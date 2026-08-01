@@ -139,6 +139,13 @@ Browser mutations additionally require `allow_browser_input: true`.
 `browser_prepare` is destructive and separately requires
 `allow_browser_prepare: true`; it never changes a personal browser profile
 implicitly and forwards CUA's explicit setup refusal/approval contract.
+For an isolated browser, mint the one-use approval interactively with the
+upstream `cua-driver browser-approve --pid PID --profile-mode isolated_new`
+command, then pass its token to `browser_prepare`; this CLI never mints a
+browser approval on behalf of an agent. Existing-profile attachment requires
+a trusted Core authorization host created through
+`ComputerUseDriver::create_with_authorization_host`; the default runtime and
+Host process keep refusing it.
 `browser_snapshot` first binds the exact native window, then snapshots a
 specific CUA tab; `browser_click`, `browser_type`, and `browser_pointer` require
 the latest browser `snapshot_id`, exact binding, and an explicit input route.

@@ -9,6 +9,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use base64::Engine;
 use cua_driver_sdk::CuaDriver;
+pub use cua_driver_sdk::{
+    ConfiguredDriverOptions, DriverAuthorizationAction, DriverAuthorizationDecision,
+    DriverAuthorizationHost, DriverAuthorizationHostError, DriverAuthorizationRequest,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use thiserror::Error;
@@ -221,6 +225,20 @@ impl ComputerUseDriver {
         CuaDriver::create(None)
             .map(|driver| Self { driver })
             .map_err(|error| map_driver_error("create CUA runtime", error))
+    }
+
+    /// Create a configured runtime with a trusted host authorization callback.
+    ///
+    /// The callback is constructor-only and must be owned by Core or another
+    /// trusted embedding host. It is never exposed through CUA tools or Host
+    /// IPC, and returning `Allow` must require an explicit user decision.
+    pub fn create_with_authorization_host(
+        options: ConfiguredDriverOptions,
+        host: Arc<dyn DriverAuthorizationHost>,
+    ) -> ComputerUseResult<Self> {
+        CuaDriver::create_configured_with_authorization_host(options, host)
+            .map(|driver| Self { driver })
+            .map_err(|error| map_driver_error("create authorized CUA runtime", error))
     }
 
     pub fn session(
