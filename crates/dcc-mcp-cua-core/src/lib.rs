@@ -19,6 +19,10 @@ const MAX_DRAG_POINTS: usize = 256;
 const MAX_LAUNCH_ARGUMENTS: usize = 32;
 const MAX_LAUNCH_URLS: usize = 16;
 const MAX_LOCAL_PATH_CHARS: usize = 4_096;
+const MAX_NATIVE_TOOL_NAME_CHARS: usize = 128;
+const MAX_NATIVE_TOOL_ARGUMENT_BYTES: usize = 1 * 1024 * 1024;
+const MAX_NATIVE_TOOL_IMAGES: usize = 8;
+const MAX_NATIVE_TOOL_IMAGE_BYTES: usize = 64 * 1024 * 1024;
 const MOUSE_CURSOR_THEME: &str = "cua.default";
 static OBSERVATION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
@@ -146,6 +150,17 @@ pub struct ComputerUseImage {
     pub mime_type: String,
 }
 
+/// Result of an open-ended CUA SDK tool call. The raw MCP result stays
+/// available for extension tools; image pixels are decoded separately so a
+/// Host can forward them as binary frames instead of base64 JSON.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ComputerUseToolResult {
+    pub value: Value,
+    pub text: String,
+    pub images: Vec<ComputerUseImage>,
+    pub degraded: bool,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ComputerUseVerification {
     pub value: Value,
@@ -267,6 +282,32 @@ impl ComputerUseDriver {
         })
     }
 
+    /// Call a non-window-bound CUA tool from the local CLI surface.
+    /// Window-bound tools must use an exact `ComputerUseSession` instead.
+    pub async fn call_tool(
+        &self,
+        name: &str,
+        arguments: Value,
+    ) -> ComputerUseResult<ComputerUseToolResult> {
+        validate_native_tool_request(name, &arguments)?;
+        let schema = self.tool_schema(name).await?;
+        if schema["properties"].get("pid").is_some()
+            || schema["properties"].get("window_id").is_some()
+        {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::InvalidTarget,
+                format!("CUA tool {name:?} requires an exact window session"),
+            ));
+        }
+        let result = self
+            .driver
+            .call_tool(name.to_owned(), arguments.to_string())
+            .await
+            .map_err(|error| map_driver_error(&format!("call CUA {name}"), error))?;
+        ensure_tool_ok(&format!("call CUA {name}"), &result)?;
+        native_tool_result(result)
+    }
+
     /// Capture the full desktop without widening any window-scoped session.
     pub async fn desktop_snapshot(&self) -> ComputerUseResult<ComputerUseDesktopSnapshot> {
         self.desktop_snapshot_for(None).await
@@ -343,6 +384,38 @@ impl ComputerUseDriver {
             )
         })
     }
+
+    async fn tool_schema(&self, name: &str) -> ComputerUseResult<Value> {
+        tool_schema_from_driver(&self.driver, name).await
+    }
+}
+
+async fn tool_schema_from_driver(driver: &CuaDriver, name: &str) -> ComputerUseResult<Value> {
+    let raw = driver
+        .list_tools_json()
+        .await
+        .map_err(|error| map_driver_error("list CUA tools", error))?;
+    let inventory: Value = serde_json::from_str(&raw).map_err(|error| {
+        ComputerUseError::new(
+            ComputerUseErrorCode::BackendUnavailable,
+            format!("CUA tool inventory returned invalid JSON: {error}"),
+        )
+    })?;
+    inventory["tools"]
+        .as_array()
+        .and_then(|tools| {
+            tools
+                .iter()
+                .find(|tool| tool["name"].as_str() == Some(name))
+        })
+        .and_then(|tool| tool.get("inputSchema"))
+        .cloned()
+        .ok_or_else(|| {
+            ComputerUseError::new(
+                ComputerUseErrorCode::InvalidAction,
+                format!("CUA tool {name:?} is not present in the live inventory"),
+            )
+        })
 }
 
 /// A long-lived, exact-window Computer Use session.
@@ -752,6 +825,62 @@ impl ComputerUseSession {
             ComputerUseError::new(ComputerUseErrorCode::CaptureFailed, error.to_string())
         })?;
         Ok(ComputerUseVerification { value, image })
+    }
+
+    /// Call an extension CUA tool while retaining this session's exact target.
+    /// Typed action/browser/lifecycle routes remain the only path for their
+    /// sensitive operations.
+    pub async fn call_tool(
+        &self,
+        name: &str,
+        arguments: Value,
+    ) -> ComputerUseResult<ComputerUseToolResult> {
+        validate_native_tool_request(name, &arguments)?;
+        if !native_tool_allowed_in_window_session(name) {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::InvalidAction,
+                format!("CUA tool {name:?} must use its dedicated typed route"),
+            ));
+        }
+        self.ensure_active()?;
+        let target = self.revalidate_target().await?;
+        let schema = tool_schema_from_driver(&self.driver, name).await?;
+        let mut object = arguments.as_object().cloned().ok_or_else(|| {
+            ComputerUseError::new(
+                ComputerUseErrorCode::InvalidAction,
+                "native CUA tool arguments must be a JSON object",
+            )
+        })?;
+        let properties = schema["properties"].as_object().ok_or_else(|| {
+            ComputerUseError::new(
+                ComputerUseErrorCode::BackendUnavailable,
+                format!("CUA tool {name:?} returned an invalid input schema"),
+            )
+        })?;
+        for reserved in ["pid", "window_id", "session"] {
+            if object.remove(reserved).is_some() && !properties.contains_key(reserved) {
+                return Err(ComputerUseError::new(
+                    ComputerUseErrorCode::InvalidAction,
+                    format!("native CUA tool argument {reserved:?} is not target-bindable"),
+                ));
+            }
+        }
+        if properties.contains_key("pid") {
+            object.insert("pid".into(), json!(target.pid));
+        }
+        if properties.contains_key("window_id") {
+            object.insert("window_id".into(), json!(target.window_id));
+        }
+        if properties.contains_key("session") {
+            object.insert("session".into(), json!(self.session_id));
+        }
+        let result = self
+            .driver
+            .call_tool(name.to_owned(), Value::Object(object).to_string())
+            .await
+            .map_err(|error| map_driver_error(&format!("call CUA {name}"), error))?;
+        ensure_tool_ok(&format!("call CUA {name}"), &result)?;
+        native_tool_result(result)
     }
 
     /// Call one of CUA's typed browser tools within this exact native window.
@@ -1398,6 +1527,139 @@ fn validate_verify_state_request(
     Ok(())
 }
 
+fn validate_native_tool_request(name: &str, arguments: &Value) -> ComputerUseResult<()> {
+    if name.is_empty()
+        || name.chars().count() > MAX_NATIVE_TOOL_NAME_CHARS
+        || !name
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || character == '_')
+    {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::InvalidAction,
+            "native CUA tool name must be 1..128 ASCII letters, digits, or underscores",
+        ));
+    }
+    if !arguments.is_object() {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::InvalidAction,
+            "native CUA tool arguments must be a JSON object",
+        ));
+    }
+    let encoded = serde_json::to_vec(arguments).map_err(|error| {
+        ComputerUseError::new(ComputerUseErrorCode::InvalidAction, error.to_string())
+    })?;
+    if encoded.len() > MAX_NATIVE_TOOL_ARGUMENT_BYTES {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::InvalidAction,
+            "native CUA tool arguments exceed 1 MiB",
+        ));
+    }
+    if arguments
+        .as_object()
+        .is_some_and(|object| object.keys().any(|key| key.starts_with('_')))
+    {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::InvalidAction,
+            "native CUA reserved arguments are host-owned",
+        ));
+    }
+    Ok(())
+}
+
+fn native_tool_allowed_in_window_session(name: &str) -> bool {
+    const DEDICATED_TOOLS: [&str; 30] = [
+        "get_window_state",
+        "verify_state",
+        "click",
+        "double_click",
+        "right_click",
+        "drag",
+        "type_text",
+        "press_key",
+        "hotkey",
+        "set_value",
+        "scroll",
+        "clipboard_read",
+        "clipboard_write",
+        "get_desktop_state",
+        "move_cursor",
+        "set_agent_cursor_enabled",
+        "set_agent_cursor_motion",
+        "get_agent_cursor_state",
+        "set_agent_cursor_theme",
+        "browser_prepare",
+        "browser_navigate",
+        "browser_click",
+        "browser_type",
+        "browser_dialog",
+        "browser_set_input_files",
+        "browser_download",
+        "browser_pointer",
+        "start_recording",
+        "stop_recording",
+        "get_recording_state",
+    ];
+    if DEDICATED_TOOLS.contains(&name) || name.starts_with("browser_") {
+        return false;
+    }
+    !matches!(
+        name,
+        "launch_app"
+            | "kill_app"
+            | "bring_to_front"
+            | "start_session"
+            | "escalate_session"
+            | "end_session"
+    )
+}
+
+fn native_tool_result(
+    result: cua_driver_sdk::ToolResult,
+) -> ComputerUseResult<ComputerUseToolResult> {
+    if result.images.len() > MAX_NATIVE_TOOL_IMAGES {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::CaptureFailed,
+            format!("CUA native tool returned more than {MAX_NATIVE_TOOL_IMAGES} images"),
+        ));
+    }
+    let mut images = Vec::with_capacity(result.images.len());
+    for image in result.images {
+        if image.data_base64.len() > MAX_NATIVE_TOOL_IMAGE_BYTES * 2 {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::CaptureFailed,
+                "CUA native tool image exceeds 64 MiB",
+            ));
+        }
+        let data = base64::engine::general_purpose::STANDARD
+            .decode(image.data_base64)
+            .map_err(|error| {
+                ComputerUseError::new(ComputerUseErrorCode::CaptureFailed, error.to_string())
+            })?;
+        if data.len() > MAX_NATIVE_TOOL_IMAGE_BYTES {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::CaptureFailed,
+                "CUA native tool image exceeds 64 MiB",
+            ));
+        }
+        images.push(ComputerUseImage {
+            data,
+            mime_type: image.mime_type,
+        });
+    }
+    let value = serde_json::from_str(&result.raw_json).map_err(|error| {
+        ComputerUseError::new(
+            ComputerUseErrorCode::BackendUnavailable,
+            format!("CUA native tool returned invalid JSON: {error}"),
+        )
+    })?;
+    Ok(ComputerUseToolResult {
+        value,
+        text: result.text,
+        images,
+        degraded: result.degraded,
+    })
+}
+
 fn validate_action(action: &ComputerUseAction) -> ComputerUseResult<()> {
     const ACTIONS: [&str; 12] = [
         "click",
@@ -1768,6 +2030,16 @@ mod tests {
             )
             .is_ok()
         );
+    }
+
+    #[test]
+    fn native_tool_boundary_rejects_reserved_and_dedicated_routes() {
+        assert!(validate_native_tool_request("debug_window_info", &json!({})).is_ok());
+        assert!(validate_native_tool_request("bad-name", &json!({})).is_err());
+        assert!(validate_native_tool_request("debug_window_info", &json!({"_tool":"x"})).is_err());
+        assert!(!native_tool_allowed_in_window_session("click"));
+        assert!(!native_tool_allowed_in_window_session("browser_navigate"));
+        assert!(native_tool_allowed_in_window_session("debug_window_info"));
     }
 
     #[test]

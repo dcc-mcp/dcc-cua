@@ -19,6 +19,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "list" => list_windows(&driver, &flags).await?,
         "apps" => list_apps(&driver).await?,
         "tools" => list_tools(&driver).await?,
+        "call" => call_tool(&driver, &flags).await?,
         "desktop-snapshot" => desktop_snapshot(&driver, &flags).await?,
         "screen-size" => screen_size(&driver).await?,
         "cursor-position" => cursor_position(&driver).await?,
@@ -77,6 +78,44 @@ async fn list_tools(driver: &ComputerUseDriver) -> Result<(), Box<dyn std::error
         "{}",
         serde_json::to_string_pretty(&driver.list_tools().await?)?
     );
+    Ok(())
+}
+
+async fn call_tool(
+    driver: &ComputerUseDriver,
+    flags: &[String],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let name = flag_value(flags, "--tool").ok_or("call requires --tool NAME")?;
+    let arguments = serde_json::from_str::<serde_json::Value>(
+        &flag_value(flags, "--json").unwrap_or_else(|| "{}".into()),
+    )?;
+    let output = flag_value(flags, "--output");
+    let has_target = ["--app", "--pid", "--window-id", "--title"]
+        .into_iter()
+        .any(|flag| flag_value(flags, flag).is_some());
+    let result = if has_target {
+        let scope = select_scope(driver, flags).await?;
+        let app = flag_value(flags, "--app").unwrap_or_else(|| "DCC application".into());
+        let session_id =
+            flag_value(flags, "--session").unwrap_or_else(|| "dcc-mcp-call-cli".into());
+        let mut session = driver.session(scope, app, session_id)?;
+        session.start().await?;
+        let result = session.call_tool(&name, arguments).await;
+        let stop_result = session.stop().await;
+        let result = result?;
+        stop_result?;
+        result
+    } else {
+        driver.call_tool(&name, arguments).await?
+    };
+    if let (Some(path), Some(image)) = (output.as_deref(), result.images.first()) {
+        fs::write(path, &image.data)?;
+    }
+    let mut value = result.value;
+    if let Some(path) = output {
+        value["_dcc_mcp_image_output"] = json!(path);
+    }
+    println!("{}", serde_json::to_string_pretty(&value)?);
     Ok(())
 }
 
@@ -401,6 +440,6 @@ fn has_flag(flags: &[String], name: &str) -> bool {
 
 fn print_help() {
     println!(
-        "dcc-mcp-cua\n\n  list [--app APP]\n  apps\n  tools\n  desktop-snapshot [--output FILE]\n  screen-size\n  cursor-position\n  launch --name NAME|--bundle-id ID|--aumid ID|--path PATH|--launch-path PATH [--url URL] [--arg ARG] [--new-instance] [--start-minimized]\n  terminate --app APP --confirm\n  snapshot --app APP [--output FILE]\n  act --app APP --action-json JSON\n  verify --app APP --expect-json JSON [--timeout-ms N] [--stable-samples N]\n  desktop-act --action-json JSON [--session ID]\n  clipboard-read --app APP [--include-text]\n  clipboard-write --app APP --text TEXT|--image-path FILE|--file-path FILE\n  doctor\n  host [--stdio|--endpoint PATH]\n\nHost uses versioned big-endian JSON frames. Hello version 1 negotiates binary-frame or shared-memory snapshots and supports request_id correlation."
+        "dcc-mcp-cua\n\n  list [--app APP]\n  apps\n  tools\n  call --tool NAME [--json JSON] [--app APP|--pid PID --window-id ID] [--output FILE]\n  desktop-snapshot [--output FILE]\n  screen-size\n  cursor-position\n  launch --name NAME|--bundle-id ID|--aumid ID|--path PATH|--launch-path PATH [--url URL] [--arg ARG] [--new-instance] [--start-minimized]\n  terminate --app APP --confirm\n  snapshot --app APP [--output FILE]\n  act --app APP --action-json JSON\n  verify --app APP --expect-json JSON [--timeout-ms N] [--stable-samples N]\n  desktop-act --action-json JSON [--session ID]\n  clipboard-read --app APP [--include-text]\n  clipboard-write --app APP --text TEXT|--image-path FILE|--file-path FILE\n  doctor\n  host [--stdio|--endpoint PATH]\n\nHost uses versioned big-endian JSON frames. Hello version 1 negotiates binary-frame or shared-memory snapshots and supports request_id correlation."
     );
 }

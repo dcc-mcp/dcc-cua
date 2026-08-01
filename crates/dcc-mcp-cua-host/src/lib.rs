@@ -31,7 +31,7 @@ use dcc_mcp_cua_core::{
     ComputerUseAction, ComputerUseClipboardWriteRequest, ComputerUseDesktopSession,
     ComputerUseDriver, ComputerUseError, ComputerUseErrorCode, ComputerUsePoint,
     ComputerUseRecordingStartRequest, ComputerUseResult, ComputerUseSession,
-    ComputerUseTargetScope,
+    ComputerUseTargetScope, ComputerUseToolResult,
 };
 use dcc_mcp_cua_shm::SharedImage;
 
@@ -62,6 +62,7 @@ pub const HOST_CAPABILITIES: &[&str] = &[
     "application_inventory",
     "window_inventory",
     "tool_inventory",
+    "authorized_native_tool_calls",
     "desktop_snapshot",
     "screen_size",
     "cursor_position",
@@ -249,6 +250,13 @@ enum Request {
         #[serde(default)]
         include_screenshot: bool,
     },
+    CallTool {
+        session_id: String,
+        task_grant_id: String,
+        window_capability: String,
+        tool: String,
+        arguments: Value,
+    },
     BrowserSnapshot {
         session_id: String,
         task_grant_id: String,
@@ -400,6 +408,8 @@ struct TaskGrant {
     allow_browser_prepare: bool,
     #[serde(default)]
     allow_browser_download: bool,
+    #[serde(default)]
+    allow_native_tool: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -587,6 +597,7 @@ struct HostSession {
     allow_browser_input: bool,
     allow_browser_prepare: bool,
     allow_browser_download: bool,
+    allow_native_tool: bool,
     capability: String,
     session: ComputerUseSession,
     browser: BrowserSession,
@@ -1234,6 +1245,7 @@ async fn handle_request(
                     allow_browser_input: grant.allow_browser_input,
                     allow_browser_prepare: grant.allow_browser_prepare,
                     allow_browser_download: grant.allow_browser_download,
+                    allow_native_tool: grant.allow_native_tool,
                     capability: capability.clone(),
                     session,
                     browser: BrowserSession::default(),
@@ -1404,6 +1416,23 @@ async fn handle_request(
                 });
             }
             Ok((response, attachment))
+        }
+        Request::CallTool {
+            session_id,
+            task_grant_id,
+            window_capability,
+            tool,
+            arguments,
+        } => {
+            let host =
+                authorized_session(sessions, &session_id, &task_grant_id, &window_capability)?;
+            if !host.allow_native_tool {
+                return Err(HostError::Protocol(
+                    "native CUA tool calls are not granted".into(),
+                ));
+            }
+            let result = host.session.call_tool(&tool, arguments).await?;
+            Ok(native_tool_response(&session_id, &tool, result))
         }
         Request::BrowserSnapshot {
             session_id,
@@ -1866,6 +1895,44 @@ fn authorized_desktop_session<'a>(
     Ok(session)
 }
 
+fn native_tool_response(
+    session_id: &str,
+    tool: &str,
+    result: ComputerUseToolResult,
+) -> (Value, Option<Vec<u8>>) {
+    let mut value = result.value;
+    let image = result.images.first();
+    if image.is_some() {
+        if let Some(content) = value.get_mut("content").and_then(Value::as_array_mut) {
+            for item in content {
+                if item["type"] == "image" {
+                    item["data"] = Value::Null;
+                    item["encoding"] = Value::String("binary_frame".into());
+                    item["length"] = json!(image.map_or(0, |image| image.data.len()));
+                    break;
+                }
+            }
+        }
+    }
+    let mut response = json!({
+        "type": "tool_result",
+        "session_id": session_id,
+        "tool": tool,
+        "result": value,
+        "text": result.text,
+        "degraded": result.degraded,
+    });
+    let attachment = image.map(|image| {
+        response["image"] = json!({
+            "encoding": "binary_frame",
+            "mime_type": image.mime_type,
+            "length": image.data.len(),
+        });
+        image.data.clone()
+    });
+    (response, attachment)
+}
+
 fn target_wire(target: &Value) -> Value {
     json!({
         "process_id": target["pid"],
@@ -2218,6 +2285,7 @@ mod tests {
         assert!(!grant.allow_browser_input);
         assert!(!grant.allow_browser_prepare);
         assert!(!grant.allow_browser_download);
+        assert!(!grant.allow_native_tool);
         assert_eq!(
             error_code(&HostError::Protocol(
                 "browser download is not granted".into()
@@ -2268,6 +2336,19 @@ mod tests {
                 }
             })),
             Ok(Request::VerifyState { .. })
+        ));
+        assert!(matches!(
+            serde_json::from_value::<Request>(json!({
+                "method": "call_tool",
+                "params": {
+                    "session_id": "session-1",
+                    "task_grant_id": "task-1",
+                    "window_capability": "cap-1",
+                    "tool": "debug_window_info",
+                    "arguments": {}
+                }
+            })),
+            Ok(Request::CallTool { .. })
         ));
         assert!(matches!(
             serde_json::from_value::<Request>(json!({
@@ -2487,6 +2568,29 @@ mod tests {
             })),
             Ok(Request::BrowserDialog { .. })
         ));
+    }
+
+    #[test]
+    fn native_tool_response_moves_image_pixels_to_binary_attachment() {
+        let (response, attachment) = native_tool_response(
+            "session-1",
+            "debug_window_info",
+            ComputerUseToolResult {
+                value: json!({
+                    "content": [{"type": "image", "mimeType": "image/png", "data": "base64"}]
+                }),
+                text: String::new(),
+                images: vec![dcc_mcp_cua_core::ComputerUseImage {
+                    data: vec![1, 2, 3],
+                    mime_type: "image/png".into(),
+                }],
+                degraded: false,
+            },
+        );
+        assert_eq!(response["type"], "tool_result");
+        assert_eq!(response["result"]["content"][0]["data"], Value::Null);
+        assert_eq!(response["image"]["length"], 3);
+        assert_eq!(attachment, Some(vec![1, 2, 3]));
     }
 
     #[test]

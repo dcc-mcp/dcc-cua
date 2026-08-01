@@ -38,6 +38,7 @@ operations.
 cargo run -p dcc-mcp-cua-cli -- list --app chrome.exe
 cargo run -p dcc-mcp-cua-cli -- apps
 cargo run -p dcc-mcp-cua-cli -- tools
+cargo run -p dcc-mcp-cua-cli -- call --tool check_permissions --json '{}'
 cargo run -p dcc-mcp-cua-cli -- desktop-snapshot --output desktop.png
 cargo run -p dcc-mcp-cua-cli -- screen-size
 cargo run -p dcc-mcp-cua-cli -- cursor-position
@@ -86,7 +87,7 @@ handshake advertises the exact capabilities of this build.
 
 The supported request surface is `hello`, `list_apps`, `list_tools`, `list_windows`, `launch_app`, `open_session`,
 `get_window_state`, `change_window_state` (`restore`, `show`, `activate`), `snapshot`,
-`accessibility_snapshot`, `verify_state`, `find`, `wait_for`, `browser_snapshot`,
+`accessibility_snapshot`, `verify_state`, `call_tool`, `find`, `wait_for`, `browser_snapshot`,
 `browser_prepare`, `browser_navigate`, `browser_click`, `browser_type`, `browser_pointer`,
 `browser_set_input_files`, `browser_download`, `browser_dialog`,
 `clipboard_read`, `clipboard_write`, `recording_start`, `recording_stop`,
@@ -132,11 +133,19 @@ ordered and are rejected until that wait completes.
 operation; the returned window state is always revalidated against the exact
 PID/HWND target.
 
+Extension tools from the live CUA inventory are available through `call_tool`
+only after `open_session` grants `allow_native_tool: true`. The host injects
+the exact session PID/HWND/session values from the live SDK schema and rejects
+reserved arguments. Click, keyboard, browser, clipboard, recording, and
+session-lifecycle tools stay on their dedicated grant-gated routes so the
+extension surface cannot bypass observation or approval fences.
+
 Example host requests:
 
 ```json
 {"method":"list_apps","params":{}}
 {"method":"launch_app","params":{"grant":{"task_grant_id":"task-1","dcc_type":"unreal","allow_app_launch":true},"launch":{"name":"Calculator"}}}
+{"method":"call_tool","params":{"session_id":"session-1","task_grant_id":"task-1","window_capability":"cua-window-...","tool":"debug_window_info","arguments":{}}}
 ```
 
 ## Build and test
