@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/dcc-mcp-cua-browser",
+    "crates/dcc-mcp-cua-client",
     "crates/dcc-mcp-cua-core",
     "crates/dcc-mcp-cua-host",
     "crates/dcc-mcp-cua-shm",

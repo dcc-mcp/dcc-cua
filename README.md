@@ -14,12 +14,14 @@ a whole task. Its public protocol is owned by this repository and provides:
 - a visible CUA mouse-shaped cursor and `DCC UI Control · <app> · Esc to stop`
   marker.
 
-The repository is a Cargo workspace with five responsibilities:
+The repository is a Cargo workspace with six responsibilities:
 
 - `dcc-mcp-cua-core`: scoped Computer Use domain, safety policy, and
   CUA execution boundary;
 - `dcc-mcp-cua-browser`: exact-window browser binding, tab snapshots, typed
   browser actions, and bounded file transfer;
+- `dcc-mcp-cua-client`: reusable Core-side Host IPC client with request
+  correlation and binary image attachments;
 - `dcc-mcp-cua-host`: long-lived versioned IPC and request
   routing;
 - `dcc-mcp-cua-shm`: cross-platform shared-memory image handoff;
@@ -73,6 +75,15 @@ Start one persistent host process instead of spawning a process per action:
 ```powershell
 cargo run -p dcc-mcp-cua-cli -- host --stdio
 cargo run -p dcc-mcp-cua-cli -- host
+```
+
+`dcc-mcp-cua-client` is the direct embedding path for dcc-mcp-core. It opens
+the per-session endpoint, performs `hello`, sends JSON requests, and returns
+the following binary image frame without base64 decoding in the control path:
+
+```rust,no_run
+let mut host = dcc_mcp_cua_client::HostClient::connect_default("dcc-mcp-core").await?;
+let response = host.request("list_windows", serde_json::json!({})).await?;
 ```
 
 On Windows, the default endpoint is the per-session named pipe

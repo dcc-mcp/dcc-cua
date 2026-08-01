@@ -1,0 +1,22 @@
+[package]
+name = "dcc-mcp-cua-client"
+description = "Cross-platform client for the DCC-MCP Computer Use Host IPC"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "dcc_mcp_cua_client"
+path = "src/lib.rs"
+
+[dependencies]
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_System_RemoteDesktop", "Win32_System_Threading"] }

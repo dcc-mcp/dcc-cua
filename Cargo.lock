@@ -858,6 +858,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "dcc-mcp-cua-client"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "thiserror 2.0.19",
+ "tokio",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "dcc-mcp-cua-core"
 version = "0.1.0"
 dependencies = [
