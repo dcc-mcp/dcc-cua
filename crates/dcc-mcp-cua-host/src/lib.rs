@@ -34,6 +34,7 @@ use dcc_mcp_cua_core::{
 /// Core-compatible control frame limit. Pixel bytes use a separate bounded frame.
 pub const MAX_JSON_FRAME_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_BINARY_FRAME_BYTES: usize = 64 * 1024 * 1024;
+pub const MAX_REQUEST_ID_CHARS: usize = 128;
 pub const HOST_PROTOCOL_VERSION: u32 = 3;
 
 /// Capabilities this implementation actually provides.
@@ -63,6 +64,7 @@ pub const HOST_CAPABILITIES: &[&str] = &[
     "browser_file_upload",
     "browser_file_download",
     "browser_dialog",
+    "request_correlation",
 ];
 
 /// Local transport selected by the CLI or embedding host.
@@ -508,12 +510,33 @@ where
     let mut sessions = HashMap::<String, HostSession>::new();
 
     while let Some(frame) = read_frame(&mut reader, MAX_JSON_FRAME_BYTES).await? {
-        let request = match serde_json::from_slice::<Request>(&frame) {
-            Ok(request) => request,
+        let envelope = match serde_json::from_slice::<Value>(&frame) {
+            Ok(envelope) => envelope,
             Err(error) => {
                 write_json(
                     &mut writer,
                     error_response("invalid_request", error.to_string()),
+                )
+                .await?;
+                continue;
+            }
+        };
+        let request_id = match request_id_from(&envelope) {
+            Ok(request_id) => request_id,
+            Err(error) => {
+                write_json(&mut writer, error_response("invalid_request", error)).await?;
+                continue;
+            }
+        };
+        let request = match serde_json::from_value::<Request>(envelope) {
+            Ok(request) => request,
+            Err(error) => {
+                write_json(
+                    &mut writer,
+                    with_request_id(
+                        error_response("invalid_request", error.to_string()),
+                        request_id.as_deref(),
+                    ),
                 )
                 .await?;
                 continue;
@@ -524,7 +547,12 @@ where
                 Ok(result) => result,
                 Err(error) => (error_response(error_code(&error), error.to_string()), None),
             };
-        write_response(&mut writer, response, attachment.as_deref()).await?;
+        write_response(
+            &mut writer,
+            with_request_id(response, request_id.as_deref()),
+            attachment.as_deref(),
+        )
+        .await?;
     }
 
     for (_, mut session) in sessions {
@@ -1296,6 +1324,28 @@ fn error_response(code: &str, message: impl Into<String>) -> Value {
     json!({"type":"error", "code":code, "message":message.into()})
 }
 
+fn request_id_from(value: &Value) -> Result<Option<String>, String> {
+    let Some(request_id) = value.get("request_id") else {
+        return Ok(None);
+    };
+    let request_id = request_id
+        .as_str()
+        .ok_or_else(|| "request_id must be a string".to_owned())?;
+    if request_id.is_empty() || request_id.chars().count() > MAX_REQUEST_ID_CHARS {
+        return Err(format!(
+            "request_id must contain 1..{MAX_REQUEST_ID_CHARS} characters"
+        ));
+    }
+    Ok(Some(request_id.to_owned()))
+}
+
+fn with_request_id(mut response: Value, request_id: Option<&str>) -> Value {
+    if let Some(request_id) = request_id {
+        response["request_id"] = Value::String(request_id.to_owned());
+    }
+    response
+}
+
 async fn read_frame<R: AsyncRead + Unpin>(
     reader: &mut R,
     max: usize,
@@ -1429,6 +1479,26 @@ mod tests {
     fn frame_prefix_is_big_endian_and_bounded() {
         assert_eq!(u32::from_be_bytes((42_u32).to_be_bytes()), 42);
         assert!(MAX_BINARY_FRAME_BYTES > MAX_JSON_FRAME_BYTES);
+    }
+
+    #[test]
+    fn request_ids_are_optional_bounded_and_echoable() {
+        assert_eq!(request_id_from(&json!({})).unwrap(), None);
+        assert_eq!(
+            request_id_from(&json!({"request_id":"req-1"})).unwrap(),
+            Some("req-1".into())
+        );
+        assert!(request_id_from(&json!({"request_id":""})).is_err());
+        assert!(
+            request_id_from(&json!({
+                "request_id": "x".repeat(MAX_REQUEST_ID_CHARS + 1)
+            }))
+            .is_err()
+        );
+        assert_eq!(
+            with_request_id(json!({"type":"ok"}), Some("req-1")),
+            json!({"type":"ok", "request_id":"req-1"})
+        );
     }
 
     #[test]

@@ -70,7 +70,10 @@ On Unix, the default endpoint is
 an unsigned big-endian `u32` length followed by one UTF-8 JSON request or
 response. A `snapshot` response is followed by one additional length-prefixed
 binary PNG frame, avoiding base64 pixel transfer and keeping the JSON frame
-under 4 MiB. The handshake advertises the exact capabilities of this build.
+under 4 MiB. Requests may include a top-level `request_id` (1–128 characters);
+the host echoes it on the JSON response, including errors, so Core can safely
+correlate long-lived IPC calls. The handshake advertises the exact capabilities
+of this build.
 
 The supported Core request surface is `hello`, `list_apps`, `launch_app`, `open_session`,
 `get_window_state`, `change_window_state` (`activate`), `snapshot`,
