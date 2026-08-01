@@ -18,6 +18,8 @@ task. It preserves the Core Computer Use contract:
 
 ```powershell
 cargo run -- list --app chrome.exe
+cargo run -- apps
+cargo run -- launch --name Calculator
 cargo run -- doctor
 cargo run -- snapshot --app chrome.exe --output screenshot.png
 cargo run -- act --app chrome.exe --action-json '{"action":"click","x":100,"y":100}'
@@ -26,6 +28,10 @@ cargo run -- act --app chrome.exe --action-json '{"action":"click","x":100,"y":1
 `list` and `doctor` are read-only. `snapshot` and `act` require one exact
 target; if an application has multiple windows, pass `--pid` and
 `--window-id` instead of relying on an app name.
+
+`apps` uses CUA's cross-platform application inventory. `launch` accepts one
+explicit selector (`--name`, `--bundle-id`, or `--launch-path`) and applies the
+same sensitive-application deny policy as the host.
 
 ## Core host IPC
 
@@ -43,15 +49,24 @@ response. A `snapshot` response is followed by one additional length-prefixed
 binary PNG frame, avoiding base64 pixel transfer and keeping the JSON frame
 under 4 MiB. The handshake advertises the exact capabilities of this build.
 
-The supported Core request surface is `hello`, `open_session`,
+The supported Core request surface is `hello`, `list_apps`, `launch_app`, `open_session`,
 `get_window_state`, `change_window_state` (`activate`), `snapshot`,
 `accessibility_snapshot`, `execute_action`, `resume_session`, and
 `stop_session`. Semantic actions use CUA `element_index` values from the latest
 accessibility snapshot; coordinate actions remain available for custom-drawn
-surfaces. Shared-memory descriptors, recording, and typed system operations
+surfaces. `launch_app` requires a non-empty `task_grant_id`, `dcc_type`, and
+`allow_app_launch: true`; it never inherits permission from an open DCC window
+session. Shared-memory descriptors, recording, and typed system operations
 remain explicitly unsupported until their cross-platform contracts are
 implemented; the host returns `unsupported` instead of silently falling back
 to unsafe desktop automation.
+
+Example host requests:
+
+```json
+{"method":"list_apps","params":{}}
+{"method":"launch_app","params":{"grant":{"task_grant_id":"task-1","dcc_type":"unreal","allow_app_launch":true},"launch":{"name":"Calculator"}}}
+```
 
 ## Build and test
 

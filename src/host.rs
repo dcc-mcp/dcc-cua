@@ -39,6 +39,8 @@ pub const HOST_CAPABILITIES: &[&str] = &[
     "binary_snapshot_frames",
     "cua_cursor_marker",
     "cross_platform_window_control",
+    "application_inventory",
+    "application_launch",
 ];
 
 /// Local transport selected by the CLI or embedding host.
@@ -76,6 +78,11 @@ pub enum HostError {
 #[serde(tag = "method", content = "params", rename_all = "snake_case")]
 enum Request {
     Hello(HelloParams),
+    ListApps {},
+    LaunchApp {
+        grant: TaskGrant,
+        launch: crate::ComputerUseLaunchRequest,
+    },
     OpenSession {
         session_id: String,
         grant: TaskGrant,
@@ -147,6 +154,8 @@ struct TaskGrant {
     window_handle: Option<u64>,
     #[serde(default)]
     allow_raw_input: bool,
+    #[serde(default)]
+    allow_app_launch: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -351,6 +360,29 @@ async fn handle_request(
 
     match request {
         Request::Hello(_) => unreachable!(),
+        Request::ListApps {} => {
+            let apps = driver.list_apps().await?;
+            Ok((json!({"type":"apps", "apps":apps}), None))
+        }
+        Request::LaunchApp { grant, launch } => {
+            if grant.task_grant_id.trim().is_empty() || grant.dcc_type.trim().is_empty() {
+                return Err(HostError::Protocol("task grant is incomplete".into()));
+            }
+            if !grant.allow_app_launch {
+                return Err(HostError::Protocol(
+                    "application launch is not granted".into(),
+                ));
+            }
+            let result = driver.launch_app(&launch).await?;
+            Ok((
+                json!({
+                    "type":"app_launched",
+                    "task_grant_id":grant.task_grant_id,
+                    "result":result,
+                }),
+                None,
+            ))
+        }
         Request::OpenSession { session_id, grant } => {
             if sessions.contains_key(&session_id) {
                 return Err(HostError::Protocol("session already exists".into()));
@@ -632,6 +664,9 @@ fn error_code(error: &HostError) -> &'static str {
         HostError::Io(_) => "backend_unavailable",
         HostError::Protocol(message) if message.contains("version") => "protocol_mismatch",
         HostError::Protocol(message) if message.contains("raw input") => "raw_input_not_granted",
+        HostError::Protocol(message) if message.contains("application launch") => {
+            "app_launch_not_granted"
+        }
         HostError::Protocol(message) if message.contains("accessibility") => "unsupported",
         HostError::Protocol(_) => "invalid_request",
     }
@@ -770,5 +805,40 @@ mod tests {
             duration_ms: None,
         };
         assert!(action.reject_policy().is_some());
+    }
+
+    #[test]
+    fn app_launch_grant_defaults_to_denied() {
+        let grant: TaskGrant = serde_json::from_value(json!({
+            "task_grant_id": "task-1",
+            "dcc_type": "unreal"
+        }))
+        .expect("legacy grants should remain readable");
+        assert!(!grant.allow_app_launch);
+    }
+
+    #[test]
+    fn app_requests_parse_with_core_params_frames() {
+        assert!(matches!(
+            serde_json::from_value::<Request>(json!({
+                "method": "list_apps",
+                "params": {}
+            })),
+            Ok(Request::ListApps {})
+        ));
+        assert!(matches!(
+            serde_json::from_value::<Request>(json!({
+                "method": "launch_app",
+                "params": {
+                    "grant": {
+                        "task_grant_id": "task-1",
+                        "dcc_type": "unreal",
+                        "allow_app_launch": true
+                    },
+                    "launch": {"name": "Calculator"}
+                }
+            })),
+            Ok(Request::LaunchApp { .. })
+        ));
     }
 }

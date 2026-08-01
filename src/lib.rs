@@ -83,6 +83,19 @@ pub struct ComputerUseObservation {
     pub session_id: String,
 }
 
+/// Exact CUA application selector used by the host and CLI launch surface.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ComputerUseLaunchRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bundle_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub launch_path: Option<String>,
+    #[serde(default)]
+    pub creates_new_application_instance: bool,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ComputerUseScreenshot {
     pub data: Vec<u8>,
@@ -163,6 +176,45 @@ impl ComputerUseDriver {
     /// List the currently visible native windows through the CUA runtime.
     pub async fn list_windows(&self) -> ComputerUseResult<Vec<Value>> {
         list_windows_with_driver(&self.driver).await
+    }
+
+    /// Enumerate installed and currently running applications through CUA.
+    pub async fn list_apps(&self) -> ComputerUseResult<Value> {
+        let value = self.call_tool_value("list_apps", json!({})).await?;
+        value["structuredContent"]
+            .as_object()
+            .cloned()
+            .map(Value::Object)
+            .ok_or_else(|| {
+                ComputerUseError::new(
+                    ComputerUseErrorCode::BackendUnavailable,
+                    "CUA list_apps omitted structuredContent",
+                )
+            })
+    }
+
+    /// Launch one explicitly selected application through CUA's platform backend.
+    pub async fn launch_app(&self, request: &ComputerUseLaunchRequest) -> ComputerUseResult<Value> {
+        validate_launch_request(request)?;
+        let arguments = serde_json::to_value(request).map_err(|error| {
+            ComputerUseError::new(ComputerUseErrorCode::InvalidAction, error.to_string())
+        })?;
+        self.call_tool_value("launch_app", arguments).await
+    }
+
+    async fn call_tool_value(&self, name: &str, arguments: Value) -> ComputerUseResult<Value> {
+        let result = self
+            .driver
+            .call_tool(name.to_owned(), arguments.to_string())
+            .await
+            .map_err(|error| map_driver_error(&format!("call CUA {name}"), error))?;
+        ensure_tool_ok(&format!("call CUA {name}"), &result)?;
+        serde_json::from_str(&result.raw_json).map_err(|error| {
+            ComputerUseError::new(
+                ComputerUseErrorCode::BackendUnavailable,
+                format!("CUA {name} returned invalid JSON: {error}"),
+            )
+        })
     }
 }
 
@@ -648,6 +700,53 @@ fn validate_target_policy(target: &WindowTarget) -> ComputerUseResult<()> {
     Ok(())
 }
 
+fn validate_launch_request(request: &ComputerUseLaunchRequest) -> ComputerUseResult<()> {
+    let selectors = [
+        request.name.as_deref(),
+        request.bundle_id.as_deref(),
+        request.launch_path.as_deref(),
+    ];
+    if selectors
+        .iter()
+        .flatten()
+        .filter(|value| !value.trim().is_empty())
+        .count()
+        != 1
+    {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::InvalidAction,
+            "launch requires exactly one non-empty name, bundle_id, or launch_path",
+        ));
+    }
+    let selected = selectors
+        .into_iter()
+        .flatten()
+        .find(|value| !value.trim().is_empty())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    const DENIED: [&str; 12] = [
+        "password",
+        "credential",
+        "authentication",
+        "sign in",
+        "login",
+        "terminal",
+        "command prompt",
+        "cmd.exe",
+        "powershell",
+        "pwsh",
+        "bash",
+        "security",
+    ];
+    if DENIED.iter().any(|marker| selected.contains(marker)) {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::InvalidTarget,
+            "system, terminal, authentication, password, and security applications are not allowed",
+        ));
+    }
+    Ok(())
+}
+
 fn validate_action(action: &ComputerUseAction) -> ComputerUseResult<()> {
     const ACTIONS: [&str; 9] = [
         "click",
@@ -906,5 +1005,38 @@ mod tests {
         assert_eq!(args["element_index"], 7);
         assert!(args.get("x").is_none());
         assert!(args.get("y").is_none());
+    }
+
+    #[test]
+    fn launch_requires_one_safe_application_selector() {
+        assert!(validate_launch_request(&ComputerUseLaunchRequest::default()).is_err());
+        assert!(
+            validate_launch_request(&ComputerUseLaunchRequest {
+                name: Some("Calculator".into()),
+                ..Default::default()
+            })
+            .is_ok()
+        );
+        assert!(
+            validate_launch_request(&ComputerUseLaunchRequest {
+                name: Some("Calculator".into()),
+                bundle_id: Some("com.example.Calculator".into()),
+                ..Default::default()
+            })
+            .is_err()
+        );
+        assert!(
+            validate_launch_request(&ComputerUseLaunchRequest {
+                launch_path: Some("powershell.exe".into()),
+                ..Default::default()
+            })
+            .is_err()
+        );
+        let json = serde_json::to_value(ComputerUseLaunchRequest {
+            name: Some("Calculator".into()),
+            ..Default::default()
+        })
+        .expect("launch request should serialize");
+        assert!(json.get("bundle_id").is_none());
     }
 }

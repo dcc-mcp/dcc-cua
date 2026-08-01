@@ -2,7 +2,7 @@ use std::env;
 use std::fs;
 
 use dcc_mcp_computer_use::{
-    ComputerUseAction, ComputerUseDriver, ComputerUseTargetScope,
+    ComputerUseAction, ComputerUseDriver, ComputerUseLaunchRequest, ComputerUseTargetScope,
     host::{HostTransport, run as run_host},
 };
 use serde_json::json;
@@ -16,6 +16,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     match command.as_str() {
         "list" => list_windows(&driver, &flags).await?,
+        "apps" => list_apps(&driver).await?,
+        "launch" => launch_app(&driver, &flags).await?,
         "host" => {
             let transport = if has_flag(&flags, "--stdio") {
                 HostTransport::Stdio
@@ -49,6 +51,31 @@ async fn list_windows(
         });
     }
     println!("{}", serde_json::to_string_pretty(&windows)?);
+    Ok(())
+}
+
+async fn list_apps(driver: &ComputerUseDriver) -> Result<(), Box<dyn std::error::Error>> {
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&driver.list_apps().await?)?
+    );
+    Ok(())
+}
+
+async fn launch_app(
+    driver: &ComputerUseDriver,
+    flags: &[String],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let request = ComputerUseLaunchRequest {
+        name: flag_value(flags, "--name"),
+        bundle_id: flag_value(flags, "--bundle-id"),
+        launch_path: flag_value(flags, "--launch-path"),
+        creates_new_application_instance: has_flag(flags, "--new-instance"),
+    };
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&driver.launch_app(&request).await?)?
+    );
     Ok(())
 }
 
@@ -187,6 +214,6 @@ fn has_flag(flags: &[String], name: &str) -> bool {
 
 fn print_help() {
     println!(
-        "dcc-mcp-computer-use\n\n  list [--app APP]\n  snapshot --app APP [--output FILE]\n  act --app APP --action-json JSON\n  doctor\n  host [--stdio|--endpoint PATH]\n\nHost uses Core-compatible big-endian length-prefixed JSON frames; snapshot pixels follow as one binary frame."
+        "dcc-mcp-computer-use\n\n  list [--app APP]\n  apps\n  launch --name NAME|--bundle-id ID|--launch-path PATH [--new-instance]\n  snapshot --app APP [--output FILE]\n  act --app APP --action-json JSON\n  doctor\n  host [--stdio|--endpoint PATH]\n\nHost uses Core-compatible big-endian length-prefixed JSON frames; snapshot pixels follow as one binary frame."
     );
 }
