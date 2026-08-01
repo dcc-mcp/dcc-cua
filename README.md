@@ -197,7 +197,7 @@ creating a new CUA driver for each request. `host-call --output FILE` consumes
 both binary-frame images and negotiated shared-memory image descriptors.
 `--json-file -` reads UTF-8 JSON from stdin, keeping large payloads off the
 process command line. Host clients use `call_global_tool` for the grant-gated
-global CUA tools `check_permissions`, `health_report`, `get_config`,
+global CUA tools `check_permissions`, `health_report`, `get_accessibility_tree`, `get_config`,
 `set_config`, `replay_trajectory`, and `install_ffmpeg`; window tools continue
 through `call_tool` with an exact session capability.
 

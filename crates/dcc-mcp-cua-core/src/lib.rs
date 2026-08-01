@@ -1790,6 +1790,7 @@ fn native_tool_allowed_globally(name: &str) -> bool {
         name,
         "check_permissions"
             | "health_report"
+            | "get_accessibility_tree"
             | "get_config"
             | "set_config"
             | "replay_trajectory"
@@ -2350,6 +2351,7 @@ mod tests {
         assert!(!native_tool_allowed_in_window_session("browser_navigate"));
         assert!(native_tool_allowed_in_window_session("debug_window_info"));
         assert!(native_tool_allowed_globally("health_report"));
+        assert!(native_tool_allowed_globally("get_accessibility_tree"));
         assert!(!native_tool_allowed_globally("launch_app"));
         assert!(validate_escalation_request("other", Some("reason")).is_ok());
         assert!(validate_escalation_request("unknown", None).is_err());

@@ -69,6 +69,7 @@ pub const HOST_CAPABILITIES: &[&str] = &[
     "tool_inventory",
     "authorized_native_tool_calls",
     "authorized_global_native_tool_calls",
+    "desktop_accessibility_tree",
     "desktop_snapshot",
     "screen_size",
     "cursor_position",
