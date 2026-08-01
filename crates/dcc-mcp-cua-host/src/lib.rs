@@ -1789,7 +1789,7 @@ async fn handle_request(
                     "action observation_id does not match the latest host snapshot",
                 )));
             }
-            if action.element_index.is_some()
+            if (action.element_index.is_some() || action.element_token.is_some())
                 && host.latest_accessibility_state_id.as_deref()
                     != Some(accessibility_state_id.as_str())
             {
