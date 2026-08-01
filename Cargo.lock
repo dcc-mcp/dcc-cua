@@ -851,6 +851,7 @@ dependencies = [
 name = "dcc-mcp-cua-cli"
 version = "0.1.0"
 dependencies = [
+ "dcc-mcp-cua-client",
  "dcc-mcp-cua-core",
  "dcc-mcp-cua-host",
  "serde_json",

@@ -75,6 +75,7 @@ Start one persistent host process instead of spawning a process per action:
 ```powershell
 cargo run -p dcc-mcp-cua-cli -- host --stdio
 cargo run -p dcc-mcp-cua-cli -- host
+cargo run -p dcc-mcp-cua-cli -- host-call --method list_apps --json '{}'
 ```
 
 `dcc-mcp-cua-client` is the direct embedding path for dcc-mcp-core. It opens
@@ -167,7 +168,9 @@ reserved arguments. Click, keyboard, browser, clipboard, recording, and
 session-lifecycle tools stay on their dedicated grant-gated routes so the
 extension surface cannot bypass observation or approval fences.
 
-The CLI `call` command accepts either `--json JSON` or `--json-file PATH`;
+The CLI `call` and `host-call` commands accept either `--json JSON` or
+`--json-file PATH`; `host-call` reuses the persistent Host endpoint instead of
+creating a new CUA driver for each request.
 `--json-file -` reads UTF-8 JSON from stdin, keeping large payloads off the
 process command line. Host clients use `call_global_tool` for the grant-gated
 global CUA tools `check_permissions`, `health_report`, `get_config`,
