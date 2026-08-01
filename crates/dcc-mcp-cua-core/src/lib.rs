@@ -1214,7 +1214,7 @@ impl ComputerUseSession {
             ));
         }
         validate_native_tool_request(name, &arguments)?;
-        let object = arguments.as_object().cloned().ok_or_else(|| {
+        let mut object = arguments.as_object().cloned().ok_or_else(|| {
             ComputerUseError::new(
                 ComputerUseErrorCode::InvalidAction,
                 "cursor tool arguments must be a JSON object",
@@ -1225,6 +1225,10 @@ impl ComputerUseSession {
                 ComputerUseErrorCode::InvalidAction,
                 "cursor tool session is host-owned",
             ));
+        }
+        if name == "move_cursor" {
+            validate_window_cursor_move(&object)?;
+            object.insert("scope".into(), Value::String("window".into()));
         }
         let enabled = if name == "set_agent_cursor_enabled" {
             Some(
@@ -1740,11 +1744,45 @@ fn validate_escalation_request(reason: &str, detail: Option<&str>) -> ComputerUs
 fn cursor_tool_allowed(name: &str) -> bool {
     matches!(
         name,
-        "set_agent_cursor_enabled"
+        "move_cursor"
+            | "set_agent_cursor_enabled"
             | "set_agent_cursor_motion"
             | "get_agent_cursor_state"
             | "set_agent_cursor_theme"
     )
+}
+
+fn validate_window_cursor_move(
+    arguments: &serde_json::Map<String, Value>,
+) -> ComputerUseResult<()> {
+    let x = arguments.get("x").and_then(Value::as_f64).ok_or_else(|| {
+        ComputerUseError::new(
+            ComputerUseErrorCode::InvalidAction,
+            "move_cursor requires numeric x and y",
+        )
+    })?;
+    let y = arguments.get("y").and_then(Value::as_f64).ok_or_else(|| {
+        ComputerUseError::new(
+            ComputerUseErrorCode::InvalidAction,
+            "move_cursor requires numeric x and y",
+        )
+    })?;
+    if !x.is_finite() || !y.is_finite() || x < 0.0 || y < 0.0 {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::InvalidAction,
+            "move_cursor coordinates must be finite and non-negative",
+        ));
+    }
+    if arguments
+        .get("scope")
+        .is_some_and(|scope| scope.as_str() != Some("window"))
+    {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::InvalidAction,
+            "window cursor control only supports scope=window",
+        ));
+    }
+    Ok(())
 }
 
 fn native_tool_allowed_globally(name: &str) -> bool {
@@ -2316,7 +2354,19 @@ mod tests {
         assert!(validate_escalation_request("other", Some("reason")).is_ok());
         assert!(validate_escalation_request("unknown", None).is_err());
         assert!(cursor_tool_allowed("get_agent_cursor_state"));
-        assert!(!cursor_tool_allowed("move_cursor"));
+        assert!(cursor_tool_allowed("move_cursor"));
+    }
+
+    #[test]
+    fn window_cursor_move_is_bounded_to_window_scope() {
+        let valid = serde_json::json!({"x": 10, "y": 20});
+        assert!(validate_window_cursor_move(valid.as_object().unwrap()).is_ok());
+
+        let desktop = serde_json::json!({"x": 10, "y": 20, "scope": "desktop"});
+        assert!(validate_window_cursor_move(desktop.as_object().unwrap()).is_err());
+
+        let negative = serde_json::json!({"x": -1, "y": 20});
+        assert!(validate_window_cursor_move(negative.as_object().unwrap()).is_err());
     }
 
     #[test]

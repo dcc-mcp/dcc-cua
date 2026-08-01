@@ -178,10 +178,11 @@ background route is unavailable.
 one-way window-to-desktop scope transition and requires the separate
 `allow_session_escalation: true` grant plus one of CUA's bounded escalation
 reasons; `resume_session` remains the explicit post-approval restart path.
-`cursor_tool` exposes only `set_agent_cursor_enabled`,
+`cursor_tool` exposes `move_cursor`, `set_agent_cursor_enabled`,
 `set_agent_cursor_motion`, `set_agent_cursor_theme`, and
-`get_agent_cursor_state`; the session id is always injected by Host, so the
-mouse-shaped marker cannot be redirected to another session.
+`get_agent_cursor_state`; `move_cursor` is forced to `scope: "window"`, and the
+session id is always injected by Host, so the mouse-shaped marker cannot be
+redirected to another session or move the real system pointer.
 
 Extension tools from the live CUA inventory are available through `call_tool`
 only after `open_session` grants `allow_native_tool: true`. The host injects
