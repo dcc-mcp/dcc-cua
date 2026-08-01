@@ -24,8 +24,9 @@ jobs:
         shell: bash
         run: |
           swiftc_path="$(xcrun --find swiftc)"
-          swift_lib="$(cd "$(dirname "$swiftc_path")/../lib/swift/macosx" && pwd)"
-          echo "DYLD_LIBRARY_PATH=$swift_lib" >> "$GITHUB_ENV"
+          swift_lib="$(find "$(xcrun --show-sdk-path)/usr/lib/swift" "$(dirname "$swiftc_path")/../lib/swift" -name libswift_Concurrency.dylib -print -quit 2>/dev/null)"
+          test -n "$swift_lib"
+          echo "DYLD_LIBRARY_PATH=$(dirname "$swift_lib")" >> "$GITHUB_ENV"
       - run: cargo fmt --all -- --check
       - run: cargo check --all-targets
       - run: cargo test --all-targets
