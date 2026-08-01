@@ -1,0 +1,192 @@
+use std::env;
+use std::fs;
+
+use dcc_mcp_computer_use::{
+    ComputerUseAction, ComputerUseDriver, ComputerUseTargetScope,
+    host::{HostTransport, run as run_host},
+};
+use serde_json::json;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut args = env::args().skip(1);
+    let command = args.next().unwrap_or_else(|| "help".into());
+    let flags = args.collect::<Vec<_>>();
+    let driver = ComputerUseDriver::create()?;
+
+    match command.as_str() {
+        "list" => list_windows(&driver, &flags).await?,
+        "host" => {
+            let transport = if has_flag(&flags, "--stdio") {
+                HostTransport::Stdio
+            } else {
+                HostTransport::Endpoint(
+                    flag_value(&flags, "--endpoint")
+                        .unwrap_or_else(HostTransport::default_endpoint),
+                )
+            };
+            run_host(driver, transport).await?;
+        }
+        "snapshot" => snapshot(&driver, &flags).await?,
+        "act" => act(&driver, &flags).await?,
+        "doctor" => doctor(&driver).await?,
+        "help" | "--help" | "-h" => print_help(),
+        other => return Err(format!("unknown command: {other}; use `help`").into()),
+    }
+    Ok(())
+}
+
+async fn list_windows(
+    driver: &ComputerUseDriver,
+    flags: &[String],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut windows = driver.list_windows().await?;
+    if let Some(app) = flag_value(flags, "--app") {
+        windows.retain(|window| {
+            window["app_name"]
+                .as_str()
+                .is_some_and(|name| name.eq_ignore_ascii_case(&app))
+        });
+    }
+    println!("{}", serde_json::to_string_pretty(&windows)?);
+    Ok(())
+}
+
+async fn snapshot(
+    driver: &ComputerUseDriver,
+    flags: &[String],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let scope = select_scope(driver, flags).await?;
+    let app = flag_value(flags, "--app").unwrap_or_else(|| "DCC application".into());
+    let session_id = flag_value(flags, "--session").unwrap_or_else(|| "dcc-mcp-cli".into());
+    let output = flag_value(flags, "--output").unwrap_or_else(|| "screenshot.png".into());
+    let mut session = driver.session(scope, app, session_id)?;
+    session.start().await?;
+    let result = session.screenshot().await;
+    let stop_result = session.stop().await;
+    let screenshot = result?;
+    stop_result?;
+    fs::write(&output, &screenshot.data)?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&json!({
+            "success": true,
+            "observation": screenshot.observation,
+            "output": output,
+            "backend": "cua-driver-sdk",
+        }))?
+    );
+    Ok(())
+}
+
+async fn act(
+    driver: &ComputerUseDriver,
+    flags: &[String],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let scope = select_scope(driver, flags).await?;
+    let app = flag_value(flags, "--app").unwrap_or_else(|| "DCC application".into());
+    let session_id = flag_value(flags, "--session").unwrap_or_else(|| "dcc-mcp-cli".into());
+    let action_json = flag_value(flags, "--action-json")
+        .ok_or("act requires --action-json with a Core-shaped ComputerUseAction JSON object")?;
+    let mut action: ComputerUseAction = serde_json::from_str(&action_json)?;
+    let mut session = driver.session(scope, app, session_id)?;
+    session.start().await?;
+    let result = async {
+        let screenshot = session.screenshot().await?;
+        action.observation_id = Some(screenshot.observation.observation_id.clone());
+        let action_result = session.perform_action(&action).await?;
+        Ok::<_, dcc_mcp_computer_use::ComputerUseError>(json!({
+            "success": true,
+            "observation": screenshot.observation,
+            "action": action_result,
+        }))
+    }
+    .await;
+    let stop_result = session.stop().await;
+    let result = result?;
+    stop_result?;
+    println!("{}", serde_json::to_string_pretty(&result)?);
+    Ok(())
+}
+
+async fn doctor(driver: &ComputerUseDriver) -> Result<(), Box<dyn std::error::Error>> {
+    let metadata = driver.raw().metadata().await?;
+    let windows = driver.list_windows().await?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&json!({
+            "backend": "cua-driver-sdk",
+            "driver": metadata,
+            "window_count": windows.len(),
+            "host_endpoint": HostTransport::default_endpoint(),
+        }))?
+    );
+    Ok(())
+}
+
+async fn select_scope(
+    driver: &ComputerUseDriver,
+    flags: &[String],
+) -> Result<ComputerUseTargetScope, Box<dyn std::error::Error>> {
+    let pid = flag_value(flags, "--pid")
+        .map(|value| value.parse::<u32>())
+        .transpose()?;
+    let window_handle = flag_value(flags, "--window-id")
+        .map(|value| value.parse::<u64>())
+        .transpose()?;
+    let title = flag_value(flags, "--title");
+    if pid.is_some() || window_handle.is_some() || title.is_some() {
+        return Ok(ComputerUseTargetScope {
+            process_id: pid,
+            window_handle,
+            window_title: title,
+        });
+    }
+    let app =
+        flag_value(flags, "--app").ok_or("a target requires --app or --pid/--window-id/--title")?;
+    let rows = driver.list_windows().await?;
+    let matches = rows
+        .iter()
+        .filter(|row| {
+            row["app_name"]
+                .as_str()
+                .is_some_and(|name| name.eq_ignore_ascii_case(&app))
+                && row["is_on_screen"] == true
+        })
+        .collect::<Vec<_>>();
+    if matches.len() != 1 {
+        return Err(format!(
+            "expected one on-screen {app} window, found {}",
+            matches.len()
+        )
+        .into());
+    }
+    let row = matches[0];
+    Ok(ComputerUseTargetScope {
+        process_id: Some(row["pid"].as_u64().ok_or("window is missing pid")? as u32),
+        window_handle: Some(
+            row["window_id"]
+                .as_u64()
+                .ok_or("window is missing window_id")?,
+        ),
+        window_title: row["title"].as_str().map(str::to_owned),
+    })
+}
+
+fn flag_value(flags: &[String], name: &str) -> Option<String> {
+    flags
+        .iter()
+        .position(|flag| flag == name)
+        .and_then(|index| flags.get(index + 1))
+        .cloned()
+}
+
+fn has_flag(flags: &[String], name: &str) -> bool {
+    flags.iter().any(|flag| flag == name)
+}
+
+fn print_help() {
+    println!(
+        "dcc-mcp-computer-use\n\n  list [--app APP]\n  snapshot --app APP [--output FILE]\n  act --app APP --action-json JSON\n  doctor\n  host [--stdio|--endpoint PATH]\n\nHost uses Core-compatible big-endian length-prefixed JSON frames; snapshot pixels follow as one binary frame."
+    );
+}

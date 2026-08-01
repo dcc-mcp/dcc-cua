@@ -1,0 +1,66 @@
+# dcc-mcp-computer-use
+
+Cross-platform Computer Use host and CLI for DCC-MCP, backed by the open-source
+[CUA SDK](https://github.com/trycua/cua).
+
+This is the standalone runtime that Core can launch and keep alive for a whole
+task. It preserves the Core Computer Use contract:
+
+- exact PID/window/title scope; agent requests cannot widen the target;
+- a fresh observation ID is required for every mutation;
+- bounded text, key, drag, and coordinate input;
+- fail-closed sensitive-window policy;
+- explicit stop/resume lifecycle and structured errors;
+- a visible CUA mouse-shaped cursor and `DCC UI Control · <app> · Esc to stop`
+  marker.
+
+## CLI
+
+```powershell
+cargo run -- list --app chrome.exe
+cargo run -- doctor
+cargo run -- snapshot --app chrome.exe --output screenshot.png
+cargo run -- act --app chrome.exe --action-json '{"action":"click","x":100,"y":100}'
+```
+
+`list` and `doctor` are read-only. `snapshot` and `act` require one exact
+target; if an application has multiple windows, pass `--pid` and
+`--window-id` instead of relying on an app name.
+
+## Core host IPC
+
+Start one persistent host process instead of spawning a process per action:
+
+```powershell
+cargo run -- host --stdio
+cargo run -- host --endpoint '\\.\pipe\dcc-mcp-computer-use-v1'
+```
+
+On Unix, the default endpoint is
+`$TMPDIR/dcc-mcp-computer-use-v1.sock`. The host uses Core's version-3 framing:
+an unsigned big-endian `u32` length followed by one UTF-8 JSON request or
+response. A `snapshot` response is followed by one additional length-prefixed
+binary PNG frame, avoiding base64 pixel transfer and keeping the JSON frame
+under 4 MiB. The handshake advertises the exact capabilities of this build.
+
+The supported Core request surface is `hello`, `open_session`,
+`get_window_state`, `change_window_state` (`activate`), `snapshot`,
+`accessibility_snapshot`, `execute_action`, `resume_session`, and
+`stop_session`. Semantic actions use CUA `element_index` values from the latest
+accessibility snapshot; coordinate actions remain available for custom-drawn
+surfaces. Shared-memory descriptors, recording, and typed system operations
+remain explicitly unsupported until their cross-platform contracts are
+implemented; the host returns `unsupported` instead of silently falling back
+to unsafe desktop automation.
+
+## Build and test
+
+```powershell
+cargo fmt --all -- --check
+cargo check --all-targets
+cargo test --all-targets
+```
+
+The CUA SDK revision is pinned in `Cargo.toml` and `Cargo.lock`. Native desktop
+permissions and an interactive session are still required for real capture and
+input on Windows, macOS, and Linux.
