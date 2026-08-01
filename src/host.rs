@@ -7,6 +7,8 @@
 
 use std::collections::HashMap;
 #[cfg(unix)]
+use std::os::unix::fs::FileTypeExt;
+#[cfg(unix)]
 use std::path::Path;
 
 use serde::Deserialize;
