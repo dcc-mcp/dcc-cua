@@ -76,6 +76,7 @@ Start one persistent host process instead of spawning a process per action:
 cargo run -p dcc-mcp-cua-cli -- host --stdio
 cargo run -p dcc-mcp-cua-cli -- host
 cargo run -p dcc-mcp-cua-cli -- host-call --method list_apps --json '{}'
+cargo run -p dcc-mcp-cua-cli -- host-batch --json '[{"method":"list_apps","params":{}},{"method":"screen_size","params":{}}]'
 ```
 
 `dcc-mcp-cua-client` is the direct embedding path for dcc-mcp-core. It opens
@@ -95,6 +96,10 @@ Read-only discovery and observation calls can use `HostClient::request_batch`
 to write several requests before one flush; responses are returned in request
 order. Mutating methods stay on `request` so side effects remain explicit.
 The handshake advertises this as `pipelined_read_requests`.
+
+The `host-batch` CLI accepts the same `{method, params}` shape and uses one
+persistent Host connection. If a response contains image pixels, pass
+`--output-dir DIR`; metadata-only batches can omit it.
 
 For large or frequent images, use `connect_default_with_transport(...,
 SnapshotTransport::SharedMemory)` and open the returned descriptor with

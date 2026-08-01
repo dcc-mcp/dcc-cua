@@ -20,6 +20,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         host_call(&flags).await?;
         return Ok(());
     }
+    if command == "host-batch" {
+        host_batch(&flags).await?;
+        return Ok(());
+    }
     let driver = ComputerUseDriver::create()?;
 
     match command.as_str() {
@@ -132,21 +136,8 @@ async fn call_tool(
 async fn host_call(flags: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let method = flag_value(flags, "--method").ok_or("host-call requires --method NAME")?;
     let params = json_arguments(flags)?;
-    let snapshot_transport = match flag_value(flags, "--snapshot-transport").as_deref() {
-        None | Some("binary_frame") => SnapshotTransport::BinaryFrame,
-        Some("shared_memory") => SnapshotTransport::SharedMemory,
-        Some(value) => return Err(format!("unsupported snapshot transport: {value}").into()),
-    };
-    let mut client = match flag_value(flags, "--endpoint") {
-        Some(endpoint) => {
-            HostClient::connect_with_transport(endpoint, "dcc-mcp-cua-cli", snapshot_transport)
-                .await?
-        }
-        None => {
-            HostClient::connect_default_with_transport("dcc-mcp-cua-cli", snapshot_transport)
-                .await?
-        }
-    };
+    let snapshot_transport = snapshot_transport(flags)?;
+    let mut client = connect_host_client(flags, snapshot_transport).await?;
     let response = client.request(method, params).await?;
     let output = flag_value(flags, "--output");
     if let Some(path) = output.as_deref() {
@@ -158,6 +149,94 @@ async fn host_call(flags: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     }
     println!("{}", serde_json::to_string_pretty(&value)?);
     Ok(())
+}
+
+async fn host_batch(flags: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let requests = parse_host_batch(json_arguments(flags)?)?;
+    let snapshot_transport = snapshot_transport(flags)?;
+    let mut client = connect_host_client(flags, snapshot_transport).await?;
+    let responses = client.request_batch(requests).await?;
+    let output_dir = flag_value(flags, "--output-dir");
+    if let Some(path) = output_dir.as_deref() {
+        fs::create_dir_all(path)?;
+    }
+
+    let mut values = Vec::with_capacity(responses.len());
+    for (index, response) in responses.into_iter().enumerate() {
+        let has_image = response.binary_attachment.is_some()
+            || response.value.get("image").is_some()
+            || response.value.get("attachments").is_some();
+        let mut value = response.value;
+        if has_image {
+            let directory = output_dir.as_deref().ok_or(
+                "host-batch received image data; pass --output-dir or use metadata-only requests",
+            )?;
+            let path = format!("{directory}/response-{index}.bin");
+            let bytes = response_image(
+                &HostResponse {
+                    value: value.clone(),
+                    binary_attachment: response.binary_attachment,
+                },
+                snapshot_transport,
+            )?;
+            fs::write(&path, bytes)?;
+            value["_dcc_mcp_binary_output"] = json!(path);
+        }
+        values.push(value);
+    }
+    println!("{}", serde_json::to_string_pretty(&values)?);
+    Ok(())
+}
+
+fn parse_host_batch(
+    value: serde_json::Value,
+) -> Result<Vec<(String, serde_json::Value)>, Box<dyn std::error::Error>> {
+    let requests = value
+        .as_array()
+        .ok_or("host-batch JSON must be an array of {method, params} objects")?;
+    requests
+        .iter()
+        .enumerate()
+        .map(|(index, request)| {
+            let object = request
+                .as_object()
+                .ok_or_else(|| format!("host-batch request {index} must be an object"))?;
+            let method = object
+                .get("method")
+                .and_then(serde_json::Value::as_str)
+                .filter(|method| !method.is_empty())
+                .ok_or_else(|| format!("host-batch request {index} requires method"))?;
+            let params = object.get("params").cloned().unwrap_or_else(|| json!({}));
+            if !params.is_object() {
+                return Err(format!("host-batch request {index} params must be an object").into());
+            }
+            Ok((method.to_owned(), params))
+        })
+        .collect()
+}
+
+fn snapshot_transport(flags: &[String]) -> Result<SnapshotTransport, Box<dyn std::error::Error>> {
+    match flag_value(flags, "--snapshot-transport").as_deref() {
+        None | Some("binary_frame") => Ok(SnapshotTransport::BinaryFrame),
+        Some("shared_memory") => Ok(SnapshotTransport::SharedMemory),
+        Some(value) => Err(format!("unsupported snapshot transport: {value}").into()),
+    }
+}
+
+async fn connect_host_client(
+    flags: &[String],
+    snapshot_transport: SnapshotTransport,
+) -> Result<HostClient, Box<dyn std::error::Error>> {
+    Ok(match flag_value(flags, "--endpoint") {
+        Some(endpoint) => {
+            HostClient::connect_with_transport(endpoint, "dcc-mcp-cua-cli", snapshot_transport)
+                .await?
+        }
+        None => {
+            HostClient::connect_default_with_transport("dcc-mcp-cua-cli", snapshot_transport)
+                .await?
+        }
+    })
 }
 
 fn response_image(
@@ -536,7 +615,7 @@ fn has_flag(flags: &[String], name: &str) -> bool {
 
 fn print_help() {
     println!(
-        "dcc-mcp-cua\n\n  list [--app APP]\n  apps\n  tools\n  call --tool NAME [--json JSON|--json-file PATH] [--app APP|--pid PID --window-id ID] [--output FILE]\n  host-call --method NAME [--json JSON|--json-file PATH] [--endpoint PATH] [--snapshot-transport binary_frame|shared_memory] [--output FILE]\n  desktop-snapshot [--output FILE]\n  screen-size\n  cursor-position\n  launch --name NAME|--bundle-id ID|--aumid ID|--path PATH|--launch-path PATH [--url URL] [--arg ARG] [--new-instance] [--start-minimized]\n  terminate --app APP --confirm\n  snapshot --app APP [--output FILE]\n  act --app APP --action-json JSON\n  verify --app APP --expect-json JSON [--timeout-ms N] [--stable-samples N]\n  desktop-act --action-json JSON [--session ID]\n  clipboard-read --app APP [--include-text]\n  clipboard-write --app APP --text TEXT|--image-path FILE|--file-path FILE\n  doctor\n  host [--stdio|--endpoint PATH]\n\nHost uses versioned big-endian JSON frames. Hello version 1 negotiates binary-frame or shared-memory snapshots and supports request_id correlation."
+        "dcc-mcp-cua\n\n  list [--app APP]\n  apps\n  tools\n  call --tool NAME [--json JSON|--json-file PATH] [--app APP|--pid PID --window-id ID] [--output FILE]\n  host-call --method NAME [--json JSON|--json-file PATH] [--endpoint PATH] [--snapshot-transport binary_frame|shared_memory] [--output FILE]\n  host-batch --json JSON_ARRAY [--endpoint PATH] [--snapshot-transport binary_frame|shared_memory] [--output-dir DIR]\n  desktop-snapshot [--output FILE]\n  screen-size\n  cursor-position\n  launch --name NAME|--bundle-id ID|--aumid ID|--path PATH|--launch-path PATH [--url URL] [--arg ARG] [--new-instance] [--start-minimized]\n  terminate --app APP --confirm\n  snapshot --app APP [--output FILE]\n  act --app APP --action-json JSON\n  verify --app APP --expect-json JSON [--timeout-ms N] [--stable-samples N]\n  desktop-act --action-json JSON [--session ID]\n  clipboard-read --app APP [--include-text]\n  clipboard-write --app APP --text TEXT|--image-path FILE|--file-path FILE\n  doctor\n  host [--stdio|--endpoint PATH]\n\nHost uses versioned big-endian JSON frames. Hello version 1 negotiates binary-frame or shared-memory snapshots and supports request_id correlation."
     );
     println!(
         "Window snapshots/actions accept --escalate --escalation-reason REASON when an explicit desktop visual fallback approval is required."
@@ -557,6 +636,24 @@ mod tests {
         assert_eq!(
             response_image(&response, SnapshotTransport::SharedMemory).unwrap(),
             b"png"
+        );
+    }
+
+    #[test]
+    fn host_batch_parser_requires_read_only_request_shapes() {
+        let requests = parse_host_batch(json!([
+            {"method":"list_apps"},
+            {"method":"screen_size","params":{}}
+        ]))
+        .unwrap();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].0, "list_apps");
+        assert!(parse_host_batch(json!({"method":"list_apps"})).is_err());
+        assert!(
+            parse_host_batch(json!([
+                {"method":"screen_size","params":[]}
+            ]))
+            .is_err()
         );
     }
 }
