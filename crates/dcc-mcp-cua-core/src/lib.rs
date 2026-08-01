@@ -676,7 +676,7 @@ impl ComputerUseSession {
                 "start_session".into(),
                 json!({
                     "session": self.session_id,
-                    "capture_scope": "window",
+                    "capture_scope": "auto",
                     "cursor_theme": {"theme_id": MOUSE_CURSOR_THEME, "reduced_motion": "auto"},
                     "_public_session_label": self.marker.label,
                 })
@@ -1175,6 +1175,26 @@ impl ComputerUseSession {
         Ok(json!({"success": true, "active": false, "marker": self.marker}))
     }
 
+    /// Read CUA's live capture policy for this exact session.
+    pub async fn session_state(&self) -> ComputerUseResult<Value> {
+        self.ensure_active()?;
+        self.call_bound_tool_value("get_session_state", json!({}))
+            .await
+    }
+
+    /// Explicitly unlock the desktop phase after the window ladder is exhausted.
+    pub async fn escalate(&self, reason: &str, detail: Option<&str>) -> ComputerUseResult<Value> {
+        validate_escalation_request(reason, detail)?;
+        self.ensure_active()?;
+        self.revalidate_target().await?;
+        let mut arguments = json!({"reason": reason});
+        if let Some(detail) = detail {
+            arguments["detail"] = Value::String(detail.to_owned());
+        }
+        self.call_bound_tool_value("escalate_session", arguments)
+            .await
+    }
+
     pub async fn resume_after_user_approval(&mut self) -> ComputerUseResult<Value> {
         if self.active {
             return Err(ComputerUseError::new(
@@ -1619,6 +1639,29 @@ fn validate_native_tool_request(name: &str, arguments: &Value) -> ComputerUseRes
         return Err(ComputerUseError::new(
             ComputerUseErrorCode::InvalidAction,
             "native CUA reserved arguments are host-owned",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_escalation_request(reason: &str, detail: Option<&str>) -> ComputerUseResult<()> {
+    const REASONS: [&str; 5] = [
+        "ax_tree_pixel_mismatch",
+        "background_delivery_failed",
+        "foreground_ineffective",
+        "no_window_target",
+        "other",
+    ];
+    if !REASONS.contains(&reason) {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::InvalidAction,
+            "unsupported CUA session escalation reason",
+        ));
+    }
+    if detail.is_some_and(|value| value.chars().count() > 200) {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::InvalidAction,
+            "CUA session escalation detail exceeds 200 characters",
         ));
     }
     Ok(())
@@ -2132,6 +2175,8 @@ mod tests {
         assert!(native_tool_allowed_in_window_session("debug_window_info"));
         assert!(native_tool_allowed_globally("health_report"));
         assert!(!native_tool_allowed_globally("launch_app"));
+        assert!(validate_escalation_request("other", Some("reason")).is_ok());
+        assert!(validate_escalation_request("unknown", None).is_err());
     }
 
     #[test]

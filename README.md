@@ -92,7 +92,7 @@ each descriptor gives its `offset`, `length`, and `mime_type`.
 
 The supported request surface is `hello`, `list_apps`, `list_tools`, `list_windows`, `launch_app`, `open_session`,
 `get_window_state`, `change_window_state` (`restore`, `show`, `activate`), `snapshot`,
-`accessibility_snapshot`, `verify_state`, `call_tool`, `call_global_tool`, `find`, `wait_for`, `browser_snapshot`,
+`accessibility_snapshot`, `verify_state`, `call_tool`, `call_global_tool`, `get_session_state`, `escalate_session`, `find`, `wait_for`, `browser_snapshot`,
 `browser_prepare`, `browser_navigate`, `browser_click`, `browser_type`, `browser_pointer`,
 `browser_set_input_files`, `browser_download`, `browser_dialog`,
 `clipboard_read`, `clipboard_write`, `recording_start`, `recording_stop`,
@@ -139,6 +139,11 @@ ordered and are rejected until that wait completes.
 `restore`, `show`, and `activate` are scoped through CUA's `bring_to_front`
 operation; the returned window state is always revalidated against the exact
 PID/HWND target.
+
+`get_session_state` reads CUA's live capture policy. `escalate_session` is a
+one-way window-to-desktop scope transition and requires the separate
+`allow_session_escalation: true` grant plus one of CUA's bounded escalation
+reasons; `resume_session` remains the explicit post-approval restart path.
 
 Extension tools from the live CUA inventory are available through `call_tool`
 only after `open_session` grants `allow_native_tool: true`. The host injects

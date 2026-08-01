@@ -51,6 +51,8 @@ pub const HOST_CAPABILITIES: &[&str] = &[
     "accessibility_snapshot",
     "accessibility_find",
     "state_verification",
+    "session_state",
+    "session_escalation",
     "uia_snapshot_and_actions",
     "semantic_value_actions",
     "bounded_wait_for",
@@ -346,6 +348,19 @@ enum Request {
         task_grant_id: String,
         window_capability: String,
     },
+    GetSessionState {
+        session_id: String,
+        task_grant_id: String,
+        window_capability: String,
+    },
+    EscalateSession {
+        session_id: String,
+        task_grant_id: String,
+        window_capability: String,
+        reason: String,
+        #[serde(default)]
+        detail: Option<String>,
+    },
     StopSession {
         session_id: String,
     },
@@ -420,6 +435,8 @@ struct TaskGrant {
     allow_browser_download: bool,
     #[serde(default)]
     allow_native_tool: bool,
+    #[serde(default)]
+    allow_session_escalation: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -608,6 +625,7 @@ struct HostSession {
     allow_browser_prepare: bool,
     allow_browser_download: bool,
     allow_native_tool: bool,
+    allow_session_escalation: bool,
     capability: String,
     session: ComputerUseSession,
     browser: BrowserSession,
@@ -1260,6 +1278,7 @@ async fn handle_request(
                     allow_browser_prepare: grant.allow_browser_prepare,
                     allow_browser_download: grant.allow_browser_download,
                     allow_native_tool: grant.allow_native_tool,
+                    allow_session_escalation: grant.allow_session_escalation,
                     capability: capability.clone(),
                     session,
                     browser: BrowserSession::default(),
@@ -1791,6 +1810,39 @@ async fn handle_request(
                 None,
             ))
         }
+        Request::GetSessionState {
+            session_id,
+            task_grant_id,
+            window_capability,
+        } => {
+            let host =
+                authorized_session(sessions, &session_id, &task_grant_id, &window_capability)?;
+            let state = host.session.session_state().await?;
+            Ok((
+                json!({"type":"session_state", "session_id":session_id, "state":state}),
+                None,
+            ))
+        }
+        Request::EscalateSession {
+            session_id,
+            task_grant_id,
+            window_capability,
+            reason,
+            detail,
+        } => {
+            let host =
+                authorized_session(sessions, &session_id, &task_grant_id, &window_capability)?;
+            if !host.allow_session_escalation {
+                return Err(HostError::Protocol(
+                    "session escalation is not granted".into(),
+                ));
+            }
+            let result = host.session.escalate(&reason, detail.as_deref()).await?;
+            Ok((
+                json!({"type":"session_escalated", "session_id":session_id, "result":result}),
+                None,
+            ))
+        }
         Request::StopSession { session_id } => {
             let mut host = sessions
                 .remove(&session_id)
@@ -2032,6 +2084,9 @@ fn error_code(error: &HostError) -> &'static str {
         HostError::Protocol(message) if message.contains("recording") => "recording_not_granted",
         HostError::Protocol(message) if message.contains("native CUA tool calls") => {
             "native_tool_not_granted"
+        }
+        HostError::Protocol(message) if message.contains("session escalation") => {
+            "session_escalation_not_granted"
         }
         HostError::Protocol(message) if message.contains("already running") => {
             "request_in_progress"
@@ -2368,6 +2423,7 @@ mod tests {
         assert!(!grant.allow_browser_prepare);
         assert!(!grant.allow_browser_download);
         assert!(!grant.allow_native_tool);
+        assert!(!grant.allow_session_escalation);
         assert_eq!(
             error_code(&HostError::Protocol(
                 "browser download is not granted".into()
@@ -2453,6 +2509,30 @@ mod tests {
                 "params": {}
             })),
             Ok(Request::ScreenSize {})
+        ));
+        assert!(matches!(
+            serde_json::from_value::<Request>(json!({
+                "method": "get_session_state",
+                "params": {
+                    "session_id": "session-1",
+                    "task_grant_id": "task-1",
+                    "window_capability": "cap-1"
+                }
+            })),
+            Ok(Request::GetSessionState { .. })
+        ));
+        assert!(matches!(
+            serde_json::from_value::<Request>(json!({
+                "method": "escalate_session",
+                "params": {
+                    "session_id": "session-1",
+                    "task_grant_id": "task-1",
+                    "window_capability": "cap-1",
+                    "reason": "foreground_ineffective",
+                    "detail": "window route exhausted"
+                }
+            })),
+            Ok(Request::EscalateSession { .. })
         ));
         assert!(matches!(
             serde_json::from_value::<Request>(json!({
