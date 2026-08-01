@@ -465,7 +465,7 @@ impl ComputerUseSession {
         name: &str,
         arguments: Value,
     ) -> ComputerUseResult<Value> {
-        const ALLOWED_TOOLS: [&str; 7] = [
+        const ALLOWED_TOOLS: [&str; 8] = [
             "get_browser_state",
             "browser_prepare",
             "browser_navigate",
@@ -473,6 +473,7 @@ impl ComputerUseSession {
             "browser_type",
             "browser_pointer",
             "browser_set_input_files",
+            "browser_dialog",
         ];
         if !ALLOWED_TOOLS.contains(&name) {
             return Err(ComputerUseError::new(

@@ -21,9 +21,9 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use uuid::Uuid;
 
 use dcc_mcp_cua_browser::{
-    BrowserClickRequest, BrowserDownloadRequest, BrowserNavigateRequest, BrowserPointerRequest,
-    BrowserPrepareRequest, BrowserSession, BrowserSetInputFilesRequest, BrowserSnapshotRequest,
-    BrowserTypeRequest,
+    BrowserClickRequest, BrowserDialogRequest, BrowserDownloadRequest, BrowserNavigateRequest,
+    BrowserPointerRequest, BrowserPrepareRequest, BrowserSession, BrowserSetInputFilesRequest,
+    BrowserSnapshotRequest, BrowserTypeRequest,
 };
 use dcc_mcp_cua_core::{
     ComputerUseAction, ComputerUseClipboardWriteRequest, ComputerUseDriver, ComputerUseError,
@@ -62,6 +62,7 @@ pub const HOST_CAPABILITIES: &[&str] = &[
     "browser_typed_actions",
     "browser_file_upload",
     "browser_file_download",
+    "browser_dialog",
 ];
 
 /// Local transport selected by the CLI or embedding host.
@@ -216,6 +217,12 @@ enum Request {
         task_grant_id: String,
         window_capability: String,
         request: BrowserDownloadRequest,
+    },
+    BrowserDialog {
+        session_id: String,
+        task_grant_id: String,
+        window_capability: String,
+        request: BrowserDialogRequest,
     },
     Find {
         session_id: String,
@@ -940,6 +947,24 @@ async fn handle_request(
             let result = host.browser.download(&host.session, request).await?;
             Ok(browser_response("browser_downloaded", session_id, result))
         }
+        Request::BrowserDialog {
+            session_id,
+            task_grant_id,
+            window_capability,
+            request,
+        } => {
+            let host =
+                authorized_session(sessions, &session_id, &task_grant_id, &window_capability)?;
+            if !host.allow_browser_input {
+                return Err(HostError::Protocol("browser input is not granted".into()));
+            }
+            let result = host.browser.dialog(&host.session, request).await?;
+            Ok(browser_response(
+                "browser_dialog_completed",
+                session_id,
+                result,
+            ))
+        }
         Request::Find {
             session_id,
             task_grant_id,
@@ -1601,6 +1626,22 @@ mod tests {
                 }
             })),
             Ok(Request::BrowserDownload { .. })
+        ));
+        assert!(matches!(
+            serde_json::from_value::<Request>(json!({
+                "method": "browser_dialog",
+                "params": {
+                    "session_id": "session-1",
+                    "task_grant_id": "task-1",
+                    "window_capability": "cap-1",
+                    "request": {
+                        "target_id": "target-1",
+                        "tab_id": "tab-1",
+                        "action": "inspect"
+                    }
+                }
+            })),
+            Ok(Request::BrowserDialog { .. })
         ));
     }
 

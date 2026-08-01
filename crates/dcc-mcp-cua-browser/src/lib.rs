@@ -146,6 +146,19 @@ pub struct BrowserDownloadRequest {
     pub destination_root: String,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct BrowserDialogRequest {
+    pub target_id: String,
+    pub tab_id: String,
+    pub action: String,
+    #[serde(default)]
+    pub dialog_id: Option<String>,
+    #[serde(default)]
+    pub prompt_text: Option<String>,
+    #[serde(default)]
+    pub delivery_mode: Option<String>,
+}
+
 impl BrowserSession {
     pub async fn prepare(
         &self,
@@ -419,6 +432,35 @@ impl BrowserSession {
         Ok(result)
     }
 
+    pub async fn dialog(
+        &mut self,
+        native: &ComputerUseSession,
+        request: BrowserDialogRequest,
+    ) -> ComputerUseResult<BrowserResult> {
+        self.require_exact_target(&request.target_id)?;
+        validate_dialog_request(&request)?;
+        let delivery_mode = request.delivery_mode.as_deref().unwrap_or("background");
+        let mut args = json!({
+            "target_id": request.target_id,
+            "tab_id": request.tab_id,
+            "action": request.action,
+            "delivery_mode": delivery_mode,
+        });
+        if let Some(dialog_id) = request.dialog_id {
+            args["dialog_id"] = json!(dialog_id);
+        }
+        if let Some(prompt_text) = request.prompt_text {
+            args["prompt_text"] = json!(prompt_text);
+        }
+        let action = request.action;
+        let result =
+            BrowserResult::from_value(native.call_browser_tool("browser_dialog", args).await?)?;
+        if action != "inspect" {
+            self.clear_snapshot();
+        }
+        Ok(result)
+    }
+
     fn store_binding(&mut self, value: &Value) -> ComputerUseResult<()> {
         let structured = structured_content(value)?;
         if let Some(refusal) = structured["refusal"].as_object() {
@@ -628,6 +670,38 @@ fn validate_destination_root(raw: &str) -> ComputerUseResult<String> {
         .map_err(|_| invalid("browser download destination_root could not be canonicalized"))
 }
 
+fn validate_dialog_request(request: &BrowserDialogRequest) -> ComputerUseResult<()> {
+    if !matches!(request.action.as_str(), "inspect" | "accept" | "dismiss") {
+        return Err(invalid(
+            "browser_dialog action must be inspect, accept, or dismiss",
+        ));
+    }
+    if request.action != "inspect" && request.dialog_id.is_none() {
+        return Err(invalid("browser_dialog accept/dismiss requires dialog_id"));
+    }
+    if let Some(prompt_text) = request.prompt_text.as_deref() {
+        if request.action != "accept" {
+            return Err(invalid(
+                "browser_dialog prompt_text is valid only for accept",
+            ));
+        }
+        if prompt_text.chars().count() > MAX_TEXT_CHARS {
+            return Err(invalid(
+                "browser_dialog prompt_text exceeds the 4096-character limit",
+            ));
+        }
+    }
+    if let Some(delivery_mode) = request.delivery_mode.as_deref()
+        && delivery_mode != "background"
+        && delivery_mode != "foreground"
+    {
+        return Err(invalid(
+            "browser_dialog delivery_mode must be background or foreground",
+        ));
+    }
+    Ok(())
+}
+
 fn validate_local_path(raw: &str, field: &str) -> ComputerUseResult<()> {
     if raw.is_empty() || raw.chars().count() > MAX_LOCAL_PATH_CHARS || raw.contains('\0') {
         return Err(invalid(format!(
@@ -679,5 +753,16 @@ mod tests {
         assert!(validate_upload_paths(&[]).is_err());
         assert!(validate_upload_paths(&["relative.txt".into()]).is_err());
         assert!(validate_destination_root("relative").is_err());
+        assert!(
+            validate_dialog_request(&BrowserDialogRequest {
+                target_id: "target".into(),
+                tab_id: "tab".into(),
+                action: "accept".into(),
+                dialog_id: None,
+                prompt_text: None,
+                delivery_mode: None,
+            })
+            .is_err()
+        );
     }
 }

@@ -76,7 +76,7 @@ The supported Core request surface is `hello`, `list_apps`, `launch_app`, `open_
 `get_window_state`, `change_window_state` (`activate`), `snapshot`,
 `accessibility_snapshot`, `find`, `wait_for`, `browser_snapshot`,
 `browser_prepare`, `browser_navigate`, `browser_click`, `browser_type`, `browser_pointer`,
-`browser_set_input_files`, `browser_download`,
+`browser_set_input_files`, `browser_download`, `browser_dialog`,
 `clipboard_read`, `clipboard_write`, `recording_start`, `recording_stop`,
 `recording_state`,
 `execute_action`, `resume_session`, and
@@ -99,6 +99,8 @@ the latest browser `snapshot_id`, exact binding, and an explicit input route.
 `browser_navigate`, `browser_set_input_files`, and `browser_download` invalidate
 the tab snapshot. Upload uses `allow_browser_input`; download is a separate
 destructive grant (`allow_browser_download`) and CUA's host approval evidence.
+`browser_dialog` only resolves page-owned JavaScript dialogs and requires the
+exact current `dialog_id` for accept/dismiss.
 Shared-memory descriptors and typed system operations remain explicitly
 unsupported until their cross-platform contracts are implemented.
 
