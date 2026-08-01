@@ -1182,6 +1182,53 @@ impl ComputerUseSession {
             .await
     }
 
+    /// Control or inspect the visible CUA mouse marker for this session.
+    pub async fn cursor_tool(&mut self, name: &str, arguments: Value) -> ComputerUseResult<Value> {
+        if !cursor_tool_allowed(name) {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::InvalidAction,
+                format!("cursor tool {name:?} is not exposed by this host"),
+            ));
+        }
+        validate_native_tool_request(name, &arguments)?;
+        let object = arguments.as_object().cloned().ok_or_else(|| {
+            ComputerUseError::new(
+                ComputerUseErrorCode::InvalidAction,
+                "cursor tool arguments must be a JSON object",
+            )
+        })?;
+        if object.contains_key("session") {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::InvalidAction,
+                "cursor tool session is host-owned",
+            ));
+        }
+        let enabled = if name == "set_agent_cursor_enabled" {
+            Some(
+                object
+                    .get("enabled")
+                    .and_then(Value::as_bool)
+                    .ok_or_else(|| {
+                        ComputerUseError::new(
+                            ComputerUseErrorCode::InvalidAction,
+                            "set_agent_cursor_enabled requires enabled",
+                        )
+                    })?,
+            )
+        } else {
+            None
+        };
+        self.ensure_active()?;
+        self.revalidate_target().await?;
+        let result = self
+            .call_bound_tool_value(name, Value::Object(object))
+            .await?;
+        if let Some(enabled) = enabled {
+            self.marker.visible = enabled;
+        }
+        Ok(result)
+    }
+
     /// Explicitly unlock the desktop phase after the window ladder is exhausted.
     pub async fn escalate(&self, reason: &str, detail: Option<&str>) -> ComputerUseResult<Value> {
         validate_escalation_request(reason, detail)?;
@@ -1665,6 +1712,16 @@ fn validate_escalation_request(reason: &str, detail: Option<&str>) -> ComputerUs
         ));
     }
     Ok(())
+}
+
+fn cursor_tool_allowed(name: &str) -> bool {
+    matches!(
+        name,
+        "set_agent_cursor_enabled"
+            | "set_agent_cursor_motion"
+            | "get_agent_cursor_state"
+            | "set_agent_cursor_theme"
+    )
 }
 
 fn native_tool_allowed_globally(name: &str) -> bool {
@@ -2177,6 +2234,8 @@ mod tests {
         assert!(!native_tool_allowed_globally("launch_app"));
         assert!(validate_escalation_request("other", Some("reason")).is_ok());
         assert!(validate_escalation_request("unknown", None).is_err());
+        assert!(cursor_tool_allowed("get_agent_cursor_state"));
+        assert!(!cursor_tool_allowed("move_cursor"));
     }
 
     #[test]

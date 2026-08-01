@@ -53,6 +53,7 @@ pub const HOST_CAPABILITIES: &[&str] = &[
     "state_verification",
     "session_state",
     "session_escalation",
+    "cursor_controls",
     "uia_snapshot_and_actions",
     "semantic_value_actions",
     "bounded_wait_for",
@@ -352,6 +353,13 @@ enum Request {
         session_id: String,
         task_grant_id: String,
         window_capability: String,
+    },
+    CursorTool {
+        session_id: String,
+        task_grant_id: String,
+        window_capability: String,
+        tool: String,
+        arguments: Value,
     },
     EscalateSession {
         session_id: String,
@@ -1823,6 +1831,22 @@ async fn handle_request(
                 None,
             ))
         }
+        Request::CursorTool {
+            session_id,
+            task_grant_id,
+            window_capability,
+            tool,
+            arguments,
+        } => {
+            let host =
+                authorized_session(sessions, &session_id, &task_grant_id, &window_capability)?;
+            let result = host.session.cursor_tool(&tool, arguments).await?;
+            let marker = host.session.status()["marker"].clone();
+            Ok((
+                json!({"type":"cursor_tool_result", "session_id":session_id, "tool":tool, "result":result, "marker":marker}),
+                None,
+            ))
+        }
         Request::EscalateSession {
             session_id,
             task_grant_id,
@@ -2533,6 +2557,19 @@ mod tests {
                 }
             })),
             Ok(Request::EscalateSession { .. })
+        ));
+        assert!(matches!(
+            serde_json::from_value::<Request>(json!({
+                "method": "cursor_tool",
+                "params": {
+                    "session_id": "session-1",
+                    "task_grant_id": "task-1",
+                    "window_capability": "cap-1",
+                    "tool": "set_agent_cursor_enabled",
+                    "arguments": {"enabled": true}
+                }
+            })),
+            Ok(Request::CursorTool { .. })
         ));
         assert!(matches!(
             serde_json::from_value::<Request>(json!({
