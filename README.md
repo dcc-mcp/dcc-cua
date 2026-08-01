@@ -87,6 +87,10 @@ let mut host = dcc_mcp_cua_client::HostClient::connect_default("dcc-mcp-core").a
 let response = host.request("list_windows", serde_json::json!({})).await?;
 ```
 
+Long waits can use `HostClient::request_with_cancel`; it sends `cancel` on the
+same connection and consumes both the cancellation acknowledgement and the
+wait terminal response.
+
 For large or frequent images, use `connect_default_with_transport(...,
 SnapshotTransport::SharedMemory)` and open the returned descriptor with
 `dcc_mcp_cua_shm::SharedImageReader`; pixels do not cross the control pipe.

@@ -4,7 +4,7 @@
 //! can own its higher-level task contracts without duplicating framing,
 //! request correlation, or binary image handling.
 
-use std::fmt;
+use std::{fmt, future::Future};
 
 use serde_json::{Value, json};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadHalf, WriteHalf};
@@ -40,6 +40,34 @@ pub enum HostClientError {
 }
 
 pub type HostClientResult<T> = Result<T, HostClientError>;
+
+struct ReceivedResponse {
+    request_id: String,
+    value: Value,
+    binary_attachment: Option<Vec<u8>>,
+}
+
+impl ReceivedResponse {
+    fn into_result(self) -> HostClientResult<HostResponse> {
+        if self.value["type"] == "error" {
+            return Err(HostClientError::Remote {
+                code: self.value["code"]
+                    .as_str()
+                    .unwrap_or("host_error")
+                    .to_owned(),
+                message: self.value["message"]
+                    .as_str()
+                    .unwrap_or("Host returned an error")
+                    .to_owned(),
+                response: self.value,
+            });
+        }
+        Ok(HostResponse {
+            value: self.value,
+            binary_attachment: self.binary_attachment,
+        })
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SnapshotTransport {
@@ -201,11 +229,64 @@ impl HostClient {
         self.request_inner(&method.into(), params).await
     }
 
+    /// Send a request while allowing the Host's same-connection cancellation
+    /// route to terminate it. The cancellation parameters must contain the
+    /// exact credentials required by the target request, such as `wait_for`.
+    pub async fn request_with_cancel<C>(
+        &mut self,
+        method: impl Into<String>,
+        params: Value,
+        cancel_params: Value,
+        cancel: C,
+    ) -> HostClientResult<HostResponse>
+    where
+        C: Future<Output = ()>,
+    {
+        if !self.hello_complete {
+            return Err(HostClientError::Protocol(
+                "hello must complete before stateful requests".into(),
+            ));
+        }
+        let request_id = self.send_request(&method.into(), params).await?;
+        tokio::pin!(cancel);
+        tokio::select! {
+            received = self.receive_response() => {
+                let received = received?;
+                ensure_request_id(&received, &request_id)?;
+                received.into_result()
+            }
+            _ = &mut cancel => {
+                let cancel_id = self.send_request("cancel", cancel_params).await?;
+                let first = self.receive_response().await?;
+                if first.request_id == request_id {
+                    let result = first.into_result()?;
+                    let cancel_response = self.receive_response().await?;
+                    ensure_request_id(&cancel_response, &cancel_id)?;
+                    return Ok(result);
+                }
+                ensure_request_id(&first, &cancel_id)?;
+                let cancel_result = first.into_result();
+                let terminal = self.receive_response().await?;
+                ensure_request_id(&terminal, &request_id)?;
+                let result = terminal.into_result()?;
+                cancel_result?;
+                Ok(result)
+            }
+        }
+    }
+
     async fn request_inner(
         &mut self,
         method: &str,
         params: Value,
     ) -> HostClientResult<HostResponse> {
+        let request_id = self.send_request(method, params).await?;
+        let response = self.receive_response().await?;
+        ensure_request_id(&response, &request_id)?;
+        response.into_result()
+    }
+
+    async fn send_request(&mut self, method: &str, params: Value) -> HostClientResult<String> {
         let request_id = format!("cua-client-{}", self.next_request_id);
         self.next_request_id = self.next_request_id.saturating_add(1);
         if request_id.chars().count() > MAX_REQUEST_ID_CHARS {
@@ -221,27 +302,15 @@ impl HostClient {
         let body = serde_json::to_vec(&request)
             .map_err(|error| HostClientError::Protocol(error.to_string()))?;
         write_frame(&mut self.writer, &body, MAX_JSON_FRAME_BYTES).await?;
+        Ok(request_id)
+    }
 
+    async fn receive_response(&mut self) -> HostClientResult<ReceivedResponse> {
         let response_body = read_frame(&mut self.reader, MAX_JSON_FRAME_BYTES)
             .await?
             .ok_or_else(|| HostClientError::Protocol("Host closed the connection".into()))?;
         let response: Value = serde_json::from_slice(&response_body)
             .map_err(|error| HostClientError::Protocol(error.to_string()))?;
-        if response["request_id"] != request_id {
-            return Err(HostClientError::Protocol(
-                "Host response request_id does not match the request".into(),
-            ));
-        }
-        if response["type"] == "error" {
-            return Err(HostClientError::Remote {
-                code: response["code"].as_str().unwrap_or("host_error").to_owned(),
-                message: response["message"]
-                    .as_str()
-                    .unwrap_or("Host returned an error")
-                    .to_owned(),
-                response,
-            });
-        }
         let binary_attachment = if let Some(expected_length) = binary_attachment_length(&response) {
             let attachment = read_frame(&mut self.reader, MAX_BINARY_FRAME_BYTES)
                 .await?
@@ -260,11 +329,25 @@ impl HostClient {
         } else {
             None
         };
-        Ok(HostResponse {
+        let request_id = response["request_id"]
+            .as_str()
+            .ok_or_else(|| HostClientError::Protocol("Host response omitted request_id".into()))?
+            .to_owned();
+        Ok(ReceivedResponse {
+            request_id,
             value: response,
             binary_attachment,
         })
     }
+}
+
+fn ensure_request_id(response: &ReceivedResponse, expected: &str) -> HostClientResult<()> {
+    if response.request_id != expected {
+        return Err(HostClientError::Protocol(
+            "Host response request_id does not match the request".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn binary_attachment_length(response: &Value) -> Option<usize> {
@@ -388,6 +471,29 @@ mod tests {
         server.await.unwrap().unwrap();
     }
 
+    #[tokio::test]
+    async fn client_can_cancel_wait_on_the_same_connection() {
+        let (client_stream, server_stream) = tokio::io::duplex(4096);
+        let server = tokio::spawn(fake_cancel_server(server_stream));
+        let mut client = HostClient::from_stream(client_stream);
+        client.hello("cancel-client").await.unwrap();
+        let response = client
+            .request_with_cancel(
+                "wait_for",
+                json!({"session_id":"s"}),
+                json!({
+                    "session_id":"s",
+                    "task_grant_id":"grant",
+                    "window_capability":"cap"
+                }),
+                async {},
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.value["type"], "wait_cancelled");
+        server.await.unwrap().unwrap();
+    }
+
     async fn fake_server(mut stream: DuplexStream) -> HostClientResult<()> {
         let hello = read_frame(&mut stream, MAX_JSON_FRAME_BYTES)
             .await?
@@ -428,6 +534,46 @@ mod tests {
             json!({"type":"hello","snapshot_transport":"shared_memory"}),
         )
         .await
+    }
+
+    async fn fake_cancel_server(mut stream: DuplexStream) -> HostClientResult<()> {
+        let hello = read_frame(&mut stream, MAX_JSON_FRAME_BYTES)
+            .await?
+            .unwrap();
+        let hello: Value = serde_json::from_slice(&hello).unwrap();
+        write_json_response(
+            &mut stream,
+            hello["request_id"].as_str().unwrap(),
+            json!({"type":"hello"}),
+        )
+        .await?;
+
+        let first = read_frame(&mut stream, MAX_JSON_FRAME_BYTES)
+            .await?
+            .unwrap();
+        let second = read_frame(&mut stream, MAX_JSON_FRAME_BYTES)
+            .await?
+            .unwrap();
+        let first: Value = serde_json::from_slice(&first).unwrap();
+        let second: Value = serde_json::from_slice(&second).unwrap();
+        let requests = [first, second];
+        let wait_id = requests
+            .iter()
+            .find(|request| request["method"] == "wait_for")
+            .and_then(|request| request["request_id"].as_str())
+            .unwrap();
+        let cancel_id = requests
+            .iter()
+            .find(|request| request["method"] == "cancel")
+            .and_then(|request| request["request_id"].as_str())
+            .unwrap();
+        write_json_response(
+            &mut stream,
+            cancel_id,
+            json!({"type":"wait_cancel_requested"}),
+        )
+        .await?;
+        write_json_response(&mut stream, wait_id, json!({"type":"wait_cancelled"})).await
     }
 
     async fn write_json_response(
