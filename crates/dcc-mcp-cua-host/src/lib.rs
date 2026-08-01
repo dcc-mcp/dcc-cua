@@ -1761,6 +1761,13 @@ mod tests {
     }
 
     #[test]
+    fn request_frame_preserves_correlation_on_deserialization_errors() {
+        let parsed =
+            parse_request_frame(br#"{"request_id":"req-7","method":"unknown","params":{}}"#);
+        assert_eq!(parsed.unwrap_err().0, Some("req-7".into()));
+    }
+
+    #[test]
     fn hard_denied_intents_do_not_reach_cua() {
         let action = HostAction {
             action: "keypress".into(),
