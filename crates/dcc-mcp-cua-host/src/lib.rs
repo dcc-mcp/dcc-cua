@@ -18,6 +18,10 @@ use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use uuid::Uuid;
 
+use dcc_mcp_cua_browser::{
+    BrowserClickRequest, BrowserNavigateRequest, BrowserPointerRequest, BrowserPrepareRequest,
+    BrowserSession, BrowserSnapshotRequest, BrowserTypeRequest,
+};
 use dcc_mcp_cua_core::{
     ComputerUseAction, ComputerUseDriver, ComputerUseError, ComputerUseErrorCode, ComputerUsePoint,
     ComputerUseResult, ComputerUseSession, ComputerUseTargetScope,
@@ -45,6 +49,10 @@ pub const HOST_CAPABILITIES: &[&str] = &[
     "cross_platform_window_control",
     "application_inventory",
     "application_launch",
+    "browser_exact_binding",
+    "browser_prepare",
+    "browser_semantic_snapshot",
+    "browser_typed_actions",
 ];
 
 /// Local transport selected by the CLI or embedding host.
@@ -123,6 +131,42 @@ enum Request {
         #[allow(dead_code)]
         max_nodes: u32,
     },
+    BrowserSnapshot {
+        session_id: String,
+        task_grant_id: String,
+        window_capability: String,
+        request: BrowserSnapshotRequest,
+    },
+    BrowserPrepare {
+        session_id: String,
+        task_grant_id: String,
+        window_capability: String,
+        request: BrowserPrepareRequest,
+    },
+    BrowserNavigate {
+        session_id: String,
+        task_grant_id: String,
+        window_capability: String,
+        request: BrowserNavigateRequest,
+    },
+    BrowserClick {
+        session_id: String,
+        task_grant_id: String,
+        window_capability: String,
+        request: BrowserClickRequest,
+    },
+    BrowserType {
+        session_id: String,
+        task_grant_id: String,
+        window_capability: String,
+        request: BrowserTypeRequest,
+    },
+    BrowserPointer {
+        session_id: String,
+        task_grant_id: String,
+        window_capability: String,
+        request: BrowserPointerRequest,
+    },
     Find {
         session_id: String,
         task_grant_id: String,
@@ -172,6 +216,10 @@ struct TaskGrant {
     allow_raw_input: bool,
     #[serde(default)]
     allow_app_launch: bool,
+    #[serde(default)]
+    allow_browser_input: bool,
+    #[serde(default)]
+    allow_browser_prepare: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -348,8 +396,11 @@ impl HostAction {
 struct HostSession {
     task_grant_id: String,
     allow_raw_input: bool,
+    allow_browser_input: bool,
+    allow_browser_prepare: bool,
     capability: String,
     session: ComputerUseSession,
+    browser: BrowserSession,
     latest_observation_id: Option<String>,
     latest_accessibility_state_id: Option<String>,
     latest_accessibility_root: Option<Value>,
@@ -494,8 +545,11 @@ async fn handle_request(
                 HostSession {
                     task_grant_id: grant.task_grant_id,
                     allow_raw_input: grant.allow_raw_input,
+                    allow_browser_input: grant.allow_browser_input,
+                    allow_browser_prepare: grant.allow_browser_prepare,
                     capability: capability.clone(),
                     session,
+                    browser: BrowserSession::default(),
                     latest_observation_id: None,
                     latest_accessibility_state_id: None,
                     latest_accessibility_root: None,
@@ -617,6 +671,93 @@ async fn handle_request(
                     "node_count":root["elements"].as_array().map_or(0, Vec::len),
                 }),
                 None,
+            ))
+        }
+        Request::BrowserSnapshot {
+            session_id,
+            task_grant_id,
+            window_capability,
+            request,
+        } => {
+            let host =
+                authorized_session(sessions, &session_id, &task_grant_id, &window_capability)?;
+            let result = host.browser.snapshot(&host.session, request).await?;
+            Ok(browser_response("browser_snapshot", session_id, result))
+        }
+        Request::BrowserPrepare {
+            session_id,
+            task_grant_id,
+            window_capability,
+            request,
+        } => {
+            let host =
+                authorized_session(sessions, &session_id, &task_grant_id, &window_capability)?;
+            if !host.allow_browser_prepare {
+                return Err(HostError::Protocol(
+                    "browser preparation is not granted".into(),
+                ));
+            }
+            let result = host.browser.prepare(&host.session, request).await?;
+            Ok(browser_response("browser_prepared", session_id, result))
+        }
+        Request::BrowserNavigate {
+            session_id,
+            task_grant_id,
+            window_capability,
+            request,
+        } => {
+            let host =
+                authorized_session(sessions, &session_id, &task_grant_id, &window_capability)?;
+            if !host.allow_browser_input {
+                return Err(HostError::Protocol("browser input is not granted".into()));
+            }
+            let result = host.browser.navigate(&host.session, request).await?;
+            Ok(browser_response("browser_navigated", session_id, result))
+        }
+        Request::BrowserClick {
+            session_id,
+            task_grant_id,
+            window_capability,
+            request,
+        } => {
+            let host =
+                authorized_session(sessions, &session_id, &task_grant_id, &window_capability)?;
+            if !host.allow_browser_input {
+                return Err(HostError::Protocol("browser input is not granted".into()));
+            }
+            let result = host.browser.click(&host.session, request).await?;
+            Ok(browser_response("browser_clicked", session_id, result))
+        }
+        Request::BrowserType {
+            session_id,
+            task_grant_id,
+            window_capability,
+            request,
+        } => {
+            let host =
+                authorized_session(sessions, &session_id, &task_grant_id, &window_capability)?;
+            if !host.allow_browser_input {
+                return Err(HostError::Protocol("browser input is not granted".into()));
+            }
+            let result = host.browser.type_text(&host.session, request).await?;
+            Ok(browser_response("browser_typed", session_id, result))
+        }
+        Request::BrowserPointer {
+            session_id,
+            task_grant_id,
+            window_capability,
+            request,
+        } => {
+            let host =
+                authorized_session(sessions, &session_id, &task_grant_id, &window_capability)?;
+            if !host.allow_browser_input {
+                return Err(HostError::Protocol("browser input is not granted".into()));
+            }
+            let result = host.browser.pointer(&host.session, request).await?;
+            Ok(browser_response(
+                "browser_pointer_completed",
+                session_id,
+                result,
             ))
         }
         Request::Find {
@@ -792,6 +933,27 @@ async fn handle_request(
     }
 }
 
+fn browser_response(
+    response_type: &str,
+    session_id: String,
+    result: dcc_mcp_cua_browser::BrowserResult,
+) -> (Value, Option<Vec<u8>>) {
+    let attachment = result.image.as_ref().map(|image| image.data.clone());
+    let mut response = json!({
+        "type": response_type,
+        "session_id": session_id,
+        "result": result.value,
+    });
+    if let Some(image) = result.image {
+        response["image"] = json!({
+            "encoding": "binary_frame",
+            "mime_type": image.mime_type,
+            "length": image.data.len(),
+        });
+    }
+    (response, attachment)
+}
+
 fn find_elements(root: &Value, query: &FindQuery, max_results: usize) -> Vec<Value> {
     root["elements"]
         .as_array()
@@ -889,6 +1051,7 @@ fn error_code(error: &HostError) -> &'static str {
             ComputerUseErrorCode::StaleObservation => "stale_observation",
             ComputerUseErrorCode::UserInterrupted => "user_interrupted",
             ComputerUseErrorCode::InvalidTarget => "invalid_target",
+            ComputerUseErrorCode::BrowserRefused => "browser_refused",
             ComputerUseErrorCode::CaptureFailed => "capture_failed",
             ComputerUseErrorCode::InputFailed => "input_failed",
             ComputerUseErrorCode::InvalidAction => "invalid_request",
@@ -900,6 +1063,12 @@ fn error_code(error: &HostError) -> &'static str {
         HostError::Protocol(message) if message.contains("raw input") => "raw_input_not_granted",
         HostError::Protocol(message) if message.contains("application launch") => {
             "app_launch_not_granted"
+        }
+        HostError::Protocol(message) if message.contains("browser input") => {
+            "browser_input_not_granted"
+        }
+        HostError::Protocol(message) if message.contains("browser preparation") => {
+            "browser_prepare_not_granted"
         }
         HostError::Protocol(message) if message.contains("accessibility") => "unsupported",
         HostError::Protocol(_) => "invalid_request",
@@ -1049,6 +1218,8 @@ mod tests {
         }))
         .expect("legacy grants should remain readable");
         assert!(!grant.allow_app_launch);
+        assert!(!grant.allow_browser_input);
+        assert!(!grant.allow_browser_prepare);
     }
 
     #[test]
@@ -1101,6 +1272,48 @@ mod tests {
                 }
             })),
             Ok(Request::Find { .. })
+        ));
+        assert!(matches!(
+            serde_json::from_value::<Request>(json!({
+                "method": "browser_snapshot",
+                "params": {
+                    "session_id": "session-1",
+                    "task_grant_id": "task-1",
+                    "window_capability": "cap-1",
+                    "request": {"snapshot_format": "semantic_v2"}
+                }
+            })),
+            Ok(Request::BrowserSnapshot { .. })
+        ));
+        assert!(matches!(
+            serde_json::from_value::<Request>(json!({
+                "method": "browser_prepare",
+                "params": {
+                    "session_id": "session-1",
+                    "task_grant_id": "task-1",
+                    "window_capability": "cap-1",
+                    "request": {"allow_launch": false}
+                }
+            })),
+            Ok(Request::BrowserPrepare { .. })
+        ));
+        assert!(matches!(
+            serde_json::from_value::<Request>(json!({
+                "method": "browser_type",
+                "params": {
+                    "session_id": "session-1",
+                    "task_grant_id": "task-1",
+                    "window_capability": "cap-1",
+                    "request": {
+                        "target_id": "target-1",
+                        "tab_id": "tab-1",
+                        "snapshot_id": "p1",
+                        "ref": "p1:2",
+                        "text": "Fab"
+                    }
+                }
+            })),
+            Ok(Request::BrowserType { .. })
         ));
     }
 

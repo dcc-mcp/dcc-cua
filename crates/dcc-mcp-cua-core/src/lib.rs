@@ -117,6 +117,7 @@ pub struct ComputerUseScreenshot {
 #[serde(rename_all = "snake_case")]
 pub enum ComputerUseErrorCode {
     BackendUnavailable,
+    BrowserRefused,
     MissingWindow,
     InvalidTarget,
     StaleObservation,
@@ -430,6 +431,57 @@ impl ComputerUseSession {
                     "CUA window state returned no structured accessibility state",
                 )
             })
+    }
+
+    /// Call one of CUA's typed browser tools within this exact native window.
+    ///
+    /// The allow-list is deliberate: browser adapters must not turn the Core
+    /// host into an arbitrary CUA command proxy. CUA still owns browser target,
+    /// tab, ref, origin, and input-trust validation.
+    pub async fn call_browser_tool(
+        &self,
+        name: &str,
+        arguments: Value,
+    ) -> ComputerUseResult<Value> {
+        const ALLOWED_TOOLS: [&str; 6] = [
+            "get_browser_state",
+            "browser_prepare",
+            "browser_navigate",
+            "browser_click",
+            "browser_type",
+            "browser_pointer",
+        ];
+        if !ALLOWED_TOOLS.contains(&name) {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::InvalidAction,
+                format!("browser tool {name:?} is not exposed by this host"),
+            ));
+        }
+        self.ensure_active()?;
+        let target = self.revalidate_target().await?;
+        let mut object = arguments.as_object().cloned().ok_or_else(|| {
+            ComputerUseError::new(
+                ComputerUseErrorCode::InvalidAction,
+                "browser tool arguments must be a JSON object",
+            )
+        })?;
+        object.insert("session".into(), json!(self.session_id));
+        if matches!(name, "get_browser_state" | "browser_prepare") {
+            object.insert("pid".into(), json!(target.pid));
+            object.insert("window_id".into(), json!(target.window_id));
+        }
+        let result = self
+            .driver
+            .call_tool(name.to_owned(), Value::Object(object).to_string())
+            .await
+            .map_err(|error| map_driver_error(&format!("call CUA {name}"), error))?;
+        ensure_tool_ok(&format!("call CUA {name}"), &result)?;
+        serde_json::from_str(&result.raw_json).map_err(|error| {
+            ComputerUseError::new(
+                ComputerUseErrorCode::BackendUnavailable,
+                format!("CUA {name} returned invalid JSON: {error}"),
+            )
+        })
     }
 
     /// Execute one Core-shaped action through CUA after a fresh target fence.
@@ -952,6 +1004,8 @@ fn ensure_tool_ok(context: &str, result: &cua_driver_sdk::ToolResult) -> Compute
             || message.to_ascii_lowercase().contains("user_interrupted")
         {
             ComputerUseErrorCode::UserInterrupted
+        } else if code.contains("browser") || message.to_ascii_lowercase().contains("browser_") {
+            ComputerUseErrorCode::BrowserRefused
         } else if code.contains("window") || code.contains("target") {
             ComputerUseErrorCode::InvalidTarget
         } else {
@@ -970,6 +1024,8 @@ fn map_driver_error(context: &str, error: impl std::fmt::Display) -> ComputerUse
     let lower = message.to_ascii_lowercase();
     let code = if lower.contains("interrupt") || lower.contains("user_interrupted") {
         ComputerUseErrorCode::UserInterrupted
+    } else if lower.contains("browser_") {
+        ComputerUseErrorCode::BrowserRefused
     } else if lower.contains("window") || lower.contains("target") {
         ComputerUseErrorCode::InvalidTarget
     } else {
