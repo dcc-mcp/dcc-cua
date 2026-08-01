@@ -35,7 +35,7 @@ operations.
 ## CLI
 
 ```powershell
-cargo run -p dcc-mcp-cua-cli -- list --app chrome.exe
+cargo run -p dcc-mcp-cua-cli -- list --app chrome.exe --on-screen
 cargo run -p dcc-mcp-cua-cli -- apps
 cargo run -p dcc-mcp-cua-cli -- tools
 cargo run -p dcc-mcp-cua-cli -- call --tool check_permissions --json '{}'
@@ -100,6 +100,8 @@ connection. Semantic actions use CUA `element_index` values from the latest
 accessibility snapshot, and `set_text`/`set_value`/`set_checked` use CUA's
 native semantic value path. Coordinate actions remain available for
 custom-drawn surfaces.
+`list_windows` supports optional `app`, `pid`, and `on_screen_only` filters;
+these are applied by the native backend before the response crosses IPC.
 `find` filters the current accessibility tree by text, role, or element index
 and returns a fresh `accessibility_state_id`. `wait_for` is bounded to 30 seconds and supports `element_present`,
 `text_contains`, `text_equals`, and `value_equals`. `launch_app` requires a non-empty `task_grant_id`, `dcc_type`, and

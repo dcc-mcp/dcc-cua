@@ -53,7 +53,12 @@ async fn list_windows(
     driver: &ComputerUseDriver,
     flags: &[String],
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut windows = driver.list_windows().await?;
+    let pid = flag_value(flags, "--pid")
+        .map(|value| value.parse::<u32>())
+        .transpose()?;
+    let mut windows = driver
+        .list_windows_filtered(pid, has_flag(flags, "--on-screen"))
+        .await?;
     if let Some(app) = flag_value(flags, "--app") {
         windows.retain(|window| {
             window["app_name"]

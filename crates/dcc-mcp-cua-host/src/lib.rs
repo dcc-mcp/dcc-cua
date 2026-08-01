@@ -141,6 +141,10 @@ enum Request {
     ListWindows {
         #[serde(default)]
         app: Option<String>,
+        #[serde(default)]
+        pid: Option<u32>,
+        #[serde(default)]
+        on_screen_only: bool,
     },
     DesktopSnapshot {},
     ScreenSize {},
@@ -903,8 +907,12 @@ async fn handle_request(
             json!({"type":"tools", "tools":driver.list_tools().await?}),
             None,
         )),
-        Request::ListWindows { app } => {
-            let mut windows = driver.list_windows().await?;
+        Request::ListWindows {
+            app,
+            pid,
+            on_screen_only,
+        } => {
+            let mut windows = driver.list_windows_filtered(pid, on_screen_only).await?;
             if let Some(app) = app {
                 windows.retain(|window| {
                     window["app_name"]

@@ -249,7 +249,16 @@ impl ComputerUseDriver {
 
     /// List the currently visible native windows through the CUA runtime.
     pub async fn list_windows(&self) -> ComputerUseResult<Vec<Value>> {
-        list_windows_with_driver(&self.driver).await
+        self.list_windows_filtered(None, false).await
+    }
+
+    /// Enumerate windows with filters applied by the native CUA backend.
+    pub async fn list_windows_filtered(
+        &self,
+        pid: Option<u32>,
+        on_screen_only: bool,
+    ) -> ComputerUseResult<Vec<Value>> {
+        list_windows_with_driver(&self.driver, pid, on_screen_only).await
     }
 
     /// Enumerate installed and currently running applications through CUA.
@@ -1247,7 +1256,7 @@ impl ComputerUseSession {
     }
 
     async fn list_windows(&self) -> ComputerUseResult<Vec<WindowTarget>> {
-        Ok(list_windows_with_driver(&self.driver)
+        Ok(list_windows_with_driver(&self.driver, None, false)
             .await?
             .into_iter()
             .filter_map(|value| WindowTarget::from_value(&value))
@@ -1299,9 +1308,20 @@ impl WindowTarget {
     }
 }
 
-async fn list_windows_with_driver(driver: &Arc<CuaDriver>) -> ComputerUseResult<Vec<Value>> {
+async fn list_windows_with_driver(
+    driver: &Arc<CuaDriver>,
+    pid: Option<u32>,
+    on_screen_only: bool,
+) -> ComputerUseResult<Vec<Value>> {
+    let mut arguments = json!({});
+    if let Some(pid) = pid {
+        arguments["pid"] = json!(pid);
+    }
+    if on_screen_only {
+        arguments["on_screen_only"] = Value::Bool(true);
+    }
     let result = driver
-        .call_tool("list_windows".into(), "{}".into())
+        .call_tool("list_windows".into(), arguments.to_string())
         .await
         .map_err(|error| map_driver_error("list CUA windows", error))?;
     ensure_tool_ok("list CUA windows", &result)?;
