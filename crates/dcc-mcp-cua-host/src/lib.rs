@@ -12,6 +12,8 @@ use std::os::unix::fs::FileTypeExt;
 use std::os::unix::fs::PermissionsExt;
 #[cfg(unix)]
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use serde::Deserialize;
@@ -66,6 +68,7 @@ pub const HOST_CAPABILITIES: &[&str] = &[
     "browser_file_download",
     "browser_dialog",
     "request_correlation",
+    "request_cancellation",
 ];
 
 /// Local transport selected by the CLI or embedding host.
@@ -259,6 +262,11 @@ enum Request {
     },
     StopSession {
         session_id: String,
+    },
+    Cancel {
+        session_id: String,
+        task_grant_id: String,
+        window_capability: String,
     },
 }
 
@@ -486,6 +494,89 @@ struct HostSession {
     latest_accessibility_root: Option<Value>,
 }
 
+type CancellationRegistry = Arc<Mutex<HashMap<String, CancellationHandle>>>;
+
+#[derive(Clone)]
+struct CancellationHandle {
+    task_grant_id: String,
+    window_capability: String,
+    cancelled: Arc<AtomicBool>,
+    notify: Arc<tokio::sync::Notify>,
+}
+
+struct CancellationGuard {
+    registry: CancellationRegistry,
+    session_id: String,
+    handle: CancellationHandle,
+}
+
+impl CancellationHandle {
+    async fn cancelled(&self) {
+        let notified = self.notify.notified();
+        if self.cancelled.load(Ordering::Acquire) {
+            return;
+        }
+        notified.await;
+    }
+}
+
+impl Drop for CancellationGuard {
+    fn drop(&mut self) {
+        if let Ok(mut registry) = self.registry.lock() {
+            registry.remove(&self.session_id);
+        }
+    }
+}
+
+fn register_wait(
+    registry: &CancellationRegistry,
+    session_id: &str,
+    task_grant_id: &str,
+    window_capability: &str,
+) -> Result<CancellationGuard, HostError> {
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let handle = CancellationHandle {
+        task_grant_id: task_grant_id.to_owned(),
+        window_capability: window_capability.to_owned(),
+        cancelled,
+        notify: Arc::new(tokio::sync::Notify::new()),
+    };
+    let mut waits = registry
+        .lock()
+        .map_err(|_| HostError::Protocol("cancellation registry is unavailable".into()))?;
+    if waits.contains_key(session_id) {
+        return Err(HostError::Protocol("wait_for is already running".into()));
+    }
+    waits.insert(session_id.to_owned(), handle.clone());
+    Ok(CancellationGuard {
+        registry: Arc::clone(registry),
+        session_id: session_id.to_owned(),
+        handle,
+    })
+}
+
+fn cancel_wait(
+    registry: &CancellationRegistry,
+    session_id: &str,
+    task_grant_id: &str,
+    window_capability: &str,
+) -> Result<Value, HostError> {
+    let handle = registry
+        .lock()
+        .map_err(|_| HostError::Protocol("cancellation registry is unavailable".into()))?
+        .get(session_id)
+        .cloned()
+        .ok_or_else(|| HostError::Protocol("no wait_for is running for this session".into()))?;
+    if handle.task_grant_id != task_grant_id || handle.window_capability != window_capability {
+        return Err(HostError::Protocol(
+            "cancel credentials do not match the running wait_for".into(),
+        ));
+    }
+    handle.cancelled.store(true, Ordering::Release);
+    handle.notify.notify_one();
+    Ok(json!({"type":"wait_cancel_requested", "session_id":session_id}))
+}
+
 /// Run one long-lived host connection over stdio or the platform local endpoint.
 pub async fn run(driver: ComputerUseDriver, transport: HostTransport) -> Result<(), HostError> {
     match transport {
@@ -517,33 +608,16 @@ where
     let mut writer = writer;
     let mut handshaken = false;
     let mut sessions = HashMap::<String, HostSession>::new();
+    let cancellation_registry = Arc::new(Mutex::new(HashMap::new()));
 
     while let Some(frame) = read_frame(&mut reader, MAX_JSON_FRAME_BYTES).await? {
-        let envelope = match serde_json::from_slice::<Value>(&frame) {
-            Ok(envelope) => envelope,
-            Err(error) => {
-                write_json(
-                    &mut writer,
-                    error_response("invalid_request", error.to_string()),
-                )
-                .await?;
-                continue;
-            }
-        };
-        let request_id = match request_id_from(&envelope) {
-            Ok(request_id) => request_id,
-            Err(error) => {
-                write_json(&mut writer, error_response("invalid_request", error)).await?;
-                continue;
-            }
-        };
-        let request = match serde_json::from_value::<Request>(envelope) {
+        let (request_id, request) = match parse_request_frame(&frame) {
             Ok(request) => request,
-            Err(error) => {
+            Err((request_id, error)) => {
                 write_json(
                     &mut writer,
                     with_request_id(
-                        error_response("invalid_request", error.to_string()),
+                        error_response("invalid_request", error),
                         request_id.as_deref(),
                     ),
                 )
@@ -551,19 +625,93 @@ where
                 continue;
             }
         };
-        let (response, attachment) =
-            match handle_request(&driver, &mut sessions, &mut handshaken, request).await {
+
+        if matches!(&request, Request::WaitFor { .. }) {
+            let mut operation = Box::pin(handle_request(
+                &driver,
+                &mut sessions,
+                &mut handshaken,
+                &cancellation_registry,
+                request,
+            ));
+            loop {
+                tokio::select! {
+                    result = &mut operation => {
+                        let (response, attachment) = match result {
+                            Ok(result) => result,
+                            Err(error) => (error_response(error_code(&error), error.to_string()), None),
+                        };
+                        write_response(
+                            &mut writer,
+                            with_request_id(response, request_id.as_deref()),
+                            attachment.as_deref(),
+                        ).await?;
+                        break;
+                    }
+                    frame = read_frame(&mut reader, MAX_JSON_FRAME_BYTES) => {
+                        let Some(frame) = frame? else {
+                            drop(operation);
+                            return cleanup_sessions(sessions).await;
+                        };
+                        let (cancel_id, next_request) = match parse_request_frame(&frame) {
+                            Ok(request) => request,
+                            Err((cancel_id, error)) => {
+                                write_json(
+                                    &mut writer,
+                                    with_request_id(error_response("invalid_request", error), cancel_id.as_deref()),
+                                ).await?;
+                                continue;
+                            }
+                        };
+                        if let Request::Cancel { session_id, task_grant_id, window_capability } = next_request {
+                            let response = match cancel_wait(
+                                &cancellation_registry,
+                                &session_id,
+                                &task_grant_id,
+                                &window_capability,
+                            ) {
+                                Ok(response) => response,
+                                Err(error) => error_response(error_code(&error), error.to_string()),
+                            };
+                            write_json(&mut writer, with_request_id(response, cancel_id.as_deref())).await?;
+                        } else {
+                            write_json(
+                                &mut writer,
+                                with_request_id(
+                                    error_response("request_in_progress", "wait_for is still running; cancel it before sending another request"),
+                                    cancel_id.as_deref(),
+                                ),
+                            ).await?;
+                        }
+                    }
+                }
+            }
+        } else {
+            let (response, attachment) = match handle_request(
+                &driver,
+                &mut sessions,
+                &mut handshaken,
+                &cancellation_registry,
+                request,
+            )
+            .await
+            {
                 Ok(result) => result,
                 Err(error) => (error_response(error_code(&error), error.to_string()), None),
             };
-        write_response(
-            &mut writer,
-            with_request_id(response, request_id.as_deref()),
-            attachment.as_deref(),
-        )
-        .await?;
+            write_response(
+                &mut writer,
+                with_request_id(response, request_id.as_deref()),
+                attachment.as_deref(),
+            )
+            .await?;
+        }
     }
 
+    cleanup_sessions(sessions).await
+}
+
+async fn cleanup_sessions(sessions: HashMap<String, HostSession>) -> Result<(), HostError> {
     for (_, mut session) in sessions {
         let _ = session.session.stop().await;
     }
@@ -574,6 +722,7 @@ async fn handle_request(
     driver: &ComputerUseDriver,
     sessions: &mut HashMap<String, HostSession>,
     handshaken: &mut bool,
+    cancellation_registry: &CancellationRegistry,
     request: Request,
 ) -> Result<(Value, Option<Vec<u8>>), HostError> {
     if let Request::Hello(params) = &request {
@@ -601,6 +750,19 @@ async fn handle_request(
 
     match request {
         Request::Hello(_) => unreachable!(),
+        Request::Cancel {
+            session_id,
+            task_grant_id,
+            window_capability,
+        } => Ok((
+            cancel_wait(
+                cancellation_registry,
+                &session_id,
+                &task_grant_id,
+                &window_capability,
+            )?,
+            None,
+        )),
         Request::ListApps {} => {
             let apps = driver.list_apps().await?;
             Ok((json!({"type":"apps", "apps":apps}), None))
@@ -1072,11 +1234,28 @@ async fn handle_request(
             condition,
         } => {
             let (timeout_ms, interval_ms) = condition.validate()?;
+            let cancellation = register_wait(
+                cancellation_registry,
+                &session_id,
+                &task_grant_id,
+                &window_capability,
+            )?;
             let host =
                 authorized_session(sessions, &session_id, &task_grant_id, &window_capability)?;
             let started = Instant::now();
             loop {
-                let root = host.session.accessibility_snapshot(5_000, 25).await?;
+                let root = tokio::select! {
+                    _ = cancellation.handle.cancelled() => {
+                        return Ok((json!({
+                            "type":"wait_cancelled",
+                            "success":false,
+                            "session_id":session_id,
+                            "error_code":"cancelled",
+                            "elapsed_ms":started.elapsed().as_millis(),
+                        }), None));
+                    }
+                    result = host.session.accessibility_snapshot(5_000, 25) => result?,
+                };
                 if wait_condition_matches(&root, &condition) {
                     return Ok((
                         json!({
@@ -1102,7 +1281,18 @@ async fn handle_request(
                         None,
                     ));
                 }
-                tokio::time::sleep(std::time::Duration::from_millis(interval_ms)).await;
+                tokio::select! {
+                    _ = cancellation.handle.cancelled() => {
+                        return Ok((json!({
+                            "type":"wait_cancelled",
+                            "success":false,
+                            "session_id":session_id,
+                            "error_code":"cancelled",
+                            "elapsed_ms":started.elapsed().as_millis(),
+                        }), None));
+                    }
+                    _ = tokio::time::sleep(std::time::Duration::from_millis(interval_ms)) => {}
+                }
             }
         }
         Request::ExecuteAction {
@@ -1353,6 +1543,11 @@ fn error_code(error: &HostError) -> &'static str {
             "clipboard_write_not_granted"
         }
         HostError::Protocol(message) if message.contains("recording") => "recording_not_granted",
+        HostError::Protocol(message) if message.contains("already running") => {
+            "request_in_progress"
+        }
+        HostError::Protocol(message) if message.contains("no wait_for") => "request_not_found",
+        HostError::Protocol(message) if message.contains("cancel credentials") => "forbidden",
         HostError::Protocol(message) if message.contains("accessibility") => "unsupported",
         HostError::Protocol(_) => "invalid_request",
     }
@@ -1360,6 +1555,22 @@ fn error_code(error: &HostError) -> &'static str {
 
 fn error_response(code: &str, message: impl Into<String>) -> Value {
     json!({"type":"error", "code":code, "message":message.into()})
+}
+
+fn parse_request_frame(
+    frame: &[u8],
+) -> Result<(Option<String>, Request), (Option<String>, String)> {
+    let envelope = match serde_json::from_slice::<Value>(frame) {
+        Ok(envelope) => envelope,
+        Err(error) => return Err((None, error.to_string())),
+    };
+    let request_id = match request_id_from(&envelope) {
+        Ok(request_id) => request_id,
+        Err(error) => return Err((None, error)),
+    };
+    serde_json::from_value(envelope)
+        .map(|request| (request_id.clone(), request))
+        .map_err(|error| (request_id, error.to_string()))
 }
 
 fn request_id_from(value: &Value) -> Result<Option<String>, String> {
@@ -1537,6 +1748,16 @@ mod tests {
             with_request_id(json!({"type":"ok"}), Some("req-1")),
             json!({"type":"ok", "request_id":"req-1"})
         );
+    }
+
+    #[test]
+    fn wait_cancellation_requires_exact_credentials() {
+        let registry = Arc::new(Mutex::new(HashMap::new()));
+        let guard = register_wait(&registry, "session-1", "grant-1", "cap-1").unwrap();
+        assert!(cancel_wait(&registry, "session-1", "grant-1", "wrong-cap").is_err());
+        let response = cancel_wait(&registry, "session-1", "grant-1", "cap-1").unwrap();
+        assert_eq!(response["type"], "wait_cancel_requested");
+        assert!(guard.handle.cancelled.load(Ordering::Acquire));
     }
 
     #[test]
