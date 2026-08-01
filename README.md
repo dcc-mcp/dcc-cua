@@ -14,15 +14,15 @@ task. It preserves the Core Computer Use contract:
 - a visible CUA mouse-shaped cursor and `DCC UI Control · <app> · Esc to stop`
   marker.
 
-The repository is a Cargo workspace with three responsibilities:
+The repository is a Cargo workspace with four responsibilities:
 
 - `dcc-mcp-cua-core`: scoped Computer Use domain, safety policy, and
   CUA execution boundary;
-- `dcc-mcp-cua-browser`: exact-window browser binding, tab snapshots, and
-  typed browser actions;
+- `dcc-mcp-cua-browser`: exact-window browser binding, tab snapshots, typed
+  browser actions, and bounded file transfer;
 - `dcc-mcp-cua-host`: long-lived Core-compatible IPC and request
   routing;
-- `dcc-mcp-cua-cli`: the thin CLI process that composes the two crates.
+- `dcc-mcp-cua-cli`: the thin CLI process that composes the workspace crates.
 
 Application-specific adapters stay above this workspace. A browser adapter can
 add tab/DOM/iframe/download capabilities through CDP or WebDriver while using
@@ -51,6 +51,11 @@ explicit selector (`--name`, `--bundle-id`, `--aumid`, `--path`, or
 `--launch-path`), supports repeated `--url`/`--arg` values, and applies the
 same sensitive-application deny policy as the host.
 
+Clipboard access is session-scoped and grant-gated: `clipboard_read` does not
+return text unless the caller asks for it, and `clipboard_write` accepts exactly
+one bounded text, image path, or regular-file path. Recording is also
+grant-gated through `recording_start`, `recording_stop`, and `recording_state`.
+
 ## Core host IPC
 
 Start one persistent host process instead of spawning a process per action:
@@ -71,6 +76,9 @@ The supported Core request surface is `hello`, `list_apps`, `launch_app`, `open_
 `get_window_state`, `change_window_state` (`activate`), `snapshot`,
 `accessibility_snapshot`, `find`, `wait_for`, `browser_snapshot`,
 `browser_prepare`, `browser_navigate`, `browser_click`, `browser_type`, `browser_pointer`,
+`browser_set_input_files`, `browser_download`,
+`clipboard_read`, `clipboard_write`, `recording_start`, `recording_stop`,
+`recording_state`,
 `execute_action`, `resume_session`, and
 `stop_session`. Semantic actions use CUA `element_index` values from the latest
 accessibility snapshot; `set_text`/`set_value` use CUA's native semantic value
@@ -79,18 +87,20 @@ path, while coordinate actions remain available for custom-drawn surfaces.
 and returns a fresh `accessibility_state_id`. `wait_for` is bounded to 30 seconds and supports `element_present`,
 `text_contains`, `text_equals`, and `value_equals`. `launch_app` requires a non-empty `task_grant_id`, `dcc_type`, and
 `allow_app_launch: true`; it never inherits permission from an open DCC window
-session. Browser mutations additionally require `allow_browser_input: true`.
+session. Clipboard operations require `allow_clipboard_read` or
+`allow_clipboard_write`; recording operations require `allow_recording: true`.
+Browser mutations additionally require `allow_browser_input: true`.
 `browser_prepare` is destructive and separately requires
 `allow_browser_prepare: true`; it never changes a personal browser profile
 implicitly and forwards CUA's explicit setup refusal/approval contract.
 `browser_snapshot` first binds the exact native window, then snapshots a
 specific CUA tab; `browser_click`, `browser_type`, and `browser_pointer` require
 the latest browser `snapshot_id`, exact binding, and an explicit input route.
-`browser_navigate` invalidates the tab snapshot. Shared-memory descriptors,
-recording, file upload/download, and typed system operations remain explicitly
-unsupported until their cross-platform contracts are implemented; the host
-returns `unsupported` instead of silently falling back to unsafe desktop
-automation.
+`browser_navigate`, `browser_set_input_files`, and `browser_download` invalidate
+the tab snapshot. Upload uses `allow_browser_input`; download is a separate
+destructive grant (`allow_browser_download`) and CUA's host approval evidence.
+Shared-memory descriptors and typed system operations remain explicitly
+unsupported until their cross-platform contracts are implemented.
 
 Example host requests:
 

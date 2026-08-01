@@ -9,6 +9,8 @@ use std::collections::HashMap;
 #[cfg(unix)]
 use std::os::unix::fs::FileTypeExt;
 #[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+#[cfg(unix)]
 use std::path::Path;
 use std::time::Instant;
 
@@ -19,12 +21,14 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use uuid::Uuid;
 
 use dcc_mcp_cua_browser::{
-    BrowserClickRequest, BrowserNavigateRequest, BrowserPointerRequest, BrowserPrepareRequest,
-    BrowserSession, BrowserSnapshotRequest, BrowserTypeRequest,
+    BrowserClickRequest, BrowserDownloadRequest, BrowserNavigateRequest, BrowserPointerRequest,
+    BrowserPrepareRequest, BrowserSession, BrowserSetInputFilesRequest, BrowserSnapshotRequest,
+    BrowserTypeRequest,
 };
 use dcc_mcp_cua_core::{
-    ComputerUseAction, ComputerUseDriver, ComputerUseError, ComputerUseErrorCode, ComputerUsePoint,
-    ComputerUseResult, ComputerUseSession, ComputerUseTargetScope,
+    ComputerUseAction, ComputerUseClipboardWriteRequest, ComputerUseDriver, ComputerUseError,
+    ComputerUseErrorCode, ComputerUsePoint, ComputerUseRecordingStartRequest, ComputerUseResult,
+    ComputerUseSession, ComputerUseTargetScope,
 };
 
 /// Core-compatible control frame limit. Pixel bytes use a separate bounded frame.
@@ -49,10 +53,15 @@ pub const HOST_CAPABILITIES: &[&str] = &[
     "cross_platform_window_control",
     "application_inventory",
     "application_launch",
+    "clipboard_read",
+    "clipboard_write",
+    "trajectory_recording",
     "browser_exact_binding",
     "browser_prepare",
     "browser_semantic_snapshot",
     "browser_typed_actions",
+    "browser_file_upload",
+    "browser_file_download",
 ];
 
 /// Local transport selected by the CLI or embedding host.
@@ -94,6 +103,35 @@ enum Request {
     LaunchApp {
         grant: TaskGrant,
         launch: dcc_mcp_cua_core::ComputerUseLaunchRequest,
+    },
+    ClipboardRead {
+        session_id: String,
+        task_grant_id: String,
+        window_capability: String,
+        #[serde(default)]
+        include_text: bool,
+    },
+    ClipboardWrite {
+        session_id: String,
+        task_grant_id: String,
+        window_capability: String,
+        write: ComputerUseClipboardWriteRequest,
+    },
+    RecordingStart {
+        session_id: String,
+        task_grant_id: String,
+        window_capability: String,
+        request: ComputerUseRecordingStartRequest,
+    },
+    RecordingStop {
+        session_id: String,
+        task_grant_id: String,
+        window_capability: String,
+    },
+    RecordingState {
+        session_id: String,
+        task_grant_id: String,
+        window_capability: String,
     },
     OpenSession {
         session_id: String,
@@ -167,6 +205,18 @@ enum Request {
         window_capability: String,
         request: BrowserPointerRequest,
     },
+    BrowserSetInputFiles {
+        session_id: String,
+        task_grant_id: String,
+        window_capability: String,
+        request: BrowserSetInputFilesRequest,
+    },
+    BrowserDownload {
+        session_id: String,
+        task_grant_id: String,
+        window_capability: String,
+        request: BrowserDownloadRequest,
+    },
     Find {
         session_id: String,
         task_grant_id: String,
@@ -217,9 +267,17 @@ struct TaskGrant {
     #[serde(default)]
     allow_app_launch: bool,
     #[serde(default)]
+    allow_clipboard_read: bool,
+    #[serde(default)]
+    allow_clipboard_write: bool,
+    #[serde(default)]
+    allow_recording: bool,
+    #[serde(default)]
     allow_browser_input: bool,
     #[serde(default)]
     allow_browser_prepare: bool,
+    #[serde(default)]
+    allow_browser_download: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -396,8 +454,12 @@ impl HostAction {
 struct HostSession {
     task_grant_id: String,
     allow_raw_input: bool,
+    allow_clipboard_read: bool,
+    allow_clipboard_write: bool,
+    allow_recording: bool,
     allow_browser_input: bool,
     allow_browser_prepare: bool,
+    allow_browser_download: bool,
     capability: String,
     session: ComputerUseSession,
     browser: BrowserSession,
@@ -455,10 +517,7 @@ where
                 Ok(result) => result,
                 Err(error) => (error_response(error_code(&error), error.to_string()), None),
             };
-        write_json(&mut writer, response).await?;
-        if let Some(bytes) = attachment {
-            write_frame(&mut writer, &bytes, MAX_BINARY_FRAME_BYTES).await?;
-        }
+        write_response(&mut writer, response, attachment.as_deref()).await?;
     }
 
     for (_, mut session) in sessions {
@@ -521,6 +580,89 @@ async fn handle_request(
                 None,
             ))
         }
+        Request::ClipboardRead {
+            session_id,
+            task_grant_id,
+            window_capability,
+            include_text,
+        } => {
+            let host =
+                authorized_session(sessions, &session_id, &task_grant_id, &window_capability)?;
+            if !host.allow_clipboard_read {
+                return Err(HostError::Protocol("clipboard read is not granted".into()));
+            }
+            let result = host.session.clipboard_read(include_text).await?;
+            Ok((
+                json!({"type":"clipboard_read", "session_id":session_id, "result":result}),
+                None,
+            ))
+        }
+        Request::ClipboardWrite {
+            session_id,
+            task_grant_id,
+            window_capability,
+            write,
+        } => {
+            let host =
+                authorized_session(sessions, &session_id, &task_grant_id, &window_capability)?;
+            if !host.allow_clipboard_write {
+                return Err(HostError::Protocol("clipboard write is not granted".into()));
+            }
+            let result = host.session.clipboard_write(&write).await?;
+            Ok((
+                json!({"type":"clipboard_written", "session_id":session_id, "result":result}),
+                None,
+            ))
+        }
+        Request::RecordingStart {
+            session_id,
+            task_grant_id,
+            window_capability,
+            request,
+        } => {
+            let host =
+                authorized_session(sessions, &session_id, &task_grant_id, &window_capability)?;
+            if !host.allow_recording {
+                return Err(HostError::Protocol("recording is not granted".into()));
+            }
+            let result = host.session.recording_start(&request).await?;
+            Ok((
+                json!({"type":"recording_started", "session_id":session_id, "result":result}),
+                None,
+            ))
+        }
+        Request::RecordingStop {
+            session_id,
+            task_grant_id,
+            window_capability,
+        } => {
+            let host =
+                authorized_session(sessions, &session_id, &task_grant_id, &window_capability)?;
+            if !host.allow_recording {
+                return Err(HostError::Protocol("recording is not granted".into()));
+            }
+            let result = host.session.recording_stop().await?;
+            Ok((
+                json!({"type":"recording_stopped", "session_id":session_id, "result":result}),
+                None,
+            ))
+        }
+        Request::RecordingState {
+            session_id,
+            task_grant_id,
+            window_capability,
+        } => {
+            let host =
+                authorized_session(sessions, &session_id, &task_grant_id, &window_capability)?;
+            if !host.allow_recording {
+                return Err(HostError::Protocol("recording is not granted".into()));
+            }
+            let result = host.session.recording_state().await?;
+            Ok((
+                json!({"type":"recording_state", "session_id":session_id, "result":result}),
+                None,
+            ))
+        }
         Request::OpenSession { session_id, grant } => {
             if sessions.contains_key(&session_id) {
                 return Err(HostError::Protocol("session already exists".into()));
@@ -545,8 +687,12 @@ async fn handle_request(
                 HostSession {
                     task_grant_id: grant.task_grant_id,
                     allow_raw_input: grant.allow_raw_input,
+                    allow_clipboard_read: grant.allow_clipboard_read,
+                    allow_clipboard_write: grant.allow_clipboard_write,
+                    allow_recording: grant.allow_recording,
                     allow_browser_input: grant.allow_browser_input,
                     allow_browser_prepare: grant.allow_browser_prepare,
+                    allow_browser_download: grant.allow_browser_download,
                     capability: capability.clone(),
                     session,
                     browser: BrowserSession::default(),
@@ -759,6 +905,40 @@ async fn handle_request(
                 session_id,
                 result,
             ))
+        }
+        Request::BrowserSetInputFiles {
+            session_id,
+            task_grant_id,
+            window_capability,
+            request,
+        } => {
+            let host =
+                authorized_session(sessions, &session_id, &task_grant_id, &window_capability)?;
+            if !host.allow_browser_input {
+                return Err(HostError::Protocol("browser input is not granted".into()));
+            }
+            let result = host.browser.set_input_files(&host.session, request).await?;
+            Ok(browser_response(
+                "browser_files_uploaded",
+                session_id,
+                result,
+            ))
+        }
+        Request::BrowserDownload {
+            session_id,
+            task_grant_id,
+            window_capability,
+            request,
+        } => {
+            let host =
+                authorized_session(sessions, &session_id, &task_grant_id, &window_capability)?;
+            if !host.allow_browser_download {
+                return Err(HostError::Protocol(
+                    "browser download is not granted".into(),
+                ));
+            }
+            let result = host.browser.download(&host.session, request).await?;
+            Ok(browser_response("browser_downloaded", session_id, result))
         }
         Request::Find {
             session_id,
@@ -1052,6 +1232,8 @@ fn error_code(error: &HostError) -> &'static str {
             ComputerUseErrorCode::UserInterrupted => "user_interrupted",
             ComputerUseErrorCode::InvalidTarget => "invalid_target",
             ComputerUseErrorCode::BrowserRefused => "browser_refused",
+            ComputerUseErrorCode::ClipboardRefused => "clipboard_refused",
+            ComputerUseErrorCode::RecordingRefused => "recording_refused",
             ComputerUseErrorCode::CaptureFailed => "capture_failed",
             ComputerUseErrorCode::InputFailed => "input_failed",
             ComputerUseErrorCode::InvalidAction => "invalid_request",
@@ -1070,6 +1252,16 @@ fn error_code(error: &HostError) -> &'static str {
         HostError::Protocol(message) if message.contains("browser preparation") => {
             "browser_prepare_not_granted"
         }
+        HostError::Protocol(message) if message.contains("browser download") => {
+            "browser_download_not_granted"
+        }
+        HostError::Protocol(message) if message.contains("clipboard read") => {
+            "clipboard_read_not_granted"
+        }
+        HostError::Protocol(message) if message.contains("clipboard write") => {
+            "clipboard_write_not_granted"
+        }
+        HostError::Protocol(message) if message.contains("recording") => "recording_not_granted",
         HostError::Protocol(message) if message.contains("accessibility") => "unsupported",
         HostError::Protocol(_) => "invalid_request",
     }
@@ -1106,7 +1298,32 @@ async fn write_json<W: AsyncWrite + Unpin>(writer: &mut W, value: Value) -> Resu
     write_frame(writer, &body, MAX_JSON_FRAME_BYTES).await
 }
 
+async fn write_response<W: AsyncWrite + Unpin>(
+    writer: &mut W,
+    value: Value,
+    attachment: Option<&[u8]>,
+) -> Result<(), HostError> {
+    let body =
+        serde_json::to_vec(&value).map_err(|error| HostError::Protocol(error.to_string()))?;
+    write_frame_unflushed(writer, &body, MAX_JSON_FRAME_BYTES).await?;
+    if let Some(bytes) = attachment {
+        write_frame_unflushed(writer, bytes, MAX_BINARY_FRAME_BYTES).await?;
+    }
+    writer.flush().await?;
+    Ok(())
+}
+
 async fn write_frame<W: AsyncWrite + Unpin>(
+    writer: &mut W,
+    body: &[u8],
+    max: usize,
+) -> Result<(), HostError> {
+    write_frame_unflushed(writer, body, max).await?;
+    writer.flush().await?;
+    Ok(())
+}
+
+async fn write_frame_unflushed<W: AsyncWrite + Unpin>(
     writer: &mut W,
     body: &[u8],
     max: usize,
@@ -1118,7 +1335,6 @@ async fn write_frame<W: AsyncWrite + Unpin>(
     }
     writer.write_all(&(body.len() as u32).to_be_bytes()).await?;
     writer.write_all(body).await?;
-    writer.flush().await?;
     Ok(())
 }
 
@@ -1170,6 +1386,7 @@ async fn serve_unix_socket(driver: ComputerUseDriver, endpoint: String) -> Resul
         std::fs::remove_file(path)?;
     }
     let listener = UnixListener::bind(path)?;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
     loop {
         let (stream, _) = listener.accept().await?;
         let next_driver = driver.clone();
@@ -1218,8 +1435,18 @@ mod tests {
         }))
         .expect("legacy grants should remain readable");
         assert!(!grant.allow_app_launch);
+        assert!(!grant.allow_clipboard_read);
+        assert!(!grant.allow_clipboard_write);
+        assert!(!grant.allow_recording);
         assert!(!grant.allow_browser_input);
         assert!(!grant.allow_browser_prepare);
+        assert!(!grant.allow_browser_download);
+        assert_eq!(
+            error_code(&HostError::Protocol(
+                "browser download is not granted".into()
+            )),
+            "browser_download_not_granted"
+        );
     }
 
     #[test]
@@ -1287,6 +1514,30 @@ mod tests {
         ));
         assert!(matches!(
             serde_json::from_value::<Request>(json!({
+                "method": "clipboard_write",
+                "params": {
+                    "session_id": "session-1",
+                    "task_grant_id": "task-1",
+                    "window_capability": "cap-1",
+                    "write": {"text": "hello"}
+                }
+            })),
+            Ok(Request::ClipboardWrite { .. })
+        ));
+        assert!(matches!(
+            serde_json::from_value::<Request>(json!({
+                "method": "recording_start",
+                "params": {
+                    "session_id": "session-1",
+                    "task_grant_id": "task-1",
+                    "window_capability": "cap-1",
+                    "request": {"output_dir": "C:/tmp/cua"}
+                }
+            })),
+            Ok(Request::RecordingStart { .. })
+        ));
+        assert!(matches!(
+            serde_json::from_value::<Request>(json!({
                 "method": "browser_prepare",
                 "params": {
                     "session_id": "session-1",
@@ -1314,6 +1565,42 @@ mod tests {
                 }
             })),
             Ok(Request::BrowserType { .. })
+        ));
+        assert!(matches!(
+            serde_json::from_value::<Request>(json!({
+                "method": "browser_set_input_files",
+                "params": {
+                    "session_id": "session-1",
+                    "task_grant_id": "task-1",
+                    "window_capability": "cap-1",
+                    "request": {
+                        "target_id": "target-1",
+                        "tab_id": "tab-1",
+                        "snapshot_id": "p1",
+                        "ref": "p1:4",
+                        "files": ["C:/tmp/input.fbx"]
+                    }
+                }
+            })),
+            Ok(Request::BrowserSetInputFiles { .. })
+        ));
+        assert!(matches!(
+            serde_json::from_value::<Request>(json!({
+                "method": "browser_download",
+                "params": {
+                    "session_id": "session-1",
+                    "task_grant_id": "task-1",
+                    "window_capability": "cap-1",
+                    "request": {
+                        "target_id": "target-1",
+                        "tab_id": "tab-1",
+                        "snapshot_id": "p1",
+                        "ref": "p1:5",
+                        "destination_root": "C:/tmp/downloads"
+                    }
+                }
+            })),
+            Ok(Request::BrowserDownload { .. })
         ));
     }
 

@@ -2,7 +2,8 @@ use std::env;
 use std::fs;
 
 use dcc_mcp_cua_core::{
-    ComputerUseAction, ComputerUseDriver, ComputerUseLaunchRequest, ComputerUseTargetScope,
+    ComputerUseAction, ComputerUseClipboardWriteRequest, ComputerUseDriver,
+    ComputerUseLaunchRequest, ComputerUseTargetScope,
 };
 use dcc_mcp_cua_host::{HostTransport, run as run_host};
 use serde_json::json;
@@ -18,6 +19,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "list" => list_windows(&driver, &flags).await?,
         "apps" => list_apps(&driver).await?,
         "launch" => launch_app(&driver, &flags).await?,
+        "clipboard-read" => clipboard_read(&driver, &flags).await?,
+        "clipboard-write" => clipboard_write(&driver, &flags).await?,
         "host" => {
             let transport = if has_flag(&flags, "--stdio") {
                 HostTransport::Stdio
@@ -81,6 +84,47 @@ async fn launch_app(
         "{}",
         serde_json::to_string_pretty(&driver.launch_app(&request).await?)?
     );
+    Ok(())
+}
+
+async fn clipboard_read(
+    driver: &ComputerUseDriver,
+    flags: &[String],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let scope = select_scope(driver, flags).await?;
+    let app = flag_value(flags, "--app").unwrap_or_else(|| "DCC application".into());
+    let session_id = flag_value(flags, "--session").unwrap_or_else(|| "dcc-mcp-cli".into());
+    let mut session = driver.session(scope, app, session_id)?;
+    session.start().await?;
+    let result = session
+        .clipboard_read(has_flag(flags, "--include-text"))
+        .await;
+    let stop_result = session.stop().await;
+    let result = result?;
+    stop_result?;
+    println!("{}", serde_json::to_string_pretty(&result)?);
+    Ok(())
+}
+
+async fn clipboard_write(
+    driver: &ComputerUseDriver,
+    flags: &[String],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let request = ComputerUseClipboardWriteRequest {
+        text: flag_value(flags, "--text"),
+        image_path: flag_value(flags, "--image-path"),
+        file_path: flag_value(flags, "--file-path"),
+    };
+    let scope = select_scope(driver, flags).await?;
+    let app = flag_value(flags, "--app").unwrap_or_else(|| "DCC application".into());
+    let session_id = flag_value(flags, "--session").unwrap_or_else(|| "dcc-mcp-cli".into());
+    let mut session = driver.session(scope, app, session_id)?;
+    session.start().await?;
+    let result = session.clipboard_write(&request).await;
+    let stop_result = session.stop().await;
+    let result = result?;
+    stop_result?;
+    println!("{}", serde_json::to_string_pretty(&result)?);
     Ok(())
 }
 
@@ -227,6 +271,6 @@ fn has_flag(flags: &[String], name: &str) -> bool {
 
 fn print_help() {
     println!(
-        "dcc-mcp-cua\n\n  list [--app APP]\n  apps\n  launch --name NAME|--bundle-id ID|--aumid ID|--path PATH|--launch-path PATH [--url URL] [--arg ARG] [--new-instance] [--start-minimized]\n  snapshot --app APP [--output FILE]\n  act --app APP --action-json JSON\n  doctor\n  host [--stdio|--endpoint PATH]\n\nHost uses Core-compatible big-endian length-prefixed JSON frames; snapshot pixels follow as one binary frame."
+        "dcc-mcp-cua\n\n  list [--app APP]\n  apps\n  launch --name NAME|--bundle-id ID|--aumid ID|--path PATH|--launch-path PATH [--url URL] [--arg ARG] [--new-instance] [--start-minimized]\n  snapshot --app APP [--output FILE]\n  act --app APP --action-json JSON\n  clipboard-read --app APP [--include-text]\n  clipboard-write --app APP --text TEXT|--image-path FILE|--file-path FILE\n  doctor\n  host [--stdio|--endpoint PATH]\n\nHost uses Core-compatible big-endian length-prefixed JSON frames; snapshot pixels follow as one binary frame."
     );
 }

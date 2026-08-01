@@ -18,6 +18,7 @@ const MAX_KEY_TOKENS: usize = 16;
 const MAX_DRAG_POINTS: usize = 256;
 const MAX_LAUNCH_ARGUMENTS: usize = 32;
 const MAX_LAUNCH_URLS: usize = 16;
+const MAX_LOCAL_PATH_CHARS: usize = 4_096;
 const MOUSE_CURSOR_THEME: &str = "cua.default";
 static OBSERVATION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
@@ -106,6 +107,25 @@ pub struct ComputerUseLaunchRequest {
     pub start_minimized: bool,
 }
 
+/// One explicit value that may replace the system clipboard.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ComputerUseClipboardWriteRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_path: Option<String>,
+}
+
+/// A bounded recording destination owned by the caller's task grant.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ComputerUseRecordingStartRequest {
+    pub output_dir: String,
+    #[serde(default)]
+    pub record_video: bool,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ComputerUseScreenshot {
     pub data: Vec<u8>,
@@ -118,6 +138,8 @@ pub struct ComputerUseScreenshot {
 pub enum ComputerUseErrorCode {
     BackendUnavailable,
     BrowserRefused,
+    ClipboardRefused,
+    RecordingRefused,
     MissingWindow,
     InvalidTarget,
     StaleObservation,
@@ -443,13 +465,14 @@ impl ComputerUseSession {
         name: &str,
         arguments: Value,
     ) -> ComputerUseResult<Value> {
-        const ALLOWED_TOOLS: [&str; 6] = [
+        const ALLOWED_TOOLS: [&str; 7] = [
             "get_browser_state",
             "browser_prepare",
             "browser_navigate",
             "browser_click",
             "browser_type",
             "browser_pointer",
+            "browser_set_input_files",
         ];
         if !ALLOWED_TOOLS.contains(&name) {
             return Err(ComputerUseError::new(
@@ -484,6 +507,96 @@ impl ComputerUseSession {
                 format!("CUA {name} returned invalid JSON: {error}"),
             )
         })
+    }
+
+    /// Call the one browser destructive tool through CUA's trusted adapter
+    /// ingress. The approval evidence is created here, never accepted from
+    /// caller JSON.
+    pub async fn call_browser_download_tool(&self, arguments: Value) -> ComputerUseResult<Value> {
+        self.ensure_active()?;
+        self.revalidate_target().await?;
+        let mut object = arguments.as_object().cloned().ok_or_else(|| {
+            ComputerUseError::new(
+                ComputerUseErrorCode::InvalidAction,
+                "browser download arguments must be a JSON object",
+            )
+        })?;
+        object.insert("session".into(), json!(self.session_id));
+        object.insert(
+            "_cua_browser_download_mcp_host_approved".into(),
+            Value::Bool(true),
+        );
+        let result = self
+            .driver
+            .call_tool_from_trusted_adapter("browser_download", Value::Object(object))
+            .await
+            .map_err(|error| map_driver_error("call CUA browser_download", error))?;
+        ensure_tool_ok("call CUA browser_download", &result)?;
+        serde_json::from_str(&result.raw_json).map_err(|error| {
+            ComputerUseError::new(
+                ComputerUseErrorCode::BackendUnavailable,
+                format!("CUA browser_download returned invalid JSON: {error}"),
+            )
+        })
+    }
+
+    /// Read clipboard types, optionally including privacy-sensitive text.
+    pub async fn clipboard_read(&self, include_text: bool) -> ComputerUseResult<Value> {
+        self.ensure_active()?;
+        self.revalidate_target().await?;
+        self.call_bound_tool_value("clipboard_read", json!({"include_text": include_text}))
+            .await
+    }
+
+    /// Replace the clipboard with exactly one validated value.
+    pub async fn clipboard_write(
+        &self,
+        request: &ComputerUseClipboardWriteRequest,
+    ) -> ComputerUseResult<Value> {
+        validate_clipboard_write_request(request)?;
+        self.ensure_active()?;
+        self.revalidate_target().await?;
+        self.call_bound_tool_value(
+            "clipboard_write",
+            serde_json::to_value(request).map_err(|error| {
+                ComputerUseError::new(ComputerUseErrorCode::InvalidAction, error.to_string())
+            })?,
+        )
+        .await
+    }
+
+    /// Start trajectory/evidence recording for this exact CUA session.
+    pub async fn recording_start(
+        &self,
+        request: &ComputerUseRecordingStartRequest,
+    ) -> ComputerUseResult<Value> {
+        validate_recording_start_request(request)?;
+        self.ensure_active()?;
+        self.revalidate_target().await?;
+        self.call_bound_tool_value(
+            "start_recording",
+            json!({
+                "output_dir": request.output_dir,
+                "record_video": request.record_video,
+            }),
+        )
+        .await
+    }
+
+    /// Stop recording and return the finalized recording state.
+    pub async fn recording_stop(&self) -> ComputerUseResult<Value> {
+        self.ensure_active()?;
+        self.revalidate_target().await?;
+        self.call_bound_tool_value("stop_recording", json!({}))
+            .await
+    }
+
+    /// Read the current recording state without exposing arbitrary CUA calls.
+    pub async fn recording_state(&self) -> ComputerUseResult<Value> {
+        self.ensure_active()?;
+        self.revalidate_target().await?;
+        self.call_bound_tool_value("get_recording_state", json!({}))
+            .await
     }
 
     /// Execute one Core-shaped action through CUA after a fresh target fence.
@@ -529,6 +642,32 @@ impl ComputerUseSession {
             "capture_provenance": observation.capture_provenance,
             "cua": result.raw_json,
         }))
+    }
+
+    async fn call_bound_tool_value(
+        &self,
+        name: &str,
+        arguments: Value,
+    ) -> ComputerUseResult<Value> {
+        let mut object = arguments.as_object().cloned().ok_or_else(|| {
+            ComputerUseError::new(
+                ComputerUseErrorCode::InvalidAction,
+                "bound CUA tool arguments must be a JSON object",
+            )
+        })?;
+        object.insert("session".into(), json!(self.session_id));
+        let result = self
+            .driver
+            .call_tool(name.to_owned(), Value::Object(object).to_string())
+            .await
+            .map_err(|error| map_driver_error(&format!("call CUA {name}"), error))?;
+        ensure_tool_ok(&format!("call CUA {name}"), &result)?;
+        serde_json::from_str(&result.raw_json).map_err(|error| {
+            ComputerUseError::new(
+                ComputerUseErrorCode::BackendUnavailable,
+                format!("CUA {name} returned invalid JSON: {error}"),
+            )
+        })
     }
 
     pub async fn stop(&mut self) -> ComputerUseResult<Value> {
@@ -821,6 +960,83 @@ fn validate_launch_request(request: &ComputerUseLaunchRequest) -> ComputerUseRes
     Ok(())
 }
 
+fn validate_clipboard_write_request(
+    request: &ComputerUseClipboardWriteRequest,
+) -> ComputerUseResult<()> {
+    let values = [
+        request.text.is_some(),
+        request.image_path.is_some(),
+        request.file_path.is_some(),
+    ];
+    if values.into_iter().filter(|present| *present).count() != 1 {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::InvalidAction,
+            "clipboard_write requires exactly one of text, image_path, or file_path",
+        ));
+    }
+    if request
+        .text
+        .as_deref()
+        .is_some_and(|text| text.encode_utf16().count() > MAX_TEXT_UTF16_UNITS)
+    {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::InvalidAction,
+            "clipboard text exceeds the Core UTF-16 limit",
+        ));
+    }
+    for path in [request.image_path.as_deref(), request.file_path.as_deref()]
+        .into_iter()
+        .flatten()
+    {
+        validate_local_file_path(path)?;
+    }
+    Ok(())
+}
+
+fn validate_local_file_path(path: &str) -> ComputerUseResult<()> {
+    let candidate = std::path::Path::new(path);
+    if path.is_empty()
+        || path.chars().count() > MAX_LOCAL_PATH_CHARS
+        || path.contains('\0')
+        || !candidate.is_absolute()
+    {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::InvalidAction,
+            "clipboard file paths must be absolute and bounded",
+        ));
+    }
+    let metadata = std::fs::symlink_metadata(candidate).map_err(|error| {
+        ComputerUseError::new(
+            ComputerUseErrorCode::InvalidAction,
+            format!("clipboard file path is unavailable: {error}"),
+        )
+    })?;
+    if metadata.file_type().is_symlink() || !metadata.file_type().is_file() {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::InvalidAction,
+            "clipboard file paths must name regular files directly",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_recording_start_request(
+    request: &ComputerUseRecordingStartRequest,
+) -> ComputerUseResult<()> {
+    let path = request.output_dir.trim();
+    if path.is_empty()
+        || path.chars().count() > MAX_LOCAL_PATH_CHARS
+        || path.contains('\0')
+        || (!std::path::Path::new(path).is_absolute() && !path.starts_with("~/"))
+    {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::InvalidAction,
+            "recording output_dir must be an absolute path or ~/ path",
+        ));
+    }
+    Ok(())
+}
+
 fn validate_action(action: &ComputerUseAction) -> ComputerUseResult<()> {
     const ACTIONS: [&str; 12] = [
         "click",
@@ -1008,6 +1224,10 @@ fn ensure_tool_ok(context: &str, result: &cua_driver_sdk::ToolResult) -> Compute
             ComputerUseErrorCode::UserInterrupted
         } else if code.contains("browser") || message.to_ascii_lowercase().contains("browser_") {
             ComputerUseErrorCode::BrowserRefused
+        } else if code.contains("clipboard") || message.to_ascii_lowercase().contains("clipboard") {
+            ComputerUseErrorCode::ClipboardRefused
+        } else if code.contains("record") || message.to_ascii_lowercase().contains("recording") {
+            ComputerUseErrorCode::RecordingRefused
         } else if code.contains("window") || code.contains("target") {
             ComputerUseErrorCode::InvalidTarget
         } else {
@@ -1028,6 +1248,10 @@ fn map_driver_error(context: &str, error: impl std::fmt::Display) -> ComputerUse
         ComputerUseErrorCode::UserInterrupted
     } else if lower.contains("browser_") {
         ComputerUseErrorCode::BrowserRefused
+    } else if lower.contains("clipboard") {
+        ComputerUseErrorCode::ClipboardRefused
+    } else if lower.contains("recording") || lower.contains("record_") {
+        ComputerUseErrorCode::RecordingRefused
     } else if lower.contains("window") || lower.contains("target") {
         ComputerUseErrorCode::InvalidTarget
     } else {
@@ -1171,5 +1395,34 @@ mod tests {
         })
         .expect("launch request should serialize");
         assert!(json.get("bundle_id").is_none());
+    }
+
+    #[test]
+    fn clipboard_and_recording_requests_are_bounded() {
+        assert!(
+            validate_clipboard_write_request(&ComputerUseClipboardWriteRequest::default()).is_err()
+        );
+        assert!(
+            validate_clipboard_write_request(&ComputerUseClipboardWriteRequest {
+                text: Some("hello".into()),
+                image_path: Some("C:\\image.png".into()),
+                file_path: None,
+            })
+            .is_err()
+        );
+        assert!(
+            validate_recording_start_request(&ComputerUseRecordingStartRequest {
+                output_dir: "relative/output".into(),
+                record_video: false,
+            })
+            .is_err()
+        );
+        assert!(
+            validate_recording_start_request(&ComputerUseRecordingStartRequest {
+                output_dir: "~/cua-recordings".into(),
+                record_video: false,
+            })
+            .is_ok()
+        );
     }
 }

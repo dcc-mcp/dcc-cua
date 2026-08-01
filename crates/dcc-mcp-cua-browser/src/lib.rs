@@ -10,10 +10,13 @@ use dcc_mcp_cua_core::{
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
+use std::path::Path;
 
 const MAX_URL_CHARS: usize = 4_096;
 const MAX_TEXT_CHARS: usize = 4_096;
 const MAX_BROWSER_IMAGE_BYTES: usize = 64 * 1024 * 1024;
+const MAX_LOCAL_PATH_CHARS: usize = 4_096;
+const MAX_UPLOAD_FILES: usize = 32;
 
 #[derive(Debug)]
 pub struct BrowserResult {
@@ -121,6 +124,26 @@ pub struct BrowserPointerRequest {
     pub x: Option<f64>,
     #[serde(default)]
     pub y: Option<f64>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct BrowserSetInputFilesRequest {
+    pub target_id: String,
+    pub tab_id: String,
+    pub snapshot_id: String,
+    #[serde(rename = "ref")]
+    pub element_ref: String,
+    pub files: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct BrowserDownloadRequest {
+    pub target_id: String,
+    pub tab_id: String,
+    pub snapshot_id: String,
+    #[serde(rename = "ref")]
+    pub element_ref: String,
+    pub destination_root: String,
 }
 
 impl BrowserSession {
@@ -349,6 +372,53 @@ impl BrowserSession {
         Ok(result)
     }
 
+    pub async fn set_input_files(
+        &mut self,
+        native: &ComputerUseSession,
+        request: BrowserSetInputFilesRequest,
+    ) -> ComputerUseResult<BrowserResult> {
+        self.require_mutation_target(&request.target_id, &request.tab_id, &request.snapshot_id)?;
+        validate_ref(&request.element_ref, "browser_set_input_files ref")?;
+        let files = validate_upload_paths(&request.files)?;
+        let result = BrowserResult::from_value(
+            native
+                .call_browser_tool(
+                    "browser_set_input_files",
+                    json!({
+                        "target_id": request.target_id,
+                        "tab_id": request.tab_id,
+                        "ref": request.element_ref,
+                        "files": files,
+                    }),
+                )
+                .await?,
+        )?;
+        self.clear_snapshot();
+        Ok(result)
+    }
+
+    pub async fn download(
+        &mut self,
+        native: &ComputerUseSession,
+        request: BrowserDownloadRequest,
+    ) -> ComputerUseResult<BrowserResult> {
+        self.require_mutation_target(&request.target_id, &request.tab_id, &request.snapshot_id)?;
+        validate_ref(&request.element_ref, "browser_download ref")?;
+        let destination_root = validate_destination_root(&request.destination_root)?;
+        let result = BrowserResult::from_value(
+            native
+                .call_browser_download_tool(json!({
+                    "target_id": request.target_id,
+                    "tab_id": request.tab_id,
+                    "ref": request.element_ref,
+                    "destination_root": destination_root,
+                }))
+                .await?,
+        )?;
+        self.clear_snapshot();
+        Ok(result)
+    }
+
     fn store_binding(&mut self, value: &Value) -> ComputerUseResult<()> {
         let structured = structured_content(value)?;
         if let Some(refusal) = structured["refusal"].as_object() {
@@ -510,6 +580,66 @@ fn validate_route(route: Option<&str>) -> ComputerUseResult<&str> {
     Ok(route)
 }
 
+fn validate_ref(value: &str, field: &str) -> ComputerUseResult<()> {
+    if value.trim().is_empty() {
+        return Err(invalid(format!("{field} must not be empty")));
+    }
+    Ok(())
+}
+
+fn validate_upload_paths(paths: &[String]) -> ComputerUseResult<Vec<String>> {
+    if paths.is_empty() || paths.len() > MAX_UPLOAD_FILES {
+        return Err(invalid(format!(
+            "browser upload requires between 1 and {MAX_UPLOAD_FILES} files"
+        )));
+    }
+    paths
+        .iter()
+        .map(|raw| {
+            validate_local_path(raw, "upload path")?;
+            let path = Path::new(raw);
+            let metadata = std::fs::symlink_metadata(path).map_err(|_| {
+                invalid("browser upload paths must name existing regular files")
+            })?;
+            if metadata.file_type().is_symlink() || !metadata.is_file() {
+                return Err(invalid(
+                    "browser upload paths must name regular files directly, not links or directories",
+                ));
+            }
+            std::fs::canonicalize(path)
+                .map(|path| path.to_string_lossy().into_owned())
+                .map_err(|_| invalid("browser upload path could not be canonicalized"))
+        })
+        .collect()
+}
+
+fn validate_destination_root(raw: &str) -> ComputerUseResult<String> {
+    validate_local_path(raw, "browser download destination_root")?;
+    let path = Path::new(raw);
+    let metadata = std::fs::symlink_metadata(path)
+        .map_err(|_| invalid("browser download destination_root must be an existing directory"))?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(invalid(
+            "browser download destination_root must be a direct directory, not a link",
+        ));
+    }
+    std::fs::canonicalize(path)
+        .map(|path| path.to_string_lossy().into_owned())
+        .map_err(|_| invalid("browser download destination_root could not be canonicalized"))
+}
+
+fn validate_local_path(raw: &str, field: &str) -> ComputerUseResult<()> {
+    if raw.is_empty() || raw.chars().count() > MAX_LOCAL_PATH_CHARS || raw.contains('\0') {
+        return Err(invalid(format!(
+            "{field} must be a bounded absolute path without NUL bytes"
+        )));
+    }
+    if !Path::new(raw).is_absolute() {
+        return Err(invalid(format!("{field} must be absolute")));
+    }
+    Ok(())
+}
+
 fn invalid(message: impl Into<String>) -> ComputerUseError {
     ComputerUseError::new(ComputerUseErrorCode::InvalidAction, message)
 }
@@ -542,5 +672,12 @@ mod tests {
             browser_snapshot_id(&json!({"structuredContent":{"snapshot":{"id":"p2"}}})),
             Some("p2".into())
         );
+    }
+
+    #[test]
+    fn browser_file_paths_require_direct_files_and_direct_directory() {
+        assert!(validate_upload_paths(&[]).is_err());
+        assert!(validate_upload_paths(&["relative.txt".into()]).is_err());
+        assert!(validate_destination_root("relative").is_err());
     }
 }
