@@ -229,6 +229,46 @@ impl HostClient {
         self.request_inner(&method.into(), params).await
     }
 
+    /// Send a sequence of read-only requests in one flushed write and return
+    /// responses in the same order. Stateful mutations intentionally remain
+    /// single-request so a failed operation cannot hide later side effects.
+    pub async fn request_batch(
+        &mut self,
+        requests: impl IntoIterator<Item = (String, Value)>,
+    ) -> HostClientResult<Vec<HostResponse>> {
+        if !self.hello_complete {
+            return Err(HostClientError::Protocol(
+                "hello must complete before stateful requests".into(),
+            ));
+        }
+        let requests = requests.into_iter().collect::<Vec<_>>();
+        if requests
+            .iter()
+            .any(|(method, _)| !is_pipeline_safe_method(method))
+        {
+            return Err(HostClientError::Protocol(
+                "request_batch accepts read-only Host methods only".into(),
+            ));
+        }
+        let mut request_ids = Vec::with_capacity(requests.len());
+        for (method, params) in requests {
+            request_ids.push(self.send_request_unflushed(&method, params).await?);
+        }
+        if !request_ids.is_empty() {
+            self.writer.flush().await?;
+        }
+        let mut received = Vec::with_capacity(request_ids.len());
+        for request_id in request_ids {
+            let response = self.receive_response().await?;
+            ensure_request_id(&response, &request_id)?;
+            received.push(response);
+        }
+        received
+            .into_iter()
+            .map(ReceivedResponse::into_result)
+            .collect()
+    }
+
     /// Send a request while allowing the Host's same-connection cancellation
     /// route to terminate it. The cancellation parameters must contain the
     /// exact credentials required by the target request, such as `wait_for`.
@@ -287,6 +327,16 @@ impl HostClient {
     }
 
     async fn send_request(&mut self, method: &str, params: Value) -> HostClientResult<String> {
+        let request_id = self.send_request_unflushed(method, params).await?;
+        self.writer.flush().await?;
+        Ok(request_id)
+    }
+
+    async fn send_request_unflushed(
+        &mut self,
+        method: &str,
+        params: Value,
+    ) -> HostClientResult<String> {
         let request_id = format!("cua-client-{}", self.next_request_id);
         self.next_request_id = self.next_request_id.saturating_add(1);
         if request_id.chars().count() > MAX_REQUEST_ID_CHARS {
@@ -301,7 +351,7 @@ impl HostClient {
         });
         let body = serde_json::to_vec(&request)
             .map_err(|error| HostClientError::Protocol(error.to_string()))?;
-        write_frame(&mut self.writer, &body, MAX_JSON_FRAME_BYTES).await?;
+        write_frame_unflushed(&mut self.writer, &body, MAX_JSON_FRAME_BYTES).await?;
         Ok(request_id)
     }
 
@@ -339,6 +389,28 @@ impl HostClient {
             binary_attachment,
         })
     }
+}
+
+fn is_pipeline_safe_method(method: &str) -> bool {
+    matches!(
+        method,
+        "list_apps"
+            | "list_tools"
+            | "list_windows"
+            | "desktop_snapshot"
+            | "screen_size"
+            | "cursor_position"
+            | "get_window_state"
+            | "snapshot"
+            | "accessibility_snapshot"
+            | "verify_state"
+            | "get_session_state"
+            | "find"
+            | "browser_snapshot"
+            | "recording_state"
+            | "clipboard_read"
+            | "desktop_session_snapshot"
+    )
 }
 
 fn ensure_request_id(response: &ReceivedResponse, expected: &str) -> HostClientResult<()> {
@@ -393,7 +465,18 @@ async fn read_frame<R: AsyncRead + Unpin>(
     Ok(Some(body))
 }
 
+#[cfg(test)]
 async fn write_frame<W: AsyncWrite + Unpin>(
+    writer: &mut W,
+    body: &[u8],
+    max: usize,
+) -> HostClientResult<()> {
+    write_frame_unflushed(writer, body, max).await?;
+    writer.flush().await?;
+    Ok(())
+}
+
+async fn write_frame_unflushed<W: AsyncWrite + Unpin>(
     writer: &mut W,
     body: &[u8],
     max: usize,
@@ -405,7 +488,6 @@ async fn write_frame<W: AsyncWrite + Unpin>(
     }
     writer.write_all(&(body.len() as u32).to_be_bytes()).await?;
     writer.write_all(body).await?;
-    writer.flush().await?;
     Ok(())
 }
 
@@ -472,6 +554,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn client_pipelines_read_only_requests_in_order() {
+        let (client_stream, server_stream) = tokio::io::duplex(4096);
+        let server = tokio::spawn(fake_batch_server(server_stream));
+        let mut client = HostClient::from_stream(client_stream);
+        client.hello("batch-client").await.unwrap();
+
+        let responses = client
+            .request_batch(vec![
+                ("screen_size".into(), json!({})),
+                ("cursor_position".into(), json!({})),
+            ])
+            .await
+            .unwrap();
+
+        assert_eq!(responses.len(), 2);
+        assert_eq!(responses[0].value["type"], "screen_size");
+        assert_eq!(responses[1].value["type"], "cursor_position");
+        server.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn client_rejects_mutations_from_request_batch() {
+        let (client_stream, server_stream) = tokio::io::duplex(4096);
+        let server = tokio::spawn(fake_hello_only_server(server_stream));
+        let mut client =
+            HostClient::from_stream_with_transport(client_stream, SnapshotTransport::SharedMemory);
+        client.hello("batch-client").await.unwrap();
+
+        assert!(matches!(
+            client
+                .request_batch(vec![("execute_action".into(), json!({}))])
+                .await,
+            Err(HostClientError::Protocol(message))
+                if message.contains("read-only")
+        ));
+        server.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
     async fn client_can_cancel_wait_on_the_same_connection() {
         let (client_stream, server_stream) = tokio::io::duplex(4096);
         let server = tokio::spawn(fake_cancel_server(server_stream));
@@ -532,6 +653,46 @@ mod tests {
             &mut stream,
             hello["request_id"].as_str().unwrap(),
             json!({"type":"hello","snapshot_transport":"shared_memory"}),
+        )
+        .await
+    }
+
+    async fn fake_batch_server(mut stream: DuplexStream) -> HostClientResult<()> {
+        let hello = read_frame(&mut stream, MAX_JSON_FRAME_BYTES)
+            .await?
+            .unwrap();
+        let hello: Value = serde_json::from_slice(&hello).unwrap();
+        write_json_response(
+            &mut stream,
+            hello["request_id"].as_str().unwrap(),
+            json!({"type":"hello"}),
+        )
+        .await?;
+
+        let first: Value = serde_json::from_slice(
+            &read_frame(&mut stream, MAX_JSON_FRAME_BYTES)
+                .await?
+                .unwrap(),
+        )
+        .unwrap();
+        let second: Value = serde_json::from_slice(
+            &read_frame(&mut stream, MAX_JSON_FRAME_BYTES)
+                .await?
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(first["method"], "screen_size");
+        assert_eq!(second["method"], "cursor_position");
+        write_json_response(
+            &mut stream,
+            first["request_id"].as_str().unwrap(),
+            json!({"type":"screen_size"}),
+        )
+        .await?;
+        write_json_response(
+            &mut stream,
+            second["request_id"].as_str().unwrap(),
+            json!({"type":"cursor_position"}),
         )
         .await
     }

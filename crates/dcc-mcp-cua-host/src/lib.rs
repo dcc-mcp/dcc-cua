@@ -91,6 +91,7 @@ pub const HOST_CAPABILITIES: &[&str] = &[
     "browser_dialog",
     "request_correlation",
     "request_cancellation",
+    "pipelined_read_requests",
 ];
 
 /// Local transport selected by the CLI or embedding host.

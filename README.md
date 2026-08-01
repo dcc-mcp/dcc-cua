@@ -91,6 +91,11 @@ Long waits can use `HostClient::request_with_cancel`; it sends `cancel` on the
 same connection and consumes both the cancellation acknowledgement and the
 wait terminal response.
 
+Read-only discovery and observation calls can use `HostClient::request_batch`
+to write several requests before one flush; responses are returned in request
+order. Mutating methods stay on `request` so side effects remain explicit.
+The handshake advertises this as `pipelined_read_requests`.
+
 For large or frequent images, use `connect_default_with_transport(...,
 SnapshotTransport::SharedMemory)` and open the returned descriptor with
 `dcc_mcp_cua_shm::SharedImageReader`; window/desktop snapshots and browser
