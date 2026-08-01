@@ -2179,6 +2179,13 @@ fn map_driver_error(context: &str, error: impl std::fmt::Display) -> ComputerUse
         ComputerUseErrorCode::ClipboardRefused
     } else if lower.contains("recording") || lower.contains("record_") {
         ComputerUseErrorCode::RecordingRefused
+    } else if lower.contains("uia")
+        || lower.contains("provider")
+        || lower.contains("timed out")
+        || lower.contains("timeout")
+        || lower.contains("invalid handle")
+    {
+        ComputerUseErrorCode::BackendUnavailable
     } else if lower.contains("window") || lower.contains("target") {
         ComputerUseErrorCode::InvalidTarget
     } else {
@@ -2238,6 +2245,15 @@ mod tests {
             )
             .is_ok()
         );
+    }
+
+    #[test]
+    fn native_provider_timeout_is_backend_unavailable() {
+        let error = map_driver_error(
+            "capture CUA window state",
+            "InputFailed: get_window_state timed out (UIA provider unresponsive)",
+        );
+        assert_eq!(error.code, ComputerUseErrorCode::BackendUnavailable);
     }
 
     #[test]
