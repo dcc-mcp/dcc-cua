@@ -39,6 +39,7 @@ cargo run -p dcc-mcp-cua-cli -- list --app chrome.exe --on-screen
 cargo run -p dcc-mcp-cua-cli -- apps
 cargo run -p dcc-mcp-cua-cli -- tools
 cargo run -p dcc-mcp-cua-cli -- call --tool check_permissions --json '{}'
+cargo run -p dcc-mcp-cua-cli -- call --tool set_config --json-file payload.json
 cargo run -p dcc-mcp-cua-cli -- desktop-snapshot --output desktop.png
 cargo run -p dcc-mcp-cua-cli -- screen-size
 cargo run -p dcc-mcp-cua-cli -- cursor-position
@@ -87,7 +88,7 @@ handshake advertises the exact capabilities of this build.
 
 The supported request surface is `hello`, `list_apps`, `list_tools`, `list_windows`, `launch_app`, `open_session`,
 `get_window_state`, `change_window_state` (`restore`, `show`, `activate`), `snapshot`,
-`accessibility_snapshot`, `verify_state`, `call_tool`, `find`, `wait_for`, `browser_snapshot`,
+`accessibility_snapshot`, `verify_state`, `call_tool`, `call_global_tool`, `find`, `wait_for`, `browser_snapshot`,
 `browser_prepare`, `browser_navigate`, `browser_click`, `browser_type`, `browser_pointer`,
 `browser_set_input_files`, `browser_download`, `browser_dialog`,
 `clipboard_read`, `clipboard_write`, `recording_start`, `recording_stop`,
@@ -142,12 +143,20 @@ reserved arguments. Click, keyboard, browser, clipboard, recording, and
 session-lifecycle tools stay on their dedicated grant-gated routes so the
 extension surface cannot bypass observation or approval fences.
 
+The CLI `call` command accepts either `--json JSON` or `--json-file PATH`;
+`--json-file -` reads UTF-8 JSON from stdin, keeping large payloads off the
+process command line. Host clients use `call_global_tool` for the grant-gated
+global CUA tools `check_permissions`, `health_report`, `get_config`,
+`set_config`, `replay_trajectory`, and `install_ffmpeg`; window tools continue
+through `call_tool` with an exact session capability.
+
 Example host requests:
 
 ```json
 {"method":"list_apps","params":{}}
 {"method":"launch_app","params":{"grant":{"task_grant_id":"task-1","dcc_type":"unreal","allow_app_launch":true},"launch":{"name":"Calculator"}}}
 {"method":"call_tool","params":{"session_id":"session-1","task_grant_id":"task-1","window_capability":"cua-window-...","tool":"debug_window_info","arguments":{}}}
+{"method":"call_global_tool","params":{"grant":{"task_grant_id":"task-1","dcc_type":"desktop","allow_native_tool":true},"tool":"health_report","arguments":{}}}
 ```
 
 ## Build and test

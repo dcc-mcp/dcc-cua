@@ -1,5 +1,6 @@
 use std::env;
 use std::fs;
+use std::io::Read;
 
 use dcc_mcp_cua_core::{
     ComputerUseAction, ComputerUseClipboardWriteRequest, ComputerUseDriver,
@@ -91,9 +92,7 @@ async fn call_tool(
     flags: &[String],
 ) -> Result<(), Box<dyn std::error::Error>> {
     let name = flag_value(flags, "--tool").ok_or("call requires --tool NAME")?;
-    let arguments = serde_json::from_str::<serde_json::Value>(
-        &flag_value(flags, "--json").unwrap_or_else(|| "{}".into()),
-    )?;
+    let arguments = json_arguments(flags)?;
     let output = flag_value(flags, "--output");
     let has_target = ["--app", "--pid", "--window-id", "--title"]
         .into_iter()
@@ -122,6 +121,24 @@ async fn call_tool(
     }
     println!("{}", serde_json::to_string_pretty(&value)?);
     Ok(())
+}
+
+fn json_arguments(flags: &[String]) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    let inline = flag_value(flags, "--json");
+    let file = flag_value(flags, "--json-file");
+    if inline.is_some() && file.is_some() {
+        return Err("use --json or --json-file, not both".into());
+    }
+    let source = match file.as_deref() {
+        Some("-") => {
+            let mut source = String::new();
+            std::io::stdin().read_to_string(&mut source)?;
+            source
+        }
+        Some(path) => fs::read_to_string(path)?,
+        None => inline.unwrap_or_else(|| "{}".into()),
+    };
+    Ok(serde_json::from_str(&source)?)
 }
 
 async fn desktop_snapshot(
@@ -445,6 +462,6 @@ fn has_flag(flags: &[String], name: &str) -> bool {
 
 fn print_help() {
     println!(
-        "dcc-mcp-cua\n\n  list [--app APP]\n  apps\n  tools\n  call --tool NAME [--json JSON] [--app APP|--pid PID --window-id ID] [--output FILE]\n  desktop-snapshot [--output FILE]\n  screen-size\n  cursor-position\n  launch --name NAME|--bundle-id ID|--aumid ID|--path PATH|--launch-path PATH [--url URL] [--arg ARG] [--new-instance] [--start-minimized]\n  terminate --app APP --confirm\n  snapshot --app APP [--output FILE]\n  act --app APP --action-json JSON\n  verify --app APP --expect-json JSON [--timeout-ms N] [--stable-samples N]\n  desktop-act --action-json JSON [--session ID]\n  clipboard-read --app APP [--include-text]\n  clipboard-write --app APP --text TEXT|--image-path FILE|--file-path FILE\n  doctor\n  host [--stdio|--endpoint PATH]\n\nHost uses versioned big-endian JSON frames. Hello version 1 negotiates binary-frame or shared-memory snapshots and supports request_id correlation."
+        "dcc-mcp-cua\n\n  list [--app APP]\n  apps\n  tools\n  call --tool NAME [--json JSON|--json-file PATH] [--app APP|--pid PID --window-id ID] [--output FILE]\n  desktop-snapshot [--output FILE]\n  screen-size\n  cursor-position\n  launch --name NAME|--bundle-id ID|--aumid ID|--path PATH|--launch-path PATH [--url URL] [--arg ARG] [--new-instance] [--start-minimized]\n  terminate --app APP --confirm\n  snapshot --app APP [--output FILE]\n  act --app APP --action-json JSON\n  verify --app APP --expect-json JSON [--timeout-ms N] [--stable-samples N]\n  desktop-act --action-json JSON [--session ID]\n  clipboard-read --app APP [--include-text]\n  clipboard-write --app APP --text TEXT|--image-path FILE|--file-path FILE\n  doctor\n  host [--stdio|--endpoint PATH]\n\nHost uses versioned big-endian JSON frames. Hello version 1 negotiates binary-frame or shared-memory snapshots and supports request_id correlation."
     );
 }

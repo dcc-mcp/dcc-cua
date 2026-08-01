@@ -299,6 +299,34 @@ impl ComputerUseDriver {
         arguments: Value,
     ) -> ComputerUseResult<ComputerUseToolResult> {
         validate_native_tool_request(name, &arguments)?;
+        self.call_unscoped_tool(name, arguments).await
+    }
+
+    /// Call a CUA tool that is not bound to an exact native window.
+    ///
+    /// Host IPC callers must use the grant-gated global route. Dedicated
+    /// application, input, browser, recording, and lifecycle routes stay out
+    /// of this escape hatch.
+    pub async fn call_global_tool(
+        &self,
+        name: &str,
+        arguments: Value,
+    ) -> ComputerUseResult<ComputerUseToolResult> {
+        validate_native_tool_request(name, &arguments)?;
+        if !native_tool_allowed_globally(name) {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::InvalidAction,
+                format!("CUA tool {name:?} must use its dedicated or window-bound route"),
+            ));
+        }
+        self.call_unscoped_tool(name, arguments).await
+    }
+
+    async fn call_unscoped_tool(
+        &self,
+        name: &str,
+        arguments: Value,
+    ) -> ComputerUseResult<ComputerUseToolResult> {
         let schema = self.tool_schema(name).await?;
         if schema["properties"].get("pid").is_some()
             || schema["properties"].get("window_id").is_some()
@@ -882,6 +910,15 @@ impl ComputerUseSession {
         }
         if properties.contains_key("session") {
             object.insert("session".into(), json!(self.session_id));
+        }
+        if !properties.contains_key("pid")
+            && !properties.contains_key("window_id")
+            && !properties.contains_key("session")
+        {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::InvalidTarget,
+                format!("CUA tool {name:?} is not bindable to an exact window session"),
+            ));
         }
         let result = self
             .driver
@@ -1586,8 +1623,20 @@ fn validate_native_tool_request(name: &str, arguments: &Value) -> ComputerUseRes
     Ok(())
 }
 
+fn native_tool_allowed_globally(name: &str) -> bool {
+    matches!(
+        name,
+        "check_permissions"
+            | "health_report"
+            | "get_config"
+            | "set_config"
+            | "replay_trajectory"
+            | "install_ffmpeg"
+    )
+}
+
 fn native_tool_allowed_in_window_session(name: &str) -> bool {
-    const DEDICATED_TOOLS: [&str; 30] = [
+    const DEDICATED_TOOLS: [&str; 31] = [
         "get_window_state",
         "verify_state",
         "click",
@@ -1602,6 +1651,7 @@ fn native_tool_allowed_in_window_session(name: &str) -> bool {
         "clipboard_read",
         "clipboard_write",
         "get_desktop_state",
+        "get_accessibility_tree",
         "move_cursor",
         "set_agent_cursor_enabled",
         "set_agent_cursor_motion",
@@ -2060,6 +2110,8 @@ mod tests {
         assert!(!native_tool_allowed_in_window_session("click"));
         assert!(!native_tool_allowed_in_window_session("browser_navigate"));
         assert!(native_tool_allowed_in_window_session("debug_window_info"));
+        assert!(native_tool_allowed_globally("health_report"));
+        assert!(!native_tool_allowed_globally("launch_app"));
     }
 
     #[test]

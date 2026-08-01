@@ -63,6 +63,7 @@ pub const HOST_CAPABILITIES: &[&str] = &[
     "window_inventory",
     "tool_inventory",
     "authorized_native_tool_calls",
+    "authorized_global_native_tool_calls",
     "desktop_snapshot",
     "screen_size",
     "cursor_position",
@@ -258,6 +259,11 @@ enum Request {
         session_id: String,
         task_grant_id: String,
         window_capability: String,
+        tool: String,
+        arguments: Value,
+    },
+    CallGlobalTool {
+        grant: TaskGrant,
         tool: String,
         arguments: Value,
     },
@@ -1440,7 +1446,23 @@ async fn handle_request(
                 ));
             }
             let result = host.session.call_tool(&tool, arguments).await?;
-            Ok(native_tool_response(&session_id, &tool, result))
+            Ok(native_tool_response(Some(&session_id), &tool, result))
+        }
+        Request::CallGlobalTool {
+            grant,
+            tool,
+            arguments,
+        } => {
+            if grant.task_grant_id.trim().is_empty() || grant.dcc_type.trim().is_empty() {
+                return Err(HostError::Protocol("task grant is incomplete".into()));
+            }
+            if !grant.allow_native_tool {
+                return Err(HostError::Protocol(
+                    "global native CUA tool calls are not granted".into(),
+                ));
+            }
+            let result = driver.call_global_tool(&tool, arguments).await?;
+            Ok(native_tool_response(None, &tool, result))
         }
         Request::BrowserSnapshot {
             session_id,
@@ -1904,7 +1926,7 @@ fn authorized_desktop_session<'a>(
 }
 
 fn native_tool_response(
-    session_id: &str,
+    session_id: Option<&str>,
     tool: &str,
     result: ComputerUseToolResult,
 ) -> (Value, Option<Vec<u8>>) {
@@ -1930,6 +1952,9 @@ fn native_tool_response(
         "text": result.text,
         "degraded": result.degraded,
     });
+    if let Some(session_id) = session_id {
+        response["session_id"] = Value::String(session_id.to_owned());
+    }
     let attachment = image.map(|image| {
         response["image"] = json!({
             "encoding": "binary_frame",
@@ -1989,6 +2014,9 @@ fn error_code(error: &HostError) -> &'static str {
             "clipboard_write_not_granted"
         }
         HostError::Protocol(message) if message.contains("recording") => "recording_not_granted",
+        HostError::Protocol(message) if message.contains("native CUA tool calls") => {
+            "native_tool_not_granted"
+        }
         HostError::Protocol(message) if message.contains("already running") => {
             "request_in_progress"
         }
@@ -2390,6 +2418,21 @@ mod tests {
         ));
         assert!(matches!(
             serde_json::from_value::<Request>(json!({
+                "method": "call_global_tool",
+                "params": {
+                    "grant": {
+                        "task_grant_id": "task-1",
+                        "dcc_type": "desktop",
+                        "allow_native_tool": true
+                    },
+                    "tool": "health_report",
+                    "arguments": {}
+                }
+            })),
+            Ok(Request::CallGlobalTool { .. })
+        ));
+        assert!(matches!(
+            serde_json::from_value::<Request>(json!({
                 "method": "screen_size",
                 "params": {}
             })),
@@ -2611,7 +2654,7 @@ mod tests {
     #[test]
     fn native_tool_response_moves_image_pixels_to_binary_attachment() {
         let (response, attachment) = native_tool_response(
-            "session-1",
+            Some("session-1"),
             "debug_window_info",
             ComputerUseToolResult {
                 value: json!({
