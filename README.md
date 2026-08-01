@@ -185,7 +185,8 @@ extension surface cannot bypass observation or approval fences.
 
 The CLI `call` and `host-call` commands accept either `--json JSON` or
 `--json-file PATH`; `host-call` reuses the persistent Host endpoint instead of
-creating a new CUA driver for each request.
+creating a new CUA driver for each request. `host-call --output FILE` consumes
+both binary-frame images and negotiated shared-memory image descriptors.
 `--json-file -` reads UTF-8 JSON from stdin, keeping large payloads off the
 process command line. Host clients use `call_global_tool` for the grant-gated
 global CUA tools `check_permissions`, `health_report`, `get_config`,

@@ -854,6 +854,7 @@ dependencies = [
  "dcc-mcp-cua-client",
  "dcc-mcp-cua-core",
  "dcc-mcp-cua-host",
+ "dcc-mcp-cua-shm",
  "serde_json",
  "tokio",
 ]

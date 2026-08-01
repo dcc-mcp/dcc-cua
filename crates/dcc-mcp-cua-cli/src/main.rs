@@ -8,6 +8,7 @@ use dcc_mcp_cua_core::{
     ComputerUseLaunchRequest, ComputerUseTargetScope,
 };
 use dcc_mcp_cua_host::{HostTransport, run as run_host};
+use dcc_mcp_cua_shm::{SharedImageDescriptor, SharedImageReader};
 use serde_json::json;
 
 #[tokio::main]
@@ -149,10 +150,20 @@ async fn host_call(flags: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let response = client.request(method, params).await?;
     let output = flag_value(flags, "--output");
     if let Some(path) = output.as_deref() {
-        let image = response
-            .binary_attachment
-            .as_deref()
-            .ok_or("--output requires a binary image attachment")?;
+        let image = if let Some(image) = response.binary_attachment.as_deref() {
+            image.to_vec()
+        } else if snapshot_transport == SnapshotTransport::SharedMemory {
+            let descriptor: SharedImageDescriptor = serde_json::from_value(
+                response
+                    .value
+                    .get("image")
+                    .cloned()
+                    .ok_or("--output requires an image response")?,
+            )?;
+            SharedImageReader::open(descriptor)?.read()?
+        } else {
+            return Err("--output requires a binary image attachment".into());
+        };
         fs::write(path, image)?;
     }
     let mut value = response.value;
