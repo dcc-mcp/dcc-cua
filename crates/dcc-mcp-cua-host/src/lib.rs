@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use std::os::unix::fs::FileTypeExt;
 #[cfg(unix)]
 use std::path::Path;
+use std::time::Instant;
 
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -17,7 +18,7 @@ use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use uuid::Uuid;
 
-use crate::{
+use dcc_mcp_cua_core::{
     ComputerUseAction, ComputerUseDriver, ComputerUseError, ComputerUseErrorCode, ComputerUsePoint,
     ComputerUseResult, ComputerUseSession, ComputerUseTargetScope,
 };
@@ -35,7 +36,10 @@ pub const HOST_CAPABILITIES: &[&str] = &[
     "observation_fencing",
     "scoped_raw_input",
     "accessibility_snapshot",
+    "accessibility_find",
     "uia_snapshot_and_actions",
+    "semantic_value_actions",
+    "bounded_wait_for",
     "binary_snapshot_frames",
     "cua_cursor_marker",
     "cross_platform_window_control",
@@ -81,7 +85,7 @@ enum Request {
     ListApps {},
     LaunchApp {
         grant: TaskGrant,
-        launch: crate::ComputerUseLaunchRequest,
+        launch: dcc_mcp_cua_core::ComputerUseLaunchRequest,
     },
     OpenSession {
         session_id: String,
@@ -118,6 +122,18 @@ enum Request {
         max_depth: u32,
         #[allow(dead_code)]
         max_nodes: u32,
+    },
+    Find {
+        session_id: String,
+        task_grant_id: String,
+        window_capability: String,
+        query: FindQuery,
+    },
+    WaitFor {
+        session_id: String,
+        task_grant_id: String,
+        window_capability: String,
+        condition: WaitCondition,
     },
     ExecuteAction {
         session_id: String,
@@ -196,6 +212,76 @@ struct HostAction {
     duration_ms: Option<u64>,
 }
 
+#[derive(Debug, Deserialize)]
+struct WaitCondition {
+    kind: String,
+    #[serde(default)]
+    element_index: Option<u32>,
+    #[serde(default)]
+    text: Option<String>,
+    #[serde(default)]
+    value: Option<String>,
+    #[serde(default)]
+    timeout_ms: Option<u64>,
+    #[serde(default)]
+    interval_ms: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct FindQuery {
+    #[serde(default)]
+    text: Option<String>,
+    #[serde(default)]
+    role: Option<String>,
+    #[serde(default)]
+    element_index: Option<u32>,
+    #[serde(default)]
+    max_results: Option<u32>,
+}
+
+impl FindQuery {
+    fn validate(&self) -> Result<usize, HostError> {
+        const MAX_RESULTS: u32 = 50;
+        if self.text.as_deref().is_none_or(str::is_empty)
+            && self.role.as_deref().is_none_or(str::is_empty)
+            && self.element_index.is_none()
+        {
+            return Err(HostError::Protocol(
+                "find requires text, role, or element_index".into(),
+            ));
+        }
+        Ok(self.max_results.unwrap_or(10).clamp(1, MAX_RESULTS) as usize)
+    }
+}
+
+impl WaitCondition {
+    fn validate(&self) -> Result<(u64, u64), HostError> {
+        const MAX_TIMEOUT_MS: u64 = 30_000;
+        const MAX_INTERVAL_MS: u64 = 1_000;
+        if !matches!(
+            self.kind.as_str(),
+            "element_present" | "text_contains" | "text_equals" | "value_equals"
+        ) {
+            return Err(HostError::Protocol(
+                "wait condition kind is unsupported".into(),
+            ));
+        }
+        if matches!(self.kind.as_str(), "text_contains" | "text_equals") && self.text.is_none() {
+            return Err(HostError::Protocol(
+                "text wait conditions require text".into(),
+            ));
+        }
+        if self.kind == "value_equals" && self.value.is_none() {
+            return Err(HostError::Protocol(
+                "value_equals wait conditions require value".into(),
+            ));
+        }
+        let timeout_ms = self.timeout_ms.unwrap_or(5_000).min(MAX_TIMEOUT_MS);
+        let interval_ms = self.interval_ms.unwrap_or(100).clamp(10, MAX_INTERVAL_MS);
+        Ok((timeout_ms, interval_ms))
+    }
+}
+
 impl HostAction {
     fn reject_policy(&self) -> Option<(&'static str, &'static str)> {
         const HARD_DENY: [&str; 6] = [
@@ -266,6 +352,7 @@ struct HostSession {
     session: ComputerUseSession,
     latest_observation_id: Option<String>,
     latest_accessibility_state_id: Option<String>,
+    latest_accessibility_root: Option<Value>,
 }
 
 /// Run one long-lived host connection over stdio or the platform local endpoint.
@@ -411,6 +498,7 @@ async fn handle_request(
                     session,
                     latest_observation_id: None,
                     latest_accessibility_state_id: None,
+                    latest_accessibility_root: None,
                 },
             );
             Ok((
@@ -475,6 +563,7 @@ async fn handle_request(
             host.latest_observation_id = Some(observation_id.clone());
             host.latest_accessibility_state_id = Some(observation_id.clone());
             let accessibility = screenshot.accessibility;
+            host.latest_accessibility_root = Some(accessibility.clone());
             let node_count = accessibility["elements"].as_array().map_or(0, Vec::len);
             let target = json!({
                 "process_id": screenshot.observation.process_id,
@@ -514,6 +603,7 @@ async fn handle_request(
                 .await?;
             let state_id = format!("{}-accessibility-{}", session_id, Uuid::new_v4());
             host.latest_accessibility_state_id = Some(state_id.clone());
+            host.latest_accessibility_root = Some(root.clone());
             let target = host
                 .session
                 .target()
@@ -528,6 +618,83 @@ async fn handle_request(
                 }),
                 None,
             ))
+        }
+        Request::Find {
+            session_id,
+            task_grant_id,
+            window_capability,
+            query,
+        } => {
+            let max_results = query.validate()?;
+            let host =
+                authorized_session(sessions, &session_id, &task_grant_id, &window_capability)?;
+            let root = host.latest_accessibility_root.clone().ok_or_else(|| {
+                HostError::ComputerUse(ComputerUseError::new(
+                    ComputerUseErrorCode::StaleObservation,
+                    "take a snapshot before finding accessibility elements",
+                ))
+            })?;
+            let state_id = host.latest_accessibility_state_id.clone().ok_or_else(|| {
+                HostError::ComputerUse(ComputerUseError::new(
+                    ComputerUseErrorCode::StaleObservation,
+                    "accessibility state is unavailable; take a snapshot first",
+                ))
+            })?;
+            let matches = find_elements(&root, &query, max_results);
+            let target = host
+                .session
+                .target()
+                .ok_or_else(|| HostError::Protocol("CUA did not return a target".into()))?;
+            Ok((
+                json!({
+                    "type":"find_results",
+                    "accessibility_state_id":state_id,
+                    "target":target_wire(&target),
+                    "matches":matches,
+                    "node_count":root["elements"].as_array().map_or(0, Vec::len),
+                }),
+                None,
+            ))
+        }
+        Request::WaitFor {
+            session_id,
+            task_grant_id,
+            window_capability,
+            condition,
+        } => {
+            let (timeout_ms, interval_ms) = condition.validate()?;
+            let host =
+                authorized_session(sessions, &session_id, &task_grant_id, &window_capability)?;
+            let started = Instant::now();
+            loop {
+                let root = host.session.accessibility_snapshot(5_000, 25).await?;
+                if wait_condition_matches(&root, &condition) {
+                    return Ok((
+                        json!({
+                            "type":"wait_completed",
+                            "success":true,
+                            "session_id":session_id,
+                            "condition":condition.kind,
+                            "elapsed_ms":started.elapsed().as_millis(),
+                        }),
+                        None,
+                    ));
+                }
+                if started.elapsed().as_millis() >= u128::from(timeout_ms) {
+                    return Ok((
+                        json!({
+                            "type":"wait_completed",
+                            "success":false,
+                            "session_id":session_id,
+                            "condition":condition.kind,
+                            "error_code":"timeout",
+                            "elapsed_ms":started.elapsed().as_millis(),
+                        }),
+                        None,
+                    ));
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(interval_ms)).await;
+            }
         }
         Request::ExecuteAction {
             session_id,
@@ -585,6 +752,7 @@ async fn handle_request(
             let result = host.session.perform_action(&action).await?;
             host.latest_observation_id = None;
             host.latest_accessibility_state_id = None;
+            host.latest_accessibility_root = None;
             Ok((
                 json!({
                     "type":"action_completed",
@@ -622,6 +790,72 @@ async fn handle_request(
             ))
         }
     }
+}
+
+fn find_elements(root: &Value, query: &FindQuery, max_results: usize) -> Vec<Value> {
+    root["elements"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|element| {
+            let index_matches = query.element_index.is_none_or(|expected| {
+                element["element_index"]
+                    .as_u64()
+                    .or_else(|| element["index"].as_u64())
+                    == Some(u64::from(expected))
+            });
+            let role_matches = query.role.as_deref().is_none_or(|expected| {
+                element["role"]
+                    .as_str()
+                    .is_some_and(|actual| actual.eq_ignore_ascii_case(expected))
+            });
+            let text_matches = query.text.as_deref().is_none_or(|expected| {
+                let expected = expected.to_ascii_lowercase();
+                ["name", "label", "title", "text", "value"]
+                    .iter()
+                    .filter_map(|field| element[*field].as_str())
+                    .any(|actual| actual.to_ascii_lowercase().contains(&expected))
+            });
+            index_matches && role_matches && text_matches
+        })
+        .take(max_results)
+        .cloned()
+        .collect()
+}
+
+fn wait_condition_matches(root: &Value, condition: &WaitCondition) -> bool {
+    root["elements"].as_array().is_some_and(|elements| {
+        elements.iter().any(|element| {
+            if let Some(index) = condition.element_index {
+                let actual = element["element_index"]
+                    .as_u64()
+                    .or_else(|| element["index"].as_u64());
+                if actual != Some(u64::from(index)) {
+                    return false;
+                }
+            }
+            match condition.kind.as_str() {
+                "element_present" => true,
+                "text_contains" => condition.text.as_deref().is_some_and(|expected| {
+                    ["name", "label", "title", "text", "value"]
+                        .iter()
+                        .filter_map(|field| element[*field].as_str())
+                        .any(|actual| actual.contains(expected))
+                }),
+                "text_equals" => condition.text.as_deref().is_some_and(|expected| {
+                    ["name", "label", "title", "text"]
+                        .iter()
+                        .filter_map(|field| element[*field].as_str())
+                        .any(|actual| actual == expected)
+                }),
+                "value_equals" => condition
+                    .value
+                    .as_deref()
+                    .is_some_and(|expected| element["value"].as_str() == Some(expected)),
+                _ => false,
+            }
+        })
+    })
 }
 
 fn authorized_session<'a>(
@@ -840,5 +1074,104 @@ mod tests {
             })),
             Ok(Request::LaunchApp { .. })
         ));
+        assert!(matches!(
+            serde_json::from_value::<Request>(json!({
+                "method": "wait_for",
+                "params": {
+                    "session_id": "session-1",
+                    "task_grant_id": "task-1",
+                    "window_capability": "cap-1",
+                    "condition": {
+                        "kind": "text_contains",
+                        "element_index": 3,
+                        "text": "Ready"
+                    }
+                }
+            })),
+            Ok(Request::WaitFor { .. })
+        ));
+        assert!(matches!(
+            serde_json::from_value::<Request>(json!({
+                "method": "find",
+                "params": {
+                    "session_id": "session-1",
+                    "task_grant_id": "task-1",
+                    "window_capability": "cap-1",
+                    "query": {"text": "Ready", "max_results": 3}
+                }
+            })),
+            Ok(Request::Find { .. })
+        ));
+    }
+
+    #[test]
+    fn find_queries_filter_semantic_elements() {
+        let root = json!({
+            "elements": [
+                {"element_index": 3, "role": "Button", "name": "Ready"},
+                {"element_index": 4, "role": "Text", "name": "Ready"},
+                {"element_index": 5, "role": "Button", "name": "Cancel"}
+            ]
+        });
+        let query = FindQuery {
+            text: Some("ready".into()),
+            role: Some("button".into()),
+            element_index: None,
+            max_results: Some(10),
+        };
+        let matches = find_elements(&root, &query, query.validate().unwrap());
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0]["element_index"], 3);
+        assert!(
+            FindQuery {
+                text: None,
+                role: None,
+                element_index: None,
+                max_results: None,
+            }
+            .validate()
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn wait_conditions_match_bounded_accessibility_elements() {
+        let root = json!({
+            "elements": [
+                {"element_index": 3, "role": "text", "name": "Ready to render", "value": "idle"}
+            ]
+        });
+        let condition = WaitCondition {
+            kind: "text_contains".into(),
+            element_index: Some(3),
+            text: Some("Ready".into()),
+            value: None,
+            timeout_ms: None,
+            interval_ms: None,
+        };
+        assert!(wait_condition_matches(&root, &condition));
+        assert!(!wait_condition_matches(
+            &root,
+            &WaitCondition {
+                kind: "value_equals".into(),
+                element_index: Some(3),
+                text: None,
+                value: Some("done".into()),
+                timeout_ms: None,
+                interval_ms: None,
+            }
+        ));
+        assert!(
+            WaitCondition {
+                kind: "text_equals".into(),
+                element_index: None,
+                text: Some("Ready to render".into()),
+                value: None,
+                timeout_ms: Some(60_000),
+                interval_ms: Some(1),
+            }
+            .validate()
+            .is_ok()
+        );
     }
 }

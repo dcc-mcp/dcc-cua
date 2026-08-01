@@ -1,5 +1,12 @@
-[package]
-name = "dcc-mcp-computer-use"
+[workspace]
+members = [
+    "crates/dcc-mcp-cua-core",
+    "crates/dcc-mcp-cua-host",
+    "crates/dcc-mcp-cua-cli",
+]
+resolver = "2"
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.95"
@@ -7,17 +14,3 @@ publish = false
 authors = ["loonghao <hal.long@outlook.com>"]
 license = "MIT"
 repository = "https://github.com/dcc-mcp/dcc-mcp-computer-use"
-description = "Cross-platform CUA SDK-backed computer control host and CLI for DCC-MCP"
-
-[lib]
-name = "dcc_mcp_computer_use"
-path = "src/lib.rs"
-
-[dependencies]
-base64 = "0.22"
-cua-driver-sdk = { git = "https://github.com/trycua/cua.git", rev = "dc0af9b23ca8d866540b9ed2b4e4ad7b8b0c4ffb", package = "cua-driver-sdk" }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-thiserror = "2"
-tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread"] }
-uuid = { version = "1", features = ["v4"] }

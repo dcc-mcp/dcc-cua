@@ -14,15 +14,30 @@ task. It preserves the Core Computer Use contract:
 - a visible CUA mouse-shaped cursor and `DCC UI Control · <app> · Esc to stop`
   marker.
 
+The repository is a Cargo workspace with three responsibilities:
+
+- `dcc-mcp-cua-core`: scoped Computer Use domain, safety policy, and
+  CUA execution boundary;
+- `dcc-mcp-cua-host`: long-lived Core-compatible IPC and request
+  routing;
+- `dcc-mcp-cua-cli`: the thin CLI process that composes the two crates.
+
+Application-specific adapters stay above this workspace. A browser adapter can
+add tab/DOM/iframe/download capabilities through CDP or WebDriver while using
+this host as its visual fallback. Unreal/Fab flows belong in the Unreal or
+browser adapter and should combine typed Unreal APIs with scoped CUA; Fab
+account, purchase, and download confirmation remain explicit user-approved
+operations.
+
 ## CLI
 
 ```powershell
-cargo run -- list --app chrome.exe
-cargo run -- apps
-cargo run -- launch --name Calculator
-cargo run -- doctor
-cargo run -- snapshot --app chrome.exe --output screenshot.png
-cargo run -- act --app chrome.exe --action-json '{"action":"click","x":100,"y":100}'
+cargo run -p dcc-mcp-cua-cli -- list --app chrome.exe
+cargo run -p dcc-mcp-cua-cli -- apps
+cargo run -p dcc-mcp-cua-cli -- launch --name Calculator
+cargo run -p dcc-mcp-cua-cli -- doctor
+cargo run -p dcc-mcp-cua-cli -- snapshot --app chrome.exe --output screenshot.png
+cargo run -p dcc-mcp-cua-cli -- act --app chrome.exe --action-json '{"action":"click","x":100,"y":100}'
 ```
 
 `list` and `doctor` are read-only. `snapshot` and `act` require one exact
@@ -30,7 +45,8 @@ target; if an application has multiple windows, pass `--pid` and
 `--window-id` instead of relying on an app name.
 
 `apps` uses CUA's cross-platform application inventory. `launch` accepts one
-explicit selector (`--name`, `--bundle-id`, or `--launch-path`) and applies the
+explicit selector (`--name`, `--bundle-id`, `--aumid`, `--path`, or
+`--launch-path`), supports repeated `--url`/`--arg` values, and applies the
 same sensitive-application deny policy as the host.
 
 ## Core host IPC
@@ -38,8 +54,8 @@ same sensitive-application deny policy as the host.
 Start one persistent host process instead of spawning a process per action:
 
 ```powershell
-cargo run -- host --stdio
-cargo run -- host --endpoint '\\.\pipe\dcc-mcp-computer-use-v1'
+cargo run -p dcc-mcp-cua-cli -- host --stdio
+cargo run -p dcc-mcp-cua-cli -- host --endpoint '\\.\pipe\dcc-mcp-computer-use-v1'
 ```
 
 On Unix, the default endpoint is
@@ -51,10 +67,13 @@ under 4 MiB. The handshake advertises the exact capabilities of this build.
 
 The supported Core request surface is `hello`, `list_apps`, `launch_app`, `open_session`,
 `get_window_state`, `change_window_state` (`activate`), `snapshot`,
-`accessibility_snapshot`, `execute_action`, `resume_session`, and
+`accessibility_snapshot`, `find`, `wait_for`, `execute_action`, `resume_session`, and
 `stop_session`. Semantic actions use CUA `element_index` values from the latest
-accessibility snapshot; coordinate actions remain available for custom-drawn
-surfaces. `launch_app` requires a non-empty `task_grant_id`, `dcc_type`, and
+accessibility snapshot; `set_text`/`set_value` use CUA's native semantic value
+path, while coordinate actions remain available for custom-drawn surfaces.
+`find` filters the current accessibility tree by text, role, or element index
+and returns a fresh `accessibility_state_id`. `wait_for` is bounded to 30 seconds and supports `element_present`,
+`text_contains`, `text_equals`, and `value_equals`. `launch_app` requires a non-empty `task_grant_id`, `dcc_type`, and
 `allow_app_launch: true`; it never inherits permission from an open DCC window
 session. Shared-memory descriptors, recording, and typed system operations
 remain explicitly unsupported until their cross-platform contracts are
@@ -72,8 +91,8 @@ Example host requests:
 
 ```powershell
 cargo fmt --all -- --check
-cargo check --all-targets
-cargo test --all-targets
+cargo check --workspace --all-targets
+cargo test --workspace --all-targets
 ```
 
 The CUA SDK revision is pinned in `Cargo.toml` and `Cargo.lock`. Native desktop

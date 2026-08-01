@@ -4,8 +4,6 @@
 //! the DCC-MCP safety shell: exact target scope, fresh observations, bounded
 //! actions, stop semantics, and auditable provenance.
 
-pub mod host;
-
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -18,6 +16,8 @@ use thiserror::Error;
 const MAX_TEXT_UTF16_UNITS: usize = 4_096;
 const MAX_KEY_TOKENS: usize = 16;
 const MAX_DRAG_POINTS: usize = 256;
+const MAX_LAUNCH_ARGUMENTS: usize = 32;
+const MAX_LAUNCH_URLS: usize = 16;
 const MOUSE_CURSOR_THEME: &str = "cua.default";
 static OBSERVATION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
@@ -91,9 +91,19 @@ pub struct ComputerUseLaunchRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bundle_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aumid: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub launch_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub urls: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub additional_arguments: Vec<String>,
     #[serde(default)]
     pub creates_new_application_instance: bool,
+    #[serde(default)]
+    pub start_minimized: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -124,7 +134,7 @@ pub struct ComputerUseError {
 }
 
 impl ComputerUseError {
-    pub(crate) fn new(code: ComputerUseErrorCode, message: impl Into<String>) -> Self {
+    pub fn new(code: ComputerUseErrorCode, message: impl Into<String>) -> Self {
         Self {
             code,
             message: message.into(),
@@ -704,6 +714,8 @@ fn validate_launch_request(request: &ComputerUseLaunchRequest) -> ComputerUseRes
     let selectors = [
         request.name.as_deref(),
         request.bundle_id.as_deref(),
+        request.aumid.as_deref(),
+        request.path.as_deref(),
         request.launch_path.as_deref(),
     ];
     if selectors
@@ -744,18 +756,29 @@ fn validate_launch_request(request: &ComputerUseLaunchRequest) -> ComputerUseRes
             "system, terminal, authentication, password, and security applications are not allowed",
         ));
     }
+    if request.urls.len() > MAX_LAUNCH_URLS
+        || request.additional_arguments.len() > MAX_LAUNCH_ARGUMENTS
+    {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::InvalidAction,
+            "launch contains too many URLs or arguments",
+        ));
+    }
     Ok(())
 }
 
 fn validate_action(action: &ComputerUseAction) -> ComputerUseResult<()> {
-    const ACTIONS: [&str; 9] = [
+    const ACTIONS: [&str; 12] = [
         "click",
         "double_click",
         "right_click",
+        "toggle",
         "move",
         "scroll",
         "drag",
         "type",
+        "set_text",
+        "set_value",
         "keypress",
         "keyboard_shortcut",
     ];
@@ -796,16 +819,24 @@ fn validate_action(action: &ComputerUseAction) -> ComputerUseResult<()> {
             ));
         }
     }
+    if matches!(action.action.as_str(), "set_text" | "set_value") && action.element_index.is_none()
+    {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::InvalidAction,
+            "set_text and set_value require a semantic element_index",
+        ));
+    }
     Ok(())
 }
 
 fn action_arguments(action: &ComputerUseAction, session: &str, target: &WindowTarget) -> Value {
     let scope = json!({
         "_tool": match action.action.as_str() {
-            "click" | "double_click" | "right_click" => "click",
+            "click" | "double_click" | "right_click" | "toggle" => "click",
             "drag" => "drag",
             "scroll" => "scroll",
             "type" => "type_text",
+            "set_text" | "set_value" => "set_value",
             "keypress" => "press_key",
             "keyboard_shortcut" => "hotkey",
             "move" => "move_cursor",
@@ -825,7 +856,7 @@ fn action_arguments(action: &ComputerUseAction, session: &str, target: &WindowTa
             object.insert("x".into(), json!(action.x));
             object.insert("y".into(), json!(action.y));
         }
-        "click" | "double_click" | "right_click" => {
+        "click" | "double_click" | "right_click" | "toggle" => {
             object.insert("x".into(), json!(action.x));
             object.insert("y".into(), json!(action.y));
             object.insert(
@@ -881,6 +912,12 @@ fn action_arguments(action: &ComputerUseAction, session: &str, target: &WindowTa
         "type" => {
             object.insert(
                 "text".into(),
+                json!(action.text.as_deref().unwrap_or_default()),
+            );
+        }
+        "set_text" | "set_value" => {
+            object.insert(
+                "value".into(),
                 json!(action.text.as_deref().unwrap_or_default()),
             );
         }
@@ -1005,6 +1042,44 @@ mod tests {
         assert_eq!(args["element_index"], 7);
         assert!(args.get("x").is_none());
         assert!(args.get("y").is_none());
+    }
+
+    #[test]
+    fn semantic_value_actions_require_and_encode_element_values() {
+        let action = ComputerUseAction {
+            action: "set_text".into(),
+            element_index: Some(11),
+            text: Some("Hero".into()),
+            ..Default::default()
+        };
+        let args = action_arguments(
+            &action,
+            "session",
+            &WindowTarget {
+                pid: 42,
+                window_id: 7,
+                title: "DCC".into(),
+                app_name: "dcc".into(),
+                bounds: [0, 0, 100, 100],
+                is_on_screen: true,
+                is_minimized: false,
+                z_index: 1,
+                is_foreground: true,
+            },
+        );
+        assert_eq!(args["_tool"], "set_value");
+        assert_eq!(args["element_index"], 11);
+        assert_eq!(args["value"], "Hero");
+        assert_eq!(
+            validate_action(&ComputerUseAction {
+                action: "set_value".into(),
+                text: Some("Hero".into()),
+                ..Default::default()
+            })
+            .unwrap_err()
+            .code,
+            ComputerUseErrorCode::InvalidAction
+        );
     }
 
     #[test]

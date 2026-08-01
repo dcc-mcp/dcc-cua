@@ -1,10 +1,10 @@
 use std::env;
 use std::fs;
 
-use dcc_mcp_computer_use::{
+use dcc_mcp_cua_core::{
     ComputerUseAction, ComputerUseDriver, ComputerUseLaunchRequest, ComputerUseTargetScope,
-    host::{HostTransport, run as run_host},
 };
+use dcc_mcp_cua_host::{HostTransport, run as run_host};
 use serde_json::json;
 
 #[tokio::main]
@@ -69,8 +69,13 @@ async fn launch_app(
     let request = ComputerUseLaunchRequest {
         name: flag_value(flags, "--name"),
         bundle_id: flag_value(flags, "--bundle-id"),
+        aumid: flag_value(flags, "--aumid"),
+        path: flag_value(flags, "--path"),
         launch_path: flag_value(flags, "--launch-path"),
+        urls: flag_values(flags, "--url"),
+        additional_arguments: flag_values(flags, "--arg"),
         creates_new_application_instance: has_flag(flags, "--new-instance"),
+        start_minimized: has_flag(flags, "--start-minimized"),
     };
     println!(
         "{}",
@@ -122,7 +127,7 @@ async fn act(
         let screenshot = session.screenshot().await?;
         action.observation_id = Some(screenshot.observation.observation_id.clone());
         let action_result = session.perform_action(&action).await?;
-        Ok::<_, dcc_mcp_computer_use::ComputerUseError>(json!({
+        Ok::<_, dcc_mcp_cua_core::ComputerUseError>(json!({
             "success": true,
             "observation": screenshot.observation,
             "action": action_result,
@@ -208,12 +213,20 @@ fn flag_value(flags: &[String], name: &str) -> Option<String> {
         .cloned()
 }
 
+fn flag_values(flags: &[String], name: &str) -> Vec<String> {
+    flags
+        .windows(2)
+        .filter(|pair| pair[0] == name)
+        .map(|pair| pair[1].clone())
+        .collect()
+}
+
 fn has_flag(flags: &[String], name: &str) -> bool {
     flags.iter().any(|flag| flag == name)
 }
 
 fn print_help() {
     println!(
-        "dcc-mcp-computer-use\n\n  list [--app APP]\n  apps\n  launch --name NAME|--bundle-id ID|--launch-path PATH [--new-instance]\n  snapshot --app APP [--output FILE]\n  act --app APP --action-json JSON\n  doctor\n  host [--stdio|--endpoint PATH]\n\nHost uses Core-compatible big-endian length-prefixed JSON frames; snapshot pixels follow as one binary frame."
+        "dcc-mcp-cua\n\n  list [--app APP]\n  apps\n  launch --name NAME|--bundle-id ID|--aumid ID|--path PATH|--launch-path PATH [--url URL] [--arg ARG] [--new-instance] [--start-minimized]\n  snapshot --app APP [--output FILE]\n  act --app APP --action-json JSON\n  doctor\n  host [--stdio|--endpoint PATH]\n\nHost uses Core-compatible big-endian length-prefixed JSON frames; snapshot pixels follow as one binary frame."
     );
 }
