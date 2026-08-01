@@ -741,6 +741,26 @@ impl ComputerUseSession {
         Ok(json!({"success": true, "target": target}))
     }
 
+    /// Force-terminate only the exact process bound to this session.
+    ///
+    /// This is intentionally separate from `stop`: stopping ends the CUA
+    /// control session, while termination is a destructive application
+    /// operation that requires an explicit Host grant.
+    pub async fn terminate_app(&mut self) -> ComputerUseResult<Value> {
+        self.ensure_active()?;
+        let target = self.revalidate_target().await?;
+        let termination = self
+            .call_bound_tool_value("kill_app", json!({"pid": target.pid}))
+            .await?;
+        let cleanup = self.stop().await?;
+        Ok(json!({
+            "success": true,
+            "target": target,
+            "termination": termination,
+            "cleanup": cleanup,
+        }))
+    }
+
     pub fn status(&self) -> Value {
         json!({
             "active": self.active,

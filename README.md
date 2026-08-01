@@ -82,14 +82,16 @@ The supported Core request surface is `hello`, `list_apps`, `launch_app`, `open_
 `browser_set_input_files`, `browser_download`, `browser_dialog`,
 `clipboard_read`, `clipboard_write`, `recording_start`, `recording_stop`,
 `recording_state`,
-`execute_action`, `resume_session`, and
+`execute_action`, `resume_session`, `terminate_app`, and
 `stop_session`. Semantic actions use CUA `element_index` values from the latest
 accessibility snapshot; `set_text`/`set_value` use CUA's native semantic value
 path, while coordinate actions remain available for custom-drawn surfaces.
 `find` filters the current accessibility tree by text, role, or element index
 and returns a fresh `accessibility_state_id`. `wait_for` is bounded to 30 seconds and supports `element_present`,
 `text_contains`, `text_equals`, and `value_equals`. `launch_app` requires a non-empty `task_grant_id`, `dcc_type`, and
-`allow_app_launch: true`; it never inherits permission from an open DCC window
+`allow_app_launch: true`; `terminate_app` requires the separate
+`allow_app_terminate: true` grant and force-closes only the exact session target;
+neither permission inherits from an open DCC window
 session. Clipboard operations require `allow_clipboard_read` or
 `allow_clipboard_write`; recording operations require `allow_recording: true`.
 Browser mutations additionally require `allow_browser_input: true`.

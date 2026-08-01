@@ -19,6 +19,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "list" => list_windows(&driver, &flags).await?,
         "apps" => list_apps(&driver).await?,
         "launch" => launch_app(&driver, &flags).await?,
+        "terminate" => terminate_app(&driver, &flags).await?,
         "clipboard-read" => clipboard_read(&driver, &flags).await?,
         "clipboard-write" => clipboard_write(&driver, &flags).await?,
         "host" => {
@@ -84,6 +85,28 @@ async fn launch_app(
         "{}",
         serde_json::to_string_pretty(&driver.launch_app(&request).await?)?
     );
+    Ok(())
+}
+
+async fn terminate_app(
+    driver: &ComputerUseDriver,
+    flags: &[String],
+) -> Result<(), Box<dyn std::error::Error>> {
+    if !has_flag(flags, "--confirm") {
+        return Err(
+            "terminate requires --confirm because it force-closes the exact target process".into(),
+        );
+    }
+    let scope = select_scope(driver, flags).await?;
+    let app = flag_value(flags, "--app").unwrap_or_else(|| "DCC application".into());
+    let session_id = flag_value(flags, "--session").unwrap_or_else(|| "dcc-mcp-cli".into());
+    let mut session = driver.session(scope, app, session_id)?;
+    session.start().await?;
+    let result = session.terminate_app().await;
+    if result.is_err() {
+        let _ = session.stop().await;
+    }
+    println!("{}", serde_json::to_string_pretty(&result?)?);
     Ok(())
 }
 
@@ -271,6 +294,6 @@ fn has_flag(flags: &[String], name: &str) -> bool {
 
 fn print_help() {
     println!(
-        "dcc-mcp-cua\n\n  list [--app APP]\n  apps\n  launch --name NAME|--bundle-id ID|--aumid ID|--path PATH|--launch-path PATH [--url URL] [--arg ARG] [--new-instance] [--start-minimized]\n  snapshot --app APP [--output FILE]\n  act --app APP --action-json JSON\n  clipboard-read --app APP [--include-text]\n  clipboard-write --app APP --text TEXT|--image-path FILE|--file-path FILE\n  doctor\n  host [--stdio|--endpoint PATH]\n\nHost uses Core-compatible big-endian length-prefixed JSON frames; snapshot pixels follow as one binary frame."
+        "dcc-mcp-cua\n\n  list [--app APP]\n  apps\n  launch --name NAME|--bundle-id ID|--aumid ID|--path PATH|--launch-path PATH [--url URL] [--arg ARG] [--new-instance] [--start-minimized]\n  terminate --app APP --confirm\n  snapshot --app APP [--output FILE]\n  act --app APP --action-json JSON\n  clipboard-read --app APP [--include-text]\n  clipboard-write --app APP --text TEXT|--image-path FILE|--file-path FILE\n  doctor\n  host [--stdio|--endpoint PATH]\n\nHost uses Core-compatible big-endian JSON frames with optional request_id correlation; snapshot pixels follow as one binary frame."
     );
 }

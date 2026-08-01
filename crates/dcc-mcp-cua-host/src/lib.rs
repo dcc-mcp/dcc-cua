@@ -54,6 +54,7 @@ pub const HOST_CAPABILITIES: &[&str] = &[
     "cross_platform_window_control",
     "application_inventory",
     "application_launch",
+    "application_terminate",
     "clipboard_read",
     "clipboard_write",
     "trajectory_recording",
@@ -106,6 +107,11 @@ enum Request {
     LaunchApp {
         grant: TaskGrant,
         launch: dcc_mcp_cua_core::ComputerUseLaunchRequest,
+    },
+    TerminateApp {
+        session_id: String,
+        task_grant_id: String,
+        window_capability: String,
     },
     ClipboardRead {
         session_id: String,
@@ -275,6 +281,8 @@ struct TaskGrant {
     allow_raw_input: bool,
     #[serde(default)]
     allow_app_launch: bool,
+    #[serde(default)]
+    allow_app_terminate: bool,
     #[serde(default)]
     allow_clipboard_read: bool,
     #[serde(default)]
@@ -463,6 +471,7 @@ impl HostAction {
 struct HostSession {
     task_grant_id: String,
     allow_raw_input: bool,
+    allow_app_terminate: bool,
     allow_clipboard_read: bool,
     allow_clipboard_write: bool,
     allow_recording: bool,
@@ -615,6 +624,31 @@ async fn handle_request(
                 None,
             ))
         }
+        Request::TerminateApp {
+            session_id,
+            task_grant_id,
+            window_capability,
+        } => {
+            let result = {
+                let host =
+                    authorized_session(sessions, &session_id, &task_grant_id, &window_capability)?;
+                if !host.allow_app_terminate {
+                    return Err(HostError::Protocol(
+                        "application termination is not granted".into(),
+                    ));
+                }
+                host.session.terminate_app().await?
+            };
+            sessions.remove(&session_id);
+            Ok((
+                json!({
+                    "type":"app_terminated",
+                    "session_id":session_id,
+                    "result":result,
+                }),
+                None,
+            ))
+        }
         Request::ClipboardRead {
             session_id,
             task_grant_id,
@@ -722,6 +756,7 @@ async fn handle_request(
                 HostSession {
                     task_grant_id: grant.task_grant_id,
                     allow_raw_input: grant.allow_raw_input,
+                    allow_app_terminate: grant.allow_app_terminate,
                     allow_clipboard_read: grant.allow_clipboard_read,
                     allow_clipboard_write: grant.allow_clipboard_write,
                     allow_recording: grant.allow_recording,
@@ -1299,6 +1334,9 @@ fn error_code(error: &HostError) -> &'static str {
         HostError::Protocol(message) if message.contains("application launch") => {
             "app_launch_not_granted"
         }
+        HostError::Protocol(message) if message.contains("application termination") => {
+            "app_terminate_not_granted"
+        }
         HostError::Protocol(message) if message.contains("browser input") => {
             "browser_input_not_granted"
         }
@@ -1530,6 +1568,7 @@ mod tests {
         }))
         .expect("legacy grants should remain readable");
         assert!(!grant.allow_app_launch);
+        assert!(!grant.allow_app_terminate);
         assert!(!grant.allow_clipboard_read);
         assert!(!grant.allow_clipboard_write);
         assert!(!grant.allow_recording);
@@ -1566,6 +1605,17 @@ mod tests {
                 }
             })),
             Ok(Request::LaunchApp { .. })
+        ));
+        assert!(matches!(
+            serde_json::from_value::<Request>(json!({
+                "method": "terminate_app",
+                "params": {
+                    "session_id": "session-1",
+                    "task_grant_id": "task-1",
+                    "window_capability": "cap-1"
+                }
+            })),
+            Ok(Request::TerminateApp { .. })
         ));
         assert!(matches!(
             serde_json::from_value::<Request>(json!({
