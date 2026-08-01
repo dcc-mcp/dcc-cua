@@ -223,12 +223,18 @@ pub struct ComputerUseMarker {
 #[derive(Clone)]
 pub struct ComputerUseDriver {
     driver: Arc<CuaDriver>,
+    // ponytail: cache the static tool registry for this driver; recreate the
+    // driver if a future SDK supports runtime tool registration.
+    tool_inventory: Arc<tokio::sync::OnceCell<Value>>,
 }
 
 impl ComputerUseDriver {
     pub fn create() -> ComputerUseResult<Self> {
         CuaDriver::create(None)
-            .map(|driver| Self { driver })
+            .map(|driver| Self {
+                driver,
+                tool_inventory: Arc::new(tokio::sync::OnceCell::new()),
+            })
             .map_err(|error| map_driver_error("create CUA runtime", error))
     }
 
@@ -242,7 +248,10 @@ impl ComputerUseDriver {
         host: Arc<dyn DriverAuthorizationHost>,
     ) -> ComputerUseResult<Self> {
         CuaDriver::create_configured_with_authorization_host(options, host)
-            .map(|driver| Self { driver })
+            .map(|driver| Self {
+                driver,
+                tool_inventory: Arc::new(tokio::sync::OnceCell::new()),
+            })
             .map_err(|error| map_driver_error("create authorized CUA runtime", error))
     }
 
@@ -252,12 +261,7 @@ impl ComputerUseDriver {
         app_name: impl Into<String>,
         session_id: impl Into<String>,
     ) -> ComputerUseResult<ComputerUseSession> {
-        ComputerUseSession::new(
-            Arc::clone(&self.driver),
-            scope,
-            app_name.into(),
-            session_id.into(),
-        )
+        ComputerUseSession::new(self.clone(), scope, app_name.into(), session_id.into())
     }
 
     pub fn desktop_session(
@@ -300,19 +304,11 @@ impl ComputerUseDriver {
             })
     }
 
-    /// Return the live CUA tool inventory for adapter capability discovery.
+    /// Return the CUA tool inventory for adapter capability discovery.
+    /// The registry is cached for the lifetime of this shared driver so Host
+    /// calls do not re-fetch it just to validate one tool schema.
     pub async fn list_tools(&self) -> ComputerUseResult<Value> {
-        let raw = self
-            .driver
-            .list_tools_json()
-            .await
-            .map_err(|error| map_driver_error("list CUA tools", error))?;
-        serde_json::from_str(&raw).map_err(|error| {
-            ComputerUseError::new(
-                ComputerUseErrorCode::BackendUnavailable,
-                format!("CUA tool inventory returned invalid JSON: {error}"),
-            )
-        })
+        Ok(self.cached_tool_inventory().await?.clone())
     }
 
     /// Call a non-window-bound CUA tool from the local CLI surface.
@@ -447,21 +443,29 @@ impl ComputerUseDriver {
     }
 
     async fn tool_schema(&self, name: &str) -> ComputerUseResult<Value> {
-        tool_schema_from_driver(&self.driver, name).await
+        tool_schema_from_inventory(self.cached_tool_inventory().await?, name)
+    }
+
+    async fn cached_tool_inventory(&self) -> ComputerUseResult<&Value> {
+        self.tool_inventory
+            .get_or_try_init(|| async {
+                let raw = self
+                    .driver
+                    .list_tools_json()
+                    .await
+                    .map_err(|error| map_driver_error("list CUA tools", error))?;
+                serde_json::from_str(&raw).map_err(|error| {
+                    ComputerUseError::new(
+                        ComputerUseErrorCode::BackendUnavailable,
+                        format!("CUA tool inventory returned invalid JSON: {error}"),
+                    )
+                })
+            })
+            .await
     }
 }
 
-async fn tool_schema_from_driver(driver: &CuaDriver, name: &str) -> ComputerUseResult<Value> {
-    let raw = driver
-        .list_tools_json()
-        .await
-        .map_err(|error| map_driver_error("list CUA tools", error))?;
-    let inventory: Value = serde_json::from_str(&raw).map_err(|error| {
-        ComputerUseError::new(
-            ComputerUseErrorCode::BackendUnavailable,
-            format!("CUA tool inventory returned invalid JSON: {error}"),
-        )
-    })?;
+fn tool_schema_from_inventory(inventory: &Value, name: &str) -> ComputerUseResult<Value> {
     inventory["tools"]
         .as_array()
         .and_then(|tools| {
@@ -481,7 +485,7 @@ async fn tool_schema_from_driver(driver: &CuaDriver, name: &str) -> ComputerUseR
 
 /// A long-lived, exact-window Computer Use session.
 pub struct ComputerUseSession {
-    driver: Arc<CuaDriver>,
+    driver: ComputerUseDriver,
     scope: ComputerUseTargetScope,
     app_name: String,
     session_id: String,
@@ -661,7 +665,7 @@ impl std::fmt::Debug for ComputerUseSession {
 
 impl ComputerUseSession {
     fn new(
-        driver: Arc<CuaDriver>,
+        driver: ComputerUseDriver,
         scope: ComputerUseTargetScope,
         app_name: String,
         session_id: String,
@@ -695,6 +699,7 @@ impl ComputerUseSession {
         let target = self.resolve_target().await?;
         let result = self
             .driver
+            .driver
             .call_tool(
                 "start_session".into(),
                 json!({
@@ -709,6 +714,7 @@ impl ComputerUseSession {
             .map_err(|error| map_driver_error("start CUA session", error))?;
         ensure_tool_ok("start CUA session", &result)?;
         let cursor = self
+            .driver
             .driver
             .call_tool(
                 "set_agent_cursor_enabled".into(),
@@ -734,6 +740,7 @@ impl ComputerUseSession {
         self.ensure_active()?;
         let target = self.revalidate_target().await?;
         let result = self
+            .driver
             .driver
             .call_tool(
                 "get_window_state".into(),
@@ -812,6 +819,7 @@ impl ComputerUseSession {
         self.ensure_active()?;
         let target = self.revalidate_target().await?;
         let result = self
+            .driver
             .driver
             .call_tool(
                 "get_window_state".into(),
@@ -905,7 +913,7 @@ impl ComputerUseSession {
         }
         self.ensure_active()?;
         let target = self.revalidate_target().await?;
-        let schema = tool_schema_from_driver(&self.driver, name).await?;
+        let schema = self.driver.tool_schema(name).await?;
         let mut object = arguments.as_object().cloned().ok_or_else(|| {
             ComputerUseError::new(
                 ComputerUseErrorCode::InvalidAction,
@@ -945,6 +953,7 @@ impl ComputerUseSession {
             ));
         }
         let result = self
+            .driver
             .driver
             .call_tool(name.to_owned(), Value::Object(object).to_string())
             .await
@@ -996,6 +1005,7 @@ impl ComputerUseSession {
         }
         let result = self
             .driver
+            .driver
             .call_tool(name.to_owned(), Value::Object(object).to_string())
             .await
             .map_err(|error| map_driver_error(&format!("call CUA {name}"), error))?;
@@ -1026,6 +1036,7 @@ impl ComputerUseSession {
             Value::Bool(true),
         );
         let result = self
+            .driver
             .driver
             .call_tool_from_trusted_adapter("browser_download", Value::Object(object))
             .await
@@ -1129,6 +1140,7 @@ impl ComputerUseSession {
             .remove("_tool");
         let result = self
             .driver
+            .driver
             .call_tool(name.clone(), args.to_string())
             .await
             .map_err(|error| map_driver_error(&format!("execute CUA {name}"), error))?;
@@ -1157,6 +1169,7 @@ impl ComputerUseSession {
         object.insert("session".into(), json!(self.session_id));
         let result = self
             .driver
+            .driver
             .call_tool(name.to_owned(), Value::Object(object).to_string())
             .await
             .map_err(|error| map_driver_error(&format!("call CUA {name}"), error))?;
@@ -1183,6 +1196,7 @@ impl ComputerUseSession {
             return Ok(json!({"success": true, "active": false}));
         }
         let result = self
+            .driver
             .driver
             .call_tool(
                 "end_session".into(),
@@ -1304,6 +1318,7 @@ impl ComputerUseSession {
         let target = self.revalidate_target().await?;
         let result = self
             .driver
+            .driver
             .call_tool(
                 "bring_to_front".into(),
                 json!({
@@ -1388,7 +1403,7 @@ impl ComputerUseSession {
     }
 
     async fn list_windows(&self) -> ComputerUseResult<Vec<WindowTarget>> {
-        Ok(list_windows_with_driver(&self.driver, None, false)
+        Ok(list_windows_with_driver(&self.driver.driver, None, false)
             .await?
             .into_iter()
             .filter_map(|value| WindowTarget::from_value(&value))
@@ -2357,6 +2372,21 @@ mod tests {
         assert!(validate_escalation_request("unknown", None).is_err());
         assert!(cursor_tool_allowed("get_agent_cursor_state"));
         assert!(cursor_tool_allowed("move_cursor"));
+    }
+
+    #[test]
+    fn tool_schema_lookup_uses_exact_inventory_names() {
+        let inventory = json!({
+            "tools": [{
+                "name": "debug_window_info",
+                "inputSchema": {"type": "object"}
+            }]
+        });
+        assert_eq!(
+            tool_schema_from_inventory(&inventory, "debug_window_info").unwrap()["type"],
+            "object"
+        );
+        assert!(tool_schema_from_inventory(&inventory, "debug_window_info_extra").is_err());
     }
 
     #[test]
