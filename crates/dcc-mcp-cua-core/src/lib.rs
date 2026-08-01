@@ -466,7 +466,9 @@ impl ComputerUseSession {
             )
         })?;
         object.insert("session".into(), json!(self.session_id));
-        if matches!(name, "get_browser_state" | "browser_prepare") {
+        if name == "browser_prepare"
+            || (name == "get_browser_state" && !object.contains_key("target_id"))
+        {
             object.insert("pid".into(), json!(target.pid));
             object.insert("window_id".into(), json!(target.window_id));
         }
