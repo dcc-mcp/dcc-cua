@@ -1931,16 +1931,35 @@ fn native_tool_response(
     result: ComputerUseToolResult,
 ) -> (Value, Option<Vec<u8>>) {
     let mut value = result.value;
-    let image = result.images.first();
-    if image.is_some() {
+    let images = result.images;
+    let mut attachment_bytes = Vec::new();
+    let mut attachments = Vec::with_capacity(images.len());
+    for (index, image) in images.iter().enumerate() {
+        let offset = attachment_bytes.len();
+        attachment_bytes.extend_from_slice(&image.data);
+        attachments.push(json!({
+            "index": index,
+            "offset": offset,
+            "length": image.data.len(),
+            "mime_type": image.mime_type,
+            "encoding": "binary_frame",
+        }));
+    }
+    if !images.is_empty() {
         if let Some(content) = value.get_mut("content").and_then(Value::as_array_mut) {
-            for item in content {
-                if item["type"] == "image" {
-                    item["data"] = Value::Null;
-                    item["encoding"] = Value::String("binary_frame".into());
-                    item["length"] = json!(image.map_or(0, |image| image.data.len()));
+            for (index, item) in content
+                .iter_mut()
+                .filter(|item| item["type"] == "image")
+                .enumerate()
+            {
+                let Some(image) = images.get(index) else {
                     break;
-                }
+                };
+                item["data"] = Value::Null;
+                item["encoding"] = Value::String("binary_frame".into());
+                item["attachment_index"] = json!(index);
+                item["offset"] = json!(attachments[index]["offset"]);
+                item["length"] = json!(image.data.len());
             }
         }
     }
@@ -1955,14 +1974,11 @@ fn native_tool_response(
     if let Some(session_id) = session_id {
         response["session_id"] = Value::String(session_id.to_owned());
     }
-    let attachment = image.map(|image| {
-        response["image"] = json!({
-            "encoding": "binary_frame",
-            "mime_type": image.mime_type,
-            "length": image.data.len(),
-        });
-        image.data.clone()
-    });
+    if let Some(first) = attachments.first() {
+        response["image"] = first.clone();
+        response["attachments"] = Value::Array(attachments);
+    }
+    let attachment = (!attachment_bytes.is_empty()).then_some(attachment_bytes);
     (response, attachment)
 }
 
@@ -2672,6 +2688,41 @@ mod tests {
         assert_eq!(response["result"]["content"][0]["data"], Value::Null);
         assert_eq!(response["image"]["length"], 3);
         assert_eq!(attachment, Some(vec![1, 2, 3]));
+    }
+
+    #[test]
+    fn native_tool_response_concatenates_all_image_attachments() {
+        let (response, attachment) = native_tool_response(
+            None,
+            "page",
+            ComputerUseToolResult {
+                value: json!({
+                    "content": [
+                        {"type": "image", "data": "first"},
+                        {"type": "image", "data": "second"}
+                    ]
+                }),
+                text: String::new(),
+                images: vec![
+                    dcc_mcp_cua_core::ComputerUseImage {
+                        data: vec![1, 2],
+                        mime_type: "image/png".into(),
+                    },
+                    dcc_mcp_cua_core::ComputerUseImage {
+                        data: vec![3, 4, 5],
+                        mime_type: "image/jpeg".into(),
+                    },
+                ],
+                degraded: false,
+            },
+        );
+        assert_eq!(response["attachments"].as_array().map(Vec::len), Some(2));
+        assert_eq!(response["attachments"][1]["offset"], 2);
+        assert_eq!(response["result"]["content"][0]["data"], Value::Null);
+        assert_eq!(response["result"]["content"][1]["data"], Value::Null);
+        assert_eq!(response["result"]["content"][0]["attachment_index"], 0);
+        assert_eq!(response["result"]["content"][1]["length"], 3);
+        assert_eq!(attachment, Some(vec![1, 2, 3, 4, 5]));
     }
 
     #[test]

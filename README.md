@@ -86,6 +86,10 @@ frame under 4 MiB. Requests may include a top-level `request_id` (1–128
 characters); the host echoes it on the JSON response, including errors. The
 handshake advertises the exact capabilities of this build.
 
+Native tool results expose every returned image in `attachments`. The single
+binary frame following the JSON response is the concatenation of those images;
+each descriptor gives its `offset`, `length`, and `mime_type`.
+
 The supported request surface is `hello`, `list_apps`, `list_tools`, `list_windows`, `launch_app`, `open_session`,
 `get_window_state`, `change_window_state` (`restore`, `show`, `activate`), `snapshot`,
 `accessibility_snapshot`, `verify_state`, `call_tool`, `call_global_tool`, `find`, `wait_for`, `browser_snapshot`,

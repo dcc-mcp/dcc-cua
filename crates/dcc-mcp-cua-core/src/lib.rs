@@ -23,6 +23,7 @@ const MAX_NATIVE_TOOL_NAME_CHARS: usize = 128;
 const MAX_NATIVE_TOOL_ARGUMENT_BYTES: usize = 1 * 1024 * 1024;
 const MAX_NATIVE_TOOL_IMAGES: usize = 8;
 const MAX_NATIVE_TOOL_IMAGE_BYTES: usize = 64 * 1024 * 1024;
+const MAX_NATIVE_TOOL_TOTAL_IMAGE_BYTES: usize = 64 * 1024 * 1024;
 const MOUSE_CURSOR_THEME: &str = "cua.default";
 static OBSERVATION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
@@ -1693,6 +1694,7 @@ fn native_tool_result(
         ));
     }
     let mut images = Vec::with_capacity(result.images.len());
+    let mut total_bytes = 0_usize;
     for image in result.images {
         if image.data_base64.len() > MAX_NATIVE_TOOL_IMAGE_BYTES * 2 {
             return Err(ComputerUseError::new(
@@ -1705,10 +1707,28 @@ fn native_tool_result(
             .map_err(|error| {
                 ComputerUseError::new(ComputerUseErrorCode::CaptureFailed, error.to_string())
             })?;
+        if data.is_empty() {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::CaptureFailed,
+                "CUA native tool returned an empty image",
+            ));
+        }
         if data.len() > MAX_NATIVE_TOOL_IMAGE_BYTES {
             return Err(ComputerUseError::new(
                 ComputerUseErrorCode::CaptureFailed,
                 "CUA native tool image exceeds 64 MiB",
+            ));
+        }
+        total_bytes = total_bytes.checked_add(data.len()).ok_or_else(|| {
+            ComputerUseError::new(
+                ComputerUseErrorCode::CaptureFailed,
+                "CUA native tool images exceed 64 MiB in total",
+            )
+        })?;
+        if total_bytes > MAX_NATIVE_TOOL_TOTAL_IMAGE_BYTES {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::CaptureFailed,
+                "CUA native tool images exceed 64 MiB in total",
             ));
         }
         images.push(ComputerUseImage {
