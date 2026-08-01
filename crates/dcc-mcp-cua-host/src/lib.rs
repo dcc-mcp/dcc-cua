@@ -2143,7 +2143,7 @@ async fn serve_named_pipe(driver: ComputerUseDriver, endpoint: String) -> Result
 
 #[cfg(unix)]
 async fn serve_unix_socket(driver: ComputerUseDriver, endpoint: String) -> Result<(), HostError> {
-    use tokio::net::UnixListener;
+    use tokio::net::{UnixListener, UnixStream};
 
     let path = Path::new(&endpoint);
     if path.exists() {
@@ -2153,7 +2153,15 @@ async fn serve_unix_socket(driver: ComputerUseDriver, endpoint: String) -> Resul
                 "endpoint exists and is not a socket: {endpoint}"
             )));
         }
-        std::fs::remove_file(path)?;
+        match UnixStream::connect(path).await {
+            Ok(_) => {
+                return Err(HostError::Protocol(format!(
+                    "endpoint is already in use: {endpoint}"
+                )));
+            }
+            Err(error) if stale_unix_socket_error(&error) => std::fs::remove_file(path)?,
+            Err(error) => return Err(error.into()),
+        }
     }
     let listener = UnixListener::bind(path)?;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
@@ -2166,6 +2174,14 @@ async fn serve_unix_socket(driver: ComputerUseDriver, endpoint: String) -> Resul
     }
 }
 
+#[cfg(unix)]
+fn stale_unix_socket_error(error: &std::io::Error) -> bool {
+    matches!(
+        error.kind(),
+        std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2174,6 +2190,20 @@ mod tests {
     fn frame_prefix_is_big_endian_and_bounded() {
         assert_eq!(u32::from_be_bytes((42_u32).to_be_bytes()), 42);
         assert!(MAX_BINARY_FRAME_BYTES > MAX_JSON_FRAME_BYTES);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn only_refused_or_missing_unix_sockets_are_replaceable() {
+        assert!(stale_unix_socket_error(&std::io::Error::from(
+            std::io::ErrorKind::ConnectionRefused,
+        )));
+        assert!(stale_unix_socket_error(&std::io::Error::from(
+            std::io::ErrorKind::NotFound,
+        )));
+        assert!(!stale_unix_socket_error(&std::io::Error::from(
+            std::io::ErrorKind::PermissionDenied,
+        )));
     }
 
     #[test]
