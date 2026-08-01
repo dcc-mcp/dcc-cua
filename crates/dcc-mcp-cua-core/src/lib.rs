@@ -4,6 +4,7 @@
 //! the DCC-MCP safety shell: exact target scope, fresh observations, bounded
 //! actions, stop semantics, and auditable provenance.
 
+use std::io::Cursor;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -493,6 +494,7 @@ pub struct ComputerUseSession {
     target: Option<WindowTarget>,
     observation: Option<ComputerUseObservation>,
     active: bool,
+    escalated: bool,
 }
 
 /// A bounded desktop-scope session for screen-absolute discovery and input.
@@ -659,6 +661,7 @@ impl std::fmt::Debug for ComputerUseSession {
             .field("app_name", &self.app_name)
             .field("session_id", &self.session_id)
             .field("active", &self.active)
+            .field("escalated", &self.escalated)
             .finish_non_exhaustive()
     }
 }
@@ -691,6 +694,7 @@ impl ComputerUseSession {
             target: None,
             observation: None,
             active: false,
+            escalated: false,
         })
     }
 
@@ -725,6 +729,7 @@ impl ComputerUseSession {
         ensure_tool_ok("show CUA marker", &cursor)?;
         self.target = Some(target.clone());
         self.active = true;
+        self.escalated = false;
         self.marker.visible = true;
         Ok(json!({
             "success": true,
@@ -755,8 +760,20 @@ impl ComputerUseSession {
                 .to_string(),
             )
             .await
-            .map_err(|error| map_driver_error("capture CUA window state", error))?;
-        ensure_tool_ok("capture CUA window", &result)?;
+            .map_err(|error| map_driver_error("capture CUA window state", error));
+        let result = match result {
+            Ok(result) if result.is_error && is_uia_snapshot_failure(&result) => {
+                return self.capture_window_from_desktop(&target).await;
+            }
+            Ok(result) => {
+                ensure_tool_ok("capture CUA window", &result)?;
+                result
+            }
+            Err(error) if is_uia_snapshot_message(&error.message) => {
+                return self.capture_window_from_desktop(&target).await;
+            }
+            Err(error) => return Err(error),
+        };
         let image = result.images.first().ok_or_else(|| {
             ComputerUseError::new(
                 ComputerUseErrorCode::CaptureFailed,
@@ -807,6 +824,95 @@ impl ComputerUseSession {
             data,
             observation,
             accessibility,
+        })
+    }
+
+    async fn capture_window_from_desktop(
+        &mut self,
+        target: &WindowTarget,
+    ) -> ComputerUseResult<ComputerUseScreenshot> {
+        if !self.escalated {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::BackendUnavailable,
+                "UIA window snapshot timed out; call escalate_session with explicit approval before using the desktop visual fallback",
+            ));
+        }
+        if !target.is_on_screen || target.is_minimized {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::CaptureFailed,
+                "UIA window snapshot timed out and the target is not capturable from the desktop",
+            ));
+        }
+        let result = self
+            .driver
+            .driver
+            .call_tool(
+                "get_desktop_state".into(),
+                json!({"session": self.session_id}).to_string(),
+            )
+            .await
+            .map_err(|error| map_driver_error("capture CUA desktop fallback", error))?;
+        ensure_tool_ok("capture CUA desktop fallback", &result)?;
+        let image = result.images.first().ok_or_else(|| {
+            ComputerUseError::new(
+                ComputerUseErrorCode::CaptureFailed,
+                "CUA desktop fallback returned no screenshot",
+            )
+        })?;
+        let desktop = base64::engine::general_purpose::STANDARD
+            .decode(&image.data_base64)
+            .map_err(|error| {
+                ComputerUseError::new(ComputerUseErrorCode::CaptureFailed, error.to_string())
+            })?;
+        let data = crop_png_to_bounds(&desktop, target.bounds)?;
+        let (width, height) = png_dimensions(&data).ok_or_else(|| {
+            ComputerUseError::new(
+                ComputerUseErrorCode::CaptureFailed,
+                "desktop fallback crop returned a non-PNG screenshot",
+            )
+        })?;
+        let desktop_state = result
+            .structured_json
+            .as_deref()
+            .and_then(|json| serde_json::from_str(json).ok())
+            .unwrap_or_else(|| json!({}));
+        let observation = ComputerUseObservation {
+            observation_id: format!(
+                "{}-{}",
+                self.session_id,
+                OBSERVATION_COUNTER.fetch_add(1, Ordering::Relaxed)
+            ),
+            window_handle: target.window_id,
+            process_id: target.pid,
+            window_title: target.title.clone(),
+            width,
+            height,
+            source_rect: target.bounds,
+            capture_backend: "cua-driver-sdk-desktop-crop".into(),
+            capture_provenance: json!({
+                "backend": "cua-driver-sdk-desktop-crop",
+                "pixels_captured": true,
+                "scope": "window",
+                "fallback": "desktop_crop",
+                "accessibility_available": false,
+                "process_id": target.pid,
+                "window_handle": target.window_id,
+                "desktop_state": desktop_state,
+            }),
+            session_id: self.session_id.clone(),
+        };
+        self.target = Some(target.clone());
+        self.observation = Some(observation.clone());
+        Ok(ComputerUseScreenshot {
+            data,
+            observation,
+            accessibility: json!({
+                "degraded": true,
+                "accessibility_available": false,
+                "fallback": "desktop_crop",
+                "window_id": target.window_id,
+                "pid": target.pid,
+            }),
         })
     }
 
@@ -1271,7 +1377,11 @@ impl ComputerUseSession {
     }
 
     /// Explicitly unlock the desktop phase after the window ladder is exhausted.
-    pub async fn escalate(&self, reason: &str, detail: Option<&str>) -> ComputerUseResult<Value> {
+    pub async fn escalate(
+        &mut self,
+        reason: &str,
+        detail: Option<&str>,
+    ) -> ComputerUseResult<Value> {
         validate_escalation_request(reason, detail)?;
         self.ensure_active()?;
         self.revalidate_target().await?;
@@ -1279,8 +1389,11 @@ impl ComputerUseSession {
         if let Some(detail) = detail {
             arguments["detail"] = Value::String(detail.to_owned());
         }
-        self.call_bound_tool_value("escalate_session", arguments)
-            .await
+        let result = self
+            .call_bound_tool_value("escalate_session", arguments)
+            .await?;
+        self.escalated = true;
+        Ok(result)
     }
 
     pub async fn resume_after_user_approval(&mut self) -> ComputerUseResult<Value> {
@@ -1357,6 +1470,7 @@ impl ComputerUseSession {
     pub fn status(&self) -> Value {
         json!({
             "active": self.active,
+            "escalated": self.escalated,
             "session_id": self.session_id,
             "target": self.target,
             "marker": self.marker,
@@ -2284,6 +2398,131 @@ fn png_dimensions(data: &[u8]) -> Option<(u32, u32)> {
     ))
 }
 
+fn is_uia_snapshot_failure(result: &cua_driver_sdk::ToolResult) -> bool {
+    let message = format!(
+        "{} {} {}",
+        result.error_code.as_deref().unwrap_or_default(),
+        result.text,
+        result.raw_json
+    );
+    is_uia_snapshot_message(&message)
+}
+
+fn is_uia_snapshot_message(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    lower.contains("uia provider unresponsive")
+        || lower.contains("get_window_state timed out")
+        || (lower.contains("get_window_state") && lower.contains("desktop scope"))
+}
+
+fn crop_png_to_bounds(data: &[u8], bounds: [i32; 4]) -> ComputerUseResult<Vec<u8>> {
+    let decoder = png::Decoder::new(Cursor::new(data));
+    let mut reader = decoder.read_info().map_err(|error| {
+        ComputerUseError::new(
+            ComputerUseErrorCode::CaptureFailed,
+            format!("desktop fallback PNG decode failed: {error}"),
+        )
+    })?;
+    let output_size = reader.output_buffer_size();
+    let mut source = vec![0_u8; output_size];
+    let info = reader.next_frame(&mut source).map_err(|error| {
+        ComputerUseError::new(
+            ComputerUseErrorCode::CaptureFailed,
+            format!("desktop fallback PNG frame decode failed: {error}"),
+        )
+    })?;
+    if info.bit_depth != png::BitDepth::Eight {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::CaptureFailed,
+            "desktop fallback only supports 8-bit PNG screenshots",
+        ));
+    }
+    let channels = match info.color_type {
+        png::ColorType::Grayscale => 1,
+        png::ColorType::GrayscaleAlpha => 2,
+        png::ColorType::Rgb => 3,
+        png::ColorType::Rgba => 4,
+        png::ColorType::Indexed => {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::CaptureFailed,
+                "desktop fallback does not support indexed PNG screenshots",
+            ));
+        }
+    };
+    let [x, y, width, height] = bounds;
+    if x < 0 || y < 0 || width <= 0 || height <= 0 {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::CaptureFailed,
+            "desktop fallback target bounds are outside the capturable display",
+        ));
+    }
+    let right = x.checked_add(width).ok_or_else(|| {
+        ComputerUseError::new(
+            ComputerUseErrorCode::CaptureFailed,
+            "desktop fallback target bounds overflow",
+        )
+    })?;
+    let bottom = y.checked_add(height).ok_or_else(|| {
+        ComputerUseError::new(
+            ComputerUseErrorCode::CaptureFailed,
+            "desktop fallback target bounds overflow",
+        )
+    })?;
+    if right as u32 > info.width || bottom as u32 > info.height {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::CaptureFailed,
+            format!(
+                "desktop fallback target bounds {x},{y},{width},{height} exceed screenshot {}x{}",
+                info.width, info.height
+            ),
+        ));
+    }
+    let row_bytes = (info.width as usize).checked_mul(channels).ok_or_else(|| {
+        ComputerUseError::new(
+            ComputerUseErrorCode::CaptureFailed,
+            "desktop fallback PNG row size overflow",
+        )
+    })?;
+    let crop_row_bytes = (width as usize).checked_mul(channels).ok_or_else(|| {
+        ComputerUseError::new(
+            ComputerUseErrorCode::CaptureFailed,
+            "desktop fallback crop row size overflow",
+        )
+    })?;
+    let mut cropped = vec![0_u8; crop_row_bytes * height as usize];
+    let source = &source[..info.buffer_size()];
+    for row in 0..height as usize {
+        let source_start = (y as usize + row) * row_bytes + x as usize * channels;
+        let source_end = source_start + crop_row_bytes;
+        let target_start = row * crop_row_bytes;
+        cropped[target_start..target_start + crop_row_bytes]
+            .copy_from_slice(&source[source_start..source_end]);
+    }
+    let mut output = Vec::new();
+    let mut encoder = png::Encoder::new(&mut output, width as u32, height as u32);
+    encoder.set_color(info.color_type);
+    encoder.set_depth(info.bit_depth);
+    let mut writer = encoder.write_header().map_err(|error| {
+        ComputerUseError::new(
+            ComputerUseErrorCode::CaptureFailed,
+            format!("desktop fallback PNG encoder failed: {error}"),
+        )
+    })?;
+    writer.write_image_data(&cropped).map_err(|error| {
+        ComputerUseError::new(
+            ComputerUseErrorCode::CaptureFailed,
+            format!("desktop fallback PNG crop failed: {error}"),
+        )
+    })?;
+    writer.finish().map_err(|error| {
+        ComputerUseError::new(
+            ComputerUseErrorCode::CaptureFailed,
+            format!("desktop fallback PNG finalize failed: {error}"),
+        )
+    })?;
+    Ok(output)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2354,6 +2593,29 @@ mod tests {
                 .unwrap_err()
                 .code,
             ComputerUseErrorCode::BackendUnavailable
+        );
+    }
+
+    #[test]
+    fn desktop_fallback_crops_an_8_bit_rgba_png() {
+        let mut source = Vec::new();
+        let mut encoder = png::Encoder::new(&mut source, 4, 3);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut writer = encoder.write_header().unwrap();
+        writer
+            .write_image_data(&(0..48).map(|value| value as u8).collect::<Vec<_>>())
+            .unwrap();
+        writer.finish().unwrap();
+
+        let cropped = crop_png_to_bounds(&source, [1, 1, 2, 2]).unwrap();
+        assert_eq!(png_dimensions(&cropped), Some((2, 2)));
+        let mut reader = png::Decoder::new(Cursor::new(cropped)).read_info().unwrap();
+        let mut bytes = vec![0; reader.output_buffer_size()];
+        let info = reader.next_frame(&mut bytes).unwrap();
+        assert_eq!(
+            &bytes[..info.buffer_size()],
+            &(20..28).chain(36..44).map(|v| v as u8).collect::<Vec<_>>()
         );
     }
 

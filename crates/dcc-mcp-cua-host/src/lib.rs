@@ -64,6 +64,7 @@ pub const HOST_CAPABILITIES: &[&str] = &[
     "cua_cursor_marker",
     "cross_platform_window_control",
     "scoped_window_restore_show_activate",
+    "degraded_window_visual_fallback",
     "application_inventory",
     "window_inventory",
     "tool_inventory",

@@ -154,6 +154,15 @@ the tab snapshot. Upload uses `allow_browser_input`; download is a separate
 destructive grant (`allow_browser_download`) and CUA's host approval evidence.
 `browser_dialog` only resolves page-owned JavaScript dialogs and requires the
 exact current `dialog_id` for accept/dismiss.
+
+For native windows whose UIA/AX provider is unavailable (for example a
+game-engine editor or custom-rendered DCC surface), `snapshot` first attempts
+the semantic window capture. After an explicit `escalate_session` approval,
+the same exact-window session may use a CUA desktop visual frame cropped to
+the validated PID/HWND bounds. The result is marked
+`capture_backend: "cua-driver-sdk-desktop-crop"` and
+`accessibility_available: false`; coordinate actions remain observation-bound,
+while semantic element actions correctly remain unavailable.
 `desktop_snapshot` is a full-display visual discovery surface; it does not
 widen an existing window session or grant desktop-wide mutation. For an
 explicit desktop input scope, use `open_desktop_session`, then take a fresh

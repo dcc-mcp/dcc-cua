@@ -328,7 +328,11 @@ async fn snapshot(
     let output = flag_value(flags, "--output").unwrap_or_else(|| "screenshot.png".into());
     let mut session = driver.session(scope, app, session_id)?;
     session.start().await?;
-    let result = session.screenshot().await;
+    let result = async {
+        maybe_escalate(&mut session, flags).await?;
+        session.screenshot().await
+    }
+    .await;
     let stop_result = session.stop().await;
     let screenshot = result?;
     stop_result?;
@@ -358,6 +362,7 @@ async fn act(
     let mut session = driver.session(scope, app, session_id)?;
     session.start().await?;
     let result = async {
+        maybe_escalate(&mut session, flags).await?;
         let screenshot = session.screenshot().await?;
         action.observation_id = Some(screenshot.observation.observation_id.clone());
         let action_result = session.perform_action(&action).await?;
@@ -448,6 +453,18 @@ async fn doctor(driver: &ComputerUseDriver) -> Result<(), Box<dyn std::error::Er
     Ok(())
 }
 
+async fn maybe_escalate(
+    session: &mut dcc_mcp_cua_core::ComputerUseSession,
+    flags: &[String],
+) -> dcc_mcp_cua_core::ComputerUseResult<Option<serde_json::Value>> {
+    if !has_flag(flags, "--escalate") {
+        return Ok(None);
+    }
+    let reason = flag_value(flags, "--escalation-reason").unwrap_or_else(|| "other".into());
+    let detail = flag_value(flags, "--escalation-detail");
+    session.escalate(&reason, detail.as_deref()).await.map(Some)
+}
+
 async fn select_scope(
     driver: &ComputerUseDriver,
     flags: &[String],
@@ -520,6 +537,9 @@ fn has_flag(flags: &[String], name: &str) -> bool {
 fn print_help() {
     println!(
         "dcc-mcp-cua\n\n  list [--app APP]\n  apps\n  tools\n  call --tool NAME [--json JSON|--json-file PATH] [--app APP|--pid PID --window-id ID] [--output FILE]\n  host-call --method NAME [--json JSON|--json-file PATH] [--endpoint PATH] [--snapshot-transport binary_frame|shared_memory] [--output FILE]\n  desktop-snapshot [--output FILE]\n  screen-size\n  cursor-position\n  launch --name NAME|--bundle-id ID|--aumid ID|--path PATH|--launch-path PATH [--url URL] [--arg ARG] [--new-instance] [--start-minimized]\n  terminate --app APP --confirm\n  snapshot --app APP [--output FILE]\n  act --app APP --action-json JSON\n  verify --app APP --expect-json JSON [--timeout-ms N] [--stable-samples N]\n  desktop-act --action-json JSON [--session ID]\n  clipboard-read --app APP [--include-text]\n  clipboard-write --app APP --text TEXT|--image-path FILE|--file-path FILE\n  doctor\n  host [--stdio|--endpoint PATH]\n\nHost uses versioned big-endian JSON frames. Hello version 1 negotiates binary-frame or shared-memory snapshots and supports request_id correlation."
+    );
+    println!(
+        "Window snapshots/actions accept --escalate --escalation-reason REASON when an explicit desktop visual fallback approval is required."
     );
 }
 
