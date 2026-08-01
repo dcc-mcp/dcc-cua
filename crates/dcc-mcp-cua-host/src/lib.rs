@@ -29,7 +29,7 @@ use dcc_mcp_cua_browser::{
 };
 use dcc_mcp_cua_core::{
     ComputerUseAction, ComputerUseClipboardWriteRequest, ComputerUseDesktopSession,
-    ComputerUseDriver, ComputerUseError, ComputerUseErrorCode, ComputerUsePoint,
+    ComputerUseDriver, ComputerUseError, ComputerUseErrorCode, ComputerUseImage, ComputerUsePoint,
     ComputerUseRecordingStartRequest, ComputerUseResult, ComputerUseSession,
     ComputerUseTargetScope, ComputerUseToolResult,
 };
@@ -61,6 +61,7 @@ pub const HOST_CAPABILITIES: &[&str] = &[
     "bounded_wait_for",
     "binary_snapshot_frames",
     "shared_memory_snapshots",
+    "shared_memory_verification_images",
     "shared_memory_browser_images",
     "cua_cursor_marker",
     "cross_platform_window_control",
@@ -1458,19 +1459,21 @@ async fn handle_request(
                 .session
                 .verify_state(expect, timeout_ms, stable_samples, include_screenshot)
                 .await?;
-            let attachment = verification.image.as_ref().map(|image| image.data.clone());
+            let image_transport = verification
+                .image
+                .map(|image| image_response(image, mode, &mut host.latest_shared_image))
+                .transpose()?;
             let mut response = json!({
                 "type": "state_verified",
                 "session_id": session_id,
                 "result": verification.value,
             });
-            if let Some(image) = verification.image {
-                response["image"] = json!({
-                    "encoding": "binary_frame",
-                    "mime_type": image.mime_type,
-                    "length": image.data.len(),
-                });
-            }
+            let attachment = if let Some((descriptor, attachment)) = image_transport {
+                response["image"] = descriptor;
+                attachment
+            } else {
+                None
+            };
             Ok((response, attachment))
         }
         Request::CallTool {
@@ -1934,6 +1937,34 @@ async fn handle_request(
                 None,
             ))
         }
+    }
+}
+
+fn image_response(
+    image: ComputerUseImage,
+    mode: SnapshotTransport,
+    shared_image: &mut Option<SharedImage>,
+) -> Result<(Value, Option<Vec<u8>>), HostError> {
+    match mode {
+        SnapshotTransport::SharedMemory => {
+            let shared = SharedImage::from_bytes(&image.data, &image.mime_type)
+                .map_err(|error| HostError::Protocol(error.to_string()))?;
+            let mut descriptor = serde_json::to_value(shared.descriptor())
+                .map_err(|error| HostError::Protocol(error.to_string()))?;
+            descriptor["encoding"] = Value::String("shared_memory".into());
+            *shared_image = Some(shared);
+            Ok((descriptor, None))
+        }
+        SnapshotTransport::BinaryFrame => Ok((
+            json!({
+                "name": "",
+                "id": "",
+                "length": image.data.len(),
+                "mime_type": image.mime_type,
+                "encoding": "binary_frame",
+            }),
+            Some(image.data),
+        )),
     }
 }
 
@@ -3016,6 +3047,38 @@ mod tests {
         assert_eq!(response["result"]["content"][0]["data"], Value::Null);
         assert!(attachment.is_none());
         assert!(shared.is_some_and(|image| image.is_alive()));
+    }
+
+    #[test]
+    fn verification_images_follow_the_negotiated_transport() {
+        let mut shared = None;
+        let (shared_response, shared_attachment) = image_response(
+            ComputerUseImage {
+                data: vec![1, 2, 3],
+                mime_type: "image/png".into(),
+            },
+            SnapshotTransport::SharedMemory,
+            &mut shared,
+        )
+        .unwrap();
+        assert_eq!(shared_response["encoding"], "shared_memory");
+        assert!(shared_attachment.is_none());
+        assert!(shared.is_some_and(|image| image.is_alive()));
+
+        let mut no_shared_image = None;
+        let (binary_response, binary_attachment) = image_response(
+            ComputerUseImage {
+                data: vec![4, 5],
+                mime_type: "image/jpeg".into(),
+            },
+            SnapshotTransport::BinaryFrame,
+            &mut no_shared_image,
+        )
+        .unwrap();
+        assert_eq!(binary_response["encoding"], "binary_frame");
+        assert_eq!(binary_response["length"], 2);
+        assert_eq!(binary_attachment, Some(vec![4, 5]));
+        assert!(no_shared_image.is_none());
     }
 
     #[test]
