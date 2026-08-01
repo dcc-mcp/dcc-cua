@@ -72,6 +72,11 @@ cargo run -p dcc-mcp-cua-cli -- host --stdio
 cargo run -p dcc-mcp-cua-cli -- host
 ```
 
+Release builds also produce `dcc-mcp-ui-control-host(.exe)`. When launched
+without arguments, that compatibility binary starts the persistent Host on
+the legacy Core session endpoint, so Core's existing launcher can use it via
+`DCC_MCP_UI_CONTROL_HOST` without a wrapper.
+
 On Windows, the default endpoint is the existing Core-compatible
 `\\.\pipe\dcc-mcp-ui-control-host-v1-session-<WindowsSessionId>` pipe. On Unix, the default endpoint is
 `$TMPDIR/dcc-mcp-computer-use-v1.sock`. Extended clients use Core's version-3 framing:

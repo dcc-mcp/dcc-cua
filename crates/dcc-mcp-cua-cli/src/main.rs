@@ -11,7 +11,7 @@ use serde_json::json;
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = env::args().skip(1);
-    let command = args.next().unwrap_or_else(|| "help".into());
+    let command = args.next().unwrap_or_else(default_command);
     let flags = args.collect::<Vec<_>>();
     let driver = ComputerUseDriver::create()?;
 
@@ -44,6 +44,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         other => return Err(format!("unknown command: {other}; use `help`").into()),
     }
     Ok(())
+}
+
+fn default_command() -> String {
+    let legacy_host = env::current_exe()
+        .ok()
+        .and_then(|path| {
+            path.file_stem()
+                .map(|stem| stem.to_string_lossy().into_owned())
+        })
+        .is_some_and(|stem| stem.eq_ignore_ascii_case("dcc-mcp-ui-control-host"));
+    if legacy_host {
+        "host".into()
+    } else {
+        "help".into()
+    }
 }
 
 async fn list_windows(
