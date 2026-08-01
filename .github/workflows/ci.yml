@@ -22,7 +22,4 @@ jobs:
         run: sudo apt-get update && sudo apt-get install --no-install-recommends -y libx11-dev libxi-dev libxtst-dev
       - run: cargo fmt --all -- --check
       - run: cargo check --workspace --all-targets
-      - if: matrix.os == 'macos-latest'
-        run: cargo test --workspace --all-targets --no-run
-      - if: matrix.os != 'macos-latest'
-        run: cargo test --workspace --all-targets
+      - run: cargo test --workspace --all-targets
