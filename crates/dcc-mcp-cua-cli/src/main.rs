@@ -2,7 +2,7 @@ use std::env;
 use std::fs;
 use std::io::Read;
 
-use dcc_mcp_cua_client::{HostClient, HostResponse, SnapshotTransport};
+use dcc_mcp_cua_client::{HostClient, HostProcess, HostResponse, SnapshotTransport};
 use dcc_mcp_cua_core::{
     ComputerUseAction, ComputerUseClipboardWriteRequest, ComputerUseDriver,
     ComputerUseLaunchRequest, ComputerUseTargetScope,
@@ -137,8 +137,8 @@ async fn host_call(flags: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let method = flag_value(flags, "--method").ok_or("host-call requires --method NAME")?;
     let params = json_arguments(flags)?;
     let snapshot_transport = snapshot_transport(flags)?;
-    let mut client = connect_host_client(flags, snapshot_transport).await?;
-    let response = client.request(method, params).await?;
+    let mut connection = connect_host(flags, snapshot_transport).await?;
+    let response = connection.client_mut().request(method, params).await?;
     let output = flag_value(flags, "--output");
     if let Some(path) = output.as_deref() {
         fs::write(path, response_image(&response, snapshot_transport)?)?;
@@ -148,14 +148,15 @@ async fn host_call(flags: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         value["_dcc_mcp_binary_output"] = json!(path);
     }
     println!("{}", serde_json::to_string_pretty(&value)?);
+    connection.shutdown().await?;
     Ok(())
 }
 
 async fn host_batch(flags: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let requests = parse_host_batch(json_arguments(flags)?)?;
     let snapshot_transport = snapshot_transport(flags)?;
-    let mut client = connect_host_client(flags, snapshot_transport).await?;
-    let responses = client.request_batch(requests).await?;
+    let mut connection = connect_host(flags, snapshot_transport).await?;
+    let responses = connection.client_mut().request_batch(requests).await?;
     let output_dir = flag_value(flags, "--output-dir");
     if let Some(path) = output_dir.as_deref() {
         fs::create_dir_all(path)?;
@@ -185,6 +186,7 @@ async fn host_batch(flags: &[String]) -> Result<(), Box<dyn std::error::Error>> 
         values.push(value);
     }
     println!("{}", serde_json::to_string_pretty(&values)?);
+    connection.shutdown().await?;
     Ok(())
 }
 
@@ -223,19 +225,48 @@ fn snapshot_transport(flags: &[String]) -> Result<SnapshotTransport, Box<dyn std
     }
 }
 
-async fn connect_host_client(
+enum HostConnection {
+    Endpoint(HostClient),
+    Spawned(HostProcess),
+}
+
+impl HostConnection {
+    fn client_mut(&mut self) -> &mut HostClient {
+        match self {
+            Self::Endpoint(client) => client,
+            Self::Spawned(process) => process.client_mut(),
+        }
+    }
+
+    async fn shutdown(self) -> Result<(), Box<dyn std::error::Error>> {
+        if let Self::Spawned(process) = self {
+            let status = process.shutdown().await?;
+            if !status.success() {
+                return Err(format!("spawned Host exited with {status}").into());
+            }
+        }
+        Ok(())
+    }
+}
+
+async fn connect_host(
     flags: &[String],
     snapshot_transport: SnapshotTransport,
-) -> Result<HostClient, Box<dyn std::error::Error>> {
+) -> Result<HostConnection, Box<dyn std::error::Error>> {
+    if let Some(binary_path) = flag_value(flags, "--spawn") {
+        return Ok(HostConnection::Spawned(
+            HostProcess::spawn(binary_path, "dcc-mcp-cua-cli", snapshot_transport).await?,
+        ));
+    }
     Ok(match flag_value(flags, "--endpoint") {
-        Some(endpoint) => {
+        Some(endpoint) => HostConnection::Endpoint(
             HostClient::connect_with_transport(endpoint, "dcc-mcp-cua-cli", snapshot_transport)
-                .await?
-        }
-        None => {
+                .await?,
+        ),
+        None => HostConnection::Endpoint(
             HostClient::connect_default_with_transport("dcc-mcp-cua-cli", snapshot_transport)
-                .await?
-        }
+                .await?,
+        ),
     })
 }
 
@@ -615,7 +646,7 @@ fn has_flag(flags: &[String], name: &str) -> bool {
 
 fn print_help() {
     println!(
-        "dcc-mcp-cua\n\n  list [--app APP]\n  apps\n  tools\n  call --tool NAME [--json JSON|--json-file PATH] [--app APP|--pid PID --window-id ID] [--output FILE]\n  host-call --method NAME [--json JSON|--json-file PATH] [--endpoint PATH] [--snapshot-transport binary_frame|shared_memory] [--output FILE]\n  host-batch --json JSON_ARRAY [--endpoint PATH] [--snapshot-transport binary_frame|shared_memory] [--output-dir DIR]\n  desktop-snapshot [--output FILE]\n  screen-size\n  cursor-position\n  launch --name NAME|--bundle-id ID|--aumid ID|--path PATH|--launch-path PATH [--url URL] [--arg ARG] [--new-instance] [--start-minimized]\n  terminate --app APP --confirm\n  snapshot --app APP [--output FILE]\n  act --app APP --action-json JSON\n  verify --app APP --expect-json JSON [--timeout-ms N] [--stable-samples N]\n  desktop-act --action-json JSON [--session ID]\n  clipboard-read --app APP [--include-text]\n  clipboard-write --app APP --text TEXT|--image-path FILE|--file-path FILE\n  doctor\n  host [--stdio|--endpoint PATH]\n\nHost uses versioned big-endian JSON frames. Hello version 1 negotiates binary-frame or shared-memory snapshots and supports request_id correlation."
+        "dcc-mcp-cua\n\n  list [--app APP]\n  apps\n  tools\n  call --tool NAME [--json JSON|--json-file PATH] [--app APP|--pid PID --window-id ID] [--output FILE]\n  host-call --method NAME [--json JSON|--json-file PATH] [--endpoint PATH|--spawn BINARY] [--snapshot-transport binary_frame|shared_memory] [--output FILE]\n  host-batch --json JSON_ARRAY [--endpoint PATH|--spawn BINARY] [--snapshot-transport binary_frame|shared_memory] [--output-dir DIR]\n  desktop-snapshot [--output FILE]\n  screen-size\n  cursor-position\n  launch --name NAME|--bundle-id ID|--aumid ID|--path PATH|--launch-path PATH [--url URL] [--arg ARG] [--new-instance] [--start-minimized]\n  terminate --app APP --confirm\n  snapshot --app APP [--output FILE]\n  act --app APP --action-json JSON\n  verify --app APP --expect-json JSON [--timeout-ms N] [--stable-samples N]\n  desktop-act --action-json JSON [--session ID]\n  clipboard-read --app APP [--include-text]\n  clipboard-write --app APP --text TEXT|--image-path FILE|--file-path FILE\n  doctor\n  host [--stdio|--endpoint PATH]\n\nHost uses versioned big-endian JSON frames. Hello version 1 negotiates binary-frame or shared-memory snapshots and supports request_id correlation."
     );
     println!(
         "Window snapshots/actions accept --escalate --escalation-reason REASON when an explicit desktop visual fallback approval is required."

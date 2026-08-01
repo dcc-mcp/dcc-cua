@@ -4,10 +4,19 @@
 //! can own its higher-level task contracts without duplicating framing,
 //! request correlation, or binary image handling.
 
-use std::{fmt, future::Future};
+use std::{
+    fmt,
+    future::Future,
+    path::Path,
+    pin::Pin,
+    process::{ExitStatus, Stdio},
+    task::{Context, Poll},
+    time::Duration,
+};
 
 use serde_json::{Value, json};
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadHalf, WriteHalf};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf, ReadHalf, WriteHalf};
+use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 
 pub const HOST_PROTOCOL_VERSION: u32 = 1;
 pub const MAX_JSON_FRAME_BYTES: usize = 4 * 1024 * 1024;
@@ -91,6 +100,112 @@ pub struct HostClient {
     next_request_id: u64,
     hello_complete: bool,
     snapshot_transport: SnapshotTransport,
+}
+
+/// A CUA Host child and its already-negotiated stdio client.
+///
+/// Core can use this when it owns the Host lifecycle. Endpoint connections
+/// remain available for supervisors that launch the CLI separately.
+pub struct HostProcess {
+    client: Option<HostClient>,
+    child: Option<Child>,
+}
+
+impl fmt::Debug for HostProcess {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("HostProcess")
+            .field("pid", &self.child.as_ref().and_then(Child::id))
+            .field("client", &self.client)
+            .finish()
+    }
+}
+
+impl HostProcess {
+    /// Spawn `dcc-mcp-cua host --stdio` and complete the Host handshake.
+    pub async fn spawn(
+        binary_path: impl AsRef<Path>,
+        client_name: impl Into<String>,
+        snapshot_transport: SnapshotTransport,
+    ) -> HostClientResult<Self> {
+        let mut child = Command::new(binary_path.as_ref())
+            .arg("host")
+            .arg("--stdio")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()?;
+        let stdin = match child.stdin.take() {
+            Some(stdin) => stdin,
+            None => {
+                let _ = child.start_kill();
+                return Err(HostClientError::Protocol(
+                    "spawned Host did not expose stdin".into(),
+                ));
+            }
+        };
+        let stdout = match child.stdout.take() {
+            Some(stdout) => stdout,
+            None => {
+                let _ = child.start_kill();
+                return Err(HostClientError::Protocol(
+                    "spawned Host did not expose stdout".into(),
+                ));
+            }
+        };
+        let mut client = HostClient::from_stream_with_transport(
+            ChildStdio {
+                reader: stdout,
+                writer: stdin,
+            },
+            snapshot_transport,
+        );
+        if let Err(error) = client.hello(client_name).await {
+            let _ = child.start_kill();
+            let _ = child.wait().await;
+            return Err(error);
+        }
+        Ok(Self {
+            client: Some(client),
+            child: Some(child),
+        })
+    }
+
+    /// Access the negotiated client for Host requests.
+    pub fn client_mut(&mut self) -> &mut HostClient {
+        self.client
+            .as_mut()
+            .expect("HostProcess client is available until shutdown")
+    }
+
+    /// Return the spawned Host process id while it is still running.
+    #[must_use]
+    pub fn id(&self) -> Option<u32> {
+        self.child.as_ref().and_then(Child::id)
+    }
+
+    /// Close stdio gracefully, then force-stop a Host that does not exit.
+    pub async fn shutdown(mut self) -> HostClientResult<ExitStatus> {
+        drop(self.client.take());
+        let mut child = self.child.take().ok_or_else(|| {
+            HostClientError::Protocol("Host process was already shut down".into())
+        })?;
+        match tokio::time::timeout(Duration::from_secs(2), child.wait()).await {
+            Ok(status) => Ok(status?),
+            Err(_) => {
+                child.kill().await?;
+                Ok(child.wait().await?)
+            }
+        }
+    }
+}
+
+impl Drop for HostProcess {
+    fn drop(&mut self) {
+        if let Some(child) = self.child.as_mut() {
+            let _ = child.start_kill();
+        }
+    }
 }
 
 impl fmt::Debug for HostClient {
@@ -507,6 +622,45 @@ async fn connect_endpoint(endpoint: &str) -> HostClientResult<BoxedHostStream> {
         Err(HostClientError::Protocol(
             "local endpoint transport is unsupported on this platform".into(),
         ))
+    }
+}
+
+struct ChildStdio {
+    reader: ChildStdout,
+    writer: ChildStdin,
+}
+
+impl AsyncRead for ChildStdio {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+        buffer: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.reader).poll_read(context, buffer)
+    }
+}
+
+impl AsyncWrite for ChildStdio {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+        buffer: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        Pin::new(&mut self.writer).poll_write(context, buffer)
+    }
+
+    fn poll_flush(
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.writer).poll_flush(context)
+    }
+
+    fn poll_shutdown(
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.writer).poll_shutdown(context)
     }
 }
 

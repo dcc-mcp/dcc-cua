@@ -77,6 +77,7 @@ cargo run -p dcc-mcp-cua-cli -- host --stdio
 cargo run -p dcc-mcp-cua-cli -- host
 cargo run -p dcc-mcp-cua-cli -- host-call --method list_apps --json '{}'
 cargo run -p dcc-mcp-cua-cli -- host-batch --json '[{"method":"list_apps","params":{}},{"method":"screen_size","params":{}}]'
+cargo run -p dcc-mcp-cua-cli -- host-call --spawn target/debug/dcc-mcp-cua --method list_apps --json '{}'
 ```
 
 `dcc-mcp-cua-client` is the direct embedding path for dcc-mcp-core. It opens
@@ -86,6 +87,21 @@ the following binary image frame without base64 decoding in the control path:
 ```rust,no_run
 let mut host = dcc_mcp_cua_client::HostClient::connect_default("dcc-mcp-core").await?;
 let response = host.request("list_windows", serde_json::json!({})).await?;
+```
+
+When Core owns the Host lifecycle, use `HostProcess::spawn` to start the CLI
+with `host --stdio`, reuse the same negotiated `HostClient`, and call
+`shutdown` when the task ends. This keeps process supervision out of Core's
+request code while preserving the same protocol as endpoint connections.
+
+```rust,no_run
+let mut host = dcc_mcp_cua_client::HostProcess::spawn(
+    "dcc-mcp-cua",
+    "dcc-mcp-core",
+    dcc_mcp_cua_client::SnapshotTransport::SharedMemory,
+).await?;
+let response = host.client_mut().request("list_apps", serde_json::json!({})).await?;
+let _status = host.shutdown().await?;
 ```
 
 Long waits can use `HostClient::request_with_cancel`; it sends `cancel` on the
@@ -99,7 +115,9 @@ The handshake advertises this as `pipelined_read_requests`.
 
 The `host-batch` CLI accepts the same `{method, params}` shape and uses one
 persistent Host connection. If a response contains image pixels, pass
-`--output-dir DIR`; metadata-only batches can omit it.
+`--output-dir DIR`; metadata-only batches can omit it. `host-call` and
+`host-batch` accept `--spawn BINARY` for a one-shot stdio-managed Host when a
+supervisor does not already own an endpoint.
 
 For large or frequent images, use `connect_default_with_transport(...,
 SnapshotTransport::SharedMemory)` and open the returned descriptor with
