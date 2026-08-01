@@ -21,7 +21,7 @@ const MAX_UPLOAD_FILES: usize = 32;
 #[derive(Debug)]
 pub struct BrowserResult {
     pub value: Value,
-    pub image: Option<BrowserImage>,
+    pub images: Vec<BrowserImage>,
 }
 
 #[derive(Debug)]
@@ -535,10 +535,10 @@ impl BrowserSession {
 
 impl BrowserResult {
     fn from_value(mut value: Value) -> ComputerUseResult<Self> {
-        let mut image = None;
+        let mut images = Vec::new();
         if let Some(content) = value["content"].as_array_mut() {
             for item in content.iter_mut() {
-                if item["type"] != "image" || image.is_some() {
+                if item["type"] != "image" {
                     continue;
                 }
                 let mime_type = item["mimeType"].as_str().unwrap_or("image/png");
@@ -562,16 +562,16 @@ impl BrowserResult {
                         "CUA browser image exceeds the 64 MiB frame limit",
                     ));
                 }
-                image = Some(BrowserImage {
+                images.push(BrowserImage {
                     mime_type: mime_type.to_owned(),
                     data,
                 });
                 item.as_object_mut().map(|object| {
-                    object.insert("data".into(), Value::String("[binary_frame]".into()));
+                    object.insert("data".into(), Value::Null);
                 });
             }
         }
-        Ok(Self { value, image })
+        Ok(Self { value, images })
     }
 }
 
@@ -764,5 +764,22 @@ mod tests {
             })
             .is_err()
         );
+    }
+
+    #[test]
+    fn browser_result_extracts_every_image_from_json() {
+        let result = BrowserResult::from_value(json!({
+            "content": [
+                {"type":"image", "mimeType":"image/png", "data":"aGVsbG8="},
+                {"type":"image", "mimeType":"image/jpeg", "data":"d29ybGQ="}
+            ]
+        }))
+        .unwrap();
+
+        assert_eq!(result.images.len(), 2);
+        assert_eq!(result.images[0].data, b"hello");
+        assert_eq!(result.images[1].mime_type, "image/jpeg");
+        assert_eq!(result.value["content"][0]["data"], Value::Null);
+        assert_eq!(result.value["content"][1]["data"], Value::Null);
     }
 }

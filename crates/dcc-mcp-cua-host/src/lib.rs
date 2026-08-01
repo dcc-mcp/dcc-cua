@@ -61,6 +61,7 @@ pub const HOST_CAPABILITIES: &[&str] = &[
     "bounded_wait_for",
     "binary_snapshot_frames",
     "shared_memory_snapshots",
+    "shared_memory_browser_images",
     "cua_cursor_marker",
     "cross_platform_window_control",
     "scoped_window_restore_show_activate",
@@ -1513,7 +1514,13 @@ async fn handle_request(
             let host =
                 authorized_session(sessions, &session_id, &task_grant_id, &window_capability)?;
             let result = host.browser.snapshot(&host.session, request).await?;
-            Ok(browser_response("browser_snapshot", session_id, result))
+            browser_response(
+                "browser_snapshot",
+                session_id,
+                result,
+                mode,
+                &mut host.latest_shared_image,
+            )
         }
         Request::BrowserPrepare {
             session_id,
@@ -1529,7 +1536,13 @@ async fn handle_request(
                 ));
             }
             let result = host.browser.prepare(&host.session, request).await?;
-            Ok(browser_response("browser_prepared", session_id, result))
+            browser_response(
+                "browser_prepared",
+                session_id,
+                result,
+                mode,
+                &mut host.latest_shared_image,
+            )
         }
         Request::BrowserNavigate {
             session_id,
@@ -1543,7 +1556,13 @@ async fn handle_request(
                 return Err(HostError::Protocol("browser input is not granted".into()));
             }
             let result = host.browser.navigate(&host.session, request).await?;
-            Ok(browser_response("browser_navigated", session_id, result))
+            browser_response(
+                "browser_navigated",
+                session_id,
+                result,
+                mode,
+                &mut host.latest_shared_image,
+            )
         }
         Request::BrowserClick {
             session_id,
@@ -1557,7 +1576,13 @@ async fn handle_request(
                 return Err(HostError::Protocol("browser input is not granted".into()));
             }
             let result = host.browser.click(&host.session, request).await?;
-            Ok(browser_response("browser_clicked", session_id, result))
+            browser_response(
+                "browser_clicked",
+                session_id,
+                result,
+                mode,
+                &mut host.latest_shared_image,
+            )
         }
         Request::BrowserType {
             session_id,
@@ -1571,7 +1596,13 @@ async fn handle_request(
                 return Err(HostError::Protocol("browser input is not granted".into()));
             }
             let result = host.browser.type_text(&host.session, request).await?;
-            Ok(browser_response("browser_typed", session_id, result))
+            browser_response(
+                "browser_typed",
+                session_id,
+                result,
+                mode,
+                &mut host.latest_shared_image,
+            )
         }
         Request::BrowserPointer {
             session_id,
@@ -1585,11 +1616,13 @@ async fn handle_request(
                 return Err(HostError::Protocol("browser input is not granted".into()));
             }
             let result = host.browser.pointer(&host.session, request).await?;
-            Ok(browser_response(
+            browser_response(
                 "browser_pointer_completed",
                 session_id,
                 result,
-            ))
+                mode,
+                &mut host.latest_shared_image,
+            )
         }
         Request::BrowserSetInputFiles {
             session_id,
@@ -1603,11 +1636,13 @@ async fn handle_request(
                 return Err(HostError::Protocol("browser input is not granted".into()));
             }
             let result = host.browser.set_input_files(&host.session, request).await?;
-            Ok(browser_response(
+            browser_response(
                 "browser_files_uploaded",
                 session_id,
                 result,
-            ))
+                mode,
+                &mut host.latest_shared_image,
+            )
         }
         Request::BrowserDownload {
             session_id,
@@ -1623,7 +1658,13 @@ async fn handle_request(
                 ));
             }
             let result = host.browser.download(&host.session, request).await?;
-            Ok(browser_response("browser_downloaded", session_id, result))
+            browser_response(
+                "browser_downloaded",
+                session_id,
+                result,
+                mode,
+                &mut host.latest_shared_image,
+            )
         }
         Request::BrowserDialog {
             session_id,
@@ -1637,11 +1678,13 @@ async fn handle_request(
                 return Err(HostError::Protocol("browser input is not granted".into()));
             }
             let result = host.browser.dialog(&host.session, request).await?;
-            Ok(browser_response(
+            browser_response(
                 "browser_dialog_completed",
                 session_id,
                 result,
-            ))
+                mode,
+                &mut host.latest_shared_image,
+            )
         }
         Request::Find {
             session_id,
@@ -1897,21 +1940,84 @@ fn browser_response(
     response_type: &str,
     session_id: String,
     result: dcc_mcp_cua_browser::BrowserResult,
-) -> (Value, Option<Vec<u8>>) {
-    let attachment = result.image.as_ref().map(|image| image.data.clone());
+    mode: SnapshotTransport,
+    shared_image: &mut Option<SharedImage>,
+) -> Result<(Value, Option<Vec<u8>>), HostError> {
+    let images = result.images;
+    let mut response_result = result.value;
+    let mut attachment_bytes = Vec::new();
+    let mut attachments = Vec::with_capacity(images.len());
+    let use_shared_memory = mode == SnapshotTransport::SharedMemory && images.len() == 1;
+
+    for (index, image) in images.iter().enumerate() {
+        let offset = attachment_bytes.len();
+        if !use_shared_memory {
+            attachment_bytes.extend_from_slice(&image.data);
+        }
+        attachments.push(json!({
+            "index": index,
+            "offset": offset,
+            "length": image.data.len(),
+            "mime_type": image.mime_type,
+            "encoding": if use_shared_memory { "shared_memory" } else { "binary_frame" },
+        }));
+    }
+
+    let image_descriptor = if use_shared_memory {
+        let image = &images[0];
+        let shared = SharedImage::from_bytes(&image.data, &image.mime_type)
+            .map_err(|error| HostError::Protocol(error.to_string()))?;
+        let mut descriptor = serde_json::to_value(shared.descriptor())
+            .map_err(|error| HostError::Protocol(error.to_string()))?;
+        descriptor["encoding"] = Value::String("shared_memory".into());
+        *shared_image = Some(shared);
+        Some(descriptor)
+    } else {
+        attachments.first().cloned()
+    };
+
+    if let Some(content) = response_result
+        .get_mut("content")
+        .and_then(Value::as_array_mut)
+    {
+        for (index, item) in content
+            .iter_mut()
+            .filter(|item| item["type"] == "image")
+            .enumerate()
+        {
+            let Some(image) = images.get(index) else {
+                break;
+            };
+            item["data"] = Value::Null;
+            item["encoding"] = Value::String(
+                if use_shared_memory {
+                    "shared_memory"
+                } else {
+                    "binary_frame"
+                }
+                .into(),
+            );
+            item["attachment_index"] = json!(index);
+            item["offset"] = json!(attachments[index]["offset"]);
+            item["length"] = json!(image.data.len());
+        }
+    }
+
     let mut response = json!({
         "type": response_type,
         "session_id": session_id,
-        "result": result.value,
+        "result": response_result,
     });
-    if let Some(image) = result.image {
-        response["image"] = json!({
-            "encoding": "binary_frame",
-            "mime_type": image.mime_type,
-            "length": image.data.len(),
-        });
+    if let Some(image) = image_descriptor {
+        response["image"] = image;
     }
-    (response, attachment)
+    if attachments.len() > 1 {
+        response["attachments"] = Value::Array(attachments);
+    }
+    Ok((
+        response,
+        (!attachment_bytes.is_empty()).then_some(attachment_bytes),
+    ))
 }
 
 fn find_elements(root: &Value, query: &FindQuery, max_results: usize) -> Vec<Value> {
@@ -2882,6 +2988,69 @@ mod tests {
         assert_eq!(response["result"]["content"][0]["attachment_index"], 0);
         assert_eq!(response["result"]["content"][1]["length"], 3);
         assert_eq!(attachment, Some(vec![1, 2, 3, 4, 5]));
+    }
+
+    #[test]
+    fn browser_response_uses_shared_memory_for_one_image() {
+        let mut shared = None;
+        let (response, attachment) = browser_response(
+            "browser_snapshot",
+            "session-1".into(),
+            dcc_mcp_cua_browser::BrowserResult {
+                value: json!({
+                    "content": [{"type":"image", "data": "base64"}]
+                }),
+                images: vec![dcc_mcp_cua_browser::BrowserImage {
+                    data: vec![1, 2, 3],
+                    mime_type: "image/png".into(),
+                }],
+            },
+            SnapshotTransport::SharedMemory,
+            &mut shared,
+        )
+        .unwrap();
+
+        assert_eq!(response["image"]["encoding"], "shared_memory");
+        assert_eq!(response["image"]["length"], 3);
+        assert_eq!(response["result"]["content"][0]["data"], Value::Null);
+        assert!(attachment.is_none());
+        assert!(shared.is_some_and(|image| image.is_alive()));
+    }
+
+    #[test]
+    fn browser_response_concatenates_multiple_binary_images() {
+        let mut shared = None;
+        let (response, attachment) = browser_response(
+            "browser_snapshot",
+            "session-1".into(),
+            dcc_mcp_cua_browser::BrowserResult {
+                value: json!({
+                    "content": [
+                        {"type":"image", "data": "first"},
+                        {"type":"image", "data": "second"}
+                    ]
+                }),
+                images: vec![
+                    dcc_mcp_cua_browser::BrowserImage {
+                        data: vec![1, 2],
+                        mime_type: "image/png".into(),
+                    },
+                    dcc_mcp_cua_browser::BrowserImage {
+                        data: vec![3, 4, 5],
+                        mime_type: "image/jpeg".into(),
+                    },
+                ],
+            },
+            SnapshotTransport::BinaryFrame,
+            &mut shared,
+        )
+        .unwrap();
+
+        assert_eq!(response["attachments"].as_array().map(Vec::len), Some(2));
+        assert_eq!(response["attachments"][1]["offset"], 2);
+        assert_eq!(response["result"]["content"][1]["data"], Value::Null);
+        assert_eq!(attachment, Some(vec![1, 2, 3, 4, 5]));
+        assert!(shared.is_none());
     }
 
     #[test]

@@ -93,7 +93,10 @@ wait terminal response.
 
 For large or frequent images, use `connect_default_with_transport(...,
 SnapshotTransport::SharedMemory)` and open the returned descriptor with
-`dcc_mcp_cua_shm::SharedImageReader`; pixels do not cross the control pipe.
+`dcc_mcp_cua_shm::SharedImageReader`; window/desktop snapshots and browser
+responses containing one image keep pixels out of the control pipe. Native
+extension results and browser responses containing multiple images use one
+bounded binary attachment frame with offset descriptors.
 
 On Windows, the default endpoint is the per-session named pipe
 `\\.\pipe\dcc-mcp-cua-v1-session-<WindowsSessionId>`. On Unix, the default
