@@ -137,6 +137,7 @@ pub struct ComputerUseScreenshot {
 pub struct ComputerUseDesktopSnapshot {
     pub data: Vec<u8>,
     pub state: Value,
+    pub observation_id: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -208,6 +209,13 @@ impl ComputerUseDriver {
         )
     }
 
+    pub fn desktop_session(
+        &self,
+        session_id: impl Into<String>,
+    ) -> ComputerUseResult<ComputerUseDesktopSession> {
+        ComputerUseDesktopSession::new(self.clone(), session_id.into())
+    }
+
     pub fn raw(&self) -> &Arc<CuaDriver> {
         &self.driver
     }
@@ -234,9 +242,20 @@ impl ComputerUseDriver {
 
     /// Capture the full desktop without widening any window-scoped session.
     pub async fn desktop_snapshot(&self) -> ComputerUseResult<ComputerUseDesktopSnapshot> {
+        self.desktop_snapshot_for(None).await
+    }
+
+    async fn desktop_snapshot_for(
+        &self,
+        session: Option<&str>,
+    ) -> ComputerUseResult<ComputerUseDesktopSnapshot> {
+        let mut arguments = json!({});
+        if let Some(session) = session {
+            arguments["session"] = Value::String(session.to_owned());
+        }
         let result = self
             .driver
-            .call_tool("get_desktop_state".into(), json!({}).to_string())
+            .call_tool("get_desktop_state".into(), arguments.to_string())
             .await
             .map_err(|error| map_driver_error("capture CUA desktop state", error))?;
         ensure_tool_ok("capture CUA desktop state", &result)?;
@@ -256,7 +275,14 @@ impl ComputerUseDriver {
             .as_deref()
             .and_then(|json| serde_json::from_str(json).ok())
             .unwrap_or_else(|| json!({}));
-        Ok(ComputerUseDesktopSnapshot { data, state })
+        Ok(ComputerUseDesktopSnapshot {
+            data,
+            state,
+            observation_id: format!(
+                "desktop-{}",
+                OBSERVATION_COUNTER.fetch_add(1, Ordering::Relaxed)
+            ),
+        })
     }
 
     pub async fn screen_size(&self) -> ComputerUseResult<Value> {
@@ -302,6 +328,163 @@ pub struct ComputerUseSession {
     target: Option<WindowTarget>,
     observation: Option<ComputerUseObservation>,
     active: bool,
+}
+
+/// A bounded desktop-scope session for screen-absolute discovery and input.
+/// Window-scoped sessions remain the preferred path for semantic controls.
+pub struct ComputerUseDesktopSession {
+    driver: ComputerUseDriver,
+    session_id: String,
+    marker: ComputerUseMarker,
+    active: bool,
+    latest_observation_id: Option<String>,
+}
+
+impl std::fmt::Debug for ComputerUseDesktopSession {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ComputerUseDesktopSession")
+            .field("session_id", &self.session_id)
+            .field("active", &self.active)
+            .finish_non_exhaustive()
+    }
+}
+
+impl ComputerUseDesktopSession {
+    fn new(driver: ComputerUseDriver, session_id: String) -> ComputerUseResult<Self> {
+        if session_id.trim().is_empty() {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::InvalidAction,
+                "desktop session_id must not be empty",
+            ));
+        }
+        Ok(Self {
+            driver,
+            session_id,
+            marker: ComputerUseMarker {
+                visible: false,
+                label: "DCC UI Control · Desktop · Esc to stop".into(),
+                backend: "cua-driver-sdk",
+            },
+            active: false,
+            latest_observation_id: None,
+        })
+    }
+
+    pub async fn start(&mut self) -> ComputerUseResult<Value> {
+        if self.active {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::InvalidAction,
+                "desktop session is already active",
+            ));
+        }
+        let result = self
+            .driver
+            .driver
+            .call_tool(
+                "start_session".into(),
+                json!({
+                    "session": self.session_id,
+                    "capture_scope": "desktop",
+                    "cursor_theme": {"theme_id": MOUSE_CURSOR_THEME, "reduced_motion": "auto"},
+                    "_public_session_label": self.marker.label,
+                })
+                .to_string(),
+            )
+            .await
+            .map_err(|error| map_driver_error("start CUA desktop session", error))?;
+        ensure_tool_ok("start CUA desktop session", &result)?;
+        let cursor = self
+            .driver
+            .driver
+            .call_tool(
+                "set_agent_cursor_enabled".into(),
+                json!({"session": self.session_id, "enabled": true}).to_string(),
+            )
+            .await
+            .map_err(|error| map_driver_error("show CUA desktop marker", error))?;
+        ensure_tool_ok("show CUA desktop marker", &cursor)?;
+        self.active = true;
+        self.marker.visible = true;
+        Ok(json!({"success": true, "active": true, "marker": self.marker}))
+    }
+
+    pub async fn screenshot(&mut self) -> ComputerUseResult<ComputerUseDesktopSnapshot> {
+        if !self.active {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::InvalidAction,
+                "desktop session is not active",
+            ));
+        }
+        let snapshot = self
+            .driver
+            .desktop_snapshot_for(Some(&self.session_id))
+            .await?;
+        self.latest_observation_id = Some(snapshot.observation_id.clone());
+        Ok(snapshot)
+    }
+
+    pub async fn perform_action(&mut self, action: &ComputerUseAction) -> ComputerUseResult<Value> {
+        if !self.active {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::InvalidAction,
+                "desktop session is not active",
+            ));
+        }
+        validate_action(action)?;
+        if action.element_index.is_some()
+            || matches!(action.action.as_str(), "set_text" | "set_value" | "toggle")
+        {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::InvalidAction,
+                "desktop actions support only screen-coordinate input",
+            ));
+        }
+        if self.latest_observation_id.as_deref() != action.observation_id.as_deref() {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::StaleObservation,
+                "take a fresh desktop snapshot before acting",
+            ));
+        }
+        let arguments = desktop_action_arguments(action, &self.session_id);
+        let tool = arguments["_tool"].as_str().unwrap_or_default().to_owned();
+        let mut arguments = arguments;
+        arguments
+            .as_object_mut()
+            .expect("desktop action arguments are an object")
+            .remove("_tool");
+        let result = self
+            .driver
+            .driver
+            .call_tool(tool.clone(), arguments.to_string())
+            .await
+            .map_err(|error| map_driver_error(&format!("execute desktop CUA {tool}"), error))?;
+        ensure_tool_ok(&format!("execute desktop CUA {tool}"), &result)?;
+        self.latest_observation_id = None;
+        Ok(
+            json!({"success": true, "action": action, "marker": self.marker, "cua": result.raw_json}),
+        )
+    }
+
+    pub async fn stop(&mut self) -> ComputerUseResult<Value> {
+        if !self.active {
+            return Ok(json!({"success": true, "active": false}));
+        }
+        let result = self
+            .driver
+            .driver
+            .call_tool(
+                "end_session".into(),
+                json!({"session": self.session_id}).to_string(),
+            )
+            .await
+            .map_err(|error| map_driver_error("stop CUA desktop session", error))?;
+        ensure_tool_ok("stop CUA desktop session", &result)?;
+        self.active = false;
+        self.marker.visible = false;
+        self.latest_observation_id = None;
+        Ok(json!({"success": true, "active": false, "marker": self.marker}))
+    }
 }
 
 impl std::fmt::Debug for ComputerUseSession {
@@ -1272,6 +1455,102 @@ fn action_arguments(action: &ComputerUseAction, session: &str, target: &WindowTa
     args
 }
 
+fn desktop_action_arguments(action: &ComputerUseAction, session: &str) -> Value {
+    let mut args = json!({
+        "_tool": match action.action.as_str() {
+            "click" | "double_click" | "right_click" => "click",
+            "drag" => "drag",
+            "scroll" => "scroll",
+            "type" => "type_text",
+            "keypress" => "press_key",
+            "keyboard_shortcut" => "hotkey",
+            "move" => "move_cursor",
+            _ => "wait",
+        },
+        "session": session,
+        "scope": "desktop",
+    });
+    let object = args
+        .as_object_mut()
+        .expect("desktop action arguments are an object");
+    match action.action.as_str() {
+        "move" => {
+            object.insert("x".into(), json!(action.x));
+            object.insert("y".into(), json!(action.y));
+        }
+        "click" | "double_click" | "right_click" => {
+            object.insert("x".into(), json!(action.x));
+            object.insert("y".into(), json!(action.y));
+            object.insert(
+                "count".into(),
+                json!(if action.action == "double_click" {
+                    2
+                } else {
+                    1
+                }),
+            );
+            object.insert(
+                "button".into(),
+                json!(
+                    action
+                        .button
+                        .as_deref()
+                        .unwrap_or(if action.action == "right_click" {
+                            "right"
+                        } else {
+                            "left"
+                        })
+                ),
+            );
+        }
+        "drag" => {
+            let first = action.path.first().copied().unwrap_or(ComputerUsePoint {
+                x: action.x.unwrap_or_default(),
+                y: action.y.unwrap_or_default(),
+            });
+            let last = action.path.last().copied().unwrap_or(first);
+            object.insert("from_x".into(), json!(first.x));
+            object.insert("from_y".into(), json!(first.y));
+            object.insert("to_x".into(), json!(last.x));
+            object.insert("to_y".into(), json!(last.y));
+        }
+        "scroll" => {
+            object.insert("x".into(), json!(action.x));
+            object.insert("y".into(), json!(action.y));
+            object.insert(
+                "direction".into(),
+                json!(if action.scroll_y.unwrap_or_default() < 0 {
+                    "up"
+                } else {
+                    "down"
+                }),
+            );
+            object.insert("by".into(), json!("amount"));
+            object.insert(
+                "amount".into(),
+                json!(action.scroll_y.unwrap_or(1).unsigned_abs()),
+            );
+        }
+        "type" => {
+            object.insert(
+                "text".into(),
+                json!(action.text.as_deref().unwrap_or_default()),
+            );
+        }
+        "keypress" => {
+            object.insert(
+                "key".into(),
+                json!(action.keys.first().cloned().unwrap_or_default()),
+            );
+        }
+        "keyboard_shortcut" => {
+            object.insert("keys".into(), json!(action.keys));
+        }
+        _ => {}
+    }
+    args
+}
+
 fn ensure_tool_ok(context: &str, result: &cua_driver_sdk::ToolResult) -> ComputerUseResult<()> {
     if result.is_error {
         let code = result.error_code.as_deref().unwrap_or_default();
@@ -1424,6 +1703,22 @@ mod tests {
             .code,
             ComputerUseErrorCode::InvalidAction
         );
+    }
+
+    #[test]
+    fn desktop_actions_are_screen_scoped_and_observation_bound() {
+        let action = ComputerUseAction {
+            action: "click".into(),
+            x: Some(100.0),
+            y: Some(200.0),
+            ..Default::default()
+        };
+        let args = desktop_action_arguments(&action, "desktop-session");
+        assert_eq!(args["_tool"], "click");
+        assert_eq!(args["scope"], "desktop");
+        assert_eq!(args["session"], "desktop-session");
+        assert_eq!(args["x"], 100.0);
+        assert!(args.get("pid").is_none());
     }
 
     #[test]

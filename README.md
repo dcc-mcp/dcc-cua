@@ -41,6 +41,7 @@ cargo run -p dcc-mcp-cua-cli -- apps
 cargo run -p dcc-mcp-cua-cli -- desktop-snapshot --output desktop.png
 cargo run -p dcc-mcp-cua-cli -- screen-size
 cargo run -p dcc-mcp-cua-cli -- cursor-position
+cargo run -p dcc-mcp-cua-cli -- desktop-act --action-json '{"action":"click","x":100,"y":100}'
 cargo run -p dcc-mcp-cua-cli -- launch --name Calculator
 cargo run -p dcc-mcp-cua-cli -- doctor
 cargo run -p dcc-mcp-cua-cli -- snapshot --app chrome.exe --output screenshot.png
@@ -83,13 +84,14 @@ correlate long-lived IPC calls. The handshake advertises the exact capabilities
 of this build.
 
 The supported Core request surface is `hello`, `list_apps`, `launch_app`, `open_session`,
-`get_window_state`, `change_window_state` (`activate`), `snapshot`,
+`get_window_state`, `change_window_state` (`restore`, `show`, `activate`), `snapshot`,
 `accessibility_snapshot`, `find`, `wait_for`, `browser_snapshot`,
 `browser_prepare`, `browser_navigate`, `browser_click`, `browser_type`, `browser_pointer`,
 `browser_set_input_files`, `browser_download`, `browser_dialog`,
 `clipboard_read`, `clipboard_write`, `recording_start`, `recording_stop`,
 `recording_state`,
-`desktop_snapshot`, `screen_size`, `cursor_position`,
+`desktop_snapshot`, `screen_size`, `cursor_position`, `open_desktop_session`,
+`desktop_session_snapshot`, `execute_desktop_action`, `stop_desktop_session`,
 `execute_action`, `resume_session`, `terminate_app`, and
 `stop_session`; `cancel` is available while `wait_for` is active on the same
 connection. The host also accepts Core's protocol version 1: its `snapshot`
@@ -120,7 +122,10 @@ destructive grant (`allow_browser_download`) and CUA's host approval evidence.
 `browser_dialog` only resolves page-owned JavaScript dialogs and requires the
 exact current `dialog_id` for accept/dismiss.
 `desktop_snapshot` is a full-display visual discovery surface; it does not
-widen an existing window session or grant desktop-wide mutation.
+widen an existing window session or grant desktop-wide mutation. For an
+explicit desktop input scope, use `open_desktop_session`, then take a fresh
+`desktop_session_snapshot` and call `execute_desktop_action`; raw input grant
+and the exact desktop capability are required.
 While `wait_for` is running, the same connection accepts `cancel` with the
 exact session grant and window capability; the host returns both a cancellation
 acknowledgement and the wait's cancelled terminal response. Other requests stay

@@ -38,6 +38,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         "snapshot" => snapshot(&driver, &flags).await?,
         "act" => act(&driver, &flags).await?,
+        "desktop-act" => desktop_act(&driver, &flags).await?,
         "doctor" => doctor(&driver).await?,
         "help" | "--help" | "-h" => print_help(),
         other => return Err(format!("unknown command: {other}; use `help`").into()),
@@ -246,6 +247,36 @@ async fn act(
     Ok(())
 }
 
+async fn desktop_act(
+    driver: &ComputerUseDriver,
+    flags: &[String],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let action_json = flag_value(flags, "--action-json")
+        .ok_or("desktop-act requires --action-json with a raw coordinate action")?;
+    let mut action: ComputerUseAction = serde_json::from_str(&action_json)?;
+    let session_id = flag_value(flags, "--session").unwrap_or_else(|| "dcc-mcp-desktop-cli".into());
+    let mut session = driver.desktop_session(session_id.clone())?;
+    session.start().await?;
+    let result = async {
+        let snapshot = session.screenshot().await?;
+        action.observation_id = Some(snapshot.observation_id.clone());
+        let action_result = session.perform_action(&action).await?;
+        Ok::<_, dcc_mcp_cua_core::ComputerUseError>(json!({
+            "success": true,
+            "session_id": session_id,
+            "observation_id": snapshot.observation_id,
+            "state": snapshot.state,
+            "action": action_result,
+        }))
+    }
+    .await;
+    let stop_result = session.stop().await;
+    let result = result?;
+    stop_result?;
+    println!("{}", serde_json::to_string_pretty(&result)?);
+    Ok(())
+}
+
 async fn doctor(driver: &ComputerUseDriver) -> Result<(), Box<dyn std::error::Error>> {
     let metadata = driver.raw().metadata().await?;
     let windows = driver.list_windows().await?;
@@ -332,6 +363,6 @@ fn has_flag(flags: &[String], name: &str) -> bool {
 
 fn print_help() {
     println!(
-        "dcc-mcp-cua\n\n  list [--app APP]\n  apps\n  desktop-snapshot [--output FILE]\n  screen-size\n  cursor-position\n  launch --name NAME|--bundle-id ID|--aumid ID|--path PATH|--launch-path PATH [--url URL] [--arg ARG] [--new-instance] [--start-minimized]\n  terminate --app APP --confirm\n  snapshot --app APP [--output FILE]\n  act --app APP --action-json JSON\n  clipboard-read --app APP [--include-text]\n  clipboard-write --app APP --text TEXT|--image-path FILE|--file-path FILE\n  doctor\n  host [--stdio|--endpoint PATH]\n\nHost uses Core-compatible big-endian JSON frames. Hello version 1 uses shared-memory snapshot descriptors for the existing Core client; version 3 uses optional request_id correlation and a separate binary PNG frame."
+        "dcc-mcp-cua\n\n  list [--app APP]\n  apps\n  desktop-snapshot [--output FILE]\n  screen-size\n  cursor-position\n  launch --name NAME|--bundle-id ID|--aumid ID|--path PATH|--launch-path PATH [--url URL] [--arg ARG] [--new-instance] [--start-minimized]\n  terminate --app APP --confirm\n  snapshot --app APP [--output FILE]\n  act --app APP --action-json JSON\n  desktop-act --action-json JSON [--session ID]\n  clipboard-read --app APP [--include-text]\n  clipboard-write --app APP --text TEXT|--image-path FILE|--file-path FILE\n  doctor\n  host [--stdio|--endpoint PATH]\n\nHost uses Core-compatible big-endian JSON frames. Hello version 1 uses shared-memory snapshot descriptors for the existing Core client; version 3 uses optional request_id correlation and a separate binary PNG frame."
     );
 }

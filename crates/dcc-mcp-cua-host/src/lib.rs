@@ -28,9 +28,10 @@ use dcc_mcp_cua_browser::{
     BrowserSnapshotRequest, BrowserTypeRequest,
 };
 use dcc_mcp_cua_core::{
-    ComputerUseAction, ComputerUseClipboardWriteRequest, ComputerUseDriver, ComputerUseError,
-    ComputerUseErrorCode, ComputerUsePoint, ComputerUseRecordingStartRequest, ComputerUseResult,
-    ComputerUseSession, ComputerUseTargetScope,
+    ComputerUseAction, ComputerUseClipboardWriteRequest, ComputerUseDesktopSession,
+    ComputerUseDriver, ComputerUseError, ComputerUseErrorCode, ComputerUsePoint,
+    ComputerUseRecordingStartRequest, ComputerUseResult, ComputerUseSession,
+    ComputerUseTargetScope,
 };
 use dcc_mcp_cua_shm::SharedImage;
 
@@ -62,6 +63,8 @@ pub const HOST_CAPABILITIES: &[&str] = &[
     "desktop_snapshot",
     "screen_size",
     "cursor_position",
+    "scoped_desktop_sessions",
+    "scoped_desktop_raw_input",
     "application_launch",
     "application_terminate",
     "clipboard_read",
@@ -136,6 +139,25 @@ enum Request {
     DesktopSnapshot {},
     ScreenSize {},
     CursorPosition {},
+    OpenDesktopSession {
+        session_id: String,
+        grant: TaskGrant,
+    },
+    DesktopSessionSnapshot {
+        session_id: String,
+        task_grant_id: String,
+        desktop_capability: String,
+    },
+    ExecuteDesktopAction {
+        session_id: String,
+        task_grant_id: String,
+        desktop_capability: String,
+        observation_id: String,
+        action: HostAction,
+    },
+    StopDesktopSession {
+        session_id: String,
+    },
     LaunchApp {
         grant: TaskGrant,
         launch: dcc_mcp_cua_core::ComputerUseLaunchRequest,
@@ -579,6 +601,14 @@ struct HostSession {
     latest_shared_image: Option<SharedImage>,
 }
 
+struct HostDesktopSession {
+    task_grant_id: String,
+    allow_raw_input: bool,
+    capability: String,
+    session: ComputerUseDesktopSession,
+    latest_shared_image: Option<SharedImage>,
+}
+
 type CancellationRegistry = Arc<Mutex<HashMap<String, CancellationHandle>>>;
 
 #[derive(Clone)]
@@ -693,6 +723,7 @@ where
     let mut writer = writer;
     let mut protocol_mode = None;
     let mut sessions = HashMap::<String, HostSession>::new();
+    let mut desktop_sessions = HashMap::<String, HostDesktopSession>::new();
     let mut desktop_shared_image = None;
     let cancellation_registry = Arc::new(Mutex::new(HashMap::new()));
 
@@ -716,6 +747,7 @@ where
             let mut operation = Box::pin(handle_request(
                 &driver,
                 &mut sessions,
+                &mut desktop_sessions,
                 &mut protocol_mode,
                 &mut desktop_shared_image,
                 &cancellation_registry,
@@ -738,7 +770,7 @@ where
                     frame = read_frame(&mut reader, MAX_JSON_FRAME_BYTES) => {
                         let Some(frame) = frame? else {
                             drop(operation);
-                            return cleanup_sessions(sessions).await;
+                            return cleanup_sessions(sessions, desktop_sessions).await;
                         };
                         let (cancel_id, next_request) = match parse_request_frame(&frame) {
                             Ok(request) => request,
@@ -777,6 +809,7 @@ where
             let (response, attachment) = match handle_request(
                 &driver,
                 &mut sessions,
+                &mut desktop_sessions,
                 &mut protocol_mode,
                 &mut desktop_shared_image,
                 &cancellation_registry,
@@ -796,11 +829,17 @@ where
         }
     }
 
-    cleanup_sessions(sessions).await
+    cleanup_sessions(sessions, desktop_sessions).await
 }
 
-async fn cleanup_sessions(sessions: HashMap<String, HostSession>) -> Result<(), HostError> {
+async fn cleanup_sessions(
+    sessions: HashMap<String, HostSession>,
+    desktop_sessions: HashMap<String, HostDesktopSession>,
+) -> Result<(), HostError> {
     for (_, mut session) in sessions {
+        let _ = session.session.stop().await;
+    }
+    for (_, mut session) in desktop_sessions {
         let _ = session.session.stop().await;
     }
     Ok(())
@@ -809,6 +848,7 @@ async fn cleanup_sessions(sessions: HashMap<String, HostSession>) -> Result<(), 
 async fn handle_request(
     driver: &ComputerUseDriver,
     sessions: &mut HashMap<String, HostSession>,
+    desktop_sessions: &mut HashMap<String, HostDesktopSession>,
     protocol_mode: &mut Option<ProtocolMode>,
     desktop_shared_image: &mut Option<SharedImage>,
     cancellation_registry: &CancellationRegistry,
@@ -883,6 +923,144 @@ async fn handle_request(
             json!({"type":"cursor_position", "result":driver.cursor_position().await?}),
             None,
         )),
+        Request::OpenDesktopSession { session_id, grant } => {
+            if desktop_sessions.contains_key(&session_id) {
+                return Err(HostError::Protocol("desktop session already exists".into()));
+            }
+            if grant.task_grant_id.trim().is_empty() || grant.dcc_type.trim().is_empty() {
+                return Err(HostError::Protocol("task grant is incomplete".into()));
+            }
+            let mut session = driver.desktop_session(session_id.clone())?;
+            let started = session.start().await?;
+            let capability = format!("cua-desktop-{}", Uuid::new_v4());
+            desktop_sessions.insert(
+                session_id.clone(),
+                HostDesktopSession {
+                    task_grant_id: grant.task_grant_id,
+                    allow_raw_input: grant.allow_raw_input,
+                    capability: capability.clone(),
+                    session,
+                    latest_shared_image: None,
+                },
+            );
+            Ok((
+                json!({
+                    "type":"desktop_session_opened",
+                    "session_id":session_id,
+                    "desktop_capability":capability,
+                    "started":started,
+                }),
+                None,
+            ))
+        }
+        Request::DesktopSessionSnapshot {
+            session_id,
+            task_grant_id,
+            desktop_capability,
+        } => {
+            let host = authorized_desktop_session(
+                desktop_sessions,
+                &session_id,
+                &task_grant_id,
+                &desktop_capability,
+            )?;
+            let snapshot = host.session.screenshot().await?;
+            let (image, attachment) = match mode {
+                ProtocolMode::CoreV1 => {
+                    let shared = SharedImage::from_bytes(&snapshot.data, "image/png")
+                        .map_err(|error| HostError::Protocol(error.to_string()))?;
+                    let descriptor = serde_json::to_value(shared.descriptor())
+                        .map_err(|error| HostError::Protocol(error.to_string()))?;
+                    host.latest_shared_image = Some(shared);
+                    (descriptor, None)
+                }
+                ProtocolMode::ExtendedV3 => (
+                    json!({
+                        "name": "",
+                        "id": snapshot.observation_id,
+                        "length": snapshot.data.len(),
+                        "mime_type": "image/png",
+                        "encoding": "binary_frame",
+                    }),
+                    Some(snapshot.data),
+                ),
+            };
+            Ok((
+                json!({
+                    "type":"desktop_snapshot",
+                    "session_id":session_id,
+                    "observation_id":snapshot.observation_id,
+                    "state":snapshot.state,
+                    "image":image,
+                }),
+                attachment,
+            ))
+        }
+        Request::ExecuteDesktopAction {
+            session_id,
+            task_grant_id,
+            desktop_capability,
+            observation_id,
+            action,
+        } => {
+            let host = authorized_desktop_session(
+                desktop_sessions,
+                &session_id,
+                &task_grant_id,
+                &desktop_capability,
+            )?;
+            if !host.allow_raw_input {
+                return Err(HostError::Protocol("raw input is not granted".into()));
+            }
+            if let Some((code, message)) = action.reject_policy() {
+                return Ok((
+                    json!({
+                        "type":"action_completed",
+                        "success":false,
+                        "policy_tier":code,
+                        "message":message,
+                        "error":code,
+                    }),
+                    None,
+                ));
+            }
+            if action.requires_approval() {
+                return Ok((
+                    json!({
+                        "type":"action_completed",
+                        "success":false,
+                        "policy_tier":"action_confirmation",
+                        "message":"trusted action-time confirmation is required",
+                        "error":"approval_required",
+                    }),
+                    None,
+                ));
+            }
+            let action = action.into_computer_use(observation_id, None)?;
+            let result = host.session.perform_action(&action).await?;
+            Ok((
+                json!({
+                    "type":"action_completed",
+                    "success":true,
+                    "action_id":format!("cua-desktop-action-{}", Uuid::new_v4()),
+                    "target_closed":false,
+                    "policy_tier":"task_grant",
+                    "message":"desktop CUA action completed",
+                    "result":result,
+                }),
+                None,
+            ))
+        }
+        Request::StopDesktopSession { session_id } => {
+            let mut host = desktop_sessions
+                .remove(&session_id)
+                .ok_or_else(|| HostError::Protocol("desktop session not found".into()))?;
+            let result = host.session.stop().await?;
+            Ok((
+                json!({"type":"desktop_session_stopped", "session_id":session_id, "result":result}),
+                None,
+            ))
+        }
         Request::LaunchApp { grant, launch } => {
             if grant.task_grant_id.trim().is_empty() || grant.dcc_type.trim().is_empty() {
                 return Err(HostError::Protocol("task grant is incomplete".into()));
@@ -1652,6 +1830,23 @@ fn authorized_session<'a>(
     Ok(session)
 }
 
+fn authorized_desktop_session<'a>(
+    sessions: &'a mut HashMap<String, HostDesktopSession>,
+    session_id: &str,
+    grant_id: &str,
+    capability: &str,
+) -> Result<&'a mut HostDesktopSession, HostError> {
+    let session = sessions
+        .get_mut(session_id)
+        .ok_or_else(|| HostError::Protocol("desktop session not found".into()))?;
+    if session.task_grant_id != grant_id || session.capability != capability {
+        return Err(HostError::Protocol(
+            "desktop session grant or capability mismatch".into(),
+        ));
+    }
+    Ok(session)
+}
+
 fn target_wire(target: &Value) -> Value {
     json!({
         "process_id": target["pid"],
@@ -2040,6 +2235,39 @@ mod tests {
                 "params": {}
             })),
             Ok(Request::CursorPosition {})
+        ));
+        assert!(matches!(
+            serde_json::from_value::<Request>(json!({
+                "method": "open_desktop_session",
+                "params": {
+                    "session_id": "desktop-1",
+                    "grant": {
+                        "task_grant_id": "task-1",
+                        "dcc_type": "desktop",
+                        "allow_raw_input": true
+                    }
+                }
+            })),
+            Ok(Request::OpenDesktopSession { .. })
+        ));
+        assert!(matches!(
+            serde_json::from_value::<Request>(json!({
+                "method": "execute_desktop_action",
+                "params": {
+                    "session_id": "desktop-1",
+                    "task_grant_id": "task-1",
+                    "desktop_capability": "cap-1",
+                    "observation_id": "desktop-obs-1",
+                    "action": {
+                        "action": "click",
+                        "input_kind": "raw_input",
+                        "intent": "ordinary_edit",
+                        "x": 10,
+                        "y": 20
+                    }
+                }
+            })),
+            Ok(Request::ExecuteDesktopAction { .. })
         ));
         assert!(matches!(
             serde_json::from_value::<Request>(json!({
