@@ -22,6 +22,10 @@ pub enum SharedImageError {
     Empty,
     #[error("shared image is larger than {MAX_IMAGE_BYTES} bytes")]
     TooLarge,
+    #[error("shared image descriptor is invalid: {0}")]
+    Invalid(String),
+    #[error("shared image has expired")]
+    Expired,
     #[error("shared memory failed: {0}")]
     Ipc(String),
 }
@@ -36,6 +40,12 @@ pub struct SharedImageDescriptor {
 
 /// Owns the named region until the consumer has opened it or the session ends.
 pub struct SharedImage {
+    memory: SharedMemory,
+    descriptor: SharedImageDescriptor,
+}
+
+/// Opens a Host-owned shared image for the duration of one response.
+pub struct SharedImageReader {
     memory: SharedMemory,
     descriptor: SharedImageDescriptor,
 }
@@ -93,8 +103,68 @@ impl SharedImage {
     }
 }
 
+impl SharedImageReader {
+    pub fn open(descriptor: SharedImageDescriptor) -> Result<Self, SharedImageError> {
+        if descriptor.name.is_empty() || descriptor.length == 0 {
+            return Err(SharedImageError::Invalid(
+                "name and length are required".into(),
+            ));
+        }
+        if descriptor.length > MAX_IMAGE_BYTES {
+            return Err(SharedImageError::TooLarge);
+        }
+        let memory = SharedMemory::open(&descriptor.name)
+            .map_err(|error| SharedImageError::Ipc(error.to_string()))?;
+        if memory.size() < HEADER_SIZE + descriptor.length {
+            return Err(SharedImageError::Invalid(
+                "shared memory region is smaller than its descriptor".into(),
+            ));
+        }
+        let header = memory
+            .read(0, HEADER_SIZE)
+            .map_err(|error| SharedImageError::Ipc(error.to_string()))?;
+        if read_u64(&header[0..8]) != HEADER_MAGIC
+            || read_u64(&header[8..16]) != descriptor.length as u64
+            || read_u64(&header[16..24]) != descriptor.length as u64
+        {
+            return Err(SharedImageError::Invalid(
+                "shared memory header does not match its descriptor".into(),
+            ));
+        }
+        let created_at = read_u64(&header[24..32]);
+        let ttl = read_u64(&header[32..40]);
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        if created_at > now || now - created_at > ttl {
+            return Err(SharedImageError::Expired);
+        }
+        Ok(Self { memory, descriptor })
+    }
+
+    #[must_use]
+    pub fn descriptor(&self) -> &SharedImageDescriptor {
+        &self.descriptor
+    }
+
+    pub fn read(&self) -> Result<Vec<u8>, SharedImageError> {
+        self.memory
+            .read(HEADER_SIZE, self.descriptor.length)
+            .map_err(|error| SharedImageError::Ipc(error.to_string()))
+    }
+}
+
 fn write_u64(target: &mut [u8], value: u64) {
     target.copy_from_slice(&value.to_ne_bytes());
+}
+
+fn read_u64(source: &[u8]) -> u64 {
+    u64::from_ne_bytes(
+        source
+            .try_into()
+            .expect("shared image header field is 8 bytes"),
+    )
 }
 
 #[cfg(test)]
@@ -118,6 +188,14 @@ mod tests {
         );
         assert_eq!(u64::from_ne_bytes(header[8..16].try_into().unwrap()), 3);
         assert_eq!(&opened.read(HEADER_SIZE, 3).unwrap(), b"png");
+    }
+
+    #[test]
+    fn reader_opens_and_reads_host_owned_image() {
+        let image = SharedImage::from_bytes(b"png", "image/png").unwrap();
+        let reader = SharedImageReader::open(image.descriptor().clone()).unwrap();
+        assert_eq!(reader.read().unwrap(), b"png");
+        assert_eq!(reader.descriptor().mime_type, "image/png");
     }
 
     #[test]

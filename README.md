@@ -87,6 +87,10 @@ let mut host = dcc_mcp_cua_client::HostClient::connect_default("dcc-mcp-core").a
 let response = host.request("list_windows", serde_json::json!({})).await?;
 ```
 
+For large or frequent images, use `connect_default_with_transport(...,
+SnapshotTransport::SharedMemory)` and open the returned descriptor with
+`dcc_mcp_cua_shm::SharedImageReader`; pixels do not cross the control pipe.
+
 On Windows, the default endpoint is the per-session named pipe
 `\\.\pipe\dcc-mcp-cua-v1-session-<WindowsSessionId>`. On Unix, the default
 endpoint is `$TMPDIR/dcc-mcp-cua-v1.sock`. The protocol uses an unsigned

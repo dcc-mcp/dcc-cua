@@ -41,12 +41,28 @@ pub enum HostClientError {
 
 pub type HostClientResult<T> = Result<T, HostClientError>;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SnapshotTransport {
+    BinaryFrame,
+    SharedMemory,
+}
+
+impl SnapshotTransport {
+    fn as_wire_name(self) -> &'static str {
+        match self {
+            Self::BinaryFrame => "binary_frame",
+            Self::SharedMemory => "shared_memory",
+        }
+    }
+}
+
 /// One ordered client connection to a DCC-MCP Computer Use Host.
 pub struct HostClient {
     reader: ReadHalf<BoxedHostStream>,
     writer: WriteHalf<BoxedHostStream>,
     next_request_id: u64,
     hello_complete: bool,
+    snapshot_transport: SnapshotTransport,
 }
 
 impl fmt::Debug for HostClient {
@@ -55,6 +71,7 @@ impl fmt::Debug for HostClient {
             .debug_struct("HostClient")
             .field("next_request_id", &self.next_request_id)
             .field("hello_complete", &self.hello_complete)
+            .field("snapshot_transport", &self.snapshot_transport)
             .finish_non_exhaustive()
     }
 }
@@ -65,13 +82,31 @@ impl HostClient {
         Self::connect(Self::default_endpoint(), client_name).await
     }
 
+    /// Connect to the platform-default endpoint with an explicit image transport.
+    pub async fn connect_default_with_transport(
+        client_name: impl Into<String>,
+        snapshot_transport: SnapshotTransport,
+    ) -> HostClientResult<Self> {
+        Self::connect_with_transport(Self::default_endpoint(), client_name, snapshot_transport)
+            .await
+    }
+
     /// Connect to an endpoint and complete the mandatory Host handshake.
     pub async fn connect(
         endpoint: impl Into<String>,
         client_name: impl Into<String>,
     ) -> HostClientResult<Self> {
+        Self::connect_with_transport(endpoint, client_name, SnapshotTransport::BinaryFrame).await
+    }
+
+    /// Connect to an endpoint and select binary frames or shared memory for images.
+    pub async fn connect_with_transport(
+        endpoint: impl Into<String>,
+        client_name: impl Into<String>,
+        snapshot_transport: SnapshotTransport,
+    ) -> HostClientResult<Self> {
         let stream = connect_endpoint(&endpoint.into()).await?;
-        let mut client = Self::from_stream(stream);
+        let mut client = Self::from_stream_with_transport(stream, snapshot_transport);
         client.hello(client_name).await?;
         Ok(client)
     }
@@ -82,12 +117,20 @@ impl HostClient {
     where
         S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
+        Self::from_stream_with_transport(stream, SnapshotTransport::BinaryFrame)
+    }
+
+    pub fn from_stream_with_transport<S>(stream: S, snapshot_transport: SnapshotTransport) -> Self
+    where
+        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    {
         let (reader, writer) = tokio::io::split(Box::new(stream) as BoxedHostStream);
         Self {
             reader,
             writer,
             next_request_id: 1,
             hello_complete: false,
+            snapshot_transport,
         }
     }
 
@@ -131,7 +174,7 @@ impl HostClient {
                 json!({
                 "protocol_version": HOST_PROTOCOL_VERSION,
                     "client_name": client_name.into(),
-                    "snapshot_transport": "binary_frame",
+                "snapshot_transport": self.snapshot_transport.as_wire_name(),
                 }),
             )
             .await?;
@@ -334,6 +377,17 @@ mod tests {
         ));
     }
 
+    #[tokio::test]
+    async fn client_can_negotiate_shared_memory_images() {
+        let (client_stream, server_stream) = tokio::io::duplex(4096);
+        let server = tokio::spawn(fake_hello_only_server(server_stream));
+        let mut client =
+            HostClient::from_stream_with_transport(client_stream, SnapshotTransport::SharedMemory);
+        let hello = client.hello("shared-memory-client").await.unwrap();
+        assert_eq!(hello.value["snapshot_transport"], "shared_memory");
+        server.await.unwrap().unwrap();
+    }
+
     async fn fake_server(mut stream: DuplexStream) -> HostClientResult<()> {
         let hello = read_frame(&mut stream, MAX_JSON_FRAME_BYTES)
             .await?
@@ -360,6 +414,20 @@ mod tests {
         )
         .await?;
         write_frame(&mut stream, b"png", MAX_BINARY_FRAME_BYTES).await
+    }
+
+    async fn fake_hello_only_server(mut stream: DuplexStream) -> HostClientResult<()> {
+        let hello = read_frame(&mut stream, MAX_JSON_FRAME_BYTES)
+            .await?
+            .unwrap();
+        let hello: Value = serde_json::from_slice(&hello).unwrap();
+        assert_eq!(hello["params"]["snapshot_transport"], "shared_memory");
+        write_json_response(
+            &mut stream,
+            hello["request_id"].as_str().unwrap(),
+            json!({"type":"hello","snapshot_transport":"shared_memory"}),
+        )
+        .await
     }
 
     async fn write_json_response(
