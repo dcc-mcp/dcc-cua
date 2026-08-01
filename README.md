@@ -83,7 +83,8 @@ The supported Core request surface is `hello`, `list_apps`, `launch_app`, `open_
 `clipboard_read`, `clipboard_write`, `recording_start`, `recording_stop`,
 `recording_state`,
 `execute_action`, `resume_session`, `terminate_app`, and
-`stop_session`. Semantic actions use CUA `element_index` values from the latest
+`stop_session`; `cancel` is available while `wait_for` is active on the same
+connection. Semantic actions use CUA `element_index` values from the latest
 accessibility snapshot; `set_text`/`set_value` use CUA's native semantic value
 path, while coordinate actions remain available for custom-drawn surfaces.
 `find` filters the current accessibility tree by text, role, or element index
@@ -106,6 +107,10 @@ the tab snapshot. Upload uses `allow_browser_input`; download is a separate
 destructive grant (`allow_browser_download`) and CUA's host approval evidence.
 `browser_dialog` only resolves page-owned JavaScript dialogs and requires the
 exact current `dialog_id` for accept/dismiss.
+While `wait_for` is running, the same connection accepts `cancel` with the
+exact session grant and window capability; the host returns both a cancellation
+acknowledgement and the wait's cancelled terminal response. Other requests stay
+ordered and are rejected until that wait completes.
 Shared-memory descriptors and typed system operations remain explicitly
 unsupported until their cross-platform contracts are implemented.
 
