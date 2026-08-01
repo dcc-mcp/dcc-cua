@@ -133,6 +133,12 @@ pub struct ComputerUseScreenshot {
     pub accessibility: Value,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct ComputerUseDesktopSnapshot {
+    pub data: Vec<u8>,
+    pub state: Value,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ComputerUseErrorCode {
@@ -224,6 +230,41 @@ impl ComputerUseDriver {
                     "CUA list_apps omitted structuredContent",
                 )
             })
+    }
+
+    /// Capture the full desktop without widening any window-scoped session.
+    pub async fn desktop_snapshot(&self) -> ComputerUseResult<ComputerUseDesktopSnapshot> {
+        let result = self
+            .driver
+            .call_tool("get_desktop_state".into(), json!({}).to_string())
+            .await
+            .map_err(|error| map_driver_error("capture CUA desktop state", error))?;
+        ensure_tool_ok("capture CUA desktop state", &result)?;
+        let image = result.images.first().ok_or_else(|| {
+            ComputerUseError::new(
+                ComputerUseErrorCode::CaptureFailed,
+                "CUA desktop state returned no screenshot",
+            )
+        })?;
+        let data = base64::engine::general_purpose::STANDARD
+            .decode(&image.data_base64)
+            .map_err(|error| {
+                ComputerUseError::new(ComputerUseErrorCode::CaptureFailed, error.to_string())
+            })?;
+        let state = result
+            .structured_json
+            .as_deref()
+            .and_then(|json| serde_json::from_str(json).ok())
+            .unwrap_or_else(|| json!({}));
+        Ok(ComputerUseDesktopSnapshot { data, state })
+    }
+
+    pub async fn screen_size(&self) -> ComputerUseResult<Value> {
+        self.call_tool_value("get_screen_size", json!({})).await
+    }
+
+    pub async fn cursor_position(&self) -> ComputerUseResult<Value> {
+        self.call_tool_value("get_cursor_position", json!({})).await
     }
 
     /// Launch one explicitly selected application through CUA's platform backend.

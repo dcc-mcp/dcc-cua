@@ -59,6 +59,9 @@ pub const HOST_CAPABILITIES: &[&str] = &[
     "cross_platform_window_control",
     "scoped_window_restore_show_activate",
     "application_inventory",
+    "desktop_snapshot",
+    "screen_size",
+    "cursor_position",
     "application_launch",
     "application_terminate",
     "clipboard_read",
@@ -130,6 +133,9 @@ pub enum HostError {
 enum Request {
     Hello(HelloParams),
     ListApps {},
+    DesktopSnapshot {},
+    ScreenSize {},
+    CursorPosition {},
     LaunchApp {
         grant: TaskGrant,
         launch: dcc_mcp_cua_core::ComputerUseLaunchRequest,
@@ -687,6 +693,7 @@ where
     let mut writer = writer;
     let mut protocol_mode = None;
     let mut sessions = HashMap::<String, HostSession>::new();
+    let mut desktop_shared_image = None;
     let cancellation_registry = Arc::new(Mutex::new(HashMap::new()));
 
     while let Some(frame) = read_frame(&mut reader, MAX_JSON_FRAME_BYTES).await? {
@@ -710,6 +717,7 @@ where
                 &driver,
                 &mut sessions,
                 &mut protocol_mode,
+                &mut desktop_shared_image,
                 &cancellation_registry,
                 request,
             ));
@@ -770,6 +778,7 @@ where
                 &driver,
                 &mut sessions,
                 &mut protocol_mode,
+                &mut desktop_shared_image,
                 &cancellation_registry,
                 request,
             )
@@ -801,6 +810,7 @@ async fn handle_request(
     driver: &ComputerUseDriver,
     sessions: &mut HashMap<String, HostSession>,
     protocol_mode: &mut Option<ProtocolMode>,
+    desktop_shared_image: &mut Option<SharedImage>,
     cancellation_registry: &CancellationRegistry,
     request: Request,
 ) -> Result<(Value, Option<Vec<u8>>), HostError> {
@@ -838,6 +848,41 @@ async fn handle_request(
             let apps = driver.list_apps().await?;
             Ok((json!({"type":"apps", "apps":apps}), None))
         }
+        Request::DesktopSnapshot {} => {
+            let snapshot = driver.desktop_snapshot().await?;
+            let (image, attachment) = match mode {
+                ProtocolMode::CoreV1 => {
+                    let shared = SharedImage::from_bytes(&snapshot.data, "image/png")
+                        .map_err(|error| HostError::Protocol(error.to_string()))?;
+                    let descriptor = serde_json::to_value(shared.descriptor())
+                        .map_err(|error| HostError::Protocol(error.to_string()))?;
+                    *desktop_shared_image = Some(shared);
+                    (descriptor, None)
+                }
+                ProtocolMode::ExtendedV3 => (
+                    json!({
+                        "name": "",
+                        "id": format!("desktop-{}", Uuid::new_v4()),
+                        "length": snapshot.data.len(),
+                        "mime_type": "image/png",
+                        "encoding": "binary_frame",
+                    }),
+                    Some(snapshot.data),
+                ),
+            };
+            Ok((
+                json!({"type":"desktop_snapshot", "state":snapshot.state, "image":image}),
+                attachment,
+            ))
+        }
+        Request::ScreenSize {} => Ok((
+            json!({"type":"screen_size", "result":driver.screen_size().await?}),
+            None,
+        )),
+        Request::CursorPosition {} => Ok((
+            json!({"type":"cursor_position", "result":driver.cursor_position().await?}),
+            None,
+        )),
         Request::LaunchApp { grant, launch } => {
             if grant.task_grant_id.trim().is_empty() || grant.dcc_type.trim().is_empty() {
                 return Err(HostError::Protocol("task grant is incomplete".into()));
@@ -1974,6 +2019,27 @@ mod tests {
                 "params": {}
             })),
             Ok(Request::ListApps {})
+        ));
+        assert!(matches!(
+            serde_json::from_value::<Request>(json!({
+                "method": "desktop_snapshot",
+                "params": {}
+            })),
+            Ok(Request::DesktopSnapshot {})
+        ));
+        assert!(matches!(
+            serde_json::from_value::<Request>(json!({
+                "method": "screen_size",
+                "params": {}
+            })),
+            Ok(Request::ScreenSize {})
+        ));
+        assert!(matches!(
+            serde_json::from_value::<Request>(json!({
+                "method": "cursor_position",
+                "params": {}
+            })),
+            Ok(Request::CursorPosition {})
         ));
         assert!(matches!(
             serde_json::from_value::<Request>(json!({
