@@ -18,6 +18,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     match command.as_str() {
         "list" => list_windows(&driver, &flags).await?,
         "apps" => list_apps(&driver).await?,
+        "tools" => list_tools(&driver).await?,
         "desktop-snapshot" => desktop_snapshot(&driver, &flags).await?,
         "screen-size" => screen_size(&driver).await?,
         "cursor-position" => cursor_position(&driver).await?,
@@ -37,6 +38,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             run_host(driver, transport).await?;
         }
         "snapshot" => snapshot(&driver, &flags).await?,
+        "verify" => verify_state(&driver, &flags).await?,
         "act" => act(&driver, &flags).await?,
         "desktop-act" => desktop_act(&driver, &flags).await?,
         "doctor" => doctor(&driver).await?,
@@ -66,6 +68,14 @@ async fn list_apps(driver: &ComputerUseDriver) -> Result<(), Box<dyn std::error:
     println!(
         "{}",
         serde_json::to_string_pretty(&driver.list_apps().await?)?
+    );
+    Ok(())
+}
+
+async fn list_tools(driver: &ComputerUseDriver) -> Result<(), Box<dyn std::error::Error>> {
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&driver.list_tools().await?)?
     );
     Ok(())
 }
@@ -247,6 +257,34 @@ async fn act(
     Ok(())
 }
 
+async fn verify_state(
+    driver: &ComputerUseDriver,
+    flags: &[String],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let scope = select_scope(driver, flags).await?;
+    let app = flag_value(flags, "--app").unwrap_or_else(|| "DCC application".into());
+    let session_id = flag_value(flags, "--session").unwrap_or_else(|| "dcc-mcp-verify-cli".into());
+    let expect_json = flag_value(flags, "--expect-json")
+        .ok_or("verify requires --expect-json with a JSON predicate array")?;
+    let expect = serde_json::from_str(&expect_json)?;
+    let timeout_ms = flag_value(flags, "--timeout-ms")
+        .map(|value| value.parse::<u64>())
+        .transpose()?;
+    let stable_samples = flag_value(flags, "--stable-samples")
+        .map(|value| value.parse::<u64>())
+        .transpose()?;
+    let mut session = driver.session(scope, app, session_id)?;
+    session.start().await?;
+    let verification = session
+        .verify_state(expect, timeout_ms, stable_samples, false)
+        .await;
+    let stop_result = session.stop().await;
+    let result = verification?.value;
+    stop_result?;
+    println!("{}", serde_json::to_string_pretty(&result)?);
+    Ok(())
+}
+
 async fn desktop_act(
     driver: &ComputerUseDriver,
     flags: &[String],
@@ -363,6 +401,6 @@ fn has_flag(flags: &[String], name: &str) -> bool {
 
 fn print_help() {
     println!(
-        "dcc-mcp-cua\n\n  list [--app APP]\n  apps\n  desktop-snapshot [--output FILE]\n  screen-size\n  cursor-position\n  launch --name NAME|--bundle-id ID|--aumid ID|--path PATH|--launch-path PATH [--url URL] [--arg ARG] [--new-instance] [--start-minimized]\n  terminate --app APP --confirm\n  snapshot --app APP [--output FILE]\n  act --app APP --action-json JSON\n  desktop-act --action-json JSON [--session ID]\n  clipboard-read --app APP [--include-text]\n  clipboard-write --app APP --text TEXT|--image-path FILE|--file-path FILE\n  doctor\n  host [--stdio|--endpoint PATH]\n\nHost uses versioned big-endian JSON frames. Hello version 1 negotiates binary-frame or shared-memory snapshots and supports request_id correlation."
+        "dcc-mcp-cua\n\n  list [--app APP]\n  apps\n  tools\n  desktop-snapshot [--output FILE]\n  screen-size\n  cursor-position\n  launch --name NAME|--bundle-id ID|--aumid ID|--path PATH|--launch-path PATH [--url URL] [--arg ARG] [--new-instance] [--start-minimized]\n  terminate --app APP --confirm\n  snapshot --app APP [--output FILE]\n  act --app APP --action-json JSON\n  verify --app APP --expect-json JSON [--timeout-ms N] [--stable-samples N]\n  desktop-act --action-json JSON [--session ID]\n  clipboard-read --app APP [--include-text]\n  clipboard-write --app APP --text TEXT|--image-path FILE|--file-path FILE\n  doctor\n  host [--stdio|--endpoint PATH]\n\nHost uses versioned big-endian JSON frames. Hello version 1 negotiates binary-frame or shared-memory snapshots and supports request_id correlation."
     );
 }

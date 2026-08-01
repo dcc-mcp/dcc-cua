@@ -50,6 +50,7 @@ pub const HOST_CAPABILITIES: &[&str] = &[
     "scoped_raw_input",
     "accessibility_snapshot",
     "accessibility_find",
+    "state_verification",
     "uia_snapshot_and_actions",
     "semantic_value_actions",
     "bounded_wait_for",
@@ -59,6 +60,8 @@ pub const HOST_CAPABILITIES: &[&str] = &[
     "cross_platform_window_control",
     "scoped_window_restore_show_activate",
     "application_inventory",
+    "window_inventory",
+    "tool_inventory",
     "desktop_snapshot",
     "screen_size",
     "cursor_position",
@@ -133,6 +136,11 @@ pub enum HostError {
 enum Request {
     Hello(HelloParams),
     ListApps {},
+    ListTools {},
+    ListWindows {
+        #[serde(default)]
+        app: Option<String>,
+    },
     DesktopSnapshot {},
     ScreenSize {},
     CursorPosition {},
@@ -228,6 +236,18 @@ enum Request {
         max_depth: u32,
         #[allow(dead_code)]
         max_nodes: u32,
+    },
+    VerifyState {
+        session_id: String,
+        task_grant_id: String,
+        window_capability: String,
+        expect: Value,
+        #[serde(default)]
+        timeout_ms: Option<u64>,
+        #[serde(default)]
+        stable_samples: Option<u64>,
+        #[serde(default)]
+        include_screenshot: bool,
     },
     BrowserSnapshot {
         session_id: String,
@@ -868,6 +888,21 @@ async fn handle_request(
             let apps = driver.list_apps().await?;
             Ok((json!({"type":"apps", "apps":apps}), None))
         }
+        Request::ListTools {} => Ok((
+            json!({"type":"tools", "tools":driver.list_tools().await?}),
+            None,
+        )),
+        Request::ListWindows { app } => {
+            let mut windows = driver.list_windows().await?;
+            if let Some(app) = app {
+                windows.retain(|window| {
+                    window["app_name"]
+                        .as_str()
+                        .is_some_and(|name| name.eq_ignore_ascii_case(&app))
+                });
+            }
+            Ok((json!({"type":"windows", "windows":windows}), None))
+        }
         Request::DesktopSnapshot {} => {
             let snapshot = driver.desktop_snapshot().await?;
             let (image, attachment) = match mode {
@@ -1339,6 +1374,36 @@ async fn handle_request(
                 }),
                 None,
             ))
+        }
+        Request::VerifyState {
+            session_id,
+            task_grant_id,
+            window_capability,
+            expect,
+            timeout_ms,
+            stable_samples,
+            include_screenshot,
+        } => {
+            let host =
+                authorized_session(sessions, &session_id, &task_grant_id, &window_capability)?;
+            let verification = host
+                .session
+                .verify_state(expect, timeout_ms, stable_samples, include_screenshot)
+                .await?;
+            let attachment = verification.image.as_ref().map(|image| image.data.clone());
+            let mut response = json!({
+                "type": "state_verified",
+                "session_id": session_id,
+                "result": verification.value,
+            });
+            if let Some(image) = verification.image {
+                response["image"] = json!({
+                    "encoding": "binary_frame",
+                    "mime_type": image.mime_type,
+                    "length": image.data.len(),
+                });
+            }
+            Ok((response, attachment))
         }
         Request::BrowserSnapshot {
             session_id,
@@ -2172,10 +2237,37 @@ mod tests {
         ));
         assert!(matches!(
             serde_json::from_value::<Request>(json!({
+                "method": "list_tools",
+                "params": {}
+            })),
+            Ok(Request::ListTools {})
+        ));
+        assert!(matches!(
+            serde_json::from_value::<Request>(json!({
+                "method": "list_windows",
+                "params": {"app": "chrome.exe"}
+            })),
+            Ok(Request::ListWindows { .. })
+        ));
+        assert!(matches!(
+            serde_json::from_value::<Request>(json!({
                 "method": "desktop_snapshot",
                 "params": {}
             })),
             Ok(Request::DesktopSnapshot {})
+        ));
+        assert!(matches!(
+            serde_json::from_value::<Request>(json!({
+                "method": "verify_state",
+                "params": {
+                    "session_id": "session-1",
+                    "task_grant_id": "task-1",
+                    "window_capability": "cap-1",
+                    "expect": [{"window": {"exists": true}}],
+                    "stable_samples": 2
+                }
+            })),
+            Ok(Request::VerifyState { .. })
         ));
         assert!(matches!(
             serde_json::from_value::<Request>(json!({

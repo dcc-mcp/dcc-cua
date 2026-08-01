@@ -140,6 +140,18 @@ pub struct ComputerUseDesktopSnapshot {
     pub observation_id: String,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct ComputerUseImage {
+    pub data: Vec<u8>,
+    pub mime_type: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ComputerUseVerification {
+    pub value: Value,
+    pub image: Option<ComputerUseImage>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ComputerUseErrorCode {
@@ -238,6 +250,21 @@ impl ComputerUseDriver {
                     "CUA list_apps omitted structuredContent",
                 )
             })
+    }
+
+    /// Return the live CUA tool inventory for adapter capability discovery.
+    pub async fn list_tools(&self) -> ComputerUseResult<Value> {
+        let raw = self
+            .driver
+            .list_tools_json()
+            .await
+            .map_err(|error| map_driver_error("list CUA tools", error))?;
+        serde_json::from_str(&raw).map_err(|error| {
+            ComputerUseError::new(
+                ComputerUseErrorCode::BackendUnavailable,
+                format!("CUA tool inventory returned invalid JSON: {error}"),
+            )
+        })
     }
 
     /// Capture the full desktop without widening any window-scoped session.
@@ -433,7 +460,7 @@ impl ComputerUseDesktopSession {
         }
         validate_action(action)?;
         if action.element_index.is_some()
-            || matches!(action.action.as_str(), "set_text" | "set_value" | "toggle")
+            || matches!(action.action.as_str(), "set_text" | "set_value")
         {
             return Err(ComputerUseError::new(
                 ComputerUseErrorCode::InvalidAction,
@@ -679,6 +706,54 @@ impl ComputerUseSession {
             })
     }
 
+    /// Verify bounded structured predicates against this exact native window.
+    ///
+    /// Verification is read-only and remains target-bound; the CUA driver
+    /// owns predicate semantics and returns tri-state evidence.
+    pub async fn verify_state(
+        &self,
+        expect: Value,
+        timeout_ms: Option<u64>,
+        stable_samples: Option<u64>,
+        include_screenshot: bool,
+    ) -> ComputerUseResult<ComputerUseVerification> {
+        self.ensure_active()?;
+        validate_verify_state_request(&expect, timeout_ms, stable_samples)?;
+        let expect = expect.as_array().expect("verify state was validated");
+        let target = self.revalidate_target().await?;
+        let result = self
+            .call_bound_tool(
+                "verify_state",
+                json!({
+                    "pid": target.pid,
+                    "window_id": target.window_id,
+                    "expect": expect,
+                    "timeout_ms": timeout_ms,
+                    "stable_samples": stable_samples,
+                    "include_screenshot": include_screenshot,
+                }),
+            )
+            .await?;
+        let value = serde_json::from_str(&result.raw_json).map_err(|error| {
+            ComputerUseError::new(
+                ComputerUseErrorCode::BackendUnavailable,
+                format!("CUA verify_state returned invalid JSON: {error}"),
+            )
+        })?;
+        let image = result.images.first().map(|image| {
+            base64::engine::general_purpose::STANDARD
+                .decode(&image.data_base64)
+                .map(|data| ComputerUseImage {
+                    data,
+                    mime_type: image.mime_type.clone(),
+                })
+        });
+        let image = image.transpose().map_err(|error| {
+            ComputerUseError::new(ComputerUseErrorCode::CaptureFailed, error.to_string())
+        })?;
+        Ok(ComputerUseVerification { value, image })
+    }
+
     /// Call one of CUA's typed browser tools within this exact native window.
     ///
     /// The allow-list is deliberate: browser adapters must not turn the Core
@@ -869,11 +944,11 @@ impl ComputerUseSession {
         }))
     }
 
-    async fn call_bound_tool_value(
+    async fn call_bound_tool(
         &self,
         name: &str,
         arguments: Value,
-    ) -> ComputerUseResult<Value> {
+    ) -> ComputerUseResult<cua_driver_sdk::ToolResult> {
         let mut object = arguments.as_object().cloned().ok_or_else(|| {
             ComputerUseError::new(
                 ComputerUseErrorCode::InvalidAction,
@@ -887,6 +962,15 @@ impl ComputerUseSession {
             .await
             .map_err(|error| map_driver_error(&format!("call CUA {name}"), error))?;
         ensure_tool_ok(&format!("call CUA {name}"), &result)?;
+        Ok(result)
+    }
+
+    async fn call_bound_tool_value(
+        &self,
+        name: &str,
+        arguments: Value,
+    ) -> ComputerUseResult<Value> {
+        let result = self.call_bound_tool(name, arguments).await?;
         serde_json::from_str(&result.raw_json).map_err(|error| {
             ComputerUseError::new(
                 ComputerUseErrorCode::BackendUnavailable,
@@ -1282,6 +1366,38 @@ fn validate_recording_start_request(
     Ok(())
 }
 
+fn validate_verify_state_request(
+    expect: &Value,
+    timeout_ms: Option<u64>,
+    stable_samples: Option<u64>,
+) -> ComputerUseResult<()> {
+    let predicates = expect.as_array().ok_or_else(|| {
+        ComputerUseError::new(
+            ComputerUseErrorCode::InvalidAction,
+            "verify_state expect must be an array",
+        )
+    })?;
+    if !(1..=8).contains(&predicates.len()) {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::InvalidAction,
+            "verify_state expect must contain 1..8 predicates",
+        ));
+    }
+    if timeout_ms.is_some_and(|value| value > 10_000) {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::InvalidAction,
+            "verify_state timeout_ms must be at most 10000",
+        ));
+    }
+    if stable_samples.is_some_and(|value| !(1..=5).contains(&value)) {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::InvalidAction,
+            "verify_state stable_samples must be 1..5",
+        ));
+    }
+    Ok(())
+}
+
 fn validate_action(action: &ComputerUseAction) -> ComputerUseResult<()> {
     const ACTIONS: [&str; 12] = [
         "click",
@@ -1458,7 +1574,7 @@ fn action_arguments(action: &ComputerUseAction, session: &str, target: &WindowTa
 fn desktop_action_arguments(action: &ComputerUseAction, session: &str) -> Value {
     let mut args = json!({
         "_tool": match action.action.as_str() {
-            "click" | "double_click" | "right_click" => "click",
+            "click" | "double_click" | "right_click" | "toggle" => "click",
             "drag" => "drag",
             "scroll" => "scroll",
             "type" => "type_text",
@@ -1478,7 +1594,7 @@ fn desktop_action_arguments(action: &ComputerUseAction, session: &str) -> Value 
             object.insert("x".into(), json!(action.x));
             object.insert("y".into(), json!(action.y));
         }
-        "click" | "double_click" | "right_click" => {
+        "click" | "double_click" | "right_click" | "toggle" => {
             object.insert("x".into(), json!(action.x));
             object.insert("y".into(), json!(action.y));
             object.insert(
@@ -1630,6 +1746,31 @@ mod tests {
     }
 
     #[test]
+    fn verify_state_bounds_are_rejected_before_backend_call() {
+        assert!(validate_verify_state_request(&json!([]), None, None).is_err());
+        assert!(
+            validate_verify_state_request(
+                &json!([{"window": {"exists": true}}]),
+                Some(10_001),
+                None,
+            )
+            .is_err()
+        );
+        assert!(
+            validate_verify_state_request(&json!([{"window": {"exists": true}}]), None, Some(6),)
+                .is_err()
+        );
+        assert!(
+            validate_verify_state_request(
+                &json!([{"window": {"exists": true}}]),
+                Some(1_000),
+                Some(2),
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
     fn png_dimensions_reads_the_png_header() {
         let mut data = b"\x89PNG\r\n\x1a\n".to_vec();
         data.extend_from_slice(&[0; 8]);
@@ -1719,6 +1860,16 @@ mod tests {
         assert_eq!(args["session"], "desktop-session");
         assert_eq!(args["x"], 100.0);
         assert!(args.get("pid").is_none());
+
+        let toggle = ComputerUseAction {
+            action: "toggle".into(),
+            x: Some(100.0),
+            y: Some(200.0),
+            ..Default::default()
+        };
+        let toggle_args = desktop_action_arguments(&toggle, "desktop-session");
+        assert_eq!(toggle_args["_tool"], "click");
+        assert_eq!(toggle_args["count"], 1);
     }
 
     #[test]

@@ -37,6 +37,7 @@ operations.
 ```powershell
 cargo run -p dcc-mcp-cua-cli -- list --app chrome.exe
 cargo run -p dcc-mcp-cua-cli -- apps
+cargo run -p dcc-mcp-cua-cli -- tools
 cargo run -p dcc-mcp-cua-cli -- desktop-snapshot --output desktop.png
 cargo run -p dcc-mcp-cua-cli -- screen-size
 cargo run -p dcc-mcp-cua-cli -- cursor-position
@@ -45,9 +46,10 @@ cargo run -p dcc-mcp-cua-cli -- launch --name Calculator
 cargo run -p dcc-mcp-cua-cli -- doctor
 cargo run -p dcc-mcp-cua-cli -- snapshot --app chrome.exe --output screenshot.png
 cargo run -p dcc-mcp-cua-cli -- act --app chrome.exe --action-json '{"action":"click","x":100,"y":100}'
+cargo run -p dcc-mcp-cua-cli -- verify --app chrome.exe --expect-json '[{"window":{"exists":true}}]'
 ```
 
-`list`, `apps`, `desktop-snapshot`, `screen-size`, `cursor-position`, and
+`list`, `apps`, `tools`, `desktop-snapshot`, `screen-size`, `cursor-position`, and
 `doctor` are read-only. `snapshot` and `act` require one exact
 target; if an application has multiple windows, pass `--pid` and
 `--window-id` instead of relying on an app name.
@@ -82,9 +84,9 @@ frame under 4 MiB. Requests may include a top-level `request_id` (1–128
 characters); the host echoes it on the JSON response, including errors. The
 handshake advertises the exact capabilities of this build.
 
-The supported request surface is `hello`, `list_apps`, `launch_app`, `open_session`,
+The supported request surface is `hello`, `list_apps`, `list_tools`, `list_windows`, `launch_app`, `open_session`,
 `get_window_state`, `change_window_state` (`restore`, `show`, `activate`), `snapshot`,
-`accessibility_snapshot`, `find`, `wait_for`, `browser_snapshot`,
+`accessibility_snapshot`, `verify_state`, `find`, `wait_for`, `browser_snapshot`,
 `browser_prepare`, `browser_navigate`, `browser_click`, `browser_type`, `browser_pointer`,
 `browser_set_input_files`, `browser_download`, `browser_dialog`,
 `clipboard_read`, `clipboard_write`, `recording_start`, `recording_stop`,
