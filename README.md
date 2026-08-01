@@ -167,6 +167,13 @@ ordered and are rejected until that wait completes.
 operation; the returned window state is always revalidated against the exact
 PID/HWND target.
 
+Window actions accept CUA's `element_token` as an alternative to
+`element_index`; when both are supplied the token wins. They also accept
+`delivery_mode: "background" | "foreground"`. The default is `background`,
+which preserves the user's foreground and lets CUA select its accessibility or
+synthetic-event route. Use `foreground` only after CUA reports that the
+background route is unavailable.
+
 `get_session_state` reads CUA's live capture policy. `escalate_session` is a
 one-way window-to-desktop scope transition and requires the separate
 `allow_session_escalation: true` grant plus one of CUA's bounded escalation

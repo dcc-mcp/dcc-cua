@@ -47,6 +47,8 @@ pub const HOST_CAPABILITIES: &[&str] = &[
     "exact_window_state",
     "connection_scoped_sessions",
     "observation_fencing",
+    "semantic_element_tokens",
+    "background_first_input_delivery",
     "scoped_raw_input",
     "accessibility_snapshot",
     "accessibility_find",
@@ -460,6 +462,10 @@ struct HostAction {
     action: String,
     #[serde(default)]
     element_index: Option<u32>,
+    #[serde(default)]
+    element_token: Option<String>,
+    #[serde(default)]
+    delivery_mode: Option<String>,
     input_kind: String,
     intent: String,
     #[serde(default)]
@@ -590,10 +596,13 @@ impl HostAction {
                 "input_kind must be raw_input or semantic",
             ));
         }
-        if self.input_kind != "raw_input" && self.element_index.is_none() {
+        if self.input_kind != "raw_input"
+            && self.element_index.is_none()
+            && self.element_token.is_none()
+        {
             return Err(ComputerUseError::new(
                 ComputerUseErrorCode::InvalidAction,
-                "semantic actions require a current CUA element_index",
+                "semantic actions require a current CUA element_index or element_token",
             ));
         }
         let action = if self.action == "set_checked" {
@@ -610,6 +619,8 @@ impl HostAction {
             action,
             observation_id: Some(observation_id),
             element_index: self.element_index,
+            element_token: self.element_token,
+            delivery_mode: self.delivery_mode,
             x: self.x,
             y: self.y,
             button: self.button,
@@ -2371,6 +2382,8 @@ mod tests {
         let action = HostAction {
             action: "keypress".into(),
             element_index: None,
+            element_token: None,
+            delivery_mode: None,
             input_kind: "raw_input".into(),
             intent: "terminal_or_run_dialog".into(),
             x: None,
@@ -2388,10 +2401,12 @@ mod tests {
     }
 
     #[test]
-    fn semantic_actions_require_element_index() {
+    fn semantic_actions_require_element_locator() {
         let action = HostAction {
             action: "set_checked".into(),
             element_index: None,
+            element_token: None,
+            delivery_mode: None,
             input_kind: "semantic".into(),
             intent: "ordinary_edit".into(),
             x: None,
@@ -2407,6 +2422,31 @@ mod tests {
         };
         let error = action.into_computer_use("obs-1".into()).unwrap_err();
         assert_eq!(error.code, ComputerUseErrorCode::InvalidAction);
+    }
+
+    #[test]
+    fn semantic_actions_forward_element_tokens_and_delivery_mode() {
+        let action = HostAction {
+            action: "click".into(),
+            element_index: None,
+            element_token: Some("element-token".into()),
+            delivery_mode: Some("background".into()),
+            input_kind: "semantic".into(),
+            intent: "ordinary_edit".into(),
+            x: None,
+            y: None,
+            button: None,
+            scroll_x: None,
+            scroll_y: None,
+            path: Vec::new(),
+            text: None,
+            checked: None,
+            keys: Vec::new(),
+            duration_ms: None,
+        };
+        let action = action.into_computer_use("obs-1".into()).unwrap();
+        assert_eq!(action.element_token.as_deref(), Some("element-token"));
+        assert_eq!(action.delivery_mode.as_deref(), Some("background"));
     }
 
     #[test]

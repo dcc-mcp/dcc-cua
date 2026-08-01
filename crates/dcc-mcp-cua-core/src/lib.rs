@@ -20,6 +20,7 @@ use thiserror::Error;
 const MAX_TEXT_UTF16_UNITS: usize = 4_096;
 const MAX_KEY_TOKENS: usize = 16;
 const MAX_DRAG_POINTS: usize = 256;
+const MAX_ELEMENT_TOKEN_CHARS: usize = 512;
 const MAX_LAUNCH_ARGUMENTS: usize = 32;
 const MAX_LAUNCH_URLS: usize = 16;
 const MAX_LOCAL_PATH_CHARS: usize = 4_096;
@@ -60,6 +61,10 @@ pub struct ComputerUseAction {
     pub observation_id: Option<String>,
     #[serde(default)]
     pub element_index: Option<u32>,
+    #[serde(default)]
+    pub element_token: Option<String>,
+    #[serde(default)]
+    pub delivery_mode: Option<String>,
     pub x: Option<f64>,
     pub y: Option<f64>,
     pub button: Option<String>,
@@ -1905,6 +1910,26 @@ fn validate_action(action: &ComputerUseAction) -> ComputerUseResult<()> {
             "text exceeds the host UTF-16 limit",
         ));
     }
+    if action
+        .element_token
+        .as_deref()
+        .is_some_and(|token| token.is_empty() || token.chars().count() > MAX_ELEMENT_TOKEN_CHARS)
+    {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::InvalidAction,
+            "element_token must be non-empty and at most 512 characters",
+        ));
+    }
+    if action
+        .delivery_mode
+        .as_deref()
+        .is_some_and(|mode| !matches!(mode, "background" | "foreground"))
+    {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::InvalidAction,
+            "delivery_mode must be background or foreground",
+        ));
+    }
     for point in action.path.iter().chain(
         [action
             .x
@@ -1920,7 +1945,9 @@ fn validate_action(action: &ComputerUseAction) -> ComputerUseResult<()> {
             ));
         }
     }
-    if matches!(action.action.as_str(), "set_text" | "set_value") && action.element_index.is_none()
+    if matches!(action.action.as_str(), "set_text" | "set_value")
+        && action.element_index.is_none()
+        && action.element_token.is_none()
     {
         return Err(ComputerUseError::new(
             ComputerUseErrorCode::InvalidAction,
@@ -1946,7 +1973,7 @@ fn action_arguments(action: &ComputerUseAction, session: &str, target: &WindowTa
         "pid": target.pid,
         "window_id": target.window_id,
         "session": session,
-        "delivery_mode": "foreground",
+        "delivery_mode": action.delivery_mode.as_deref().unwrap_or("background"),
     });
     let mut args = scope;
     let object = args
@@ -2033,7 +2060,12 @@ fn action_arguments(action: &ComputerUseAction, session: &str, target: &WindowTa
         }
         _ => {}
     }
-    if let Some(element_index) = action.element_index {
+    if let Some(element_token) = action.element_token.as_deref() {
+        object.insert("element_token".into(), json!(element_token));
+        object.remove("element_index");
+        object.remove("x");
+        object.remove("y");
+    } else if let Some(element_index) = action.element_index {
         object.insert("element_index".into(), json!(element_index));
         object.remove("x");
         object.remove("y");
@@ -2145,21 +2177,7 @@ fn ensure_tool_ok(context: &str, result: &cua_driver_sdk::ToolResult) -> Compute
         } else {
             result.text.clone()
         };
-        let mapped = if code.contains("interrupt")
-            || message.to_ascii_lowercase().contains("user_interrupted")
-        {
-            ComputerUseErrorCode::UserInterrupted
-        } else if code.contains("browser") || message.to_ascii_lowercase().contains("browser_") {
-            ComputerUseErrorCode::BrowserRefused
-        } else if code.contains("clipboard") || message.to_ascii_lowercase().contains("clipboard") {
-            ComputerUseErrorCode::ClipboardRefused
-        } else if code.contains("record") || message.to_ascii_lowercase().contains("recording") {
-            ComputerUseErrorCode::RecordingRefused
-        } else if code.contains("window") || code.contains("target") {
-            ComputerUseErrorCode::InvalidTarget
-        } else {
-            ComputerUseErrorCode::InputFailed
-        };
+        let mapped = classify_driver_failure(code, &message, ComputerUseErrorCode::InputFailed);
         return Err(ComputerUseError::new(
             mapped,
             format!("{context}: {message}"),
@@ -2170,10 +2188,19 @@ fn ensure_tool_ok(context: &str, result: &cua_driver_sdk::ToolResult) -> Compute
 
 fn map_driver_error(context: &str, error: impl std::fmt::Display) -> ComputerUseError {
     let message = error.to_string();
-    let lower = message.to_ascii_lowercase();
-    let code = if lower.contains("interrupt") || lower.contains("user_interrupted") {
+    let code = classify_driver_failure("", &message, ComputerUseErrorCode::BackendUnavailable);
+    ComputerUseError::new(code, format!("{context}: {message}"))
+}
+
+fn classify_driver_failure(
+    code: &str,
+    message: &str,
+    fallback: ComputerUseErrorCode,
+) -> ComputerUseErrorCode {
+    let lower = format!("{code} {message}").to_ascii_lowercase();
+    if lower.contains("interrupt") || lower.contains("user_interrupted") {
         ComputerUseErrorCode::UserInterrupted
-    } else if lower.contains("browser_") {
+    } else if lower.contains("browser_") || lower.contains("browser") {
         ComputerUseErrorCode::BrowserRefused
     } else if lower.contains("clipboard") {
         ComputerUseErrorCode::ClipboardRefused
@@ -2189,9 +2216,8 @@ fn map_driver_error(context: &str, error: impl std::fmt::Display) -> ComputerUse
     } else if lower.contains("window") || lower.contains("target") {
         ComputerUseErrorCode::InvalidTarget
     } else {
-        ComputerUseErrorCode::BackendUnavailable
-    };
-    ComputerUseError::new(code, format!("{context}: {message}"))
+        fallback
+    }
 }
 
 fn png_dimensions(data: &[u8]) -> Option<(u32, u32)> {
@@ -2257,6 +2283,27 @@ mod tests {
     }
 
     #[test]
+    fn tool_provider_timeout_is_backend_unavailable() {
+        let result = cua_driver_sdk::ToolResult {
+            is_error: true,
+            error_code: Some("input_failed".into()),
+            raw_json: "{}".into(),
+            text: "get_window_state timed out: UIA provider unresponsive".into(),
+            structured_json: None,
+            images: Vec::new(),
+            degraded: false,
+            action: None,
+            verification: None,
+        };
+        assert_eq!(
+            ensure_tool_ok("capture CUA window", &result)
+                .unwrap_err()
+                .code,
+            ComputerUseErrorCode::BackendUnavailable
+        );
+    }
+
+    #[test]
     fn native_tool_boundary_rejects_reserved_and_dedicated_routes() {
         assert!(validate_native_tool_request("debug_window_info", &json!({})).is_ok());
         assert!(validate_native_tool_request("bad-name", &json!({})).is_err());
@@ -2308,6 +2355,61 @@ mod tests {
         assert_eq!(args["element_index"], 7);
         assert!(args.get("x").is_none());
         assert!(args.get("y").is_none());
+    }
+
+    #[test]
+    fn semantic_tokens_and_background_delivery_reach_cua() {
+        let action = ComputerUseAction {
+            action: "click".into(),
+            element_index: Some(7),
+            element_token: Some("element-token".into()),
+            delivery_mode: Some("background".into()),
+            x: Some(12.0),
+            y: Some(13.0),
+            ..Default::default()
+        };
+        let args = action_arguments(
+            &action,
+            "session",
+            &WindowTarget {
+                pid: 42,
+                window_id: 7,
+                title: "DCC".into(),
+                app_name: "dcc".into(),
+                bounds: [0, 0, 100, 100],
+                is_on_screen: true,
+                is_minimized: false,
+                z_index: 1,
+                is_foreground: true,
+            },
+        );
+        assert_eq!(args["element_token"], "element-token");
+        assert!(args.get("element_index").is_none());
+        assert_eq!(args["delivery_mode"], "background");
+        assert!(args.get("x").is_none());
+        assert!(args.get("y").is_none());
+    }
+
+    #[test]
+    fn action_rejects_unknown_delivery_mode_and_unbounded_token() {
+        assert_eq!(
+            validate_action(&ComputerUseAction {
+                action: "click".into(),
+                delivery_mode: Some("guess".into()),
+                ..Default::default()
+            })
+            .unwrap_err()
+            .code,
+            ComputerUseErrorCode::InvalidAction
+        );
+        assert!(
+            validate_action(&ComputerUseAction {
+                action: "click".into(),
+                element_token: Some("x".repeat(MAX_ELEMENT_TOKEN_CHARS + 1)),
+                ..Default::default()
+            })
+            .is_err()
+        );
     }
 
     #[test]
