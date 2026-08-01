@@ -1,4 +1,4 @@
-//! CUA-backed, Core-compatible scoped Computer Use.
+//! CUA-backed, scoped Computer Use domain and execution boundary.
 //!
 //! CUA owns native capture/input and its color-coded cursor. This crate keeps
 //! the DCC-MCP safety shell: exact target scope, fresh observations, bounded
@@ -824,7 +824,7 @@ impl ComputerUseSession {
             .await
     }
 
-    /// Execute one Core-shaped action through CUA after a fresh target fence.
+    /// Execute one scoped action through CUA after a fresh target fence.
     pub async fn perform_action(&mut self, action: &ComputerUseAction) -> ComputerUseResult<Value> {
         self.ensure_active()?;
         validate_action(action)?;
@@ -1226,7 +1226,7 @@ fn validate_clipboard_write_request(
     {
         return Err(ComputerUseError::new(
             ComputerUseErrorCode::InvalidAction,
-            "clipboard text exceeds the Core UTF-16 limit",
+            "clipboard text exceeds the host UTF-16 limit",
         ));
     }
     for path in [request.image_path.as_deref(), request.file_path.as_deref()]
@@ -1306,7 +1306,7 @@ fn validate_action(action: &ComputerUseAction) -> ComputerUseResult<()> {
     if action.keys.len() > MAX_KEY_TOKENS || action.path.len() > MAX_DRAG_POINTS {
         return Err(ComputerUseError::new(
             ComputerUseErrorCode::InvalidAction,
-            "action exceeds the Core safety limits",
+            "action exceeds the host safety limits",
         ));
     }
     if action
@@ -1316,7 +1316,7 @@ fn validate_action(action: &ComputerUseAction) -> ComputerUseResult<()> {
     {
         return Err(ComputerUseError::new(
             ComputerUseErrorCode::InvalidAction,
-            "text exceeds the Core UTF-16 limit",
+            "text exceeds the host UTF-16 limit",
         ));
     }
     for point in action.path.iter().chain(

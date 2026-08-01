@@ -1,6 +1,6 @@
 [package]
 name = "dcc-mcp-cua-host"
-description = "Core-compatible local Host IPC for DCC-MCP Computer Use"
+description = "Versioned local Host IPC for DCC-MCP Computer Use"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

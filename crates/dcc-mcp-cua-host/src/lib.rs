@@ -1,9 +1,9 @@
-//! Long-lived local host IPC for dcc-mcp-core.
+//! Long-lived local host IPC for dcc-mcp Computer Use.
 //!
-//! The wire format intentionally matches Core's existing UI Control framing:
-//! big-endian `u32` length followed by one UTF-8 JSON object. Screenshot bytes
-//! are sent as a second framed payload, so the control frame stays bounded and
-//! the transport does not base64-encode pixels.
+//! The wire format is a versioned length-prefixed protocol: a big-endian `u32`
+//! followed by one UTF-8 JSON object. Screenshot bytes are sent as a second
+//! framed payload when binary transport is selected, so control frames stay
+//! bounded and the transport does not base64-encode pixels.
 
 use std::collections::HashMap;
 #[cfg(unix)]
@@ -35,12 +35,11 @@ use dcc_mcp_cua_core::{
 };
 use dcc_mcp_cua_shm::SharedImage;
 
-/// Core-compatible control frame limit. Pixel bytes use a separate bounded frame.
+/// Control frame limit. Pixel bytes use a separate bounded frame.
 pub const MAX_JSON_FRAME_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_BINARY_FRAME_BYTES: usize = 64 * 1024 * 1024;
 pub const MAX_REQUEST_ID_CHARS: usize = 128;
-pub const HOST_PROTOCOL_VERSION: u32 = 3;
-pub const CORE_COMPAT_PROTOCOL_VERSION: u32 = 1;
+pub const HOST_PROTOCOL_VERSION: u32 = 1;
 
 /// Capabilities this implementation actually provides.
 pub const HOST_CAPABILITIES: &[&str] = &[
@@ -94,8 +93,6 @@ impl HostTransport {
         #[cfg(windows)]
         {
             let mut session_id = 0;
-            // The legacy Core client discovers this exact per-Windows-session
-            // endpoint before sending its protocol-v1 hello.
             let resolved = unsafe {
                 windows_sys::Win32::System::RemoteDesktop::ProcessIdToSessionId(
                     windows_sys::Win32::System::Threading::GetCurrentProcessId(),
@@ -103,20 +100,20 @@ impl HostTransport {
                 ) != 0
             };
             if resolved {
-                return format!(r"\\.\pipe\dcc-mcp-ui-control-host-v1-session-{session_id}");
+                return format!(r"\\.\pipe\dcc-mcp-cua-v1-session-{session_id}");
             }
-            return r"\\.\pipe\dcc-mcp-computer-use-v1".to_owned();
+            return r"\\.\pipe\dcc-mcp-cua-v1".to_owned();
         }
         #[cfg(unix)]
         {
             return std::env::temp_dir()
-                .join("dcc-mcp-computer-use-v1.sock")
+                .join("dcc-mcp-cua-v1.sock")
                 .to_string_lossy()
                 .into_owned();
         }
         #[cfg(not(any(windows, unix)))]
         {
-            "dcc-mcp-computer-use-v1".to_owned()
+            "dcc-mcp-cua-v1".to_owned()
         }
     }
 }
@@ -324,23 +321,34 @@ enum Request {
 #[derive(Debug, Deserialize)]
 struct HelloParams {
     protocol_version: u32,
-    #[allow(dead_code)]
     client_name: String,
+    #[serde(default)]
+    snapshot_transport: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ProtocolMode {
-    CoreV1,
-    ExtendedV3,
+enum SnapshotTransport {
+    SharedMemory,
+    BinaryFrame,
 }
 
-impl ProtocolMode {
-    fn from_version(version: u32) -> Result<Self, HostError> {
-        match version {
-            CORE_COMPAT_PROTOCOL_VERSION => Ok(Self::CoreV1),
-            HOST_PROTOCOL_VERSION => Ok(Self::ExtendedV3),
-            _ => Err(HostError::Protocol(format!(
-                "protocol version {version} is not supported"
+impl SnapshotTransport {
+    fn from_hello(params: &HelloParams) -> Result<Self, HostError> {
+        if params.protocol_version != HOST_PROTOCOL_VERSION {
+            return Err(HostError::Protocol(format!(
+                "protocol version {} is not supported",
+                params.protocol_version
+            )));
+        }
+        match params
+            .snapshot_transport
+            .as_deref()
+            .unwrap_or("binary_frame")
+        {
+            "binary_frame" => Ok(Self::BinaryFrame),
+            "shared_memory" => Ok(Self::SharedMemory),
+            value => Err(HostError::Protocol(format!(
+                "snapshot transport {value} is not supported"
             ))),
         }
     }
@@ -385,8 +393,6 @@ enum WindowOperation {
 #[derive(Debug, Deserialize)]
 struct HostAction {
     action: String,
-    #[serde(default)]
-    control_id: Option<String>,
     #[serde(default)]
     element_index: Option<u32>,
     input_kind: String,
@@ -512,49 +518,18 @@ impl HostAction {
         )
     }
 
-    fn into_computer_use(
-        self,
-        observation_id: String,
-        accessibility: Option<&Value>,
-    ) -> ComputerUseResult<ComputerUseAction> {
+    fn into_computer_use(self, observation_id: String) -> ComputerUseResult<ComputerUseAction> {
         if !matches!(self.input_kind.as_str(), "raw_input" | "semantic") {
             return Err(ComputerUseError::new(
                 ComputerUseErrorCode::InvalidAction,
                 "input_kind must be raw_input or semantic",
             ));
         }
-        if self.input_kind == "raw_input" && self.control_id.is_some() {
+        if self.input_kind != "raw_input" && self.element_index.is_none() {
             return Err(ComputerUseError::new(
                 ComputerUseErrorCode::InvalidAction,
-                "control_id is only valid for semantic actions",
+                "semantic actions require a current CUA element_index",
             ));
-        }
-        let resolved_element_index = self.element_index.or_else(|| {
-            self.control_id.as_deref().and_then(|id| {
-                accessibility.and_then(|root| find_element_index_by_control_id(root, id))
-            })
-        });
-        if self.input_kind != "raw_input" && resolved_element_index.is_none() {
-            return Err(ComputerUseError::new(
-                ComputerUseErrorCode::InvalidAction,
-                "semantic actions require a current CUA element_index or resolvable control_id",
-            ));
-        }
-        if let (Some(control_id), Some(accessibility)) = (self.control_id.as_deref(), accessibility)
-        {
-            let mapped = find_element_index_by_control_id(accessibility, control_id);
-            if mapped.is_none() {
-                return Err(ComputerUseError::new(
-                    ComputerUseErrorCode::InvalidAction,
-                    "control_id is not present in the latest accessibility snapshot",
-                ));
-            }
-            if self.element_index.is_some() && mapped != self.element_index {
-                return Err(ComputerUseError::new(
-                    ComputerUseErrorCode::StaleObservation,
-                    "control_id and element_index identify different controls",
-                ));
-            }
         }
         let action = if self.action == "set_checked" {
             "set_value".to_owned()
@@ -569,7 +544,7 @@ impl HostAction {
         Ok(ComputerUseAction {
             action,
             observation_id: Some(observation_id),
-            element_index: resolved_element_index,
+            element_index: self.element_index,
             x: self.x,
             y: self.y,
             button: self.button,
@@ -721,7 +696,7 @@ where
 {
     let mut reader = reader;
     let mut writer = writer;
-    let mut protocol_mode = None;
+    let mut snapshot_transport = None;
     let mut sessions = HashMap::<String, HostSession>::new();
     let mut desktop_sessions = HashMap::<String, HostDesktopSession>::new();
     let mut desktop_shared_image = None;
@@ -748,7 +723,7 @@ where
                 &driver,
                 &mut sessions,
                 &mut desktop_sessions,
-                &mut protocol_mode,
+                &mut snapshot_transport,
                 &mut desktop_shared_image,
                 &cancellation_registry,
                 request,
@@ -810,7 +785,7 @@ where
                 &driver,
                 &mut sessions,
                 &mut desktop_sessions,
-                &mut protocol_mode,
+                &mut snapshot_transport,
                 &mut desktop_shared_image,
                 &cancellation_registry,
                 request,
@@ -849,24 +824,29 @@ async fn handle_request(
     driver: &ComputerUseDriver,
     sessions: &mut HashMap<String, HostSession>,
     desktop_sessions: &mut HashMap<String, HostDesktopSession>,
-    protocol_mode: &mut Option<ProtocolMode>,
+    snapshot_transport: &mut Option<SnapshotTransport>,
     desktop_shared_image: &mut Option<SharedImage>,
     cancellation_registry: &CancellationRegistry,
     request: Request,
 ) -> Result<(Value, Option<Vec<u8>>), HostError> {
     if let Request::Hello(params) = &request {
-        let mode = ProtocolMode::from_version(params.protocol_version)?;
-        *protocol_mode = Some(mode);
+        let transport = SnapshotTransport::from_hello(params)?;
+        *snapshot_transport = Some(transport);
         return Ok((
             json!({
                 "type": "hello",
-                "protocol_version": params.protocol_version,
+                "protocol_version": HOST_PROTOCOL_VERSION,
+                "client_name": params.client_name,
+                "snapshot_transport": match transport {
+                    SnapshotTransport::SharedMemory => "shared_memory",
+                    SnapshotTransport::BinaryFrame => "binary_frame",
+                },
                 "capabilities": HOST_CAPABILITIES,
             }),
             None,
         ));
     }
-    let mode = protocol_mode
+    let mode = snapshot_transport
         .ok_or_else(|| HostError::Protocol("hello is required before stateful requests".into()))?;
 
     match request {
@@ -891,7 +871,7 @@ async fn handle_request(
         Request::DesktopSnapshot {} => {
             let snapshot = driver.desktop_snapshot().await?;
             let (image, attachment) = match mode {
-                ProtocolMode::CoreV1 => {
+                SnapshotTransport::SharedMemory => {
                     let shared = SharedImage::from_bytes(&snapshot.data, "image/png")
                         .map_err(|error| HostError::Protocol(error.to_string()))?;
                     let descriptor = serde_json::to_value(shared.descriptor())
@@ -899,7 +879,7 @@ async fn handle_request(
                     *desktop_shared_image = Some(shared);
                     (descriptor, None)
                 }
-                ProtocolMode::ExtendedV3 => (
+                SnapshotTransport::BinaryFrame => (
                     json!({
                         "name": "",
                         "id": format!("desktop-{}", Uuid::new_v4()),
@@ -966,7 +946,7 @@ async fn handle_request(
             )?;
             let snapshot = host.session.screenshot().await?;
             let (image, attachment) = match mode {
-                ProtocolMode::CoreV1 => {
+                SnapshotTransport::SharedMemory => {
                     let shared = SharedImage::from_bytes(&snapshot.data, "image/png")
                         .map_err(|error| HostError::Protocol(error.to_string()))?;
                     let descriptor = serde_json::to_value(shared.descriptor())
@@ -974,7 +954,7 @@ async fn handle_request(
                     host.latest_shared_image = Some(shared);
                     (descriptor, None)
                 }
-                ProtocolMode::ExtendedV3 => (
+                SnapshotTransport::BinaryFrame => (
                     json!({
                         "name": "",
                         "id": snapshot.observation_id,
@@ -1036,7 +1016,7 @@ async fn handle_request(
                     None,
                 ));
             }
-            let action = action.into_computer_use(observation_id, None)?;
+            let action = action.into_computer_use(observation_id)?;
             let result = host.session.perform_action(&action).await?;
             Ok((
                 json!({
@@ -1298,7 +1278,7 @@ async fn handle_request(
                 "window_title": screenshot.observation.window_title,
             });
             let (image, attachment) = match mode {
-                ProtocolMode::CoreV1 => {
+                SnapshotTransport::SharedMemory => {
                     let shared = SharedImage::from_bytes(&screenshot.data, "image/png")
                         .map_err(|error| HostError::Protocol(error.to_string()))?;
                     let descriptor = serde_json::to_value(shared.descriptor())
@@ -1306,7 +1286,7 @@ async fn handle_request(
                     host.latest_shared_image = Some(shared);
                     (descriptor, None)
                 }
-                ProtocolMode::ExtendedV3 => (
+                SnapshotTransport::BinaryFrame => (
                     json!({
                         "name": "",
                         "id": screenshot.observation.observation_id,
@@ -1656,8 +1636,7 @@ async fn handle_request(
                     "semantic action requires the latest accessibility_state_id",
                 )));
             }
-            let action = action
-                .into_computer_use(observation_id, host.latest_accessibility_root.as_ref())?;
+            let action = action.into_computer_use(observation_id)?;
             let result = host.session.perform_action(&action).await?;
             host.latest_observation_id = None;
             host.latest_accessibility_state_id = None;
@@ -1751,31 +1730,6 @@ fn find_elements(root: &Value, query: &FindQuery, max_results: usize) -> Vec<Val
         .take(max_results)
         .cloned()
         .collect()
-}
-
-fn find_element_index_by_control_id(root: &Value, control_id: &str) -> Option<u32> {
-    let expected = control_id.strip_prefix("uia:").unwrap_or(control_id);
-    fn visit(value: &Value, expected: &str) -> Option<u32> {
-        match value {
-            Value::Object(object) => {
-                let matches = ["runtime_id", "control_id", "automation_id"]
-                    .into_iter()
-                    .filter_map(|key| object.get(key).and_then(Value::as_str))
-                    .any(|value| value.strip_prefix("uia:").unwrap_or(value) == expected);
-                if matches {
-                    return object
-                        .get("element_index")
-                        .or_else(|| object.get("index"))
-                        .and_then(Value::as_u64)
-                        .and_then(|index| u32::try_from(index).ok());
-                }
-                object.values().find_map(|child| visit(child, expected))
-            }
-            Value::Array(values) => values.iter().find_map(|child| visit(child, expected)),
-            _ => None,
-        }
-    }
-    visit(root, expected)
 }
 
 fn wait_condition_matches(root: &Value, condition: &WaitCondition) -> bool {
@@ -2123,7 +2077,6 @@ mod tests {
     fn hard_denied_intents_do_not_reach_cua() {
         let action = HostAction {
             action: "keypress".into(),
-            control_id: None,
             element_index: None,
             input_kind: "raw_input".into(),
             intent: "terminal_or_run_dialog".into(),
@@ -2142,13 +2095,9 @@ mod tests {
     }
 
     #[test]
-    fn legacy_control_ids_resolve_to_current_cua_elements() {
-        let root = json!({
-            "elements": [{"runtime_id": "42.1", "element_index": 7}]
-        });
+    fn semantic_actions_require_element_index() {
         let action = HostAction {
             action: "set_checked".into(),
-            control_id: Some("uia:42.1".into()),
             element_index: None,
             input_kind: "semantic".into(),
             intent: "ordinary_edit".into(),
@@ -2163,23 +2112,29 @@ mod tests {
             keys: Vec::new(),
             duration_ms: None,
         };
-        let mapped = action
-            .into_computer_use("obs-1".into(), Some(&root))
-            .unwrap();
-        assert_eq!(mapped.action, "set_value");
-        assert_eq!(mapped.element_index, Some(7));
-        assert_eq!(mapped.text.as_deref(), Some("true"));
+        let error = action.into_computer_use("obs-1".into()).unwrap_err();
+        assert_eq!(error.code, ComputerUseErrorCode::InvalidAction);
     }
 
     #[test]
-    fn hello_versions_select_shared_memory_or_binary_mode() {
+    fn hello_selects_snapshot_transport() {
+        let shared_memory = HelloParams {
+            protocol_version: HOST_PROTOCOL_VERSION,
+            client_name: "test-client".into(),
+            snapshot_transport: Some("shared_memory".into()),
+        };
         assert_eq!(
-            ProtocolMode::from_version(CORE_COMPAT_PROTOCOL_VERSION).unwrap(),
-            ProtocolMode::CoreV1
+            SnapshotTransport::from_hello(&shared_memory).unwrap(),
+            SnapshotTransport::SharedMemory
         );
+        let binary_frame = HelloParams {
+            protocol_version: HOST_PROTOCOL_VERSION,
+            client_name: "test-client".into(),
+            snapshot_transport: None,
+        };
         assert_eq!(
-            ProtocolMode::from_version(HOST_PROTOCOL_VERSION).unwrap(),
-            ProtocolMode::ExtendedV3
+            SnapshotTransport::from_hello(&binary_frame).unwrap(),
+            SnapshotTransport::BinaryFrame
         );
     }
 
@@ -2189,7 +2144,7 @@ mod tests {
             "task_grant_id": "task-1",
             "dcc_type": "unreal"
         }))
-        .expect("legacy grants should remain readable");
+        .expect("minimal grants should be readable");
         assert!(!grant.allow_app_launch);
         assert!(!grant.allow_app_terminate);
         assert!(!grant.allow_clipboard_read);
@@ -2207,7 +2162,7 @@ mod tests {
     }
 
     #[test]
-    fn app_requests_parse_with_core_params_frames() {
+    fn app_requests_parse_with_host_params_frames() {
         assert!(matches!(
             serde_json::from_value::<Request>(json!({
                 "method": "list_apps",

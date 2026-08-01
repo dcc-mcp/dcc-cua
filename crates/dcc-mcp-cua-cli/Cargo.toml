@@ -1,7 +1,6 @@
 [package]
 name = "dcc-mcp-cua-cli"
 description = "DCC-MCP Computer Use command-line host"
-default-run = "dcc-mcp-cua"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -13,10 +12,6 @@ repository.workspace = true
 [[bin]]
 name = "dcc-mcp-cua"
 path = "src/main.rs"
-
-[[bin]]
-name = "dcc-mcp-ui-control-host"
-path = "src/legacy_host.rs"
 
 [dependencies]
 dcc-mcp-cua-core = { path = "../dcc-mcp-cua-core" }

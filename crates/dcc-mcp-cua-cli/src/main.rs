@@ -11,7 +11,7 @@ use serde_json::json;
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = env::args().skip(1);
-    let command = args.next().unwrap_or_else(default_command);
+    let command = args.next().unwrap_or_else(|| "help".into());
     let flags = args.collect::<Vec<_>>();
     let driver = ComputerUseDriver::create()?;
 
@@ -44,21 +44,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         other => return Err(format!("unknown command: {other}; use `help`").into()),
     }
     Ok(())
-}
-
-fn default_command() -> String {
-    let legacy_host = env::current_exe()
-        .ok()
-        .and_then(|path| {
-            path.file_stem()
-                .map(|stem| stem.to_string_lossy().into_owned())
-        })
-        .is_some_and(|stem| stem.eq_ignore_ascii_case("dcc-mcp-ui-control-host"));
-    if legacy_host {
-        "host".into()
-    } else {
-        "help".into()
-    }
 }
 
 async fn list_windows(
@@ -240,7 +225,7 @@ async fn act(
     let app = flag_value(flags, "--app").unwrap_or_else(|| "DCC application".into());
     let session_id = flag_value(flags, "--session").unwrap_or_else(|| "dcc-mcp-cli".into());
     let action_json = flag_value(flags, "--action-json")
-        .ok_or("act requires --action-json with a Core-shaped ComputerUseAction JSON object")?;
+        .ok_or("act requires --action-json with a ComputerUseAction JSON object")?;
     let mut action: ComputerUseAction = serde_json::from_str(&action_json)?;
     let mut session = driver.session(scope, app, session_id)?;
     session.start().await?;
@@ -378,6 +363,6 @@ fn has_flag(flags: &[String], name: &str) -> bool {
 
 fn print_help() {
     println!(
-        "dcc-mcp-cua\n\n  list [--app APP]\n  apps\n  desktop-snapshot [--output FILE]\n  screen-size\n  cursor-position\n  launch --name NAME|--bundle-id ID|--aumid ID|--path PATH|--launch-path PATH [--url URL] [--arg ARG] [--new-instance] [--start-minimized]\n  terminate --app APP --confirm\n  snapshot --app APP [--output FILE]\n  act --app APP --action-json JSON\n  desktop-act --action-json JSON [--session ID]\n  clipboard-read --app APP [--include-text]\n  clipboard-write --app APP --text TEXT|--image-path FILE|--file-path FILE\n  doctor\n  host [--stdio|--endpoint PATH]\n\nHost uses Core-compatible big-endian JSON frames. Hello version 1 uses shared-memory snapshot descriptors for the existing Core client; version 3 uses optional request_id correlation and a separate binary PNG frame."
+        "dcc-mcp-cua\n\n  list [--app APP]\n  apps\n  desktop-snapshot [--output FILE]\n  screen-size\n  cursor-position\n  launch --name NAME|--bundle-id ID|--aumid ID|--path PATH|--launch-path PATH [--url URL] [--arg ARG] [--new-instance] [--start-minimized]\n  terminate --app APP --confirm\n  snapshot --app APP [--output FILE]\n  act --app APP --action-json JSON\n  desktop-act --action-json JSON [--session ID]\n  clipboard-read --app APP [--include-text]\n  clipboard-write --app APP --text TEXT|--image-path FILE|--file-path FILE\n  doctor\n  host [--stdio|--endpoint PATH]\n\nHost uses versioned big-endian JSON frames. Hello version 1 negotiates binary-frame or shared-memory snapshots and supports request_id correlation."
     );
 }

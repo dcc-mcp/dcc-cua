@@ -1,7 +1,7 @@
 //! Small, bounded, cross-process image handoff.
 //!
-//! The header intentionally matches `dcc-mcp-shm` in dcc-mcp-core so the
-//! existing `PySharedBuffer.open(name, id)` consumer can read the image.
+//! The header is owned by this project and versioned independently from the
+//! host control protocol.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -12,8 +12,8 @@ use uuid::Uuid;
 
 pub const MAX_IMAGE_BYTES: usize = 64 * 1024 * 1024;
 const HEADER_SIZE: usize = 48;
-const HEADER_MAGIC: u64 = 0xDCC0_0000_5348_4D01;
-const SEGMENT_PREFIX: &str = "ds_";
+const HEADER_MAGIC: u64 = 0x4355_4100_5348_4D01;
+const SEGMENT_PREFIX: &str = "cua_";
 const TTL_SECS: u64 = 60;
 
 #[derive(Debug, Error)]
@@ -102,10 +102,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn descriptor_uses_core_shared_buffer_shape() {
+    fn descriptor_uses_cua_shared_memory_shape() {
         let image = SharedImage::from_bytes(b"png", "image/png").unwrap();
         let descriptor = image.descriptor();
-        assert!(descriptor.name.starts_with("ds_"));
+        assert!(descriptor.name.starts_with("cua_"));
         assert_eq!(descriptor.length, 3);
         assert_eq!(descriptor.mime_type, "image/png");
         assert!(image.is_alive());

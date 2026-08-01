@@ -3,8 +3,8 @@
 Cross-platform Computer Use host and CLI for DCC-MCP, backed by the open-source
 [CUA SDK](https://github.com/trycua/cua).
 
-This is the standalone runtime that Core can launch and keep alive for a whole
-task. It preserves the Core Computer Use contract:
+This is the standalone runtime that DCC-MCP Core can launch and keep alive for
+a whole task. Its public protocol is owned by this repository and provides:
 
 - exact PID/window/title scope; agent requests cannot widen the target;
 - a fresh observation ID is required for every mutation;
@@ -20,10 +20,9 @@ The repository is a Cargo workspace with five responsibilities:
   CUA execution boundary;
 - `dcc-mcp-cua-browser`: exact-window browser binding, tab snapshots, typed
   browser actions, and bounded file transfer;
-- `dcc-mcp-cua-host`: long-lived Core-compatible IPC and request
+- `dcc-mcp-cua-host`: long-lived versioned IPC and request
   routing;
-- `dcc-mcp-cua-shm`: cross-platform shared-memory image handoff compatible
-  with Core's `PySharedBuffer`;
+- `dcc-mcp-cua-shm`: cross-platform shared-memory image handoff;
 - `dcc-mcp-cua-cli`: the thin CLI process that composes the workspace crates.
 
 Application-specific adapters stay above this workspace. A browser adapter can
@@ -63,7 +62,7 @@ return text unless the caller asks for it, and `clipboard_write` accepts exactly
 one bounded text, image path, or regular-file path. Recording is also
 grant-gated through `recording_start`, `recording_stop`, and `recording_state`.
 
-## Core host IPC
+## Host IPC
 
 Start one persistent host process instead of spawning a process per action:
 
@@ -72,23 +71,18 @@ cargo run -p dcc-mcp-cua-cli -- host --stdio
 cargo run -p dcc-mcp-cua-cli -- host
 ```
 
-Release builds also produce `dcc-mcp-ui-control-host(.exe)`. When launched
-without arguments, that compatibility binary starts the persistent Host on
-the legacy Core session endpoint, so Core's existing launcher can use it via
-`DCC_MCP_UI_CONTROL_HOST` without a wrapper.
+On Windows, the default endpoint is the per-session named pipe
+`\\.\pipe\dcc-mcp-cua-v1-session-<WindowsSessionId>`. On Unix, the default
+endpoint is `$TMPDIR/dcc-mcp-cua-v1.sock`. The protocol uses an unsigned
+big-endian `u32` length followed by one UTF-8 JSON request or response. A
+client selects `snapshot_transport` as `binary_frame` (the default) or
+`shared_memory` in `hello`; binary snapshots are followed by one additional
+length-prefixed PNG frame, avoiding base64 pixel transfer and keeping the JSON
+frame under 4 MiB. Requests may include a top-level `request_id` (1–128
+characters); the host echoes it on the JSON response, including errors. The
+handshake advertises the exact capabilities of this build.
 
-On Windows, the default endpoint is the existing Core-compatible
-`\\.\pipe\dcc-mcp-ui-control-host-v1-session-<WindowsSessionId>` pipe. On Unix, the default endpoint is
-`$TMPDIR/dcc-mcp-computer-use-v1.sock`. Extended clients use Core's version-3 framing:
-an unsigned big-endian `u32` length followed by one UTF-8 JSON request or
-response. A `snapshot` response is followed by one additional length-prefixed
-binary PNG frame, avoiding base64 pixel transfer and keeping the JSON frame
-under 4 MiB. Requests may include a top-level `request_id` (1–128 characters);
-the host echoes it on the JSON response, including errors, so Core can safely
-correlate long-lived IPC calls. The handshake advertises the exact capabilities
-of this build.
-
-The supported Core request surface is `hello`, `list_apps`, `launch_app`, `open_session`,
+The supported request surface is `hello`, `list_apps`, `launch_app`, `open_session`,
 `get_window_state`, `change_window_state` (`restore`, `show`, `activate`), `snapshot`,
 `accessibility_snapshot`, `find`, `wait_for`, `browser_snapshot`,
 `browser_prepare`, `browser_navigate`, `browser_click`, `browser_type`, `browser_pointer`,
@@ -99,11 +93,8 @@ The supported Core request surface is `hello`, `list_apps`, `launch_app`, `open_
 `desktop_session_snapshot`, `execute_desktop_action`, `stop_desktop_session`,
 `execute_action`, `resume_session`, `terminate_app`, and
 `stop_session`; `cancel` is available while `wait_for` is active on the same
-connection. The host also accepts Core's protocol version 1: its `snapshot`
-image is a `PySharedBuffer`-compatible descriptor, so no pixel frame is read
-from the legacy client. Semantic actions use CUA `element_index` values from
-the latest accessibility snapshot; legacy `control_id` values are resolved
-against the same fresh tree, and `set_text`/`set_value`/`set_checked` use CUA's
+connection. Semantic actions use CUA `element_index` values from the latest
+accessibility snapshot, and `set_text`/`set_value`/`set_checked` use CUA's
 native semantic value path. Coordinate actions remain available for
 custom-drawn surfaces.
 `find` filters the current accessibility tree by text, role, or element index
