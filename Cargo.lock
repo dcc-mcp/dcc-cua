@@ -874,10 +874,22 @@ version = "0.1.0"
 dependencies = [
  "dcc-mcp-cua-browser",
  "dcc-mcp-cua-core",
+ "dcc-mcp-cua-shm",
  "serde",
  "serde_json",
  "thiserror 2.0.19",
  "tokio",
+ "uuid",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "dcc-mcp-cua-shm"
+version = "0.1.0"
+dependencies = [
+ "ipckit",
+ "serde",
+ "thiserror 2.0.19",
  "uuid",
 ]
 
@@ -1621,6 +1633,25 @@ dependencies = [
  "hashbrown 0.17.1",
  "serde",
  "serde_core",
+]
+
+[[package]]
+name = "ipckit"
+version = "0.1.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5c7445c70ce11dd04e53e887ee78eefc7103dfd20fd67e2e42cabbfc97de897f"
+dependencies = [
+ "base64",
+ "bytes",
+ "crossbeam-channel",
+ "libc",
+ "parking_lot",
+ "regex",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+ "tracing",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

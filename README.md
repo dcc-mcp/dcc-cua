@@ -14,7 +14,7 @@ task. It preserves the Core Computer Use contract:
 - a visible CUA mouse-shaped cursor and `DCC UI Control · <app> · Esc to stop`
   marker.
 
-The repository is a Cargo workspace with four responsibilities:
+The repository is a Cargo workspace with five responsibilities:
 
 - `dcc-mcp-cua-core`: scoped Computer Use domain, safety policy, and
   CUA execution boundary;
@@ -22,6 +22,8 @@ The repository is a Cargo workspace with four responsibilities:
   browser actions, and bounded file transfer;
 - `dcc-mcp-cua-host`: long-lived Core-compatible IPC and request
   routing;
+- `dcc-mcp-cua-shm`: cross-platform shared-memory image handoff compatible
+  with Core's `PySharedBuffer`;
 - `dcc-mcp-cua-cli`: the thin CLI process that composes the workspace crates.
 
 Application-specific adapters stay above this workspace. A browser adapter can
@@ -62,11 +64,12 @@ Start one persistent host process instead of spawning a process per action:
 
 ```powershell
 cargo run -p dcc-mcp-cua-cli -- host --stdio
-cargo run -p dcc-mcp-cua-cli -- host --endpoint '\\.\pipe\dcc-mcp-computer-use-v1'
+cargo run -p dcc-mcp-cua-cli -- host
 ```
 
-On Unix, the default endpoint is
-`$TMPDIR/dcc-mcp-computer-use-v1.sock`. The host uses Core's version-3 framing:
+On Windows, the default endpoint is the existing Core-compatible
+`\\.\pipe\dcc-mcp-ui-control-host-v1-session-<WindowsSessionId>` pipe. On Unix, the default endpoint is
+`$TMPDIR/dcc-mcp-computer-use-v1.sock`. Extended clients use Core's version-3 framing:
 an unsigned big-endian `u32` length followed by one UTF-8 JSON request or
 response. A `snapshot` response is followed by one additional length-prefixed
 binary PNG frame, avoiding base64 pixel transfer and keeping the JSON frame
@@ -84,9 +87,13 @@ The supported Core request surface is `hello`, `list_apps`, `launch_app`, `open_
 `recording_state`,
 `execute_action`, `resume_session`, `terminate_app`, and
 `stop_session`; `cancel` is available while `wait_for` is active on the same
-connection. Semantic actions use CUA `element_index` values from the latest
-accessibility snapshot; `set_text`/`set_value` use CUA's native semantic value
-path, while coordinate actions remain available for custom-drawn surfaces.
+connection. The host also accepts Core's protocol version 1: its `snapshot`
+image is a `PySharedBuffer`-compatible descriptor, so no pixel frame is read
+from the legacy client. Semantic actions use CUA `element_index` values from
+the latest accessibility snapshot; legacy `control_id` values are resolved
+against the same fresh tree, and `set_text`/`set_value`/`set_checked` use CUA's
+native semantic value path. Coordinate actions remain available for
+custom-drawn surfaces.
 `find` filters the current accessibility tree by text, role, or element index
 and returns a fresh `accessibility_state_id`. `wait_for` is bounded to 30 seconds and supports `element_present`,
 `text_contains`, `text_equals`, and `value_equals`. `launch_app` requires a non-empty `task_grant_id`, `dcc_type`, and
@@ -111,8 +118,9 @@ While `wait_for` is running, the same connection accepts `cancel` with the
 exact session grant and window capability; the host returns both a cancellation
 acknowledgement and the wait's cancelled terminal response. Other requests stay
 ordered and are rejected until that wait completes.
-Shared-memory descriptors and typed system operations remain explicitly
-unsupported until their cross-platform contracts are implemented.
+`restore`, `show`, and `activate` are scoped through CUA's `bring_to_front`
+operation; the returned window state is always revalidated against the exact
+PID/HWND target.
 
 Example host requests:
 

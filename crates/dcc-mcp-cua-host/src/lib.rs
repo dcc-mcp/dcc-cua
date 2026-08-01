@@ -32,12 +32,14 @@ use dcc_mcp_cua_core::{
     ComputerUseErrorCode, ComputerUsePoint, ComputerUseRecordingStartRequest, ComputerUseResult,
     ComputerUseSession, ComputerUseTargetScope,
 };
+use dcc_mcp_cua_shm::SharedImage;
 
 /// Core-compatible control frame limit. Pixel bytes use a separate bounded frame.
 pub const MAX_JSON_FRAME_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_BINARY_FRAME_BYTES: usize = 64 * 1024 * 1024;
 pub const MAX_REQUEST_ID_CHARS: usize = 128;
 pub const HOST_PROTOCOL_VERSION: u32 = 3;
+pub const CORE_COMPAT_PROTOCOL_VERSION: u32 = 1;
 
 /// Capabilities this implementation actually provides.
 pub const HOST_CAPABILITIES: &[&str] = &[
@@ -52,8 +54,10 @@ pub const HOST_CAPABILITIES: &[&str] = &[
     "semantic_value_actions",
     "bounded_wait_for",
     "binary_snapshot_frames",
+    "shared_memory_snapshots",
     "cua_cursor_marker",
     "cross_platform_window_control",
+    "scoped_window_restore_show_activate",
     "application_inventory",
     "application_launch",
     "application_terminate",
@@ -81,13 +85,32 @@ pub enum HostTransport {
 impl HostTransport {
     #[must_use]
     pub fn default_endpoint() -> String {
-        if cfg!(windows) {
-            r"\\.\pipe\dcc-mcp-computer-use-v1".to_owned()
-        } else {
-            std::env::temp_dir()
+        #[cfg(windows)]
+        {
+            let mut session_id = 0;
+            // The legacy Core client discovers this exact per-Windows-session
+            // endpoint before sending its protocol-v1 hello.
+            let resolved = unsafe {
+                windows_sys::Win32::System::RemoteDesktop::ProcessIdToSessionId(
+                    windows_sys::Win32::System::Threading::GetCurrentProcessId(),
+                    &mut session_id,
+                ) != 0
+            };
+            if resolved {
+                return format!(r"\\.\pipe\dcc-mcp-ui-control-host-v1-session-{session_id}");
+            }
+            return r"\\.\pipe\dcc-mcp-computer-use-v1".to_owned();
+        }
+        #[cfg(unix)]
+        {
+            return std::env::temp_dir()
                 .join("dcc-mcp-computer-use-v1.sock")
                 .to_string_lossy()
-                .into_owned()
+                .into_owned();
+        }
+        #[cfg(not(any(windows, unix)))]
+        {
+            "dcc-mcp-computer-use-v1".to_owned()
         }
     }
 }
@@ -277,6 +300,24 @@ struct HelloParams {
     client_name: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProtocolMode {
+    CoreV1,
+    ExtendedV3,
+}
+
+impl ProtocolMode {
+    fn from_version(version: u32) -> Result<Self, HostError> {
+        match version {
+            CORE_COMPAT_PROTOCOL_VERSION => Ok(Self::CoreV1),
+            HOST_PROTOCOL_VERSION => Ok(Self::ExtendedV3),
+            _ => Err(HostError::Protocol(format!(
+                "protocol version {version} is not supported"
+            ))),
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct TaskGrant {
     task_grant_id: String,
@@ -336,6 +377,8 @@ struct HostAction {
     path: Vec<ComputerUsePoint>,
     #[serde(default)]
     text: Option<String>,
+    #[serde(default)]
+    checked: Option<bool>,
     #[serde(default)]
     keys: Vec<String>,
     #[allow(dead_code)]
@@ -441,36 +484,71 @@ impl HostAction {
         )
     }
 
-    fn into_computer_use(self, observation_id: String) -> ComputerUseResult<ComputerUseAction> {
+    fn into_computer_use(
+        self,
+        observation_id: String,
+        accessibility: Option<&Value>,
+    ) -> ComputerUseResult<ComputerUseAction> {
         if !matches!(self.input_kind.as_str(), "raw_input" | "semantic") {
             return Err(ComputerUseError::new(
                 ComputerUseErrorCode::InvalidAction,
                 "input_kind must be raw_input or semantic",
             ));
         }
-        if self.input_kind != "raw_input" && self.element_index.is_none() {
+        if self.input_kind == "raw_input" && self.control_id.is_some() {
             return Err(ComputerUseError::new(
                 ComputerUseErrorCode::InvalidAction,
-                "semantic actions require CUA element_index",
+                "control_id is only valid for semantic actions",
             ));
         }
-        if self.control_id.is_some() {
+        let resolved_element_index = self.element_index.or_else(|| {
+            self.control_id.as_deref().and_then(|id| {
+                accessibility.and_then(|root| find_element_index_by_control_id(root, id))
+            })
+        });
+        if self.input_kind != "raw_input" && resolved_element_index.is_none() {
             return Err(ComputerUseError::new(
                 ComputerUseErrorCode::InvalidAction,
-                "control_id requires a semantic UI backend",
+                "semantic actions require a current CUA element_index or resolvable control_id",
             ));
         }
+        if let (Some(control_id), Some(accessibility)) = (self.control_id.as_deref(), accessibility)
+        {
+            let mapped = find_element_index_by_control_id(accessibility, control_id);
+            if mapped.is_none() {
+                return Err(ComputerUseError::new(
+                    ComputerUseErrorCode::InvalidAction,
+                    "control_id is not present in the latest accessibility snapshot",
+                ));
+            }
+            if self.element_index.is_some() && mapped != self.element_index {
+                return Err(ComputerUseError::new(
+                    ComputerUseErrorCode::StaleObservation,
+                    "control_id and element_index identify different controls",
+                ));
+            }
+        }
+        let action = if self.action == "set_checked" {
+            "set_value".to_owned()
+        } else {
+            self.action
+        };
+        let text = if action == "set_value" && self.checked.is_some() {
+            self.checked.map(|checked| checked.to_string())
+        } else {
+            self.text
+        };
         Ok(ComputerUseAction {
-            action: self.action,
+            action,
             observation_id: Some(observation_id),
-            element_index: self.element_index,
+            element_index: resolved_element_index,
             x: self.x,
             y: self.y,
             button: self.button,
             scroll_x: self.scroll_x,
             scroll_y: self.scroll_y,
             path: self.path,
-            text: self.text,
+            text,
             keys: self.keys,
         })
     }
@@ -492,6 +570,7 @@ struct HostSession {
     latest_observation_id: Option<String>,
     latest_accessibility_state_id: Option<String>,
     latest_accessibility_root: Option<Value>,
+    latest_shared_image: Option<SharedImage>,
 }
 
 type CancellationRegistry = Arc<Mutex<HashMap<String, CancellationHandle>>>;
@@ -606,7 +685,7 @@ where
 {
     let mut reader = reader;
     let mut writer = writer;
-    let mut handshaken = false;
+    let mut protocol_mode = None;
     let mut sessions = HashMap::<String, HostSession>::new();
     let cancellation_registry = Arc::new(Mutex::new(HashMap::new()));
 
@@ -630,7 +709,7 @@ where
             let mut operation = Box::pin(handle_request(
                 &driver,
                 &mut sessions,
-                &mut handshaken,
+                &mut protocol_mode,
                 &cancellation_registry,
                 request,
             ));
@@ -690,7 +769,7 @@ where
             let (response, attachment) = match handle_request(
                 &driver,
                 &mut sessions,
-                &mut handshaken,
+                &mut protocol_mode,
                 &cancellation_registry,
                 request,
             )
@@ -721,32 +800,24 @@ async fn cleanup_sessions(sessions: HashMap<String, HostSession>) -> Result<(), 
 async fn handle_request(
     driver: &ComputerUseDriver,
     sessions: &mut HashMap<String, HostSession>,
-    handshaken: &mut bool,
+    protocol_mode: &mut Option<ProtocolMode>,
     cancellation_registry: &CancellationRegistry,
     request: Request,
 ) -> Result<(Value, Option<Vec<u8>>), HostError> {
     if let Request::Hello(params) = &request {
-        if params.protocol_version != HOST_PROTOCOL_VERSION {
-            return Err(HostError::Protocol(format!(
-                "protocol version {} is not supported",
-                params.protocol_version
-            )));
-        }
-        *handshaken = true;
+        let mode = ProtocolMode::from_version(params.protocol_version)?;
+        *protocol_mode = Some(mode);
         return Ok((
             json!({
                 "type": "hello",
-                "protocol_version": HOST_PROTOCOL_VERSION,
+                "protocol_version": params.protocol_version,
                 "capabilities": HOST_CAPABILITIES,
             }),
             None,
         ));
     }
-    if !*handshaken {
-        return Err(HostError::Protocol(
-            "hello is required before stateful requests".into(),
-        ));
-    }
+    let mode = protocol_mode
+        .ok_or_else(|| HostError::Protocol("hello is required before stateful requests".into()))?;
 
     match request {
         Request::Hello(_) => unreachable!(),
@@ -931,6 +1002,7 @@ async fn handle_request(
                     latest_observation_id: None,
                     latest_accessibility_state_id: None,
                     latest_accessibility_root: None,
+                    latest_shared_image: None,
                 },
             );
             Ok((
@@ -965,18 +1037,18 @@ async fn handle_request(
         } => {
             let host =
                 authorized_session(sessions, &session_id, &task_grant_id, &window_capability)?;
-            if !matches!(operation, WindowOperation::Activate) {
-                return Err(HostError::Protocol(
-                    "CUA currently supports activate; restore/show are platform-specific".into(),
-                ));
-            }
+            let operation_name = match operation {
+                WindowOperation::Restore => "restore",
+                WindowOperation::Show => "show",
+                WindowOperation::Activate => "activate",
+            };
             host.session.activate().await?;
             let state = host.session.window_state().await?;
             Ok((
                 json!({
                     "type":"window_state_changed",
                     "session_id":session_id,
-                    "operation":"activate",
+                    "operation":operation_name,
                     "state":state,
                 }),
                 None,
@@ -1002,6 +1074,26 @@ async fn handle_request(
                 "window_handle": screenshot.observation.window_handle,
                 "window_title": screenshot.observation.window_title,
             });
+            let (image, attachment) = match mode {
+                ProtocolMode::CoreV1 => {
+                    let shared = SharedImage::from_bytes(&screenshot.data, "image/png")
+                        .map_err(|error| HostError::Protocol(error.to_string()))?;
+                    let descriptor = serde_json::to_value(shared.descriptor())
+                        .map_err(|error| HostError::Protocol(error.to_string()))?;
+                    host.latest_shared_image = Some(shared);
+                    (descriptor, None)
+                }
+                ProtocolMode::ExtendedV3 => (
+                    json!({
+                        "name": "",
+                        "id": screenshot.observation.observation_id,
+                        "length": screenshot.data.len(),
+                        "mime_type": "image/png",
+                        "encoding": "binary_frame",
+                    }),
+                    Some(screenshot.data),
+                ),
+            };
             let response = json!({
                 "type": "snapshot",
                 "observation_id": observation_id,
@@ -1010,15 +1102,9 @@ async fn handle_request(
                 "observation": screenshot.observation,
                 "root": accessibility,
                 "node_count": node_count,
-                "image": {
-                    "name": "",
-                    "id": screenshot.observation.observation_id,
-                    "length": screenshot.data.len(),
-                    "mime_type": "image/png",
-                    "encoding": "binary_frame",
-                },
+                "image": image,
             });
-            Ok((response, Some(screenshot.data)))
+            Ok((response, attachment))
         }
         Request::AccessibilitySnapshot {
             session_id,
@@ -1347,7 +1433,8 @@ async fn handle_request(
                     "semantic action requires the latest accessibility_state_id",
                 )));
             }
-            let action = action.into_computer_use(observation_id)?;
+            let action = action
+                .into_computer_use(observation_id, host.latest_accessibility_root.as_ref())?;
             let result = host.session.perform_action(&action).await?;
             host.latest_observation_id = None;
             host.latest_accessibility_state_id = None;
@@ -1441,6 +1528,31 @@ fn find_elements(root: &Value, query: &FindQuery, max_results: usize) -> Vec<Val
         .take(max_results)
         .cloned()
         .collect()
+}
+
+fn find_element_index_by_control_id(root: &Value, control_id: &str) -> Option<u32> {
+    let expected = control_id.strip_prefix("uia:").unwrap_or(control_id);
+    fn visit(value: &Value, expected: &str) -> Option<u32> {
+        match value {
+            Value::Object(object) => {
+                let matches = ["runtime_id", "control_id", "automation_id"]
+                    .into_iter()
+                    .filter_map(|key| object.get(key).and_then(Value::as_str))
+                    .any(|value| value.strip_prefix("uia:").unwrap_or(value) == expected);
+                if matches {
+                    return object
+                        .get("element_index")
+                        .or_else(|| object.get("index"))
+                        .and_then(Value::as_u64)
+                        .and_then(|index| u32::try_from(index).ok());
+                }
+                object.values().find_map(|child| visit(child, expected))
+            }
+            Value::Array(values) => values.iter().find_map(|child| visit(child, expected)),
+            _ => None,
+        }
+    }
+    visit(root, expected)
 }
 
 fn wait_condition_matches(root: &Value, condition: &WaitCondition) -> bool {
@@ -1782,10 +1894,53 @@ mod tests {
             scroll_y: None,
             path: Vec::new(),
             text: None,
+            checked: None,
             keys: vec!["ENTER".into()],
             duration_ms: None,
         };
         assert!(action.reject_policy().is_some());
+    }
+
+    #[test]
+    fn legacy_control_ids_resolve_to_current_cua_elements() {
+        let root = json!({
+            "elements": [{"runtime_id": "42.1", "element_index": 7}]
+        });
+        let action = HostAction {
+            action: "set_checked".into(),
+            control_id: Some("uia:42.1".into()),
+            element_index: None,
+            input_kind: "semantic".into(),
+            intent: "ordinary_edit".into(),
+            x: None,
+            y: None,
+            button: None,
+            scroll_x: None,
+            scroll_y: None,
+            path: Vec::new(),
+            text: None,
+            checked: Some(true),
+            keys: Vec::new(),
+            duration_ms: None,
+        };
+        let mapped = action
+            .into_computer_use("obs-1".into(), Some(&root))
+            .unwrap();
+        assert_eq!(mapped.action, "set_value");
+        assert_eq!(mapped.element_index, Some(7));
+        assert_eq!(mapped.text.as_deref(), Some("true"));
+    }
+
+    #[test]
+    fn hello_versions_select_shared_memory_or_binary_mode() {
+        assert_eq!(
+            ProtocolMode::from_version(CORE_COMPAT_PROTOCOL_VERSION).unwrap(),
+            ProtocolMode::CoreV1
+        );
+        assert_eq!(
+            ProtocolMode::from_version(HOST_PROTOCOL_VERSION).unwrap(),
+            ProtocolMode::ExtendedV3
+        );
     }
 
     #[test]
