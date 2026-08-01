@@ -2,7 +2,7 @@ use std::env;
 use std::fs;
 use std::io::Read;
 
-use dcc_mcp_cua_client::{HostClient, SnapshotTransport};
+use dcc_mcp_cua_client::{HostClient, HostResponse, SnapshotTransport};
 use dcc_mcp_cua_core::{
     ComputerUseAction, ComputerUseClipboardWriteRequest, ComputerUseDriver,
     ComputerUseLaunchRequest, ComputerUseTargetScope,
@@ -150,21 +150,7 @@ async fn host_call(flags: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let response = client.request(method, params).await?;
     let output = flag_value(flags, "--output");
     if let Some(path) = output.as_deref() {
-        let image = if let Some(image) = response.binary_attachment.as_deref() {
-            image.to_vec()
-        } else if snapshot_transport == SnapshotTransport::SharedMemory {
-            let descriptor: SharedImageDescriptor = serde_json::from_value(
-                response
-                    .value
-                    .get("image")
-                    .cloned()
-                    .ok_or("--output requires an image response")?,
-            )?;
-            SharedImageReader::open(descriptor)?.read()?
-        } else {
-            return Err("--output requires a binary image attachment".into());
-        };
-        fs::write(path, image)?;
+        fs::write(path, response_image(&response, snapshot_transport)?)?;
     }
     let mut value = response.value;
     if let Some(path) = output {
@@ -172,6 +158,26 @@ async fn host_call(flags: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     }
     println!("{}", serde_json::to_string_pretty(&value)?);
     Ok(())
+}
+
+fn response_image(
+    response: &HostResponse,
+    snapshot_transport: SnapshotTransport,
+) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    if let Some(image) = response.binary_attachment.as_deref() {
+        return Ok(image.to_vec());
+    }
+    if snapshot_transport != SnapshotTransport::SharedMemory {
+        return Err("--output requires a binary image attachment".into());
+    }
+    let descriptor: SharedImageDescriptor = serde_json::from_value(
+        response
+            .value
+            .get("image")
+            .cloned()
+            .ok_or("--output requires an image response")?,
+    )?;
+    Ok(SharedImageReader::open(descriptor)?.read()?)
 }
 
 fn json_arguments(flags: &[String]) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
@@ -515,4 +521,22 @@ fn print_help() {
     println!(
         "dcc-mcp-cua\n\n  list [--app APP]\n  apps\n  tools\n  call --tool NAME [--json JSON|--json-file PATH] [--app APP|--pid PID --window-id ID] [--output FILE]\n  host-call --method NAME [--json JSON|--json-file PATH] [--endpoint PATH] [--snapshot-transport binary_frame|shared_memory] [--output FILE]\n  desktop-snapshot [--output FILE]\n  screen-size\n  cursor-position\n  launch --name NAME|--bundle-id ID|--aumid ID|--path PATH|--launch-path PATH [--url URL] [--arg ARG] [--new-instance] [--start-minimized]\n  terminate --app APP --confirm\n  snapshot --app APP [--output FILE]\n  act --app APP --action-json JSON\n  verify --app APP --expect-json JSON [--timeout-ms N] [--stable-samples N]\n  desktop-act --action-json JSON [--session ID]\n  clipboard-read --app APP [--include-text]\n  clipboard-write --app APP --text TEXT|--image-path FILE|--file-path FILE\n  doctor\n  host [--stdio|--endpoint PATH]\n\nHost uses versioned big-endian JSON frames. Hello version 1 negotiates binary-frame or shared-memory snapshots and supports request_id correlation."
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn response_image_reads_host_owned_shared_memory() {
+        let image = dcc_mcp_cua_shm::SharedImage::from_bytes(b"png", "image/png").unwrap();
+        let response = HostResponse {
+            value: json!({"image": image.descriptor()}),
+            binary_attachment: None,
+        };
+        assert_eq!(
+            response_image(&response, SnapshotTransport::SharedMemory).unwrap(),
+            b"png"
+        );
+    }
 }
