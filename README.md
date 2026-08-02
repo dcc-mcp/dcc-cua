@@ -110,11 +110,12 @@ lifecycle is not lost when a one-shot CLI process exits.
 The friendly selector forms also include toggle, drag, set-text, and set-value.
 Click, toggle, scroll, press, hotkey, type, and value actions can target the
 latest semantic tree with --element-index or --element-token; coordinate
-actions remain available for custom-rendered surfaces. `type --x X --y Y`
+actions remain available for custom-rendered surfaces. Semantic `type`
+uses CUA's canonical `type_text` element path; `type --x X --y Y`
 uses CUA's pixel-focus-then-type path for Chromium/Electron and other
 custom-rendered inputs; `press` and `hotkey` accept the same focus coordinates.
 `press --modifier M` and drag's `--modifier M` map to CUA's native modifier
-fields, while drag also accepts `--button left|middle|right`.
+fields, while click and drag accept `--button left|middle|right`.
 
 For common controls, `click`, `double-click`, `right-click`, `move`, `scroll`,
 `press`, `hotkey`, and `type` build the same fenced CUA actions without manual

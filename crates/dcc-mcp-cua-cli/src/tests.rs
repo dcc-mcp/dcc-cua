@@ -106,6 +106,13 @@ fn friendly_actions_build_bounded_cua_requests() {
     assert_eq!(semantic_click.element_index, Some(7));
     assert_eq!(semantic_click.x, None);
 
+    let middle_click = action_from_command(
+        "click",
+        &strings(["--x", "10", "--y", "20", "--button", "middle"]),
+    )
+    .unwrap();
+    assert_eq!(middle_click.button.as_deref(), Some("middle"));
+
     let toggle =
         action_from_command("toggle", &strings(["--element-token", "checkbox-1"])).unwrap();
     assert_eq!(toggle.action, "toggle");
@@ -151,6 +158,15 @@ fn friendly_actions_build_bounded_cua_requests() {
     assert_eq!(type_chars.action, "type_chars");
     assert!(type_chars.type_chars_only);
     assert_eq!(type_chars.delay_ms, Some(25));
+
+    let semantic_type = action_from_command(
+        "type",
+        &strings(["--text", "hello", "--element-index", "8"]),
+    )
+    .unwrap();
+    assert_eq!(semantic_type.action, "type");
+    assert_eq!(semantic_type.element_index, Some(8));
+    assert!(!semantic_type.type_chars_only);
     let pixel_type = action_from_command(
         "type",
         &strings(["--text", "hello", "--x", "12", "--y", "34"]),

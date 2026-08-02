@@ -379,6 +379,20 @@ fn coordinate_text_and_key_actions_forward_cua_focus_arguments() {
     assert_eq!(drag_args["modifier"], json!(["ALT"]));
 }
 
+#[rstest]
+fn semantic_type_uses_cua_canonical_type_text() {
+    let action = ComputerUseAction {
+        action: "type".into(),
+        element_index: Some(8),
+        text: Some("hello".into()),
+        ..Default::default()
+    };
+    let arguments = action_arguments(&action, "session", &test_window_target());
+    assert_eq!(arguments["_tool"], "type_text");
+    assert_eq!(arguments["element_index"], 8);
+    assert_eq!(arguments["text"], "hello");
+}
+
 fn test_window_target() -> WindowTarget {
     WindowTarget {
         pid: 42,

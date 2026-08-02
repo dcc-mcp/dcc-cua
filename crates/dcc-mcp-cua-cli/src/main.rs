@@ -1076,7 +1076,7 @@ fn action_from_command(
         action: match command {
             "double-click" => "double_click",
             "right-click" => "right_click",
-            "type" => "type_chars",
+            "type" => "type",
             "set-text" => "set_text",
             "set-value" => "set_value",
             "press" => "keypress",
@@ -1089,6 +1089,7 @@ fn action_from_command(
     match command {
         "click" | "double-click" | "right-click" | "toggle" => {
             apply_element_selector(&mut action, flags, command)?;
+            action.button = flag_value(flags, "--button");
             let coordinate_present =
                 flag_value(flags, "--x").is_some() || flag_value(flags, "--y").is_some();
             if (action.element_index.is_some() || action.element_token.is_some())
@@ -1126,6 +1127,9 @@ fn action_from_command(
             action.text = Some(flag_value(flags, "--text").ok_or("type requires --text")?);
             apply_element_selector(&mut action, flags, command)?;
             action.type_chars_only = has_flag(flags, "--focused");
+            if action.type_chars_only {
+                action.action = "type_chars".into();
+            }
             if action.type_chars_only
                 && (action.element_index.is_some() || action.element_token.is_some())
             {
@@ -1469,7 +1473,7 @@ fn print_help() {
     );
     println!("Zoom: zoom --app APP --x1 N --y1 N --x2 N --y2 N [--output FILE].");
     println!(
-        "Friendly actions: click/double-click/right-click/toggle [--x X --y Y|--element-index N|--element-token TOKEN], drag --from-x X --from-y Y --to-x X --to-y Y [--button B --modifier M], type [--text TEXT] [--focused|--x X --y Y|--element-index N], set-text/set-value, press [--key K] [--modifier M] [--x X --y Y|--element-index N], hotkey [--key K ...] [--x X --y Y], scroll, move."
+        "Friendly actions: click/double-click/right-click/toggle [--x X --y Y|--element-index N|--element-token TOKEN] [--button left|middle|right], drag --from-x X --from-y Y --to-x X --to-y Y [--button B --modifier M], type [--text TEXT] [--focused|--x X --y Y|--element-index N], set-text/set-value, press [--key K] [--modifier M] [--x X --y Y|--element-index N], hotkey [--key K ...] [--x X --y Y], scroll, move."
     );
     println!(
         "Semantic tree: accessibility --app APP [--max-elements N] [--max-depth N]. Window: window-state|activate --app APP."
