@@ -78,7 +78,7 @@ cargo run -p dcc-mcp-cua-cli -- click --app chrome.exe --x 100 --y 100
 cargo run -p dcc-mcp-cua-cli -- click --app chrome.exe --element-index 12
 cargo run -p dcc-mcp-cua-cli -- toggle --app chrome.exe --element-index 14
 cargo run -p dcc-mcp-cua-cli -- set-value --app chrome.exe --element-index 15 --value Published
-cargo run -p dcc-mcp-cua-cli -- drag --app chrome.exe --from-x 100 --from-y 100 --to-x 300 --to-y 200
+cargo run -p dcc-mcp-cua-cli -- drag --app chrome.exe --from-x 100 --from-y 100 --to-x 300 --to-y 200 --duration-ms 750
 cargo run -p dcc-mcp-cua-cli -- type --app chrome.exe --text "hello" --focused
 cargo run -p dcc-mcp-cua-cli -- hotkey --app chrome.exe --key CTRL --key L
 cargo run -p dcc-mcp-cua-cli -- act --app chrome.exe --action-json '{"action":"click","x":100,"y":100}'

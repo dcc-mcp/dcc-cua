@@ -199,11 +199,14 @@ fn friendly_actions_build_bounded_cua_requests() {
             "middle",
             "--modifier",
             "ALT",
+            "--duration-ms",
+            "750",
         ]),
     )
     .unwrap();
     assert_eq!(drag.button.as_deref(), Some("middle"));
     assert_eq!(drag.modifiers, vec!["ALT"]);
+    assert_eq!(drag.duration_ms, Some(750));
     assert!(action_from_command("type", &strings(["--text", "hello", "--x", "12"])).is_err());
     assert!(action_from_command("hotkey", &strings(["--key", "CTRL"])).is_err());
     assert_eq!(

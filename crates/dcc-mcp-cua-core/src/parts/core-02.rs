@@ -497,6 +497,20 @@ fn validate_action(action: &ComputerUseAction) -> ComputerUseResult<()> {
             "type requires text",
         ));
     }
+    if let Some(duration_ms) = action.duration_ms {
+        if duration_ms > MAX_DRAG_DURATION_MS {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::InvalidAction,
+                "duration_ms must be at most 10000",
+            ));
+        }
+        if action.action != "drag" {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::InvalidAction,
+                "duration_ms is supported only for drag",
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -613,6 +627,9 @@ fn action_arguments(action: &ComputerUseAction, session: &str, target: &WindowTa
             }
             if !action.modifiers.is_empty() {
                 object.insert("modifier".into(), json!(action.modifiers));
+            }
+            if let Some(duration_ms) = action.duration_ms {
+                object.insert("duration_ms".into(), json!(duration_ms));
             }
         }
         "scroll" => {
@@ -758,6 +775,9 @@ fn desktop_action_arguments(action: &ComputerUseAction, session: &str) -> Value 
             }
             if !action.modifiers.is_empty() {
                 object.insert("modifier".into(), json!(action.modifiers));
+            }
+            if let Some(duration_ms) = action.duration_ms {
+                object.insert("duration_ms".into(), json!(duration_ms));
             }
         }
         "scroll" => {

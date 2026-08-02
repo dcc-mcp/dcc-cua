@@ -297,6 +297,22 @@ fn action_rejects_unknown_delivery_mode_and_unbounded_token() {
         })
         .is_err()
     );
+    assert!(
+        validate_action(&ComputerUseAction {
+            action: "drag".into(),
+            duration_ms: Some(10_001),
+            ..Default::default()
+        })
+        .is_err()
+    );
+    assert!(
+        validate_action(&ComputerUseAction {
+            action: "click".into(),
+            duration_ms: Some(100),
+            ..Default::default()
+        })
+        .is_err()
+    );
 }
 
 #[rstest]
@@ -372,11 +388,13 @@ fn coordinate_text_and_key_actions_forward_cua_focus_arguments() {
         ],
         button: Some("middle".into()),
         modifiers: vec!["ALT".into()],
+        duration_ms: Some(750),
         ..Default::default()
     };
     let drag_args = action_arguments(&drag_action, "session", &test_window_target());
     assert_eq!(drag_args["button"], "middle");
     assert_eq!(drag_args["modifier"], json!(["ALT"]));
+    assert_eq!(drag_args["duration_ms"], 750);
 }
 
 #[rstest]
