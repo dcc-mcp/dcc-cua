@@ -566,9 +566,9 @@ impl BrowserResult {
                     mime_type: mime_type.to_owned(),
                     data,
                 });
-                item.as_object_mut().map(|object| {
+                if let Some(object) = item.as_object_mut() {
                     object.insert("data".into(), Value::Null);
-                });
+                }
             }
         }
         Ok(Self { value, images })

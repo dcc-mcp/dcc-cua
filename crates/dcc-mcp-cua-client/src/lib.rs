@@ -319,14 +319,14 @@ impl HostClient {
             if resolved {
                 return format!(r"\\.\pipe\dcc-mcp-cua-v1-session-{session_id}");
             }
-            return r"\\.\pipe\dcc-mcp-cua-v1".to_owned();
+            r"\\.\pipe\dcc-mcp-cua-v1".to_owned()
         }
         #[cfg(unix)]
         {
-            return std::env::temp_dir()
+            std::env::temp_dir()
                 .join("dcc-mcp-cua-v1.sock")
                 .to_string_lossy()
-                .into_owned();
+                .into_owned()
         }
         #[cfg(not(any(windows, unix)))]
         {
@@ -805,11 +805,11 @@ async fn connect_endpoint(endpoint: &str) -> HostClientResult<BoxedHostStream> {
     #[cfg(windows)]
     {
         let stream = tokio::net::windows::named_pipe::ClientOptions::new().open(endpoint)?;
-        return Ok(Box::new(stream));
+        Ok(Box::new(stream))
     }
     #[cfg(unix)]
     {
-        return Ok(Box::new(tokio::net::UnixStream::connect(endpoint).await?));
+        Ok(Box::new(tokio::net::UnixStream::connect(endpoint).await?))
     }
     #[cfg(not(any(windows, unix)))]
     {

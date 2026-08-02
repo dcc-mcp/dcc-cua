@@ -658,7 +658,7 @@ fn snapshot_transport(flags: &[String]) -> Result<SnapshotTransport, Box<dyn std
 
 enum HostConnection {
     Endpoint(HostClient),
-    Spawned(HostProcess),
+    Spawned(Box<HostProcess>),
 }
 
 impl HostConnection {
@@ -671,7 +671,7 @@ impl HostConnection {
 
     async fn shutdown(self) -> Result<(), Box<dyn std::error::Error>> {
         if let Self::Spawned(process) = self {
-            let status = process.shutdown().await?;
+            let status = (*process).shutdown().await?;
             if !status.success() {
                 return Err(format!("spawned Host exited with {status}").into());
             }
@@ -685,9 +685,9 @@ async fn connect_host(
     snapshot_transport: SnapshotTransport,
 ) -> Result<HostConnection, Box<dyn std::error::Error>> {
     if let Some(binary_path) = flag_value(flags, "--spawn") {
-        return Ok(HostConnection::Spawned(
+        return Ok(HostConnection::Spawned(Box::new(
             HostProcess::spawn(binary_path, "dcc-mcp-cua-cli", snapshot_transport).await?,
-        ));
+        )));
     }
     Ok(match flag_value(flags, "--endpoint") {
         Some(endpoint) => HostConnection::Endpoint(
