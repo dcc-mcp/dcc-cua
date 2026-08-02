@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 use thiserror::Error;
 
 pub(crate) const MAX_TEXT_UTF16_UNITS: usize = 4_096;
-pub(crate) const MAX_TYPE_CHAR_DELAY_MS: u64 = 1_000;
+pub(crate) const MAX_TYPE_CHAR_DELAY_MS: u64 = 200;
 pub(crate) const MAX_KEY_TOKENS: usize = 16;
 pub(crate) const MAX_MODIFIER_TOKENS: usize = 8;
 pub(crate) const MAX_MODIFIER_CHARS: usize = 32;

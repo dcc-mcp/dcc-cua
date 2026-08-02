@@ -256,10 +256,12 @@ enum Request {
         session_id: String,
         task_grant_id: String,
         window_capability: String,
-        #[allow(dead_code)]
+        #[serde(default)]
         max_depth: u32,
-        #[allow(dead_code)]
+        #[serde(default)]
         max_nodes: u32,
+        #[serde(default)]
+        activate_before: bool,
     },
     Zoom {
         session_id: String,

@@ -871,11 +871,16 @@ async fn snapshot(
     session.start().await?;
     let result = async {
         maybe_escalate(&mut session, flags).await?;
-        session.screenshot().await
+        let activation = if has_flag(flags, "--activate") {
+            Some(session.activate().await?)
+        } else {
+            None
+        };
+        Ok::<_, dcc_mcp_cua_core::ComputerUseError>((activation, session.screenshot().await?))
     }
     .await;
     let stop_result = session.stop().await;
-    let screenshot = result?;
+    let (activation, screenshot) = result?;
     stop_result?;
     let node_count = screenshot.accessibility["elements"]
         .as_array()
@@ -890,6 +895,7 @@ async fn snapshot(
             "accessibility": accessibility,
             "node_count": node_count,
             "output": output,
+            "activation": activation,
             "backend": "cua-driver-sdk",
         }))?
     );
@@ -1035,11 +1041,17 @@ async fn execute_action(
     session.start().await?;
     let result = async {
         maybe_escalate(&mut session, flags).await?;
+        let activation = if has_flag(flags, "--activate") {
+            Some(session.activate().await?)
+        } else {
+            None
+        };
         let screenshot = session.screenshot().await?;
         action.observation_id = Some(screenshot.observation.observation_id.clone());
         let action_result = session.perform_action(&action).await?;
         let post_snapshot = session.screenshot().await;
         Ok::<_, dcc_mcp_cua_core::ComputerUseError>((
+            activation,
             screenshot.observation,
             action_result,
             post_snapshot,
@@ -1047,13 +1059,14 @@ async fn execute_action(
     }
     .await;
     let stop_result = session.stop().await;
-    let (observation, action_result, post_snapshot) = result?;
+    let (activation, observation, action_result, post_snapshot) = result?;
     stop_result?;
     let post_snapshot = window_post_snapshot_value(post_snapshot, flag_value(flags, "--output"));
     println!(
         "{}",
         serde_json::to_string_pretty(&json!({
             "success": true,
+            "activation": activation,
             "observation": observation,
             "action": action_result_value(action_result),
             "post_snapshot": post_snapshot,
@@ -1539,10 +1552,39 @@ fn has_flag(flags: &[String], name: &str) -> bool {
 
 fn print_help() {
     println!(
-        "dcc-mcp-cua\n\n  list [--app APP] [--pid PID] [--window-id ID] [--title TITLE] [--on-screen]\n  wait-window --app APP|--pid PID|--window-id ID|--title TITLE [--on-screen] [--timeout-ms N] [--poll-ms N]\n  apps\n  tools\n  call --tool NAME [--json JSON|--json-file PATH] [--app APP|--pid PID --window-id ID] [--output FILE]\n  host-call --method NAME [--json JSON|--json-file PATH] [--endpoint PATH|--spawn BINARY] [--snapshot-transport binary_frame|shared_memory] [--output FILE]\n  host-batch --json JSON_ARRAY [--endpoint PATH|--spawn BINARY] [--snapshot-transport binary_frame|shared_memory] [--output-dir DIR]\n  host-jsonl [--endpoint PATH|--spawn BINARY] [--parallel-discovery] [--snapshot-transport binary_frame|shared_memory] [--output-dir DIR]\n  daemon [CUA_DRIVER_ARGS...]\n  mcp [CUA_DRIVER_ARGS...]\n  recording start|stop|status|render [CUA_DRIVER_ARGS...]\n  recording-render INPUT_DIR OUTPUT_MP4 [CUA_DRIVER_ARGS...]\n  update [--check]\n  desktop-snapshot [--output FILE]\n  screen-size\n  cursor-position\n  launch --name NAME|--bundle-id ID|--aumid ID|--path PATH|--launch-path PATH [--url URL] [--arg ARG] [--new-instance] [--start-minimized]\n  terminate --app APP --confirm\n  snapshot --app APP [--output FILE]\n  act --app APP --action-json JSON [--output FILE]\n  verify --app APP --expect-json JSON [--timeout-ms N] [--stable-samples N]\n  desktop-act --action-json JSON [--session ID] [--output FILE]\n  clipboard-read --app APP [--include-text]\n  clipboard-write --app APP --text TEXT|--image-path FILE|--file-path FILE\n  doctor\n  host [--stdio|--endpoint PATH]\n\nHost uses versioned big-endian JSON frames. Hello version 1 negotiates binary-frame or shared-memory snapshots and supports request_id correlation."
+        r#"dcc-mcp-cua
+
+  list [--app APP] [--pid PID] [--window-id ID] [--title TITLE] [--on-screen]
+  wait-window --app APP|--pid PID|--window-id ID|--title TITLE [--on-screen] [--timeout-ms N] [--poll-ms N]
+  apps
+  tools
+  call --tool NAME [--json JSON|--json-file PATH] [--app APP|--pid PID --window-id ID] [--output FILE]
+  host-call --method NAME [--json JSON|--json-file PATH] [--endpoint PATH|--spawn BINARY] [--snapshot-transport binary_frame|shared_memory] [--output FILE]
+  host-batch --json JSON_ARRAY [--endpoint PATH|--spawn BINARY] [--snapshot-transport binary_frame|shared_memory] [--output-dir DIR]
+  host-jsonl [--endpoint PATH|--spawn BINARY] [--parallel-discovery] [--snapshot-transport binary_frame|shared_memory] [--output-dir DIR]
+  daemon [CUA_DRIVER_ARGS...]
+  mcp [CUA_DRIVER_ARGS...]
+  recording start|stop|status|render [CUA_DRIVER_ARGS...]
+  recording-render INPUT_DIR OUTPUT_MP4 [CUA_DRIVER_ARGS...]
+  update [--check]
+  desktop-snapshot [--output FILE]
+  screen-size
+  cursor-position
+  launch --name NAME|--bundle-id ID|--aumid ID|--path PATH|--launch-path PATH [--url URL] [--arg ARG] [--new-instance] [--start-minimized]
+  terminate --app APP --confirm
+  snapshot --app APP|--pid PID|--window-id ID|--title TITLE [--activate] [--output FILE]
+  act --app APP --action-json JSON [--output FILE]
+  verify --app APP --expect-json JSON [--timeout-ms N] [--stable-samples N]
+  desktop-act --action-json JSON [--session ID] [--output FILE]
+  clipboard-read --app APP [--include-text]
+  clipboard-write --app APP --text TEXT|--image-path FILE|--file-path FILE
+  doctor
+  host [--stdio|--endpoint PATH]
+
+Host uses versioned big-endian JSON frames. Hello version 1 negotiates binary-frame or shared-memory snapshots and supports request_id correlation."#
     );
     println!(
-        "Window snapshots/actions accept --escalate --escalation-reason REASON when an explicit desktop visual fallback approval is required."
+        "Window snapshots/actions accept --escalate --escalation-reason REASON when an explicit desktop visual fallback approval is required; --activate keeps custom-rendered foreground capture and actions in one session."
     );
     println!("Zoom: zoom --app APP --x1 N --y1 N --x2 N --y2 N [--output FILE].");
     println!(

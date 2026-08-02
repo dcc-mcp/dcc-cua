@@ -340,6 +340,23 @@ fn app_requests_parse_with_host_params_frames() {
     ));
     assert!(matches!(
         serde_json::from_value::<Request>(json!({
+            "method": "snapshot",
+            "params": {
+                "session_id": "session-1",
+                "task_grant_id": "task-1",
+                "window_capability": "cap-1",
+                "activate_before": true
+            }
+        })),
+        Ok(Request::Snapshot {
+            max_depth: 0,
+            max_nodes: 0,
+            activate_before: true,
+            ..
+        })
+    ));
+    assert!(matches!(
+        serde_json::from_value::<Request>(json!({
             "method": "zoom",
             "params": {
                 "session_id": "session-1",

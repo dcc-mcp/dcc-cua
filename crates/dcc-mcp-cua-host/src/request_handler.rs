@@ -504,9 +504,15 @@ pub(super) async fn handle_request(
             window_capability,
             max_depth,
             max_nodes,
+            activate_before,
         } => {
             let host =
                 authorized_session(sessions, &session_id, &task_grant_id, &window_capability)?;
+            let activation = if activate_before {
+                Some(host.session.activate().await?)
+            } else {
+                None
+            };
             let screenshot = host
                 .session
                 .screenshot_with_bounds(max_nodes, max_depth)
@@ -551,6 +557,7 @@ pub(super) async fn handle_request(
                 "root": accessibility,
                 "node_count": node_count,
                 "image": image,
+                "activation": activation,
             });
             Ok((response, attachment))
         }

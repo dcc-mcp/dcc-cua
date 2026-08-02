@@ -289,10 +289,11 @@ Semantic actions use CUA `element_index` values from the latest
 accessibility snapshot, and `set_text`/`set_value`/`set_checked` use CUA's
 native semantic value path. Coordinate actions remain available for
 custom-drawn surfaces. For applications that miss fast keystrokes, use
-`action: "type_chars"` with `delay_ms` (0..1000); it requires an
+`action: "type_chars"` with `delay_ms` (0..200); it requires an
 `element_index`/`element_token`, or the explicit `type_chars_only: true` when
 the target field is already focused. This maps to CUA's cross-platform
-`type_text_chars` input path and does not accept screen coordinates.
+`type_text` input path with character pacing and does not accept screen
+coordinates.
 `list_windows` supports optional `app`, `pid`, `window_id`, `window_title`, and
 `on_screen_only` filters;
 these are applied by the native backend before the response crosses IPC.
@@ -336,10 +337,18 @@ For native windows whose UIA/AX provider is unavailable (for example a
 game-engine editor or custom-rendered DCC surface), `snapshot` first attempts
 the semantic window capture. After an explicit `escalate_session` approval,
 the same exact-window session may use a CUA desktop visual frame cropped to
-the validated PID/HWND bounds. The result is marked
+the validated PID/HWND bounds. The exact target must be foreground so another
+window cannot be mistaken for it; use CLI `snapshot --activate` or Host
+`snapshot` with `activate_before: true` to activate, verify, and capture within
+one serialized session operation. Windows per-monitor DPI is mapped into the
+desktop screenshot coordinate space before cropping. The result is marked
 `capture_backend: "cua-driver-sdk-desktop-crop"` and
 `accessibility_available: false`; coordinate actions remain observation-bound,
-while semantic element actions correctly remain unavailable.
+are translated from crop-local to desktop coordinates only while that exact
+window remains foreground, and semantic element actions remain unavailable.
+One-shot CLI `act` and friendly action commands accept the same `--activate`
+flag, so their pre-action observation and mutation remain in that foreground
+session instead of racing a separate activation process.
 `desktop_snapshot` is a full-display visual discovery surface; it does not
 widen an existing window session or grant desktop-wide mutation. For an
 explicit desktop input scope, use `open_desktop_session`, then take a fresh

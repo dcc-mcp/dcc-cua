@@ -452,10 +452,8 @@ impl ComputerUseDesktopSession {
         }
         validate_action(action)?;
         if action.element_index.is_some()
-            || matches!(
-                action.action.as_str(),
-                "set_text" | "set_value" | "type_chars"
-            )
+            || action.element_token.is_some()
+            || matches!(action.action.as_str(), "set_text" | "set_value")
         {
             return Err(ComputerUseError::new(
                 ComputerUseErrorCode::InvalidAction,
@@ -746,6 +744,12 @@ impl ComputerUseSession {
                 "UIA window snapshot timed out and the target is not capturable from the desktop",
             ));
         }
+        if !target.is_foreground {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::CaptureFailed,
+                "desktop visual fallback requires the exact target window to be foreground; call activate before retrying the snapshot",
+            ));
+        }
         let result = self
             .driver
             .driver
@@ -767,7 +771,8 @@ impl ComputerUseSession {
             .map_err(|error| {
                 ComputerUseError::new(ComputerUseErrorCode::CaptureFailed, error.to_string())
             })?;
-        let data = crop_png_to_bounds(&desktop, target.bounds)?;
+        let (crop_bounds, window_dpi) = desktop_crop_bounds(target)?;
+        let data = crop_png_to_bounds(&desktop, crop_bounds)?;
         let (width, height) = png_dimensions(&data).ok_or_else(|| {
             ComputerUseError::new(
                 ComputerUseErrorCode::CaptureFailed,
@@ -800,6 +805,9 @@ impl ComputerUseSession {
                 "accessibility_available": false,
                 "process_id": target.pid,
                 "window_handle": target.window_id,
+                "native_window_bounds": target.bounds,
+                "desktop_crop_bounds": crop_bounds,
+                "window_dpi": window_dpi,
                 "desktop_state": desktop_state,
             }),
             session_id: self.session_id.clone(),
@@ -1144,7 +1152,20 @@ impl ComputerUseSession {
                 "the exact target window changed after the screenshot",
             ));
         }
-        let args = action_arguments(action, &self.session_id, &target);
+        let fallback = observation.capture_backend == "cua-driver-sdk-desktop-crop";
+        if fallback && !target.is_foreground {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::InvalidTarget,
+                "desktop visual fallback requires the exact target window to remain foreground",
+            ));
+        }
+        let desktop_action;
+        let args = if fallback {
+            desktop_action = action_for_desktop_fallback(action, observation)?;
+            desktop_action_arguments(&desktop_action, &self.session_id)
+        } else {
+            action_arguments(action, &self.session_id, &target)
+        };
         let name = args["_tool"].as_str().unwrap_or_default().to_string();
         let mut args = args;
         args.as_object_mut()
@@ -1352,7 +1373,21 @@ impl ComputerUseSession {
             .await
             .map_err(|error| map_driver_error("activate CUA window", error))?;
         ensure_tool_ok("activate CUA window", &result)?;
-        Ok(json!({"success": true, "target": target}))
+        let activation = native_tool_result(result)?;
+        let target = self.revalidate_target().await?;
+        if !target.is_foreground {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::InputFailed,
+                "CUA reported activation success but the exact target is not foreground",
+            ));
+        }
+        Ok(json!({
+            "success": true,
+            "target": target,
+            "cua": activation.value,
+            "text": activation.text,
+            "degraded": activation.degraded,
+        }))
     }
 
     /// Force-terminate only the exact process bound to this session.
@@ -1425,11 +1460,13 @@ impl ComputerUseSession {
     }
 
     async fn list_windows(&self) -> ComputerUseResult<Vec<WindowTarget>> {
-        Ok(list_windows_with_driver(&self.driver.driver, None, false)
+        let mut windows = list_windows_with_driver(&self.driver.driver, None, false)
             .await?
             .into_iter()
             .filter_map(|value| WindowTarget::from_value(&value))
-            .collect())
+            .collect::<Vec<_>>();
+        mark_foreground_window(&mut windows);
+        Ok(windows)
     }
 
     fn ensure_active(&self) -> ComputerUseResult<()> {
@@ -1444,6 +1481,25 @@ impl ComputerUseSession {
     }
 }
 
+#[cfg(windows)]
+fn desktop_crop_bounds(target: &WindowTarget) -> ComputerUseResult<([i32; 4], u32)> {
+    let window_handle = usize::try_from(target.window_id).map_err(|_| {
+        ComputerUseError::new(
+            ComputerUseErrorCode::InvalidTarget,
+            "window handle does not fit the current Windows target",
+        )
+    })?;
+    let dpi = unsafe {
+        windows_sys::Win32::UI::HiDpi::GetDpiForWindow(window_handle as *mut core::ffi::c_void)
+    };
+    Ok((scale_bounds_for_dpi(target.bounds, dpi)?, dpi))
+}
+
+#[cfg(not(windows))]
+fn desktop_crop_bounds(target: &WindowTarget) -> ComputerUseResult<([i32; 4], u32)> {
+    Ok((target.bounds, 96))
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub(crate) struct WindowTarget {
     pub(crate) pid: u32,
@@ -1456,7 +1512,7 @@ pub(crate) struct WindowTarget {
     #[serde(default)]
     pub(crate) is_minimized: bool,
     #[serde(default)]
-    pub(crate) z_index: i32,
+    pub(crate) z_index: Option<i32>,
     #[serde(default)]
     pub(crate) is_foreground: bool,
 }
@@ -1471,9 +1527,38 @@ impl WindowTarget {
             bounds: bounds(value["bounds"].as_object()?)?,
             is_on_screen: value["is_on_screen"].as_bool().unwrap_or(false),
             is_minimized: value["minimized"].as_bool().unwrap_or(false),
-            z_index: value["z_index"].as_i64().unwrap_or_default() as i32,
+            z_index: value["z_index"]
+                .as_i64()
+                .and_then(|value| value.try_into().ok()),
             is_foreground: value["is_foreground"].as_bool().unwrap_or(false),
         })
+    }
+}
+
+#[cfg(windows)]
+fn mark_foreground_window(windows: &mut [WindowTarget]) {
+    let foreground = unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow() }
+        as usize as u64;
+    for window in windows {
+        window.is_foreground = window.window_id == foreground;
+    }
+}
+
+#[cfg(not(windows))]
+fn mark_foreground_window(windows: &mut [WindowTarget]) {
+    if windows.iter().any(|window| window.is_foreground) {
+        return;
+    }
+    mark_foreground_by_z_index(windows);
+}
+
+#[cfg(any(not(windows), test))]
+pub(crate) fn mark_foreground_by_z_index(windows: &mut [WindowTarget]) {
+    let Some(highest) = windows.iter().filter_map(|window| window.z_index).max() else {
+        return;
+    };
+    for window in windows {
+        window.is_foreground = window.z_index == Some(highest);
     }
 }
 

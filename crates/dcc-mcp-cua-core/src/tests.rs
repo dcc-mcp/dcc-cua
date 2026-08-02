@@ -175,6 +175,34 @@ fn desktop_fallback_crops_an_8_bit_rgba_png() {
 }
 
 #[rstest]
+fn desktop_fallback_maps_per_monitor_dpi_bounds_to_capture_pixels() {
+    assert_eq!(
+        scale_bounds_for_dpi([1, 1, 3118, 1982], 192).unwrap(),
+        [0, 0, 1560, 992]
+    );
+    assert_eq!(
+        scale_bounds_for_dpi([10, 20, 300, 400], 96).unwrap(),
+        [10, 20, 300, 400]
+    );
+}
+
+#[rstest]
+fn foreground_fallback_uses_the_highest_known_z_index() {
+    let mut back = test_window_target();
+    back.window_id = 1;
+    back.z_index = Some(3);
+    back.is_foreground = false;
+    let mut front = test_window_target();
+    front.window_id = 2;
+    front.z_index = Some(7);
+    front.is_foreground = false;
+    let mut windows = vec![back, front];
+    mark_foreground_by_z_index(&mut windows);
+    assert!(!windows[0].is_foreground);
+    assert!(windows[1].is_foreground);
+}
+
+#[rstest]
 fn native_tool_boundary_rejects_reserved_and_dedicated_routes() {
     assert!(validate_native_tool_request("debug_window_info", &json!({})).is_ok());
     assert!(validate_native_tool_request("bad-name", &json!({})).is_err());
@@ -247,7 +275,7 @@ fn semantic_element_actions_replace_pixel_coordinates() {
             bounds: [0, 0, 100, 100],
             is_on_screen: true,
             is_minimized: false,
-            z_index: 1,
+            z_index: Some(1),
             is_foreground: true,
         },
     );
@@ -278,7 +306,7 @@ fn semantic_tokens_and_background_delivery_reach_cua() {
             bounds: [0, 0, 100, 100],
             is_on_screen: true,
             is_minimized: false,
-            z_index: 1,
+            z_index: Some(1),
             is_foreground: true,
         },
     );
@@ -370,7 +398,7 @@ fn semantic_value_actions_require_and_encode_element_values() {
             bounds: [0, 0, 100, 100],
             is_on_screen: true,
             is_minimized: false,
-            z_index: 1,
+            z_index: Some(1),
             is_foreground: true,
         },
     );
@@ -458,7 +486,7 @@ fn test_window_target() -> WindowTarget {
         bounds: [0, 0, 100, 100],
         is_on_screen: true,
         is_minimized: false,
-        z_index: 1,
+        z_index: Some(1),
         is_foreground: true,
     }
 }
@@ -485,15 +513,16 @@ fn type_chars_uses_cua_character_input_without_delivery_mode() {
             bounds: [0, 0, 100, 100],
             is_on_screen: true,
             is_minimized: false,
-            z_index: 1,
+            z_index: Some(1),
             is_foreground: true,
         },
     );
-    assert_eq!(args["_tool"], "type_text_chars");
+    assert_eq!(args["_tool"], "type_text");
     assert_eq!(args["text"], "Fab");
     assert_eq!(args["delay_ms"], 20);
     assert_eq!(args["element_index"], 4);
     assert!(args.get("delivery_mode").is_none());
+    assert!(args.get("type_chars_only").is_none());
 
     let focused = ComputerUseAction {
         action: "type_chars".into(),
@@ -536,6 +565,56 @@ fn desktop_actions_are_screen_scoped_and_observation_bound() {
     let toggle_args = desktop_action_arguments(&toggle, "desktop-session");
     assert_eq!(toggle_args["_tool"], "click");
     assert_eq!(toggle_args["count"], 1);
+
+    let type_chars = ComputerUseAction {
+        action: "type_chars".into(),
+        text: Some("Fab".into()),
+        delay_ms: Some(20),
+        type_chars_only: true,
+        ..Default::default()
+    };
+    let type_args = desktop_action_arguments(&type_chars, "desktop-session");
+    assert_eq!(type_args["_tool"], "type_text");
+    assert_eq!(type_args["delay_ms"], 20);
+    assert!(type_args.get("type_chars_only").is_none());
+}
+
+#[rstest]
+fn desktop_fallback_maps_local_coordinates_and_rejects_semantic_actions() {
+    let observation = ComputerUseObservation {
+        observation_id: "obs".into(),
+        window_handle: 7,
+        process_id: 42,
+        window_title: "UE".into(),
+        width: 1560,
+        height: 992,
+        source_rect: [1, 1, 3118, 1982],
+        capture_backend: "cua-driver-sdk-desktop-crop".into(),
+        capture_provenance: json!({"desktop_crop_bounds": [20, 30, 1560, 992]}),
+        session_id: "session".into(),
+    };
+    let mapped = action_for_desktop_fallback(
+        &ComputerUseAction {
+            action: "move".into(),
+            x: Some(780.0),
+            y: Some(120.0),
+            ..Default::default()
+        },
+        &observation,
+    )
+    .unwrap();
+    assert_eq!((mapped.x, mapped.y), (Some(800.0), Some(150.0)));
+    assert!(
+        action_for_desktop_fallback(
+            &ComputerUseAction {
+                action: "click".into(),
+                element_index: Some(1),
+                ..Default::default()
+            },
+            &observation,
+        )
+        .is_err()
+    );
 }
 
 #[rstest]

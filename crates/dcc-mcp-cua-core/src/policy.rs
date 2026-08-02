@@ -426,7 +426,7 @@ pub(crate) fn validate_action(action: &ComputerUseAction) -> ComputerUseResult<(
     {
         return Err(ComputerUseError::new(
             ComputerUseErrorCode::InvalidAction,
-            "delay_ms must be at most 1000",
+            "delay_ms must be at most 200",
         ));
     }
     if action
@@ -592,7 +592,7 @@ pub(crate) fn action_arguments(
             "drag" => "drag",
             "scroll" => "scroll",
             "type" => "type_text",
-            "type_chars" => "type_text_chars",
+            "type_chars" => "type_text",
             "set_text" | "set_value" => "set_value",
             "keypress" => "press_key",
             "keyboard_shortcut" => "hotkey",
@@ -701,9 +701,6 @@ pub(crate) fn action_arguments(
             if let Some(delay_ms) = action.delay_ms {
                 object.insert("delay_ms".into(), json!(delay_ms));
             }
-            if action.type_chars_only {
-                object.insert("type_chars_only".into(), json!(true));
-            }
         }
         "set_text" | "set_value" => {
             object.insert(
@@ -752,7 +749,7 @@ pub(crate) fn desktop_action_arguments(action: &ComputerUseAction, session: &str
             "click" | "double_click" | "right_click" | "toggle" => "click",
             "drag" => "drag",
             "scroll" => "scroll",
-            "type" => "type_text",
+            "type" | "type_chars" => "type_text",
             "keypress" => "press_key",
             "keyboard_shortcut" => "hotkey",
             "move" => "move_cursor",
@@ -834,11 +831,14 @@ pub(crate) fn desktop_action_arguments(action: &ComputerUseAction, session: &str
                 json!(action.scroll_y.unwrap_or(1).unsigned_abs()),
             );
         }
-        "type" => {
+        "type" | "type_chars" => {
             object.insert(
                 "text".into(),
                 json!(action.text.as_deref().unwrap_or_default()),
             );
+            if let Some(delay_ms) = action.delay_ms {
+                object.insert("delay_ms".into(), json!(delay_ms));
+            }
         }
         "keypress" => {
             object.insert(
@@ -855,6 +855,91 @@ pub(crate) fn desktop_action_arguments(action: &ComputerUseAction, session: &str
         _ => {}
     }
     args
+}
+
+pub(crate) fn action_for_desktop_fallback(
+    action: &ComputerUseAction,
+    observation: &ComputerUseObservation,
+) -> ComputerUseResult<ComputerUseAction> {
+    if action.element_index.is_some()
+        || action.element_token.is_some()
+        || matches!(action.action.as_str(), "set_text" | "set_value")
+    {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::InvalidAction,
+            "desktop visual fallback does not support semantic element actions",
+        ));
+    }
+    let bounds = observation.capture_provenance["desktop_crop_bounds"]
+        .as_array()
+        .filter(|bounds| bounds.len() == 4)
+        .and_then(|bounds| {
+            Some([
+                i32::try_from(bounds[0].as_i64()?).ok()?,
+                i32::try_from(bounds[1].as_i64()?).ok()?,
+                i32::try_from(bounds[2].as_i64()?).ok()?,
+                i32::try_from(bounds[3].as_i64()?).ok()?,
+            ])
+        })
+        .ok_or_else(|| {
+            ComputerUseError::new(
+                ComputerUseErrorCode::StaleObservation,
+                "desktop fallback observation has no valid crop bounds",
+            )
+        })?;
+    let [left, top, width, height] = bounds;
+    if left < 0
+        || top < 0
+        || width != observation.width as i32
+        || height != observation.height as i32
+    {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::StaleObservation,
+            "desktop fallback observation bounds do not match its screenshot",
+        ));
+    }
+    if matches!(
+        action.action.as_str(),
+        "click" | "double_click" | "right_click" | "toggle" | "move" | "scroll"
+    ) && action.x.is_none()
+    {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::InvalidAction,
+            "desktop fallback pointer actions require screenshot coordinates",
+        ));
+    }
+    if action.action == "drag" && action.path.is_empty() && action.x.is_none() {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::InvalidAction,
+            "desktop fallback drag requires screenshot coordinates",
+        ));
+    }
+
+    let map_point = |point: ComputerUsePoint| -> ComputerUseResult<ComputerUsePoint> {
+        if point.x >= f64::from(observation.width) || point.y >= f64::from(observation.height) {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::InvalidAction,
+                "desktop fallback coordinates exceed the latest screenshot",
+            ));
+        }
+        Ok(ComputerUsePoint {
+            x: point.x + f64::from(left),
+            y: point.y + f64::from(top),
+        })
+    };
+    let mut mapped = action.clone();
+    if let (Some(x), Some(y)) = (action.x, action.y) {
+        let point = map_point(ComputerUsePoint { x, y })?;
+        mapped.x = Some(point.x);
+        mapped.y = Some(point.y);
+    }
+    mapped.path = action
+        .path
+        .iter()
+        .copied()
+        .map(map_point)
+        .collect::<ComputerUseResult<_>>()?;
+    Ok(mapped)
 }
 
 pub(crate) fn ensure_tool_ok(
@@ -936,6 +1021,34 @@ pub(crate) fn is_uia_snapshot_message(message: &str) -> bool {
     lower.contains("uia provider unresponsive")
         || lower.contains("get_window_state timed out")
         || (lower.contains("get_window_state") && lower.contains("desktop scope"))
+}
+
+pub(crate) fn scale_bounds_for_dpi(
+    bounds: [i32; 4],
+    window_dpi: u32,
+) -> ComputerUseResult<[i32; 4]> {
+    if window_dpi == 0 || window_dpi == 96 {
+        return Ok(bounds);
+    }
+    let [x, y, width, height] = bounds;
+    let right = x.checked_add(width).ok_or_else(|| {
+        ComputerUseError::new(
+            ComputerUseErrorCode::CaptureFailed,
+            "desktop fallback target bounds overflow",
+        )
+    })?;
+    let bottom = y.checked_add(height).ok_or_else(|| {
+        ComputerUseError::new(
+            ComputerUseErrorCode::CaptureFailed,
+            "desktop fallback target bounds overflow",
+        )
+    })?;
+    let scale = 96.0 / f64::from(window_dpi);
+    let left = (f64::from(x) * scale).floor() as i32;
+    let top = (f64::from(y) * scale).floor() as i32;
+    let right = (f64::from(right) * scale).ceil() as i32;
+    let bottom = (f64::from(bottom) * scale).ceil() as i32;
+    Ok([left, top, right - left, bottom - top])
 }
 
 pub(crate) fn crop_png_to_bounds(data: &[u8], bounds: [i32; 4]) -> ComputerUseResult<Vec<u8>> {
