@@ -115,8 +115,13 @@ Read-only discovery and observation calls can use `HostClient::request_batch`
 to write several requests before one flush; responses are returned in request
 order. Core callers that need task/turn tracing can use
 `HostClient::request_batch_with_ids`, which preserves caller-owned IDs through
-the same pipelined write. Mutating methods stay on `request` so side effects
-remain explicit. The handshake advertises this as `pipelined_read_requests`.
+the same pipelined write. The Host dispatches stateless discovery calls
+(`list_apps`, `list_tools`, `list_windows`, `screen_size`, and
+`cursor_position`) concurrently; exact-window and desktop session state stays
+serialized. The client matches responses by `request_id`, so completion order
+does not change the caller's result order. Mutating methods stay on `request`
+so side effects remain explicit. The handshake advertises this as
+`pipelined_read_requests` and `parallel_discovery_requests`.
 
 The `host-batch` CLI accepts `{request_id?, method, params}` objects and uses
 one persistent Host connection; supplied IDs are echoed, while omitted IDs

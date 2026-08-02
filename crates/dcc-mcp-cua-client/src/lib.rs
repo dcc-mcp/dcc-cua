@@ -5,6 +5,7 @@
 //! request correlation, or binary image handling.
 
 use std::{
+    collections::{HashMap, HashSet},
     fmt,
     future::Future,
     path::Path,
@@ -93,10 +94,11 @@ impl SnapshotTransport {
     }
 }
 
-/// One ordered client connection to a DCC-MCP Computer Use Host.
+/// One multiplexed client connection to a DCC-MCP Computer Use Host.
 pub struct HostClient {
     reader: ReadHalf<BoxedHostStream>,
     writer: WriteHalf<BoxedHostStream>,
+    pending_responses: HashMap<String, ReceivedResponse>,
     next_request_id: u64,
     hello_complete: bool,
     snapshot_transport: SnapshotTransport,
@@ -271,6 +273,7 @@ impl HostClient {
         Self {
             reader,
             writer,
+            pending_responses: HashMap::new(),
             next_request_id: 1,
             hello_complete: false,
             snapshot_transport,
@@ -409,6 +412,15 @@ impl HostClient {
         for (request_id, _, _) in &requests {
             validate_request_id(request_id)?;
         }
+        let mut seen = HashSet::with_capacity(requests.len());
+        if requests
+            .iter()
+            .any(|(request_id, _, _)| !seen.insert(request_id.as_str()))
+        {
+            return Err(HostClientError::Protocol(
+                "request_batch does not allow duplicate request ids".into(),
+            ));
+        }
         let mut request_ids = Vec::with_capacity(requests.len());
         for (request_id, method, params) in requests {
             request_ids.push(
@@ -421,14 +433,9 @@ impl HostClient {
         }
         let mut received = Vec::with_capacity(request_ids.len());
         for request_id in request_ids {
-            let response = self.receive_response().await?;
-            ensure_request_id(&response, &request_id)?;
-            received.push(response);
+            received.push(self.receive_for_request(&request_id).await?);
         }
-        received
-            .into_iter()
-            .map(ReceivedResponse::into_result)
-            .collect()
+        Ok(received)
     }
 
     /// Send a request while allowing the Host's same-connection cancellation
@@ -452,27 +459,15 @@ impl HostClient {
         let request_id = self.send_request(&method.into(), params).await?;
         tokio::pin!(cancel);
         tokio::select! {
-            received = self.receive_response() => {
-                let received = received?;
-                ensure_request_id(&received, &request_id)?;
-                received.into_result()
+            received = self.receive_for_request(&request_id) => {
+                received
             }
             _ = &mut cancel => {
                 let cancel_id = self.send_request("cancel", cancel_params).await?;
-                let first = self.receive_response().await?;
-                if first.request_id == request_id {
-                    let result = first.into_result()?;
-                    let cancel_response = self.receive_response().await?;
-                    ensure_request_id(&cancel_response, &cancel_id)?;
-                    return Ok(result);
-                }
-                ensure_request_id(&first, &cancel_id)?;
-                let cancel_result = first.into_result();
-                let terminal = self.receive_response().await?;
-                ensure_request_id(&terminal, &request_id)?;
-                let result = terminal.into_result()?;
+                let cancel_result = self.receive_for_request(&cancel_id).await;
+                let request_result = self.receive_for_request(&request_id).await;
                 cancel_result?;
-                Ok(result)
+                request_result
             }
         }
     }
@@ -499,9 +494,17 @@ impl HostClient {
     }
 
     async fn receive_for_request(&mut self, request_id: &str) -> HostClientResult<HostResponse> {
-        let response = self.receive_response().await?;
-        ensure_request_id(&response, request_id)?;
-        response.into_result()
+        if let Some(response) = self.pending_responses.remove(request_id) {
+            return response.into_result();
+        }
+        loop {
+            let response = self.receive_response().await?;
+            if response.request_id == request_id {
+                return response.into_result();
+            }
+            self.pending_responses
+                .insert(response.request_id.clone(), response);
+        }
     }
 
     async fn send_request(&mut self, method: &str, params: Value) -> HostClientResult<String> {
@@ -610,15 +613,6 @@ fn is_pipeline_safe_method(method: &str) -> bool {
             | "clipboard_read"
             | "desktop_session_snapshot"
     )
-}
-
-fn ensure_request_id(response: &ReceivedResponse, expected: &str) -> HostClientResult<()> {
-    if response.request_id != expected {
-        return Err(HostClientError::Protocol(
-            "Host response request_id does not match the request".into(),
-        ));
-    }
-    Ok(())
 }
 
 fn validate_request_id(request_id: &str) -> HostClientResult<()> {
@@ -881,6 +875,16 @@ mod tests {
             Err(HostClientError::Protocol(message))
                 if message.contains("1..")
         ));
+        assert!(matches!(
+            client
+                .request_batch_with_ids(vec![
+                    ("duplicate".into(), "screen_size".into(), json!({})),
+                    ("duplicate".into(), "cursor_position".into(), json!({})),
+                ])
+                .await,
+            Err(HostClientError::Protocol(message))
+                if message.contains("duplicate")
+        ));
         server.await.unwrap().unwrap();
     }
 
@@ -1034,13 +1038,13 @@ mod tests {
         .unwrap();
         assert_eq!(first["request_id"], "core-read-1");
         assert_eq!(second["request_id"], "core-read-2");
-        write_json_response(&mut stream, "core-read-1", json!({"type":"screen_size"})).await?;
         write_json_response(
             &mut stream,
             "core-read-2",
             json!({"type":"cursor_position"}),
         )
-        .await
+        .await?;
+        write_json_response(&mut stream, "core-read-1", json!({"type":"screen_size"})).await
     }
 
     async fn fake_cancel_server(mut stream: DuplexStream) -> HostClientResult<()> {

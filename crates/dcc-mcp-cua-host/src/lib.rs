@@ -20,6 +20,8 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::sync::Mutex as AsyncMutex;
+use tokio::task::JoinSet;
 use uuid::Uuid;
 
 use dcc_mcp_cua_browser::{
@@ -94,6 +96,7 @@ pub const HOST_CAPABILITIES: &[&str] = &[
     "request_correlation",
     "request_cancellation",
     "pipelined_read_requests",
+    "parallel_discovery_requests",
 ];
 
 /// Local transport selected by the CLI or embedding host.
@@ -767,7 +770,7 @@ pub async fn run(driver: ComputerUseDriver, transport: HostTransport) -> Result<
 
 async fn process_connection<S>(driver: ComputerUseDriver, stream: S) -> Result<(), HostError>
 where
-    S: AsyncRead + AsyncWrite + Unpin,
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     let (reader, writer) = tokio::io::split(stream);
     process_connection_parts(driver, reader, writer).await
@@ -780,10 +783,11 @@ async fn process_connection_parts<R, W>(
 ) -> Result<(), HostError>
 where
     R: AsyncRead + Unpin,
-    W: AsyncWrite + Unpin,
+    W: AsyncWrite + Unpin + Send + 'static,
 {
     let mut reader = reader;
-    let mut writer = writer;
+    let writer = Arc::new(AsyncMutex::new(writer));
+    let mut parallel_tasks = JoinSet::new();
     let mut snapshot_transport = None;
     let mut sessions = HashMap::<String, HostSession>::new();
     let mut desktop_sessions = HashMap::<String, HostDesktopSession>::new();
@@ -794,8 +798,8 @@ where
         let (request_id, request) = match parse_request_frame(&frame) {
             Ok(request) => request,
             Err((request_id, error)) => {
-                write_json(
-                    &mut writer,
+                write_json_locked(
+                    &writer,
                     with_request_id(
                         error_response("invalid_request", error),
                         request_id.as_deref(),
@@ -823,8 +827,8 @@ where
                             Ok(result) => result,
                             Err(error) => (error_response(error_code(&error), error.to_string()), None),
                         };
-                        write_response(
-                            &mut writer,
+                        write_response_locked(
+                            &writer,
                             with_request_id(response, request_id.as_deref()),
                             attachment.as_deref(),
                         ).await?;
@@ -833,13 +837,15 @@ where
                     frame = read_frame(&mut reader, MAX_JSON_FRAME_BYTES) => {
                         let Some(frame) = frame? else {
                             drop(operation);
+                            parallel_tasks.abort_all();
+                            while parallel_tasks.join_next().await.is_some() {}
                             return cleanup_sessions(sessions, desktop_sessions).await;
                         };
                         let (cancel_id, next_request) = match parse_request_frame(&frame) {
                             Ok(request) => request,
                             Err((cancel_id, error)) => {
-                                write_json(
-                                    &mut writer,
+                                write_json_locked(
+                                    &writer,
                                     with_request_id(error_response("invalid_request", error), cancel_id.as_deref()),
                                 ).await?;
                                 continue;
@@ -855,10 +861,10 @@ where
                                 Ok(response) => response,
                                 Err(error) => error_response(error_code(&error), error.to_string()),
                             };
-                            write_json(&mut writer, with_request_id(response, cancel_id.as_deref())).await?;
+                            write_json_locked(&writer, with_request_id(response, cancel_id.as_deref())).await?;
                         } else {
-                            write_json(
-                                &mut writer,
+                            write_json_locked(
+                                &writer,
                                 with_request_id(
                                     error_response("request_in_progress", "wait_for is still running; cancel it before sending another request"),
                                     cancel_id.as_deref(),
@@ -868,6 +874,22 @@ where
                     }
                 }
             }
+        } else if is_parallel_request(&request) {
+            let task_driver = driver.clone();
+            let task_writer = writer.clone();
+            parallel_tasks.spawn(async move {
+                let (response, attachment) =
+                    match handle_parallel_request(&task_driver, request).await {
+                        Ok(result) => result,
+                        Err(error) => (error_response(error_code(&error), error.to_string()), None),
+                    };
+                write_response_locked(
+                    &task_writer,
+                    with_request_id(response, request_id.as_deref()),
+                    attachment.as_deref(),
+                )
+                .await
+            });
         } else {
             let (response, attachment) = match handle_request(
                 &driver,
@@ -883,14 +905,16 @@ where
                 Ok(result) => result,
                 Err(error) => (error_response(error_code(&error), error.to_string()), None),
             };
-            write_response(
-                &mut writer,
+            write_response_locked(
+                &writer,
                 with_request_id(response, request_id.as_deref()),
                 attachment.as_deref(),
             )
             .await?;
         }
     }
+
+    while parallel_tasks.join_next().await.is_some() {}
 
     cleanup_sessions(sessions, desktop_sessions).await
 }
@@ -906,6 +930,59 @@ async fn cleanup_sessions(
         let _ = session.session.stop().await;
     }
     Ok(())
+}
+
+fn is_parallel_request(request: &Request) -> bool {
+    matches!(
+        request,
+        Request::ListApps {}
+            | Request::ListTools {}
+            | Request::ListWindows { .. }
+            | Request::ScreenSize {}
+            | Request::CursorPosition {}
+    )
+}
+
+async fn handle_parallel_request(
+    driver: &ComputerUseDriver,
+    request: Request,
+) -> Result<(Value, Option<Vec<u8>>), HostError> {
+    match request {
+        Request::ListApps {} => {
+            let apps = driver.list_apps().await?;
+            Ok((json!({"type":"apps", "apps":apps}), None))
+        }
+        Request::ListTools {} => Ok((
+            json!({"type":"tools", "tools":driver.list_tools().await?}),
+            None,
+        )),
+        Request::ListWindows {
+            app,
+            pid,
+            on_screen_only,
+        } => {
+            let mut windows = driver.list_windows_filtered(pid, on_screen_only).await?;
+            if let Some(app) = app {
+                windows.retain(|window| {
+                    window["app_name"]
+                        .as_str()
+                        .is_some_and(|name| name.eq_ignore_ascii_case(&app))
+                });
+            }
+            Ok((json!({"type":"windows", "windows":windows}), None))
+        }
+        Request::ScreenSize {} => Ok((
+            json!({"type":"screen_size", "result":driver.screen_size().await?}),
+            None,
+        )),
+        Request::CursorPosition {} => Ok((
+            json!({"type":"cursor_position", "result":driver.cursor_position().await?}),
+            None,
+        )),
+        _ => Err(HostError::Protocol(
+            "request is not eligible for parallel Host dispatch".into(),
+        )),
+    }
 }
 
 async fn handle_request(
@@ -2353,6 +2430,23 @@ async fn read_frame<R: AsyncRead + Unpin>(
     Ok(Some(body))
 }
 
+async fn write_json_locked<W: AsyncWrite + Unpin>(
+    writer: &Arc<AsyncMutex<W>>,
+    value: Value,
+) -> Result<(), HostError> {
+    let mut writer = writer.lock().await;
+    write_json(&mut *writer, value).await
+}
+
+async fn write_response_locked<W: AsyncWrite + Unpin>(
+    writer: &Arc<AsyncMutex<W>>,
+    value: Value,
+    attachment: Option<&[u8]>,
+) -> Result<(), HostError> {
+    let mut writer = writer.lock().await;
+    write_response(&mut *writer, value, attachment).await
+}
+
 async fn write_json<W: AsyncWrite + Unpin>(writer: &mut W, value: Value) -> Result<(), HostError> {
     let body =
         serde_json::to_vec(&value).map_err(|error| HostError::Protocol(error.to_string()))?;
@@ -3004,6 +3098,15 @@ mod tests {
             })),
             Ok(Request::BrowserDialog { .. })
         ));
+    }
+
+    #[test]
+    fn only_stateless_discovery_uses_parallel_dispatch() {
+        assert!(is_parallel_request(&Request::ListApps {}));
+        assert!(is_parallel_request(&Request::ListTools {}));
+        assert!(is_parallel_request(&Request::ScreenSize {}));
+        assert!(is_parallel_request(&Request::CursorPosition {}));
+        assert!(!is_parallel_request(&Request::DesktopSnapshot {}));
     }
 
     #[test]
