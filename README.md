@@ -27,6 +27,12 @@ The repository is a Cargo workspace with six responsibilities:
 - `dcc-mcp-cua-shm`: cross-platform shared-memory image handoff;
 - `dcc-mcp-cua-cli`: the thin CLI process that composes the workspace crates.
 
+Inside `dcc-mcp-cua-core`, source files follow domain responsibility rather
+than numeric partitions: `contracts.rs` owns public requests/results and shared
+limits, `runtime.rs` owns driver/session/window orchestration, and `policy.rs`
+owns trust-boundary validation, action translation, and SDK error/result
+normalization.
+
 Application-specific adapters stay above this workspace. A browser adapter can
 add tab/DOM/iframe/download capabilities through CDP or WebDriver while using
 this host as its visual fallback. Unreal/Fab flows belong in the Unreal or
@@ -67,7 +73,7 @@ cargo run -p dcc-mcp-cua-cli -- desktop-snapshot --output desktop.png
 cargo run -p dcc-mcp-cua-cli -- screen-size
 cargo run -p dcc-mcp-cua-cli -- cursor-position
 cargo run -p dcc-mcp-cua-cli -- desktop-act --action-json '{"action":"click","x":100,"y":100}'
-cargo run -p dcc-mcp-cua-cli -- act --app chrome.exe --action-json '{"action":"click","x":100,"y":100}' --output action.png
+cargo run -p dcc-mcp-cua-cli -- act --app chrome.exe --action-json '{"action":"click","x":100,"y":100}' --output after.png
 cargo run -p dcc-mcp-cua-cli -- launch --name Calculator
 cargo run -p dcc-mcp-cua-cli -- doctor
 cargo run -p dcc-mcp-cua-cli -- snapshot --app chrome.exe --output screenshot.png
@@ -123,6 +129,12 @@ uses CUA's pixel-focus-then-type path for Chromium/Electron and other
 custom-rendered inputs; `press` and `hotkey` accept the same focus coordinates.
 `press --modifier M` and drag's `--modifier M` map to CUA's native modifier
 fields, while click and drag accept `--button left|middle|right`.
+
+One-shot window and desktop actions always attempt a fresh post-action
+snapshot. `--output FILE` writes that post-action image, and the JSON result
+includes `post_snapshot`. If capture fails after input was already delivered,
+the command reports `action_was_executed: true` instead of returning a generic
+mutation failure that could cause an unsafe retry.
 
 For common controls, `click`, `double-click`, `right-click`, `move`, `scroll`,
 `press`, `hotkey`, and `type` build the same fenced CUA actions without manual
@@ -263,6 +275,13 @@ The supported request surface is `hello`, `list_apps`, `list_tools`, `list_windo
 `execute_action`, `resume_session`, `terminate_app`, and
 `stop_session`; `cancel` is available while `wait_for` is active and
 `cancel_window_wait` while `wait_for_window` is active on the same connection.
+`execute_action` accepts `capture_after: true` plus optional
+`post_snapshot_max_nodes` and `post_snapshot_max_depth`. The Host then performs
+the mutation and captures the next exact-window observation in one serialized
+request, returns its screenshot and semantic tree as `post_snapshot`, and keeps
+that observation current for the next action. The handshake advertises this as
+`action_post_snapshot`. If only the post-action capture fails, the response
+still reports the completed mutation and sets `observation_required: true`.
 Semantic actions use CUA `element_index` values from the latest
 accessibility snapshot, and `set_text`/`set_value`/`set_checked` use CUA's
 native semantic value path. Coordinate actions remain available for

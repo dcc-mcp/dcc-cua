@@ -16,6 +16,20 @@ fn response_image_reads_host_owned_shared_memory() {
 }
 
 #[rstest]
+fn failed_post_snapshot_reports_that_the_action_already_ran() {
+    let value = window_post_snapshot_value(
+        Err(dcc_mcp_cua_core::ComputerUseError::new(
+            dcc_mcp_cua_core::ComputerUseErrorCode::CaptureFailed,
+            "capture failed",
+        )),
+        None,
+    );
+    assert_eq!(value["success"], false);
+    assert_eq!(value["action_was_executed"], true);
+    assert_eq!(value["code"], "capture_failed");
+}
+
+#[rstest]
 fn host_batch_parser_requires_read_only_request_shapes() {
     let requests = parse_host_batch(json!([
         {"method":"list_apps"},

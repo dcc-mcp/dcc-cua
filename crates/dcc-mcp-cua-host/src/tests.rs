@@ -371,6 +371,33 @@ fn app_requests_parse_with_host_params_frames() {
     ));
     assert!(matches!(
         serde_json::from_value::<Request>(json!({
+            "method": "execute_action",
+            "params": {
+                "session_id": "session-1",
+                "task_grant_id": "task-1",
+                "window_capability": "cap-1",
+                "observation_id": "obs-1",
+                "accessibility_state_id": "obs-1",
+                "action": {
+                    "action": "click",
+                    "input_kind": "semantic",
+                    "intent": "ordinary_edit",
+                    "element_token": "token-1"
+                },
+                "capture_after": true,
+                "post_snapshot_max_nodes": 256,
+                "post_snapshot_max_depth": 12
+            }
+        })),
+        Ok(Request::ExecuteAction {
+            capture_after: true,
+            post_snapshot_max_nodes: 256,
+            post_snapshot_max_depth: 12,
+            ..
+        })
+    ));
+    assert!(matches!(
+        serde_json::from_value::<Request>(json!({
             "method": "call_tool",
             "params": {
                 "session_id": "session-1",
@@ -804,6 +831,48 @@ fn action_response_uses_shared_memory_for_one_image() {
     assert_eq!(response["result"]["content"][0]["data"], Value::Null);
     assert!(attachment.is_none());
     assert!(shared.is_some_and(|image| image.is_alive()));
+}
+
+#[rstest]
+fn action_post_snapshot_reuses_the_single_attachment_frame() {
+    let mut shared = None;
+    let (response, attachment) = action_completed_with_snapshot_response(
+        "session-1",
+        "action-1".into(),
+        ComputerUseToolResult {
+            value: json!({"accepted": true}),
+            text: "clicked".into(),
+            images: vec![ComputerUseImage {
+                data: vec![7, 8],
+                mime_type: "image/png".into(),
+            }],
+            degraded: false,
+        },
+        ComputerUseScreenshot {
+            data: vec![1, 2, 3],
+            observation: dcc_mcp_cua_core::ComputerUseObservation {
+                observation_id: "obs-after".into(),
+                window_handle: 7,
+                process_id: 42,
+                window_title: "DCC".into(),
+                width: 1280,
+                height: 720,
+                source_rect: [0, 0, 1280, 720],
+                capture_backend: "test".into(),
+                capture_provenance: json!({}),
+                session_id: "session-1".into(),
+            },
+            accessibility: json!({"elements": [{"element_token": "next"}]}),
+        },
+        SnapshotTransport::BinaryFrame,
+        &mut shared,
+    )
+    .unwrap();
+    assert_eq!(response["post_snapshot"]["observation_id"], "obs-after");
+    assert_eq!(response["post_snapshot"]["node_count"], 1);
+    assert_eq!(response["post_snapshot"]["image"]["index"], 1);
+    assert_eq!(response["post_snapshot"]["image"]["offset"], 2);
+    assert_eq!(attachment, Some(vec![7, 8, 1, 2, 3]));
 }
 
 #[rstest]

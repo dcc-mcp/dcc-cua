@@ -1038,17 +1038,27 @@ async fn execute_action(
         let screenshot = session.screenshot().await?;
         action.observation_id = Some(screenshot.observation.observation_id.clone());
         let action_result = session.perform_action(&action).await?;
-        Ok::<_, dcc_mcp_cua_core::ComputerUseError>(json!({
-            "success": true,
-            "observation": screenshot.observation,
-            "action": action_result_value(action_result, flag_value(flags, "--output"))?,
-        }))
+        let post_snapshot = session.screenshot().await;
+        Ok::<_, dcc_mcp_cua_core::ComputerUseError>((
+            screenshot.observation,
+            action_result,
+            post_snapshot,
+        ))
     }
     .await;
     let stop_result = session.stop().await;
-    let result = result?;
+    let (observation, action_result, post_snapshot) = result?;
     stop_result?;
-    println!("{}", serde_json::to_string_pretty(&result)?);
+    let post_snapshot = window_post_snapshot_value(post_snapshot, flag_value(flags, "--output"));
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&json!({
+            "success": true,
+            "observation": observation,
+            "action": action_result_value(action_result),
+            "post_snapshot": post_snapshot,
+        }))?
+    );
     Ok(())
 }
 
@@ -1323,46 +1333,96 @@ async fn desktop_act(
         let snapshot = session.screenshot().await?;
         action.observation_id = Some(snapshot.observation_id.clone());
         let action_result = session.perform_action(&action).await?;
-        Ok::<_, dcc_mcp_cua_core::ComputerUseError>(json!({
+        let post_snapshot = session.screenshot().await;
+        Ok::<_, dcc_mcp_cua_core::ComputerUseError>((snapshot, action_result, post_snapshot))
+    }
+    .await;
+    let stop_result = session.stop().await;
+    let (snapshot, action_result, post_snapshot) = result?;
+    stop_result?;
+    let post_snapshot = desktop_post_snapshot_value(post_snapshot, flag_value(flags, "--output"));
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&json!({
             "success": true,
             "session_id": session_id,
             "observation_id": snapshot.observation_id,
             "state": snapshot.state,
-            "action": action_result_value(action_result, flag_value(flags, "--output"))?,
-        }))
-    }
-    .await;
-    let stop_result = session.stop().await;
-    let result = result?;
-    stop_result?;
-    println!("{}", serde_json::to_string_pretty(&result)?);
+            "action": action_result_value(action_result),
+            "post_snapshot": post_snapshot,
+        }))?
+    );
     Ok(())
 }
 
-fn action_result_value(
-    result: ComputerUseToolResult,
-    output: Option<String>,
-) -> dcc_mcp_cua_core::ComputerUseResult<serde_json::Value> {
+fn action_result_value(result: ComputerUseToolResult) -> serde_json::Value {
     let mut value = result.value;
     value["text"] = json!(result.text);
     value["degraded"] = json!(result.degraded);
     value["image_count"] = json!(result.images.len());
-    if let Some(path) = output {
-        let image = result.images.first().ok_or_else(|| {
-            dcc_mcp_cua_core::ComputerUseError::new(
-                dcc_mcp_cua_core::ComputerUseErrorCode::CaptureFailed,
-                "action returned no image",
-            )
-        })?;
-        fs::write(&path, &image.data).map_err(|error| {
-            dcc_mcp_cua_core::ComputerUseError::new(
-                dcc_mcp_cua_core::ComputerUseErrorCode::CaptureFailed,
-                format!("write action image: {error}"),
-            )
-        })?;
-        value["image_output"] = json!(path);
+    value
+}
+
+fn window_post_snapshot_value(
+    result: dcc_mcp_cua_core::ComputerUseResult<dcc_mcp_cua_core::ComputerUseScreenshot>,
+    output: Option<String>,
+) -> serde_json::Value {
+    match result {
+        Ok(snapshot) => {
+            let node_count = snapshot.accessibility["elements"]
+                .as_array()
+                .map_or(0, Vec::len);
+            let (output, output_error) = snapshot_output(&snapshot.data, output);
+            json!({
+                "success": true,
+                "observation": snapshot.observation,
+                "accessibility": snapshot.accessibility,
+                "node_count": node_count,
+                "output": output,
+                "output_error": output_error,
+            })
+        }
+        Err(error) => json!({
+            "success": false,
+            "action_was_executed": true,
+            "code": error.code,
+            "message": error.message,
+        }),
     }
-    Ok(value)
+}
+
+fn desktop_post_snapshot_value(
+    result: dcc_mcp_cua_core::ComputerUseResult<dcc_mcp_cua_core::ComputerUseDesktopSnapshot>,
+    output: Option<String>,
+) -> serde_json::Value {
+    match result {
+        Ok(snapshot) => {
+            let (output, output_error) = snapshot_output(&snapshot.data, output);
+            json!({
+                "success": true,
+                "observation_id": snapshot.observation_id,
+                "state": snapshot.state,
+                "output": output,
+                "output_error": output_error,
+            })
+        }
+        Err(error) => json!({
+            "success": false,
+            "action_was_executed": true,
+            "code": error.code,
+            "message": error.message,
+        }),
+    }
+}
+
+fn snapshot_output(data: &[u8], output: Option<String>) -> (Option<String>, Option<String>) {
+    let Some(path) = output else {
+        return (None, None);
+    };
+    match fs::write(&path, data) {
+        Ok(()) => (Some(path), None),
+        Err(error) => (None, Some(format!("write post-action snapshot: {error}"))),
+    }
 }
 
 async fn doctor(driver: &ComputerUseDriver) -> Result<(), Box<dyn std::error::Error>> {

@@ -937,6 +937,9 @@ pub(super) async fn handle_request(
             observation_id,
             accessibility_state_id,
             action,
+            capture_after,
+            post_snapshot_max_depth,
+            post_snapshot_max_nodes,
         } => {
             let host =
                 authorized_session(sessions, &session_id, &task_grant_id, &window_capability)?;
@@ -984,12 +987,57 @@ pub(super) async fn handle_request(
             }
             let action = action.into_computer_use(observation_id)?;
             let result = host.session.perform_action(&action).await?;
+            let action_id = format!("cua-action-{}", Uuid::new_v4());
+            if capture_after {
+                return match host
+                    .session
+                    .screenshot_with_bounds(post_snapshot_max_nodes, post_snapshot_max_depth)
+                    .await
+                {
+                    Ok(screenshot) => {
+                        let observation_id = screenshot.observation.observation_id.clone();
+                        host.latest_observation_id = Some(observation_id.clone());
+                        host.latest_accessibility_state_id = Some(observation_id);
+                        host.latest_accessibility_root = Some(screenshot.accessibility.clone());
+                        action_completed_with_snapshot_response(
+                            &session_id,
+                            action_id,
+                            result,
+                            screenshot,
+                            mode,
+                            &mut host.latest_shared_image,
+                        )
+                    }
+                    Err(error) => {
+                        host.latest_observation_id = None;
+                        host.latest_accessibility_state_id = None;
+                        host.latest_accessibility_root = None;
+                        let code = error_code(&HostError::ComputerUse(error.clone()));
+                        let (mut response, attachment) = action_completed_response(
+                            &session_id,
+                            action_id,
+                            "CUA action completed, but the post-action snapshot failed",
+                            result,
+                            mode,
+                            &mut host.latest_shared_image,
+                        )?;
+                        response["post_snapshot"] = json!({
+                            "success": false,
+                            "action_was_executed": true,
+                            "code": code,
+                            "message": error.message,
+                        });
+                        response["observation_required"] = Value::Bool(true);
+                        Ok((response, attachment))
+                    }
+                };
+            }
             host.latest_observation_id = None;
             host.latest_accessibility_state_id = None;
             host.latest_accessibility_root = None;
             action_completed_response(
                 &session_id,
-                format!("cua-action-{}", Uuid::new_v4()),
+                action_id,
                 "CUA action completed",
                 result,
                 mode,

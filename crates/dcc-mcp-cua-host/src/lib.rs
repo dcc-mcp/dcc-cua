@@ -35,7 +35,7 @@ use dcc_mcp_cua_browser::{
 use dcc_mcp_cua_core::{
     ComputerUseAction, ComputerUseClipboardWriteRequest, ComputerUseDesktopSession,
     ComputerUseDriver, ComputerUseError, ComputerUseErrorCode, ComputerUseImage, ComputerUsePoint,
-    ComputerUseRecordingStartRequest, ComputerUseResult, ComputerUseSession,
+    ComputerUseRecordingStartRequest, ComputerUseResult, ComputerUseScreenshot, ComputerUseSession,
     ComputerUseTargetScope, ComputerUseToolResult, ComputerUseWindowQuery,
     ComputerUseWindowWaitRequest, ComputerUseZoomRequest,
 };
@@ -53,6 +53,7 @@ pub const HOST_CAPABILITIES: &[&str] = &[
     "exact_window_state",
     "connection_scoped_sessions",
     "observation_fencing",
+    "action_post_snapshot",
     "semantic_element_tokens",
     "background_first_input_delivery",
     "scoped_raw_input",
@@ -373,6 +374,12 @@ enum Request {
         observation_id: String,
         accessibility_state_id: String,
         action: HostAction,
+        #[serde(default)]
+        capture_after: bool,
+        #[serde(default)]
+        post_snapshot_max_depth: u32,
+        #[serde(default)]
+        post_snapshot_max_nodes: u32,
     },
     ResumeSession {
         session_id: String,
@@ -1459,6 +1466,53 @@ fn action_completed_response(
             response[field] = tool_response[field].clone();
         }
     }
+    Ok((response, attachment))
+}
+
+fn action_completed_with_snapshot_response(
+    session_id: &str,
+    action_id: String,
+    mut result: ComputerUseToolResult,
+    screenshot: ComputerUseScreenshot,
+    mode: SnapshotTransport,
+    shared_image: &mut Option<SharedImage>,
+) -> Result<(Value, Option<Vec<u8>>), HostError> {
+    let image_index = result.images.len();
+    let node_count = screenshot.accessibility["elements"]
+        .as_array()
+        .map_or(0, Vec::len);
+    let observation_id = screenshot.observation.observation_id.clone();
+    let mut post_snapshot = json!({
+        "success": true,
+        "observation_id": observation_id,
+        "accessibility_state_id": observation_id,
+        "observation": screenshot.observation,
+        "root": screenshot.accessibility,
+        "node_count": node_count,
+    });
+    result.images.push(ComputerUseImage {
+        data: screenshot.data,
+        mime_type: "image/png".into(),
+    });
+    let (mut response, attachment) = action_completed_response(
+        session_id,
+        action_id,
+        "CUA action completed with a fresh post-action snapshot",
+        result,
+        mode,
+        shared_image,
+    )?;
+    let descriptor = response["attachments"]
+        .as_array()
+        .and_then(|attachments| attachments.get(image_index))
+        .cloned()
+        .or_else(|| {
+            (image_index == 0 && !response["image"].is_null()).then(|| response["image"].clone())
+        });
+    if let Some(descriptor) = descriptor {
+        post_snapshot["image"] = descriptor;
+    }
+    response["post_snapshot"] = post_snapshot;
     Ok((response, attachment))
 }
 
