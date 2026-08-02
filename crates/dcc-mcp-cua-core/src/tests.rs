@@ -464,6 +464,74 @@ fn coordinate_text_and_key_actions_forward_cua_focus_arguments() {
 }
 
 #[rstest]
+#[case(-4, 0, "left", 4)]
+#[case(4, 0, "right", 4)]
+#[case(0, -5, "up", 5)]
+#[case(0, 5, "down", 5)]
+fn scroll_axes_reach_window_and_desktop_cua(
+    #[case] scroll_x: i32,
+    #[case] scroll_y: i32,
+    #[case] direction: &str,
+    #[case] amount: u32,
+) {
+    let action = ComputerUseAction {
+        action: "scroll".into(),
+        scroll_x: Some(scroll_x),
+        scroll_y: Some(scroll_y),
+        scroll_by: Some("page".into()),
+        ..Default::default()
+    };
+    validate_action(&action).unwrap();
+    for arguments in [
+        action_arguments(&action, "session", &test_window_target()),
+        desktop_action_arguments(&action, "session"),
+    ] {
+        assert_eq!(arguments["direction"], direction);
+        assert_eq!(arguments["amount"], amount);
+        assert_eq!(arguments["by"], "page");
+    }
+}
+
+#[rstest]
+fn scroll_rejects_diagonal_unbounded_and_unscoped_requests() {
+    for action in [
+        ComputerUseAction {
+            action: "scroll".into(),
+            scroll_x: Some(1),
+            scroll_y: Some(1),
+            ..Default::default()
+        },
+        ComputerUseAction {
+            action: "scroll".into(),
+            scroll_y: Some(51),
+            ..Default::default()
+        },
+        ComputerUseAction {
+            action: "scroll".into(),
+            ..Default::default()
+        },
+        ComputerUseAction {
+            action: "scroll".into(),
+            element_index: Some(1),
+            scroll_by: Some("pixel".into()),
+            ..Default::default()
+        },
+    ] {
+        assert!(validate_action(&action).is_err());
+    }
+
+    let element_scroll = ComputerUseAction {
+        action: "scroll".into(),
+        element_index: Some(1),
+        ..Default::default()
+    };
+    validate_action(&element_scroll).unwrap();
+    let arguments = action_arguments(&element_scroll, "session", &test_window_target());
+    assert_eq!(arguments["direction"], "down");
+    assert!(arguments.get("amount").is_none());
+}
+
+#[rstest]
 fn semantic_type_uses_cua_canonical_type_text() {
     let action = ComputerUseAction {
         action: "type".into(),

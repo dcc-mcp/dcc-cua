@@ -17,6 +17,7 @@ pub(crate) const MAX_MODIFIER_CHARS: usize = 32;
 pub(crate) const MAX_DRAG_POINTS: usize = 256;
 pub(crate) const MAX_DRAG_DURATION_MS: u64 = 10_000;
 pub(crate) const MAX_DRAG_STEPS: u32 = 200;
+pub(crate) const MAX_SCROLL_AMOUNT: u32 = 50;
 pub(crate) const MAX_ELEMENT_TOKEN_CHARS: usize = 512;
 pub(crate) const MAX_LAUNCH_ARGUMENTS: usize = 32;
 pub(crate) const MAX_LAUNCH_URLS: usize = 16;
@@ -184,6 +185,8 @@ pub struct ComputerUseAction {
     pub button: Option<String>,
     pub scroll_x: Option<i32>,
     pub scroll_y: Option<i32>,
+    #[serde(default)]
+    pub scroll_by: Option<String>,
     #[serde(default)]
     pub path: Vec<ComputerUsePoint>,
     pub text: Option<String>,

@@ -89,6 +89,7 @@ cargo run -p dcc-mcp-cua-cli -- set-value --app chrome.exe --element-index 15 --
 cargo run -p dcc-mcp-cua-cli -- drag --app chrome.exe --from-x 100 --from-y 100 --to-x 300 --to-y 200 --duration-ms 750 --steps 32
 cargo run -p dcc-mcp-cua-cli -- type --app chrome.exe --text "hello" --focused
 cargo run -p dcc-mcp-cua-cli -- hotkey --app chrome.exe --key CTRL --key L
+cargo run -p dcc-mcp-cua-cli -- scroll --app UE5Editor.exe --scroll-x 4 --by page --x 600 --y 900
 cargo run -p dcc-mcp-cua-cli -- act --app chrome.exe --action-json '{"action":"click","x":100,"y":100}'
 cargo run -p dcc-mcp-cua-cli -- verify --app chrome.exe --expect-json '[{"window":{"exists":true}}]'
 cargo run -p dcc-mcp-cua-cli -- update --check
@@ -143,6 +144,10 @@ uses CUA's pixel-focus-then-type path for Chromium/Electron and other
 custom-rendered inputs; `press` and `hotkey` accept the same focus coordinates.
 `press --modifier M` and drag's `--modifier M` map to CUA's native modifier
 fields, while click and drag accept `--button left|middle|right`.
+Scroll accepts one signed axis per action (`--scroll-x` or `--scroll-y`), an
+optional `--by line|page`, and either a semantic element or exact window-local
+coordinates. This preserves horizontal timeline/canvas scrolling instead of
+silently converting it to a vertical wheel action.
 
 One-shot window and desktop actions always attempt a fresh post-action
 snapshot. `--output FILE` writes that post-action image, and the JSON result

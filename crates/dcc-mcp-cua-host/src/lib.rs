@@ -66,6 +66,7 @@ pub const HOST_CAPABILITIES: &[&str] = &[
     "uia_snapshot_and_actions",
     "zoomed_window_observation",
     "semantic_value_actions",
+    "two_axis_scroll",
     "bounded_wait_for",
     "binary_snapshot_frames",
     "shared_memory_snapshots",
@@ -521,6 +522,8 @@ struct HostAction {
     #[serde(default)]
     scroll_y: Option<i32>,
     #[serde(default)]
+    scroll_by: Option<String>,
+    #[serde(default)]
     path: Vec<ComputerUsePoint>,
     #[serde(default)]
     text: Option<String>,
@@ -675,6 +678,7 @@ impl HostAction {
             button: self.button,
             scroll_x: self.scroll_x,
             scroll_y: self.scroll_y,
+            scroll_by: self.scroll_by,
             path: self.path,
             text,
             delay_ms: self.delay_ms,

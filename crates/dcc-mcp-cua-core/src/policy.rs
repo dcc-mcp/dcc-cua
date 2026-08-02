@@ -449,6 +449,14 @@ pub(crate) fn validate_action(action: &ComputerUseAction) -> ComputerUseResult<(
             "delivery_mode must be background or foreground",
         ));
     }
+    if action.action == "scroll" {
+        validate_scroll(action)?;
+    } else if action.scroll_x.is_some() || action.scroll_y.is_some() || action.scroll_by.is_some() {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::InvalidAction,
+            "scroll_x, scroll_y, and scroll_by are supported only for scroll",
+        ));
+    }
     for point in action.path.iter().chain(
         [action
             .x
@@ -669,19 +677,7 @@ pub(crate) fn action_arguments(
         "scroll" => {
             object.insert("x".into(), json!(action.x));
             object.insert("y".into(), json!(action.y));
-            object.insert(
-                "direction".into(),
-                json!(if action.scroll_y.unwrap_or_default() < 0 {
-                    "up"
-                } else {
-                    "down"
-                }),
-            );
-            object.insert("by".into(), json!("amount"));
-            object.insert(
-                "amount".into(),
-                json!(action.scroll_y.unwrap_or(1).unsigned_abs()),
-            );
+            insert_scroll_arguments(object, action);
         }
         "type" => {
             object.insert(
@@ -817,19 +813,7 @@ pub(crate) fn desktop_action_arguments(action: &ComputerUseAction, session: &str
         "scroll" => {
             object.insert("x".into(), json!(action.x));
             object.insert("y".into(), json!(action.y));
-            object.insert(
-                "direction".into(),
-                json!(if action.scroll_y.unwrap_or_default() < 0 {
-                    "up"
-                } else {
-                    "down"
-                }),
-            );
-            object.insert("by".into(), json!("amount"));
-            object.insert(
-                "amount".into(),
-                json!(action.scroll_y.unwrap_or(1).unsigned_abs()),
-            );
+            insert_scroll_arguments(object, action);
         }
         "type" | "type_chars" => {
             object.insert(
@@ -855,6 +839,75 @@ pub(crate) fn desktop_action_arguments(action: &ComputerUseAction, session: &str
         _ => {}
     }
     args
+}
+
+fn validate_scroll(action: &ComputerUseAction) -> ComputerUseResult<()> {
+    let horizontal = action.scroll_x.unwrap_or_default();
+    let vertical = action.scroll_y.unwrap_or_default();
+    if horizontal != 0 && vertical != 0 {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::InvalidAction,
+            "scroll supports one axis per action",
+        ));
+    }
+    let amount = if horizontal != 0 {
+        horizontal.unsigned_abs()
+    } else {
+        vertical.unsigned_abs()
+    };
+    if amount > MAX_SCROLL_AMOUNT {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::InvalidAction,
+            format!("scroll amount must be at most {MAX_SCROLL_AMOUNT}"),
+        ));
+    }
+    if amount == 0
+        && action.element_index.is_none()
+        && action.element_token.is_none()
+        && action.x.is_none()
+    {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::InvalidAction,
+            "scroll requires a non-zero axis, element locator, or coordinates",
+        ));
+    }
+    if action
+        .scroll_by
+        .as_deref()
+        .is_some_and(|value| !matches!(value, "line" | "page"))
+    {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::InvalidAction,
+            "scroll_by must be line or page",
+        ));
+    }
+    Ok(())
+}
+
+fn insert_scroll_arguments(
+    object: &mut serde_json::Map<String, Value>,
+    action: &ComputerUseAction,
+) {
+    let horizontal = action.scroll_x.unwrap_or_default();
+    let vertical = action.scroll_y.unwrap_or_default();
+    let (direction, amount) = if horizontal < 0 {
+        ("left", horizontal.unsigned_abs())
+    } else if horizontal > 0 {
+        ("right", horizontal.unsigned_abs())
+    } else if vertical < 0 {
+        ("up", vertical.unsigned_abs())
+    } else if vertical > 0 {
+        ("down", vertical.unsigned_abs())
+    } else {
+        ("down", 0)
+    };
+    object.insert("direction".into(), json!(direction));
+    if amount > 0 {
+        object.insert("amount".into(), json!(amount));
+    }
+    if let Some(by) = action.scroll_by.as_deref() {
+        object.insert("by".into(), json!(by));
+    }
 }
 
 pub(crate) fn action_for_desktop_fallback(

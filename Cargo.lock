@@ -976,7 +976,7 @@ checksum = "a4ae5f15dda3c708c0ade84bfee31ccab44a3da4f88015ed22f63732abe300c8"
 
 [[package]]
 name = "dcc-mcp-cua-browser"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "base64",
  "dcc-mcp-cua-core",
@@ -987,7 +987,7 @@ dependencies = [
 
 [[package]]
 name = "dcc-mcp-cua-cli"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "dcc-mcp-cua-client",
  "dcc-mcp-cua-core",
@@ -1001,7 +1001,7 @@ dependencies = [
 
 [[package]]
 name = "dcc-mcp-cua-client"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "rstest",
  "serde_json",
@@ -1012,7 +1012,7 @@ dependencies = [
 
 [[package]]
 name = "dcc-mcp-cua-core"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "base64",
  "cua-driver-sdk",
@@ -1027,7 +1027,7 @@ dependencies = [
 
 [[package]]
 name = "dcc-mcp-cua-host"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "dcc-mcp-cua-browser",
  "dcc-mcp-cua-core",
@@ -1043,7 +1043,7 @@ dependencies = [
 
 [[package]]
 name = "dcc-mcp-cua-shm"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "ipckit",
  "rstest",

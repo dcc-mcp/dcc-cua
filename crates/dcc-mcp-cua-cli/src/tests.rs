@@ -99,6 +99,11 @@ fn manifest_is_a_machine_readable_core_launch_contract() {
             .as_array()
             .is_some_and(|values| values.iter().any(|value| value == "browser_exact_binding"))
     );
+    assert!(
+        manifest["host"]["capabilities"]
+            .as_array()
+            .is_some_and(|values| values.iter().any(|value| value == "two_axis_scroll"))
+    );
     assert_eq!(
         manifest["upstream_driver"]["top_level_aliases"]["daemon"],
         "serve"
@@ -311,6 +316,34 @@ fn friendly_actions_build_bounded_cua_requests() {
         8
     );
     assert!(bounded_u32(&strings(["--max-depth", "65"]), "--max-depth", 64, 64).is_err());
+}
+
+#[rstest]
+fn friendly_scroll_preserves_axis_target_and_granularity() {
+    let action = action_from_command(
+        "scroll",
+        &strings([
+            "--scroll-x",
+            "-4",
+            "--by",
+            "page",
+            "--x",
+            "120",
+            "--y",
+            "80",
+        ]),
+    )
+    .unwrap();
+    assert_eq!(action.scroll_x, Some(-4));
+    assert_eq!(action.scroll_by.as_deref(), Some("page"));
+    assert_eq!((action.x, action.y), (Some(120.0), Some(80.0)));
+    assert!(
+        action_from_command(
+            "scroll",
+            &strings(["--element-index", "7", "--x", "120", "--y", "80"])
+        )
+        .is_err()
+    );
 }
 
 fn strings<const N: usize>(values: [&str; N]) -> Vec<String> {

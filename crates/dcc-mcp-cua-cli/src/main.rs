@@ -1264,18 +1264,33 @@ fn action_from_command(
         }
         "scroll" => {
             apply_element_selector(&mut action, flags, command)?;
+            let coordinates = optional_coordinate_pair(flags, command)?;
+            if coordinates.is_some()
+                && (action.element_index.is_some() || action.element_token.is_some())
+            {
+                return Err("scroll cannot combine coordinates with an element selector".into());
+            }
+            if let Some((x, y)) = coordinates {
+                action.x = Some(x);
+                action.y = Some(y);
+            }
             action.scroll_x = flag_value(flags, "--scroll-x")
                 .map(|value| value.parse::<i32>())
                 .transpose()?;
             action.scroll_y = flag_value(flags, "--scroll-y")
                 .map(|value| value.parse::<i32>())
                 .transpose()?;
+            action.scroll_by = flag_value(flags, "--by");
             if action.scroll_x.is_none()
                 && action.scroll_y.is_none()
                 && action.element_index.is_none()
                 && action.element_token.is_none()
+                && action.x.is_none()
             {
-                return Err("scroll requires --scroll-x/--scroll-y or an element selector".into());
+                return Err(
+                    "scroll requires --scroll-x/--scroll-y, coordinates, or an element selector"
+                        .into(),
+                );
             }
         }
         _ => unreachable!("friendly action command is validated before parsing"),
@@ -1640,7 +1655,7 @@ Host uses versioned big-endian JSON frames. Hello version 1 negotiates binary-fr
     );
     println!("Zoom: zoom --app APP --x1 N --y1 N --x2 N --y2 N [--output FILE].");
     println!(
-        "Friendly actions: click/double-click/right-click/toggle [--x X --y Y|--element-index N|--element-token TOKEN] [--button left|middle|right], drag --from-x X --from-y Y --to-x X --to-y Y [--button B --modifier M --duration-ms N --steps N], type [--text TEXT] [--focused|--x X --y Y|--element-index N], set-text/set-value, press [--key K] [--modifier M] [--x X --y Y|--element-index N], hotkey [--key K ...] [--x X --y Y], scroll, move."
+        "Friendly actions: click/double-click/right-click/toggle [--x X --y Y|--element-index N|--element-token TOKEN] [--button left|middle|right], drag --from-x X --from-y Y --to-x X --to-y Y [--button B --modifier M --duration-ms N --steps N], type [--text TEXT] [--focused|--x X --y Y|--element-index N], set-text/set-value, press [--key K] [--modifier M] [--x X --y Y|--element-index N], hotkey [--key K ...] [--x X --y Y], scroll [--scroll-x N|--scroll-y N] [--by line|page] [--x X --y Y|--element-index N], move."
     );
     println!(
         "Semantic tree: accessibility --app APP [--max-elements N] [--max-depth N]. Window: window-state|activate --app APP."
