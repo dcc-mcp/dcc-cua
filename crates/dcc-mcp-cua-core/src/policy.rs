@@ -1,5 +1,13 @@
+// Trust-boundary validation, action translation, and SDK result normalization.
+use std::io::Cursor;
 
-fn validate_clipboard_write_request(
+use base64::Engine;
+use serde_json::{Value, json};
+
+use crate::contracts::*;
+use crate::runtime::WindowTarget;
+
+pub(crate) fn validate_clipboard_write_request(
     request: &ComputerUseClipboardWriteRequest,
 ) -> ComputerUseResult<()> {
     let values = [
@@ -59,7 +67,7 @@ fn validate_local_file_path(path: &str) -> ComputerUseResult<()> {
     Ok(())
 }
 
-fn validate_recording_start_request(
+pub(crate) fn validate_recording_start_request(
     request: &ComputerUseRecordingStartRequest,
 ) -> ComputerUseResult<()> {
     let path = request.output_dir.trim();
@@ -76,7 +84,7 @@ fn validate_recording_start_request(
     Ok(())
 }
 
-fn validate_verify_state_request(
+pub(crate) fn validate_verify_state_request(
     expect: &Value,
     timeout_ms: Option<u64>,
     stable_samples: Option<u64>,
@@ -108,7 +116,7 @@ fn validate_verify_state_request(
     Ok(())
 }
 
-fn validate_native_tool_request(name: &str, arguments: &Value) -> ComputerUseResult<()> {
+pub(crate) fn validate_native_tool_request(name: &str, arguments: &Value) -> ComputerUseResult<()> {
     if name.is_empty()
         || name.chars().count() > MAX_NATIVE_TOOL_NAME_CHARS
         || !name
@@ -147,7 +155,10 @@ fn validate_native_tool_request(name: &str, arguments: &Value) -> ComputerUseRes
     Ok(())
 }
 
-fn validate_escalation_request(reason: &str, detail: Option<&str>) -> ComputerUseResult<()> {
+pub(crate) fn validate_escalation_request(
+    reason: &str,
+    detail: Option<&str>,
+) -> ComputerUseResult<()> {
     const REASONS: [&str; 5] = [
         "ax_tree_pixel_mismatch",
         "background_delivery_failed",
@@ -170,7 +181,7 @@ fn validate_escalation_request(reason: &str, detail: Option<&str>) -> ComputerUs
     Ok(())
 }
 
-fn cursor_tool_allowed(name: &str) -> bool {
+pub(crate) fn cursor_tool_allowed(name: &str) -> bool {
     matches!(
         name,
         "move_cursor"
@@ -181,7 +192,7 @@ fn cursor_tool_allowed(name: &str) -> bool {
     )
 }
 
-fn validate_window_cursor_move(
+pub(crate) fn validate_window_cursor_move(
     arguments: &serde_json::Map<String, Value>,
 ) -> ComputerUseResult<()> {
     let x = arguments.get("x").and_then(Value::as_f64).ok_or_else(|| {
@@ -214,7 +225,7 @@ fn validate_window_cursor_move(
     Ok(())
 }
 
-fn native_tool_allowed_globally(name: &str) -> bool {
+pub(crate) fn native_tool_allowed_globally(name: &str) -> bool {
     matches!(
         name,
         "check_permissions"
@@ -227,7 +238,7 @@ fn native_tool_allowed_globally(name: &str) -> bool {
     )
 }
 
-fn native_tool_allowed_in_window_session(name: &str) -> bool {
+pub(crate) fn native_tool_allowed_in_window_session(name: &str) -> bool {
     const DEDICATED_TOOLS: [&str; 32] = [
         "get_window_state",
         "zoom",
@@ -276,7 +287,7 @@ fn native_tool_allowed_in_window_session(name: &str) -> bool {
     )
 }
 
-fn native_tool_result(
+pub(crate) fn native_tool_result(
     result: cua_driver_sdk::ToolResult,
 ) -> ComputerUseResult<ComputerUseToolResult> {
     if result.images.len() > MAX_NATIVE_TOOL_IMAGES {
@@ -342,7 +353,7 @@ fn native_tool_result(
     })
 }
 
-fn validate_action(action: &ComputerUseAction) -> ComputerUseResult<()> {
+pub(crate) fn validate_action(action: &ComputerUseAction) -> ComputerUseResult<()> {
     const ACTIONS: [&str; 13] = [
         "click",
         "double_click",
@@ -373,9 +384,11 @@ fn validate_action(action: &ComputerUseAction) -> ComputerUseResult<()> {
             "action exceeds the host safety limits",
         ));
     }
-    if action.modifiers.iter().any(|modifier| {
-        modifier.is_empty() || modifier.chars().count() > MAX_MODIFIER_CHARS
-    }) {
+    if action
+        .modifiers
+        .iter()
+        .any(|modifier| modifier.is_empty() || modifier.chars().count() > MAX_MODIFIER_CHARS)
+    {
         return Err(ComputerUseError::new(
             ComputerUseErrorCode::InvalidAction,
             "modifiers must be non-empty and at most 32 characters",
@@ -528,7 +541,7 @@ fn validate_action(action: &ComputerUseAction) -> ComputerUseResult<()> {
     Ok(())
 }
 
-fn validate_zoom_request(
+pub(crate) fn validate_zoom_request(
     request: &ComputerUseZoomRequest,
     observation: &ComputerUseObservation,
 ) -> ComputerUseResult<()> {
@@ -568,7 +581,11 @@ fn validate_zoom_request(
     Ok(())
 }
 
-fn action_arguments(action: &ComputerUseAction, session: &str, target: &WindowTarget) -> Value {
+pub(crate) fn action_arguments(
+    action: &ComputerUseAction,
+    session: &str,
+    target: &WindowTarget,
+) -> Value {
     let scope = json!({
         "_tool": match action.action.as_str() {
             "click" | "double_click" | "right_click" | "toggle" => "click",
@@ -729,7 +746,7 @@ fn action_arguments(action: &ComputerUseAction, session: &str, target: &WindowTa
     args
 }
 
-fn desktop_action_arguments(action: &ComputerUseAction, session: &str) -> Value {
+pub(crate) fn desktop_action_arguments(action: &ComputerUseAction, session: &str) -> Value {
     let mut args = json!({
         "_tool": match action.action.as_str() {
             "click" | "double_click" | "right_click" | "toggle" => "click",
@@ -840,7 +857,10 @@ fn desktop_action_arguments(action: &ComputerUseAction, session: &str) -> Value 
     args
 }
 
-fn ensure_tool_ok(context: &str, result: &cua_driver_sdk::ToolResult) -> ComputerUseResult<()> {
+pub(crate) fn ensure_tool_ok(
+    context: &str,
+    result: &cua_driver_sdk::ToolResult,
+) -> ComputerUseResult<()> {
     if result.is_error {
         let code = result.error_code.as_deref().unwrap_or_default();
         let message = if result.text.is_empty() {
@@ -857,7 +877,7 @@ fn ensure_tool_ok(context: &str, result: &cua_driver_sdk::ToolResult) -> Compute
     Ok(())
 }
 
-fn map_driver_error(context: &str, error: impl std::fmt::Display) -> ComputerUseError {
+pub(crate) fn map_driver_error(context: &str, error: impl std::fmt::Display) -> ComputerUseError {
     let message = error.to_string();
     let code = classify_driver_failure("", &message, ComputerUseErrorCode::BackendUnavailable);
     ComputerUseError::new(code, format!("{context}: {message}"))
@@ -891,7 +911,7 @@ fn classify_driver_failure(
     }
 }
 
-fn png_dimensions(data: &[u8]) -> Option<(u32, u32)> {
+pub(crate) fn png_dimensions(data: &[u8]) -> Option<(u32, u32)> {
     if data.len() < 24 || !data.starts_with(b"\x89PNG\r\n\x1a\n") {
         return None;
     }
@@ -901,7 +921,7 @@ fn png_dimensions(data: &[u8]) -> Option<(u32, u32)> {
     ))
 }
 
-fn is_uia_snapshot_failure(result: &cua_driver_sdk::ToolResult) -> bool {
+pub(crate) fn is_uia_snapshot_failure(result: &cua_driver_sdk::ToolResult) -> bool {
     let message = format!(
         "{} {} {}",
         result.error_code.as_deref().unwrap_or_default(),
@@ -911,14 +931,14 @@ fn is_uia_snapshot_failure(result: &cua_driver_sdk::ToolResult) -> bool {
     is_uia_snapshot_message(&message)
 }
 
-fn is_uia_snapshot_message(message: &str) -> bool {
+pub(crate) fn is_uia_snapshot_message(message: &str) -> bool {
     let lower = message.to_ascii_lowercase();
     lower.contains("uia provider unresponsive")
         || lower.contains("get_window_state timed out")
         || (lower.contains("get_window_state") && lower.contains("desktop scope"))
 }
 
-fn crop_png_to_bounds(data: &[u8], bounds: [i32; 4]) -> ComputerUseResult<Vec<u8>> {
+pub(crate) fn crop_png_to_bounds(data: &[u8], bounds: [i32; 4]) -> ComputerUseResult<Vec<u8>> {
     let decoder = png::Decoder::new(Cursor::new(data));
     let mut reader = decoder.read_info().map_err(|error| {
         ComputerUseError::new(
@@ -1025,5 +1045,3 @@ fn crop_png_to_bounds(data: &[u8], bounds: [i32; 4]) -> ComputerUseResult<Vec<u8
     })?;
     Ok(output)
 }
-
-

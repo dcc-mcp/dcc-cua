@@ -4,8 +4,25 @@
 //! the DCC-MCP safety shell: exact target scope, fresh observations, bounded
 //! actions, stop semantics, and auditable provenance.
 
-include!("parts/core-01.rs");
-include!("parts/core-02.rs");
+mod contracts;
+mod policy;
+mod runtime;
+
+pub use contracts::*;
+pub use runtime::*;
+
+#[cfg(test)]
+pub(crate) use contracts::{
+    DEFAULT_SNAPSHOT_MAX_DEPTH, DEFAULT_SNAPSHOT_MAX_ELEMENTS, MAX_SNAPSHOT_DEPTH,
+    MAX_SNAPSHOT_ELEMENTS, MAX_TEXT_UTF16_UNITS,
+};
+#[cfg(test)]
+pub(crate) use policy::*;
+#[cfg(test)]
+pub(crate) use runtime::{
+    WindowTarget, bounded_snapshot_depth, bounded_snapshot_elements, tool_schema_from_inventory,
+    validate_launch_request,
+};
 
 #[cfg(test)]
 mod tests;
