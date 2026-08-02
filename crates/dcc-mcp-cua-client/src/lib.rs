@@ -344,6 +344,29 @@ impl HostClient {
         self.request_inner(&method.into(), params).await
     }
 
+    /// Send one request with a caller-owned correlation id.
+    ///
+    /// The id is echoed by the Host on both success and error responses. This
+    /// is the Core-facing path for preserving task/turn tracing across a
+    /// long-lived connection; [`Self::request`] remains convenient for
+    /// callers that do not need an external id.
+    pub async fn request_with_id(
+        &mut self,
+        request_id: impl Into<String>,
+        method: impl Into<String>,
+        params: Value,
+    ) -> HostClientResult<HostResponse> {
+        if !self.hello_complete {
+            return Err(HostClientError::Protocol(
+                "hello must complete before stateful requests".into(),
+            ));
+        }
+        let request_id = request_id.into();
+        validate_request_id(&request_id)?;
+        self.request_inner_with_id(&request_id, &method.into(), params)
+            .await
+    }
+
     /// Send a sequence of read-only requests in one flushed write and return
     /// responses in the same order. Stateful mutations intentionally remain
     /// single-request so a failed operation cannot hide later side effects.
@@ -436,13 +459,49 @@ impl HostClient {
         params: Value,
     ) -> HostClientResult<HostResponse> {
         let request_id = self.send_request(method, params).await?;
+        self.receive_for_request(&request_id).await
+    }
+
+    async fn request_inner_with_id(
+        &mut self,
+        request_id: &str,
+        method: &str,
+        params: Value,
+    ) -> HostClientResult<HostResponse> {
+        let request_id = self
+            .send_request_with_id(request_id, method, params)
+            .await?;
+        self.receive_for_request(&request_id).await
+    }
+
+    async fn receive_for_request(&mut self, request_id: &str) -> HostClientResult<HostResponse> {
         let response = self.receive_response().await?;
-        ensure_request_id(&response, &request_id)?;
+        ensure_request_id(&response, request_id)?;
         response.into_result()
     }
 
     async fn send_request(&mut self, method: &str, params: Value) -> HostClientResult<String> {
-        let request_id = self.send_request_unflushed(method, params).await?;
+        let request_id = format!("cua-client-{}", self.next_request_id);
+        self.next_request_id = self.next_request_id.saturating_add(1);
+        self.send_request_with_id(&request_id, method, params).await
+    }
+
+    async fn send_request_with_id(
+        &mut self,
+        request_id: &str,
+        method: &str,
+        params: Value,
+    ) -> HostClientResult<String> {
+        validate_request_id(request_id)?;
+        let request_id = request_id.to_owned();
+        let request = json!({
+            "request_id": request_id,
+            "method": method,
+            "params": params,
+        });
+        let body = serde_json::to_vec(&request)
+            .map_err(|error| HostClientError::Protocol(error.to_string()))?;
+        write_frame_unflushed(&mut self.writer, &body, MAX_JSON_FRAME_BYTES).await?;
         self.writer.flush().await?;
         Ok(request_id)
     }
@@ -454,11 +513,18 @@ impl HostClient {
     ) -> HostClientResult<String> {
         let request_id = format!("cua-client-{}", self.next_request_id);
         self.next_request_id = self.next_request_id.saturating_add(1);
-        if request_id.chars().count() > MAX_REQUEST_ID_CHARS {
-            return Err(HostClientError::Protocol(
-                "request id exceeds host limit".into(),
-            ));
-        }
+        self.send_request_unflushed_with_id(&request_id, method, params)
+            .await
+    }
+
+    async fn send_request_unflushed_with_id(
+        &mut self,
+        request_id: &str,
+        method: &str,
+        params: Value,
+    ) -> HostClientResult<String> {
+        validate_request_id(request_id)?;
+        let request_id = request_id.to_owned();
         let request = json!({
             "request_id": request_id,
             "method": method,
@@ -533,6 +599,15 @@ fn ensure_request_id(response: &ReceivedResponse, expected: &str) -> HostClientR
         return Err(HostClientError::Protocol(
             "Host response request_id does not match the request".into(),
         ));
+    }
+    Ok(())
+}
+
+fn validate_request_id(request_id: &str) -> HostClientResult<()> {
+    if request_id.is_empty() || request_id.chars().count() > MAX_REQUEST_ID_CHARS {
+        return Err(HostClientError::Protocol(format!(
+            "request id must contain 1..{MAX_REQUEST_ID_CHARS} characters"
+        )));
     }
     Ok(())
 }
@@ -708,6 +783,20 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn client_preserves_caller_request_id() {
+        let (client_stream, server_stream) = tokio::io::duplex(4096);
+        let server = tokio::spawn(fake_request_id_server(server_stream));
+        let mut client = HostClient::from_stream(client_stream);
+        client.hello("request-id-client").await.unwrap();
+        let response = client
+            .request_with_id("core-task-42", "screen_size", json!({}))
+            .await
+            .unwrap();
+        assert_eq!(response.value["request_id"], "core-task-42");
+        server.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
     async fn client_pipelines_read_only_requests_in_order() {
         let (client_stream, server_stream) = tokio::io::duplex(4096);
         let server = tokio::spawn(fake_batch_server(server_stream));
@@ -809,6 +898,25 @@ mod tests {
             json!({"type":"hello","snapshot_transport":"shared_memory"}),
         )
         .await
+    }
+
+    async fn fake_request_id_server(mut stream: DuplexStream) -> HostClientResult<()> {
+        let hello = read_frame(&mut stream, MAX_JSON_FRAME_BYTES)
+            .await?
+            .unwrap();
+        let hello: Value = serde_json::from_slice(&hello).unwrap();
+        write_json_response(
+            &mut stream,
+            hello["request_id"].as_str().unwrap(),
+            json!({"type":"hello"}),
+        )
+        .await?;
+        let request = read_frame(&mut stream, MAX_JSON_FRAME_BYTES)
+            .await?
+            .unwrap();
+        let request: Value = serde_json::from_slice(&request).unwrap();
+        assert_eq!(request["request_id"], "core-task-42");
+        write_json_response(&mut stream, "core-task-42", json!({"type":"screen_size"})).await
     }
 
     async fn fake_batch_server(mut stream: DuplexStream) -> HostClientResult<()> {

@@ -3,7 +3,7 @@ use std::fs;
 use std::io::Read;
 
 use dcc_mcp_cua_client::{
-    HostClient, HostClientError, HostProcess, HostResponse, SnapshotTransport,
+    HostClient, HostClientError, HostProcess, HostResponse, MAX_REQUEST_ID_CHARS, SnapshotTransport,
 };
 use dcc_mcp_cua_core::{
     ComputerUseAction, ComputerUseClipboardWriteRequest, ComputerUseDriver,
@@ -231,11 +231,21 @@ async fn host_jsonl(flags: &[String]) -> Result<(), Box<dyn std::error::Error>> 
                 continue;
             }
         };
-        let response = match connection
-            .client_mut()
-            .request(&request.method, request.params)
-            .await
-        {
+        let host_result = match request.request_id {
+            Some(request_id) => {
+                connection
+                    .client_mut()
+                    .request_with_id(request_id, request.method, request.params)
+                    .await
+            }
+            None => {
+                connection
+                    .client_mut()
+                    .request(request.method, request.params)
+                    .await
+            }
+        };
+        let response = match host_result {
             Ok(response) => match jsonl_response_value(response, output_dir.as_deref(), index) {
                 Ok(value) => value,
                 Err(error) => {
@@ -265,6 +275,7 @@ async fn host_jsonl(flags: &[String]) -> Result<(), Box<dyn std::error::Error>> 
 }
 
 struct JsonlRequest {
+    request_id: Option<String>,
     method: String,
     params: serde_json::Value,
 }
@@ -275,6 +286,23 @@ fn parse_jsonl_request(line: &str) -> Result<JsonlRequest, String> {
     let object = value
         .as_object()
         .ok_or_else(|| "JSONL request must be an object".to_owned())?;
+    let request_id = match object.get("request_id") {
+        Some(value) => Some(
+            value
+                .as_str()
+                .ok_or_else(|| "JSONL request_id must be a string".to_owned())?
+                .to_owned(),
+        ),
+        None => None,
+    };
+    if request_id
+        .as_deref()
+        .is_some_and(|id| id.is_empty() || id.chars().count() > MAX_REQUEST_ID_CHARS)
+    {
+        return Err(format!(
+            "JSONL request_id must contain 1..{MAX_REQUEST_ID_CHARS} characters"
+        ));
+    }
     let method = object
         .get("method")
         .and_then(serde_json::Value::as_str)
@@ -285,6 +313,7 @@ fn parse_jsonl_request(line: &str) -> Result<JsonlRequest, String> {
         return Err("JSONL request params must be an object".to_owned());
     }
     Ok(JsonlRequest {
+        request_id,
         method: method.to_owned(),
         params,
     })
@@ -845,8 +874,13 @@ mod tests {
     #[test]
     fn jsonl_parser_requires_method_and_object_params() {
         let request = parse_jsonl_request(r#"{"method":"list_apps"}"#).unwrap();
+        assert_eq!(request.request_id, None);
         assert_eq!(request.method, "list_apps");
         assert_eq!(request.params, json!({}));
+        let request =
+            parse_jsonl_request(r#"{"request_id":"core-42","method":"list_apps"}"#).unwrap();
+        assert_eq!(request.request_id.as_deref(), Some("core-42"));
+        assert!(parse_jsonl_request(r#"{"request_id":"","method":"list_apps"}"#).is_err());
         assert!(parse_jsonl_request("[]").is_err());
         assert!(parse_jsonl_request(r#"{"method":"list_apps","params":[]}"#).is_err());
     }

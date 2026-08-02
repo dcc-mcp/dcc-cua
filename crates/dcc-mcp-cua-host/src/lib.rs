@@ -65,7 +65,7 @@ pub const HOST_CAPABILITIES: &[&str] = &[
     "shared_memory_browser_images",
     "cua_cursor_marker",
     "cross_platform_window_control",
-    "scoped_window_restore_show_activate",
+    "scoped_window_activate",
     "degraded_window_visual_fallback",
     "application_inventory",
     "window_inventory",
@@ -457,8 +457,6 @@ struct TaskGrant {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum WindowOperation {
-    Restore,
-    Show,
     Activate,
 }
 
@@ -1344,18 +1342,14 @@ async fn handle_request(
         } => {
             let host =
                 authorized_session(sessions, &session_id, &task_grant_id, &window_capability)?;
-            let operation_name = match operation {
-                WindowOperation::Restore => "restore",
-                WindowOperation::Show => "show",
-                WindowOperation::Activate => "activate",
-            };
+            let WindowOperation::Activate = operation;
             host.session.activate().await?;
             let state = host.session.window_state().await?;
             Ok((
                 json!({
                     "type":"window_state_changed",
                     "session_id":session_id,
-                    "operation":operation_name,
+                    "operation":"activate",
                     "state":state,
                 }),
                 None,
@@ -2515,6 +2509,13 @@ mod tests {
         let parsed =
             parse_request_frame(br#"{"request_id":"req-7","method":"unknown","params":{}}"#);
         assert_eq!(parsed.unwrap_err().0, Some("req-7".into()));
+    }
+
+    #[test]
+    fn window_state_wire_surface_matches_cua_capability() {
+        assert!(serde_json::from_value::<WindowOperation>(json!("activate")).is_ok());
+        assert!(serde_json::from_value::<WindowOperation>(json!("restore")).is_err());
+        assert!(serde_json::from_value::<WindowOperation>(json!("show")).is_err());
     }
 
     #[test]

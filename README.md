@@ -123,14 +123,15 @@ persistent Host connection. If a response contains image pixels, pass
 supervisor does not already own an endpoint.
 
 `host-jsonl` is the streaming CLI bridge for dcc-mcp-core and scripts. It keeps
-one negotiated Host session open, reads one `{method, params}` object per line
-from stdin, and writes one response object per line to stdout. Binary image
-attachments are written to `--output-dir`; `shared_memory` keeps image pixels
-out of the Host control pipe.
+one negotiated Host session open, reads one `{request_id?, method, params}`
+object per line from stdin, and writes one response object per line to stdout.
+When present, `request_id` is preserved end to end for Core task/turn tracing.
+Binary image attachments are written to `--output-dir`; `shared_memory` keeps
+image pixels out of the Host control pipe.
 
 ```text
-{"method":"list_apps","params":{}}
-{"method":"list_windows","params":{"on_screen_only":true}}
+{"request_id":"core-task-42","method":"list_apps","params":{}}
+{"request_id":"core-task-43","method":"list_windows","params":{"on_screen_only":true}}
 ```
 
 For large or frequent images, use `connect_default_with_transport(...,
@@ -156,7 +157,7 @@ binary frame following the JSON response is the concatenation of those images;
 each descriptor gives its `offset`, `length`, and `mime_type`.
 
 The supported request surface is `hello`, `list_apps`, `list_tools`, `list_windows`, `launch_app`, `open_session`,
-`get_window_state`, `change_window_state` (`restore`, `show`, `activate`), `snapshot`,
+`get_window_state`, `change_window_state` (`activate`), `snapshot`,
 `accessibility_snapshot`, `verify_state`, `call_tool`, `call_global_tool`, `get_session_state`, `cursor_tool`, `escalate_session`, `find`, `wait_for`, `browser_snapshot`,
 `browser_prepare`, `browser_navigate`, `browser_click`, `browser_type`, `browser_pointer`,
 `browser_set_input_files`, `browser_download`, `browser_dialog`,
@@ -217,9 +218,8 @@ While `wait_for` is running, the same connection accepts `cancel` with the
 exact session grant and window capability; the host returns both a cancellation
 acknowledgement and the wait's cancelled terminal response. Other requests stay
 ordered and are rejected until that wait completes.
-`restore`, `show`, and `activate` are scoped through CUA's `bring_to_front`
-operation; the returned window state is always revalidated against the exact
-PID/HWND target.
+`activate` is scoped through CUA's `bring_to_front` operation; the returned
+window state is always revalidated against the exact PID/HWND target.
 
 Window actions accept CUA's `element_token` as an alternative to
 `element_index`; when both are supplied the token wins. They also accept
