@@ -457,3 +457,30 @@ fn clipboard_and_recording_requests_are_bounded() {
         .is_ok()
     );
 }
+
+#[rstest]
+fn window_queries_require_a_selector_and_match_native_rows() {
+    assert!(ComputerUseWindowQuery::default().validate().is_err());
+    assert!(
+        ComputerUseWindowQuery {
+            app: Some(String::new()),
+            ..Default::default()
+        }
+        .validate()
+        .is_err()
+    );
+
+    let query = ComputerUseWindowQuery {
+        app: Some("ue5editor.exe".into()),
+        window_title: Some("PCG Fab".into()),
+        ..Default::default()
+    };
+    assert!(window_matches_query(
+        &query,
+        &json!({"app_name":"UE5Editor.exe", "title":"PCG Fab", "pid":42, "window_id":7})
+    ));
+    assert!(!window_matches_query(
+        &query,
+        &json!({"app_name":"UE5Editor.exe", "title":"Other", "pid":42, "window_id":7})
+    ));
+}

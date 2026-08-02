@@ -58,6 +58,7 @@ cargo test --workspace --all-targets
 
 ```powershell
 cargo run -p dcc-mcp-cua-cli -- list --app chrome.exe --on-screen
+cargo run -p dcc-mcp-cua-cli -- wait-window --app UE5Editor.exe --title "PCG Fab" --on-screen
 cargo run -p dcc-mcp-cua-cli -- apps
 cargo run -p dcc-mcp-cua-cli -- tools
 cargo run -p dcc-mcp-cua-cli -- call --tool check_permissions --json '{}'
@@ -96,6 +97,10 @@ grant-gated DCC-MCP surface.
 `doctor` are read-only. `snapshot` and `act` require one exact
 target; if an application has multiple windows, pass `--pid` and
 `--window-id` instead of relying on an app name.
+
+`wait-window` polls CUA's native window inventory for an app, process ID,
+window handle, or exact title. It is capped at 30 seconds and is intended for
+launch/switch orchestration before a target-bound action.
 
 `accessibility` reads the current bounded semantic tree without screenshot
 pixels. `window-state` and `activate` operate on the same exact target scope.
@@ -225,7 +230,7 @@ Native tool results expose every returned image in `attachments`. The single
 binary frame following the JSON response is the concatenation of those images;
 each descriptor gives its `offset`, `length`, and `mime_type`.
 
-The supported request surface is `hello`, `list_apps`, `list_tools`, `list_windows`, `launch_app`, `open_session`,
+The supported request surface is `hello`, `list_apps`, `list_tools`, `list_windows`, `wait_for_window`, `launch_app`, `open_session`,
 `get_window_state`, `change_window_state` (`activate`), `snapshot`,
 `accessibility_snapshot`, `verify_state`, `call_tool`, `call_global_tool`, `get_session_state`, `cursor_tool`, `escalate_session`, `find`, `wait_for`, `browser_snapshot`,
 `browser_prepare`, `browser_navigate`, `browser_click`, `browser_type`, `browser_pointer`,
@@ -247,6 +252,8 @@ the target field is already focused. This maps to CUA's cross-platform
 `type_text_chars` input path and does not accept screen coordinates.
 `list_windows` supports optional `app`, `pid`, and `on_screen_only` filters;
 these are applied by the native backend before the response crosses IPC.
+`wait_for_window` accepts `query` with `app`, `process_id`, `window_handle`,
+`window_title`, and `on_screen_only`; its `timeout_ms` is capped at 30 seconds.
 `find` filters the current accessibility tree by text, role, or element index
 and returns a fresh `accessibility_state_id`. `wait_for` is bounded to 30 seconds and supports `element_present`,
 `text_contains`, `text_equals`, and `value_equals`. `launch_app` requires a non-empty `task_grant_id`, `dcc_type`, and

@@ -36,7 +36,8 @@ use dcc_mcp_cua_core::{
     ComputerUseAction, ComputerUseClipboardWriteRequest, ComputerUseDesktopSession,
     ComputerUseDriver, ComputerUseError, ComputerUseErrorCode, ComputerUseImage, ComputerUsePoint,
     ComputerUseRecordingStartRequest, ComputerUseResult, ComputerUseSession,
-    ComputerUseTargetScope, ComputerUseToolResult, ComputerUseZoomRequest,
+    ComputerUseTargetScope, ComputerUseToolResult, ComputerUseWindowWaitRequest,
+    ComputerUseZoomRequest,
 };
 use dcc_mcp_cua_shm::SharedImage;
 
@@ -76,6 +77,7 @@ pub const HOST_CAPABILITIES: &[&str] = &[
     "degraded_window_visual_fallback",
     "application_inventory",
     "window_inventory",
+    "window_wait",
     "tool_inventory",
     "authorized_native_tool_calls",
     "authorized_global_native_tool_calls",
@@ -165,6 +167,7 @@ enum Request {
         #[serde(default)]
         on_screen_only: bool,
     },
+    WaitForWindow(ComputerUseWindowWaitRequest),
     DesktopSnapshot {},
     ScreenSize {},
     CursorPosition {},

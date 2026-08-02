@@ -74,6 +74,28 @@ fn daemon_reuses_the_official_serve_command() {
 }
 
 #[rstest]
+fn wait_window_builds_a_bounded_window_query() {
+    let request = window_wait_request(&strings([
+        "--app",
+        "UE5Editor.exe",
+        "--title",
+        "PCG Fab",
+        "--on-screen",
+        "--timeout-ms",
+        "12000",
+        "--poll-ms",
+        "250",
+    ]))
+    .unwrap();
+    assert_eq!(request.query.app.as_deref(), Some("UE5Editor.exe"));
+    assert_eq!(request.query.window_title.as_deref(), Some("PCG Fab"));
+    assert!(request.query.on_screen_only);
+    assert_eq!(request.timeout_ms, Some(12000));
+    assert_eq!(request.interval_ms, Some(250));
+    assert!(window_wait_request(&strings(["--on-screen"])).is_err());
+}
+
+#[rstest]
 fn friendly_actions_build_bounded_cua_requests() {
     let click = action_from_command("click", &strings(["--x", "10", "--y", "20"])).unwrap();
     assert_eq!(click.action, "click");

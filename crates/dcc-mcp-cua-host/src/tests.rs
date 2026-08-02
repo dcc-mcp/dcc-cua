@@ -215,6 +215,13 @@ fn app_requests_parse_with_host_params_frames() {
     ));
     assert!(matches!(
         serde_json::from_value::<Request>(json!({
+            "method": "wait_for_window",
+            "params": {"query": {"app": "UE5Editor.exe"}, "timeout_ms": 1000}
+        })),
+        Ok(Request::WaitForWindow(..))
+    ));
+    assert!(matches!(
+        serde_json::from_value::<Request>(json!({
             "method": "desktop_snapshot",
             "params": {}
         })),

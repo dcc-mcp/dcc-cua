@@ -67,6 +67,10 @@ pub(super) async fn handle_request(
             }
             Ok((json!({"type":"windows", "windows":windows}), None))
         }
+        Request::WaitForWindow(request) => Ok((
+            json!({"type":"window_ready", "result":driver.wait_for_window(&request).await?}),
+            None,
+        )),
         Request::DesktopSnapshot {} => {
             let snapshot = driver.desktop_snapshot().await?;
             let (image, attachment) = match mode {

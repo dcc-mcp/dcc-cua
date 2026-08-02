@@ -1,6 +1,7 @@
 use std::io::Cursor;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 use base64::Engine;
 use cua_driver_sdk::CuaDriver;
@@ -20,6 +21,9 @@ const MAX_ELEMENT_TOKEN_CHARS: usize = 512;
 const MAX_LAUNCH_ARGUMENTS: usize = 32;
 const MAX_LAUNCH_URLS: usize = 16;
 const MAX_LOCAL_PATH_CHARS: usize = 4_096;
+const MAX_WINDOW_QUERY_CHARS: usize = 512;
+const MAX_WINDOW_WAIT_TIMEOUT_MS: u64 = 30_000;
+const MAX_WINDOW_WAIT_INTERVAL_MS: u64 = 1_000;
 const MAX_NATIVE_TOOL_NAME_CHARS: usize = 128;
 const MAX_NATIVE_TOOL_ARGUMENT_BYTES: usize = 1 * 1024 * 1024;
 const MAX_NATIVE_TOOL_IMAGES: usize = 8;
@@ -46,6 +50,84 @@ impl ComputerUseTargetScope {
             ));
         }
         Ok(())
+    }
+}
+
+/// Bounded selector used to wait for a native window to become available.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ComputerUseWindowQuery {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub process_id: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_handle: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_title: Option<String>,
+    #[serde(default)]
+    pub on_screen_only: bool,
+}
+
+impl ComputerUseWindowQuery {
+    pub fn validate(&self) -> ComputerUseResult<()> {
+        if self
+            .app
+            .as_deref()
+            .is_some_and(|value| value.is_empty())
+            || self
+                .window_title
+                .as_deref()
+                .is_some_and(|value| value.is_empty())
+        {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::InvalidTarget,
+                "window query selectors cannot be empty",
+            ));
+        }
+        if self.app.is_none()
+            && self.process_id.is_none()
+            && self.window_handle.is_none()
+            && self.window_title.is_none()
+        {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::MissingWindow,
+                "window query requires app, process_id, window_handle, or window_title",
+            ));
+        }
+        for (name, value) in [
+            ("app", self.app.as_deref()),
+            ("window_title", self.window_title.as_deref()),
+        ] {
+            if value.is_some_and(|value| value.chars().count() > MAX_WINDOW_QUERY_CHARS) {
+                return Err(ComputerUseError::new(
+                    ComputerUseErrorCode::InvalidTarget,
+                    format!("{name} exceeds {MAX_WINDOW_QUERY_CHARS} characters"),
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Request for a bounded poll of the native window inventory.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ComputerUseWindowWaitRequest {
+    pub query: ComputerUseWindowQuery,
+    #[serde(default)]
+    pub timeout_ms: Option<u64>,
+    #[serde(default)]
+    pub interval_ms: Option<u64>,
+}
+
+impl ComputerUseWindowWaitRequest {
+    fn limits(&self) -> ComputerUseResult<(u64, u64)> {
+        self.query.validate()?;
+        Ok((
+            self.timeout_ms.unwrap_or(5_000).min(MAX_WINDOW_WAIT_TIMEOUT_MS),
+            self.interval_ms
+                .unwrap_or(100)
+                .clamp(10, MAX_WINDOW_WAIT_INTERVAL_MS),
+        ))
     }
 }
 
@@ -297,6 +379,35 @@ impl ComputerUseDriver {
         on_screen_only: bool,
     ) -> ComputerUseResult<Vec<Value>> {
         list_windows_with_driver(&self.driver, pid, on_screen_only).await
+    }
+
+    /// Wait until the bounded native window query returns at least one row.
+    pub async fn wait_for_window(
+        &self,
+        request: &ComputerUseWindowWaitRequest,
+    ) -> ComputerUseResult<Value> {
+        let (timeout_ms, interval_ms) = request.limits()?;
+        let started = Instant::now();
+        loop {
+            let mut windows = self
+                .list_windows_filtered(request.query.process_id, request.query.on_screen_only)
+                .await?;
+            windows.retain(|window| window_matches_query(&request.query, window));
+            if !windows.is_empty() {
+                return Ok(json!({
+                    "windows": windows,
+                    "count": windows.len(),
+                    "waited_ms": started.elapsed().as_millis(),
+                }));
+            }
+            if started.elapsed() >= Duration::from_millis(timeout_ms) {
+                return Err(ComputerUseError::new(
+                    ComputerUseErrorCode::MissingWindow,
+                    "window query timed out",
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(interval_ms)).await;
+        }
     }
 
     /// Enumerate installed and currently running applications through CUA.
@@ -1681,6 +1792,20 @@ fn bounds(value: &serde_json::Map<String, Value>) -> Option<[i32; 4]> {
         value["width"].as_i64()?.try_into().ok()?,
         value["height"].as_i64()?.try_into().ok()?,
     ])
+}
+
+fn window_matches_query(query: &ComputerUseWindowQuery, window: &Value) -> bool {
+    query.app.as_deref().is_none_or(|app| {
+        window["app_name"]
+            .as_str()
+            .is_some_and(|name| name.eq_ignore_ascii_case(app))
+    }) && query.process_id.is_none_or(|pid| window["pid"] == json!(pid))
+        && query
+            .window_handle
+            .is_none_or(|handle| window["window_id"] == json!(handle))
+        && query.window_title.as_deref().is_none_or(|title| {
+            window["title"].as_str() == Some(title)
+        })
 }
 
 fn validate_target_policy(target: &WindowTarget) -> ComputerUseResult<()> {

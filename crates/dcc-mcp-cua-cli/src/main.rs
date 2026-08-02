@@ -12,7 +12,7 @@ use dcc_mcp_cua_client::{
 use dcc_mcp_cua_core::{
     ComputerUseAction, ComputerUseClipboardWriteRequest, ComputerUseDriver,
     ComputerUseLaunchRequest, ComputerUseTargetScope, ComputerUseToolResult,
-    ComputerUseZoomRequest,
+    ComputerUseWindowQuery, ComputerUseWindowWaitRequest, ComputerUseZoomRequest,
 };
 use dcc_mcp_cua_host::{HostTransport, run as run_host};
 use dcc_mcp_cua_shm::{SharedImageDescriptor, SharedImageReader};
@@ -60,6 +60,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     match command.as_str() {
         "list" => list_windows(&driver, &flags).await?,
+        "wait-window" => wait_window(&driver, &flags).await?,
         "apps" => list_apps(&driver).await?,
         "tools" => list_tools(&driver).await?,
         "call" => call_tool(&driver, &flags).await?,
@@ -118,6 +119,44 @@ async fn list_windows(
     }
     println!("{}", serde_json::to_string_pretty(&windows)?);
     Ok(())
+}
+
+async fn wait_window(
+    driver: &ComputerUseDriver,
+    flags: &[String],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let request = window_wait_request(flags)?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&driver.wait_for_window(&request).await?)?
+    );
+    Ok(())
+}
+
+fn window_wait_request(
+    flags: &[String],
+) -> Result<ComputerUseWindowWaitRequest, Box<dyn std::error::Error>> {
+    let request = ComputerUseWindowWaitRequest {
+        query: ComputerUseWindowQuery {
+            app: flag_value(flags, "--app"),
+            process_id: flag_value(flags, "--pid")
+                .map(|value| value.parse::<u32>())
+                .transpose()?,
+            window_handle: flag_value(flags, "--window-id")
+                .map(|value| value.parse::<u64>())
+                .transpose()?,
+            window_title: flag_value(flags, "--title"),
+            on_screen_only: has_flag(flags, "--on-screen"),
+        },
+        timeout_ms: flag_value(flags, "--timeout-ms")
+            .map(|value| value.parse::<u64>())
+            .transpose()?,
+        interval_ms: flag_value(flags, "--poll-ms")
+            .map(|value| value.parse::<u64>())
+            .transpose()?,
+    };
+    request.query.validate()?;
+    Ok(request)
 }
 
 fn run_upstream_cua_command(
@@ -1366,7 +1405,7 @@ fn has_flag(flags: &[String], name: &str) -> bool {
 
 fn print_help() {
     println!(
-        "dcc-mcp-cua\n\n  list [--app APP]\n  apps\n  tools\n  call --tool NAME [--json JSON|--json-file PATH] [--app APP|--pid PID --window-id ID] [--output FILE]\n  host-call --method NAME [--json JSON|--json-file PATH] [--endpoint PATH|--spawn BINARY] [--snapshot-transport binary_frame|shared_memory] [--output FILE]\n  host-batch --json JSON_ARRAY [--endpoint PATH|--spawn BINARY] [--snapshot-transport binary_frame|shared_memory] [--output-dir DIR]\n  host-jsonl [--endpoint PATH|--spawn BINARY] [--parallel-discovery] [--snapshot-transport binary_frame|shared_memory] [--output-dir DIR]\n  daemon [CUA_DRIVER_ARGS...]\n  mcp [CUA_DRIVER_ARGS...]\n  recording start|stop|status|render [CUA_DRIVER_ARGS...]\n  recording-render INPUT_DIR OUTPUT_MP4 [CUA_DRIVER_ARGS...]\n  update [--check]\n  desktop-snapshot [--output FILE]\n  screen-size\n  cursor-position\n  launch --name NAME|--bundle-id ID|--aumid ID|--path PATH|--launch-path PATH [--url URL] [--arg ARG] [--new-instance] [--start-minimized]\n  terminate --app APP --confirm\n  snapshot --app APP [--output FILE]\n  act --app APP --action-json JSON [--output FILE]\n  verify --app APP --expect-json JSON [--timeout-ms N] [--stable-samples N]\n  desktop-act --action-json JSON [--session ID] [--output FILE]\n  clipboard-read --app APP [--include-text]\n  clipboard-write --app APP --text TEXT|--image-path FILE|--file-path FILE\n  doctor\n  host [--stdio|--endpoint PATH]\n\nHost uses versioned big-endian JSON frames. Hello version 1 negotiates binary-frame or shared-memory snapshots and supports request_id correlation."
+        "dcc-mcp-cua\n\n  list [--app APP]\n  wait-window --app APP|--pid PID|--window-id ID|--title TITLE [--on-screen] [--timeout-ms N] [--poll-ms N]\n  apps\n  tools\n  call --tool NAME [--json JSON|--json-file PATH] [--app APP|--pid PID --window-id ID] [--output FILE]\n  host-call --method NAME [--json JSON|--json-file PATH] [--endpoint PATH|--spawn BINARY] [--snapshot-transport binary_frame|shared_memory] [--output FILE]\n  host-batch --json JSON_ARRAY [--endpoint PATH|--spawn BINARY] [--snapshot-transport binary_frame|shared_memory] [--output-dir DIR]\n  host-jsonl [--endpoint PATH|--spawn BINARY] [--parallel-discovery] [--snapshot-transport binary_frame|shared_memory] [--output-dir DIR]\n  daemon [CUA_DRIVER_ARGS...]\n  mcp [CUA_DRIVER_ARGS...]\n  recording start|stop|status|render [CUA_DRIVER_ARGS...]\n  recording-render INPUT_DIR OUTPUT_MP4 [CUA_DRIVER_ARGS...]\n  update [--check]\n  desktop-snapshot [--output FILE]\n  screen-size\n  cursor-position\n  launch --name NAME|--bundle-id ID|--aumid ID|--path PATH|--launch-path PATH [--url URL] [--arg ARG] [--new-instance] [--start-minimized]\n  terminate --app APP --confirm\n  snapshot --app APP [--output FILE]\n  act --app APP --action-json JSON [--output FILE]\n  verify --app APP --expect-json JSON [--timeout-ms N] [--stable-samples N]\n  desktop-act --action-json JSON [--session ID] [--output FILE]\n  clipboard-read --app APP [--include-text]\n  clipboard-write --app APP --text TEXT|--image-path FILE|--file-path FILE\n  doctor\n  host [--stdio|--endpoint PATH]\n\nHost uses versioned big-endian JSON frames. Hello version 1 negotiates binary-frame or shared-memory snapshots and supports request_id correlation."
     );
     println!(
         "Window snapshots/actions accept --escalate --escalation-reason REASON when an explicit desktop visual fallback approval is required."
