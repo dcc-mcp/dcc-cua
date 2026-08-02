@@ -336,6 +336,11 @@ impl HostClient {
         &mut self,
         client_name: impl Into<String>,
     ) -> HostClientResult<HostResponse> {
+        if self.hello_complete {
+            return Err(HostClientError::Protocol(
+                "hello has already completed on this connection".into(),
+            ));
+        }
         let response = self
             .request_inner(
                 "hello",

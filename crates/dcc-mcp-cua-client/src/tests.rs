@@ -65,6 +65,22 @@ async fn client_can_negotiate_shared_memory_images() {
 
 #[rstest]
 #[tokio::test]
+async fn client_rejects_duplicate_hello() {
+    let (client_stream, server_stream) = tokio::io::duplex(4096);
+    let server = tokio::spawn(fake_hello_only_server(server_stream));
+    let mut client =
+        HostClient::from_stream_with_transport(client_stream, SnapshotTransport::SharedMemory);
+    client.hello("hello-once").await.unwrap();
+    assert!(matches!(
+        client.hello("hello-twice").await,
+        Err(HostClientError::Protocol(message))
+            if message.contains("already completed")
+    ));
+    server.await.unwrap().unwrap();
+}
+
+#[rstest]
+#[tokio::test]
 async fn client_preserves_caller_request_id() {
     let (client_stream, server_stream) = tokio::io::duplex(4096);
     let server = tokio::spawn(fake_request_id_server(server_stream));

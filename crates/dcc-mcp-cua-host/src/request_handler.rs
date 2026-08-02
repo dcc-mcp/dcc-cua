@@ -10,6 +10,11 @@ pub(super) async fn handle_request(
     request: Request,
 ) -> Result<(Value, Option<Vec<u8>>), HostError> {
     if let Request::Hello(params) = &request {
+        if snapshot_transport.is_some() {
+            return Err(HostError::Protocol(
+                "hello has already completed on this connection".into(),
+            ));
+        }
         let transport = SnapshotTransport::from_hello(params)?;
         *snapshot_transport = Some(transport);
         return Ok((
