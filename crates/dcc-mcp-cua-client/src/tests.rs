@@ -43,6 +43,15 @@ async fn client_rejects_requests_before_hello() {
 }
 
 #[rstest]
+fn stopped_host_process_reports_not_running() {
+    let mut process = HostProcess {
+        client: None,
+        child: None,
+    };
+    assert!(!process.is_running().unwrap());
+}
+
+#[rstest]
 #[tokio::test]
 async fn client_can_negotiate_shared_memory_images() {
     let (client_stream, server_stream) = tokio::io::duplex(4096);

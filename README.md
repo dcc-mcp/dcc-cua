@@ -173,6 +173,10 @@ let response = host.client_mut().request("list_apps", serde_json::json!({})).awa
 let _status = host.shutdown().await?;
 ```
 
+Supervisors can poll `host.is_running()` and call `host.restart(...)` after a
+process exit. Restart is explicit and never replays requests; Core must reopen
+sessions and obtain a fresh observation before sending another action.
+
 Long waits can use `HostClient::request_with_cancel`; it sends `cancel` on the
 same connection and consumes both the cancellation acknowledgement and the
 wait terminal response.

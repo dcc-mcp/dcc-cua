@@ -186,6 +186,28 @@ impl HostProcess {
         self.child.as_ref().and_then(Child::id)
     }
 
+    /// Report whether the owned Host child is still running.
+    pub fn is_running(&mut self) -> HostClientResult<bool> {
+        let Some(child) = self.child.as_mut() else {
+            return Ok(false);
+        };
+        Ok(child.try_wait()?.is_none())
+    }
+
+    /// Stop this Host and start a fresh negotiated process.
+    ///
+    /// Requests are never replayed. Callers must establish fresh sessions and
+    /// observations after a restart because the previous process state is gone.
+    pub async fn restart(
+        self,
+        binary_path: impl AsRef<Path>,
+        client_name: impl Into<String>,
+        snapshot_transport: SnapshotTransport,
+    ) -> HostClientResult<Self> {
+        let _ = self.shutdown().await?;
+        Self::spawn(binary_path, client_name, snapshot_transport).await
+    }
+
     /// Close stdio gracefully, then force-stop a Host that does not exit.
     pub async fn shutdown(mut self) -> HostClientResult<ExitStatus> {
         drop(self.client.take());
