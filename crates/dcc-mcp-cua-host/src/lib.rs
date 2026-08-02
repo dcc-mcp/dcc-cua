@@ -69,6 +69,7 @@ pub const HOST_CAPABILITIES: &[&str] = &[
     "shared_memory_snapshots",
     "shared_memory_verification_images",
     "shared_memory_browser_images",
+    "shared_memory_native_images",
     "cua_cursor_marker",
     "cross_platform_window_control",
     "scoped_window_activate",
@@ -1206,26 +1207,43 @@ fn authorized_desktop_session<'a>(
     Ok(session)
 }
 
-fn native_tool_response(
+fn native_tool_response_with_transport(
     session_id: Option<&str>,
     tool: &str,
     result: ComputerUseToolResult,
-) -> (Value, Option<Vec<u8>>) {
+    mode: SnapshotTransport,
+    shared_image: &mut Option<SharedImage>,
+) -> Result<(Value, Option<Vec<u8>>), HostError> {
     let mut value = result.value;
     let images = result.images;
+    let use_shared_memory = mode == SnapshotTransport::SharedMemory && images.len() == 1;
     let mut attachment_bytes = Vec::new();
     let mut attachments = Vec::with_capacity(images.len());
     for (index, image) in images.iter().enumerate() {
         let offset = attachment_bytes.len();
-        attachment_bytes.extend_from_slice(&image.data);
+        if !use_shared_memory {
+            attachment_bytes.extend_from_slice(&image.data);
+        }
         attachments.push(json!({
             "index": index,
             "offset": offset,
             "length": image.data.len(),
             "mime_type": image.mime_type,
-            "encoding": "binary_frame",
+            "encoding": if use_shared_memory { "shared_memory" } else { "binary_frame" },
         }));
     }
+    let image_descriptor = if use_shared_memory {
+        let image = &images[0];
+        let shared = SharedImage::from_bytes(&image.data, &image.mime_type)
+            .map_err(|error| HostError::Protocol(error.to_string()))?;
+        let mut descriptor = serde_json::to_value(shared.descriptor())
+            .map_err(|error| HostError::Protocol(error.to_string()))?;
+        descriptor["encoding"] = Value::String("shared_memory".into());
+        *shared_image = Some(shared);
+        Some(descriptor)
+    } else {
+        attachments.first().cloned()
+    };
     if !images.is_empty() {
         if let Some(content) = value.get_mut("content").and_then(Value::as_array_mut) {
             for (index, item) in content
@@ -1237,7 +1255,14 @@ fn native_tool_response(
                     break;
                 };
                 item["data"] = Value::Null;
-                item["encoding"] = Value::String("binary_frame".into());
+                item["encoding"] = Value::String(
+                    if use_shared_memory {
+                        "shared_memory"
+                    } else {
+                        "binary_frame"
+                    }
+                    .into(),
+                );
                 item["attachment_index"] = json!(index);
                 item["offset"] = json!(attachments[index]["offset"]);
                 item["length"] = json!(image.data.len());
@@ -1255,12 +1280,14 @@ fn native_tool_response(
     if let Some(session_id) = session_id {
         response["session_id"] = Value::String(session_id.to_owned());
     }
-    if let Some(first) = attachments.first() {
-        response["image"] = first.clone();
-        response["attachments"] = Value::Array(attachments);
+    if let Some(image) = image_descriptor {
+        response["image"] = image;
+        if !use_shared_memory {
+            response["attachments"] = Value::Array(attachments);
+        }
     }
     let attachment = (!attachment_bytes.is_empty()).then_some(attachment_bytes);
-    (response, attachment)
+    Ok((response, attachment))
 }
 
 fn action_completed_response(
@@ -1268,8 +1295,16 @@ fn action_completed_response(
     action_id: String,
     message: &str,
     result: ComputerUseToolResult,
-) -> (Value, Option<Vec<u8>>) {
-    let (tool_response, attachment) = native_tool_response(Some(session_id), "action", result);
+    mode: SnapshotTransport,
+    shared_image: &mut Option<SharedImage>,
+) -> Result<(Value, Option<Vec<u8>>), HostError> {
+    let (tool_response, attachment) = native_tool_response_with_transport(
+        Some(session_id),
+        "action",
+        result,
+        mode,
+        shared_image,
+    )?;
     let mut response = json!({
         "type": "action_completed",
         "success": true,
@@ -1286,7 +1321,7 @@ fn action_completed_response(
             response[field] = tool_response[field].clone();
         }
     }
-    (response, attachment)
+    Ok((response, attachment))
 }
 
 fn target_wire(target: &Value) -> Value {

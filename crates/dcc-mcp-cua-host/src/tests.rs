@@ -547,7 +547,8 @@ fn only_stateless_discovery_uses_parallel_dispatch() {
 
 #[rstest]
 fn native_tool_response_moves_image_pixels_to_binary_attachment() {
-    let (response, attachment) = native_tool_response(
+    let mut shared = None;
+    let (response, attachment) = native_tool_response_with_transport(
         Some("session-1"),
         "debug_window_info",
         ComputerUseToolResult {
@@ -561,7 +562,10 @@ fn native_tool_response_moves_image_pixels_to_binary_attachment() {
             }],
             degraded: false,
         },
-    );
+        SnapshotTransport::BinaryFrame,
+        &mut shared,
+    )
+    .unwrap();
     assert_eq!(response["type"], "tool_result");
     assert_eq!(response["result"]["content"][0]["data"], Value::Null);
     assert_eq!(response["image"]["length"], 3);
@@ -570,7 +574,8 @@ fn native_tool_response_moves_image_pixels_to_binary_attachment() {
 
 #[rstest]
 fn native_tool_response_concatenates_all_image_attachments() {
-    let (response, attachment) = native_tool_response(
+    let mut shared = None;
+    let (response, attachment) = native_tool_response_with_transport(
         None,
         "page",
         ComputerUseToolResult {
@@ -593,7 +598,10 @@ fn native_tool_response_concatenates_all_image_attachments() {
             ],
             degraded: false,
         },
-    );
+        SnapshotTransport::BinaryFrame,
+        &mut shared,
+    )
+    .unwrap();
     assert_eq!(response["attachments"].as_array().map(Vec::len), Some(2));
     assert_eq!(response["attachments"][1]["offset"], 2);
     assert_eq!(response["result"]["content"][0]["data"], Value::Null);
@@ -605,6 +613,7 @@ fn native_tool_response_concatenates_all_image_attachments() {
 
 #[rstest]
 fn action_response_preserves_tool_metadata_and_images() {
+    let mut shared = None;
     let (response, attachment) = action_completed_response(
         "session-1",
         "action-1".into(),
@@ -618,7 +627,10 @@ fn action_response_preserves_tool_metadata_and_images() {
             }],
             degraded: true,
         },
-    );
+        SnapshotTransport::BinaryFrame,
+        &mut shared,
+    )
+    .unwrap();
     assert_eq!(response["type"], "action_completed");
     assert_eq!(response["action_id"], "action-1");
     assert_eq!(response["result"]["cua"]["accepted"], true);
@@ -626,6 +638,38 @@ fn action_response_preserves_tool_metadata_and_images() {
     assert_eq!(response["degraded"], true);
     assert_eq!(response["image"]["length"], 2);
     assert_eq!(attachment, Some(vec![7, 8]));
+}
+
+#[rstest]
+fn action_response_uses_shared_memory_for_one_image() {
+    let mut shared = None;
+    let (response, attachment) = action_completed_response(
+        "session-1",
+        "action-1".into(),
+        "CUA action completed",
+        ComputerUseToolResult {
+            value: json!({
+                "content": [{"type": "image", "data": "base64"}]
+            }),
+            text: "clicked".into(),
+            images: vec![dcc_mcp_cua_core::ComputerUseImage {
+                data: vec![7, 8],
+                mime_type: "image/png".into(),
+            }],
+            degraded: false,
+        },
+        SnapshotTransport::SharedMemory,
+        &mut shared,
+    )
+    .unwrap();
+    assert_eq!(response["image"]["encoding"], "shared_memory");
+    assert_eq!(
+        response["result"]["content"][0]["encoding"],
+        "shared_memory"
+    );
+    assert_eq!(response["result"]["content"][0]["data"], Value::Null);
+    assert!(attachment.is_none());
+    assert!(shared.is_some_and(|image| image.is_alive()));
 }
 
 #[rstest]

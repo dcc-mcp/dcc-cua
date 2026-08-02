@@ -217,12 +217,14 @@ pub(super) async fn handle_request(
             }
             let action = action.into_computer_use(observation_id)?;
             let result = host.session.perform_action(&action).await?;
-            Ok(action_completed_response(
+            action_completed_response(
                 &session_id,
                 format!("cua-desktop-action-{}", Uuid::new_v4()),
                 "desktop CUA action completed",
                 result,
-            ))
+                mode,
+                &mut host.latest_shared_image,
+            )
         }
         Request::StopDesktopSession { session_id } => {
             let mut host = desktop_sessions
@@ -510,8 +512,13 @@ pub(super) async fn handle_request(
                 authorized_session(sessions, &session_id, &task_grant_id, &window_capability)?;
             let observation_id = request.observation_id.clone();
             let result = host.session.zoom(&request).await?;
-            let (mut response, attachment) =
-                native_tool_response(Some(&session_id), "zoom", result);
+            let (mut response, attachment) = native_tool_response_with_transport(
+                Some(&session_id),
+                "zoom",
+                result,
+                mode,
+                &mut host.latest_shared_image,
+            )?;
             response["type"] = Value::String("zoom".into());
             response["observation_id"] = Value::String(observation_id);
             Ok((response, attachment))
@@ -594,7 +601,13 @@ pub(super) async fn handle_request(
                 ));
             }
             let result = host.session.call_tool(&tool, arguments).await?;
-            Ok(native_tool_response(Some(&session_id), &tool, result))
+            native_tool_response_with_transport(
+                Some(&session_id),
+                &tool,
+                result,
+                mode,
+                &mut host.latest_shared_image,
+            )
         }
         Request::CallGlobalTool {
             grant,
@@ -610,7 +623,7 @@ pub(super) async fn handle_request(
                 ));
             }
             let result = driver.call_global_tool(&tool, arguments).await?;
-            Ok(native_tool_response(None, &tool, result))
+            native_tool_response_with_transport(None, &tool, result, mode, desktop_shared_image)
         }
         Request::BrowserSnapshot {
             session_id,
@@ -955,12 +968,14 @@ pub(super) async fn handle_request(
             host.latest_observation_id = None;
             host.latest_accessibility_state_id = None;
             host.latest_accessibility_root = None;
-            Ok(action_completed_response(
+            action_completed_response(
                 &session_id,
                 format!("cua-action-{}", Uuid::new_v4()),
                 "CUA action completed",
                 result,
-            ))
+                mode,
+                &mut host.latest_shared_image,
+            )
         }
         Request::ResumeSession {
             session_id,
