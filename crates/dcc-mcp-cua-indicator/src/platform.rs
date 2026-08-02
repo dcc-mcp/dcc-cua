@@ -42,8 +42,7 @@ const BANNER_COLOR: COLORREF = COLORREF(0x00FF_840A);
 const FRAME_COLOR: COLORREF = COLORREF(0x00FA_A560);
 const CURSOR_COLOR: COLORREF = FRAME_COLOR;
 const BANNER_ALPHA: u8 = 200;
-const CURSOR_SIZE: i32 = 64;
-const CURSOR_LAYER_MAX_ALPHA: [u8; 4] = [210, 140, 70, 4];
+pub(super) const CURSOR_SIZE: i32 = 52;
 pub(super) const FRAME_LAYER_MAX_ALPHA: [u8; 8] = [210, 181, 151, 121, 91, 61, 31, 4];
 const FRAME_ALPHA_MIN: u8 = 132;
 const FRAME_ALPHA_MAX: u8 = 244;
@@ -281,7 +280,7 @@ fn run_banner(
         .iter()
         .map(|alpha| create_overlay(FRAME_CLASS, "", *alpha).map(OverlayWindow))
         .collect::<Result<Vec<_>, _>>()?;
-    let cursors = CURSOR_LAYER_MAX_ALPHA
+    let cursors = FRAME_LAYER_MAX_ALPHA
         .iter()
         .map(|alpha| create_overlay(CURSOR_CLASS, "", *alpha).map(OverlayWindow))
         .collect::<Result<Vec<_>, _>>()?;
@@ -340,7 +339,7 @@ fn run_banner(
                 for (frame, maximum) in frames.iter().zip(FRAME_LAYER_MAX_ALPHA) {
                     set_overlay_alpha(frame.0, gradient_frame_alpha(maximum, next_frame_alpha))?;
                 }
-                for (cursor, maximum) in cursors.iter().zip(CURSOR_LAYER_MAX_ALPHA) {
+                for (cursor, maximum) in cursors.iter().zip(FRAME_LAYER_MAX_ALPHA) {
                     set_overlay_alpha(cursor.0, gradient_frame_alpha(maximum, next_frame_alpha))?;
                 }
                 frame_alpha = next_frame_alpha;
@@ -808,7 +807,7 @@ fn cursor_pointer_polygon(size: i32, layer: usize) -> [POINT; 7] {
         (0.76, 0.55),
     ];
     const CENTER: (f64, f64) = (0.34, 0.53);
-    let factor = 1.0 - layer as f64 * 0.12;
+    let factor = 1.0 - layer as f64 * 0.06;
     SHAPE.map(|(x, y)| POINT {
         x: ((CENTER.0 + (x - CENTER.0) * factor) * f64::from(size)).round() as i32,
         y: ((CENTER.1 + (y - CENTER.1) * factor) * f64::from(size)).round() as i32,

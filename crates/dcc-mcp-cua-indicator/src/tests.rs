@@ -60,6 +60,13 @@ fn target_frame_fades_from_the_window_edge_toward_transparent_content() {
 
 #[cfg(windows)]
 #[rstest]
+fn cursor_uses_the_smaller_smooth_outer_to_inner_gradient() {
+    assert_eq!(platform::CURSOR_SIZE, 52);
+    assert_eq!(platform::FRAME_LAYER_MAX_ALPHA.len(), 8);
+}
+
+#[cfg(windows)]
+#[rstest]
 #[case(7, 7, false)]
 #[case(7, 8, true)]
 fn escape_generation_broadcasts_only_to_existing_sessions(
