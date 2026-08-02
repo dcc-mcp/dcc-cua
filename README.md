@@ -57,7 +57,7 @@ cargo test --workspace --all-targets
 ## CLI
 
 ```powershell
-cargo run -p dcc-mcp-cua-cli -- list --app chrome.exe --on-screen
+cargo run -p dcc-mcp-cua-cli -- list --app chrome.exe --title "New Tab" --on-screen
 cargo run -p dcc-mcp-cua-cli -- wait-window --app UE5Editor.exe --title "PCG Fab" --on-screen
 cargo run -p dcc-mcp-cua-cli -- apps
 cargo run -p dcc-mcp-cua-cli -- tools
@@ -98,9 +98,12 @@ grant-gated DCC-MCP surface.
 target; if an application has multiple windows, pass `--pid` and
 `--window-id` instead of relying on an app name.
 
-`wait-window` polls CUA's native window inventory for an app, process ID,
-window handle, or exact title. It is capped at 30 seconds and is intended for
-launch/switch orchestration before a target-bound action.
+`list` accepts optional `--app`, `--pid`, `--window-id`, `--title`, and
+`--on-screen` filters. `--app` is case-insensitive; `--title` is exact and
+bounded, so Core can select a UE/Fab subwindow without receiving the entire
+inventory over Host IPC. `wait-window` polls CUA's native window inventory for an app,
+process ID, window handle, or exact title. It is capped at 30 seconds and is
+intended for launch/switch orchestration before a target-bound action.
 
 `accessibility` reads the current bounded semantic tree without screenshot
 pixels. `window-state` and `activate` operate on the same exact target scope.
@@ -264,7 +267,8 @@ custom-drawn surfaces. For applications that miss fast keystrokes, use
 `element_index`/`element_token`, or the explicit `type_chars_only: true` when
 the target field is already focused. This maps to CUA's cross-platform
 `type_text_chars` input path and does not accept screen coordinates.
-`list_windows` supports optional `app`, `pid`, and `on_screen_only` filters;
+`list_windows` supports optional `app`, `pid`, `window_id`, `window_title`, and
+`on_screen_only` filters;
 these are applied by the native backend before the response crosses IPC.
 `open_session` grants may bind an exact `window_title` when Core does not yet
 have the PID/HWND; the Host still requires the title to resolve to exactly one

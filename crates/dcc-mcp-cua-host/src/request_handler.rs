@@ -63,18 +63,21 @@ pub(super) async fn handle_request(
         Request::ListWindows {
             app,
             pid,
+            window_id,
+            window_title,
             on_screen_only,
-        } => {
-            let mut windows = driver.list_windows_filtered(pid, on_screen_only).await?;
-            if let Some(app) = app {
-                windows.retain(|window| {
-                    window["app_name"]
-                        .as_str()
-                        .is_some_and(|name| name.eq_ignore_ascii_case(&app))
-                });
-            }
-            Ok((json!({"type":"windows", "windows":windows}), None))
-        }
+        } => Ok((
+            list_windows_response(
+                driver,
+                app.as_deref(),
+                pid,
+                window_id,
+                window_title.as_deref(),
+                on_screen_only,
+            )
+            .await?,
+            None,
+        )),
         Request::WaitForWindow(request) => Ok((
             json!({"type":"window_ready", "result":driver.wait_for_window(&request).await?}),
             None,

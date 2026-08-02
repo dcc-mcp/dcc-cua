@@ -48,6 +48,11 @@ async fn process_connection_negotiates_and_rejects_duplicate_hello() {
             .as_array()
             .is_some_and(|items| { items.iter().any(|item| item == "pipelined_read_requests") })
     );
+    assert!(
+        response["capabilities"]
+            .as_array()
+            .is_some_and(|items| { items.iter().any(|item| item == "window_inventory_filters") })
+    );
 
     write_json_request(
         &mut client,
@@ -300,9 +305,17 @@ fn app_requests_parse_with_host_params_frames() {
     assert!(matches!(
         serde_json::from_value::<Request>(json!({
             "method": "list_windows",
-            "params": {"app": "chrome.exe"}
+            "params": {
+                "app": "chrome.exe",
+                "window_id": 42,
+                "window_title": "PCG Fab"
+            }
         })),
-        Ok(Request::ListWindows { .. })
+        Ok(Request::ListWindows {
+            window_id: Some(42),
+            window_title: Some(title),
+            ..
+        }) if title == "PCG Fab"
     ));
     assert!(matches!(
         serde_json::from_value::<Request>(json!({
@@ -655,6 +668,40 @@ fn app_requests_parse_with_host_params_frames() {
         })),
         Ok(Request::BrowserDialog { .. })
     ));
+}
+
+#[rstest]
+fn list_window_filters_match_exact_identity() {
+    let mut windows = vec![
+        json!({
+            "app_name": "UE5Editor.exe",
+            "pid": 42,
+            "window_id": 7,
+            "title": "PCG Fab"
+        }),
+        json!({
+            "app_name": "UE5Editor.exe",
+            "pid": 42,
+            "window_id": 8,
+            "title": "Output Log"
+        }),
+    ];
+    filter_window_rows(
+        &mut windows,
+        Some("ue5editor.exe"),
+        Some(42),
+        Some(7),
+        Some("PCG Fab"),
+    );
+    assert_eq!(windows.len(), 1);
+    assert_eq!(windows[0]["window_id"], 7);
+}
+
+#[rstest]
+fn list_window_filters_validate_bounded_strings() {
+    assert!(validate_window_filter("app", Some(""),).is_err());
+    assert!(validate_window_filter("window_title", Some(&"x".repeat(513)),).is_err());
+    assert!(validate_window_filter("window_title", Some("PCG Fab"),).is_ok());
 }
 
 #[rstest]

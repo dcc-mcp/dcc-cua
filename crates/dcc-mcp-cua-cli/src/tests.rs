@@ -96,6 +96,32 @@ fn wait_window_builds_a_bounded_window_query() {
 }
 
 #[rstest]
+fn list_window_filters_select_one_exact_window() {
+    let mut windows = vec![
+        json!({
+            "app_name": "UE5Editor.exe",
+            "window_id": 7,
+            "title": "PCG Fab"
+        }),
+        json!({
+            "app_name": "UE5Editor.exe",
+            "window_id": 8,
+            "title": "Output Log"
+        }),
+    ];
+    filter_window_rows(
+        &mut windows,
+        Some("ue5editor.exe"),
+        Some(7),
+        Some("PCG Fab"),
+    )
+    .unwrap();
+    assert_eq!(windows.len(), 1);
+    assert_eq!(windows[0]["window_id"], 7);
+    assert!(filter_window_rows(&mut windows, Some(""), None, None).is_err());
+}
+
+#[rstest]
 fn friendly_actions_build_bounded_cua_requests() {
     let click = action_from_command("click", &strings(["--x", "10", "--y", "20"])).unwrap();
     assert_eq!(click.action, "click");

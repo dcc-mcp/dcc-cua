@@ -46,6 +46,7 @@ pub const MAX_JSON_FRAME_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_BINARY_FRAME_BYTES: usize = 64 * 1024 * 1024;
 pub const MAX_REQUEST_ID_CHARS: usize = 128;
 pub const HOST_PROTOCOL_VERSION: u32 = 1;
+const MAX_WINDOW_FILTER_CHARS: usize = 512;
 
 /// Capabilities this implementation actually provides.
 pub const HOST_CAPABILITIES: &[&str] = &[
@@ -77,6 +78,7 @@ pub const HOST_CAPABILITIES: &[&str] = &[
     "degraded_window_visual_fallback",
     "application_inventory",
     "window_inventory",
+    "window_inventory_filters",
     "window_wait",
     "window_wait_cancellation",
     "tool_inventory",
@@ -165,6 +167,10 @@ enum Request {
         app: Option<String>,
         #[serde(default)]
         pid: Option<u32>,
+        #[serde(default)]
+        window_id: Option<u64>,
+        #[serde(default)]
+        window_title: Option<String>,
         #[serde(default)]
         on_screen_only: bool,
     },
@@ -1076,18 +1082,21 @@ async fn handle_parallel_request(
         Request::ListWindows {
             app,
             pid,
+            window_id,
+            window_title,
             on_screen_only,
-        } => {
-            let mut windows = driver.list_windows_filtered(pid, on_screen_only).await?;
-            if let Some(app) = app {
-                windows.retain(|window| {
-                    window["app_name"]
-                        .as_str()
-                        .is_some_and(|name| name.eq_ignore_ascii_case(&app))
-                });
-            }
-            Ok((json!({"type":"windows", "windows":windows}), None))
-        }
+        } => Ok((
+            list_windows_response(
+                driver,
+                app.as_deref(),
+                pid,
+                window_id,
+                window_title.as_deref(),
+                on_screen_only,
+            )
+            .await?,
+            None,
+        )),
         Request::ScreenSize {} => Ok((
             json!({"type":"screen_size", "result":driver.screen_size().await?}),
             None,
@@ -1100,6 +1109,50 @@ async fn handle_parallel_request(
             "request is not eligible for parallel Host dispatch".into(),
         )),
     }
+}
+
+async fn list_windows_response(
+    driver: &ComputerUseDriver,
+    app: Option<&str>,
+    pid: Option<u32>,
+    window_id: Option<u64>,
+    window_title: Option<&str>,
+    on_screen_only: bool,
+) -> Result<Value, HostError> {
+    validate_window_filter("app", app)?;
+    validate_window_filter("window_title", window_title)?;
+    let mut windows = driver.list_windows_filtered(pid, on_screen_only).await?;
+    filter_window_rows(&mut windows, app, pid, window_id, window_title);
+    Ok(json!({"type":"windows", "windows":windows}))
+}
+
+fn filter_window_rows(
+    windows: &mut Vec<Value>,
+    app: Option<&str>,
+    pid: Option<u32>,
+    window_id: Option<u64>,
+    window_title: Option<&str>,
+) {
+    windows.retain(|window| {
+        app.is_none_or(|expected| {
+            window["app_name"]
+                .as_str()
+                .is_some_and(|actual| actual.eq_ignore_ascii_case(expected))
+        }) && pid.is_none_or(|expected| window["pid"] == json!(expected))
+            && window_id.is_none_or(|expected| window["window_id"] == json!(expected))
+            && window_title.is_none_or(|expected| window["title"].as_str() == Some(expected))
+    });
+}
+
+fn validate_window_filter(name: &str, value: Option<&str>) -> Result<(), HostError> {
+    if value
+        .is_some_and(|value| value.is_empty() || value.chars().count() > MAX_WINDOW_FILTER_CHARS)
+    {
+        return Err(HostError::Protocol(format!(
+            "{name} must contain 1..{MAX_WINDOW_FILTER_CHARS} characters"
+        )));
+    }
+    Ok(())
 }
 
 fn image_response(
