@@ -11,10 +11,12 @@ a whole task. Its public protocol is owned by this repository and provides:
 - bounded text, key, drag, and coordinate input;
 - fail-closed sensitive-window policy;
 - explicit stop/resume lifecycle and structured errors;
-- a visible CUA mouse-shaped cursor and `DCC UI Control · <app> · Esc to stop`
-  marker.
+- a visible, vector-rendered CUA mouse-pointer cursor plus a Host-owned
+  `DCC UI Control · <app> · Esc to stop` safety banner on Windows. The banner
+  and softly breathing target-window frame are click-through, excluded from agent
+  captures, and Escape stops the CUA session before another action is accepted.
 
-The repository is a Cargo workspace with seven responsibilities:
+The repository is a Cargo workspace with eight responsibilities:
 
 - `dcc-mcp-cua-core`: scoped Computer Use domain, safety policy, and
   CUA execution boundary;
@@ -26,6 +28,8 @@ The repository is a Cargo workspace with seven responsibilities:
   correlation and binary image attachments;
 - `dcc-mcp-cua-host`: long-lived versioned IPC and request
   routing;
+- `dcc-mcp-cua-indicator`: Host-owned control banner and physical Escape
+  interruption boundary (Win32 today; other platform backends are pending);
 - `dcc-mcp-cua-shm`: cross-platform shared-memory image handoff;
 - `dcc-mcp-cua-cli`: the thin CLI process that composes the workspace crates.
 
@@ -416,6 +420,14 @@ reasons; `resume_session` remains the explicit post-approval restart path.
 `get_agent_cursor_state`; `move_cursor` is forced to `scope: "window"`, and the
 session id is always injected by Host, so the mouse-shaped marker cannot be
 redirected to another session or move the real system pointer.
+The default `cua.default` theme is CUA's compiled vector mouse pointer, rendered
+at the live display scale with click/drag/scroll feedback; this project reuses
+that SDK renderer instead of maintaining a second cursor overlay.
+
+The safety banner remains a native overlay rather than a WebView. Static SVG
+art can be added as a cached theme layer later, while the app name and stop
+state remain runtime text; the current Win32 backend draws the small capsule
+directly and does not rerender an SVG every frame.
 
 Extension tools from the live CUA inventory are available through `call_tool`
 only after `open_session` grants `allow_native_tool: true`. The host injects

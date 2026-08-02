@@ -5,6 +5,7 @@ members = [
     "crates/dcc-mcp-cua-core",
     "crates/dcc-mcp-cua-e2e",
     "crates/dcc-mcp-cua-host",
+    "crates/dcc-mcp-cua-indicator",
     "crates/dcc-mcp-cua-shm",
     "crates/dcc-mcp-cua-cli",
 ]

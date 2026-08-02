@@ -232,6 +232,7 @@ async fn controlled_electron_round_trip() {
                 "process_id": fixture_pid,
                 "window_handle": window_id,
                 "window_title": window_title,
+                "allow_raw_input": true,
                 "allow_browser_input": true,
                 "allow_browser_prepare": true
             }
@@ -243,6 +244,43 @@ async fn controlled_electron_round_trip() {
         .expect("window capability")
         .to_owned();
     assert_eq!(opened.value["marker"]["visible"], true);
+    assert_eq!(opened.value["banner"]["visible"], cfg!(windows));
+    assert_eq!(
+        opened.value["banner"]["target_frame_visible"],
+        cfg!(windows)
+    );
+    assert_eq!(opened.value["banner"]["stop_key"], "Escape");
+    assert_eq!(opened.value["cursor"]["visible"], true);
+    assert_eq!(opened.value["cursor"]["shape"], "mouse_pointer");
+    assert_eq!(opened.value["cursor"]["theme"], "cua.default");
+
+    host_request(
+        &mut host,
+        "cursor_tool",
+        json!({
+            "session_id": SESSION_ID,
+            "task_grant_id": GRANT_ID,
+            "window_capability": capability,
+            "tool": "move_cursor",
+            "arguments": {"x": 64, "y": 64}
+        }),
+    )
+    .await;
+    let cursor_state = host_request(
+        &mut host,
+        "cursor_tool",
+        json!({
+            "session_id": SESSION_ID,
+            "task_grant_id": GRANT_ID,
+            "window_capability": capability,
+            "tool": "get_agent_cursor_state",
+            "arguments": {}
+        }),
+    )
+    .await;
+    let cursor_state = cursor_state.value["result"].to_string();
+    assert!(cursor_state.contains("cua.default"), "{cursor_state}");
+    assert!(cursor_state.contains("enabled"), "{cursor_state}");
 
     let snapshot = host_request(
         &mut host,
@@ -469,6 +507,62 @@ async fn controlled_electron_round_trip() {
         "lbl-input-mirror",
         &format!("mirror={browser_expected}"),
     );
+
+    #[cfg(windows)]
+    {
+        let snapshot = host_request(
+            &mut host,
+            "snapshot",
+            json!({
+                "session_id": SESSION_ID,
+                "task_grant_id": GRANT_ID,
+                "window_capability": capability,
+                "max_nodes": 64,
+                "max_depth": 8
+            }),
+        )
+        .await;
+        host_request(
+            &mut host,
+            "execute_action",
+            json!({
+                "session_id": SESSION_ID,
+                "task_grant_id": GRANT_ID,
+                "window_capability": capability,
+                "observation_id": snapshot.value["observation_id"],
+                "accessibility_state_id": snapshot.value["accessibility_state_id"],
+                "action": {
+                    "action": "keypress",
+                    "input_kind": "raw_input",
+                    "intent": "ordinary_edit",
+                    "delivery_mode": "foreground",
+                    "keys": ["escape"]
+                },
+                "capture_after": false
+            }),
+        )
+        .await;
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            match host
+                .client_mut()
+                .request(
+                    "get_window_state",
+                    json!({
+                        "session_id": SESSION_ID,
+                        "task_grant_id": GRANT_ID,
+                        "window_capability": capability
+                    }),
+                )
+                .await
+            {
+                Err(error) if format!("{error:?}").contains("user_interrupted") => break,
+                Ok(_) if Instant::now() < deadline => tokio::task::yield_now().await,
+                result => panic!("Escape did not stop the CUA session: {result:?}"),
+            }
+        }
+    }
 
     host_request(&mut host, "stop_session", json!({"session_id": SESSION_ID})).await;
     let status = host.shutdown().await.expect("stop Host process");

@@ -39,6 +39,7 @@ use dcc_mcp_cua_core::{
     ComputerUseScreenshot, ComputerUseSession, ComputerUseTargetScope, ComputerUseToolResult,
     ComputerUseWindowQuery, ComputerUseWindowWaitRequest, ComputerUseZoomRequest,
 };
+use dcc_mcp_cua_indicator::{BannerTarget, ControlBanner};
 use dcc_mcp_cua_shm::SharedImage;
 
 /// Control frame limit. Pixel bytes use a separate bounded frame.
@@ -709,6 +710,7 @@ struct HostSession {
     allow_session_escalation: bool,
     capability: String,
     session: ComputerUseSession,
+    banner: ControlBanner,
     browser: BrowserSession,
     latest_observation_id: Option<String>,
     latest_accessibility_state_id: Option<String>,
@@ -1351,7 +1353,7 @@ fn wait_condition_matches(root: &Value, condition: &WaitCondition) -> bool {
     })
 }
 
-fn authorized_session<'a>(
+async fn authorized_session<'a>(
     sessions: &'a mut HashMap<String, HostSession>,
     session_id: &str,
     grant_id: &str,
@@ -1364,6 +1366,22 @@ fn authorized_session<'a>(
         return Err(HostError::Protocol(
             "session grant or capability mismatch".into(),
         ));
+    }
+    if session.banner.interrupted() {
+        let cleanup_note = session
+            .session
+            .stop()
+            .await
+            .err()
+            .map(|error| format!("; CUA cleanup also failed: {error}"))
+            .unwrap_or_default();
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::UserInterrupted,
+            format!(
+                "the user pressed Escape or the safety banner stopped; the session was stopped{cleanup_note}"
+            ),
+        )
+        .into());
     }
     Ok(session)
 }
