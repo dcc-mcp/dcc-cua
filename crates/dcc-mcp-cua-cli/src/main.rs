@@ -1439,18 +1439,51 @@ fn snapshot_output(data: &[u8], output: Option<String>) -> (Option<String>, Opti
 }
 
 async fn doctor(driver: &ComputerUseDriver) -> Result<(), Box<dyn std::error::Error>> {
-    let metadata = driver.raw().metadata().await?;
-    let windows = driver.list_windows().await?;
+    let (metadata, windows, permissions, health) = tokio::join!(
+        driver.raw().metadata(),
+        driver.list_windows(),
+        driver.call_global_tool("check_permissions", json!({})),
+        driver.call_global_tool("health_report", json!({})),
+    );
+    let permissions = diagnostic_result(permissions);
+    let health = diagnostic_result(health);
+    let ready = permissions["success"] == true
+        && health["success"] == true
+        && health["result"]["overall"] == "ok";
     println!(
         "{}",
         serde_json::to_string_pretty(&json!({
             "backend": "cua-driver-sdk",
-            "driver": metadata,
-            "window_count": windows.len(),
+            "ready": ready,
+            "driver": metadata?,
+            "window_count": windows?.len(),
             "host_endpoint": HostTransport::default_endpoint(),
+            "permissions": permissions,
+            "health": health,
         }))?
     );
+    if !ready {
+        return Err("CUA diagnostics are not ready".into());
+    }
     Ok(())
+}
+
+fn diagnostic_result(
+    result: dcc_mcp_cua_core::ComputerUseResult<ComputerUseToolResult>,
+) -> serde_json::Value {
+    match result {
+        Ok(result) => json!({
+            "success": true,
+            "degraded": result.degraded,
+            "summary": result.text,
+            "result": result.value.get("structuredContent").unwrap_or(&result.value),
+        }),
+        Err(error) => json!({
+            "success": false,
+            "code": error.code,
+            "message": error.message,
+        }),
+    }
 }
 
 async fn maybe_escalate(

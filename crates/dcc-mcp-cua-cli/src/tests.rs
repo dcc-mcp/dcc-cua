@@ -88,6 +88,25 @@ fn daemon_reuses_the_official_serve_command() {
 }
 
 #[rstest]
+fn diagnostics_preserve_upstream_health_and_structured_failures() {
+    let healthy = diagnostic_result(Ok(ComputerUseToolResult {
+        value: json!({"structuredContent": {"overall": "ok"}}),
+        text: "healthy".into(),
+        images: Vec::new(),
+        degraded: false,
+    }));
+    assert_eq!(healthy["result"]["overall"], "ok");
+    assert_eq!(healthy["summary"], "healthy");
+
+    let failed = diagnostic_result(Err(dcc_mcp_cua_core::ComputerUseError::new(
+        dcc_mcp_cua_core::ComputerUseErrorCode::BackendUnavailable,
+        "screen capture unavailable",
+    )));
+    assert_eq!(failed["success"], false);
+    assert_eq!(failed["code"], "backend_unavailable");
+}
+
+#[rstest]
 fn wait_window_builds_a_bounded_window_query() {
     let request = window_wait_request(&strings([
         "--app",

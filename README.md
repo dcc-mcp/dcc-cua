@@ -104,6 +104,11 @@ grant-gated DCC-MCP surface.
 target; if an application has multiple windows, pass `--pid` and
 `--window-id` instead of relying on an app name.
 
+`doctor` runs CUA's `check_permissions` and `health_report` concurrently with
+driver/window discovery. It reports the upstream structured checks for native
+accessibility, screen capture, platform support, and input readiness, and exits
+non-zero when the authoritative health status is not `ok`.
+
 `list` accepts optional `--app`, `--pid`, `--window-id`, `--title`, and
 `--on-screen` filters. `--app` is case-insensitive; `--title` is exact and
 bounded, so Core can select a UE/Fab subwindow without receiving the entire
