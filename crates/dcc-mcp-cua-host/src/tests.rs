@@ -98,6 +98,7 @@ fn hard_denied_intents_do_not_reach_cua() {
         keys: vec!["ENTER".into()],
         modifiers: Vec::new(),
         duration_ms: None,
+        steps: None,
     };
     assert!(action.reject_policy().is_some());
 }
@@ -124,6 +125,7 @@ fn semantic_actions_require_element_locator() {
         keys: Vec::new(),
         modifiers: Vec::new(),
         duration_ms: None,
+        steps: None,
     };
     let error = action.into_computer_use("obs-1".into()).unwrap_err();
     assert_eq!(error.code, ComputerUseErrorCode::InvalidAction);
@@ -151,6 +153,7 @@ fn semantic_actions_forward_element_tokens_and_delivery_mode() {
         keys: Vec::new(),
         modifiers: Vec::new(),
         duration_ms: None,
+        steps: None,
     };
     let action = action.into_computer_use("obs-1".into()).unwrap();
     assert_eq!(action.element_token.as_deref(), Some("element-token"));

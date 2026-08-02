@@ -511,6 +511,20 @@ fn validate_action(action: &ComputerUseAction) -> ComputerUseResult<()> {
             ));
         }
     }
+    if let Some(steps) = action.steps {
+        if !(1..=MAX_DRAG_STEPS).contains(&steps) {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::InvalidAction,
+                "steps must be between 1 and 200",
+            ));
+        }
+        if action.action != "drag" {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::InvalidAction,
+                "steps is supported only for drag",
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -630,6 +644,9 @@ fn action_arguments(action: &ComputerUseAction, session: &str, target: &WindowTa
             }
             if let Some(duration_ms) = action.duration_ms {
                 object.insert("duration_ms".into(), json!(duration_ms));
+            }
+            if let Some(steps) = action.steps {
+                object.insert("steps".into(), json!(steps));
             }
         }
         "scroll" => {
@@ -778,6 +795,9 @@ fn desktop_action_arguments(action: &ComputerUseAction, session: &str) -> Value 
             }
             if let Some(duration_ms) = action.duration_ms {
                 object.insert("duration_ms".into(), json!(duration_ms));
+            }
+            if let Some(steps) = action.steps {
+                object.insert("steps".into(), json!(steps));
             }
         }
         "scroll" => {

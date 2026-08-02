@@ -518,6 +518,8 @@ struct HostAction {
     modifiers: Vec<String>,
     #[serde(default)]
     duration_ms: Option<u64>,
+    #[serde(default)]
+    steps: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -659,6 +661,7 @@ impl HostAction {
             text,
             delay_ms: self.delay_ms,
             duration_ms: self.duration_ms,
+            steps: self.steps,
             type_chars_only: self.type_chars_only,
             keys: self.keys,
             modifiers: self.modifiers,

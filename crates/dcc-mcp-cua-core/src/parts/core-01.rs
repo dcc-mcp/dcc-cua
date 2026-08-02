@@ -20,6 +20,7 @@ const MAX_MODIFIER_TOKENS: usize = 8;
 const MAX_MODIFIER_CHARS: usize = 32;
 const MAX_DRAG_POINTS: usize = 256;
 const MAX_DRAG_DURATION_MS: u64 = 10_000;
+const MAX_DRAG_STEPS: u32 = 200;
 const MAX_ELEMENT_TOKEN_CHARS: usize = 512;
 const MAX_LAUNCH_ARGUMENTS: usize = 32;
 const MAX_LAUNCH_URLS: usize = 16;
@@ -158,6 +159,8 @@ pub struct ComputerUseAction {
     pub delay_ms: Option<u64>,
     #[serde(default)]
     pub duration_ms: Option<u64>,
+    #[serde(default)]
+    pub steps: Option<u32>,
     #[serde(default)]
     pub type_chars_only: bool,
     #[serde(default)]
