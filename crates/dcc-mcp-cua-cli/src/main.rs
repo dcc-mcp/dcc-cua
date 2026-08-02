@@ -1,6 +1,9 @@
 use std::env;
 use std::fs;
 use std::io::Read;
+use std::process::Command as ProcessCommand;
+
+mod update;
 
 use dcc_mcp_cua_client::{
     HostClient, HostClientError, HostProcess, HostResponse, MAX_REQUEST_ID_CHARS,
@@ -34,6 +37,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     if command == "host-jsonl" {
         host_jsonl(&flags).await?;
+        return Ok(());
+    }
+    if matches!(command.as_str(), "daemon" | "mcp" | "recording") {
+        run_upstream_cua_command(upstream_command(&command), &flags)?;
+        return Ok(());
+    }
+    if command == "recording-render" {
+        let mut upstream_flags = vec!["render".to_owned()];
+        upstream_flags.extend(flags);
+        run_upstream_cua_command("recording", &upstream_flags)?;
+        return Ok(());
+    }
+    if command == "update" {
+        tokio::task::spawn_blocking(move || update::run(&flags))
+            .await
+            .map_err(|error| std::io::Error::other(format!("update worker failed: {error}")))?
+            .map_err(|error| std::io::Error::other(error.to_string()))?;
         return Ok(());
     }
     let driver = ComputerUseDriver::create()?;
@@ -98,6 +118,34 @@ async fn list_windows(
     }
     println!("{}", serde_json::to_string_pretty(&windows)?);
     Ok(())
+}
+
+fn run_upstream_cua_command(
+    command: &str,
+    flags: &[String],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let binary = env::var_os("CUA_DRIVER_BIN").unwrap_or_else(|| "cua-driver".into());
+    let status = ProcessCommand::new(&binary)
+        .arg(command)
+        .args(flags)
+        .status()
+        .map_err(|error| {
+            format!(
+                "start upstream cua-driver {command}: {error}; set CUA_DRIVER_BIN to its executable"
+            )
+        })?;
+    if status.success() {
+        return Ok(());
+    }
+    Err(format!("cua-driver {command} exited with {status}").into())
+}
+
+fn upstream_command(command: &str) -> &str {
+    if command == "daemon" {
+        "serve"
+    } else {
+        command
+    }
 }
 
 async fn list_apps(driver: &ComputerUseDriver) -> Result<(), Box<dyn std::error::Error>> {
@@ -1318,7 +1366,7 @@ fn has_flag(flags: &[String], name: &str) -> bool {
 
 fn print_help() {
     println!(
-        "dcc-mcp-cua\n\n  list [--app APP]\n  apps\n  tools\n  call --tool NAME [--json JSON|--json-file PATH] [--app APP|--pid PID --window-id ID] [--output FILE]\n  host-call --method NAME [--json JSON|--json-file PATH] [--endpoint PATH|--spawn BINARY] [--snapshot-transport binary_frame|shared_memory] [--output FILE]\n  host-batch --json JSON_ARRAY [--endpoint PATH|--spawn BINARY] [--snapshot-transport binary_frame|shared_memory] [--output-dir DIR]\n  host-jsonl [--endpoint PATH|--spawn BINARY] [--parallel-discovery] [--snapshot-transport binary_frame|shared_memory] [--output-dir DIR]\n  desktop-snapshot [--output FILE]\n  screen-size\n  cursor-position\n  launch --name NAME|--bundle-id ID|--aumid ID|--path PATH|--launch-path PATH [--url URL] [--arg ARG] [--new-instance] [--start-minimized]\n  terminate --app APP --confirm\n  snapshot --app APP [--output FILE]\n  act --app APP --action-json JSON [--output FILE]\n  verify --app APP --expect-json JSON [--timeout-ms N] [--stable-samples N]\n  desktop-act --action-json JSON [--session ID] [--output FILE]\n  clipboard-read --app APP [--include-text]\n  clipboard-write --app APP --text TEXT|--image-path FILE|--file-path FILE\n  doctor\n  host [--stdio|--endpoint PATH]\n\nHost uses versioned big-endian JSON frames. Hello version 1 negotiates binary-frame or shared-memory snapshots and supports request_id correlation."
+        "dcc-mcp-cua\n\n  list [--app APP]\n  apps\n  tools\n  call --tool NAME [--json JSON|--json-file PATH] [--app APP|--pid PID --window-id ID] [--output FILE]\n  host-call --method NAME [--json JSON|--json-file PATH] [--endpoint PATH|--spawn BINARY] [--snapshot-transport binary_frame|shared_memory] [--output FILE]\n  host-batch --json JSON_ARRAY [--endpoint PATH|--spawn BINARY] [--snapshot-transport binary_frame|shared_memory] [--output-dir DIR]\n  host-jsonl [--endpoint PATH|--spawn BINARY] [--parallel-discovery] [--snapshot-transport binary_frame|shared_memory] [--output-dir DIR]\n  daemon [CUA_DRIVER_ARGS...]\n  mcp [CUA_DRIVER_ARGS...]\n  recording start|stop|status|render [CUA_DRIVER_ARGS...]\n  recording-render INPUT_DIR OUTPUT_MP4 [CUA_DRIVER_ARGS...]\n  update [--check]\n  desktop-snapshot [--output FILE]\n  screen-size\n  cursor-position\n  launch --name NAME|--bundle-id ID|--aumid ID|--path PATH|--launch-path PATH [--url URL] [--arg ARG] [--new-instance] [--start-minimized]\n  terminate --app APP --confirm\n  snapshot --app APP [--output FILE]\n  act --app APP --action-json JSON [--output FILE]\n  verify --app APP --expect-json JSON [--timeout-ms N] [--stable-samples N]\n  desktop-act --action-json JSON [--session ID] [--output FILE]\n  clipboard-read --app APP [--include-text]\n  clipboard-write --app APP --text TEXT|--image-path FILE|--file-path FILE\n  doctor\n  host [--stdio|--endpoint PATH]\n\nHost uses versioned big-endian JSON frames. Hello version 1 negotiates binary-frame or shared-memory snapshots and supports request_id correlation."
     );
     println!(
         "Window snapshots/actions accept --escalate --escalation-reason REASON when an explicit desktop visual fallback approval is required."

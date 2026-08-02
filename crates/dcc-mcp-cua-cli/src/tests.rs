@@ -67,6 +67,13 @@ fn parallel_discovery_is_limited_to_stateless_methods() {
 }
 
 #[rstest]
+fn daemon_reuses_the_official_serve_command() {
+    assert_eq!(upstream_command("daemon"), "serve");
+    assert_eq!(upstream_command("mcp"), "mcp");
+    assert_eq!(upstream_command("recording"), "recording");
+}
+
+#[rstest]
 fn friendly_actions_build_bounded_cua_requests() {
     let click = action_from_command("click", &strings(["--x", "10", "--y", "20"])).unwrap();
     assert_eq!(click.action, "click");

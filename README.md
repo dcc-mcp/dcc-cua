@@ -34,12 +34,13 @@ browser adapter and should combine typed Unreal APIs with scoped CUA; Fab
 account, purchase, and download confirmation remain explicit user-approved
 operations.
 
-This project wraps the CUA SDK for agent-friendly, bounded operations; it does
-not replace the upstream driver. Use the official `cua-driver` CLI for driver
-installation, daemon lifecycle, configuration, skills, cursor themes,
-manifest/docs, diagnostics, and recording rendering. Use this CLI/Host for the
-DCC-MCP safety envelope, exact window capability, fresh observations, grants,
-friendly actions, and software-specific adapters.
+This project wraps the CUA SDK for agent-friendly, bounded operations. The
+`dcc-mcp-cua` CLI owns its own `update` command and exposes `daemon`, `mcp`, and
+`recording render` as first-class entries. Those three entries reuse the
+official `cua-driver` executable through `CUA_DRIVER_BIN` rather than copying
+its daemon/MCP/render implementation. Use this CLI/Host for the DCC-MCP safety
+envelope, exact window capability, fresh observations, grants, friendly actions,
+and software-specific adapters.
 
 ## Development gates
 
@@ -81,7 +82,15 @@ cargo run -p dcc-mcp-cua-cli -- type --app chrome.exe --text "hello" --focused
 cargo run -p dcc-mcp-cua-cli -- hotkey --app chrome.exe --key CTRL --key L
 cargo run -p dcc-mcp-cua-cli -- act --app chrome.exe --action-json '{"action":"click","x":100,"y":100}'
 cargo run -p dcc-mcp-cua-cli -- verify --app chrome.exe --expect-json '[{"window":{"exists":true}}]'
+cargo run -p dcc-mcp-cua-cli -- update --check
 ```
+
+`daemon` and `mcp` pass their remaining flags to the official `cua-driver`
+binary. `recording render` can be invoked as
+`dcc-mcp-cua recording render INPUT_DIR OUTPUT_MP4`; set `CUA_DRIVER_BIN` when
+the upstream executable is not on `PATH`. `recording start|stop|status` keeps
+the upstream daemon lifecycle, while this project's Host routes remain the
+grant-gated DCC-MCP surface.
 
 `list`, `apps`, `tools`, `desktop-snapshot`, `screen-size`, `cursor-position`, and
 `doctor` are read-only. `snapshot` and `act` require one exact

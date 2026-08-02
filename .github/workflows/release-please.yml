@@ -87,15 +87,21 @@ jobs:
       - run: cargo build --release --locked -p dcc-mcp-cua-cli
       - name: Package dcc-mcp-cua
         shell: bash
+        env:
+          TAG_NAME: ${{ needs.release-please.outputs.tag_name }}
         run: |
           set -euo pipefail
           host="$(rustc -vV | sed -n 's/^host: //p')"
+          version="${TAG_NAME#v}"
           mkdir -p dist
           if [ "${{ matrix.archive }}" = "zip" ]; then
-            7z a "dist/dcc-mcp-cua-${{ matrix.platform }}-${host}.zip" target/release/dcc-mcp-cua.exe
+            archive="dist/dcc-mcp-cua-${version}-${host}.zip"
+            7z a "$archive" target/release/dcc-mcp-cua.exe
           else
-            tar -czf "dist/dcc-mcp-cua-${{ matrix.platform }}-${host}.tar.gz" -C target/release dcc-mcp-cua
+            archive="dist/dcc-mcp-cua-${version}-${host}.tar.gz"
+            tar -czf "$archive" -C target/release dcc-mcp-cua
           fi
+          sha256sum "$archive" > "${archive}.sha256"
       - uses: actions/upload-artifact@v4
         with:
           name: dcc-mcp-cua-${{ matrix.platform }}
