@@ -597,12 +597,11 @@ fn window_queries_require_a_selector_and_match_native_rows() {
         window_title: Some("PCG Fab".into()),
         ..Default::default()
     };
-    assert!(window_matches_query(
-        &query,
+    assert!(query.matches_window(
         &json!({"app_name":"UE5Editor.exe", "title":"PCG Fab", "pid":42, "window_id":7})
     ));
-    assert!(!window_matches_query(
-        &query,
+    assert!(!query.matches_window(
         &json!({"app_name":"UE5Editor.exe", "title":"Other", "pid":42, "window_id":7})
     ));
+    assert!(query.validate_selectors().is_ok());
 }

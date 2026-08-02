@@ -97,6 +97,13 @@ fn wait_window_builds_a_bounded_window_query() {
 
 #[rstest]
 fn list_window_filters_select_one_exact_window() {
+    let query = ComputerUseWindowQuery {
+        app: Some("ue5editor.exe".into()),
+        window_handle: Some(7),
+        window_title: Some("PCG Fab".into()),
+        ..Default::default()
+    };
+    query.validate_selectors().unwrap();
     let mut windows = vec![
         json!({
             "app_name": "UE5Editor.exe",
@@ -109,16 +116,17 @@ fn list_window_filters_select_one_exact_window() {
             "title": "Output Log"
         }),
     ];
-    filter_window_rows(
-        &mut windows,
-        Some("ue5editor.exe"),
-        Some(7),
-        Some("PCG Fab"),
-    )
-    .unwrap();
+    windows.retain(|window| query.matches_window(window));
     assert_eq!(windows.len(), 1);
     assert_eq!(windows[0]["window_id"], 7);
-    assert!(filter_window_rows(&mut windows, Some(""), None, None).is_err());
+    assert!(
+        ComputerUseWindowQuery {
+            app: Some(String::new()),
+            ..Default::default()
+        }
+        .validate_selectors()
+        .is_err()
+    );
 }
 
 #[rstest]

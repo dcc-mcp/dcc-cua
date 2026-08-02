@@ -112,33 +112,19 @@ async fn list_windows(
         .map(|value| value.parse::<u64>())
         .transpose()?;
     let title = flag_value(flags, "--title");
+    let query = ComputerUseWindowQuery {
+        app,
+        process_id: pid,
+        window_handle: window_id,
+        window_title: title,
+        on_screen_only: has_flag(flags, "--on-screen"),
+    };
+    query.validate_selectors()?;
     let mut windows = driver
-        .list_windows_filtered(pid, has_flag(flags, "--on-screen"))
+        .list_windows_filtered(query.process_id, query.on_screen_only)
         .await?;
-    filter_window_rows(&mut windows, app.as_deref(), window_id, title.as_deref())?;
+    windows.retain(|window| query.matches_window(window));
     println!("{}", serde_json::to_string_pretty(&windows)?);
-    Ok(())
-}
-
-fn filter_window_rows(
-    windows: &mut Vec<serde_json::Value>,
-    app: Option<&str>,
-    window_id: Option<u64>,
-    title: Option<&str>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    for (name, value) in [("--app", app), ("--title", title)] {
-        if value.is_some_and(|value| value.is_empty() || value.chars().count() > 512) {
-            return Err(format!("{name} must contain 1..512 characters").into());
-        }
-    }
-    windows.retain(|window| {
-        app.is_none_or(|expected| {
-            window["app_name"]
-                .as_str()
-                .is_some_and(|actual| actual.eq_ignore_ascii_case(expected))
-        }) && window_id.is_none_or(|expected| window["window_id"] == json!(expected))
-            && title.is_none_or(|expected| window["title"].as_str() == Some(expected))
-    });
     Ok(())
 }
 

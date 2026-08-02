@@ -36,8 +36,8 @@ use dcc_mcp_cua_core::{
     ComputerUseAction, ComputerUseClipboardWriteRequest, ComputerUseDesktopSession,
     ComputerUseDriver, ComputerUseError, ComputerUseErrorCode, ComputerUseImage, ComputerUsePoint,
     ComputerUseRecordingStartRequest, ComputerUseResult, ComputerUseSession,
-    ComputerUseTargetScope, ComputerUseToolResult, ComputerUseWindowWaitRequest,
-    ComputerUseZoomRequest,
+    ComputerUseTargetScope, ComputerUseToolResult, ComputerUseWindowQuery,
+    ComputerUseWindowWaitRequest, ComputerUseZoomRequest,
 };
 use dcc_mcp_cua_shm::SharedImage;
 
@@ -46,7 +46,6 @@ pub const MAX_JSON_FRAME_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_BINARY_FRAME_BYTES: usize = 64 * 1024 * 1024;
 pub const MAX_REQUEST_ID_CHARS: usize = 128;
 pub const HOST_PROTOCOL_VERSION: u32 = 1;
-const MAX_WINDOW_FILTER_CHARS: usize = 512;
 
 /// Capabilities this implementation actually provides.
 pub const HOST_CAPABILITIES: &[&str] = &[
@@ -1119,40 +1118,19 @@ async fn list_windows_response(
     window_title: Option<&str>,
     on_screen_only: bool,
 ) -> Result<Value, HostError> {
-    validate_window_filter("app", app)?;
-    validate_window_filter("window_title", window_title)?;
-    let mut windows = driver.list_windows_filtered(pid, on_screen_only).await?;
-    filter_window_rows(&mut windows, app, pid, window_id, window_title);
+    let query = ComputerUseWindowQuery {
+        app: app.map(str::to_owned),
+        process_id: pid,
+        window_handle: window_id,
+        window_title: window_title.map(str::to_owned),
+        on_screen_only,
+    };
+    query.validate_selectors()?;
+    let mut windows = driver
+        .list_windows_filtered(query.process_id, query.on_screen_only)
+        .await?;
+    windows.retain(|window| query.matches_window(window));
     Ok(json!({"type":"windows", "windows":windows}))
-}
-
-fn filter_window_rows(
-    windows: &mut Vec<Value>,
-    app: Option<&str>,
-    pid: Option<u32>,
-    window_id: Option<u64>,
-    window_title: Option<&str>,
-) {
-    windows.retain(|window| {
-        app.is_none_or(|expected| {
-            window["app_name"]
-                .as_str()
-                .is_some_and(|actual| actual.eq_ignore_ascii_case(expected))
-        }) && pid.is_none_or(|expected| window["pid"] == json!(expected))
-            && window_id.is_none_or(|expected| window["window_id"] == json!(expected))
-            && window_title.is_none_or(|expected| window["title"].as_str() == Some(expected))
-    });
-}
-
-fn validate_window_filter(name: &str, value: Option<&str>) -> Result<(), HostError> {
-    if value
-        .is_some_and(|value| value.is_empty() || value.chars().count() > MAX_WINDOW_FILTER_CHARS)
-    {
-        return Err(HostError::Protocol(format!(
-            "{name} must contain 1..{MAX_WINDOW_FILTER_CHARS} characters"
-        )));
-    }
-    Ok(())
 }
 
 fn image_response(

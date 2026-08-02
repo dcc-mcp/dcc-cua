@@ -671,40 +671,6 @@ fn app_requests_parse_with_host_params_frames() {
 }
 
 #[rstest]
-fn list_window_filters_match_exact_identity() {
-    let mut windows = vec![
-        json!({
-            "app_name": "UE5Editor.exe",
-            "pid": 42,
-            "window_id": 7,
-            "title": "PCG Fab"
-        }),
-        json!({
-            "app_name": "UE5Editor.exe",
-            "pid": 42,
-            "window_id": 8,
-            "title": "Output Log"
-        }),
-    ];
-    filter_window_rows(
-        &mut windows,
-        Some("ue5editor.exe"),
-        Some(42),
-        Some(7),
-        Some("PCG Fab"),
-    );
-    assert_eq!(windows.len(), 1);
-    assert_eq!(windows[0]["window_id"], 7);
-}
-
-#[rstest]
-fn list_window_filters_validate_bounded_strings() {
-    assert!(validate_window_filter("app", Some(""),).is_err());
-    assert!(validate_window_filter("window_title", Some(&"x".repeat(513)),).is_err());
-    assert!(validate_window_filter("window_title", Some("PCG Fab"),).is_ok());
-}
-
-#[rstest]
 fn only_stateless_discovery_uses_parallel_dispatch() {
     assert!(is_parallel_request(&Request::ListApps {}));
     assert!(is_parallel_request(&Request::ListTools {}));

@@ -83,7 +83,7 @@ pub struct ComputerUseWindowQuery {
 }
 
 impl ComputerUseWindowQuery {
-    pub fn validate(&self) -> ComputerUseResult<()> {
+    pub fn validate_selectors(&self) -> ComputerUseResult<()> {
         if self
             .app
             .as_deref()
@@ -98,16 +98,6 @@ impl ComputerUseWindowQuery {
                 "window query selectors cannot be empty",
             ));
         }
-        if self.app.is_none()
-            && self.process_id.is_none()
-            && self.window_handle.is_none()
-            && self.window_title.is_none()
-        {
-            return Err(ComputerUseError::new(
-                ComputerUseErrorCode::MissingWindow,
-                "window query requires app, process_id, window_handle, or window_title",
-            ));
-        }
         for (name, value) in [
             ("app", self.app.as_deref()),
             ("window_title", self.window_title.as_deref()),
@@ -120,6 +110,39 @@ impl ComputerUseWindowQuery {
             }
         }
         Ok(())
+    }
+
+    pub fn validate(&self) -> ComputerUseResult<()> {
+        self.validate_selectors()?;
+        if self.app.is_none()
+            && self.process_id.is_none()
+            && self.window_handle.is_none()
+            && self.window_title.is_none()
+        {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::MissingWindow,
+                "window query requires app, process_id, window_handle, or window_title",
+            ));
+        }
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn matches_window(&self, window: &Value) -> bool {
+        self.app.as_deref().is_none_or(|app| {
+            window["app_name"]
+                .as_str()
+                .is_some_and(|name| name.eq_ignore_ascii_case(app))
+        }) && self
+            .process_id
+            .is_none_or(|pid| window["pid"] == json!(pid))
+            && self
+                .window_handle
+                .is_none_or(|handle| window["window_id"] == json!(handle))
+            && self
+                .window_title
+                .as_deref()
+                .is_none_or(|title| window["title"].as_str() == Some(title))
     }
 }
 
@@ -412,7 +435,7 @@ impl ComputerUseDriver {
             let mut windows = self
                 .list_windows_filtered(request.query.process_id, request.query.on_screen_only)
                 .await?;
-            windows.retain(|window| window_matches_query(&request.query, window));
+            windows.retain(|window| request.query.matches_window(window));
             if !windows.is_empty() {
                 return Ok(json!({
                     "windows": windows,
@@ -1841,20 +1864,6 @@ fn bounds(value: &serde_json::Map<String, Value>) -> Option<[i32; 4]> {
         value["width"].as_i64()?.try_into().ok()?,
         value["height"].as_i64()?.try_into().ok()?,
     ])
-}
-
-fn window_matches_query(query: &ComputerUseWindowQuery, window: &Value) -> bool {
-    query.app.as_deref().is_none_or(|app| {
-        window["app_name"]
-            .as_str()
-            .is_some_and(|name| name.eq_ignore_ascii_case(app))
-    }) && query.process_id.is_none_or(|pid| window["pid"] == json!(pid))
-        && query
-            .window_handle
-            .is_none_or(|handle| window["window_id"] == json!(handle))
-        && query.window_title.as_deref().is_none_or(|title| {
-            window["title"].as_str() == Some(title)
-        })
 }
 
 fn validate_target_policy(target: &WindowTarget) -> ComputerUseResult<()> {
