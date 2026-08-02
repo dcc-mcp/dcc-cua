@@ -248,9 +248,10 @@ async fn controlled_electron_round_trip() {
     let locator = semantic_locator(input);
     let expected = "host-ipc-e2e";
     let mut action = json!({
-        "action": "set_text",
+        "action": if cfg!(target_os = "linux") { "type" } else { "set_text" },
         "input_kind": "semantic",
         "intent": "ordinary_edit",
+        "delivery_mode": if cfg!(target_os = "linux") { "foreground" } else { "background" },
         "text": expected
     });
     action
