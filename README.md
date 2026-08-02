@@ -46,6 +46,7 @@ cargo run -p dcc-mcp-cua-cli -- desktop-snapshot --output desktop.png
 cargo run -p dcc-mcp-cua-cli -- screen-size
 cargo run -p dcc-mcp-cua-cli -- cursor-position
 cargo run -p dcc-mcp-cua-cli -- desktop-act --action-json '{"action":"click","x":100,"y":100}'
+cargo run -p dcc-mcp-cua-cli -- act --app chrome.exe --action-json '{"action":"click","x":100,"y":100}' --output action.png
 cargo run -p dcc-mcp-cua-cli -- launch --name Calculator
 cargo run -p dcc-mcp-cua-cli -- doctor
 cargo run -p dcc-mcp-cua-cli -- snapshot --app chrome.exe --output screenshot.png
@@ -234,6 +235,9 @@ widen an existing window session or grant desktop-wide mutation. For an
 explicit desktop input scope, use `open_desktop_session`, then take a fresh
 `desktop_session_snapshot` and call `execute_desktop_action`; raw input grant
 and the exact desktop capability are required.
+Action responses preserve the CUA SDK's structured result, text, degraded
+status, and image attachments. Host transports image bytes as the negotiated
+binary attachment, so Core does not need to decode base64 on its control path.
 While `wait_for` is running, the same connection accepts `cancel` with the
 exact session grant and window capability; the host returns both a cancellation
 acknowledgement and the wait's cancelled terminal response. Other requests stay

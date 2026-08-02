@@ -1208,17 +1208,11 @@ async fn handle_request(
             }
             let action = action.into_computer_use(observation_id)?;
             let result = host.session.perform_action(&action).await?;
-            Ok((
-                json!({
-                    "type":"action_completed",
-                    "success":true,
-                    "action_id":format!("cua-desktop-action-{}", Uuid::new_v4()),
-                    "target_closed":false,
-                    "policy_tier":"task_grant",
-                    "message":"desktop CUA action completed",
-                    "result":result,
-                }),
-                None,
+            Ok(action_completed_response(
+                &session_id,
+                format!("cua-desktop-action-{}", Uuid::new_v4()),
+                "desktop CUA action completed",
+                result,
             ))
         }
         Request::StopDesktopSession { session_id } => {
@@ -1952,17 +1946,11 @@ async fn handle_request(
             host.latest_observation_id = None;
             host.latest_accessibility_state_id = None;
             host.latest_accessibility_root = None;
-            Ok((
-                json!({
-                    "type":"action_completed",
-                    "success":true,
-                    "action_id":format!("cua-action-{}", Uuid::new_v4()),
-                    "target_closed":false,
-                    "policy_tier":"task_grant",
-                    "message":"CUA action completed",
-                    "result":result,
-                }),
-                None,
+            Ok(action_completed_response(
+                &session_id,
+                format!("cua-action-{}", Uuid::new_v4()),
+                "CUA action completed",
+                result,
             ))
         }
         Request::ResumeSession {
@@ -2306,6 +2294,32 @@ fn native_tool_response(
         response["attachments"] = Value::Array(attachments);
     }
     let attachment = (!attachment_bytes.is_empty()).then_some(attachment_bytes);
+    (response, attachment)
+}
+
+fn action_completed_response(
+    session_id: &str,
+    action_id: String,
+    message: &str,
+    result: ComputerUseToolResult,
+) -> (Value, Option<Vec<u8>>) {
+    let (tool_response, attachment) = native_tool_response(Some(session_id), "action", result);
+    let mut response = json!({
+        "type": "action_completed",
+        "success": true,
+        "action_id": action_id,
+        "target_closed": false,
+        "policy_tier": "task_grant",
+        "message": message,
+        "result": tool_response["result"].clone(),
+        "text": tool_response["text"].clone(),
+        "degraded": tool_response["degraded"].clone(),
+    });
+    for field in ["image", "attachments"] {
+        if !tool_response[field].is_null() {
+            response[field] = tool_response[field].clone();
+        }
+    }
     (response, attachment)
 }
 
@@ -3177,6 +3191,31 @@ mod tests {
         assert_eq!(response["result"]["content"][0]["attachment_index"], 0);
         assert_eq!(response["result"]["content"][1]["length"], 3);
         assert_eq!(attachment, Some(vec![1, 2, 3, 4, 5]));
+    }
+
+    #[test]
+    fn action_response_preserves_tool_metadata_and_images() {
+        let (response, attachment) = action_completed_response(
+            "session-1",
+            "action-1".into(),
+            "CUA action completed",
+            ComputerUseToolResult {
+                value: json!({"success": true, "cua": {"accepted": true}}),
+                text: "clicked".into(),
+                images: vec![dcc_mcp_cua_core::ComputerUseImage {
+                    data: vec![7, 8],
+                    mime_type: "image/png".into(),
+                }],
+                degraded: true,
+            },
+        );
+        assert_eq!(response["type"], "action_completed");
+        assert_eq!(response["action_id"], "action-1");
+        assert_eq!(response["result"]["cua"]["accepted"], true);
+        assert_eq!(response["text"], "clicked");
+        assert_eq!(response["degraded"], true);
+        assert_eq!(response["image"]["length"], 2);
+        assert_eq!(attachment, Some(vec![7, 8]));
     }
 
     #[test]

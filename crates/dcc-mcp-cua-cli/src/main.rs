@@ -8,7 +8,8 @@ use dcc_mcp_cua_client::{
 };
 use dcc_mcp_cua_core::{
     ComputerUseAction, ComputerUseClipboardWriteRequest, ComputerUseDriver,
-    ComputerUseLaunchRequest, ComputerUseTargetScope, ComputerUseZoomRequest,
+    ComputerUseLaunchRequest, ComputerUseTargetScope, ComputerUseToolResult,
+    ComputerUseZoomRequest,
 };
 use dcc_mcp_cua_host::{HostTransport, run as run_host};
 use dcc_mcp_cua_shm::{SharedImageDescriptor, SharedImageReader};
@@ -853,7 +854,7 @@ async fn act(
         Ok::<_, dcc_mcp_cua_core::ComputerUseError>(json!({
             "success": true,
             "observation": screenshot.observation,
-            "action": action_result,
+            "action": action_result_value(action_result, flag_value(flags, "--output"))?,
         }))
     }
     .await;
@@ -911,7 +912,7 @@ async fn desktop_act(
             "session_id": session_id,
             "observation_id": snapshot.observation_id,
             "state": snapshot.state,
-            "action": action_result,
+            "action": action_result_value(action_result, flag_value(flags, "--output"))?,
         }))
     }
     .await;
@@ -920,6 +921,32 @@ async fn desktop_act(
     stop_result?;
     println!("{}", serde_json::to_string_pretty(&result)?);
     Ok(())
+}
+
+fn action_result_value(
+    result: ComputerUseToolResult,
+    output: Option<String>,
+) -> dcc_mcp_cua_core::ComputerUseResult<serde_json::Value> {
+    let mut value = result.value;
+    value["text"] = json!(result.text);
+    value["degraded"] = json!(result.degraded);
+    value["image_count"] = json!(result.images.len());
+    if let Some(path) = output {
+        let image = result.images.first().ok_or_else(|| {
+            dcc_mcp_cua_core::ComputerUseError::new(
+                dcc_mcp_cua_core::ComputerUseErrorCode::CaptureFailed,
+                "action returned no image",
+            )
+        })?;
+        fs::write(&path, &image.data).map_err(|error| {
+            dcc_mcp_cua_core::ComputerUseError::new(
+                dcc_mcp_cua_core::ComputerUseErrorCode::CaptureFailed,
+                format!("write action image: {error}"),
+            )
+        })?;
+        value["image_output"] = json!(path);
+    }
+    Ok(value)
 }
 
 async fn doctor(driver: &ComputerUseDriver) -> Result<(), Box<dyn std::error::Error>> {
@@ -1020,7 +1047,7 @@ fn has_flag(flags: &[String], name: &str) -> bool {
 
 fn print_help() {
     println!(
-        "dcc-mcp-cua\n\n  list [--app APP]\n  apps\n  tools\n  call --tool NAME [--json JSON|--json-file PATH] [--app APP|--pid PID --window-id ID] [--output FILE]\n  host-call --method NAME [--json JSON|--json-file PATH] [--endpoint PATH|--spawn BINARY] [--snapshot-transport binary_frame|shared_memory] [--output FILE]\n  host-batch --json JSON_ARRAY [--endpoint PATH|--spawn BINARY] [--snapshot-transport binary_frame|shared_memory] [--output-dir DIR]\n  host-jsonl [--endpoint PATH|--spawn BINARY] [--parallel-discovery] [--snapshot-transport binary_frame|shared_memory] [--output-dir DIR]\n  desktop-snapshot [--output FILE]\n  screen-size\n  cursor-position\n  launch --name NAME|--bundle-id ID|--aumid ID|--path PATH|--launch-path PATH [--url URL] [--arg ARG] [--new-instance] [--start-minimized]\n  terminate --app APP --confirm\n  snapshot --app APP [--output FILE]\n  act --app APP --action-json JSON\n  verify --app APP --expect-json JSON [--timeout-ms N] [--stable-samples N]\n  desktop-act --action-json JSON [--session ID]\n  clipboard-read --app APP [--include-text]\n  clipboard-write --app APP --text TEXT|--image-path FILE|--file-path FILE\n  doctor\n  host [--stdio|--endpoint PATH]\n\nHost uses versioned big-endian JSON frames. Hello version 1 negotiates binary-frame or shared-memory snapshots and supports request_id correlation."
+        "dcc-mcp-cua\n\n  list [--app APP]\n  apps\n  tools\n  call --tool NAME [--json JSON|--json-file PATH] [--app APP|--pid PID --window-id ID] [--output FILE]\n  host-call --method NAME [--json JSON|--json-file PATH] [--endpoint PATH|--spawn BINARY] [--snapshot-transport binary_frame|shared_memory] [--output FILE]\n  host-batch --json JSON_ARRAY [--endpoint PATH|--spawn BINARY] [--snapshot-transport binary_frame|shared_memory] [--output-dir DIR]\n  host-jsonl [--endpoint PATH|--spawn BINARY] [--parallel-discovery] [--snapshot-transport binary_frame|shared_memory] [--output-dir DIR]\n  desktop-snapshot [--output FILE]\n  screen-size\n  cursor-position\n  launch --name NAME|--bundle-id ID|--aumid ID|--path PATH|--launch-path PATH [--url URL] [--arg ARG] [--new-instance] [--start-minimized]\n  terminate --app APP --confirm\n  snapshot --app APP [--output FILE]\n  act --app APP --action-json JSON [--output FILE]\n  verify --app APP --expect-json JSON [--timeout-ms N] [--stable-samples N]\n  desktop-act --action-json JSON [--session ID] [--output FILE]\n  clipboard-read --app APP [--include-text]\n  clipboard-write --app APP --text TEXT|--image-path FILE|--file-path FILE\n  doctor\n  host [--stdio|--endpoint PATH]\n\nHost uses versioned big-endian JSON frames. Hello version 1 negotiates binary-frame or shared-memory snapshots and supports request_id correlation."
     );
     println!(
         "Window snapshots/actions accept --escalate --escalation-reason REASON when an explicit desktop visual fallback approval is required."

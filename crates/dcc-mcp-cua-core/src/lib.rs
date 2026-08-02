@@ -606,7 +606,10 @@ impl ComputerUseDesktopSession {
         Ok(snapshot)
     }
 
-    pub async fn perform_action(&mut self, action: &ComputerUseAction) -> ComputerUseResult<Value> {
+    pub async fn perform_action(
+        &mut self,
+        action: &ComputerUseAction,
+    ) -> ComputerUseResult<ComputerUseToolResult> {
         if !self.active {
             return Err(ComputerUseError::new(
                 ComputerUseErrorCode::InvalidAction,
@@ -645,10 +648,15 @@ impl ComputerUseDesktopSession {
             .await
             .map_err(|error| map_driver_error(&format!("execute desktop CUA {tool}"), error))?;
         ensure_tool_ok(&format!("execute desktop CUA {tool}"), &result)?;
+        let mut result = native_tool_result(result)?;
         self.latest_observation_id = None;
-        Ok(
-            json!({"success": true, "action": action, "marker": self.marker, "cua": result.raw_json}),
-        )
+        result.value = json!({
+            "success": true,
+            "action": action,
+            "marker": self.marker,
+            "cua": result.value,
+        });
+        Ok(result)
     }
 
     pub async fn stop(&mut self) -> ComputerUseResult<Value> {
@@ -1270,7 +1278,10 @@ impl ComputerUseSession {
     }
 
     /// Execute one scoped action through CUA after a fresh target fence.
-    pub async fn perform_action(&mut self, action: &ComputerUseAction) -> ComputerUseResult<Value> {
+    pub async fn perform_action(
+        &mut self,
+        action: &ComputerUseAction,
+    ) -> ComputerUseResult<ComputerUseToolResult> {
         self.ensure_active()?;
         validate_action(action)?;
         let observation = self.observation.as_ref().ok_or_else(|| {
@@ -1305,14 +1316,16 @@ impl ComputerUseSession {
             .await
             .map_err(|error| map_driver_error(&format!("execute CUA {name}"), error))?;
         ensure_tool_ok(&format!("execute CUA {name}"), &result)?;
-        Ok(json!({
+        let mut result = native_tool_result(result)?;
+        result.value = json!({
             "success": true,
             "action": action,
             "target": target,
             "marker": self.marker,
             "capture_provenance": observation.capture_provenance,
-            "cua": result.raw_json,
-        }))
+            "cua": result.value,
+        });
+        Ok(result)
     }
 
     async fn call_bound_tool(
