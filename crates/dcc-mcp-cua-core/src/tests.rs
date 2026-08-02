@@ -4,6 +4,15 @@ use rstest::rstest;
 use serde_json::json;
 
 use super::*;
+use crate::contracts::{
+    DEFAULT_SNAPSHOT_MAX_DEPTH, DEFAULT_SNAPSHOT_MAX_ELEMENTS, MAX_SNAPSHOT_DEPTH,
+    MAX_SNAPSHOT_ELEMENTS, MAX_TEXT_UTF16_UNITS,
+};
+use crate::policy::*;
+use crate::runtime::{
+    WindowTarget, bounded_snapshot_depth, bounded_snapshot_elements, tool_schema_from_inventory,
+    validate_launch_request,
+};
 
 #[rstest]
 fn snapshot_bounds_use_agent_defaults_and_cap_context() {
