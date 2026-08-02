@@ -62,12 +62,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             run_host(driver, transport).await?;
         }
         "snapshot" => snapshot(&driver, &flags).await?,
+        "accessibility" => accessibility_snapshot(&driver, &flags).await?,
+        "window-state" => window_state(&driver, &flags).await?,
+        "activate" => activate_window(&driver, &flags).await?,
         "zoom" => zoom(&driver, &flags).await?,
         "verify" => verify_state(&driver, &flags).await?,
         "act" => act(&driver, &flags).await?,
         "desktop-act" => desktop_act(&driver, &flags).await?,
         "doctor" => doctor(&driver).await?,
         "help" | "--help" | "-h" => print_help(),
+        friendly if is_friendly_action(friendly) => {
+            friendly_action(&driver, &flags, friendly).await?
+        }
         other => return Err(format!("unknown command: {other}; use `help`").into()),
     }
     Ok(())
@@ -777,16 +783,88 @@ async fn snapshot(
     let stop_result = session.stop().await;
     let screenshot = result?;
     stop_result?;
+    let node_count = screenshot.accessibility["elements"]
+        .as_array()
+        .map_or(0, Vec::len);
+    let accessibility = screenshot.accessibility;
     fs::write(&output, &screenshot.data)?;
     println!(
         "{}",
         serde_json::to_string_pretty(&json!({
             "success": true,
             "observation": screenshot.observation,
+            "accessibility": accessibility,
+            "node_count": node_count,
             "output": output,
             "backend": "cua-driver-sdk",
         }))?
     );
+    Ok(())
+}
+
+async fn accessibility_snapshot(
+    driver: &ComputerUseDriver,
+    flags: &[String],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let scope = select_scope(driver, flags).await?;
+    let app = flag_value(flags, "--app").unwrap_or_else(|| "DCC application".into());
+    let session_id =
+        flag_value(flags, "--session").unwrap_or_else(|| "dcc-mcp-accessibility-cli".into());
+    let max_elements = bounded_u32(flags, "--max-elements", 5_000, 5_000)?;
+    let max_depth = bounded_u32(flags, "--max-depth", 64, 64)?;
+    let mut session = driver.session(scope, app, session_id)?;
+    session.start().await?;
+    let result = session
+        .accessibility_snapshot(max_elements, max_depth)
+        .await;
+    let stop_result = session.stop().await;
+    let root = result?;
+    stop_result?;
+    let node_count = root["elements"].as_array().map_or(0, Vec::len);
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&json!({
+            "accessibility": root,
+            "node_count": node_count,
+            "max_elements": max_elements,
+            "max_depth": max_depth,
+        }))?
+    );
+    Ok(())
+}
+
+async fn window_state(
+    driver: &ComputerUseDriver,
+    flags: &[String],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let scope = select_scope(driver, flags).await?;
+    let app = flag_value(flags, "--app").unwrap_or_else(|| "DCC application".into());
+    let session_id = flag_value(flags, "--session").unwrap_or_else(|| "dcc-mcp-window-cli".into());
+    let mut session = driver.session(scope, app, session_id)?;
+    session.start().await?;
+    let result = session.window_state().await;
+    let stop_result = session.stop().await;
+    let state = result?;
+    stop_result?;
+    println!("{}", serde_json::to_string_pretty(&state)?);
+    Ok(())
+}
+
+async fn activate_window(
+    driver: &ComputerUseDriver,
+    flags: &[String],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let scope = select_scope(driver, flags).await?;
+    let app = flag_value(flags, "--app").unwrap_or_else(|| "DCC application".into());
+    let session_id =
+        flag_value(flags, "--session").unwrap_or_else(|| "dcc-mcp-activate-cli".into());
+    let mut session = driver.session(scope, app, session_id)?;
+    session.start().await?;
+    let result = session.activate().await;
+    let stop_result = session.stop().await;
+    let activation = result?;
+    stop_result?;
+    println!("{}", serde_json::to_string_pretty(&activation)?);
     Ok(())
 }
 
@@ -838,12 +916,27 @@ async fn act(
     driver: &ComputerUseDriver,
     flags: &[String],
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let action_json = flag_value(flags, "--action-json")
+        .ok_or("act requires --action-json with a ComputerUseAction JSON object")?;
+    execute_action(driver, flags, serde_json::from_str(&action_json)?).await
+}
+
+async fn friendly_action(
+    driver: &ComputerUseDriver,
+    flags: &[String],
+    command: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    execute_action(driver, flags, action_from_command(command, flags)?).await
+}
+
+async fn execute_action(
+    driver: &ComputerUseDriver,
+    flags: &[String],
+    mut action: ComputerUseAction,
+) -> Result<(), Box<dyn std::error::Error>> {
     let scope = select_scope(driver, flags).await?;
     let app = flag_value(flags, "--app").unwrap_or_else(|| "DCC application".into());
     let session_id = flag_value(flags, "--session").unwrap_or_else(|| "dcc-mcp-cli".into());
-    let action_json = flag_value(flags, "--action-json")
-        .ok_or("act requires --action-json with a ComputerUseAction JSON object")?;
-    let mut action: ComputerUseAction = serde_json::from_str(&action_json)?;
     let mut session = driver.session(scope, app, session_id)?;
     session.start().await?;
     let result = async {
@@ -863,6 +956,81 @@ async fn act(
     stop_result?;
     println!("{}", serde_json::to_string_pretty(&result)?);
     Ok(())
+}
+
+fn is_friendly_action(command: &str) -> bool {
+    matches!(
+        command,
+        "click" | "double-click" | "right-click" | "type" | "press" | "hotkey" | "scroll" | "move"
+    )
+}
+
+fn action_from_command(
+    command: &str,
+    flags: &[String],
+) -> Result<ComputerUseAction, Box<dyn std::error::Error>> {
+    let coordinate = |name: &str| -> Result<f64, Box<dyn std::error::Error>> {
+        flag_value(flags, name)
+            .ok_or_else(|| format!("{command} requires {name}").into())
+            .and_then(|value| Ok(value.parse()?))
+    };
+    let mut action = ComputerUseAction {
+        action: match command {
+            "double-click" => "double_click",
+            "right-click" => "right_click",
+            "type" => "type_chars",
+            "press" => "keypress",
+            "hotkey" => "keyboard_shortcut",
+            other => other,
+        }
+        .into(),
+        ..ComputerUseAction::default()
+    };
+    match command {
+        "click" | "double-click" | "right-click" | "move" => {
+            action.x = Some(coordinate("--x")?);
+            action.y = Some(coordinate("--y")?);
+        }
+        "type" => {
+            action.text = Some(flag_value(flags, "--text").ok_or("type requires --text")?);
+            action.element_index = flag_value(flags, "--element-index")
+                .map(|value| value.parse::<u32>())
+                .transpose()?;
+            action.element_token = flag_value(flags, "--element-token");
+            action.type_chars_only = has_flag(flags, "--focused");
+            action.delay_ms = flag_value(flags, "--delay-ms")
+                .map(|value| value.parse::<u64>())
+                .transpose()?;
+            if !action.type_chars_only
+                && action.element_index.is_none()
+                && action.element_token.is_none()
+            {
+                return Err("type requires --focused or --element-index/--element-token".into());
+            }
+        }
+        "press" => {
+            action.keys = vec![flag_value(flags, "--key").ok_or("press requires --key")?];
+        }
+        "hotkey" => {
+            action.keys = flag_values(flags, "--key");
+            if action.keys.len() < 2 {
+                return Err("hotkey requires at least two repeated --key values".into());
+            }
+        }
+        "scroll" => {
+            action.scroll_x = flag_value(flags, "--scroll-x")
+                .map(|value| value.parse::<i32>())
+                .transpose()?;
+            action.scroll_y = flag_value(flags, "--scroll-y")
+                .map(|value| value.parse::<i32>())
+                .transpose()?;
+            if action.scroll_x.is_none() && action.scroll_y.is_none() {
+                return Err("scroll requires --scroll-x or --scroll-y".into());
+            }
+        }
+        _ => unreachable!("friendly action command is validated before parsing"),
+    }
+    Ok(action)
 }
 
 async fn verify_state(
@@ -1041,6 +1209,22 @@ fn flag_values(flags: &[String], name: &str) -> Vec<String> {
         .collect()
 }
 
+fn bounded_u32(
+    flags: &[String],
+    name: &str,
+    default: u32,
+    maximum: u32,
+) -> Result<u32, Box<dyn std::error::Error>> {
+    let value = flag_value(flags, name)
+        .map(|value| value.parse::<u32>())
+        .transpose()?
+        .unwrap_or(default);
+    if !(1..=maximum).contains(&value) {
+        return Err(format!("{name} must be between 1 and {maximum}").into());
+    }
+    Ok(value)
+}
+
 fn has_flag(flags: &[String], name: &str) -> bool {
     flags.iter().any(|flag| flag == name)
 }
@@ -1053,6 +1237,9 @@ fn print_help() {
         "Window snapshots/actions accept --escalate --escalation-reason REASON when an explicit desktop visual fallback approval is required."
     );
     println!("Zoom: zoom --app APP --x1 N --y1 N --x2 N --y2 N [--output FILE].");
+    println!(
+        "Semantic tree: accessibility --app APP [--max-elements N] [--max-depth N]. Window: window-state|activate --app APP."
+    );
 }
 
 #[cfg(test)]

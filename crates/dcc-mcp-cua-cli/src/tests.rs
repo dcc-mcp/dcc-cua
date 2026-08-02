@@ -65,3 +65,30 @@ fn parallel_discovery_is_limited_to_stateless_methods() {
     assert!(!is_parallel_discovery_method("snapshot"));
     assert!(!is_parallel_discovery_method("desktop_snapshot"));
 }
+
+#[rstest]
+fn friendly_actions_build_bounded_cua_requests() {
+    let click = action_from_command("click", &strings(["--x", "10", "--y", "20"])).unwrap();
+    assert_eq!(click.action, "click");
+    assert_eq!(click.x, Some(10.0));
+    assert_eq!(click.y, Some(20.0));
+
+    let type_chars = action_from_command(
+        "type",
+        &strings(["--text", "hello", "--focused", "--delay-ms", "25"]),
+    )
+    .unwrap();
+    assert_eq!(type_chars.action, "type_chars");
+    assert!(type_chars.type_chars_only);
+    assert_eq!(type_chars.delay_ms, Some(25));
+    assert!(action_from_command("hotkey", &strings(["--key", "CTRL"])).is_err());
+    assert_eq!(
+        bounded_u32(&strings(["--max-depth", "8"]), "--max-depth", 64, 64).unwrap(),
+        8
+    );
+    assert!(bounded_u32(&strings(["--max-depth", "65"]), "--max-depth", 64, 64).is_err());
+}
+
+fn strings<const N: usize>(values: [&str; N]) -> Vec<String> {
+    values.into_iter().map(str::to_owned).collect()
+}

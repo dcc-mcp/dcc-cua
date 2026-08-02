@@ -62,6 +62,12 @@ cargo run -p dcc-mcp-cua-cli -- act --app chrome.exe --action-json '{"action":"c
 cargo run -p dcc-mcp-cua-cli -- launch --name Calculator
 cargo run -p dcc-mcp-cua-cli -- doctor
 cargo run -p dcc-mcp-cua-cli -- snapshot --app chrome.exe --output screenshot.png
+cargo run -p dcc-mcp-cua-cli -- accessibility --app chrome.exe
+cargo run -p dcc-mcp-cua-cli -- window-state --app chrome.exe
+cargo run -p dcc-mcp-cua-cli -- activate --app chrome.exe
+cargo run -p dcc-mcp-cua-cli -- click --app chrome.exe --x 100 --y 100
+cargo run -p dcc-mcp-cua-cli -- type --app chrome.exe --text "hello" --focused
+cargo run -p dcc-mcp-cua-cli -- hotkey --app chrome.exe --key CTRL --key L
 cargo run -p dcc-mcp-cua-cli -- act --app chrome.exe --action-json '{"action":"click","x":100,"y":100}'
 cargo run -p dcc-mcp-cua-cli -- verify --app chrome.exe --expect-json '[{"window":{"exists":true}}]'
 ```
@@ -70,6 +76,16 @@ cargo run -p dcc-mcp-cua-cli -- verify --app chrome.exe --expect-json '[{"window
 `doctor` are read-only. `snapshot` and `act` require one exact
 target; if an application has multiple windows, pass `--pid` and
 `--window-id` instead of relying on an app name.
+
+`accessibility` reads the current bounded semantic tree without screenshot
+pixels. `window-state` and `activate` operate on the same exact target scope.
+Long-lived recording remains on the persistent Host session so its start/stop
+lifecycle is not lost when a one-shot CLI process exits.
+
+For common controls, `click`, `double-click`, `right-click`, `move`, `scroll`,
+`press`, `hotkey`, and `type` build the same fenced CUA actions without manual
+JSON. `type` requires `--focused` or an explicit `--element-index`/
+`--element-token`; `hotkey` accepts repeated `--key` values.
 
 `apps` uses CUA's cross-platform application inventory. `launch` accepts one
 explicit selector (`--name`, `--bundle-id`, `--aumid`, `--path`, or
