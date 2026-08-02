@@ -1,0 +1,120 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate release configuration
+        shell: pwsh
+        run: |
+          $config = Get-Content release-please-config.json -Raw | ConvertFrom-Json
+          $manifest = Get-Content .release-please-manifest.json -Raw | ConvertFrom-Json
+          if ($config.'release-type' -ne 'rust') { throw 'release-type must remain rust' }
+          if ($config.packages.'.'.component -ne 'dcc-mcp-cua') { throw 'unexpected release component' }
+          if ($manifest.'.' -notmatch '^\d+\.\d+\.\d+$') { throw 'manifest version must be valid semver' }
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.95.0
+      - run: cargo metadata --locked --no-deps --format-version 1
+
+  release-please:
+    needs: validate
+    if: vars.DCC_MCP_CUA_RELEASE_READY == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: release
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  build:
+    needs: release-please
+    if: needs.release-please.outputs.release_created == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: windows
+            archive: zip
+          - os: ubuntu-latest
+            platform: linux
+            archive: tar.gz
+          - os: macos-latest
+            platform: macos
+            archive: tar.gz
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.release-please.outputs.tag_name }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.95.0
+      - if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y libx11-dev libxi-dev libxtst-dev
+      - if: matrix.os == 'macos-latest'
+        shell: bash
+        run: |
+          swiftc_path="$(xcrun --find swiftc)"
+          swift_runtime="$(cd "$(dirname "$swiftc_path")/../lib/swift/macosx" && pwd)"
+          echo "DYLD_LIBRARY_PATH=${swift_runtime}:/usr/lib/swift${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}" >> "$GITHUB_ENV"
+      - run: cargo build --release --locked -p dcc-mcp-cua-cli
+      - name: Package dcc-mcp-cua
+        shell: bash
+        run: |
+          set -euo pipefail
+          host="$(rustc -vV | sed -n 's/^host: //p')"
+          mkdir -p dist
+          if [ "${{ matrix.archive }}" = "zip" ]; then
+            7z a "dist/dcc-mcp-cua-${{ matrix.platform }}-${host}.zip" target/release/dcc-mcp-cua.exe
+          else
+            tar -czf "dist/dcc-mcp-cua-${{ matrix.platform }}-${host}.tar.gz" -C target/release dcc-mcp-cua
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dcc-mcp-cua-${{ matrix.platform }}
+          path: dist/*
+          if-no-files-found: error
+
+  attach-assets:
+    needs: [release-please, build]
+    if: needs.release-please.outputs.release_created == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: dcc-mcp-cua-*
+          merge-multiple: true
+      - name: Attach release archives
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ needs.release-please.outputs.tag_name }}
+        run: gh release upload "$TAG_NAME" dist/* --repo "$GITHUB_REPOSITORY" --clobber

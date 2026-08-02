@@ -34,6 +34,13 @@ browser adapter and should combine typed Unreal APIs with scoped CUA; Fab
 account, purchase, and download confirmation remain explicit user-approved
 operations.
 
+This project wraps the CUA SDK for agent-friendly, bounded operations; it does
+not replace the upstream driver. Use the official `cua-driver` CLI for driver
+installation, daemon lifecycle, configuration, skills, cursor themes,
+manifest/docs, diagnostics, and recording rendering. Use this CLI/Host for the
+DCC-MCP safety envelope, exact window capability, fresh observations, grants,
+friendly actions, and software-specific adapters.
+
 ## Development gates
 
 Every Rust file is limited to 2000 lines. Unit tests live in a sibling
@@ -339,6 +346,23 @@ cargo fmt --all -- --check
 cargo check --workspace --all-targets
 cargo test --workspace --all-targets
 ```
+
+## CI/CD and release
+
+CI checks layout, formatting, workspace tests, the locked release build, and a
+CLI help smoke test on Windows, Linux, and macOS. The release workflow packages
+the `dcc-mcp-cua` binary as platform archives and attaches them to the GitHub
+release.
+
+The release gate is intentionally closed while the product is still being
+completed. Do not set the repository variable `DCC_MCP_CUA_RELEASE_READY=true`
+until the full computer-control goal is accepted. The initial manifest starts
+at `0.0.0`, so the first release-please release will be `0.1.0`; after that
+release-please owns the manifest version and conventional-commit changelog.
+
+The workflow uses the official `cargo-workspace` release-please plugin so all
+workspace crates and `Cargo.lock` stay aligned. It does not publish crates;
+`publish = false` remains intentional.
 
 The CUA SDK revision is pinned in `Cargo.toml` and `Cargo.lock`. Native desktop
 permissions and an interactive session are still required for real capture and
