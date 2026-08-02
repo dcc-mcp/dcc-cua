@@ -113,12 +113,15 @@ wait terminal response.
 
 Read-only discovery and observation calls can use `HostClient::request_batch`
 to write several requests before one flush; responses are returned in request
-order. Mutating methods stay on `request` so side effects remain explicit.
-The handshake advertises this as `pipelined_read_requests`.
+order. Core callers that need task/turn tracing can use
+`HostClient::request_batch_with_ids`, which preserves caller-owned IDs through
+the same pipelined write. Mutating methods stay on `request` so side effects
+remain explicit. The handshake advertises this as `pipelined_read_requests`.
 
-The `host-batch` CLI accepts the same `{method, params}` shape and uses one
-persistent Host connection. If a response contains image pixels, pass
-`--output-dir DIR`; metadata-only batches can omit it. `host-call` and
+The `host-batch` CLI accepts `{request_id?, method, params}` objects and uses
+one persistent Host connection; supplied IDs are echoed, while omitted IDs
+receive a deterministic `host-batch-N` ID. If a response contains image
+pixels, pass `--output-dir DIR`; metadata-only batches can omit it. `host-call` and
 `host-batch` accept `--spawn BINARY` for a one-shot stdio-managed Host when a
 supervisor does not already own an endpoint.
 

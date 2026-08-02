@@ -163,7 +163,19 @@ async fn host_batch(flags: &[String]) -> Result<(), Box<dyn std::error::Error>> 
     let requests = parse_host_batch(json_arguments(flags)?)?;
     let snapshot_transport = snapshot_transport(flags)?;
     let mut connection = connect_host(flags, snapshot_transport).await?;
-    let responses = connection.client_mut().request_batch(requests).await?;
+    let requests = requests.into_iter().enumerate().map(|(index, request)| {
+        (
+            request
+                .request_id
+                .unwrap_or_else(|| format!("host-batch-{index}")),
+            request.method,
+            request.params,
+        )
+    });
+    let responses = connection
+        .client_mut()
+        .request_batch_with_ids(requests)
+        .await?;
     let output_dir = flag_value(flags, "--output-dir");
     if let Some(path) = output_dir.as_deref() {
         fs::create_dir_all(path)?;
@@ -375,7 +387,7 @@ async fn write_jsonl_response<W: AsyncWrite + Unpin>(
 
 fn parse_host_batch(
     value: serde_json::Value,
-) -> Result<Vec<(String, serde_json::Value)>, Box<dyn std::error::Error>> {
+) -> Result<Vec<HostBatchRequest>, Box<dyn std::error::Error>> {
     let requests = value
         .as_array()
         .ok_or("host-batch JSON must be an array of {method, params} objects")?;
@@ -386,6 +398,25 @@ fn parse_host_batch(
             let object = request
                 .as_object()
                 .ok_or_else(|| format!("host-batch request {index} must be an object"))?;
+            let request_id = match object.get("request_id") {
+                Some(value) => Some(
+                    value
+                        .as_str()
+                        .ok_or_else(|| {
+                            format!("host-batch request {index} request_id must be a string")
+                        })?
+                        .to_owned(),
+                ),
+                None => None,
+            };
+            if request_id.as_deref().is_some_and(|id| {
+                id.is_empty() || id.chars().count() > MAX_REQUEST_ID_CHARS
+            }) {
+                return Err(format!(
+                    "host-batch request {index} request_id must contain 1..{MAX_REQUEST_ID_CHARS} characters"
+                )
+                .into());
+            }
             let method = object
                 .get("method")
                 .and_then(serde_json::Value::as_str)
@@ -395,9 +426,19 @@ fn parse_host_batch(
             if !params.is_object() {
                 return Err(format!("host-batch request {index} params must be an object").into());
             }
-            Ok((method.to_owned(), params))
+            Ok(HostBatchRequest {
+                request_id,
+                method: method.to_owned(),
+                params,
+            })
         })
         .collect()
+}
+
+struct HostBatchRequest {
+    request_id: Option<String>,
+    method: String,
+    params: serde_json::Value,
 }
 
 fn snapshot_transport(flags: &[String]) -> Result<SnapshotTransport, Box<dyn std::error::Error>> {
@@ -861,8 +902,20 @@ mod tests {
         ]))
         .unwrap();
         assert_eq!(requests.len(), 2);
-        assert_eq!(requests[0].0, "list_apps");
+        assert_eq!(requests[0].method, "list_apps");
+        assert_eq!(requests[0].request_id, None);
+        let requests = parse_host_batch(json!([
+            {"request_id":"core-read-1","method":"list_apps"}
+        ]))
+        .unwrap();
+        assert_eq!(requests[0].request_id.as_deref(), Some("core-read-1"));
         assert!(parse_host_batch(json!({"method":"list_apps"})).is_err());
+        assert!(
+            parse_host_batch(json!([
+                {"request_id":"","method":"list_apps"}
+            ]))
+            .is_err()
+        );
         assert!(
             parse_host_batch(json!([
                 {"method":"screen_size","params":[]}

@@ -379,18 +379,42 @@ impl HostClient {
                 "hello must complete before stateful requests".into(),
             ));
         }
+        let requests = requests
+            .into_iter()
+            .map(|(method, params)| (self.next_request_id(), method, params))
+            .collect::<Vec<_>>();
+        self.request_batch_with_ids(requests).await
+    }
+
+    /// Send a sequence of read-only requests with caller-owned correlation ids
+    /// in one flushed write and return responses in the same order.
+    pub async fn request_batch_with_ids(
+        &mut self,
+        requests: impl IntoIterator<Item = (String, String, Value)>,
+    ) -> HostClientResult<Vec<HostResponse>> {
+        if !self.hello_complete {
+            return Err(HostClientError::Protocol(
+                "hello must complete before stateful requests".into(),
+            ));
+        }
         let requests = requests.into_iter().collect::<Vec<_>>();
         if requests
             .iter()
-            .any(|(method, _)| !is_pipeline_safe_method(method))
+            .any(|(_, method, _)| !is_pipeline_safe_method(method))
         {
             return Err(HostClientError::Protocol(
                 "request_batch accepts read-only Host methods only".into(),
             ));
         }
+        for (request_id, _, _) in &requests {
+            validate_request_id(request_id)?;
+        }
         let mut request_ids = Vec::with_capacity(requests.len());
-        for (method, params) in requests {
-            request_ids.push(self.send_request_unflushed(&method, params).await?);
+        for (request_id, method, params) in requests {
+            request_ids.push(
+                self.send_request_unflushed_with_id(&request_id, &method, params)
+                    .await?,
+            );
         }
         if !request_ids.is_empty() {
             self.writer.flush().await?;
@@ -481,9 +505,14 @@ impl HostClient {
     }
 
     async fn send_request(&mut self, method: &str, params: Value) -> HostClientResult<String> {
+        let request_id = self.next_request_id();
+        self.send_request_with_id(&request_id, method, params).await
+    }
+
+    fn next_request_id(&mut self) -> String {
         let request_id = format!("cua-client-{}", self.next_request_id);
         self.next_request_id = self.next_request_id.saturating_add(1);
-        self.send_request_with_id(&request_id, method, params).await
+        request_id
     }
 
     async fn send_request_with_id(
@@ -504,17 +533,6 @@ impl HostClient {
         write_frame_unflushed(&mut self.writer, &body, MAX_JSON_FRAME_BYTES).await?;
         self.writer.flush().await?;
         Ok(request_id)
-    }
-
-    async fn send_request_unflushed(
-        &mut self,
-        method: &str,
-        params: Value,
-    ) -> HostClientResult<String> {
-        let request_id = format!("cua-client-{}", self.next_request_id);
-        self.next_request_id = self.next_request_id.saturating_add(1);
-        self.send_request_unflushed_with_id(&request_id, method, params)
-            .await
     }
 
     async fn send_request_unflushed_with_id(
@@ -818,6 +836,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn client_pipelines_caller_request_ids_in_order() {
+        let (client_stream, server_stream) = tokio::io::duplex(4096);
+        let server = tokio::spawn(fake_batch_request_id_server(server_stream));
+        let mut client = HostClient::from_stream(client_stream);
+        client.hello("batch-request-id-client").await.unwrap();
+
+        let responses = client
+            .request_batch_with_ids(vec![
+                ("core-read-1".into(), "screen_size".into(), json!({})),
+                ("core-read-2".into(), "cursor_position".into(), json!({})),
+            ])
+            .await
+            .unwrap();
+
+        assert_eq!(responses[0].value["request_id"], "core-read-1");
+        assert_eq!(responses[1].value["request_id"], "core-read-2");
+        server.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
     async fn client_rejects_mutations_from_request_batch() {
         let (client_stream, server_stream) = tokio::io::duplex(4096);
         let server = tokio::spawn(fake_hello_only_server(server_stream));
@@ -831,6 +869,17 @@ mod tests {
                 .await,
             Err(HostClientError::Protocol(message))
                 if message.contains("read-only")
+        ));
+        assert!(matches!(
+            client
+                .request_batch_with_ids(vec![(
+                    "".into(),
+                    "screen_size".into(),
+                    json!({})
+                )])
+                .await,
+            Err(HostClientError::Protocol(message))
+                if message.contains("1..")
         ));
         server.await.unwrap().unwrap();
     }
@@ -954,6 +1003,41 @@ mod tests {
         write_json_response(
             &mut stream,
             second["request_id"].as_str().unwrap(),
+            json!({"type":"cursor_position"}),
+        )
+        .await
+    }
+
+    async fn fake_batch_request_id_server(mut stream: DuplexStream) -> HostClientResult<()> {
+        let hello = read_frame(&mut stream, MAX_JSON_FRAME_BYTES)
+            .await?
+            .unwrap();
+        let hello: Value = serde_json::from_slice(&hello).unwrap();
+        write_json_response(
+            &mut stream,
+            hello["request_id"].as_str().unwrap(),
+            json!({"type":"hello"}),
+        )
+        .await?;
+
+        let first: Value = serde_json::from_slice(
+            &read_frame(&mut stream, MAX_JSON_FRAME_BYTES)
+                .await?
+                .unwrap(),
+        )
+        .unwrap();
+        let second: Value = serde_json::from_slice(
+            &read_frame(&mut stream, MAX_JSON_FRAME_BYTES)
+                .await?
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(first["request_id"], "core-read-1");
+        assert_eq!(second["request_id"], "core-read-2");
+        write_json_response(&mut stream, "core-read-1", json!({"type":"screen_size"})).await?;
+        write_json_response(
+            &mut stream,
+            "core-read-2",
             json!({"type":"cursor_position"}),
         )
         .await
