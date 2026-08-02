@@ -1023,6 +1023,7 @@ pub(crate) fn is_uia_snapshot_message(message: &str) -> bool {
         || (lower.contains("get_window_state") && lower.contains("desktop scope"))
 }
 
+#[cfg(any(windows, test))]
 pub(crate) fn scale_bounds_for_dpi(
     bounds: [i32; 4],
     window_dpi: u32,
