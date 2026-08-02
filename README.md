@@ -234,6 +234,10 @@ length-prefixed PNG frame, avoiding base64 pixel transfer and keeping the JSON
 frame under 4 MiB. Requests may include a top-level `request_id` (1–128
 characters); the host echoes it on the JSON response, including errors. The
 handshake advertises the exact capabilities of this build.
+`dcc_mcp_cua_client::HostClient::capabilities()` and
+`supports_capability(...)` expose that negotiated list without requiring Core
+to parse Host handshake JSON; callers can choose shared memory, batching, or
+optional routes from the actual Host instead of assuming them.
 
 Native tool results expose every returned image in `attachments`. The single
 binary frame following the JSON response is the concatenation of those images;

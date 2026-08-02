@@ -102,6 +102,7 @@ pub struct HostClient {
     next_request_id: u64,
     hello_complete: bool,
     snapshot_transport: SnapshotTransport,
+    capabilities: Vec<String>,
 }
 
 /// A CUA Host child and its already-negotiated stdio client.
@@ -239,6 +240,7 @@ impl fmt::Debug for HostClient {
             .field("next_request_id", &self.next_request_id)
             .field("hello_complete", &self.hello_complete)
             .field("snapshot_transport", &self.snapshot_transport)
+            .field("capability_count", &self.capabilities.len())
             .finish_non_exhaustive()
     }
 }
@@ -299,6 +301,7 @@ impl HostClient {
             next_request_id: 1,
             hello_complete: false,
             snapshot_transport,
+            capabilities: Vec::new(),
         }
     }
 
@@ -356,8 +359,21 @@ impl HostClient {
                 "Host hello response has an unexpected type".into(),
             ));
         }
+        self.capabilities = response_capabilities(&response.value)?;
         self.hello_complete = true;
         Ok(response)
+    }
+
+    /// Return the capabilities advertised by the negotiated Host.
+    #[must_use]
+    pub fn capabilities(&self) -> &[String] {
+        &self.capabilities
+    }
+
+    /// Check one capability without coupling Core to the wire JSON shape.
+    #[must_use]
+    pub fn supports_capability(&self, capability: &str) -> bool {
+        self.capabilities.iter().any(|value| value == capability)
     }
 
     /// Send one request and read its JSON response plus an optional image frame.
@@ -689,6 +705,22 @@ fn is_pipeline_safe_method(method: &str) -> bool {
             | "clipboard_read"
             | "desktop_session_snapshot"
     )
+}
+
+fn response_capabilities(response: &Value) -> HostClientResult<Vec<String>> {
+    let Some(capabilities) = response.get("capabilities") else {
+        return Ok(Vec::new());
+    };
+    capabilities
+        .as_array()
+        .ok_or_else(|| HostClientError::Protocol("Host capabilities must be an array".into()))?
+        .iter()
+        .map(|value| {
+            value.as_str().map(str::to_owned).ok_or_else(|| {
+                HostClientError::Protocol("Host capability names must be strings".into())
+            })
+        })
+        .collect()
 }
 
 /// Host methods that can execute concurrently without session or observation

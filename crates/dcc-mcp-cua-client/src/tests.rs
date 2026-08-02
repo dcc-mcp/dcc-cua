@@ -22,6 +22,8 @@ async fn client_negotiates_and_reads_binary_attachment() {
 
     let hello = client.hello("test-client").await.unwrap();
     assert_eq!(hello.value["type"], "hello");
+    assert!(client.supports_capability("binary_snapshot_frames"));
+    assert!(!client.supports_capability("missing_capability"));
     let response = client.request("desktop_snapshot", json!({})).await.unwrap();
     assert_eq!(response.value["type"], "desktop_snapshot");
     assert_eq!(
@@ -49,6 +51,16 @@ fn stopped_host_process_reports_not_running() {
         child: None,
     };
     assert!(!process.is_running().unwrap());
+}
+
+#[rstest]
+fn client_rejects_malformed_host_capabilities() {
+    assert!(response_capabilities(&json!({"capabilities": {}})).is_err());
+    assert!(response_capabilities(&json!({"capabilities": ["ok", 1]})).is_err());
+    assert_eq!(
+        response_capabilities(&json!({})).unwrap(),
+        Vec::<String>::new()
+    );
 }
 
 #[rstest]
@@ -251,7 +263,10 @@ async fn fake_server(mut stream: DuplexStream) -> HostClientResult<()> {
     write_json_response(
         &mut stream,
         hello["request_id"].as_str().unwrap(),
-        json!({"type":"hello"}),
+        json!({
+            "type":"hello",
+            "capabilities":["binary_snapshot_frames"]
+        }),
     )
     .await?;
 
