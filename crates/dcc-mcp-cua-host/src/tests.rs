@@ -73,6 +73,11 @@ async fn process_connection_requires_hello_pings_and_rejects_duplicate_hello() {
             .as_array()
             .is_some_and(|items| { items.iter().any(|item| item == "host_ping") })
     );
+    assert!(
+        response["capabilities"]
+            .as_array()
+            .is_some_and(|items| { items.iter().any(|item| item == "host_diagnostics") })
+    );
 
     write_json_request(
         &mut client,
@@ -332,6 +337,13 @@ fn app_requests_parse_with_host_params_frames() {
             "params": {}
         })),
         Ok(Request::Ping {})
+    ));
+    assert!(matches!(
+        serde_json::from_value::<Request>(json!({
+            "method": "doctor",
+            "params": {}
+        })),
+        Ok(Request::Doctor {})
     ));
     assert!(matches!(
         serde_json::from_value::<Request>(json!({
@@ -770,6 +782,7 @@ fn only_stateless_discovery_uses_parallel_dispatch() {
     assert!(is_parallel_request(&Request::ListTools {}));
     assert!(is_parallel_request(&Request::ScreenSize {}));
     assert!(is_parallel_request(&Request::CursorPosition {}));
+    assert!(!is_parallel_request(&Request::Doctor {}));
     assert!(!is_parallel_request(&Request::DesktopSnapshot {}));
 }
 

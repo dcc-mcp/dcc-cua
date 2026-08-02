@@ -381,6 +381,11 @@ impl HostClient {
         self.request("ping", json!({})).await
     }
 
+    /// Probe the readiness of this negotiated Host and its embedded CUA runtime.
+    pub async fn doctor(&mut self) -> HostClientResult<HostResponse> {
+        self.request("doctor", json!({})).await
+    }
+
     /// Send one request and read its JSON response plus an optional image frame.
     pub async fn request(
         &mut self,

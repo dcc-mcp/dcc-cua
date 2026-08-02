@@ -10,8 +10,8 @@ use crate::contracts::{
 };
 use crate::policy::*;
 use crate::runtime::{
-    WindowTarget, bounded_snapshot_depth, bounded_snapshot_elements, tool_schema_from_inventory,
-    validate_launch_request,
+    WindowTarget, bounded_snapshot_depth, bounded_snapshot_elements, diagnostic_tool_check,
+    tool_schema_from_inventory, validate_launch_request,
 };
 
 #[rstest]
@@ -20,6 +20,26 @@ fn snapshot_bounds_use_agent_defaults_and_cap_context() {
     assert_eq!(bounded_snapshot_depth(0), DEFAULT_SNAPSHOT_MAX_DEPTH);
     assert_eq!(bounded_snapshot_elements(u32::MAX), MAX_SNAPSHOT_ELEMENTS);
     assert_eq!(bounded_snapshot_depth(u32::MAX), MAX_SNAPSHOT_DEPTH);
+}
+
+#[rstest]
+fn diagnostics_prefer_upstream_structured_content() {
+    let check = diagnostic_tool_check(Ok(ComputerUseToolResult {
+        value: json!({"structuredContent":{"overall":"ok"}}),
+        text: "healthy".into(),
+        images: Vec::new(),
+        degraded: false,
+    }));
+    assert_eq!(check["success"], true);
+    assert_eq!(check["result"]["overall"], "ok");
+    assert_eq!(check["summary"], "healthy");
+
+    let failed = diagnostic_tool_check(Err(ComputerUseError::new(
+        ComputerUseErrorCode::BackendUnavailable,
+        "screen capture unavailable",
+    )));
+    assert_eq!(failed["success"], false);
+    assert_eq!(failed["code"], "backend_unavailable");
 }
 
 #[rstest]

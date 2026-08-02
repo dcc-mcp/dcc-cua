@@ -110,6 +110,11 @@ fn manifest_is_a_machine_readable_core_launch_contract() {
             .as_array()
             .is_some_and(|values| values.iter().any(|value| value == "host_ping"))
     );
+    assert!(
+        manifest["host"]["capabilities"]
+            .as_array()
+            .is_some_and(|values| values.iter().any(|value| value == "host_diagnostics"))
+    );
     assert_eq!(
         manifest["upstream_driver"]["top_level_aliases"]["daemon"],
         "serve"
@@ -123,25 +128,6 @@ fn upstream_namespace_requires_an_explicit_command() {
     assert_eq!(command, "browser-approve");
     assert_eq!(arguments, &flags[1..]);
     assert!(upstream_invocation(&[]).is_err());
-}
-
-#[rstest]
-fn diagnostics_preserve_upstream_health_and_structured_failures() {
-    let healthy = diagnostic_result(Ok(ComputerUseToolResult {
-        value: json!({"structuredContent": {"overall": "ok"}}),
-        text: "healthy".into(),
-        images: Vec::new(),
-        degraded: false,
-    }));
-    assert_eq!(healthy["result"]["overall"], "ok");
-    assert_eq!(healthy["summary"], "healthy");
-
-    let failed = diagnostic_result(Err(dcc_mcp_cua_core::ComputerUseError::new(
-        dcc_mcp_cua_core::ComputerUseErrorCode::BackendUnavailable,
-        "screen capture unavailable",
-    )));
-    assert_eq!(failed["success"], false);
-    assert_eq!(failed["code"], "backend_unavailable");
 }
 
 #[rstest]

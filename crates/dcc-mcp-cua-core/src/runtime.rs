@@ -131,6 +131,50 @@ impl ComputerUseDriver {
         Ok(self.cached_tool_inventory().await?.clone())
     }
 
+    /// Probe the embedded CUA runtime without creating a second process.
+    ///
+    /// Diagnostics are always returned as data so supervisors can distinguish
+    /// a live-but-unready Host from a transport failure.
+    pub async fn diagnostics(&self) -> Value {
+        let (metadata, windows, permissions, health) = tokio::join!(
+            self.driver.metadata(),
+            self.list_windows(),
+            self.call_global_tool("check_permissions", json!({})),
+            self.call_global_tool("health_report", json!({})),
+        );
+        let driver = match metadata {
+            Ok(result) => json!({"success": true, "result": result}),
+            Err(error) => json!({"success": false, "message": error.to_string()}),
+        };
+        let window_inventory = match windows {
+            Ok(result) => json!({"success": true, "count": result.len()}),
+            Err(error) => json!({
+                "success": false,
+                "code": error.code,
+                "message": error.message,
+            }),
+        };
+        let permissions = diagnostic_tool_check(permissions);
+        let health = diagnostic_tool_check(health);
+        let ready = driver["success"] == true
+            && window_inventory["success"] == true
+            && permissions["success"] == true
+            && health["success"] == true
+            && health["result"]["overall"] == "ok";
+        json!({
+            "type": "diagnostics",
+            "schema_version": 1,
+            "backend": "cua-driver-sdk",
+            "ready": ready,
+            "checks": {
+                "driver": driver,
+                "window_inventory": window_inventory,
+                "permissions": permissions,
+                "health": health,
+            },
+        })
+    }
+
     /// Call a non-window-bound CUA tool from the local CLI surface.
     /// Window-bound tools must use an exact `ComputerUseSession` instead.
     pub async fn call_tool(
@@ -282,6 +326,22 @@ impl ComputerUseDriver {
                 })
             })
             .await
+    }
+}
+
+pub(crate) fn diagnostic_tool_check(result: ComputerUseResult<ComputerUseToolResult>) -> Value {
+    match result {
+        Ok(result) => json!({
+            "success": true,
+            "degraded": result.degraded,
+            "summary": result.text,
+            "result": result.value.get("structuredContent").unwrap_or(&result.value),
+        }),
+        Err(error) => json!({
+            "success": false,
+            "code": error.code,
+            "message": error.message,
+        }),
     }
 }
 

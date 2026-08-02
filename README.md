@@ -78,6 +78,7 @@ cargo run -p dcc-mcp-cua-cli -- desktop-act --action-json '{"action":"click","x"
 cargo run -p dcc-mcp-cua-cli -- act --app chrome.exe --action-json '{"action":"click","x":100,"y":100}' --output after.png
 cargo run -p dcc-mcp-cua-cli -- launch --name Calculator
 cargo run -p dcc-mcp-cua-cli -- doctor
+cargo run -p dcc-mcp-cua-cli -- doctor --spawn target/debug/dcc-mcp-cua
 cargo run -p dcc-mcp-cua-cli -- snapshot --app chrome.exe --output screenshot.png
 cargo run -p dcc-mcp-cua-cli -- accessibility --app chrome.exe
 cargo run -p dcc-mcp-cua-cli -- window-state --app chrome.exe
@@ -218,6 +219,10 @@ sessions and obtain a fresh observation before sending another action.
 `HostClient::ping` and `dcc-mcp-cua ping` provide a small protocol-level
 liveness check without querying the native CUA backend or transferring its
 tool inventory.
+`HostClient::doctor` and `dcc-mcp-cua doctor --endpoint/--spawn` probe the
+embedded runtime in that same Host process. The structured report keeps
+transport liveness separate from driver, window inventory, permission, and
+native health readiness.
 
 Long waits can use `HostClient::request_with_cancel`; it sends `cancel` on the
 same connection and consumes both the cancellation acknowledgement and the

@@ -38,7 +38,8 @@ if ($manifest.version -notmatch '^\d+\.\d+\.\d+$' -or $manifest.host.protocol_ve
 }
 if ($manifest.host.snapshot_transports -notcontains "shared_memory" -or
     $manifest.host.capabilities -notcontains "two_axis_scroll" -or
-    $manifest.host.capabilities -notcontains "host_ping") {
+    $manifest.host.capabilities -notcontains "host_ping" -or
+    $manifest.host.capabilities -notcontains "host_diagnostics") {
     throw "manifest omitted required Host capabilities"
 }
 
@@ -107,6 +108,9 @@ if (-not $stream.Start()) {
 try {
     foreach ($request in @(
         '{"request_id":"stream-ping-1","method":"ping","params":{}}',
+        '{"request_id":"stream-doctor","method":"doctor","params":{}}',
+        '{"request_id":"stream-desktop-open","method":"open_desktop_session","params":{"session_id":"cli-e2e-lifecycle","grant":{"task_grant_id":"cli-e2e","dcc_type":"desktop","allow_raw_input":false}}}',
+        '{"request_id":"stream-desktop-stop","method":"stop_desktop_session","params":{"session_id":"cli-e2e-lifecycle"}}',
         '{"request_id":"stream-error","method":"unknown_method","params":{}}',
         '{"request_id":"stream-ping-2","method":"ping","params":{}}'
     )) {
@@ -115,7 +119,7 @@ try {
     $stream.StandardInput.Flush()
 
     $streamResponses = @()
-    foreach ($index in 0..2) {
+    foreach ($index in 0..5) {
         $read = $stream.StandardOutput.ReadLineAsync()
         if (-not $read.Wait(30000)) {
             throw "host-jsonl response $index timed out"
@@ -140,11 +144,22 @@ finally {
 
 if ($streamResponses[0].request_id -ne "stream-ping-1" -or
     $streamResponses[0].type -ne "pong" -or
-    $streamResponses[1].request_id -ne "stream-error" -or
-    $streamResponses[1].type -ne "error" -or
-    $streamResponses[2].request_id -ne "stream-ping-2" -or
-    $streamResponses[2].type -ne "pong") {
+    $streamResponses[1].request_id -ne "stream-doctor" -or
+    $streamResponses[1].type -ne "diagnostics" -or
+    $streamResponses[1].schema_version -ne 1 -or
+    $null -eq $streamResponses[1].checks.driver.success -or
+    $null -eq $streamResponses[1].checks.health.success -or
+    $streamResponses[2].request_id -ne "stream-desktop-open" -or
+    $streamResponses[2].type -ne "desktop_session_opened" -or
+    $streamResponses[2].started.active -ne $true -or
+    $streamResponses[3].request_id -ne "stream-desktop-stop" -or
+    $streamResponses[3].type -ne "desktop_session_stopped" -or
+    $streamResponses[3].result.active -ne $false -or
+    $streamResponses[4].request_id -ne "stream-error" -or
+    $streamResponses[4].type -ne "error" -or
+    $streamResponses[5].request_id -ne "stream-ping-2" -or
+    $streamResponses[5].type -ne "pong") {
     throw "host-jsonl did not preserve correlation or recover after an invalid request"
 }
 
-Write-Host "CLI E2E passed for ${expectedOs}: manifest, ping, batch/stream Host IPC, error recovery, apps, and $($toolNames.Count) CUA tools."
+Write-Host "CLI E2E passed for ${expectedOs}: manifest, diagnostics, session lifecycle, batch/stream Host IPC, error recovery, apps, and $($toolNames.Count) CUA tools."

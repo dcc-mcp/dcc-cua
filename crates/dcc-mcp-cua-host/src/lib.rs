@@ -106,6 +106,7 @@ pub const HOST_CAPABILITIES: &[&str] = &[
     "request_correlation",
     "request_cancellation",
     "host_ping",
+    "host_diagnostics",
     "pipelined_read_requests",
     "parallel_discovery_requests",
 ];
@@ -163,6 +164,7 @@ pub enum HostError {
 enum Request {
     Hello(HelloParams),
     Ping {},
+    Doctor {},
     ListApps {},
     ListTools {},
     ListWindows {
