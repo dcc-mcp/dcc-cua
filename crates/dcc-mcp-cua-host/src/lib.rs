@@ -496,6 +496,10 @@ struct HostAction {
     #[serde(default)]
     text: Option<String>,
     #[serde(default)]
+    delay_ms: Option<u64>,
+    #[serde(default)]
+    type_chars_only: bool,
+    #[serde(default)]
     checked: Option<bool>,
     #[serde(default)]
     keys: Vec<String>,
@@ -641,6 +645,8 @@ impl HostAction {
             scroll_y: self.scroll_y,
             path: self.path,
             text,
+            delay_ms: self.delay_ms,
+            type_chars_only: self.type_chars_only,
             keys: self.keys,
         })
     }
@@ -2651,6 +2657,8 @@ mod tests {
             scroll_y: None,
             path: Vec::new(),
             text: None,
+            delay_ms: None,
+            type_chars_only: false,
             checked: None,
             keys: vec!["ENTER".into()],
             duration_ms: None,
@@ -2674,6 +2682,8 @@ mod tests {
             scroll_y: None,
             path: Vec::new(),
             text: None,
+            delay_ms: None,
+            type_chars_only: false,
             checked: Some(true),
             keys: Vec::new(),
             duration_ms: None,
@@ -2698,6 +2708,8 @@ mod tests {
             scroll_y: None,
             path: Vec::new(),
             text: None,
+            delay_ms: None,
+            type_chars_only: false,
             checked: None,
             keys: Vec::new(),
             duration_ms: None,

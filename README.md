@@ -186,7 +186,11 @@ The supported request surface is `hello`, `list_apps`, `list_tools`, `list_windo
 connection. Semantic actions use CUA `element_index` values from the latest
 accessibility snapshot, and `set_text`/`set_value`/`set_checked` use CUA's
 native semantic value path. Coordinate actions remain available for
-custom-drawn surfaces.
+custom-drawn surfaces. For applications that miss fast keystrokes, use
+`action: "type_chars"` with `delay_ms` (0..1000); it requires an
+`element_index`/`element_token`, or the explicit `type_chars_only: true` when
+the target field is already focused. This maps to CUA's cross-platform
+`type_text_chars` input path and does not accept screen coordinates.
 `list_windows` supports optional `app`, `pid`, and `on_screen_only` filters;
 these are applied by the native backend before the response crosses IPC.
 `find` filters the current accessibility tree by text, role, or element index

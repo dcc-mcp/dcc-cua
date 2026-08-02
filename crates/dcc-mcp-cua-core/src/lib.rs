@@ -19,6 +19,7 @@ use serde_json::{Value, json};
 use thiserror::Error;
 
 const MAX_TEXT_UTF16_UNITS: usize = 4_096;
+const MAX_TYPE_CHAR_DELAY_MS: u64 = 1_000;
 const MAX_KEY_TOKENS: usize = 16;
 const MAX_DRAG_POINTS: usize = 256;
 const MAX_ELEMENT_TOKEN_CHARS: usize = 512;
@@ -74,6 +75,10 @@ pub struct ComputerUseAction {
     #[serde(default)]
     pub path: Vec<ComputerUsePoint>,
     pub text: Option<String>,
+    #[serde(default)]
+    pub delay_ms: Option<u64>,
+    #[serde(default)]
+    pub type_chars_only: bool,
     #[serde(default)]
     pub keys: Vec<String>,
 }
@@ -610,7 +615,10 @@ impl ComputerUseDesktopSession {
         }
         validate_action(action)?;
         if action.element_index.is_some()
-            || matches!(action.action.as_str(), "set_text" | "set_value")
+            || matches!(
+                action.action.as_str(),
+                "set_text" | "set_value" | "type_chars"
+            )
         {
             return Err(ComputerUseError::new(
                 ComputerUseErrorCode::InvalidAction,
@@ -2089,7 +2097,7 @@ fn native_tool_result(
 }
 
 fn validate_action(action: &ComputerUseAction) -> ComputerUseResult<()> {
-    const ACTIONS: [&str; 12] = [
+    const ACTIONS: [&str; 13] = [
         "click",
         "double_click",
         "right_click",
@@ -2098,6 +2106,7 @@ fn validate_action(action: &ComputerUseAction) -> ComputerUseResult<()> {
         "scroll",
         "drag",
         "type",
+        "type_chars",
         "set_text",
         "set_value",
         "keypress",
@@ -2123,6 +2132,15 @@ fn validate_action(action: &ComputerUseAction) -> ComputerUseResult<()> {
         return Err(ComputerUseError::new(
             ComputerUseErrorCode::InvalidAction,
             "text exceeds the host UTF-16 limit",
+        ));
+    }
+    if action
+        .delay_ms
+        .is_some_and(|delay| delay > MAX_TYPE_CHAR_DELAY_MS)
+    {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::InvalidAction,
+            "delay_ms must be at most 1000",
         ));
     }
     if action
@@ -2168,6 +2186,37 @@ fn validate_action(action: &ComputerUseAction) -> ComputerUseResult<()> {
             ComputerUseErrorCode::InvalidAction,
             "set_text and set_value require a semantic element_index",
         ));
+    }
+    if action.action == "type_chars" {
+        if action.text.is_none() {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::InvalidAction,
+                "type_chars requires text",
+            ));
+        }
+        if action.type_chars_only
+            && (action.element_index.is_some() || action.element_token.is_some())
+        {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::InvalidAction,
+                "type_chars_only cannot be combined with an element locator",
+            ));
+        }
+        if !action.type_chars_only
+            && action.element_index.is_none()
+            && action.element_token.is_none()
+        {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::InvalidAction,
+                "type_chars requires an element locator unless type_chars_only is true",
+            ));
+        }
+        if action.x.is_some() || action.y.is_some() {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::InvalidAction,
+                "type_chars does not accept screen coordinates",
+            ));
+        }
     }
     Ok(())
 }
@@ -2219,6 +2268,7 @@ fn action_arguments(action: &ComputerUseAction, session: &str, target: &WindowTa
             "drag" => "drag",
             "scroll" => "scroll",
             "type" => "type_text",
+            "type_chars" => "type_text_chars",
             "set_text" | "set_value" => "set_value",
             "keypress" => "press_key",
             "keyboard_shortcut" => "hotkey",
@@ -2228,12 +2278,17 @@ fn action_arguments(action: &ComputerUseAction, session: &str, target: &WindowTa
         "pid": target.pid,
         "window_id": target.window_id,
         "session": session,
-        "delivery_mode": action.delivery_mode.as_deref().unwrap_or("background"),
     });
     let mut args = scope;
     let object = args
         .as_object_mut()
         .expect("action arguments are an object");
+    if action.action != "type_chars" {
+        object.insert(
+            "delivery_mode".into(),
+            json!(action.delivery_mode.as_deref().unwrap_or("background")),
+        );
+    }
     match action.action.as_str() {
         "move" => {
             object.insert("x".into(), json!(action.x));
@@ -2297,6 +2352,18 @@ fn action_arguments(action: &ComputerUseAction, session: &str, target: &WindowTa
                 "text".into(),
                 json!(action.text.as_deref().unwrap_or_default()),
             );
+        }
+        "type_chars" => {
+            object.insert(
+                "text".into(),
+                json!(action.text.as_deref().unwrap_or_default()),
+            );
+            if let Some(delay_ms) = action.delay_ms {
+                object.insert("delay_ms".into(), json!(delay_ms));
+            }
+            if action.type_chars_only {
+                object.insert("type_chars_only".into(), json!(true));
+            }
         }
         "set_text" | "set_value" => {
             object.insert(
@@ -2934,6 +3001,55 @@ mod tests {
             .unwrap_err()
             .code,
             ComputerUseErrorCode::InvalidAction
+        );
+    }
+
+    #[test]
+    fn type_chars_uses_cua_character_input_without_delivery_mode() {
+        let action = ComputerUseAction {
+            action: "type_chars".into(),
+            element_index: Some(4),
+            text: Some("Fab".into()),
+            delay_ms: Some(20),
+            delivery_mode: Some("foreground".into()),
+            ..Default::default()
+        };
+        assert!(validate_action(&action).is_ok());
+        let args = action_arguments(
+            &action,
+            "session",
+            &WindowTarget {
+                pid: 42,
+                window_id: 7,
+                title: "DCC".into(),
+                app_name: "dcc".into(),
+                bounds: [0, 0, 100, 100],
+                is_on_screen: true,
+                is_minimized: false,
+                z_index: 1,
+                is_foreground: true,
+            },
+        );
+        assert_eq!(args["_tool"], "type_text_chars");
+        assert_eq!(args["text"], "Fab");
+        assert_eq!(args["delay_ms"], 20);
+        assert_eq!(args["element_index"], 4);
+        assert!(args.get("delivery_mode").is_none());
+
+        let focused = ComputerUseAction {
+            action: "type_chars".into(),
+            text: Some("UE".into()),
+            type_chars_only: true,
+            ..Default::default()
+        };
+        assert!(validate_action(&focused).is_ok());
+        assert!(
+            validate_action(&ComputerUseAction {
+                action: "type_chars".into(),
+                text: Some("UE".into()),
+                ..Default::default()
+            })
+            .is_err()
         );
     }
 
