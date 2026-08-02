@@ -34,6 +34,18 @@ browser adapter and should combine typed Unreal APIs with scoped CUA; Fab
 account, purchase, and download confirmation remain explicit user-approved
 operations.
 
+## Development gates
+
+Every Rust file is limited to 2000 lines. Unit tests live in a sibling
+`src/tests.rs` module rather than production files and use `rstest`; the same
+layout gate runs before formatting in CI:
+
+```powershell
+pwsh -NoProfile -File scripts/check-rust-layout.ps1
+cargo fmt --all -- --check
+cargo test --workspace --all-targets
+```
+
 ## CLI
 
 ```powershell

@@ -26,6 +26,7 @@ jobs:
           swiftc_path="$(xcrun --find swiftc)"
           swift_runtime="$(cd "$(dirname "$swiftc_path")/../lib/swift/macosx" && pwd)"
           echo "DYLD_LIBRARY_PATH=${swift_runtime}:/usr/lib/swift${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}" >> "$GITHUB_ENV"
+      - run: pwsh -NoProfile -File scripts/check-rust-layout.ps1
       - run: cargo fmt --all -- --check
       - run: cargo check --workspace --all-targets
       - run: cargo test --workspace --all-targets
