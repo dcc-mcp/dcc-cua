@@ -14,10 +14,12 @@ a whole task. Its public protocol is owned by this repository and provides:
 - a visible CUA mouse-shaped cursor and `DCC UI Control · <app> · Esc to stop`
   marker.
 
-The repository is a Cargo workspace with six responsibilities:
+The repository is a Cargo workspace with seven responsibilities:
 
 - `dcc-mcp-cua-core`: scoped Computer Use domain, safety policy, and
   CUA execution boundary;
+- `dcc-mcp-cua-e2e`: opt-in controlled GUI tests against the upstream CUA
+  Electron fixture and the public Host IPC contract;
 - `dcc-mcp-cua-browser`: exact-window browser binding, tab snapshots, typed
   browser actions, and bounded file transfer;
 - `dcc-mcp-cua-client`: reusable Core-side Host IPC client with request
@@ -448,6 +450,7 @@ Example host requests:
 cargo fmt --all -- --check
 cargo check --workspace --all-targets
 cargo test --workspace --all-targets
+pwsh -NoProfile -File scripts/run-gui-e2e.ps1 -Binary target/debug/dcc-mcp-cua.exe
 ```
 
 ## CI/CD and release
@@ -456,8 +459,12 @@ CI checks layout, formatting, workspace tests, the locked release build, and a
 real release-binary E2E on Windows, Linux, and macOS. The E2E validates the
 machine manifest, platform identity, shared-memory negotiation, a spawned Host
 handshake, lightweight ping, pipelined/streaming request correlation, invalid
-request recovery, and the embedded CUA application/tool inventories without
-requiring an interactive desktop. The release workflow
+request recovery, and the embedded CUA application/tool inventories. Windows
+and Linux additionally build CUA's official Electron fixture and verify the
+real launch -> scoped PNG snapshot -> semantic find -> input -> state oracle ->
+cleanup path. The hosted macOS lane retains the structured permission/readiness
+refusal gate; full macOS GUI input requires a signed, TCC-provisioned runner.
+The release workflow
 packages the `dcc-mcp-cua` binary as platform archives and attaches them to the
 GitHub release.
 
