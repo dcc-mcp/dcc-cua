@@ -73,6 +73,47 @@ fn friendly_actions_build_bounded_cua_requests() {
     assert_eq!(click.x, Some(10.0));
     assert_eq!(click.y, Some(20.0));
 
+    let semantic_click = action_from_command("click", &strings(["--element-index", "7"])).unwrap();
+    assert_eq!(semantic_click.element_index, Some(7));
+    assert_eq!(semantic_click.x, None);
+
+    let toggle =
+        action_from_command("toggle", &strings(["--element-token", "checkbox-1"])).unwrap();
+    assert_eq!(toggle.action, "toggle");
+    assert_eq!(toggle.element_token.as_deref(), Some("checkbox-1"));
+
+    let set_value = action_from_command(
+        "set-value",
+        &strings(["--element-index", "3", "--value", "Published"]),
+    )
+    .unwrap();
+    assert_eq!(set_value.action, "set_value");
+    assert_eq!(set_value.text.as_deref(), Some("Published"));
+
+    let drag = action_from_command(
+        "drag",
+        &strings([
+            "--from-x", "1", "--from-y", "2", "--to-x", "30", "--to-y", "40",
+        ]),
+    )
+    .unwrap();
+    assert_eq!(drag.path.len(), 2);
+    assert!(action_from_command("click", &strings(["--x", "10"])).is_err());
+    assert!(
+        action_from_command(
+            "click",
+            &strings(["--element-index", "7", "--element-token", "same"])
+        )
+        .is_err()
+    );
+    assert!(
+        action_from_command(
+            "click",
+            &strings(["--element-index", "7", "--x", "10", "--y", "20"])
+        )
+        .is_err()
+    );
+
     let type_chars = action_from_command(
         "type",
         &strings(["--text", "hello", "--focused", "--delay-ms", "25"]),

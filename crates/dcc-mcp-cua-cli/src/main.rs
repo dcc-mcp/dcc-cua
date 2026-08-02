@@ -961,7 +961,18 @@ async fn execute_action(
 fn is_friendly_action(command: &str) -> bool {
     matches!(
         command,
-        "click" | "double-click" | "right-click" | "type" | "press" | "hotkey" | "scroll" | "move"
+        "click"
+            | "double-click"
+            | "right-click"
+            | "toggle"
+            | "drag"
+            | "type"
+            | "set-text"
+            | "set-value"
+            | "press"
+            | "hotkey"
+            | "scroll"
+            | "move"
     )
 }
 
@@ -979,6 +990,8 @@ fn action_from_command(
             "double-click" => "double_click",
             "right-click" => "right_click",
             "type" => "type_chars",
+            "set-text" => "set_text",
+            "set-value" => "set_value",
             "press" => "keypress",
             "hotkey" => "keyboard_shortcut",
             other => other,
@@ -987,17 +1000,48 @@ fn action_from_command(
         ..ComputerUseAction::default()
     };
     match command {
-        "click" | "double-click" | "right-click" | "move" => {
+        "click" | "double-click" | "right-click" | "toggle" => {
+            apply_element_selector(&mut action, flags, command)?;
+            let coordinate_present =
+                flag_value(flags, "--x").is_some() || flag_value(flags, "--y").is_some();
+            if (action.element_index.is_some() || action.element_token.is_some())
+                && coordinate_present
+            {
+                return Err(format!(
+                    "{command} cannot combine coordinates with an element selector"
+                )
+                .into());
+            }
+            if action.element_index.is_none() && action.element_token.is_none() {
+                action.x = Some(coordinate("--x")?);
+                action.y = Some(coordinate("--y")?);
+            }
+        }
+        "move" => {
             action.x = Some(coordinate("--x")?);
             action.y = Some(coordinate("--y")?);
         }
+        "drag" => {
+            action.path = vec![
+                dcc_mcp_cua_core::ComputerUsePoint {
+                    x: coordinate("--from-x")?,
+                    y: coordinate("--from-y")?,
+                },
+                dcc_mcp_cua_core::ComputerUsePoint {
+                    x: coordinate("--to-x")?,
+                    y: coordinate("--to-y")?,
+                },
+            ];
+        }
         "type" => {
             action.text = Some(flag_value(flags, "--text").ok_or("type requires --text")?);
-            action.element_index = flag_value(flags, "--element-index")
-                .map(|value| value.parse::<u32>())
-                .transpose()?;
-            action.element_token = flag_value(flags, "--element-token");
+            apply_element_selector(&mut action, flags, command)?;
             action.type_chars_only = has_flag(flags, "--focused");
+            if action.type_chars_only
+                && (action.element_index.is_some() || action.element_token.is_some())
+            {
+                return Err("type cannot combine --focused with an element selector".into());
+            }
             action.delay_ms = flag_value(flags, "--delay-ms")
                 .map(|value| value.parse::<u64>())
                 .transpose()?;
@@ -1008,29 +1052,72 @@ fn action_from_command(
                 return Err("type requires --focused or --element-index/--element-token".into());
             }
         }
+        "set-text" | "set-value" => {
+            let flag = value_flag(command);
+            action.text =
+                Some(flag_value(flags, flag).ok_or_else(|| format!("{command} requires {flag}"))?);
+            apply_element_selector(&mut action, flags, command)?;
+            if action.element_index.is_none() && action.element_token.is_none() {
+                return Err(
+                    format!("{command} requires --element-index or --element-token").into(),
+                );
+            }
+        }
         "press" => {
             action.keys = vec![flag_value(flags, "--key").ok_or("press requires --key")?];
+            apply_element_selector(&mut action, flags, command)?;
         }
         "hotkey" => {
             action.keys = flag_values(flags, "--key");
             if action.keys.len() < 2 {
                 return Err("hotkey requires at least two repeated --key values".into());
             }
+            apply_element_selector(&mut action, flags, command)?;
         }
         "scroll" => {
+            apply_element_selector(&mut action, flags, command)?;
             action.scroll_x = flag_value(flags, "--scroll-x")
                 .map(|value| value.parse::<i32>())
                 .transpose()?;
             action.scroll_y = flag_value(flags, "--scroll-y")
                 .map(|value| value.parse::<i32>())
                 .transpose()?;
-            if action.scroll_x.is_none() && action.scroll_y.is_none() {
-                return Err("scroll requires --scroll-x or --scroll-y".into());
+            if action.scroll_x.is_none()
+                && action.scroll_y.is_none()
+                && action.element_index.is_none()
+                && action.element_token.is_none()
+            {
+                return Err("scroll requires --scroll-x/--scroll-y or an element selector".into());
             }
         }
         _ => unreachable!("friendly action command is validated before parsing"),
     }
     Ok(action)
+}
+
+fn value_flag(command: &str) -> &'static str {
+    if command == "set-value" {
+        "--value"
+    } else {
+        "--text"
+    }
+}
+
+fn apply_element_selector(
+    action: &mut ComputerUseAction,
+    flags: &[String],
+    command: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let element_index = flag_value(flags, "--element-index")
+        .map(|value| value.parse::<u32>())
+        .transpose()?;
+    let element_token = flag_value(flags, "--element-token");
+    if element_index.is_some() && element_token.is_some() {
+        return Err(format!("{command} accepts only one element selector").into());
+    }
+    action.element_index = element_index;
+    action.element_token = element_token;
+    Ok(())
 }
 
 async fn verify_state(
@@ -1237,6 +1324,9 @@ fn print_help() {
         "Window snapshots/actions accept --escalate --escalation-reason REASON when an explicit desktop visual fallback approval is required."
     );
     println!("Zoom: zoom --app APP --x1 N --y1 N --x2 N --y2 N [--output FILE].");
+    println!(
+        "Friendly actions: click/double-click/right-click/toggle [--x X --y Y|--element-index N|--element-token TOKEN], drag --from-x X --from-y Y --to-x X --to-y Y, type/set-text/set-value, press, hotkey, scroll, move."
+    );
     println!(
         "Semantic tree: accessibility --app APP [--max-elements N] [--max-depth N]. Window: window-state|activate --app APP."
     );
