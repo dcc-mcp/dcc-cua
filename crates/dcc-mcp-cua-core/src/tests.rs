@@ -281,6 +281,22 @@ fn action_rejects_unknown_delivery_mode_and_unbounded_token() {
         })
         .is_err()
     );
+    assert!(
+        validate_action(&ComputerUseAction {
+            action: "drag".into(),
+            button: Some("side".into()),
+            ..Default::default()
+        })
+        .is_err()
+    );
+    assert!(
+        validate_action(&ComputerUseAction {
+            action: "keypress".into(),
+            modifiers: vec!["x".repeat(MAX_MODIFIER_CHARS + 1)],
+            ..Default::default()
+        })
+        .is_err()
+    );
 }
 
 #[rstest]
@@ -319,6 +335,62 @@ fn semantic_value_actions_require_and_encode_element_values() {
         .code,
         ComputerUseErrorCode::InvalidAction
     );
+}
+
+#[rstest]
+fn coordinate_text_and_key_actions_forward_cua_focus_arguments() {
+    let type_action = ComputerUseAction {
+        action: "type".into(),
+        x: Some(20.0),
+        y: Some(30.0),
+        text: Some("Fab".into()),
+        ..Default::default()
+    };
+    assert!(validate_action(&type_action).is_ok());
+    let type_args = action_arguments(&type_action, "session", &test_window_target());
+    assert_eq!(type_args["_tool"], "type_text");
+    assert_eq!(type_args["x"], 20.0);
+    assert_eq!(type_args["y"], 30.0);
+
+    let press_action = ComputerUseAction {
+        action: "keypress".into(),
+        x: Some(20.0),
+        y: Some(30.0),
+        keys: vec!["S".into()],
+        modifiers: vec!["CTRL".into(), "SHIFT".into()],
+        ..Default::default()
+    };
+    let press_args = action_arguments(&press_action, "session", &test_window_target());
+    assert_eq!(press_args["x"], 20.0);
+    assert_eq!(press_args["modifiers"], json!(["CTRL", "SHIFT"]));
+
+    let drag_action = ComputerUseAction {
+        action: "drag".into(),
+        path: vec![
+            ComputerUsePoint { x: 1.0, y: 2.0 },
+            ComputerUsePoint { x: 3.0, y: 4.0 },
+        ],
+        button: Some("middle".into()),
+        modifiers: vec!["ALT".into()],
+        ..Default::default()
+    };
+    let drag_args = action_arguments(&drag_action, "session", &test_window_target());
+    assert_eq!(drag_args["button"], "middle");
+    assert_eq!(drag_args["modifier"], json!(["ALT"]));
+}
+
+fn test_window_target() -> WindowTarget {
+    WindowTarget {
+        pid: 42,
+        window_id: 7,
+        title: "DCC".into(),
+        app_name: "dcc".into(),
+        bounds: [0, 0, 100, 100],
+        is_on_screen: true,
+        is_minimized: false,
+        z_index: 1,
+        is_foreground: true,
+    }
 }
 
 #[rstest]

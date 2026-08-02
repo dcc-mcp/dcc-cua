@@ -364,10 +364,37 @@ fn validate_action(action: &ComputerUseAction) -> ComputerUseResult<()> {
             "unsupported Computer Use action",
         ));
     }
-    if action.keys.len() > MAX_KEY_TOKENS || action.path.len() > MAX_DRAG_POINTS {
+    if action.keys.len() > MAX_KEY_TOKENS
+        || action.modifiers.len() > MAX_MODIFIER_TOKENS
+        || action.path.len() > MAX_DRAG_POINTS
+    {
         return Err(ComputerUseError::new(
             ComputerUseErrorCode::InvalidAction,
             "action exceeds the host safety limits",
+        ));
+    }
+    if action.modifiers.iter().any(|modifier| {
+        modifier.is_empty() || modifier.chars().count() > MAX_MODIFIER_CHARS
+    }) {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::InvalidAction,
+            "modifiers must be non-empty and at most 32 characters",
+        ));
+    }
+    if action
+        .button
+        .as_deref()
+        .is_some_and(|button| !matches!(button, "left" | "middle" | "right"))
+    {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::InvalidAction,
+            "button must be left, middle, or right",
+        ));
+    }
+    if action.x.is_some() != action.y.is_some() {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::InvalidAction,
+            "x and y must be supplied together",
         ));
     }
     if action
@@ -463,6 +490,12 @@ fn validate_action(action: &ComputerUseAction) -> ComputerUseResult<()> {
                 "type_chars does not accept screen coordinates",
             ));
         }
+    }
+    if action.action == "type" && action.text.is_none() {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::InvalidAction,
+            "type requires text",
+        ));
     }
     Ok(())
 }
@@ -575,6 +608,12 @@ fn action_arguments(action: &ComputerUseAction, session: &str, target: &WindowTa
             object.insert("from_y".into(), json!(first.y));
             object.insert("to_x".into(), json!(last.x));
             object.insert("to_y".into(), json!(last.y));
+            if let Some(button) = action.button.as_deref() {
+                object.insert("button".into(), json!(button));
+            }
+            if !action.modifiers.is_empty() {
+                object.insert("modifier".into(), json!(action.modifiers));
+            }
         }
         "scroll" => {
             object.insert("x".into(), json!(action.x));
@@ -598,6 +637,10 @@ fn action_arguments(action: &ComputerUseAction, session: &str, target: &WindowTa
                 "text".into(),
                 json!(action.text.as_deref().unwrap_or_default()),
             );
+            if let (Some(x), Some(y)) = (action.x, action.y) {
+                object.insert("x".into(), json!(x));
+                object.insert("y".into(), json!(y));
+            }
         }
         "type_chars" => {
             object.insert(
@@ -622,9 +665,20 @@ fn action_arguments(action: &ComputerUseAction, session: &str, target: &WindowTa
                 "key".into(),
                 json!(action.keys.first().cloned().unwrap_or_default()),
             );
+            if let (Some(x), Some(y)) = (action.x, action.y) {
+                object.insert("x".into(), json!(x));
+                object.insert("y".into(), json!(y));
+            }
+            if !action.modifiers.is_empty() {
+                object.insert("modifiers".into(), json!(action.modifiers));
+            }
         }
         "keyboard_shortcut" => {
             object.insert("keys".into(), json!(action.keys));
+            if let (Some(x), Some(y)) = (action.x, action.y) {
+                object.insert("x".into(), json!(x));
+                object.insert("y".into(), json!(y));
+            }
         }
         _ => {}
     }
@@ -699,6 +753,12 @@ fn desktop_action_arguments(action: &ComputerUseAction, session: &str) -> Value 
             object.insert("from_y".into(), json!(first.y));
             object.insert("to_x".into(), json!(last.x));
             object.insert("to_y".into(), json!(last.y));
+            if let Some(button) = action.button.as_deref() {
+                object.insert("button".into(), json!(button));
+            }
+            if !action.modifiers.is_empty() {
+                object.insert("modifier".into(), json!(action.modifiers));
+            }
         }
         "scroll" => {
             object.insert("x".into(), json!(action.x));
@@ -728,6 +788,9 @@ fn desktop_action_arguments(action: &ComputerUseAction, session: &str) -> Value 
                 "key".into(),
                 json!(action.keys.first().cloned().unwrap_or_default()),
             );
+            if !action.modifiers.is_empty() {
+                object.insert("modifiers".into(), json!(action.modifiers));
+            }
         }
         "keyboard_shortcut" => {
             object.insert("keys".into(), json!(action.keys));

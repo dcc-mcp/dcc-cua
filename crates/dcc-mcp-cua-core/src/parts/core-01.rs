@@ -16,6 +16,8 @@ use thiserror::Error;
 const MAX_TEXT_UTF16_UNITS: usize = 4_096;
 const MAX_TYPE_CHAR_DELAY_MS: u64 = 1_000;
 const MAX_KEY_TOKENS: usize = 16;
+const MAX_MODIFIER_TOKENS: usize = 8;
+const MAX_MODIFIER_CHARS: usize = 32;
 const MAX_DRAG_POINTS: usize = 256;
 const MAX_ELEMENT_TOKEN_CHARS: usize = 512;
 const MAX_LAUNCH_ARGUMENTS: usize = 32;
@@ -157,6 +159,8 @@ pub struct ComputerUseAction {
     pub type_chars_only: bool,
     #[serde(default)]
     pub keys: Vec<String>,
+    #[serde(default)]
+    pub modifiers: Vec<String>,
 }
 
 /// A bounded crop of the latest exact-window observation.

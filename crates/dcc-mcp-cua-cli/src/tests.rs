@@ -151,6 +151,44 @@ fn friendly_actions_build_bounded_cua_requests() {
     assert_eq!(type_chars.action, "type_chars");
     assert!(type_chars.type_chars_only);
     assert_eq!(type_chars.delay_ms, Some(25));
+    let pixel_type = action_from_command(
+        "type",
+        &strings(["--text", "hello", "--x", "12", "--y", "34"]),
+    )
+    .unwrap();
+    assert_eq!(pixel_type.action, "type");
+    assert_eq!(pixel_type.x, Some(12.0));
+    assert_eq!(pixel_type.y, Some(34.0));
+
+    let press = action_from_command(
+        "press",
+        &strings(["--key", "S", "--modifier", "CTRL", "--x", "12", "--y", "34"]),
+    )
+    .unwrap();
+    assert_eq!(press.modifiers, vec!["CTRL"]);
+    assert_eq!(press.x, Some(12.0));
+
+    let drag = action_from_command(
+        "drag",
+        &strings([
+            "--from-x",
+            "1",
+            "--from-y",
+            "2",
+            "--to-x",
+            "30",
+            "--to-y",
+            "40",
+            "--button",
+            "middle",
+            "--modifier",
+            "ALT",
+        ]),
+    )
+    .unwrap();
+    assert_eq!(drag.button.as_deref(), Some("middle"));
+    assert_eq!(drag.modifiers, vec!["ALT"]);
+    assert!(action_from_command("type", &strings(["--text", "hello", "--x", "12"])).is_err());
     assert!(action_from_command("hotkey", &strings(["--key", "CTRL"])).is_err());
     assert_eq!(
         bounded_u32(&strings(["--max-depth", "8"]), "--max-depth", 64, 64).unwrap(),

@@ -514,6 +514,8 @@ struct HostAction {
     checked: Option<bool>,
     #[serde(default)]
     keys: Vec<String>,
+    #[serde(default)]
+    modifiers: Vec<String>,
     #[allow(dead_code)]
     #[serde(default)]
     duration_ms: Option<u64>,
@@ -659,6 +661,7 @@ impl HostAction {
             delay_ms: self.delay_ms,
             type_chars_only: self.type_chars_only,
             keys: self.keys,
+            modifiers: self.modifiers,
         })
     }
 }

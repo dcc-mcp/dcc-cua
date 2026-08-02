@@ -1119,6 +1119,8 @@ fn action_from_command(
                     y: coordinate("--to-y")?,
                 },
             ];
+            action.button = flag_value(flags, "--button");
+            action.modifiers = flag_values(flags, "--modifier");
         }
         "type" => {
             action.text = Some(flag_value(flags, "--text").ok_or("type requires --text")?);
@@ -1129,14 +1131,35 @@ fn action_from_command(
             {
                 return Err("type cannot combine --focused with an element selector".into());
             }
+            let coordinates = optional_coordinate_pair(flags, command)?;
+            if let Some((x, y)) = coordinates {
+                if action.type_chars_only
+                    || action.element_index.is_some()
+                    || action.element_token.is_some()
+                {
+                    return Err(
+                        "type coordinates cannot combine with --focused or an element selector"
+                            .into(),
+                    );
+                }
+                action.action = "type".into();
+                action.x = Some(x);
+                action.y = Some(y);
+            }
             action.delay_ms = flag_value(flags, "--delay-ms")
                 .map(|value| value.parse::<u64>())
                 .transpose()?;
+            if coordinates.is_some() && action.delay_ms.is_some() {
+                return Err("coordinate type does not support --delay-ms".into());
+            }
             if !action.type_chars_only
+                && coordinates.is_none()
                 && action.element_index.is_none()
                 && action.element_token.is_none()
             {
-                return Err("type requires --focused or --element-index/--element-token".into());
+                return Err(
+                    "type requires --focused, --x/--y, or --element-index/--element-token".into(),
+                );
             }
         }
         "set-text" | "set-value" => {
@@ -1153,6 +1176,17 @@ fn action_from_command(
         "press" => {
             action.keys = vec![flag_value(flags, "--key").ok_or("press requires --key")?];
             apply_element_selector(&mut action, flags, command)?;
+            let coordinates = optional_coordinate_pair(flags, command)?;
+            if coordinates.is_some()
+                && (action.element_index.is_some() || action.element_token.is_some())
+            {
+                return Err("press cannot combine coordinates with an element selector".into());
+            }
+            if let Some((x, y)) = coordinates {
+                action.x = Some(x);
+                action.y = Some(y);
+            }
+            action.modifiers = flag_values(flags, "--modifier");
         }
         "hotkey" => {
             action.keys = flag_values(flags, "--key");
@@ -1160,6 +1194,16 @@ fn action_from_command(
                 return Err("hotkey requires at least two repeated --key values".into());
             }
             apply_element_selector(&mut action, flags, command)?;
+            let coordinates = optional_coordinate_pair(flags, command)?;
+            if coordinates.is_some()
+                && (action.element_index.is_some() || action.element_token.is_some())
+            {
+                return Err("hotkey cannot combine coordinates with an element selector".into());
+            }
+            if let Some((x, y)) = coordinates {
+                action.x = Some(x);
+                action.y = Some(y);
+            }
         }
         "scroll" => {
             apply_element_selector(&mut action, flags, command)?;
@@ -1205,6 +1249,19 @@ fn apply_element_selector(
     action.element_index = element_index;
     action.element_token = element_token;
     Ok(())
+}
+
+fn optional_coordinate_pair(
+    flags: &[String],
+    command: &str,
+) -> Result<Option<(f64, f64)>, Box<dyn std::error::Error>> {
+    let x = flag_value(flags, "--x");
+    let y = flag_value(flags, "--y");
+    match (x, y) {
+        (None, None) => Ok(None),
+        (Some(x), Some(y)) => Ok(Some((x.parse()?, y.parse()?))),
+        _ => Err(format!("{command} requires both --x and --y").into()),
+    }
 }
 
 async fn verify_state(
@@ -1412,7 +1469,7 @@ fn print_help() {
     );
     println!("Zoom: zoom --app APP --x1 N --y1 N --x2 N --y2 N [--output FILE].");
     println!(
-        "Friendly actions: click/double-click/right-click/toggle [--x X --y Y|--element-index N|--element-token TOKEN], drag --from-x X --from-y Y --to-x X --to-y Y, type/set-text/set-value, press, hotkey, scroll, move."
+        "Friendly actions: click/double-click/right-click/toggle [--x X --y Y|--element-index N|--element-token TOKEN], drag --from-x X --from-y Y --to-x X --to-y Y [--button B --modifier M], type [--text TEXT] [--focused|--x X --y Y|--element-index N], set-text/set-value, press [--key K] [--modifier M] [--x X --y Y|--element-index N], hotkey [--key K ...] [--x X --y Y], scroll, move."
     );
     println!(
         "Semantic tree: accessibility --app APP [--max-elements N] [--max-depth N]. Window: window-state|activate --app APP."
