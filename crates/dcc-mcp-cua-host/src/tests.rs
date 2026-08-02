@@ -53,6 +53,17 @@ fn wait_cancellation_requires_exact_credentials() {
 }
 
 #[rstest]
+fn window_wait_cancellation_uses_the_request_id_handle() {
+    let registry = Arc::new(Mutex::new(HashMap::new()));
+    let guard = register_window_wait(&registry, "window-wait-1").unwrap();
+    let response = cancel_window_wait(&registry, "window-wait-1").unwrap();
+    assert_eq!(response["type"], "window_wait_cancel_requested");
+    assert_eq!(response["wait_id"], "window-wait-1");
+    assert!(guard.handle.cancelled.load(Ordering::Acquire));
+    assert!(cancel_window_wait(&registry, "missing").is_err());
+}
+
+#[rstest]
 fn request_frame_preserves_correlation_on_deserialization_errors() {
     let parsed = parse_request_frame(br#"{"request_id":"req-7","method":"unknown","params":{}}"#);
     assert_eq!(parsed.unwrap_err().0, Some("req-7".into()));
@@ -219,6 +230,13 @@ fn app_requests_parse_with_host_params_frames() {
             "params": {"query": {"app": "UE5Editor.exe"}, "timeout_ms": 1000}
         })),
         Ok(Request::WaitForWindow(..))
+    ));
+    assert!(matches!(
+        serde_json::from_value::<Request>(json!({
+            "method": "cancel_window_wait",
+            "params": {"wait_id": "window-wait-1"}
+        })),
+        Ok(Request::CancelWindowWait { .. })
     ));
     assert!(matches!(
         serde_json::from_value::<Request>(json!({

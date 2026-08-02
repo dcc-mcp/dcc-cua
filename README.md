@@ -241,8 +241,9 @@ The supported request surface is `hello`, `list_apps`, `list_tools`, `list_windo
 `desktop_session_snapshot`, `execute_desktop_action`, `stop_desktop_session`,
 `zoom`,
 `execute_action`, `resume_session`, `terminate_app`, and
-`stop_session`; `cancel` is available while `wait_for` is active on the same
-connection. Semantic actions use CUA `element_index` values from the latest
+`stop_session`; `cancel` is available while `wait_for` is active and
+`cancel_window_wait` while `wait_for_window` is active on the same connection.
+Semantic actions use CUA `element_index` values from the latest
 accessibility snapshot, and `set_text`/`set_value`/`set_checked` use CUA's
 native semantic value path. Coordinate actions remain available for
 custom-drawn surfaces. For applications that miss fast keystrokes, use
@@ -254,6 +255,9 @@ the target field is already focused. This maps to CUA's cross-platform
 these are applied by the native backend before the response crosses IPC.
 `wait_for_window` accepts `query` with `app`, `process_id`, `window_handle`,
 `window_title`, and `on_screen_only`; its `timeout_ms` is capped at 30 seconds.
+When a request ID is supplied, cancel it on the same connection with
+`cancel_window_wait` and `{"wait_id":"<request_id>"}`. The Rust Client's
+`wait_for_window_with_cancel` helper sends that route automatically.
 `find` filters the current accessibility tree by text, role, or element index
 and returns a fresh `accessibility_state_id`. `wait_for` is bounded to 30 seconds and supports `element_present`,
 `text_contains`, `text_equals`, and `value_equals`. `launch_app` requires a non-empty `task_grant_id`, `dcc_type`, and

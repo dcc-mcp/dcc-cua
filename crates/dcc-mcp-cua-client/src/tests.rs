@@ -200,6 +200,24 @@ async fn client_can_cancel_wait_on_the_same_connection() {
     server.await.unwrap().unwrap();
 }
 
+#[rstest]
+#[tokio::test]
+async fn client_can_cancel_window_wait_with_generated_request_id() {
+    let (client_stream, server_stream) = tokio::io::duplex(4096);
+    let server = tokio::spawn(fake_window_wait_cancel_server(server_stream));
+    let mut client = HostClient::from_stream(client_stream);
+    client.hello("window-wait-client").await.unwrap();
+    let response = client
+        .wait_for_window_with_cancel(
+            json!({"query":{"app":"UE5Editor.exe"},"timeout_ms":30000}),
+            async {},
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.value["type"], "window_wait_cancelled");
+    server.await.unwrap().unwrap();
+}
+
 async fn fake_server(mut stream: DuplexStream) -> HostClientResult<()> {
     let hello = read_frame(&mut stream, MAX_JSON_FRAME_BYTES)
         .await?
@@ -409,6 +427,57 @@ async fn fake_cancel_server(mut stream: DuplexStream) -> HostClientResult<()> {
     )
     .await?;
     write_json_response(&mut stream, wait_id, json!({"type":"wait_cancelled"})).await
+}
+
+async fn fake_window_wait_cancel_server(mut stream: DuplexStream) -> HostClientResult<()> {
+    let hello = read_frame(&mut stream, MAX_JSON_FRAME_BYTES)
+        .await?
+        .unwrap();
+    let hello: Value = serde_json::from_slice(&hello).unwrap();
+    write_json_response(
+        &mut stream,
+        hello["request_id"].as_str().unwrap(),
+        json!({"type":"hello"}),
+    )
+    .await?;
+
+    let first: Value = serde_json::from_slice(
+        &read_frame(&mut stream, MAX_JSON_FRAME_BYTES)
+            .await?
+            .unwrap(),
+    )
+    .unwrap();
+    let second: Value = serde_json::from_slice(
+        &read_frame(&mut stream, MAX_JSON_FRAME_BYTES)
+            .await?
+            .unwrap(),
+    )
+    .unwrap();
+    let wait = if first["method"] == "wait_for_window" {
+        first.clone()
+    } else {
+        second.clone()
+    };
+    let cancel = if second["method"] == "cancel_window_wait" {
+        second
+    } else {
+        first
+    };
+    assert_eq!(wait["method"], "wait_for_window");
+    assert_eq!(cancel["method"], "cancel_window_wait");
+    assert_eq!(cancel["params"]["wait_id"], wait["request_id"]);
+    write_json_response(
+        &mut stream,
+        cancel["request_id"].as_str().unwrap(),
+        json!({"type":"window_wait_cancel_requested"}),
+    )
+    .await?;
+    write_json_response(
+        &mut stream,
+        wait["request_id"].as_str().unwrap(),
+        json!({"type":"window_wait_cancelled"}),
+    )
+    .await
 }
 
 async fn write_json_response(

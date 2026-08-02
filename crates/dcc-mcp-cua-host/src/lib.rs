@@ -78,6 +78,7 @@ pub const HOST_CAPABILITIES: &[&str] = &[
     "application_inventory",
     "window_inventory",
     "window_wait",
+    "window_wait_cancellation",
     "tool_inventory",
     "authorized_native_tool_calls",
     "authorized_global_native_tool_calls",
@@ -400,6 +401,9 @@ enum Request {
         session_id: String,
         task_grant_id: String,
         window_capability: String,
+    },
+    CancelWindowWait {
+        wait_id: String,
     },
 }
 
@@ -749,6 +753,60 @@ fn register_wait(
     })
 }
 
+fn register_window_wait(
+    registry: &CancellationRegistry,
+    wait_id: &str,
+) -> Result<CancellationGuard, HostError> {
+    validate_window_wait_id(wait_id)?;
+    let key = format!("window_wait:{wait_id}");
+    let handle = CancellationHandle {
+        task_grant_id: String::new(),
+        window_capability: String::new(),
+        cancelled: Arc::new(AtomicBool::new(false)),
+        notify: Arc::new(tokio::sync::Notify::new()),
+    };
+    let mut waits = registry
+        .lock()
+        .map_err(|_| HostError::Protocol("cancellation registry is unavailable".into()))?;
+    if waits.contains_key(&key) {
+        return Err(HostError::Protocol(
+            "window_wait is already running for this wait_id".into(),
+        ));
+    }
+    waits.insert(key.clone(), handle.clone());
+    Ok(CancellationGuard {
+        registry: Arc::clone(registry),
+        session_id: key,
+        handle,
+    })
+}
+
+fn cancel_window_wait(registry: &CancellationRegistry, wait_id: &str) -> Result<Value, HostError> {
+    validate_window_wait_id(wait_id)?;
+    let key = format!("window_wait:{wait_id}");
+    let handle = registry
+        .lock()
+        .map_err(|_| HostError::Protocol("cancellation registry is unavailable".into()))?
+        .get(&key)
+        .cloned()
+        .ok_or_else(|| HostError::Protocol("no window_wait is running for this wait_id".into()))?;
+    handle.cancelled.store(true, Ordering::Release);
+    handle.notify.notify_one();
+    Ok(json!({
+        "type": "window_wait_cancel_requested",
+        "wait_id": wait_id,
+    }))
+}
+
+fn validate_window_wait_id(wait_id: &str) -> Result<(), HostError> {
+    if wait_id.is_empty() || wait_id.chars().count() > MAX_REQUEST_ID_CHARS {
+        return Err(HostError::Protocol(format!(
+            "wait_id must contain 1..{MAX_REQUEST_ID_CHARS} characters"
+        )));
+    }
+    Ok(())
+}
+
 fn cancel_wait(
     registry: &CancellationRegistry,
     session_id: &str,
@@ -823,7 +881,20 @@ where
             }
         };
 
-        if matches!(&request, Request::WaitFor { .. }) {
+        let is_window_wait = matches!(&request, Request::WaitForWindow(_));
+        let window_wait_guard = if is_window_wait {
+            request_id
+                .as_deref()
+                .map(|wait_id| register_window_wait(&cancellation_registry, wait_id))
+                .transpose()?
+        } else {
+            None
+        };
+
+        if matches!(
+            &request,
+            Request::WaitFor { .. } | Request::WaitForWindow(_)
+        ) {
             let mut operation = Box::pin(handle_request(
                 &driver,
                 &mut sessions,
@@ -864,7 +935,31 @@ where
                                 continue;
                             }
                         };
-                        if let Request::Cancel { session_id, task_grant_id, window_capability } = next_request {
+                        if let Request::CancelWindowWait { wait_id } = next_request {
+                            let response = match cancel_window_wait(&cancellation_registry, &wait_id) {
+                                Ok(response) => response,
+                                Err(error) => error_response(error_code(&error), error.to_string()),
+                            };
+                            let cancelled = response["type"] == "window_wait_cancel_requested";
+                            write_json_locked(&writer, with_request_id(response, cancel_id.as_deref())).await?;
+                            if is_window_wait && cancelled {
+                                drop(operation);
+                                write_json_locked(
+                                    &writer,
+                                    with_request_id(
+                                        json!({
+                                            "type": "window_wait_cancelled",
+                                            "success": false,
+                                            "wait_id": wait_id,
+                                            "error_code": "cancelled",
+                                        }),
+                                        request_id.as_deref(),
+                                    ),
+                                )
+                                .await?;
+                                break;
+                            }
+                        } else if let Request::Cancel { session_id, task_grant_id, window_capability } = next_request {
                             let response = match cancel_wait(
                                 &cancellation_registry,
                                 &session_id,
@@ -887,6 +982,7 @@ where
                     }
                 }
             }
+            drop(window_wait_guard);
         } else if is_parallel_request(&request) {
             let task_driver = driver.clone();
             let task_writer = writer.clone();
@@ -1384,7 +1480,11 @@ fn error_code(error: &HostError) -> &'static str {
         HostError::Protocol(message) if message.contains("already running") => {
             "request_in_progress"
         }
-        HostError::Protocol(message) if message.contains("no wait_for") => "request_not_found",
+        HostError::Protocol(message)
+            if message.contains("no wait_for") || message.contains("no window_wait") =>
+        {
+            "request_not_found"
+        }
         HostError::Protocol(message) if message.contains("cancel credentials") => "forbidden",
         HostError::Protocol(message) if message.contains("accessibility") => "unsupported",
         HostError::Protocol(_) => "invalid_request",

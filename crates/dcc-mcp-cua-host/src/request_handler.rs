@@ -44,6 +44,9 @@ pub(super) async fn handle_request(
             )?,
             None,
         )),
+        Request::CancelWindowWait { wait_id } => {
+            Ok((cancel_window_wait(cancellation_registry, &wait_id)?, None))
+        }
         Request::ListApps {} => {
             let apps = driver.list_apps().await?;
             Ok((json!({"type":"apps", "apps":apps}), None))

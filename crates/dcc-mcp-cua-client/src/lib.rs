@@ -483,6 +483,35 @@ impl HostClient {
         }
     }
 
+    /// Wait for a native window while allowing a same-connection cancellation.
+    /// The generated request id is used as the cancellation handle.
+    pub async fn wait_for_window_with_cancel<C>(
+        &mut self,
+        params: Value,
+        cancel: C,
+    ) -> HostClientResult<HostResponse>
+    where
+        C: Future<Output = ()>,
+    {
+        if !self.hello_complete {
+            return Err(HostClientError::Protocol(
+                "hello must complete before stateful requests".into(),
+            ));
+        }
+        let request_id = self.send_request("wait_for_window", params).await?;
+        tokio::pin!(cancel);
+        tokio::select! {
+            received = self.receive_for_request(&request_id) => received,
+            _ = &mut cancel => {
+                let cancel_id = self
+                    .send_request("cancel_window_wait", json!({"wait_id": request_id}))
+                    .await?;
+                self.receive_for_request(&cancel_id).await?;
+                self.receive_for_request(&request_id).await
+            }
+        }
+    }
+
     async fn request_inner(
         &mut self,
         method: &str,
