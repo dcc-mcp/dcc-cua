@@ -1,4 +1,6 @@
 #[cfg(feature = "gui-e2e")]
+use std::net::TcpListener;
+#[cfg(feature = "gui-e2e")]
 use std::path::PathBuf;
 #[cfg(feature = "gui-e2e")]
 use std::process::{Command, Stdio};
@@ -88,6 +90,42 @@ fn assert_png(image: &[u8]) {
 }
 
 #[cfg(feature = "gui-e2e")]
+fn allocate_loopback_port() -> u16 {
+    TcpListener::bind(("127.0.0.1", 0))
+        .expect("allocate Electron CDP port")
+        .local_addr()
+        .expect("read Electron CDP port")
+        .port()
+}
+
+#[cfg(feature = "gui-e2e")]
+fn browser_ref_by_text(snapshot: &Value, text: &str) -> String {
+    snapshot["result"]["structuredContent"]["refs"]
+        .as_array()
+        .and_then(|refs| {
+            refs.iter().find(|entry| {
+                entry["label"]
+                    .as_str()
+                    .or_else(|| entry["name"].as_str())
+                    .is_some_and(|label| label.contains(text))
+            })
+        })
+        .and_then(|entry| entry["ref"].as_str())
+        .map(str::to_owned)
+        .unwrap_or_else(|| panic!("browser snapshot is missing ref text {text:?}: {snapshot}"))
+}
+
+#[cfg(feature = "gui-e2e")]
+fn browser_snapshot_id(snapshot: &Value) -> String {
+    let structured = &snapshot["result"]["structuredContent"];
+    structured["snapshot_id"]
+        .as_str()
+        .or_else(|| structured["snapshot"]["id"].as_str())
+        .expect("browser snapshot id")
+        .to_owned()
+}
+
+#[cfg(feature = "gui-e2e")]
 fn wait_for_journal(journal: &FixtureJournal, id: &str, expected: &str) {
     let deadline = Instant::now() + Duration::from_secs(5);
     while journal.text(id).as_deref() != Some(expected) {
@@ -137,10 +175,12 @@ async fn controlled_electron_round_trip() {
         fixture_path.display()
     );
     let journal = FixtureJournal::start();
+    let cdp_port = allocate_loopback_port();
     let mut fixture_command = Command::new(&fixture_path);
     fixture_command
         .args(fixture_args)
         .env("CUA_E2E_FIXTURE_JOURNAL_URL", journal.url())
+        .env("CUA_ELECTRON_CDP_PORT", cdp_port.to_string())
         .stdout(Stdio::null())
         .stderr(Stdio::inherit());
     let fixture_child = spawn_in_job(&mut fixture_command).expect("launch official CUA fixture");
@@ -191,7 +231,9 @@ async fn controlled_electron_round_trip() {
                 "dcc_type": "electron",
                 "process_id": fixture_pid,
                 "window_handle": window_id,
-                "window_title": window_title
+                "window_title": window_title,
+                "allow_browser_input": true,
+                "allow_browser_prepare": true
             }
         }),
     )
@@ -309,6 +351,124 @@ async fn controlled_electron_round_trip() {
         verified.value
     );
     wait_for_journal(&journal, "lbl-input-mirror", &format!("mirror={expected}"));
+
+    let prepared = host_request(
+        &mut host,
+        "browser_prepare",
+        json!({
+            "session_id": SESSION_ID,
+            "task_grant_id": GRANT_ID,
+            "window_capability": capability,
+            "request": {"allow_launch": false}
+        }),
+    )
+    .await;
+    assert_eq!(
+        prepared.value["result"]["structuredContent"]["prepared"], true,
+        "browser_prepare failed: {}",
+        prepared.value
+    );
+
+    let bound = host_request(
+        &mut host,
+        "browser_snapshot",
+        json!({
+            "session_id": SESSION_ID,
+            "task_grant_id": GRANT_ID,
+            "window_capability": capability,
+            "request": {"snapshot_format": "semantic_v2"}
+        }),
+    )
+    .await;
+    let browser_state = &bound.value["result"]["structuredContent"];
+    assert_eq!(browser_state["binding_quality"], "exact");
+    let target_id = browser_state["target_id"]
+        .as_str()
+        .expect("browser target id")
+        .to_owned();
+    let tab_id = browser_state["tabs"]
+        .as_array()
+        .and_then(|tabs| tabs.iter().find(|tab| tab["active"] == true))
+        .and_then(|tab| tab["tab_id"].as_str())
+        .expect("active browser tab id")
+        .to_owned();
+
+    let browser_snapshot = host_request(
+        &mut host,
+        "browser_snapshot",
+        json!({
+            "session_id": SESSION_ID,
+            "task_grant_id": GRANT_ID,
+            "window_capability": capability,
+            "request": {
+                "target_id": target_id,
+                "tab_id": tab_id,
+                "snapshot_format": "semantic_v2"
+            }
+        }),
+    )
+    .await;
+    let snapshot_id = browser_snapshot_id(&browser_snapshot.value);
+    let increment_ref = browser_ref_by_text(&browser_snapshot.value, "Increment");
+    host_request(
+        &mut host,
+        "browser_click",
+        json!({
+            "session_id": SESSION_ID,
+            "task_grant_id": GRANT_ID,
+            "window_capability": capability,
+            "request": {
+                "target_id": target_id,
+                "tab_id": tab_id,
+                "snapshot_id": snapshot_id,
+                "ref": increment_ref
+            }
+        }),
+    )
+    .await;
+    wait_for_journal(&journal, "lbl-counter", "counter=1");
+
+    let browser_snapshot = host_request(
+        &mut host,
+        "browser_snapshot",
+        json!({
+            "session_id": SESSION_ID,
+            "task_grant_id": GRANT_ID,
+            "window_capability": capability,
+            "request": {
+                "target_id": target_id,
+                "tab_id": tab_id,
+                "snapshot_format": "semantic_v2"
+            }
+        }),
+    )
+    .await;
+    let snapshot_id = browser_snapshot_id(&browser_snapshot.value);
+    let input_ref = browser_ref_by_text(&browser_snapshot.value, "txt-input");
+    let browser_expected = "browser-host-ipc-e2e";
+    host_request(
+        &mut host,
+        "browser_type",
+        json!({
+            "session_id": SESSION_ID,
+            "task_grant_id": GRANT_ID,
+            "window_capability": capability,
+            "request": {
+                "target_id": target_id,
+                "tab_id": tab_id,
+                "snapshot_id": snapshot_id,
+                "ref": input_ref,
+                "text": browser_expected,
+                "replace": true
+            }
+        }),
+    )
+    .await;
+    wait_for_journal(
+        &journal,
+        "lbl-input-mirror",
+        &format!("mirror={browser_expected}"),
+    );
 
     host_request(&mut host, "stop_session", json!({"session_id": SESSION_ID})).await;
     let status = host.shutdown().await.expect("stop Host process");

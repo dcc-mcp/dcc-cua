@@ -462,8 +462,10 @@ handshake, lightweight ping, pipelined/streaming request correlation, invalid
 request recovery, and the embedded CUA application/tool inventories. Windows
 and Linux additionally build CUA's official Electron fixture and verify the
 real launch -> scoped PNG snapshot -> semantic find -> input -> state oracle ->
-cleanup path. The hosted macOS lane retains the structured permission/readiness
-refusal gate; full macOS GUI input requires a signed, TCC-provisioned runner.
+exact browser binding -> semantic browser snapshot -> click/type -> independent
+state oracle -> cleanup path. The hosted macOS lane retains the structured
+permission/readiness refusal gate; full macOS GUI input requires a signed,
+TCC-provisioned runner.
 The release workflow
 packages the `dcc-mcp-cua` binary as platform archives and attaches them to the
 GitHub release.
