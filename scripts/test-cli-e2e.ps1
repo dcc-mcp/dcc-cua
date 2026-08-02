@@ -142,6 +142,7 @@ finally {
     $stream.Dispose()
 }
 
+$streamJson = $streamResponses | ConvertTo-Json -Depth 12 -Compress
 if ($streamResponses[0].request_id -ne "stream-ping-1" -or
     $streamResponses[0].type -ne "pong" -or
     $streamResponses[1].request_id -ne "stream-doctor" -or
@@ -149,17 +150,31 @@ if ($streamResponses[0].request_id -ne "stream-ping-1" -or
     $streamResponses[1].schema_version -ne 1 -or
     $null -eq $streamResponses[1].checks.driver.success -or
     $null -eq $streamResponses[1].checks.health.success -or
-    $streamResponses[2].request_id -ne "stream-desktop-open" -or
-    $streamResponses[2].type -ne "desktop_session_opened" -or
-    $streamResponses[2].started.active -ne $true -or
-    $streamResponses[3].request_id -ne "stream-desktop-stop" -or
-    $streamResponses[3].type -ne "desktop_session_stopped" -or
-    $streamResponses[3].result.active -ne $false -or
     $streamResponses[4].request_id -ne "stream-error" -or
     $streamResponses[4].type -ne "error" -or
     $streamResponses[5].request_id -ne "stream-ping-2" -or
     $streamResponses[5].type -ne "pong") {
-    throw "host-jsonl did not preserve correlation or recover after an invalid request"
+    throw "host-jsonl did not preserve diagnostics, correlation, or error recovery: $streamJson"
+}
+
+if ($streamResponses[2].type -eq "desktop_session_opened") {
+    if ($streamResponses[2].request_id -ne "stream-desktop-open" -or
+        $streamResponses[2].started.active -ne $true -or
+        $streamResponses[3].request_id -ne "stream-desktop-stop" -or
+        $streamResponses[3].type -ne "desktop_session_stopped" -or
+        $streamResponses[3].result.active -ne $false) {
+        throw "Host desktop session lifecycle failed: $streamJson"
+    }
+}
+elseif (-not $IsMacOS -or
+    $streamResponses[1].ready -ne $false -or
+    $streamResponses[2].request_id -ne "stream-desktop-open" -or
+    $streamResponses[2].type -ne "error" -or
+    [string]::IsNullOrWhiteSpace($streamResponses[2].code) -or
+    $streamResponses[3].request_id -ne "stream-desktop-stop" -or
+    $streamResponses[3].type -ne "error" -or
+    [string]::IsNullOrWhiteSpace($streamResponses[3].code)) {
+    throw "Host session lifecycle was not available without a structured macOS readiness refusal: $streamJson"
 }
 
 Write-Host "CLI E2E passed for ${expectedOs}: manifest, diagnostics, session lifecycle, batch/stream Host IPC, error recovery, apps, and $($toolNames.Count) CUA tools."
