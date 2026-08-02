@@ -14,7 +14,8 @@ a whole task. Its public protocol is owned by this repository and provides:
 - a visible, vector-rendered CUA mouse-pointer cursor plus a Host-owned
   `DCC UI Control · <app> · Esc to stop` safety banner on Windows. The banner
   and softly breathing target-window frame are click-through, excluded from agent
-  captures, and Escape stops the CUA session before another action is accepted.
+  captures, and one shared Escape hotkey broadcasts interruption to every active
+  session in the Host process.
 
 The repository is a Cargo workspace with eight responsibilities:
 
@@ -45,6 +46,19 @@ this host as its visual fallback. Unreal/Fab flows belong in the Unreal or
 browser adapter and should combine typed Unreal APIs with scoped CUA; Fab
 account, purchase, and download confirmation remain explicit user-approved
 operations.
+
+Multiple agents may keep independent exact PID/HWND sessions open for different
+applications. Semantic, UIA, and browser operations remain parallel; actions
+that consume the single OS keyboard/mouse stream use one fair Host-wide FIFO and
+release it before post-action capture. Run one Host daemon per interactive OS
+seat so the shared Escape broadcast and raw-input ordering have one owner.
+
+Game automation is supported as an exact-window black-box test surface for
+menus, launch flows, HUD interaction, input replay, screenshots, and visual
+regression. For authoritative 3D state, performance, physics, or gameplay
+assertions, combine CUA input/vision with engine-native telemetry and test APIs
+such as Unreal Automation or Gauntlet; protected anti-cheat environments and
+exclusive full-screen capture are outside this Host's contract.
 
 This project wraps the CUA SDK for agent-friendly, bounded operations. The
 `dcc-mcp-cua` CLI owns its own `update` command and exposes `daemon`, `mcp`, and
@@ -420,9 +434,9 @@ reasons; `resume_session` remains the explicit post-approval restart path.
 `get_agent_cursor_state`; `move_cursor` is forced to `scope: "window"`, and the
 session id is always injected by Host, so the mouse-shaped marker cannot be
 redirected to another session or move the real system pointer.
-The default `cua.default` theme is CUA's compiled vector mouse pointer, rendered
-at the live display scale with click/drag/scroll feedback; this project reuses
-that SDK renderer instead of maintaining a second cursor overlay.
+CUA owns the cursor state and scoped motion. The Host mirrors successful moves
+into a larger native mouse-pointer overlay so the user can always see the active
+agent position even when an application does not render CUA's SDK cursor.
 
 The safety banner remains a native overlay rather than a WebView. Static SVG
 art can be added as a cached theme layer later, while the app name and stop

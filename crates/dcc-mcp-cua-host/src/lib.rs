@@ -42,6 +42,9 @@ use dcc_mcp_cua_core::{
 use dcc_mcp_cua_indicator::{BannerTarget, ControlBanner};
 use dcc_mcp_cua_shm::SharedImage;
 
+// ponytail: one OS input stream is process-global; shard only if platforms gain isolated seats.
+static RAW_INPUT_QUEUE: AsyncMutex<()> = AsyncMutex::const_new(());
+
 /// Control frame limit. Pixel bytes use a separate bounded frame.
 pub const MAX_JSON_FRAME_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_BINARY_FRAME_BYTES: usize = 64 * 1024 * 1024;
@@ -58,6 +61,7 @@ pub const HOST_CAPABILITIES: &[&str] = &[
     "semantic_element_tokens",
     "background_first_input_delivery",
     "scoped_raw_input",
+    "serialized_raw_input",
     "accessibility_snapshot",
     "accessibility_find",
     "state_verification",

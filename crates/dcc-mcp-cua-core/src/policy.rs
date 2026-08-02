@@ -225,6 +225,26 @@ pub(crate) fn validate_window_cursor_move(
     Ok(())
 }
 
+pub(crate) fn map_window_cursor_move(
+    arguments: &mut serde_json::Map<String, Value>,
+    target: &WindowTarget,
+) -> ComputerUseResult<()> {
+    validate_window_cursor_move(arguments)?;
+    let x = arguments["x"].as_f64().expect("validated cursor x");
+    let y = arguments["y"].as_f64().expect("validated cursor y");
+    let [left, top, width, height] = target.bounds;
+    if x >= f64::from(width) || y >= f64::from(height) {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::InvalidAction,
+            "move_cursor coordinates must stay inside the target window",
+        ));
+    }
+    arguments.insert("x".into(), json!(f64::from(left) + x));
+    arguments.insert("y".into(), json!(f64::from(top) + y));
+    arguments.insert("scope".into(), Value::String("window".into()));
+    Ok(())
+}
+
 pub(crate) fn native_tool_allowed_globally(name: &str) -> bool {
     matches!(
         name,

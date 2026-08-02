@@ -71,6 +71,10 @@ impl ControlBanner {
     pub fn interrupted(&self) -> bool {
         self.platform.interrupted()
     }
+
+    pub fn set_cursor_position(&self, x: f64, y: f64) {
+        self.platform.set_cursor_position(x, y);
+    }
 }
 
 #[cfg(windows)]
@@ -100,6 +104,8 @@ mod platform {
         pub(super) fn interrupted(&self) -> bool {
             false
         }
+
+        pub(super) fn set_cursor_position(&self, _x: f64, _y: f64) {}
     }
 }
 

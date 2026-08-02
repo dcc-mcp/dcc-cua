@@ -234,7 +234,10 @@ pub(super) async fn handle_request(
                 ));
             }
             let action = action.into_computer_use(observation_id)?;
-            let result = host.session.perform_action(&action).await?;
+            let result = {
+                let _input_turn = RAW_INPUT_QUEUE.lock().await;
+                host.session.perform_action(&action).await?
+            };
             let action_id = format!("cua-desktop-action-{}", Uuid::new_v4());
             if capture_after {
                 return match host.session.screenshot().await {
@@ -482,7 +485,8 @@ pub(super) async fn handle_request(
                 "visible": marker["visible"],
                 "shape": "mouse_pointer",
                 "theme": started["cursor_theme"],
-                "backend": "cua-driver-sdk",
+                "render_backend": "host-native-overlay",
+                "motion_backend": "cua-driver-sdk",
             });
             let capability = format!("cua-window-{}", Uuid::new_v4());
             sessions.insert(
@@ -1102,8 +1106,14 @@ pub(super) async fn handle_request(
                     "semantic action requires the latest accessibility_state_id",
                 )));
             }
+            let raw_input = action.input_kind == "raw_input";
             let action = action.into_computer_use(observation_id)?;
-            let result = host.session.perform_action(&action).await?;
+            let result = if raw_input {
+                let _input_turn = RAW_INPUT_QUEUE.lock().await;
+                host.session.perform_action(&action).await?
+            } else {
+                host.session.perform_action(&action).await?
+            };
             let action_id = format!("cua-action-{}", Uuid::new_v4());
             if capture_after {
                 return match host
@@ -1199,7 +1209,19 @@ pub(super) async fn handle_request(
             let host =
                 authorized_session(sessions, &session_id, &task_grant_id, &window_capability)
                     .await?;
-            let result = host.session.cursor_tool(&tool, arguments).await?;
+            let cursor_position = (tool == "move_cursor").then(|| {
+                (
+                    arguments["x"].as_f64().unwrap_or_default(),
+                    arguments["y"].as_f64().unwrap_or_default(),
+                )
+            });
+            let result = {
+                let _input_turn = RAW_INPUT_QUEUE.lock().await;
+                host.session.cursor_tool(&tool, arguments).await?
+            };
+            if let Some((x, y)) = cursor_position {
+                host.banner.set_cursor_position(x, y);
+            }
             let marker = host.session.status()["marker"].clone();
             Ok((
                 json!({"type":"cursor_tool_result", "session_id":session_id, "tool":tool, "result":result, "marker":marker}),

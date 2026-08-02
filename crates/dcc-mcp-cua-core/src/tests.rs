@@ -256,14 +256,31 @@ fn tool_schema_lookup_uses_exact_inventory_names() {
 
 #[rstest]
 fn window_cursor_move_is_bounded_to_window_scope() {
-    let valid = serde_json::json!({"x": 10, "y": 20});
-    assert!(validate_window_cursor_move(valid.as_object().unwrap()).is_ok());
+    let mut valid = serde_json::json!({"x": 10, "y": 20});
+    let target = WindowTarget {
+        pid: 7,
+        window_id: 9,
+        title: "target".into(),
+        app_name: "app".into(),
+        bounds: [100, 200, 800, 600],
+        is_on_screen: true,
+        is_minimized: false,
+        z_index: Some(0),
+        is_foreground: true,
+    };
+    map_window_cursor_move(valid.as_object_mut().unwrap(), &target).unwrap();
+    assert_eq!(valid["x"], 110.0);
+    assert_eq!(valid["y"], 220.0);
+    assert_eq!(valid["scope"], "window");
 
     let desktop = serde_json::json!({"x": 10, "y": 20, "scope": "desktop"});
     assert!(validate_window_cursor_move(desktop.as_object().unwrap()).is_err());
 
     let negative = serde_json::json!({"x": -1, "y": 20});
     assert!(validate_window_cursor_move(negative.as_object().unwrap()).is_err());
+
+    let mut outside = serde_json::json!({"x": 800, "y": 20});
+    assert!(map_window_cursor_move(outside.as_object_mut().unwrap(), &target).is_err());
 }
 
 #[rstest]

@@ -1335,9 +1335,9 @@ impl ComputerUseSession {
                 "cursor tool session is host-owned",
             ));
         }
-        if name == "move_cursor" {
+        let moves_cursor = name == "move_cursor";
+        if moves_cursor {
             validate_window_cursor_move(&object)?;
-            object.insert("scope".into(), Value::String("window".into()));
         }
         let enabled = if name == "set_agent_cursor_enabled" {
             Some(
@@ -1355,7 +1355,10 @@ impl ComputerUseSession {
             None
         };
         self.ensure_active()?;
-        self.revalidate_target().await?;
+        let target = self.revalidate_target().await?;
+        if moves_cursor {
+            map_window_cursor_move(&mut object, &target)?;
+        }
         let result = self
             .call_bound_tool_value(name, Value::Object(object))
             .await?;

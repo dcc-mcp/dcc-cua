@@ -78,6 +78,11 @@ async fn process_connection_requires_hello_pings_and_rejects_duplicate_hello() {
             .as_array()
             .is_some_and(|items| { items.iter().any(|item| item == "host_diagnostics") })
     );
+    assert!(
+        response["capabilities"]
+            .as_array()
+            .is_some_and(|items| { items.iter().any(|item| item == "serialized_raw_input") })
+    );
 
     write_json_request(
         &mut client,
@@ -1156,4 +1161,27 @@ fn wait_conditions_match_bounded_accessibility_elements() {
         .validate()
         .is_ok()
     );
+}
+
+#[rstest]
+#[tokio::test]
+async fn raw_input_turns_wait_for_the_shared_fifo() {
+    let first_turn = RAW_INPUT_QUEUE.lock().await;
+    let (acquired_tx, mut acquired_rx) = tokio::sync::oneshot::channel();
+    let waiting_turn = tokio::spawn(async move {
+        let _second_turn = RAW_INPUT_QUEUE.lock().await;
+        acquired_tx.send(()).unwrap();
+    });
+
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(25), &mut acquired_rx)
+            .await
+            .is_err()
+    );
+    drop(first_turn);
+    tokio::time::timeout(std::time::Duration::from_secs(1), &mut acquired_rx)
+        .await
+        .unwrap()
+        .unwrap();
+    waiting_turn.await.unwrap();
 }
