@@ -444,9 +444,12 @@ cargo test --workspace --all-targets
 ## CI/CD and release
 
 CI checks layout, formatting, workspace tests, the locked release build, and a
-CLI help smoke test on Windows, Linux, and macOS. The release workflow packages
-the `dcc-mcp-cua` binary as platform archives and attaches them to the GitHub
-release.
+real release-binary E2E on Windows, Linux, and macOS. The E2E validates the
+machine manifest, platform identity, shared-memory negotiation, a spawned Host
+handshake, pipelined request correlation, and the embedded CUA application/tool
+inventories without requiring an interactive desktop. The release workflow
+packages the `dcc-mcp-cua` binary as platform archives and attaches them to the
+GitHub release.
 
 The release gate is intentionally closed while the product is still being
 completed. Do not set the repository variable `DCC_MCP_CUA_RELEASE_READY=true`

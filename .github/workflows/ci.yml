@@ -40,4 +40,9 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace --all-targets
       - run: cargo build --release --locked -p dcc-mcp-cua-cli
-      - run: cargo run --release --locked -p dcc-mcp-cua-cli -- --help
+      - name: Run release CLI and Host IPC E2E
+        timeout-minutes: 5
+        shell: pwsh
+        run: |
+          $binary = if ($IsWindows) { "target/release/dcc-mcp-cua.exe" } else { "target/release/dcc-mcp-cua" }
+          ./scripts/test-cli-e2e.ps1 -Binary $binary
