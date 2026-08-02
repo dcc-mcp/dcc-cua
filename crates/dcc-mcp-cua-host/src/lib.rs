@@ -105,6 +105,7 @@ pub const HOST_CAPABILITIES: &[&str] = &[
     "browser_dialog",
     "request_correlation",
     "request_cancellation",
+    "host_ping",
     "pipelined_read_requests",
     "parallel_discovery_requests",
 ];
@@ -161,6 +162,7 @@ pub enum HostError {
 #[serde(tag = "method", content = "params", rename_all = "snake_case")]
 enum Request {
     Hello(HelloParams),
+    Ping {},
     ListApps {},
     ListTools {},
     ListWindows {
@@ -910,6 +912,17 @@ where
         };
 
         let is_window_wait = matches!(&request, Request::WaitForWindow(_));
+        if snapshot_transport.is_none() && !matches!(&request, Request::Hello(_)) {
+            write_json_locked(
+                &writer,
+                with_request_id(
+                    error_response("protocol_error", "hello is required before Host requests"),
+                    request_id.as_deref(),
+                ),
+            )
+            .await?;
+            continue;
+        }
         let window_wait_guard = if is_window_wait {
             request_id
                 .as_deref()
@@ -1069,10 +1082,19 @@ async fn cleanup_sessions(
     Ok(())
 }
 
+fn ping_response() -> Value {
+    json!({
+        "type": "pong",
+        "protocol_version": HOST_PROTOCOL_VERSION,
+        "host_version": env!("CARGO_PKG_VERSION"),
+    })
+}
+
 fn is_parallel_request(request: &Request) -> bool {
     matches!(
         request,
-        Request::ListApps {}
+        Request::Ping {}
+            | Request::ListApps {}
             | Request::ListTools {}
             | Request::ListWindows { .. }
             | Request::ScreenSize {}
@@ -1085,6 +1107,7 @@ async fn handle_parallel_request(
     request: Request,
 ) -> Result<(Value, Option<Vec<u8>>), HostError> {
     match request {
+        Request::Ping {} => Ok((ping_response(), None)),
         Request::ListApps {} => {
             let apps = driver.list_apps().await?;
             Ok((json!({"type":"apps", "apps":apps}), None))

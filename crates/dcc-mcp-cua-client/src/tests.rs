@@ -45,6 +45,19 @@ async fn client_rejects_requests_before_hello() {
 }
 
 #[rstest]
+#[tokio::test]
+async fn client_ping_uses_the_lightweight_host_route() {
+    let (client_stream, server_stream) = tokio::io::duplex(4096);
+    let server = tokio::spawn(fake_ping_server(server_stream));
+    let mut client = HostClient::from_stream(client_stream);
+    client.hello("ping-client").await.unwrap();
+    let response = client.ping().await.unwrap();
+    assert_eq!(response.value["type"], "pong");
+    assert_eq!(response.value["protocol_version"], HOST_PROTOCOL_VERSION);
+    server.await.unwrap().unwrap();
+}
+
+#[rstest]
 fn stopped_host_process_reports_not_running() {
     let mut process = HostProcess {
         client: None,
@@ -284,6 +297,30 @@ async fn fake_server(mut stream: DuplexStream) -> HostClientResult<()> {
     )
     .await?;
     write_frame(&mut stream, b"png", MAX_BINARY_FRAME_BYTES).await
+}
+
+async fn fake_ping_server(mut stream: DuplexStream) -> HostClientResult<()> {
+    let hello = read_frame(&mut stream, MAX_JSON_FRAME_BYTES)
+        .await?
+        .unwrap();
+    let hello: Value = serde_json::from_slice(&hello).unwrap();
+    write_json_response(
+        &mut stream,
+        hello["request_id"].as_str().unwrap(),
+        json!({"type":"hello","capabilities":["host_ping"]}),
+    )
+    .await?;
+    let ping = read_frame(&mut stream, MAX_JSON_FRAME_BYTES)
+        .await?
+        .unwrap();
+    let ping: Value = serde_json::from_slice(&ping).unwrap();
+    assert_eq!(ping["method"], "ping");
+    write_json_response(
+        &mut stream,
+        ping["request_id"].as_str().unwrap(),
+        json!({"type":"pong","protocol_version":HOST_PROTOCOL_VERSION}),
+    )
+    .await
 }
 
 async fn fake_hello_only_server(mut stream: DuplexStream) -> HostClientResult<()> {

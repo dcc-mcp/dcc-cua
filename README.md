@@ -177,6 +177,7 @@ Start one persistent host process instead of spawning a process per action:
 ```powershell
 cargo run -p dcc-mcp-cua-cli -- host --stdio
 cargo run -p dcc-mcp-cua-cli -- host
+cargo run -p dcc-mcp-cua-cli -- ping --spawn target/debug/dcc-mcp-cua
 cargo run -p dcc-mcp-cua-cli -- host-call --method list_apps --json '{}'
 cargo run -p dcc-mcp-cua-cli -- host-batch --json '[{"method":"list_apps","params":{}},{"method":"screen_size","params":{}}]'
 cargo run -p dcc-mcp-cua-cli -- host-call --spawn target/debug/dcc-mcp-cua --method list_apps --json '{}'
@@ -214,6 +215,9 @@ let _status = host.shutdown().await?;
 Supervisors can poll `host.is_running()` and call `host.restart(...)` after a
 process exit. Restart is explicit and never replays requests; Core must reopen
 sessions and obtain a fresh observation before sending another action.
+`HostClient::ping` and `dcc-mcp-cua ping` provide a small protocol-level
+liveness check without querying the native CUA backend or transferring its
+tool inventory.
 
 Long waits can use `HostClient::request_with_cancel`; it sends `cancel` on the
 same connection and consumes both the cancellation acknowledgement and the
@@ -224,7 +228,7 @@ to write several requests before one flush; responses are returned in request
 order. Core callers that need task/turn tracing can use
 `HostClient::request_batch_with_ids`, which preserves caller-owned IDs through
 the same pipelined write. The Host dispatches stateless discovery calls
-(`list_apps`, `list_tools`, `list_windows`, `screen_size`, and
+(`ping`, `list_apps`, `list_tools`, `list_windows`, `screen_size`, and
 `cursor_position`) concurrently; exact-window and desktop session state stays
 serialized. The client matches responses by `request_id`, so completion order
 does not change the caller's result order. Mutating methods stay on `request`
@@ -245,7 +249,7 @@ When present, `request_id` is preserved end to end for Core task/turn tracing.
 Binary image attachments are written to `--output-dir`; `shared_memory` keeps
 image pixels out of the Host control pipe.
 
-`--parallel-discovery` batches contiguous `list_apps`, `list_tools`,
+`--parallel-discovery` batches contiguous `ping`, `list_apps`, `list_tools`,
 `list_windows`, `screen_size`, and `cursor_position` requests for up to 5 ms or
 32 lines, preserves input order and `request_id`, and leaves stateful,
 visual, browser, and mutating requests serialized.
@@ -281,7 +285,7 @@ Native tool results expose every returned image in `attachments`. The single
 binary frame following the JSON response is the concatenation of those images;
 each descriptor gives its `offset`, `length`, and `mime_type`.
 
-The supported request surface is `hello`, `list_apps`, `list_tools`, `list_windows`, `wait_for_window`, `launch_app`, `open_session`,
+The supported request surface is `hello`, `ping`, `list_apps`, `list_tools`, `list_windows`, `wait_for_window`, `launch_app`, `open_session`,
 `get_window_state`, `change_window_state` (`activate`), `snapshot`,
 `accessibility_snapshot`, `verify_state`, `call_tool`, `call_global_tool`, `get_session_state`, `cursor_tool`, `escalate_session`, `find`, `wait_for`, `browser_snapshot`,
 `browser_prepare`, `browser_navigate`, `browser_click`, `browser_type`, `browser_pointer`,
@@ -446,8 +450,9 @@ cargo test --workspace --all-targets
 CI checks layout, formatting, workspace tests, the locked release build, and a
 real release-binary E2E on Windows, Linux, and macOS. The E2E validates the
 machine manifest, platform identity, shared-memory negotiation, a spawned Host
-handshake, pipelined request correlation, and the embedded CUA application/tool
-inventories without requiring an interactive desktop. The release workflow
+handshake, lightweight ping, pipelined/streaming request correlation, invalid
+request recovery, and the embedded CUA application/tool inventories without
+requiring an interactive desktop. The release workflow
 packages the `dcc-mcp-cua` binary as platform archives and attaches them to the
 GitHub release.
 

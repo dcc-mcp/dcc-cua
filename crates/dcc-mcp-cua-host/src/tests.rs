@@ -18,12 +18,27 @@ async fn write_json_request(
 
 #[rstest]
 #[tokio::test]
-async fn process_connection_negotiates_and_rejects_duplicate_hello() {
+async fn process_connection_requires_hello_pings_and_rejects_duplicate_hello() {
     let (mut client, server_stream): (DuplexStream, DuplexStream) = tokio::io::duplex(16 * 1024);
     let server = tokio::spawn(process_connection(
         ComputerUseDriver::create().unwrap(),
         server_stream,
     ));
+
+    write_json_request(
+        &mut client,
+        json!({"request_id":"pre-hello", "method":"ping", "params":{}}),
+    )
+    .await
+    .unwrap();
+    let response = read_frame(&mut client, MAX_JSON_FRAME_BYTES)
+        .await
+        .unwrap()
+        .unwrap();
+    let response: Value = serde_json::from_slice(&response).unwrap();
+    assert_eq!(response["type"], "error");
+    assert_eq!(response["code"], "protocol_error");
+    assert_eq!(response["request_id"], "pre-hello");
 
     let hello = json!({
         "request_id": "hello-1",
@@ -53,6 +68,26 @@ async fn process_connection_negotiates_and_rejects_duplicate_hello() {
             .as_array()
             .is_some_and(|items| { items.iter().any(|item| item == "window_inventory_filters") })
     );
+    assert!(
+        response["capabilities"]
+            .as_array()
+            .is_some_and(|items| { items.iter().any(|item| item == "host_ping") })
+    );
+
+    write_json_request(
+        &mut client,
+        json!({"request_id":"ping-1", "method":"ping", "params":{}}),
+    )
+    .await
+    .unwrap();
+    let response = read_frame(&mut client, MAX_JSON_FRAME_BYTES)
+        .await
+        .unwrap()
+        .unwrap();
+    let response: Value = serde_json::from_slice(&response).unwrap();
+    assert_eq!(response["type"], "pong");
+    assert_eq!(response["request_id"], "ping-1");
+    assert_eq!(response["protocol_version"], HOST_PROTOCOL_VERSION);
 
     write_json_request(
         &mut client,
@@ -291,6 +326,13 @@ fn app_launch_grant_defaults_to_denied() {
 
 #[rstest]
 fn app_requests_parse_with_host_params_frames() {
+    assert!(matches!(
+        serde_json::from_value::<Request>(json!({
+            "method": "ping",
+            "params": {}
+        })),
+        Ok(Request::Ping {})
+    ));
     assert!(matches!(
         serde_json::from_value::<Request>(json!({
             "method": "list_apps",
@@ -723,6 +765,7 @@ fn app_requests_parse_with_host_params_frames() {
 
 #[rstest]
 fn only_stateless_discovery_uses_parallel_dispatch() {
+    assert!(is_parallel_request(&Request::Ping {}));
     assert!(is_parallel_request(&Request::ListApps {}));
     assert!(is_parallel_request(&Request::ListTools {}));
     assert!(is_parallel_request(&Request::ScreenSize {}));

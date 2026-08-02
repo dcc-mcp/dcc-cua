@@ -32,6 +32,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         host_call(&flags).await?;
         return Ok(());
     }
+    if command == "ping" {
+        host_ping(&flags).await?;
+        return Ok(());
+    }
     if command == "host-batch" {
         host_batch(&flags).await?;
         return Ok(());
@@ -278,6 +282,15 @@ async fn host_call(flags: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         value["_dcc_mcp_binary_output"] = json!(path);
     }
     println!("{}", serde_json::to_string_pretty(&value)?);
+    connection.shutdown().await?;
+    Ok(())
+}
+
+async fn host_ping(flags: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let snapshot_transport = snapshot_transport(flags)?;
+    let mut connection = connect_host(flags, snapshot_transport).await?;
+    let response = connection.client_mut().ping().await?;
+    println!("{}", serde_json::to_string_pretty(&response.value)?);
     connection.shutdown().await?;
     Ok(())
 }
@@ -1624,6 +1637,7 @@ fn print_help() {
   apps
   tools
   call --tool NAME [--json JSON|--json-file PATH] [--app APP|--pid PID --window-id ID] [--output FILE]
+  ping [--endpoint PATH|--spawn BINARY]
   host-call --method NAME [--json JSON|--json-file PATH] [--endpoint PATH|--spawn BINARY] [--snapshot-transport binary_frame|shared_memory] [--output FILE]
   host-batch --json JSON_ARRAY [--endpoint PATH|--spawn BINARY] [--snapshot-transport binary_frame|shared_memory] [--output-dir DIR]
   host-jsonl [--endpoint PATH|--spawn BINARY] [--parallel-discovery] [--snapshot-transport binary_frame|shared_memory] [--output-dir DIR]

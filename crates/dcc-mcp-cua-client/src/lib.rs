@@ -376,6 +376,11 @@ impl HostClient {
         self.capabilities.iter().any(|value| value == capability)
     }
 
+    /// Cheap Host liveness check that does not call into the native CUA backend.
+    pub async fn ping(&mut self) -> HostClientResult<HostResponse> {
+        self.request("ping", json!({})).await
+    }
+
     /// Send one request and read its JSON response plus an optional image frame.
     pub async fn request(
         &mut self,
@@ -688,7 +693,8 @@ impl HostClient {
 fn is_pipeline_safe_method(method: &str) -> bool {
     matches!(
         method,
-        "list_apps"
+        "ping"
+            | "list_apps"
             | "list_tools"
             | "list_windows"
             | "desktop_snapshot"
@@ -730,7 +736,7 @@ fn response_capabilities(response: &Value) -> HostClientResult<Vec<String>> {
 pub fn is_parallel_discovery_method(method: &str) -> bool {
     matches!(
         method,
-        "list_apps" | "list_tools" | "list_windows" | "screen_size" | "cursor_position"
+        "ping" | "list_apps" | "list_tools" | "list_windows" | "screen_size" | "cursor_position"
     )
 }
 

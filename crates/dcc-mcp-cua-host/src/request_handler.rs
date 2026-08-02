@@ -36,6 +36,7 @@ pub(super) async fn handle_request(
 
     match request {
         Request::Hello(_) => unreachable!(),
+        Request::Ping {} => Ok((ping_response(), None)),
         Request::Cancel {
             session_id,
             task_grant_id,

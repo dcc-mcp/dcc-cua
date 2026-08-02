@@ -74,6 +74,7 @@ fn jsonl_parser_requires_method_and_object_params() {
 
 #[rstest]
 fn parallel_discovery_is_limited_to_stateless_methods() {
+    assert!(is_parallel_discovery_method("ping"));
     assert!(is_parallel_discovery_method("list_apps"));
     assert!(is_parallel_discovery_method("cursor_position"));
     assert!(!is_parallel_discovery_method("snapshot"));
@@ -103,6 +104,11 @@ fn manifest_is_a_machine_readable_core_launch_contract() {
         manifest["host"]["capabilities"]
             .as_array()
             .is_some_and(|values| values.iter().any(|value| value == "two_axis_scroll"))
+    );
+    assert!(
+        manifest["host"]["capabilities"]
+            .as_array()
+            .is_some_and(|values| values.iter().any(|value| value == "host_ping"))
     );
     assert_eq!(
         manifest["upstream_driver"]["top_level_aliases"]["daemon"],
