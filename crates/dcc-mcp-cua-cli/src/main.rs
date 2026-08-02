@@ -2,7 +2,9 @@ use std::env;
 use std::fs;
 use std::io::Read;
 
-use dcc_mcp_cua_client::{HostClient, HostProcess, HostResponse, SnapshotTransport};
+use dcc_mcp_cua_client::{
+    HostClient, HostClientError, HostProcess, HostResponse, SnapshotTransport,
+};
 use dcc_mcp_cua_core::{
     ComputerUseAction, ComputerUseClipboardWriteRequest, ComputerUseDriver,
     ComputerUseLaunchRequest, ComputerUseTargetScope,
@@ -10,6 +12,7 @@ use dcc_mcp_cua_core::{
 use dcc_mcp_cua_host::{HostTransport, run as run_host};
 use dcc_mcp_cua_shm::{SharedImageDescriptor, SharedImageReader};
 use serde_json::json;
+use tokio::io::{AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader, BufWriter};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -22,6 +25,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     if command == "host-batch" {
         host_batch(&flags).await?;
+        return Ok(());
+    }
+    if command == "host-jsonl" {
+        host_jsonl(&flags).await?;
         return Ok(());
     }
     let driver = ComputerUseDriver::create()?;
@@ -188,6 +195,153 @@ async fn host_batch(flags: &[String]) -> Result<(), Box<dyn std::error::Error>> 
     println!("{}", serde_json::to_string_pretty(&values)?);
     connection.shutdown().await?;
     Ok(())
+}
+
+async fn host_jsonl(flags: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let snapshot_transport = snapshot_transport(flags)?;
+    let mut connection = connect_host(flags, snapshot_transport).await?;
+    let output_dir = flag_value(flags, "--output-dir");
+    if let Some(path) = output_dir.as_deref() {
+        fs::create_dir_all(path)?;
+    }
+    let stdin = tokio::io::stdin();
+    let stdout = tokio::io::stdout();
+    let mut lines = BufReader::new(stdin).lines();
+    let mut output = BufWriter::new(stdout);
+    let mut index = 0_usize;
+
+    while let Some(line) = lines.next_line().await? {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let request = match parse_jsonl_request(line) {
+            Ok(request) => request,
+            Err(error) => {
+                write_jsonl_response(
+                    &mut output,
+                    json!({
+                        "type": "error",
+                        "code": "invalid_request",
+                        "message": error,
+                    }),
+                )
+                .await?;
+                index = index.saturating_add(1);
+                continue;
+            }
+        };
+        let response = match connection
+            .client_mut()
+            .request(&request.method, request.params)
+            .await
+        {
+            Ok(response) => match jsonl_response_value(response, output_dir.as_deref(), index) {
+                Ok(value) => value,
+                Err(error) => {
+                    write_jsonl_response(
+                        &mut output,
+                        json!({
+                            "type": "error",
+                            "code": "output_error",
+                            "message": error.to_string(),
+                        }),
+                    )
+                    .await?;
+                    return Err(error);
+                }
+            },
+            Err(error @ HostClientError::Remote { .. }) => host_error_value(&error),
+            Err(error) => {
+                write_jsonl_response(&mut output, host_error_value(&error)).await?;
+                return Err(error.into());
+            }
+        };
+        write_jsonl_response(&mut output, response).await?;
+        index = index.saturating_add(1);
+    }
+    connection.shutdown().await?;
+    Ok(())
+}
+
+struct JsonlRequest {
+    method: String,
+    params: serde_json::Value,
+}
+
+fn parse_jsonl_request(line: &str) -> Result<JsonlRequest, String> {
+    let value: serde_json::Value = serde_json::from_str(line)
+        .map_err(|error| format!("JSONL request is invalid JSON: {error}"))?;
+    let object = value
+        .as_object()
+        .ok_or_else(|| "JSONL request must be an object".to_owned())?;
+    let method = object
+        .get("method")
+        .and_then(serde_json::Value::as_str)
+        .filter(|method| !method.is_empty())
+        .ok_or_else(|| "JSONL request requires a non-empty method".to_owned())?;
+    let params = object.get("params").cloned().unwrap_or_else(|| json!({}));
+    if !params.is_object() {
+        return Err("JSONL request params must be an object".to_owned());
+    }
+    Ok(JsonlRequest {
+        method: method.to_owned(),
+        params,
+    })
+}
+
+fn jsonl_response_value(
+    response: HostResponse,
+    output_dir: Option<&str>,
+    index: usize,
+) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    let mut value = response.value;
+    if let Some(bytes) = response.binary_attachment {
+        let directory = output_dir.ok_or(
+            "JSONL response contains image bytes; pass --output-dir or negotiate shared_memory",
+        )?;
+        let path = format!("{directory}/response-{index}.bin");
+        fs::write(&path, bytes)?;
+        value["_dcc_mcp_binary_output"] = json!(path);
+    }
+    Ok(value)
+}
+
+fn host_error_value(error: &HostClientError) -> serde_json::Value {
+    match error {
+        HostClientError::Io(error) => json!({
+            "type": "error",
+            "code": "transport_error",
+            "message": error.to_string(),
+        }),
+        HostClientError::Protocol(message) => json!({
+            "type": "error",
+            "code": "protocol_error",
+            "message": message,
+        }),
+        HostClientError::Remote {
+            code,
+            message,
+            response,
+        } => {
+            let mut value = response.clone();
+            value["type"] = json!("error");
+            value["code"] = json!(code);
+            value["message"] = json!(message);
+            value
+        }
+    }
+}
+
+async fn write_jsonl_response<W: AsyncWrite + Unpin>(
+    output: &mut W,
+    value: serde_json::Value,
+) -> Result<(), std::io::Error> {
+    let body =
+        serde_json::to_vec(&value).map_err(|error| std::io::Error::other(error.to_string()))?;
+    output.write_all(&body).await?;
+    output.write_all(b"\n").await?;
+    output.flush().await
 }
 
 fn parse_host_batch(
@@ -646,7 +800,7 @@ fn has_flag(flags: &[String], name: &str) -> bool {
 
 fn print_help() {
     println!(
-        "dcc-mcp-cua\n\n  list [--app APP]\n  apps\n  tools\n  call --tool NAME [--json JSON|--json-file PATH] [--app APP|--pid PID --window-id ID] [--output FILE]\n  host-call --method NAME [--json JSON|--json-file PATH] [--endpoint PATH|--spawn BINARY] [--snapshot-transport binary_frame|shared_memory] [--output FILE]\n  host-batch --json JSON_ARRAY [--endpoint PATH|--spawn BINARY] [--snapshot-transport binary_frame|shared_memory] [--output-dir DIR]\n  desktop-snapshot [--output FILE]\n  screen-size\n  cursor-position\n  launch --name NAME|--bundle-id ID|--aumid ID|--path PATH|--launch-path PATH [--url URL] [--arg ARG] [--new-instance] [--start-minimized]\n  terminate --app APP --confirm\n  snapshot --app APP [--output FILE]\n  act --app APP --action-json JSON\n  verify --app APP --expect-json JSON [--timeout-ms N] [--stable-samples N]\n  desktop-act --action-json JSON [--session ID]\n  clipboard-read --app APP [--include-text]\n  clipboard-write --app APP --text TEXT|--image-path FILE|--file-path FILE\n  doctor\n  host [--stdio|--endpoint PATH]\n\nHost uses versioned big-endian JSON frames. Hello version 1 negotiates binary-frame or shared-memory snapshots and supports request_id correlation."
+        "dcc-mcp-cua\n\n  list [--app APP]\n  apps\n  tools\n  call --tool NAME [--json JSON|--json-file PATH] [--app APP|--pid PID --window-id ID] [--output FILE]\n  host-call --method NAME [--json JSON|--json-file PATH] [--endpoint PATH|--spawn BINARY] [--snapshot-transport binary_frame|shared_memory] [--output FILE]\n  host-batch --json JSON_ARRAY [--endpoint PATH|--spawn BINARY] [--snapshot-transport binary_frame|shared_memory] [--output-dir DIR]\n  host-jsonl [--endpoint PATH|--spawn BINARY] [--snapshot-transport binary_frame|shared_memory] [--output-dir DIR]\n  desktop-snapshot [--output FILE]\n  screen-size\n  cursor-position\n  launch --name NAME|--bundle-id ID|--aumid ID|--path PATH|--launch-path PATH [--url URL] [--arg ARG] [--new-instance] [--start-minimized]\n  terminate --app APP --confirm\n  snapshot --app APP [--output FILE]\n  act --app APP --action-json JSON\n  verify --app APP --expect-json JSON [--timeout-ms N] [--stable-samples N]\n  desktop-act --action-json JSON [--session ID]\n  clipboard-read --app APP [--include-text]\n  clipboard-write --app APP --text TEXT|--image-path FILE|--file-path FILE\n  doctor\n  host [--stdio|--endpoint PATH]\n\nHost uses versioned big-endian JSON frames. Hello version 1 negotiates binary-frame or shared-memory snapshots and supports request_id correlation."
     );
     println!(
         "Window snapshots/actions accept --escalate --escalation-reason REASON when an explicit desktop visual fallback approval is required."
@@ -686,5 +840,14 @@ mod tests {
             ]))
             .is_err()
         );
+    }
+
+    #[test]
+    fn jsonl_parser_requires_method_and_object_params() {
+        let request = parse_jsonl_request(r#"{"method":"list_apps"}"#).unwrap();
+        assert_eq!(request.method, "list_apps");
+        assert_eq!(request.params, json!({}));
+        assert!(parse_jsonl_request("[]").is_err());
+        assert!(parse_jsonl_request(r#"{"method":"list_apps","params":[]}"#).is_err());
     }
 }

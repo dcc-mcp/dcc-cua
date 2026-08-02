@@ -78,6 +78,9 @@ cargo run -p dcc-mcp-cua-cli -- host
 cargo run -p dcc-mcp-cua-cli -- host-call --method list_apps --json '{}'
 cargo run -p dcc-mcp-cua-cli -- host-batch --json '[{"method":"list_apps","params":{}},{"method":"screen_size","params":{}}]'
 cargo run -p dcc-mcp-cua-cli -- host-call --spawn target/debug/dcc-mcp-cua --method list_apps --json '{}'
+
+# Keep one Host connection open and process one JSON request per input line.
+cargo run -p dcc-mcp-cua-cli -- host-jsonl --spawn target/debug/dcc-mcp-cua --output-dir artifacts
 ```
 
 `dcc-mcp-cua-client` is the direct embedding path for dcc-mcp-core. It opens
@@ -118,6 +121,17 @@ persistent Host connection. If a response contains image pixels, pass
 `--output-dir DIR`; metadata-only batches can omit it. `host-call` and
 `host-batch` accept `--spawn BINARY` for a one-shot stdio-managed Host when a
 supervisor does not already own an endpoint.
+
+`host-jsonl` is the streaming CLI bridge for dcc-mcp-core and scripts. It keeps
+one negotiated Host session open, reads one `{method, params}` object per line
+from stdin, and writes one response object per line to stdout. Binary image
+attachments are written to `--output-dir`; `shared_memory` keeps image pixels
+out of the Host control pipe.
+
+```text
+{"method":"list_apps","params":{}}
+{"method":"list_windows","params":{"on_screen_only":true}}
+```
 
 For large or frequent images, use `connect_default_with_transport(...,
 SnapshotTransport::SharedMemory)` and open the returned descriptor with
