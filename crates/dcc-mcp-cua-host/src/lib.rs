@@ -452,6 +452,8 @@ struct TaskGrant {
     #[serde(default)]
     window_handle: Option<u64>,
     #[serde(default)]
+    window_title: Option<String>,
+    #[serde(default)]
     allow_raw_input: bool,
     #[serde(default)]
     allow_app_launch: bool,

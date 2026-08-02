@@ -262,6 +262,9 @@ the target field is already focused. This maps to CUA's cross-platform
 `type_text_chars` input path and does not accept screen coordinates.
 `list_windows` supports optional `app`, `pid`, and `on_screen_only` filters;
 these are applied by the native backend before the response crosses IPC.
+`open_session` grants may bind an exact `window_title` when Core does not yet
+have the PID/HWND; the Host still requires the title to resolve to exactly one
+native window before starting the CUA session.
 `wait_for_window` accepts `query` with `app`, `process_id`, `window_handle`,
 `window_title`, and `on_screen_only`; its `timeout_ms` is capped at 30 seconds.
 When a request ID is supplied, cancel it on the same connection with

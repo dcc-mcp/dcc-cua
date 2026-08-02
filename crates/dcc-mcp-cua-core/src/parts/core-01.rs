@@ -53,6 +53,16 @@ impl ComputerUseTargetScope {
                 "Computer Use requires an exact process_id, window_handle, or window_title",
             ));
         }
+        if self
+            .window_title
+            .as_deref()
+            .is_some_and(|title| title.is_empty() || title.chars().count() > MAX_WINDOW_QUERY_CHARS)
+        {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::InvalidTarget,
+                format!("window_title must contain 1..{MAX_WINDOW_QUERY_CHARS} characters"),
+            ));
+        }
         Ok(())
     }
 }
@@ -611,7 +621,43 @@ fn tool_schema_from_inventory(inventory: &Value, name: &str) -> ComputerUseResul
                 ComputerUseErrorCode::InvalidAction,
                 format!("CUA tool {name:?} is not present in the live inventory"),
             )
-        })
+    })
+}
+
+async fn enable_session_marker(
+    driver: &ComputerUseDriver,
+    session_id: &str,
+    context: &str,
+) -> ComputerUseResult<()> {
+    let result = driver
+        .driver
+        .call_tool(
+            "set_agent_cursor_enabled".into(),
+            json!({"session": session_id, "enabled": true}).to_string(),
+        )
+        .await;
+    let result = match result {
+        Ok(result) => result,
+        Err(error) => {
+            cleanup_started_session(driver, session_id).await;
+            return Err(map_driver_error(context, error));
+        }
+    };
+    if let Err(error) = ensure_tool_ok(context, &result) {
+        cleanup_started_session(driver, session_id).await;
+        return Err(error);
+    }
+    Ok(())
+}
+
+async fn cleanup_started_session(driver: &ComputerUseDriver, session_id: &str) {
+    let _ = driver
+        .driver
+        .call_tool(
+            "end_session".into(),
+            json!({"session": session_id}).to_string(),
+        )
+        .await;
 }
 
 /// A long-lived, exact-window Computer Use session.
@@ -691,16 +737,12 @@ impl ComputerUseDesktopSession {
             .await
             .map_err(|error| map_driver_error("start CUA desktop session", error))?;
         ensure_tool_ok("start CUA desktop session", &result)?;
-        let cursor = self
-            .driver
-            .driver
-            .call_tool(
-                "set_agent_cursor_enabled".into(),
-                json!({"session": self.session_id, "enabled": true}).to_string(),
-            )
-            .await
-            .map_err(|error| map_driver_error("show CUA desktop marker", error))?;
-        ensure_tool_ok("show CUA desktop marker", &cursor)?;
+        enable_session_marker(
+            &self.driver,
+            &self.session_id,
+            "show CUA desktop marker",
+        )
+        .await?;
         self.active = true;
         self.marker.visible = true;
         Ok(json!({"success": true, "active": true, "marker": self.marker}))
@@ -841,6 +883,12 @@ impl ComputerUseSession {
 
     /// Start CUA's bounded window session and show its color-coded marker.
     pub async fn start(&mut self) -> ComputerUseResult<Value> {
+        if self.active {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::InvalidAction,
+                "window session is already active",
+            ));
+        }
         let target = self.resolve_target().await?;
         let result = self
             .driver
@@ -858,16 +906,7 @@ impl ComputerUseSession {
             .await
             .map_err(|error| map_driver_error("start CUA session", error))?;
         ensure_tool_ok("start CUA session", &result)?;
-        let cursor = self
-            .driver
-            .driver
-            .call_tool(
-                "set_agent_cursor_enabled".into(),
-                json!({"session": self.session_id, "enabled": true}).to_string(),
-            )
-            .await
-            .map_err(|error| map_driver_error("show CUA marker", error))?;
-        ensure_tool_ok("show CUA marker", &cursor)?;
+        enable_session_marker(&self.driver, &self.session_id, "show CUA marker").await?;
         self.target = Some(target.clone());
         self.active = true;
         self.escalated = false;

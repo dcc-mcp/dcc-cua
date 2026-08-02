@@ -5,6 +5,14 @@ use super::*;
 #[rstest]
 fn scope_requires_exact_identity_and_action_rejects_unbounded_text() {
     assert!(ComputerUseTargetScope::default().validate().is_err());
+    assert!(
+        ComputerUseTargetScope {
+            window_title: Some(String::new()),
+            ..Default::default()
+        }
+        .validate()
+        .is_err()
+    );
     let action = ComputerUseAction {
         action: "type".into(),
         text: Some("x".repeat(MAX_TEXT_UTF16_UNITS + 1)),

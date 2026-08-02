@@ -380,7 +380,7 @@ pub(super) async fn handle_request(
             let scope = ComputerUseTargetScope {
                 process_id: grant.process_id,
                 window_handle: grant.window_handle,
-                window_title: None,
+                window_title: grant.window_title,
             };
             let mut session = driver.session(scope, grant.dcc_type.clone(), session_id.clone())?;
             session.start().await?;

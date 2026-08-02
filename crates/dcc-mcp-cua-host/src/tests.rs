@@ -408,6 +408,22 @@ fn app_requests_parse_with_host_params_frames() {
         })),
         Ok(Request::LaunchApp { .. })
     ));
+    let request = serde_json::from_value::<Request>(json!({
+        "method": "open_session",
+        "params": {
+            "session_id": "session-title",
+            "grant": {
+                "task_grant_id": "task-1",
+                "dcc_type": "unreal",
+                "window_title": "PCG Fab"
+            }
+        }
+    }))
+    .unwrap();
+    let Request::OpenSession { grant, .. } = request else {
+        panic!("expected open_session request");
+    };
+    assert_eq!(grant.window_title.as_deref(), Some("PCG Fab"));
     assert!(matches!(
         serde_json::from_value::<Request>(json!({
             "method": "terminate_app",
