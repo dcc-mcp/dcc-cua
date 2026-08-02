@@ -3,6 +3,7 @@ use std::fs;
 use std::io::Read;
 use std::process::Command as ProcessCommand;
 
+mod manifest;
 mod update;
 
 use dcc_mcp_cua_client::{
@@ -37,6 +38,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     if command == "host-jsonl" {
         host_jsonl(&flags).await?;
+        return Ok(());
+    }
+    if command == "manifest" {
+        println!("{}", serde_json::to_string_pretty(&manifest::document())?);
+        return Ok(());
+    }
+    if command == "cua-driver" {
+        let (upstream, upstream_flags) = upstream_invocation(&flags)?;
+        run_upstream_cua_command(upstream, upstream_flags)?;
         return Ok(());
     }
     if matches!(command.as_str(), "daemon" | "mcp" | "recording") {
@@ -192,6 +202,13 @@ fn upstream_command(command: &str) -> &str {
     } else {
         command
     }
+}
+
+fn upstream_invocation(flags: &[String]) -> Result<(&str, &[String]), &'static str> {
+    flags
+        .split_first()
+        .map(|(command, flags)| (command.as_str(), flags))
+        .ok_or("cua-driver requires an upstream command")
 }
 
 async fn list_apps(driver: &ComputerUseDriver) -> Result<(), Box<dyn std::error::Error>> {
@@ -1595,6 +1612,8 @@ fn print_help() {
   host-call --method NAME [--json JSON|--json-file PATH] [--endpoint PATH|--spawn BINARY] [--snapshot-transport binary_frame|shared_memory] [--output FILE]
   host-batch --json JSON_ARRAY [--endpoint PATH|--spawn BINARY] [--snapshot-transport binary_frame|shared_memory] [--output-dir DIR]
   host-jsonl [--endpoint PATH|--spawn BINARY] [--parallel-discovery] [--snapshot-transport binary_frame|shared_memory] [--output-dir DIR]
+  manifest
+  cua-driver COMMAND [CUA_DRIVER_ARGS...]
   daemon [CUA_DRIVER_ARGS...]
   mcp [CUA_DRIVER_ARGS...]
   recording start|stop|status|render [CUA_DRIVER_ARGS...]

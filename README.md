@@ -69,6 +69,8 @@ cargo run -p dcc-mcp-cua-cli -- apps
 cargo run -p dcc-mcp-cua-cli -- tools
 cargo run -p dcc-mcp-cua-cli -- call --tool check_permissions --json '{}'
 cargo run -p dcc-mcp-cua-cli -- call --tool set_config --json-file payload.json
+cargo run -p dcc-mcp-cua-cli -- manifest
+cargo run -p dcc-mcp-cua-cli -- cua-driver browser-approve --pid 4242 --profile-mode isolated_new
 cargo run -p dcc-mcp-cua-cli -- desktop-snapshot --output desktop.png
 cargo run -p dcc-mcp-cua-cli -- screen-size
 cargo run -p dcc-mcp-cua-cli -- cursor-position
@@ -98,6 +100,13 @@ binary. `recording render` can be invoked as
 the upstream executable is not on `PATH`. `recording start|stop|status` keeps
 the upstream daemon lifecycle, while this project's Host routes remain the
 grant-gated DCC-MCP surface.
+
+`manifest` is the stable machine-readable discovery entry for Core and other
+independent callers. It reports the current platform, Host protocol, frame
+limits, snapshot transports, capabilities, endpoint, and recommended stdio/
+JSONL launch arguments. `cua-driver COMMAND ...` forwards an official upstream
+command without copying its implementation; this includes the interactive
+`browser-approve` flow. Top-level `update` remains this project's updater.
 
 `list`, `apps`, `tools`, `desktop-snapshot`, `screen-size`, `cursor-position`, and
 `doctor` are read-only. `snapshot` and `act` require one exact

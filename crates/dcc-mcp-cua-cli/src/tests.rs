@@ -88,6 +88,33 @@ fn daemon_reuses_the_official_serve_command() {
 }
 
 #[rstest]
+fn manifest_is_a_machine_readable_core_launch_contract() {
+    let manifest = manifest::document();
+    assert_eq!(manifest["schema_version"], 1);
+    assert_eq!(manifest["rust_version"], "1.95");
+    assert_eq!(manifest["host"]["protocol_version"], 1);
+    assert_eq!(manifest["core_bridge"]["rust_crate"], "dcc-mcp-cua-client");
+    assert!(
+        manifest["host"]["capabilities"]
+            .as_array()
+            .is_some_and(|values| values.iter().any(|value| value == "browser_exact_binding"))
+    );
+    assert_eq!(
+        manifest["upstream_driver"]["top_level_aliases"]["daemon"],
+        "serve"
+    );
+}
+
+#[rstest]
+fn upstream_namespace_requires_an_explicit_command() {
+    let flags = strings(["browser-approve", "--pid", "42"]);
+    let (command, arguments) = upstream_invocation(&flags).unwrap();
+    assert_eq!(command, "browser-approve");
+    assert_eq!(arguments, &flags[1..]);
+    assert!(upstream_invocation(&[]).is_err());
+}
+
+#[rstest]
 fn diagnostics_preserve_upstream_health_and_structured_failures() {
     let healthy = diagnostic_result(Ok(ComputerUseToolResult {
         value: json!({"structuredContent": {"overall": "ok"}}),
