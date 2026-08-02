@@ -395,6 +395,16 @@ impl HostClient {
         &mut self,
         requests: impl IntoIterator<Item = (String, String, Value)>,
     ) -> HostClientResult<Vec<HostResponse>> {
+        let responses = self.request_batch_with_ids_all(requests).await?;
+        responses.into_iter().collect()
+    }
+
+    /// Send read-only requests in one flushed write and drain every response,
+    /// including remote errors, in caller order.
+    pub async fn request_batch_with_ids_all(
+        &mut self,
+        requests: impl IntoIterator<Item = (String, String, Value)>,
+    ) -> HostClientResult<Vec<HostClientResult<HostResponse>>> {
         if !self.hello_complete {
             return Err(HostClientError::Protocol(
                 "hello must complete before stateful requests".into(),
@@ -433,7 +443,8 @@ impl HostClient {
         }
         let mut received = Vec::with_capacity(request_ids.len());
         for request_id in request_ids {
-            received.push(self.receive_for_request(&request_id).await?);
+            let response = self.receive_for_request_raw(&request_id).await?;
+            received.push(response.into_result());
         }
         Ok(received)
     }
@@ -494,13 +505,22 @@ impl HostClient {
     }
 
     async fn receive_for_request(&mut self, request_id: &str) -> HostClientResult<HostResponse> {
+        self.receive_for_request_raw(request_id)
+            .await
+            .and_then(ReceivedResponse::into_result)
+    }
+
+    async fn receive_for_request_raw(
+        &mut self,
+        request_id: &str,
+    ) -> HostClientResult<ReceivedResponse> {
         if let Some(response) = self.pending_responses.remove(request_id) {
-            return response.into_result();
+            return Ok(response);
         }
         loop {
             let response = self.receive_response().await?;
             if response.request_id == request_id {
-                return response.into_result();
+                return Ok(response);
             }
             self.pending_responses
                 .insert(response.request_id.clone(), response);
@@ -612,6 +632,17 @@ fn is_pipeline_safe_method(method: &str) -> bool {
             | "recording_state"
             | "clipboard_read"
             | "desktop_session_snapshot"
+    )
+}
+
+/// Host methods that can execute concurrently without session or observation
+/// state. Callers may batch the broader read-only set, but only these methods
+/// use the Host's parallel dispatch path.
+#[must_use]
+pub fn is_parallel_discovery_method(method: &str) -> bool {
+    matches!(
+        method,
+        "list_apps" | "list_tools" | "list_windows" | "screen_size" | "cursor_position"
     )
 }
 
@@ -850,6 +881,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn client_batch_all_drains_remote_errors() {
+        let (client_stream, server_stream) = tokio::io::duplex(4096);
+        let server = tokio::spawn(fake_batch_mixed_server(server_stream));
+        let mut client = HostClient::from_stream(client_stream);
+        client.hello("batch-all-client").await.unwrap();
+
+        let results = client
+            .request_batch_with_ids_all(vec![
+                ("read-error".into(), "screen_size".into(), json!({})),
+                ("read-ok".into(), "cursor_position".into(), json!({})),
+            ])
+            .await
+            .unwrap();
+
+        assert!(matches!(
+            &results[0],
+            Err(HostClientError::Remote { code, .. }) if code == "not_ready"
+        ));
+        assert_eq!(results[1].as_ref().unwrap().value["request_id"], "read-ok");
+        server.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
     async fn client_rejects_mutations_from_request_batch() {
         let (client_stream, server_stream) = tokio::io::duplex(4096);
         let server = tokio::spawn(fake_hello_only_server(server_stream));
@@ -1045,6 +1099,41 @@ mod tests {
         )
         .await?;
         write_json_response(&mut stream, "core-read-1", json!({"type":"screen_size"})).await
+    }
+
+    async fn fake_batch_mixed_server(mut stream: DuplexStream) -> HostClientResult<()> {
+        let hello = read_frame(&mut stream, MAX_JSON_FRAME_BYTES)
+            .await?
+            .unwrap();
+        let hello: Value = serde_json::from_slice(&hello).unwrap();
+        write_json_response(
+            &mut stream,
+            hello["request_id"].as_str().unwrap(),
+            json!({"type":"hello"}),
+        )
+        .await?;
+
+        let first: Value = serde_json::from_slice(
+            &read_frame(&mut stream, MAX_JSON_FRAME_BYTES)
+                .await?
+                .unwrap(),
+        )
+        .unwrap();
+        let second: Value = serde_json::from_slice(
+            &read_frame(&mut stream, MAX_JSON_FRAME_BYTES)
+                .await?
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(first["request_id"], "read-error");
+        assert_eq!(second["request_id"], "read-ok");
+        write_json_response(&mut stream, "read-ok", json!({"type":"cursor_position"})).await?;
+        write_json_response(
+            &mut stream,
+            "read-error",
+            json!({"type":"error","code":"not_ready","message":"try again"}),
+        )
+        .await
     }
 
     async fn fake_cancel_server(mut stream: DuplexStream) -> HostClientResult<()> {

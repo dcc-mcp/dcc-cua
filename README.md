@@ -81,6 +81,8 @@ cargo run -p dcc-mcp-cua-cli -- host-call --spawn target/debug/dcc-mcp-cua --met
 
 # Keep one Host connection open and process one JSON request per input line.
 cargo run -p dcc-mcp-cua-cli -- host-jsonl --spawn target/debug/dcc-mcp-cua --output-dir artifacts
+# Batch only stateless discovery lines within a short window.
+cargo run -p dcc-mcp-cua-cli -- host-jsonl --parallel-discovery --spawn target/debug/dcc-mcp-cua
 ```
 
 `dcc-mcp-cua-client` is the direct embedding path for dcc-mcp-core. It opens
@@ -136,6 +138,11 @@ object per line from stdin, and writes one response object per line to stdout.
 When present, `request_id` is preserved end to end for Core task/turn tracing.
 Binary image attachments are written to `--output-dir`; `shared_memory` keeps
 image pixels out of the Host control pipe.
+
+`--parallel-discovery` batches contiguous `list_apps`, `list_tools`,
+`list_windows`, `screen_size`, and `cursor_position` requests for up to 5 ms or
+32 lines, preserves input order and `request_id`, and leaves stateful,
+visual, browser, and mutating requests serialized.
 
 ```text
 {"request_id":"core-task-42","method":"list_apps","params":{}}

@@ -3,7 +3,8 @@ use std::fs;
 use std::io::Read;
 
 use dcc_mcp_cua_client::{
-    HostClient, HostClientError, HostProcess, HostResponse, MAX_REQUEST_ID_CHARS, SnapshotTransport,
+    HostClient, HostClientError, HostProcess, HostResponse, MAX_REQUEST_ID_CHARS,
+    SnapshotTransport, is_parallel_discovery_method,
 };
 use dcc_mcp_cua_core::{
     ComputerUseAction, ComputerUseClipboardWriteRequest, ComputerUseDriver,
@@ -13,6 +14,9 @@ use dcc_mcp_cua_host::{HostTransport, run as run_host};
 use dcc_mcp_cua_shm::{SharedImageDescriptor, SharedImageReader};
 use serde_json::json;
 use tokio::io::{AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader, BufWriter};
+
+const MAX_PARALLEL_DISCOVERY_BATCH: usize = 32;
+const PARALLEL_DISCOVERY_WINDOW_MS: u64 = 5;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -222,8 +226,24 @@ async fn host_jsonl(flags: &[String]) -> Result<(), Box<dyn std::error::Error>> 
     let mut lines = BufReader::new(stdin).lines();
     let mut output = BufWriter::new(stdout);
     let mut index = 0_usize;
+    let parallel_discovery = has_flag(flags, "--parallel-discovery");
+    let mut pending_line = None;
 
-    while let Some(line) = lines.next_line().await? {
+    loop {
+        let (line_index, line) = match pending_line.take() {
+            Some(value) => value,
+            None => {
+                let Some(line) = lines.next_line().await? else {
+                    break;
+                };
+                if line.trim().is_empty() {
+                    continue;
+                }
+                let line_index = index;
+                index = index.saturating_add(1);
+                (line_index, line)
+            }
+        };
         let line = line.trim();
         if line.is_empty() {
             continue;
@@ -240,10 +260,95 @@ async fn host_jsonl(flags: &[String]) -> Result<(), Box<dyn std::error::Error>> 
                     }),
                 )
                 .await?;
-                index = index.saturating_add(1);
                 continue;
             }
         };
+
+        if parallel_discovery && is_parallel_discovery_method(&request.method) {
+            let mut batch = vec![(line_index, request)];
+            while batch.len() < MAX_PARALLEL_DISCOVERY_BATCH {
+                let next_line = match tokio::time::timeout(
+                    std::time::Duration::from_millis(PARALLEL_DISCOVERY_WINDOW_MS),
+                    lines.next_line(),
+                )
+                .await
+                {
+                    Ok(line) => line?,
+                    Err(_) => break,
+                };
+                let Some(next_line) = next_line else {
+                    break;
+                };
+                if next_line.trim().is_empty() {
+                    continue;
+                }
+                let next_index = index;
+                index = index.saturating_add(1);
+                match parse_jsonl_request(next_line.trim()) {
+                    Ok(next_request) if is_parallel_discovery_method(&next_request.method) => {
+                        batch.push((next_index, next_request));
+                    }
+                    Ok(_) => {
+                        pending_line = Some((next_index, next_line));
+                        break;
+                    }
+                    Err(error) => {
+                        write_jsonl_response(
+                            &mut output,
+                            json!({
+                                "type": "error",
+                                "code": "invalid_request",
+                                "message": error,
+                            }),
+                        )
+                        .await?;
+                    }
+                }
+            }
+
+            let mut metadata = Vec::with_capacity(batch.len());
+            let mut requests = Vec::with_capacity(batch.len());
+            for (request_index, request) in batch {
+                let request_id = request
+                    .request_id
+                    .unwrap_or_else(|| format!("host-jsonl-{request_index}"));
+                metadata.push(request_index);
+                requests.push((request_id, request.method, request.params));
+            }
+            let host_results = connection
+                .client_mut()
+                .request_batch_with_ids_all(requests)
+                .await?;
+            for (request_index, host_result) in metadata.into_iter().zip(host_results) {
+                let response = match host_result {
+                    Ok(response) => {
+                        match jsonl_response_value(response, output_dir.as_deref(), request_index) {
+                            Ok(value) => value,
+                            Err(error) => {
+                                write_jsonl_response(
+                                    &mut output,
+                                    json!({
+                                        "type": "error",
+                                        "code": "output_error",
+                                        "message": error.to_string(),
+                                    }),
+                                )
+                                .await?;
+                                return Err(error);
+                            }
+                        }
+                    }
+                    Err(error @ HostClientError::Remote { .. }) => host_error_value(&error),
+                    Err(error) => {
+                        write_jsonl_response(&mut output, host_error_value(&error)).await?;
+                        return Err(error.into());
+                    }
+                };
+                write_jsonl_response(&mut output, response).await?;
+            }
+            continue;
+        }
+
         let host_result = match request.request_id {
             Some(request_id) => {
                 connection
@@ -259,7 +364,8 @@ async fn host_jsonl(flags: &[String]) -> Result<(), Box<dyn std::error::Error>> 
             }
         };
         let response = match host_result {
-            Ok(response) => match jsonl_response_value(response, output_dir.as_deref(), index) {
+            Ok(response) => match jsonl_response_value(response, output_dir.as_deref(), line_index)
+            {
                 Ok(value) => value,
                 Err(error) => {
                     write_jsonl_response(
@@ -281,7 +387,6 @@ async fn host_jsonl(flags: &[String]) -> Result<(), Box<dyn std::error::Error>> 
             }
         };
         write_jsonl_response(&mut output, response).await?;
-        index = index.saturating_add(1);
     }
     connection.shutdown().await?;
     Ok(())
@@ -915,7 +1020,7 @@ fn has_flag(flags: &[String], name: &str) -> bool {
 
 fn print_help() {
     println!(
-        "dcc-mcp-cua\n\n  list [--app APP]\n  apps\n  tools\n  call --tool NAME [--json JSON|--json-file PATH] [--app APP|--pid PID --window-id ID] [--output FILE]\n  host-call --method NAME [--json JSON|--json-file PATH] [--endpoint PATH|--spawn BINARY] [--snapshot-transport binary_frame|shared_memory] [--output FILE]\n  host-batch --json JSON_ARRAY [--endpoint PATH|--spawn BINARY] [--snapshot-transport binary_frame|shared_memory] [--output-dir DIR]\n  host-jsonl [--endpoint PATH|--spawn BINARY] [--snapshot-transport binary_frame|shared_memory] [--output-dir DIR]\n  desktop-snapshot [--output FILE]\n  screen-size\n  cursor-position\n  launch --name NAME|--bundle-id ID|--aumid ID|--path PATH|--launch-path PATH [--url URL] [--arg ARG] [--new-instance] [--start-minimized]\n  terminate --app APP --confirm\n  snapshot --app APP [--output FILE]\n  act --app APP --action-json JSON\n  verify --app APP --expect-json JSON [--timeout-ms N] [--stable-samples N]\n  desktop-act --action-json JSON [--session ID]\n  clipboard-read --app APP [--include-text]\n  clipboard-write --app APP --text TEXT|--image-path FILE|--file-path FILE\n  doctor\n  host [--stdio|--endpoint PATH]\n\nHost uses versioned big-endian JSON frames. Hello version 1 negotiates binary-frame or shared-memory snapshots and supports request_id correlation."
+        "dcc-mcp-cua\n\n  list [--app APP]\n  apps\n  tools\n  call --tool NAME [--json JSON|--json-file PATH] [--app APP|--pid PID --window-id ID] [--output FILE]\n  host-call --method NAME [--json JSON|--json-file PATH] [--endpoint PATH|--spawn BINARY] [--snapshot-transport binary_frame|shared_memory] [--output FILE]\n  host-batch --json JSON_ARRAY [--endpoint PATH|--spawn BINARY] [--snapshot-transport binary_frame|shared_memory] [--output-dir DIR]\n  host-jsonl [--endpoint PATH|--spawn BINARY] [--parallel-discovery] [--snapshot-transport binary_frame|shared_memory] [--output-dir DIR]\n  desktop-snapshot [--output FILE]\n  screen-size\n  cursor-position\n  launch --name NAME|--bundle-id ID|--aumid ID|--path PATH|--launch-path PATH [--url URL] [--arg ARG] [--new-instance] [--start-minimized]\n  terminate --app APP --confirm\n  snapshot --app APP [--output FILE]\n  act --app APP --action-json JSON\n  verify --app APP --expect-json JSON [--timeout-ms N] [--stable-samples N]\n  desktop-act --action-json JSON [--session ID]\n  clipboard-read --app APP [--include-text]\n  clipboard-write --app APP --text TEXT|--image-path FILE|--file-path FILE\n  doctor\n  host [--stdio|--endpoint PATH]\n\nHost uses versioned big-endian JSON frames. Hello version 1 negotiates binary-frame or shared-memory snapshots and supports request_id correlation."
     );
     println!(
         "Window snapshots/actions accept --escalate --escalation-reason REASON when an explicit desktop visual fallback approval is required."
@@ -982,5 +1087,13 @@ mod tests {
         assert!(parse_jsonl_request(r#"{"request_id":"","method":"list_apps"}"#).is_err());
         assert!(parse_jsonl_request("[]").is_err());
         assert!(parse_jsonl_request(r#"{"method":"list_apps","params":[]}"#).is_err());
+    }
+
+    #[test]
+    fn parallel_discovery_is_limited_to_stateless_methods() {
+        assert!(is_parallel_discovery_method("list_apps"));
+        assert!(is_parallel_discovery_method("cursor_position"));
+        assert!(!is_parallel_discovery_method("snapshot"));
+        assert!(!is_parallel_discovery_method("desktop_snapshot"));
     }
 }
