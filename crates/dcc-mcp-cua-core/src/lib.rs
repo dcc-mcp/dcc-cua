@@ -78,6 +78,16 @@ pub struct ComputerUseAction {
     pub keys: Vec<String>,
 }
 
+/// A bounded crop of the latest exact-window observation.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ComputerUseZoomRequest {
+    pub observation_id: String,
+    pub x1: f64,
+    pub y1: f64,
+    pub x2: f64,
+    pub y2: f64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct ComputerUsePoint {
     pub x: f64,
@@ -825,6 +835,42 @@ impl ComputerUseSession {
             observation,
             accessibility,
         })
+    }
+
+    /// Capture a native-resolution crop from the latest window observation.
+    pub async fn zoom(
+        &self,
+        request: &ComputerUseZoomRequest,
+    ) -> ComputerUseResult<ComputerUseToolResult> {
+        self.ensure_active()?;
+        let observation = self.observation.as_ref().ok_or_else(|| {
+            ComputerUseError::new(
+                ComputerUseErrorCode::StaleObservation,
+                "take a screenshot before zooming an observation region",
+            )
+        })?;
+        validate_zoom_request(request, observation)?;
+        let target = self.revalidate_target().await?;
+        if target.window_id != observation.window_handle || target.pid != observation.process_id {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::StaleObservation,
+                "the exact target window changed after the screenshot",
+            ));
+        }
+        let result = self
+            .call_bound_tool(
+                "zoom",
+                json!({
+                    "pid": target.pid,
+                    "window_id": target.window_id,
+                    "x1": request.x1,
+                    "y1": request.y1,
+                    "x2": request.x2,
+                    "y2": request.y2,
+                }),
+            )
+            .await?;
+        native_tool_result(result)
     }
 
     async fn capture_window_from_desktop(
@@ -1928,8 +1974,9 @@ fn native_tool_allowed_globally(name: &str) -> bool {
 }
 
 fn native_tool_allowed_in_window_session(name: &str) -> bool {
-    const DEDICATED_TOOLS: [&str; 31] = [
+    const DEDICATED_TOOLS: [&str; 32] = [
         "get_window_state",
+        "zoom",
         "verify_state",
         "click",
         "double_click",
@@ -2120,6 +2167,46 @@ fn validate_action(action: &ComputerUseAction) -> ComputerUseResult<()> {
         return Err(ComputerUseError::new(
             ComputerUseErrorCode::InvalidAction,
             "set_text and set_value require a semantic element_index",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_zoom_request(
+    request: &ComputerUseZoomRequest,
+    observation: &ComputerUseObservation,
+) -> ComputerUseResult<()> {
+    if request.observation_id != observation.observation_id {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::StaleObservation,
+            "zoom observation_id does not match the latest screenshot",
+        ));
+    }
+    if [request.x1, request.y1, request.x2, request.y2]
+        .into_iter()
+        .any(|coordinate| !coordinate.is_finite() || coordinate < 0.0)
+    {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::InvalidAction,
+            "zoom coordinates must be finite and non-negative",
+        ));
+    }
+    if request.x2 <= request.x1 || request.y2 <= request.y1 {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::InvalidAction,
+            "zoom region must have positive width and height",
+        ));
+    }
+    if request.x2 - request.x1 > 500.0 {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::InvalidAction,
+            "zoom region width must not exceed 500 pixels",
+        ));
+    }
+    if request.x2 > f64::from(observation.width) || request.y2 > f64::from(observation.height) {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::InvalidAction,
+            "zoom region must stay within the latest screenshot",
         ));
     }
     Ok(())
@@ -2563,6 +2650,62 @@ mod tests {
                 Some(2),
             )
             .is_ok()
+        );
+    }
+
+    #[test]
+    fn zoom_is_fenced_to_the_latest_observation_and_bounds() {
+        let observation = ComputerUseObservation {
+            observation_id: "obs-1".into(),
+            window_handle: 7,
+            process_id: 42,
+            window_title: "DCC".into(),
+            width: 1280,
+            height: 720,
+            source_rect: [0, 0, 1280, 720],
+            capture_backend: "test".into(),
+            capture_provenance: json!({}),
+            session_id: "session".into(),
+        };
+        let valid = ComputerUseZoomRequest {
+            observation_id: "obs-1".into(),
+            x1: 10.0,
+            y1: 20.0,
+            x2: 400.0,
+            y2: 200.0,
+        };
+        assert!(validate_zoom_request(&valid, &observation).is_ok());
+        assert_eq!(
+            validate_zoom_request(
+                &ComputerUseZoomRequest {
+                    observation_id: "old".into(),
+                    ..valid.clone()
+                },
+                &observation,
+            )
+            .unwrap_err()
+            .code,
+            ComputerUseErrorCode::StaleObservation
+        );
+        assert!(
+            validate_zoom_request(
+                &ComputerUseZoomRequest {
+                    x2: 511.0,
+                    ..valid.clone()
+                },
+                &observation,
+            )
+            .is_err()
+        );
+        assert!(
+            validate_zoom_request(
+                &ComputerUseZoomRequest {
+                    x2: 1_281.0,
+                    ..valid
+                },
+                &observation,
+            )
+            .is_err()
         );
     }
 

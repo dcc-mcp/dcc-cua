@@ -168,6 +168,7 @@ The supported request surface is `hello`, `list_apps`, `list_tools`, `list_windo
 `recording_state`,
 `desktop_snapshot`, `screen_size`, `cursor_position`, `open_desktop_session`,
 `desktop_session_snapshot`, `execute_desktop_action`, `stop_desktop_session`,
+`zoom`,
 `execute_action`, `resume_session`, `terminate_app`, and
 `stop_session`; `cancel` is available while `wait_for` is active on the same
 connection. Semantic actions use CUA `element_index` values from the latest
@@ -224,6 +225,12 @@ ordered and are rejected until that wait completes.
 `activate` is scoped through CUA's `bring_to_front` operation; the returned
 window state is always revalidated against the exact PID/HWND target.
 
+`zoom` is a typed, read-only crop of the latest window `snapshot`. It requires
+the matching `observation_id`, keeps the exact PID/HWND binding, limits the
+requested width to 500 pixels, and returns the JPEG through the negotiated
+binary or shared-memory image transport. This is useful for dense DCC/UE/Fab
+panels where the full observation is resized.
+
 Window actions accept CUA's `element_token` as an alternative to
 `element_index`; when both are supplied the token wins. They also accept
 `delivery_mode: "background" | "foreground"`. The default is `background`,
@@ -264,6 +271,7 @@ Example host requests:
 {"method":"list_apps","params":{}}
 {"method":"launch_app","params":{"grant":{"task_grant_id":"task-1","dcc_type":"unreal","allow_app_launch":true},"launch":{"name":"Calculator"}}}
 {"method":"call_tool","params":{"session_id":"session-1","task_grant_id":"task-1","window_capability":"cua-window-...","tool":"debug_window_info","arguments":{}}}
+{"method":"zoom","params":{"session_id":"session-1","task_grant_id":"task-1","window_capability":"cua-window-...","request":{"observation_id":"session-1-obs-1","x1":120,"y1":80,"x2":420,"y2":220}}}
 {"method":"call_global_tool","params":{"grant":{"task_grant_id":"task-1","dcc_type":"desktop","allow_native_tool":true},"tool":"health_report","arguments":{}}}
 ```
 

@@ -31,7 +31,7 @@ use dcc_mcp_cua_core::{
     ComputerUseAction, ComputerUseClipboardWriteRequest, ComputerUseDesktopSession,
     ComputerUseDriver, ComputerUseError, ComputerUseErrorCode, ComputerUseImage, ComputerUsePoint,
     ComputerUseRecordingStartRequest, ComputerUseResult, ComputerUseSession,
-    ComputerUseTargetScope, ComputerUseToolResult,
+    ComputerUseTargetScope, ComputerUseToolResult, ComputerUseZoomRequest,
 };
 use dcc_mcp_cua_shm::SharedImage;
 
@@ -57,6 +57,7 @@ pub const HOST_CAPABILITIES: &[&str] = &[
     "session_escalation",
     "cursor_controls",
     "uia_snapshot_and_actions",
+    "zoomed_window_observation",
     "semantic_value_actions",
     "bounded_wait_for",
     "binary_snapshot_frames",
@@ -240,6 +241,12 @@ enum Request {
         max_depth: u32,
         #[allow(dead_code)]
         max_nodes: u32,
+    },
+    Zoom {
+        session_id: String,
+        task_grant_id: String,
+        window_capability: String,
+        request: ComputerUseZoomRequest,
     },
     AccessibilitySnapshot {
         #[allow(dead_code)]
@@ -1405,6 +1412,22 @@ async fn handle_request(
                 "node_count": node_count,
                 "image": image,
             });
+            Ok((response, attachment))
+        }
+        Request::Zoom {
+            session_id,
+            task_grant_id,
+            window_capability,
+            request,
+        } => {
+            let host =
+                authorized_session(sessions, &session_id, &task_grant_id, &window_capability)?;
+            let observation_id = request.observation_id.clone();
+            let result = host.session.zoom(&request).await?;
+            let (mut response, attachment) =
+                native_tool_response(Some(&session_id), "zoom", result);
+            response["type"] = Value::String("zoom".into());
+            response["observation_id"] = Value::String(observation_id);
             Ok((response, attachment))
         }
         Request::AccessibilitySnapshot {
@@ -2666,6 +2689,24 @@ mod tests {
                 "params": {}
             })),
             Ok(Request::DesktopSnapshot {})
+        ));
+        assert!(matches!(
+            serde_json::from_value::<Request>(json!({
+                "method": "zoom",
+                "params": {
+                    "session_id": "session-1",
+                    "task_grant_id": "task-1",
+                    "window_capability": "cap-1",
+                    "request": {
+                        "observation_id": "session-1-obs-1",
+                        "x1": 10,
+                        "y1": 20,
+                        "x2": 400,
+                        "y2": 200
+                    }
+                }
+            })),
+            Ok(Request::Zoom { .. })
         ));
         assert!(matches!(
             serde_json::from_value::<Request>(json!({

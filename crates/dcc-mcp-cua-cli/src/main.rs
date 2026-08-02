@@ -7,7 +7,7 @@ use dcc_mcp_cua_client::{
 };
 use dcc_mcp_cua_core::{
     ComputerUseAction, ComputerUseClipboardWriteRequest, ComputerUseDriver,
-    ComputerUseLaunchRequest, ComputerUseTargetScope,
+    ComputerUseLaunchRequest, ComputerUseTargetScope, ComputerUseZoomRequest,
 };
 use dcc_mcp_cua_host::{HostTransport, run as run_host};
 use dcc_mcp_cua_shm::{SharedImageDescriptor, SharedImageReader};
@@ -57,6 +57,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             run_host(driver, transport).await?;
         }
         "snapshot" => snapshot(&driver, &flags).await?,
+        "zoom" => zoom(&driver, &flags).await?,
         "verify" => verify_state(&driver, &flags).await?,
         "act" => act(&driver, &flags).await?,
         "desktop-act" => desktop_act(&driver, &flags).await?,
@@ -683,6 +684,50 @@ async fn snapshot(
     Ok(())
 }
 
+async fn zoom(
+    driver: &ComputerUseDriver,
+    flags: &[String],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let scope = select_scope(driver, flags).await?;
+    let app = flag_value(flags, "--app").unwrap_or_else(|| "DCC application".into());
+    let session_id = flag_value(flags, "--session").unwrap_or_else(|| "dcc-mcp-zoom-cli".into());
+    let coordinate = |name: &str| -> Result<f64, Box<dyn std::error::Error>> {
+        flag_value(flags, name)
+            .ok_or_else(|| format!("zoom requires {name}").into())
+            .and_then(|value| Ok(value.parse()?))
+    };
+    let output = flag_value(flags, "--output");
+    let mut session = driver.session(scope, app, session_id)?;
+    session.start().await?;
+    let result = async {
+        maybe_escalate(&mut session, flags).await?;
+        let screenshot = session.screenshot().await?;
+        let zoom = session
+            .zoom(&ComputerUseZoomRequest {
+                observation_id: screenshot.observation.observation_id.clone(),
+                x1: coordinate("--x1")?,
+                y1: coordinate("--y1")?,
+                x2: coordinate("--x2")?,
+                y2: coordinate("--y2")?,
+            })
+            .await?;
+        Ok::<_, Box<dyn std::error::Error>>((screenshot.observation, zoom))
+    }
+    .await;
+    let stop_result = session.stop().await;
+    let (observation, result) = result?;
+    stop_result?;
+    let mut value = result.value;
+    if let Some(path) = output {
+        let image = result.images.first().ok_or("zoom returned no image")?;
+        fs::write(&path, &image.data)?;
+        value["_dcc_mcp_image_output"] = json!(path);
+    }
+    value["observation"] = serde_json::to_value(observation)?;
+    println!("{}", serde_json::to_string_pretty(&value)?);
+    Ok(())
+}
+
 async fn act(
     driver: &ComputerUseDriver,
     flags: &[String],
@@ -875,6 +920,7 @@ fn print_help() {
     println!(
         "Window snapshots/actions accept --escalate --escalation-reason REASON when an explicit desktop visual fallback approval is required."
     );
+    println!("Zoom: zoom --app APP --x1 N --y1 N --x2 N --y2 N [--output FILE].");
 }
 
 #[cfg(test)]
