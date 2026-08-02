@@ -34,6 +34,10 @@ const MAX_NATIVE_TOOL_IMAGES: usize = 8;
 const MAX_NATIVE_TOOL_IMAGE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_NATIVE_TOOL_TOTAL_IMAGE_BYTES: usize = 64 * 1024 * 1024;
 const MOUSE_CURSOR_THEME: &str = "cua.default";
+const DEFAULT_SNAPSHOT_MAX_ELEMENTS: u32 = 512;
+const DEFAULT_SNAPSHOT_MAX_DEPTH: u32 = 16;
+const MAX_SNAPSHOT_ELEMENTS: u32 = 2_000;
+const MAX_SNAPSHOT_DEPTH: u32 = 25;
 static OBSERVATION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 /// Exact identity supplied by the adapter/runtime. Agent input cannot widen it.
@@ -945,6 +949,16 @@ impl ComputerUseSession {
 
     /// Capture a fresh exact-window observation. Every action must consume it.
     pub async fn screenshot(&mut self) -> ComputerUseResult<ComputerUseScreenshot> {
+        self.screenshot_with_bounds(DEFAULT_SNAPSHOT_MAX_ELEMENTS, DEFAULT_SNAPSHOT_MAX_DEPTH)
+            .await
+    }
+
+    /// Capture a fresh observation with bounded semantic-tree context.
+    pub async fn screenshot_with_bounds(
+        &mut self,
+        max_elements: u32,
+        max_depth: u32,
+    ) -> ComputerUseResult<ComputerUseScreenshot> {
         self.ensure_active()?;
         let target = self.revalidate_target().await?;
         let result = self
@@ -956,8 +970,8 @@ impl ComputerUseSession {
                     "window_id": target.window_id,
                     "pid": target.pid,
                     "include_screenshot": true,
-                    "max_elements": 1,
-                    "max_depth": 1,
+                    "max_elements": bounded_snapshot_elements(max_elements),
+                    "max_depth": bounded_snapshot_depth(max_depth),
                     "session": self.session_id,
                 })
                 .to_string(),
@@ -1172,8 +1186,8 @@ impl ComputerUseSession {
                     "window_id": target.window_id,
                     "pid": target.pid,
                     "include_screenshot": false,
-                    "max_elements": max_elements.max(1),
-                    "max_depth": max_depth.max(1),
+                    "max_elements": bounded_snapshot_elements(max_elements),
+                    "max_depth": bounded_snapshot_depth(max_depth),
                     "session": self.session_id,
                 })
                 .to_string(),
@@ -1864,6 +1878,22 @@ fn bounds(value: &serde_json::Map<String, Value>) -> Option<[i32; 4]> {
         value["width"].as_i64()?.try_into().ok()?,
         value["height"].as_i64()?.try_into().ok()?,
     ])
+}
+
+fn bounded_snapshot_elements(value: u32) -> u32 {
+    if value == 0 {
+        DEFAULT_SNAPSHOT_MAX_ELEMENTS
+    } else {
+        value.min(MAX_SNAPSHOT_ELEMENTS)
+    }
+}
+
+fn bounded_snapshot_depth(value: u32) -> u32 {
+    if value == 0 {
+        DEFAULT_SNAPSHOT_MAX_DEPTH
+    } else {
+        value.min(MAX_SNAPSHOT_DEPTH)
+    }
 }
 
 fn validate_target_policy(target: &WindowTarget) -> ComputerUseResult<()> {

@@ -3,6 +3,14 @@ use rstest::rstest;
 use super::*;
 
 #[rstest]
+fn snapshot_bounds_use_agent_defaults_and_cap_context() {
+    assert_eq!(bounded_snapshot_elements(0), DEFAULT_SNAPSHOT_MAX_ELEMENTS);
+    assert_eq!(bounded_snapshot_depth(0), DEFAULT_SNAPSHOT_MAX_DEPTH);
+    assert_eq!(bounded_snapshot_elements(u32::MAX), MAX_SNAPSHOT_ELEMENTS);
+    assert_eq!(bounded_snapshot_depth(u32::MAX), MAX_SNAPSHOT_DEPTH);
+}
+
+#[rstest]
 fn scope_requires_exact_identity_and_action_rejects_unbounded_text() {
     assert!(ComputerUseTargetScope::default().validate().is_err());
     assert!(

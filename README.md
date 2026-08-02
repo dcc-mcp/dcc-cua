@@ -105,8 +105,12 @@ inventory over Host IPC. `wait-window` polls CUA's native window inventory for a
 process ID, window handle, or exact title. It is capped at 30 seconds and is
 intended for launch/switch orchestration before a target-bound action.
 
-`accessibility` reads the current bounded semantic tree without screenshot
-pixels. `window-state` and `activate` operate on the same exact target scope.
+`snapshot` returns the screenshot plus a bounded semantic tree (default 512
+elements and 16 levels). `accessibility` reads a larger semantic tree without
+transferring screenshot pixels when the agent needs to locate a deeply nested
+control. Prefer the returned `element_token`/`element_index` over guessed
+pixels, then verify the post-action state. `window-state` and `activate`
+operate on the same exact target scope.
 Long-lived recording remains on the persistent Host session so its start/stop
 lifecycle is not lost when a one-shot CLI process exits.
 

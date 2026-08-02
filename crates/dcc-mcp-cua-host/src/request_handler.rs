@@ -469,11 +469,15 @@ pub(super) async fn handle_request(
             session_id,
             task_grant_id,
             window_capability,
-            ..
+            max_depth,
+            max_nodes,
         } => {
             let host =
                 authorized_session(sessions, &session_id, &task_grant_id, &window_capability)?;
-            let screenshot = host.session.screenshot().await?;
+            let screenshot = host
+                .session
+                .screenshot_with_bounds(max_nodes, max_depth)
+                .await?;
             let observation_id = screenshot.observation.observation_id.clone();
             host.latest_observation_id = Some(observation_id.clone());
             host.latest_accessibility_state_id = Some(observation_id.clone());
