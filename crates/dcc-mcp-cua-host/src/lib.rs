@@ -34,10 +34,10 @@ use dcc_mcp_cua_browser::{
 };
 use dcc_mcp_cua_core::{
     ComputerUseAction, ComputerUseClipboardWriteRequest, ComputerUseDesktopSession,
-    ComputerUseDriver, ComputerUseError, ComputerUseErrorCode, ComputerUseImage, ComputerUsePoint,
-    ComputerUseRecordingStartRequest, ComputerUseResult, ComputerUseScreenshot, ComputerUseSession,
-    ComputerUseTargetScope, ComputerUseToolResult, ComputerUseWindowQuery,
-    ComputerUseWindowWaitRequest, ComputerUseZoomRequest,
+    ComputerUseDesktopSnapshot, ComputerUseDriver, ComputerUseError, ComputerUseErrorCode,
+    ComputerUseImage, ComputerUsePoint, ComputerUseRecordingStartRequest, ComputerUseResult,
+    ComputerUseScreenshot, ComputerUseSession, ComputerUseTargetScope, ComputerUseToolResult,
+    ComputerUseWindowQuery, ComputerUseWindowWaitRequest, ComputerUseZoomRequest,
 };
 use dcc_mcp_cua_shm::SharedImage;
 
@@ -130,14 +130,14 @@ impl HostTransport {
             if resolved {
                 return format!(r"\\.\pipe\dcc-mcp-cua-v1-session-{session_id}");
             }
-            return r"\\.\pipe\dcc-mcp-cua-v1".to_owned();
+            r"\\.\pipe\dcc-mcp-cua-v1".to_owned()
         }
         #[cfg(unix)]
         {
-            return std::env::temp_dir()
+            std::env::temp_dir()
                 .join("dcc-mcp-cua-v1.sock")
                 .to_string_lossy()
-                .into_owned();
+                .into_owned()
         }
         #[cfg(not(any(windows, unix)))]
         {
@@ -193,6 +193,8 @@ enum Request {
         desktop_capability: String,
         observation_id: String,
         action: HostAction,
+        #[serde(default)]
+        capture_after: bool,
     },
     StopDesktopSession {
         session_id: String,
@@ -1389,29 +1391,29 @@ fn native_tool_response_with_transport(
     } else {
         attachments.first().cloned()
     };
-    if !images.is_empty() {
-        if let Some(content) = value.get_mut("content").and_then(Value::as_array_mut) {
-            for (index, item) in content
-                .iter_mut()
-                .filter(|item| item["type"] == "image")
-                .enumerate()
-            {
-                let Some(image) = images.get(index) else {
-                    break;
-                };
-                item["data"] = Value::Null;
-                item["encoding"] = Value::String(
-                    if use_shared_memory {
-                        "shared_memory"
-                    } else {
-                        "binary_frame"
-                    }
-                    .into(),
-                );
-                item["attachment_index"] = json!(index);
-                item["offset"] = json!(attachments[index]["offset"]);
-                item["length"] = json!(image.data.len());
-            }
+    if !images.is_empty()
+        && let Some(content) = value.get_mut("content").and_then(Value::as_array_mut)
+    {
+        for (index, item) in content
+            .iter_mut()
+            .filter(|item| item["type"] == "image")
+            .enumerate()
+        {
+            let Some(image) = images.get(index) else {
+                break;
+            };
+            item["data"] = Value::Null;
+            item["encoding"] = Value::String(
+                if use_shared_memory {
+                    "shared_memory"
+                } else {
+                    "binary_frame"
+                }
+                .into(),
+            );
+            item["attachment_index"] = json!(index);
+            item["offset"] = json!(attachments[index]["offset"]);
+            item["length"] = json!(image.data.len());
         }
     }
     let mut response = json!({
@@ -1469,6 +1471,16 @@ fn action_completed_response(
     Ok((response, attachment))
 }
 
+fn response_image_descriptor(response: &Value, image_index: usize) -> Option<Value> {
+    response["attachments"]
+        .as_array()
+        .and_then(|attachments| attachments.get(image_index))
+        .cloned()
+        .or_else(|| {
+            (image_index == 0 && !response["image"].is_null()).then(|| response["image"].clone())
+        })
+}
+
 fn action_completed_with_snapshot_response(
     session_id: &str,
     action_id: String,
@@ -1502,14 +1514,40 @@ fn action_completed_with_snapshot_response(
         mode,
         shared_image,
     )?;
-    let descriptor = response["attachments"]
-        .as_array()
-        .and_then(|attachments| attachments.get(image_index))
-        .cloned()
-        .or_else(|| {
-            (image_index == 0 && !response["image"].is_null()).then(|| response["image"].clone())
-        });
-    if let Some(descriptor) = descriptor {
+    if let Some(descriptor) = response_image_descriptor(&response, image_index) {
+        post_snapshot["image"] = descriptor;
+    }
+    response["post_snapshot"] = post_snapshot;
+    Ok((response, attachment))
+}
+
+fn desktop_action_completed_with_snapshot_response(
+    session_id: &str,
+    action_id: String,
+    mut result: ComputerUseToolResult,
+    snapshot: ComputerUseDesktopSnapshot,
+    mode: SnapshotTransport,
+    shared_image: &mut Option<SharedImage>,
+) -> Result<(Value, Option<Vec<u8>>), HostError> {
+    let image_index = result.images.len();
+    let mut post_snapshot = json!({
+        "success": true,
+        "observation_id": snapshot.observation_id,
+        "state": snapshot.state,
+    });
+    result.images.push(ComputerUseImage {
+        data: snapshot.data,
+        mime_type: "image/png".into(),
+    });
+    let (mut response, attachment) = action_completed_response(
+        session_id,
+        action_id,
+        "desktop CUA action completed with a fresh post-action snapshot",
+        result,
+        mode,
+        shared_image,
+    )?;
+    if let Some(descriptor) = response_image_descriptor(&response, image_index) {
         post_snapshot["image"] = descriptor;
     }
     response["post_snapshot"] = post_snapshot;
@@ -1713,11 +1751,11 @@ async fn write_frame_unflushed<W: AsyncWrite + Unpin>(
 async fn serve_endpoint(driver: ComputerUseDriver, endpoint: String) -> Result<(), HostError> {
     #[cfg(windows)]
     {
-        return serve_named_pipe(driver, endpoint).await;
+        serve_named_pipe(driver, endpoint).await
     }
     #[cfg(unix)]
     {
-        return serve_unix_socket(driver, endpoint).await;
+        serve_unix_socket(driver, endpoint).await
     }
     #[cfg(not(any(windows, unix)))]
     {

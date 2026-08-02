@@ -196,6 +196,7 @@ pub(super) async fn handle_request(
             desktop_capability,
             observation_id,
             action,
+            capture_after,
         } => {
             let host = authorized_desktop_session(
                 desktop_sessions,
@@ -232,9 +233,41 @@ pub(super) async fn handle_request(
             }
             let action = action.into_computer_use(observation_id)?;
             let result = host.session.perform_action(&action).await?;
+            let action_id = format!("cua-desktop-action-{}", Uuid::new_v4());
+            if capture_after {
+                return match host.session.screenshot().await {
+                    Ok(snapshot) => desktop_action_completed_with_snapshot_response(
+                        &session_id,
+                        action_id,
+                        result,
+                        snapshot,
+                        mode,
+                        &mut host.latest_shared_image,
+                    ),
+                    Err(error) => {
+                        let code = error_code(&HostError::ComputerUse(error.clone()));
+                        let (mut response, attachment) = action_completed_response(
+                            &session_id,
+                            action_id,
+                            "desktop CUA action completed, but the post-action snapshot failed",
+                            result,
+                            mode,
+                            &mut host.latest_shared_image,
+                        )?;
+                        response["post_snapshot"] = json!({
+                            "success": false,
+                            "action_was_executed": true,
+                            "code": code,
+                            "message": error.message,
+                        });
+                        response["observation_required"] = Value::Bool(true);
+                        Ok((response, attachment))
+                    }
+                };
+            }
             action_completed_response(
                 &session_id,
-                format!("cua-desktop-action-{}", Uuid::new_v4()),
+                action_id,
                 "desktop CUA action completed",
                 result,
                 mode,

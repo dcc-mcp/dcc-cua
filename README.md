@@ -282,6 +282,9 @@ request, returns its screenshot and semantic tree as `post_snapshot`, and keeps
 that observation current for the next action. The handshake advertises this as
 `action_post_snapshot`. If only the post-action capture fails, the response
 still reports the completed mutation and sets `observation_required: true`.
+`execute_desktop_action` accepts the same `capture_after: true` flag and returns
+the next full-display image and desktop state in `post_snapshot`; it has no
+window accessibility-tree bounds.
 Semantic actions use CUA `element_index` values from the latest
 accessibility snapshot, and `set_text`/`set_value`/`set_checked` use CUA's
 native semantic value path. Coordinate actions remain available for

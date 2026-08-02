@@ -84,7 +84,7 @@ async fn process_connection_negotiates_and_rejects_duplicate_hello() {
 #[rstest]
 fn frame_prefix_is_big_endian_and_bounded() {
     assert_eq!(u32::from_be_bytes((42_u32).to_be_bytes()), 42);
-    assert!(MAX_BINARY_FRAME_BYTES > MAX_JSON_FRAME_BYTES);
+    const { assert!(MAX_BINARY_FRAME_BYTES > MAX_JSON_FRAME_BYTES) };
 }
 
 #[cfg(unix)]
@@ -497,6 +497,7 @@ fn app_requests_parse_with_host_params_frames() {
                 "task_grant_id": "task-1",
                 "desktop_capability": "cap-1",
                 "observation_id": "desktop-obs-1",
+                "capture_after": true,
                 "action": {
                     "action": "click",
                     "input_kind": "raw_input",
@@ -506,7 +507,10 @@ fn app_requests_parse_with_host_params_frames() {
                 }
             }
         })),
-        Ok(Request::ExecuteDesktopAction { .. })
+        Ok(Request::ExecuteDesktopAction {
+            capture_after: true,
+            ..
+        })
     ));
     assert!(matches!(
         serde_json::from_value::<Request>(json!({
@@ -870,6 +874,43 @@ fn action_post_snapshot_reuses_the_single_attachment_frame() {
     .unwrap();
     assert_eq!(response["post_snapshot"]["observation_id"], "obs-after");
     assert_eq!(response["post_snapshot"]["node_count"], 1);
+    assert_eq!(response["post_snapshot"]["image"]["index"], 1);
+    assert_eq!(response["post_snapshot"]["image"]["offset"], 2);
+    assert_eq!(attachment, Some(vec![7, 8, 1, 2, 3]));
+}
+
+#[rstest]
+fn desktop_action_post_snapshot_reuses_the_single_attachment_frame() {
+    let mut shared = None;
+    let (response, attachment) = desktop_action_completed_with_snapshot_response(
+        "desktop-1",
+        "action-1".into(),
+        ComputerUseToolResult {
+            value: json!({"accepted": true}),
+            text: "clicked".into(),
+            images: vec![ComputerUseImage {
+                data: vec![7, 8],
+                mime_type: "image/png".into(),
+            }],
+            degraded: false,
+        },
+        ComputerUseDesktopSnapshot {
+            data: vec![1, 2, 3],
+            state: json!({"screen_size": {"width": 1920, "height": 1080}}),
+            observation_id: "desktop-obs-after".into(),
+        },
+        SnapshotTransport::BinaryFrame,
+        &mut shared,
+    )
+    .unwrap();
+    assert_eq!(
+        response["post_snapshot"]["observation_id"],
+        "desktop-obs-after"
+    );
+    assert_eq!(
+        response["post_snapshot"]["state"]["screen_size"]["width"],
+        1920
+    );
     assert_eq!(response["post_snapshot"]["image"]["index"], 1);
     assert_eq!(response["post_snapshot"]["image"]["offset"], 2);
     assert_eq!(attachment, Some(vec![7, 8, 1, 2, 3]));
