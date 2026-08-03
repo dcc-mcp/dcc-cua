@@ -68,8 +68,12 @@ impl UiaSession {
         let index = resolve_index(state, action.element_index, action.element_token.as_deref())?;
         let fence = state.fences[index].clone();
         let action_name = normalized_action(&action.action)?;
-        let foreground = (action.delivery_mode.as_deref() == Some("background"))
-            .then(|| unsafe { GetForegroundWindow() } as usize);
+        let foreground = (action.delivery_mode.as_deref() == Some("background")).then(|| {
+            (
+                unsafe { GetForegroundWindow() } as usize,
+                self.target.process_id,
+            )
+        });
         let payload = json!({
             "mode": "act",
             "scope": self.scope(true),
@@ -85,7 +89,9 @@ impl UiaSession {
         });
         let raw = self.request(&payload);
         self.snapshot = None;
-        let foreground = foreground.map(restore_foreground).transpose();
+        let foreground = foreground
+            .map(|(window, process_id)| restore_foreground(window, process_id))
+            .transpose();
         let raw = raw?;
         foreground?;
         ensure_ok(&raw)?;
@@ -119,9 +125,8 @@ impl UiaSession {
     }
 }
 
-fn restore_foreground(expected: usize) -> Result<(), UiaError> {
-    let current = unsafe { GetForegroundWindow() };
-    if current as usize == expected {
+fn restore_foreground(expected: usize, controlled_process_id: u32) -> Result<(), UiaError> {
+    if !foreground_restore_still_required(expected, controlled_process_id) {
         return Ok(());
     }
     let expected = expected as windows_sys::Win32::Foundation::HWND;
@@ -129,10 +134,11 @@ fn restore_foreground(expected: usize) -> Result<(), UiaError> {
         return Err(background_delivery_error());
     }
     unsafe { SetForegroundWindow(expected) };
-    if unsafe { GetForegroundWindow() } == expected {
+    if !foreground_restore_still_required(expected as usize, controlled_process_id) {
         return Ok(());
     }
 
+    let current = unsafe { GetForegroundWindow() };
     let current_thread = unsafe { GetCurrentThreadId() };
     let foreground_thread = unsafe { GetWindowThreadProcessId(current, std::ptr::null_mut()) };
     let expected_thread = unsafe { GetWindowThreadProcessId(expected, std::ptr::null_mut()) };
@@ -146,6 +152,16 @@ fn restore_foreground(expected: usize) -> Result<(), UiaError> {
     unsafe {
         BringWindowToTop(expected);
         SetForegroundWindow(expected);
+    }
+    let mut preserved = false;
+    for _ in 0..20 {
+        if !foreground_restore_still_required(expected as usize, controlled_process_id) {
+            preserved = true;
+            break;
+        }
+        thread::sleep(Duration::from_millis(5));
+    }
+    unsafe {
         if attached_expected {
             AttachThreadInput(current_thread, expected_thread, 0);
         }
@@ -153,11 +169,34 @@ fn restore_foreground(expected: usize) -> Result<(), UiaError> {
             AttachThreadInput(current_thread, foreground_thread, 0);
         }
     }
-    if unsafe { GetForegroundWindow() } == expected {
+    if preserved {
         Ok(())
     } else {
         Err(background_delivery_error())
     }
+}
+
+fn foreground_restore_still_required(expected: usize, controlled_process_id: u32) -> bool {
+    let current = unsafe { GetForegroundWindow() };
+    let mut current_process_id = 0;
+    if !current.is_null() {
+        unsafe { GetWindowThreadProcessId(current, &mut current_process_id) };
+    }
+    foreground_restore_required(
+        expected,
+        current as usize,
+        current_process_id,
+        controlled_process_id,
+    )
+}
+
+pub(crate) fn foreground_restore_required(
+    expected: usize,
+    current: usize,
+    current_process_id: u32,
+    controlled_process_id: u32,
+) -> bool {
+    current != expected && (current == 0 || current_process_id == controlled_process_id)
 }
 
 fn background_delivery_error() -> UiaError {
