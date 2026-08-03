@@ -12,7 +12,9 @@ use cua_driver_testkit::{
     BrowserFixtureServer, ChildReaper, FixtureJournal, harness_app, spawn_in_job,
 };
 #[cfg(feature = "gui-e2e")]
-use dcc_mcp_cua_client::{HostClient, HostProcess, HostResponse, SnapshotTransport};
+use dcc_mcp_cua_client::{
+    HostClient, HostClientError, HostProcess, HostResponse, SnapshotTransport,
+};
 #[cfg(feature = "gui-e2e")]
 use rstest::rstest;
 #[cfg(feature = "gui-e2e")]
@@ -263,6 +265,75 @@ fn wait_for_fixture_file(path: &std::path::Path, id: &str, expected: &str) {
     }
 }
 
+#[cfg(all(feature = "gui-e2e", windows))]
+fn physically_focus_window(window_handle: u64) {
+    // Match CUA's sentinel setup: a real click completes the Windows foreground-lock handshake.
+    use windows_sys::Win32::Foundation::{POINT, RECT};
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+        INPUT, INPUT_0, INPUT_MOUSE, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEINPUT,
+        SendInput,
+    };
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetCursorPos, GetForegroundWindow, GetWindowRect, SetCursorPos,
+    };
+
+    let window = window_handle as *mut core::ffi::c_void;
+    let mut rect = RECT::default();
+    let mut cursor = POINT::default();
+    unsafe {
+        assert_ne!(GetWindowRect(window, &mut rect), 0, "read fixture bounds");
+        assert_ne!(GetCursorPos(&mut cursor), 0, "read cursor position");
+        assert_ne!(
+            SetCursorPos((rect.left + rect.right) / 2, (rect.top + rect.bottom) / 2),
+            0,
+            "move cursor onto fixture"
+        );
+    }
+    let inputs = [
+        INPUT {
+            r#type: INPUT_MOUSE,
+            Anonymous: INPUT_0 {
+                mi: MOUSEINPUT {
+                    dwFlags: MOUSEEVENTF_LEFTDOWN,
+                    ..MOUSEINPUT::default()
+                },
+            },
+        },
+        INPUT {
+            r#type: INPUT_MOUSE,
+            Anonymous: INPUT_0 {
+                mi: MOUSEINPUT {
+                    dwFlags: MOUSEEVENTF_LEFTUP,
+                    ..MOUSEINPUT::default()
+                },
+            },
+        },
+    ];
+    let sent = unsafe {
+        SendInput(
+            inputs.len() as u32,
+            inputs.as_ptr(),
+            std::mem::size_of::<INPUT>() as i32,
+        )
+    };
+    unsafe {
+        assert_ne!(
+            SetCursorPos(cursor.x, cursor.y),
+            0,
+            "restore cursor position"
+        );
+    }
+    assert_eq!(sent, inputs.len() as u32, "focus fixture with one click");
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while unsafe { GetForegroundWindow() } != window {
+        assert!(
+            Instant::now() < deadline,
+            "fixture did not become foreground"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 #[cfg(feature = "gui-e2e")]
 async fn host_request(host: &mut HostProcess, method: &str, params: Value) -> HostResponse {
     client_request(host.client_mut(), method, params).await
@@ -280,6 +351,21 @@ async fn client_request(client: &mut HostClient, method: &str, params: Value) ->
         started.elapsed()
     );
     response
+}
+
+#[cfg(feature = "gui-e2e")]
+async fn expect_user_interrupted(client: &mut HostClient, params: Value) {
+    let error = tokio::time::timeout(
+        Duration::from_secs(90),
+        client.request("get_session_state", params),
+    )
+    .await
+    .expect("interrupted Host request exceeded 90 seconds")
+    .expect_err("the second endpoint session must observe the shared stop");
+    assert!(
+        matches!(error, HostClientError::Remote { ref code, .. } if code == "user_interrupted"),
+        "unexpected shared-stop response: {error:?}"
+    );
 }
 
 #[cfg(feature = "gui-e2e")]
@@ -1236,14 +1322,18 @@ async fn independent_endpoint_clients_serialize_scoped_raw_input() {
     for journal in &journals {
         wait_for_journal(journal, "lbl-counter", "counter=1");
     }
-    for (index, (session_id, _, _)) in sessions.iter().enumerate() {
-        client_request(
-            &mut clients[index],
-            "stop_session",
-            json!({"session_id": session_id}),
-        )
-        .await;
-    }
+    let interrupted = client_request(&mut clients[0], "interrupt_all", json!({})).await;
+    assert_eq!(interrupted.value["scope"], "host_process");
+    assert_eq!(interrupted.value["stopped_window_sessions"], 1);
+    expect_user_interrupted(
+        &mut clients[1],
+        json!({
+            "session_id": sessions[1].0,
+            "task_grant_id": sessions[1].1,
+            "window_capability": sessions[1].2,
+        }),
+    )
+    .await;
     drop(clients);
     drop(fixture_reaper);
     drop(endpoint_directory);
@@ -1394,7 +1484,7 @@ async fn controlled_native_menu_round_trip() {
 #[cfg(all(feature = "gui-e2e", windows))]
 #[rstest]
 #[tokio::test]
-async fn windows_background_uia_keeps_independent_endpoint_sessions_isolated() {
+async fn windows_endpoint_sessions_keep_background_uia_and_share_escape() {
     let binary = std::env::var_os("DCC_MCP_CUA_E2E_BINARY")
         .map(PathBuf::from)
         .expect("DCC_MCP_CUA_E2E_BINARY must point to dcc-mcp-cua");
@@ -1467,7 +1557,9 @@ async fn windows_background_uia_keeps_independent_endpoint_sessions_isolated() {
                     "dcc_type": "wpf",
                     "process_id": pid,
                     "window_handle": window_handle,
-                    "window_title": window_title
+                    "window_title": window_title,
+                    "allow_raw_input": true,
+                    "allow_session_escalation": true
                 }
             }),
         )
@@ -1586,14 +1678,89 @@ async fn windows_background_uia_keeps_independent_endpoint_sessions_isolated() {
         background_action_observed,
         "two WPF sessions must exercise at least one background UIA action"
     );
-    for (client_index, session_id, _, _, _) in &sessions {
-        client_request(
-            &mut clients[*client_index],
-            "stop_session",
-            json!({"session_id": session_id}),
+    let (active_client, first_session_id, first_grant_id, first_capability, window_handle) =
+        sessions
+            .iter()
+            .find(|(client_index, ..)| *client_index == 0)
+            .expect("first endpoint client session");
+    let active_client = *active_client;
+    let activation = clients[active_client]
+        .request(
+            "change_window_state",
+            json!({
+                "session_id": first_session_id,
+                "task_grant_id": first_grant_id,
+                "window_capability": first_capability,
+                "operation": "activate"
+            }),
         )
         .await;
-    }
+    assert!(
+        activation.is_ok()
+            || matches!(&activation, Err(HostClientError::Remote { code, .. }) if code == "input_failed"),
+        "unexpected activation result before physical focus: {activation:?}"
+    );
+    physically_focus_window(*window_handle);
+    client_request(
+        &mut clients[active_client],
+        "escalate_session",
+        json!({
+            "session_id": first_session_id,
+            "task_grant_id": first_grant_id,
+            "window_capability": first_capability,
+            "reason": "ax_tree_pixel_mismatch",
+            "detail": "controlled Escape E2E permits an exact-window pixel observation"
+        }),
+    )
+    .await;
+    let escape_snapshot = client_request(
+        &mut clients[active_client],
+        "snapshot",
+        json!({
+            "session_id": first_session_id,
+            "task_grant_id": first_grant_id,
+            "window_capability": first_capability,
+            "max_nodes": 1_000,
+            "max_depth": 20,
+        }),
+    )
+    .await;
+    let pressed = client_request(
+        &mut clients[active_client],
+        "execute_action",
+        json!({
+            "session_id": first_session_id,
+            "task_grant_id": first_grant_id,
+            "window_capability": first_capability,
+            "observation_id": escape_snapshot.value["observation_id"],
+            "accessibility_state_id": escape_snapshot.value["accessibility_state_id"],
+            "action": {
+                "action": "keypress",
+                "input_kind": "raw_input",
+                "intent": "navigate",
+                "delivery_mode": "foreground",
+                "keys": ["ESC"]
+            },
+            "capture_after": false
+        }),
+    )
+    .await;
+    assert_eq!(pressed.value["success"], true, "{}", pressed.value);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let interrupted_client = 1 - active_client;
+    let (_, session_id, grant_id, capability, _) = sessions
+        .iter()
+        .find(|(client_index, ..)| *client_index == interrupted_client)
+        .expect("other endpoint client session");
+    expect_user_interrupted(
+        &mut clients[interrupted_client],
+        json!({
+            "session_id": session_id,
+            "task_grant_id": grant_id,
+            "window_capability": capability,
+        }),
+    )
+    .await;
 
     drop(clients);
     drop(fixture_reaper);

@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -35,7 +35,10 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::{HRESULT, PCWSTR, w};
 
-use super::{BannerStatus, BannerTarget, IndicatorError};
+use super::{
+    BannerStatus, BannerTarget, IndicatorError, broadcast_interrupt, interrupt_generation,
+    interrupt_generation_changed,
+};
 
 const BANNER_CLASS: PCWSTR = w!("DccMcpCuaControlBanner");
 const FRAME_CLASS: PCWSTR = w!("DccMcpCuaControlFrame");
@@ -59,7 +62,6 @@ const FRAME_PULSE_INTERVAL: Duration = Duration::from_millis(50);
 const HOTKEY_ID: i32 = 0x4443;
 const ESCAPE_EVENT_NAME: PCWSTR = w!("DccMcpCuaEscape");
 const FRAME_INTERVAL: Duration = Duration::from_millis(16);
-static ESCAPE_GENERATION: AtomicU64 = AtomicU64::new(0);
 static ESCAPE_HUB: OnceLock<Result<EscapeHub, String>> = OnceLock::new();
 
 pub(super) struct PlatformBanner {
@@ -77,7 +79,7 @@ impl PlatformBanner {
         let cursor_position = Arc::new(Mutex::new(None));
         let runtime = BannerRuntime {
             hub_active: Arc::clone(&escape_hub.active),
-            generation: ESCAPE_GENERATION.load(Ordering::Acquire),
+            generation: interrupt_generation(),
             cursor_position: Arc::clone(&cursor_position),
         };
         let stop = Arc::new(AtomicBool::new(false));
@@ -255,6 +257,7 @@ fn run_escape_hub(
         while unsafe { PeekMessageW(&mut message, None, 0, 0, PM_REMOVE) }.as_bool() {
             if owns_hotkey && message.message == WM_HOTKEY && message.wParam.0 == HOTKEY_ID as usize
             {
+                broadcast_interrupt();
                 unsafe { SetEvent(event.0) }
                     .map_err(|error| format!("broadcast Escape stop: {error}"))?;
             }
@@ -264,7 +267,7 @@ fn run_escape_hub(
             }
         }
         if !owns_hotkey && unsafe { WaitForSingleObject(event.0, 0) } == WAIT_OBJECT_0 {
-            ESCAPE_GENERATION.fetch_add(1, Ordering::AcqRel);
+            broadcast_interrupt();
         }
         thread::sleep(FRAME_INTERVAL);
     }
@@ -345,10 +348,7 @@ fn run_banner(
         if !runtime.hub_active.load(Ordering::Acquire) {
             return Err(IndicatorError::Backend("Escape hub stopped".into()));
         }
-        if escape_generation_changed(
-            runtime.generation,
-            ESCAPE_GENERATION.load(Ordering::Acquire),
-        ) {
+        if interrupt_generation_changed(runtime.generation, interrupt_generation()) {
             interrupted.store(true, Ordering::Release);
             stop.store(true, Ordering::Release);
             break;
@@ -466,10 +466,6 @@ fn run_banner(
         thread::sleep(FRAME_INTERVAL);
     }
     Ok(())
-}
-
-pub(super) fn escape_generation_changed(started: u64, current: u64) -> bool {
-    started != current
 }
 
 fn validate_target(window: HWND, expected_pid: u32) -> Result<(), IndicatorError> {

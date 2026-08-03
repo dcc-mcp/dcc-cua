@@ -39,6 +39,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         host_ping(&flags).await?;
         return Ok(());
     }
+    if command == "interrupt-all" {
+        host_interrupt_all(&flags).await?;
+        return Ok(());
+    }
     if command == "doctor"
         && flags
             .iter()
@@ -350,6 +354,16 @@ async fn host_ping(flags: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     println!("{}", serde_json::to_string_pretty(&response.value)?);
     connection.shutdown().await?;
     Ok(())
+}
+
+async fn host_interrupt_all(flags: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    if flag_value(flags, "--spawn").is_some() {
+        return Err("interrupt-all must target an existing Host endpoint".into());
+    }
+    let mut connection = connect_host(flags, SnapshotTransport::BinaryFrame).await?;
+    let response = connection.client_mut().interrupt_all().await?;
+    println!("{}", serde_json::to_string_pretty(&response.value)?);
+    connection.shutdown().await
 }
 
 async fn host_doctor(flags: &[String]) -> Result<(), Box<dyn std::error::Error>> {
@@ -1732,6 +1746,7 @@ fn print_help() {
   tools
   call --tool NAME [--json JSON|--json-file PATH] [--app APP|--pid PID --window-id ID] [--output FILE]
   ping [--endpoint PATH|--spawn BINARY]
+  interrupt-all [--endpoint PATH]
   host-call --method NAME [--json JSON|--json-file PATH] [--endpoint PATH|--spawn BINARY] [--snapshot-transport binary_frame|shared_memory] [--output FILE]
   host-batch --json JSON_ARRAY [--endpoint PATH|--spawn BINARY] [--snapshot-transport binary_frame|shared_memory] [--output-dir DIR]
   host-jsonl [--endpoint PATH|--spawn BINARY] [--parallel-discovery] [--snapshot-transport binary_frame|shared_memory] [--output-dir DIR]

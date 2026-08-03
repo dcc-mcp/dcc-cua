@@ -40,6 +40,21 @@ pub(super) async fn handle_request(
         Request::Hello(_) => unreachable!(),
         Request::Ping {} => Ok((ping_response(), None)),
         Request::Doctor {} => Ok((driver.diagnostics().await, None)),
+        Request::InterruptAll {} => {
+            let generation = broadcast_interrupt();
+            let (window_sessions, desktop_sessions) =
+                stop_sessions(sessions, desktop_sessions).await;
+            Ok((
+                json!({
+                    "type": "interrupt_broadcast",
+                    "scope": "host_process",
+                    "generation": generation,
+                    "stopped_window_sessions": window_sessions,
+                    "stopped_desktop_sessions": desktop_sessions,
+                }),
+                None,
+            ))
+        }
         Request::Cancel {
             session_id,
             task_grant_id,
@@ -129,6 +144,7 @@ pub(super) async fn handle_request(
             if grant.task_grant_id.trim().is_empty() || grant.dcc_type.trim().is_empty() {
                 return Err(HostError::Protocol("task grant is incomplete".into()));
             }
+            let session_generation = interrupt_generation();
             let mut session = driver.desktop_session(session_id.clone())?;
             let started = session.start().await?;
             let capability = format!("cua-desktop-{}", Uuid::new_v4());
@@ -138,6 +154,7 @@ pub(super) async fn handle_request(
                     task_grant_id: grant.task_grant_id,
                     allow_raw_input: grant.allow_raw_input,
                     capability: capability.clone(),
+                    interrupt_generation: session_generation,
                     session,
                     latest_shared_image: None,
                 },
@@ -162,7 +179,8 @@ pub(super) async fn handle_request(
                 &session_id,
                 &task_grant_id,
                 &desktop_capability,
-            )?;
+            )
+            .await?;
             let snapshot = host.session.screenshot().await?;
             let (image, attachment) = match mode {
                 SnapshotTransport::SharedMemory => {
@@ -209,7 +227,8 @@ pub(super) async fn handle_request(
                 &session_id,
                 &task_grant_id,
                 &desktop_capability,
-            )?;
+            )
+            .await?;
             if !host.allow_raw_input {
                 return Err(HostError::Protocol("raw input is not granted".into()));
             }
@@ -1063,6 +1082,7 @@ pub(super) async fn handle_request(
                     .await?;
             let started = Instant::now();
             loop {
+                ensure_session_not_interrupted(host).await?;
                 let root = tokio::select! {
                     _ = cancellation.handle.cancelled() => {
                         return Ok((json!({
@@ -1075,6 +1095,7 @@ pub(super) async fn handle_request(
                     }
                     result = host.session.accessibility_snapshot(5_000, 25) => result?,
                 };
+                ensure_session_not_interrupted(host).await?;
                 if wait_condition_matches(&root, &condition) {
                     return Ok((
                         json!({

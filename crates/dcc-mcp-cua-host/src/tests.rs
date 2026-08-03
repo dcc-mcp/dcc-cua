@@ -25,6 +25,7 @@ fn capabilities_follow_the_selected_cursor_runtime() {
     let capabilities = host_capabilities(cursor_available);
     assert!(capabilities.contains(&"scoped_window_frame"));
     assert!(capabilities.contains(&"native_menu_path"));
+    assert!(capabilities.contains(&"host_wide_interrupt"));
     assert_eq!(capabilities.contains(&"cursor_controls"), cursor_available);
     assert_eq!(
         capabilities.contains(&"cua_cursor_marker"),
@@ -46,6 +47,14 @@ fn private_worker_enables_the_upstream_cursor_backend() {
             "cua-driver-sdk"
         }
     );
+}
+
+#[rstest]
+fn shared_interrupt_has_a_typed_host_request() {
+    assert!(matches!(
+        serde_json::from_value::<Request>(json!({"method":"interrupt_all", "params":{}})),
+        Ok(Request::InterruptAll {})
+    ));
 }
 
 async fn write_json_request(
