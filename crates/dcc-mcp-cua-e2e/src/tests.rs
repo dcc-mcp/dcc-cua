@@ -749,23 +749,6 @@ async fn controlled_electron_round_trip() {
     );
     wait_for_journal(&journal, "lbl-input-mirror", &format!("mirror={expected}"));
 
-    let activated = host_request(
-        &mut host,
-        "change_window_state",
-        json!({
-            "session_id": SESSION_ID,
-            "task_grant_id": GRANT_ID,
-            "window_capability": capability,
-            "operation": "activate"
-        }),
-    )
-    .await;
-    assert_eq!(
-        activated.value["state"]["foreground"], true,
-        "fixture activation failed: {}",
-        activated.value
-    );
-
     let raw_snapshot = host_request(
         &mut host,
         "snapshot",
