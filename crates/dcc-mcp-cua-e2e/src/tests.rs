@@ -387,7 +387,12 @@ async fn start_endpoint_clients(
     );
     #[cfg(unix)]
     let (endpoint, endpoint_directory) = {
-        let directory = tempfile::tempdir().expect("create Host endpoint directory");
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::Builder::new()
+            .permissions(std::fs::Permissions::from_mode(0o700))
+            .tempdir()
+            .expect("create private Host endpoint directory");
         (
             directory
                 .path()
