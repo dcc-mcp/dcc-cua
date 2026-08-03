@@ -1733,6 +1733,7 @@ impl ComputerUseSession {
     }
 
     async fn resolve_target(&self) -> ComputerUseResult<WindowTarget> {
+        #[cfg(windows)]
         if self.scope.window_handle.is_some() {
             let target = crate::window_target::resolve_exact(&self.scope)?.ok_or_else(|| {
                 ComputerUseError::new(
