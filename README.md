@@ -164,7 +164,7 @@ intended for launch/switch orchestration before a target-bound action.
 elements and 16 levels). `accessibility` reads a larger semantic tree without
 transferring screenshot pixels when the agent needs to locate a deeply nested
 control. Prefer the returned `element_token`/`element_index` over guessed
-pixels, then verify the post-action state. `window-state`, `activate`, and
+pixels, then verify the post-action state. `window-state`, `activate`,
 `set-window-frame`, and `invoke-menu` operate on the same exact target scope.
 Long-lived recording remains on the persistent Host session so its start/stop
 lifecycle is not lost when a one-shot CLI process exits.
@@ -486,7 +486,9 @@ only after `open_session` grants `allow_native_tool: true`. The host injects
 the exact session PID/HWND/session values from the live SDK schema and rejects
 reserved arguments. Click, keyboard, browser, clipboard, recording, and
 session-lifecycle tools stay on their dedicated grant-gated routes so the
-extension surface cannot bypass observation or approval fences.
+extension surface cannot bypass observation or approval fences. This includes
+CUA's legacy `page` compatibility tool; browser work must enter through the
+exact-binding `browser_snapshot` route before any browser mutation.
 
 The CLI `call` and `host-call` commands accept either `--json JSON` or
 `--json-file PATH`; `host-call` reuses the persistent Host endpoint instead of
@@ -525,16 +527,15 @@ real release-binary E2E on Windows, Linux, and macOS. The E2E validates the
 machine manifest, platform identity, shared-memory negotiation, a spawned Host
 handshake, lightweight ping, pipelined/streaming request correlation, invalid
 request recovery (including a UTF-8 BOM on the first JSONL line), and the
-embedded CUA application/tool inventories. Windows
-and Linux additionally build CUA's official Electron fixture and verify the
+embedded CUA application/tool inventories. All three platforms build CUA's
+official Electron fixture and verify the
 real launch -> scoped PNG snapshot -> semantic find -> input -> state oracle ->
 exact browser binding -> semantic browser snapshot -> click/type -> independent
-state oracle -> cleanup path, plus two independent Electron windows sharing one
-Host with distinct session capabilities. Windows also builds CUA's native WPF
-fixture and verifies an exact non-foreground UIA read/write round trip. The
-hosted macOS lane retains the structured
-permission/readiness refusal gate; full macOS GUI input requires a signed,
-TCC-provisioned runner. The same CLI E2E also launches a real endpoint Host and
+state oracle -> cleanup path. Each lane also builds CUA's native WPF, GTK3, or
+AppKit fixture and verifies an exact `Window -> Arrange -> Left` menu path by
+reading fresh UIA, AT-SPI, or AX application state. Concurrent-session coverage
+uses two Electron windows on Linux/macOS and two non-foreground WPF windows on
+Windows. The same CLI E2E also launches a real endpoint Host and
 checks ping plus pipelined application/tool discovery over the platform transport
 (Windows named pipe or Unix socket).
 The release workflow

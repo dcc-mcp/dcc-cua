@@ -275,7 +275,8 @@ pub(crate) fn native_tool_allowed_globally(name: &str) -> bool {
 }
 
 pub(crate) fn native_tool_allowed_in_window_session(name: &str) -> bool {
-    const DEDICATED_TOOLS: [&str; 34] = [
+    const DEDICATED_TOOLS: &[&str] = &[
+        "list_windows",
         "get_window_state",
         "set_window_frame",
         "invoke_menu",
@@ -310,6 +311,9 @@ pub(crate) fn native_tool_allowed_in_window_session(name: &str) -> bool {
         "start_recording",
         "stop_recording",
         "get_recording_state",
+        "get_browser_state",
+        "page",
+        "get_session_state",
     ];
     if DEDICATED_TOOLS.contains(&name) || name.starts_with("browser_") {
         return false;
