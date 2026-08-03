@@ -106,6 +106,28 @@ fn window_frame_accepts_fractional_multi_monitor_coordinates() {
 }
 
 #[rstest]
+fn native_menu_paths_match_the_upstream_contract_bounds() {
+    assert!(
+        ComputerUseMenuRequest {
+            path: ["Window", "Arrange", "Left"].map(str::to_owned).to_vec(),
+        }
+        .validate()
+        .is_ok()
+    );
+    for path in [
+        Vec::new(),
+        vec![" ".into()],
+        vec!["x".repeat(201)],
+        vec!["item".into(); 17],
+    ] {
+        assert_eq!(
+            ComputerUseMenuRequest { path }.validate().unwrap_err().code,
+            ComputerUseErrorCode::InvalidAction
+        );
+    }
+}
+
+#[rstest]
 #[case(f64::NAN, 0.0, 100.0, 100.0)]
 #[case(0.0, f64::INFINITY, 100.0, 100.0)]
 #[case(0.0, 0.0, 0.0, 100.0)]
@@ -315,6 +337,7 @@ fn native_tool_boundary_rejects_reserved_and_dedicated_routes() {
     assert!(validate_native_tool_request("debug_window_info", &json!({"_tool":"x"})).is_err());
     assert!(!native_tool_allowed_in_window_session("click"));
     assert!(!native_tool_allowed_in_window_session("set_window_frame"));
+    assert!(!native_tool_allowed_in_window_session("invoke_menu"));
     assert!(!native_tool_allowed_in_window_session("browser_navigate"));
     assert!(native_tool_allowed_in_window_session("debug_window_info"));
     assert!(native_tool_allowed_globally("health_report"));

@@ -15,6 +15,8 @@ use crate::window_target::{WindowTarget, validate_target_policy};
 #[cfg(windows)]
 use crate::windows_uia_fallback::WindowsUiaFallback;
 
+mod action_result;
+mod menu_commands;
 mod window_commands;
 
 const INPUT_CALL_TIMEOUT: Duration = Duration::from_secs(15);

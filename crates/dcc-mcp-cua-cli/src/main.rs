@@ -13,9 +13,9 @@ use dcc_mcp_cua_client::{
 };
 use dcc_mcp_cua_core::{
     ComputerUseAction, ComputerUseClipboardWriteRequest, ComputerUseDriver,
-    ComputerUseLaunchRequest, ComputerUseTargetScope, ComputerUseToolResult,
-    ComputerUseWindowFrameRequest, ComputerUseWindowQuery, ComputerUseWindowWaitRequest,
-    ComputerUseZoomRequest,
+    ComputerUseLaunchRequest, ComputerUseMenuRequest, ComputerUseTargetScope,
+    ComputerUseToolResult, ComputerUseWindowFrameRequest, ComputerUseWindowQuery,
+    ComputerUseWindowWaitRequest, ComputerUseZoomRequest,
 };
 use dcc_mcp_cua_host::{HostTransport, run as run_host};
 use dcc_mcp_cua_shm::{SharedImageDescriptor, SharedImageReader};
@@ -115,6 +115,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "window-state" => window_state(&driver, &flags).await?,
         "activate" => activate_window(&driver, &flags).await?,
         "set-window-frame" => set_window_frame(&driver, &flags).await?,
+        "invoke-menu" => invoke_menu(&driver, &flags).await?,
         "zoom" => zoom(&driver, &flags).await?,
         "verify" => verify_state(&driver, &flags).await?,
         "act" => act(&driver, &flags).await?,
@@ -1063,6 +1064,32 @@ fn window_frame_request(
     Ok(request)
 }
 
+async fn invoke_menu(
+    driver: &ComputerUseDriver,
+    flags: &[String],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let scope = select_scope(driver, flags).await?;
+    let app = flag_value(flags, "--app").unwrap_or_else(|| "DCC application".into());
+    let session_id = flag_value(flags, "--session").unwrap_or_else(|| "dcc-mcp-menu-cli".into());
+    let request = menu_request(flags)?;
+    let mut session = driver.session(scope, app, session_id)?;
+    session.start().await?;
+    let result = session.invoke_menu(&request).await;
+    let stop_result = session.stop().await;
+    let result = result?;
+    stop_result?;
+    println!("{}", serde_json::to_string_pretty(&result)?);
+    Ok(())
+}
+
+fn menu_request(flags: &[String]) -> Result<ComputerUseMenuRequest, Box<dyn std::error::Error>> {
+    let request = ComputerUseMenuRequest {
+        path: flag_values(flags, "--menu"),
+    };
+    request.validate()?;
+    Ok(request)
+}
+
 async fn zoom(
     driver: &ComputerUseDriver,
     flags: &[String],
@@ -1681,6 +1708,7 @@ fn print_help() {
   terminate --app APP --confirm
   snapshot --app APP|--pid PID|--window-id ID|--title TITLE [--activate] [--output FILE]
   set-window-frame --app APP|--pid PID --window-id ID --x N --y N --width N --height N
+  invoke-menu --app APP|--pid PID --window-id ID --menu TOP [--menu CHILD ...]
   act --app APP --action-json JSON [--output FILE]
   verify --app APP --expect-json JSON [--timeout-ms N] [--stable-samples N]
   desktop-act --action-json JSON [--session ID] [--output FILE]
@@ -1699,7 +1727,7 @@ Host uses versioned big-endian JSON frames. Hello version 1 negotiates binary-fr
         "Friendly actions: click/double-click/right-click/toggle [--x X --y Y|--element-index N|--element-token TOKEN] [--button left|middle|right], drag --from-x X --from-y Y --to-x X --to-y Y [--button B --modifier M --duration-ms N --steps N], type [--text TEXT] [--focused|--x X --y Y|--element-index N], set-text/set-value, press [--key K] [--modifier M] [--x X --y Y|--element-index N], hotkey [--key K ...] [--x X --y Y], scroll [--scroll-x N|--scroll-y N] [--by line|page] [--x X --y Y|--element-index N], move."
     );
     println!(
-        "Semantic tree: accessibility --app APP [--max-elements N] [--max-depth N]. Window: window-state|activate|set-window-frame --app APP."
+        "Semantic tree: accessibility --app APP [--max-elements N] [--max-depth N]. Window: window-state|activate|set-window-frame|invoke-menu --app APP."
     );
 }
 

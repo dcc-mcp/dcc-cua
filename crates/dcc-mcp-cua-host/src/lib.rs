@@ -35,10 +35,10 @@ use dcc_mcp_cua_browser::{
 use dcc_mcp_cua_core::{
     ComputerUseAction, ComputerUseClipboardWriteRequest, ComputerUseDesktopSession,
     ComputerUseDesktopSnapshot, ComputerUseDriver, ComputerUseError, ComputerUseErrorCode,
-    ComputerUseImage, ComputerUsePoint, ComputerUseRecordingStartRequest, ComputerUseResult,
-    ComputerUseScreenshot, ComputerUseSession, ComputerUseTargetScope, ComputerUseToolResult,
-    ComputerUseWindowFrameRequest, ComputerUseWindowQuery, ComputerUseWindowWaitRequest,
-    ComputerUseZoomRequest,
+    ComputerUseImage, ComputerUseMenuRequest, ComputerUsePoint, ComputerUseRecordingStartRequest,
+    ComputerUseResult, ComputerUseScreenshot, ComputerUseSession, ComputerUseTargetScope,
+    ComputerUseToolResult, ComputerUseWindowFrameRequest, ComputerUseWindowQuery,
+    ComputerUseWindowWaitRequest, ComputerUseZoomRequest,
 };
 use dcc_mcp_cua_indicator::{BannerTarget, ControlBanner};
 use dcc_mcp_cua_shm::SharedImage;
@@ -84,6 +84,7 @@ pub const HOST_CAPABILITIES: &[&str] = &[
     "cross_platform_window_control",
     "scoped_window_activate",
     "scoped_window_frame",
+    "native_menu_path",
     "degraded_window_visual_fallback",
     "application_inventory",
     "window_inventory",
@@ -284,6 +285,12 @@ enum Request {
         task_grant_id: String,
         window_capability: String,
         frame: ComputerUseWindowFrameRequest,
+    },
+    InvokeMenu {
+        session_id: String,
+        task_grant_id: String,
+        window_capability: String,
+        request: ComputerUseMenuRequest,
     },
     Snapshot {
         session_id: String,
@@ -523,6 +530,8 @@ struct TaskGrant {
     #[serde(default)]
     allow_native_tool: bool,
     #[serde(default)]
+    allow_menu_invoke: bool,
+    #[serde(default)]
     allow_session_escalation: bool,
 }
 
@@ -734,6 +743,7 @@ struct HostSession {
     allow_browser_prepare: bool,
     allow_browser_download: bool,
     allow_native_tool: bool,
+    allow_menu_invoke: bool,
     allow_session_escalation: bool,
     capability: String,
     session: ComputerUseSession,
@@ -743,6 +753,16 @@ struct HostSession {
     latest_accessibility_state_id: Option<String>,
     latest_accessibility_root: Option<Value>,
     latest_shared_image: Option<SharedImage>,
+}
+
+impl HostSession {
+    fn invalidate_observations(&mut self) {
+        self.latest_observation_id = None;
+        self.latest_accessibility_state_id = None;
+        self.latest_accessibility_root = None;
+        self.latest_shared_image = None;
+        self.browser.invalidate_snapshot();
+    }
 }
 
 struct HostDesktopSession {
@@ -1680,6 +1700,9 @@ fn error_code(error: &HostError) -> &'static str {
         HostError::Protocol(message) if message.contains("recording") => "recording_not_granted",
         HostError::Protocol(message) if message.contains("native CUA tool calls") => {
             "native_tool_not_granted"
+        }
+        HostError::Protocol(message) if message.contains("native menu invocation") => {
+            "menu_invoke_not_granted"
         }
         HostError::Protocol(message) if message.contains("session escalation") => {
             "session_escalation_not_granted"

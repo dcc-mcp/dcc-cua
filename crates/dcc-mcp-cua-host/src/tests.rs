@@ -20,6 +20,7 @@ fn cursor_render_backend_matches_the_native_platform_owner() {
 fn capabilities_do_not_advertise_unavailable_macos_cursor_controls() {
     let capabilities = host_capabilities();
     assert!(capabilities.contains(&"scoped_window_frame"));
+    assert!(capabilities.contains(&"native_menu_path"));
     let cursor_available = cfg!(any(windows, target_os = "linux"));
     assert_eq!(capabilities.contains(&"cursor_controls"), cursor_available);
     assert_eq!(
@@ -353,12 +354,19 @@ fn app_launch_grant_defaults_to_denied() {
     assert!(!grant.allow_browser_prepare);
     assert!(!grant.allow_browser_download);
     assert!(!grant.allow_native_tool);
+    assert!(!grant.allow_menu_invoke);
     assert!(!grant.allow_session_escalation);
     assert_eq!(
         error_code(&HostError::Protocol(
             "browser download is not granted".into()
         )),
         "browser_download_not_granted"
+    );
+    assert_eq!(
+        error_code(&HostError::Protocol(
+            "native menu invocation is not granted".into()
+        )),
+        "menu_invoke_not_granted"
     );
 }
 
@@ -474,6 +482,18 @@ fn app_requests_parse_with_host_params_frames() {
             }
         })),
         Ok(Request::SetWindowFrame { frame, .. }) if frame.x == -20.5 && frame.width == 1280.0
+    ));
+    assert!(matches!(
+        serde_json::from_value::<Request>(json!({
+            "method": "invoke_menu",
+            "params": {
+                "session_id": "session-1",
+                "task_grant_id": "task-1",
+                "window_capability": "cap-1",
+                "request": {"path": ["Window", "Arrange", "Left"]}
+            }
+        })),
+        Ok(Request::InvokeMenu { request, .. }) if request.path[2] == "Left"
     ));
     assert!(matches!(
         serde_json::from_value::<Request>(json!({

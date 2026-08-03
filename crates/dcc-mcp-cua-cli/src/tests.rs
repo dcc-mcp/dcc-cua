@@ -136,6 +136,11 @@ fn manifest_is_a_machine_readable_core_launch_contract() {
     assert!(
         manifest["host"]["capabilities"]
             .as_array()
+            .is_some_and(|values| values.iter().any(|value| value == "native_menu_path"))
+    );
+    assert!(
+        manifest["host"]["capabilities"]
+            .as_array()
             .is_some_and(|values| values.iter().any(|value| value == "host_ping"))
     );
     assert!(
@@ -205,6 +210,17 @@ fn window_frame_parser_requires_a_valid_complete_frame() {
         ]))
         .is_err()
     );
+}
+
+#[rstest]
+fn menu_parser_preserves_repeated_native_path_segments() {
+    let request = menu_request(&strings([
+        "--menu", "Window", "--menu", "Arrange", "--menu", "Left",
+    ]))
+    .unwrap();
+    assert_eq!(request.path, ["Window", "Arrange", "Left"]);
+    assert!(menu_request(&strings([])).is_err());
+    assert!(menu_request(&strings(["--menu", " "])).is_err());
 }
 
 #[rstest]

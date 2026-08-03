@@ -275,9 +275,10 @@ pub(crate) fn native_tool_allowed_globally(name: &str) -> bool {
 }
 
 pub(crate) fn native_tool_allowed_in_window_session(name: &str) -> bool {
-    const DEDICATED_TOOLS: [&str; 33] = [
+    const DEDICATED_TOOLS: [&str; 34] = [
         "get_window_state",
         "set_window_frame",
+        "invoke_menu",
         "zoom",
         "verify_state",
         "click",
