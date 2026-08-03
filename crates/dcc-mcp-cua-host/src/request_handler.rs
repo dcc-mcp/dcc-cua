@@ -145,12 +145,14 @@ pub(super) async fn handle_request(
                 return Err(HostError::Protocol("task grant is incomplete".into()));
             }
             let session_generation = interrupt_generation();
-            let mut session = driver.desktop_session(session_id.clone())?;
+            let runtime_session_id = new_runtime_session_id("desktop");
+            let mut session = driver.desktop_session(runtime_session_id.clone())?;
             let started = session.start().await?;
             let capability = format!("cua-desktop-{}", Uuid::new_v4());
             desktop_sessions.insert(
                 session_id.clone(),
                 HostDesktopSession {
+                    runtime_session_id,
                     task_grant_id: grant.task_grant_id,
                     allow_raw_input: grant.allow_raw_input,
                     capability: capability.clone(),
@@ -457,7 +459,9 @@ pub(super) async fn handle_request(
                 window_handle: grant.window_handle,
                 window_title: grant.window_title,
             };
-            let mut session = driver.session(scope, grant.dcc_type.clone(), session_id.clone())?;
+            let runtime_session_id = new_runtime_session_id("window");
+            let mut session =
+                driver.session(scope, grant.dcc_type.clone(), runtime_session_id.clone())?;
             let started = session.start().await?;
             let Some(target) = session.target() else {
                 let _ = session.stop().await;
@@ -517,6 +521,7 @@ pub(super) async fn handle_request(
             sessions.insert(
                 session_id.clone(),
                 HostSession {
+                    runtime_session_id,
                     task_grant_id: grant.task_grant_id,
                     allow_raw_input: grant.allow_raw_input,
                     allow_app_terminate: grant.allow_app_terminate,

@@ -6,7 +6,9 @@
 //! bounded and the transport does not base64-encode pixels.
 
 mod request_handler;
+mod session_identity;
 use request_handler::handle_request;
+use session_identity::{new_runtime_session_id, rewrite_session_aliases};
 
 use std::collections::HashMap;
 #[cfg(unix)]
@@ -60,6 +62,7 @@ pub const HOST_CAPABILITIES: &[&str] = &[
     "exact_window_capabilities",
     "exact_window_state",
     "connection_scoped_sessions",
+    "isolated_runtime_sessions",
     "observation_fencing",
     "action_post_snapshot",
     "semantic_element_tokens",
@@ -136,6 +139,22 @@ pub fn host_capabilities(cursor_controls_available: bool) -> Vec<&'static str> {
                 && (*capability != "windows_background_uia_fallback" || cfg!(windows))
         })
         .collect()
+}
+
+fn rewrite_runtime_session_ids(
+    value: &mut Value,
+    sessions: &HashMap<String, HostSession>,
+    desktop_sessions: &HashMap<String, HostDesktopSession>,
+) {
+    let aliases =
+        sessions
+            .iter()
+            .map(|(public_id, session)| (session.runtime_session_id.as_str(), public_id.as_str()))
+            .chain(desktop_sessions.iter().map(|(public_id, session)| {
+                (session.runtime_session_id.as_str(), public_id.as_str())
+            }))
+            .collect::<Vec<_>>();
+    rewrite_session_aliases(value, &aliases);
 }
 
 /// Local transport selected by the CLI or embedding host.
@@ -738,6 +757,7 @@ impl HostAction {
 }
 
 struct HostSession {
+    runtime_session_id: String,
     task_grant_id: String,
     allow_raw_input: bool,
     allow_app_terminate: bool,
@@ -771,6 +791,7 @@ impl HostSession {
 }
 
 struct HostDesktopSession {
+    runtime_session_id: String,
     task_grant_id: String,
     allow_raw_input: bool,
     capability: String,
@@ -1005,10 +1026,12 @@ where
             loop {
                 tokio::select! {
                     result = &mut operation => {
-                        let (response, attachment) = match result {
+                        let (mut response, attachment) = match result {
                             Ok(result) => result,
                             Err(error) => (error_response(error_code(&error), error.to_string()), None),
                         };
+                        drop(operation);
+                        rewrite_runtime_session_ids(&mut response, &sessions, &desktop_sessions);
                         write_response_locked(
                             &writer,
                             with_request_id(response, request_id.as_deref()),
@@ -1098,7 +1121,7 @@ where
                 .await
             });
         } else {
-            let (response, attachment) = match Box::pin(handle_request(
+            let (mut response, attachment) = match Box::pin(handle_request(
                 &driver,
                 &mut sessions,
                 &mut desktop_sessions,
@@ -1112,6 +1135,7 @@ where
                 Ok(result) => result,
                 Err(error) => (error_response(error_code(&error), error.to_string()), None),
             };
+            rewrite_runtime_session_ids(&mut response, &sessions, &desktop_sessions);
             write_response_locked(
                 &writer,
                 with_request_id(response, request_id.as_deref()),
