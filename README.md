@@ -198,8 +198,9 @@ Their banner and frame exist only for that command's session lifetime. Core and
 other multi-step agents should keep one Host IPC session open so the same exact
 PID/HWND retains its visible banner, breathing frame, cursor, and observation
 fence across actions. The Windows UIA worker starts through a separate readiness
-handshake; a provider request that then exceeds 15 seconds invalidates that
-window session instead of blocking the Host indefinitely.
+handshake. A CUA action or window activation that does not return within 15
+seconds invalidates that window session instead of blocking the Host
+indefinitely.
 
 For common controls, `click`, `double-click`, `right-click`, `move`, `scroll`,
 `press`, `hotkey`, and `type` build the same fenced CUA actions without manual
