@@ -54,7 +54,7 @@ pub(super) struct HostDesktopSession {
 pub(super) struct HostLaunchSession {
     pub(super) runtime_session_id: String,
     pub(super) task_grant_id: String,
-    pub(super) dcc_type: String,
+    pub(super) application_label: String,
     pub(super) process_id: u32,
 }
 

@@ -396,9 +396,10 @@ fn hello_selects_snapshot_transport() {
 fn app_launch_grant_defaults_to_denied() {
     let grant: TaskGrant = serde_json::from_value(json!({
         "task_grant_id": "task-1",
-        "dcc_type": "unreal"
+        "application_label": "Unreal Editor"
     }))
     .expect("minimal grants should be readable");
+    grant.validate_identity().unwrap();
     assert!(!grant.allow_app_launch);
     assert!(!grant.allow_app_terminate);
     assert!(!grant.allow_clipboard_read);
@@ -425,16 +426,51 @@ fn app_launch_grant_defaults_to_denied() {
 }
 
 #[rstest]
+#[case("", "Application")]
+#[case(" task-1", "Application")]
+#[case("task-1", "")]
+#[case("task-1", "Application\nspoof")]
+fn grant_identity_is_generic_bounded_and_banner_safe(
+    #[case] task_grant_id: &str,
+    #[case] application_label: &str,
+) {
+    let grant: TaskGrant = serde_json::from_value(json!({
+        "task_grant_id": task_grant_id,
+        "application_label": application_label
+    }))
+    .unwrap();
+    assert!(grant.validate_identity().is_err());
+}
+
+#[rstest]
+fn grant_identity_rejects_oversized_and_legacy_fields() {
+    let oversized: TaskGrant = serde_json::from_value(json!({
+        "task_grant_id": "task-1",
+        "application_label": "x".repeat(crate::task_grant::MAX_APPLICATION_LABEL_CHARS + 1)
+    }))
+    .unwrap();
+    assert!(oversized.validate_identity().is_err());
+    assert!(
+        serde_json::from_value::<TaskGrant>(json!({
+            "task_grant_id": "task-1",
+            "application_label": "Application",
+            "dcc_type": "legacy"
+        }))
+        .is_err()
+    );
+}
+
+#[rstest]
 fn launch_ownership_requires_the_same_grant_and_process() {
     let launched = HostLaunchSession {
         runtime_session_id: "private-launch-session".into(),
         task_grant_id: "task-1".into(),
-        dcc_type: "unreal".into(),
+        application_label: "Unreal Editor".into(),
         process_id: 4242,
     };
     let mut matching: TaskGrant = serde_json::from_value(json!({
         "task_grant_id": "task-1",
-        "dcc_type": "unreal"
+        "application_label": "Unreal Editor"
     }))
     .unwrap();
     bind_launched_process(&launched, &mut matching).unwrap();
@@ -442,7 +478,7 @@ fn launch_ownership_requires_the_same_grant_and_process() {
 
     let mut wrong_process: TaskGrant = serde_json::from_value(json!({
         "task_grant_id": "task-1",
-        "dcc_type": "unreal",
+        "application_label": "Unreal Editor",
         "process_id": 7
     }))
     .unwrap();
@@ -450,10 +486,17 @@ fn launch_ownership_requires_the_same_grant_and_process() {
 
     let mut wrong_grant: TaskGrant = serde_json::from_value(json!({
         "task_grant_id": "task-2",
-        "dcc_type": "unreal"
+        "application_label": "Unreal Editor"
     }))
     .unwrap();
     assert!(bind_launched_process(&launched, &mut wrong_grant).is_err());
+
+    let mut wrong_label: TaskGrant = serde_json::from_value(json!({
+        "task_grant_id": "task-1",
+        "application_label": "Maya"
+    }))
+    .unwrap();
+    assert!(bind_launched_process(&launched, &mut wrong_label).is_err());
 }
 
 #[rstest]
@@ -640,7 +683,7 @@ fn app_requests_parse_with_host_params_frames() {
             "params": {
                 "grant": {
                     "task_grant_id": "task-1",
-                    "dcc_type": "desktop",
+                    "application_label": "Desktop",
                     "allow_native_tool": true
                 },
                 "tool": "health_report",
@@ -707,7 +750,7 @@ fn app_requests_parse_with_host_params_frames() {
                 "session_id": "desktop-1",
                 "grant": {
                     "task_grant_id": "task-1",
-                    "dcc_type": "desktop",
+                    "application_label": "Desktop",
                     "allow_raw_input": true
                 }
             }
@@ -744,7 +787,7 @@ fn app_requests_parse_with_host_params_frames() {
                 "session_id": "session-launch",
                 "grant": {
                     "task_grant_id": "task-1",
-                    "dcc_type": "unreal",
+                    "application_label": "Unreal Editor",
                     "allow_app_launch": true
                 },
                 "launch": {"name": "Calculator"}
@@ -758,7 +801,7 @@ fn app_requests_parse_with_host_params_frames() {
             "params": {
                 "grant": {
                     "task_grant_id": "task-1",
-                    "dcc_type": "unreal",
+                    "application_label": "Unreal Editor",
                     "allow_app_launch": true
                 },
                 "launch": {"name": "Calculator"}
@@ -772,7 +815,7 @@ fn app_requests_parse_with_host_params_frames() {
             "session_id": "session-title",
             "grant": {
                 "task_grant_id": "task-1",
-                "dcc_type": "unreal",
+                "application_label": "Unreal Editor",
                 "window_title": "PCG Fab"
             }
         }

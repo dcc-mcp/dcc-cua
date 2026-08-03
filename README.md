@@ -4,7 +4,10 @@ Cross-platform Computer Use host and CLI for DCC-MCP, backed by the open-source
 [CUA SDK](https://github.com/trycua/cua).
 
 This is the standalone runtime that DCC-MCP Core can launch and keep alive for
-a whole task. Its public protocol is owned by this repository and provides:
+a whole task. The Host protocol itself is product-neutral and can be used by
+other agents without importing DCC-MCP; `application_label` is only a bounded
+human-readable safety-banner label. Its public protocol is owned by this
+repository and provides:
 
 - exact PID/window/title scope; agent requests cannot widen the target;
 - a fresh observation ID is required for every mutation;
@@ -398,15 +401,18 @@ When a request ID is supplied, cancel it on the same connection with
 `wait_for_window_with_cancel` helper sends that route automatically.
 `find` filters the current accessibility tree by text, role, or element index
 and returns a fresh `accessibility_state_id`. `wait_for` is bounded to 30 seconds and supports `element_present`,
-`text_contains`, `text_equals`, and `value_equals`. `launch_app` requires a non-empty `session_id`, `task_grant_id`, `dcc_type`, and
+`text_contains`, `text_equals`, and `value_equals`. `launch_app` requires a non-empty `session_id`, `task_grant_id`, `application_label`, and
 `allow_app_launch: true`; `terminate_app` requires the separate
 `allow_app_terminate: true` grant and force-closes only the exact session target;
 neither permission inherits from an open DCC window
 session. Clipboard operations require `allow_clipboard_read` or
 `allow_clipboard_write`; recording operations require `allow_recording: true`.
+Grant IDs are capped at 128 characters and application labels at 80; both reject
+control characters and surrounding whitespace. The manifest exposes these
+limits under `host.grant_limits` for non-DCC callers.
 When CUA returns a newly launched PID, the Host keeps its private runtime
 session alive and `open_session` with the same public `session_id`, task grant,
-and DCC type promotes that ownership into the exact window session. This lets
+and application label promotes that ownership into the exact window session. This lets
 CUA standard mode prove that `terminate_app` targets a process created by that
 runtime; a different PID or grant is rejected. Keep these requests on one
 persistent Host connection because launch ownership is connection-scoped.
@@ -536,10 +542,10 @@ Example host requests:
 
 ```json
 {"method":"list_apps","params":{}}
-{"method":"launch_app","params":{"session_id":"session-1","grant":{"task_grant_id":"task-1","dcc_type":"unreal","allow_app_launch":true},"launch":{"name":"Calculator"}}}
+{"method":"launch_app","params":{"session_id":"session-1","grant":{"task_grant_id":"task-1","application_label":"Unreal Editor","allow_app_launch":true},"launch":{"name":"Calculator"}}}
 {"method":"call_tool","params":{"session_id":"session-1","task_grant_id":"task-1","window_capability":"cua-window-...","tool":"debug_window_info","arguments":{}}}
 {"method":"zoom","params":{"session_id":"session-1","task_grant_id":"task-1","window_capability":"cua-window-...","request":{"observation_id":"session-1-obs-1","x1":120,"y1":80,"x2":420,"y2":220}}}
-{"method":"call_global_tool","params":{"grant":{"task_grant_id":"task-1","dcc_type":"desktop","allow_native_tool":true},"tool":"health_report","arguments":{}}}
+{"method":"call_global_tool","params":{"grant":{"task_grant_id":"task-1","application_label":"Desktop","allow_native_tool":true},"tool":"health_report","arguments":{}}}
 ```
 
 ## Build and test

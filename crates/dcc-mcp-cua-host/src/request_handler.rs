@@ -4,7 +4,9 @@ pub(super) fn bind_launched_process(
     launched: &HostLaunchSession,
     grant: &mut TaskGrant,
 ) -> Result<(), HostError> {
-    if grant.task_grant_id != launched.task_grant_id || grant.dcc_type != launched.dcc_type {
+    if grant.task_grant_id != launched.task_grant_id
+        || grant.application_label != launched.application_label
+    {
         return Err(HostError::Protocol(
             "launch and window session grants do not match".into(),
         ));
@@ -167,9 +169,7 @@ pub(super) async fn handle_request(
             if desktop_sessions.contains_key(&session_id) {
                 return Err(HostError::Protocol("desktop session already exists".into()));
             }
-            if grant.task_grant_id.trim().is_empty() || grant.dcc_type.trim().is_empty() {
-                return Err(HostError::Protocol("task grant is incomplete".into()));
-            }
+            grant.validate_identity()?;
             let session_generation = interrupt_generation();
             let runtime_session_id = new_runtime_session_id("desktop");
             let mut session = driver.desktop_session(runtime_session_id.clone())?;
@@ -353,9 +353,7 @@ pub(super) async fn handle_request(
             if sessions.contains_key(&session_id) || launch_sessions.contains_key(&session_id) {
                 return Err(HostError::Protocol("session already exists".into()));
             }
-            if grant.task_grant_id.trim().is_empty() || grant.dcc_type.trim().is_empty() {
-                return Err(HostError::Protocol("task grant is incomplete".into()));
-            }
+            grant.validate_identity()?;
             if !grant.allow_app_launch {
                 return Err(HostError::Protocol(
                     "application launch is not granted".into(),
@@ -374,7 +372,7 @@ pub(super) async fn handle_request(
                     HostLaunchSession {
                         runtime_session_id,
                         task_grant_id: grant.task_grant_id.clone(),
-                        dcc_type: grant.dcc_type.clone(),
+                        application_label: grant.application_label.clone(),
                         process_id,
                     },
                 );
@@ -513,9 +511,7 @@ pub(super) async fn handle_request(
             if sessions.contains_key(&session_id) {
                 return Err(HostError::Protocol("session already exists".into()));
             }
-            if grant.task_grant_id.trim().is_empty() || grant.dcc_type.trim().is_empty() {
-                return Err(HostError::Protocol("task grant is incomplete".into()));
-            }
+            grant.validate_identity()?;
             let launched = launch_sessions.get(&session_id).cloned();
             if let Some(launched) = &launched {
                 bind_launched_process(launched, &mut grant)?;
@@ -529,8 +525,11 @@ pub(super) async fn handle_request(
                 .as_ref()
                 .map(|session| session.runtime_session_id.clone())
                 .unwrap_or_else(|| new_runtime_session_id("window"));
-            let mut session =
-                driver.session(scope, grant.dcc_type.clone(), runtime_session_id.clone())?;
+            let mut session = driver.session(
+                scope,
+                grant.application_label.clone(),
+                runtime_session_id.clone(),
+            )?;
             let started = session.start().await?;
             launch_sessions.remove(&session_id);
             let Some(target) = session.target() else {
@@ -900,9 +899,7 @@ pub(super) async fn handle_request(
             tool,
             arguments,
         } => {
-            if grant.task_grant_id.trim().is_empty() || grant.dcc_type.trim().is_empty() {
-                return Err(HostError::Protocol("task grant is incomplete".into()));
-            }
+            grant.validate_identity()?;
             if !grant.allow_native_tool {
                 return Err(HostError::Protocol(
                     "global native CUA tool calls are not granted".into(),

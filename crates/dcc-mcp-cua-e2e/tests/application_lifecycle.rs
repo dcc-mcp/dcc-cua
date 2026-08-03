@@ -69,7 +69,7 @@ fn launch_request() -> (&'static str, Value) {
             "WPF lifecycle fixture is missing: {}",
             path.display()
         );
-        ("wpf", json!({"path": path}))
+        ("WPF Test Harness", json!({"path": path}))
     }
     #[cfg(target_os = "linux")]
     {
@@ -79,12 +79,12 @@ fn launch_request() -> (&'static str, Value) {
             "GTK lifecycle fixture is missing: {}",
             path.display()
         );
-        ("gtk3", json!({"launch_path": path}))
+        ("GTK3 Test Harness", json!({"launch_path": path}))
     }
     #[cfg(target_os = "macos")]
     {
         (
-            "appkit",
+            "Calculator",
             json!({
                 "bundle_id": "com.apple.calculator",
                 "creates_new_application_instance": true
@@ -160,7 +160,7 @@ async fn host_launches_records_and_terminates_one_exact_application() {
     let mut host = HostProcess::spawn(&binary, SESSION_ID, SnapshotTransport::BinaryFrame)
         .await
         .expect("launch DCC-MCP CUA Host");
-    let (dcc_type, launch) = launch_request();
+    let (application_label, launch) = launch_request();
     let launched = host_request(
         &mut host,
         "launch_app",
@@ -168,7 +168,7 @@ async fn host_launches_records_and_terminates_one_exact_application() {
             "session_id": SESSION_ID,
             "grant": {
                 "task_grant_id": GRANT_ID,
-                "dcc_type": dcc_type,
+                "application_label": application_label,
                 "allow_app_launch": true
             },
             "launch": launch
@@ -212,7 +212,7 @@ async fn host_launches_records_and_terminates_one_exact_application() {
             "session_id": SESSION_ID,
             "grant": {
                 "task_grant_id": GRANT_ID,
-                "dcc_type": dcc_type,
+                "application_label": application_label,
                 "process_id": pid,
                 "window_handle": window_id,
                 "window_title": window_title,
@@ -222,6 +222,10 @@ async fn host_launches_records_and_terminates_one_exact_application() {
         }),
     )
     .await;
+    assert_eq!(
+        opened.value["marker"]["label"],
+        format!("DCC UI Control · {application_label} · Esc to stop")
+    );
     let capability = opened.value["window_capability"]
         .as_str()
         .expect("window capability")

@@ -53,6 +53,10 @@ if ($manifest.name -ne "dcc-mcp-cua" -or $manifest.target.os -ne $expectedOs) {
 if ($manifest.version -notmatch '^\d+\.\d+\.\d+$' -or $manifest.host.protocol_version -ne 1) {
     throw "manifest version or Host protocol is invalid"
 }
+if ($manifest.host.grant_limits.task_grant_id_max_chars -ne 128 -or
+    $manifest.host.grant_limits.application_label_max_chars -ne 80) {
+    throw "manifest omitted the Host grant limits"
+}
 if ($manifest.host.snapshot_transports -notcontains "shared_memory" -or
     $manifest.host.capabilities -notcontains "two_axis_scroll" -or
     $manifest.host.capabilities -notcontains "host_ping" -or
@@ -121,7 +125,7 @@ $streamArguments = @(
 $streamRequests = @(
     '{"request_id":"stream-ping-1","method":"ping","params":{}}',
     '{"request_id":"stream-doctor","method":"doctor","params":{}}',
-    '{"request_id":"stream-desktop-open","method":"open_desktop_session","params":{"session_id":"cli-e2e-lifecycle","grant":{"task_grant_id":"cli-e2e","dcc_type":"desktop","allow_raw_input":false}}}',
+    '{"request_id":"stream-desktop-open","method":"open_desktop_session","params":{"session_id":"cli-e2e-lifecycle","grant":{"task_grant_id":"cli-e2e","application_label":"Desktop","allow_raw_input":false}}}',
     '{"request_id":"stream-desktop-stop","method":"stop_desktop_session","params":{"session_id":"cli-e2e-lifecycle"}}',
     '{"request_id":"stream-error","method":"unknown_method","params":{}}',
     '{"request_id":"stream-ping-2","method":"ping","params":{}}'

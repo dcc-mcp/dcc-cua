@@ -8,9 +8,12 @@
 mod request_handler;
 mod session_identity;
 mod session_state;
+mod task_grant;
 use request_handler::handle_request;
 use session_identity::{new_runtime_session_id, rewrite_session_aliases};
 use session_state::{ConnectionSessions, HostDesktopSession, HostLaunchSession, HostSession};
+use task_grant::TaskGrant;
+pub use task_grant::{MAX_APPLICATION_LABEL_CHARS, MAX_TASK_GRANT_ID_CHARS};
 
 use std::collections::HashMap;
 #[cfg(unix)]
@@ -525,42 +528,6 @@ impl SnapshotTransport {
             ))),
         }
     }
-}
-
-#[derive(Debug, Deserialize)]
-struct TaskGrant {
-    task_grant_id: String,
-    dcc_type: String,
-    #[serde(default)]
-    process_id: Option<u32>,
-    #[serde(default)]
-    window_handle: Option<u64>,
-    #[serde(default)]
-    window_title: Option<String>,
-    #[serde(default)]
-    allow_raw_input: bool,
-    #[serde(default)]
-    allow_app_launch: bool,
-    #[serde(default)]
-    allow_app_terminate: bool,
-    #[serde(default)]
-    allow_clipboard_read: bool,
-    #[serde(default)]
-    allow_clipboard_write: bool,
-    #[serde(default)]
-    allow_recording: bool,
-    #[serde(default)]
-    allow_browser_input: bool,
-    #[serde(default)]
-    allow_browser_prepare: bool,
-    #[serde(default)]
-    allow_browser_download: bool,
-    #[serde(default)]
-    allow_native_tool: bool,
-    #[serde(default)]
-    allow_menu_invoke: bool,
-    #[serde(default)]
-    allow_session_escalation: bool,
 }
 
 #[derive(Debug, Deserialize)]
