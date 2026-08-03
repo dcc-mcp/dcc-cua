@@ -11,6 +11,7 @@ pub struct UiaAction {
     pub element_token: Option<String>,
     pub text: Option<String>,
     pub checked: Option<bool>,
+    pub delivery_mode: Option<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
