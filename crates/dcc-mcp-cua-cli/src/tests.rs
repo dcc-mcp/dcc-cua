@@ -213,6 +213,13 @@ fn manifest_is_a_machine_readable_core_launch_contract() {
     assert!(
         manifest["host"]["capabilities"]
             .as_array()
+            .is_some_and(|values| values
+                .iter()
+                .any(|value| value == "session_scoped_application_lifecycle"))
+    );
+    assert!(
+        manifest["host"]["capabilities"]
+            .as_array()
             .is_some_and(|values| values.iter().any(|value| value == "cursor_controls"))
     );
     assert_eq!(

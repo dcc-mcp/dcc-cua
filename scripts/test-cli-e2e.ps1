@@ -56,7 +56,8 @@ if ($manifest.version -notmatch '^\d+\.\d+\.\d+$' -or $manifest.host.protocol_ve
 if ($manifest.host.snapshot_transports -notcontains "shared_memory" -or
     $manifest.host.capabilities -notcontains "two_axis_scroll" -or
     $manifest.host.capabilities -notcontains "host_ping" -or
-    $manifest.host.capabilities -notcontains "host_diagnostics") {
+    $manifest.host.capabilities -notcontains "host_diagnostics" -or
+    $manifest.host.capabilities -notcontains "session_scoped_application_lifecycle") {
     throw "manifest omitted required Host capabilities"
 }
 
