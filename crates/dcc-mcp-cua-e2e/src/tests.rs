@@ -865,6 +865,7 @@ async fn windows_background_uia_keeps_concurrent_host_sessions_isolated() {
     sessions.sort_by_key(|(_, _, _, window_handle)| *window_handle == foreground);
     assert_ne!(sessions[0].3, foreground);
 
+    let mut background_action_observed = false;
     for (index, (session_id, grant_id, capability, window_handle)) in sessions.iter().enumerate() {
         let snapshot = host_request(
             &mut host,
@@ -907,6 +908,9 @@ async fn windows_background_uia_keeps_concurrent_host_sessions_isolated() {
                 .expect("locator object")
                 .clone(),
         );
+        let foreground_before =
+            unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow() } as usize
+                as u64;
         let completed = host_request(
             &mut host,
             "execute_action",
@@ -922,12 +926,13 @@ async fn windows_background_uia_keeps_concurrent_host_sessions_isolated() {
         )
         .await;
         assert_eq!(completed.value["success"], true);
-        if index == 0 {
-            assert_ne!(
+        if foreground_before != *window_handle {
+            background_action_observed = true;
+            assert_eq!(
                 unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow() }
                     as usize as u64,
-                *window_handle,
-                "background UIA action must not activate the target"
+                foreground_before,
+                "background UIA action must preserve the foreground window"
             );
         }
         let updated = host_request(
@@ -950,6 +955,10 @@ async fn windows_background_uia_keeps_concurrent_host_sessions_isolated() {
             updated.value
         );
     }
+    assert!(
+        background_action_observed,
+        "two WPF sessions must exercise at least one background UIA action"
+    );
     for (session_id, _, _, _) in &sessions {
         host_request(&mut host, "stop_session", json!({"session_id": session_id})).await;
     }
