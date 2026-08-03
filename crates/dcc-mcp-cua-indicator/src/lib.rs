@@ -4,10 +4,31 @@
 //! separate, non-activating safety banner that tells the operator which app is
 //! under agent control and provides the Escape stop boundary.
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use serde::Serialize;
 use thiserror::Error;
 
 const MAX_LABEL_CHARS: usize = 512;
+static INTERRUPT_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+/// Broadcast a cooperative stop to every control session in this Host process.
+pub fn broadcast_interrupt() -> u64 {
+    INTERRUPT_GENERATION
+        .fetch_add(1, Ordering::AcqRel)
+        .wrapping_add(1)
+}
+
+/// Return the current Host-process stop generation.
+#[must_use]
+pub fn interrupt_generation() -> u64 {
+    INTERRUPT_GENERATION.load(Ordering::Acquire)
+}
+
+#[must_use]
+pub fn interrupt_generation_changed(started: u64, current: u64) -> bool {
+    started != current
+}
 
 #[derive(Debug, Clone)]
 pub struct BannerTarget {
@@ -51,6 +72,7 @@ pub enum IndicatorError {
 }
 
 pub struct ControlBanner {
+    generation: u64,
     platform: platform::PlatformBanner,
 }
 
@@ -58,18 +80,22 @@ impl ControlBanner {
     pub fn start(target: BannerTarget) -> Result<Self, IndicatorError> {
         target.validate()?;
         Ok(Self {
+            generation: interrupt_generation(),
             platform: platform::PlatformBanner::start(target)?,
         })
     }
 
     #[must_use]
     pub fn status(&self) -> BannerStatus {
-        self.platform.status()
+        let mut status = self.platform.status();
+        status.interrupted = self.interrupted();
+        status
     }
 
     #[must_use]
     pub fn interrupted(&self) -> bool {
-        self.platform.interrupted()
+        interrupt_generation_changed(self.generation, interrupt_generation())
+            || self.platform.interrupted()
     }
 
     pub fn set_cursor_position(&self, x: f64, y: f64) {

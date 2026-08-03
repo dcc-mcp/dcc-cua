@@ -237,6 +237,14 @@ try {
         throw "cross-platform Host endpoint did not answer ping"
     }
 
+    $endpointInterrupt = & $binaryPath interrupt-all --endpoint $endpoint |
+        Out-String | ConvertFrom-Json
+    if ($LASTEXITCODE -ne 0 -or
+        $endpointInterrupt.type -ne "interrupt_broadcast" -or
+        $endpointInterrupt.scope -ne "host_process") {
+        throw "cross-platform Host endpoint did not accept a shared stop"
+    }
+
     $endpointBatch = & $binaryPath host-batch --endpoint $endpoint --json-file $endpointBatchFile |
         Out-String | ConvertFrom-Json
     if ($LASTEXITCODE -ne 0 -or

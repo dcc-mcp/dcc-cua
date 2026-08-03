@@ -40,7 +40,10 @@ use dcc_mcp_cua_core::{
     ComputerUseToolResult, ComputerUseWindowFrameRequest, ComputerUseWindowQuery,
     ComputerUseWindowWaitRequest, ComputerUseZoomRequest,
 };
-use dcc_mcp_cua_indicator::{BannerTarget, ControlBanner};
+use dcc_mcp_cua_indicator::{
+    BannerTarget, ControlBanner, broadcast_interrupt, interrupt_generation,
+    interrupt_generation_changed,
+};
 use dcc_mcp_cua_shm::SharedImage;
 
 // ponytail: one OS input stream is process-global; shard only if platforms gain isolated seats.
@@ -63,6 +66,7 @@ pub const HOST_CAPABILITIES: &[&str] = &[
     "background_first_input_delivery",
     "scoped_raw_input",
     "serialized_raw_input",
+    "host_wide_interrupt",
     "accessibility_snapshot",
     "accessibility_find",
     "state_verification",
@@ -188,6 +192,7 @@ enum Request {
     Hello(HelloParams),
     Ping {},
     Doctor {},
+    InterruptAll {},
     ListApps {},
     ListTools {},
     ListWindows {
@@ -769,6 +774,7 @@ struct HostDesktopSession {
     task_grant_id: String,
     allow_raw_input: bool,
     capability: String,
+    interrupt_generation: u64,
     session: ComputerUseDesktopSession,
     latest_shared_image: Option<SharedImage>,
 }
@@ -1121,16 +1127,25 @@ where
 }
 
 async fn cleanup_sessions(
-    sessions: HashMap<String, HostSession>,
-    desktop_sessions: HashMap<String, HostDesktopSession>,
+    mut sessions: HashMap<String, HostSession>,
+    mut desktop_sessions: HashMap<String, HostDesktopSession>,
 ) -> Result<(), HostError> {
-    for (_, mut session) in sessions {
-        let _ = session.session.stop().await;
-    }
-    for (_, mut session) in desktop_sessions {
-        let _ = session.session.stop().await;
-    }
+    stop_sessions(&mut sessions, &mut desktop_sessions).await;
     Ok(())
+}
+
+async fn stop_sessions(
+    sessions: &mut HashMap<String, HostSession>,
+    desktop_sessions: &mut HashMap<String, HostDesktopSession>,
+) -> (usize, usize) {
+    let counts = (sessions.len(), desktop_sessions.len());
+    for (_, mut session) in sessions.drain() {
+        let _ = session.session.stop().await;
+    }
+    for (_, mut session) in desktop_sessions.drain() {
+        let _ = session.session.stop().await;
+    }
+    counts
 }
 
 fn ping_response() -> Value {
@@ -1414,6 +1429,11 @@ async fn authorized_session<'a>(
             "session grant or capability mismatch".into(),
         ));
     }
+    ensure_session_not_interrupted(session).await?;
+    Ok(session)
+}
+
+async fn ensure_session_not_interrupted(session: &mut HostSession) -> Result<(), HostError> {
     if session.banner.interrupted() {
         let cleanup_note = session
             .session
@@ -1425,15 +1445,15 @@ async fn authorized_session<'a>(
         return Err(ComputerUseError::new(
             ComputerUseErrorCode::UserInterrupted,
             format!(
-                "the user pressed Escape or the safety banner stopped; the session was stopped{cleanup_note}"
+                "Escape, the safety banner, or a shared Host stop interrupted this session; the session was stopped{cleanup_note}"
             ),
         )
         .into());
     }
-    Ok(session)
+    Ok(())
 }
 
-fn authorized_desktop_session<'a>(
+async fn authorized_desktop_session<'a>(
     sessions: &'a mut HashMap<String, HostDesktopSession>,
     session_id: &str,
     grant_id: &str,
@@ -1446,6 +1466,20 @@ fn authorized_desktop_session<'a>(
         return Err(HostError::Protocol(
             "desktop session grant or capability mismatch".into(),
         ));
+    }
+    if interrupt_generation_changed(session.interrupt_generation, interrupt_generation()) {
+        let cleanup_note = session
+            .session
+            .stop()
+            .await
+            .err()
+            .map(|error| format!("; CUA cleanup also failed: {error}"))
+            .unwrap_or_default();
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::UserInterrupted,
+            format!("a shared Host stop interrupted this desktop session{cleanup_note}"),
+        )
+        .into());
     }
     Ok(session)
 }

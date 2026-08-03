@@ -18,9 +18,9 @@ a whole task. Its public protocol is owned by this repository and provides:
   per-session cursor and badge; macOS runs the bundled official `cua-driver`
   as an SDK private worker so AppKit remains on that worker's main thread.
   Headless macOS sessions still return CUA's structured readiness refusal. All
-  supported indicators are click-through, excluded from agent captures, and one shared
-  Escape hotkey broadcasts interruption to every active session in the Host
-  process.
+  supported indicators are click-through and excluded from agent captures.
+  Windows physical Escape and the cross-platform `interrupt_all` Host request
+  advance the same Host-process stop generation for every active connection.
 
 The repository is a Cargo workspace with nine responsibilities:
 
@@ -34,9 +34,9 @@ The repository is a Cargo workspace with nine responsibilities:
   correlation and binary image attachments;
 - `dcc-mcp-cua-host`: long-lived versioned IPC and request
   routing;
-- `dcc-mcp-cua-indicator`: Host-owned Windows control banner/frame and physical
-  Escape interruption boundary; Linux cursor/badge rendering stays in the CUA
-  SDK, while the packaged macOS Host uses CUA's private-worker overlay;
+- `dcc-mcp-cua-indicator`: Host-process stop generation plus the Windows control
+  banner/frame and physical Escape boundary; Linux cursor/badge rendering stays
+  in the CUA SDK, while the packaged macOS Host uses CUA's private-worker overlay;
 - `dcc-mcp-cua-platform-windows`: exact PID/HWND Windows UI Automation worker
   for background semantic fallback when CUA's combined window-state path is
   unavailable;
@@ -228,6 +228,7 @@ Start one persistent host process instead of spawning a process per action:
 cargo run -p dcc-mcp-cua-cli -- host --stdio
 cargo run -p dcc-mcp-cua-cli -- host
 cargo run -p dcc-mcp-cua-cli -- ping --spawn target/debug/dcc-mcp-cua
+cargo run -p dcc-mcp-cua-cli -- interrupt-all
 cargo run -p dcc-mcp-cua-cli -- host-call --method list_apps --json '{}'
 cargo run -p dcc-mcp-cua-cli -- host-batch --json '[{"method":"list_apps","params":{}},{"method":"screen_size","params":{}}]'
 cargo run -p dcc-mcp-cua-cli -- host-call --spawn target/debug/dcc-mcp-cua --method list_apps --json '{}'
@@ -245,7 +246,16 @@ the following binary image frame without base64 decoding in the control path:
 ```rust,no_run
 let mut host = dcc_mcp_cua_client::HostClient::connect_default("dcc-mcp-core").await?;
 let response = host.request("list_windows", serde_json::json!({})).await?;
+let stopped = host.interrupt_all().await?;
 ```
+
+`HostClient::interrupt_all` and `dcc-mcp-cua interrupt-all [--endpoint PATH]`
+broadcast a cooperative safety stop to every connection in the selected Host
+process. The calling connection is cleaned up before acknowledgement; other
+window and desktop sessions return `user_interrupted` at their next bounded
+operation or wait checkpoint. An already-running native SDK call remains
+bounded by the Host action timeout because CUA exposes no portable preemption
+primitive.
 
 When Core owns the Host lifecycle, use `HostProcess::spawn` to start the CLI
 with `host --stdio`, reuse the same negotiated `HostClient`, and call
@@ -548,8 +558,10 @@ exact browser binding -> semantic browser snapshot -> click/type -> independent
 state oracle -> cleanup path. Each lane also builds CUA's native WPF, GTK3, or
 AppKit fixture and verifies an exact `Window -> Arrange -> Left` menu path by
 reading fresh UIA, AT-SPI, or AX application state. Concurrent-session coverage
-uses two Electron windows on Linux/macOS and two non-foreground WPF windows on
-Windows. The same CLI E2E also launches a real endpoint Host and
+uses two independent endpoint clients controlling two Electron windows on
+Linux/macOS and two non-foreground WPF windows on Windows; it also verifies
+Host-wide stop propagation and serialized concurrent raw input. The same CLI
+E2E launches a real endpoint Host and
 checks ping plus pipelined application/tool discovery over the platform transport
 (Windows named pipe or Unix socket).
 The release workflow packages `dcc-mcp-cua`, the pinned official `cua-driver`

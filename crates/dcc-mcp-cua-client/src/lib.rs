@@ -397,6 +397,11 @@ impl HostClient {
         self.request("doctor", json!({})).await
     }
 
+    /// Cooperatively stop every active session owned by this Host process.
+    pub async fn interrupt_all(&mut self) -> HostClientResult<HostResponse> {
+        self.request("interrupt_all", json!({})).await
+    }
+
     /// Send one request and read its JSON response plus an optional image frame.
     pub async fn request(
         &mut self,

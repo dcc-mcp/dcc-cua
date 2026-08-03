@@ -82,19 +82,22 @@ fn cursor_halo_is_transparent_in_the_center_and_diffuses_outward() {
     }));
 }
 
-#[cfg(windows)]
 #[rstest]
 #[case(7, 7, false)]
 #[case(7, 8, true)]
-fn escape_generation_broadcasts_only_to_existing_sessions(
+fn interrupt_generation_broadcasts_only_to_existing_sessions(
     #[case] started: u64,
     #[case] current: u64,
     #[case] interrupted: bool,
 ) {
-    assert_eq!(
-        platform::escape_generation_changed(started, current),
-        interrupted
-    );
+    assert_eq!(interrupt_generation_changed(started, current), interrupted);
+}
+
+#[rstest]
+fn programmatic_interrupt_advances_the_shared_generation() {
+    let started = interrupt_generation();
+    let current = broadcast_interrupt();
+    assert!(interrupt_generation_changed(started, current));
 }
 
 #[cfg(windows)]
