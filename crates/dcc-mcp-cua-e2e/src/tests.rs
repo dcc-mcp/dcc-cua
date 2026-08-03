@@ -12,7 +12,7 @@ use cua_driver_testkit::{
     BrowserFixtureServer, ChildReaper, FixtureJournal, harness_app, spawn_in_job,
 };
 #[cfg(feature = "gui-e2e")]
-use dcc_mcp_cua_client::{HostProcess, HostResponse, SnapshotTransport};
+use dcc_mcp_cua_client::{HostClient, HostProcess, HostResponse, SnapshotTransport};
 #[cfg(feature = "gui-e2e")]
 use rstest::rstest;
 #[cfg(feature = "gui-e2e")]
@@ -265,19 +265,83 @@ fn wait_for_fixture_file(path: &std::path::Path, id: &str, expected: &str) {
 
 #[cfg(feature = "gui-e2e")]
 async fn host_request(host: &mut HostProcess, method: &str, params: Value) -> HostResponse {
+    client_request(host.client_mut(), method, params).await
+}
+
+#[cfg(feature = "gui-e2e")]
+async fn client_request(client: &mut HostClient, method: &str, params: Value) -> HostResponse {
     let started = Instant::now();
-    let response = tokio::time::timeout(
-        Duration::from_secs(90),
-        host.client_mut().request(method, params),
-    )
-    .await
-    .unwrap_or_else(|_| panic!("Host request {method:?} exceeded 90 seconds"))
-    .unwrap_or_else(|error| panic!("Host request {method:?} failed: {error:?}"));
+    let response = tokio::time::timeout(Duration::from_secs(90), client.request(method, params))
+        .await
+        .unwrap_or_else(|_| panic!("Host request {method:?} exceeded 90 seconds"))
+        .unwrap_or_else(|error| panic!("Host request {method:?} failed: {error:?}"));
     eprintln!(
         "Host request {method:?} completed in {:?}",
         started.elapsed()
     );
     response
+}
+
+#[cfg(feature = "gui-e2e")]
+async fn start_endpoint_clients(
+    binary: &std::path::Path,
+    reaper: &mut ChildReaper,
+    client_name: &str,
+) -> (Vec<HostClient>, Option<tempfile::TempDir>) {
+    #[cfg(windows)]
+    let (endpoint, endpoint_directory) = (
+        format!(
+            r"\\.\pipe\dcc-mcp-cua-gui-e2e-{}-{client_name}",
+            std::process::id()
+        ),
+        None,
+    );
+    #[cfg(unix)]
+    let (endpoint, endpoint_directory) = {
+        let directory = tempfile::tempdir().expect("create Host endpoint directory");
+        (
+            directory
+                .path()
+                .join("host.sock")
+                .to_string_lossy()
+                .into_owned(),
+            Some(directory),
+        )
+    };
+    let mut host_command = Command::new(binary);
+    host_command
+        .args(["host", "--endpoint"])
+        .arg(&endpoint)
+        .stdout(Stdio::null())
+        .stderr(Stdio::inherit());
+    reaper
+        .spawn(&mut host_command)
+        .expect("launch endpoint DCC-MCP CUA Host");
+
+    let mut clients = Vec::new();
+    for index in 0..2 {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        let client = loop {
+            match HostClient::connect_with_transport(
+                endpoint.clone(),
+                format!("{client_name}-{index}"),
+                SnapshotTransport::SharedMemory,
+            )
+            .await
+            {
+                Ok(client) => break client,
+                Err(error) => {
+                    assert!(
+                        Instant::now() < deadline,
+                        "endpoint Host did not accept client {index}: {error:?}"
+                    );
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+            }
+        };
+        clients.push(client);
+    }
+    (clients, endpoint_directory)
 }
 
 #[cfg(feature = "gui-e2e")]
@@ -961,7 +1025,7 @@ async fn controlled_electron_round_trip() {
 #[cfg(all(feature = "gui-e2e", not(windows)))]
 #[rstest]
 #[tokio::test]
-async fn concurrent_electron_sessions_keep_distinct_capabilities() {
+async fn independent_endpoint_clients_serialize_scoped_raw_input() {
     let binary = std::env::var_os("DCC_MCP_CUA_E2E_BINARY")
         .map(PathBuf::from)
         .expect("DCC_MCP_CUA_E2E_BINARY must point to dcc-mcp-cua");
@@ -1000,21 +1064,21 @@ async fn concurrent_electron_sessions_keep_distinct_capabilities() {
         fixture_profiles.push(profile);
     }
 
-    let mut host = HostProcess::spawn(
+    let (mut clients, endpoint_directory) = start_endpoint_clients(
         &binary,
+        &mut fixture_reaper,
         "concurrent-controlled-gui-e2e",
-        SnapshotTransport::SharedMemory,
     )
-    .await
-    .expect("launch DCC-MCP CUA Host");
+    .await;
     for journal in &journals {
         wait_for_journal(journal, "page-marker", FIXTURE_MARKER);
     }
 
     let mut sessions = Vec::new();
     for (index, pid) in fixture_pids.iter().copied().enumerate() {
-        let ready = host_request(
-            &mut host,
+        let client = &mut clients[index];
+        let ready = client_request(
+            client,
             "wait_for_window",
             json!({
                 "query": {"process_id": pid, "on_screen_only": true},
@@ -1029,8 +1093,8 @@ async fn concurrent_electron_sessions_keep_distinct_capabilities() {
         assert!(window_title.starts_with(FIXTURE_TITLE));
         let session_id = format!("concurrent-gui-{index}");
         let grant_id = format!("concurrent-gui-grant-{index}");
-        let opened = host_request(
-            &mut host,
+        let opened = client_request(
+            client,
             "open_session",
             json!({
                 "session_id": session_id,
@@ -1052,8 +1116,8 @@ async fn concurrent_electron_sessions_keep_distinct_capabilities() {
             .as_str()
             .expect("window capability")
             .to_owned();
-        host_request(
-            &mut host,
+        client_request(
+            client,
             "escalate_session",
             json!({
                 "session_id": session_id,
@@ -1069,9 +1133,9 @@ async fn concurrent_electron_sessions_keep_distinct_capabilities() {
 
     assert_ne!(sessions[0].0, sessions[1].0);
     assert_ne!(sessions[0].2, sessions[1].2);
-    for (session_id, grant_id, capability) in &sessions {
-        let state = host_request(
-            &mut host,
+    for (index, (session_id, grant_id, capability)) in sessions.iter().enumerate() {
+        let state = client_request(
+            &mut clients[index],
             "get_session_state",
             json!({
                 "session_id": session_id,
@@ -1091,9 +1155,11 @@ async fn concurrent_electron_sessions_keep_distinct_capabilities() {
             "window"
         );
     }
+    let mut raw_input_requests = Vec::new();
     for (index, (session_id, grant_id, capability)) in sessions.iter().enumerate() {
-        let snapshot = host_request(
-            &mut host,
+        let client = &mut clients[index];
+        let snapshot = client_request(
+            client,
             "snapshot",
             json!({
                 "session_id": session_id,
@@ -1118,65 +1184,69 @@ async fn concurrent_electron_sessions_keep_distinct_capabilities() {
             .as_str()
             .expect("parallel accessibility state id")
             .to_owned();
-        let found = host_request(
-            &mut host,
+        let found = client_request(
+            client,
             "find",
             json!({
                 "session_id": session_id,
                 "task_grant_id": grant_id,
                 "window_capability": capability,
-                "query": {"text": "txt-input", "max_results": 1}
+                "query": {"text": "Increment", "max_results": 1}
             }),
         )
         .await;
-        let input = found.value["matches"]
+        let target = found.value["matches"]
             .as_array()
             .and_then(|matches| matches.first())
-            .expect("parallel semantic text input match");
-        let mut action = json!({
-            "action": if cfg!(target_os = "linux") { "type" } else { "set_text" },
-            "input_kind": "semantic",
-            "intent": "ordinary_edit",
-            "delivery_mode": if cfg!(target_os = "linux") { "foreground" } else { "background" },
-            "text": format!("parallel-host-ipc-e2e-{index}")
-        });
-        action
-            .as_object_mut()
-            .expect("parallel action object")
-            .extend(
-                semantic_locator(input)
-                    .as_object()
-                    .expect("parallel locator")
-                    .clone(),
-            );
-        host_request(
-            &mut host,
-            "execute_action",
-            json!({
-                "session_id": session_id,
-                "task_grant_id": grant_id,
-                "window_capability": capability,
-                "observation_id": observation_id,
-                "accessibility_state_id": accessibility_state_id,
-                "action": action,
-                "capture_after": true,
-                "post_snapshot_max_nodes": 1_000,
-                "post_snapshot_max_depth": 20
-            }),
+            .expect("parallel raw-input click target");
+        let (x, y) = screenshot_point(&snapshot.value, target);
+        raw_input_requests.push(json!({
+            "session_id": session_id,
+            "task_grant_id": grant_id,
+            "window_capability": capability,
+            "observation_id": observation_id,
+            "accessibility_state_id": accessibility_state_id,
+            "action": {
+                "action": "click",
+                "input_kind": "raw_input",
+                "intent": "navigate",
+                "delivery_mode": "foreground",
+                "x": x,
+                "y": y
+            },
+            "capture_after": true,
+            "post_snapshot_max_nodes": 1_000,
+            "post_snapshot_max_depth": 20
+        }));
+    }
+    let (first_clients, second_clients) = clients.split_at_mut(1);
+    let first = client_request(
+        &mut first_clients[0],
+        "execute_action",
+        raw_input_requests.remove(0),
+    );
+    let second = client_request(
+        &mut second_clients[0],
+        "execute_action",
+        raw_input_requests.remove(0),
+    );
+    let (first, second) = tokio::join!(first, second);
+    assert_eq!(first.value["success"], true, "{}", first.value);
+    assert_eq!(second.value["success"], true, "{}", second.value);
+    for journal in &journals {
+        wait_for_journal(journal, "lbl-counter", "counter=1");
+    }
+    for (index, (session_id, _, _)) in sessions.iter().enumerate() {
+        client_request(
+            &mut clients[index],
+            "stop_session",
+            json!({"session_id": session_id}),
         )
         .await;
-        wait_for_journal(
-            &journals[index],
-            "lbl-input-mirror",
-            &format!("mirror=parallel-host-ipc-e2e-{index}"),
-        );
     }
-    for (session_id, _, _) in &sessions {
-        host_request(&mut host, "stop_session", json!({"session_id": session_id})).await;
-    }
-    let status = host.shutdown().await.expect("stop Host process");
-    assert!(status.success(), "Host exited unsuccessfully: {status}");
+    drop(clients);
     drop(fixture_reaper);
+    drop(endpoint_directory);
 }
 
 #[cfg(feature = "gui-e2e")]
@@ -1324,7 +1394,7 @@ async fn controlled_native_menu_round_trip() {
 #[cfg(all(feature = "gui-e2e", windows))]
 #[rstest]
 #[tokio::test]
-async fn windows_background_uia_keeps_concurrent_host_sessions_isolated() {
+async fn windows_background_uia_keeps_independent_endpoint_sessions_isolated() {
     let binary = std::env::var_os("DCC_MCP_CUA_E2E_BINARY")
         .map(PathBuf::from)
         .expect("DCC_MCP_CUA_E2E_BINARY must point to dcc-mcp-cua");
@@ -1353,17 +1423,12 @@ async fn windows_background_uia_keeps_concurrent_host_sessions_isolated() {
         fixture_state_dirs.push(state_dir);
     }
 
-    let mut host = HostProcess::spawn(
-        &binary,
-        "windows-background-uia-e2e",
-        SnapshotTransport::BinaryFrame,
-    )
-    .await
-    .expect("launch DCC-MCP CUA Host");
+    let (mut clients, endpoint_directory) =
+        start_endpoint_clients(&binary, &mut fixture_reaper, "windows-background-uia-e2e").await;
     let mut window_targets = Vec::new();
-    for pid in fixture_pids {
-        let ready = host_request(
-            &mut host,
+    for (index, pid) in fixture_pids.into_iter().enumerate() {
+        let ready = client_request(
+            &mut clients[index],
             "wait_for_window",
             json!({
                 "query": {"process_id": pid, "on_screen_only": true},
@@ -1392,8 +1457,8 @@ async fn windows_background_uia_keeps_concurrent_host_sessions_isolated() {
     for (index, (pid, window_handle, window_title)) in window_targets.iter().enumerate() {
         let session_id = format!("windows-background-uia-{index}");
         let grant_id = format!("windows-background-uia-grant-{index}");
-        let opened = host_request(
-            &mut host,
+        let opened = client_request(
+            &mut clients[index],
             "open_session",
             json!({
                 "session_id": session_id,
@@ -1408,6 +1473,7 @@ async fn windows_background_uia_keeps_concurrent_host_sessions_isolated() {
         )
         .await;
         sessions.push((
+            index,
             session_id,
             grant_id,
             opened.value["window_capability"]
@@ -1417,16 +1483,19 @@ async fn windows_background_uia_keeps_concurrent_host_sessions_isolated() {
             *window_handle,
         ));
     }
-    assert_ne!(sessions[0].2, sessions[1].2);
+    assert_ne!(sessions[0].3, sessions[1].3);
     let foreground = unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow() }
         as usize as u64;
-    sessions.sort_by_key(|(_, _, _, window_handle)| *window_handle == foreground);
-    assert_ne!(sessions[0].3, foreground);
+    sessions.sort_by_key(|(_, _, _, _, window_handle)| *window_handle == foreground);
+    assert_ne!(sessions[0].4, foreground);
 
     let mut background_action_observed = false;
-    for (index, (session_id, grant_id, capability, window_handle)) in sessions.iter().enumerate() {
-        let snapshot = host_request(
-            &mut host,
+    for (index, (client_index, session_id, grant_id, capability, window_handle)) in
+        sessions.iter().enumerate()
+    {
+        let client = &mut clients[*client_index];
+        let snapshot = client_request(
+            client,
             "accessibility_snapshot",
             json!({
                 "session_id": session_id,
@@ -1438,8 +1507,8 @@ async fn windows_background_uia_keeps_concurrent_host_sessions_isolated() {
         )
         .await;
         assert_eq!(snapshot.value["root"]["backend"], "windows_uia");
-        let found = host_request(
-            &mut host,
+        let found = client_request(
+            client,
             "find",
             json!({
                 "session_id": session_id,
@@ -1469,8 +1538,8 @@ async fn windows_background_uia_keeps_concurrent_host_sessions_isolated() {
         let foreground_before =
             unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow() } as usize
                 as u64;
-        let completed = host_request(
-            &mut host,
+        let completed = client_request(
+            client,
             "execute_action",
             json!({
                 "session_id": session_id,
@@ -1493,8 +1562,8 @@ async fn windows_background_uia_keeps_concurrent_host_sessions_isolated() {
                 "background UIA action must preserve the foreground window"
             );
         }
-        let updated = host_request(
-            &mut host,
+        let updated = client_request(
+            client,
             "accessibility_snapshot",
             json!({
                 "session_id": session_id,
@@ -1517,11 +1586,16 @@ async fn windows_background_uia_keeps_concurrent_host_sessions_isolated() {
         background_action_observed,
         "two WPF sessions must exercise at least one background UIA action"
     );
-    for (session_id, _, _, _) in &sessions {
-        host_request(&mut host, "stop_session", json!({"session_id": session_id})).await;
+    for (client_index, session_id, _, _, _) in &sessions {
+        client_request(
+            &mut clients[*client_index],
+            "stop_session",
+            json!({"session_id": session_id}),
+        )
+        .await;
     }
 
-    let status = host.shutdown().await.expect("stop Host process");
-    assert!(status.success(), "Host exited unsuccessfully: {status}");
+    drop(clients);
     drop(fixture_reaper);
+    drop(endpoint_directory);
 }
