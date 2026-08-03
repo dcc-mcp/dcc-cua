@@ -1092,7 +1092,7 @@ where
                 .await
             });
         } else {
-            let (response, attachment) = match handle_request(
+            let (response, attachment) = match Box::pin(handle_request(
                 &driver,
                 &mut sessions,
                 &mut desktop_sessions,
@@ -1100,7 +1100,7 @@ where
                 &mut desktop_shared_image,
                 &cancellation_registry,
                 request,
-            )
+            ))
             .await
             {
                 Ok(result) => result,
