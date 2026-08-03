@@ -18,6 +18,7 @@ cua-driver-testkit = { git = "https://github.com/loonghao/cua.git", rev = "bed06
 dcc-mcp-cua-client = { path = "../dcc-mcp-cua-client" }
 rstest.workspace = true
 serde_json = "1"
+tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
 
 [target.'cfg(windows)'.dev-dependencies]

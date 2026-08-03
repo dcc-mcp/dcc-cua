@@ -1052,6 +1052,7 @@ dependencies = [
  "dcc-mcp-cua-client",
  "rstest",
  "serde_json",
+ "tempfile",
  "tokio",
  "windows-sys 0.61.2",
 ]

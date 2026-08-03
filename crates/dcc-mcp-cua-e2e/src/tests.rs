@@ -575,12 +575,15 @@ async fn concurrent_electron_sessions_keep_distinct_capabilities() {
     let mut journals = Vec::new();
     let mut fixture_reaper = ChildReaper::new();
     let mut fixture_pids = Vec::new();
+    let mut fixture_profiles = Vec::new();
     for _ in 0..2 {
         let journal = FixtureJournal::start();
         let cdp_port = allocate_loopback_port();
+        let profile = tempfile::tempdir().expect("create isolated Electron profile");
         let mut command = Command::new(&fixture_path);
         command
             .args(fixture_args)
+            .arg(format!("--user-data-dir={}", profile.path().display()))
             .env("CUA_E2E_FIXTURE_JOURNAL_URL", journal.url())
             .env("CUA_ELECTRON_CDP_PORT", cdp_port.to_string())
             .stdout(Stdio::null())
@@ -589,6 +592,7 @@ async fn concurrent_electron_sessions_keep_distinct_capabilities() {
         fixture_pids.push(child.id());
         fixture_reaper.push(child);
         journals.push(journal);
+        fixture_profiles.push(profile);
     }
 
     let mut host = HostProcess::spawn(
