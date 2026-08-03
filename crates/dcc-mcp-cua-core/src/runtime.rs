@@ -10,6 +10,7 @@ use serde_json::{Value, json};
 
 use crate::contracts::*;
 use crate::observation::semantic_observation;
+use crate::platform_process::prepare_platform_process;
 use crate::policy::*;
 use crate::window_target::{WindowTarget, validate_target_policy};
 #[cfg(windows)]
@@ -70,6 +71,7 @@ pub struct ComputerUseDriver {
 
 impl ComputerUseDriver {
     pub fn create() -> ComputerUseResult<Self> {
+        prepare_platform_process();
         CuaDriver::try_create_for_host(driver_host_options())
             .map(|driver| Self {
                 driver,
@@ -87,6 +89,7 @@ impl ComputerUseDriver {
         options: ConfiguredDriverOptions,
         host: Arc<dyn DriverAuthorizationHost>,
     ) -> ComputerUseResult<Self> {
+        prepare_platform_process();
         let mut host_options = driver_host_options();
         host_options.authorization_host = Some(host);
         CuaDriver::try_create_configured_for_host(options, host_options)

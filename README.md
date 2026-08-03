@@ -197,9 +197,9 @@ mutation failure that could cause an unsafe retry.
 Their banner and frame exist only for that command's session lifetime. Core and
 other multi-step agents should keep one Host IPC session open so the same exact
 PID/HWND retains its visible banner, breathing frame, cursor, and observation
-fence across actions. A CUA action or window activation that does not return
-within 15 seconds invalidates that window session instead of blocking the Host
-indefinitely.
+fence across actions. The Windows UIA worker starts through a separate readiness
+handshake; a provider request that then exceeds 15 seconds invalidates that
+window session instead of blocking the Host indefinitely.
 
 For common controls, `click`, `double-click`, `right-click`, `move`, `scroll`,
 `press`, `hotkey`, and `type` build the same fenced CUA actions without manual
@@ -424,8 +424,9 @@ the semantic window capture. After an explicit `escalate_session` approval,
 the same exact-window session first uses CUA's native platform capture for that
 validated HWND. Only when exact-window capture is unavailable may it crop a CUA
 desktop frame, which requires the target to be foreground so another window
-cannot be mistaken for it. Windows per-monitor DPI and resized exact-window
-frames are mapped back to native target coordinates. Exact Windows visual
+cannot be mistaken for it. The standalone Windows Host enters Per-Monitor V2
+DPI awareness before creating CUA, and resized exact-window frames are mapped
+back to native target coordinates. Exact Windows visual
 captures also attach the bounded Windows UIA tree when available; otherwise
 they are marked `accessibility_available: false`. Coordinate actions remain
 bound to their exact PID/HWND.
@@ -536,6 +537,7 @@ request recovery (including a UTF-8 BOM on the first JSONL line), and the
 embedded CUA application/tool inventories. All three platforms build CUA's
 official Electron fixture and verify the
 real launch -> scoped PNG snapshot -> semantic find -> input -> state oracle ->
+exact-window raw-input coordinate click -> independent state oracle ->
 exact browser binding -> semantic browser snapshot -> click/type -> independent
 state oracle -> cleanup path. Each lane also builds CUA's native WPF, GTK3, or
 AppKit fixture and verifies an exact `Window -> Arrange -> Left` menu path by

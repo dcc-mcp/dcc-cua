@@ -140,6 +140,41 @@ fn semantic_locator(element: &Value) -> Value {
 }
 
 #[cfg(feature = "gui-e2e")]
+fn screenshot_point(snapshot: &Value, element: &Value) -> (f64, f64) {
+    let (frame, width_key, height_key) = if element["frame"].is_object() {
+        (&element["frame"], "w", "h")
+    } else {
+        (&element["bounds"], "width", "height")
+    };
+    let center_x = frame["x"].as_f64().expect("element frame x")
+        + frame[width_key].as_f64().expect("element frame width") / 2.0;
+    let center_y = frame["y"].as_f64().expect("element frame y")
+        + frame[height_key].as_f64().expect("element frame height") / 2.0;
+    let source = snapshot["observation"]["source_rect"]
+        .as_array()
+        .expect("snapshot source rect");
+    let image_width = snapshot["observation"]["width"]
+        .as_f64()
+        .expect("snapshot width");
+    let image_height = snapshot["observation"]["height"]
+        .as_f64()
+        .expect("snapshot height");
+    let x = (center_x - source[0].as_f64().expect("source x")) * image_width
+        / source[2].as_f64().expect("source width");
+    let y = (center_y - source[1].as_f64().expect("source y")) * image_height
+        / source[3].as_f64().expect("source height");
+    eprintln!(
+        "raw-input target frame={frame} source={} image={image_width}x{image_height} point=({x}, {y})",
+        snapshot["observation"]["source_rect"]
+    );
+    assert!(
+        x >= 0.0 && x < image_width && y >= 0.0 && y < image_height,
+        "element center ({x}, {y}) is outside the exact-window snapshot ({image_width}x{image_height})"
+    );
+    (x, y)
+}
+
+#[cfg(feature = "gui-e2e")]
 fn assert_png(image: &[u8]) {
     assert!(
         image.len() > 8 && image.starts_with(b"\x89PNG\r\n\x1a\n"),
@@ -185,7 +220,7 @@ fn browser_snapshot_id(snapshot: &Value) -> String {
 
 #[cfg(feature = "gui-e2e")]
 fn wait_for_journal(journal: &FixtureJournal, id: &str, expected: &str) {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(15);
     while journal.text(id).as_deref() != Some(expected) {
         assert!(
             Instant::now() < deadline,
@@ -198,12 +233,31 @@ fn wait_for_journal(journal: &FixtureJournal, id: &str, expected: &str) {
 
 #[cfg(feature = "gui-e2e")]
 fn wait_for_browser_fixture(server: &BrowserFixtureServer, id: &str, expected: &str) {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(15);
     while server.text(id).as_deref() != Some(expected) {
         assert!(
             Instant::now() < deadline,
             "browser fixture state {id:?} did not reach {expected:?}: {}",
             server.snapshot()
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+#[cfg(all(feature = "gui-e2e", windows))]
+fn wait_for_fixture_file(path: &std::path::Path, id: &str, expected: &str) {
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let state = std::fs::read(path)
+            .ok()
+            .and_then(|body| serde_json::from_slice::<Value>(&body).ok());
+        if state.as_ref().and_then(|state| state[id]["text"].as_str()) == Some(expected) {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "fixture file state {id:?} did not reach {expected:?}: {}",
+            state.unwrap_or(Value::Null)
         );
         std::thread::sleep(Duration::from_millis(50));
     }
@@ -547,6 +601,64 @@ async fn controlled_electron_round_trip() {
     );
     wait_for_journal(&journal, "lbl-input-mirror", &format!("mirror={expected}"));
 
+    let raw_snapshot = host_request(
+        &mut host,
+        "snapshot",
+        json!({
+            "session_id": SESSION_ID,
+            "task_grant_id": GRANT_ID,
+            "window_capability": capability,
+            "max_nodes": 1_000,
+            "max_depth": 20
+        }),
+    )
+    .await;
+    let raw_target = host_request(
+        &mut host,
+        "find",
+        json!({
+            "session_id": SESSION_ID,
+            "task_grant_id": GRANT_ID,
+            "window_capability": capability,
+            "query": {"text": "Increment", "max_results": 1}
+        }),
+    )
+    .await;
+    let raw_target = raw_target.value["matches"]
+        .as_array()
+        .and_then(|matches| matches.first())
+        .expect("raw-input click target");
+    let (x, y) = screenshot_point(&raw_snapshot.value, raw_target);
+    let raw_clicked = host_request(
+        &mut host,
+        "execute_action",
+        json!({
+            "session_id": SESSION_ID,
+            "task_grant_id": GRANT_ID,
+            "window_capability": capability,
+            "observation_id": raw_snapshot.value["observation_id"],
+            "accessibility_state_id": raw_snapshot.value["accessibility_state_id"],
+            "action": {
+                "action": "click",
+                "input_kind": "raw_input",
+                "intent": "navigate",
+                "delivery_mode": "foreground",
+                "x": x,
+                "y": y
+            },
+            "capture_after": true,
+            "post_snapshot_max_nodes": 1_000,
+            "post_snapshot_max_depth": 20
+        }),
+    )
+    .await;
+    assert_eq!(
+        raw_clicked.value["success"], true,
+        "raw-input click failed: {}",
+        raw_clicked.value
+    );
+    wait_for_journal(&journal, "lbl-counter", "counter=1");
+
     let prepared = host_request(
         &mut host,
         "browser_prepare",
@@ -624,7 +736,7 @@ async fn controlled_electron_round_trip() {
         }),
     )
     .await;
-    wait_for_journal(&journal, "lbl-counter", "counter=1");
+    wait_for_journal(&journal, "lbl-counter", "counter=2");
 
     let browser_snapshot = host_request(
         &mut host,
@@ -1084,11 +1196,19 @@ async fn controlled_native_menu_round_trip() {
     );
 
     let mut command = Command::new(&fixture_path);
+    #[cfg(windows)]
+    let fixture_state_dir = tempfile::tempdir().expect("create native fixture state directory");
+    #[cfg(windows)]
+    let fixture_state_path = fixture_state_dir.path().join("state.json");
+    #[cfg(windows)]
+    command.env("CUA_E2E_FIXTURE_STATE_PATH", &fixture_state_path);
     command.stdout(Stdio::null()).stderr(Stdio::inherit());
     let fixture_child = spawn_in_job(&mut command).expect("launch official CUA native fixture");
     let fixture_pid = fixture_child.id();
     let mut fixture_reaper = ChildReaper::new();
     fixture_reaper.push(fixture_child);
+    #[cfg(windows)]
+    wait_for_fixture_file(&fixture_state_path, "page-marker", "WPF_HARNESS_MARKER_v1");
 
     let mut host = HostProcess::spawn(
         &binary,
@@ -1219,15 +1339,20 @@ async fn windows_background_uia_keeps_concurrent_host_sessions_isolated() {
 
     let mut fixture_reaper = ChildReaper::new();
     let mut fixture_pids = Vec::new();
-    for _ in 0..2 {
-        let child = spawn_in_job(
-            Command::new(&fixture_path)
-                .stdout(Stdio::null())
-                .stderr(Stdio::inherit()),
-        )
-        .expect("launch official CUA WPF fixture");
+    let mut fixture_state_dirs = Vec::new();
+    for index in 0..2 {
+        let state_dir = tempfile::tempdir().expect("create WPF fixture state directory");
+        let state_path = state_dir.path().join(format!("state-{index}.json"));
+        let mut command = Command::new(&fixture_path);
+        command
+            .env("CUA_E2E_FIXTURE_STATE_PATH", &state_path)
+            .stdout(Stdio::null())
+            .stderr(Stdio::inherit());
+        let child = spawn_in_job(&mut command).expect("launch official CUA WPF fixture");
         fixture_pids.push(child.id());
         fixture_reaper.push(child);
+        wait_for_fixture_file(&state_path, "page-marker", "WPF_HARNESS_MARKER_v1");
+        fixture_state_dirs.push(state_dir);
     }
 
     let mut host = HostProcess::spawn(
