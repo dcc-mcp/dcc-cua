@@ -3,6 +3,8 @@ use serde_json::Value;
 use tokio::io::{AsyncWrite, DuplexStream};
 
 use super::*;
+#[cfg(unix)]
+use crate::endpoint::{prepare_unix_endpoint_parent, stale_unix_socket_error};
 use crate::request_handler::bind_launched_process;
 
 #[rstest]
@@ -215,6 +217,14 @@ fn frame_prefix_is_big_endian_and_bounded() {
     const { assert!(MAX_BINARY_FRAME_BYTES > MAX_JSON_FRAME_BYTES) };
 }
 
+#[rstest]
+fn default_endpoint_uses_the_shared_protocol_contract() {
+    assert_eq!(
+        HostTransport::default_endpoint(),
+        dcc_mcp_cua_protocol::default_endpoint()
+    );
+}
+
 #[cfg(unix)]
 #[rstest]
 fn only_refused_or_missing_unix_sockets_are_replaceable() {
@@ -227,6 +237,36 @@ fn only_refused_or_missing_unix_sockets_are_replaceable() {
     assert!(!stale_unix_socket_error(&std::io::Error::from(
         std::io::ErrorKind::PermissionDenied,
     )));
+}
+
+#[cfg(unix)]
+#[rstest]
+fn unix_endpoint_parent_must_be_private() {
+    use std::os::unix::fs::PermissionsExt;
+
+    assert!(matches!(
+        prepare_unix_endpoint_parent(std::path::Path::new("host.sock")),
+        Err(HostError::Protocol(message)) if message.contains("absolute")
+    ));
+
+    let runtime_dir = std::env::temp_dir().join(format!(
+        "dcc-mcp-cua-host-{}-{}",
+        dcc_mcp_cua_protocol::effective_user_id(),
+        Uuid::new_v4()
+    ));
+    let endpoint = runtime_dir.join("host.sock");
+    prepare_unix_endpoint_parent(&endpoint).unwrap();
+    assert!(dcc_mcp_cua_protocol::is_private_runtime_directory(
+        &runtime_dir
+    ));
+
+    std::fs::set_permissions(&runtime_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(matches!(
+        prepare_unix_endpoint_parent(&endpoint),
+        Err(HostError::Protocol(message)) if message.contains("mode 0700")
+    ));
+
+    std::fs::remove_dir(runtime_dir).unwrap();
 }
 
 #[rstest]
