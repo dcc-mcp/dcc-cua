@@ -6,6 +6,7 @@
 
 mod contracts;
 mod observation;
+mod platform_process;
 mod policy;
 mod runtime;
 mod window_target;

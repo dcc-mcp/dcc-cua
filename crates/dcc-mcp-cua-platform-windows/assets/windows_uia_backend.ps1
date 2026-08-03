@@ -496,6 +496,8 @@ function Invoke-UiaRequest($requestPayload) {
   }
 }
 
+[Console]::Out.WriteLine('{"type":"ready"}')
+[Console]::Out.Flush()
 while ($true) {
   $rawInput = [Console]::In.ReadLine()
   if ($null -eq $rawInput) { break }

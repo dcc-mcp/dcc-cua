@@ -22,6 +22,7 @@ use crate::{
     snapshot::{ElementFence, SnapshotState, normalize, resolve_index},
 };
 
+const STARTUP_TIMEOUT: Duration = Duration::from_secs(15);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 const STDERR_LIMIT: u64 = 64 * 1024;
 const BACKEND: &str = include_str!("../assets/windows_uia_backend.ps1");
@@ -318,7 +319,7 @@ impl UiaWorker {
             }
         });
         let stderr_reader = thread::spawn(move || read_bounded(stderr, STDERR_LIMIT));
-        Ok(Self {
+        let mut worker = Self {
             child: Some(child),
             stdin: Some(stdin),
             responses,
@@ -326,7 +327,27 @@ impl UiaWorker {
             stderr_reader: Some(stderr_reader),
             stderr: Vec::new(),
             script_path,
-        })
+        };
+        worker.wait_until_ready()?;
+        Ok(worker)
+    }
+
+    fn wait_until_ready(&mut self) -> Result<(), UiaError> {
+        let response = match self.responses.recv_timeout(STARTUP_TIMEOUT) {
+            Ok(response) => response,
+            Err(RecvTimeoutError::Timeout) => {
+                return Err(self.fail("UIA worker startup timed out after 15 seconds"));
+            }
+            Err(RecvTimeoutError::Disconnected) => {
+                return Err(self.fail("UIA worker closed during startup"));
+            }
+        };
+        let response: Value = serde_json::from_slice(&response)
+            .map_err(|error| self.fail(format!("decode UIA worker readiness: {error}")))?;
+        if response["type"] != "ready" {
+            return Err(self.fail("UIA worker returned an invalid readiness message"));
+        }
+        Ok(())
     }
 
     fn request(&mut self, payload: &Value) -> Result<Value, UiaError> {
