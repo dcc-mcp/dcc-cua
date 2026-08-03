@@ -1781,11 +1781,12 @@ impl ComputerUseSession {
     }
 
     async fn list_windows(&self) -> ComputerUseResult<Vec<WindowTarget>> {
-        let mut windows = list_windows_with_driver(&self.driver.driver, None, false)
-            .await?
-            .into_iter()
-            .filter_map(|value| WindowTarget::from_value(&value))
-            .collect::<Vec<_>>();
+        let mut windows =
+            list_windows_with_driver(&self.driver.driver, self.scope.process_id, false)
+                .await?
+                .into_iter()
+                .filter_map(|value| WindowTarget::from_value(&value))
+                .collect::<Vec<_>>();
         mark_foreground_window(&mut windows);
         Ok(windows)
     }
