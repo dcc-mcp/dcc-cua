@@ -169,6 +169,32 @@ impl ComputerUseWindowWaitRequest {
     }
 }
 
+/// Exact top-level window frame in CUA desktop coordinates.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ComputerUseWindowFrameRequest {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+impl ComputerUseWindowFrameRequest {
+    pub fn validate(&self) -> ComputerUseResult<()> {
+        if ![self.x, self.y, self.width, self.height]
+            .into_iter()
+            .all(f64::is_finite)
+            || self.width < 1.0
+            || self.height < 1.0
+        {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::InvalidAction,
+                "window frame coordinates must be finite and dimensions must be at least 1",
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// One native action in screenshot coordinates.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ComputerUseAction {

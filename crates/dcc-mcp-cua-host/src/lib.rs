@@ -37,7 +37,8 @@ use dcc_mcp_cua_core::{
     ComputerUseDesktopSnapshot, ComputerUseDriver, ComputerUseError, ComputerUseErrorCode,
     ComputerUseImage, ComputerUsePoint, ComputerUseRecordingStartRequest, ComputerUseResult,
     ComputerUseScreenshot, ComputerUseSession, ComputerUseTargetScope, ComputerUseToolResult,
-    ComputerUseWindowQuery, ComputerUseWindowWaitRequest, ComputerUseZoomRequest,
+    ComputerUseWindowFrameRequest, ComputerUseWindowQuery, ComputerUseWindowWaitRequest,
+    ComputerUseZoomRequest,
 };
 use dcc_mcp_cua_indicator::{BannerTarget, ControlBanner};
 use dcc_mcp_cua_shm::SharedImage;
@@ -82,6 +83,7 @@ pub const HOST_CAPABILITIES: &[&str] = &[
     "cua_cursor_marker",
     "cross_platform_window_control",
     "scoped_window_activate",
+    "scoped_window_frame",
     "degraded_window_visual_fallback",
     "application_inventory",
     "window_inventory",
@@ -276,6 +278,12 @@ enum Request {
         task_grant_id: String,
         window_capability: String,
         operation: WindowOperation,
+    },
+    SetWindowFrame {
+        session_id: String,
+        task_grant_id: String,
+        window_capability: String,
+        frame: ComputerUseWindowFrameRequest,
     },
     Snapshot {
         session_id: String,

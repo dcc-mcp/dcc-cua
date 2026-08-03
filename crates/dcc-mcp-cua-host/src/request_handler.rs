@@ -564,6 +564,31 @@ pub(super) async fn handle_request(
                 None,
             ))
         }
+        Request::SetWindowFrame {
+            session_id,
+            task_grant_id,
+            window_capability,
+            frame,
+        } => {
+            frame.validate()?;
+            let host =
+                authorized_session(sessions, &session_id, &task_grant_id, &window_capability)
+                    .await?;
+            host.latest_observation_id = None;
+            host.latest_accessibility_state_id = None;
+            host.latest_accessibility_root = None;
+            host.latest_shared_image = None;
+            host.browser.invalidate_snapshot();
+            let result = host.session.set_window_frame(&frame).await?;
+            Ok((
+                json!({
+                    "type":"window_frame_set",
+                    "session_id":session_id,
+                    "result":result,
+                }),
+                None,
+            ))
+        }
         Request::Snapshot {
             session_id,
             task_grant_id,

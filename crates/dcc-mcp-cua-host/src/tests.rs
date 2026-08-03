@@ -19,6 +19,7 @@ fn cursor_render_backend_matches_the_native_platform_owner() {
 #[rstest]
 fn capabilities_do_not_advertise_unavailable_macos_cursor_controls() {
     let capabilities = host_capabilities();
+    assert!(capabilities.contains(&"scoped_window_frame"));
     let cursor_available = cfg!(any(windows, target_os = "linux"));
     assert_eq!(capabilities.contains(&"cursor_controls"), cursor_available);
     assert_eq!(
@@ -461,6 +462,18 @@ fn app_requests_parse_with_host_params_frames() {
             }
         })),
         Ok(Request::Zoom { .. })
+    ));
+    assert!(matches!(
+        serde_json::from_value::<Request>(json!({
+            "method": "set_window_frame",
+            "params": {
+                "session_id": "session-1",
+                "task_grant_id": "task-1",
+                "window_capability": "cap-1",
+                "frame": {"x": -20.5, "y": 10, "width": 1280, "height": 720}
+            }
+        })),
+        Ok(Request::SetWindowFrame { frame, .. }) if frame.x == -20.5 && frame.width == 1280.0
     ));
     assert!(matches!(
         serde_json::from_value::<Request>(json!({
