@@ -50,7 +50,9 @@ $expectedOs = if ($isWindowsHost) { "windows" } elseif ($isMacHost) { "macos" } 
 if ($manifest.name -ne "dcc-mcp-cua" -or $manifest.target.os -ne $expectedOs) {
     throw "manifest does not describe the current release binary"
 }
-if ($manifest.version -notmatch '^\d+\.\d+\.\d+$' -or $manifest.host.protocol_version -ne 1) {
+if ($manifest.version -notmatch '^\d+\.\d+\.\d+$' -or
+    $manifest.host.protocol_version -ne 1 -or
+    $manifest.host.max_parallel_discovery_requests -ne 32) {
     throw "manifest version or Host protocol is invalid"
 }
 if ($manifest.host.grant_limits.task_grant_id_max_chars -ne 128 -or
@@ -130,6 +132,10 @@ $streamRequests = @(
     '{"request_id":"stream-error","method":"unknown_method","params":{}}',
     '{"request_id":"stream-ping-2","method":"ping","params":{}}'
 )
+$streamBurstCount = 2 * [int]$manifest.host.max_parallel_discovery_requests
+for ($index = 0; $index -lt $streamBurstCount; $index++) {
+    $streamRequests += "{`"request_id`":`"stream-burst-$index`",`"method`":`"ping`",`"params`":{}}"
+}
 $streamInput = Join-Path ([System.IO.Path]::GetTempPath()) "dcc-mcp-cua-e2e-$([guid]::NewGuid().ToString('N')).jsonl"
 $streamOutput = Join-Path ([System.IO.Path]::GetTempPath()) "dcc-mcp-cua-e2e-$([guid]::NewGuid().ToString('N')).out"
 $streamError = Join-Path ([System.IO.Path]::GetTempPath()) "dcc-mcp-cua-e2e-$([guid]::NewGuid().ToString('N')).err"
@@ -184,6 +190,15 @@ elseif (-not $isMacHost -or
     [string]::IsNullOrWhiteSpace($streamResponses[3].code)) {
     throw "Host session lifecycle was not available without a structured macOS readiness refusal: $streamJson"
 }
+if ($streamResponses.Count -ne (6 + $streamBurstCount)) {
+    throw "long-lived Host stream dropped bounded discovery responses"
+}
+for ($index = 0; $index -lt $streamBurstCount; $index++) {
+    $response = $streamResponses[$index + 6]
+    if ($response.request_id -ne "stream-burst-$index" -or $response.type -ne "pong") {
+        throw "long-lived Host stream lost bounded discovery response $index"
+    }
+}
 
 $endpointHost = $null
 $endpoint = if ($isWindowsHost) {
@@ -191,10 +206,19 @@ $endpoint = if ($isWindowsHost) {
 } else {
     Join-Path ([System.IO.Path]::GetTempPath()) "dcc-mcp-cua-e2e-$([guid]::NewGuid().ToString('N')).sock"
 }
-$endpointBatchJson = @(
+$endpointPingCount = [int]$manifest.host.max_parallel_discovery_requests - 2
+$endpointBatchRequests = @(
     [ordered]@{ request_id = "endpoint-apps"; method = "list_apps"; params = @{} },
     [ordered]@{ request_id = "endpoint-tools"; method = "list_tools"; params = @{} }
-) | ConvertTo-Json -Depth 4 -Compress
+)
+for ($index = 0; $index -lt $endpointPingCount; $index++) {
+    $endpointBatchRequests += [ordered]@{
+        request_id = "endpoint-ping-$index"
+        method = "ping"
+        params = @{}
+    }
+}
+$endpointBatchJson = $endpointBatchRequests | ConvertTo-Json -Depth 4 -Compress
 $endpointBatchFile = Join-Path ([System.IO.Path]::GetTempPath()) "dcc-mcp-cua-e2e-$([guid]::NewGuid().ToString('N')).json"
 [System.IO.File]::WriteAllText($endpointBatchFile, $endpointBatchJson, [System.Text.UTF8Encoding]::new($false))
 try {
@@ -253,12 +277,18 @@ try {
     $endpointBatch = & $binaryPath host-batch --endpoint $endpoint --json-file $endpointBatchFile |
         Out-String | ConvertFrom-Json
     if ($LASTEXITCODE -ne 0 -or
-        $endpointBatch.Count -ne 2 -or
+        $endpointBatch.Count -ne (2 + $endpointPingCount) -or
         $endpointBatch[0].request_id -ne "endpoint-apps" -or
         $endpointBatch[0].type -ne "apps" -or
         $endpointBatch[1].request_id -ne "endpoint-tools" -or
         $endpointBatch[1].type -ne "tools") {
         throw "cross-platform Host endpoint batch IPC failed"
+    }
+    for ($index = 0; $index -lt $endpointPingCount; $index++) {
+        $response = $endpointBatch[$index + 2]
+        if ($response.request_id -ne "endpoint-ping-$index" -or $response.type -ne "pong") {
+            throw "bounded parallel Host endpoint burst lost response $index"
+        }
     }
 }
 finally {
@@ -277,4 +307,4 @@ finally {
     }
 }
 
-Write-Host "CLI E2E passed for ${expectedOs}: bundled upstream routes, manifest, diagnostics, session lifecycle, batch/stream Host IPC, error recovery, apps, and $($toolNames.Count) CUA tools."
+Write-Host "CLI E2E passed for ${expectedOs}: bundled upstream routes, manifest, diagnostics, session lifecycle, a ${streamBurstCount}-request long-lived discovery burst, bounded endpoint batch/stream Host IPC, error recovery, apps, and $($toolNames.Count) CUA tools."

@@ -324,6 +324,12 @@ image pixels out of the Host control pipe.
 `list_windows`, `screen_size`, and `cursor_position` requests for up to 5 ms or
 32 lines, preserves input order and `request_id`, and leaves stateful,
 visual, browser, and mutating requests serialized.
+The Host enforces the same per-connection ceiling with backpressure and reaps
+completed discovery tasks while the connection stays open, so a long-running
+Core bridge cannot retain one task allocation per request.
+The Rust Client rejects larger single batches before writing to the transport;
+`host-jsonl --parallel-discovery` automatically splits a longer stream into
+bounded batches on the same connection.
 
 ```text
 {"request_id":"core-task-42","method":"list_apps","params":{}}

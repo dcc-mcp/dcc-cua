@@ -23,6 +23,7 @@ pub const HOST_PROTOCOL_VERSION: u32 = 1;
 pub const MAX_JSON_FRAME_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_BINARY_FRAME_BYTES: usize = 64 * 1024 * 1024;
 pub const MAX_REQUEST_ID_CHARS: usize = 128;
+pub const MAX_PARALLEL_DISCOVERY_REQUESTS: usize = 32;
 
 trait HostStream: AsyncRead + AsyncWrite + Unpin + Send {}
 impl<T> HostStream for T where T: AsyncRead + AsyncWrite + Unpin + Send {}
@@ -480,6 +481,11 @@ impl HostClient {
             ));
         }
         let requests = requests.into_iter().collect::<Vec<_>>();
+        if requests.len() > MAX_PARALLEL_DISCOVERY_REQUESTS {
+            return Err(HostClientError::Protocol(format!(
+                "request_batch accepts at most {MAX_PARALLEL_DISCOVERY_REQUESTS} requests"
+            )));
+        }
         if requests
             .iter()
             .any(|(_, method, _)| !is_pipeline_safe_method(method))

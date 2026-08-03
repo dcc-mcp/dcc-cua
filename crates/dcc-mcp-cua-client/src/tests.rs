@@ -228,6 +228,25 @@ async fn client_rejects_mutations_from_request_batch() {
 
 #[rstest]
 #[tokio::test]
+async fn client_bounds_one_parallel_discovery_batch() {
+    let (client_stream, server_stream) = tokio::io::duplex(4096);
+    let server = tokio::spawn(fake_hello_only_server(server_stream));
+    let mut client =
+        HostClient::from_stream_with_transport(client_stream, SnapshotTransport::SharedMemory);
+    client.hello("bounded-batch-client").await.unwrap();
+
+    let requests = (0..=MAX_PARALLEL_DISCOVERY_REQUESTS)
+        .map(|index| (format!("ping-{index}"), "ping".into(), json!({})))
+        .collect::<Vec<_>>();
+    assert!(matches!(
+        client.request_batch_with_ids(requests).await,
+        Err(HostClientError::Protocol(message)) if message.contains("at most 32")
+    ));
+    server.await.unwrap().unwrap();
+}
+
+#[rstest]
+#[tokio::test]
 async fn client_can_cancel_wait_on_the_same_connection() {
     let (client_stream, server_stream) = tokio::io::duplex(4096);
     let server = tokio::spawn(fake_cancel_server(server_stream));

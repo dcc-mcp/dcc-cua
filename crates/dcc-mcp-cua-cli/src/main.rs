@@ -18,12 +18,11 @@ use dcc_mcp_cua_core::{
     ComputerUseToolResult, ComputerUseWindowFrameRequest, ComputerUseWindowQuery,
     ComputerUseWindowWaitRequest, ComputerUseZoomRequest,
 };
-use dcc_mcp_cua_host::{HostTransport, run as run_host};
+use dcc_mcp_cua_host::{HostTransport, MAX_PARALLEL_DISCOVERY_REQUESTS, run as run_host};
 use dcc_mcp_cua_shm::{SharedImageDescriptor, SharedImageReader};
 use serde_json::json;
 use tokio::io::{AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader, BufWriter};
 
-const MAX_PARALLEL_DISCOVERY_BATCH: usize = 32;
 const PARALLEL_DISCOVERY_WINDOW_MS: u64 = 5;
 
 #[tokio::main]
@@ -480,7 +479,7 @@ async fn host_jsonl(flags: &[String]) -> Result<(), Box<dyn std::error::Error>> 
 
         if parallel_discovery && is_parallel_discovery_method(&request.method) {
             let mut batch = vec![(line_index, request)];
-            while batch.len() < MAX_PARALLEL_DISCOVERY_BATCH {
+            while batch.len() < MAX_PARALLEL_DISCOVERY_REQUESTS {
                 let next_line = match tokio::time::timeout(
                     std::time::Duration::from_millis(PARALLEL_DISCOVERY_WINDOW_MS),
                     lines.next_line(),
