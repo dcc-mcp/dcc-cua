@@ -30,7 +30,7 @@ if ($isWindowsHost) {
 } else {
     & bash (Join-Path $cuaDriverDir "tests/fixtures/build/linux.sh") --only "electron,gtk3"
 }
-if ($LASTEXITCODE -ne 0) { throw "official CUA Electron fixture build failed" }
+if ($LASTEXITCODE -ne 0) { throw "official CUA GUI fixture build failed" }
 
 $env:CUA_TEST_APPS_ROOT = Join-Path $rustDir "test-apps"
 $env:DCC_MCP_CUA_E2E_BINARY = $binaryPath

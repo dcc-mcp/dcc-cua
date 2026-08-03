@@ -338,6 +338,10 @@ fn native_tool_boundary_rejects_reserved_and_dedicated_routes() {
     assert!(!native_tool_allowed_in_window_session("click"));
     assert!(!native_tool_allowed_in_window_session("set_window_frame"));
     assert!(!native_tool_allowed_in_window_session("invoke_menu"));
+    assert!(!native_tool_allowed_in_window_session("list_windows"));
+    assert!(!native_tool_allowed_in_window_session("get_browser_state"));
+    assert!(!native_tool_allowed_in_window_session("page"));
+    assert!(!native_tool_allowed_in_window_session("get_session_state"));
     assert!(!native_tool_allowed_in_window_session("browser_navigate"));
     assert!(native_tool_allowed_in_window_session("debug_window_info"));
     assert!(native_tool_allowed_globally("health_report"));
