@@ -174,6 +174,14 @@ fn manifest_is_a_machine_readable_core_launch_contract() {
     assert_eq!(manifest["schema_version"], 1);
     assert_eq!(manifest["rust_version"], "1.95");
     assert_eq!(manifest["host"]["protocol_version"], 1);
+    assert_eq!(
+        manifest["host"]["grant_limits"]["task_grant_id_max_chars"],
+        128
+    );
+    assert_eq!(
+        manifest["host"]["grant_limits"]["application_label_max_chars"],
+        80
+    );
     assert_eq!(manifest["core_bridge"]["rust_crate"], "dcc-mcp-cua-client");
     assert!(
         manifest["host"]["capabilities"]

@@ -103,7 +103,7 @@ fn wpf_fixture() -> PathBuf {
 fn native_menu_fixture() -> (PathBuf, &'static str) {
     #[cfg(target_os = "windows")]
     {
-        (wpf_fixture(), "wpf")
+        (wpf_fixture(), "WPF Test Harness")
     }
     #[cfg(target_os = "macos")]
     {
@@ -112,12 +112,15 @@ fn native_menu_fixture() -> (PathBuf, &'static str) {
                 "harness-appkit",
                 "CuaTestHarness.AppKit.app/Contents/MacOS/CuaTestHarness.AppKit",
             ),
-            "appkit",
+            "AppKit Test Harness",
         )
     }
     #[cfg(target_os = "linux")]
     {
-        (harness_app("harness-gtk3", "CuaTestHarness.Gtk3"), "gtk3")
+        (
+            harness_app("harness-gtk3", "CuaTestHarness.Gtk3"),
+            "GTK3 Test Harness",
+        )
     }
 }
 
@@ -509,7 +512,7 @@ async fn controlled_electron_round_trip() {
             "session_id": SESSION_ID,
             "grant": {
                 "task_grant_id": GRANT_ID,
-                "dcc_type": "electron",
+                "application_label": "Electron",
                 "process_id": fixture_pid,
                 "window_handle": window_id,
                 "window_title": window_title,
@@ -1186,7 +1189,7 @@ async fn independent_endpoint_clients_serialize_scoped_raw_input() {
                 "session_id": session_id,
                 "grant": {
                     "task_grant_id": grant_id,
-                    "dcc_type": "electron",
+                    "application_label": "Electron",
                     "process_id": pid,
                     "window_handle": window_id,
                     "window_title": window_title,
@@ -1372,7 +1375,7 @@ async fn controlled_native_menu_round_trip() {
     let binary = std::env::var_os("DCC_MCP_CUA_E2E_BINARY")
         .map(PathBuf::from)
         .expect("DCC_MCP_CUA_E2E_BINARY must point to dcc-mcp-cua");
-    let (fixture_path, dcc_type) = native_menu_fixture();
+    let (fixture_path, application_label) = native_menu_fixture();
     assert!(
         fixture_path.is_file(),
         "official CUA native fixture is missing: {}",
@@ -1421,7 +1424,7 @@ async fn controlled_native_menu_round_trip() {
             "session_id": "controlled-native-menu-e2e",
             "grant": {
                 "task_grant_id": "controlled-native-menu-e2e-grant",
-                "dcc_type": dcc_type,
+                "application_label": application_label,
                 "process_id": fixture_pid,
                 "window_handle": window_id,
                 "window_title": window_title,
@@ -1580,7 +1583,7 @@ async fn windows_endpoint_sessions_keep_background_uia_and_share_escape() {
                 "session_id": session_id,
                 "grant": {
                     "task_grant_id": grant_id,
-                    "dcc_type": "wpf",
+                    "application_label": "WPF",
                     "process_id": pid,
                     "window_handle": window_handle,
                     "window_title": window_title,
