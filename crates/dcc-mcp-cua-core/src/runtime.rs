@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 use crate::contracts::*;
 use crate::observation::semantic_observation;
 use crate::policy::*;
-use crate::window_target::{WindowTarget, resolve_scoped_target, validate_target_policy};
+use crate::window_target::{WindowTarget, validate_target_policy};
 #[cfg(windows)]
 use crate::windows_uia_fallback::WindowsUiaFallback;
 
@@ -1744,7 +1744,21 @@ impl ComputerUseSession {
             validate_target_policy(&target)?;
             return Ok(target);
         }
-        let target = resolve_scoped_target(&self.scope, self.list_windows().await?)?;
+        let rows = self.list_windows().await?;
+        let matches = rows
+            .into_iter()
+            .filter(|row| self.scope.matches(row))
+            .collect::<Vec<_>>();
+        if matches.len() != 1 {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::MissingWindow,
+                format!(
+                    "expected exactly one scoped window, found {}",
+                    matches.len()
+                ),
+            ));
+        }
+        let target = matches.into_iter().next().expect("one match");
         validate_target_policy(&target)?;
         Ok(target)
     }
