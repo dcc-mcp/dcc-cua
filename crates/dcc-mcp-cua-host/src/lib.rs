@@ -69,6 +69,7 @@ pub const HOST_CAPABILITIES: &[&str] = &[
     "session_escalation",
     "cursor_controls",
     "uia_snapshot_and_actions",
+    "windows_background_uia_fallback",
     "zoomed_window_observation",
     "semantic_value_actions",
     "two_axis_scroll",
@@ -115,6 +116,20 @@ pub const HOST_CAPABILITIES: &[&str] = &[
     "pipelined_read_requests",
     "parallel_discovery_requests",
 ];
+
+/// Return only capabilities backed by the current platform runtime.
+#[must_use]
+pub fn host_capabilities() -> Vec<&'static str> {
+    HOST_CAPABILITIES
+        .iter()
+        .copied()
+        .filter(|capability| {
+            (!matches!(*capability, "cursor_controls" | "cua_cursor_marker")
+                || cfg!(any(windows, target_os = "linux")))
+                && (*capability != "windows_background_uia_fallback" || cfg!(windows))
+        })
+        .collect()
+}
 
 /// Local transport selected by the CLI or embedding host.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1310,7 +1325,7 @@ fn find_elements(root: &Value, query: &FindQuery, max_results: usize) -> Vec<Val
             });
             let text_matches = query.text.as_deref().is_none_or(|expected| {
                 let expected = expected.to_ascii_lowercase();
-                ["name", "label", "title", "text", "value"]
+                ["name", "label", "title", "text", "value", "automation_id"]
                     .iter()
                     .filter_map(|field| element[*field].as_str())
                     .any(|actual| actual.to_ascii_lowercase().contains(&expected))

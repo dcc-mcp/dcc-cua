@@ -1,6 +1,23 @@
 use rstest::rstest;
 
+use super::authorization::existing_profile_grant_requested;
 use super::*;
+
+#[rstest]
+#[case(vec![], false)]
+#[case(vec!["--stdio"], false)]
+#[case(vec!["--grant", "existing-profile"], true)]
+#[case(vec!["--grant=existing_profile"], true)]
+fn host_existing_profile_grant_is_explicit(#[case] flags: Vec<&str>, #[case] expected: bool) {
+    let flags = flags.into_iter().map(str::to_owned).collect::<Vec<_>>();
+    assert_eq!(existing_profile_grant_requested(&flags).unwrap(), expected);
+}
+
+#[rstest]
+fn host_grant_parser_rejects_missing_and_unknown_values() {
+    assert!(existing_profile_grant_requested(&["--grant".into()]).is_err());
+    assert!(existing_profile_grant_requested(&["--grant".into(), "everything".into()]).is_err());
+}
 
 #[rstest]
 fn response_image_reads_host_owned_shared_memory() {
@@ -73,6 +90,12 @@ fn jsonl_parser_requires_method_and_object_params() {
 }
 
 #[rstest]
+fn jsonl_parser_accepts_a_utf8_bom_on_the_first_line() {
+    let request = parse_jsonl_request("\u{feff}{\"method\":\"list_apps\"}").unwrap();
+    assert_eq!(request.method, "list_apps");
+}
+
+#[rstest]
 fn parallel_discovery_is_limited_to_stateless_methods() {
     assert!(is_parallel_discovery_method("ping"));
     assert!(is_parallel_discovery_method("list_apps"));
@@ -114,6 +137,14 @@ fn manifest_is_a_machine_readable_core_launch_contract() {
         manifest["host"]["capabilities"]
             .as_array()
             .is_some_and(|values| values.iter().any(|value| value == "host_diagnostics"))
+    );
+    assert_eq!(
+        manifest["host"]["capabilities"]
+            .as_array()
+            .is_some_and(|values| values
+                .iter()
+                .any(|value| value == "windows_background_uia_fallback")),
+        cfg!(windows)
     );
     assert_eq!(
         manifest["upstream_driver"]["top_level_aliases"]["daemon"],

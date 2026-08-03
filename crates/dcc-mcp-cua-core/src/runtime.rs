@@ -1,14 +1,58 @@
+use std::future::Future;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use base64::Engine;
-use cua_driver_sdk::CuaDriver;
-use serde::Serialize;
+use cua_driver_sdk::{CuaDriver, DriverHostOptions};
+use cursor_overlay::CursorConfig;
 use serde_json::{Value, json};
 
 use crate::contracts::*;
+use crate::observation::semantic_observation;
 use crate::policy::*;
+use crate::window_target::{WindowTarget, validate_target_policy};
+#[cfg(windows)]
+use crate::windows_uia_fallback::WindowsUiaFallback;
+
+const INPUT_CALL_TIMEOUT: Duration = Duration::from_secs(15);
+
+async fn call_driver_tool(
+    driver: &CuaDriver,
+    name: impl Into<String>,
+    arguments: String,
+    operation: &str,
+) -> ComputerUseResult<cua_driver_sdk::ToolResult> {
+    call_driver_tool_with_timeout(driver, name, arguments, operation, INPUT_CALL_TIMEOUT).await
+}
+
+async fn call_driver_tool_with_timeout(
+    driver: &CuaDriver,
+    name: impl Into<String>,
+    arguments: String,
+    operation: &str,
+    timeout: Duration,
+) -> ComputerUseResult<cua_driver_sdk::ToolResult> {
+    let name = name.into();
+    let result = await_input_call(driver.call_tool(name, arguments), timeout, operation).await?;
+    result.map_err(|error| map_driver_error(operation, error))
+}
+
+pub(crate) async fn await_input_call<T>(
+    future: impl Future<Output = T>,
+    timeout: Duration,
+    operation: &str,
+) -> ComputerUseResult<T> {
+    tokio::time::timeout(timeout, future).await.map_err(|_| {
+        ComputerUseError::new(
+            ComputerUseErrorCode::InputFailed,
+            format!(
+                "CUA {operation} timed out after {} ms; the window session was invalidated",
+                timeout.as_millis()
+            ),
+        )
+    })
+}
 
 /// One shared CUA runtime. Create it once per host process.
 #[derive(Clone)]
@@ -21,7 +65,7 @@ pub struct ComputerUseDriver {
 
 impl ComputerUseDriver {
     pub fn create() -> ComputerUseResult<Self> {
-        CuaDriver::create(None)
+        CuaDriver::try_create_for_host(driver_host_options())
             .map(|driver| Self {
                 driver,
                 tool_inventory: Arc::new(tokio::sync::OnceCell::new()),
@@ -38,7 +82,9 @@ impl ComputerUseDriver {
         options: ConfiguredDriverOptions,
         host: Arc<dyn DriverAuthorizationHost>,
     ) -> ComputerUseResult<Self> {
-        CuaDriver::create_configured_with_authorization_host(options, host)
+        let mut host_options = driver_host_options();
+        host_options.authorization_host = Some(host);
+        CuaDriver::try_create_configured_for_host(options, host_options)
             .map(|driver| Self {
                 driver,
                 tool_inventory: Arc::new(tokio::sync::OnceCell::new()),
@@ -142,6 +188,7 @@ impl ComputerUseDriver {
             self.call_global_tool("check_permissions", json!({})),
             self.call_global_tool("health_report", json!({})),
         );
+        let interactive_desktop = Self::interactive_desktop_diagnostic();
         let driver = match metadata {
             Ok(result) => json!({"success": true, "result": result}),
             Err(error) => json!({"success": false, "message": error.to_string()}),
@@ -160,7 +207,8 @@ impl ComputerUseDriver {
             && window_inventory["success"] == true
             && permissions["success"] == true
             && health["success"] == true
-            && health["result"]["overall"] == "ok";
+            && health["result"]["overall"] == "ok"
+            && interactive_desktop["success"] == true;
         json!({
             "type": "diagnostics",
             "schema_version": 1,
@@ -171,8 +219,39 @@ impl ComputerUseDriver {
                 "window_inventory": window_inventory,
                 "permissions": permissions,
                 "health": health,
+                "interactive_desktop": interactive_desktop,
             },
         })
+    }
+
+    fn interactive_desktop_diagnostic() -> Value {
+        #[cfg(windows)]
+        {
+            let available = unsafe {
+                !windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow().is_null()
+            };
+            if available {
+                json!({
+                    "success": true,
+                    "code": "interactive_desktop_ready",
+                    "message": "Windows interactive desktop has a foreground window"
+                })
+            } else {
+                json!({
+                    "success": false,
+                    "code": "interactive_desktop_unavailable",
+                    "message": "Windows interactive desktop is locked or has no foreground window"
+                })
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            json!({
+                "success": true,
+                "code": "interactive_desktop_platform_managed",
+                "message": "Interactive desktop readiness is reported by the platform CUA runtime"
+            })
+        }
     }
 
     /// Call a non-window-bound CUA tool from the local CLI surface.
@@ -220,11 +299,13 @@ impl ComputerUseDriver {
                 format!("CUA tool {name:?} requires an exact window session"),
             ));
         }
-        let result = self
-            .driver
-            .call_tool(name.to_owned(), arguments.to_string())
-            .await
-            .map_err(|error| map_driver_error(&format!("call CUA {name}"), error))?;
+        let result = call_driver_tool(
+            &self.driver,
+            name,
+            arguments.to_string(),
+            &format!("call CUA {name}"),
+        )
+        .await?;
         ensure_tool_ok(&format!("call CUA {name}"), &result)?;
         native_tool_result(result)
     }
@@ -242,11 +323,13 @@ impl ComputerUseDriver {
         if let Some(session) = session {
             arguments["session"] = Value::String(session.to_owned());
         }
-        let result = self
-            .driver
-            .call_tool("get_desktop_state".into(), arguments.to_string())
-            .await
-            .map_err(|error| map_driver_error("capture CUA desktop state", error))?;
+        let result = call_driver_tool(
+            &self.driver,
+            "get_desktop_state",
+            arguments.to_string(),
+            "capture CUA desktop state",
+        )
+        .await?;
         ensure_tool_ok("capture CUA desktop state", &result)?;
         let image = result.images.first().ok_or_else(|| {
             ComputerUseError::new(
@@ -292,11 +375,13 @@ impl ComputerUseDriver {
     }
 
     async fn call_tool_value(&self, name: &str, arguments: Value) -> ComputerUseResult<Value> {
-        let result = self
-            .driver
-            .call_tool(name.to_owned(), arguments.to_string())
-            .await
-            .map_err(|error| map_driver_error(&format!("call CUA {name}"), error))?;
+        let result = call_driver_tool(
+            &self.driver,
+            name,
+            arguments.to_string(),
+            &format!("call CUA {name}"),
+        )
+        .await?;
         ensure_tool_ok(&format!("call CUA {name}"), &result)?;
         serde_json::from_str(&result.raw_json).map_err(|error| {
             ComputerUseError::new(
@@ -326,6 +411,26 @@ impl ComputerUseDriver {
                 })
             })
             .await
+    }
+}
+
+pub(crate) fn driver_host_options() -> DriverHostOptions {
+    DriverHostOptions {
+        cursor: CursorConfig {
+            // Windows keeps the custom Host-owned pointer. The pinned CUA
+            // runtime currently supplies the native per-session cursor/badge
+            // only on Linux; macOS reports facility_unavailable until its
+            // signed/TCC presentation runtime is available.
+            enabled: cfg!(target_os = "linux"),
+            ..CursorConfig::default()
+        },
+        host_owns_permission_ux: true,
+        host_bundle_id: None,
+        claude_code_compatibility: false,
+        prepare_desktop_environment: true,
+        register_host_tools: None,
+        authorization_host: None,
+        activity_observer: None,
     }
 }
 
@@ -371,18 +476,18 @@ async fn enable_session_marker(
     session_id: &str,
     context: &str,
 ) -> ComputerUseResult<()> {
-    let result = driver
-        .driver
-        .call_tool(
-            "set_agent_cursor_enabled".into(),
-            json!({"session": session_id, "enabled": true}).to_string(),
-        )
-        .await;
+    let result = call_driver_tool(
+        &driver.driver,
+        "set_agent_cursor_enabled",
+        json!({"session": session_id, "enabled": true}).to_string(),
+        context,
+    )
+    .await;
     let result = match result {
         Ok(result) => result,
         Err(error) => {
             cleanup_started_session(driver, session_id).await;
-            return Err(map_driver_error(context, error));
+            return Err(error);
         }
     };
     if let Err(error) = ensure_tool_ok(context, &result) {
@@ -393,13 +498,13 @@ async fn enable_session_marker(
 }
 
 async fn cleanup_started_session(driver: &ComputerUseDriver, session_id: &str) {
-    let _ = driver
-        .driver
-        .call_tool(
-            "end_session".into(),
-            json!({"session": session_id}).to_string(),
-        )
-        .await;
+    let _ = call_driver_tool(
+        &driver.driver,
+        "end_session",
+        json!({"session": session_id}).to_string(),
+        "cleanup CUA session",
+    )
+    .await;
 }
 
 /// A long-lived, exact-window Computer Use session.
@@ -410,7 +515,9 @@ pub struct ComputerUseSession {
     session_id: String,
     marker: ComputerUseMarker,
     target: Option<WindowTarget>,
-    observation: Option<ComputerUseObservation>,
+    pub(crate) observation: Option<ComputerUseObservation>,
+    #[cfg(windows)]
+    pub(crate) windows_uia: Option<WindowsUiaFallback>,
     active: bool,
     escalated: bool,
 }
@@ -463,21 +570,19 @@ impl ComputerUseDesktopSession {
                 "desktop session is already active",
             ));
         }
-        let result = self
-            .driver
-            .driver
-            .call_tool(
-                "start_session".into(),
-                json!({
-                    "session": self.session_id,
-                    "capture_scope": "desktop",
-                    "cursor_theme": {"theme_id": MOUSE_CURSOR_THEME, "reduced_motion": "auto"},
-                    "_public_session_label": self.marker.label,
-                })
-                .to_string(),
-            )
-            .await
-            .map_err(|error| map_driver_error("start CUA desktop session", error))?;
+        let result = call_driver_tool(
+            &self.driver.driver,
+            "start_session",
+            json!({
+                "session": self.session_id,
+                "capture_scope": "desktop",
+                "cursor_theme": {"theme_id": MOUSE_CURSOR_THEME, "reduced_motion": "auto"},
+                "_public_session_label": self.marker.label,
+            })
+            .to_string(),
+            "start CUA desktop session",
+        )
+        .await?;
         ensure_tool_ok("start CUA desktop session", &result)?;
         enable_session_marker(&self.driver, &self.session_id, "show CUA desktop marker").await?;
         self.active = true;
@@ -492,10 +597,17 @@ impl ComputerUseDesktopSession {
                 "desktop session is not active",
             ));
         }
-        let snapshot = self
-            .driver
-            .desktop_snapshot_for(Some(&self.session_id))
-            .await?;
+        let snapshot = tokio::time::timeout(
+            INPUT_CALL_TIMEOUT,
+            self.driver.desktop_snapshot_for(Some(&self.session_id)),
+        )
+        .await
+        .map_err(|_| {
+            ComputerUseError::new(
+                ComputerUseErrorCode::InputFailed,
+                "CUA desktop snapshot timed out; the desktop session was invalidated",
+            )
+        })??;
         self.latest_observation_id = Some(snapshot.observation_id.clone());
         Ok(snapshot)
     }
@@ -533,12 +645,13 @@ impl ComputerUseDesktopSession {
             .as_object_mut()
             .expect("desktop action arguments are an object")
             .remove("_tool");
-        let result = self
-            .driver
-            .driver
-            .call_tool(tool.clone(), arguments.to_string())
-            .await
-            .map_err(|error| map_driver_error(&format!("execute desktop CUA {tool}"), error))?;
+        let result = call_driver_tool(
+            &self.driver.driver,
+            tool.clone(),
+            arguments.to_string(),
+            &format!("execute desktop CUA {tool}"),
+        )
+        .await?;
         ensure_tool_ok(&format!("execute desktop CUA {tool}"), &result)?;
         let mut result = native_tool_result(result)?;
         self.latest_observation_id = None;
@@ -555,15 +668,20 @@ impl ComputerUseDesktopSession {
         if !self.active {
             return Ok(json!({"success": true, "active": false}));
         }
-        let result = self
-            .driver
-            .driver
-            .call_tool(
-                "end_session".into(),
-                json!({"session": self.session_id}).to_string(),
-            )
-            .await
-            .map_err(|error| map_driver_error("stop CUA desktop session", error))?;
+        let result = call_driver_tool(
+            &self.driver.driver,
+            "end_session",
+            json!({"session": self.session_id}).to_string(),
+            "stop CUA desktop session",
+        )
+        .await;
+        if let Err(error) = &result {
+            self.active = false;
+            self.marker.visible = false;
+            self.latest_observation_id = None;
+            return Err(error.clone());
+        }
+        let result = result?;
         ensure_tool_ok("stop CUA desktop session", &result)?;
         self.active = false;
         self.marker.visible = false;
@@ -611,6 +729,8 @@ impl ComputerUseSession {
             },
             target: None,
             observation: None,
+            #[cfg(windows)]
+            windows_uia: None,
             active: false,
             escalated: false,
         })
@@ -625,24 +745,26 @@ impl ComputerUseSession {
             ));
         }
         let target = self.resolve_target().await?;
-        let result = self
-            .driver
-            .driver
-            .call_tool(
-                "start_session".into(),
-                json!({
-                    "session": self.session_id,
-                    "capture_scope": "auto",
-                    "cursor_theme": {"theme_id": MOUSE_CURSOR_THEME, "reduced_motion": "auto"},
-                    "_public_session_label": self.marker.label,
-                })
-                .to_string(),
-            )
-            .await
-            .map_err(|error| map_driver_error("start CUA session", error))?;
+        let result = call_driver_tool(
+            &self.driver.driver,
+            "start_session",
+            json!({
+                "session": self.session_id,
+                "capture_scope": "window",
+                "cursor_theme": {"theme_id": MOUSE_CURSOR_THEME, "reduced_motion": "auto"},
+                "_public_session_label": self.marker.label,
+            })
+            .to_string(),
+            "start CUA session",
+        )
+        .await?;
         ensure_tool_ok("start CUA session", &result)?;
         enable_session_marker(&self.driver, &self.session_id, "show CUA marker").await?;
         self.target = Some(target.clone());
+        #[cfg(windows)]
+        {
+            self.windows_uia = None;
+        }
         self.active = true;
         self.escalated = false;
         self.marker.visible = true;
@@ -669,33 +791,48 @@ impl ComputerUseSession {
     ) -> ComputerUseResult<ComputerUseScreenshot> {
         self.ensure_active()?;
         let target = self.revalidate_target().await?;
-        let result = self
-            .driver
-            .driver
-            .call_tool(
-                "get_window_state".into(),
-                json!({
-                    "window_id": target.window_id,
-                    "pid": target.pid,
-                    "include_screenshot": true,
-                    "max_elements": bounded_snapshot_elements(max_elements),
-                    "max_depth": bounded_snapshot_depth(max_depth),
-                    "session": self.session_id,
-                })
-                .to_string(),
-            )
-            .await
-            .map_err(|error| map_driver_error("capture CUA window state", error));
+        #[cfg(windows)]
+        if self.windows_uia.is_some() {
+            return self
+                .capture_window_visually(&target, max_elements, max_depth)
+                .await;
+        }
+        let result = call_driver_tool(
+            &self.driver.driver,
+            "get_window_state",
+            json!({
+                "window_id": target.window_id,
+                "pid": target.pid,
+                "include_screenshot": true,
+                "max_elements": bounded_snapshot_elements(max_elements),
+                "max_depth": bounded_snapshot_depth(max_depth),
+                "session": self.session_id,
+            })
+            .to_string(),
+            "capture CUA window state",
+        )
+        .await;
         let result = match result {
             Ok(result) if result.is_error && is_uia_snapshot_failure(&result) => {
-                return self.capture_window_from_desktop(&target).await;
+                #[cfg(windows)]
+                self.activate_windows_uia_fallback(&target);
+                return self
+                    .capture_window_visually(&target, max_elements, max_depth)
+                    .await;
             }
             Ok(result) => {
                 ensure_tool_ok("capture CUA window", &result)?;
                 result
             }
-            Err(error) if is_uia_snapshot_message(&error.message) => {
-                return self.capture_window_from_desktop(&target).await;
+            Err(error)
+                if is_uia_snapshot_message(&error.message)
+                    || error.message.contains("capture CUA window state timed out") =>
+            {
+                #[cfg(windows)]
+                self.activate_windows_uia_fallback(&target);
+                return self
+                    .capture_window_visually(&target, max_elements, max_depth)
+                    .await;
             }
             Err(error) => return Err(error),
         };
@@ -788,62 +925,116 @@ impl ComputerUseSession {
         native_tool_result(result)
     }
 
-    async fn capture_window_from_desktop(
+    async fn capture_window_visually(
         &mut self,
         target: &WindowTarget,
+        max_elements: u32,
+        max_depth: u32,
     ) -> ComputerUseResult<ComputerUseScreenshot> {
         if !self.escalated {
             return Err(ComputerUseError::new(
                 ComputerUseErrorCode::BackendUnavailable,
-                "UIA window snapshot timed out; call escalate_session with explicit approval before using the desktop visual fallback",
+                "UIA window snapshot timed out; call escalate_session with explicit approval before using the visual fallback",
             ));
         }
-        if !target.is_on_screen || target.is_minimized {
+        if target.is_minimized {
             return Err(ComputerUseError::new(
                 ComputerUseErrorCode::CaptureFailed,
-                "UIA window snapshot timed out and the target is not capturable from the desktop",
+                "UIA window snapshot timed out and the target is minimized",
             ));
         }
-        if !target.is_foreground {
-            return Err(ComputerUseError::new(
-                ComputerUseErrorCode::CaptureFailed,
-                "desktop visual fallback requires the exact target window to be foreground; call activate before retrying the snapshot",
-            ));
-        }
-        let result = self
-            .driver
-            .driver
-            .call_tool(
-                "get_desktop_state".into(),
-                json!({"session": self.session_id}).to_string(),
-            )
-            .await
-            .map_err(|error| map_driver_error("capture CUA desktop fallback", error))?;
-        ensure_tool_ok("capture CUA desktop fallback", &result)?;
-        let image = result.images.first().ok_or_else(|| {
-            ComputerUseError::new(
-                ComputerUseErrorCode::CaptureFailed,
-                "CUA desktop fallback returned no screenshot",
-            )
-        })?;
-        let desktop = base64::engine::general_purpose::STANDARD
-            .decode(&image.data_base64)
-            .map_err(|error| {
-                ComputerUseError::new(ComputerUseErrorCode::CaptureFailed, error.to_string())
-            })?;
-        let (crop_bounds, window_dpi) = desktop_crop_bounds(target)?;
-        let data = crop_png_to_bounds(&desktop, crop_bounds)?;
+        let (data, capture_backend, fallback, mut capture_provenance) = match capture_exact_window(
+            target.window_id,
+        )
+        .await
+        {
+            Ok(data) => (
+                data,
+                "cua-platform-windows-window",
+                "exact_window",
+                json!({
+                    "backend": "cua-platform-windows-window",
+                    "pixels_captured": true,
+                    "scope": "window",
+                    "fallback": "exact_window",
+                    "accessibility_available": false,
+                    "process_id": target.pid,
+                    "window_handle": target.window_id,
+                    "native_window_bounds": target.bounds,
+                }),
+            ),
+            Err(exact_error) => {
+                if !target.is_on_screen || !target.is_foreground {
+                    return Err(ComputerUseError::new(
+                        ComputerUseErrorCode::CaptureFailed,
+                        format!(
+                            "exact window capture failed ({exact_error}); desktop visual fallback requires the target to be on-screen and foreground"
+                        ),
+                    ));
+                }
+                let result = call_driver_tool(
+                    &self.driver.driver,
+                    "get_desktop_state",
+                    json!({"session": self.session_id}).to_string(),
+                    "capture CUA desktop fallback",
+                )
+                .await?;
+                ensure_tool_ok("capture CUA desktop fallback", &result)?;
+                let image = result.images.first().ok_or_else(|| {
+                    ComputerUseError::new(
+                        ComputerUseErrorCode::CaptureFailed,
+                        "CUA desktop fallback returned no screenshot",
+                    )
+                })?;
+                let desktop = base64::engine::general_purpose::STANDARD
+                    .decode(&image.data_base64)
+                    .map_err(|error| {
+                        ComputerUseError::new(
+                            ComputerUseErrorCode::CaptureFailed,
+                            error.to_string(),
+                        )
+                    })?;
+                let (crop_bounds, window_dpi) = desktop_crop_bounds(target)?;
+                let data = crop_png_to_bounds(&desktop, crop_bounds)?;
+                let desktop_state = result
+                    .structured_json
+                    .as_deref()
+                    .and_then(|json| serde_json::from_str(json).ok())
+                    .unwrap_or_else(|| json!({}));
+                (
+                    data,
+                    "cua-driver-sdk-desktop-crop",
+                    "desktop_crop",
+                    json!({
+                        "backend": "cua-driver-sdk-desktop-crop",
+                        "pixels_captured": true,
+                        "scope": "window",
+                        "fallback": "desktop_crop",
+                        "accessibility_available": false,
+                        "process_id": target.pid,
+                        "window_handle": target.window_id,
+                        "native_window_bounds": target.bounds,
+                        "desktop_crop_bounds": crop_bounds,
+                        "window_dpi": window_dpi,
+                        "desktop_state": desktop_state,
+                    }),
+                )
+            }
+        };
         let (width, height) = png_dimensions(&data).ok_or_else(|| {
             ComputerUseError::new(
                 ComputerUseErrorCode::CaptureFailed,
                 "desktop fallback crop returned a non-PNG screenshot",
             )
         })?;
-        let desktop_state = result
-            .structured_json
-            .as_deref()
-            .and_then(|json| serde_json::from_str(json).ok())
-            .unwrap_or_else(|| json!({}));
+        let accessibility = self
+            .visual_fallback_accessibility(target, max_elements, max_depth, fallback)
+            .await;
+        let accessibility_available = accessibility["accessibility_available"] == true;
+        capture_provenance["accessibility_available"] = json!(accessibility_available);
+        if accessibility_available {
+            capture_provenance["accessibility_backend"] = json!("windows_uia");
+        }
         let observation = ComputerUseObservation {
             observation_id: format!(
                 "{}-{}",
@@ -856,20 +1047,8 @@ impl ComputerUseSession {
             width,
             height,
             source_rect: target.bounds,
-            capture_backend: "cua-driver-sdk-desktop-crop".into(),
-            capture_provenance: json!({
-                "backend": "cua-driver-sdk-desktop-crop",
-                "pixels_captured": true,
-                "scope": "window",
-                "fallback": "desktop_crop",
-                "accessibility_available": false,
-                "process_id": target.pid,
-                "window_handle": target.window_id,
-                "native_window_bounds": target.bounds,
-                "desktop_crop_bounds": crop_bounds,
-                "window_dpi": window_dpi,
-                "desktop_state": desktop_state,
-            }),
+            capture_backend: capture_backend.into(),
+            capture_provenance,
             session_id: self.session_id.clone(),
         };
         self.target = Some(target.clone());
@@ -877,29 +1056,27 @@ impl ComputerUseSession {
         Ok(ComputerUseScreenshot {
             data,
             observation,
-            accessibility: json!({
-                "degraded": true,
-                "accessibility_available": false,
-                "fallback": "desktop_crop",
-                "window_id": target.window_id,
-                "pid": target.pid,
-            }),
+            accessibility,
         })
     }
 
     /// Read CUA's bounded semantic tree without transferring screenshot pixels.
     pub async fn accessibility_snapshot(
-        &self,
+        &mut self,
         max_elements: u32,
         max_depth: u32,
     ) -> ComputerUseResult<Value> {
         self.ensure_active()?;
         let target = self.revalidate_target().await?;
-        let result = self
-            .driver
-            .driver
-            .call_tool(
-                "get_window_state".into(),
+        #[cfg(windows)]
+        let accessibility = self
+            .windows_accessibility_snapshot(&target, max_elements, max_depth)
+            .await?;
+        #[cfg(not(windows))]
+        let accessibility = {
+            let result = call_driver_tool(
+                &self.driver.driver,
+                "get_window_state",
                 json!({
                     "window_id": target.window_id,
                     "pid": target.pid,
@@ -909,20 +1086,28 @@ impl ComputerUseSession {
                     "session": self.session_id,
                 })
                 .to_string(),
+                "capture CUA accessibility state",
             )
-            .await
-            .map_err(|error| map_driver_error("capture CUA accessibility state", error))?;
-        ensure_tool_ok("capture CUA accessibility state", &result)?;
-        result
-            .structured_json
-            .as_deref()
-            .and_then(|json| serde_json::from_str(json).ok())
-            .ok_or_else(|| {
-                ComputerUseError::new(
-                    ComputerUseErrorCode::CaptureFailed,
-                    "CUA window state returned no structured accessibility state",
-                )
-            })
+            .await?;
+            ensure_tool_ok("capture CUA accessibility state", &result)?;
+            result
+                .structured_json
+                .as_deref()
+                .and_then(|json| serde_json::from_str(json).ok())
+                .ok_or_else(|| {
+                    ComputerUseError::new(
+                        ComputerUseErrorCode::CaptureFailed,
+                        "CUA window state returned no structured accessibility state",
+                    )
+                })?
+        };
+        self.observation = Some(semantic_observation(
+            &self.session_id,
+            &target,
+            &accessibility,
+        ));
+        self.target = Some(target);
+        Ok(accessibility)
     }
 
     /// Verify bounded structured predicates against this exact native window.
@@ -1029,12 +1214,13 @@ impl ComputerUseSession {
                 format!("CUA tool {name:?} is not bindable to an exact window session"),
             ));
         }
-        let result = self
-            .driver
-            .driver
-            .call_tool(name.to_owned(), Value::Object(object).to_string())
-            .await
-            .map_err(|error| map_driver_error(&format!("call CUA {name}"), error))?;
+        let result = call_driver_tool(
+            &self.driver.driver,
+            name,
+            Value::Object(object).to_string(),
+            &format!("call CUA {name}"),
+        )
+        .await?;
         ensure_tool_ok(&format!("call CUA {name}"), &result)?;
         native_tool_result(result)
     }
@@ -1080,12 +1266,19 @@ impl ComputerUseSession {
             object.insert("pid".into(), json!(target.pid));
             object.insert("window_id".into(), json!(target.window_id));
         }
-        let result = self
-            .driver
-            .driver
-            .call_tool(name.to_owned(), Value::Object(object).to_string())
-            .await
-            .map_err(|error| map_driver_error(&format!("call CUA {name}"), error))?;
+        let timeout = if name == "browser_prepare" {
+            Duration::from_secs(60)
+        } else {
+            INPUT_CALL_TIMEOUT
+        };
+        let result = call_driver_tool_with_timeout(
+            &self.driver.driver,
+            name,
+            Value::Object(object).to_string(),
+            &format!("call CUA {name}"),
+            timeout,
+        )
+        .await?;
         ensure_tool_ok(&format!("call CUA {name}"), &result)?;
         serde_json::from_str(&result.raw_json).map_err(|error| {
             ComputerUseError::new(
@@ -1193,7 +1386,7 @@ impl ComputerUseSession {
     ) -> ComputerUseResult<ComputerUseToolResult> {
         self.ensure_active()?;
         validate_action(action)?;
-        let observation = self.observation.as_ref().ok_or_else(|| {
+        let observation = self.observation.clone().ok_or_else(|| {
             ComputerUseError::new(
                 ComputerUseErrorCode::StaleObservation,
                 "take a screenshot before performing Computer Use actions",
@@ -1212,17 +1405,31 @@ impl ComputerUseSession {
                 "the exact target window changed after the screenshot",
             ));
         }
-        let fallback = observation.capture_backend == "cua-driver-sdk-desktop-crop";
-        if fallback && !target.is_foreground {
-            return Err(ComputerUseError::new(
-                ComputerUseErrorCode::InvalidTarget,
-                "desktop visual fallback requires the exact target window to remain foreground",
-            ));
+        validate_action_observation(action, &observation)?;
+        #[cfg(windows)]
+        if is_windows_uia_semantic_action(action, &observation) {
+            let fallback = self.windows_uia.as_ref().ok_or_else(|| {
+                ComputerUseError::new(
+                    ComputerUseErrorCode::StaleObservation,
+                    "take a fresh Windows UIA snapshot before performing this semantic action",
+                )
+            })?;
+            let mut result = fallback.perform(action).await?;
+            result.value = json!({
+                "success": true,
+                "action": action,
+                "target": target,
+                "marker": self.marker,
+                "capture_provenance": observation.capture_provenance,
+                "windows_uia": result.value,
+            });
+            return Ok(result);
         }
-        let desktop_action;
+        let fallback = observation.capture_provenance["accessibility_available"] == false;
+        let visual_action;
         let args = if fallback {
-            desktop_action = action_for_desktop_fallback(action, observation)?;
-            desktop_action_arguments(&desktop_action, &self.session_id)
+            visual_action = action_for_window_visual_fallback(action, &observation)?;
+            action_arguments(&visual_action, &self.session_id, &target)
         } else {
             action_arguments(action, &self.session_id, &target)
         };
@@ -1231,12 +1438,22 @@ impl ComputerUseSession {
         args.as_object_mut()
             .expect("action arguments are an object")
             .remove("_tool");
-        let result = self
-            .driver
-            .driver
-            .call_tool(name.clone(), args.to_string())
-            .await
-            .map_err(|error| map_driver_error(&format!("execute CUA {name}"), error))?;
+        let result = match await_input_call(
+            self.driver.driver.call_tool(name.clone(), args.to_string()),
+            INPUT_CALL_TIMEOUT,
+            "action",
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(error) => {
+                self.active = false;
+                self.observation = None;
+                self.marker.visible = false;
+                return Err(error);
+            }
+        }
+        .map_err(|error| map_driver_error(&format!("execute CUA {name}"), error))?;
         ensure_tool_ok(&format!("execute CUA {name}"), &result)?;
         let mut result = native_tool_result(result)?;
         result.value = json!({
@@ -1262,12 +1479,13 @@ impl ComputerUseSession {
             )
         })?;
         object.insert("session".into(), json!(self.session_id));
-        let result = self
-            .driver
-            .driver
-            .call_tool(name.to_owned(), Value::Object(object).to_string())
-            .await
-            .map_err(|error| map_driver_error(&format!("call CUA {name}"), error))?;
+        let result = call_driver_tool(
+            &self.driver.driver,
+            name,
+            Value::Object(object).to_string(),
+            &format!("call CUA {name}"),
+        )
+        .await?;
         ensure_tool_ok(&format!("call CUA {name}"), &result)?;
         Ok(result)
     }
@@ -1290,20 +1508,34 @@ impl ComputerUseSession {
         if !self.active {
             return Ok(json!({"success": true, "active": false}));
         }
-        let result = self
-            .driver
-            .driver
-            .call_tool(
-                "end_session".into(),
-                json!({"session": self.session_id}).to_string(),
-            )
-            .await
-            .map_err(|error| map_driver_error("stop CUA session", error))?;
+        let result = call_driver_tool(
+            &self.driver.driver,
+            "end_session",
+            json!({"session": self.session_id}).to_string(),
+            "stop CUA session",
+        )
+        .await;
+        if let Err(error) = &result {
+            self.active = false;
+            self.marker.visible = false;
+            self.target = None;
+            self.observation = None;
+            #[cfg(windows)]
+            {
+                self.windows_uia = None;
+            }
+            return Err(error.clone());
+        }
+        let result = result?;
         ensure_tool_ok("stop CUA session", &result)?;
         self.active = false;
         self.marker.visible = false;
         self.target = None;
         self.observation = None;
+        #[cfg(windows)]
+        {
+            self.windows_uia = None;
+        }
         Ok(json!({"success": true, "active": false, "marker": self.marker}))
     }
 
@@ -1368,7 +1600,7 @@ impl ComputerUseSession {
         Ok(result)
     }
 
-    /// Explicitly unlock the desktop phase after the window ladder is exhausted.
+    /// Explicitly approve pixel fallback after the window accessibility ladder is exhausted.
     pub async fn escalate(
         &mut self,
         reason: &str,
@@ -1376,16 +1608,17 @@ impl ComputerUseSession {
     ) -> ComputerUseResult<Value> {
         validate_escalation_request(reason, detail)?;
         self.ensure_active()?;
-        self.revalidate_target().await?;
-        let mut arguments = json!({"reason": reason});
-        if let Some(detail) = detail {
-            arguments["detail"] = Value::String(detail.to_owned());
-        }
-        let result = self
-            .call_bound_tool_value("escalate_session", arguments)
-            .await?;
+        let target = self.revalidate_target().await?;
+        #[cfg(windows)]
+        self.activate_windows_uia_fallback(&target);
         self.escalated = true;
-        Ok(result)
+        Ok(json!({
+            "approved": true,
+            "capture_scope": "window",
+            "fallback": "pixel",
+            "reason": reason,
+            "detail": detail,
+        }))
     }
 
     pub async fn resume_after_user_approval(&mut self) -> ComputerUseResult<Value> {
@@ -1418,13 +1651,11 @@ impl ComputerUseSession {
     }
 
     /// Activate only the exact target through CUA's scoped window action.
-    pub async fn activate(&self) -> ComputerUseResult<Value> {
+    pub async fn activate(&mut self) -> ComputerUseResult<Value> {
         self.ensure_active()?;
         let target = self.revalidate_target().await?;
-        let result = self
-            .driver
-            .driver
-            .call_tool(
+        let result = match await_input_call(
+            self.driver.driver.call_tool(
                 "bring_to_front".into(),
                 json!({
                     "pid": target.pid,
@@ -1432,9 +1663,21 @@ impl ComputerUseSession {
                     "session": self.session_id,
                 })
                 .to_string(),
-            )
-            .await
-            .map_err(|error| map_driver_error("activate CUA window", error))?;
+            ),
+            INPUT_CALL_TIMEOUT,
+            "window activation",
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(error) => {
+                self.active = false;
+                self.observation = None;
+                self.marker.visible = false;
+                return Err(error);
+            }
+        }
+        .map_err(|error| map_driver_error("activate CUA window", error))?;
         ensure_tool_ok("activate CUA window", &result)?;
         let activation = native_tool_result(result)?;
         let target = self.revalidate_target().await?;
@@ -1486,6 +1729,16 @@ impl ComputerUseSession {
     }
 
     async fn resolve_target(&self) -> ComputerUseResult<WindowTarget> {
+        if self.scope.window_handle.is_some() {
+            let target = crate::window_target::resolve_exact(&self.scope)?.ok_or_else(|| {
+                ComputerUseError::new(
+                    ComputerUseErrorCode::MissingWindow,
+                    "exact native window resolution is unavailable on this platform",
+                )
+            })?;
+            validate_target_policy(&target)?;
+            return Ok(target);
+        }
         let rows = self.list_windows().await?;
         let matches = rows
             .into_iter()
@@ -1563,39 +1816,28 @@ fn desktop_crop_bounds(target: &WindowTarget) -> ComputerUseResult<([i32; 4], u3
     Ok((target.bounds, 96))
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
-pub(crate) struct WindowTarget {
-    pub(crate) pid: u32,
-    pub(crate) window_id: u64,
-    pub(crate) title: String,
-    pub(crate) app_name: String,
-    pub(crate) bounds: [i32; 4],
-    #[serde(default)]
-    pub(crate) is_on_screen: bool,
-    #[serde(default)]
-    pub(crate) is_minimized: bool,
-    #[serde(default)]
-    pub(crate) z_index: Option<i32>,
-    #[serde(default)]
-    pub(crate) is_foreground: bool,
+#[cfg(windows)]
+async fn capture_exact_window(window_id: u64) -> ComputerUseResult<Vec<u8>> {
+    tokio::task::spawn_blocking(move || {
+        platform_windows::capture::screenshot_window_bytes(window_id).map_err(|error| {
+            ComputerUseError::new(ComputerUseErrorCode::CaptureFailed, error.to_string())
+        })
+    })
+    .await
+    .map_err(|error| {
+        ComputerUseError::new(
+            ComputerUseErrorCode::CaptureFailed,
+            format!("exact window capture task failed: {error}"),
+        )
+    })?
 }
 
-impl WindowTarget {
-    fn from_value(value: &Value) -> Option<Self> {
-        Some(Self {
-            pid: value["pid"].as_u64()?.try_into().ok()?,
-            window_id: value["window_id"].as_u64()?,
-            title: value["title"].as_str().unwrap_or_default().to_owned(),
-            app_name: value["app_name"].as_str().unwrap_or_default().to_owned(),
-            bounds: bounds(value["bounds"].as_object()?)?,
-            is_on_screen: value["is_on_screen"].as_bool().unwrap_or(false),
-            is_minimized: value["minimized"].as_bool().unwrap_or(false),
-            z_index: value["z_index"]
-                .as_i64()
-                .and_then(|value| value.try_into().ok()),
-            is_foreground: value["is_foreground"].as_bool().unwrap_or(false),
-        })
-    }
+#[cfg(not(windows))]
+async fn capture_exact_window(_window_id: u64) -> ComputerUseResult<Vec<u8>> {
+    Err(ComputerUseError::new(
+        ComputerUseErrorCode::BackendUnavailable,
+        "exact native window capture is unavailable on this platform",
+    ))
 }
 
 #[cfg(windows)]
@@ -1630,6 +1872,9 @@ async fn list_windows_with_driver(
     pid: Option<u32>,
     on_screen_only: bool,
 ) -> ComputerUseResult<Vec<Value>> {
+    if let Some(windows) = crate::window_target::native_inventory(pid, on_screen_only) {
+        return Ok(windows);
+    }
     let mut arguments = json!({});
     if let Some(pid) = pid {
         arguments["pid"] = json!(pid);
@@ -1637,10 +1882,13 @@ async fn list_windows_with_driver(
     if on_screen_only {
         arguments["on_screen_only"] = Value::Bool(true);
     }
-    let result = driver
-        .call_tool("list_windows".into(), arguments.to_string())
-        .await
-        .map_err(|error| map_driver_error("list CUA windows", error))?;
+    let result = call_driver_tool(
+        driver,
+        "list_windows",
+        arguments.to_string(),
+        "list CUA windows",
+    )
+    .await?;
     ensure_tool_ok("list CUA windows", &result)?;
     let value: Value = result.raw_json.parse::<Value>().map_err(|error| {
         ComputerUseError::new(ComputerUseErrorCode::BackendUnavailable, error.to_string())
@@ -1656,64 +1904,6 @@ async fn list_windows_with_driver(
         })
 }
 
-impl ComputerUseTargetScope {
-    fn matches(&self, target: &WindowTarget) -> bool {
-        self.process_id.is_none_or(|value| value == target.pid)
-            && self
-                .window_handle
-                .is_none_or(|value| value == target.window_id)
-            && self
-                .window_title
-                .as_deref()
-                .is_none_or(|value| value == target.title)
-    }
-}
-
-fn bounds(value: &serde_json::Map<String, Value>) -> Option<[i32; 4]> {
-    Some([
-        value["x"].as_i64()?.try_into().ok()?,
-        value["y"].as_i64()?.try_into().ok()?,
-        value["width"].as_i64()?.try_into().ok()?,
-        value["height"].as_i64()?.try_into().ok()?,
-    ])
-}
-
-pub(crate) fn bounded_snapshot_elements(value: u32) -> u32 {
-    if value == 0 {
-        DEFAULT_SNAPSHOT_MAX_ELEMENTS
-    } else {
-        value.min(MAX_SNAPSHOT_ELEMENTS)
-    }
-}
-
-pub(crate) fn bounded_snapshot_depth(value: u32) -> u32 {
-    if value == 0 {
-        DEFAULT_SNAPSHOT_MAX_DEPTH
-    } else {
-        value.min(MAX_SNAPSHOT_DEPTH)
-    }
-}
-
-fn validate_target_policy(target: &WindowTarget) -> ComputerUseResult<()> {
-    let value = format!("{} {}", target.app_name, target.title).to_ascii_lowercase();
-    const DENIED: [&str; 7] = [
-        "password",
-        "credential",
-        "authentication",
-        "sign in",
-        "login",
-        "terminal",
-        "command prompt",
-    ];
-    if DENIED.iter().any(|marker| value.contains(marker)) {
-        return Err(ComputerUseError::new(
-            ComputerUseErrorCode::InvalidTarget,
-            "system, terminal, authentication, and password targets are not allowed",
-        ));
-    }
-    Ok(())
-}
-
 pub(crate) fn validate_launch_request(request: &ComputerUseLaunchRequest) -> ComputerUseResult<()> {
     let selectors = [
         request.name.as_deref(),
@@ -1722,16 +1912,15 @@ pub(crate) fn validate_launch_request(request: &ComputerUseLaunchRequest) -> Com
         request.path.as_deref(),
         request.launch_path.as_deref(),
     ];
-    if selectors
+    let selector_count = selectors
         .iter()
         .flatten()
         .filter(|value| !value.trim().is_empty())
-        .count()
-        != 1
-    {
+        .count();
+    if selector_count > 1 || (selector_count == 0 && request.urls.is_empty()) {
         return Err(ComputerUseError::new(
             ComputerUseErrorCode::InvalidAction,
-            "launch requires exactly one non-empty name, bundle_id, or launch_path",
+            "launch requires one application selector or at least one URL",
         ));
     }
     let selected = selectors
@@ -1766,6 +1955,21 @@ pub(crate) fn validate_launch_request(request: &ComputerUseLaunchRequest) -> Com
         return Err(ComputerUseError::new(
             ComputerUseErrorCode::InvalidAction,
             "launch contains too many URLs or arguments",
+        ));
+    }
+    if request.urls.iter().any(|url| {
+        let url = url.trim().to_ascii_lowercase();
+        url.len() > 4096
+            || !matches!(
+                url.as_str(),
+                value if value.starts_with("https://")
+                    || value.starts_with("http://")
+                    || value.starts_with("com.epicgames.launcher://")
+            )
+    }) {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::InvalidAction,
+            "launch URLs must use http, https, or the Epic Games Launcher protocol",
         ));
     }
     Ok(())

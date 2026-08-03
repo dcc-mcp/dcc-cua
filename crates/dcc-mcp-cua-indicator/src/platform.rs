@@ -4,7 +4,8 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use windows::Win32::Foundation::{
-    COLORREF, ERROR_CLASS_ALREADY_EXISTS, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM,
+    COLORREF, CloseHandle, ERROR_CLASS_ALREADY_EXISTS, ERROR_HOTKEY_ALREADY_REGISTERED, HANDLE,
+    HWND, LPARAM, LRESULT, POINT, RECT, WAIT_OBJECT_0, WPARAM,
 };
 use windows::Win32::Graphics::Gdi::{
     BeginPaint, CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, CombineRgn, CreateFontW, CreatePolygonRgn,
@@ -14,6 +15,7 @@ use windows::Win32::Graphics::Gdi::{
     SetBkMode, SetTextColor, SetWindowRgn, TRANSPARENT, WINDING,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::System::Threading::{CreateEventW, SetEvent, WaitForSingleObject};
 use windows::Win32::UI::HiDpi::{
     DPI_AWARENESS_CONTEXT, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForWindow,
     SetThreadDpiAwarenessContext,
@@ -49,6 +51,7 @@ const FRAME_ALPHA_MAX: u8 = 244;
 const FRAME_PULSE_PERIOD: Duration = Duration::from_millis(1_800);
 const FRAME_PULSE_INTERVAL: Duration = Duration::from_millis(50);
 const HOTKEY_ID: i32 = 0x4443;
+const ESCAPE_EVENT_NAME: PCWSTR = w!("DccMcpCuaEscape");
 const FRAME_INTERVAL: Duration = Duration::from_millis(16);
 static ESCAPE_GENERATION: AtomicU64 = AtomicU64::new(0);
 static ESCAPE_HUB: OnceLock<Result<EscapeHub, String>> = OnceLock::new();
@@ -173,6 +176,14 @@ impl Drop for RegisteredHotKey {
     }
 }
 
+struct EscapeEvent(HANDLE);
+
+impl Drop for EscapeEvent {
+    fn drop(&mut self) {
+        let _ = unsafe { CloseHandle(self.0) };
+    }
+}
+
 struct EscapeHub {
     active: Arc<AtomicBool>,
 }
@@ -218,9 +229,17 @@ fn run_escape_hub(
     active: &AtomicBool,
     ready: &std::sync::mpsc::SyncSender<Result<(), String>>,
 ) -> Result<(), String> {
-    unsafe { RegisterHotKey(None, HOTKEY_ID, MOD_NOREPEAT, VK_ESCAPE.0 as u32) }
-        .map_err(|error| format!("reserve Escape stop key: {error}"))?;
-    let _hotkey = RegisteredHotKey;
+    let event = EscapeEvent(
+        unsafe { CreateEventW(None, false, false, ESCAPE_EVENT_NAME) }
+            .map_err(|error| format!("create shared Escape event: {error}"))?,
+    );
+    let owns_hotkey =
+        match unsafe { RegisterHotKey(None, HOTKEY_ID, MOD_NOREPEAT, VK_ESCAPE.0 as u32) } {
+            Ok(()) => true,
+            Err(error) if hotkey_already_registered(&error) => false,
+            Err(error) => return Err(format!("reserve Escape stop key: {error}")),
+        };
+    let _hotkey = owns_hotkey.then_some(RegisteredHotKey);
     active.store(true, Ordering::Release);
     ready
         .try_send(Ok(()))
@@ -228,16 +247,25 @@ fn run_escape_hub(
     let mut message = MSG::default();
     loop {
         while unsafe { PeekMessageW(&mut message, None, 0, 0, PM_REMOVE) }.as_bool() {
-            if message.message == WM_HOTKEY && message.wParam.0 == HOTKEY_ID as usize {
-                ESCAPE_GENERATION.fetch_add(1, Ordering::AcqRel);
+            if owns_hotkey && message.message == WM_HOTKEY && message.wParam.0 == HOTKEY_ID as usize
+            {
+                unsafe { SetEvent(event.0) }
+                    .map_err(|error| format!("broadcast Escape stop: {error}"))?;
             }
             unsafe {
                 let _ = TranslateMessage(&message);
                 DispatchMessageW(&message);
             }
         }
+        if !owns_hotkey && unsafe { WaitForSingleObject(event.0, 0) } == WAIT_OBJECT_0 {
+            ESCAPE_GENERATION.fetch_add(1, Ordering::AcqRel);
+        }
         thread::sleep(FRAME_INTERVAL);
     }
+}
+
+pub(super) fn hotkey_already_registered(error: &windows::core::Error) -> bool {
+    error.code() == HRESULT::from_win32(ERROR_HOTKEY_ALREADY_REGISTERED.0)
 }
 
 struct ThreadDpiAwareness {

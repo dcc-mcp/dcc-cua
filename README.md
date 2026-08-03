@@ -11,13 +11,16 @@ a whole task. Its public protocol is owned by this repository and provides:
 - bounded text, key, drag, and coordinate input;
 - fail-closed sensitive-window policy;
 - explicit stop/resume lifecycle and structured errors;
-- a visible, vector-rendered CUA mouse-pointer cursor plus a Host-owned
-  `DCC UI Control · <app> · Esc to stop` safety banner on Windows. The banner
-  and softly breathing target-window frame are click-through, excluded from agent
-  captures, and one shared Escape hotkey broadcasts interruption to every active
-  session in the Host process.
+- a visible, vector-rendered CUA mouse-pointer cursor on Windows and Linux,
+  plus a Host-owned `DCC UI Control · <app> · Esc to stop` safety banner and
+  softly breathing target-window frame on Windows. Linux reuses CUA's native
+  per-session cursor and badge; macOS exposes the SDK's structured readiness
+  refusal until a signed/TCC presentation runtime is available. All supported
+  indicators are click-through, excluded from agent captures, and one shared
+  Escape hotkey broadcasts interruption to every active session in the Host
+  process.
 
-The repository is a Cargo workspace with eight responsibilities:
+The repository is a Cargo workspace with nine responsibilities:
 
 - `dcc-mcp-cua-core`: scoped Computer Use domain, safety policy, and
   CUA execution boundary;
@@ -29,23 +32,29 @@ The repository is a Cargo workspace with eight responsibilities:
   correlation and binary image attachments;
 - `dcc-mcp-cua-host`: long-lived versioned IPC and request
   routing;
-- `dcc-mcp-cua-indicator`: Host-owned control banner and physical Escape
-  interruption boundary (Win32 today; other platform backends are pending);
+- `dcc-mcp-cua-indicator`: Host-owned Windows control banner/frame and physical
+  Escape interruption boundary; Linux cursor/badge rendering stays in the CUA
+  SDK, while macOS remains behind its structured readiness boundary;
+- `dcc-mcp-cua-platform-windows`: exact PID/HWND Windows UI Automation worker
+  for background semantic fallback when CUA's combined window-state path is
+  unavailable;
 - `dcc-mcp-cua-shm`: cross-platform shared-memory image handoff;
 - `dcc-mcp-cua-cli`: the thin CLI process that composes the workspace crates.
 
 Inside `dcc-mcp-cua-core`, source files follow domain responsibility rather
 than numeric partitions: `contracts.rs` owns public requests/results and shared
-limits, `runtime.rs` owns driver/session/window orchestration, and `policy.rs`
-owns trust-boundary validation, action translation, and SDK error/result
-normalization.
+limits, `runtime.rs` owns driver/session orchestration, `window_target.rs` owns
+exact native-window identity, `observation.rs` owns observation construction,
+and `policy.rs` owns trust-boundary validation, action translation, and SDK
+error/result normalization.
 
-Application-specific adapters stay above this workspace. A browser adapter can
-add tab/DOM/iframe/download capabilities through CDP or WebDriver while using
-this host as its visual fallback. Unreal/Fab flows belong in the Unreal or
-browser adapter and should combine typed Unreal APIs with scoped CUA; Fab
-account, purchase, and download confirmation remain explicit user-approved
-operations.
+Application-specific adapters stay above this workspace. Browser control uses
+CUA's typed CDP routes first, then a browser semantic/DOM adapter, exact-window
+OS accessibility, and finally explicitly approved exact-window pixels. It does
+not enter UIA before proving an available CDP route. Unreal/Fab flows belong in
+the Unreal or browser adapter and should combine typed Unreal APIs with scoped
+CUA; Fab account, purchase, and download confirmation remain explicit
+user-approved operations.
 
 Multiple agents may keep independent exact PID/HWND sessions open for different
 applications. Semantic, UIA, and browser operations remain parallel; actions
@@ -138,7 +147,9 @@ target; if an application has multiple windows, pass `--pid` and
 `doctor` runs CUA's `check_permissions` and `health_report` concurrently with
 driver/window discovery. It reports the upstream structured checks for native
 accessibility, screen capture, platform support, and input readiness, and exits
-non-zero when the authoritative health status is not `ok`.
+non-zero when the authoritative health status is not `ok`. Its `ready` field
+also becomes false when Windows is locked or has no interactive foreground
+window, even if UIA and screen-capture permissions remain available.
 
 `list` accepts optional `--app`, `--pid`, `--window-id`, `--title`, and
 `--on-screen` filters. `--app` is case-insensitive; `--title` is exact and
@@ -175,6 +186,12 @@ snapshot. `--output FILE` writes that post-action image, and the JSON result
 includes `post_snapshot`. If capture fails after input was already delivered,
 the command reports `action_was_executed: true` instead of returning a generic
 mutation failure that could cause an unsafe retry.
+Their banner and frame exist only for that command's session lifetime. Core and
+other multi-step agents should keep one Host IPC session open so the same exact
+PID/HWND retains its visible banner, breathing frame, cursor, and observation
+fence across actions. A CUA action or window activation that does not return
+within 15 seconds invalidates that window session instead of blocking the Host
+indefinitely.
 
 For common controls, `click`, `double-click`, `right-click`, `move`, `scroll`,
 `press`, `hotkey`, and `type` build the same fenced CUA actions without manual
@@ -183,8 +200,9 @@ JSON. `type` requires `--focused` or an explicit `--element-index`/
 
 `apps` uses CUA's cross-platform application inventory. `launch` accepts one
 explicit selector (`--name`, `--bundle-id`, `--aumid`, `--path`, or
-`--launch-path`), supports repeated `--url`/`--arg` values, and applies the
-same sensitive-application deny policy as the host.
+`--launch-path`) or at least one bounded `http`, `https`, or Epic Launcher URL,
+supports repeated `--url`/`--arg` values, and applies the same
+sensitive-application deny policy as the host.
 
 Clipboard access is session-scoped and grant-gated: `clipboard_read` does not
 return text unless the caller asks for it, and `clipboard_write` accepts exactly
@@ -380,20 +398,29 @@ the tab snapshot. Upload uses `allow_browser_input`; download is a separate
 destructive grant (`allow_browser_download`) and CUA's host approval evidence.
 `browser_dialog` only resolves page-owned JavaScript dialogs and requires the
 exact current `dialog_id` for accept/dismiss.
+Attaching to a logged-in Chromium profile keeps CUA's R2 gate: launch the Host
+with `dcc-mcp-cua host --grant existing-profile` and also set the session's
+`allow_browser_prepare` grant. Without both approvals, attachment is refused.
+
+On Windows, non-pixel semantic access reuses one exact PID/HWND UIA worker per
+session; CUA remains the cross-platform, browser, and visual backend. An
+`accessibility_snapshot` creates a fresh non-pixel observation and returns
+`dcc-wuia:` tokens; click, toggle, set-text, and set-value can consume those
+tokens without a screenshot, raw-input grant, or explicit window activation.
+The target application may still choose to activate itself when it opens a
+visible menu or dialog.
 
 For native windows whose UIA/AX provider is unavailable (for example a
 game-engine editor or custom-rendered DCC surface), `snapshot` first attempts
 the semantic window capture. After an explicit `escalate_session` approval,
-the same exact-window session may use a CUA desktop visual frame cropped to
-the validated PID/HWND bounds. The exact target must be foreground so another
-window cannot be mistaken for it; use CLI `snapshot --activate` or Host
-`snapshot` with `activate_before: true` to activate, verify, and capture within
-one serialized session operation. Windows per-monitor DPI is mapped into the
-desktop screenshot coordinate space before cropping. The result is marked
-`capture_backend: "cua-driver-sdk-desktop-crop"` and
-`accessibility_available: false`; coordinate actions remain observation-bound,
-are translated from crop-local to desktop coordinates only while that exact
-window remains foreground, and semantic element actions remain unavailable.
+the same exact-window session first uses CUA's native platform capture for that
+validated HWND. Only when exact-window capture is unavailable may it crop a CUA
+desktop frame, which requires the target to be foreground so another window
+cannot be mistaken for it. Windows per-monitor DPI and resized exact-window
+frames are mapped back to native target coordinates. Exact Windows visual
+captures also attach the bounded Windows UIA tree when available; otherwise
+they are marked `accessibility_available: false`. Coordinate actions remain
+bound to their exact PID/HWND.
 One-shot CLI `act` and friendly action commands accept the same `--activate`
 flag, so their pre-action observation and mutation remain in that foreground
 session instead of racing a separate activation process.
@@ -425,10 +452,10 @@ which preserves the user's foreground and lets CUA select its accessibility or
 synthetic-event route. Use `foreground` only after CUA reports that the
 background route is unavailable.
 
-`get_session_state` reads CUA's live capture policy. `escalate_session` is a
-one-way window-to-desktop scope transition and requires the separate
-`allow_session_escalation: true` grant plus one of CUA's bounded escalation
-reasons; `resume_session` remains the explicit post-approval restart path.
+`get_session_state` reads CUA's live capture policy. `escalate_session` grants
+pixel fallback only inside the existing exact-window scope and requires the
+separate `allow_session_escalation: true` grant plus one of CUA's bounded
+escalation reasons; it does not widen the session to desktop control.
 `cursor_tool` exposes `move_cursor`, `set_agent_cursor_enabled`,
 `set_agent_cursor_motion`, `set_agent_cursor_theme`, and
 `get_agent_cursor_state`; `move_cursor` is forced to `scope: "window"`, and the
@@ -474,8 +501,9 @@ Example host requests:
 
 ```powershell
 cargo fmt --all -- --check
-cargo check --workspace --all-targets
-cargo test --workspace --all-targets
+cargo check --workspace --all-targets --locked
+cargo test --workspace --all-targets --locked
+cargo test --locked -p dcc-mcp-cua-e2e --features gui-e2e --no-run
 pwsh -NoProfile -File scripts/run-gui-e2e.ps1 -Binary target/debug/dcc-mcp-cua.exe
 ```
 
@@ -485,13 +513,19 @@ CI checks layout, formatting, workspace tests, the locked release build, and a
 real release-binary E2E on Windows, Linux, and macOS. The E2E validates the
 machine manifest, platform identity, shared-memory negotiation, a spawned Host
 handshake, lightweight ping, pipelined/streaming request correlation, invalid
-request recovery, and the embedded CUA application/tool inventories. Windows
+request recovery (including a UTF-8 BOM on the first JSONL line), and the
+embedded CUA application/tool inventories. Windows
 and Linux additionally build CUA's official Electron fixture and verify the
 real launch -> scoped PNG snapshot -> semantic find -> input -> state oracle ->
 exact browser binding -> semantic browser snapshot -> click/type -> independent
-state oracle -> cleanup path. The hosted macOS lane retains the structured
+state oracle -> cleanup path, plus two independent Electron windows sharing one
+Host with distinct session capabilities. Windows also builds CUA's native WPF
+fixture and verifies an exact non-foreground UIA read/write round trip. The
+hosted macOS lane retains the structured
 permission/readiness refusal gate; full macOS GUI input requires a signed,
-TCC-provisioned runner.
+TCC-provisioned runner. The same CLI E2E also launches a real endpoint Host and
+checks ping plus pipelined application/tool discovery over the platform transport
+(Windows named pipe or Unix socket).
 The release workflow
 packages the `dcc-mcp-cua` binary as platform archives and attaches them to the
 GitHub release.

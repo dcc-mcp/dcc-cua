@@ -3,6 +3,7 @@ use std::fs;
 use std::io::Read;
 use std::process::Command as ProcessCommand;
 
+mod authorization;
 mod manifest;
 mod update;
 
@@ -78,7 +79,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .map_err(|error| std::io::Error::other(error.to_string()))?;
         return Ok(());
     }
-    let driver = ComputerUseDriver::create()?;
+    let driver = if command == "host" {
+        authorization::driver_for_host(&flags)?
+    } else {
+        ComputerUseDriver::create()?
+    };
 
     match command.as_str() {
         "list" => list_windows(&driver, &flags).await?,
@@ -550,6 +555,7 @@ struct JsonlRequest {
 }
 
 fn parse_jsonl_request(line: &str) -> Result<JsonlRequest, String> {
+    let line = line.strip_prefix('\u{feff}').unwrap_or(line);
     let value: serde_json::Value = serde_json::from_str(line)
         .map_err(|error| format!("JSONL request is invalid JSON: {error}"))?;
     let object = value
@@ -1641,7 +1647,7 @@ fn print_help() {
   clipboard-read --app APP [--include-text]
   clipboard-write --app APP --text TEXT|--image-path FILE|--file-path FILE
   doctor [--endpoint PATH|--spawn BINARY]
-  host [--stdio|--endpoint PATH]
+  host [--stdio|--endpoint PATH] [--grant existing-profile]
 
 Host uses versioned big-endian JSON frames. Hello version 1 negotiates binary-frame or shared-memory snapshots and supports request_id correlation."#
     );

@@ -26,7 +26,7 @@ pub(super) async fn handle_request(
                     SnapshotTransport::SharedMemory => "shared_memory",
                     SnapshotTransport::BinaryFrame => "binary_frame",
                 },
-                "capabilities": HOST_CAPABILITIES,
+                "capabilities": host_capabilities(),
             }),
             None,
         ));
@@ -90,8 +90,9 @@ pub(super) async fn handle_request(
                 SnapshotTransport::SharedMemory => {
                     let shared = SharedImage::from_bytes(&snapshot.data, "image/png")
                         .map_err(|error| HostError::Protocol(error.to_string()))?;
-                    let descriptor = serde_json::to_value(shared.descriptor())
+                    let mut descriptor = serde_json::to_value(shared.descriptor())
                         .map_err(|error| HostError::Protocol(error.to_string()))?;
+                    descriptor["encoding"] = Value::String("shared_memory".into());
                     *desktop_shared_image = Some(shared);
                     (descriptor, None)
                 }
@@ -165,8 +166,9 @@ pub(super) async fn handle_request(
                 SnapshotTransport::SharedMemory => {
                     let shared = SharedImage::from_bytes(&snapshot.data, "image/png")
                         .map_err(|error| HostError::Protocol(error.to_string()))?;
-                    let descriptor = serde_json::to_value(shared.descriptor())
+                    let mut descriptor = serde_json::to_value(shared.descriptor())
                         .map_err(|error| HostError::Protocol(error.to_string()))?;
+                    descriptor["encoding"] = Value::String("shared_memory".into());
                     host.latest_shared_image = Some(shared);
                     (descriptor, None)
                 }
@@ -485,7 +487,7 @@ pub(super) async fn handle_request(
                 "visible": marker["visible"],
                 "shape": "mouse_pointer",
                 "theme": started["cursor_theme"],
-                "render_backend": "host-native-overlay",
+                "render_backend": cursor_render_backend(),
                 "motion_backend": "cua-driver-sdk",
             });
             let capability = format!("cua-window-{}", Uuid::new_v4());
@@ -597,8 +599,9 @@ pub(super) async fn handle_request(
                 SnapshotTransport::SharedMemory => {
                     let shared = SharedImage::from_bytes(&screenshot.data, "image/png")
                         .map_err(|error| HostError::Protocol(error.to_string()))?;
-                    let descriptor = serde_json::to_value(shared.descriptor())
+                    let mut descriptor = serde_json::to_value(shared.descriptor())
                         .map_err(|error| HostError::Protocol(error.to_string()))?;
+                    descriptor["encoding"] = Value::String("shared_memory".into());
                     host.latest_shared_image = Some(shared);
                     (descriptor, None)
                 }
@@ -662,7 +665,15 @@ pub(super) async fn handle_request(
                 .session
                 .accessibility_snapshot(max_nodes, max_depth)
                 .await?;
-            let state_id = format!("{}-accessibility-{}", session_id, Uuid::new_v4());
+            let observation_id = host
+                .session
+                .latest_observation_id()
+                .ok_or_else(|| {
+                    HostError::Protocol("accessibility snapshot returned no observation".into())
+                })?
+                .to_owned();
+            let state_id = observation_id.clone();
+            host.latest_observation_id = Some(observation_id.clone());
             host.latest_accessibility_state_id = Some(state_id.clone());
             host.latest_accessibility_root = Some(root.clone());
             let target = host
@@ -672,6 +683,7 @@ pub(super) async fn handle_request(
             Ok((
                 json!({
                     "type":"accessibility_snapshot",
+                    "observation_id":observation_id,
                     "accessibility_state_id":state_id,
                     "target":target_wire(&target),
                     "root":root,
@@ -1259,5 +1271,15 @@ pub(super) async fn handle_request(
                 None,
             ))
         }
+    }
+}
+
+pub(super) const fn cursor_render_backend() -> &'static str {
+    if cfg!(windows) {
+        "host-native-overlay"
+    } else if cfg!(target_os = "linux") {
+        "cua-driver-sdk"
+    } else {
+        "unavailable"
     }
 }

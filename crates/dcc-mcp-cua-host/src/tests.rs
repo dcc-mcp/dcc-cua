@@ -4,6 +4,33 @@ use tokio::io::{AsyncWrite, DuplexStream};
 
 use super::*;
 
+#[rstest]
+fn cursor_render_backend_matches_the_native_platform_owner() {
+    let expected = if cfg!(windows) {
+        "host-native-overlay"
+    } else if cfg!(target_os = "linux") {
+        "cua-driver-sdk"
+    } else {
+        "unavailable"
+    };
+    assert_eq!(request_handler::cursor_render_backend(), expected);
+}
+
+#[rstest]
+fn capabilities_do_not_advertise_unavailable_macos_cursor_controls() {
+    let capabilities = host_capabilities();
+    let cursor_available = cfg!(any(windows, target_os = "linux"));
+    assert_eq!(capabilities.contains(&"cursor_controls"), cursor_available);
+    assert_eq!(
+        capabilities.contains(&"cua_cursor_marker"),
+        cursor_available
+    );
+    assert_eq!(
+        capabilities.contains(&"windows_background_uia_fallback"),
+        cfg!(windows)
+    );
+}
+
 async fn write_json_request(
     writer: &mut (impl AsyncWrite + Unpin),
     value: Value,
@@ -1098,7 +1125,8 @@ fn find_queries_filter_semantic_elements() {
         "elements": [
             {"element_index": 3, "role": "Button", "name": "Ready"},
             {"element_index": 4, "role": "Text", "name": "Ready"},
-            {"element_index": 5, "role": "Button", "name": "Cancel"}
+            {"element_index": 5, "role": "Button", "name": "Cancel"},
+            {"element_index": 6, "role": "Edit", "automation_id": "txt-input"}
         ]
     });
     let query = FindQuery {
@@ -1110,6 +1138,17 @@ fn find_queries_filter_semantic_elements() {
     let matches = find_elements(&root, &query, query.validate().unwrap());
     assert_eq!(matches.len(), 1);
     assert_eq!(matches[0]["element_index"], 3);
+    let automation_match = find_elements(
+        &root,
+        &FindQuery {
+            text: Some("txt-input".into()),
+            role: None,
+            element_index: None,
+            max_results: Some(10),
+        },
+        10,
+    );
+    assert_eq!(automation_match[0]["element_index"], 6);
     assert!(
         FindQuery {
             text: None,
