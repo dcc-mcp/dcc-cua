@@ -8,11 +8,11 @@ use windows::Win32::Foundation::{
     HWND, LPARAM, LRESULT, POINT, RECT, WAIT_OBJECT_0, WPARAM,
 };
 use windows::Win32::Graphics::Gdi::{
-    BeginPaint, CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, CombineRgn, CreateFontW, CreatePolygonRgn,
-    CreateRoundRectRgn, CreateSolidBrush, DEFAULT_CHARSET, DEFAULT_PITCH, DT_CENTER,
-    DT_END_ELLIPSIS, DT_SINGLELINE, DT_VCENTER, DeleteObject, DrawTextW, EndPaint, FW_SEMIBOLD,
-    FillRect, HGDIOBJ, OUT_DEFAULT_PRECIS, PAINTSTRUCT, RGN_DIFF, RGN_ERROR, SelectObject,
-    SetBkMode, SetTextColor, SetWindowRgn, TRANSPARENT, WINDING,
+    BeginPaint, CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, CombineRgn, CreateEllipticRgn, CreateFontW,
+    CreatePolygonRgn, CreateRoundRectRgn, CreateSolidBrush, DEFAULT_CHARSET, DEFAULT_PITCH,
+    DT_CENTER, DT_END_ELLIPSIS, DT_SINGLELINE, DT_VCENTER, DeleteObject, DrawTextW, EndPaint,
+    FW_SEMIBOLD, FillRect, FillRgn, HGDIOBJ, OUT_DEFAULT_PRECIS, PAINTSTRUCT, RGN_DIFF, RGN_ERROR,
+    SelectObject, SetBkMode, SetTextColor, SetWindowRgn, TRANSPARENT, WINDING,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::{CreateEventW, SetEvent, WaitForSingleObject};
@@ -39,12 +39,18 @@ use super::{BannerStatus, BannerTarget, IndicatorError};
 
 const BANNER_CLASS: PCWSTR = w!("DccMcpCuaControlBanner");
 const FRAME_CLASS: PCWSTR = w!("DccMcpCuaControlFrame");
-const CURSOR_CLASS: PCWSTR = w!("DccMcpCuaControlCursor");
+const CURSOR_HALO_CLASS: PCWSTR = w!("DccMcpCuaControlCursorHalo");
+const CURSOR_POINTER_CLASS: PCWSTR = w!("DccMcpCuaControlCursorPointer");
 const BANNER_COLOR: COLORREF = COLORREF(0x00FF_840A);
 const FRAME_COLOR: COLORREF = COLORREF(0x00FA_A560);
-const CURSOR_COLOR: COLORREF = FRAME_COLOR;
+pub(super) const CURSOR_HALO_COLOR: COLORREF = COLORREF(0x0092_CF9A);
+pub(super) const CURSOR_POINTER_COLOR: COLORREF = COLORREF(0x0000_0000);
+const CURSOR_POINTER_OUTLINE_COLOR: COLORREF = COLORREF(0x00FF_FFFF);
 const BANNER_ALPHA: u8 = 200;
-pub(super) const CURSOR_SIZE: i32 = 52;
+pub(super) const CURSOR_HALO_SIZE: i32 = 68;
+pub(super) const CURSOR_POINTER_SIZE: i32 = 24;
+pub(super) const CURSOR_HALO_LAYER_ALPHA: [u8; 8] = [6, 8, 10, 13, 17, 22, 28, 36];
+const CURSOR_HALO_INNER_INSET_PERCENT: [i32; 8] = [46, 44, 42, 40, 39, 37, 35, 34];
 pub(super) const FRAME_LAYER_MAX_ALPHA: [u8; 8] = [210, 181, 151, 121, 91, 61, 31, 4];
 const FRAME_ALPHA_MIN: u8 = 132;
 const FRAME_ALPHA_MAX: u8 = 244;
@@ -308,10 +314,11 @@ fn run_banner(
         .iter()
         .map(|alpha| create_overlay(FRAME_CLASS, "", *alpha).map(OverlayWindow))
         .collect::<Result<Vec<_>, _>>()?;
-    let cursors = FRAME_LAYER_MAX_ALPHA
+    let cursor_halos = CURSOR_HALO_LAYER_ALPHA
         .iter()
-        .map(|alpha| create_overlay(CURSOR_CLASS, "", *alpha).map(OverlayWindow))
+        .map(|alpha| create_overlay(CURSOR_HALO_CLASS, "", *alpha).map(OverlayWindow))
         .collect::<Result<Vec<_>, _>>()?;
+    let cursor_pointer = OverlayWindow(create_overlay(CURSOR_POINTER_CLASS, "", u8::MAX)?);
     let target_geometry = read_target_geometry(target_window)?;
     let mut geometry = banner_geometry(target_geometry);
     let mut frame_geometries = target_frame_geometries(target_geometry);
@@ -323,9 +330,10 @@ fn run_banner(
     for (frame, geometry) in frames.iter().zip(frame_geometries) {
         position_target_frame(frame.0, geometry, true)?;
     }
-    for (layer, cursor) in cursors.iter().enumerate() {
-        position_cursor_pointer(cursor.0, cursor_state, layer, true)?;
+    for (layer, halo) in cursor_halos.iter().enumerate() {
+        position_cursor_halo(halo.0, cursor_state, layer, true)?;
     }
+    position_cursor_pointer(cursor_pointer.0, cursor_state, true)?;
     active.store(true, Ordering::Release);
     visible.store(true, Ordering::Release);
     ready
@@ -367,8 +375,8 @@ fn run_banner(
                 for (frame, maximum) in frames.iter().zip(FRAME_LAYER_MAX_ALPHA) {
                     set_overlay_alpha(frame.0, gradient_frame_alpha(maximum, next_frame_alpha))?;
                 }
-                for (cursor, maximum) in cursors.iter().zip(FRAME_LAYER_MAX_ALPHA) {
-                    set_overlay_alpha(cursor.0, gradient_frame_alpha(maximum, next_frame_alpha))?;
+                for (halo, maximum) in cursor_halos.iter().zip(CURSOR_HALO_LAYER_ALPHA) {
+                    set_overlay_alpha(halo.0, gradient_frame_alpha(maximum, next_frame_alpha))?;
                 }
                 frame_alpha = next_frame_alpha;
                 pulse_updated = pulse_elapsed;
@@ -380,19 +388,29 @@ fn run_banner(
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             let next_cursor_geometry = cursor_geometry(next_target_geometry, requested_cursor);
             if next_cursor_geometry != cursor_state {
-                for (layer, cursor) in cursors.iter().enumerate() {
-                    position_cursor_pointer(
-                        cursor.0,
+                for (layer, halo) in cursor_halos.iter().enumerate() {
+                    position_cursor_halo(
+                        halo.0,
                         next_cursor_geometry,
                         layer,
                         cursor_shape_needs_update(
                             cursor_state.visible,
                             next_cursor_geometry.visible,
-                            cursor_state.size,
-                            next_cursor_geometry.size,
+                            cursor_state.halo_size,
+                            next_cursor_geometry.halo_size,
                         ),
                     )?;
                 }
+                position_cursor_pointer(
+                    cursor_pointer.0,
+                    next_cursor_geometry,
+                    cursor_shape_needs_update(
+                        cursor_state.visible,
+                        next_cursor_geometry.visible,
+                        cursor_state.pointer_size,
+                        next_cursor_geometry.pointer_size,
+                    ),
+                )?;
                 cursor_state = next_cursor_geometry;
             }
             let next_geometry = banner_geometry(next_target_geometry);
@@ -429,9 +447,10 @@ fn run_banner(
                     let _ = unsafe { ShowWindow(frame.0, SW_SHOWNOACTIVATE) };
                 }
                 if cursor_state.visible {
-                    for cursor in &cursors {
-                        let _ = unsafe { ShowWindow(cursor.0, SW_SHOWNOACTIVATE) };
+                    for halo in &cursor_halos {
+                        let _ = unsafe { ShowWindow(halo.0, SW_SHOWNOACTIVATE) };
                     }
+                    let _ = unsafe { ShowWindow(cursor_pointer.0, SW_SHOWNOACTIVATE) };
                 }
             }
         } else if visible.swap(false, Ordering::AcqRel) {
@@ -439,9 +458,10 @@ fn run_banner(
             for frame in &frames {
                 let _ = unsafe { ShowWindow(frame.0, SW_HIDE) };
             }
-            for cursor in &cursors {
-                let _ = unsafe { ShowWindow(cursor.0, SW_HIDE) };
+            for halo in &cursor_halos {
+                let _ = unsafe { ShowWindow(halo.0, SW_HIDE) };
             }
+            let _ = unsafe { ShowWindow(cursor_pointer.0, SW_HIDE) };
         }
         thread::sleep(FRAME_INTERVAL);
     }
@@ -551,7 +571,8 @@ struct TargetGeometry {
 struct CursorGeometry {
     x: i32,
     y: i32,
-    size: i32,
+    halo_size: i32,
+    pointer_size: i32,
     visible: bool,
 }
 
@@ -581,11 +602,11 @@ fn cursor_geometry(target: TargetGeometry, requested: Option<(f64, f64)>) -> Cur
             }
         }
     };
-    let size = scale(CURSOR_SIZE, target.dpi);
     CursorGeometry {
-        x: point.x - size * 8 / 100,
-        y: point.y - size * 4 / 100,
-        size,
+        x: point.x,
+        y: point.y,
+        halo_size: scale(CURSOR_HALO_SIZE, target.dpi),
+        pointer_size: scale(CURSOR_POINTER_SIZE, target.dpi),
         visible: point.x >= target.x
             && point.x < target.x + target.width
             && point.y >= target.y
@@ -778,7 +799,7 @@ fn position_target_frame(
     Ok(())
 }
 
-fn position_cursor_pointer(
+fn position_cursor_halo(
     window: HWND,
     geometry: CursorGeometry,
     layer: usize,
@@ -789,15 +810,29 @@ fn position_cursor_pointer(
         return Ok(());
     }
     if update_shape {
-        let outer_points = cursor_pointer_polygon(geometry.size, layer);
-        let inner_points = cursor_pointer_polygon(geometry.size, layer + 1);
-        let outer = unsafe { CreatePolygonRgn(&outer_points, WINDING) };
-        let inner = unsafe { CreatePolygonRgn(&inner_points, WINDING) };
+        let outer_inset = cursor_halo_outer_inset(geometry.halo_size, layer);
+        let inner_inset = cursor_halo_inner_inset(geometry.halo_size, layer);
+        let outer = unsafe {
+            CreateEllipticRgn(
+                outer_inset,
+                outer_inset,
+                geometry.halo_size - outer_inset,
+                geometry.halo_size - outer_inset,
+            )
+        };
+        let inner = unsafe {
+            CreateEllipticRgn(
+                inner_inset,
+                inner_inset,
+                geometry.halo_size - inner_inset,
+                geometry.halo_size - inner_inset,
+            )
+        };
         if outer.0.is_null() || inner.0.is_null() {
             let _ = unsafe { DeleteObject(HGDIOBJ(outer.0)) };
             let _ = unsafe { DeleteObject(HGDIOBJ(inner.0)) };
             return Err(IndicatorError::Backend(
-                "Windows could not create the mouse marker shape".into(),
+                "Windows could not create the mouse halo shape".into(),
             ));
         }
         let combined = unsafe { CombineRgn(Some(outer), Some(outer), Some(inner), RGN_DIFF) };
@@ -805,7 +840,56 @@ fn position_cursor_pointer(
         if combined == RGN_ERROR || unsafe { SetWindowRgn(window, Some(outer), true) } == 0 {
             let _ = unsafe { DeleteObject(HGDIOBJ(outer.0)) };
             return Err(IndicatorError::Backend(
-                "Windows rejected the mouse marker shape".into(),
+                "Windows rejected the mouse halo shape".into(),
+            ));
+        }
+    }
+    let center_x = geometry.x + geometry.pointer_size * 10 / 100;
+    let center_y = geometry.y + geometry.pointer_size * 18 / 100;
+    unsafe {
+        SetWindowPos(
+            window,
+            Some(HWND_TOPMOST),
+            center_x - geometry.halo_size / 2,
+            center_y - geometry.halo_size / 2,
+            geometry.halo_size,
+            geometry.halo_size,
+            SWP_NOACTIVATE | SWP_SHOWWINDOW,
+        )
+    }
+    .map_err(|error| IndicatorError::Backend(format!("position mouse halo: {error}")))?;
+    Ok(())
+}
+
+pub(super) fn cursor_halo_outer_inset(size: i32, layer: usize) -> i32 {
+    size * 28 * layer as i32 / 100 / (CURSOR_HALO_LAYER_ALPHA.len() as i32 - 1)
+}
+
+pub(super) fn cursor_halo_inner_inset(size: i32, layer: usize) -> i32 {
+    size * CURSOR_HALO_INNER_INSET_PERCENT[layer] / 100
+}
+
+fn position_cursor_pointer(
+    window: HWND,
+    geometry: CursorGeometry,
+    update_shape: bool,
+) -> Result<(), IndicatorError> {
+    if !geometry.visible {
+        let _ = unsafe { ShowWindow(window, SW_HIDE) };
+        return Ok(());
+    }
+    if update_shape {
+        let points = cursor_pointer_polygon(geometry.pointer_size, 0);
+        let region = unsafe { CreatePolygonRgn(&points, WINDING) };
+        if region.0.is_null() {
+            return Err(IndicatorError::Backend(
+                "Windows could not create the mouse pointer shape".into(),
+            ));
+        }
+        if unsafe { SetWindowRgn(window, Some(region), true) } == 0 {
+            let _ = unsafe { DeleteObject(HGDIOBJ(region.0)) };
+            return Err(IndicatorError::Backend(
+                "Windows rejected the mouse pointer shape".into(),
             ));
         }
     }
@@ -813,14 +897,14 @@ fn position_cursor_pointer(
         SetWindowPos(
             window,
             Some(HWND_TOPMOST),
-            geometry.x,
-            geometry.y,
-            geometry.size,
-            geometry.size,
+            geometry.x - geometry.pointer_size * 8 / 100,
+            geometry.y - geometry.pointer_size * 4 / 100,
+            geometry.pointer_size,
+            geometry.pointer_size,
             SWP_NOACTIVATE | SWP_SHOWWINDOW,
         )
     }
-    .map_err(|error| IndicatorError::Backend(format!("position mouse marker: {error}")))?;
+    .map_err(|error| IndicatorError::Backend(format!("position mouse pointer: {error}")))?;
     Ok(())
 }
 
@@ -864,8 +948,14 @@ unsafe extern "system" fn window_proc(
         let text_length = unsafe { GetWindowTextLengthW(window) }.max(0) as usize;
         let mut class_name = [0_u16; 64];
         let class_length = unsafe { GetClassNameW(window, &mut class_name) }.max(0) as usize;
-        let color = match String::from_utf16_lossy(&class_name[..class_length]).as_str() {
-            "DccMcpCuaControlCursor" => CURSOR_COLOR,
+        let class_name = String::from_utf16_lossy(&class_name[..class_length]);
+        if class_name == "DccMcpCuaControlCursorPointer" {
+            paint_cursor_pointer(device, bounds);
+            let _ = unsafe { EndPaint(window, &paint) };
+            return LRESULT(0);
+        }
+        let color = match class_name.as_str() {
+            "DccMcpCuaControlCursorHalo" => CURSOR_HALO_COLOR,
             _ if text_length == 0 => FRAME_COLOR,
             _ => BANNER_COLOR,
         };
@@ -909,6 +999,21 @@ unsafe extern "system" fn window_proc(
     }
     let _ = unsafe { EndPaint(window, &paint) };
     LRESULT(0)
+}
+
+fn paint_cursor_pointer(device: windows::Win32::Graphics::Gdi::HDC, bounds: RECT) {
+    let outline = unsafe { CreateSolidBrush(CURSOR_POINTER_OUTLINE_COLOR) };
+    let _ = unsafe { FillRect(device, &bounds, outline) };
+    let _ = unsafe { DeleteObject(HGDIOBJ(outline.0)) };
+
+    let size = (bounds.right - bounds.left).min(bounds.bottom - bounds.top);
+    let inner = unsafe { CreatePolygonRgn(&cursor_pointer_polygon(size, 1), WINDING) };
+    if !inner.0.is_null() {
+        let fill = unsafe { CreateSolidBrush(CURSOR_POINTER_COLOR) };
+        let _ = unsafe { FillRgn(device, inner, fill) };
+        let _ = unsafe { DeleteObject(HGDIOBJ(fill.0)) };
+        let _ = unsafe { DeleteObject(HGDIOBJ(inner.0)) };
+    }
 }
 
 fn scale(value: i32, dpi: u32) -> i32 {

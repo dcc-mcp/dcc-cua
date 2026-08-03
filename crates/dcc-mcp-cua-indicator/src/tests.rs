@@ -60,9 +60,26 @@ fn target_frame_fades_from_the_window_edge_toward_transparent_content() {
 
 #[cfg(windows)]
 #[rstest]
-fn cursor_uses_the_smaller_smooth_outer_to_inner_gradient() {
-    assert_eq!(platform::CURSOR_SIZE, 52);
-    assert_eq!(platform::FRAME_LAYER_MAX_ALPHA.len(), 8);
+fn cursor_uses_a_small_black_pointer_over_a_larger_hollow_halo() {
+    assert_eq!(platform::CURSOR_POINTER_SIZE, 24);
+    assert_eq!(platform::CURSOR_HALO_SIZE, 68);
+    assert_eq!(platform::CURSOR_POINTER_COLOR.0, 0);
+    assert_eq!(platform::CURSOR_HALO_COLOR.0, 0x0092_CF9A);
+}
+
+#[cfg(windows)]
+#[rstest]
+fn cursor_halo_is_transparent_in_the_center_and_diffuses_outward() {
+    let alpha = platform::CURSOR_HALO_LAYER_ALPHA;
+    assert_eq!(alpha.len(), 8);
+    assert!(alpha.windows(2).all(|pair| pair[0] < pair[1]));
+    assert_eq!(platform::cursor_halo_outer_inset(68, 0), 0);
+    assert_eq!(platform::cursor_halo_outer_inset(68, 7), 19);
+    assert_eq!(platform::cursor_halo_inner_inset(68, 0), 31);
+    assert_eq!(platform::cursor_halo_inner_inset(68, 7), 23);
+    assert!((0..8).all(|layer| {
+        platform::cursor_halo_outer_inset(68, layer) < platform::cursor_halo_inner_inset(68, layer)
+    }));
 }
 
 #[cfg(windows)]
