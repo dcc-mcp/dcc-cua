@@ -6,6 +6,9 @@ use super::{
     snapshot::{TOKEN_PREFIX, normalize, resolve_index},
 };
 
+#[cfg(windows)]
+use super::windows::foreground_restore_required;
+
 #[rstest]
 fn snapshot_normalization_emits_flat_agent_friendly_elements() {
     let raw = json!({
@@ -97,4 +100,23 @@ fn portable_contract_construction_does_not_require_windows() {
     };
     assert_eq!(target.process_id, 42);
     assert_eq!(action.element_index, Some(1));
+}
+
+#[cfg(windows)]
+#[rstest]
+#[case(10, 10, 42, 42, false)]
+#[case(10, 20, 42, 42, true)]
+#[case(10, 20, 7, 42, false)]
+#[case(10, 0, 0, 42, true)]
+fn background_action_only_restores_focus_stolen_by_the_controlled_process(
+    #[case] expected: usize,
+    #[case] current: usize,
+    #[case] current_process_id: u32,
+    #[case] controlled_process_id: u32,
+    #[case] required: bool,
+) {
+    assert_eq!(
+        foreground_restore_required(expected, current, current_process_id, controlled_process_id),
+        required
+    );
 }
