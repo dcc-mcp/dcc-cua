@@ -749,6 +749,23 @@ async fn controlled_electron_round_trip() {
     );
     wait_for_journal(&journal, "lbl-input-mirror", &format!("mirror={expected}"));
 
+    let activated = host_request(
+        &mut host,
+        "change_window_state",
+        json!({
+            "session_id": SESSION_ID,
+            "task_grant_id": GRANT_ID,
+            "window_capability": capability,
+            "operation": "activate"
+        }),
+    )
+    .await;
+    assert_eq!(
+        activated.value["state"]["foreground"], true,
+        "fixture activation failed: {}",
+        activated.value
+    );
+
     let raw_snapshot = host_request(
         &mut host,
         "snapshot",
@@ -1177,7 +1194,7 @@ async fn independent_endpoint_clients_serialize_scoped_raw_input() {
         let window_id = window["window_id"].as_u64().expect("window id");
         let window_title = window["title"].as_str().expect("window title");
         assert!(window_title.starts_with(FIXTURE_TITLE));
-        let session_id = format!("concurrent-gui-{index}");
+        let session_id = "shared-public-session".to_owned();
         let grant_id = format!("concurrent-gui-grant-{index}");
         let opened = client_request(
             client,
@@ -1217,7 +1234,7 @@ async fn independent_endpoint_clients_serialize_scoped_raw_input() {
         sessions.push((session_id, grant_id, capability));
     }
 
-    assert_ne!(sessions[0].0, sessions[1].0);
+    assert_eq!(sessions[0].0, sessions[1].0);
     assert_ne!(sessions[0].2, sessions[1].2);
     for (index, (session_id, grant_id, capability)) in sessions.iter().enumerate() {
         let state = client_request(
@@ -1322,9 +1339,35 @@ async fn independent_endpoint_clients_serialize_scoped_raw_input() {
     for journal in &journals {
         wait_for_journal(journal, "lbl-counter", "counter=1");
     }
+    let stopped = client_request(
+        &mut clients[0],
+        "stop_session",
+        json!({"session_id": sessions[0].0}),
+    )
+    .await;
+    assert_eq!(stopped.value["type"], "session_stopped");
+    let still_active = client_request(
+        &mut clients[1],
+        "snapshot",
+        json!({
+            "session_id": sessions[1].0,
+            "task_grant_id": sessions[1].1,
+            "window_capability": sessions[1].2,
+            "max_nodes": 1_000,
+            "max_depth": 20
+        }),
+    )
+    .await;
+    assert!(
+        still_active.value["root"]
+            .to_string()
+            .contains(FIXTURE_MARKER),
+        "stopping the same public id on another connection must not end this runtime session: {}",
+        still_active.value
+    );
     let interrupted = client_request(&mut clients[0], "interrupt_all", json!({})).await;
     assert_eq!(interrupted.value["scope"], "host_process");
-    assert_eq!(interrupted.value["stopped_window_sessions"], 1);
+    assert_eq!(interrupted.value["stopped_window_sessions"], 0);
     expect_user_interrupted(
         &mut clients[1],
         json!({
@@ -1545,7 +1588,7 @@ async fn windows_endpoint_sessions_keep_background_uia_and_share_escape() {
 
     let mut sessions = Vec::new();
     for (index, (pid, window_handle, window_title)) in window_targets.iter().enumerate() {
-        let session_id = format!("windows-background-uia-{index}");
+        let session_id = "shared-windows-public-session".to_owned();
         let grant_id = format!("windows-background-uia-grant-{index}");
         let opened = client_request(
             &mut clients[index],
@@ -1575,6 +1618,7 @@ async fn windows_endpoint_sessions_keep_background_uia_and_share_escape() {
             *window_handle,
         ));
     }
+    assert_eq!(sessions[0].1, sessions[1].1);
     assert_ne!(sessions[0].3, sessions[1].3);
     let foreground = unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow() }
         as usize as u64;

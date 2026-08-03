@@ -63,6 +63,10 @@ applications. Semantic, UIA, and browser operations remain parallel; actions
 that consume the single OS keyboard/mouse stream use one fair Host-wide FIFO and
 release it before post-action capture. Run one Host daemon per interactive OS
 seat so the shared Escape broadcast and raw-input ordering have one owner.
+Public `session_id` values are connection-scoped: Host mints a private CUA
+runtime identity for every opened window or desktop session and rewrites it at
+the IPC boundary. Two agents may therefore both use `session-1` without sharing
+cursor, browser refs, recording ownership, capture scope, or cleanup state.
 
 Game automation is supported as an exact-window black-box test surface for
 menus, launch flows, HUD interaction, input replay, screenshots, and visual
@@ -560,7 +564,8 @@ AppKit fixture and verifies an exact `Window -> Arrange -> Left` menu path by
 reading fresh UIA, AT-SPI, or AX application state. Concurrent-session coverage
 uses two independent endpoint clients controlling two Electron windows on
 Linux/macOS and two non-foreground WPF windows on Windows; it also verifies
-Host-wide stop propagation and serialized concurrent raw input. The same CLI
+same-named public sessions remain runtime-isolated, Host-wide stop propagation,
+and serialized concurrent raw input. The same CLI
 E2E launches a real endpoint Host and
 checks ping plus pipelined application/tool discovery over the platform transport
 (Windows named pipe or Unix socket).

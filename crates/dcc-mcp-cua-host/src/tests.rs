@@ -26,6 +26,7 @@ fn capabilities_follow_the_selected_cursor_runtime() {
     assert!(capabilities.contains(&"scoped_window_frame"));
     assert!(capabilities.contains(&"native_menu_path"));
     assert!(capabilities.contains(&"host_wide_interrupt"));
+    assert!(capabilities.contains(&"isolated_runtime_sessions"));
     assert_eq!(capabilities.contains(&"cursor_controls"), cursor_available);
     assert_eq!(
         capabilities.contains(&"cua_cursor_marker"),
@@ -35,6 +36,34 @@ fn capabilities_follow_the_selected_cursor_runtime() {
         capabilities.contains(&"windows_background_uia_fallback"),
         cfg!(windows)
     );
+}
+
+#[rstest]
+fn runtime_session_ids_are_opaque_and_unique() {
+    let first = new_runtime_session_id("window");
+    let second = new_runtime_session_id("window");
+    assert_ne!(first, second);
+    assert!(first.starts_with("dcc-mcp-cua-window-"));
+    assert!(!first.contains("public-session"));
+}
+
+#[rstest]
+fn runtime_session_ids_are_rewritten_in_nested_host_responses() {
+    let mut response = json!({
+        "session": "runtime-a",
+        "observation_id": "runtime-a-observation-7",
+        "nested": [{"session_id": "runtime-b"}],
+    });
+    rewrite_session_aliases(
+        &mut response,
+        &[
+            ("runtime-a", "agent-session"),
+            ("runtime-b", "desktop-session"),
+        ],
+    );
+    assert_eq!(response["session"], "agent-session");
+    assert_eq!(response["observation_id"], "runtime-a-observation-7");
+    assert_eq!(response["nested"][0]["session_id"], "desktop-session");
 }
 
 #[rstest]
