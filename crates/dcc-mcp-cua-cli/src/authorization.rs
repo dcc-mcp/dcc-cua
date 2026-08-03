@@ -1,6 +1,10 @@
+#[cfg(any(target_os = "macos", test))]
+use std::path::Path;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+#[cfg(any(target_os = "macos", test))]
+use dcc_mcp_cua_core::PrivateWorkerOptions;
 use dcc_mcp_cua_core::{
     ComputerUseDriver, ConfiguredDriverOptions, DriverAuthorizationAction,
     DriverAuthorizationDecision, DriverAuthorizationHost, DriverAuthorizationHostError,
@@ -8,6 +12,8 @@ use dcc_mcp_cua_core::{
 };
 
 const EXISTING_PROFILE_GRANT: &str = "existing-profile";
+#[cfg(any(target_os = "macos", test))]
+const PRIVATE_WORKER_HOST_ID: &str = "com.dcc-mcp.cua.host";
 
 pub(crate) fn driver_for_host(
     flags: &[String],
@@ -29,6 +35,51 @@ pub(crate) fn driver_for_host(
         },
         Arc::new(ExistingProfileAuthorizationHost),
     )?)
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn driver_for_private_worker(
+    flags: &[String],
+    binary_path: &Path,
+) -> Result<ComputerUseDriver, Box<dyn std::error::Error>> {
+    let existing_profile_granted = existing_profile_grant_requested(flags)?;
+    Ok(ComputerUseDriver::create_private_worker(
+        host_private_worker_options(binary_path, existing_profile_granted),
+    )?)
+}
+
+#[cfg(any(target_os = "macos", test))]
+pub(crate) fn host_private_worker_options(
+    binary_path: &Path,
+    existing_profile_granted: bool,
+) -> PrivateWorkerOptions {
+    let permission_mode = if existing_profile_granted {
+        SessionPermissionMode::Unrestricted
+    } else {
+        SessionPermissionMode::Standard
+    };
+    PrivateWorkerOptions {
+        binary_path: binary_path.to_string_lossy().into_owned(),
+        host_bundle_id: PRIVATE_WORKER_HOST_ID.into(),
+        startup_timeout_ms: None,
+        shutdown_timeout_ms: None,
+        // The private-worker protocol cannot carry a host callback. Only the
+        // explicit existing-profile startup grant raises this internal ceiling;
+        // the worker has no public endpoint and parent Host grants still gate it.
+        configured_driver: ConfiguredDriverOptions {
+            claude_code_compatibility: false,
+            authorization: RuntimeAuthorizationOptions {
+                allowed_modes: vec![permission_mode],
+                compatibility_mode: permission_mode,
+                compatibility_bounded_manifest_path: None,
+                unrestricted_acknowledged: existing_profile_granted,
+                max_session_ttl_seconds: 8 * 60 * 60,
+                max_idle_ttl_seconds: 30 * 60,
+            },
+        },
+        environment: Vec::new(),
+        inherit_stderr: true,
+    }
 }
 
 pub(crate) fn existing_profile_grant_requested(flags: &[String]) -> Result<bool, String> {

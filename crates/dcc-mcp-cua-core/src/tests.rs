@@ -10,10 +10,10 @@ use crate::contracts::{
     DEFAULT_SNAPSHOT_MAX_DEPTH, DEFAULT_SNAPSHOT_MAX_ELEMENTS, MAX_SNAPSHOT_DEPTH,
     MAX_SNAPSHOT_ELEMENTS, MAX_TEXT_UTF16_UNITS,
 };
+use crate::driver_factory::{UPSTREAM_CURSOR_RENDERER_ENABLED, driver_host_options};
 use crate::policy::*;
 use crate::runtime::{
-    UPSTREAM_CURSOR_RENDERER_ENABLED, await_input_call, diagnostic_tool_check, driver_host_options,
-    tool_schema_from_inventory, validate_launch_request,
+    await_input_call, diagnostic_tool_check, tool_schema_from_inventory, validate_launch_request,
 };
 use crate::window_target::{WindowTarget, validate_target_policy};
 

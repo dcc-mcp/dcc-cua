@@ -402,10 +402,8 @@ async fn controlled_electron_round_trip() {
         opened.value["cursor"]["render_backend"],
         if cfg!(windows) {
             "host-native-overlay"
-        } else if cfg!(target_os = "linux") {
-            "cua-driver-sdk"
         } else {
-            "unavailable"
+            "cua-driver-sdk"
         }
     );
 

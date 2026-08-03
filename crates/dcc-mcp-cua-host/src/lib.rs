@@ -122,13 +122,13 @@ pub const HOST_CAPABILITIES: &[&str] = &[
 
 /// Return only capabilities backed by the current platform runtime.
 #[must_use]
-pub fn host_capabilities() -> Vec<&'static str> {
+pub fn host_capabilities(cursor_controls_available: bool) -> Vec<&'static str> {
     HOST_CAPABILITIES
         .iter()
         .copied()
         .filter(|capability| {
             (!matches!(*capability, "cursor_controls" | "cua_cursor_marker")
-                || cfg!(any(windows, target_os = "linux")))
+                || cursor_controls_available)
                 && (*capability != "windows_background_uia_fallback" || cfg!(windows))
         })
         .collect()

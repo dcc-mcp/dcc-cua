@@ -4,7 +4,8 @@ use std::sync::atomic::AtomicU64;
 pub use cua_driver_sdk::{
     ConfiguredDriverOptions, DriverAuthorizationAction, DriverAuthorizationDecision,
     DriverAuthorizationHost, DriverAuthorizationHostError, DriverAuthorizationRequest,
-    RuntimeAuthorizationOptions, SessionPermissionMode,
+    EmbeddedEnvironmentVariable, PrivateWorkerOptions, RuntimeAuthorizationOptions,
+    SessionPermissionMode,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};

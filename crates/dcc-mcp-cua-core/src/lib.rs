@@ -5,6 +5,7 @@
 //! actions, stop semantics, and auditable provenance.
 
 mod contracts;
+mod driver_factory;
 mod observation;
 mod platform_process;
 mod policy;
