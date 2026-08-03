@@ -318,6 +318,60 @@ async fn controlled_electron_round_trip() {
         assert!(cursor_state.contains("enabled"), "{cursor_state}");
     }
 
+    let bound = |name: &str| {
+        window["bounds"][name]
+            .as_f64()
+            .unwrap_or_else(|| panic!("fixture window omitted numeric {name} bound: {window}"))
+    };
+    let initial_x = bound("x");
+    let initial_y = bound("y");
+    let requested = [
+        if initial_x > 32.0 {
+            initial_x - 16.0
+        } else {
+            initial_x + 16.0
+        },
+        if initial_y > 32.0 {
+            initial_y - 16.0
+        } else {
+            initial_y + 16.0
+        },
+        bound("width"),
+        bound("height"),
+    ];
+    let frame = host_request(
+        &mut host,
+        "set_window_frame",
+        json!({
+            "session_id": SESSION_ID,
+            "task_grant_id": GRANT_ID,
+            "window_capability": capability,
+            "frame": {
+                "x": requested[0],
+                "y": requested[1],
+                "width": requested[2],
+                "height": requested[3]
+            }
+        }),
+    )
+    .await;
+    assert_eq!(frame.value["result"]["success"], true, "{}", frame.value);
+    assert_eq!(frame.value["result"]["effect"], "confirmed");
+    let actual = frame.value["result"]["target"]["bounds"]
+        .as_array()
+        .expect("revalidated window bounds")
+        .iter()
+        .map(|value| value.as_f64().expect("numeric revalidated bound"))
+        .collect::<Vec<_>>();
+    assert_eq!(actual.len(), requested.len());
+    for (actual, requested) in actual.iter().zip(requested) {
+        assert!(
+            (actual - requested).abs() <= 2.0,
+            "CUA confirmed a frame without matching independent readback: {}",
+            frame.value
+        );
+    }
+
     let snapshot = host_request(
         &mut host,
         "snapshot",

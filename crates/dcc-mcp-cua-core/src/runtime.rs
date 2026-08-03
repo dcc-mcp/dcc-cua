@@ -15,6 +15,8 @@ use crate::window_target::{WindowTarget, validate_target_policy};
 #[cfg(windows)]
 use crate::windows_uia_fallback::WindowsUiaFallback;
 
+mod window_commands;
+
 const INPUT_CALL_TIMEOUT: Duration = Duration::from_secs(15);
 pub(crate) const UPSTREAM_CURSOR_RENDERER_ENABLED: bool = cfg!(target_os = "linux");
 
@@ -1656,6 +1658,7 @@ impl ComputerUseSession {
             "visible": target.is_on_screen,
             "minimized": target.is_minimized,
             "foreground": target.is_foreground,
+            "bounds": target.bounds,
         }))
     }
 

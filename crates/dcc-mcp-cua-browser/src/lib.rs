@@ -160,6 +160,11 @@ pub struct BrowserDialogRequest {
 }
 
 impl BrowserSession {
+    /// Preserve the exact browser binding but fence coordinates from an old viewport.
+    pub fn invalidate_snapshot(&mut self) {
+        self.clear_snapshot();
+    }
+
     pub async fn prepare(
         &self,
         native: &ComputerUseSession,

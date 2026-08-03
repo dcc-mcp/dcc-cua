@@ -131,6 +131,11 @@ fn manifest_is_a_machine_readable_core_launch_contract() {
     assert!(
         manifest["host"]["capabilities"]
             .as_array()
+            .is_some_and(|values| values.iter().any(|value| value == "scoped_window_frame"))
+    );
+    assert!(
+        manifest["host"]["capabilities"]
+            .as_array()
             .is_some_and(|values| values.iter().any(|value| value == "host_ping"))
     );
     assert!(
@@ -181,6 +186,25 @@ fn wait_window_builds_a_bounded_window_query() {
     assert_eq!(request.timeout_ms, Some(12000));
     assert_eq!(request.interval_ms, Some(250));
     assert!(window_wait_request(&strings(["--on-screen"])).is_err());
+}
+
+#[rstest]
+fn window_frame_parser_requires_a_valid_complete_frame() {
+    let frame = window_frame_request(&strings([
+        "--x", "-1920.5", "--y", "12.25", "--width", "1280", "--height", "720",
+    ]))
+    .unwrap();
+    assert_eq!(frame.x, -1920.5);
+    assert_eq!(frame.y, 12.25);
+    assert_eq!(frame.width, 1280.0);
+    assert_eq!(frame.height, 720.0);
+    assert!(window_frame_request(&strings(["--x", "0"])).is_err());
+    assert!(
+        window_frame_request(&strings([
+            "--x", "0", "--y", "0", "--width", "0", "--height", "720",
+        ]))
+        .is_err()
+    );
 }
 
 #[rstest]

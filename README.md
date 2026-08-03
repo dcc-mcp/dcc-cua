@@ -112,6 +112,7 @@ cargo run -p dcc-mcp-cua-cli -- snapshot --app chrome.exe --output screenshot.pn
 cargo run -p dcc-mcp-cua-cli -- accessibility --app chrome.exe
 cargo run -p dcc-mcp-cua-cli -- window-state --app chrome.exe
 cargo run -p dcc-mcp-cua-cli -- activate --app chrome.exe
+cargo run -p dcc-mcp-cua-cli -- set-window-frame --pid 4242 --window-id 123456 --x 80 --y 80 --width 1280 --height 720
 cargo run -p dcc-mcp-cua-cli -- click --app chrome.exe --x 100 --y 100
 cargo run -p dcc-mcp-cua-cli -- click --app chrome.exe --element-index 12
 cargo run -p dcc-mcp-cua-cli -- toggle --app chrome.exe --element-index 14
@@ -162,8 +163,8 @@ intended for launch/switch orchestration before a target-bound action.
 elements and 16 levels). `accessibility` reads a larger semantic tree without
 transferring screenshot pixels when the agent needs to locate a deeply nested
 control. Prefer the returned `element_token`/`element_index` over guessed
-pixels, then verify the post-action state. `window-state` and `activate`
-operate on the same exact target scope.
+pixels, then verify the post-action state. `window-state`, `activate`, and
+`set-window-frame` operate on the same exact target scope.
 Long-lived recording remains on the persistent Host session so its start/stop
 lifecycle is not lost when a one-shot CLI process exits.
 
@@ -329,7 +330,7 @@ binary frame following the JSON response is the concatenation of those images;
 each descriptor gives its `offset`, `length`, and `mime_type`.
 
 The supported request surface is `hello`, `ping`, `list_apps`, `list_tools`, `list_windows`, `wait_for_window`, `launch_app`, `open_session`,
-`get_window_state`, `change_window_state` (`activate`), `snapshot`,
+`get_window_state`, `change_window_state` (`activate`), `set_window_frame`, `snapshot`,
 `accessibility_snapshot`, `verify_state`, `call_tool`, `call_global_tool`, `get_session_state`, `cursor_tool`, `escalate_session`, `find`, `wait_for`, `browser_snapshot`,
 `browser_prepare`, `browser_navigate`, `browser_click`, `browser_type`, `browser_pointer`,
 `browser_set_input_files`, `browser_download`, `browser_dialog`,
@@ -438,6 +439,9 @@ acknowledgement and the wait's cancelled terminal response. Other requests stay
 ordered and are rejected until that wait completes.
 `activate` is scoped through CUA's `bring_to_front` operation; the returned
 window state is always revalidated against the exact PID/HWND target.
+`set_window_frame` reuses CUA's native cross-platform mutation and independent
+geometry readback. Moving or resizing a window invalidates native and browser
+observations, so callers must snapshot again before the next action.
 
 `zoom` is a typed, read-only crop of the latest window `snapshot`. It requires
 the matching `observation_id`, keeps the exact PID/HWND binding, limits the

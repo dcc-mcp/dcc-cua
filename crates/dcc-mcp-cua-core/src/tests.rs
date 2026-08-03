@@ -92,6 +92,42 @@ fn scope_requires_exact_identity_and_action_rejects_unbounded_text() {
 }
 
 #[rstest]
+fn window_frame_accepts_fractional_multi_monitor_coordinates() {
+    assert!(
+        ComputerUseWindowFrameRequest {
+            x: -1919.5,
+            y: 42.25,
+            width: 1280.5,
+            height: 720.25,
+        }
+        .validate()
+        .is_ok()
+    );
+}
+
+#[rstest]
+#[case(f64::NAN, 0.0, 100.0, 100.0)]
+#[case(0.0, f64::INFINITY, 100.0, 100.0)]
+#[case(0.0, 0.0, 0.0, 100.0)]
+#[case(0.0, 0.0, 100.0, -1.0)]
+fn invalid_window_frames_fail_before_cua(
+    #[case] x: f64,
+    #[case] y: f64,
+    #[case] width: f64,
+    #[case] height: f64,
+) {
+    let error = ComputerUseWindowFrameRequest {
+        x,
+        y,
+        width,
+        height,
+    }
+    .validate()
+    .unwrap_err();
+    assert_eq!(error.code, ComputerUseErrorCode::InvalidAction);
+}
+
+#[rstest]
 fn native_target_policy_denies_terminal_processes() {
     let mut target = test_window_target();
     target.app_name = "powershell.exe".into();
@@ -278,6 +314,7 @@ fn native_tool_boundary_rejects_reserved_and_dedicated_routes() {
     assert!(validate_native_tool_request("bad-name", &json!({})).is_err());
     assert!(validate_native_tool_request("debug_window_info", &json!({"_tool":"x"})).is_err());
     assert!(!native_tool_allowed_in_window_session("click"));
+    assert!(!native_tool_allowed_in_window_session("set_window_frame"));
     assert!(!native_tool_allowed_in_window_session("browser_navigate"));
     assert!(native_tool_allowed_in_window_session("debug_window_info"));
     assert!(native_tool_allowed_globally("health_report"));
