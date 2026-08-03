@@ -1,6 +1,7 @@
 use std::env;
 use std::fs;
 use std::io::Read;
+use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 
 mod authorization;
@@ -200,20 +201,37 @@ fn run_upstream_cua_command(
     command: &str,
     flags: &[String],
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let binary = env::var_os("CUA_DRIVER_BIN").unwrap_or_else(|| "cua-driver".into());
+    let binary = upstream_cua_binary();
     let status = ProcessCommand::new(&binary)
         .arg(command)
         .args(flags)
         .status()
         .map_err(|error| {
             format!(
-                "start upstream cua-driver {command}: {error}; set CUA_DRIVER_BIN to its executable"
+                "start upstream cua-driver {command}: {error}; place cua-driver beside dcc-mcp-cua or set CUA_DRIVER_BIN"
             )
         })?;
     if status.success() {
         return Ok(());
     }
     Err(format!("cua-driver {command} exited with {status}").into())
+}
+
+fn upstream_cua_binary() -> PathBuf {
+    if let Some(binary) = env::var_os("CUA_DRIVER_BIN") {
+        return binary.into();
+    }
+    if let Ok(executable) = env::current_exe() {
+        let sibling = sibling_upstream_binary(&executable);
+        if sibling.is_file() {
+            return sibling;
+        }
+    }
+    "cua-driver".into()
+}
+
+fn sibling_upstream_binary(executable: &Path) -> PathBuf {
+    executable.with_file_name(format!("cua-driver{}", env::consts::EXE_SUFFIX))
 }
 
 fn upstream_command(command: &str) -> &str {

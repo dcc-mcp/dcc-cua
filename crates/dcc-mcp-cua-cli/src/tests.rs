@@ -112,6 +112,19 @@ fn daemon_reuses_the_official_serve_command() {
 }
 
 #[rstest]
+fn bundled_upstream_driver_uses_a_platform_sibling_name() {
+    let cli = std::path::Path::new(if cfg!(windows) {
+        r"C:\release\dcc-mcp-cua.exe"
+    } else {
+        "/release/dcc-mcp-cua"
+    });
+    assert_eq!(
+        sibling_upstream_binary(cli),
+        cli.with_file_name(format!("cua-driver{}", std::env::consts::EXE_SUFFIX))
+    );
+}
+
+#[rstest]
 fn manifest_is_a_machine_readable_core_launch_contract() {
     let manifest = manifest::document();
     assert_eq!(manifest["schema_version"], 1);
@@ -159,6 +172,10 @@ fn manifest_is_a_machine_readable_core_launch_contract() {
     assert_eq!(
         manifest["upstream_driver"]["top_level_aliases"]["daemon"],
         "serve"
+    );
+    assert_eq!(
+        manifest["upstream_driver"]["sibling_binary"],
+        format!("cua-driver{}", std::env::consts::EXE_SUFFIX)
     );
 }
 

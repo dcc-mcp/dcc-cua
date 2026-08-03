@@ -68,7 +68,7 @@ jobs:
             platform: macos
             archive: tar.gz
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
         with:
@@ -85,6 +85,9 @@ jobs:
           swift_runtime="$(cd "$(dirname "$swiftc_path")/../lib/swift/macosx" && pwd)"
           echo "DYLD_LIBRARY_PATH=${swift_runtime}:/usr/lib/swift${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}" >> "$GITHUB_ENV"
       - run: cargo build --release --locked -p dcc-mcp-cua-cli
+      - name: Build pinned official CUA driver
+        shell: pwsh
+        run: ./scripts/build-upstream-cua-driver.ps1 -Destination target/release
       - name: Package dcc-mcp-cua
         shell: bash
         env:
@@ -94,12 +97,16 @@ jobs:
           host="$(rustc -vV | sed -n 's/^host: //p')"
           version="${TAG_NAME#v}"
           mkdir -p dist
+          cp LICENSE target/release/LICENSE
           if [ "${{ matrix.archive }}" = "zip" ]; then
             archive="dist/dcc-mcp-cua-${version}-${host}.zip"
-            7z a "$archive" target/release/dcc-mcp-cua.exe
+            (
+              cd target/release
+              7z a "../../$archive" dcc-mcp-cua.exe cua-driver.exe cua-cursor-theme.exe cua-driver-uia.exe LICENSE CUA-LICENSE.md
+            )
           else
             archive="dist/dcc-mcp-cua-${version}-${host}.tar.gz"
-            tar -czf "$archive" -C target/release dcc-mcp-cua
+            tar -czf "$archive" -C target/release dcc-mcp-cua cua-driver cua-cursor-theme LICENSE CUA-LICENSE.md
           fi
           sha256sum "$archive" > "${archive}.sha256"
       - uses: actions/upload-artifact@v4
