@@ -2,40 +2,39 @@ use super::action_result::validated_action_effect;
 use super::*;
 
 impl ComputerUseSession {
-    /// Set and independently revalidate the exact target window frame through CUA.
-    pub async fn set_window_frame(
+    /// Invoke one exact native application-menu path without pixel targeting.
+    pub async fn invoke_menu(
         &mut self,
-        request: &ComputerUseWindowFrameRequest,
+        request: &ComputerUseMenuRequest,
     ) -> ComputerUseResult<Value> {
         request.validate()?;
         self.ensure_active()?;
         let target = self.revalidate_target().await?;
 
-        // The backend may mutate before a timeout or partial result is observed.
+        // Menu invocation may mutate before an unverifiable result is returned.
         self.observation = None;
         let result = self
             .call_bound_tool(
-                "set_window_frame",
+                "invoke_menu",
                 json!({
                     "pid": target.pid,
                     "window_id": target.window_id,
-                    "x": request.x,
-                    "y": request.y,
-                    "width": request.width,
-                    "height": request.height,
+                    "path": &request.path,
                 }),
             )
             .await?;
-        let effect = validated_action_effect(&result, "set_window_frame")?;
+        let effect = validated_action_effect(&result, "invoke_menu")?;
         let result = native_tool_result(result)?;
         let target = self.revalidate_target().await?;
         self.target = Some(target.clone());
-        let success = effect == "confirmed";
+        let success = matches!(effect.as_str(), "confirmed" | "unverifiable");
 
         Ok(json!({
             "success": success,
             "effect": effect,
-            "requested_frame": request,
+            "verification_required": effect != "confirmed",
+            "observation_required": true,
+            "path": request.path,
             "target": target,
             "cua": result.value,
             "text": result.text,

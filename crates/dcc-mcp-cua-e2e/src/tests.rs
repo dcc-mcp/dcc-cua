@@ -67,6 +67,28 @@ fn wpf_fixture() -> PathBuf {
 }
 
 #[cfg(feature = "gui-e2e")]
+fn native_menu_fixture() -> (PathBuf, &'static str) {
+    #[cfg(target_os = "windows")]
+    {
+        (wpf_fixture(), "wpf")
+    }
+    #[cfg(target_os = "macos")]
+    {
+        (
+            harness_app(
+                "harness-appkit",
+                "CuaTestHarness.AppKit.app/Contents/MacOS/CuaTestHarness.AppKit",
+            ),
+            "appkit",
+        )
+    }
+    #[cfg(target_os = "linux")]
+    {
+        (harness_app("harness-gtk3", "CuaTestHarness.Gtk3"), "gtk3")
+    }
+}
+
+#[cfg(feature = "gui-e2e")]
 fn first_window(response: &Value) -> &Value {
     response["result"]["windows"]
         .as_array()
@@ -823,6 +845,140 @@ async fn concurrent_electron_sessions_keep_distinct_capabilities() {
     for (session_id, _, _) in &sessions {
         host_request(&mut host, "stop_session", json!({"session_id": session_id})).await;
     }
+    let status = host.shutdown().await.expect("stop Host process");
+    assert!(status.success(), "Host exited unsuccessfully: {status}");
+    drop(fixture_reaper);
+}
+
+#[cfg(feature = "gui-e2e")]
+#[rstest]
+#[tokio::test]
+async fn controlled_native_menu_round_trip() {
+    let binary = std::env::var_os("DCC_MCP_CUA_E2E_BINARY")
+        .map(PathBuf::from)
+        .expect("DCC_MCP_CUA_E2E_BINARY must point to dcc-mcp-cua");
+    let (fixture_path, dcc_type) = native_menu_fixture();
+    assert!(
+        fixture_path.is_file(),
+        "official CUA native fixture is missing: {}",
+        fixture_path.display()
+    );
+
+    let mut command = Command::new(&fixture_path);
+    command.stdout(Stdio::null()).stderr(Stdio::inherit());
+    let fixture_child = spawn_in_job(&mut command).expect("launch official CUA native fixture");
+    let fixture_pid = fixture_child.id();
+    let mut fixture_reaper = ChildReaper::new();
+    fixture_reaper.push(fixture_child);
+
+    let mut host = HostProcess::spawn(
+        &binary,
+        "controlled-native-menu-e2e",
+        SnapshotTransport::BinaryFrame,
+    )
+    .await
+    .expect("launch DCC-MCP CUA Host");
+    let ready = host_request(
+        &mut host,
+        "wait_for_window",
+        json!({
+            "query": {"process_id": fixture_pid, "on_screen_only": true},
+            "timeout_ms": 30_000,
+            "interval_ms": 100
+        }),
+    )
+    .await;
+    let window = first_window(&ready.value);
+    let window_id = window["window_id"].as_u64().expect("window id");
+    let window_title = window["title"].as_str().expect("window title");
+    let opened = host_request(
+        &mut host,
+        "open_session",
+        json!({
+            "session_id": "controlled-native-menu-e2e",
+            "grant": {
+                "task_grant_id": "controlled-native-menu-e2e-grant",
+                "dcc_type": dcc_type,
+                "process_id": fixture_pid,
+                "window_handle": window_id,
+                "window_title": window_title,
+                "allow_menu_invoke": true
+            }
+        }),
+    )
+    .await;
+    let capability = opened.value["window_capability"]
+        .as_str()
+        .expect("window capability")
+        .to_owned();
+    let initial = host_request(
+        &mut host,
+        "accessibility_snapshot",
+        json!({
+            "session_id": "controlled-native-menu-e2e",
+            "task_grant_id": "controlled-native-menu-e2e-grant",
+            "window_capability": capability,
+            "max_nodes": 1_000,
+            "max_depth": 20
+        }),
+    )
+    .await;
+    assert!(
+        initial.value["root"]
+            .to_string()
+            .contains("menu_action=none"),
+        "native fixture initial menu state is missing: {}",
+        initial.value
+    );
+
+    let invoked = host_request(
+        &mut host,
+        "invoke_menu",
+        json!({
+            "session_id": "controlled-native-menu-e2e",
+            "task_grant_id": "controlled-native-menu-e2e-grant",
+            "window_capability": capability,
+            "request": {"path": ["Window", "Arrange", "Left"]}
+        }),
+    )
+    .await;
+    assert_eq!(invoked.value["result"]["success"], true);
+    assert_eq!(invoked.value["result"]["effect"], "unverifiable");
+    assert_eq!(invoked.value["result"]["verification_required"], true);
+
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let post = host_request(
+            &mut host,
+            "accessibility_snapshot",
+            json!({
+                "session_id": "controlled-native-menu-e2e",
+                "task_grant_id": "controlled-native-menu-e2e-grant",
+                "window_capability": capability,
+                "max_nodes": 1_000,
+                "max_depth": 20
+            }),
+        )
+        .await;
+        if post.value["root"]
+            .to_string()
+            .contains("menu_action=window_arrange_left")
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "native menu post-state did not update: {}",
+            post.value
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    host_request(
+        &mut host,
+        "stop_session",
+        json!({"session_id": "controlled-native-menu-e2e"}),
+    )
+    .await;
     let status = host.shutdown().await.expect("stop Host process");
     assert!(status.success(), "Host exited unsuccessfully: {status}");
     drop(fixture_reaper);

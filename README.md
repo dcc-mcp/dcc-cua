@@ -113,6 +113,7 @@ cargo run -p dcc-mcp-cua-cli -- accessibility --app chrome.exe
 cargo run -p dcc-mcp-cua-cli -- window-state --app chrome.exe
 cargo run -p dcc-mcp-cua-cli -- activate --app chrome.exe
 cargo run -p dcc-mcp-cua-cli -- set-window-frame --pid 4242 --window-id 123456 --x 80 --y 80 --width 1280 --height 720
+cargo run -p dcc-mcp-cua-cli -- invoke-menu --app maya.exe --menu File --menu "New Scene"
 cargo run -p dcc-mcp-cua-cli -- click --app chrome.exe --x 100 --y 100
 cargo run -p dcc-mcp-cua-cli -- click --app chrome.exe --element-index 12
 cargo run -p dcc-mcp-cua-cli -- toggle --app chrome.exe --element-index 14
@@ -164,7 +165,7 @@ elements and 16 levels). `accessibility` reads a larger semantic tree without
 transferring screenshot pixels when the agent needs to locate a deeply nested
 control. Prefer the returned `element_token`/`element_index` over guessed
 pixels, then verify the post-action state. `window-state`, `activate`, and
-`set-window-frame` operate on the same exact target scope.
+`set-window-frame`, and `invoke-menu` operate on the same exact target scope.
 Long-lived recording remains on the persistent Host session so its start/stop
 lifecycle is not lost when a one-shot CLI process exits.
 
@@ -330,7 +331,7 @@ binary frame following the JSON response is the concatenation of those images;
 each descriptor gives its `offset`, `length`, and `mime_type`.
 
 The supported request surface is `hello`, `ping`, `list_apps`, `list_tools`, `list_windows`, `wait_for_window`, `launch_app`, `open_session`,
-`get_window_state`, `change_window_state` (`activate`), `set_window_frame`, `snapshot`,
+`get_window_state`, `change_window_state` (`activate`), `set_window_frame`, `invoke_menu`, `snapshot`,
 `accessibility_snapshot`, `verify_state`, `call_tool`, `call_global_tool`, `get_session_state`, `cursor_tool`, `escalate_session`, `find`, `wait_for`, `browser_snapshot`,
 `browser_prepare`, `browser_navigate`, `browser_click`, `browser_type`, `browser_pointer`,
 `browser_set_input_files`, `browser_download`, `browser_dialog`,
@@ -442,6 +443,12 @@ window state is always revalidated against the exact PID/HWND target.
 `set_window_frame` reuses CUA's native cross-platform mutation and independent
 geometry readback. Moving or resizing a window invalidates native and browser
 observations, so callers must snapshot again before the next action.
+`invoke_menu` forwards CUA's live native menu-path resolver, never guesses
+pixels, and fails closed for missing or ambiguous levels. A successful native
+delivery can remain `unverifiable`; take a fresh accessibility snapshot and
+verify the application state before the next mutation. Host sessions require
+the explicit `allow_menu_invoke: true` task grant because native menu commands
+can be destructive; the one-shot CLI command itself is the explicit request.
 
 `zoom` is a typed, read-only crop of the latest window `snapshot`. It requires
 the matching `observation_id`, keeps the exact PID/HWND binding, limits the

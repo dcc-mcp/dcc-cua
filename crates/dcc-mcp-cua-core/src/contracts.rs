@@ -26,6 +26,8 @@ pub(crate) const MAX_LOCAL_PATH_CHARS: usize = 4_096;
 pub(crate) const MAX_WINDOW_QUERY_CHARS: usize = 512;
 pub(crate) const MAX_WINDOW_WAIT_TIMEOUT_MS: u64 = 30_000;
 pub(crate) const MAX_WINDOW_WAIT_INTERVAL_MS: u64 = 1_000;
+pub(crate) const MAX_MENU_PATH_SEGMENTS: usize = 16;
+pub(crate) const MAX_MENU_PATH_SEGMENT_CHARS: usize = 200;
 pub(crate) const MAX_NATIVE_TOOL_NAME_CHARS: usize = 128;
 pub(crate) const MAX_NATIVE_TOOL_ARGUMENT_BYTES: usize = 1024 * 1024;
 pub(crate) const MAX_NATIVE_TOOL_IMAGES: usize = 8;
@@ -189,6 +191,31 @@ impl ComputerUseWindowFrameRequest {
             return Err(ComputerUseError::new(
                 ComputerUseErrorCode::InvalidAction,
                 "window frame coordinates must be finite and dimensions must be at least 1",
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// A live native application-menu path resolved one level at a time by CUA.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ComputerUseMenuRequest {
+    pub path: Vec<String>,
+}
+
+impl ComputerUseMenuRequest {
+    pub fn validate(&self) -> ComputerUseResult<()> {
+        if self.path.is_empty()
+            || self.path.len() > MAX_MENU_PATH_SEGMENTS
+            || self.path.iter().any(|segment| {
+                segment.trim().is_empty() || segment.chars().count() > MAX_MENU_PATH_SEGMENT_CHARS
+            })
+        {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::InvalidAction,
+                format!(
+                    "menu path requires 1..{MAX_MENU_PATH_SEGMENTS} non-empty segments of at most {MAX_MENU_PATH_SEGMENT_CHARS} characters"
+                ),
             ));
         }
         Ok(())

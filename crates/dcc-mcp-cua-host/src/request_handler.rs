@@ -504,6 +504,7 @@ pub(super) async fn handle_request(
                     allow_browser_prepare: grant.allow_browser_prepare,
                     allow_browser_download: grant.allow_browser_download,
                     allow_native_tool: grant.allow_native_tool,
+                    allow_menu_invoke: grant.allow_menu_invoke,
                     allow_session_escalation: grant.allow_session_escalation,
                     capability: capability.clone(),
                     session,
@@ -574,15 +575,37 @@ pub(super) async fn handle_request(
             let host =
                 authorized_session(sessions, &session_id, &task_grant_id, &window_capability)
                     .await?;
-            host.latest_observation_id = None;
-            host.latest_accessibility_state_id = None;
-            host.latest_accessibility_root = None;
-            host.latest_shared_image = None;
-            host.browser.invalidate_snapshot();
+            host.invalidate_observations();
             let result = host.session.set_window_frame(&frame).await?;
             Ok((
                 json!({
                     "type":"window_frame_set",
+                    "session_id":session_id,
+                    "result":result,
+                }),
+                None,
+            ))
+        }
+        Request::InvokeMenu {
+            session_id,
+            task_grant_id,
+            window_capability,
+            request,
+        } => {
+            request.validate()?;
+            let host =
+                authorized_session(sessions, &session_id, &task_grant_id, &window_capability)
+                    .await?;
+            if !host.allow_menu_invoke {
+                return Err(HostError::Protocol(
+                    "native menu invocation is not granted".into(),
+                ));
+            }
+            host.invalidate_observations();
+            let result = host.session.invoke_menu(&request).await?;
+            Ok((
+                json!({
+                    "type":"menu_invoked",
                     "session_id":session_id,
                     "result":result,
                 }),

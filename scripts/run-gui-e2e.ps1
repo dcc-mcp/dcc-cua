@@ -24,8 +24,11 @@ if ($isWindowsHost) {
     & (Join-Path $cuaDriverDir "tests\fixtures\build\windows.ps1") -Targets electron,wpf
 } elseif ($isMacHost) {
     & bash (Join-Path $cuaDriverDir "tests/fixtures/build/macos.sh") --only electron
+    if ($LASTEXITCODE -eq 0) {
+        & bash (Join-Path $cuaDriverDir "tests/fixtures/build/macos.sh") --only appkit
+    }
 } else {
-    & bash (Join-Path $cuaDriverDir "tests/fixtures/build/linux.sh") --only electron
+    & bash (Join-Path $cuaDriverDir "tests/fixtures/build/linux.sh") --only "electron,gtk3"
 }
 if ($LASTEXITCODE -ne 0) { throw "official CUA Electron fixture build failed" }
 
