@@ -1,4 +1,6 @@
+use std::future::pending;
 use std::io::Cursor;
+use std::time::Duration;
 
 use rstest::rstest;
 use serde_json::json;
@@ -10,9 +12,33 @@ use crate::contracts::{
 };
 use crate::policy::*;
 use crate::runtime::{
-    WindowTarget, bounded_snapshot_depth, bounded_snapshot_elements, diagnostic_tool_check,
-    tool_schema_from_inventory, validate_launch_request,
+    await_input_call, diagnostic_tool_check, driver_host_options, tool_schema_from_inventory,
+    validate_launch_request,
 };
+use crate::window_target::{WindowTarget, validate_target_policy};
+
+#[rstest]
+#[tokio::test]
+async fn input_calls_have_a_hard_timeout() {
+    let error = await_input_call(
+        pending::<()>(),
+        Duration::from_millis(1),
+        "window activation",
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(error.code, ComputerUseErrorCode::InputFailed);
+    assert!(error.message.contains("window activation timed out"));
+    assert!(error.message.contains("window session was invalidated"));
+}
+
+#[rstest]
+fn host_runtime_uses_the_upstream_cursor_renderer_only_where_it_can_run() {
+    let options = driver_host_options();
+    assert_eq!(options.cursor.enabled, cfg!(target_os = "linux"));
+    assert!(options.host_owns_permission_ux);
+    assert!(options.prepare_desktop_environment);
+}
 
 #[rstest]
 fn snapshot_bounds_use_agent_defaults_and_cap_context() {
@@ -61,6 +87,16 @@ fn scope_requires_exact_identity_and_action_rejects_unbounded_text() {
     assert_eq!(
         validate_action(&action).unwrap_err().code,
         ComputerUseErrorCode::InvalidAction
+    );
+}
+
+#[rstest]
+fn native_target_policy_denies_terminal_processes() {
+    let mut target = test_window_target();
+    target.app_name = "powershell.exe".into();
+    assert_eq!(
+        validate_target_policy(&target).unwrap_err().code,
+        ComputerUseErrorCode::InvalidTarget
     );
 }
 
@@ -352,6 +388,84 @@ fn semantic_tokens_and_background_delivery_reach_cua() {
     assert_eq!(args["delivery_mode"], "background");
     assert!(args.get("x").is_none());
     assert!(args.get("y").is_none());
+}
+
+#[rstest]
+fn windows_uia_tokens_route_only_supported_semantic_actions() {
+    let observation = ComputerUseObservation {
+        observation_id: "observation".into(),
+        window_handle: 7,
+        process_id: 42,
+        window_title: "DCC".into(),
+        width: 100,
+        height: 100,
+        source_rect: [0, 0, 100, 100],
+        capture_backend: "native".into(),
+        capture_provenance: json!({"accessibility_backend":"windows_uia"}),
+        session_id: "session".into(),
+    };
+    assert!(is_windows_uia_semantic_action(
+        &ComputerUseAction {
+            action: "click".into(),
+            element_token: Some("dcc-wuia:snapshot:2".into()),
+            ..Default::default()
+        },
+        &observation,
+    ));
+    assert!(is_windows_uia_semantic_action(
+        &ComputerUseAction {
+            action: "set_value".into(),
+            element_index: Some(2),
+            ..Default::default()
+        },
+        &observation,
+    ));
+    assert!(!is_windows_uia_semantic_action(
+        &ComputerUseAction {
+            action: "keypress".into(),
+            element_token: Some("dcc-wuia:snapshot:2".into()),
+            ..Default::default()
+        },
+        &observation,
+    ));
+}
+
+#[rstest]
+fn semantic_only_observations_reject_unscoped_pixel_actions() {
+    let observation = ComputerUseObservation {
+        observation_id: "observation".into(),
+        window_handle: 7,
+        process_id: 42,
+        window_title: "DCC".into(),
+        width: 100,
+        height: 100,
+        source_rect: [0, 0, 100, 100],
+        capture_backend: "windows_uia".into(),
+        capture_provenance: json!({"pixels_captured":false}),
+        session_id: "session".into(),
+    };
+    let error = validate_action_observation(
+        &ComputerUseAction {
+            action: "click".into(),
+            x: Some(10.0),
+            y: Some(20.0),
+            ..Default::default()
+        },
+        &observation,
+    )
+    .unwrap_err();
+    assert_eq!(error.code, ComputerUseErrorCode::StaleObservation);
+    assert!(
+        validate_action_observation(
+            &ComputerUseAction {
+                action: "click".into(),
+                element_index: Some(2),
+                ..Default::default()
+            },
+            &observation,
+        )
+        .is_ok()
+    );
 }
 
 #[rstest]
@@ -685,7 +799,7 @@ fn desktop_actions_are_screen_scoped_and_observation_bound() {
 }
 
 #[rstest]
-fn desktop_fallback_maps_local_coordinates_and_rejects_semantic_actions() {
+fn window_visual_fallback_maps_capture_pixels_to_the_exact_target() {
     let observation = ComputerUseObservation {
         observation_id: "obs".into(),
         window_handle: 7,
@@ -693,12 +807,13 @@ fn desktop_fallback_maps_local_coordinates_and_rejects_semantic_actions() {
         window_title: "UE".into(),
         width: 1560,
         height: 992,
-        source_rect: [1, 1, 3118, 1982],
+        source_rect: [1, 1, 3120, 1984],
         capture_backend: "cua-driver-sdk-desktop-crop".into(),
         capture_provenance: json!({"desktop_crop_bounds": [20, 30, 1560, 992]}),
         session_id: "session".into(),
     };
-    let mapped = action_for_desktop_fallback(
+    let target = test_window_target();
+    let validated = action_for_window_visual_fallback(
         &ComputerUseAction {
             action: "move".into(),
             x: Some(780.0),
@@ -708,9 +823,13 @@ fn desktop_fallback_maps_local_coordinates_and_rejects_semantic_actions() {
         &observation,
     )
     .unwrap();
-    assert_eq!((mapped.x, mapped.y), (Some(800.0), Some(150.0)));
+    assert_eq!((validated.x, validated.y), (Some(1560.0), Some(240.0)));
+    let args = action_arguments(&validated, "session", &target);
+    assert_eq!(args["pid"], 42);
+    assert_eq!(args["window_id"], 7);
+    assert!(args.get("scope").is_none());
     assert!(
-        action_for_desktop_fallback(
+        action_for_window_visual_fallback(
             &ComputerUseAction {
                 action: "click".into(),
                 element_index: Some(1),
@@ -736,6 +855,20 @@ fn launch_requires_one_safe_application_selector() {
         validate_launch_request(&ComputerUseLaunchRequest {
             name: Some("Calculator".into()),
             bundle_id: Some("com.example.Calculator".into()),
+            ..Default::default()
+        })
+        .is_err()
+    );
+    assert!(
+        validate_launch_request(&ComputerUseLaunchRequest {
+            urls: vec!["com.epicgames.launcher://fab/plugins/egl".into()],
+            ..Default::default()
+        })
+        .is_ok()
+    );
+    assert!(
+        validate_launch_request(&ComputerUseLaunchRequest {
+            urls: vec!["file:///C:/Windows/System32/cmd.exe".into()],
             ..Default::default()
         })
         .is_err()

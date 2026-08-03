@@ -1,6 +1,6 @@
 use dcc_mcp_cua_host::{
-    HOST_CAPABILITIES, HOST_PROTOCOL_VERSION, HostTransport, MAX_BINARY_FRAME_BYTES,
-    MAX_JSON_FRAME_BYTES,
+    HOST_PROTOCOL_VERSION, HostTransport, MAX_BINARY_FRAME_BYTES, MAX_JSON_FRAME_BYTES,
+    host_capabilities,
 };
 use serde_json::{Value, json};
 
@@ -22,7 +22,7 @@ pub(crate) fn document() -> Value {
             "snapshot_transports": ["binary_frame", "shared_memory"],
             "max_json_frame_bytes": MAX_JSON_FRAME_BYTES,
             "max_binary_frame_bytes": MAX_BINARY_FRAME_BYTES,
-            "capabilities": HOST_CAPABILITIES,
+            "capabilities": host_capabilities(),
         },
         "core_bridge": {
             "command": ["host-jsonl", "--snapshot-transport", "shared_memory"],

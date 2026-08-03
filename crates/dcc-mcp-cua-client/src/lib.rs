@@ -131,9 +131,20 @@ impl HostProcess {
         client_name: impl Into<String>,
         snapshot_transport: SnapshotTransport,
     ) -> HostClientResult<Self> {
+        Self::spawn_with_host_args(binary_path, client_name, snapshot_transport, &[]).await
+    }
+
+    /// Spawn a Host with explicit user-approved startup arguments.
+    pub async fn spawn_with_host_args(
+        binary_path: impl AsRef<Path>,
+        client_name: impl Into<String>,
+        snapshot_transport: SnapshotTransport,
+        host_args: &[&str],
+    ) -> HostClientResult<Self> {
         let mut child = Command::new(binary_path.as_ref())
             .arg("host")
             .arg("--stdio")
+            .args(host_args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())

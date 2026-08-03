@@ -15,15 +15,19 @@ path = "src/lib.rs"
 
 [dependencies]
 base64 = "0.22"
-cua-driver-sdk = { git = "https://github.com/trycua/cua.git", rev = "dc0af9b23ca8d866540b9ed2b4e4ad7b8b0c4ffb", package = "cua-driver-sdk" }
+# Temporary upstream fix: https://github.com/trycua/cua/pull/2812
+cua-driver-sdk = { git = "https://github.com/loonghao/cua.git", rev = "bed06d8bb144ff673fbdc8181ec42dc134d2de91", package = "cua-driver-sdk" }
+cursor-overlay = { git = "https://github.com/loonghao/cua.git", rev = "bed06d8bb144ff673fbdc8181ec42dc134d2de91", package = "cursor-overlay" }
 png = "0.17"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
-tokio = { version = "1", features = ["sync"] }
+tokio = { version = "1", features = ["rt", "sync", "time"] }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_HiDpi", "Win32_UI_WindowsAndMessaging"] }
+dcc-mcp-cua-platform-windows = { path = "../dcc-mcp-cua-platform-windows" }
+platform-windows = { git = "https://github.com/loonghao/cua.git", rev = "bed06d8bb144ff673fbdc8181ec42dc134d2de91", package = "platform-windows" }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_UI_HiDpi", "Win32_UI_WindowsAndMessaging"] }
 
 [dev-dependencies]
 rstest.workspace = true

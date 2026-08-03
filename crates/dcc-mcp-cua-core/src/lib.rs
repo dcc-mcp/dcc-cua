@@ -5,8 +5,11 @@
 //! actions, stop semantics, and auditable provenance.
 
 mod contracts;
+mod observation;
 mod policy;
 mod runtime;
+mod window_target;
+mod windows_uia_fallback;
 
 pub use contracts::*;
 pub use runtime::*;

@@ -1,0 +1,22 @@
+[package]
+name = "dcc-mcp-cua-platform-windows"
+description = "Host-owned Windows UI Automation fallback for DCC-MCP CUA"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "dcc_mcp_cua_platform_windows"
+path = "src/lib.rs"
+
+[dependencies]
+serde_json = "1"
+thiserror = "2"
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+rstest.workspace = true

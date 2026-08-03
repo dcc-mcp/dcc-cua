@@ -61,6 +61,11 @@ fn fixture() -> (PathBuf, &'static [&'static str]) {
     }
 }
 
+#[cfg(all(feature = "gui-e2e", windows))]
+fn wpf_fixture() -> PathBuf {
+    harness_app("harness-wpf", "CuaTestHarness.Wpf.exe")
+}
+
 #[cfg(feature = "gui-e2e")]
 fn first_window(response: &Value) -> &Value {
     response["result"]["windows"]
@@ -188,17 +193,23 @@ async fn controlled_electron_round_trip() {
     let mut fixture_reaper = ChildReaper::new();
     fixture_reaper.push(fixture_child);
 
-    let mut host = HostProcess::spawn(
+    let mut host = HostProcess::spawn_with_host_args(
         &binary,
         "controlled-gui-e2e",
         SnapshotTransport::BinaryFrame,
+        &["--grant", "existing-profile"],
     )
     .await
     .expect("launch DCC-MCP CUA Host");
     let doctor = host_request(&mut host, "doctor", json!({})).await;
     assert_eq!(
-        doctor.value["ready"], true,
-        "Host is not GUI-ready: {}",
+        doctor.value["checks"]["driver"]["success"], true,
+        "Host driver is unavailable: {}",
+        doctor.value
+    );
+    assert_eq!(
+        doctor.value["checks"]["health"]["success"], true,
+        "Host health check failed: {}",
         doctor.value
     );
 
@@ -234,7 +245,8 @@ async fn controlled_electron_round_trip() {
                 "window_title": window_title,
                 "allow_raw_input": true,
                 "allow_browser_input": true,
-                "allow_browser_prepare": true
+                "allow_browser_prepare": true,
+                "allow_session_escalation": true
             }
         }),
     )
@@ -243,6 +255,18 @@ async fn controlled_electron_round_trip() {
         .as_str()
         .expect("window capability")
         .to_owned();
+    host_request(
+        &mut host,
+        "escalate_session",
+        json!({
+            "session_id": SESSION_ID,
+            "task_grant_id": GRANT_ID,
+            "window_capability": capability,
+            "reason": "ax_tree_pixel_mismatch",
+            "detail": "controlled GUI E2E permits exact-window pixel fallback"
+        }),
+    )
+    .await;
     assert_eq!(opened.value["marker"]["visible"], true);
     assert_eq!(opened.value["banner"]["visible"], cfg!(windows));
     assert_eq!(
@@ -255,7 +279,13 @@ async fn controlled_electron_round_trip() {
     assert_eq!(opened.value["cursor"]["theme"], "cua.default");
     assert_eq!(
         opened.value["cursor"]["render_backend"],
-        "host-native-overlay"
+        if cfg!(windows) {
+            "host-native-overlay"
+        } else if cfg!(target_os = "linux") {
+            "cua-driver-sdk"
+        } else {
+            "unavailable"
+        }
     );
 
     host_request(
@@ -401,7 +431,10 @@ async fn controlled_electron_round_trip() {
             "session_id": SESSION_ID,
             "task_grant_id": GRANT_ID,
             "window_capability": capability,
-            "request": {"allow_launch": false}
+            "request": {
+                "allow_launch": false,
+                "strategy": {"kind": "existing_profile"}
+            }
         }),
     )
     .await;
@@ -513,6 +546,414 @@ async fn controlled_electron_round_trip() {
     );
 
     host_request(&mut host, "stop_session", json!({"session_id": SESSION_ID})).await;
+    let status = host.shutdown().await.expect("stop Host process");
+    assert!(status.success(), "Host exited unsuccessfully: {status}");
+    drop(fixture_reaper);
+}
+
+#[cfg(all(feature = "gui-e2e", not(windows)))]
+#[rstest]
+#[tokio::test]
+async fn concurrent_electron_sessions_keep_distinct_capabilities() {
+    let binary = std::env::var_os("DCC_MCP_CUA_E2E_BINARY")
+        .map(PathBuf::from)
+        .expect("DCC_MCP_CUA_E2E_BINARY must point to dcc-mcp-cua");
+    assert!(
+        binary.is_file(),
+        "Host binary is missing: {}",
+        binary.display()
+    );
+
+    let (fixture_path, fixture_args) = fixture();
+    assert!(
+        fixture_path.is_file(),
+        "official CUA Electron fixture is missing: {}",
+        fixture_path.display()
+    );
+    let mut journals = Vec::new();
+    let mut fixture_reaper = ChildReaper::new();
+    let mut fixture_pids = Vec::new();
+    for _ in 0..2 {
+        let journal = FixtureJournal::start();
+        let cdp_port = allocate_loopback_port();
+        let mut command = Command::new(&fixture_path);
+        command
+            .args(fixture_args)
+            .env("CUA_E2E_FIXTURE_JOURNAL_URL", journal.url())
+            .env("CUA_ELECTRON_CDP_PORT", cdp_port.to_string())
+            .stdout(Stdio::null())
+            .stderr(Stdio::inherit());
+        let child = spawn_in_job(&mut command).expect("launch official CUA fixture");
+        fixture_pids.push(child.id());
+        fixture_reaper.push(child);
+        journals.push(journal);
+    }
+
+    let mut host = HostProcess::spawn(
+        &binary,
+        "concurrent-controlled-gui-e2e",
+        SnapshotTransport::SharedMemory,
+    )
+    .await
+    .expect("launch DCC-MCP CUA Host");
+    for journal in &journals {
+        wait_for_journal(journal, "page-marker", FIXTURE_MARKER);
+    }
+
+    let mut sessions = Vec::new();
+    for (index, pid) in fixture_pids.iter().copied().enumerate() {
+        let ready = host_request(
+            &mut host,
+            "wait_for_window",
+            json!({
+                "query": {"process_id": pid, "on_screen_only": true},
+                "timeout_ms": 30_000,
+                "interval_ms": 100
+            }),
+        )
+        .await;
+        let window = first_window(&ready.value);
+        let window_id = window["window_id"].as_u64().expect("window id");
+        let window_title = window["title"].as_str().expect("window title");
+        assert!(window_title.starts_with(FIXTURE_TITLE));
+        let session_id = format!("concurrent-gui-{index}");
+        let grant_id = format!("concurrent-gui-grant-{index}");
+        let opened = host_request(
+            &mut host,
+            "open_session",
+            json!({
+                "session_id": session_id,
+                "grant": {
+                    "task_grant_id": grant_id,
+                    "dcc_type": "electron",
+                    "process_id": pid,
+                    "window_handle": window_id,
+                    "window_title": window_title,
+                    "allow_raw_input": true,
+                    "allow_session_escalation": true
+                }
+            }),
+        )
+        .await;
+        assert_eq!(opened.value["marker"]["visible"], true);
+        assert_eq!(opened.value["cursor"]["visible"], true);
+        let capability = opened.value["window_capability"]
+            .as_str()
+            .expect("window capability")
+            .to_owned();
+        host_request(
+            &mut host,
+            "escalate_session",
+            json!({
+                "session_id": session_id,
+                "task_grant_id": grant_id,
+                "window_capability": capability,
+                "reason": "ax_tree_pixel_mismatch",
+                "detail": "controlled concurrent E2E permits exact-window pixel fallback"
+            }),
+        )
+        .await;
+        sessions.push((session_id, grant_id, capability));
+    }
+
+    assert_ne!(sessions[0].0, sessions[1].0);
+    assert_ne!(sessions[0].2, sessions[1].2);
+    for (session_id, grant_id, capability) in &sessions {
+        let state = host_request(
+            &mut host,
+            "get_session_state",
+            json!({
+                "session_id": session_id,
+                "task_grant_id": grant_id,
+                "window_capability": capability
+            }),
+        )
+        .await;
+        assert_eq!(
+            state.value["state"]["structuredContent"]["session"],
+            session_id.as_str(),
+            "unexpected session state response: {}",
+            state.value
+        );
+        assert_eq!(
+            state.value["state"]["structuredContent"]["effective_scope"],
+            "window"
+        );
+    }
+    for (index, (session_id, grant_id, capability)) in sessions.iter().enumerate() {
+        let snapshot = host_request(
+            &mut host,
+            "snapshot",
+            json!({
+                "session_id": session_id,
+                "task_grant_id": grant_id,
+                "window_capability": capability,
+                "max_nodes": 1_000,
+                "max_depth": 20
+            }),
+        )
+        .await;
+        assert_eq!(
+            snapshot.value["image"]["encoding"], "shared_memory",
+            "parallel snapshot must use the negotiated shared-memory transport: {}",
+            snapshot.value
+        );
+        assert!(snapshot.value["root"].to_string().contains(FIXTURE_MARKER));
+        let observation_id = snapshot.value["observation_id"]
+            .as_str()
+            .expect("parallel observation id")
+            .to_owned();
+        let accessibility_state_id = snapshot.value["accessibility_state_id"]
+            .as_str()
+            .expect("parallel accessibility state id")
+            .to_owned();
+        let found = host_request(
+            &mut host,
+            "find",
+            json!({
+                "session_id": session_id,
+                "task_grant_id": grant_id,
+                "window_capability": capability,
+                "query": {"text": "txt-input", "max_results": 1}
+            }),
+        )
+        .await;
+        let input = found.value["matches"]
+            .as_array()
+            .and_then(|matches| matches.first())
+            .expect("parallel semantic text input match");
+        let mut action = json!({
+            "action": if cfg!(target_os = "linux") { "type" } else { "set_text" },
+            "input_kind": "semantic",
+            "intent": "ordinary_edit",
+            "delivery_mode": if cfg!(target_os = "linux") { "foreground" } else { "background" },
+            "text": format!("parallel-host-ipc-e2e-{index}")
+        });
+        action
+            .as_object_mut()
+            .expect("parallel action object")
+            .extend(
+                semantic_locator(input)
+                    .as_object()
+                    .expect("parallel locator")
+                    .clone(),
+            );
+        host_request(
+            &mut host,
+            "execute_action",
+            json!({
+                "session_id": session_id,
+                "task_grant_id": grant_id,
+                "window_capability": capability,
+                "observation_id": observation_id,
+                "accessibility_state_id": accessibility_state_id,
+                "action": action,
+                "capture_after": true,
+                "post_snapshot_max_nodes": 1_000,
+                "post_snapshot_max_depth": 20
+            }),
+        )
+        .await;
+        wait_for_journal(
+            &journals[index],
+            "lbl-input-mirror",
+            &format!("mirror=parallel-host-ipc-e2e-{index}"),
+        );
+    }
+    for (session_id, _, _) in &sessions {
+        host_request(&mut host, "stop_session", json!({"session_id": session_id})).await;
+    }
+    let status = host.shutdown().await.expect("stop Host process");
+    assert!(status.success(), "Host exited unsuccessfully: {status}");
+    drop(fixture_reaper);
+}
+
+#[cfg(all(feature = "gui-e2e", windows))]
+#[rstest]
+#[tokio::test]
+async fn windows_background_uia_keeps_concurrent_host_sessions_isolated() {
+    let binary = std::env::var_os("DCC_MCP_CUA_E2E_BINARY")
+        .map(PathBuf::from)
+        .expect("DCC_MCP_CUA_E2E_BINARY must point to dcc-mcp-cua");
+    let fixture_path = wpf_fixture();
+    assert!(
+        fixture_path.is_file(),
+        "official CUA WPF fixture is missing: {}",
+        fixture_path.display()
+    );
+
+    let mut fixture_reaper = ChildReaper::new();
+    let mut fixture_pids = Vec::new();
+    for _ in 0..2 {
+        let child = spawn_in_job(
+            Command::new(&fixture_path)
+                .stdout(Stdio::null())
+                .stderr(Stdio::inherit()),
+        )
+        .expect("launch official CUA WPF fixture");
+        fixture_pids.push(child.id());
+        fixture_reaper.push(child);
+    }
+
+    let mut host = HostProcess::spawn(
+        &binary,
+        "windows-background-uia-e2e",
+        SnapshotTransport::BinaryFrame,
+    )
+    .await
+    .expect("launch DCC-MCP CUA Host");
+    let mut window_targets = Vec::new();
+    for pid in fixture_pids {
+        let ready = host_request(
+            &mut host,
+            "wait_for_window",
+            json!({
+                "query": {"process_id": pid, "on_screen_only": true},
+                "timeout_ms": 30_000,
+                "interval_ms": 100
+            }),
+        )
+        .await;
+        let window = first_window(&ready.value);
+        window_targets.push((
+            pid,
+            window["window_id"].as_u64().expect("window id"),
+            window["title"].as_str().expect("window title").to_owned(),
+        ));
+    }
+
+    let foreground = unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow() }
+        as usize as u64;
+    window_targets.sort_by_key(|(_, window_handle, _)| *window_handle == foreground);
+    assert_ne!(
+        window_targets[0].1, foreground,
+        "two WPF windows must include one non-foreground target"
+    );
+
+    let mut sessions = Vec::new();
+    for (index, (pid, window_handle, window_title)) in window_targets.iter().enumerate() {
+        let session_id = format!("windows-background-uia-{index}");
+        let grant_id = format!("windows-background-uia-grant-{index}");
+        let opened = host_request(
+            &mut host,
+            "open_session",
+            json!({
+                "session_id": session_id,
+                "grant": {
+                    "task_grant_id": grant_id,
+                    "dcc_type": "wpf",
+                    "process_id": pid,
+                    "window_handle": window_handle,
+                    "window_title": window_title
+                }
+            }),
+        )
+        .await;
+        sessions.push((
+            session_id,
+            grant_id,
+            opened.value["window_capability"]
+                .as_str()
+                .expect("window capability")
+                .to_owned(),
+            *window_handle,
+        ));
+    }
+    assert_ne!(sessions[0].2, sessions[1].2);
+    let foreground = unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow() }
+        as usize as u64;
+    sessions.sort_by_key(|(_, _, _, window_handle)| *window_handle == foreground);
+    assert_ne!(sessions[0].3, foreground);
+
+    for (index, (session_id, grant_id, capability, window_handle)) in sessions.iter().enumerate() {
+        let snapshot = host_request(
+            &mut host,
+            "accessibility_snapshot",
+            json!({
+                "session_id": session_id,
+                "task_grant_id": grant_id,
+                "window_capability": capability,
+                "max_nodes": 1_000,
+                "max_depth": 20
+            }),
+        )
+        .await;
+        assert_eq!(snapshot.value["root"]["backend"], "windows_uia");
+        let found = host_request(
+            &mut host,
+            "find",
+            json!({
+                "session_id": session_id,
+                "task_grant_id": grant_id,
+                "window_capability": capability,
+                "query": {"text": "txt-input", "max_results": 1}
+            }),
+        )
+        .await;
+        let input = found.value["matches"]
+            .as_array()
+            .and_then(|matches| matches.first())
+            .expect("WPF UIA input match");
+        let mut action = json!({
+            "action": "set_text",
+            "input_kind": "semantic",
+            "intent": "ordinary_edit",
+            "delivery_mode": "background",
+            "text": format!("windows-background-uia-e2e-{index}")
+        });
+        action.as_object_mut().expect("action object").extend(
+            semantic_locator(input)
+                .as_object()
+                .expect("locator object")
+                .clone(),
+        );
+        let completed = host_request(
+            &mut host,
+            "execute_action",
+            json!({
+                "session_id": session_id,
+                "task_grant_id": grant_id,
+                "window_capability": capability,
+                "observation_id": snapshot.value["observation_id"],
+                "accessibility_state_id": snapshot.value["accessibility_state_id"],
+                "action": action,
+                "capture_after": false
+            }),
+        )
+        .await;
+        assert_eq!(completed.value["success"], true);
+        if index == 0 {
+            assert_ne!(
+                unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow() }
+                    as usize as u64,
+                *window_handle,
+                "background UIA action must not activate the target"
+            );
+        }
+        let updated = host_request(
+            &mut host,
+            "accessibility_snapshot",
+            json!({
+                "session_id": session_id,
+                "task_grant_id": grant_id,
+                "window_capability": capability,
+                "max_nodes": 1_000,
+                "max_depth": 20
+            }),
+        )
+        .await;
+        assert!(
+            updated.value["root"]
+                .to_string()
+                .contains(&format!("windows-background-uia-e2e-{index}")),
+            "background UIA post-state is missing: {}",
+            updated.value
+        );
+    }
+    for (session_id, _, _, _) in &sessions {
+        host_request(&mut host, "stop_session", json!({"session_id": session_id})).await;
+    }
+
     let status = host.shutdown().await.expect("stop Host process");
     assert!(status.success(), "Host exited unsuccessfully: {status}");
     drop(fixture_reaper);

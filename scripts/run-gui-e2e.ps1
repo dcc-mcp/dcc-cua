@@ -18,9 +18,11 @@ $cratesDir = Split-Path -Parent $sdkDir
 $rustDir = Split-Path -Parent $cratesDir
 $cuaDriverDir = Split-Path -Parent $rustDir
 
-if ($IsWindows) {
-    & (Join-Path $cuaDriverDir "tests\fixtures\build\windows.ps1") -Targets electron
-} elseif ($IsMacOS) {
+$isWindowsHost = $env:OS -eq "Windows_NT"
+$isMacHost = $PSVersionTable.PSVersion.Major -ge 6 -and $IsMacOS
+if ($isWindowsHost) {
+    & (Join-Path $cuaDriverDir "tests\fixtures\build\windows.ps1") -Targets electron,wpf
+} elseif ($isMacHost) {
     & bash (Join-Path $cuaDriverDir "tests/fixtures/build/macos.sh") --only electron
 } else {
     & bash (Join-Path $cuaDriverDir "tests/fixtures/build/linux.sh") --only electron
@@ -29,5 +31,5 @@ if ($LASTEXITCODE -ne 0) { throw "official CUA Electron fixture build failed" }
 
 $env:CUA_TEST_APPS_ROOT = Join-Path $rustDir "test-apps"
 $env:DCC_MCP_CUA_E2E_BINARY = $binaryPath
-cargo test --locked -p dcc-mcp-cua-e2e --features gui-e2e controlled_electron_round_trip -- --nocapture
-if ($LASTEXITCODE -ne 0) { throw "controlled GUI E2E failed" }
+cargo test --locked -p dcc-mcp-cua-e2e --features gui-e2e -- --nocapture --test-threads=1
+if ($LASTEXITCODE -ne 0) { throw "GUI E2E failed" }

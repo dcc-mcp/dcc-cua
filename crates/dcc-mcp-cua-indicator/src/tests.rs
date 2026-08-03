@@ -82,6 +82,15 @@ fn escape_generation_broadcasts_only_to_existing_sessions(
 
 #[cfg(windows)]
 #[rstest]
+fn an_existing_host_hotkey_uses_the_shared_escape_event() {
+    let error = windows::core::Error::from_hresult(windows::core::HRESULT::from_win32(
+        windows::Win32::Foundation::ERROR_HOTKEY_ALREADY_REGISTERED.0,
+    ));
+    assert!(platform::hotkey_already_registered(&error));
+}
+
+#[cfg(windows)]
+#[rstest]
 #[case(false, true, 64, 64, true)]
 #[case(true, true, 64, 64, false)]
 #[case(true, true, 64, 80, true)]

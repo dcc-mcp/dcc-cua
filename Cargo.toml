@@ -6,6 +6,7 @@ members = [
     "crates/dcc-mcp-cua-e2e",
     "crates/dcc-mcp-cua-host",
     "crates/dcc-mcp-cua-indicator",
+    "crates/dcc-mcp-cua-platform-windows",
     "crates/dcc-mcp-cua-shm",
     "crates/dcc-mcp-cua-cli",
 ]
@@ -21,4 +22,5 @@ license = "MIT"
 repository = "https://github.com/dcc-mcp/dcc-mcp-computer-use"
 
 [workspace.dependencies]
+async-trait = "0.1"
 rstest = "0.26.1"

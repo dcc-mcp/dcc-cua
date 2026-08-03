@@ -5,7 +5,23 @@ use base64::Engine;
 use serde_json::{Value, json};
 
 use crate::contracts::*;
-use crate::runtime::WindowTarget;
+use crate::window_target::WindowTarget;
+
+pub(crate) fn bounded_snapshot_elements(value: u32) -> u32 {
+    if value == 0 {
+        DEFAULT_SNAPSHOT_MAX_ELEMENTS
+    } else {
+        value.min(MAX_SNAPSHOT_ELEMENTS)
+    }
+}
+
+pub(crate) fn bounded_snapshot_depth(value: u32) -> u32 {
+    if value == 0 {
+        DEFAULT_SNAPSHOT_MAX_DEPTH
+    } else {
+        value.min(MAX_SNAPSHOT_DEPTH)
+    }
+}
 
 pub(crate) fn validate_clipboard_write_request(
     request: &ComputerUseClipboardWriteRequest,
@@ -759,6 +775,37 @@ pub(crate) fn action_arguments(
     args
 }
 
+pub(crate) fn is_windows_uia_semantic_action(
+    action: &ComputerUseAction,
+    observation: &ComputerUseObservation,
+) -> bool {
+    matches!(
+        action.action.as_str(),
+        "click" | "toggle" | "set_text" | "set_value"
+    ) && (action
+        .element_token
+        .as_deref()
+        .is_some_and(|token| token.starts_with("dcc-wuia:"))
+        || (action.element_index.is_some()
+            && observation.capture_provenance["accessibility_backend"] == "windows_uia"))
+}
+
+pub(crate) fn validate_action_observation(
+    action: &ComputerUseAction,
+    observation: &ComputerUseObservation,
+) -> ComputerUseResult<()> {
+    if observation.capture_provenance["pixels_captured"] == false
+        && action.element_index.is_none()
+        && action.element_token.is_none()
+    {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::StaleObservation,
+            "coordinate and unscoped keyboard actions require a fresh pixel screenshot",
+        ));
+    }
+    Ok(())
+}
+
 pub(crate) fn desktop_action_arguments(action: &ComputerUseAction, session: &str) -> Value {
     let mut args = json!({
         "_tool": match action.action.as_str() {
@@ -930,7 +977,7 @@ fn insert_scroll_arguments(
     }
 }
 
-pub(crate) fn action_for_desktop_fallback(
+pub(crate) fn action_for_window_visual_fallback(
     action: &ComputerUseAction,
     observation: &ComputerUseObservation,
 ) -> ComputerUseResult<ComputerUseAction> {
@@ -940,35 +987,7 @@ pub(crate) fn action_for_desktop_fallback(
     {
         return Err(ComputerUseError::new(
             ComputerUseErrorCode::InvalidAction,
-            "desktop visual fallback does not support semantic element actions",
-        ));
-    }
-    let bounds = observation.capture_provenance["desktop_crop_bounds"]
-        .as_array()
-        .filter(|bounds| bounds.len() == 4)
-        .and_then(|bounds| {
-            Some([
-                i32::try_from(bounds[0].as_i64()?).ok()?,
-                i32::try_from(bounds[1].as_i64()?).ok()?,
-                i32::try_from(bounds[2].as_i64()?).ok()?,
-                i32::try_from(bounds[3].as_i64()?).ok()?,
-            ])
-        })
-        .ok_or_else(|| {
-            ComputerUseError::new(
-                ComputerUseErrorCode::StaleObservation,
-                "desktop fallback observation has no valid crop bounds",
-            )
-        })?;
-    let [left, top, width, height] = bounds;
-    if left < 0
-        || top < 0
-        || width != observation.width as i32
-        || height != observation.height as i32
-    {
-        return Err(ComputerUseError::new(
-            ComputerUseErrorCode::StaleObservation,
-            "desktop fallback observation bounds do not match its screenshot",
+            "window visual fallback does not support semantic element actions",
         ));
     }
     if matches!(
@@ -978,13 +997,13 @@ pub(crate) fn action_for_desktop_fallback(
     {
         return Err(ComputerUseError::new(
             ComputerUseErrorCode::InvalidAction,
-            "desktop fallback pointer actions require screenshot coordinates",
+            "window visual fallback pointer actions require screenshot coordinates",
         ));
     }
     if action.action == "drag" && action.path.is_empty() && action.x.is_none() {
         return Err(ComputerUseError::new(
             ComputerUseErrorCode::InvalidAction,
-            "desktop fallback drag requires screenshot coordinates",
+            "window visual fallback drag requires screenshot coordinates",
         ));
     }
 
@@ -992,27 +1011,27 @@ pub(crate) fn action_for_desktop_fallback(
         if point.x >= f64::from(observation.width) || point.y >= f64::from(observation.height) {
             return Err(ComputerUseError::new(
                 ComputerUseErrorCode::InvalidAction,
-                "desktop fallback coordinates exceed the latest screenshot",
+                "window visual fallback coordinates exceed the latest screenshot",
             ));
         }
         Ok(ComputerUsePoint {
-            x: point.x + f64::from(left),
-            y: point.y + f64::from(top),
+            x: point.x * f64::from(observation.source_rect[2]) / f64::from(observation.width),
+            y: point.y * f64::from(observation.source_rect[3]) / f64::from(observation.height),
         })
     };
-    let mut mapped = action.clone();
+    let mut validated = action.clone();
     if let (Some(x), Some(y)) = (action.x, action.y) {
         let point = map_point(ComputerUsePoint { x, y })?;
-        mapped.x = Some(point.x);
-        mapped.y = Some(point.y);
+        validated.x = Some(point.x);
+        validated.y = Some(point.y);
     }
-    mapped.path = action
+    validated.path = action
         .path
         .iter()
         .copied()
         .map(map_point)
         .collect::<ComputerUseResult<_>>()?;
-    Ok(mapped)
+    Ok(validated)
 }
 
 pub(crate) fn ensure_tool_ok(
