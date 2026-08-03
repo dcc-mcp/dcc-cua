@@ -4,13 +4,11 @@ use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use base64::Engine;
-use cua_driver_sdk::{CuaDriver, DriverHostOptions};
-use cursor_overlay::CursorConfig;
+use cua_driver_sdk::CuaDriver;
 use serde_json::{Value, json};
 
 use crate::contracts::*;
 use crate::observation::semantic_observation;
-use crate::platform_process::prepare_platform_process;
 use crate::policy::*;
 use crate::window_target::{WindowTarget, validate_target_policy};
 #[cfg(windows)]
@@ -21,7 +19,6 @@ mod menu_commands;
 mod window_commands;
 
 const INPUT_CALL_TIMEOUT: Duration = Duration::from_secs(15);
-pub(crate) const UPSTREAM_CURSOR_RENDERER_ENABLED: bool = cfg!(target_os = "linux");
 
 async fn call_driver_tool(
     driver: &CuaDriver,
@@ -64,6 +61,7 @@ pub(crate) async fn await_input_call<T>(
 #[derive(Clone)]
 pub struct ComputerUseDriver {
     driver: Arc<CuaDriver>,
+    upstream_cursor_renderer_enabled: bool,
     // ponytail: cache the static tool registry for this driver; recreate the
     // driver if a future SDK supports runtime tool registration.
     tool_inventory: Arc<tokio::sync::OnceCell<Value>>,
@@ -71,13 +69,20 @@ pub struct ComputerUseDriver {
 
 impl ComputerUseDriver {
     pub fn create() -> ComputerUseResult<Self> {
-        prepare_platform_process();
-        CuaDriver::try_create_for_host(driver_host_options())
-            .map(|driver| Self {
-                driver,
-                tool_inventory: Arc::new(tokio::sync::OnceCell::new()),
-            })
+        crate::driver_factory::create_embedded()
+            .map(Self::from_driver)
             .map_err(|error| map_driver_error("create CUA runtime", error))
+    }
+
+    /// Create a directly supervised official CUA worker.
+    ///
+    /// The packaged macOS Host uses this upstream-owned process boundary so
+    /// CUA can keep AppKit on the worker's main thread and render its native
+    /// per-session cursor without turning the Host itself into an app bundle.
+    pub fn create_private_worker(options: PrivateWorkerOptions) -> ComputerUseResult<Self> {
+        crate::driver_factory::create_private_worker(options)
+            .map(Self::from_driver)
+            .map_err(|error| map_driver_error("create CUA private worker", error))
     }
 
     /// Create a configured runtime with a trusted host authorization callback.
@@ -89,15 +94,22 @@ impl ComputerUseDriver {
         options: ConfiguredDriverOptions,
         host: Arc<dyn DriverAuthorizationHost>,
     ) -> ComputerUseResult<Self> {
-        prepare_platform_process();
-        let mut host_options = driver_host_options();
-        host_options.authorization_host = Some(host);
-        CuaDriver::try_create_configured_for_host(options, host_options)
-            .map(|driver| Self {
-                driver,
-                tool_inventory: Arc::new(tokio::sync::OnceCell::new()),
-            })
+        crate::driver_factory::create_authorized(options, host)
+            .map(Self::from_driver)
             .map_err(|error| map_driver_error("create authorized CUA runtime", error))
+    }
+
+    fn from_driver((driver, upstream_cursor_renderer_enabled): (Arc<CuaDriver>, bool)) -> Self {
+        Self {
+            driver,
+            upstream_cursor_renderer_enabled,
+            tool_inventory: Arc::new(tokio::sync::OnceCell::new()),
+        }
+    }
+
+    #[must_use]
+    pub const fn upstream_cursor_renderer_enabled(&self) -> bool {
+        self.upstream_cursor_renderer_enabled
     }
 
     pub fn session(
@@ -422,26 +434,6 @@ impl ComputerUseDriver {
     }
 }
 
-pub(crate) fn driver_host_options() -> DriverHostOptions {
-    DriverHostOptions {
-        cursor: CursorConfig {
-            // Windows keeps the custom Host-owned pointer. The pinned CUA
-            // runtime currently supplies the native per-session cursor/badge
-            // only on Linux; macOS reports facility_unavailable until its
-            // signed/TCC presentation runtime is available.
-            enabled: UPSTREAM_CURSOR_RENDERER_ENABLED,
-            ..CursorConfig::default()
-        },
-        host_owns_permission_ux: true,
-        host_bundle_id: None,
-        claude_code_compatibility: false,
-        prepare_desktop_environment: true,
-        register_host_tools: None,
-        authorization_host: None,
-        activity_observer: None,
-    }
-}
-
 pub(crate) fn diagnostic_tool_check(result: ComputerUseResult<ComputerUseToolResult>) -> Value {
     match result {
         Ok(result) => json!({
@@ -484,7 +476,7 @@ async fn enable_session_marker(
     session_id: &str,
     context: &str,
 ) -> ComputerUseResult<()> {
-    if !UPSTREAM_CURSOR_RENDERER_ENABLED {
+    if !driver.upstream_cursor_renderer_enabled() {
         return Ok(());
     }
 

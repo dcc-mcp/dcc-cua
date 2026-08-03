@@ -11,12 +11,14 @@ a whole task. Its public protocol is owned by this repository and provides:
 - bounded text, key, drag, and coordinate input;
 - fail-closed sensitive-window policy;
 - explicit stop/resume lifecycle and structured errors;
-- a visible, vector-rendered CUA mouse-pointer cursor on Windows and Linux,
+- a visible, vector-rendered CUA mouse-pointer cursor on Windows, Linux, and
+  the packaged macOS Host,
   plus a Host-owned `DCC UI Control · <app> · Esc to stop` safety banner and
   softly breathing target-window frame on Windows. Linux reuses CUA's native
-  per-session cursor and badge; macOS exposes the SDK's structured readiness
-  refusal until a signed/TCC presentation runtime is available. All supported
-  indicators are click-through, excluded from agent captures, and one shared
+  per-session cursor and badge; macOS runs the bundled official `cua-driver`
+  as an SDK private worker so AppKit remains on that worker's main thread.
+  Headless macOS sessions still return CUA's structured readiness refusal. All
+  supported indicators are click-through, excluded from agent captures, and one shared
   Escape hotkey broadcasts interruption to every active session in the Host
   process.
 
@@ -34,7 +36,7 @@ The repository is a Cargo workspace with nine responsibilities:
   routing;
 - `dcc-mcp-cua-indicator`: Host-owned Windows control banner/frame and physical
   Escape interruption boundary; Linux cursor/badge rendering stays in the CUA
-  SDK, while macOS remains behind its structured readiness boundary;
+  SDK, while the packaged macOS Host uses CUA's private-worker overlay;
 - `dcc-mcp-cua-platform-windows`: exact PID/HWND Windows UI Automation worker
   for background semantic fallback when CUA's combined window-state path is
   unavailable;
@@ -267,7 +269,7 @@ sessions and obtain a fresh observation before sending another action.
 liveness check without querying the native CUA backend or transferring its
 tool inventory.
 `HostClient::doctor` and `dcc-mcp-cua doctor --endpoint/--spawn` probe the
-embedded runtime in that same Host process. The structured report keeps
+selected CUA runtime owned by that Host process. The structured report keeps
 transport liveness separate from driver, window inventory, permission, and
 native health readiness.
 
@@ -481,8 +483,8 @@ escalation reasons; it does not widen the session to desktop control.
 session id is always injected by Host, so the mouse-shaped marker cannot be
 redirected to another session or move the real system pointer.
 CUA owns the cursor state and scoped motion. The Host mirrors successful moves
-into a larger native mouse-pointer overlay so the user can always see the active
-agent position even when an application does not render CUA's SDK cursor.
+into a larger native mouse-pointer overlay on Windows. Linux and the packaged
+macOS Host render the session-owned cursor and badge in the official CUA runtime.
 
 The safety banner remains a native overlay rather than a WebView. Static SVG
 art can be added as a cached theme layer later, while the app name and stop
@@ -537,8 +539,9 @@ real release-binary E2E on Windows, Linux, and macOS. The E2E validates the
 machine manifest, platform identity, shared-memory negotiation, a spawned Host
 handshake, lightweight ping, pipelined/streaming request correlation, invalid
 request recovery (including a UTF-8 BOM on the first JSONL line), and the
-embedded CUA application/tool inventories. All three platforms build CUA's
-official Electron fixture and verify the
+CUA application/tool inventories. On macOS the release Host also proves the
+bundled private-worker route and its AppKit-owned session cursor. All three
+platforms build CUA's official Electron fixture and verify the
 real launch -> scoped PNG snapshot -> semantic find -> input -> state oracle ->
 exact-window raw-input coordinate click -> independent state oracle ->
 exact browser binding -> semantic browser snapshot -> click/type -> independent

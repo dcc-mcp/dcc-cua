@@ -26,7 +26,9 @@ pub(super) async fn handle_request(
                     SnapshotTransport::SharedMemory => "shared_memory",
                     SnapshotTransport::BinaryFrame => "binary_frame",
                 },
-                "capabilities": host_capabilities(),
+                "capabilities": host_capabilities(cursor_render_backend(
+                    driver.upstream_cursor_renderer_enabled(),
+                ) != "unavailable"),
             }),
             None,
         ));
@@ -487,7 +489,9 @@ pub(super) async fn handle_request(
                 "visible": marker["visible"],
                 "shape": "mouse_pointer",
                 "theme": started["cursor_theme"],
-                "render_backend": cursor_render_backend(),
+                "render_backend": cursor_render_backend(
+                    driver.upstream_cursor_renderer_enabled(),
+                ),
                 "motion_backend": "cua-driver-sdk",
             });
             let capability = format!("cua-window-{}", Uuid::new_v4());
@@ -1322,10 +1326,10 @@ pub(super) async fn handle_request(
     }
 }
 
-pub(super) const fn cursor_render_backend() -> &'static str {
+pub(super) const fn cursor_render_backend(upstream_cursor_renderer_enabled: bool) -> &'static str {
     if cfg!(windows) {
         "host-native-overlay"
-    } else if cfg!(target_os = "linux") {
+    } else if upstream_cursor_renderer_enabled {
         "cua-driver-sdk"
     } else {
         "unavailable"

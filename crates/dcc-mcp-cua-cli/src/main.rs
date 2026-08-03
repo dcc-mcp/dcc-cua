@@ -82,7 +82,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
     let driver = if command == "host" {
-        authorization::driver_for_host(&flags)?
+        host_driver(&flags)?
     } else {
         ComputerUseDriver::create()?
     };
@@ -129,6 +129,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         other => return Err(format!("unknown command: {other}; use `help`").into()),
     }
     Ok(())
+}
+
+fn host_driver(flags: &[String]) -> Result<ComputerUseDriver, Box<dyn std::error::Error>> {
+    #[cfg(target_os = "macos")]
+    if let Some(binary) = macos_private_worker_binary()? {
+        return authorization::driver_for_private_worker(flags, &binary);
+    }
+    authorization::driver_for_host(flags)
+}
+
+#[cfg(target_os = "macos")]
+fn macos_private_worker_binary() -> Result<Option<PathBuf>, Box<dyn std::error::Error>> {
+    let explicit = env::var_os("CUA_DRIVER_BIN").is_some();
+    let candidate = upstream_cua_binary();
+    match fs::canonicalize(&candidate) {
+        Ok(binary) if binary.is_file() => Ok(Some(binary)),
+        _ if explicit => Err(format!(
+            "CUA_DRIVER_BIN does not resolve to an official cua-driver binary: {}",
+            candidate.display()
+        )
+        .into()),
+        _ => Ok(None),
+    }
 }
 
 async fn list_windows(

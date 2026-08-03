@@ -1,6 +1,6 @@
 use rstest::rstest;
 
-use super::authorization::existing_profile_grant_requested;
+use super::authorization::{existing_profile_grant_requested, host_private_worker_options};
 use super::*;
 
 #[rstest]
@@ -17,6 +17,50 @@ fn host_existing_profile_grant_is_explicit(#[case] flags: Vec<&str>, #[case] exp
 fn host_grant_parser_rejects_missing_and_unknown_values() {
     assert!(existing_profile_grant_requested(&["--grant".into()]).is_err());
     assert!(existing_profile_grant_requested(&["--grant".into(), "everything".into()]).is_err());
+}
+
+#[rstest]
+fn macos_host_worker_is_private_and_standard_by_default() {
+    let path = if cfg!(windows) {
+        std::path::Path::new(r"C:\release\cua-driver.exe")
+    } else {
+        std::path::Path::new("/release/cua-driver")
+    };
+    let options = host_private_worker_options(path, false);
+    assert_eq!(options.binary_path, path.to_string_lossy());
+    assert_eq!(options.host_bundle_id, "com.dcc-mcp.cua.host");
+    assert_eq!(
+        options.configured_driver.authorization.compatibility_mode,
+        dcc_mcp_cua_core::SessionPermissionMode::Standard
+    );
+    assert!(
+        !options
+            .configured_driver
+            .authorization
+            .unrestricted_acknowledged
+    );
+    assert!(options.environment.is_empty());
+    assert!(options.inherit_stderr);
+}
+
+#[rstest]
+fn explicit_existing_profile_grant_raises_only_the_private_worker_ceiling() {
+    let path = if cfg!(windows) {
+        std::path::Path::new(r"C:\release\cua-driver.exe")
+    } else {
+        std::path::Path::new("/release/cua-driver")
+    };
+    let options = host_private_worker_options(path, true);
+    assert_eq!(
+        options.configured_driver.authorization.compatibility_mode,
+        dcc_mcp_cua_core::SessionPermissionMode::Unrestricted
+    );
+    assert!(
+        options
+            .configured_driver
+            .authorization
+            .unrestricted_acknowledged
+    );
 }
 
 #[rstest]
@@ -160,6 +204,11 @@ fn manifest_is_a_machine_readable_core_launch_contract() {
         manifest["host"]["capabilities"]
             .as_array()
             .is_some_and(|values| values.iter().any(|value| value == "host_diagnostics"))
+    );
+    assert!(
+        manifest["host"]["capabilities"]
+            .as_array()
+            .is_some_and(|values| values.iter().any(|value| value == "cursor_controls"))
     );
     assert_eq!(
         manifest["host"]["capabilities"]

@@ -22,7 +22,7 @@ pub(crate) fn document() -> Value {
             "snapshot_transports": ["binary_frame", "shared_memory"],
             "max_json_frame_bytes": MAX_JSON_FRAME_BYTES,
             "max_binary_frame_bytes": MAX_BINARY_FRAME_BYTES,
-            "capabilities": host_capabilities(),
+            "capabilities": host_capabilities(cfg!(any(windows, target_os = "linux", target_os = "macos"))),
         },
         "core_bridge": {
             "command": ["host-jsonl", "--snapshot-transport", "shared_memory"],

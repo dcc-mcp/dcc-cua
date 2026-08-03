@@ -13,15 +13,18 @@ fn cursor_render_backend_matches_the_native_platform_owner() {
     } else {
         "unavailable"
     };
-    assert_eq!(request_handler::cursor_render_backend(), expected);
+    assert_eq!(
+        request_handler::cursor_render_backend(cfg!(target_os = "linux")),
+        expected
+    );
 }
 
 #[rstest]
-fn capabilities_do_not_advertise_unavailable_macos_cursor_controls() {
-    let capabilities = host_capabilities();
+fn capabilities_follow_the_selected_cursor_runtime() {
+    let cursor_available = cfg!(any(windows, target_os = "linux"));
+    let capabilities = host_capabilities(cursor_available);
     assert!(capabilities.contains(&"scoped_window_frame"));
     assert!(capabilities.contains(&"native_menu_path"));
-    let cursor_available = cfg!(any(windows, target_os = "linux"));
     assert_eq!(capabilities.contains(&"cursor_controls"), cursor_available);
     assert_eq!(
         capabilities.contains(&"cua_cursor_marker"),
@@ -30,6 +33,18 @@ fn capabilities_do_not_advertise_unavailable_macos_cursor_controls() {
     assert_eq!(
         capabilities.contains(&"windows_background_uia_fallback"),
         cfg!(windows)
+    );
+}
+
+#[rstest]
+fn private_worker_enables_the_upstream_cursor_backend() {
+    assert_eq!(
+        request_handler::cursor_render_backend(true),
+        if cfg!(windows) {
+            "host-native-overlay"
+        } else {
+            "cua-driver-sdk"
+        }
     );
 }
 
