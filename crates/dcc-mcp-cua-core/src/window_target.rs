@@ -42,44 +42,17 @@ impl WindowTarget {
     }
 }
 
-pub(crate) fn resolve_scoped_target(
-    scope: &ComputerUseTargetScope,
-    targets: Vec<WindowTarget>,
-) -> ComputerUseResult<WindowTarget> {
-    let candidates = targets
-        .into_iter()
-        .filter(|target| scope.process_id.is_none_or(|pid| pid == target.pid))
-        .collect::<Vec<_>>();
-
-    if let Some(window_handle) = scope.window_handle {
-        let exact = candidates
-            .iter()
-            .filter(|target| target.window_id == window_handle)
-            .collect::<Vec<_>>();
-        if exact.len() == 1 {
-            return Ok(exact[0].clone());
-        }
+impl ComputerUseTargetScope {
+    pub(crate) fn matches(&self, target: &WindowTarget) -> bool {
+        self.process_id.is_none_or(|value| value == target.pid)
+            && self
+                .window_handle
+                .is_none_or(|value| value == target.window_id)
+            && self
+                .window_title
+                .as_deref()
+                .is_none_or(|value| value == target.title)
     }
-    if let Some(window_title) = scope.window_title.as_deref() {
-        let titled = candidates
-            .iter()
-            .filter(|target| target.title == window_title)
-            .collect::<Vec<_>>();
-        if titled.len() == 1 {
-            return Ok(titled[0].clone());
-        }
-    }
-    if scope.process_id.is_some() && candidates.len() == 1 {
-        return Ok(candidates.into_iter().next().expect("one candidate"));
-    }
-
-    Err(ComputerUseError::new(
-        ComputerUseErrorCode::MissingWindow,
-        format!(
-            "expected exactly one scoped window, found {}",
-            candidates.len()
-        ),
-    ))
 }
 
 pub(crate) fn validate_target_policy(target: &WindowTarget) -> ComputerUseResult<()> {
@@ -249,11 +222,17 @@ unsafe extern "system" fn enum_window(
 
 fn bounds(value: &serde_json::Map<String, Value>) -> Option<[i32; 4]> {
     Some([
-        value["x"].as_i64()?.try_into().ok()?,
-        value["y"].as_i64()?.try_into().ok()?,
-        value["width"].as_i64()?.try_into().ok()?,
-        value["height"].as_i64()?.try_into().ok()?,
+        bound(&value["x"])?,
+        bound(&value["y"])?,
+        bound(&value["width"])?,
+        bound(&value["height"])?,
     ])
+}
+
+fn bound(value: &Value) -> Option<i32> {
+    let value = value.as_f64()?;
+    (value.is_finite() && value >= i32::MIN as f64 && value <= i32::MAX as f64)
+        .then(|| value.round() as i32)
 }
 
 /// Resolve an explicitly supplied native window without asking CUA to enumerate
@@ -299,6 +278,16 @@ fn resolve_windows_target(
     }
 
     let title = window_title(hwnd);
+    if scope
+        .window_title
+        .as_deref()
+        .is_some_and(|expected| expected != title)
+    {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::InvalidTarget,
+            "native window title identity changed",
+        ));
+    }
 
     let mut rect = RECT::default();
     unsafe { GetWindowRect(hwnd, &mut rect) };
