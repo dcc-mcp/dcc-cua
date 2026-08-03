@@ -1031,6 +1031,7 @@ name = "dcc-mcp-cua-core"
 version = "0.0.0"
 dependencies = [
  "base64",
+ "cua-driver-contract",
  "cua-driver-sdk",
  "cursor-overlay",
  "dcc-mcp-cua-platform-windows",

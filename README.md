@@ -492,7 +492,9 @@ directly and does not rerender an SVG every frame.
 Extension tools from the live CUA inventory are available through `call_tool`
 only after `open_session` grants `allow_native_tool: true`. The host injects
 the exact session PID/HWND/session values from the live SDK schema and rejects
-reserved arguments. Click, keyboard, browser, clipboard, recording, and
+reserved arguments. CUA's canonical action-result vocabulary is always kept on
+the dedicated routes, including platform-specific pointer actions. Click,
+keyboard, browser, clipboard, recording, and
 session-lifecycle tools stay on their dedicated grant-gated routes so the
 extension surface cannot bypass observation or approval fences. This includes
 CUA's legacy `page` compatibility tool; browser work must enter through the
