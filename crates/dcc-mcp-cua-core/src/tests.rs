@@ -15,7 +15,7 @@ use crate::runtime::{
     await_input_call, diagnostic_tool_check, driver_host_options, tool_schema_from_inventory,
     validate_launch_request,
 };
-use crate::window_target::{WindowTarget, validate_target_policy};
+use crate::window_target::{WindowTarget, resolve_scoped_target, validate_target_policy};
 
 #[rstest]
 #[tokio::test]
@@ -97,6 +97,45 @@ fn native_target_policy_denies_terminal_processes() {
     assert_eq!(
         validate_target_policy(&target).unwrap_err().code,
         ComputerUseErrorCode::InvalidTarget
+    );
+}
+
+#[rstest]
+fn scoped_target_recovers_only_unambiguous_same_process_window_changes() {
+    let target = |window_id, title: &str| WindowTarget {
+        window_id,
+        title: title.into(),
+        ..test_window_target()
+    };
+    let scope = ComputerUseTargetScope {
+        process_id: Some(42),
+        window_handle: Some(7),
+        window_title: Some("Old title".into()),
+    };
+
+    assert_eq!(
+        resolve_scoped_target(&scope, vec![target(7, "New title"), target(8, "Other")])
+            .unwrap()
+            .window_id,
+        7
+    );
+    assert_eq!(
+        resolve_scoped_target(&scope, vec![target(8, "Old title"), target(9, "Other")])
+            .unwrap()
+            .window_id,
+        8
+    );
+    assert_eq!(
+        resolve_scoped_target(&scope, vec![target(8, "New title")])
+            .unwrap()
+            .window_id,
+        8
+    );
+    assert_eq!(
+        resolve_scoped_target(&scope, vec![target(8, "New title"), target(9, "Other")])
+            .unwrap_err()
+            .code,
+        ComputerUseErrorCode::MissingWindow
     );
 }
 
