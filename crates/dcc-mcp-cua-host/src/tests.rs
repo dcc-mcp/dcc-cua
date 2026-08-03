@@ -1381,6 +1381,43 @@ fn wait_conditions_match_bounded_accessibility_elements() {
 
 #[rstest]
 #[tokio::test]
+async fn parallel_discovery_tasks_are_reaped_and_bounded() {
+    let gate = Arc::new(tokio::sync::Notify::new());
+    let mut tasks = JoinSet::new();
+    for _ in 0..MAX_PARALLEL_DISCOVERY_REQUESTS {
+        let gate = Arc::clone(&gate);
+        tasks.spawn(async move {
+            gate.notified().await;
+            Ok(())
+        });
+    }
+    assert_eq!(tasks.len(), MAX_PARALLEL_DISCOVERY_REQUESTS);
+    gate.notify_one();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        await_parallel_request_capacity(&mut tasks),
+    )
+    .await
+    .unwrap();
+    assert_eq!(tasks.len(), MAX_PARALLEL_DISCOVERY_REQUESTS - 1);
+
+    tasks.abort_all();
+    while tasks.join_next().await.is_some() {}
+    for _ in 0..4 {
+        tasks.spawn(async { Ok(()) });
+    }
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        while !tasks.is_empty() {
+            tokio::task::yield_now().await;
+            reap_completed_parallel_requests(&mut tasks);
+        }
+    })
+    .await
+    .unwrap();
+}
+
+#[rstest]
+#[tokio::test]
 async fn raw_input_turns_wait_for_the_shared_fifo() {
     let first_turn = RAW_INPUT_QUEUE.lock().await;
     let (acquired_tx, mut acquired_rx) = tokio::sync::oneshot::channel();

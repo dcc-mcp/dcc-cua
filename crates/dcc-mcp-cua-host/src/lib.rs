@@ -60,6 +60,7 @@ static RAW_INPUT_QUEUE: AsyncMutex<()> = AsyncMutex::const_new(());
 pub const MAX_JSON_FRAME_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_BINARY_FRAME_BYTES: usize = 64 * 1024 * 1024;
 pub const MAX_REQUEST_ID_CHARS: usize = 128;
+pub const MAX_PARALLEL_DISCOVERY_REQUESTS: usize = 32;
 pub const HOST_PROTOCOL_VERSION: u32 = 1;
 
 /// Capabilities this implementation actually provides.
@@ -900,6 +901,7 @@ where
     let cancellation_registry = Arc::new(Mutex::new(HashMap::new()));
 
     while let Some(frame) = read_frame(&mut reader, MAX_JSON_FRAME_BYTES).await? {
+        reap_completed_parallel_requests(&mut parallel_tasks);
         let (request_id, request) = match parse_request_frame(&frame) {
             Ok(request) => request,
             Err((request_id, error)) => {
@@ -1030,6 +1032,7 @@ where
             }
             drop(window_wait_guard);
         } else if is_parallel_request(&request) {
+            await_parallel_request_capacity(&mut parallel_tasks).await;
             let task_driver = driver.clone();
             let task_writer = writer.clone();
             parallel_tasks.spawn(async move {
@@ -1072,6 +1075,18 @@ where
     while parallel_tasks.join_next().await.is_some() {}
 
     cleanup_sessions(&driver, sessions).await
+}
+
+fn reap_completed_parallel_requests(tasks: &mut JoinSet<Result<(), HostError>>) {
+    while tasks.try_join_next().is_some() {}
+}
+
+async fn await_parallel_request_capacity(tasks: &mut JoinSet<Result<(), HostError>>) {
+    reap_completed_parallel_requests(tasks);
+    if tasks.len() >= MAX_PARALLEL_DISCOVERY_REQUESTS {
+        let _ = tasks.join_next().await;
+        reap_completed_parallel_requests(tasks);
+    }
 }
 
 async fn cleanup_sessions(

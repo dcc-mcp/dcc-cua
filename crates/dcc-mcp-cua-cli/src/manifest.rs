@@ -1,6 +1,7 @@
 use dcc_mcp_cua_host::{
     HOST_PROTOCOL_VERSION, HostTransport, MAX_APPLICATION_LABEL_CHARS, MAX_BINARY_FRAME_BYTES,
-    MAX_JSON_FRAME_BYTES, MAX_TASK_GRANT_ID_CHARS, host_capabilities,
+    MAX_JSON_FRAME_BYTES, MAX_PARALLEL_DISCOVERY_REQUESTS, MAX_TASK_GRANT_ID_CHARS,
+    host_capabilities,
 };
 use serde_json::{Value, json};
 
@@ -22,6 +23,7 @@ pub(crate) fn document() -> Value {
             "snapshot_transports": ["binary_frame", "shared_memory"],
             "max_json_frame_bytes": MAX_JSON_FRAME_BYTES,
             "max_binary_frame_bytes": MAX_BINARY_FRAME_BYTES,
+            "max_parallel_discovery_requests": MAX_PARALLEL_DISCOVERY_REQUESTS,
             "grant_limits": {
                 "task_grant_id_max_chars": MAX_TASK_GRANT_ID_CHARS,
                 "application_label_max_chars": MAX_APPLICATION_LABEL_CHARS,
