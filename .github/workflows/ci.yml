@@ -48,12 +48,12 @@ jobs:
         run: |
           $binary = if ($IsWindows) { "target/release/dcc-mcp-cua.exe" } else { "target/release/dcc-mcp-cua" }
           ./scripts/test-cli-e2e.ps1 -Binary $binary
-      - name: Run controlled GUI Host IPC E2E
+      - name: Run Windows controlled GUI Host IPC E2E
         if: matrix.os == 'windows-latest'
         timeout-minutes: 10
         shell: pwsh
         run: ./scripts/run-gui-e2e.ps1 -Binary target/release/dcc-mcp-cua.exe
-      - name: Run controlled GUI Host IPC E2E
+      - name: Run Linux controlled GUI Host IPC E2E
         if: matrix.os == 'ubuntu-latest'
         timeout-minutes: 10
         shell: bash
@@ -61,3 +61,8 @@ jobs:
           xvfb-run -a --server-args="-screen 0 1920x1080x24" \
             dbus-run-session -- bash -lc \
             'openbox >/tmp/dcc-mcp-cua-openbox.log 2>&1 & picom --backend xrender --config /dev/null >/tmp/dcc-mcp-cua-picom.log 2>&1 & sleep 2; exec pwsh -NoProfile -File scripts/run-gui-e2e.ps1 -Binary target/release/dcc-mcp-cua'
+      - name: Run macOS controlled GUI Host IPC E2E
+        if: matrix.os == 'macos-latest'
+        timeout-minutes: 10
+        shell: pwsh
+        run: ./scripts/run-gui-e2e.ps1 -Binary target/release/dcc-mcp-cua
