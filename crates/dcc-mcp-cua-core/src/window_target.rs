@@ -232,22 +232,14 @@ fn bounds(value: &serde_json::Map<String, Value>) -> Option<[i32; 4]> {
 /// Resolve an explicitly supplied native window without asking CUA to enumerate
 /// every desktop window. This keeps exact-target operations usable when a UIA
 /// provider is slow or blocked by another application.
+#[cfg(windows)]
 pub(crate) fn resolve_exact(
     scope: &ComputerUseTargetScope,
 ) -> ComputerUseResult<Option<WindowTarget>> {
-    #[cfg(windows)]
-    {
-        let Some(window_id) = scope.window_handle else {
-            return Ok(None);
-        };
-        resolve_windows_target(scope, window_id)
-    }
-
-    #[cfg(not(windows))]
-    {
-        let _ = scope;
-        Ok(None)
-    }
+    let Some(window_id) = scope.window_handle else {
+        return Ok(None);
+    };
+    resolve_windows_target(scope, window_id)
 }
 
 #[cfg(windows)]
