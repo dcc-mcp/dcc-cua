@@ -398,12 +398,18 @@ When a request ID is supplied, cancel it on the same connection with
 `wait_for_window_with_cancel` helper sends that route automatically.
 `find` filters the current accessibility tree by text, role, or element index
 and returns a fresh `accessibility_state_id`. `wait_for` is bounded to 30 seconds and supports `element_present`,
-`text_contains`, `text_equals`, and `value_equals`. `launch_app` requires a non-empty `task_grant_id`, `dcc_type`, and
+`text_contains`, `text_equals`, and `value_equals`. `launch_app` requires a non-empty `session_id`, `task_grant_id`, `dcc_type`, and
 `allow_app_launch: true`; `terminate_app` requires the separate
 `allow_app_terminate: true` grant and force-closes only the exact session target;
 neither permission inherits from an open DCC window
 session. Clipboard operations require `allow_clipboard_read` or
 `allow_clipboard_write`; recording operations require `allow_recording: true`.
+When CUA returns a newly launched PID, the Host keeps its private runtime
+session alive and `open_session` with the same public `session_id`, task grant,
+and DCC type promotes that ownership into the exact window session. This lets
+CUA standard mode prove that `terminate_app` targets a process created by that
+runtime; a different PID or grant is rejected. Keep these requests on one
+persistent Host connection because launch ownership is connection-scoped.
 Browser mutations additionally require `allow_browser_input: true`.
 `browser_prepare` is destructive and separately requires
 `allow_browser_prepare: true`; it never changes a personal browser profile
@@ -530,7 +536,7 @@ Example host requests:
 
 ```json
 {"method":"list_apps","params":{}}
-{"method":"launch_app","params":{"grant":{"task_grant_id":"task-1","dcc_type":"unreal","allow_app_launch":true},"launch":{"name":"Calculator"}}}
+{"method":"launch_app","params":{"session_id":"session-1","grant":{"task_grant_id":"task-1","dcc_type":"unreal","allow_app_launch":true},"launch":{"name":"Calculator"}}}
 {"method":"call_tool","params":{"session_id":"session-1","task_grant_id":"task-1","window_capability":"cua-window-...","tool":"debug_window_info","arguments":{}}}
 {"method":"zoom","params":{"session_id":"session-1","task_grant_id":"task-1","window_capability":"cua-window-...","request":{"observation_id":"session-1-obs-1","x1":120,"y1":80,"x2":420,"y2":220}}}
 {"method":"call_global_tool","params":{"grant":{"task_grant_id":"task-1","dcc_type":"desktop","allow_native_tool":true},"tool":"health_report","arguments":{}}}
@@ -569,6 +575,10 @@ and serialized concurrent raw input. The same CLI
 E2E launches a real endpoint Host and
 checks ping plus pipelined application/tool discovery over the platform transport
 (Windows named pipe or Unix socket).
+An additional lifecycle E2E uses Host IPC itself to launch an isolated native
+fixture (Calculator as a fresh instance on macOS), promote the launch into the
+same private runtime session, record a real mutation to `action.json`, stop the
+recording, terminate only that proven PID, and verify its windows disappear.
 The release workflow packages `dcc-mcp-cua`, the pinned official `cua-driver`
 and cursor-theme companion, the Windows UIAccess companion where applicable,
 and both MIT license files as platform archives, then attaches them to the

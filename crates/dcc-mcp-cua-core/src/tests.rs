@@ -12,9 +12,8 @@ use crate::contracts::{
 };
 use crate::driver_factory::{UPSTREAM_CURSOR_RENDERER_ENABLED, driver_host_options};
 use crate::policy::*;
-use crate::runtime::{
-    await_input_call, diagnostic_tool_check, tool_schema_from_inventory, validate_launch_request,
-};
+use crate::runtime::application::{launch_arguments, validate_launch_request};
+use crate::runtime::{await_input_call, diagnostic_tool_check, tool_schema_from_inventory};
 use crate::window_target::{WindowTarget, validate_target_policy};
 
 #[rstest]
@@ -967,6 +966,15 @@ fn launch_requires_one_safe_application_selector() {
     })
     .expect("launch request should serialize");
     assert!(json.get("bundle_id").is_none());
+    let scoped = launch_arguments(
+        &ComputerUseLaunchRequest {
+            name: Some("Calculator".into()),
+            ..Default::default()
+        },
+        Some("private-runtime-session"),
+    )
+    .expect("session-scoped launch arguments");
+    assert_eq!(scoped["session"], "private-runtime-session");
 }
 
 #[rstest]

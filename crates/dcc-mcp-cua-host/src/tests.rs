@@ -3,6 +3,7 @@ use serde_json::Value;
 use tokio::io::{AsyncWrite, DuplexStream};
 
 use super::*;
+use crate::request_handler::bind_launched_process;
 
 #[rstest]
 fn cursor_render_backend_matches_the_native_platform_owner() {
@@ -424,6 +425,38 @@ fn app_launch_grant_defaults_to_denied() {
 }
 
 #[rstest]
+fn launch_ownership_requires_the_same_grant_and_process() {
+    let launched = HostLaunchSession {
+        runtime_session_id: "private-launch-session".into(),
+        task_grant_id: "task-1".into(),
+        dcc_type: "unreal".into(),
+        process_id: 4242,
+    };
+    let mut matching: TaskGrant = serde_json::from_value(json!({
+        "task_grant_id": "task-1",
+        "dcc_type": "unreal"
+    }))
+    .unwrap();
+    bind_launched_process(&launched, &mut matching).unwrap();
+    assert_eq!(matching.process_id, Some(4242));
+
+    let mut wrong_process: TaskGrant = serde_json::from_value(json!({
+        "task_grant_id": "task-1",
+        "dcc_type": "unreal",
+        "process_id": 7
+    }))
+    .unwrap();
+    assert!(bind_launched_process(&launched, &mut wrong_process).is_err());
+
+    let mut wrong_grant: TaskGrant = serde_json::from_value(json!({
+        "task_grant_id": "task-2",
+        "dcc_type": "unreal"
+    }))
+    .unwrap();
+    assert!(bind_launched_process(&launched, &mut wrong_grant).is_err());
+}
+
+#[rstest]
 fn app_requests_parse_with_host_params_frames() {
     assert!(matches!(
         serde_json::from_value::<Request>(json!({
@@ -708,6 +741,7 @@ fn app_requests_parse_with_host_params_frames() {
         serde_json::from_value::<Request>(json!({
             "method": "launch_app",
             "params": {
+                "session_id": "session-launch",
                 "grant": {
                     "task_grant_id": "task-1",
                     "dcc_type": "unreal",
@@ -718,6 +752,20 @@ fn app_requests_parse_with_host_params_frames() {
         })),
         Ok(Request::LaunchApp { .. })
     ));
+    assert!(
+        serde_json::from_value::<Request>(json!({
+            "method": "launch_app",
+            "params": {
+                "grant": {
+                    "task_grant_id": "task-1",
+                    "dcc_type": "unreal",
+                    "allow_app_launch": true
+                },
+                "launch": {"name": "Calculator"}
+            }
+        }))
+        .is_err()
+    );
     let request = serde_json::from_value::<Request>(json!({
         "method": "open_session",
         "params": {

@@ -15,6 +15,7 @@ use crate::window_target::{WindowTarget, validate_target_policy};
 use crate::windows_uia_fallback::WindowsUiaFallback;
 
 mod action_result;
+pub(crate) mod application;
 mod menu_commands;
 mod window_commands;
 
@@ -383,15 +384,6 @@ impl ComputerUseDriver {
 
     pub async fn cursor_position(&self) -> ComputerUseResult<Value> {
         self.call_tool_value("get_cursor_position", json!({})).await
-    }
-
-    /// Launch one explicitly selected application through CUA's platform backend.
-    pub async fn launch_app(&self, request: &ComputerUseLaunchRequest) -> ComputerUseResult<Value> {
-        validate_launch_request(request)?;
-        let arguments = serde_json::to_value(request).map_err(|error| {
-            ComputerUseError::new(ComputerUseErrorCode::InvalidAction, error.to_string())
-        })?;
-        self.call_tool_value("launch_app", arguments).await
     }
 
     async fn call_tool_value(&self, name: &str, arguments: Value) -> ComputerUseResult<Value> {
@@ -1913,75 +1905,4 @@ async fn list_windows_with_driver(
                 "CUA list_windows omitted structuredContent.windows",
             )
         })
-}
-
-pub(crate) fn validate_launch_request(request: &ComputerUseLaunchRequest) -> ComputerUseResult<()> {
-    let selectors = [
-        request.name.as_deref(),
-        request.bundle_id.as_deref(),
-        request.aumid.as_deref(),
-        request.path.as_deref(),
-        request.launch_path.as_deref(),
-    ];
-    let selector_count = selectors
-        .iter()
-        .flatten()
-        .filter(|value| !value.trim().is_empty())
-        .count();
-    if selector_count > 1 || (selector_count == 0 && request.urls.is_empty()) {
-        return Err(ComputerUseError::new(
-            ComputerUseErrorCode::InvalidAction,
-            "launch requires one application selector or at least one URL",
-        ));
-    }
-    let selected = selectors
-        .into_iter()
-        .flatten()
-        .find(|value| !value.trim().is_empty())
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    const DENIED: [&str; 12] = [
-        "password",
-        "credential",
-        "authentication",
-        "sign in",
-        "login",
-        "terminal",
-        "command prompt",
-        "cmd.exe",
-        "powershell",
-        "pwsh",
-        "bash",
-        "security",
-    ];
-    if DENIED.iter().any(|marker| selected.contains(marker)) {
-        return Err(ComputerUseError::new(
-            ComputerUseErrorCode::InvalidTarget,
-            "system, terminal, authentication, password, and security applications are not allowed",
-        ));
-    }
-    if request.urls.len() > MAX_LAUNCH_URLS
-        || request.additional_arguments.len() > MAX_LAUNCH_ARGUMENTS
-    {
-        return Err(ComputerUseError::new(
-            ComputerUseErrorCode::InvalidAction,
-            "launch contains too many URLs or arguments",
-        ));
-    }
-    if request.urls.iter().any(|url| {
-        let url = url.trim().to_ascii_lowercase();
-        url.len() > 4096
-            || !matches!(
-                url.as_str(),
-                value if value.starts_with("https://")
-                    || value.starts_with("http://")
-                    || value.starts_with("com.epicgames.launcher://")
-            )
-    }) {
-        return Err(ComputerUseError::new(
-            ComputerUseErrorCode::InvalidAction,
-            "launch URLs must use http, https, or the Epic Games Launcher protocol",
-        ));
-    }
-    Ok(())
 }

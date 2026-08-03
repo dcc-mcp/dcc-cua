@@ -1,9 +1,29 @@
 use super::*;
 
+pub(super) fn bind_launched_process(
+    launched: &HostLaunchSession,
+    grant: &mut TaskGrant,
+) -> Result<(), HostError> {
+    if grant.task_grant_id != launched.task_grant_id || grant.dcc_type != launched.dcc_type {
+        return Err(HostError::Protocol(
+            "launch and window session grants do not match".into(),
+        ));
+    }
+    if grant
+        .process_id
+        .is_some_and(|process_id| process_id != launched.process_id)
+    {
+        return Err(HostError::Protocol(
+            "window session does not target the launched process".into(),
+        ));
+    }
+    grant.process_id = Some(launched.process_id);
+    Ok(())
+}
+
 pub(super) async fn handle_request(
     driver: &ComputerUseDriver,
-    sessions: &mut HashMap<String, HostSession>,
-    desktop_sessions: &mut HashMap<String, HostDesktopSession>,
+    sessions: &mut ConnectionSessions,
     snapshot_transport: &mut Option<SnapshotTransport>,
     desktop_shared_image: &mut Option<SharedImage>,
     cancellation_registry: &CancellationRegistry,
@@ -35,6 +55,11 @@ pub(super) async fn handle_request(
     }
     let mode = snapshot_transport
         .ok_or_else(|| HostError::Protocol("hello is required before stateful requests".into()))?;
+    let ConnectionSessions {
+        windows: sessions,
+        desktops: desktop_sessions,
+        launches: launch_sessions,
+    } = sessions;
 
     match request {
         Request::Hello(_) => unreachable!(),
@@ -42,8 +67,8 @@ pub(super) async fn handle_request(
         Request::Doctor {} => Ok((driver.diagnostics().await, None)),
         Request::InterruptAll {} => {
             let generation = broadcast_interrupt();
-            let (window_sessions, desktop_sessions) =
-                stop_sessions(sessions, desktop_sessions).await;
+            let (window_sessions, desktop_sessions, launch_sessions) =
+                stop_sessions(driver, sessions, desktop_sessions, launch_sessions).await;
             Ok((
                 json!({
                     "type": "interrupt_broadcast",
@@ -51,6 +76,7 @@ pub(super) async fn handle_request(
                     "generation": generation,
                     "stopped_window_sessions": window_sessions,
                     "stopped_desktop_sessions": desktop_sessions,
+                    "stopped_launch_sessions": launch_sessions,
                 }),
                 None,
             ))
@@ -314,7 +340,19 @@ pub(super) async fn handle_request(
                 None,
             ))
         }
-        Request::LaunchApp { grant, launch } => {
+        Request::LaunchApp {
+            session_id,
+            grant,
+            launch,
+        } => {
+            if session_id.trim().is_empty() {
+                return Err(HostError::Protocol(
+                    "launch session_id must not be empty".into(),
+                ));
+            }
+            if sessions.contains_key(&session_id) || launch_sessions.contains_key(&session_id) {
+                return Err(HostError::Protocol("session already exists".into()));
+            }
             if grant.task_grant_id.trim().is_empty() || grant.dcc_type.trim().is_empty() {
                 return Err(HostError::Protocol("task grant is incomplete".into()));
             }
@@ -323,11 +361,32 @@ pub(super) async fn handle_request(
                     "application launch is not granted".into(),
                 ));
             }
-            let result = driver.launch_app(&launch).await?;
+            let runtime_session_id = new_runtime_session_id("launch");
+            let result = driver
+                .launch_app_for_session(&launch, &runtime_session_id)
+                .await?;
+            let process_id = result["structuredContent"]["pid"]
+                .as_u64()
+                .and_then(|pid| u32::try_from(pid).ok());
+            if let Some(process_id) = process_id {
+                launch_sessions.insert(
+                    session_id.clone(),
+                    HostLaunchSession {
+                        runtime_session_id,
+                        task_grant_id: grant.task_grant_id.clone(),
+                        dcc_type: grant.dcc_type.clone(),
+                        process_id,
+                    },
+                );
+            } else {
+                let _ = driver.end_launch_session(&runtime_session_id).await;
+            }
             Ok((
                 json!({
                     "type":"app_launched",
+                    "session_id":session_id,
                     "task_grant_id":grant.task_grant_id,
+                    "lifecycle_bound":process_id.is_some(),
                     "result":result,
                 }),
                 None,
@@ -447,22 +506,33 @@ pub(super) async fn handle_request(
                 None,
             ))
         }
-        Request::OpenSession { session_id, grant } => {
+        Request::OpenSession {
+            session_id,
+            mut grant,
+        } => {
             if sessions.contains_key(&session_id) {
                 return Err(HostError::Protocol("session already exists".into()));
             }
             if grant.task_grant_id.trim().is_empty() || grant.dcc_type.trim().is_empty() {
                 return Err(HostError::Protocol("task grant is incomplete".into()));
             }
+            let launched = launch_sessions.get(&session_id).cloned();
+            if let Some(launched) = &launched {
+                bind_launched_process(launched, &mut grant)?;
+            }
             let scope = ComputerUseTargetScope {
                 process_id: grant.process_id,
                 window_handle: grant.window_handle,
                 window_title: grant.window_title,
             };
-            let runtime_session_id = new_runtime_session_id("window");
+            let runtime_session_id = launched
+                .as_ref()
+                .map(|session| session.runtime_session_id.clone())
+                .unwrap_or_else(|| new_runtime_session_id("window"));
             let mut session =
                 driver.session(scope, grant.dcc_type.clone(), runtime_session_id.clone())?;
             let started = session.start().await?;
+            launch_sessions.remove(&session_id);
             let Some(target) = session.target() else {
                 let _ = session.stop().await;
                 return Err(HostError::Protocol("CUA did not return a target".into()));

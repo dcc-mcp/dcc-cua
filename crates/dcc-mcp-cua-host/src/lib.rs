@@ -7,8 +7,10 @@
 
 mod request_handler;
 mod session_identity;
+mod session_state;
 use request_handler::handle_request;
 use session_identity::{new_runtime_session_id, rewrite_session_aliases};
+use session_state::{ConnectionSessions, HostDesktopSession, HostLaunchSession, HostSession};
 
 use std::collections::HashMap;
 #[cfg(unix)]
@@ -35,12 +37,12 @@ use dcc_mcp_cua_browser::{
     BrowserSnapshotRequest, BrowserTypeRequest,
 };
 use dcc_mcp_cua_core::{
-    ComputerUseAction, ComputerUseClipboardWriteRequest, ComputerUseDesktopSession,
-    ComputerUseDesktopSnapshot, ComputerUseDriver, ComputerUseError, ComputerUseErrorCode,
-    ComputerUseImage, ComputerUseMenuRequest, ComputerUsePoint, ComputerUseRecordingStartRequest,
-    ComputerUseResult, ComputerUseScreenshot, ComputerUseSession, ComputerUseTargetScope,
-    ComputerUseToolResult, ComputerUseWindowFrameRequest, ComputerUseWindowQuery,
-    ComputerUseWindowWaitRequest, ComputerUseZoomRequest,
+    ComputerUseAction, ComputerUseClipboardWriteRequest, ComputerUseDesktopSnapshot,
+    ComputerUseDriver, ComputerUseError, ComputerUseErrorCode, ComputerUseImage,
+    ComputerUseMenuRequest, ComputerUsePoint, ComputerUseRecordingStartRequest, ComputerUseResult,
+    ComputerUseScreenshot, ComputerUseTargetScope, ComputerUseToolResult,
+    ComputerUseWindowFrameRequest, ComputerUseWindowQuery, ComputerUseWindowWaitRequest,
+    ComputerUseZoomRequest,
 };
 use dcc_mcp_cua_indicator::{
     BannerTarget, ControlBanner, broadcast_interrupt, interrupt_generation,
@@ -109,6 +111,7 @@ pub const HOST_CAPABILITIES: &[&str] = &[
     "scoped_desktop_raw_input",
     "application_launch",
     "application_terminate",
+    "session_scoped_application_lifecycle",
     "clipboard_read",
     "clipboard_write",
     "trajectory_recording",
@@ -141,16 +144,16 @@ pub fn host_capabilities(cursor_controls_available: bool) -> Vec<&'static str> {
         .collect()
 }
 
-fn rewrite_runtime_session_ids(
-    value: &mut Value,
-    sessions: &HashMap<String, HostSession>,
-    desktop_sessions: &HashMap<String, HostDesktopSession>,
-) {
+fn rewrite_runtime_session_ids(value: &mut Value, sessions: &ConnectionSessions) {
     let aliases =
         sessions
+            .windows
             .iter()
             .map(|(public_id, session)| (session.runtime_session_id.as_str(), public_id.as_str()))
-            .chain(desktop_sessions.iter().map(|(public_id, session)| {
+            .chain(sessions.desktops.iter().map(|(public_id, session)| {
+                (session.runtime_session_id.as_str(), public_id.as_str())
+            }))
+            .chain(sessions.launches.iter().map(|(public_id, session)| {
                 (session.runtime_session_id.as_str(), public_id.as_str())
             }))
             .collect::<Vec<_>>();
@@ -252,6 +255,7 @@ enum Request {
         session_id: String,
     },
     LaunchApp {
+        session_id: String,
         grant: TaskGrant,
         launch: dcc_mcp_cua_core::ComputerUseLaunchRequest,
     },
@@ -756,50 +760,6 @@ impl HostAction {
     }
 }
 
-struct HostSession {
-    runtime_session_id: String,
-    task_grant_id: String,
-    allow_raw_input: bool,
-    allow_app_terminate: bool,
-    allow_clipboard_read: bool,
-    allow_clipboard_write: bool,
-    allow_recording: bool,
-    allow_browser_input: bool,
-    allow_browser_prepare: bool,
-    allow_browser_download: bool,
-    allow_native_tool: bool,
-    allow_menu_invoke: bool,
-    allow_session_escalation: bool,
-    capability: String,
-    session: ComputerUseSession,
-    banner: ControlBanner,
-    browser: BrowserSession,
-    latest_observation_id: Option<String>,
-    latest_accessibility_state_id: Option<String>,
-    latest_accessibility_root: Option<Value>,
-    latest_shared_image: Option<SharedImage>,
-}
-
-impl HostSession {
-    fn invalidate_observations(&mut self) {
-        self.latest_observation_id = None;
-        self.latest_accessibility_state_id = None;
-        self.latest_accessibility_root = None;
-        self.latest_shared_image = None;
-        self.browser.invalidate_snapshot();
-    }
-}
-
-struct HostDesktopSession {
-    runtime_session_id: String,
-    task_grant_id: String,
-    allow_raw_input: bool,
-    capability: String,
-    interrupt_generation: u64,
-    session: ComputerUseDesktopSession,
-    latest_shared_image: Option<SharedImage>,
-}
-
 type CancellationRegistry = Arc<Mutex<HashMap<String, CancellationHandle>>>;
 
 #[derive(Clone)]
@@ -968,8 +928,7 @@ where
     let writer = Arc::new(AsyncMutex::new(writer));
     let mut parallel_tasks = JoinSet::new();
     let mut snapshot_transport = None;
-    let mut sessions = HashMap::<String, HostSession>::new();
-    let mut desktop_sessions = HashMap::<String, HostDesktopSession>::new();
+    let mut sessions = ConnectionSessions::default();
     let mut desktop_shared_image = None;
     let cancellation_registry = Arc::new(Mutex::new(HashMap::new()));
 
@@ -1017,7 +976,6 @@ where
             let mut operation = Box::pin(handle_request(
                 &driver,
                 &mut sessions,
-                &mut desktop_sessions,
                 &mut snapshot_transport,
                 &mut desktop_shared_image,
                 &cancellation_registry,
@@ -1031,7 +989,7 @@ where
                             Err(error) => (error_response(error_code(&error), error.to_string()), None),
                         };
                         drop(operation);
-                        rewrite_runtime_session_ids(&mut response, &sessions, &desktop_sessions);
+                        rewrite_runtime_session_ids(&mut response, &sessions);
                         write_response_locked(
                             &writer,
                             with_request_id(response, request_id.as_deref()),
@@ -1044,7 +1002,7 @@ where
                             drop(operation);
                             parallel_tasks.abort_all();
                             while parallel_tasks.join_next().await.is_some() {}
-                            return cleanup_sessions(sessions, desktop_sessions).await;
+                            return cleanup_sessions(&driver, sessions).await;
                         };
                         let (cancel_id, next_request) = match parse_request_frame(&frame) {
                             Ok(request) => request,
@@ -1124,7 +1082,6 @@ where
             let (mut response, attachment) = match Box::pin(handle_request(
                 &driver,
                 &mut sessions,
-                &mut desktop_sessions,
                 &mut snapshot_transport,
                 &mut desktop_shared_image,
                 &cancellation_registry,
@@ -1135,7 +1092,7 @@ where
                 Ok(result) => result,
                 Err(error) => (error_response(error_code(&error), error.to_string()), None),
             };
-            rewrite_runtime_session_ids(&mut response, &sessions, &desktop_sessions);
+            rewrite_runtime_session_ids(&mut response, &sessions);
             write_response_locked(
                 &writer,
                 with_request_id(response, request_id.as_deref()),
@@ -1147,27 +1104,42 @@ where
 
     while parallel_tasks.join_next().await.is_some() {}
 
-    cleanup_sessions(sessions, desktop_sessions).await
+    cleanup_sessions(&driver, sessions).await
 }
 
 async fn cleanup_sessions(
-    mut sessions: HashMap<String, HostSession>,
-    mut desktop_sessions: HashMap<String, HostDesktopSession>,
+    driver: &ComputerUseDriver,
+    mut sessions: ConnectionSessions,
 ) -> Result<(), HostError> {
-    stop_sessions(&mut sessions, &mut desktop_sessions).await;
+    stop_sessions(
+        driver,
+        &mut sessions.windows,
+        &mut sessions.desktops,
+        &mut sessions.launches,
+    )
+    .await;
     Ok(())
 }
 
 async fn stop_sessions(
+    driver: &ComputerUseDriver,
     sessions: &mut HashMap<String, HostSession>,
     desktop_sessions: &mut HashMap<String, HostDesktopSession>,
-) -> (usize, usize) {
-    let counts = (sessions.len(), desktop_sessions.len());
+    launch_sessions: &mut HashMap<String, HostLaunchSession>,
+) -> (usize, usize, usize) {
+    let counts = (
+        sessions.len(),
+        desktop_sessions.len(),
+        launch_sessions.len(),
+    );
     for (_, mut session) in sessions.drain() {
         let _ = session.session.stop().await;
     }
     for (_, mut session) in desktop_sessions.drain() {
         let _ = session.session.stop().await;
+    }
+    for (_, session) in launch_sessions.drain() {
+        let _ = driver.end_launch_session(&session.runtime_session_id).await;
     }
     counts
 }
