@@ -66,6 +66,7 @@ impl WindowsUiaFallback {
             element_token: action.element_token.clone(),
             text: action.text.clone(),
             checked: None,
+            delivery_mode: action.delivery_mode.clone(),
         };
         let value = tokio::task::spawn_blocking(move || {
             session

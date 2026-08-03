@@ -9,6 +9,13 @@ use std::{
 
 use serde_json::{Value, json};
 use uuid::Uuid;
+use windows_sys::Win32::{
+    System::Threading::{AttachThreadInput, GetCurrentThreadId},
+    UI::WindowsAndMessaging::{
+        BringWindowToTop, GetForegroundWindow, GetWindowThreadProcessId, IsWindow,
+        SetForegroundWindow,
+    },
+};
 
 use crate::{
     UiaAction, UiaError, UiaTarget,
@@ -61,6 +68,8 @@ impl UiaSession {
         let index = resolve_index(state, action.element_index, action.element_token.as_deref())?;
         let fence = state.fences[index].clone();
         let action_name = normalized_action(&action.action)?;
+        let foreground = (action.delivery_mode.as_deref() == Some("background"))
+            .then(|| unsafe { GetForegroundWindow() } as usize);
         let payload = json!({
             "mode": "act",
             "scope": self.scope(true),
@@ -74,8 +83,11 @@ impl UiaSession {
                 "checked": action.checked.unwrap_or(false),
             },
         });
-        let raw = self.request(&payload)?;
+        let raw = self.request(&payload);
         self.snapshot = None;
+        let foreground = foreground.map(restore_foreground).transpose();
+        let raw = raw?;
+        foreground?;
         ensure_ok(&raw)?;
         Ok(json!({
             "backend": "windows_uia",
@@ -105,6 +117,53 @@ impl UiaSession {
             .expect("worker was initialized")
             .request(payload)
     }
+}
+
+fn restore_foreground(expected: usize) -> Result<(), UiaError> {
+    let current = unsafe { GetForegroundWindow() };
+    if current as usize == expected {
+        return Ok(());
+    }
+    let expected = expected as windows_sys::Win32::Foundation::HWND;
+    if expected.is_null() || unsafe { IsWindow(expected) } == 0 {
+        return Err(background_delivery_error());
+    }
+    unsafe { SetForegroundWindow(expected) };
+    if unsafe { GetForegroundWindow() } == expected {
+        return Ok(());
+    }
+
+    let current_thread = unsafe { GetCurrentThreadId() };
+    let foreground_thread = unsafe { GetWindowThreadProcessId(current, std::ptr::null_mut()) };
+    let expected_thread = unsafe { GetWindowThreadProcessId(expected, std::ptr::null_mut()) };
+    let attached_foreground = foreground_thread != 0
+        && foreground_thread != current_thread
+        && unsafe { AttachThreadInput(current_thread, foreground_thread, 1) } != 0;
+    let attached_expected = expected_thread != 0
+        && expected_thread != current_thread
+        && expected_thread != foreground_thread
+        && unsafe { AttachThreadInput(current_thread, expected_thread, 1) } != 0;
+    unsafe {
+        BringWindowToTop(expected);
+        SetForegroundWindow(expected);
+        if attached_expected {
+            AttachThreadInput(current_thread, expected_thread, 0);
+        }
+        if attached_foreground {
+            AttachThreadInput(current_thread, foreground_thread, 0);
+        }
+    }
+    if unsafe { GetForegroundWindow() } == expected {
+        Ok(())
+    } else {
+        Err(background_delivery_error())
+    }
+}
+
+fn background_delivery_error() -> UiaError {
+    UiaError::BackendUnavailable(
+        "Windows UIA action completed but could not preserve the foreground window".into(),
+    )
 }
 
 fn normalized_action(action: &str) -> Result<&str, UiaError> {
