@@ -775,6 +775,7 @@ pub(crate) fn action_arguments(
     args
 }
 
+#[cfg(any(windows, test))]
 pub(crate) fn is_windows_uia_semantic_action(
     action: &ComputerUseAction,
     observation: &ComputerUseObservation,
