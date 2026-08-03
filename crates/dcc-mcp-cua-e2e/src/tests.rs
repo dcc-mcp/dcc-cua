@@ -8,7 +8,9 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 #[cfg(feature = "gui-e2e")]
-use cua_driver_testkit::{ChildReaper, FixtureJournal, harness_app, spawn_in_job};
+use cua_driver_testkit::{
+    BrowserFixtureServer, ChildReaper, FixtureJournal, harness_app, spawn_in_job,
+};
 #[cfg(feature = "gui-e2e")]
 use dcc_mcp_cua_client::{HostProcess, HostResponse, SnapshotTransport};
 #[cfg(feature = "gui-e2e")]
@@ -24,6 +26,35 @@ const FIXTURE_MARKER: &str = "WEB_HARNESS_MARKER_v1";
 const SESSION_ID: &str = "controlled-gui-e2e";
 #[cfg(feature = "gui-e2e")]
 const GRANT_ID: &str = "controlled-gui-e2e-grant";
+#[cfg(feature = "gui-e2e")]
+const BROWSER_COMPLETENESS_HTML: &str = r#"<!doctype html>
+<html><head><meta charset="utf-8"><title>CUA browser completeness</title></head>
+<body>
+  <p data-cua-id="page-marker">BROWSER_COMPLETENESS_MARKER_v1</p>
+  <input data-cua-id="upload" id="upload" aria-label="standalone-upload" type="file">
+  <span data-cua-id="upload-state" id="upload-state">upload=0</span>
+  <a data-cua-id="download" aria-label="standalone-download" href="/download" download>Download fixture</a>
+  <script>
+    const publish = () => {
+      const state = {};
+      document.querySelectorAll('[data-cua-id]').forEach(element => {
+        const entry = { text: (element.textContent || '').trim() };
+        if ('value' in element) entry.value = element.value;
+        state[element.dataset.cuaId] = entry;
+      });
+      fetch(window.__CUA_E2E_FIXTURE_JOURNAL_URL, {
+        method: 'POST', headers: {'Content-Type': 'text/plain'}, body: JSON.stringify(state)
+      }).catch(() => {});
+    };
+    document.getElementById('upload').addEventListener('change', event => {
+      const names = Array.from(event.target.files).map(file => file.name).join(',');
+      document.getElementById('upload-state').textContent = `upload=${event.target.files.length}:${names}`;
+      publish();
+    });
+    new MutationObserver(publish).observe(document.body, {subtree:true, childList:true, characterData:true});
+    window.addEventListener('load', publish, {once:true});
+  </script>
+</body></html>"#;
 
 #[cfg(feature = "gui-e2e")]
 fn fixture() -> (PathBuf, &'static [&'static str]) {
@@ -166,6 +197,19 @@ fn wait_for_journal(journal: &FixtureJournal, id: &str, expected: &str) {
 }
 
 #[cfg(feature = "gui-e2e")]
+fn wait_for_browser_fixture(server: &BrowserFixtureServer, id: &str, expected: &str) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while server.text(id).as_deref() != Some(expected) {
+        assert!(
+            Instant::now() < deadline,
+            "browser fixture state {id:?} did not reach {expected:?}: {}",
+            server.snapshot()
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+#[cfg(feature = "gui-e2e")]
 async fn host_request(host: &mut HostProcess, method: &str, params: Value) -> HostResponse {
     let started = Instant::now();
     let response = tokio::time::timeout(
@@ -268,6 +312,7 @@ async fn controlled_electron_round_trip() {
                 "allow_raw_input": true,
                 "allow_browser_input": true,
                 "allow_browser_prepare": true,
+                "allow_browser_download": true,
                 "allow_session_escalation": true
             }
         }),
@@ -621,6 +666,180 @@ async fn controlled_electron_round_trip() {
         &journal,
         "lbl-input-mirror",
         &format!("mirror={browser_expected}"),
+    );
+
+    let browser_snapshot = host_request(
+        &mut host,
+        "browser_snapshot",
+        json!({
+            "session_id": SESSION_ID,
+            "task_grant_id": GRANT_ID,
+            "window_capability": capability,
+            "request": {
+                "target_id": target_id,
+                "tab_id": tab_id,
+                "snapshot_format": "semantic_v2"
+            }
+        }),
+    )
+    .await;
+    let click_target_ref = browser_ref_by_text(&browser_snapshot.value, "Click target");
+    host_request(
+        &mut host,
+        "browser_pointer",
+        json!({
+            "session_id": SESSION_ID,
+            "task_grant_id": GRANT_ID,
+            "window_capability": capability,
+            "request": {
+                "target_id": target_id,
+                "tab_id": tab_id,
+                "snapshot_id": browser_snapshot_id(&browser_snapshot.value),
+                "ref": click_target_ref,
+                "action": "double_click",
+                "input_route": "dom_event"
+            }
+        }),
+    )
+    .await;
+    wait_for_journal(&journal, "lbl-last-action", "last_action=double_click");
+
+    let browser_fixture = BrowserFixtureServer::start(BROWSER_COMPLETENESS_HTML);
+    host_request(
+        &mut host,
+        "browser_navigate",
+        json!({
+            "session_id": SESSION_ID,
+            "task_grant_id": GRANT_ID,
+            "window_capability": capability,
+            "request": {
+                "target_id": target_id,
+                "tab_id": tab_id,
+                "url": browser_fixture.page_url()
+            }
+        }),
+    )
+    .await;
+    wait_for_browser_fixture(
+        &browser_fixture,
+        "page-marker",
+        "BROWSER_COMPLETENESS_MARKER_v1",
+    );
+
+    let browser_snapshot = host_request(
+        &mut host,
+        "browser_snapshot",
+        json!({
+            "session_id": SESSION_ID,
+            "task_grant_id": GRANT_ID,
+            "window_capability": capability,
+            "request": {
+                "target_id": target_id,
+                "tab_id": tab_id,
+                "snapshot_format": "semantic_v2"
+            }
+        }),
+    )
+    .await;
+    let upload_ref = browser_ref_by_text(&browser_snapshot.value, "standalone-upload");
+    let upload_directory = tempfile::tempdir().expect("create browser upload directory");
+    let upload_path = upload_directory.path().join("fixture-upload.txt");
+    std::fs::write(&upload_path, b"fixture upload payload").expect("write browser upload file");
+    let upload_path = std::fs::canonicalize(upload_path).expect("canonical browser upload file");
+    let uploaded = host_request(
+        &mut host,
+        "browser_set_input_files",
+        json!({
+            "session_id": SESSION_ID,
+            "task_grant_id": GRANT_ID,
+            "window_capability": capability,
+            "request": {
+                "target_id": target_id,
+                "tab_id": tab_id,
+                "snapshot_id": browser_snapshot_id(&browser_snapshot.value),
+                "ref": upload_ref,
+                "files": [upload_path]
+            }
+        }),
+    )
+    .await;
+    assert!(
+        !uploaded.value.to_string().contains("fixture-upload.txt"),
+        "browser upload response leaked a local path: {}",
+        uploaded.value
+    );
+    wait_for_browser_fixture(
+        &browser_fixture,
+        "upload-state",
+        "upload=1:fixture-upload.txt",
+    );
+
+    let primed_dialog = host_request(
+        &mut host,
+        "browser_dialog",
+        json!({
+            "session_id": SESSION_ID,
+            "task_grant_id": GRANT_ID,
+            "window_capability": capability,
+            "request": {
+                "target_id": target_id,
+                "tab_id": tab_id,
+                "action": "inspect"
+            }
+        }),
+    )
+    .await;
+    assert_eq!(
+        primed_dialog.value["result"]["structuredContent"]["present"],
+        false
+    );
+
+    let browser_snapshot = host_request(
+        &mut host,
+        "browser_snapshot",
+        json!({
+            "session_id": SESSION_ID,
+            "task_grant_id": GRANT_ID,
+            "window_capability": capability,
+            "request": {
+                "target_id": target_id,
+                "tab_id": tab_id,
+                "snapshot_format": "semantic_v2"
+            }
+        }),
+    )
+    .await;
+    let download_ref = browser_ref_by_text(&browser_snapshot.value, "standalone-download");
+    let download_directory = tempfile::tempdir().expect("create browser download directory");
+    host_request(
+        &mut host,
+        "browser_download",
+        json!({
+            "session_id": SESSION_ID,
+            "task_grant_id": GRANT_ID,
+            "window_capability": capability,
+            "request": {
+                "target_id": target_id,
+                "tab_id": tab_id,
+                "snapshot_id": browser_snapshot_id(&browser_snapshot.value),
+                "ref": download_ref,
+                "destination_root": download_directory.path()
+            }
+        }),
+    )
+    .await;
+    let downloads = std::fs::read_dir(download_directory.path())
+        .expect("read browser download directory")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("enumerate browser downloads");
+    assert_eq!(
+        downloads.len(),
+        1,
+        "expected one completed browser download"
+    );
+    assert_eq!(
+        std::fs::read(downloads[0].path()).expect("read browser download"),
+        b"CUA_DRIVER_BROWSER_DOWNLOAD_FIXTURE_V1\n"
     );
 
     host_request(&mut host, "stop_session", json!({"session_id": SESSION_ID})).await;
