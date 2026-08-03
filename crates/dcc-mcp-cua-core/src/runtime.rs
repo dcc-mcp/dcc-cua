@@ -1608,9 +1608,13 @@ impl ComputerUseSession {
     ) -> ComputerUseResult<Value> {
         validate_escalation_request(reason, detail)?;
         self.ensure_active()?;
-        let target = self.revalidate_target().await?;
         #[cfg(windows)]
-        self.activate_windows_uia_fallback(&target);
+        {
+            let target = self.revalidate_target().await?;
+            self.activate_windows_uia_fallback(&target);
+        }
+        #[cfg(not(windows))]
+        self.revalidate_target().await?;
         self.escalated = true;
         Ok(json!({
             "approved": true,

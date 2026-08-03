@@ -1,5 +1,7 @@
 use serde::Serialize;
-use serde_json::{Value, json};
+use serde_json::Value;
+#[cfg(windows)]
+use serde_json::json;
 
 use crate::contracts::{
     ComputerUseError, ComputerUseErrorCode, ComputerUseResult, ComputerUseTargetScope,
