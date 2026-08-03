@@ -31,6 +31,7 @@ pub(crate) fn document() -> Value {
         "upstream_driver": {
             "command": ["cua-driver", "<COMMAND>"],
             "binary_environment": "CUA_DRIVER_BIN",
+            "sibling_binary": format!("cua-driver{}", std::env::consts::EXE_SUFFIX),
             "top_level_aliases": {
                 "daemon": "serve",
                 "mcp": "mcp",

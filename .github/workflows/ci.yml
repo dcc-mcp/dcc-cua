@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   rust:
-    timeout-minutes: 45
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -42,6 +42,9 @@ jobs:
       - name: Compile GUI E2E on every target
         run: cargo test --locked -p dcc-mcp-cua-e2e --features gui-e2e --no-run
       - run: cargo build --release --locked -p dcc-mcp-cua-cli
+      - name: Build pinned official CUA driver
+        shell: pwsh
+        run: ./scripts/build-upstream-cua-driver.ps1 -Destination target/release
       - name: Run release CLI and Host IPC E2E
         timeout-minutes: 5
         shell: pwsh

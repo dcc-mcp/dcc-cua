@@ -72,10 +72,11 @@ exclusive full-screen capture are outside this Host's contract.
 This project wraps the CUA SDK for agent-friendly, bounded operations. The
 `dcc-mcp-cua` CLI owns its own `update` command and exposes `daemon`, `mcp`, and
 `recording render` as first-class entries. Those three entries reuse the
-official `cua-driver` executable through `CUA_DRIVER_BIN` rather than copying
-its daemon/MCP/render implementation. Use this CLI/Host for the DCC-MCP safety
-envelope, exact window capability, fresh observations, grants, friendly actions,
-and software-specific adapters.
+official `cua-driver` executable bundled beside the release CLI rather than
+copying its daemon/MCP/render implementation. `CUA_DRIVER_BIN` remains an
+explicit override, followed by the sibling binary and then `PATH`. Use this
+CLI/Host for the DCC-MCP safety envelope, exact window capability, fresh
+observations, grants, friendly actions, and software-specific adapters.
 
 ## Development gates
 
@@ -88,6 +89,10 @@ pwsh -NoProfile -File scripts/check-rust-layout.ps1
 cargo fmt --all -- --check
 cargo test --workspace --all-targets
 ```
+
+Release packaging builds the official companions from the pinned CUA checkout;
+Windows source builds therefore require Visual Studio's Spectre-mitigated C++
+libraries, matching the upstream release toolchain.
 
 ## CLI
 
@@ -129,8 +134,9 @@ cargo run -p dcc-mcp-cua-cli -- update --check
 
 `daemon` and `mcp` pass their remaining flags to the official `cua-driver`
 binary. `recording render` can be invoked as
-`dcc-mcp-cua recording render INPUT_DIR OUTPUT_MP4`; set `CUA_DRIVER_BIN` when
-the upstream executable is not on `PATH`. `recording start|stop|status` keeps
+`dcc-mcp-cua recording render INPUT_DIR OUTPUT_MP4`. Release archives include
+the official driver built from the same pinned CUA revision; set
+`CUA_DRIVER_BIN` only to override it. `recording start|stop|status` keeps
 the upstream daemon lifecycle, while this project's Host routes remain the
 grant-gated DCC-MCP surface.
 
@@ -538,9 +544,11 @@ uses two Electron windows on Linux/macOS and two non-foreground WPF windows on
 Windows. The same CLI E2E also launches a real endpoint Host and
 checks ping plus pipelined application/tool discovery over the platform transport
 (Windows named pipe or Unix socket).
-The release workflow
-packages the `dcc-mcp-cua` binary as platform archives and attaches them to the
-GitHub release.
+The release workflow packages `dcc-mcp-cua`, the pinned official `cua-driver`
+and cursor-theme companion, the Windows UIAccess companion where applicable,
+and both MIT license files as platform archives, then attaches them to the
+GitHub release. CI invokes the bundled `cua-driver`, `daemon`, `mcp`, and
+`recording render` help routes on every platform before GUI testing.
 
 The release gate is intentionally closed while the product is still being
 completed. Do not set the repository variable `DCC_MCP_CUA_RELEASE_READY=true`
