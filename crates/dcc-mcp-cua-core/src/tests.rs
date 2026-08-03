@@ -12,8 +12,8 @@ use crate::contracts::{
 };
 use crate::policy::*;
 use crate::runtime::{
-    await_input_call, diagnostic_tool_check, driver_host_options, tool_schema_from_inventory,
-    validate_launch_request,
+    UPSTREAM_CURSOR_RENDERER_ENABLED, await_input_call, diagnostic_tool_check, driver_host_options,
+    tool_schema_from_inventory, validate_launch_request,
 };
 use crate::window_target::{WindowTarget, validate_target_policy};
 
@@ -35,7 +35,8 @@ async fn input_calls_have_a_hard_timeout() {
 #[rstest]
 fn host_runtime_uses_the_upstream_cursor_renderer_only_where_it_can_run() {
     let options = driver_host_options();
-    assert_eq!(options.cursor.enabled, cfg!(target_os = "linux"));
+    assert_eq!(UPSTREAM_CURSOR_RENDERER_ENABLED, cfg!(target_os = "linux"));
+    assert_eq!(options.cursor.enabled, UPSTREAM_CURSOR_RENDERER_ENABLED);
     assert!(options.host_owns_permission_ux);
     assert!(options.prepare_desktop_environment);
 }

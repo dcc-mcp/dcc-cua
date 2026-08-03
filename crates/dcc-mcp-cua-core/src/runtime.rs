@@ -16,6 +16,7 @@ use crate::window_target::{WindowTarget, validate_target_policy};
 use crate::windows_uia_fallback::WindowsUiaFallback;
 
 const INPUT_CALL_TIMEOUT: Duration = Duration::from_secs(15);
+pub(crate) const UPSTREAM_CURSOR_RENDERER_ENABLED: bool = cfg!(target_os = "linux");
 
 async fn call_driver_tool(
     driver: &CuaDriver,
@@ -421,7 +422,7 @@ pub(crate) fn driver_host_options() -> DriverHostOptions {
             // runtime currently supplies the native per-session cursor/badge
             // only on Linux; macOS reports facility_unavailable until its
             // signed/TCC presentation runtime is available.
-            enabled: cfg!(target_os = "linux"),
+            enabled: UPSTREAM_CURSOR_RENDERER_ENABLED,
             ..CursorConfig::default()
         },
         host_owns_permission_ux: true,
@@ -476,6 +477,10 @@ async fn enable_session_marker(
     session_id: &str,
     context: &str,
 ) -> ComputerUseResult<()> {
+    if !UPSTREAM_CURSOR_RENDERER_ENABLED {
+        return Ok(());
+    }
+
     let result = call_driver_tool(
         &driver.driver,
         "set_agent_cursor_enabled",
