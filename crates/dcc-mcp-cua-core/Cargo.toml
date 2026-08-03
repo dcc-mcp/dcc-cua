@@ -16,6 +16,7 @@ path = "src/lib.rs"
 [dependencies]
 base64 = "0.22"
 # Temporary upstream fix: https://github.com/trycua/cua/pull/2812
+cua-driver-contract = { git = "https://github.com/loonghao/cua.git", rev = "bed06d8bb144ff673fbdc8181ec42dc134d2de91", package = "cua-driver-contract" }
 cua-driver-sdk = { git = "https://github.com/loonghao/cua.git", rev = "bed06d8bb144ff673fbdc8181ec42dc134d2de91", package = "cua-driver-sdk" }
 cursor-overlay = { git = "https://github.com/loonghao/cua.git", rev = "bed06d8bb144ff673fbdc8181ec42dc134d2de91", package = "cursor-overlay" }
 png = "0.17"

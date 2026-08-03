@@ -278,36 +278,16 @@ pub(crate) fn native_tool_allowed_in_window_session(name: &str) -> bool {
     const DEDICATED_TOOLS: &[&str] = &[
         "list_windows",
         "get_window_state",
-        "set_window_frame",
-        "invoke_menu",
         "zoom",
         "verify_state",
-        "click",
-        "double_click",
-        "right_click",
-        "drag",
-        "type_text",
-        "press_key",
-        "hotkey",
-        "set_value",
-        "scroll",
         "clipboard_read",
         "clipboard_write",
         "get_desktop_state",
         "get_accessibility_tree",
-        "move_cursor",
         "set_agent_cursor_enabled",
         "set_agent_cursor_motion",
         "get_agent_cursor_state",
         "set_agent_cursor_theme",
-        "browser_prepare",
-        "browser_navigate",
-        "browser_click",
-        "browser_type",
-        "browser_dialog",
-        "browser_set_input_files",
-        "browser_download",
-        "browser_pointer",
         "start_recording",
         "stop_recording",
         "get_recording_state",
@@ -315,7 +295,10 @@ pub(crate) fn native_tool_allowed_in_window_session(name: &str) -> bool {
         "page",
         "get_session_state",
     ];
-    if DEDICATED_TOOLS.contains(&name) || name.starts_with("browser_") {
+    if DEDICATED_TOOLS.contains(&name)
+        || name.starts_with("browser_")
+        || cua_driver_contract::is_action_result_tool(name)
+    {
         return false;
     }
     !matches!(

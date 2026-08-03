@@ -335,9 +335,12 @@ fn native_tool_boundary_rejects_reserved_and_dedicated_routes() {
     assert!(validate_native_tool_request("debug_window_info", &json!({})).is_ok());
     assert!(validate_native_tool_request("bad-name", &json!({})).is_err());
     assert!(validate_native_tool_request("debug_window_info", &json!({"_tool":"x"})).is_err());
-    assert!(!native_tool_allowed_in_window_session("click"));
-    assert!(!native_tool_allowed_in_window_session("set_window_frame"));
-    assert!(!native_tool_allowed_in_window_session("invoke_menu"));
+    for name in cua_driver_contract::ACTION_RESULT_TOOLS {
+        assert!(
+            !native_tool_allowed_in_window_session(name),
+            "canonical action tool {name} bypassed its dedicated route"
+        );
+    }
     assert!(!native_tool_allowed_in_window_session("list_windows"));
     assert!(!native_tool_allowed_in_window_session("get_browser_state"));
     assert!(!native_tool_allowed_in_window_session("page"));
