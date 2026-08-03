@@ -11,6 +11,7 @@ use crate::runtime::ComputerUseSession;
 use crate::window_target::WindowTarget;
 #[cfg(windows)]
 use crate::{ComputerUseAction, ComputerUseErrorCode, ComputerUseToolResult};
+#[cfg(windows)]
 use crate::{ComputerUseError, ComputerUseResult};
 
 #[cfg(windows)]
@@ -85,6 +86,7 @@ impl WindowsUiaFallback {
 }
 
 impl ComputerUseSession {
+    #[cfg(windows)]
     pub(crate) fn activate_windows_uia_fallback(&mut self, target: &WindowTarget) {
         if self
             .windows_uia
@@ -102,6 +104,8 @@ impl ComputerUseSession {
         max_depth: u32,
         visual_fallback: &str,
     ) -> Value {
+        #[cfg(not(windows))]
+        let _ = (max_elements, max_depth);
         #[cfg(windows)]
         if let Ok(value) = self
             .windows_accessibility_snapshot(target, max_elements, max_depth)
