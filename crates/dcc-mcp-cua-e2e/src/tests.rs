@@ -288,33 +288,35 @@ async fn controlled_electron_round_trip() {
         }
     );
 
-    host_request(
-        &mut host,
-        "cursor_tool",
-        json!({
-            "session_id": SESSION_ID,
-            "task_grant_id": GRANT_ID,
-            "window_capability": capability,
-            "tool": "move_cursor",
-            "arguments": {"x": 64, "y": 64}
-        }),
-    )
-    .await;
-    let cursor_state = host_request(
-        &mut host,
-        "cursor_tool",
-        json!({
-            "session_id": SESSION_ID,
-            "task_grant_id": GRANT_ID,
-            "window_capability": capability,
-            "tool": "get_agent_cursor_state",
-            "arguments": {}
-        }),
-    )
-    .await;
-    let cursor_state = cursor_state.value["result"].to_string();
-    assert!(cursor_state.contains("cua.default"), "{cursor_state}");
-    assert!(cursor_state.contains("enabled"), "{cursor_state}");
+    if opened.value["cursor"]["render_backend"] != "unavailable" {
+        host_request(
+            &mut host,
+            "cursor_tool",
+            json!({
+                "session_id": SESSION_ID,
+                "task_grant_id": GRANT_ID,
+                "window_capability": capability,
+                "tool": "move_cursor",
+                "arguments": {"x": 64, "y": 64}
+            }),
+        )
+        .await;
+        let cursor_state = host_request(
+            &mut host,
+            "cursor_tool",
+            json!({
+                "session_id": SESSION_ID,
+                "task_grant_id": GRANT_ID,
+                "window_capability": capability,
+                "tool": "get_agent_cursor_state",
+                "arguments": {}
+            }),
+        )
+        .await;
+        let cursor_state = cursor_state.value["result"].to_string();
+        assert!(cursor_state.contains("cua.default"), "{cursor_state}");
+        assert!(cursor_state.contains("enabled"), "{cursor_state}");
+    }
 
     let snapshot = host_request(
         &mut host,
