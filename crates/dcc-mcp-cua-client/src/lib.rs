@@ -19,11 +19,10 @@ use serde_json::{Value, json};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf, ReadHalf, WriteHalf};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 
-pub const HOST_PROTOCOL_VERSION: u32 = 1;
-pub const MAX_JSON_FRAME_BYTES: usize = 4 * 1024 * 1024;
-pub const MAX_BINARY_FRAME_BYTES: usize = 64 * 1024 * 1024;
-pub const MAX_REQUEST_ID_CHARS: usize = 128;
-pub const MAX_PARALLEL_DISCOVERY_REQUESTS: usize = 32;
+pub use dcc_mcp_cua_protocol::{
+    HOST_PROTOCOL_VERSION, MAX_BINARY_FRAME_BYTES, MAX_JSON_FRAME_BYTES,
+    MAX_PARALLEL_DISCOVERY_REQUESTS, MAX_REQUEST_ID_CHARS,
+};
 
 trait HostStream: AsyncRead + AsyncWrite + Unpin + Send {}
 impl<T> HostStream for T where T: AsyncRead + AsyncWrite + Unpin + Send {}
@@ -319,31 +318,7 @@ impl HostClient {
 
     #[must_use]
     pub fn default_endpoint() -> String {
-        #[cfg(windows)]
-        {
-            let mut session_id = 0;
-            let resolved = unsafe {
-                windows_sys::Win32::System::RemoteDesktop::ProcessIdToSessionId(
-                    windows_sys::Win32::System::Threading::GetCurrentProcessId(),
-                    &mut session_id,
-                ) != 0
-            };
-            if resolved {
-                return format!(r"\\.\pipe\dcc-mcp-cua-v1-session-{session_id}");
-            }
-            r"\\.\pipe\dcc-mcp-cua-v1".to_owned()
-        }
-        #[cfg(unix)]
-        {
-            std::env::temp_dir()
-                .join("dcc-mcp-cua-v1.sock")
-                .to_string_lossy()
-                .into_owned()
-        }
-        #[cfg(not(any(windows, unix)))]
-        {
-            "dcc-mcp-cua-v1".to_owned()
-        }
+        dcc_mcp_cua_protocol::default_endpoint()
     }
 
     /// Negotiate the protocol and preferred snapshot transport.

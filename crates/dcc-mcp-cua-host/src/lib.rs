@@ -5,10 +5,15 @@
 //! framed payload when binary transport is selected, so control frames stay
 //! bounded and the transport does not base64-encode pixels.
 
+mod endpoint;
 mod request_handler;
 mod session_identity;
 mod session_state;
 mod task_grant;
+pub use dcc_mcp_cua_protocol::{
+    HOST_PROTOCOL_VERSION, MAX_BINARY_FRAME_BYTES, MAX_JSON_FRAME_BYTES,
+    MAX_PARALLEL_DISCOVERY_REQUESTS, MAX_REQUEST_ID_CHARS,
+};
 use request_handler::handle_request;
 use session_identity::{new_runtime_session_id, rewrite_session_aliases};
 use session_state::{ConnectionSessions, HostDesktopSession, HostLaunchSession, HostSession};
@@ -16,12 +21,6 @@ use task_grant::TaskGrant;
 pub use task_grant::{MAX_APPLICATION_LABEL_CHARS, MAX_TASK_GRANT_ID_CHARS};
 
 use std::collections::HashMap;
-#[cfg(unix)]
-use std::os::unix::fs::FileTypeExt;
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
-#[cfg(unix)]
-use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -55,13 +54,6 @@ use dcc_mcp_cua_shm::SharedImage;
 
 // ponytail: one OS input stream is process-global; shard only if platforms gain isolated seats.
 static RAW_INPUT_QUEUE: AsyncMutex<()> = AsyncMutex::const_new(());
-
-/// Control frame limit. Pixel bytes use a separate bounded frame.
-pub const MAX_JSON_FRAME_BYTES: usize = 4 * 1024 * 1024;
-pub const MAX_BINARY_FRAME_BYTES: usize = 64 * 1024 * 1024;
-pub const MAX_REQUEST_ID_CHARS: usize = 128;
-pub const MAX_PARALLEL_DISCOVERY_REQUESTS: usize = 32;
-pub const HOST_PROTOCOL_VERSION: u32 = 1;
 
 /// Capabilities this implementation actually provides.
 pub const HOST_CAPABILITIES: &[&str] = &[
@@ -174,31 +166,7 @@ pub enum HostTransport {
 impl HostTransport {
     #[must_use]
     pub fn default_endpoint() -> String {
-        #[cfg(windows)]
-        {
-            let mut session_id = 0;
-            let resolved = unsafe {
-                windows_sys::Win32::System::RemoteDesktop::ProcessIdToSessionId(
-                    windows_sys::Win32::System::Threading::GetCurrentProcessId(),
-                    &mut session_id,
-                ) != 0
-            };
-            if resolved {
-                return format!(r"\\.\pipe\dcc-mcp-cua-v1-session-{session_id}");
-            }
-            r"\\.\pipe\dcc-mcp-cua-v1".to_owned()
-        }
-        #[cfg(unix)]
-        {
-            std::env::temp_dir()
-                .join("dcc-mcp-cua-v1.sock")
-                .to_string_lossy()
-                .into_owned()
-        }
-        #[cfg(not(any(windows, unix)))]
-        {
-            "dcc-mcp-cua-v1".to_owned()
-        }
+        dcc_mcp_cua_protocol::default_endpoint()
     }
 }
 
@@ -871,7 +839,7 @@ pub async fn run(driver: ComputerUseDriver, transport: HostTransport) -> Result<
         HostTransport::Stdio => {
             process_connection_parts(driver, tokio::io::stdin(), tokio::io::stdout()).await
         }
-        HostTransport::Endpoint(endpoint) => serve_endpoint(driver, endpoint).await,
+        HostTransport::Endpoint(endpoint) => endpoint::serve(driver, endpoint).await,
     }
 }
 
@@ -1857,80 +1825,6 @@ async fn write_frame_unflushed<W: AsyncWrite + Unpin>(
     writer.write_all(&(body.len() as u32).to_be_bytes()).await?;
     writer.write_all(body).await?;
     Ok(())
-}
-
-async fn serve_endpoint(driver: ComputerUseDriver, endpoint: String) -> Result<(), HostError> {
-    #[cfg(windows)]
-    {
-        serve_named_pipe(driver, endpoint).await
-    }
-    #[cfg(unix)]
-    {
-        serve_unix_socket(driver, endpoint).await
-    }
-    #[cfg(not(any(windows, unix)))]
-    {
-        let _ = driver;
-        let _ = endpoint;
-        Err(HostError::Protocol(
-            "local endpoint transport is unsupported on this platform".into(),
-        ))
-    }
-}
-
-#[cfg(windows)]
-async fn serve_named_pipe(driver: ComputerUseDriver, endpoint: String) -> Result<(), HostError> {
-    use tokio::net::windows::named_pipe::ServerOptions;
-
-    loop {
-        let server = ServerOptions::new().create(&endpoint)?;
-        server.connect().await?;
-        let next_driver = driver.clone();
-        tokio::spawn(async move {
-            let _ = process_connection(next_driver, server).await;
-        });
-    }
-}
-
-#[cfg(unix)]
-async fn serve_unix_socket(driver: ComputerUseDriver, endpoint: String) -> Result<(), HostError> {
-    use tokio::net::{UnixListener, UnixStream};
-
-    let path = Path::new(&endpoint);
-    if path.exists() {
-        let metadata = std::fs::symlink_metadata(path)?;
-        if !metadata.file_type().is_socket() {
-            return Err(HostError::Protocol(format!(
-                "endpoint exists and is not a socket: {endpoint}"
-            )));
-        }
-        match UnixStream::connect(path).await {
-            Ok(_) => {
-                return Err(HostError::Protocol(format!(
-                    "endpoint is already in use: {endpoint}"
-                )));
-            }
-            Err(error) if stale_unix_socket_error(&error) => std::fs::remove_file(path)?,
-            Err(error) => return Err(error.into()),
-        }
-    }
-    let listener = UnixListener::bind(path)?;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
-    loop {
-        let (stream, _) = listener.accept().await?;
-        let next_driver = driver.clone();
-        tokio::spawn(async move {
-            let _ = process_connection(next_driver, stream).await;
-        });
-    }
-}
-
-#[cfg(unix)]
-fn stale_unix_socket_error(error: &std::io::Error) -> bool {
-    matches!(
-        error.kind(),
-        std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound
-    )
 }
 
 #[cfg(test)]

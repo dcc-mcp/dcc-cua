@@ -3,6 +3,14 @@ use rstest::rstest;
 use super::*;
 use tokio::io::DuplexStream;
 
+#[rstest]
+fn default_endpoint_uses_the_shared_protocol_contract() {
+    assert_eq!(
+        HostClient::default_endpoint(),
+        dcc_mcp_cua_protocol::default_endpoint()
+    );
+}
+
 async fn write_frame<W: AsyncWrite + Unpin>(
     writer: &mut W,
     body: &[u8],

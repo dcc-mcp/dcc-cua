@@ -25,7 +25,7 @@ repository and provides:
   Windows physical Escape and the cross-platform `interrupt_all` Host request
   advance the same Host-process stop generation for every active connection.
 
-The repository is a Cargo workspace with nine responsibilities:
+The repository is a Cargo workspace with ten responsibilities:
 
 - `dcc-mcp-cua-core`: scoped Computer Use domain, safety policy, and
   CUA execution boundary;
@@ -43,6 +43,8 @@ The repository is a Cargo workspace with nine responsibilities:
 - `dcc-mcp-cua-platform-windows`: exact PID/HWND Windows UI Automation worker
   for background semantic fallback when CUA's combined window-state path is
   unavailable;
+- `dcc-mcp-cua-protocol`: shared Host wire limits and per-user local endpoint
+  identity used by both the Host and reusable Client;
 - `dcc-mcp-cua-shm`: cross-platform shared-memory image handoff;
 - `dcc-mcp-cua-cli`: the thin CLI process that composes the workspace crates.
 
@@ -345,7 +347,11 @@ bounded binary attachment frame with offset descriptors.
 
 On Windows, the default endpoint is the per-session named pipe
 `\\.\pipe\dcc-mcp-cua-v1-session-<WindowsSessionId>`. On Unix, the default
-endpoint is `$TMPDIR/dcc-mcp-cua-v1.sock`. The protocol uses an unsigned
+endpoint is `$XDG_RUNTIME_DIR/dcc-mcp-cua-v1.sock` when that directory is
+owned by the current user with mode `0700`; otherwise it falls back to
+`$TMPDIR/dcc-mcp-cua-<uid>/dcc-mcp-cua-v1.sock`. The Host creates a missing
+endpoint parent with mode `0700` and refuses relative paths or parents
+that are not current-user `0700` directories. The protocol uses an unsigned
 big-endian `u32` length followed by one UTF-8 JSON request or response. A
 client selects `snapshot_transport` as `binary_frame` (the default) or
 `shared_memory` in `hello`; binary snapshots are followed by one additional

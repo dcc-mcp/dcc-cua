@@ -1019,11 +1019,11 @@ dependencies = [
 name = "dcc-mcp-cua-client"
 version = "0.0.0"
 dependencies = [
+ "dcc-mcp-cua-protocol",
  "rstest",
  "serde_json",
  "thiserror 2.0.19",
  "tokio",
- "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1065,6 +1065,7 @@ dependencies = [
  "dcc-mcp-cua-browser",
  "dcc-mcp-cua-core",
  "dcc-mcp-cua-indicator",
+ "dcc-mcp-cua-protocol",
  "dcc-mcp-cua-shm",
  "rstest",
  "serde",
@@ -1072,7 +1073,6 @@ dependencies = [
  "thiserror 2.0.19",
  "tokio",
  "uuid",
- "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1093,6 +1093,15 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.19",
  "uuid",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "dcc-mcp-cua-protocol"
+version = "0.0.0"
+dependencies = [
+ "libc",
+ "rstest",
  "windows-sys 0.61.2",
 ]
 

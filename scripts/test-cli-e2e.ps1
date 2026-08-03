@@ -12,6 +12,8 @@ $isMacHost = $false
 if ($PSVersionTable.PSVersion.Major -ge 6) {
     $isMacHost = [bool]$IsMacOS
 }
+$endpointRuntimeDir = $null
+$originalXdgRuntimeDir = $env:XDG_RUNTIME_DIR
 
 function Invoke-BinaryJson {
     param([string[]]$Arguments)
@@ -26,6 +28,17 @@ function Invoke-BinaryJson {
     catch {
         throw "dcc-mcp-cua returned invalid JSON for '$($Arguments[0])': $_"
     }
+}
+
+try {
+if (-not $isWindowsHost) {
+    $endpointRuntimeDir = Join-Path ([System.IO.Path]::GetTempPath()) "dcc-mcp-cua-e2e-$([guid]::NewGuid().ToString('N'))"
+    [void][System.IO.Directory]::CreateDirectory($endpointRuntimeDir)
+    & chmod 700 $endpointRuntimeDir
+    if ($LASTEXITCODE -ne 0) {
+        throw "failed to secure the Unix E2E runtime directory"
+    }
+    $env:XDG_RUNTIME_DIR = $endpointRuntimeDir
 }
 
 $help = & $binaryPath --help | Out-String
@@ -49,6 +62,10 @@ $manifest = Invoke-BinaryJson -Arguments @("manifest")
 $expectedOs = if ($isWindowsHost) { "windows" } elseif ($isMacHost) { "macos" } else { "linux" }
 if ($manifest.name -ne "dcc-mcp-cua" -or $manifest.target.os -ne $expectedOs) {
     throw "manifest does not describe the current release binary"
+}
+if (-not $isWindowsHost -and
+    $manifest.host.default_endpoint -ne (Join-Path $endpointRuntimeDir "dcc-mcp-cua-v1.sock")) {
+    throw "manifest did not select the private XDG runtime endpoint"
 }
 if ($manifest.version -notmatch '^\d+\.\d+\.\d+$' -or
     $manifest.host.protocol_version -ne 1 -or
@@ -204,7 +221,7 @@ $endpointHost = $null
 $endpoint = if ($isWindowsHost) {
     "\\.\pipe\dcc-mcp-cua-e2e-$([guid]::NewGuid().ToString('N'))"
 } else {
-    Join-Path ([System.IO.Path]::GetTempPath()) "dcc-mcp-cua-e2e-$([guid]::NewGuid().ToString('N')).sock"
+    [string]$manifest.host.default_endpoint
 }
 $endpointPingCount = [int]$manifest.host.max_parallel_discovery_requests - 2
 $endpointBatchRequests = @(
@@ -226,7 +243,10 @@ try {
     $endpointStart.FileName = $binaryPath
     $endpointStart.UseShellExecute = $false
     $endpointStart.CreateNoWindow = $true
-    $endpointArguments = @("host", "--endpoint", $endpoint)
+    $endpointArguments = @("host")
+    if ($isWindowsHost) {
+        $endpointArguments += @("--endpoint", $endpoint)
+    }
     $argumentListProperty = $endpointStart.PSObject.Properties["ArgumentList"]
     if ($null -ne $argumentListProperty -and $null -ne $argumentListProperty.Value) {
         foreach ($argument in $endpointArguments) {
@@ -308,3 +328,23 @@ finally {
 }
 
 Write-Host "CLI E2E passed for ${expectedOs}: bundled upstream routes, manifest, diagnostics, session lifecycle, a ${streamBurstCount}-request long-lived discovery burst, bounded endpoint batch/stream Host IPC, error recovery, apps, and $($toolNames.Count) CUA tools."
+}
+finally {
+    if (-not $isWindowsHost) {
+        if ($null -eq $originalXdgRuntimeDir) {
+            Remove-Item Env:XDG_RUNTIME_DIR -ErrorAction SilentlyContinue
+        }
+        else {
+            $env:XDG_RUNTIME_DIR = $originalXdgRuntimeDir
+        }
+        if ($null -ne $endpointRuntimeDir) {
+            $runtimeSocket = Join-Path $endpointRuntimeDir "dcc-mcp-cua-v1.sock"
+            if (Test-Path -LiteralPath $runtimeSocket) {
+                Remove-Item -LiteralPath $runtimeSocket -Force
+            }
+            if (Test-Path -LiteralPath $endpointRuntimeDir) {
+                Remove-Item -LiteralPath $endpointRuntimeDir -Force
+            }
+        }
+    }
+}

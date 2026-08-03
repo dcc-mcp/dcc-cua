@@ -14,12 +14,10 @@ name = "dcc_mcp_cua_client"
 path = "src/lib.rs"
 
 [dependencies]
+dcc-mcp-cua-protocol = { path = "../dcc-mcp-cua-protocol" }
 serde_json = "1"
 thiserror = "2"
 tokio = { version = "1", features = ["io-util", "macros", "net", "process", "rt-multi-thread", "time"] }
-
-[target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_System_RemoteDesktop", "Win32_System_Threading"] }
 
 [dev-dependencies]
 rstest.workspace = true
