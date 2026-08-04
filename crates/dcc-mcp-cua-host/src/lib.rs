@@ -20,10 +20,12 @@ use session_state::{ConnectionSessions, HostDesktopSession, HostLaunchSession, H
 use task_grant::TaskGrant;
 pub use task_grant::{MAX_APPLICATION_LABEL_CHARS, MAX_TASK_GRANT_ID_CHARS};
 
+pub const HOST_HELLO_TIMEOUT_MS: u64 = 10_000;
+
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -837,7 +839,13 @@ fn cancel_wait(
 pub async fn run(driver: ComputerUseDriver, transport: HostTransport) -> Result<(), HostError> {
     match transport {
         HostTransport::Stdio => {
-            process_connection_parts(driver, tokio::io::stdin(), tokio::io::stdout()).await
+            process_connection_parts(
+                driver,
+                tokio::io::stdin(),
+                tokio::io::stdout(),
+                Duration::from_millis(HOST_HELLO_TIMEOUT_MS),
+            )
+            .await
         }
         HostTransport::Endpoint(endpoint) => endpoint::serve(driver, endpoint).await,
     }
@@ -848,13 +856,20 @@ where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     let (reader, writer) = tokio::io::split(stream);
-    process_connection_parts(driver, reader, writer).await
+    process_connection_parts(
+        driver,
+        reader,
+        writer,
+        Duration::from_millis(HOST_HELLO_TIMEOUT_MS),
+    )
+    .await
 }
 
 async fn process_connection_parts<R, W>(
     driver: ComputerUseDriver,
     reader: R,
     writer: W,
+    hello_timeout: Duration,
 ) -> Result<(), HostError>
 where
     R: AsyncRead + Unpin,
@@ -867,9 +882,24 @@ where
     let mut sessions = ConnectionSessions::default();
     let mut desktop_shared_image = None;
     let cancellation_registry = Arc::new(Mutex::new(HashMap::new()));
+    let hello_deadline = tokio::time::Instant::now() + hello_timeout;
 
     let connection_result = async {
-        while let Some(frame) = read_frame(&mut reader, MAX_JSON_FRAME_BYTES).await? {
+        while let Some(frame) = if snapshot_transport.is_none() {
+            tokio::time::timeout_at(
+                hello_deadline,
+                read_frame(&mut reader, MAX_JSON_FRAME_BYTES),
+            )
+            .await
+            .map_err(|_| {
+                HostError::Protocol(format!(
+                    "hello was not completed within {} ms",
+                    hello_timeout.as_millis()
+                ))
+            })??
+        } else {
+            read_frame(&mut reader, MAX_JSON_FRAME_BYTES).await?
+        } {
         reap_completed_parallel_requests(&mut parallel_tasks);
         let (request_id, request) = match parse_request_frame(&frame) {
             Ok(request) => request,
