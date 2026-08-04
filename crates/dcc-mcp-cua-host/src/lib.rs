@@ -11,7 +11,7 @@ mod session_identity;
 mod session_state;
 mod task_grant;
 pub use dcc_mcp_cua_protocol::{
-    HOST_PROTOCOL_VERSION, MAX_BINARY_FRAME_BYTES, MAX_JSON_FRAME_BYTES,
+    HOST_PROTOCOL_VERSION, MAX_BINARY_FRAME_BYTES, MAX_HOST_CONNECTIONS, MAX_JSON_FRAME_BYTES,
     MAX_PARALLEL_DISCOVERY_REQUESTS, MAX_REQUEST_ID_CHARS,
 };
 use request_handler::handle_request;

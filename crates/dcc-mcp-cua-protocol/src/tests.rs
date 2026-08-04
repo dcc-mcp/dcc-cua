@@ -7,6 +7,7 @@ fn protocol_limits_are_ordered_and_bounded() {
     const {
         assert!(HOST_PROTOCOL_VERSION == 1);
         assert!(MAX_BINARY_FRAME_BYTES > MAX_JSON_FRAME_BYTES);
+        assert!(MAX_HOST_CONNECTIONS > 0);
         assert!(MAX_PARALLEL_DISCOVERY_REQUESTS > 0);
     }
 }

@@ -11,6 +11,7 @@ pub const HOST_PROTOCOL_VERSION: u32 = 1;
 pub const MAX_JSON_FRAME_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_BINARY_FRAME_BYTES: usize = 64 * 1024 * 1024;
 pub const MAX_REQUEST_ID_CHARS: usize = 128;
+pub const MAX_HOST_CONNECTIONS: usize = 32;
 pub const MAX_PARALLEL_DISCOVERY_REQUESTS: usize = 32;
 
 #[cfg(unix)]

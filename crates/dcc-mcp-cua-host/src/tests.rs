@@ -225,6 +225,18 @@ fn default_endpoint_uses_the_shared_protocol_contract() {
     );
 }
 
+#[rstest]
+fn endpoint_connection_limit_applies_backpressure() {
+    let limiter = endpoint::connection_limiter();
+    let mut permits = Vec::with_capacity(MAX_HOST_CONNECTIONS);
+    for _ in 0..MAX_HOST_CONNECTIONS {
+        permits.push(limiter.clone().try_acquire_owned().unwrap());
+    }
+    assert!(limiter.clone().try_acquire_owned().is_err());
+    permits.pop();
+    assert!(limiter.try_acquire_owned().is_ok());
+}
+
 #[cfg(unix)]
 #[rstest]
 fn only_refused_or_missing_unix_sockets_are_replaceable() {
