@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "id": "ue",
+  "display_name": "Unreal Engine",
+  "selectors": [
+    {"application_names": ["UnrealEditor.exe", "UE4Editor.exe", "UE5Editor.exe"], "window_title_contains": ["Unreal Editor", "虚幻编辑器", "PCG Fab", "Fab"]}
+  ],
+  "surfaces": [
+    {"id": "viewport", "label": "Level viewport", "role": "viewport", "route": "unreal_typed_api", "targets": [{"id": "level_viewport", "label": "Level viewport", "role": "viewport", "names": ["Viewport"], "supported_actions": ["click", "drag", "orbit", "frame_selection"]}]},
+    {"id": "content_browser", "label": "Content Browser", "role": "asset_browser", "route": "unreal_typed_api", "targets": [{"id": "search", "label": "Asset search", "role": "search", "names": ["Search Assets"], "automation_ids": ["ContentBrowser.SearchBox"], "supported_actions": ["set_text", "submit"]}, {"id": "asset_item", "label": "Asset item", "role": "asset", "supported_actions": ["select", "open", "drag"]}]},
+    {"id": "outliner", "label": "World Outliner", "role": "tree", "route": "accessibility", "targets": [{"id": "actor", "label": "Actor item", "role": "tree_item", "supported_actions": ["select", "expand", "context_menu"]}]},
+    {"id": "details", "label": "Details panel", "role": "property_editor", "route": "accessibility", "targets": [{"id": "property", "label": "Actor property", "role": "property", "supported_actions": ["set_value", "toggle"]}]},
+    {"id": "fab", "label": "Fab browser", "role": "asset_store", "route": "browser_dom", "targets": [{"id": "listing", "label": "Fab listing", "role": "asset_listing", "supported_actions": ["inspect", "open"]}, {"id": "download", "label": "Download action", "role": "download", "supported_actions": ["request_confirmation", "download"]}]}
+  ],
+  "settings": {"dialog_style": "application_rendered", "preferred_route": "unreal_typed_api", "destructive_confirmation_required": true}
+}

@@ -9,6 +9,7 @@ members = [
     "crates/dcc-mcp-cua-platform-windows",
     "crates/dcc-mcp-cua-protocol",
     "crates/dcc-mcp-cua-shm",
+    "crates/dcc-mcp-cua-semantic-profiles",
     "crates/dcc-mcp-cua-cli",
     "crates/dcc-mcp-cua-workspace-hack",
 ]

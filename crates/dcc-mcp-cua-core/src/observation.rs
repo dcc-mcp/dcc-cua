@@ -43,6 +43,11 @@ pub(crate) fn semantic_observation(
 }
 
 impl ComputerUseSession {
+    /// Return the latest observation metadata for callers that act on it.
+    pub fn latest_observation(&self) -> Option<&ComputerUseObservation> {
+        self.observation.as_ref()
+    }
+
     /// Return the latest pixel or semantic observation fence.
     pub fn latest_observation_id(&self) -> Option<&str> {
         self.observation

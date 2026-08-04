@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 
 use base64::Engine;
 use cua_driver_sdk::CuaDriver;
+use dcc_mcp_cua_indicator::{BannerTarget, ControlBanner};
 use serde_json::{Value, json};
 
 use crate::contracts::*;
@@ -482,6 +483,7 @@ pub struct ComputerUseSession {
     app_name: String,
     session_id: String,
     marker: ComputerUseMarker,
+    control_banner: Option<ControlBanner>,
     target: Option<WindowTarget>,
     pub(crate) observation: Option<ComputerUseObservation>,
     #[cfg(windows)]
@@ -697,6 +699,7 @@ impl ComputerUseSession {
                 label,
                 backend: "cua-driver-sdk",
             },
+            control_banner: None,
             target: None,
             observation: None,
             #[cfg(windows)]
@@ -730,7 +733,22 @@ impl ComputerUseSession {
         .await?;
         ensure_tool_ok("start CUA session", &result)?;
         enable_session_marker(&self.driver, &self.session_id, "show CUA marker").await?;
+        let control_banner = match ControlBanner::start(BannerTarget {
+            process_id: target.pid,
+            window_handle: target.window_id,
+            label: self.marker.label.clone(),
+        }) {
+            Ok(banner) => banner,
+            Err(error) => {
+                cleanup_started_session(&self.driver, &self.session_id).await;
+                return Err(ComputerUseError::new(
+                    ComputerUseErrorCode::BackendUnavailable,
+                    format!("start visible control banner: {error}"),
+                ));
+            }
+        };
         self.target = Some(target.clone());
+        self.control_banner = Some(control_banner);
         #[cfg(windows)]
         {
             self.windows_uia = None;
@@ -742,6 +760,7 @@ impl ComputerUseSession {
             "success": true,
             "target": target,
             "marker": self.marker,
+            "banner": self.banner_status(),
             "cursor_theme": MOUSE_CURSOR_THEME,
             "backend": "cua-driver-sdk",
         }))
@@ -1479,6 +1498,7 @@ impl ComputerUseSession {
         if !self.active {
             return Ok(json!({"success": true, "active": false}));
         }
+        self.control_banner.take();
         let result = call_driver_tool(
             &self.driver.driver,
             "end_session",
@@ -1611,6 +1631,33 @@ impl ComputerUseSession {
         self.target.as_ref().map(|target| json!(target))
     }
 
+    pub fn banner_status(&self) -> Value {
+        self.control_banner.as_ref().map_or_else(
+            || {
+                json!({
+                    "backend": "unavailable",
+                    "visible": false,
+                    "target_frame_visible": false,
+                    "interrupted": false,
+                    "stop_key": "Escape",
+                })
+            },
+            |banner| json!(banner.status()),
+        )
+    }
+
+    pub fn control_banner_interrupted(&self) -> bool {
+        self.control_banner
+            .as_ref()
+            .is_some_and(ControlBanner::interrupted)
+    }
+
+    pub fn set_control_cursor_position(&self, x: f64, y: f64) {
+        if let Some(banner) = &self.control_banner {
+            banner.set_cursor_position(x, y);
+        }
+    }
+
     /// Revalidate and return the current exact-window state.
     pub async fn window_state(&self) -> ComputerUseResult<Value> {
         self.ensure_active()?;
@@ -1698,6 +1745,7 @@ impl ComputerUseSession {
             "escalated": self.escalated,
             "session_id": self.session_id,
             "target": self.target,
+            "banner": self.banner_status(),
             "marker": self.marker,
             "latest_observation_id": self.observation.as_ref().map(|value| &value.observation_id),
             "backend": "cua-driver-sdk",

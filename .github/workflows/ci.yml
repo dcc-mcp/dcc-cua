@@ -40,6 +40,7 @@ jobs:
           swift_runtime="$(cd "$(dirname "$swiftc_path")/../lib/swift/macosx" && pwd)"
           echo "DYLD_LIBRARY_PATH=${swift_runtime}:/usr/lib/swift${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}" >> "$GITHUB_ENV"
       - run: pwsh -NoProfile -File scripts/check-rust-layout.ps1
+      - run: pwsh -NoProfile -File scripts/check-agent-skills.ps1
       - if: matrix.os == 'ubuntu-latest'
         run: |
           cargo hakari generate --diff

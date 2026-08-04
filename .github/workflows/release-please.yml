@@ -97,16 +97,17 @@ jobs:
           host="$(rustc -vV | sed -n 's/^host: //p')"
           version="${TAG_NAME#v}"
           mkdir -p dist
+          cp -R skills target/release/skills
           cp LICENSE target/release/LICENSE
           if [ "${{ matrix.archive }}" = "zip" ]; then
             archive="dist/dcc-mcp-cua-${version}-${host}.zip"
             (
               cd target/release
-              7z a "../../$archive" dcc-mcp-cua.exe libexec LICENSE
+              7z a "../../$archive" dcc-mcp-cua.exe libexec LICENSE skills
             )
           else
             archive="dist/dcc-mcp-cua-${version}-${host}.tar.gz"
-            tar -czf "$archive" -C target/release dcc-mcp-cua libexec LICENSE
+            tar -czf "$archive" -C target/release dcc-mcp-cua libexec LICENSE skills
           fi
           sha256sum "$archive" > "${archive}.sha256"
       - uses: actions/upload-artifact@v4

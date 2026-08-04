@@ -63,6 +63,43 @@ the Unreal or browser adapter and should combine typed Unreal APIs with scoped
 CUA; Fab account, purchase, and download confirmation remain explicit
 user-approved operations.
 
+### Independent semantic profiles
+
+The `dcc-mcp-cua-semantic-profiles` crate is the application-specific extension
+point for deeper semantics. It ships validated profiles for `ue`, `maya`, and
+`fab` without adding application branches to the generic Core or Host. Each
+profile describes window/URL selectors, semantic surfaces and targets, the
+preferred route, and dialog policy. The built-ins are the official defaults;
+users and studios can supply a compatible JSON profile through the same CLI
+execution path.
+
+Use the CLI to inspect the extension catalog without starting a DCC process:
+
+```powershell
+cargo run -p dcc-mcp-cua-cli -- profiles
+cargo run -p dcc-mcp-cua-cli -- profile --id maya
+# Inspect or execute a user-authored profile with the same contract.
+cargo run -p dcc-mcp-cua-cli -- profile --profile-file C:\profiles\maya-studio.json
+# Bind a profile to one exact live window and inspect its semantic matches.
+cargo run -p dcc-mcp-cua-cli -- profile --id maya --app maya.exe --surface home --query new_scene
+# Resolve the profile target, execute its supported action, and return a post-state tree.
+cargo run -p dcc-mcp-cua-cli -- profile --id maya --app maya.exe --surface home --query new_scene --action click --activate
+```
+
+Maya's profile explicitly sets `dialog_style` to `os_native` and routes its
+file dialog surface through `os_native_dialog`, so an adapter can request the
+operating system's native dialog semantics instead of treating it as an
+application-rendered panel.
+
+The repository also ships standalone Agent Skills under `skills/`:
+
+- `cua-fab-unreal`: repeatable, confirmation-aware Fab download and Unreal import;
+- `cua-maya-native-dialog`: Maya Home and OS-native file-dialog validation;
+- `cua-semantic-profile-authoring`: official and user-authored profile guidance.
+
+They use the released `dcc-mcp-cua` CLI and are included in release archives, so
+another agent can install a single Skill without coupling to the Rust workspace.
+
 Multiple agents may keep independent exact PID/HWND sessions open for different
 applications. Semantic, UIA, and browser operations remain parallel; actions
 that consume the single OS keyboard/mouse stream use one fair Host-wide FIFO and
@@ -232,6 +269,11 @@ fence across actions. The Windows UIA worker starts through a separate readiness
 handshake. A CUA action or window activation that does not return within 15
 seconds invalidates that window session instead of blocking the Host
 indefinitely.
+
+The shared Core window session owns this ControlBanner, so direct `dcc-mcp-cua`
+window actions and Host IPC sessions use the same visible banner and target
+frame. Desktop-scope sessions have no single PID/HWND to frame and therefore
+retain the CUA desktop marker instead.
 
 For common controls, `click`, `double-click`, `right-click`, `move`, `scroll`,
 `press`, `hotkey`, and `type` build the same fenced CUA actions without manual

@@ -49,8 +49,7 @@ use dcc_mcp_cua_core::{
     ComputerUseZoomRequest,
 };
 use dcc_mcp_cua_indicator::{
-    BannerTarget, ControlBanner, broadcast_interrupt, interrupt_generation,
-    interrupt_generation_changed,
+    broadcast_interrupt, interrupt_generation, interrupt_generation_changed,
 };
 use dcc_mcp_cua_shm::SharedImage;
 
@@ -80,6 +79,7 @@ pub const HOST_CAPABILITIES: &[&str] = &[
     "windows_background_uia_fallback",
     "zoomed_window_observation",
     "semantic_value_actions",
+    "semantic_profile_extensions",
     "two_axis_scroll",
     "bounded_wait_for",
     "binary_snapshot_frames",
@@ -1429,7 +1429,7 @@ async fn authorized_session<'a>(
 }
 
 async fn ensure_session_not_interrupted(session: &mut HostSession) -> Result<(), HostError> {
-    if session.banner.interrupted() {
+    if session.session.control_banner_interrupted() {
         let cleanup_note = session
             .session
             .stop()
