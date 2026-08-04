@@ -77,6 +77,7 @@ fn acquire_endpoint_singleton(
     Ok(handle)
 }
 
+#[cfg(any(windows, test))]
 pub(crate) fn endpoint_singleton_name(endpoint: &str) -> String {
     let mut hash = 0xcbf2_9ce4_8422_2325_u64;
     for byte in endpoint.to_lowercase().bytes() {

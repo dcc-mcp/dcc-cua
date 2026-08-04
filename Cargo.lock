@@ -995,6 +995,7 @@ version = "0.0.0"
 dependencies = [
  "base64",
  "dcc-mcp-cua-core",
+ "dcc-mcp-cua-workspace-hack",
  "rstest",
  "serde",
  "serde_json",
@@ -1009,6 +1010,7 @@ dependencies = [
  "dcc-mcp-cua-core",
  "dcc-mcp-cua-host",
  "dcc-mcp-cua-shm",
+ "dcc-mcp-cua-workspace-hack",
  "rstest",
  "self_update",
  "serde_json",
@@ -1021,6 +1023,7 @@ name = "dcc-mcp-cua-client"
 version = "0.0.0"
 dependencies = [
  "dcc-mcp-cua-protocol",
+ "dcc-mcp-cua-workspace-hack",
  "rstest",
  "serde_json",
  "thiserror 2.0.19",
@@ -1036,6 +1039,7 @@ dependencies = [
  "cua-driver-sdk",
  "cursor-overlay",
  "dcc-mcp-cua-platform-windows",
+ "dcc-mcp-cua-workspace-hack",
  "platform-windows",
  "png 0.17.16",
  "rstest",
@@ -1052,6 +1056,7 @@ version = "0.0.0"
 dependencies = [
  "cua-driver-testkit",
  "dcc-mcp-cua-client",
+ "dcc-mcp-cua-workspace-hack",
  "rstest",
  "serde_json",
  "tempfile",
@@ -1068,6 +1073,7 @@ dependencies = [
  "dcc-mcp-cua-indicator",
  "dcc-mcp-cua-protocol",
  "dcc-mcp-cua-shm",
+ "dcc-mcp-cua-workspace-hack",
  "rstest",
  "serde",
  "serde_json",
@@ -1081,6 +1087,7 @@ dependencies = [
 name = "dcc-mcp-cua-indicator"
 version = "0.0.0"
 dependencies = [
+ "dcc-mcp-cua-workspace-hack",
  "rstest",
  "serde",
  "thiserror 2.0.19",
@@ -1091,6 +1098,7 @@ dependencies = [
 name = "dcc-mcp-cua-platform-windows"
 version = "0.0.0"
 dependencies = [
+ "dcc-mcp-cua-workspace-hack",
  "rstest",
  "serde_json",
  "thiserror 2.0.19",
@@ -1102,6 +1110,7 @@ dependencies = [
 name = "dcc-mcp-cua-protocol"
 version = "0.0.0"
 dependencies = [
+ "dcc-mcp-cua-workspace-hack",
  "libc",
  "rstest",
  "windows-sys 0.61.2",
@@ -1111,11 +1120,63 @@ dependencies = [
 name = "dcc-mcp-cua-shm"
 version = "0.0.0"
 dependencies = [
+ "dcc-mcp-cua-workspace-hack",
  "ipckit",
  "rstest",
  "serde",
  "thiserror 2.0.19",
  "uuid",
+]
+
+[[package]]
+name = "dcc-mcp-cua-workspace-hack"
+version = "0.0.0"
+dependencies = [
+ "aho-corasick",
+ "block2 0.5.1",
+ "camino",
+ "core-foundation-sys",
+ "errno",
+ "flate2",
+ "futures-core",
+ "futures-io",
+ "futures-sink",
+ "futures-util",
+ "getrandom 0.4.3",
+ "indexmap",
+ "ipnet",
+ "libc",
+ "linux-raw-sys",
+ "memchr",
+ "miniz_oxide",
+ "objc2 0.5.2",
+ "objc2-app-kit 0.2.2",
+ "objc2-foundation 0.2.2",
+ "once_cell",
+ "proc-macro2",
+ "quote",
+ "regex-automata",
+ "regex-syntax",
+ "rustix",
+ "semver",
+ "serde",
+ "serde_core",
+ "serde_json",
+ "simd-adler32",
+ "slab",
+ "smallvec",
+ "syn 2.0.119",
+ "syn 3.0.3",
+ "tokio",
+ "toml_parser",
+ "uuid",
+ "windows 0.61.3",
+ "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
+ "winnow 1.0.4",
+ "x11rb",
+ "x11rb-protocol",
+ "zvariant",
 ]
 
 [[package]]
@@ -6002,6 +6063,7 @@ dependencies = [
  "endi",
  "enumflags2",
  "serde",
+ "uuid",
  "winnow 1.0.4",
  "zvariant_derive",
  "zvariant_utils",

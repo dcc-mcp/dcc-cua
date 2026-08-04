@@ -10,6 +10,7 @@ members = [
     "crates/dcc-mcp-cua-protocol",
     "crates/dcc-mcp-cua-shm",
     "crates/dcc-mcp-cua-cli",
+    "crates/dcc-mcp-cua-workspace-hack",
 ]
 resolver = "2"
 
