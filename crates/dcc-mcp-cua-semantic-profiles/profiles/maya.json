@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "id": "maya",
+  "display_name": "Autodesk Maya",
+  "selectors": [
+    {"application_names": ["maya.exe", "maya"], "window_title_contains": ["Autodesk Maya", "Maya"]}
+  ],
+  "surfaces": [
+    {"id": "home", "label": "Maya home screen", "role": "home", "route": "accessibility", "targets": [{"id": "new_scene", "label": "Create a new scene", "role": "button", "names": ["新建", "New", "New Scene"], "supported_actions": ["click"]}, {"id": "open_scene", "label": "Open a scene", "role": "button", "names": ["打开", "Open"], "supported_actions": ["click"]}]},
+    {"id": "viewport", "label": "Maya viewport", "role": "viewport", "route": "accessibility", "targets": [{"id": "model_panel", "label": "Model panel", "role": "viewport", "names": ["modelPanel"], "supported_actions": ["click", "drag", "frame_selection"]}]},
+    {"id": "outliner", "label": "Outliner", "role": "tree", "route": "accessibility", "targets": [{"id": "dag_item", "label": "DAG item", "role": "tree_item", "names": ["Outliner item"], "supported_actions": ["select", "expand", "context_menu"]}]},
+    {"id": "attribute_editor", "label": "Attribute Editor", "role": "property_editor", "route": "accessibility", "targets": [{"id": "attribute", "label": "Attribute field", "role": "property", "supported_actions": ["set_value", "toggle"]}]},
+    {"id": "dialog", "label": "Maya dialog", "role": "dialog", "route": "os_native_dialog", "targets": [{"id": "file_dialog", "label": "File dialog", "role": "dialog", "names": ["Open", "Save As"], "supported_actions": ["inspect", "set_value", "accept", "dismiss"]}]}
+  ],
+  "settings": {"dialog_style": "os_native", "preferred_route": "accessibility", "destructive_confirmation_required": true}
+}

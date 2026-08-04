@@ -2,7 +2,6 @@ use std::collections::HashMap;
 
 use dcc_mcp_cua_browser::BrowserSession;
 use dcc_mcp_cua_core::{ComputerUseDesktopSession, ComputerUseSession};
-use dcc_mcp_cua_indicator::ControlBanner;
 use dcc_mcp_cua_shm::SharedImage;
 use serde_json::Value;
 
@@ -22,7 +21,6 @@ pub(super) struct HostSession {
     pub(super) allow_session_escalation: bool,
     pub(super) capability: String,
     pub(super) session: ComputerUseSession,
-    pub(super) banner: ControlBanner,
     pub(super) browser: BrowserSession,
     pub(super) latest_observation_id: Option<String>,
     pub(super) latest_accessibility_state_id: Option<String>,

@@ -7,6 +7,7 @@ use std::process::Command as ProcessCommand;
 mod authorization;
 mod host_lifecycle;
 mod manifest;
+mod semantic_profile;
 mod update;
 
 use dcc_mcp_cua_client::{
@@ -20,6 +21,9 @@ use dcc_mcp_cua_core::{
     ComputerUseWindowWaitRequest, ComputerUseZoomRequest,
 };
 use dcc_mcp_cua_host::{HostTransport, MAX_PARALLEL_DISCOVERY_REQUESTS, run as run_host};
+use dcc_mcp_cua_semantic_profiles::{
+    SemanticProfile, builtin_profile, builtin_profiles, parse_profile,
+};
 use dcc_mcp_cua_shm::{SharedImageDescriptor, SharedImageReader};
 use serde_json::json;
 use tokio::io::{AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader, BufWriter};
@@ -68,6 +72,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     if command == "manifest" {
         println!("{}", serde_json::to_string_pretty(&manifest::document())?);
+        return Ok(());
+    }
+    if command == "profiles" {
+        list_semantic_profiles()?;
+        return Ok(());
+    }
+    if command == "profile" && flag_value(&flags, "--app").is_none() {
+        inspect_semantic_profile(&flags)?;
         return Ok(());
     }
     if command == "cua-driver" {
@@ -133,6 +145,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "act" => act(&driver, &flags).await?,
         "desktop-act" => desktop_act(&driver, &flags).await?,
         "doctor" => doctor(&driver).await?,
+        "profile" => semantic_profile::execute(&driver, &flags).await?,
         "help" | "--help" | "-h" => print_help(),
         friendly if is_friendly_action(friendly) => {
             friendly_action(&driver, &flags, friendly).await?
@@ -191,6 +204,41 @@ async fn list_windows(
     windows.retain(|window| query.matches_window(window));
     println!("{}", serde_json::to_string_pretty(&windows)?);
     Ok(())
+}
+
+fn list_semantic_profiles() -> Result<(), Box<dyn std::error::Error>> {
+    let profiles = builtin_profiles()
+        .iter()
+        .map(|profile| {
+            json!({
+                "id": profile.id,
+                "display_name": profile.display_name,
+                "preferred_route": profile.settings.preferred_route,
+                "dialog_style": profile.settings.dialog_style,
+                "surface_count": profile.surfaces.len(),
+            })
+        })
+        .collect::<Vec<_>>();
+    println!("{}", serde_json::to_string_pretty(&profiles)?);
+    Ok(())
+}
+
+fn inspect_semantic_profile(flags: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let profile = load_semantic_profile(flags)?;
+    println!("{}", serde_json::to_string_pretty(&profile)?);
+    Ok(())
+}
+
+fn load_semantic_profile(flags: &[String]) -> Result<SemanticProfile, Box<dyn std::error::Error>> {
+    if let Some(path) = flag_value(flags, "--profile-file") {
+        let input = fs::read_to_string(&path)?;
+        return Ok(parse_profile(&input)?);
+    }
+    let id =
+        flag_value(flags, "--id").ok_or("profile requires --id PROFILE or --profile-file PATH")?;
+    builtin_profile(&id)
+        .cloned()
+        .ok_or_else(|| format!("unknown semantic profile: {id}").into())
 }
 
 async fn wait_window(
@@ -1227,6 +1275,9 @@ async fn execute_action(
     let session_id = flag_value(flags, "--session").unwrap_or_else(|| "dcc-mcp-cli".into());
     let mut session = driver.session(scope, app, session_id)?;
     session.start().await?;
+    let semantic_action = action.element_index.is_some() || action.element_token.is_some();
+    let max_elements = bounded_u32(flags, "--max-elements", 5_000, 5_000)?;
+    let max_depth = bounded_u32(flags, "--max-depth", 64, 64)?;
     let result = async {
         maybe_escalate(&mut session, flags).await?;
         let activation = if has_flag(flags, "--activate") {
@@ -1234,13 +1285,38 @@ async fn execute_action(
         } else {
             None
         };
-        let screenshot = session.screenshot().await?;
-        action.observation_id = Some(screenshot.observation.observation_id.clone());
-        let action_result = session.perform_action(&action).await?;
-        let post_snapshot = session.screenshot().await;
+        let (observation, action_result, post_snapshot) = if semantic_action {
+            session
+                .accessibility_snapshot(max_elements, max_depth)
+                .await?;
+            let observation = session.latest_observation().cloned().ok_or_else(|| {
+                dcc_mcp_cua_core::ComputerUseError::new(
+                    dcc_mcp_cua_core::ComputerUseErrorCode::CaptureFailed,
+                    "semantic snapshot returned no observation metadata",
+                )
+            })?;
+            action.observation_id = Some(observation.observation_id.clone());
+            let action_result = session.perform_action(&action).await?;
+            let post_snapshot = semantic_post_snapshot_value(
+                session
+                    .accessibility_snapshot(max_elements, max_depth)
+                    .await,
+                flag_value(flags, "--output"),
+            );
+            (observation, action_result, post_snapshot)
+        } else {
+            let screenshot = session.screenshot().await?;
+            action.observation_id = Some(screenshot.observation.observation_id.clone());
+            let action_result = session.perform_action(&action).await?;
+            let post_snapshot = window_post_snapshot_value(
+                session.screenshot().await,
+                flag_value(flags, "--output"),
+            );
+            (screenshot.observation, action_result, post_snapshot)
+        };
         Ok::<_, dcc_mcp_cua_core::ComputerUseError>((
             activation,
-            screenshot.observation,
+            observation,
             action_result,
             post_snapshot,
         ))
@@ -1249,7 +1325,6 @@ async fn execute_action(
     let stop_result = session.stop().await;
     let (activation, observation, action_result, post_snapshot) = result?;
     stop_result?;
-    let post_snapshot = window_post_snapshot_value(post_snapshot, flag_value(flags, "--output"));
     println!(
         "{}",
         serde_json::to_string_pretty(&json!({
@@ -1607,6 +1682,28 @@ fn window_post_snapshot_value(
     }
 }
 
+fn semantic_post_snapshot_value(
+    result: dcc_mcp_cua_core::ComputerUseResult<serde_json::Value>,
+    output: Option<String>,
+) -> serde_json::Value {
+    match result {
+        Ok(accessibility) => json!({
+            "success": true,
+            "observation_kind": "accessibility",
+            "accessibility": accessibility,
+            "node_count": accessibility["elements"].as_array().map_or(0, Vec::len),
+            "output": serde_json::Value::Null,
+            "output_error": output.map(|_| "semantic post-snapshot has no pixel output"),
+        }),
+        Err(error) => json!({
+            "success": false,
+            "action_was_executed": true,
+            "code": error.code,
+            "message": error.message,
+        }),
+    }
+}
+
 fn desktop_post_snapshot_value(
     result: dcc_mcp_cua_core::ComputerUseResult<dcc_mcp_cua_core::ComputerUseDesktopSnapshot>,
     output: Option<String>,
@@ -1763,6 +1860,8 @@ fn print_help() {
   host-jsonl [--endpoint PATH|--spawn BINARY] [--parallel-discovery] [--snapshot-transport binary_frame|shared_memory] [--output-dir DIR]
   host-ensure [--endpoint PATH] [--grant existing-profile]
   manifest
+  profiles
+  profile --id ue|maya|fab|... [--profile-file PATH] [--app APP] [--surface ID] [--query TARGET] [--action ACTION] [--activate] [--max-elements N] [--max-depth N]
   cua-driver COMMAND [CUA_DRIVER_ARGS...]
   daemon [CUA_DRIVER_ARGS...]
   mcp [CUA_DRIVER_ARGS...]

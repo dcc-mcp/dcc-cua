@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "id": "fab",
+  "display_name": "Fab marketplace",
+  "selectors": [
+    {"application_names": ["chrome.exe", "msedge.exe", "firefox.exe", "EpicGamesLauncher.exe"], "window_title_contains": ["Fab", "Epic Games", "Epic Games Launcher"]},
+    {"url_hosts": ["fab.com", "store.epicgames.com"]}
+  ],
+  "surfaces": [
+    {"id": "listing", "label": "Asset listing", "role": "asset_store", "route": "browser_dom", "targets": [{"id": "asset_card", "label": "Asset card", "role": "asset_listing", "supported_actions": ["inspect", "open"]}, {"id": "search", "label": "Fab search", "role": "search", "names": ["Search"], "supported_actions": ["set_text", "submit"]}]},
+    {"id": "account", "label": "Fab account", "role": "account", "route": "browser_dom", "targets": [{"id": "account_state", "label": "Account state", "role": "status", "supported_actions": ["inspect"]}]},
+    {"id": "download", "label": "Download flow", "role": "download", "route": "browser_dom", "targets": [{"id": "download_button", "label": "Download", "role": "button", "supported_actions": ["request_confirmation", "click"]}, {"id": "confirmation", "label": "Download confirmation", "role": "dialog", "supported_actions": ["inspect", "accept", "dismiss"]}]}
+  ],
+  "settings": {"dialog_style": "application_rendered", "preferred_route": "browser_dom", "destructive_confirmation_required": true}
+}

@@ -91,6 +91,48 @@ fn failed_post_snapshot_reports_that_the_action_already_ran() {
 }
 
 #[rstest]
+fn semantic_post_snapshot_keeps_accessibility_evidence_without_pixels() {
+    let accessibility = json!({"elements": [{"role": "button"}]});
+    let value = semantic_post_snapshot_value(Ok(accessibility.clone()), Some("ignored.png".into()));
+    assert_eq!(value["success"], true);
+    assert_eq!(value["observation_kind"], "accessibility");
+    assert_eq!(value["accessibility"], accessibility);
+    assert_eq!(value["node_count"], 1);
+    assert!(value["output"].is_null());
+    assert!(value["output_error"].is_string());
+}
+
+#[rstest]
+fn profile_action_requires_a_supported_target_action() {
+    let profile = builtin_profile("maya").unwrap();
+    let target = profile.resolve_target("home", "new_scene").unwrap();
+    assert!(target.supports_action("click"));
+    assert!(!target.supports_action("set_value"));
+}
+
+#[rstest]
+fn profile_loader_accepts_user_authored_json() {
+    let path =
+        std::env::temp_dir().join(format!("dcc-mcp-cua-profile-{}.json", std::process::id()));
+    std::fs::write(
+        &path,
+        r#"{
+            "schema_version": 1,
+            "id": "custom-maya",
+            "display_name": "Custom Maya",
+            "selectors": [{"application_names": ["maya.exe"]}],
+            "surfaces": [],
+            "settings": {"dialog_style": "os_native", "preferred_route": "accessibility"}
+        }"#,
+    )
+    .unwrap();
+    let path = path.to_string_lossy().into_owned();
+    let profile = load_semantic_profile(&strings(["--profile-file", &path])).unwrap();
+    let _ = std::fs::remove_file(&path);
+    assert_eq!(profile.id, "custom-maya");
+}
+
+#[rstest]
 fn host_batch_parser_requires_read_only_request_shapes() {
     let requests = parse_host_batch(json!([
         {"method":"list_apps"},

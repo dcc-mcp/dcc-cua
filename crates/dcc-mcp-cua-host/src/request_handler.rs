@@ -537,46 +537,6 @@ pub(super) async fn handle_request(
                 return Err(HostError::Protocol("CUA did not return a target".into()));
             };
             let marker = session.status()["marker"].clone();
-            let banner_target = (|| {
-                Ok(BannerTarget {
-                    process_id: target["pid"]
-                        .as_u64()
-                        .and_then(|value| value.try_into().ok())
-                        .ok_or_else(|| {
-                            HostError::Protocol("CUA target has an invalid process id".into())
-                        })?,
-                    window_handle: target["window_id"].as_u64().ok_or_else(|| {
-                        HostError::Protocol("CUA target has an invalid window handle".into())
-                    })?,
-                    label: marker["label"]
-                        .as_str()
-                        .ok_or_else(|| HostError::Protocol("CUA marker has no label".into()))?
-                        .to_owned(),
-                })
-            })();
-            let banner_target = match banner_target {
-                Ok(target) => target,
-                Err(error) => {
-                    let _ = session.stop().await;
-                    return Err(error);
-                }
-            };
-            let banner = match ControlBanner::start(banner_target) {
-                Ok(banner) => banner,
-                Err(error) => {
-                    let cleanup = session.stop().await;
-                    let cleanup_note = cleanup
-                        .err()
-                        .map(|cleanup_error| format!("; CUA cleanup also failed: {cleanup_error}"))
-                        .unwrap_or_default();
-                    return Err(ComputerUseError::new(
-                        ComputerUseErrorCode::BackendUnavailable,
-                        format!("start visible control banner: {error}{cleanup_note}"),
-                    )
-                    .into());
-                }
-            };
-            let banner_status = banner.status();
             let cursor = json!({
                 "visible": marker["visible"],
                 "shape": "mouse_pointer",
@@ -605,7 +565,6 @@ pub(super) async fn handle_request(
                     allow_session_escalation: grant.allow_session_escalation,
                     capability: capability.clone(),
                     session,
-                    banner,
                     browser: BrowserSession::default(),
                     latest_observation_id: None,
                     latest_accessibility_state_id: None,
@@ -620,7 +579,7 @@ pub(super) async fn handle_request(
                     "window_capability": capability,
                     "target": target_wire(&target),
                     "marker": marker,
-                    "banner": banner_status,
+                    "banner": started["banner"].clone(),
                     "cursor": cursor,
                 }),
                 None,
@@ -1377,7 +1336,7 @@ pub(super) async fn handle_request(
                 host.session.cursor_tool(&tool, arguments).await?
             };
             if let Some((x, y)) = cursor_position {
-                host.banner.set_cursor_position(x, y);
+                host.session.set_control_cursor_position(x, y);
             }
             let marker = host.session.status()["marker"].clone();
             Ok((

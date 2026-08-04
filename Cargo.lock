@@ -1009,6 +1009,7 @@ dependencies = [
  "dcc-mcp-cua-client",
  "dcc-mcp-cua-core",
  "dcc-mcp-cua-host",
+ "dcc-mcp-cua-semantic-profiles",
  "dcc-mcp-cua-shm",
  "dcc-mcp-cua-workspace-hack",
  "rstest",
@@ -1038,6 +1039,7 @@ dependencies = [
  "cua-driver-contract",
  "cua-driver-sdk",
  "cursor-overlay",
+ "dcc-mcp-cua-indicator",
  "dcc-mcp-cua-platform-windows",
  "dcc-mcp-cua-workspace-hack",
  "platform-windows",
@@ -1114,6 +1116,16 @@ dependencies = [
  "libc",
  "rstest",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "dcc-mcp-cua-semantic-profiles"
+version = "0.0.0"
+dependencies = [
+ "rstest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
 ]
 
 [[package]]
