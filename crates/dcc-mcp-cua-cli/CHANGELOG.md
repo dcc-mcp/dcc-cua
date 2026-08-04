@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.1](https://github.com/dcc-mcp/dcc-mcp-computer-use/compare/v0.1.0...v0.1.1) (2026-08-04)
+
+
+### Bug Fixes
+
+* align workspace dependency versions ([7428c2a](https://github.com/dcc-mcp/dcc-mcp-computer-use/commit/7428c2ad2b96fe9433b988aeb41e6bd4412542f5))
+
 ## 0.1.0 (2026-08-04)
 
 
