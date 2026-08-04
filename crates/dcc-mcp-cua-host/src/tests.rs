@@ -463,6 +463,13 @@ fn app_launch_grant_defaults_to_denied() {
         )),
         "menu_invoke_not_granted"
     );
+    assert_eq!(
+        error_code(&HostError::ComputerUse(ComputerUseError::new(
+            ComputerUseErrorCode::InteractiveDesktopUnavailable,
+            "session disconnected",
+        ))),
+        "interactive_desktop_unavailable"
+    );
 }
 
 #[rstest]

@@ -8,6 +8,7 @@ use cua_driver_sdk::CuaDriver;
 use serde_json::{Value, json};
 
 use crate::contracts::*;
+use crate::interactive_desktop;
 use crate::observation::semantic_observation;
 use crate::policy::*;
 use crate::window_target::{WindowTarget, validate_target_policy};
@@ -209,7 +210,7 @@ impl ComputerUseDriver {
             self.call_global_tool("check_permissions", json!({})),
             self.call_global_tool("health_report", json!({})),
         );
-        let interactive_desktop = Self::interactive_desktop_diagnostic();
+        let interactive_desktop = interactive_desktop::diagnostic();
         let driver = match metadata {
             Ok(result) => json!({"success": true, "result": result}),
             Err(error) => json!({"success": false, "message": error.to_string()}),
@@ -243,36 +244,6 @@ impl ComputerUseDriver {
                 "interactive_desktop": interactive_desktop,
             },
         })
-    }
-
-    fn interactive_desktop_diagnostic() -> Value {
-        #[cfg(windows)]
-        {
-            let available = unsafe {
-                !windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow().is_null()
-            };
-            if available {
-                json!({
-                    "success": true,
-                    "code": "interactive_desktop_ready",
-                    "message": "Windows interactive desktop has a foreground window"
-                })
-            } else {
-                json!({
-                    "success": false,
-                    "code": "interactive_desktop_unavailable",
-                    "message": "Windows interactive desktop is locked or has no foreground window"
-                })
-            }
-        }
-        #[cfg(not(windows))]
-        {
-            json!({
-                "success": true,
-                "code": "interactive_desktop_platform_managed",
-                "message": "Interactive desktop readiness is reported by the platform CUA runtime"
-            })
-        }
     }
 
     /// Call a non-window-bound CUA tool from the local CLI surface.
@@ -340,6 +311,7 @@ impl ComputerUseDriver {
         &self,
         session: Option<&str>,
     ) -> ComputerUseResult<ComputerUseDesktopSnapshot> {
+        interactive_desktop::require_available()?;
         let mut arguments = json!({});
         if let Some(session) = session {
             arguments["session"] = Value::String(session.to_owned());
@@ -566,6 +538,7 @@ impl ComputerUseDesktopSession {
                 "desktop session is already active",
             ));
         }
+        interactive_desktop::require_available()?;
         let result = call_driver_tool(
             &self.driver.driver,
             "start_session",
@@ -634,6 +607,7 @@ impl ComputerUseDesktopSession {
                 "take a fresh desktop snapshot before acting",
             ));
         }
+        interactive_desktop::require_available()?;
         let arguments = desktop_action_arguments(action, &self.session_id);
         let tool = arguments["_tool"].as_str().unwrap_or_default().to_owned();
         let mut arguments = arguments;
@@ -1421,6 +1395,7 @@ impl ComputerUseSession {
             });
             return Ok(result);
         }
+        interactive_desktop::require_available()?;
         let fallback = observation.capture_provenance["accessibility_available"] == false;
         let visual_action;
         let args = if fallback {

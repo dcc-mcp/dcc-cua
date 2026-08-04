@@ -1648,6 +1648,9 @@ fn error_code(error: &HostError) -> &'static str {
             ComputerUseErrorCode::ClipboardRefused => "clipboard_refused",
             ComputerUseErrorCode::RecordingRefused => "recording_refused",
             ComputerUseErrorCode::CaptureFailed => "capture_failed",
+            ComputerUseErrorCode::InteractiveDesktopUnavailable => {
+                "interactive_desktop_unavailable"
+            }
             ComputerUseErrorCode::InputFailed => "input_failed",
             ComputerUseErrorCode::InvalidAction => "invalid_request",
             ComputerUseErrorCode::MissingWindow => "invalid_target",

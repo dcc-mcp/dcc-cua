@@ -6,6 +6,7 @@
 
 mod contracts;
 mod driver_factory;
+mod interactive_desktop;
 mod observation;
 mod platform_process;
 mod policy;
