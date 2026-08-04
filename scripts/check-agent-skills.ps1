@@ -3,7 +3,9 @@ param()
 
 $ErrorActionPreference = "Stop"
 $skillsRoot = Join-Path $PSScriptRoot "..\skills"
-$skillDirectories = @(Get-ChildItem -LiteralPath $skillsRoot -Directory)
+$skillDirectories = @(Get-ChildItem -LiteralPath $skillsRoot -Directory | Where-Object {
+    Test-Path -LiteralPath (Join-Path $_.FullName "SKILL.md") -PathType Leaf
+})
 if ($skillDirectories.Count -eq 0) {
     throw "No Agent Skills found under $skillsRoot"
 }

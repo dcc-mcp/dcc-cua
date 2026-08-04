@@ -93,9 +93,8 @@ application-rendered panel.
 
 The repository also ships standalone Agent Skills under `skills/`:
 
-- `cua-fab-unreal`: repeatable, confirmation-aware Fab download and Unreal import;
-- `cua-maya-native-dialog`: Maya Home and OS-native file-dialog validation;
-- `cua-semantic-profile-authoring`: official and user-authored profile guidance.
+- `cua-cli`: the standalone CLI control loop, verification, safety, and long-task recovery;
+- `cua-profile-authoring`: official and user-authored semantic profile guidance.
 
 They use the released `dcc-mcp-cua` CLI and are included in release archives, so
 another agent can install a single Skill without coupling to the Rust workspace.
