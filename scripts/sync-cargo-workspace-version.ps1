@@ -51,12 +51,39 @@ $workspaceMemberNames = @(
         Where-Object { $workspaceMembers -contains $_.id } |
         Select-Object -ExpandProperty name
 )
+
+function Update-WorkspaceDependencyVersions {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string[]]$PackageNames
+    )
+
+    $content = Get-Content -LiteralPath $Path -Raw
+    $updated = $content
+    foreach ($packageName in $PackageNames) {
+        $escapedName = [regex]::Escape($packageName)
+        $pattern = '(?m)^(\s*' + $escapedName + '\s*=\s*\{[^\r\n]*\bversion\s*=\s*)"[^"]+"'
+        $updated = [regex]::Replace(
+            $updated,
+            $pattern,
+            [System.Text.RegularExpressions.MatchEvaluator]{
+                param($match)
+                return $match.Groups[1].Value + '"' + $Version + '"'
+            }
+        )
+    }
+    if ($updated -ne $content) {
+        Set-Content -LiteralPath $Path -Value $updated -NoNewline -Encoding utf8
+    }
+}
+
 foreach ($package in $metadata.packages) {
     if ($workspaceMemberNames -notcontains $package.name) {
         continue
     }
     $manifestPath = [System.IO.Path]::GetFullPath([string]$package.manifest_path)
     Update-TomlSectionVersion -Path $manifestPath -Section 'package'
+    Update-WorkspaceDependencyVersions -Path $manifestPath -PackageNames $workspaceMemberNames
 }
 
 & cargo metadata --format-version 1 --no-deps | Out-Null

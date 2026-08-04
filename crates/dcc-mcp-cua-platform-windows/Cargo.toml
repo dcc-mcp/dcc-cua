@@ -17,7 +17,7 @@ path = "src/lib.rs"
 serde_json = "1"
 thiserror = "2"
 uuid = { version = "1", features = ["v4"] }
-dcc-mcp-cua-workspace-hack = { version = "0.0.0", path = "../dcc-mcp-cua-workspace-hack" }
+dcc-mcp-cua-workspace-hack = { version = "0.1.0", path = "../dcc-mcp-cua-workspace-hack" }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }
