@@ -3,6 +3,7 @@ use serde_json::Value;
 use tokio::io::{AsyncWrite, DuplexStream};
 
 use super::*;
+use crate::endpoint::endpoint_singleton_name;
 #[cfg(unix)]
 use crate::endpoint::{prepare_unix_endpoint_parent, stale_unix_socket_error};
 use crate::request_handler::bind_launched_process;
@@ -38,6 +39,19 @@ fn capabilities_follow_the_selected_cursor_runtime() {
     assert_eq!(
         capabilities.contains(&"windows_background_uia_fallback"),
         cfg!(windows)
+    );
+}
+
+#[rstest]
+fn endpoint_singletons_are_case_insensitive_and_endpoint_scoped() {
+    let first = endpoint_singleton_name(r"\\.\pipe\dcc-mcp-cua-v1-session-42");
+    assert_eq!(
+        first,
+        endpoint_singleton_name(r"\\.\PIPE\DCC-MCP-CUA-V1-SESSION-42")
+    );
+    assert_ne!(
+        first,
+        endpoint_singleton_name(r"\\.\pipe\dcc-mcp-cua-v1-session-43")
     );
 }
 

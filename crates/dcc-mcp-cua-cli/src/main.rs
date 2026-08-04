@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 
 mod authorization;
+mod host_lifecycle;
 mod manifest;
 mod update;
 
@@ -56,6 +57,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     if command == "host-jsonl" {
         host_jsonl(&flags).await?;
+        return Ok(());
+    }
+    if command == "host-ensure" {
+        let endpoint =
+            flag_value(&flags, "--endpoint").unwrap_or_else(HostTransport::default_endpoint);
+        let response = host_lifecycle::ensure(endpoint, &flags).await?;
+        println!("{}", serde_json::to_string_pretty(&response)?);
         return Ok(());
     }
     if command == "manifest" {
@@ -1753,6 +1761,7 @@ fn print_help() {
   host-call --method NAME [--json JSON|--json-file PATH] [--endpoint PATH|--spawn BINARY] [--snapshot-transport binary_frame|shared_memory] [--output FILE]
   host-batch --json JSON_ARRAY [--endpoint PATH|--spawn BINARY] [--snapshot-transport binary_frame|shared_memory] [--output-dir DIR]
   host-jsonl [--endpoint PATH|--spawn BINARY] [--parallel-discovery] [--snapshot-transport binary_frame|shared_memory] [--output-dir DIR]
+  host-ensure [--endpoint PATH] [--grant existing-profile]
   manifest
   cua-driver COMMAND [CUA_DRIVER_ARGS...]
   daemon [CUA_DRIVER_ARGS...]

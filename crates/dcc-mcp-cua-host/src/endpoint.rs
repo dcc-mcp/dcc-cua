@@ -35,6 +35,7 @@ pub(crate) async fn serve(driver: ComputerUseDriver, endpoint: String) -> Result
 
 #[cfg(windows)]
 async fn serve_named_pipe(driver: ComputerUseDriver, endpoint: String) -> Result<(), HostError> {
+    let _singleton = acquire_endpoint_singleton(&endpoint)?;
     let limiter = connection_limiter();
     loop {
         let permit = limiter
@@ -50,6 +51,39 @@ async fn serve_named_pipe(driver: ComputerUseDriver, endpoint: String) -> Result
             let _ = process_connection(next_driver, server).await;
         });
     }
+}
+
+#[cfg(windows)]
+fn acquire_endpoint_singleton(
+    endpoint: &str,
+) -> Result<std::os::windows::io::OwnedHandle, HostError> {
+    use std::os::windows::io::{FromRawHandle, OwnedHandle};
+    use windows_sys::Win32::Foundation::{ERROR_ALREADY_EXISTS, GetLastError};
+    use windows_sys::Win32::System::Threading::CreateMutexW;
+
+    let name = endpoint_singleton_name(endpoint);
+    let wide = name.encode_utf16().chain(Some(0)).collect::<Vec<_>>();
+    let raw = unsafe { CreateMutexW(std::ptr::null(), 0, wide.as_ptr()) };
+    if raw.is_null() {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    let already_exists = unsafe { GetLastError() } == ERROR_ALREADY_EXISTS;
+    let handle = unsafe { OwnedHandle::from_raw_handle(raw) };
+    if already_exists {
+        return Err(HostError::Protocol(format!(
+            "endpoint is already in use: {endpoint}"
+        )));
+    }
+    Ok(handle)
+}
+
+pub(crate) fn endpoint_singleton_name(endpoint: &str) -> String {
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    for byte in endpoint.to_lowercase().bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!(r"Local\dcc-mcp-cua-host-{hash:016x}")
 }
 
 #[cfg(windows)]

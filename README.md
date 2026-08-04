@@ -248,6 +248,7 @@ Start one persistent host process instead of spawning a process per action:
 ```powershell
 cargo run -p dcc-mcp-cua-cli -- host --stdio
 cargo run -p dcc-mcp-cua-cli -- host
+cargo run -p dcc-mcp-cua-cli -- host-ensure
 cargo run -p dcc-mcp-cua-cli -- ping --spawn target/debug/dcc-mcp-cua
 cargo run -p dcc-mcp-cua-cli -- interrupt-all
 cargo run -p dcc-mcp-cua-cli -- host-call --method list_apps --json '{}'
@@ -277,6 +278,14 @@ window and desktop sessions return `user_interrupted` at their next bounded
 operation or wait checkpoint. An already-running native SDK call remains
 bounded by the Host action timeout because CUA exposes no portable preemption
 primitive.
+
+`dcc-mcp-cua host-ensure [--endpoint PATH]` is the idempotent supervisor entry
+for Core and adapters. It first probes the local endpoint, starts this same
+version of `dcc-mcp-cua host` only when absent, and waits for a negotiated ping.
+Windows also holds one named singleton per endpoint because named pipes alone
+permit multiple server instances; Unix keeps the existing socket bind as its
+singleton boundary. Independent Core bridges can therefore share one Host per
+interactive OS session while retaining connection-scoped agent sessions.
 
 When Core owns the Host lifecycle, use `HostProcess::spawn` to start the CLI
 with `host --stdio`, reuse the same negotiated `HostClient`, and call
