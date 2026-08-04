@@ -153,8 +153,7 @@ slab = { version = "0.4" }
 smallvec = { version = "1", default-features = false, features = ["const_new"] }
 uuid = { version = "1", features = ["fast-rng", "v4"] }
 windows = { version = "0.61", features = ["Win32_Graphics_Gdi", "Win32_Security", "Win32_System_Console", "Win32_System_JobObjects", "Win32_System_LibraryLoader", "Win32_System_Threading", "Win32_UI_HiDpi", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
-windows-sys-b21d60becc0929df = { package = "windows-sys", version = "0.52", features = ["Win32_Foundation", "Win32_Security_Cryptography", "Win32_Storage_FileSystem", "Win32_System_Environment", "Win32_System_LibraryLoader", "Win32_System_Memory", "Win32_System_Threading", "Win32_UI_Shell"] }
-windows-sys-d4189bed749088b6 = { package = "windows-sys", version = "0.61", features = ["Wdk_Foundation", "Wdk_Storage_FileSystem", "Wdk_System_IO", "Win32_Networking_WinSock", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Console", "Win32_System_IO", "Win32_System_Memory", "Win32_System_Pipes", "Win32_System_RemoteDesktop", "Win32_System_SystemServices", "Win32_System_Threading", "Win32_System_WindowsProgramming", "Win32_UI_HiDpi", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.61", features = ["Wdk_Foundation", "Wdk_Storage_FileSystem", "Wdk_System_IO", "Win32_Networking_WinSock", "Win32_Security_Authorization", "Win32_Security_Cryptography", "Win32_Storage_FileSystem", "Win32_System_Console", "Win32_System_IO", "Win32_System_Memory", "Win32_System_Pipes", "Win32_System_RemoteDesktop", "Win32_System_SystemServices", "Win32_System_Threading", "Win32_System_WindowsProgramming", "Win32_UI_HiDpi", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
 
 [target.x86_64-pc-windows-msvc.build-dependencies]
 aho-corasick = { version = "1", default-features = false, features = ["perf-literal", "std"] }
@@ -162,6 +161,6 @@ getrandom = { version = "0.4", default-features = false, features = ["std"] }
 indexmap = { version = "2" }
 regex-automata = { version = "0.4", default-features = false, features = ["dfa-onepass", "hybrid", "meta", "nfa-backtrack", "perf-inline", "perf-literal", "std", "unicode"] }
 regex-syntax = { version = "0.8" }
-windows-sys-b21d60becc0929df = { package = "windows-sys", version = "0.52", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
 
 ### END HAKARI SECTION
