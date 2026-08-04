@@ -32,7 +32,8 @@ function Invoke-BinaryJson {
 
 try {
 if (-not $isWindowsHost) {
-    $endpointRuntimeDir = Join-Path ([System.IO.Path]::GetTempPath()) "dcc-mcp-cua-e2e-$([guid]::NewGuid().ToString('N'))"
+    $runtimeBase = if (Test-Path -LiteralPath "/tmp") { "/tmp" } else { [System.IO.Path]::GetTempPath() }
+    $endpointRuntimeDir = Join-Path $runtimeBase "cua-$([guid]::NewGuid().ToString('N'))"
     [void][System.IO.Directory]::CreateDirectory($endpointRuntimeDir)
     & chmod 700 $endpointRuntimeDir
     if ($LASTEXITCODE -ne 0) {
