@@ -4,6 +4,11 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing release tag to rebuild and attach artifacts for
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -41,8 +46,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
-      release_created: ${{ steps.release.outputs.release_created }}
-      tag_name: ${{ steps.release.outputs.tag_name }}
+      release_created: ${{ steps.release.outputs['crates/dcc-mcp-cua-cli--release_created'] == 'true' || (github.event_name == 'workflow_dispatch' && inputs.release_tag != '') }}
+      tag_name: ${{ steps.release.outputs['crates/dcc-mcp-cua-cli--tag_name'] || inputs.release_tag }}
     steps:
       - uses: googleapis/release-please-action@v5
         id: release
