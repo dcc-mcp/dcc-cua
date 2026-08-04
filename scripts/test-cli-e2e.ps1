@@ -30,6 +30,48 @@ function Invoke-BinaryJson {
     }
 }
 
+function Send-OversizedEndpointFrame {
+    param([string]$Endpoint, [bool]$WindowsHost)
+
+    [byte[]]$prefix = [BitConverter]::GetBytes([uint32](4 * 1024 * 1024 + 1))
+    if ([BitConverter]::IsLittleEndian) {
+        [Array]::Reverse($prefix)
+    }
+    if ($WindowsHost) {
+        $pipeName = $Endpoint.Substring("\\.\pipe\".Length)
+        $stream = [System.IO.Pipes.NamedPipeClientStream]::new(
+            ".",
+            $pipeName,
+            [System.IO.Pipes.PipeDirection]::InOut,
+            [System.IO.Pipes.PipeOptions]::Asynchronous
+        )
+        try {
+            $stream.Connect(5000)
+            $stream.Write($prefix, 0, $prefix.Length)
+            $stream.Flush()
+        }
+        finally {
+            $stream.Dispose()
+        }
+        return
+    }
+
+    $socket = [System.Net.Sockets.Socket]::new(
+        [System.Net.Sockets.AddressFamily]::Unix,
+        [System.Net.Sockets.SocketType]::Stream,
+        [System.Net.Sockets.ProtocolType]::Unspecified
+    )
+    try {
+        $socket.Connect([System.Net.Sockets.UnixDomainSocketEndPoint]::new($Endpoint))
+        if ($socket.Send($prefix) -ne $prefix.Length) {
+            throw "failed to send the complete oversized endpoint frame"
+        }
+    }
+    finally {
+        $socket.Dispose()
+    }
+}
+
 try {
 if (-not $isWindowsHost) {
     $runtimeBase = if (Test-Path -LiteralPath "/tmp") { "/tmp" } else { [System.IO.Path]::GetTempPath() }
@@ -70,6 +112,7 @@ if (-not $isWindowsHost -and
 }
 if ($manifest.version -notmatch '^\d+\.\d+\.\d+$' -or
     $manifest.host.protocol_version -ne 1 -or
+    $manifest.host.max_connections -ne 32 -or
     $manifest.host.max_parallel_discovery_requests -ne 32) {
     throw "manifest version or Host protocol is invalid"
 }
@@ -198,15 +241,19 @@ if ($streamResponses[2].type -eq "desktop_session_opened") {
         throw "Host desktop session lifecycle failed: $streamJson"
     }
 }
-elseif (-not $isMacHost -or
-    $streamResponses[1].ready -ne $false -or
+elseif ($streamResponses[1].ready -ne $false -or
     $streamResponses[2].request_id -ne "stream-desktop-open" -or
     $streamResponses[2].type -ne "error" -or
     [string]::IsNullOrWhiteSpace($streamResponses[2].code) -or
     $streamResponses[3].request_id -ne "stream-desktop-stop" -or
     $streamResponses[3].type -ne "error" -or
     [string]::IsNullOrWhiteSpace($streamResponses[3].code)) {
-    throw "Host session lifecycle was not available without a structured macOS readiness refusal: $streamJson"
+    throw "Host session lifecycle was not available without a structured readiness refusal: $streamJson"
+}
+if ($isWindowsHost -and
+    $streamResponses[1].checks.interactive_desktop.code -eq "interactive_session_not_active" -and
+    $streamResponses[2].code -ne "interactive_desktop_unavailable") {
+    throw "disconnected Windows Host did not return the dedicated desktop-readiness error: $streamJson"
 }
 if ($streamResponses.Count -ne (6 + $streamBurstCount)) {
     throw "long-lived Host stream dropped bounded discovery responses"
@@ -285,6 +332,14 @@ try {
     }
     if ($null -eq $endpointPing -or $endpointPing.type -ne "pong") {
         throw "cross-platform Host endpoint did not answer ping"
+    }
+
+    Send-OversizedEndpointFrame -Endpoint $endpoint -WindowsHost $isWindowsHost
+    Start-Sleep -Milliseconds 100
+    $recoveryPing = & $binaryPath host-call --endpoint $endpoint --method ping |
+        Out-String | ConvertFrom-Json
+    if ($LASTEXITCODE -ne 0 -or $recoveryPing.type -ne "pong") {
+        throw "cross-platform Host endpoint did not recover after a malformed frame"
     }
 
     $endpointInterrupt = & $binaryPath interrupt-all --endpoint $endpoint |

@@ -212,6 +212,29 @@ async fn process_connection_requires_hello_pings_and_rejects_duplicate_hello() {
 }
 
 #[rstest]
+#[tokio::test]
+async fn connection_finalizer_aborts_tasks_and_cleans_up_after_errors() {
+    let cleaned = Arc::new(AtomicBool::new(false));
+    let cleanup_flag = cleaned.clone();
+    let mut tasks = JoinSet::new();
+    tasks.spawn(std::future::pending::<Result<(), HostError>>());
+
+    let result = finalize_connection(
+        Err(HostError::Protocol("broken connection".into())),
+        &mut tasks,
+        async move {
+            cleanup_flag.store(true, Ordering::Release);
+            Ok(())
+        },
+    )
+    .await;
+
+    assert!(matches!(result, Err(HostError::Protocol(_))));
+    assert!(cleaned.load(Ordering::Acquire));
+    assert!(tasks.is_empty());
+}
+
+#[rstest]
 fn frame_prefix_is_big_endian_and_bounded() {
     assert_eq!(u32::from_be_bytes((42_u32).to_be_bytes()), 42);
     const { assert!(MAX_BINARY_FRAME_BYTES > MAX_JSON_FRAME_BYTES) };

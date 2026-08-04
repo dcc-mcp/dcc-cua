@@ -868,7 +868,8 @@ where
     let mut desktop_shared_image = None;
     let cancellation_registry = Arc::new(Mutex::new(HashMap::new()));
 
-    while let Some(frame) = read_frame(&mut reader, MAX_JSON_FRAME_BYTES).await? {
+    let connection_result = async {
+        while let Some(frame) = read_frame(&mut reader, MAX_JSON_FRAME_BYTES).await? {
         reap_completed_parallel_requests(&mut parallel_tasks);
         let (request_id, request) = match parse_request_frame(&frame) {
             Ok(request) => request,
@@ -937,9 +938,7 @@ where
                     frame = read_frame(&mut reader, MAX_JSON_FRAME_BYTES) => {
                         let Some(frame) = frame? else {
                             drop(operation);
-                            parallel_tasks.abort_all();
-                            while parallel_tasks.join_next().await.is_some() {}
-                            return cleanup_sessions(&driver, sessions).await;
+                            return Ok(());
                         };
                         let (cancel_id, next_request) = match parse_request_frame(&frame) {
                             Ok(request) => request,
@@ -1038,11 +1037,31 @@ where
             )
             .await?;
         }
+        }
+        Ok::<(), HostError>(())
     }
+    .await;
 
+    finalize_connection(
+        connection_result,
+        &mut parallel_tasks,
+        cleanup_sessions(&driver, sessions),
+    )
+    .await
+}
+
+async fn finalize_connection(
+    result: Result<(), HostError>,
+    parallel_tasks: &mut JoinSet<Result<(), HostError>>,
+    cleanup: impl std::future::Future<Output = Result<(), HostError>>,
+) -> Result<(), HostError> {
+    parallel_tasks.abort_all();
     while parallel_tasks.join_next().await.is_some() {}
-
-    cleanup_sessions(&driver, sessions).await
+    let cleanup_result = cleanup.await;
+    match result {
+        Ok(()) => cleanup_result,
+        Err(error) => Err(error),
+    }
 }
 
 fn reap_completed_parallel_requests(tasks: &mut JoinSet<Result<(), HostError>>) {
