@@ -10,7 +10,69 @@
   "packages": {
     "crates/dcc-mcp-cua-cli": {
       "release-type": "rust",
-      "component": "dcc-mcp-cua"
+      "component": "dcc-mcp-cua",
+      "extra-files": [
+        {
+          "type": "toml",
+          "path": "Cargo.toml",
+          "jsonpath": "$.workspace.package.version"
+        },
+        {
+          "type": "toml",
+          "path": "crates/dcc-mcp-cua-browser/Cargo.toml",
+          "jsonpath": "$.package.version"
+        },
+        {
+          "type": "toml",
+          "path": "crates/dcc-mcp-cua-client/Cargo.toml",
+          "jsonpath": "$.package.version"
+        },
+        {
+          "type": "toml",
+          "path": "crates/dcc-mcp-cua-core/Cargo.toml",
+          "jsonpath": "$.package.version"
+        },
+        {
+          "type": "toml",
+          "path": "crates/dcc-mcp-cua-e2e/Cargo.toml",
+          "jsonpath": "$.package.version"
+        },
+        {
+          "type": "toml",
+          "path": "crates/dcc-mcp-cua-host/Cargo.toml",
+          "jsonpath": "$.package.version"
+        },
+        {
+          "type": "toml",
+          "path": "crates/dcc-mcp-cua-indicator/Cargo.toml",
+          "jsonpath": "$.package.version"
+        },
+        {
+          "type": "toml",
+          "path": "crates/dcc-mcp-cua-platform-windows/Cargo.toml",
+          "jsonpath": "$.package.version"
+        },
+        {
+          "type": "toml",
+          "path": "crates/dcc-mcp-cua-protocol/Cargo.toml",
+          "jsonpath": "$.package.version"
+        },
+        {
+          "type": "toml",
+          "path": "crates/dcc-mcp-cua-semantic-profiles/Cargo.toml",
+          "jsonpath": "$.package.version"
+        },
+        {
+          "type": "toml",
+          "path": "crates/dcc-mcp-cua-shm/Cargo.toml",
+          "jsonpath": "$.package.version"
+        },
+        {
+          "type": "toml",
+          "path": "crates/dcc-mcp-cua-workspace-hack/Cargo.toml",
+          "jsonpath": "$.package.version"
+        }
+      ]
     }
   }
 }
