@@ -297,6 +297,17 @@ fn endpoint_connection_limit_applies_backpressure() {
     assert!(limiter.try_acquire_owned().is_ok());
 }
 
+#[cfg(windows)]
+#[rstest]
+fn windows_pipe_acl_is_scoped_to_the_current_logon() {
+    let logon_sid = endpoint::current_logon_sid_string().unwrap();
+    assert!(logon_sid.starts_with("S-1-5-5-"));
+    assert_eq!(
+        endpoint::windows_pipe_sddl(&logon_sid),
+        format!("D:P(A;;GA;;;SY)(A;;GA;;;{logon_sid})")
+    );
+}
+
 #[cfg(unix)]
 #[rstest]
 fn only_refused_or_missing_unix_sockets_are_replaceable() {

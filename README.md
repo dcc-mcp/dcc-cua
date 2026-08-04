@@ -357,7 +357,8 @@ control pipe. Native extension results and browser responses containing multiple
 bounded binary attachment frame with offset descriptors.
 
 On Windows, the default endpoint is the per-session named pipe
-`\\.\pipe\dcc-mcp-cua-v1-session-<WindowsSessionId>`. On Unix, the default
+`\\.\pipe\dcc-mcp-cua-v1-session-<WindowsSessionId>` with a protected DACL
+that grants access only to LocalSystem and the current Windows logon SID. On Unix, the default
 endpoint is `$XDG_RUNTIME_DIR/dcc-mcp-cua-v1.sock` when that directory is
 owned by the current user with mode `0700`; otherwise it falls back to
 `$TMPDIR/dcc-mcp-cua-<uid>/dcc-mcp-cua-v1.sock`. The Host creates a missing
