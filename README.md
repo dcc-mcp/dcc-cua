@@ -92,13 +92,15 @@ observations, grants, friendly actions, and software-specific adapters.
 ## Development gates
 
 Every Rust file is limited to 2000 lines. Unit tests live in a sibling
-`src/tests.rs` module rather than production files and use `rstest`; the same
-layout gate runs before formatting in CI:
+`src/tests.rs` module rather than production files, use `rstest`, and run with
+`cargo-nextest`; the same layout gate runs before formatting in CI. Install the
+runner once with `cargo install cargo-nextest --locked`:
 
 ```powershell
 pwsh -NoProfile -File scripts/check-rust-layout.ps1
 cargo fmt --all -- --check
-cargo test --workspace --all-targets
+cargo nextest run --workspace --all-targets --locked
+cargo test --workspace --doc --locked
 ```
 
 Release packaging builds the official companions from the pinned CUA checkout;
@@ -577,8 +579,9 @@ Example host requests:
 ```powershell
 cargo fmt --all -- --check
 cargo check --workspace --all-targets --locked
-cargo test --workspace --all-targets --locked
-cargo test --locked -p dcc-mcp-cua-e2e --features gui-e2e --no-run
+cargo nextest run --workspace --all-targets --locked
+cargo test --workspace --doc --locked
+cargo nextest run --locked -p dcc-mcp-cua-e2e --features gui-e2e --no-run
 pwsh -NoProfile -File scripts/run-gui-e2e.ps1 -Binary target/debug/dcc-mcp-cua.exe
 ```
 

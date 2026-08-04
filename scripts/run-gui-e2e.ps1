@@ -34,5 +34,5 @@ if ($LASTEXITCODE -ne 0) { throw "official CUA GUI fixture build failed" }
 
 $env:CUA_TEST_APPS_ROOT = Join-Path $rustDir "test-apps"
 $env:DCC_MCP_CUA_E2E_BINARY = $binaryPath
-cargo test --locked -p dcc-mcp-cua-e2e --features gui-e2e -- --nocapture --test-threads=1
+cargo nextest run --locked -p dcc-mcp-cua-e2e --features gui-e2e --no-capture
 if ($LASTEXITCODE -ne 0) { throw "GUI E2E failed" }
