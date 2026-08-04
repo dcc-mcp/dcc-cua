@@ -10,9 +10,9 @@ Get-ChildItem -Path (Join-Path $PSScriptRoot "..\crates") -Recurse -Filter *.rs 
         $path = $_.FullName
         $relative = $path.Substring($repoRoot.Length + 1)
         $content = Get-Content -LiteralPath $path -Raw
-        $lines = (Get-Content -LiteralPath $path).Count
-        if ($lines -gt $maxLines) {
-            $violations.Add("$relative has $lines lines; maximum is $maxLines")
+        $sourceLines = @(Get-Content -LiteralPath $path)
+        if ($sourceLines.Count -gt $maxLines) {
+            $violations.Add("$relative has $($sourceLines.Count) lines; maximum is $maxLines")
         }
 
         $isTestFile = $path -match "[\\/]src[\\/]tests\.rs$" -or $path -match "[\\/]tests[\\/]"
@@ -20,15 +20,21 @@ Get-ChildItem -Path (Join-Path $PSScriptRoot "..\crates") -Recurse -Filter *.rs 
             if ($content -notmatch "use rstest::rstest;") {
                 $violations.Add("$relative must import rstest")
             }
-            if ($content -match "(?m)^\s*#\[test\]\s*$") {
-                $violations.Add("$relative must use rstest instead of #[test]")
-            }
-            if ($content -match "(?m)^\s*#\[tokio::test\]\s*$" -and
-                $content -notmatch "(?ms)#\[rstest\]\s*\r?\n\s*#\[tokio::test\]") {
-                $violations.Add("$relative async tests must combine rstest with tokio::test")
+            for ($lineIndex = 0; $lineIndex -lt $sourceLines.Count; $lineIndex++) {
+                $attribute = $sourceLines[$lineIndex].Trim()
+                if ($attribute -eq "#[test]") {
+                    $violations.Add("$relative`:$($lineIndex + 1) must use rstest instead of #[test]")
+                }
+                if ($attribute -match '^#\[tokio::test(?:\([^]]*\))?\]$' -and
+                    ($lineIndex -eq 0 -or $sourceLines[$lineIndex - 1].Trim() -ne "#[rstest]")) {
+                    $violations.Add("$relative`:$($lineIndex + 1) must place #[rstest] directly before #[tokio::test]")
+                }
             }
         } else {
-            if ($content -match "(?m)^\s*#\[(?:test|rstest|tokio::test)\]\s*$") {
+            $inlineTest = $sourceLines |
+                Where-Object { $_.Trim() -match '^#\[(?:test|rstest|tokio::test(?:\([^]]*\))?)\]$' } |
+                Select-Object -First 1
+            if ($null -ne $inlineTest) {
                 $violations.Add("$relative contains an inline test; move it to src/tests.rs")
             }
             if ($content -match "(?m)^\s*#\[cfg\(test\)\]\s*mod tests\s*\{") {
