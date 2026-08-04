@@ -234,7 +234,7 @@ fn run_upstream_cua_command(
         .status()
         .map_err(|error| {
             format!(
-                "start upstream cua-driver {command}: {error}; place cua-driver beside dcc-mcp-cua or set CUA_DRIVER_BIN"
+                "start upstream cua-driver {command}: {error}; install the matching dcc-mcp-cua release bundle or set CUA_DRIVER_BIN"
             )
         })?;
     if status.success() {
@@ -248,6 +248,10 @@ fn upstream_cua_binary() -> PathBuf {
         return binary.into();
     }
     if let Ok(executable) = env::current_exe() {
+        let bundled = update::bundled_driver_path(&executable, env!("CARGO_PKG_VERSION"));
+        if bundled.is_file() {
+            return bundled;
+        }
         let sibling = sibling_upstream_binary(&executable);
         if sibling.is_file() {
             return sibling;

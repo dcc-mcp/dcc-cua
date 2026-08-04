@@ -83,11 +83,12 @@ exclusive full-screen capture are outside this Host's contract.
 This project wraps the CUA SDK for agent-friendly, bounded operations. The
 `dcc-mcp-cua` CLI owns its own `update` command and exposes `daemon`, `mcp`, and
 `recording render` as first-class entries. Those three entries reuse the
-official `cua-driver` executable bundled beside the release CLI rather than
-copying its daemon/MCP/render implementation. `CUA_DRIVER_BIN` remains an
-explicit override, followed by the sibling binary and then `PATH`. Use this
-CLI/Host for the DCC-MCP safety envelope, exact window capability, fresh
-observations, grants, friendly actions, and software-specific adapters.
+official `cua-driver` executable from the release's versioned `libexec` bundle
+rather than copying its daemon/MCP/render implementation. `CUA_DRIVER_BIN`
+remains an explicit override, followed by the versioned bundle, a sibling
+development fallback, and then `PATH`. Use this CLI/Host for the DCC-MCP safety
+envelope, exact window capability, fresh observations, grants, friendly
+actions, and software-specific adapters.
 
 ## Development gates
 
@@ -105,7 +106,8 @@ cargo test --workspace --doc --locked
 
 Release packaging builds the official companions from the pinned CUA checkout;
 Windows source builds therefore require Visual Studio's Spectre-mitigated C++
-libraries, matching the upstream release toolchain.
+libraries, matching the upstream release toolchain. The build helper places
+them under `target/release/libexec/dcc-mcp-cua/<version>` by default.
 
 ## CLI
 
@@ -152,6 +154,10 @@ the official driver built from the same pinned CUA revision; set
 `CUA_DRIVER_BIN` only to override it. `recording start|stop|status` keeps
 the upstream daemon lifecycle, while this project's Host routes remain the
 grant-gated DCC-MCP surface.
+
+`update` downloads one exact platform archive, validates its complete companion
+bundle, installs that bundle under its version, and replaces the CLI last. This
+keeps the executable and official CUA runtime on the same release version.
 
 `manifest` is the stable machine-readable discovery entry for Core and other
 independent callers. It reports the current platform, Host protocol, frame
@@ -614,9 +620,10 @@ same private runtime session, record a real mutation to `action.json`, stop the
 recording, terminate only that proven PID, and verify its windows disappear.
 The release workflow packages `dcc-mcp-cua`, the pinned official `cua-driver`
 and cursor-theme companion, the Windows UIAccess companion where applicable,
-and both MIT license files as platform archives, then attaches them to the
-GitHub release. CI invokes the bundled `cua-driver`, `daemon`, `mcp`, and
-`recording render` help routes on every platform before GUI testing.
+and both MIT license files in a versioned `libexec` bundle, then attaches the
+platform archives to the GitHub release. CI invokes the bundled `cua-driver`,
+`daemon`, `mcp`, and `recording render` help routes on every platform before GUI
+testing.
 
 The release gate is intentionally closed while the product is still being
 completed. Do not set the repository variable `DCC_MCP_CUA_RELEASE_READY=true`

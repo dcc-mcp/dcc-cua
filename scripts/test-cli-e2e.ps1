@@ -106,6 +106,10 @@ $expectedOs = if ($isWindowsHost) { "windows" } elseif ($isMacHost) { "macos" } 
 if ($manifest.name -ne "dcc-mcp-cua" -or $manifest.target.os -ne $expectedOs) {
     throw "manifest does not describe the current release binary"
 }
+$bundledDriver = Join-Path (Split-Path $binaryPath -Parent) ([string]$manifest.upstream_driver.bundled_binary)
+if (-not (Test-Path -LiteralPath $bundledDriver -PathType Leaf)) {
+    throw "manifest bundled driver is missing: $bundledDriver"
+}
 if (-not $isWindowsHost -and
     $manifest.host.default_endpoint -ne (Join-Path $endpointRuntimeDir "dcc-mcp-cua-v1.sock")) {
     throw "manifest did not select the private XDG runtime endpoint"

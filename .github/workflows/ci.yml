@@ -46,7 +46,7 @@ jobs:
       - run: cargo build --release --locked -p dcc-mcp-cua-cli
       - name: Build pinned official CUA driver
         shell: pwsh
-        run: ./scripts/build-upstream-cua-driver.ps1 -Destination target/release
+        run: ./scripts/build-upstream-cua-driver.ps1
       - name: Run release CLI and Host IPC E2E
         timeout-minutes: 5
         shell: pwsh

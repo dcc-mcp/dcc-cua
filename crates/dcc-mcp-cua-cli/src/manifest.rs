@@ -39,7 +39,8 @@ pub(crate) fn document() -> Value {
         "upstream_driver": {
             "command": ["cua-driver", "<COMMAND>"],
             "binary_environment": "CUA_DRIVER_BIN",
-            "sibling_binary": format!("cua-driver{}", std::env::consts::EXE_SUFFIX),
+            "bundled_binary": crate::update::bundled_driver_relative_path(env!("CARGO_PKG_VERSION")),
+            "development_sibling_fallback": format!("cua-driver{}", std::env::consts::EXE_SUFFIX),
             "top_level_aliases": {
                 "daemon": "serve",
                 "mcp": "mcp",
