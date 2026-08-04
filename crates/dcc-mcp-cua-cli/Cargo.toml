@@ -23,7 +23,7 @@ dcc-mcp-cua-shm = { path = "../dcc-mcp-cua-shm" }
 serde_json = "1"
 self_update = { version = "0.44.0", default-features = false, features = ["reqwest", "archive-tar", "archive-zip", "compression-flate2", "compression-zip-deflate", "rustls"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
-dcc-mcp-cua-workspace-hack = { version = "0.1.0", path = "../dcc-mcp-cua-workspace-hack" }
+dcc-mcp-cua-workspace-hack = { version = "0.1.1", path = "../dcc-mcp-cua-workspace-hack" }
 
 [dev-dependencies]
 rstest.workspace = true
