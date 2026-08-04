@@ -34,7 +34,8 @@ pub(crate) fn document() -> Value {
             "capabilities": host_capabilities(cfg!(any(windows, target_os = "linux", target_os = "macos"))),
         },
         "core_bridge": {
-            "command": ["host-jsonl", "--snapshot-transport", "shared_memory"],
+            "command": ["host-jsonl"],
+            "preferred_snapshot_transport": "shared_memory",
             "rust_crate": "dcc-mcp-cua-client",
         },
         "upstream_driver": {

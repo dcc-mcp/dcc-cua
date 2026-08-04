@@ -235,6 +235,11 @@ fn manifest_is_a_machine_readable_core_launch_contract() {
         80
     );
     assert_eq!(manifest["core_bridge"]["rust_crate"], "dcc-mcp-cua-client");
+    assert_eq!(manifest["core_bridge"]["command"], json!(["host-jsonl"]));
+    assert_eq!(
+        manifest["core_bridge"]["preferred_snapshot_transport"],
+        "shared_memory"
+    );
     assert!(
         manifest["host"]["capabilities"]
             .as_array()

@@ -349,7 +349,9 @@ one negotiated Host session open, reads one `{request_id?, method, params}`
 object per line from stdin, and writes one response object per line to stdout.
 When present, `request_id` is preserved end to end for Core task/turn tracing.
 Binary image attachments are written to `--output-dir`; `shared_memory` keeps
-image pixels out of the Host control pipe.
+image pixels out of the Host control pipe. The machine manifest publishes the
+transport-neutral `host-jsonl` entry point so Core can prefer shared memory and
+fall back to binary attachments when its native shared-memory reader is absent.
 
 `--parallel-discovery` batches contiguous `ping`, `list_apps`, `list_tools`,
 `list_windows`, `screen_size`, and `cursor_position` requests for up to 5 ms or
