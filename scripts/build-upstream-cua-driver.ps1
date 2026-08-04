@@ -1,5 +1,5 @@
 param(
-    [string]$Destination = "target/release"
+    [string]$Destination = ""
 )
 
 Set-StrictMode -Version Latest
@@ -14,6 +14,13 @@ $metadata = $metadataJson | ConvertFrom-Json
 $sdk = @($metadata.packages | Where-Object { $_.name -eq "cua-driver-sdk" })
 if ($sdk.Count -ne 1) {
     throw "expected exactly one pinned cua-driver-sdk package, found $($sdk.Count)"
+}
+$cli = @($metadata.packages | Where-Object { $_.name -eq "dcc-mcp-cua-cli" })
+if ($cli.Count -ne 1) {
+    throw "expected exactly one dcc-mcp-cua-cli package, found $($cli.Count)"
+}
+if ([string]::IsNullOrWhiteSpace($Destination)) {
+    $Destination = "target/release/libexec/dcc-mcp-cua/$($cli[0].version)"
 }
 
 $rustRoot = Split-Path (Split-Path (Split-Path $sdk[0].manifest_path -Parent) -Parent) -Parent

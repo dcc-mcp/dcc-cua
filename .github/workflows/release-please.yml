@@ -87,7 +87,7 @@ jobs:
       - run: cargo build --release --locked -p dcc-mcp-cua-cli
       - name: Build pinned official CUA driver
         shell: pwsh
-        run: ./scripts/build-upstream-cua-driver.ps1 -Destination target/release
+        run: ./scripts/build-upstream-cua-driver.ps1
       - name: Package dcc-mcp-cua
         shell: bash
         env:
@@ -102,11 +102,11 @@ jobs:
             archive="dist/dcc-mcp-cua-${version}-${host}.zip"
             (
               cd target/release
-              7z a "../../$archive" dcc-mcp-cua.exe cua-driver.exe cua-cursor-theme.exe cua-driver-uia.exe LICENSE CUA-LICENSE.md
+              7z a "../../$archive" dcc-mcp-cua.exe libexec LICENSE
             )
           else
             archive="dist/dcc-mcp-cua-${version}-${host}.tar.gz"
-            tar -czf "$archive" -C target/release dcc-mcp-cua cua-driver cua-cursor-theme LICENSE CUA-LICENSE.md
+            tar -czf "$archive" -C target/release dcc-mcp-cua libexec LICENSE
           fi
           sha256sum "$archive" > "${archive}.sha256"
       - uses: actions/upload-artifact@v4

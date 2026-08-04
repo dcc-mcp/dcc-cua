@@ -156,7 +156,7 @@ fn daemon_reuses_the_official_serve_command() {
 }
 
 #[rstest]
-fn bundled_upstream_driver_uses_a_platform_sibling_name() {
+fn development_upstream_driver_uses_a_platform_sibling_fallback() {
     let cli = std::path::Path::new(if cfg!(windows) {
         r"C:\release\dcc-mcp-cua.exe"
     } else {
@@ -166,6 +166,47 @@ fn bundled_upstream_driver_uses_a_platform_sibling_name() {
         sibling_upstream_binary(cli),
         cli.with_file_name(format!("cua-driver{}", std::env::consts::EXE_SUFFIX))
     );
+}
+
+#[rstest]
+fn release_upstream_driver_uses_the_cli_versioned_bundle() {
+    let cli = std::path::Path::new(if cfg!(windows) {
+        r"C:\release\dcc-mcp-cua.exe"
+    } else {
+        "/release/dcc-mcp-cua"
+    });
+    assert_eq!(
+        update::bundled_driver_path(cli, "0.1.0"),
+        cli.parent()
+            .unwrap()
+            .join("libexec")
+            .join("dcc-mcp-cua")
+            .join("0.1.0")
+            .join(format!("cua-driver{}", std::env::consts::EXE_SUFFIX))
+    );
+}
+
+#[rstest]
+fn updater_selects_the_exact_archive_instead_of_its_checksum() {
+    let target = self_update::get_target();
+    let archive = update::release_archive_name("0.1.0", target);
+    let releases = [self_update::update::Release {
+        version: "0.1.0".into(),
+        assets: vec![
+            self_update::update::ReleaseAsset {
+                name: format!("{archive}.sha256"),
+                download_url: "checksum".into(),
+            },
+            self_update::update::ReleaseAsset {
+                name: archive.clone(),
+                download_url: "archive".into(),
+            },
+        ],
+        ..Default::default()
+    }];
+    let (_, selected) = update::latest_release_asset(&releases, target).unwrap();
+    assert_eq!(selected.name, archive);
+    assert_eq!(selected.download_url, "archive");
 }
 
 #[rstest]
@@ -253,8 +294,14 @@ fn manifest_is_a_machine_readable_core_launch_contract() {
         "serve"
     );
     assert_eq!(
-        manifest["upstream_driver"]["sibling_binary"],
+        manifest["upstream_driver"]["development_sibling_fallback"],
         format!("cua-driver{}", std::env::consts::EXE_SUFFIX)
+    );
+    assert_eq!(
+        manifest["upstream_driver"]["bundled_binary"],
+        update::bundled_driver_relative_path(env!("CARGO_PKG_VERSION"))
+            .to_string_lossy()
+            .as_ref()
     );
 }
 
