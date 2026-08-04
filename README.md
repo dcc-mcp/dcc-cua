@@ -336,6 +336,9 @@ Core bridge cannot retain one task allocation per request.
 The Rust Client rejects larger single batches before writing to the transport;
 `host-jsonl --parallel-discovery` automatically splits a longer stream into
 bounded batches on the same connection.
+The endpoint admits at most 32 simultaneous client connections and applies
+transport backpressure before creating another connection task. The manifest
+publishes both connection and per-connection discovery limits for supervisors.
 
 ```text
 {"request_id":"core-task-42","method":"list_apps","params":{}}

@@ -2,10 +2,17 @@
 use std::os::unix::fs::{DirBuilderExt, FileTypeExt, PermissionsExt};
 #[cfg(unix)]
 use std::path::Path;
+use std::sync::Arc;
+
+use tokio::sync::Semaphore;
 
 #[cfg(any(windows, unix))]
 use super::process_connection;
-use super::{ComputerUseDriver, HostError};
+use super::{ComputerUseDriver, HostError, MAX_HOST_CONNECTIONS};
+
+pub(crate) fn connection_limiter() -> Arc<Semaphore> {
+    Arc::new(Semaphore::new(MAX_HOST_CONNECTIONS))
+}
 
 pub(crate) async fn serve(driver: ComputerUseDriver, endpoint: String) -> Result<(), HostError> {
     #[cfg(windows)]
@@ -30,11 +37,18 @@ pub(crate) async fn serve(driver: ComputerUseDriver, endpoint: String) -> Result
 async fn serve_named_pipe(driver: ComputerUseDriver, endpoint: String) -> Result<(), HostError> {
     use tokio::net::windows::named_pipe::ServerOptions;
 
+    let limiter = connection_limiter();
     loop {
+        let permit = limiter
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|_| HostError::Protocol("Host connection limiter closed".into()))?;
         let server = ServerOptions::new().create(&endpoint)?;
         server.connect().await?;
         let next_driver = driver.clone();
         tokio::spawn(async move {
+            let _permit = permit;
             let _ = process_connection(next_driver, server).await;
         });
     }
@@ -65,10 +79,17 @@ async fn serve_unix_socket(driver: ComputerUseDriver, endpoint: String) -> Resul
     }
     let listener = UnixListener::bind(path)?;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    let limiter = connection_limiter();
     loop {
+        let permit = limiter
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|_| HostError::Protocol("Host connection limiter closed".into()))?;
         let (stream, _) = listener.accept().await?;
         let next_driver = driver.clone();
         tokio::spawn(async move {
+            let _permit = permit;
             let _ = process_connection(next_driver, stream).await;
         });
     }
