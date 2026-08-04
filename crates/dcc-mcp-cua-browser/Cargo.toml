@@ -18,7 +18,7 @@ base64 = "0.22"
 dcc-mcp-cua-core = { path = "../dcc-mcp-cua-core" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-dcc-mcp-cua-workspace-hack = { version = "0.0.0", path = "../dcc-mcp-cua-workspace-hack" }
+dcc-mcp-cua-workspace-hack = { version = "0.1.0", path = "../dcc-mcp-cua-workspace-hack" }
 
 [dev-dependencies]
 rstest.workspace = true

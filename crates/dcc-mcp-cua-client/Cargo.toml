@@ -18,7 +18,7 @@ dcc-mcp-cua-protocol = { path = "../dcc-mcp-cua-protocol" }
 serde_json = "1"
 thiserror = "2"
 tokio = { version = "1", features = ["io-util", "macros", "net", "process", "rt-multi-thread", "time"] }
-dcc-mcp-cua-workspace-hack = { version = "0.0.0", path = "../dcc-mcp-cua-workspace-hack" }
+dcc-mcp-cua-workspace-hack = { version = "0.1.0", path = "../dcc-mcp-cua-workspace-hack" }
 
 [dev-dependencies]
 rstest.workspace = true

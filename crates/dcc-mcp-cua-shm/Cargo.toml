@@ -19,7 +19,7 @@ ipckit = { git = "https://github.com/loonghao/ipckit.git", rev = "e2a0abc8dd7ce9
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"
 uuid = { version = "1", features = ["v4"] }
-dcc-mcp-cua-workspace-hack = { version = "0.0.0", path = "../dcc-mcp-cua-workspace-hack" }
+dcc-mcp-cua-workspace-hack = { version = "0.1.0", path = "../dcc-mcp-cua-workspace-hack" }
 
 [dev-dependencies]
 rstest.workspace = true
