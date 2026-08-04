@@ -381,6 +381,7 @@ pub enum ComputerUseErrorCode {
     StaleObservation,
     UserInterrupted,
     InvalidAction,
+    InteractiveDesktopUnavailable,
     InputFailed,
     CaptureFailed,
 }

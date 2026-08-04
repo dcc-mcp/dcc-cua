@@ -11,6 +11,7 @@ use crate::contracts::{
     MAX_SNAPSHOT_ELEMENTS, MAX_TEXT_UTF16_UNITS,
 };
 use crate::driver_factory::{UPSTREAM_CURSOR_RENDERER_ENABLED, driver_host_options};
+use crate::interactive_desktop::windows_diagnostic;
 use crate::policy::*;
 use crate::runtime::application::{launch_arguments, validate_launch_request};
 use crate::runtime::{await_input_call, diagnostic_tool_check, tool_schema_from_inventory};
@@ -66,6 +67,37 @@ fn diagnostics_prefer_upstream_structured_content() {
     )));
     assert_eq!(failed["success"], false);
     assert_eq!(failed["code"], "backend_unavailable");
+}
+
+#[rstest]
+#[case(Ok(0), true, true, "interactive_desktop_ready", "active")]
+#[case(Ok(0), false, false, "interactive_desktop_unavailable", "active")]
+#[case(Ok(4), true, false, "interactive_session_not_active", "disconnected")]
+#[case(Ok(1), true, false, "interactive_session_not_active", "not_active")]
+fn windows_session_state_fences_raw_input(
+    #[case] state: Result<i32, String>,
+    #[case] foreground: bool,
+    #[case] success: bool,
+    #[case] code: &str,
+    #[case] state_name: &str,
+) {
+    let diagnostic = windows_diagnostic(state, foreground);
+    assert_eq!(diagnostic["success"], success);
+    assert_eq!(diagnostic["code"], code);
+    assert_eq!(diagnostic["session_state"], state_name);
+}
+
+#[rstest]
+fn windows_session_query_failure_is_not_ready() {
+    let diagnostic = windows_diagnostic(Err("access denied".into()), true);
+    assert_eq!(diagnostic["success"], false);
+    assert_eq!(diagnostic["code"], "interactive_session_unknown");
+    assert!(
+        diagnostic["message"]
+            .as_str()
+            .unwrap()
+            .contains("access denied")
+    );
 }
 
 #[rstest]

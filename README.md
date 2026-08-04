@@ -167,8 +167,12 @@ target; if an application has multiple windows, pass `--pid` and
 driver/window discovery. It reports the upstream structured checks for native
 accessibility, screen capture, platform support, and input readiness, and exits
 non-zero when the authoritative health status is not `ok`. Its `ready` field
-also becomes false when Windows is locked or has no interactive foreground
-window, even if UIA and screen-capture permissions remain available.
+also becomes false when the current Windows session is disconnected, locked,
+or has no interactive foreground window, even if UIA and screen-capture
+permissions remain available. The report includes the native WTS session state;
+desktop capture and raw mouse/keyboard routes fail before input with
+`interactive_desktop_unavailable`, while exact-element Windows UIA operations
+can continue through their background semantic path.
 
 `list` accepts optional `--app`, `--pid`, `--window-id`, `--title`, and
 `--on-screen` filters. `--app` is case-insensitive; `--title` is exact and
