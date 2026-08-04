@@ -1122,6 +1122,7 @@ dependencies = [
 name = "dcc-mcp-cua-semantic-profiles"
 version = "0.0.0"
 dependencies = [
+ "dcc-mcp-cua-workspace-hack",
  "rstest",
  "serde",
  "serde_json",
