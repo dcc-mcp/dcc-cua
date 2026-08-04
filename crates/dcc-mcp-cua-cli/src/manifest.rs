@@ -18,6 +18,7 @@ pub(crate) fn document() -> Value {
         "host": {
             "stdio_command": ["host", "--stdio"],
             "endpoint_command": ["host"],
+            "ensure_command": ["host-ensure"],
             "default_endpoint": HostTransport::default_endpoint(),
             "protocol_version": HOST_PROTOCOL_VERSION,
             "snapshot_transports": ["binary_frame", "shared_memory"],

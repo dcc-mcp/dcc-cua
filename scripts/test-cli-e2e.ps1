@@ -271,6 +271,7 @@ for ($index = 0; $index -lt $streamBurstCount; $index++) {
 }
 
 $endpointHost = $null
+$endpointHostStartTime = $null
 $endpoint = if ($isWindowsHost) {
     "\\.\pipe\dcc-mcp-cua-e2e-$([guid]::NewGuid().ToString('N'))"
 } else {
@@ -292,51 +293,31 @@ $endpointBatchJson = $endpointBatchRequests | ConvertTo-Json -Depth 4 -Compress
 $endpointBatchFile = Join-Path ([System.IO.Path]::GetTempPath()) "dcc-mcp-cua-e2e-$([guid]::NewGuid().ToString('N')).json"
 [System.IO.File]::WriteAllText($endpointBatchFile, $endpointBatchJson, [System.Text.UTF8Encoding]::new($false))
 try {
-    $endpointStart = [System.Diagnostics.ProcessStartInfo]::new()
-    $endpointStart.FileName = $binaryPath
-    $endpointStart.UseShellExecute = $false
-    $endpointStart.CreateNoWindow = $true
-    $endpointArguments = @("host")
-    if ($isWindowsHost) {
-        $endpointArguments += @("--endpoint", $endpoint)
+    $ensured = Invoke-BinaryJson -Arguments @("host-ensure", "--endpoint", $endpoint)
+    if ($ensured.type -ne "host_ready" -or
+        $ensured.status -ne "started" -or
+        [string]::IsNullOrWhiteSpace([string]$ensured.pid)) {
+        throw "host-ensure did not start the endpoint Host"
     }
-    $argumentListProperty = $endpointStart.PSObject.Properties["ArgumentList"]
-    if ($null -ne $argumentListProperty -and $null -ne $argumentListProperty.Value) {
-        foreach ($argument in $endpointArguments) {
-            [void]$argumentListProperty.Value.Add($argument)
-        }
+    $startedHost = [System.Diagnostics.Process]::GetProcessById([int]$ensured.pid)
+    $startedHostStartTime = $startedHost.StartTime.ToUniversalTime().Ticks
+    $pathComparison = if ($isWindowsHost) {
+        [System.StringComparison]::OrdinalIgnoreCase
+    } else {
+        [System.StringComparison]::Ordinal
     }
-    else {
-        $endpointStart.Arguments = ($endpointArguments | ForEach-Object {
-            if ($_ -match '[\s"]') { '"' + $_.Replace('"', '\"') + '"' } else { $_ }
-        }) -join " "
+    $endpointHostPath = [System.IO.Path]::GetFullPath($startedHost.MainModule.FileName)
+    if (-not [string]::Equals($endpointHostPath, $binaryPath, $pathComparison)) {
+        $startedHost.Dispose()
+        throw "host-ensure returned an unexpected process: $endpointHostPath"
     }
-    $endpointHost = [System.Diagnostics.Process]::new()
-    $endpointHost.StartInfo = $endpointStart
-    if (-not $endpointHost.Start()) {
-        throw "failed to start endpoint Host process"
-    }
-
-    $endpointPing = $null
-    for ($attempt = 0; $attempt -lt 40 -and $null -eq $endpointPing; $attempt++) {
-        if ($endpointHost.HasExited) {
-            throw "endpoint Host exited before accepting connections with code $($endpointHost.ExitCode)"
-        }
-        try {
-            $pingOutput = & $binaryPath host-call --endpoint $endpoint --method ping 2>$null
-            if ($LASTEXITCODE -eq 0) {
-                $endpointPing = ($pingOutput | Out-String | ConvertFrom-Json)
-            }
-        }
-        catch {
-            $endpointPing = $null
-        }
-        if ($null -eq $endpointPing) {
-            Start-Sleep -Milliseconds 100
-        }
-    }
-    if ($null -eq $endpointPing -or $endpointPing.type -ne "pong") {
-        throw "cross-platform Host endpoint did not answer ping"
+    $endpointHost = $startedHost
+    $endpointHostStartTime = $startedHostStartTime
+    $ensuredAgain = Invoke-BinaryJson -Arguments @("host-ensure", "--endpoint", $endpoint)
+    if ($ensuredAgain.type -ne "host_ready" -or
+        $ensuredAgain.status -ne "existing" -or
+        $ensuredAgain.endpoint -ne $endpoint) {
+        throw "host-ensure is not idempotent"
     }
 
     Send-OversizedEndpointFrame -Endpoint $endpoint -WindowsHost $isWindowsHost
@@ -374,11 +355,18 @@ try {
 }
 finally {
     if ($null -ne $endpointHost) {
-        if (-not $endpointHost.HasExited) {
-            $endpointHost.Kill()
-            [void]$endpointHost.WaitForExit(5000)
+        try {
+            $endpointHost.Refresh()
+            if (-not $endpointHost.HasExited) {
+                if ($endpointHost.StartTime.ToUniversalTime().Ticks -ne $endpointHostStartTime) {
+                    throw "refusing to stop a reused Host process identifier"
+                }
+                $endpointHost.Kill()
+                [void]$endpointHost.WaitForExit(5000)
+            }
+            $endpointHost.Dispose()
         }
-        $endpointHost.Dispose()
+        catch [System.ArgumentException] {}
     }
     if (-not $isWindowsHost -and (Test-Path -LiteralPath $endpoint)) {
         Remove-Item -LiteralPath $endpoint -Force
@@ -388,7 +376,7 @@ finally {
     }
 }
 
-Write-Host "CLI E2E passed for ${expectedOs}: bundled upstream routes, manifest, diagnostics, session lifecycle, a ${streamBurstCount}-request long-lived discovery burst, bounded endpoint batch/stream Host IPC, error recovery, apps, and $($toolNames.Count) CUA tools."
+Write-Host "CLI E2E passed for ${expectedOs}: bundled upstream routes, manifest, diagnostics, session lifecycle, idempotent Host ensure, a ${streamBurstCount}-request long-lived discovery burst, bounded endpoint batch/stream Host IPC, error recovery, apps, and $($toolNames.Count) CUA tools."
 }
 finally {
     if (-not $isWindowsHost) {
