@@ -10,62 +10,62 @@
   "extra-files": [
     {
       "type": "toml",
-      "path": "Cargo.toml",
+      "path": "../../Cargo.toml",
       "jsonpath": "$.workspace.package.version"
     },
     {
       "type": "toml",
-      "path": "crates/dcc-mcp-cua-browser/Cargo.toml",
+      "path": "../../crates/dcc-mcp-cua-browser/Cargo.toml",
       "jsonpath": "$.package.version"
     },
     {
       "type": "toml",
-      "path": "crates/dcc-mcp-cua-client/Cargo.toml",
+      "path": "../../crates/dcc-mcp-cua-client/Cargo.toml",
       "jsonpath": "$.package.version"
     },
     {
       "type": "toml",
-      "path": "crates/dcc-mcp-cua-core/Cargo.toml",
+      "path": "../../crates/dcc-mcp-cua-core/Cargo.toml",
       "jsonpath": "$.package.version"
     },
     {
       "type": "toml",
-      "path": "crates/dcc-mcp-cua-e2e/Cargo.toml",
+      "path": "../../crates/dcc-mcp-cua-e2e/Cargo.toml",
       "jsonpath": "$.package.version"
     },
     {
       "type": "toml",
-      "path": "crates/dcc-mcp-cua-host/Cargo.toml",
+      "path": "../../crates/dcc-mcp-cua-host/Cargo.toml",
       "jsonpath": "$.package.version"
     },
     {
       "type": "toml",
-      "path": "crates/dcc-mcp-cua-indicator/Cargo.toml",
+      "path": "../../crates/dcc-mcp-cua-indicator/Cargo.toml",
       "jsonpath": "$.package.version"
     },
     {
       "type": "toml",
-      "path": "crates/dcc-mcp-cua-platform-windows/Cargo.toml",
+      "path": "../../crates/dcc-mcp-cua-platform-windows/Cargo.toml",
       "jsonpath": "$.package.version"
     },
     {
       "type": "toml",
-      "path": "crates/dcc-mcp-cua-protocol/Cargo.toml",
+      "path": "../../crates/dcc-mcp-cua-protocol/Cargo.toml",
       "jsonpath": "$.package.version"
     },
     {
       "type": "toml",
-      "path": "crates/dcc-mcp-cua-semantic-profiles/Cargo.toml",
+      "path": "../../crates/dcc-mcp-cua-semantic-profiles/Cargo.toml",
       "jsonpath": "$.package.version"
     },
     {
       "type": "toml",
-      "path": "crates/dcc-mcp-cua-shm/Cargo.toml",
+      "path": "../../crates/dcc-mcp-cua-shm/Cargo.toml",
       "jsonpath": "$.package.version"
     },
     {
       "type": "toml",
-      "path": "crates/dcc-mcp-cua-workspace-hack/Cargo.toml",
+      "path": "../../crates/dcc-mcp-cua-workspace-hack/Cargo.toml",
       "jsonpath": "$.package.version"
     }
   ],
