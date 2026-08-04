@@ -50,6 +50,36 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+      - uses: actions/checkout@v7
+        if: steps.release.outputs.prs_created == 'true'
+        with:
+          fetch-depth: 0
+      - name: Synchronize Cargo workspace release version
+        if: steps.release.outputs.prs_created == 'true'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_VERSION: ${{ steps.release.outputs['crates/dcc-mcp-cua-cli--version'] }}
+        run: |
+          $releasePr = gh pr list --repo $env:GITHUB_REPOSITORY --state open --label 'autorelease: pending' --json number,headRefName,title --limit 10 |
+            ConvertFrom-Json |
+            Where-Object { $_.title -like 'chore(main): release *' } |
+            Select-Object -First 1
+          if (-not $releasePr) { throw 'release-please did not expose an open release PR' }
+
+          $version = $env:RELEASE_VERSION
+          if ([string]::IsNullOrWhiteSpace($version)) {
+              $version = ($releasePr.title -split ' ')[-1]
+          }
+          git fetch origin "refs/heads/$($releasePr.headRefName):refs/remotes/origin/$($releasePr.headRefName)"
+          git checkout -B $releasePr.headRefName "origin/$($releasePr.headRefName)"
+          ./scripts/sync-cargo-workspace-version.ps1 -Version $version
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add Cargo.toml Cargo.lock crates/*/Cargo.toml
+          if (git diff --cached --quiet) { throw 'workspace release version sync produced no changes' }
+          git commit -m 'chore: synchronize workspace release version'
+          git push origin "HEAD:$($releasePr.headRefName)"
 
   build:
     needs: release-please
