@@ -164,7 +164,10 @@ pub(crate) async fn execute(
     Ok(())
 }
 
-fn target_matches_profile(profile: &SemanticProfile, target: Option<&serde_json::Value>) -> bool {
+pub(crate) fn target_matches_profile(
+    profile: &SemanticProfile,
+    target: Option<&serde_json::Value>,
+) -> bool {
     let Some(target) = target else {
         return false;
     };
@@ -174,30 +177,4 @@ fn target_matches_profile(profile: &SemanticProfile, target: Option<&serde_json:
     ) || target["url"]
         .as_str()
         .is_some_and(|url| profile.matches_url(url))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::target_matches_profile;
-    use dcc_mcp_cua_semantic_profiles::builtin_profile;
-    use serde_json::json;
-
-    #[test]
-    fn target_binding_requires_the_profile_selector_to_match() {
-        let profile = builtin_profile("ue").expect("UE profile");
-        assert!(target_matches_profile(
-            profile,
-            Some(&json!({
-                "app_name": "UE4Editor.exe",
-                "title": "UE426LookdevTest - 虚幻编辑器"
-            }))
-        ));
-        assert!(!target_matches_profile(
-            profile,
-            Some(&json!({
-                "app_name": "notepad.exe",
-                "title": "notes"
-            }))
-        ));
-    }
 }
