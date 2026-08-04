@@ -1,7 +1,27 @@
 use rstest::rstest;
+use serde_json::json;
 
 use super::authorization::{existing_profile_grant_requested, host_private_worker_options};
 use super::*;
+
+#[rstest]
+fn target_binding_requires_the_profile_selector_to_match() {
+    let profile = dcc_mcp_cua_semantic_profiles::builtin_profile("ue").expect("UE profile");
+    assert!(semantic_profile::target_matches_profile(
+        profile,
+        Some(&json!({
+            "app_name": "UE4Editor.exe",
+            "title": "UE426LookdevTest - 虚幻编辑器"
+        }))
+    ));
+    assert!(!semantic_profile::target_matches_profile(
+        profile,
+        Some(&json!({
+            "app_name": "notepad.exe",
+            "title": "notes"
+        }))
+    ));
+}
 
 #[rstest]
 #[case(vec![], false)]
