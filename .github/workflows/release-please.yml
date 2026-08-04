@@ -61,10 +61,14 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_VERSION: ${{ steps.release.outputs['crates/dcc-mcp-cua-cli--version'] }}
         run: |
-          $releasePr = gh pr list --repo $env:GITHUB_REPOSITORY --state open --label 'autorelease: pending' --json number,headRefName,title --limit 10 |
-            ConvertFrom-Json |
-            Where-Object { $_.title -like 'chore(main): release *' } |
-            Select-Object -First 1
+          $releasePr = $null
+          for ($attempt = 0; $attempt -lt 6 -and -not $releasePr; $attempt++) {
+              $releasePr = gh pr list --repo $env:GITHUB_REPOSITORY --state open --label 'autorelease: pending' --json number,headRefName,title --limit 10 |
+                ConvertFrom-Json |
+                Where-Object { $_.title -like 'chore(main): release *' } |
+                Select-Object -First 1
+              if (-not $releasePr) { Start-Sleep -Seconds 5 }
+          }
           if (-not $releasePr) { throw 'release-please did not expose an open release PR' }
 
           $version = $env:RELEASE_VERSION
