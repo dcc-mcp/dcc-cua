@@ -2109,8 +2109,7 @@ dependencies = [
 [[package]]
 name = "ipckit"
 version = "0.1.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5c7445c70ce11dd04e53e887ee78eefc7103dfd20fd67e2e42cabbfc97de897f"
+source = "git+https://github.com/loonghao/ipckit.git?rev=e2a0abc8dd7ce9f88f2d07b1923770bf7af09761#e2a0abc8dd7ce9f88f2d07b1923770bf7af09761"
 dependencies = [
  "base64",
  "bytes",
