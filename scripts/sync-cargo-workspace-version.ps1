@@ -86,9 +86,9 @@ foreach ($package in $metadata.packages) {
     Update-WorkspaceDependencyVersions -Path $manifestPath -PackageNames $workspaceMemberNames
 }
 
-& cargo metadata --format-version 1 --no-deps | Out-Null
+& cargo check --workspace --all-targets
 if ($LASTEXITCODE -ne 0) {
-    throw "cargo metadata failed to refresh Cargo.lock with code $LASTEXITCODE"
+    throw "cargo check failed to refresh Cargo.lock with code $LASTEXITCODE"
 }
 
 $updatedMetadata = (& cargo metadata --format-version 1 --no-deps | ConvertFrom-Json)

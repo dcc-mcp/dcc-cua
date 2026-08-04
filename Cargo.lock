@@ -24,9 +24,9 @@ dependencies = [
 
 [[package]]
 name = "aho-corasick"
-version = "1.1.4"
+version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ddd31a130427c27518df266943a5308ed92d4b226cc639f5a8f1002816174301"
+checksum = "c982642fa9e8606056828ee9a8505737230110bb1099153c79efe865c59d12ba"
 dependencies = [
  "memchr",
 ]
@@ -985,13 +985,13 @@ dependencies = [
 
 [[package]]
 name = "data-encoding"
-version = "2.11.0"
+version = "2.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a4ae5f15dda3c708c0ade84bfee31ccab44a3da4f88015ed22f63732abe300c8"
+checksum = "4583a4551df46e2792f82ceeac45e850d2e2d5debba0b91f102385cda5b11f06"
 
 [[package]]
 name = "dcc-mcp-cua-browser"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "base64",
  "dcc-mcp-cua-core",
@@ -1021,7 +1021,7 @@ dependencies = [
 
 [[package]]
 name = "dcc-mcp-cua-client"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "dcc-mcp-cua-protocol",
  "dcc-mcp-cua-workspace-hack",
@@ -1033,7 +1033,7 @@ dependencies = [
 
 [[package]]
 name = "dcc-mcp-cua-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "base64",
  "cua-driver-contract",
@@ -1054,7 +1054,7 @@ dependencies = [
 
 [[package]]
 name = "dcc-mcp-cua-e2e"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "cua-driver-testkit",
  "dcc-mcp-cua-client",
@@ -1068,7 +1068,7 @@ dependencies = [
 
 [[package]]
 name = "dcc-mcp-cua-host"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "dcc-mcp-cua-browser",
  "dcc-mcp-cua-core",
@@ -1087,7 +1087,7 @@ dependencies = [
 
 [[package]]
 name = "dcc-mcp-cua-indicator"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "dcc-mcp-cua-workspace-hack",
  "rstest",
@@ -1098,7 +1098,7 @@ dependencies = [
 
 [[package]]
 name = "dcc-mcp-cua-platform-windows"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "dcc-mcp-cua-workspace-hack",
  "rstest",
@@ -1110,7 +1110,7 @@ dependencies = [
 
 [[package]]
 name = "dcc-mcp-cua-protocol"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "dcc-mcp-cua-workspace-hack",
  "libc",
@@ -1120,7 +1120,7 @@ dependencies = [
 
 [[package]]
 name = "dcc-mcp-cua-semantic-profiles"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "dcc-mcp-cua-workspace-hack",
  "rstest",
@@ -1131,7 +1131,7 @@ dependencies = [
 
 [[package]]
 name = "dcc-mcp-cua-shm"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "dcc-mcp-cua-workspace-hack",
  "ipckit",
@@ -1143,7 +1143,7 @@ dependencies = [
 
 [[package]]
 name = "dcc-mcp-cua-workspace-hack"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "aho-corasick",
  "block2 0.5.1",
@@ -1415,7 +1415,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1797,9 +1797,9 @@ checksum = "e4eba85ea1d0a966a983acd07deee566e67395d2d96b6fb39e62b5a833f1eb0b"
 
 [[package]]
 name = "globset"
-version = "0.4.19"
+version = "0.4.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e47d37d2ae4464254884b60ab7071be2b876a9c35b696bd018ddcc76847309cd"
+checksum = "07c34a9410465b45bd9787443bc7370f37735bad04b0f0cd57ff1a3186c98988"
 dependencies = [
  "aho-corasick",
  "bstr",
@@ -2201,9 +2201,9 @@ dependencies = [
 
 [[package]]
 name = "ipnet"
-version = "2.12.0"
+version = "2.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d98f6fed1fde3f8c21bc40a1abb88dd75e67924f9cffc3ef95607bad8017f8e2"
+checksum = "6a756c3fac73139e83f14c2d742155dd2b78d3ee56597b419a0579b7bdd6dd78"
 
 [[package]]
 name = "itoa"
@@ -2337,9 +2337,9 @@ checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
 
 [[package]]
 name = "libredox"
-version = "0.1.18"
+version = "0.1.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c943259e342f1e06ff2da7a83eabdfe7f92ce10262688dbf1895ff0b3e6e4652"
+checksum = "2026a5056764a10b2bf5d56488cba40da507f5493a6a429340e2004d9ed085fa"
 dependencies = [
  "libc",
 ]
@@ -2379,9 +2379,9 @@ checksum = "0ceec5bc11778974d1bcb055b18002eba7f4b3518b6a0081b3af5f21666da9ad"
 
 [[package]]
 name = "lru"
-version = "0.18.1"
+version = "0.18.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0b6180140927ee907000b0aa540091f6ea512ead4447c92b8fc35bc72788a5a6"
+checksum = "5d2f2f9b4ba7e6b24d95e7e899329d35be83bcded72c8540cdd5368932d1d90a"
 
 [[package]]
 name = "lru-slab"
@@ -2973,7 +2973,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d8fae84b431384b68627d0f9b3b1245fcf9f46f6c0e3dc902e9dce64edd1967"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3378,7 +3378,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3535,9 +3535,9 @@ dependencies = [
 
 [[package]]
 name = "regex-automata"
-version = "0.4.16"
+version = "0.4.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8fcfdb36bda0c880c5931cdc7a2bcdc8ba4556847b9d912bca70bc94708711ad"
+checksum = "ad8553b9b26413251cbf30e620595c7a41b3887f03da04579c0e6b0d6a06b4b2"
 dependencies = [
  "aho-corasick",
  "memchr",
@@ -3697,7 +3697,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3756,7 +3756,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4271,7 +4271,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5193,7 +5193,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6002,9 +6002,9 @@ dependencies = [
 
 [[package]]
 name = "zlib-rs"
-version = "0.6.6"
+version = "0.6.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b142a20ec14a91d5bc708c1dc21b080c550113d8aa77afa29635673a65dd02c5"
+checksum = "34b31d188d9d685a4f9c7b46d6e36631b07058d2cfe190267adce54dc230bf12"
 
 [[package]]
 name = "zmij"
