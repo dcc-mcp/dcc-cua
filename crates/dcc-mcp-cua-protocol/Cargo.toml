@@ -21,3 +21,6 @@ libc = "0.2"
 
 [dev-dependencies]
 rstest.workspace = true
+
+[dependencies]
+dcc-mcp-cua-workspace-hack = { version = "0.0.0", path = "../dcc-mcp-cua-workspace-hack" }

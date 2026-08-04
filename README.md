@@ -94,10 +94,18 @@ actions, and software-specific adapters.
 
 Every Rust file is limited to 2000 lines. Unit tests live in a sibling
 `src/tests.rs` module rather than production files, use `rstest`, and run with
-`cargo-nextest`; the same layout gate runs before formatting in CI. Install the
-runner once with `cargo install cargo-nextest --locked`:
+`cargo-nextest`; the same layout gate runs before formatting in CI. A
+Hakari-managed `dcc-mcp-cua-workspace-hack` unifies dependency features for the
+four supported build targets while leaving target and host graphs separate for
+the upstream MSVC Spectre dependency. Install both tools once:
 
 ```powershell
+cargo install cargo-nextest cargo-hakari --locked
+```
+
+```powershell
+cargo hakari generate --diff
+cargo hakari manage-deps --dry-run
 pwsh -NoProfile -File scripts/check-rust-layout.ps1
 cargo fmt --all -- --check
 cargo nextest run --workspace --all-targets --locked
@@ -592,6 +600,8 @@ Example host requests:
 ## Build and test
 
 ```powershell
+cargo hakari generate --diff
+cargo hakari manage-deps --dry-run
 cargo fmt --all -- --check
 cargo check --workspace --all-targets --locked
 cargo nextest run --workspace --all-targets --locked

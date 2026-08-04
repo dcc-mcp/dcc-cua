@@ -16,6 +16,7 @@ path = "src/lib.rs"
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"
+dcc-mcp-cua-workspace-hack = { version = "0.0.0", path = "../dcc-mcp-cua-workspace-hack" }
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.61.3", features = [
