@@ -339,6 +339,8 @@ bounded batches on the same connection.
 The endpoint admits at most 32 simultaneous client connections and applies
 transport backpressure before creating another connection task. The manifest
 publishes both connection and per-connection discovery limits for supervisors.
+Clients have 10 seconds from connection acceptance to complete `hello`;
+negotiated daemon and MCP connections remain long-lived without an idle deadline.
 EOF, transport failures, and malformed frames all abort outstanding discovery
 work and stop every private window, desktop, and launch session on that connection.
 

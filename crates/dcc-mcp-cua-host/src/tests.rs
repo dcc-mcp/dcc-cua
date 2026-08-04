@@ -213,6 +213,43 @@ async fn process_connection_requires_hello_pings_and_rejects_duplicate_hello() {
 
 #[rstest]
 #[tokio::test]
+async fn connection_closes_when_hello_misses_its_absolute_deadline() {
+    let (mut client, server_stream): (DuplexStream, DuplexStream) = tokio::io::duplex(4096);
+    let (reader, writer) = tokio::io::split(server_stream);
+    let server = tokio::spawn(process_connection_parts(
+        ComputerUseDriver::create().unwrap(),
+        reader,
+        writer,
+        std::time::Duration::from_millis(25),
+    ));
+
+    write_json_request(
+        &mut client,
+        json!({"request_id":"pre-hello", "method":"ping", "params":{}}),
+    )
+    .await
+    .unwrap();
+    let response = read_frame(&mut client, MAX_JSON_FRAME_BYTES)
+        .await
+        .unwrap()
+        .unwrap();
+    let response: Value = serde_json::from_slice(&response).unwrap();
+    assert_eq!(response["code"], "protocol_error");
+
+    let error = tokio::time::timeout(std::time::Duration::from_secs(1), server)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("hello was not completed within 25 ms")
+    );
+}
+
+#[rstest]
+#[tokio::test]
 async fn connection_finalizer_aborts_tasks_and_cleans_up_after_errors() {
     let cleaned = Arc::new(AtomicBool::new(false));
     let cleanup_flag = cleaned.clone();

@@ -113,6 +113,7 @@ if (-not $isWindowsHost -and
 if ($manifest.version -notmatch '^\d+\.\d+\.\d+$' -or
     $manifest.host.protocol_version -ne 1 -or
     $manifest.host.max_connections -ne 32 -or
+    $manifest.host.hello_timeout_ms -ne 10000 -or
     $manifest.host.max_parallel_discovery_requests -ne 32) {
     throw "manifest version or Host protocol is invalid"
 }

@@ -178,6 +178,7 @@ fn manifest_is_a_machine_readable_core_launch_contract() {
         manifest["host"]["max_connections"],
         dcc_mcp_cua_host::MAX_HOST_CONNECTIONS
     );
+    assert_eq!(manifest["host"]["hello_timeout_ms"], 10_000);
     assert_eq!(manifest["host"]["max_parallel_discovery_requests"], 32);
     assert_eq!(
         MAX_PARALLEL_DISCOVERY_REQUESTS,
