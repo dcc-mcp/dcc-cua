@@ -6,6 +6,7 @@ use cua_driver_sdk::{
 use cursor_overlay::CursorConfig;
 
 use crate::contracts::ConfiguredDriverOptions;
+use crate::dcc_tools::register_dcc_host_tools;
 use crate::platform_process::prepare_platform_process;
 
 pub(crate) const UPSTREAM_CURSOR_RENDERER_ENABLED: bool = cfg!(target_os = "linux");
@@ -46,7 +47,9 @@ pub(crate) fn driver_host_options() -> DriverHostOptions {
         host_bundle_id: None,
         claude_code_compatibility: false,
         prepare_desktop_environment: true,
-        register_host_tools: None,
+        // ADR 0002 hybrid strategy: DCC typed tools join the upstream
+        // ToolRegistry so they share CUA dispatch, authorization, and audit.
+        register_host_tools: Some(register_dcc_host_tools),
         authorization_host: None,
         activity_observer: None,
     }

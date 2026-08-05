@@ -1035,8 +1035,10 @@ dependencies = [
 name = "dcc-cua-core"
 version = "0.2.0"
 dependencies = [
+ "async-trait",
  "base64",
  "cua-driver-contract",
+ "cua-driver-core",
  "cua-driver-sdk",
  "cursor-overlay",
  "dcc-cua-indicator",

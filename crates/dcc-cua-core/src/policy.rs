@@ -7,6 +7,22 @@ use serde_json::{Value, json};
 use crate::contracts::*;
 use crate::window_target::WindowTarget;
 
+/// Shared denied-word base for target and launch validation. Scope-specific
+/// additions (window: `consent`; launch: `bash`) stay at the call sites.
+pub(crate) const DENIED_SURFACE_MARKERS: [&str; 11] = [
+    "password",
+    "credential",
+    "authentication",
+    "sign in",
+    "login",
+    "terminal",
+    "command prompt",
+    "cmd.exe",
+    "powershell",
+    "pwsh",
+    "security",
+];
+
 pub(crate) fn bounded_snapshot_elements(value: u32) -> u32 {
     if value == 0 {
         DEFAULT_SNAPSHOT_MAX_ELEMENTS
@@ -271,6 +287,10 @@ pub(crate) fn native_tool_allowed_globally(name: &str) -> bool {
             | "set_config"
             | "replay_trajectory"
             | "install_ffmpeg"
+            // DCC typed tools (ADR 0002): loopback-only endpoints registered
+            // through the upstream ToolRegistry; not bound to a native window.
+            | "maya_command"
+            | "unreal_remote_call"
     )
 }
 
@@ -614,36 +634,29 @@ pub(crate) fn validate_zoom_request(
     Ok(())
 }
 
-pub(crate) fn action_arguments(
+/// Map a validated dcc-cua action verb onto the CUA tool that executes it.
+/// `set_text`/`set_value` are window-scoped only; desktop scope maps them to
+/// the inert `wait` tool exactly as before the merge.
+fn action_tool_name(action: &ComputerUseAction, window_scoped: bool) -> &'static str {
+    match action.action.as_str() {
+        "click" | "double_click" | "right_click" | "toggle" => "click",
+        "drag" => "drag",
+        "scroll" => "scroll",
+        "type" | "type_chars" => "type_text",
+        "set_text" | "set_value" if window_scoped => "set_value",
+        "keypress" => "press_key",
+        "keyboard_shortcut" => "hotkey",
+        "move" => "move_cursor",
+        _ => "wait",
+    }
+}
+
+/// Shared pointer-action argument builder for the window and desktop scopes.
+/// The `move`/`click`/`drag`/`scroll` payloads are identical across both.
+fn insert_pointer_action_arguments(
+    object: &mut serde_json::Map<String, Value>,
     action: &ComputerUseAction,
-    session: &str,
-    target: &WindowTarget,
-) -> Value {
-    let scope = json!({
-        "_tool": match action.action.as_str() {
-            "click" | "double_click" | "right_click" | "toggle" => "click",
-            "drag" => "drag",
-            "scroll" => "scroll",
-            "type" => "type_text",
-            "type_chars" => "type_text",
-            "set_text" | "set_value" => "set_value",
-            "keypress" => "press_key",
-            "keyboard_shortcut" => "hotkey",
-            "move" => "move_cursor",
-            _ => "wait",
-        },
-        "pid": target.pid,
-        "window_id": target.window_id,
-        "session": session,
-    });
-    let mut args = scope;
-    let object = args
-        .as_object_mut()
-        .expect("action arguments are an object");
-    object.insert(
-        "delivery_mode".into(),
-        json!(action.delivery_mode.as_deref().unwrap_or("background")),
-    );
+) {
     match action.action.as_str() {
         "move" => {
             object.insert("x".into(), json!(action.x));
@@ -702,6 +715,30 @@ pub(crate) fn action_arguments(
             object.insert("y".into(), json!(action.y));
             insert_scroll_arguments(object, action);
         }
+        _ => {}
+    }
+}
+
+pub(crate) fn action_arguments(
+    action: &ComputerUseAction,
+    session: &str,
+    target: &WindowTarget,
+) -> Value {
+    let mut args = json!({
+        "_tool": action_tool_name(action, true),
+        "pid": target.pid,
+        "window_id": target.window_id,
+        "session": session,
+    });
+    let object = args
+        .as_object_mut()
+        .expect("action arguments are an object");
+    object.insert(
+        "delivery_mode".into(),
+        json!(action.delivery_mode.as_deref().unwrap_or("background")),
+    );
+    insert_pointer_action_arguments(object, action);
+    match action.action.as_str() {
         "type" => {
             object.insert(
                 "text".into(),
@@ -796,80 +833,15 @@ pub(crate) fn validate_action_observation(
 
 pub(crate) fn desktop_action_arguments(action: &ComputerUseAction, session: &str) -> Value {
     let mut args = json!({
-        "_tool": match action.action.as_str() {
-            "click" | "double_click" | "right_click" | "toggle" => "click",
-            "drag" => "drag",
-            "scroll" => "scroll",
-            "type" | "type_chars" => "type_text",
-            "keypress" => "press_key",
-            "keyboard_shortcut" => "hotkey",
-            "move" => "move_cursor",
-            _ => "wait",
-        },
+        "_tool": action_tool_name(action, false),
         "session": session,
         "scope": "desktop",
     });
     let object = args
         .as_object_mut()
         .expect("desktop action arguments are an object");
+    insert_pointer_action_arguments(object, action);
     match action.action.as_str() {
-        "move" => {
-            object.insert("x".into(), json!(action.x));
-            object.insert("y".into(), json!(action.y));
-        }
-        "click" | "double_click" | "right_click" | "toggle" => {
-            object.insert("x".into(), json!(action.x));
-            object.insert("y".into(), json!(action.y));
-            object.insert(
-                "count".into(),
-                json!(if action.action == "double_click" {
-                    2
-                } else {
-                    1
-                }),
-            );
-            object.insert(
-                "button".into(),
-                json!(
-                    action
-                        .button
-                        .as_deref()
-                        .unwrap_or(if action.action == "right_click" {
-                            "right"
-                        } else {
-                            "left"
-                        })
-                ),
-            );
-        }
-        "drag" => {
-            let first = action.path.first().copied().unwrap_or(ComputerUsePoint {
-                x: action.x.unwrap_or_default(),
-                y: action.y.unwrap_or_default(),
-            });
-            let last = action.path.last().copied().unwrap_or(first);
-            object.insert("from_x".into(), json!(first.x));
-            object.insert("from_y".into(), json!(first.y));
-            object.insert("to_x".into(), json!(last.x));
-            object.insert("to_y".into(), json!(last.y));
-            if let Some(button) = action.button.as_deref() {
-                object.insert("button".into(), json!(button));
-            }
-            if !action.modifiers.is_empty() {
-                object.insert("modifier".into(), json!(action.modifiers));
-            }
-            if let Some(duration_ms) = action.duration_ms {
-                object.insert("duration_ms".into(), json!(duration_ms));
-            }
-            if let Some(steps) = action.steps {
-                object.insert("steps".into(), json!(steps));
-            }
-        }
-        "scroll" => {
-            object.insert("x".into(), json!(action.x));
-            object.insert("y".into(), json!(action.y));
-            insert_scroll_arguments(object, action);
-        }
         "type" | "type_chars" => {
             object.insert(
                 "text".into(),
