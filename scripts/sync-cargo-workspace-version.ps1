@@ -86,7 +86,39 @@ foreach ($package in $metadata.packages) {
     Update-WorkspaceDependencyVersions -Path $manifestPath -PackageNames $workspaceMemberNames
 }
 
-$updatedMetadata = (& cargo metadata --format-version 1 --no-deps | ConvertFrom-Json)
+function Update-CargoLockVersions {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string[]]$PackageNames
+    )
+
+    $content = Get-Content -LiteralPath $Path -Raw
+    $updated = $content
+    foreach ($packageName in $PackageNames) {
+        $escapedName = [regex]::Escape($packageName)
+        $pattern = '(?ms)(^\[\[package\]\]\r?\nname = "' + $escapedName + '"\r?\nversion = )"[^"]+"'
+        $matches = [regex]::Matches($updated, $pattern)
+        if ($matches.Count -ne 1) {
+            throw "expected exactly one Cargo.lock entry for $packageName, found $($matches.Count)"
+        }
+        $updated = [regex]::Replace(
+            $updated,
+            $pattern,
+            [System.Text.RegularExpressions.MatchEvaluator]{
+                param($match)
+                return $match.Groups[1].Value + '"' + $Version + '"'
+            },
+            1
+        )
+    }
+    if ($updated -ne $content) {
+        Set-Content -LiteralPath $Path -Value $updated -NoNewline -Encoding utf8
+    }
+}
+
+Update-CargoLockVersions -Path (Join-Path $rootPath 'Cargo.lock') -PackageNames $workspaceMemberNames
+
+$updatedMetadata = (& cargo metadata --locked --format-version 1 --no-deps | ConvertFrom-Json)
 if ($LASTEXITCODE -ne 0) {
     throw "cargo metadata failed after version synchronization with code $LASTEXITCODE"
 }
