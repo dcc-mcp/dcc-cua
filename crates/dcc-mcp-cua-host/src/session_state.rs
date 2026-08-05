@@ -58,6 +58,7 @@ pub(super) struct HostLaunchSession {
 
 #[derive(Default)]
 pub(super) struct ConnectionSessions {
+    pub(super) agent_name: String,
     pub(super) windows: HashMap<String, HostSession>,
     pub(super) desktops: HashMap<String, HostDesktopSession>,
     pub(super) launches: HashMap<String, HostLaunchSession>,

@@ -38,6 +38,7 @@ pub(super) async fn handle_request(
             ));
         }
         let transport = SnapshotTransport::from_hello(params)?;
+        sessions.agent_name = params.client_name.clone();
         *snapshot_transport = Some(transport);
         return Ok((
             json!({
@@ -57,7 +58,9 @@ pub(super) async fn handle_request(
     }
     let mode = snapshot_transport
         .ok_or_else(|| HostError::Protocol("hello is required before stateful requests".into()))?;
+    let agent_name = sessions.agent_name.clone();
     let ConnectionSessions {
+        agent_name: _,
         windows: sessions,
         desktops: desktop_sessions,
         launches: launch_sessions,
@@ -172,7 +175,8 @@ pub(super) async fn handle_request(
             grant.validate_identity()?;
             let session_generation = interrupt_generation();
             let runtime_session_id = new_runtime_session_id("desktop");
-            let mut session = driver.desktop_session(runtime_session_id.clone())?;
+            let mut session = driver
+                .desktop_session_with_agent(agent_name.clone(), runtime_session_id.clone())?;
             let started = session.start().await?;
             let capability = format!("cua-desktop-{}", Uuid::new_v4());
             desktop_sessions.insert(
@@ -525,9 +529,10 @@ pub(super) async fn handle_request(
                 .as_ref()
                 .map(|session| session.runtime_session_id.clone())
                 .unwrap_or_else(|| new_runtime_session_id("window"));
-            let mut session = driver.session(
+            let mut session = driver.session_with_agent(
                 scope,
                 grant.application_label.clone(),
+                agent_name.clone(),
                 runtime_session_id.clone(),
             )?;
             let started = session.start().await?;
