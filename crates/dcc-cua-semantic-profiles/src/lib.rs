@@ -94,14 +94,32 @@ impl SemanticTarget {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SemanticRoute {
     UnrealTypedApi,
+    MayaTypedApi,
     Accessibility,
     BrowserDom,
     OsNativeDialog,
     VisualFallback,
+}
+
+impl SemanticRoute {
+    /// The registered CUA tool that executes this route's typed API, if any.
+    /// Accessibility/browser/dialog/visual routes stay on the host's fenced
+    /// observation-action paths and have no direct tool mapping.
+    #[must_use]
+    pub const fn typed_tool_name(self) -> Option<&'static str> {
+        match self {
+            Self::UnrealTypedApi => Some("unreal_remote_call"),
+            Self::MayaTypedApi => Some("maya_command"),
+            Self::Accessibility
+            | Self::BrowserDom
+            | Self::OsNativeDialog
+            | Self::VisualFallback => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -110,6 +128,23 @@ pub struct ProfileSettings {
     pub preferred_route: SemanticRoute,
     #[serde(default)]
     pub destructive_confirmation_required: bool,
+    /// Host denied-word markers this application may bypass (for example a
+    /// license "Sign in" window). The host only honors an exemption when the
+    /// caller also passes an explicit grant for the same profile; the profile
+    /// alone never widens policy.
+    #[serde(default)]
+    pub denied_word_exemptions: Vec<String>,
+}
+
+impl ProfileSettings {
+    /// True when this profile declares an exemption for `marker` (case
+    /// insensitive). Callers must still require an explicit grant.
+    #[must_use]
+    pub fn exempts_denied_word(&self, marker: &str) -> bool {
+        self.denied_word_exemptions
+            .iter()
+            .any(|candidate| candidate.eq_ignore_ascii_case(marker))
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -134,6 +169,8 @@ pub enum ProfileError {
     DuplicateSurface(String, String),
     #[error("profile {0:?} surface {1:?} contains duplicate target id {2:?}")]
     DuplicateTarget(String, String, String),
+    #[error("profile id {0:?} is already defined by a built-in or earlier external profile")]
+    DuplicateProfile(String),
 }
 
 impl SemanticProfile {
@@ -303,6 +340,58 @@ pub fn builtin_profile(id: &str) -> Option<&'static SemanticProfile> {
             || (normalized == "unreal" && profile.id == "ue")
             || (normalized == "unreal-engine" && profile.id == "ue")
     })
+}
+
+/// Environment variable naming a directory of external `*.json` profiles.
+pub const PROFILE_DIR_ENV: &str = "DCC_CUA_PROFILE_DIR";
+
+/// Load and validate every `*.json` profile in `directory`.
+///
+/// Fails closed: one invalid profile rejects the whole directory so a typo
+/// cannot silently drop an application's routing or safety settings. External
+/// profiles may not reuse a built-in id — built-ins always win.
+pub fn load_profiles_from_dir(
+    directory: &std::path::Path,
+) -> Result<Vec<SemanticProfile>, ProfileError> {
+    let entries = std::fs::read_dir(directory)
+        .map_err(|error| ProfileError::InvalidJson(format!("{}: {error}", directory.display())))?;
+    let mut paths: Vec<_> = entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "json")
+        })
+        .collect();
+    paths.sort();
+    let mut profiles = Vec::new();
+    for path in paths {
+        let input = std::fs::read_to_string(&path)
+            .map_err(|error| ProfileError::InvalidJson(format!("{}: {error}", path.display())))?;
+        let profile = parse_profile(&input)?;
+        if builtin_profile(&profile.id).is_some()
+            || profiles
+                .iter()
+                .any(|existing: &SemanticProfile| existing.id == profile.id)
+        {
+            return Err(ProfileError::DuplicateProfile(profile.id));
+        }
+        profiles.push(profile);
+    }
+    Ok(profiles)
+}
+
+/// Built-in profiles plus any external directory named by
+/// [`PROFILE_DIR_ENV`]. External load errors fail closed to built-ins only.
+#[must_use]
+pub fn all_profiles() -> Vec<SemanticProfile> {
+    let mut profiles: Vec<SemanticProfile> = builtin_profiles().to_vec();
+    if let Some(directory) = std::env::var_os(PROFILE_DIR_ENV)
+        && let Ok(external) = load_profiles_from_dir(std::path::Path::new(&directory))
+    {
+        profiles.extend(external);
+    }
+    profiles
 }
 
 #[cfg(test)]
