@@ -15,10 +15,10 @@ path = "src/lib.rs"
 
 [dependencies]
 base64 = "0.22"
-# Temporary upstream fix: https://github.com/trycua/cua/pull/2812
-cua-driver-contract = { git = "https://github.com/loonghao/cua.git", rev = "e96f0ce2b45ea94684fa82acba0b21d91408942a", package = "cua-driver-contract" }
-cua-driver-sdk = { git = "https://github.com/loonghao/cua.git", rev = "e96f0ce2b45ea94684fa82acba0b21d91408942a", package = "cua-driver-sdk" }
-cursor-overlay = { git = "https://github.com/loonghao/cua.git", rev = "e96f0ce2b45ea94684fa82acba0b21d91408942a", package = "cursor-overlay" }
+# Upstreamed Windows discovery and foreground-input fixes: https://github.com/trycua/cua/pull/2812
+cua-driver-contract = { git = "https://github.com/trycua/cua.git", rev = "441cae0d4d4048524ce2f7eeabfb63a6c9a422d3", package = "cua-driver-contract" }
+cua-driver-sdk = { git = "https://github.com/trycua/cua.git", rev = "441cae0d4d4048524ce2f7eeabfb63a6c9a422d3", package = "cua-driver-sdk" }
+cursor-overlay = { git = "https://github.com/trycua/cua.git", rev = "441cae0d4d4048524ce2f7eeabfb63a6c9a422d3", package = "cursor-overlay" }
 dcc-mcp-cua-indicator = { path = "../dcc-mcp-cua-indicator" }
 png = "0.17"
 serde = { version = "1", features = ["derive"] }
@@ -29,7 +29,7 @@ dcc-mcp-cua-workspace-hack = { version = "0.1.2", path = "../dcc-mcp-cua-workspa
 
 [target.'cfg(windows)'.dependencies]
 dcc-mcp-cua-platform-windows = { path = "../dcc-mcp-cua-platform-windows" }
-platform-windows = { git = "https://github.com/loonghao/cua.git", rev = "e96f0ce2b45ea94684fa82acba0b21d91408942a", package = "platform-windows" }
+platform-windows = { git = "https://github.com/trycua/cua.git", rev = "441cae0d4d4048524ce2f7eeabfb63a6c9a422d3", package = "platform-windows" }
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_RemoteDesktop", "Win32_System_Threading", "Win32_UI_HiDpi", "Win32_UI_WindowsAndMessaging"] }
 
 [dev-dependencies]
