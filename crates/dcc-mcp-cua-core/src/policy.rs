@@ -640,12 +640,10 @@ pub(crate) fn action_arguments(
     let object = args
         .as_object_mut()
         .expect("action arguments are an object");
-    if action.action != "type_chars" {
-        object.insert(
-            "delivery_mode".into(),
-            json!(action.delivery_mode.as_deref().unwrap_or("background")),
-        );
-    }
+    object.insert(
+        "delivery_mode".into(),
+        json!(action.delivery_mode.as_deref().unwrap_or("background")),
+    );
     match action.action.as_str() {
         "move" => {
             object.insert("x".into(), json!(action.x));
