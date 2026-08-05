@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.0](https://github.com/dcc-mcp/dcc-cua/compare/v0.1.2...v0.2.0) (2026-08-05)
+
+
+### Features
+
+* rename project to dcc-cua ([1f25ff2](https://github.com/dcc-mcp/dcc-cua/commit/1f25ff26e06a9605c9544477a194831d31411ae4))
+
 ## [0.1.2](https://github.com/dcc-mcp/dcc-cua/compare/v0.1.1...v0.1.2) (2026-08-05)
 
 
