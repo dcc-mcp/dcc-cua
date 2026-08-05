@@ -1,0 +1,26 @@
+[package]
+name = "dcc-cua-platform-windows"
+description = "Host-owned Windows UI Automation fallback for dcc-cua"
+version = "0.1.2"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "dcc_cua_platform_windows"
+path = "src/lib.rs"
+
+[dependencies]
+serde_json = "1"
+thiserror = "2"
+uuid = { version = "1", features = ["v4"] }
+dcc-cua-workspace-hack = { version = "0.1.2", path = "../dcc-cua-workspace-hack" }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }
+
+[dev-dependencies]
+rstest.workspace = true

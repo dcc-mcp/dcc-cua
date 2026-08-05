@@ -33,8 +33,8 @@ jobs:
           $config = Get-Content release-please-config.json -Raw | ConvertFrom-Json
           $manifest = Get-Content .release-please-manifest.json -Raw | ConvertFrom-Json
           if ($config.'release-type' -ne 'rust') { throw 'release-type must remain rust' }
-          if ($config.packages.'crates/dcc-mcp-cua-cli'.component -ne 'dcc-mcp-cua') { throw 'unexpected release component' }
-          if ($manifest.'crates/dcc-mcp-cua-cli' -notmatch '^\d+\.\d+\.\d+$') { throw 'manifest version must be valid semver' }
+          if ($config.packages.'crates/dcc-cua-cli'.component -ne 'dcc-cua') { throw 'unexpected release component' }
+          if ($manifest.'crates/dcc-cua-cli' -notmatch '^\d+\.\d+\.\d+$') { throw 'manifest version must be valid semver' }
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.95.0
@@ -42,12 +42,12 @@ jobs:
 
   release-please:
     needs: validate
-    if: vars.DCC_MCP_CUA_RELEASE_READY == 'true'
+    if: vars.DCC_CUA_RELEASE_READY == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
-      release_created: ${{ steps.release.outputs['crates/dcc-mcp-cua-cli--release_created'] == 'true' || (github.event_name == 'workflow_dispatch' && inputs.release_tag != '') }}
-      tag_name: ${{ steps.release.outputs['crates/dcc-mcp-cua-cli--tag_name'] || inputs.release_tag }}
+      release_created: ${{ steps.release.outputs['crates/dcc-cua-cli--release_created'] == 'true' || (github.event_name == 'workflow_dispatch' && inputs.release_tag != '') }}
+      tag_name: ${{ steps.release.outputs['crates/dcc-cua-cli--tag_name'] || inputs.release_tag }}
     steps:
       - uses: googleapis/release-please-action@v5
         id: release
@@ -62,7 +62,7 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_VERSION: ${{ steps.release.outputs['crates/dcc-mcp-cua-cli--version'] }}
+          RELEASE_VERSION: ${{ steps.release.outputs['crates/dcc-cua-cli--version'] }}
         run: |
           $releasePr = $null
           for ($attempt = 0; $attempt -lt 6 -and -not $releasePr; $attempt++) {
@@ -130,11 +130,11 @@ jobs:
           swiftc_path="$(xcrun --find swiftc)"
           swift_runtime="$(cd "$(dirname "$swiftc_path")/../lib/swift/macosx" && pwd)"
           echo "DYLD_LIBRARY_PATH=${swift_runtime}:/usr/lib/swift${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}" >> "$GITHUB_ENV"
-      - run: cargo build --release --locked -p dcc-mcp-cua-cli
+      - run: cargo build --release --locked -p dcc-cua-cli
       - name: Build pinned official CUA driver
         shell: pwsh
         run: ./scripts/build-upstream-cua-driver.ps1
-      - name: Package dcc-mcp-cua
+      - name: Package dcc-cua
         shell: bash
         env:
           TAG_NAME: ${{ needs.release-please.outputs.tag_name }}
@@ -144,21 +144,23 @@ jobs:
           version="${TAG_NAME#v}"
           mkdir -p dist
           cp -R skills target/release/skills
+          cp -R assets target/release/assets
           cp LICENSE target/release/LICENSE
+          cp README.md target/release/README.md
           if [ "${{ matrix.archive }}" = "zip" ]; then
-            archive="dist/dcc-mcp-cua-${version}-${host}.zip"
+            archive="dist/dcc-cua-${version}-${host}.zip"
             (
               cd target/release
-              7z a "../../$archive" dcc-mcp-cua.exe libexec LICENSE skills
+              7z a "../../$archive" dcc-cua.exe libexec LICENSE README.md assets skills
             )
           else
-            archive="dist/dcc-mcp-cua-${version}-${host}.tar.gz"
-            tar -czf "$archive" -C target/release dcc-mcp-cua libexec LICENSE skills
+            archive="dist/dcc-cua-${version}-${host}.tar.gz"
+            tar -czf "$archive" -C target/release dcc-cua libexec LICENSE README.md assets skills
           fi
           sha256sum "$archive" > "${archive}.sha256"
       - uses: actions/upload-artifact@v4
         with:
-          name: dcc-mcp-cua-${{ matrix.platform }}
+          name: dcc-cua-${{ matrix.platform }}
           path: dist/*
           if-no-files-found: error
 
@@ -171,7 +173,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: dist
-          pattern: dcc-mcp-cua-*
+          pattern: dcc-cua-*
           merge-multiple: true
       - name: Attach release archives
         env:

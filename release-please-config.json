@@ -8,9 +8,9 @@
     }
   ],
   "packages": {
-    "crates/dcc-mcp-cua-cli": {
+    "crates/dcc-cua-cli": {
       "release-type": "rust",
-      "component": "dcc-mcp-cua"
+      "component": "dcc-cua"
     }
   }
 }

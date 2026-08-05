@@ -15,7 +15,7 @@ details and make every new DCC a host-protocol change.
 
 ## Decision
 
-Create `dcc-mcp-cua-semantic-profiles` as a separate workspace crate. Profiles
+Create `dcc-cua-semantic-profiles` as a separate workspace crate. Profiles
 are validated JSON data with selectors, semantic surfaces, target aliases,
 preferred routes, and dialog policy. Adapters choose a profile and then use the
 existing Host contracts for exact scope, fresh observations, and actions.

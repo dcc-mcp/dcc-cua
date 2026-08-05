@@ -51,8 +51,8 @@ jobs:
       - run: cargo nextest run --workspace --all-targets --locked
       - run: cargo test --workspace --doc --locked
       - name: Compile GUI E2E on every target
-        run: cargo nextest run --locked -p dcc-mcp-cua-e2e --features gui-e2e --no-run
-      - run: cargo build --release --locked -p dcc-mcp-cua-cli
+        run: cargo nextest run --locked -p dcc-cua-e2e --features gui-e2e --no-run
+      - run: cargo build --release --locked -p dcc-cua-cli
       - name: Build pinned official CUA driver
         shell: pwsh
         run: ./scripts/build-upstream-cua-driver.ps1
@@ -60,13 +60,13 @@ jobs:
         timeout-minutes: 5
         shell: pwsh
         run: |
-          $binary = if ($IsWindows) { "target/release/dcc-mcp-cua.exe" } else { "target/release/dcc-mcp-cua" }
+          $binary = if ($IsWindows) { "target/release/dcc-cua.exe" } else { "target/release/dcc-cua" }
           ./scripts/test-cli-e2e.ps1 -Binary $binary
       - name: Run Windows controlled GUI Host IPC E2E
         if: matrix.os == 'windows-latest'
         timeout-minutes: 10
         shell: pwsh
-        run: ./scripts/run-gui-e2e.ps1 -Binary target/release/dcc-mcp-cua.exe
+        run: ./scripts/run-gui-e2e.ps1 -Binary target/release/dcc-cua.exe
       - name: Run Linux controlled GUI Host IPC E2E
         if: matrix.os == 'ubuntu-latest'
         timeout-minutes: 10
@@ -74,9 +74,9 @@ jobs:
         run: |
           xvfb-run -a --server-args="-screen 0 1920x1080x24" \
             dbus-run-session -- bash -lc \
-            'openbox >/tmp/dcc-mcp-cua-openbox.log 2>&1 & picom --backend xrender --config /dev/null >/tmp/dcc-mcp-cua-picom.log 2>&1 & sleep 2; exec pwsh -NoProfile -File scripts/run-gui-e2e.ps1 -Binary target/release/dcc-mcp-cua'
+            'openbox >/tmp/dcc-cua-openbox.log 2>&1 & picom --backend xrender --config /dev/null >/tmp/dcc-cua-picom.log 2>&1 & sleep 2; exec pwsh -NoProfile -File scripts/run-gui-e2e.ps1 -Binary target/release/dcc-cua'
       - name: Run macOS controlled GUI Host IPC E2E
         if: matrix.os == 'macos-latest'
         timeout-minutes: 10
         shell: pwsh
-        run: ./scripts/run-gui-e2e.ps1 -Binary target/release/dcc-mcp-cua
+        run: ./scripts/run-gui-e2e.ps1 -Binary target/release/dcc-cua

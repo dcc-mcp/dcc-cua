@@ -1,7 +1,7 @@
 ---
 name: cua-cli
 description: >-
-  Operate the standalone dcc-mcp-cua CLI for exact-window discovery, scoped
+  Operate the standalone dcc-cua CLI for exact-window discovery, scoped
   snapshots, semantic or visual actions, post-action verification, and bounded
   long-running UI tasks. Use this project skill instead of generic Computer Use
   or a DCC-specific MCP sidecar.
@@ -10,27 +10,27 @@ metadata:
   dcc-mcp:
     dcc: computer-use
     layer: infrastructure
-    compatibility: dcc-mcp-cua 0.1+ on Windows, macOS, or Linux.
+    compatibility: dcc-cua 0.1+ on Windows, macOS, or Linux.
     version: "0.1.0"
-    search-hint: "dcc-mcp-cua CLI exact window snapshot act verify UIA visual control banner long task recovery"
+    search-hint: "dcc-cua CLI exact window snapshot act verify UIA visual control banner long task recovery"
     tags: "computer-use, ui-control, infrastructure, read-only"
 ---
 
-# Standalone dcc-mcp-cua CLI
+# Standalone dcc-cua CLI
 
 This project is an independent CUA control plane. It does not depend on Maya
 MCP, a DCC adapter, `dcc-mcp-cli`, or generic Computer Use. Use the released
-`dcc-mcp-cua` binary, which talks to the CUA SDK and Host IPC directly.
+`dcc-cua` binary, which talks to the CUA SDK and Host IPC directly.
 
 ## Control loop
 
 1. Discover the real target before acting:
 
    ```powershell
-   dcc-mcp-cua doctor
-   dcc-mcp-cua list --on-screen
-   dcc-mcp-cua list --app maya.exe --on-screen
-   dcc-mcp-cua profiles
+   dcc-cua doctor
+   dcc-cua list --on-screen
+   dcc-cua list --app maya.exe --on-screen
+   dcc-cua profiles
    ```
 
 2. Bind one exact process/window. Prefer `--pid` plus `--window-id`; use a
@@ -41,9 +41,9 @@ MCP, a DCC adapter, `dcc-mcp-cli`, or generic Computer Use. Use the released
 3. Use the latest observation as the only action coordinate/token source:
 
    ```powershell
-   dcc-mcp-cua snapshot --pid $pid --window-id $hwnd --activate --output before.png
-   dcc-mcp-cua act --pid $pid --window-id $hwnd --action-json '{"action":"click","element_index":12,"delivery_mode":"foreground"}'
-   dcc-mcp-cua snapshot --pid $pid --window-id $hwnd --activate --output after.png
+   dcc-cua snapshot --pid $pid --window-id $hwnd --activate --output before.png
+   dcc-cua act --pid $pid --window-id $hwnd --action-json '{"action":"click","element_index":12,"delivery_mode":"foreground"}'
+   dcc-cua snapshot --pid $pid --window-id $hwnd --activate --output after.png
    ```
 
    Prefer an accessibility element index/token. Use coordinates only for a
