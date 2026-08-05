@@ -823,7 +823,7 @@ fn test_window_target() -> WindowTarget {
 }
 
 #[rstest]
-fn type_chars_uses_cua_character_input_without_delivery_mode() {
+fn type_chars_forwards_delivery_mode_to_cua_character_input() {
     let action = ComputerUseAction {
         action: "type_chars".into(),
         element_index: Some(4),
@@ -852,7 +852,7 @@ fn type_chars_uses_cua_character_input_without_delivery_mode() {
     assert_eq!(args["text"], "Fab");
     assert_eq!(args["delay_ms"], 20);
     assert_eq!(args["element_index"], 4);
-    assert!(args.get("delivery_mode").is_none());
+    assert_eq!(args["delivery_mode"], "foreground");
     assert!(args.get("type_chars_only").is_none());
 
     let focused = ComputerUseAction {
