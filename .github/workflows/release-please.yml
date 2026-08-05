@@ -66,9 +66,12 @@ jobs:
         run: |
           $releasePr = $null
           for ($attempt = 0; $attempt -lt 6 -and -not $releasePr; $attempt++) {
-              $releasePr = gh pr list --repo $env:GITHUB_REPOSITORY --state open --label 'autorelease: pending' --json number,headRefName,title --limit 10 |
+              $releasePr = gh pr list --repo $env:GITHUB_REPOSITORY --state open --json number,headRefName,title --limit 10 |
                 ConvertFrom-Json |
-                Where-Object { $_.title -like 'chore(main): release *' } |
+                Where-Object {
+                  $_.title -like 'chore(main): release *' -and
+                  $_.headRefName -like 'release-please--branches--main--components--*'
+                } |
                 Select-Object -First 1
               if (-not $releasePr) { Start-Sleep -Seconds 5 }
           }
