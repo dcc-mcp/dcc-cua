@@ -1184,6 +1184,7 @@ dependencies = [
  "toml_parser",
  "uuid",
  "windows 0.61.3",
+ "windows-sys 0.52.0",
  "windows-sys 0.61.2",
  "winnow 1.0.4",
  "x11rb",
