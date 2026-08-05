@@ -13,8 +13,8 @@ repository.workspace = true
 gui-e2e = []
 
 [dev-dependencies]
-# Temporary upstream fix: https://github.com/trycua/cua/pull/2812
-cua-driver-testkit = { git = "https://github.com/loonghao/cua.git", rev = "e96f0ce2b45ea94684fa82acba0b21d91408942a", package = "cua-driver-testkit" }
+# Upstreamed Windows discovery and foreground-input fixes: https://github.com/trycua/cua/pull/2812
+cua-driver-testkit = { git = "https://github.com/trycua/cua.git", rev = "441cae0d4d4048524ce2f7eeabfb63a6c9a422d3", package = "cua-driver-testkit" }
 dcc-mcp-cua-client = { path = "../dcc-mcp-cua-client" }
 rstest.workspace = true
 serde_json = "1"
