@@ -1268,6 +1268,7 @@ async fn execute_action(
     flags: &[String],
     mut action: ComputerUseAction,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    default_activated_action_to_foreground(flags, &mut action);
     let scope = select_scope(driver, flags).await?;
     let app = flag_value(flags, "--app").unwrap_or_else(|| "DCC application".into());
     let session_id = flag_value(flags, "--session").unwrap_or_else(|| "dcc-cua-cli".into());
@@ -1284,9 +1285,10 @@ async fn execute_action(
             None
         };
         let (observation, action_result, post_snapshot) = if semantic_action {
-            session
+            let accessibility = session
                 .accessibility_snapshot(max_elements, max_depth)
                 .await?;
+            bind_fresh_element_token(&mut action, &accessibility);
             let observation = session.latest_observation().cloned().ok_or_else(|| {
                 dcc_cua_core::ComputerUseError::new(
                     dcc_cua_core::ComputerUseErrorCode::CaptureFailed,
@@ -1334,6 +1336,31 @@ async fn execute_action(
         }))?
     );
     Ok(())
+}
+
+fn default_activated_action_to_foreground(flags: &[String], action: &mut ComputerUseAction) {
+    if has_flag(flags, "--activate") && action.delivery_mode.is_none() {
+        action.delivery_mode = Some("foreground".into());
+    }
+}
+
+fn bind_fresh_element_token(action: &mut ComputerUseAction, accessibility: &serde_json::Value) {
+    let Some(index) = action.element_index else {
+        return;
+    };
+    let Some(token) = accessibility["elements"]
+        .as_array()
+        .and_then(|elements| {
+            elements
+                .iter()
+                .find(|element| element["element_index"].as_u64() == Some(u64::from(index)))
+        })
+        .and_then(|element| element["element_token"].as_str())
+    else {
+        return;
+    };
+    action.element_token = Some(token.into());
+    action.element_index = None;
 }
 
 fn is_friendly_action(command: &str) -> bool {

@@ -619,6 +619,29 @@ fn friendly_scroll_preserves_axis_target_and_granularity() {
     );
 }
 
+#[rstest]
+fn activated_actions_use_foreground_and_fresh_semantic_tokens() {
+    let mut action = ComputerUseAction {
+        action: "keypress".into(),
+        element_index: Some(8),
+        ..Default::default()
+    };
+    default_activated_action_to_foreground(&strings(["--activate"]), &mut action);
+    bind_fresh_element_token(
+        &mut action,
+        &json!({
+            "elements": [{"element_index": 8, "element_token": "snapshot:8"}]
+        }),
+    );
+    assert_eq!(action.delivery_mode.as_deref(), Some("foreground"));
+    assert_eq!(action.element_token.as_deref(), Some("snapshot:8"));
+    assert_eq!(action.element_index, None);
+
+    action.delivery_mode = Some("background".into());
+    default_activated_action_to_foreground(&strings(["--activate"]), &mut action);
+    assert_eq!(action.delivery_mode.as_deref(), Some("background"));
+}
+
 fn strings<const N: usize>(values: [&str; N]) -> Vec<String> {
     values.into_iter().map(str::to_owned).collect()
 }
