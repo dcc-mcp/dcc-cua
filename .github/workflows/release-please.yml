@@ -83,7 +83,10 @@ jobs:
           }
           git fetch origin "refs/heads/$($releasePr.headRefName):refs/remotes/origin/$($releasePr.headRefName)"
           git checkout -B $releasePr.headRefName "origin/$($releasePr.headRefName)"
-          ./scripts/sync-cargo-workspace-version.ps1 -Version $version
+          $syncScript = Join-Path $env:RUNNER_TEMP 'sync-cargo-workspace-version.ps1'
+          git show 'origin/main:scripts/sync-cargo-workspace-version.ps1' | Set-Content -LiteralPath $syncScript -Encoding utf8
+          & pwsh -NoProfile -File $syncScript -Version $version
+          if ($LASTEXITCODE -ne 0) { throw "workspace release version sync failed with code $LASTEXITCODE" }
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add Cargo.toml Cargo.lock crates/*/Cargo.toml
