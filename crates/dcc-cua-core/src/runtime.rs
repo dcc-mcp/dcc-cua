@@ -820,23 +820,26 @@ impl ComputerUseSession {
                 .capture_window_visually(&target, max_elements, max_depth)
                 .await;
         }
-        let result = call_driver_tool(
-            &self.driver.driver,
-            "get_window_state",
-            json!({
-                "window_id": target.window_id,
-                "pid": target.pid,
-                "include_screenshot": true,
-                "max_elements": bounded_snapshot_elements(max_elements),
-                "max_depth": bounded_snapshot_depth(max_depth),
-                "session": self.session_id,
-            })
-            .to_string(),
-            "capture CUA window state",
+        // The timeout is distinguished structurally here (Elapsed vs driver
+        // error) so the UIA fallback never has to match error-message text.
+        let result = tokio::time::timeout(
+            INPUT_CALL_TIMEOUT,
+            self.driver.driver.call_tool(
+                "get_window_state".into(),
+                json!({
+                    "window_id": target.window_id,
+                    "pid": target.pid,
+                    "include_screenshot": true,
+                    "max_elements": bounded_snapshot_elements(max_elements),
+                    "max_depth": bounded_snapshot_depth(max_depth),
+                    "session": self.session_id,
+                })
+                .to_string(),
+            ),
         )
         .await;
         let result = match result {
-            Ok(result) if result.is_error && is_uia_snapshot_failure(&result) => {
+            Err(_elapsed) => {
                 #[cfg(windows)]
                 self.activate_windows_uia_fallback(&target);
                 return self
@@ -844,20 +847,28 @@ impl ComputerUseSession {
                     .await;
             }
             Ok(result) => {
-                ensure_tool_ok("capture CUA window", &result)?;
-                result
+                match result.map_err(|error| map_driver_error("capture CUA window state", error)) {
+                    Ok(result) if result.is_error && is_uia_snapshot_failure(&result) => {
+                        #[cfg(windows)]
+                        self.activate_windows_uia_fallback(&target);
+                        return self
+                            .capture_window_visually(&target, max_elements, max_depth)
+                            .await;
+                    }
+                    Ok(result) => {
+                        ensure_tool_ok("capture CUA window", &result)?;
+                        result
+                    }
+                    Err(error) if is_uia_snapshot_message(&error.message) => {
+                        #[cfg(windows)]
+                        self.activate_windows_uia_fallback(&target);
+                        return self
+                            .capture_window_visually(&target, max_elements, max_depth)
+                            .await;
+                    }
+                    Err(error) => return Err(error),
+                }
             }
-            Err(error)
-                if is_uia_snapshot_message(&error.message)
-                    || error.message.contains("capture CUA window state timed out") =>
-            {
-                #[cfg(windows)]
-                self.activate_windows_uia_fallback(&target);
-                return self
-                    .capture_window_visually(&target, max_elements, max_depth)
-                    .await;
-            }
-            Err(error) => return Err(error),
         };
         let image = result.images.first().ok_or_else(|| {
             ComputerUseError::new(

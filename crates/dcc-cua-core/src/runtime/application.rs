@@ -96,21 +96,11 @@ pub(crate) fn validate_launch_request(request: &ComputerUseLaunchRequest) -> Com
         .find(|value| !value.trim().is_empty())
         .unwrap_or_default()
         .to_ascii_lowercase();
-    const DENIED: [&str; 12] = [
-        "password",
-        "credential",
-        "authentication",
-        "sign in",
-        "login",
-        "terminal",
-        "command prompt",
-        "cmd.exe",
-        "powershell",
-        "pwsh",
-        "bash",
-        "security",
-    ];
-    if DENIED.iter().any(|marker| selected.contains(marker)) {
+    if crate::policy::DENIED_SURFACE_MARKERS
+        .iter()
+        .chain(&["bash"])
+        .any(|marker| selected.contains(marker))
+    {
         return Err(ComputerUseError::new(
             ComputerUseErrorCode::InvalidTarget,
             "system, terminal, authentication, password, and security applications are not allowed",

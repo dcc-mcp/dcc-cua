@@ -57,21 +57,11 @@ impl ComputerUseTargetScope {
 
 pub(crate) fn validate_target_policy(target: &WindowTarget) -> ComputerUseResult<()> {
     let value = format!("{} {}", target.app_name, target.title).to_ascii_lowercase();
-    const DENIED: [&str; 12] = [
-        "password",
-        "credential",
-        "authentication",
-        "sign in",
-        "login",
-        "terminal",
-        "command prompt",
-        "cmd.exe",
-        "powershell",
-        "pwsh",
-        "security",
-        "consent",
-    ];
-    if DENIED.iter().any(|marker| value.contains(marker)) {
+    if crate::policy::DENIED_SURFACE_MARKERS
+        .iter()
+        .chain(&["consent"])
+        .any(|marker| value.contains(marker))
+    {
         return Err(ComputerUseError::new(
             ComputerUseErrorCode::InvalidTarget,
             "system, terminal, authentication, and password targets are not allowed",
