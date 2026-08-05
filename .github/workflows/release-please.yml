@@ -56,11 +56,9 @@ jobs:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
       - uses: actions/checkout@v7
-        if: steps.release.outputs.prs_created == 'true'
         with:
           fetch-depth: 0
       - name: Synchronize Cargo workspace release version
-        if: steps.release.outputs.prs_created == 'true'
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -74,7 +72,10 @@ jobs:
                 Select-Object -First 1
               if (-not $releasePr) { Start-Sleep -Seconds 5 }
           }
-          if (-not $releasePr) { throw 'release-please did not expose an open release PR' }
+          if (-not $releasePr) {
+              Write-Host 'No pending release PR; workspace version synchronization is not needed.'
+              exit 0
+          }
 
           $version = $env:RELEASE_VERSION
           if ([string]::IsNullOrWhiteSpace($version)) {
@@ -86,7 +87,10 @@ jobs:
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add Cargo.toml Cargo.lock crates/*/Cargo.toml
-          if (git diff --cached --quiet) { throw 'workspace release version sync produced no changes' }
+          if (git diff --cached --quiet) {
+              Write-Host 'Workspace release version is already synchronized.'
+              exit 0
+          }
           git commit -m 'chore: synchronize workspace release version'
           git push origin "HEAD:$($releasePr.headRefName)"
 
