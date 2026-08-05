@@ -1860,7 +1860,7 @@ fn print_help() {
   host-jsonl [--endpoint PATH|--spawn BINARY] [--parallel-discovery] [--snapshot-transport binary_frame|shared_memory] [--output-dir DIR]
   host-ensure [--endpoint PATH] [--grant existing-profile]
   manifest
-  profiles
+  profiles                         # list built-in profiles; use --profile-file for custom JSON
   profile --id ue|maya|fab|... [--profile-file PATH] [--app APP] [--surface ID] [--query TARGET] [--action ACTION] [--activate] [--max-elements N] [--max-depth N]
   cua-driver COMMAND [CUA_DRIVER_ARGS...]
   daemon [CUA_DRIVER_ARGS...]
