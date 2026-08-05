@@ -86,11 +86,6 @@ foreach ($package in $metadata.packages) {
     Update-WorkspaceDependencyVersions -Path $manifestPath -PackageNames $workspaceMemberNames
 }
 
-& cargo generate-lockfile
-if ($LASTEXITCODE -ne 0) {
-    throw "cargo generate-lockfile failed to refresh Cargo.lock with code $LASTEXITCODE"
-}
-
 $updatedMetadata = (& cargo metadata --format-version 1 --no-deps | ConvertFrom-Json)
 if ($LASTEXITCODE -ne 0) {
     throw "cargo metadata failed after version synchronization with code $LASTEXITCODE"
