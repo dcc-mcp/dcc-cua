@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use base64::Engine;
 use cua_driver_sdk::CuaDriver;
-use dcc_mcp_cua_indicator::{BannerTarget, ControlBanner};
+use dcc_mcp_cua_indicator::{BannerTarget, ControlBanner, localized_control_label, session_color};
 use serde_json::{Value, json};
 
 use crate::contracts::*;
@@ -121,14 +121,38 @@ impl ComputerUseDriver {
         app_name: impl Into<String>,
         session_id: impl Into<String>,
     ) -> ComputerUseResult<ComputerUseSession> {
-        ComputerUseSession::new(self.clone(), scope, app_name.into(), session_id.into())
+        self.session_with_agent(scope, app_name, "Agent", session_id)
+    }
+
+    pub fn session_with_agent(
+        &self,
+        scope: ComputerUseTargetScope,
+        app_name: impl Into<String>,
+        agent_name: impl Into<String>,
+        session_id: impl Into<String>,
+    ) -> ComputerUseResult<ComputerUseSession> {
+        ComputerUseSession::new(
+            self.clone(),
+            scope,
+            app_name.into(),
+            agent_name.into(),
+            session_id.into(),
+        )
     }
 
     pub fn desktop_session(
         &self,
         session_id: impl Into<String>,
     ) -> ComputerUseResult<ComputerUseDesktopSession> {
-        ComputerUseDesktopSession::new(self.clone(), session_id.into())
+        self.desktop_session_with_agent("Agent", session_id)
+    }
+
+    pub fn desktop_session_with_agent(
+        &self,
+        agent_name: impl Into<String>,
+        session_id: impl Into<String>,
+    ) -> ComputerUseResult<ComputerUseDesktopSession> {
+        ComputerUseDesktopSession::new(self.clone(), agent_name.into(), session_id.into())
     }
 
     pub fn raw(&self) -> &Arc<CuaDriver> {
@@ -481,6 +505,7 @@ pub struct ComputerUseSession {
     driver: ComputerUseDriver,
     scope: ComputerUseTargetScope,
     app_name: String,
+    agent_name: String,
     session_id: String,
     marker: ComputerUseMarker,
     control_banner: Option<ControlBanner>,
@@ -513,7 +538,11 @@ impl std::fmt::Debug for ComputerUseDesktopSession {
 }
 
 impl ComputerUseDesktopSession {
-    fn new(driver: ComputerUseDriver, session_id: String) -> ComputerUseResult<Self> {
+    fn new(
+        driver: ComputerUseDriver,
+        agent_name: String,
+        session_id: String,
+    ) -> ComputerUseResult<Self> {
         if session_id.trim().is_empty() {
             return Err(ComputerUseError::new(
                 ComputerUseErrorCode::InvalidAction,
@@ -525,7 +554,7 @@ impl ComputerUseDesktopSession {
             session_id,
             marker: ComputerUseMarker {
                 visible: false,
-                label: "DCC UI Control · Desktop · Esc to stop".into(),
+                label: localized_control_label(&agent_name, "Desktop"),
                 backend: "cua-driver-sdk",
             },
             active: false,
@@ -679,6 +708,7 @@ impl ComputerUseSession {
         driver: ComputerUseDriver,
         scope: ComputerUseTargetScope,
         app_name: String,
+        agent_name: String,
         session_id: String,
     ) -> ComputerUseResult<Self> {
         scope.validate()?;
@@ -688,11 +718,12 @@ impl ComputerUseSession {
                 "session_id must not be empty",
             ));
         }
-        let label = format!("DCC UI Control · {} · Esc to stop", app_name.trim());
+        let label = localized_control_label(&agent_name, &app_name);
         Ok(Self {
             driver,
             scope,
             app_name,
+            agent_name,
             session_id,
             marker: ComputerUseMarker {
                 visible: false,
@@ -733,11 +764,14 @@ impl ComputerUseSession {
         .await?;
         ensure_tool_ok("start CUA session", &result)?;
         enable_session_marker(&self.driver, &self.session_id, "show CUA marker").await?;
-        let control_banner = match ControlBanner::start(BannerTarget {
-            process_id: target.pid,
-            window_handle: target.window_id,
-            label: self.marker.label.clone(),
-        }) {
+        let control_banner = match ControlBanner::start_with_color(
+            BannerTarget {
+                process_id: target.pid,
+                window_handle: target.window_id,
+                label: self.marker.label.clone(),
+            },
+            session_color(&self.agent_name, &self.session_id),
+        ) {
             Ok(banner) => banner,
             Err(error) => {
                 cleanup_started_session(&self.driver, &self.session_id).await;

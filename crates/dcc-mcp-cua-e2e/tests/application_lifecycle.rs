@@ -222,10 +222,11 @@ async fn host_launches_records_and_terminates_one_exact_application() {
         }),
     )
     .await;
-    assert_eq!(
-        opened.value["marker"]["label"],
-        format!("DCC UI Control · {application_label} · Esc to stop")
-    );
+    let marker_label = opened.value["marker"]["label"]
+        .as_str()
+        .expect("control marker label");
+    assert!(marker_label.contains(SESSION_ID));
+    assert!(marker_label.contains(application_label));
     let capability = opened.value["window_capability"]
         .as_str()
         .expect("window capability")

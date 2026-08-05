@@ -100,6 +100,31 @@ fn programmatic_interrupt_advances_the_shared_generation() {
     assert!(interrupt_generation_changed(started, current));
 }
 
+#[rstest]
+fn session_colors_are_stable_and_avoid_the_default_banner_hue() {
+    let first = session_color("agent", "session-1");
+    assert_eq!(first, session_color("agent", "session-1"));
+    assert!(first.hue().abs_diff(BannerColor::DEFAULT.hue()) >= 45);
+    assert_ne!(first, session_color("agent", "session-2"));
+}
+
+#[rstest]
+#[case("en-US", "agent is controlling Blender")]
+#[case("zh-CN", "agent 正在操作 Blender")]
+#[case("ja-JP", "agent が Blender を操作中")]
+fn control_labels_follow_the_language_tag(#[case] language: &str, #[case] expected: &str) {
+    assert_eq!(
+        localized_control_label_for_language(language, "agent", "Blender"),
+        expected
+    );
+}
+
+#[rstest]
+fn control_labels_strip_control_characters_and_bound_names() {
+    let label = localized_control_label_for_language("en", "\tagent\n", " Blender ");
+    assert_eq!(label, "agent is controlling Blender");
+}
+
 #[cfg(windows)]
 #[rstest]
 fn an_existing_host_hotkey_uses_the_shared_escape_event() {

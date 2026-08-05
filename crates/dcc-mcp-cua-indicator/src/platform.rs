@@ -7,6 +7,7 @@ use windows::Win32::Foundation::{
     COLORREF, CloseHandle, ERROR_CLASS_ALREADY_EXISTS, ERROR_HOTKEY_ALREADY_REGISTERED, HANDLE,
     HWND, LPARAM, LRESULT, POINT, RECT, WAIT_OBJECT_0, WPARAM,
 };
+use windows::Win32::Globalization::GetUserDefaultLocaleName;
 use windows::Win32::Graphics::Gdi::{
     BeginPaint, CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, CombineRgn, CreateEllipticRgn, CreateFontW,
     CreatePolygonRgn, CreateRoundRectRgn, CreateSolidBrush, DEFAULT_CHARSET, DEFAULT_PITCH,
@@ -25,27 +26,26 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetClassNameW, GetClientRect,
-    GetCursorPos, GetWindowRect, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId,
-    HWND_TOPMOST, IsIconic, IsWindow, IsWindowVisible, LWA_ALPHA, MSG, PM_REMOVE, PeekMessageW,
-    RegisterClassW, SW_HIDE, SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_SHOWWINDOW,
-    SetLayeredWindowAttributes, SetWindowDisplayAffinity, SetWindowPos, ShowWindow,
-    TranslateMessage, WDA_EXCLUDEFROMCAPTURE, WINDOW_EX_STYLE, WINDOW_STYLE, WM_HOTKEY, WM_PAINT,
-    WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT,
-    WS_POPUP,
+    GetCursorPos, GetPropW, GetWindowRect, GetWindowTextLengthW, GetWindowTextW,
+    GetWindowThreadProcessId, HWND_TOPMOST, IsIconic, IsWindow, IsWindowVisible, LWA_ALPHA, MSG,
+    PM_REMOVE, PeekMessageW, RegisterClassW, RemovePropW, SW_HIDE, SW_SHOWNOACTIVATE,
+    SWP_NOACTIVATE, SWP_SHOWWINDOW, SetLayeredWindowAttributes, SetPropW, SetWindowDisplayAffinity,
+    SetWindowPos, ShowWindow, TranslateMessage, WDA_EXCLUDEFROMCAPTURE, WINDOW_EX_STYLE,
+    WINDOW_STYLE, WM_HOTKEY, WM_PAINT, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE,
+    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
 };
 use windows::core::{HRESULT, PCWSTR, w};
 
 use super::{
-    BannerStatus, BannerTarget, IndicatorError, broadcast_interrupt, interrupt_generation,
-    interrupt_generation_changed,
+    BannerColor, BannerStatus, BannerTarget, IndicatorError, broadcast_interrupt,
+    interrupt_generation, interrupt_generation_changed,
 };
 
 const BANNER_CLASS: PCWSTR = w!("DccMcpCuaControlBanner");
 const FRAME_CLASS: PCWSTR = w!("DccMcpCuaControlFrame");
 const CURSOR_HALO_CLASS: PCWSTR = w!("DccMcpCuaControlCursorHalo");
 const CURSOR_POINTER_CLASS: PCWSTR = w!("DccMcpCuaControlCursorPointer");
-const BANNER_COLOR: COLORREF = COLORREF(0x00FF_840A);
-const FRAME_COLOR: COLORREF = COLORREF(0x00FA_A560);
+const OVERLAY_COLOR_PROP: PCWSTR = w!("DccMcpCuaOverlayColor");
 pub(super) const CURSOR_HALO_COLOR: COLORREF = COLORREF(0x0092_CF9A);
 pub(super) const CURSOR_POINTER_COLOR: COLORREF = COLORREF(0x0000_0000);
 const CURSOR_POINTER_OUTLINE_COLOR: COLORREF = COLORREF(0x00FF_FFFF);
@@ -64,6 +64,15 @@ const ESCAPE_EVENT_NAME: PCWSTR = w!("DccMcpCuaEscape");
 const FRAME_INTERVAL: Duration = Duration::from_millis(16);
 static ESCAPE_HUB: OnceLock<Result<EscapeHub, String>> = OnceLock::new();
 
+pub(super) fn system_language_tag() -> String {
+    let mut locale = [0_u16; 85];
+    let length = unsafe { GetUserDefaultLocaleName(&mut locale) };
+    if length <= 1 {
+        return "en".into();
+    }
+    String::from_utf16_lossy(&locale[..length as usize - 1])
+}
+
 pub(super) struct PlatformBanner {
     stop: Arc<AtomicBool>,
     active: Arc<AtomicBool>,
@@ -74,13 +83,14 @@ pub(super) struct PlatformBanner {
 }
 
 impl PlatformBanner {
-    pub(super) fn start(target: BannerTarget) -> Result<Self, IndicatorError> {
+    pub(super) fn start(target: BannerTarget, color: BannerColor) -> Result<Self, IndicatorError> {
         let escape_hub = escape_hub()?;
         let cursor_position = Arc::new(Mutex::new(None));
         let runtime = BannerRuntime {
             hub_active: Arc::clone(&escape_hub.active),
             generation: interrupt_generation(),
             cursor_position: Arc::clone(&cursor_position),
+            color,
         };
         let stop = Arc::new(AtomicBool::new(false));
         let active = Arc::new(AtomicBool::new(false));
@@ -144,6 +154,8 @@ impl PlatformBanner {
             target_frame_visible: self.visible.load(Ordering::Acquire),
             interrupted: self.interrupted(),
             stop_key: "Escape",
+            label: String::new(),
+            color: BannerColor::DEFAULT,
         }
     }
 
@@ -172,6 +184,7 @@ struct OverlayWindow(HWND);
 
 impl Drop for OverlayWindow {
     fn drop(&mut self) {
+        let _ = unsafe { RemovePropW(self.0, OVERLAY_COLOR_PROP) };
         let _ = unsafe { DestroyWindow(self.0) };
     }
 }
@@ -200,6 +213,7 @@ struct BannerRuntime {
     hub_active: Arc<AtomicBool>,
     generation: u64,
     cursor_position: Arc<Mutex<Option<(f64, f64)>>>,
+    color: BannerColor,
 }
 
 impl EscapeHub {
@@ -312,16 +326,29 @@ fn run_banner(
     let _dpi_awareness = ThreadDpiAwareness::enter()?;
     let target_window = HWND(target.window_handle as *mut core::ffi::c_void);
     validate_target(target_window, target.process_id)?;
-    let overlay = OverlayWindow(create_overlay(BANNER_CLASS, &target.label, BANNER_ALPHA)?);
+    let overlay = OverlayWindow(create_overlay(
+        BANNER_CLASS,
+        &target.label,
+        BANNER_ALPHA,
+        Some(COLORREF(runtime.color.colorref())),
+    )?);
     let frames = FRAME_LAYER_MAX_ALPHA
         .iter()
-        .map(|alpha| create_overlay(FRAME_CLASS, "", *alpha).map(OverlayWindow))
+        .map(|alpha| {
+            create_overlay(
+                FRAME_CLASS,
+                "",
+                *alpha,
+                Some(COLORREF(runtime.color.frame().colorref())),
+            )
+            .map(OverlayWindow)
+        })
         .collect::<Result<Vec<_>, _>>()?;
     let cursor_halos = CURSOR_HALO_LAYER_ALPHA
         .iter()
-        .map(|alpha| create_overlay(CURSOR_HALO_CLASS, "", *alpha).map(OverlayWindow))
+        .map(|alpha| create_overlay(CURSOR_HALO_CLASS, "", *alpha, None).map(OverlayWindow))
         .collect::<Result<Vec<_>, _>>()?;
-    let cursor_pointer = OverlayWindow(create_overlay(CURSOR_POINTER_CLASS, "", u8::MAX)?);
+    let cursor_pointer = OverlayWindow(create_overlay(CURSOR_POINTER_CLASS, "", u8::MAX, None)?);
     let target_geometry = read_target_geometry(target_window)?;
     let mut geometry = banner_geometry(target_geometry);
     let mut frame_geometries = target_frame_geometries(target_geometry);
@@ -484,7 +511,12 @@ fn validate_target(window: HWND, expected_pid: u32) -> Result<(), IndicatorError
     Ok(())
 }
 
-fn create_overlay(class_name: PCWSTR, label: &str, alpha: u8) -> Result<HWND, IndicatorError> {
+fn create_overlay(
+    class_name: PCWSTR,
+    label: &str,
+    alpha: u8,
+    color: Option<COLORREF>,
+) -> Result<HWND, IndicatorError> {
     register_class(class_name)?;
     let instance = unsafe { GetModuleHandleW(None) }
         .map_err(|error| IndicatorError::Backend(format!("resolve module handle: {error}")))?;
@@ -512,6 +544,20 @@ fn create_overlay(class_name: PCWSTR, label: &str, alpha: u8) -> Result<HWND, In
         )
     }
     .map_err(|error| IndicatorError::Backend(format!("create indicator window: {error}")))?;
+    if let Some(color) = color
+        && let Err(error) = unsafe {
+            SetPropW(
+                window,
+                OVERLAY_COLOR_PROP,
+                Some(HANDLE(color.0 as usize as *mut std::ffi::c_void)),
+            )
+        }
+    {
+        let _ = unsafe { DestroyWindow(window) };
+        return Err(IndicatorError::Backend(format!(
+            "set indicator color: {error}"
+        )));
+    }
     if let Err(error) = set_overlay_alpha(window, alpha) {
         let _ = unsafe { DestroyWindow(window) };
         return Err(error);
@@ -952,8 +998,14 @@ unsafe extern "system" fn window_proc(
         }
         let color = match class_name.as_str() {
             "DccMcpCuaControlCursorHalo" => CURSOR_HALO_COLOR,
-            _ if text_length == 0 => FRAME_COLOR,
-            _ => BANNER_COLOR,
+            _ => {
+                let value = unsafe { GetPropW(window, OVERLAY_COLOR_PROP) };
+                if value.0.is_null() {
+                    COLORREF(BannerColor::DEFAULT.colorref())
+                } else {
+                    COLORREF(value.0 as u32)
+                }
+            }
         };
         let brush = unsafe { CreateSolidBrush(color) };
         let _ = unsafe { FillRect(device, &bounds, brush) };

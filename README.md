@@ -16,8 +16,9 @@ repository and provides:
 - explicit stop/resume lifecycle and structured errors;
 - a visible, vector-rendered CUA mouse-pointer cursor on Windows, Linux, and
   the packaged macOS Host,
-  plus a Host-owned `DCC UI Control · <app> · Esc to stop` safety banner and
-  softly breathing target-window frame on Windows. Linux reuses CUA's native
+  plus a Host-owned, localized `<agent> is controlling <app>` safety banner
+  with a session-specific hue and softly breathing target-window frame on
+  Windows. Linux reuses CUA's native
   per-session cursor and badge; macOS runs the bundled official `cua-driver`
   as an SDK private worker so AppKit remains on that worker's main thread.
   Headless macOS sessions still return CUA's structured readiness refusal. All
@@ -271,8 +272,11 @@ indefinitely.
 
 The shared Core window session owns this ControlBanner, so direct `dcc-mcp-cua`
 window actions and Host IPC sessions use the same visible banner and target
-frame. Desktop-scope sessions have no single PID/HWND to frame and therefore
-retain the CUA desktop marker instead.
+frame. The Host's Hello `client_name` is shown as the agent name; the text
+follows the operating-system language and the color is stable for that agent's
+session while avoiding the default banner hue. Desktop-scope sessions have no
+single PID/HWND to frame and therefore retain the localized CUA desktop marker
+instead.
 
 For common controls, `click`, `double-click`, `right-click`, `move`, `scroll`,
 `press`, `hotkey`, and `type` build the same fenced CUA actions without manual
