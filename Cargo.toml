@@ -1,17 +1,17 @@
 [workspace]
 members = [
-    "crates/dcc-mcp-cua-browser",
-    "crates/dcc-mcp-cua-client",
-    "crates/dcc-mcp-cua-core",
-    "crates/dcc-mcp-cua-e2e",
-    "crates/dcc-mcp-cua-host",
-    "crates/dcc-mcp-cua-indicator",
-    "crates/dcc-mcp-cua-platform-windows",
-    "crates/dcc-mcp-cua-protocol",
-    "crates/dcc-mcp-cua-shm",
-    "crates/dcc-mcp-cua-semantic-profiles",
-    "crates/dcc-mcp-cua-cli",
-    "crates/dcc-mcp-cua-workspace-hack",
+    "crates/dcc-cua-browser",
+    "crates/dcc-cua-client",
+    "crates/dcc-cua-core",
+    "crates/dcc-cua-e2e",
+    "crates/dcc-cua-host",
+    "crates/dcc-cua-indicator",
+    "crates/dcc-cua-platform-windows",
+    "crates/dcc-cua-protocol",
+    "crates/dcc-cua-shm",
+    "crates/dcc-cua-semantic-profiles",
+    "crates/dcc-cua-cli",
+    "crates/dcc-cua-workspace-hack",
 ]
 resolver = "2"
 
@@ -22,7 +22,7 @@ rust-version = "1.95"
 publish = false
 authors = ["loonghao <hal.long@outlook.com>"]
 license = "MIT"
-repository = "https://github.com/dcc-mcp/dcc-mcp-computer-use"
+repository = "https://github.com/dcc-mcp/dcc-cua"
 
 [workspace.dependencies]
 async-trait = "0.1"

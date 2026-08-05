@@ -20,13 +20,13 @@ function Invoke-BinaryJson {
 
     $output = & $binaryPath @Arguments
     if ($LASTEXITCODE -ne 0) {
-        throw "dcc-mcp-cua exited with code ${LASTEXITCODE}: $($Arguments -join ' ')"
+        throw "dcc-cua exited with code ${LASTEXITCODE}: $($Arguments -join ' ')"
     }
     try {
         return ($output | Out-String | ConvertFrom-Json)
     }
     catch {
-        throw "dcc-mcp-cua returned invalid JSON for '$($Arguments[0])': $_"
+        throw "dcc-cua returned invalid JSON for '$($Arguments[0])': $_"
     }
 }
 
@@ -103,7 +103,7 @@ foreach ($upstreamArguments in @(
 
 $manifest = Invoke-BinaryJson -Arguments @("manifest")
 $expectedOs = if ($isWindowsHost) { "windows" } elseif ($isMacHost) { "macos" } else { "linux" }
-if ($manifest.name -ne "dcc-mcp-cua" -or $manifest.target.os -ne $expectedOs) {
+if ($manifest.name -ne "dcc-cua" -or $manifest.target.os -ne $expectedOs) {
     throw "manifest does not describe the current release binary"
 }
 $bundledDriver = Join-Path (Split-Path $binaryPath -Parent) ([string]$manifest.upstream_driver.bundled_binary)
@@ -111,7 +111,7 @@ if (-not (Test-Path -LiteralPath $bundledDriver -PathType Leaf)) {
     throw "manifest bundled driver is missing: $bundledDriver"
 }
 if (-not $isWindowsHost -and
-    $manifest.host.default_endpoint -ne (Join-Path $endpointRuntimeDir "dcc-mcp-cua-v1.sock")) {
+    $manifest.host.default_endpoint -ne (Join-Path $endpointRuntimeDir "dcc-cua-v1.sock")) {
     throw "manifest did not select the private XDG runtime endpoint"
 }
 if ($manifest.version -notmatch '^\d+\.\d+\.\d+$' -or
@@ -138,7 +138,7 @@ $batchRequest = @(
     [ordered]@{ request_id = "e2e-apps"; method = "list_apps"; params = @{} },
     [ordered]@{ request_id = "e2e-tools"; method = "list_tools"; params = @{} }
 ) | ConvertTo-Json -Depth 4 -Compress
-$batchFile = Join-Path ([System.IO.Path]::GetTempPath()) "dcc-mcp-cua-e2e-$([guid]::NewGuid().ToString('N')).json"
+$batchFile = Join-Path ([System.IO.Path]::GetTempPath()) "dcc-cua-e2e-$([guid]::NewGuid().ToString('N')).json"
 [System.IO.File]::WriteAllText($batchFile, $batchRequest, [System.Text.UTF8Encoding]::new($false))
 try {
     $responses = @(Invoke-BinaryJson -Arguments @(
@@ -202,9 +202,9 @@ $streamBurstCount = 2 * [int]$manifest.host.max_parallel_discovery_requests
 for ($index = 0; $index -lt $streamBurstCount; $index++) {
     $streamRequests += "{`"request_id`":`"stream-burst-$index`",`"method`":`"ping`",`"params`":{}}"
 }
-$streamInput = Join-Path ([System.IO.Path]::GetTempPath()) "dcc-mcp-cua-e2e-$([guid]::NewGuid().ToString('N')).jsonl"
-$streamOutput = Join-Path ([System.IO.Path]::GetTempPath()) "dcc-mcp-cua-e2e-$([guid]::NewGuid().ToString('N')).out"
-$streamError = Join-Path ([System.IO.Path]::GetTempPath()) "dcc-mcp-cua-e2e-$([guid]::NewGuid().ToString('N')).err"
+$streamInput = Join-Path ([System.IO.Path]::GetTempPath()) "dcc-cua-e2e-$([guid]::NewGuid().ToString('N')).jsonl"
+$streamOutput = Join-Path ([System.IO.Path]::GetTempPath()) "dcc-cua-e2e-$([guid]::NewGuid().ToString('N')).out"
+$streamError = Join-Path ([System.IO.Path]::GetTempPath()) "dcc-cua-e2e-$([guid]::NewGuid().ToString('N')).err"
 [System.IO.File]::WriteAllLines($streamInput, $streamRequests, [System.Text.UTF8Encoding]::new($true))
 try {
     $stream = Start-Process -FilePath $binaryPath -ArgumentList $streamArguments -RedirectStandardInput $streamInput -RedirectStandardOutput $streamOutput -RedirectStandardError $streamError -PassThru -Wait
@@ -273,7 +273,7 @@ for ($index = 0; $index -lt $streamBurstCount; $index++) {
 $endpointHost = $null
 $endpointHostStartTime = $null
 $endpoint = if ($isWindowsHost) {
-    "\\.\pipe\dcc-mcp-cua-e2e-$([guid]::NewGuid().ToString('N'))"
+    "\\.\pipe\dcc-cua-e2e-$([guid]::NewGuid().ToString('N'))"
 } else {
     [string]$manifest.host.default_endpoint
 }
@@ -290,7 +290,7 @@ for ($index = 0; $index -lt $endpointPingCount; $index++) {
     }
 }
 $endpointBatchJson = $endpointBatchRequests | ConvertTo-Json -Depth 4 -Compress
-$endpointBatchFile = Join-Path ([System.IO.Path]::GetTempPath()) "dcc-mcp-cua-e2e-$([guid]::NewGuid().ToString('N')).json"
+$endpointBatchFile = Join-Path ([System.IO.Path]::GetTempPath()) "dcc-cua-e2e-$([guid]::NewGuid().ToString('N')).json"
 [System.IO.File]::WriteAllText($endpointBatchFile, $endpointBatchJson, [System.Text.UTF8Encoding]::new($false))
 try {
     $ensured = Invoke-BinaryJson -Arguments @("host-ensure", "--endpoint", $endpoint)
@@ -387,7 +387,7 @@ finally {
             $env:XDG_RUNTIME_DIR = $originalXdgRuntimeDir
         }
         if ($null -ne $endpointRuntimeDir) {
-            $runtimeSocket = Join-Path $endpointRuntimeDir "dcc-mcp-cua-v1.sock"
+            $runtimeSocket = Join-Path $endpointRuntimeDir "dcc-cua-v1.sock"
             if (Test-Path -LiteralPath $runtimeSocket) {
                 Remove-Item -LiteralPath $runtimeSocket -Force
             }

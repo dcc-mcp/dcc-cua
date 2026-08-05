@@ -1,7 +1,7 @@
 ---
 name: cua-profile-authoring
 description: >-
-  Create, inspect, and safely extend dcc-mcp-cua semantic profiles for official
+  Create, inspect, and safely extend dcc-cua semantic profiles for official
   application defaults or user-authored JSON. Use for profile schema, selectors,
   semantic surfaces, route ownership, dialog policy, and profile validation.
 license: MIT-0
@@ -9,13 +9,13 @@ metadata:
   dcc-mcp:
     dcc: computer-use
     layer: infrastructure
-    compatibility: dcc-mcp-cua 0.1+
+    compatibility: dcc-cua 0.1+
     version: "0.1.0"
-    search-hint: "dcc-mcp-cua semantic profile JSON official custom selectors surfaces targets routes dialog policy"
+    search-hint: "dcc-cua semantic profile JSON official custom selectors surfaces targets routes dialog policy"
     tags: "computer-use, infrastructure, read-only"
 ---
 
-# dcc-mcp-cua semantic profiles
+# dcc-cua semantic profiles
 
 Profiles are application vocabulary and route hints. They do not replace the
 CUA Host's exact-window identity, fresh-observation fence, authorization, input
@@ -51,10 +51,10 @@ confirmation-aware.
 ## Inspect and validate
 
 ```powershell
-dcc-mcp-cua profiles
-dcc-mcp-cua profile --id maya
-dcc-mcp-cua profile --profile-file C:\profiles\studio.json
-dcc-mcp-cua profile --profile-file C:\profiles\studio.json --app maya.exe --surface home --query new_scene
+dcc-cua profiles
+dcc-cua profile --id maya
+dcc-cua profile --profile-file C:\profiles\studio.json
+dcc-cua profile --profile-file C:\profiles\studio.json --app maya.exe --surface home --query new_scene
 ```
 
 The first two commands inspect official profiles; the third validates and prints

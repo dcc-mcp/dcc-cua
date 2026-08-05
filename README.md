@@ -1,13 +1,21 @@
-# dcc-mcp-computer-use
+<p align="center">
+  <img src="assets/brand/dcc-cua-logo.png" alt="CUA logo" width="900">
+</p>
 
-Cross-platform Computer Use host and CLI for DCC-MCP, backed by the open-source
-[CUA SDK](https://github.com/trycua/cua).
+# dcc-cua
 
-This is the standalone runtime that DCC-MCP Core can launch and keep alive for
-a whole task. The Host protocol itself is product-neutral and can be used by
-other agents without importing DCC-MCP; `application_label` is only a bounded
-human-readable safety-banner label. Its public protocol is owned by this
-repository and provides:
+Cross-platform Computer Use Automation runtime and CLI, backed by the
+open-source [CUA SDK](https://github.com/trycua/cua).
+
+The project began inside `dcc-mcp-core`, where it reproduced the Computer Use
+workflow used by Codex. CUA SDK's cross-platform support made that boundary
+useful beyond one host, so it was extracted and extended as `dcc-cua` for any
+agent or application to embed.
+
+`dcc-mcp-core` remains one consumer, not a runtime dependency. The Host protocol
+is product-neutral; `application_label` is only a bounded human-readable
+safety-banner label. Its public protocol is owned by this repository and
+provides:
 
 - exact PID/window/title scope; agent requests cannot widen the target;
 - a fresh observation ID is required for every mutation;
@@ -28,28 +36,28 @@ repository and provides:
 
 The repository is a Cargo workspace with ten responsibilities:
 
-- `dcc-mcp-cua-core`: scoped Computer Use domain, safety policy, and
+- `dcc-cua-core`: scoped Computer Use domain, safety policy, and
   CUA execution boundary;
-- `dcc-mcp-cua-e2e`: opt-in controlled GUI tests against the upstream CUA
+- `dcc-cua-e2e`: opt-in controlled GUI tests against the upstream CUA
   Electron fixture and the public Host IPC contract;
-- `dcc-mcp-cua-browser`: exact-window browser binding, tab snapshots, typed
+- `dcc-cua-browser`: exact-window browser binding, tab snapshots, typed
   browser actions, and bounded file transfer;
-- `dcc-mcp-cua-client`: reusable Core-side Host IPC client with request
+- `dcc-cua-client`: reusable Core-side Host IPC client with request
   correlation and binary image attachments;
-- `dcc-mcp-cua-host`: long-lived versioned IPC and request
+- `dcc-cua-host`: long-lived versioned IPC and request
   routing;
-- `dcc-mcp-cua-indicator`: Host-process stop generation plus the Windows control
+- `dcc-cua-indicator`: Host-process stop generation plus the Windows control
   banner/frame and physical Escape boundary; Linux cursor/badge rendering stays
   in the CUA SDK, while the packaged macOS Host uses CUA's private-worker overlay;
-- `dcc-mcp-cua-platform-windows`: exact PID/HWND Windows UI Automation worker
+- `dcc-cua-platform-windows`: exact PID/HWND Windows UI Automation worker
   for background semantic fallback when CUA's combined window-state path is
   unavailable;
-- `dcc-mcp-cua-protocol`: shared Host wire limits and per-user local endpoint
+- `dcc-cua-protocol`: shared Host wire limits and per-user local endpoint
   identity used by both the Host and reusable Client;
-- `dcc-mcp-cua-shm`: cross-platform shared-memory image handoff;
-- `dcc-mcp-cua-cli`: the thin CLI process that composes the workspace crates.
+- `dcc-cua-shm`: cross-platform shared-memory image handoff;
+- `dcc-cua-cli`: the thin CLI process that composes the workspace crates.
 
-Inside `dcc-mcp-cua-core`, source files follow domain responsibility rather
+Inside `dcc-cua-core`, source files follow domain responsibility rather
 than numeric partitions: `contracts.rs` owns public requests/results and shared
 limits, `runtime.rs` owns driver/session orchestration, `window_target.rs` owns
 exact native-window identity, `observation.rs` owns observation construction,
@@ -66,7 +74,7 @@ user-approved operations.
 
 ### Independent semantic profiles
 
-The `dcc-mcp-cua-semantic-profiles` crate is the application-specific extension
+The `dcc-cua-semantic-profiles` crate is the application-specific extension
 point for deeper semantics. It ships validated profiles for `ue`, `maya`, and
 `fab` without adding application branches to the generic Core or Host. Each
 profile describes window/URL selectors, semantic surfaces and targets, the
@@ -77,14 +85,14 @@ execution path.
 Use the CLI to inspect the extension catalog without starting a DCC process:
 
 ```powershell
-cargo run -p dcc-mcp-cua-cli -- profiles
-cargo run -p dcc-mcp-cua-cli -- profile --id maya
+cargo run -p dcc-cua-cli -- profiles
+cargo run -p dcc-cua-cli -- profile --id maya
 # Inspect or execute a user-authored profile with the same contract.
-cargo run -p dcc-mcp-cua-cli -- profile --profile-file C:\profiles\maya-studio.json
+cargo run -p dcc-cua-cli -- profile --profile-file C:\profiles\maya-studio.json
 # Bind a profile to one exact live window and inspect its semantic matches.
-cargo run -p dcc-mcp-cua-cli -- profile --id maya --app maya.exe --surface home --query new_scene
+cargo run -p dcc-cua-cli -- profile --id maya --app maya.exe --surface home --query new_scene
 # Resolve the profile target, execute its supported action, and return a post-state tree.
-cargo run -p dcc-mcp-cua-cli -- profile --id maya --app maya.exe --surface home --query new_scene --action click --activate
+cargo run -p dcc-cua-cli -- profile --id maya --app maya.exe --surface home --query new_scene --action click --activate
 ```
 
 Maya's profile explicitly sets `dialog_style` to `os_native` and routes its
@@ -97,7 +105,7 @@ The repository also ships standalone Agent Skills under `skills/`:
 - `cua-cli`: the standalone CLI control loop, verification, safety, and long-task recovery;
 - `cua-profile-authoring`: official and user-authored semantic profile guidance.
 
-They use the released `dcc-mcp-cua` CLI and are included in release archives, so
+They use the released `dcc-cua` CLI and are included in release archives, so
 another agent can install a single Skill without coupling to the Rust workspace.
 
 Multiple agents may keep independent exact PID/HWND sessions open for different
@@ -118,13 +126,13 @@ such as Unreal Automation or Gauntlet; protected anti-cheat environments and
 exclusive full-screen capture are outside this Host's contract.
 
 This project wraps the CUA SDK for agent-friendly, bounded operations. The
-`dcc-mcp-cua` CLI owns its own `update` command and exposes `daemon`, `mcp`, and
+`dcc-cua` CLI owns its own `update` command and exposes `daemon`, `mcp`, and
 `recording render` as first-class entries. Those three entries reuse the
 official `cua-driver` executable from the release's versioned `libexec` bundle
 rather than copying its daemon/MCP/render implementation. `CUA_DRIVER_BIN`
 remains an explicit override, followed by the versioned bundle, a sibling
-development fallback, and then `PATH`. Use this CLI/Host for the DCC-MCP safety
-envelope, exact window capability, fresh observations, grants, friendly
+development fallback, and then `PATH`. Use this CLI/Host for its safety
+envelope, exact-window capability, fresh observations, grants, friendly
 actions, and software-specific adapters.
 
 ## Development gates
@@ -132,7 +140,7 @@ actions, and software-specific adapters.
 Every Rust file is limited to 2000 lines. Unit tests live in a sibling
 `src/tests.rs` module rather than production files, use `rstest`, and run with
 `cargo-nextest`; the same layout gate runs before formatting in CI. A
-Hakari-managed `dcc-mcp-cua-workspace-hack` unifies dependency features for the
+Hakari-managed `dcc-cua-workspace-hack` unifies dependency features for the
 four supported build targets while leaving target and host graphs separate for
 the upstream MSVC Spectre dependency. Install both tools once:
 
@@ -152,53 +160,53 @@ cargo test --workspace --doc --locked
 Release packaging builds the official companions from the pinned CUA checkout;
 Windows source builds therefore require Visual Studio's Spectre-mitigated C++
 libraries, matching the upstream release toolchain. The build helper places
-them under `target/release/libexec/dcc-mcp-cua/<version>` by default.
+them under `target/release/libexec/dcc-cua/<version>` by default.
 
 ## CLI
 
 ```powershell
-cargo run -p dcc-mcp-cua-cli -- list --app chrome.exe --title "New Tab" --on-screen
-cargo run -p dcc-mcp-cua-cli -- wait-window --app UE5Editor.exe --title "PCG Fab" --on-screen
-cargo run -p dcc-mcp-cua-cli -- apps
-cargo run -p dcc-mcp-cua-cli -- tools
-cargo run -p dcc-mcp-cua-cli -- call --tool check_permissions --json '{}'
-cargo run -p dcc-mcp-cua-cli -- call --tool set_config --json-file payload.json
-cargo run -p dcc-mcp-cua-cli -- manifest
-cargo run -p dcc-mcp-cua-cli -- cua-driver browser-approve --pid 4242 --profile-mode isolated_new
-cargo run -p dcc-mcp-cua-cli -- desktop-snapshot --output desktop.png
-cargo run -p dcc-mcp-cua-cli -- screen-size
-cargo run -p dcc-mcp-cua-cli -- cursor-position
-cargo run -p dcc-mcp-cua-cli -- desktop-act --action-json '{"action":"click","x":100,"y":100}'
-cargo run -p dcc-mcp-cua-cli -- act --app chrome.exe --action-json '{"action":"click","x":100,"y":100}' --output after.png
-cargo run -p dcc-mcp-cua-cli -- launch --name Calculator
-cargo run -p dcc-mcp-cua-cli -- doctor
-cargo run -p dcc-mcp-cua-cli -- doctor --spawn target/debug/dcc-mcp-cua
-cargo run -p dcc-mcp-cua-cli -- snapshot --app chrome.exe --output screenshot.png
-cargo run -p dcc-mcp-cua-cli -- accessibility --app chrome.exe
-cargo run -p dcc-mcp-cua-cli -- window-state --app chrome.exe
-cargo run -p dcc-mcp-cua-cli -- activate --app chrome.exe
-cargo run -p dcc-mcp-cua-cli -- set-window-frame --pid 4242 --window-id 123456 --x 80 --y 80 --width 1280 --height 720
-cargo run -p dcc-mcp-cua-cli -- invoke-menu --app maya.exe --menu File --menu "New Scene"
-cargo run -p dcc-mcp-cua-cli -- click --app chrome.exe --x 100 --y 100
-cargo run -p dcc-mcp-cua-cli -- click --app chrome.exe --element-index 12
-cargo run -p dcc-mcp-cua-cli -- toggle --app chrome.exe --element-index 14
-cargo run -p dcc-mcp-cua-cli -- set-value --app chrome.exe --element-index 15 --value Published
-cargo run -p dcc-mcp-cua-cli -- drag --app chrome.exe --from-x 100 --from-y 100 --to-x 300 --to-y 200 --duration-ms 750 --steps 32
-cargo run -p dcc-mcp-cua-cli -- type --app chrome.exe --text "hello" --focused
-cargo run -p dcc-mcp-cua-cli -- hotkey --app chrome.exe --key CTRL --key L
-cargo run -p dcc-mcp-cua-cli -- scroll --app UE5Editor.exe --scroll-x 4 --by page --x 600 --y 900
-cargo run -p dcc-mcp-cua-cli -- act --app chrome.exe --action-json '{"action":"click","x":100,"y":100}'
-cargo run -p dcc-mcp-cua-cli -- verify --app chrome.exe --expect-json '[{"window":{"exists":true}}]'
-cargo run -p dcc-mcp-cua-cli -- update --check
+cargo run -p dcc-cua-cli -- list --app chrome.exe --title "New Tab" --on-screen
+cargo run -p dcc-cua-cli -- wait-window --app UE5Editor.exe --title "PCG Fab" --on-screen
+cargo run -p dcc-cua-cli -- apps
+cargo run -p dcc-cua-cli -- tools
+cargo run -p dcc-cua-cli -- call --tool check_permissions --json '{}'
+cargo run -p dcc-cua-cli -- call --tool set_config --json-file payload.json
+cargo run -p dcc-cua-cli -- manifest
+cargo run -p dcc-cua-cli -- cua-driver browser-approve --pid 4242 --profile-mode isolated_new
+cargo run -p dcc-cua-cli -- desktop-snapshot --output desktop.png
+cargo run -p dcc-cua-cli -- screen-size
+cargo run -p dcc-cua-cli -- cursor-position
+cargo run -p dcc-cua-cli -- desktop-act --action-json '{"action":"click","x":100,"y":100}'
+cargo run -p dcc-cua-cli -- act --app chrome.exe --action-json '{"action":"click","x":100,"y":100}' --output after.png
+cargo run -p dcc-cua-cli -- launch --name Calculator
+cargo run -p dcc-cua-cli -- doctor
+cargo run -p dcc-cua-cli -- doctor --spawn target/debug/dcc-cua
+cargo run -p dcc-cua-cli -- snapshot --app chrome.exe --output screenshot.png
+cargo run -p dcc-cua-cli -- accessibility --app chrome.exe
+cargo run -p dcc-cua-cli -- window-state --app chrome.exe
+cargo run -p dcc-cua-cli -- activate --app chrome.exe
+cargo run -p dcc-cua-cli -- set-window-frame --pid 4242 --window-id 123456 --x 80 --y 80 --width 1280 --height 720
+cargo run -p dcc-cua-cli -- invoke-menu --app maya.exe --menu File --menu "New Scene"
+cargo run -p dcc-cua-cli -- click --app chrome.exe --x 100 --y 100
+cargo run -p dcc-cua-cli -- click --app chrome.exe --element-index 12
+cargo run -p dcc-cua-cli -- toggle --app chrome.exe --element-index 14
+cargo run -p dcc-cua-cli -- set-value --app chrome.exe --element-index 15 --value Published
+cargo run -p dcc-cua-cli -- drag --app chrome.exe --from-x 100 --from-y 100 --to-x 300 --to-y 200 --duration-ms 750 --steps 32
+cargo run -p dcc-cua-cli -- type --app chrome.exe --text "hello" --focused
+cargo run -p dcc-cua-cli -- hotkey --app chrome.exe --key CTRL --key L
+cargo run -p dcc-cua-cli -- scroll --app UE5Editor.exe --scroll-x 4 --by page --x 600 --y 900
+cargo run -p dcc-cua-cli -- act --app chrome.exe --action-json '{"action":"click","x":100,"y":100}'
+cargo run -p dcc-cua-cli -- verify --app chrome.exe --expect-json '[{"window":{"exists":true}}]'
+cargo run -p dcc-cua-cli -- update --check
 ```
 
 `daemon` and `mcp` pass their remaining flags to the official `cua-driver`
 binary. `recording render` can be invoked as
-`dcc-mcp-cua recording render INPUT_DIR OUTPUT_MP4`. Release archives include
+`dcc-cua recording render INPUT_DIR OUTPUT_MP4`. Release archives include
 the official driver built from the same pinned CUA revision; set
 `CUA_DRIVER_BIN` only to override it. `recording start|stop|status` keeps
-the upstream daemon lifecycle, while this project's Host routes remain the
-grant-gated DCC-MCP surface.
+the upstream daemon lifecycle, while this project's Host routes remain
+grant-gated.
 
 `update` downloads one exact platform archive, validates its complete companion
 bundle, installs that bundle under its version, and replaces the CLI last. This
@@ -270,7 +278,7 @@ handshake. A CUA action or window activation that does not return within 15
 seconds invalidates that window session instead of blocking the Host
 indefinitely.
 
-The shared Core window session owns this ControlBanner, so direct `dcc-mcp-cua`
+The shared Core window session owns this ControlBanner, so direct `dcc-cua`
 window actions and Host IPC sessions use the same visible banner and target
 frame. The Host's Hello `client_name` is shown as the agent name; the text
 follows the operating-system language and the color is stable for that agent's
@@ -299,32 +307,32 @@ grant-gated through `recording_start`, `recording_stop`, and `recording_state`.
 Start one persistent host process instead of spawning a process per action:
 
 ```powershell
-cargo run -p dcc-mcp-cua-cli -- host --stdio
-cargo run -p dcc-mcp-cua-cli -- host
-cargo run -p dcc-mcp-cua-cli -- host-ensure
-cargo run -p dcc-mcp-cua-cli -- ping --spawn target/debug/dcc-mcp-cua
-cargo run -p dcc-mcp-cua-cli -- interrupt-all
-cargo run -p dcc-mcp-cua-cli -- host-call --method list_apps --json '{}'
-cargo run -p dcc-mcp-cua-cli -- host-batch --json '[{"method":"list_apps","params":{}},{"method":"screen_size","params":{}}]'
-cargo run -p dcc-mcp-cua-cli -- host-call --spawn target/debug/dcc-mcp-cua --method list_apps --json '{}'
+cargo run -p dcc-cua-cli -- host --stdio
+cargo run -p dcc-cua-cli -- host
+cargo run -p dcc-cua-cli -- host-ensure
+cargo run -p dcc-cua-cli -- ping --spawn target/debug/dcc-cua
+cargo run -p dcc-cua-cli -- interrupt-all
+cargo run -p dcc-cua-cli -- host-call --method list_apps --json '{}'
+cargo run -p dcc-cua-cli -- host-batch --json '[{"method":"list_apps","params":{}},{"method":"screen_size","params":{}}]'
+cargo run -p dcc-cua-cli -- host-call --spawn target/debug/dcc-cua --method list_apps --json '{}'
 
 # Keep one Host connection open and process one JSON request per input line.
-cargo run -p dcc-mcp-cua-cli -- host-jsonl --spawn target/debug/dcc-mcp-cua --output-dir artifacts
+cargo run -p dcc-cua-cli -- host-jsonl --spawn target/debug/dcc-cua --output-dir artifacts
 # Batch only stateless discovery lines within a short window.
-cargo run -p dcc-mcp-cua-cli -- host-jsonl --parallel-discovery --spawn target/debug/dcc-mcp-cua
+cargo run -p dcc-cua-cli -- host-jsonl --parallel-discovery --spawn target/debug/dcc-cua
 ```
 
-`dcc-mcp-cua-client` is the direct embedding path for dcc-mcp-core. It opens
+`dcc-cua-client` is the direct embedding path for dcc-mcp-core. It opens
 the per-session endpoint, performs `hello`, sends JSON requests, and returns
 the following binary image frame without base64 decoding in the control path:
 
 ```rust,no_run
-let mut host = dcc_mcp_cua_client::HostClient::connect_default("dcc-mcp-core").await?;
+let mut host = dcc_cua_client::HostClient::connect_default("dcc-mcp-core").await?;
 let response = host.request("list_windows", serde_json::json!({})).await?;
 let stopped = host.interrupt_all().await?;
 ```
 
-`HostClient::interrupt_all` and `dcc-mcp-cua interrupt-all [--endpoint PATH]`
+`HostClient::interrupt_all` and `dcc-cua interrupt-all [--endpoint PATH]`
 broadcast a cooperative safety stop to every connection in the selected Host
 process. The calling connection is cleaned up before acknowledgement; other
 window and desktop sessions return `user_interrupted` at their next bounded
@@ -332,9 +340,9 @@ operation or wait checkpoint. An already-running native SDK call remains
 bounded by the Host action timeout because CUA exposes no portable preemption
 primitive.
 
-`dcc-mcp-cua host-ensure [--endpoint PATH]` is the idempotent supervisor entry
+`dcc-cua host-ensure [--endpoint PATH]` is the idempotent supervisor entry
 for Core and adapters. It first probes the local endpoint, starts this same
-version of `dcc-mcp-cua host` only when absent, and waits for a negotiated ping.
+version of `dcc-cua host` only when absent, and waits for a negotiated ping.
 Windows also holds one named singleton per endpoint because named pipes alone
 permit multiple server instances; Unix keeps the existing socket bind as its
 singleton boundary. Independent Core bridges can therefore share one Host per
@@ -346,10 +354,10 @@ with `host --stdio`, reuse the same negotiated `HostClient`, and call
 request code while preserving the same protocol as endpoint connections.
 
 ```rust,no_run
-let mut host = dcc_mcp_cua_client::HostProcess::spawn(
-    "dcc-mcp-cua",
+let mut host = dcc_cua_client::HostProcess::spawn(
+    "dcc-cua",
     "dcc-mcp-core",
-    dcc_mcp_cua_client::SnapshotTransport::SharedMemory,
+    dcc_cua_client::SnapshotTransport::SharedMemory,
 ).await?;
 let response = host.client_mut().request("list_apps", serde_json::json!({})).await?;
 let _status = host.shutdown().await?;
@@ -358,10 +366,10 @@ let _status = host.shutdown().await?;
 Supervisors can poll `host.is_running()` and call `host.restart(...)` after a
 process exit. Restart is explicit and never replays requests; Core must reopen
 sessions and obtain a fresh observation before sending another action.
-`HostClient::ping` and `dcc-mcp-cua ping` provide a small protocol-level
+`HostClient::ping` and `dcc-cua ping` provide a small protocol-level
 liveness check without querying the native CUA backend or transferring its
 tool inventory.
-`HostClient::doctor` and `dcc-mcp-cua doctor --endpoint/--spawn` probe the
+`HostClient::doctor` and `dcc-cua doctor --endpoint/--spawn` probe the
 selected CUA runtime owned by that Host process. The structured report keeps
 transport liveness separate from driver, window inventory, permission, and
 native health readiness.
@@ -423,17 +431,17 @@ work and stop every private window, desktop, and launch session on that connecti
 
 For large or frequent images, use `connect_default_with_transport(...,
 SnapshotTransport::SharedMemory)` and open the returned descriptor with
-`dcc_mcp_cua_shm::SharedImageReader`; window/desktop snapshots, verification
+`dcc_cua_shm::SharedImageReader`; window/desktop snapshots, verification
 screenshots, and browser responses containing one image keep pixels out of the
 control pipe. Native extension results and browser responses containing multiple images use one
 bounded binary attachment frame with offset descriptors.
 
 On Windows, the default endpoint is the per-session named pipe
-`\\.\pipe\dcc-mcp-cua-v1-session-<WindowsSessionId>` with a protected DACL
+`\\.\pipe\dcc-cua-v1-session-<WindowsSessionId>` with a protected DACL
 that grants access only to LocalSystem and the current Windows logon SID. On Unix, the default
-endpoint is `$XDG_RUNTIME_DIR/dcc-mcp-cua-v1.sock` when that directory is
+endpoint is `$XDG_RUNTIME_DIR/dcc-cua-v1.sock` when that directory is
 owned by the current user with mode `0700`; otherwise it falls back to
-`$TMPDIR/dcc-mcp-cua-<uid>/dcc-mcp-cua-v1.sock`. The Host creates a missing
+`$TMPDIR/dcc-cua-<uid>/dcc-cua-v1.sock`. The Host creates a missing
 endpoint parent with mode `0700` and refuses relative paths or parents
 that are not current-user `0700` directories. The protocol uses an unsigned
 big-endian `u32` length followed by one UTF-8 JSON request or response. A
@@ -443,7 +451,7 @@ length-prefixed PNG frame, avoiding base64 pixel transfer and keeping the JSON
 frame under 4 MiB. Requests may include a top-level `request_id` (1–128
 characters); the host echoes it on the JSON response, including errors. The
 handshake advertises the exact capabilities of this build.
-`dcc_mcp_cua_client::HostClient::capabilities()` and
+`dcc_cua_client::HostClient::capabilities()` and
 `supports_capability(...)` expose that negotiated list without requiring Core
 to parse Host handshake JSON; callers can choose shared memory, batching, or
 optional routes from the actual Host instead of assuming them.
@@ -532,7 +540,7 @@ destructive grant (`allow_browser_download`) and CUA's host approval evidence.
 `browser_dialog` only resolves page-owned JavaScript dialogs and requires the
 exact current `dialog_id` for accept/dismiss.
 Attaching to a logged-in Chromium profile keeps CUA's R2 gate: launch the Host
-with `dcc-mcp-cua host --grant existing-profile` and also set the session's
+with `dcc-cua host --grant existing-profile` and also set the session's
 `allow_browser_prepare` grant. Without both approvals, attachment is refused.
 
 On Windows, non-pixel semantic access reuses one exact PID/HWND UIA worker per
@@ -653,8 +661,8 @@ cargo fmt --all -- --check
 cargo check --workspace --all-targets --locked
 cargo nextest run --workspace --all-targets --locked
 cargo test --workspace --doc --locked
-cargo nextest run --locked -p dcc-mcp-cua-e2e --features gui-e2e --no-run
-pwsh -NoProfile -File scripts/run-gui-e2e.ps1 -Binary target/debug/dcc-mcp-cua.exe
+cargo nextest run --locked -p dcc-cua-e2e --features gui-e2e --no-run
+pwsh -NoProfile -File scripts/run-gui-e2e.ps1 -Binary target/debug/dcc-cua.exe
 ```
 
 ## CI/CD and release
@@ -684,7 +692,7 @@ An additional lifecycle E2E uses Host IPC itself to launch an isolated native
 fixture (Calculator as a fresh instance on macOS), promote the launch into the
 same private runtime session, record a real mutation to `action.json`, stop the
 recording, terminate only that proven PID, and verify its windows disappear.
-The release workflow packages `dcc-mcp-cua`, the pinned official `cua-driver`
+The release workflow packages `dcc-cua`, the pinned official `cua-driver`
 and cursor-theme companion, the Windows UIAccess companion where applicable,
 and both MIT license files in a versioned `libexec` bundle, then attaches the
 platform archives to the GitHub release. CI invokes the bundled `cua-driver`,
@@ -692,7 +700,7 @@ platform archives to the GitHub release. CI invokes the bundled `cua-driver`,
 testing.
 
 The release gate is intentionally closed while the product is still being
-completed. Do not set the repository variable `DCC_MCP_CUA_RELEASE_READY=true`
+completed. Do not set the repository variable `DCC_CUA_RELEASE_READY=true`
 until the full computer-control goal is accepted. The initial manifest starts
 at `0.0.0`, so the first release-please release will be `0.1.0`; after that
 release-please owns the manifest version and conventional-commit changelog.
