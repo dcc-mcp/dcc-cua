@@ -11,6 +11,7 @@ on:
         type: string
 
 permissions:
+  actions: write
   contents: write
   issues: write
   pull-requests: write
@@ -86,19 +87,22 @@ jobs:
           }
           git fetch origin "refs/heads/$($releasePr.headRefName):refs/remotes/origin/$($releasePr.headRefName)"
           git checkout -B $releasePr.headRefName "origin/$($releasePr.headRefName)"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git merge --no-edit origin/main
           $syncScript = Join-Path $env:RUNNER_TEMP 'sync-cargo-workspace-version.ps1'
           git show 'origin/main:scripts/sync-cargo-workspace-version.ps1' | Set-Content -LiteralPath $syncScript -Encoding utf8
           & pwsh -NoProfile -File $syncScript -Version $version
           if ($LASTEXITCODE -ne 0) { throw "workspace release version sync failed with code $LASTEXITCODE" }
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add Cargo.toml Cargo.lock crates/*/Cargo.toml
           if (git diff --cached --quiet) {
               Write-Host 'Workspace release version is already synchronized.'
-              exit 0
+          } else {
+              git commit -m 'chore: synchronize workspace release version'
           }
-          git commit -m 'chore: synchronize workspace release version'
           git push origin "HEAD:$($releasePr.headRefName)"
+          gh workflow run ci-checks.yml --repo $env:GITHUB_REPOSITORY --ref $releasePr.headRefName
+          if ($LASTEXITCODE -ne 0) { throw "release PR CI dispatch failed with code $LASTEXITCODE" }
 
   build:
     needs: release-please
