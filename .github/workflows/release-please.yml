@@ -11,6 +11,7 @@ on:
         type: string
 
 permissions:
+  actions: write
   contents: write
   issues: write
   pull-requests: write
@@ -95,10 +96,12 @@ jobs:
           git add Cargo.toml Cargo.lock crates/*/Cargo.toml
           if (git diff --cached --quiet) {
               Write-Host 'Workspace release version is already synchronized.'
-              exit 0
+          } else {
+              git commit -m 'chore: synchronize workspace release version'
+              git push origin "HEAD:$($releasePr.headRefName)"
           }
-          git commit -m 'chore: synchronize workspace release version'
-          git push origin "HEAD:$($releasePr.headRefName)"
+          gh workflow run ci.yml --repo $env:GITHUB_REPOSITORY --ref $releasePr.headRefName
+          if ($LASTEXITCODE -ne 0) { throw "release PR CI dispatch failed with code $LASTEXITCODE" }
 
   build:
     needs: release-please
