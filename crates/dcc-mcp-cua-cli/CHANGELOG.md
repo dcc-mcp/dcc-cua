@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.2](https://github.com/dcc-mcp/dcc-mcp-computer-use/compare/v0.1.1...v0.1.2) (2026-08-05)
+
+
+### Bug Fixes
+
+* clarify custom profile cli usage ([04b002d](https://github.com/dcc-mcp/dcc-mcp-computer-use/commit/04b002d966700b73d623ea746ffd86a7bc5d655d))
+
 ## [0.1.1](https://github.com/dcc-mcp/dcc-mcp-computer-use/compare/v0.1.0...v0.1.1) (2026-08-04)
 
 
