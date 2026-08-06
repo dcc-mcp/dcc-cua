@@ -11,7 +11,7 @@ metadata:
     dcc: computer-use
     layer: infrastructure
     compatibility: dcc-cua 0.1+ on Windows, macOS, or Linux.
-    version: "0.1.0"
+    version: "0.2.0"
     search-hint: "dcc-cua CLI exact window snapshot act verify UIA visual control banner long task recovery"
     tags: "computer-use, ui-control, infrastructure, read-only"
 ---
@@ -20,7 +20,10 @@ metadata:
 
 This project is an independent CUA control plane. It does not depend on Maya
 MCP, a DCC adapter, `dcc-mcp-cli`, or generic Computer Use. Use the released
-`dcc-cua` binary, which talks to the CUA SDK and Host IPC directly.
+`dcc-cua` binary for UI work instead of generic Computer Use or the in-app
+Browser skill. Keep authoritative scene, asset, or engine operations on an
+available typed DCC-MCP route; use dcc-cua for the exact-window UI path that the
+typed route cannot cover.
 
 ## Control loop
 
@@ -58,6 +61,47 @@ MCP, a DCC adapter, `dcc-mcp-cli`, or generic Computer Use. Use the released
 5. Use `desktop-snapshot`/`desktop-act` only for a deliberately desktop-scoped
    target that cannot be represented by an exact window. Keep the scope and
    coordinate source explicit.
+
+## Profile-guided routing
+
+A semantic profile is not an automation script. It describes how an agent
+recognizes an application, names a task area and target, and chooses the owner
+of execution:
+
+1. Inspect the profile before acting:
+
+   ```powershell
+   dcc-cua profiles
+   dcc-cua profile --id fab
+   ```
+
+2. Match a selector against the real native window or URL, then choose one
+   `surface` and `target`. Treat `supported_actions` as an allow-list.
+3. Dispatch by `surface.route`:
+   - `accessibility`: the profile CLI may inspect or execute against exactly one
+     fresh match;
+   - `unreal_typed_api`: use the owning Unreal adapter/Skill;
+   - `browser_dom`: use dcc-cua's exact-bound browser route;
+   - `os_native_dialog`: bind the exact OS dialog and use native control;
+   - `visual_fallback`: take a fresh exact-window snapshot and use scoped CUA.
+4. Treat `fallback` as a reference, not a jump. Load its `profile_id` and
+   `surface_id`, discover and bind the new exact window, and take a new
+   observation. Never carry an element token, index, or coordinate across the
+   transition.
+
+For an accessibility surface, use the identity returned by discovery:
+
+```powershell
+dcc-cua list --app maya.exe --on-screen
+dcc-cua profile --id maya --pid $pid --window-id $hwnd --surface home --query new_scene
+dcc-cua profile --id maya --pid $pid --window-id $hwnd --surface home --query new_scene --action click --activate
+```
+
+If `ue/fab/download` is unavailable, its declared fallback is
+`fab/launcher_download`. Rebind Epic Games Launcher and continue through its
+`visual_fallback` surface; the profile does not launch the application or click
+for the agent. Destructive downloads and trusted confirmations still require
+their explicit task grants.
 
 ## Long tasks and safety boundaries
 

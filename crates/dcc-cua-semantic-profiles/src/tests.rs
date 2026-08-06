@@ -78,6 +78,7 @@ fn fab_profile_matches_browser_urls_without_matching_unrelated_hosts() {
     assert!(profile.matches_url("https://store.epicgames.com/en-US/p/fab"));
     assert!(profile.matches_window("EpicGamesLauncher.exe", "Epic Games Launcher"));
     assert!(profile.matches_window("EpicGamesLauncher.exe", "Epic Games 启动器"));
+    assert!(!profile.matches_window("notepad.exe", "Untitled - Notepad"));
     assert!(!profile.matches_url("https://example.com/fab"));
     assert!(profile.settings.destructive_confirmation_required);
     let launcher = profile
