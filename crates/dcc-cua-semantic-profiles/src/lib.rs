@@ -199,6 +199,9 @@ impl SemanticProfile {
     #[must_use]
     pub fn matches_window(&self, application_name: &str, window_title: &str) -> bool {
         self.selectors.iter().any(|selector| {
+            if selector.application_names.is_empty() && selector.window_title_contains.is_empty() {
+                return false;
+            }
             let app_matches = selector.application_names.is_empty()
                 || selector
                     .application_names

@@ -34,7 +34,8 @@ provides:
   Windows physical Escape and the cross-platform `interrupt_all` Host request
   advance the same Host-process stop generation for every active connection.
 
-The repository is a Cargo workspace with ten responsibilities:
+The repository is a Cargo workspace with eleven product responsibilities plus
+the Hakari dependency-unification support crate:
 
 - `dcc-cua-core`: scoped Computer Use domain, safety policy, and
   CUA execution boundary;
@@ -55,6 +56,8 @@ The repository is a Cargo workspace with ten responsibilities:
 - `dcc-cua-protocol`: shared Host wire limits and per-user local endpoint
   identity used by both the Host and reusable Client;
 - `dcc-cua-shm`: cross-platform shared-memory image handoff;
+- `dcc-cua-semantic-profiles`: validated application selectors, surfaces,
+  targets, route hints, and fallback edges;
 - `dcc-cua-cli`: the thin CLI process that composes the workspace crates.
 
 Inside `dcc-cua-core`, source files follow domain responsibility rather
@@ -84,17 +87,61 @@ preferred route, and dialog policy. The built-ins are the official defaults;
 users and studios can supply a compatible JSON profile through the same CLI
 execution path.
 
-Use the CLI to inspect the extension catalog without starting a DCC process:
+Profiles are declarative routing and vocabulary contracts. They do not launch
+an application, switch control routes, perform a fallback, or prove application
+state. Core and Host still own exact-window scope, fresh observations, grants,
+actions, and post-action verification.
+
+| Field | Agent meaning |
+| --- | --- |
+| `selectors` | Candidate application/window or URL identities. Selector objects are OR alternatives; populated `application_names` and `window_title_contains` fields inside one object are AND constraints. URL-only selectors never match native windows. |
+| `surfaces[]` | A stable task area such as `outliner`, `dialog`, or `launcher_download`. Its `route` selects the owning executor. |
+| `targets[]` | Stable intent vocabulary. `names` and `automation_ids` narrow live matches; `supported_actions` is an allow-list, not an instruction to act. |
+| `fallback` | A reference to another `profile_id` and `surface_id`. The agent must re-discover, bind, observe, and verify that route; no transition is automatic. |
+| `settings` | Profile-wide route preference, dialog style, and destructive-confirmation policy. Surface routes take precedence for a concrete task. |
+
+Route ownership is explicit:
+
+| Route | Owning path |
+| --- | --- |
+| `accessibility` | The profile CLI can inspect and act when exactly one fresh live element matches. |
+| `unreal_typed_api` | The Unreal adapter/Skill executes the typed operation and returns authoritative state. |
+| `browser_dom` | The exact-bound browser adapter executes DOM work. Do not substitute the in-app Browser skill. |
+| `os_native_dialog` | The platform-native dialog path binds and controls the exact dialog window. |
+| `visual_fallback` | `dcc-cua` uses a fresh exact-window visual observation; desktop scope remains explicit and separate. |
+
+Use this profile-aware agent loop:
+
+1. Run `dcc-cua profiles` and inspect the candidate with `dcc-cua profile --id ID`.
+2. Discover the real PID/window with `dcc-cua list --on-screen`, then bind that
+   exact identity. Confirm that its application/title or URL matches a selector.
+3. Choose the task surface and target. Reject actions absent from
+   `supported_actions`.
+4. Dispatch through the surface route above. `profile --action` is supported
+   only for `accessibility`; other routes are intentionally declarations for
+   their owning adapter.
+5. If a target has `fallback`, switch to the referenced profile/surface and
+   repeat discovery, exact binding, and observation. For example,
+   `ue/fab/download` falls back to `fab/launcher_download` when the in-editor
+   path is unavailable.
+6. Take a fresh observation after every mutation and verify the requested state
+   independently. Input delivery alone is not success.
+
+Inspect the extension catalog without starting a DCC process:
 
 ```powershell
-cargo run -p dcc-cua-cli -- profiles
-cargo run -p dcc-cua-cli -- profile --id maya
-# Inspect or execute a user-authored profile with the same contract.
-cargo run -p dcc-cua-cli -- profile --profile-file C:\profiles\maya-studio.json
-# Bind a profile to one exact live window and inspect its semantic matches.
-cargo run -p dcc-cua-cli -- profile --id maya --app maya.exe --surface home --query new_scene
-# Resolve the profile target, execute its supported action, and return a post-state tree.
-cargo run -p dcc-cua-cli -- profile --id maya --app maya.exe --surface home --query new_scene --action click --activate
+dcc-cua profiles
+dcc-cua profile --id maya
+dcc-cua profile --profile-file C:\profiles\maya-studio.json
+```
+
+After discovery, inspect or execute one accessibility target using the exact
+identity returned by `list`:
+
+```powershell
+dcc-cua list --app maya.exe --on-screen
+dcc-cua profile --id maya --pid $pid --window-id $hwnd --surface home --query new_scene
+dcc-cua profile --id maya --pid $pid --window-id $hwnd --surface home --query new_scene --action click --activate
 ```
 
 Maya's profile explicitly sets `dialog_style` to `os_native` and routes its
