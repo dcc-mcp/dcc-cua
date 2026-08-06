@@ -1,14 +1,13 @@
 use std::error::Error;
 use std::fs::{self, File};
 use std::io::{self, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use self_update::update::{Release, ReleaseAsset};
 
 const OWNER: &str = "dcc-mcp";
 const REPOSITORY: &str = "dcc-cua";
 const BINARY: &str = "dcc-cua";
-const BUNDLE_ROOT: &str = "libexec";
 
 type UpdateResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
 
@@ -40,20 +39,9 @@ pub fn run(flags: &[String]) -> UpdateResult<()> {
     }
 
     confirm_update(current, &release.version)?;
-    install_release_bundle(&std::env::current_exe()?, release, asset)?;
+    install_release(&std::env::current_exe()?, asset)?;
     println!("dcc-cua updated to v{}", release.version);
     Ok(())
-}
-
-pub(crate) fn bundled_driver_relative_path(version: &str) -> PathBuf {
-    bundle_relative_directory(version).join(format!("cua-driver{}", std::env::consts::EXE_SUFFIX))
-}
-
-pub(crate) fn bundled_driver_path(executable: &Path, version: &str) -> PathBuf {
-    executable
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .join(bundled_driver_relative_path(version))
 }
 
 pub(crate) fn release_archive_name(version: &str, target: &str) -> String {
@@ -75,11 +63,7 @@ pub(crate) fn latest_release_asset<'a>(
     })
 }
 
-fn install_release_bundle(
-    executable: &Path,
-    release: &Release,
-    asset: &ReleaseAsset,
-) -> UpdateResult<()> {
+fn install_release(executable: &Path, asset: &ReleaseAsset) -> UpdateResult<()> {
     let install_root = executable
         .parent()
         .ok_or("current executable has no installation directory")?;
@@ -104,48 +88,8 @@ fn install_release_bundle(
 
     let new_executable = extracted.join(format!("{BINARY}{}", std::env::consts::EXE_SUFFIX));
     require_file(&new_executable)?;
-    let relative_bundle = bundle_relative_directory(&release.version);
-    let staged_bundle = extracted.join(&relative_bundle);
-    validate_companion_bundle(&staged_bundle)?;
-
-    let installed_bundle = install_root.join(&relative_bundle);
-    if installed_bundle.exists() {
-        validate_companion_bundle(&installed_bundle)?;
-    } else {
-        fs::create_dir_all(
-            installed_bundle
-                .parent()
-                .ok_or("bundle destination has no parent")?,
-        )?;
-        fs::rename(&staged_bundle, &installed_bundle)?;
-    }
-
     self_update::self_replace::self_replace(new_executable)?;
     Ok(())
-}
-
-fn bundle_relative_directory(version: &str) -> PathBuf {
-    PathBuf::from(BUNDLE_ROOT).join(BINARY).join(version)
-}
-
-fn validate_companion_bundle(directory: &Path) -> UpdateResult<()> {
-    for name in required_companion_files() {
-        require_file(&directory.join(name))?;
-    }
-    Ok(())
-}
-
-fn required_companion_files() -> Vec<String> {
-    let suffix = std::env::consts::EXE_SUFFIX;
-    let mut files = vec![
-        format!("cua-driver{suffix}"),
-        format!("cua-cursor-theme{suffix}"),
-        "CUA-LICENSE.md".into(),
-    ];
-    if cfg!(windows) {
-        files.push("cua-driver-uia.exe".into());
-    }
-    files
 }
 
 fn require_file(path: &Path) -> UpdateResult<()> {

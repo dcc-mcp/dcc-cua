@@ -89,26 +89,13 @@ if ($LASTEXITCODE -ne 0 -or $help -notmatch "host-batch") {
     throw "release CLI help smoke test failed"
 }
 
-foreach ($upstreamArguments in @(
-    @("cua-driver", "--help"),
-    @("daemon", "--help"),
-    @("mcp", "--help"),
-    @("recording", "render", "--help")
-)) {
-    $upstreamHelp = & $binaryPath @upstreamArguments 2>&1 | Out-String
-    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($upstreamHelp)) {
-        throw "bundled official cua-driver route failed: $($upstreamArguments -join ' ')"
-    }
-}
-
 $manifest = Invoke-BinaryJson -Arguments @("manifest")
 $expectedOs = if ($isWindowsHost) { "windows" } elseif ($isMacHost) { "macos" } else { "linux" }
 if ($manifest.name -ne "dcc-cua" -or $manifest.target.os -ne $expectedOs) {
     throw "manifest does not describe the current release binary"
 }
-$bundledDriver = Join-Path (Split-Path $binaryPath -Parent) ([string]$manifest.upstream_driver.bundled_binary)
-if (-not (Test-Path -LiteralPath $bundledDriver -PathType Leaf)) {
-    throw "manifest bundled driver is missing: $bundledDriver"
+if ($manifest.runtime.backend -ne "cua-driver-sdk" -or $manifest.runtime.separate_driver_required -ne $false) {
+    throw "manifest still requires a separate CUA driver"
 }
 if (-not $isWindowsHost -and
     $manifest.host.default_endpoint -ne (Join-Path $endpointRuntimeDir "dcc-cua-v1.sock")) {
@@ -376,7 +363,7 @@ finally {
     }
 }
 
-Write-Host "CLI E2E passed for ${expectedOs}: bundled upstream routes, manifest, diagnostics, session lifecycle, idempotent Host ensure, a ${streamBurstCount}-request long-lived discovery burst, bounded endpoint batch/stream Host IPC, error recovery, apps, and $($toolNames.Count) CUA tools."
+Write-Host "CLI E2E passed for ${expectedOs}: self-contained SDK runtime, manifest, diagnostics, session lifecycle, idempotent Host ensure, a ${streamBurstCount}-request long-lived discovery burst, bounded endpoint batch/stream Host IPC, error recovery, apps, and $($toolNames.Count) CUA tools."
 }
 finally {
     if (-not $isWindowsHost) {

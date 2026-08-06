@@ -10,11 +10,13 @@ mod interactive_desktop;
 mod observation;
 mod platform_process;
 mod policy;
+mod private_worker;
 mod runtime;
 mod window_target;
 mod windows_uia_fallback;
 
 pub use contracts::*;
+pub use private_worker::run_private_worker;
 pub use runtime::*;
 
 #[cfg(test)]

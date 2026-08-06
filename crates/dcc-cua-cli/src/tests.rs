@@ -42,9 +42,9 @@ fn host_grant_parser_rejects_missing_and_unknown_values() {
 #[rstest]
 fn macos_host_worker_is_private_and_standard_by_default() {
     let path = if cfg!(windows) {
-        std::path::Path::new(r"C:\release\cua-driver.exe")
+        std::path::Path::new(r"C:\release\dcc-cua.exe")
     } else {
-        std::path::Path::new("/release/cua-driver")
+        std::path::Path::new("/release/dcc-cua")
     };
     let options = host_private_worker_options(path, false);
     assert_eq!(options.binary_path, path.to_string_lossy());
@@ -66,9 +66,9 @@ fn macos_host_worker_is_private_and_standard_by_default() {
 #[rstest]
 fn explicit_existing_profile_grant_raises_only_the_private_worker_ceiling() {
     let path = if cfg!(windows) {
-        std::path::Path::new(r"C:\release\cua-driver.exe")
+        std::path::Path::new(r"C:\release\dcc-cua.exe")
     } else {
-        std::path::Path::new("/release/cua-driver")
+        std::path::Path::new("/release/dcc-cua")
     };
     let options = host_private_worker_options(path, true);
     assert_eq!(
@@ -210,44 +210,6 @@ fn parallel_discovery_is_limited_to_stateless_methods() {
 }
 
 #[rstest]
-fn daemon_reuses_the_official_serve_command() {
-    assert_eq!(upstream_command("daemon"), "serve");
-    assert_eq!(upstream_command("mcp"), "mcp");
-    assert_eq!(upstream_command("recording"), "recording");
-}
-
-#[rstest]
-fn development_upstream_driver_uses_a_platform_sibling_fallback() {
-    let cli = std::path::Path::new(if cfg!(windows) {
-        r"C:\release\dcc-cua.exe"
-    } else {
-        "/release/dcc-cua"
-    });
-    assert_eq!(
-        sibling_upstream_binary(cli),
-        cli.with_file_name(format!("cua-driver{}", std::env::consts::EXE_SUFFIX))
-    );
-}
-
-#[rstest]
-fn release_upstream_driver_uses_the_cli_versioned_bundle() {
-    let cli = std::path::Path::new(if cfg!(windows) {
-        r"C:\release\dcc-cua.exe"
-    } else {
-        "/release/dcc-cua"
-    });
-    assert_eq!(
-        update::bundled_driver_path(cli, "0.1.0"),
-        cli.parent()
-            .unwrap()
-            .join("libexec")
-            .join("dcc-cua")
-            .join("0.1.0")
-            .join(format!("cua-driver{}", std::env::consts::EXE_SUFFIX))
-    );
-}
-
-#[rstest]
 fn updater_selects_the_exact_archive_instead_of_its_checksum() {
     let target = self_update::get_target();
     let archive = update::release_archive_name("0.1.0", target);
@@ -356,29 +318,9 @@ fn manifest_is_a_machine_readable_core_launch_contract() {
                 .any(|value| value == "windows_background_uia_fallback")),
         cfg!(windows)
     );
-    assert_eq!(
-        manifest["upstream_driver"]["top_level_aliases"]["daemon"],
-        "serve"
-    );
-    assert_eq!(
-        manifest["upstream_driver"]["development_sibling_fallback"],
-        format!("cua-driver{}", std::env::consts::EXE_SUFFIX)
-    );
-    assert_eq!(
-        manifest["upstream_driver"]["bundled_binary"],
-        update::bundled_driver_relative_path(env!("CARGO_PKG_VERSION"))
-            .to_string_lossy()
-            .as_ref()
-    );
-}
-
-#[rstest]
-fn upstream_namespace_requires_an_explicit_command() {
-    let flags = strings(["browser-approve", "--pid", "42"]);
-    let (command, arguments) = upstream_invocation(&flags).unwrap();
-    assert_eq!(command, "browser-approve");
-    assert_eq!(arguments, &flags[1..]);
-    assert!(upstream_invocation(&[]).is_err());
+    assert_eq!(manifest["runtime"]["backend"], "cua-driver-sdk");
+    assert_eq!(manifest["runtime"]["separate_driver_required"], false);
+    assert!(manifest.get("upstream_driver").is_none());
 }
 
 #[rstest]

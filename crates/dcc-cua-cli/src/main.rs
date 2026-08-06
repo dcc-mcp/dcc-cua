@@ -1,8 +1,8 @@
 use std::env;
 use std::fs;
 use std::io::Read;
-use std::path::{Path, PathBuf};
-use std::process::Command as ProcessCommand;
+#[cfg(target_os = "macos")]
+use std::path::PathBuf;
 
 mod authorization;
 mod host_lifecycle;
@@ -35,6 +35,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = env::args().skip(1);
     let command = args.next().unwrap_or_else(|| "help".into());
     let flags = args.collect::<Vec<_>>();
+    if command == "__private-worker" {
+        let generation =
+            flag_value(&flags, "--generation").ok_or("private worker requires --generation")?;
+        dcc_cua_core::run_private_worker(generation)
+            .await
+            .map_err(std::io::Error::other)?;
+        return Ok(());
+    }
     if command == "host-call" {
         host_call(&flags).await?;
         return Ok(());
@@ -80,21 +88,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     if command == "profile" && flag_value(&flags, "--app").is_none() {
         inspect_semantic_profile(&flags)?;
-        return Ok(());
-    }
-    if command == "cua-driver" {
-        let (upstream, upstream_flags) = upstream_invocation(&flags)?;
-        run_upstream_cua_command(upstream, upstream_flags)?;
-        return Ok(());
-    }
-    if matches!(command.as_str(), "daemon" | "mcp" | "recording") {
-        run_upstream_cua_command(upstream_command(&command), &flags)?;
-        return Ok(());
-    }
-    if command == "recording-render" {
-        let mut upstream_flags = vec!["render".to_owned()];
-        upstream_flags.extend(flags);
-        run_upstream_cua_command("recording", &upstream_flags)?;
         return Ok(());
     }
     if command == "update" {
@@ -157,25 +150,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 fn host_driver(flags: &[String]) -> Result<ComputerUseDriver, Box<dyn std::error::Error>> {
     #[cfg(target_os = "macos")]
-    if let Some(binary) = macos_private_worker_binary()? {
-        return authorization::driver_for_private_worker(flags, &binary);
-    }
+    return authorization::driver_for_private_worker(flags, &macos_private_worker_binary()?);
+    #[cfg(not(target_os = "macos"))]
     authorization::driver_for_host(flags)
 }
 
 #[cfg(target_os = "macos")]
-fn macos_private_worker_binary() -> Result<Option<PathBuf>, Box<dyn std::error::Error>> {
-    let explicit = env::var_os("CUA_DRIVER_BIN").is_some();
-    let candidate = upstream_cua_binary();
-    match fs::canonicalize(&candidate) {
-        Ok(binary) if binary.is_file() => Ok(Some(binary)),
-        _ if explicit => Err(format!(
-            "CUA_DRIVER_BIN does not resolve to an official cua-driver binary: {}",
-            candidate.display()
-        )
-        .into()),
-        _ => Ok(None),
-    }
+fn macos_private_worker_binary() -> Result<PathBuf, Box<dyn std::error::Error>> {
+    Ok(fs::canonicalize(env::current_exe()?)?)
 }
 
 async fn list_windows(
@@ -277,62 +259,6 @@ fn window_wait_request(
     };
     request.query.validate()?;
     Ok(request)
-}
-
-fn run_upstream_cua_command(
-    command: &str,
-    flags: &[String],
-) -> Result<(), Box<dyn std::error::Error>> {
-    let binary = upstream_cua_binary();
-    let status = ProcessCommand::new(&binary)
-        .arg(command)
-        .args(flags)
-        .status()
-        .map_err(|error| {
-            format!(
-                "start upstream cua-driver {command}: {error}; install the matching dcc-cua release bundle or set CUA_DRIVER_BIN"
-            )
-        })?;
-    if status.success() {
-        return Ok(());
-    }
-    Err(format!("cua-driver {command} exited with {status}").into())
-}
-
-fn upstream_cua_binary() -> PathBuf {
-    if let Some(binary) = env::var_os("CUA_DRIVER_BIN") {
-        return binary.into();
-    }
-    if let Ok(executable) = env::current_exe() {
-        let bundled = update::bundled_driver_path(&executable, env!("CARGO_PKG_VERSION"));
-        if bundled.is_file() {
-            return bundled;
-        }
-        let sibling = sibling_upstream_binary(&executable);
-        if sibling.is_file() {
-            return sibling;
-        }
-    }
-    "cua-driver".into()
-}
-
-fn sibling_upstream_binary(executable: &Path) -> PathBuf {
-    executable.with_file_name(format!("cua-driver{}", env::consts::EXE_SUFFIX))
-}
-
-fn upstream_command(command: &str) -> &str {
-    if command == "daemon" {
-        "serve"
-    } else {
-        command
-    }
-}
-
-fn upstream_invocation(flags: &[String]) -> Result<(&str, &[String]), &'static str> {
-    flags
-        .split_first()
-        .map(|(command, flags)| (command.as_str(), flags))
-        .ok_or("cua-driver requires an upstream command")
 }
 
 async fn list_apps(driver: &ComputerUseDriver) -> Result<(), Box<dyn std::error::Error>> {
@@ -1887,11 +1813,6 @@ fn print_help() {
   manifest
   profiles                         # list built-in profiles; use --profile-file for custom JSON
   profile --id ue|maya|fab|... [--profile-file PATH] [--app APP] [--surface ID] [--query TARGET] [--action ACTION] [--activate] [--max-elements N] [--max-depth N]
-  cua-driver COMMAND [CUA_DRIVER_ARGS...]
-  daemon [CUA_DRIVER_ARGS...]
-  mcp [CUA_DRIVER_ARGS...]
-  recording start|stop|status|render [CUA_DRIVER_ARGS...]
-  recording-render INPUT_DIR OUTPUT_MP4 [CUA_DRIVER_ARGS...]
   update [--check]
   desktop-snapshot [--output FILE]
   screen-size
