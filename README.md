@@ -2,6 +2,10 @@
   <img src="assets/brand/dcc-cua-logo.png" alt="CUA logo" width="900">
 </p>
 
+<p align="center">
+  English | <a href="README.zh-CN.md">简体中文</a>
+</p>
+
 # dcc-cua
 
 Cross-platform Computer Use Automation runtime and CLI, backed by the
