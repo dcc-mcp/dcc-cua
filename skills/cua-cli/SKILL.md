@@ -10,9 +10,9 @@ metadata:
   dcc-mcp:
     dcc: computer-use
     layer: infrastructure
-    compatibility: dcc-cua 0.1+ on Windows, macOS, or Linux.
-    version: "0.2.0"
-    search-hint: "dcc-cua CLI exact window snapshot act verify UIA visual control banner long task recovery"
+    compatibility: dcc-cua 0.2+ on Windows, macOS, or Linux.
+    version: "0.3.0"
+    search-hint: "dcc-cua CLI exact window multilingual profile localized aliases snapshot act verify UIA visual control banner long task recovery"
     tags: "computer-use, ui-control, infrastructure, read-only"
 ---
 
@@ -76,7 +76,9 @@ of execution:
    ```
 
 2. Match a selector against the real native window or URL, then choose one
-   `surface` and `target`. Treat `supported_actions` as an allow-list.
+   `surface` and stable target ID. `supported_locales` describes available
+   aliases; every locale remains active, so do not guess the UI language or
+   translate the target ID. Treat `supported_actions` as an allow-list.
 3. Dispatch by `surface.route`:
    - `accessibility`: the profile CLI may inspect or execute against exactly one
      fresh match;

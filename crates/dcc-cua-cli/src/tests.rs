@@ -139,7 +139,10 @@ fn profile_loader_accepts_user_authored_json() {
             "schema_version": 1,
             "id": "custom-maya",
             "display_name": "Custom Maya",
-            "selectors": [{"application_names": ["maya.exe"]}],
+            "selectors": [{
+                "application_names": ["maya.exe"],
+                "localized_window_title_contains": {"zh-CN": ["玛雅"]}
+            }],
             "surfaces": [],
             "settings": {"dialog_style": "os_native", "preferred_route": "accessibility"}
         }"#,
@@ -149,6 +152,7 @@ fn profile_loader_accepts_user_authored_json() {
     let profile = load_semantic_profile(&strings(["--profile-file", &path])).unwrap();
     let _ = std::fs::remove_file(&path);
     assert_eq!(profile.id, "custom-maya");
+    assert_eq!(profile.supported_locales(), ["zh-CN"]);
 }
 
 #[rstest]

@@ -24,6 +24,7 @@ fn unreal_profile_prefers_typed_semantics_and_matches_editor_windows() {
     );
     assert!(profile.matches_window("UnrealEditor.exe", "PCG Fab Showcase"));
     assert!(profile.matches_window("UE4Editor.exe", "UE426LookdevTest - 虚幻编辑器"));
+    assert!(profile.matches_window("UnrealEditor.exe", "Showcase - 虛幻編輯器"));
     assert_eq!(
         profile
             .surface("content_browser")
@@ -42,7 +43,9 @@ fn unreal_profile_prefers_typed_semantics_and_matches_editor_windows() {
 fn maya_profile_uses_os_native_dialogs() {
     let profile = builtin_profile("maya").expect("Maya profile");
     assert_eq!(profile.settings.dialog_style, DialogStyle::OsNative);
+    assert_eq!(profile.settings.default_locale.as_deref(), Some("en"));
     assert!(profile.resolve_target("home", "新建").is_some());
+    assert!(profile.resolve_target("home", "新規シーン").is_some());
     assert_eq!(
         profile.surface("dialog").expect("dialog").route,
         SemanticRoute::OsNativeDialog
@@ -69,6 +72,16 @@ fn maya_profile_uses_os_native_dialogs() {
     let home_matches = profile.find_elements("home", &home_root, "new_scene");
     assert_eq!(home_matches.len(), 1);
     assert_eq!(home_matches[0]["name"], "新建");
+    let german_root = json!({
+        "elements": [{"role": "Button", "name": "ÖFFNEN"}]
+    });
+    assert_eq!(
+        profile
+            .find_elements("home", &german_root, "open_scene")
+            .len(),
+        1
+    );
+    assert!(profile.supported_locales().contains(&"ja-JP"));
 }
 
 #[rstest]
@@ -126,5 +139,37 @@ fn invalid_profile_rejects_duplicate_targets() {
     assert!(matches!(
         parse_profile(input),
         Err(ProfileError::DuplicateTarget(..))
+    ));
+}
+
+#[rstest]
+fn invalid_profile_rejects_malformed_locale_tags() {
+    let input = r#"{
+        "schema_version": 1,
+        "id": "test",
+        "display_name": "Test",
+        "selectors": [{"application_names": ["test.exe"]}],
+        "surfaces": [{
+            "id": "surface",
+            "label": "Surface",
+            "role": "panel",
+            "route": "accessibility",
+            "targets": [{
+                "id": "run",
+                "label": "Run",
+                "role": "button",
+                "localized_names": {"not_a_locale": ["Run"]}
+            }]
+        }],
+        "settings": {"dialog_style": "host_owned", "preferred_route": "accessibility"}
+    }"#;
+    assert!(matches!(
+        parse_profile(input),
+        Err(ProfileError::InvalidLocale(..))
+    ));
+    let empty_alias = input.replace("\"not_a_locale\": [\"Run\"]", "\"en\": [\"\"]");
+    assert!(matches!(
+        parse_profile(&empty_alias),
+        Err(ProfileError::InvalidLocalizedAliases(..))
     ));
 }

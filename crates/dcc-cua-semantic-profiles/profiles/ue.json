@@ -3,14 +3,14 @@
   "id": "ue",
   "display_name": "Unreal Engine",
   "selectors": [
-    {"application_names": ["UnrealEditor.exe", "UE4Editor.exe", "UE5Editor.exe"], "window_title_contains": ["Unreal Editor", "虚幻编辑器", "PCG Fab", "Fab"]}
+    {"application_names": ["UnrealEditor.exe", "UE4Editor.exe", "UE5Editor.exe"], "window_title_contains": ["Unreal Editor", "PCG Fab", "Fab"], "localized_window_title_contains": {"zh-CN": ["虚幻编辑器"], "zh-TW": ["虛幻編輯器"]}}
   ],
   "surfaces": [
-    {"id": "viewport", "label": "Level viewport", "role": "viewport", "route": "unreal_typed_api", "targets": [{"id": "level_viewport", "label": "Level viewport", "role": "viewport", "names": ["Viewport"], "supported_actions": ["click", "drag", "orbit", "frame_selection"]}]},
-    {"id": "content_browser", "label": "Content Browser", "role": "asset_browser", "route": "unreal_typed_api", "targets": [{"id": "search", "label": "Asset search", "role": "search", "names": ["Search Assets"], "automation_ids": ["ContentBrowser.SearchBox"], "supported_actions": ["set_text", "submit"]}, {"id": "asset_item", "label": "Asset item", "role": "asset", "supported_actions": ["select", "open", "drag"]}]},
+    {"id": "viewport", "label": "Level viewport", "role": "viewport", "route": "unreal_typed_api", "targets": [{"id": "level_viewport", "label": "Level viewport", "role": "viewport", "names": ["Viewport"], "localized_names": {"zh-CN": ["视口"], "zh-TW": ["視口"], "ja-JP": ["ビューポート"], "ko-KR": ["뷰포트"]}, "supported_actions": ["click", "drag", "orbit", "frame_selection"]}]},
+    {"id": "content_browser", "label": "Content Browser", "role": "asset_browser", "route": "unreal_typed_api", "targets": [{"id": "search", "label": "Asset search", "role": "search", "names": ["Search Assets"], "localized_names": {"zh-CN": ["搜索资产", "搜索栏"], "zh-TW": ["搜尋資產", "搜尋欄"], "ja-JP": ["アセットを検索"], "ko-KR": ["에셋 검색"], "de-DE": ["Assets suchen"], "fr-FR": ["Rechercher des ressources"], "es-ES": ["Buscar recursos"], "pt-BR": ["Pesquisar ativos"]}, "automation_ids": ["ContentBrowser.SearchBox"], "supported_actions": ["set_text", "submit"]}, {"id": "asset_item", "label": "Asset item", "role": "asset", "supported_actions": ["select", "open", "drag"]}]},
     {"id": "outliner", "label": "World Outliner", "role": "tree", "route": "accessibility", "targets": [{"id": "actor", "label": "Actor item", "role": "tree_item", "supported_actions": ["select", "expand", "context_menu"]}]},
     {"id": "details", "label": "Details panel", "role": "property_editor", "route": "accessibility", "targets": [{"id": "property", "label": "Actor property", "role": "property", "supported_actions": ["set_value", "toggle"]}]},
     {"id": "fab", "label": "Fab browser", "role": "asset_store", "route": "browser_dom", "targets": [{"id": "listing", "label": "Fab listing", "role": "asset_listing", "supported_actions": ["inspect", "open"]}, {"id": "download", "label": "Download action", "role": "download", "supported_actions": ["request_confirmation", "download"], "fallback": {"profile_id": "fab", "surface_id": "launcher_download"}}]}
   ],
-  "settings": {"dialog_style": "application_rendered", "preferred_route": "unreal_typed_api", "destructive_confirmation_required": true}
+  "settings": {"dialog_style": "application_rendered", "preferred_route": "unreal_typed_api", "default_locale": "en", "destructive_confirmation_required": true}
 }

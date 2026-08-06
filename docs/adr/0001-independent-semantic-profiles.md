@@ -28,6 +28,8 @@ therefore uses the operating system native-dialog route.
 - Core and Host remain application-neutral and retain one safety boundary.
 - Profile data can evolve independently and can be extended without changing
   the wire protocol.
+- BCP-47 keyed window-title and target-name aliases extend one stable profile
+  across UI languages without duplicating its routes or target IDs.
 - A profile is a routing and vocabulary contract, not proof of authoritative
   scene state; Unreal/Fab adapters still need their native APIs and explicit
   confirmation for destructive account or download actions.
