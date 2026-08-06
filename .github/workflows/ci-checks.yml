@@ -90,9 +90,6 @@ jobs:
           swift_runtime="$(cd "$(dirname "$swiftc_path")/../lib/swift/macosx" && pwd)"
           echo "DYLD_LIBRARY_PATH=${swift_runtime}:/usr/lib/swift${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}" >> "$GITHUB_ENV"
       - run: cargo build --release --locked -p dcc-cua-cli
-      - name: Build pinned official CUA driver
-        shell: pwsh
-        run: ./scripts/build-upstream-cua-driver.ps1
       - name: Run release CLI and Host IPC E2E
         timeout-minutes: 5
         shell: pwsh

@@ -138,9 +138,6 @@ jobs:
           swift_runtime="$(cd "$(dirname "$swiftc_path")/../lib/swift/macosx" && pwd)"
           echo "DYLD_LIBRARY_PATH=${swift_runtime}:/usr/lib/swift${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}" >> "$GITHUB_ENV"
       - run: cargo build --release --locked -p dcc-cua-cli
-      - name: Build pinned official CUA driver
-        shell: pwsh
-        run: ./scripts/build-upstream-cua-driver.ps1
       - name: Package dcc-cua
         shell: bash
         env:
@@ -153,16 +150,17 @@ jobs:
           cp -R skills target/release/skills
           cp -R assets target/release/assets
           cp LICENSE target/release/LICENSE
+          cp THIRD_PARTY_LICENSES.md target/release/THIRD_PARTY_LICENSES.md
           cp README.md target/release/README.md
           if [ "${{ matrix.archive }}" = "zip" ]; then
             archive="dist/dcc-cua-${version}-${host}.zip"
             (
               cd target/release
-              7z a "../../$archive" dcc-cua.exe libexec LICENSE README.md assets skills
+              7z a "../../$archive" dcc-cua.exe LICENSE THIRD_PARTY_LICENSES.md README.md assets skills
             )
           else
             archive="dist/dcc-cua-${version}-${host}.tar.gz"
-            tar -czf "$archive" -C target/release dcc-cua libexec LICENSE README.md assets skills
+            tar -czf "$archive" -C target/release dcc-cua LICENSE THIRD_PARTY_LICENSES.md README.md assets skills
           fi
           sha256sum "$archive" > "${archive}.sha256"
       - uses: actions/upload-artifact@v4

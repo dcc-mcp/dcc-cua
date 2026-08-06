@@ -1,0 +1,4 @@
+[tools.msvc]
+version = "14.44"
+os = ["windows"]
+components = ["spectre"]

@@ -27,8 +27,8 @@ provides:
   plus a Host-owned, localized `<agent> is controlling <app>` safety banner
   with a session-specific hue and softly breathing target-window frame on
   Windows. Linux reuses CUA's native
-  per-session cursor and badge; macOS runs the bundled official `cua-driver`
-  as an SDK private worker so AppKit remains on that worker's main thread.
+  per-session cursor and badge; macOS re-enters the same `dcc-cua` executable
+  as a private SDK worker so AppKit remains on that worker's main thread.
   Headless macOS sessions still return CUA's structured readiness refusal. All
   supported indicators are click-through and excluded from agent captures.
   Windows physical Escape and the cross-platform `interrupt_all` Host request
@@ -48,7 +48,7 @@ The repository is a Cargo workspace with ten responsibilities:
   routing;
 - `dcc-cua-indicator`: Host-process stop generation plus the Windows control
   banner/frame and physical Escape boundary; Linux cursor/badge rendering stays
-  in the CUA SDK, while the packaged macOS Host uses CUA's private-worker overlay;
+  in the CUA SDK, while the packaged macOS Host uses its self-hosted private-worker overlay;
 - `dcc-cua-platform-windows`: exact PID/HWND Windows UI Automation worker
   for background semantic fallback when CUA's combined window-state path is
   unavailable;
@@ -111,7 +111,7 @@ another agent can install a single Skill without coupling to the Rust workspace.
 Multiple agents may keep independent exact PID/HWND sessions open for different
 applications. Semantic, UIA, and browser operations remain parallel; actions
 that consume the single OS keyboard/mouse stream use one fair Host-wide FIFO and
-release it before post-action capture. Run one Host daemon per interactive OS
+release it before post-action capture. Run one Host process per interactive OS
 seat so the shared Escape broadcast and raw-input ordering have one owner.
 Public `session_id` values are connection-scoped: Host mints a private CUA
 runtime identity for every opened window or desktop session and rewrites it at
@@ -126,14 +126,10 @@ such as Unreal Automation or Gauntlet; protected anti-cheat environments and
 exclusive full-screen capture are outside this Host's contract.
 
 This project wraps the CUA SDK for agent-friendly, bounded operations. The
-`dcc-cua` CLI owns its own `update` command and exposes `daemon`, `mcp`, and
-`recording render` as first-class entries. Those three entries reuse the
-official `cua-driver` executable from the release's versioned `libexec` bundle
-rather than copying its daemon/MCP/render implementation. `CUA_DRIVER_BIN`
-remains an explicit override, followed by the versioned bundle, a sibling
-development fallback, and then `PATH`. Use this CLI/Host for its safety
-envelope, exact-window capability, fresh observations, grants, friendly
-actions, and software-specific adapters.
+`dcc-cua` CLI owns its Host and update lifecycle and uses the SDK in-process;
+users do not install or run a separate `cua-driver` executable or daemon. Use
+this CLI/Host for its safety envelope, exact-window capability, fresh
+observations, grants, friendly actions, and software-specific adapters.
 
 ## Development gates
 
@@ -145,22 +141,21 @@ four supported build targets while leaving target and host graphs separate for
 the upstream MSVC Spectre dependency. Install both tools once:
 
 ```powershell
-cargo install cargo-nextest cargo-hakari --locked
+vx cargo install cargo-nextest cargo-hakari --locked
 ```
 
 ```powershell
-cargo hakari generate --diff
-cargo hakari manage-deps --dry-run
+vx cargo hakari generate --diff
+vx cargo hakari manage-deps --dry-run
 pwsh -NoProfile -File scripts/check-rust-layout.ps1
-cargo fmt --all -- --check
-cargo nextest run --workspace --all-targets --locked
-cargo test --workspace --doc --locked
+vx cargo fmt --all -- --check
+vx cargo nextest run --workspace --all-targets --locked
+vx cargo test --workspace --doc --locked
 ```
 
-Release packaging builds the official companions from the pinned CUA checkout;
-Windows source builds therefore require Visual Studio's Spectre-mitigated C++
-libraries, matching the upstream release toolchain. The build helper places
-them under `target/release/libexec/dcc-cua/<version>` by default.
+On Windows, `vx.toml` selects MSVC 14.44 with Spectre-mitigated libraries and
+injects its Windows SDK environment into Cargo. Release archives contain one `dcc-cua`
+executable plus assets, Skills, and both project and upstream license notices.
 
 ## CLI
 
@@ -172,7 +167,6 @@ cargo run -p dcc-cua-cli -- tools
 cargo run -p dcc-cua-cli -- call --tool check_permissions --json '{}'
 cargo run -p dcc-cua-cli -- call --tool set_config --json-file payload.json
 cargo run -p dcc-cua-cli -- manifest
-cargo run -p dcc-cua-cli -- cua-driver browser-approve --pid 4242 --profile-mode isolated_new
 cargo run -p dcc-cua-cli -- desktop-snapshot --output desktop.png
 cargo run -p dcc-cua-cli -- screen-size
 cargo run -p dcc-cua-cli -- cursor-position
@@ -200,24 +194,14 @@ cargo run -p dcc-cua-cli -- verify --app chrome.exe --expect-json '[{"window":{"
 cargo run -p dcc-cua-cli -- update --check
 ```
 
-`daemon` and `mcp` pass their remaining flags to the official `cua-driver`
-binary. `recording render` can be invoked as
-`dcc-cua recording render INPUT_DIR OUTPUT_MP4`. Release archives include
-the official driver built from the same pinned CUA revision; set
-`CUA_DRIVER_BIN` only to override it. `recording start|stop|status` keeps
-the upstream daemon lifecycle, while this project's Host routes remain
-grant-gated.
-
-`update` downloads one exact platform archive, validates its complete companion
-bundle, installs that bundle under its version, and replaces the CLI last. This
-keeps the executable and official CUA runtime on the same release version.
+`update` downloads one exact platform archive, validates the replacement
+executable, and replaces the CLI. The SDK runtime is statically linked into the
+same versioned executable.
 
 `manifest` is the stable machine-readable discovery entry for Core and other
 independent callers. It reports the current platform, Host protocol, frame
-limits, snapshot transports, capabilities, endpoint, and recommended stdio/
-JSONL launch arguments. `cua-driver COMMAND ...` forwards an official upstream
-command without copying its implementation; this includes the interactive
-`browser-approve` flow. Top-level `update` remains this project's updater.
+limits, snapshot transports, capabilities, endpoint, recommended stdio/JSONL
+launch arguments, and that no separate driver executable is required.
 
 `list`, `apps`, `tools`, `desktop-snapshot`, `screen-size`, `cursor-position`, and
 `doctor` are read-only. `snapshot` and `act` require one exact
@@ -420,7 +404,7 @@ The endpoint admits at most 32 simultaneous client connections and applies
 transport backpressure before creating another connection task. The manifest
 publishes both connection and per-connection discovery limits for supervisors.
 Clients have 10 seconds from connection acceptance to complete `hello`;
-negotiated daemon and MCP connections remain long-lived without an idle deadline.
+negotiated Host connections remain long-lived without an idle deadline.
 EOF, transport failures, and malformed frames all abort outstanding discovery
 work and stop every private window, desktop, and launch session on that connection.
 
@@ -524,10 +508,9 @@ Browser mutations additionally require `allow_browser_input: true`.
 `browser_prepare` is destructive and separately requires
 `allow_browser_prepare: true`; it never changes a personal browser profile
 implicitly and forwards CUA's explicit setup refusal/approval contract.
-For an isolated browser, mint the one-use approval interactively with the
-upstream `cua-driver browser-approve --pid PID --profile-mode isolated_new`
-command, then pass its token to `browser_prepare`; this CLI never mints a
-browser approval on behalf of an agent. Existing-profile attachment requires
+For an isolated browser, mint the one-use approval through an operator-owned
+upstream CUA installation, then pass its token to `browser_prepare`; DCC CUA
+never mints a browser approval on behalf of an agent. Existing-profile attachment requires
 a trusted Core authorization host created through
 `ComputerUseDriver::create_with_authorization_host`; the default runtime and
 Host process keep refusing it.
@@ -655,13 +638,13 @@ Example host requests:
 ## Build and test
 
 ```powershell
-cargo hakari generate --diff
-cargo hakari manage-deps --dry-run
-cargo fmt --all -- --check
-cargo check --workspace --all-targets --locked
-cargo nextest run --workspace --all-targets --locked
-cargo test --workspace --doc --locked
-cargo nextest run --locked -p dcc-cua-e2e --features gui-e2e --no-run
+vx cargo hakari generate --diff
+vx cargo hakari manage-deps --dry-run
+vx cargo fmt --all -- --check
+vx cargo check --workspace --all-targets --locked
+vx cargo nextest run --workspace --all-targets --locked
+vx cargo test --workspace --doc --locked
+vx cargo nextest run --locked -p dcc-cua-e2e --features gui-e2e --no-run
 pwsh -NoProfile -File scripts/run-gui-e2e.ps1 -Binary target/debug/dcc-cua.exe
 ```
 
@@ -692,12 +675,10 @@ An additional lifecycle E2E uses Host IPC itself to launch an isolated native
 fixture (Calculator as a fresh instance on macOS), promote the launch into the
 same private runtime session, record a real mutation to `action.json`, stop the
 recording, terminate only that proven PID, and verify its windows disappear.
-The release workflow packages `dcc-cua`, the pinned official `cua-driver`
-and cursor-theme companion, the Windows UIAccess companion where applicable,
-and both MIT license files in a versioned `libexec` bundle, then attaches the
-platform archives to the GitHub release. CI invokes the bundled `cua-driver`,
-`daemon`, `mcp`, and `recording render` help routes on every platform before GUI
-testing.
+The release workflow packages one `dcc-cua` executable, assets, Skills, and
+both MIT license notices, then attaches the platform archives to the GitHub
+release. CI exercises that self-contained SDK runtime and Host IPC on every
+platform before GUI testing.
 
 The release gate is intentionally closed while the product is still being
 completed. Do not set the repository variable `DCC_CUA_RELEASE_READY=true`

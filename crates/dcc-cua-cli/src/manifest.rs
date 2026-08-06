@@ -38,16 +38,9 @@ pub(crate) fn document() -> Value {
             "preferred_snapshot_transport": "shared_memory",
             "rust_crate": "dcc-cua-client",
         },
-        "upstream_driver": {
-            "command": ["cua-driver", "<COMMAND>"],
-            "binary_environment": "CUA_DRIVER_BIN",
-            "bundled_binary": crate::update::bundled_driver_relative_path(env!("CARGO_PKG_VERSION")),
-            "development_sibling_fallback": format!("cua-driver{}", std::env::consts::EXE_SUFFIX),
-            "top_level_aliases": {
-                "daemon": "serve",
-                "mcp": "mcp",
-                "recording": "recording",
-            },
+        "runtime": {
+            "backend": "cua-driver-sdk",
+            "separate_driver_required": false,
         },
     })
 }
