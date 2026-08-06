@@ -5,7 +5,7 @@
 //! Unreal, Maya, or Fab adapter can opt into deeper semantics without adding
 //! product-specific branches to the host protocol.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};
@@ -33,6 +33,8 @@ pub struct ProfileSelector {
     #[serde(default)]
     pub window_title_contains: Vec<String>,
     #[serde(default)]
+    pub localized_window_title_contains: BTreeMap<String, Vec<String>>,
+    #[serde(default)]
     pub url_hosts: Vec<String>,
 }
 
@@ -53,6 +55,8 @@ pub struct SemanticTarget {
     pub role: String,
     #[serde(default)]
     pub names: Vec<String>,
+    #[serde(default)]
+    pub localized_names: BTreeMap<String, Vec<String>>,
     #[serde(default)]
     pub automation_ids: Vec<String>,
     #[serde(default)]
@@ -80,21 +84,29 @@ impl SemanticTarget {
         let values = ["name", "text", "value", "automation_id"]
             .into_iter()
             .filter_map(|field| element[field].as_str())
-            .map(str::to_ascii_lowercase)
+            .map(normalize_text)
             .collect::<Vec<_>>();
         let role = element["role"].as_str().unwrap_or_default();
         let automation_id = element["automation_id"].as_str().unwrap_or_default();
-        let role_matches = self.role.eq_ignore_ascii_case(role);
-        let name_matches = self.names.iter().any(|name| {
-            values
-                .iter()
-                .any(|value| value == &name.to_ascii_lowercase())
-        });
+        let role_matches = normalize_text(&self.role) == normalize_text(role);
+        let has_names = !self.names.is_empty()
+            || self
+                .localized_names
+                .values()
+                .any(|aliases| !aliases.is_empty());
+        let name_matches = self
+            .names
+            .iter()
+            .chain(self.localized_names.values().flatten())
+            .any(|name| {
+                let name = normalize_text(name);
+                values.iter().any(|value| value == &name)
+            });
         let automation_matches = self
             .automation_ids
             .iter()
-            .any(|id| id.eq_ignore_ascii_case(automation_id));
-        if self.names.is_empty() && self.automation_ids.is_empty() {
+            .any(|id| normalize_text(id) == normalize_text(automation_id));
+        if !has_names && self.automation_ids.is_empty() {
             role_matches
         } else {
             role_matches && (name_matches || automation_matches)
@@ -116,6 +128,8 @@ pub enum SemanticRoute {
 pub struct ProfileSettings {
     pub dialog_style: DialogStyle,
     pub preferred_route: SemanticRoute,
+    #[serde(default)]
+    pub default_locale: Option<String>,
     #[serde(default)]
     pub destructive_confirmation_required: bool,
 }
@@ -144,6 +158,10 @@ pub enum ProfileError {
     DuplicateTarget(String, String, String),
     #[error("profile {0:?} target {1:?} contains an empty fallback")]
     InvalidFallback(String, String),
+    #[error("profile {0:?} contains invalid locale tag {1:?}")]
+    InvalidLocale(String, String),
+    #[error("profile {0:?} locale {1:?} must contain non-empty aliases")]
+    InvalidLocalizedAliases(String, String),
 }
 
 impl SemanticProfile {
@@ -160,10 +178,22 @@ impl SemanticProfile {
         let has_selector = self.selectors.iter().any(|selector| {
             !selector.application_names.is_empty()
                 || !selector.window_title_contains.is_empty()
+                || selector
+                    .localized_window_title_contains
+                    .values()
+                    .any(|aliases| !aliases.is_empty())
                 || !selector.url_hosts.is_empty()
         });
         if !has_selector {
             return Err(ProfileError::MissingSelector(self.id.clone()));
+        }
+        if let Some(locale) = &self.settings.default_locale
+            && !valid_locale_tag(locale)
+        {
+            return Err(ProfileError::InvalidLocale(self.id.clone(), locale.clone()));
+        }
+        for selector in &self.selectors {
+            validate_localized_aliases(&self.id, &selector.localized_window_title_contains)?;
         }
 
         let mut surface_ids = HashSet::new();
@@ -191,6 +221,7 @@ impl SemanticProfile {
                         target.id.clone(),
                     ));
                 }
+                validate_localized_aliases(&self.id, &target.localized_names)?;
             }
         }
         Ok(())
@@ -199,20 +230,26 @@ impl SemanticProfile {
     #[must_use]
     pub fn matches_window(&self, application_name: &str, window_title: &str) -> bool {
         self.selectors.iter().any(|selector| {
-            if selector.application_names.is_empty() && selector.window_title_contains.is_empty() {
+            let has_titles = !selector.window_title_contains.is_empty()
+                || selector
+                    .localized_window_title_contains
+                    .values()
+                    .any(|aliases| !aliases.is_empty());
+            if selector.application_names.is_empty() && !has_titles {
                 return false;
             }
             let app_matches = selector.application_names.is_empty()
                 || selector
                     .application_names
                     .iter()
-                    .any(|name| name.eq_ignore_ascii_case(application_name));
-            let title_matches = selector.window_title_contains.is_empty()
-                || selector.window_title_contains.iter().any(|value| {
-                    window_title
-                        .to_ascii_lowercase()
-                        .contains(&value.to_ascii_lowercase())
-                });
+                    .any(|name| normalize_text(name) == normalize_text(application_name));
+            let normalized_title = normalize_text(window_title);
+            let title_matches = !has_titles
+                || selector
+                    .window_title_contains
+                    .iter()
+                    .chain(selector.localized_window_title_contains.values().flatten())
+                    .any(|value| normalized_title.contains(&normalize_text(value)));
             app_matches && title_matches
         })
     }
@@ -237,18 +274,19 @@ impl SemanticProfile {
 
     #[must_use]
     pub fn resolve_target(&self, surface_id: &str, query: &str) -> Option<&SemanticTarget> {
-        let query = query.to_ascii_lowercase();
+        let query = normalize_text(query);
         self.surface(surface_id)?.targets.iter().find(|target| {
             target.id.eq_ignore_ascii_case(&query)
-                || target.label.to_ascii_lowercase().contains(&query)
+                || normalize_text(&target.label).contains(&query)
                 || target
                     .names
                     .iter()
-                    .any(|name| name.to_ascii_lowercase() == query)
+                    .chain(target.localized_names.values().flatten())
+                    .any(|name| normalize_text(name) == query)
                 || target
                     .automation_ids
                     .iter()
-                    .any(|automation_id| automation_id.eq_ignore_ascii_case(&query))
+                    .any(|automation_id| normalize_text(automation_id) == query)
         })
     }
 
@@ -274,6 +312,72 @@ impl SemanticProfile {
             .filter(|element| target.matches_element(element))
             .collect()
     }
+
+    #[must_use]
+    pub fn supported_locales(&self) -> Vec<&str> {
+        let mut locales = BTreeSet::new();
+        locales.extend(self.settings.default_locale.as_deref());
+        for selector in &self.selectors {
+            locales.extend(
+                selector
+                    .localized_window_title_contains
+                    .keys()
+                    .map(String::as_str),
+            );
+        }
+        for target in self.surfaces.iter().flat_map(|surface| &surface.targets) {
+            locales.extend(target.localized_names.keys().map(String::as_str));
+        }
+        locales.into_iter().collect()
+    }
+}
+
+fn normalize_text(value: &str) -> String {
+    // ponytail: std Unicode lowercase is enough for observed UIs; add NFKC
+    // case-folding only when a real alias demonstrates the need.
+    value
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
+
+fn validate_localized_aliases(
+    profile_id: &str,
+    aliases: &BTreeMap<String, Vec<String>>,
+) -> Result<(), ProfileError> {
+    for (locale, values) in aliases {
+        if !valid_locale_tag(locale) {
+            return Err(ProfileError::InvalidLocale(
+                profile_id.to_owned(),
+                locale.clone(),
+            ));
+        }
+        if values.is_empty() || values.iter().any(|value| value.trim().is_empty()) {
+            return Err(ProfileError::InvalidLocalizedAliases(
+                profile_id.to_owned(),
+                locale.clone(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn valid_locale_tag(value: &str) -> bool {
+    // ponytail: validate the common BCP-47 shape without a locale dependency;
+    // use a standards parser if private-use or grandfathered tags are required.
+    if value.is_empty() || value.len() > 35 || value.trim() != value {
+        return false;
+    }
+    let mut parts = value.split('-');
+    let Some(language) = parts.next() else {
+        return false;
+    };
+    (2..=8).contains(&language.len())
+        && language.bytes().all(|byte| byte.is_ascii_alphabetic())
+        && parts.all(|part| {
+            (1..=8).contains(&part.len()) && part.bytes().all(|byte| byte.is_ascii_alphanumeric())
+        })
 }
 
 fn normalize_host(value: &str) -> String {

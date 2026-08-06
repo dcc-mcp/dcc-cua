@@ -94,11 +94,11 @@ actions, and post-action verification.
 
 | Field | Agent meaning |
 | --- | --- |
-| `selectors` | Candidate application/window or URL identities. Selector objects are OR alternatives; populated `application_names` and `window_title_contains` fields inside one object are AND constraints. URL-only selectors never match native windows. |
+| `selectors` | Candidate application/window or URL identities. Selector objects are OR alternatives. Inside one object, the application constraint is ANDed with one match from the combined generic/localized title aliases. URL-only selectors never match native windows. |
 | `surfaces[]` | A stable task area such as `outliner`, `dialog`, or `launcher_download`. Its `route` selects the owning executor. |
-| `targets[]` | Stable intent vocabulary. `names` and `automation_ids` narrow live matches; `supported_actions` is an allow-list, not an instruction to act. |
+| `targets[]` | Stable intent vocabulary. `names`, BCP-47 keyed `localized_names`, and `automation_ids` narrow live matches; `supported_actions` is an allow-list, not an instruction to act. |
 | `fallback` | A reference to another `profile_id` and `surface_id`. The agent must re-discover, bind, observe, and verify that route; no transition is automatic. |
-| `settings` | Profile-wide route preference, dialog style, and destructive-confirmation policy. Surface routes take precedence for a concrete task. |
+| `settings` | Profile-wide route preference, optional `default_locale` for untagged aliases, dialog style, and destructive-confirmation policy. Surface routes take precedence for a concrete task. |
 
 Route ownership is explicit:
 
@@ -110,13 +110,24 @@ Route ownership is explicit:
 | `os_native_dialog` | The platform-native dialog path binds and controls the exact dialog window. |
 | `visual_fallback` | `dcc-cua` uses a fresh exact-window visual observation; desktop scope remains explicit and separate. |
 
+Multilingual aliases are additive and locale-agnostic at runtime. Every alias is
+eligible to match, so an agent does not need to guess the current UI locale
+before discovery. Locale tags make coverage inspectable through
+`dcc-cua profiles` and maintainable by profile authors. Matching trims and
+collapses whitespace and applies Unicode lowercase conversion. Keep profile,
+surface, target, role, action, and automation IDs stable; localize only visible
+window-title fragments and element names. `default_locale` identifies untagged
+aliases when known. Existing profiles that only use `window_title_contains` and
+`names` remain valid.
+
 Use this profile-aware agent loop:
 
-1. Run `dcc-cua profiles` and inspect the candidate with `dcc-cua profile --id ID`.
+1. Run `dcc-cua profiles`, inspect its `supported_locales`, and print the
+   candidate with `dcc-cua profile --id ID`.
 2. Discover the real PID/window with `dcc-cua list --on-screen`, then bind that
    exact identity. Confirm that its application/title or URL matches a selector.
-3. Choose the task surface and target. Reject actions absent from
-   `supported_actions`.
+3. Choose the task surface and query the stable target ID. Use localized names
+   only to match live UI. Reject actions absent from `supported_actions`.
 4. Dispatch through the surface route above. `profile --action` is supported
    only for `accessibility`; other routes are intentionally declarations for
    their owning adapter.

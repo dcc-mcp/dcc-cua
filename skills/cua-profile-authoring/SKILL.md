@@ -9,10 +9,10 @@ metadata:
   dcc-mcp:
     dcc: computer-use
     layer: infrastructure
-    compatibility: dcc-cua 0.1+
-    version: "0.2.0"
-    search-hint: "dcc-cua semantic profile JSON official custom selectors surfaces targets routes dialog policy"
-    tags: "computer-use, infrastructure, read-only"
+    compatibility: dcc-cua 0.2+
+    version: "0.3.0"
+    search-hint: "dcc-cua semantic profile JSON multilingual BCP-47 localized aliases selectors surfaces targets routes dialog policy"
+    tags: "computer-use, infrastructure, localization, read-only"
 ---
 
 # dcc-cua semantic profiles
@@ -56,23 +56,48 @@ Each profile declares:
 - `schema_version: 1`, a stable `id`, and `display_name`;
 - selectors containing real process names, localized title fragments, or URL
   hosts. Selector objects are OR alternatives. Populated application and title
-  fields inside one selector are AND constraints. A URL-only selector does not
-  match native windows;
+  constraints inside one selector are ANDed, while generic and localized title
+  aliases are one combined OR list. A URL-only selector does not match native
+  windows;
 - named surfaces with a route and targets;
-- target aliases (`names`/`automation_ids`) and an explicit action allow-list;
+- target aliases (`names`, BCP-47 keyed `localized_names`, and
+  `automation_ids`) and an explicit action allow-list;
 - an optional target `fallback` containing only a non-empty `profile_id` and
   `surface_id`. It is a route edge, not automatic execution;
-- `dialog_style` and `destructive_confirmation_required`.
+- `preferred_route`, `dialog_style`, optional `default_locale`, and
+  `destructive_confirmation_required`.
 
 Do not put credentials, private secrets, direct input injection, arbitrary shell
 commands, or application API code in profile JSON. Keep destructive actions
 confirmation-aware.
 
+## Multilingual aliases
+
+- Keep profile, surface, target, role, action, and automation IDs stable and
+  language-neutral. Localize only visible window-title fragments and element
+  names.
+- Put generic or legacy aliases in `window_title_contains` and `names`. Put
+  locale-specific aliases in `localized_window_title_contains` or
+  `localized_names`, keyed by a common BCP-47 tag such as `zh-CN`, `zh-TW`,
+  `ja-JP`, or `pt-BR`. Set `settings.default_locale` when the untagged aliases
+  belong to one known language.
+- All aliases are active simultaneously. Locale tags describe coverage; they do
+  not gate matching, so an agent can discover a mixed-language UI without first
+  knowing its locale.
+- Matching trims and collapses whitespace and uses Unicode lowercase conversion.
+  Add explicit aliases for punctuation, abbreviations, or wording differences;
+  do not rely on machine translation or fuzzy matching.
+- Prefer stable automation IDs when the application exposes them. Require real
+  UI evidence before promoting studio-specific wording into an official profile.
+- `dcc-cua profiles` reports `supported_locales`. A user-authored profile that
+  omits localized fields remains valid.
+
 Target resolution prefers the stable target `id`. Labels are substring aliases;
-`names` and `automation_ids` are exact, case-insensitive aliases. A live element
-must always match the target `role`; when aliases exist, it must also match one
-of them. A target without aliases is role-only and may produce multiple matches,
-so the CLI refuses to act unless exactly one fresh element remains.
+`names`, `localized_names`, and `automation_ids` are exact aliases after text
+normalization. A live element must always match the target `role`; when aliases
+exist, it must also match one of them. A target without aliases is role-only and
+may produce multiple matches, so the CLI refuses to act unless exactly one fresh
+element remains.
 
 Minimal valid profile:
 
@@ -84,7 +109,11 @@ Minimal valid profile:
   "selectors": [
     {
       "application_names": ["studio.exe"],
-      "window_title_contains": ["Studio Tool"]
+      "window_title_contains": ["Studio Tool"],
+      "localized_window_title_contains": {
+        "zh-CN": ["工作室工具"],
+        "ja-JP": ["スタジオツール"]
+      }
     }
   ],
   "surfaces": [
@@ -98,7 +127,11 @@ Minimal valid profile:
           "id": "run",
           "label": "Run task",
           "role": "button",
-          "names": ["Run", "运行"],
+          "names": ["Run"],
+          "localized_names": {
+            "zh-CN": ["运行"],
+            "ja-JP": ["実行"]
+          },
           "automation_ids": ["RunButton"],
           "supported_actions": ["click"]
         }
@@ -108,6 +141,7 @@ Minimal valid profile:
   "settings": {
     "dialog_style": "host_owned",
     "preferred_route": "accessibility",
+    "default_locale": "en",
     "destructive_confirmation_required": false
   }
 }
@@ -115,13 +149,13 @@ Minimal valid profile:
 
 ## Agent decision loop
 
-1. Inspect `dcc-cua profiles`, then print the chosen profile before opening a
-   session.
+1. Inspect `dcc-cua profiles` and its `supported_locales`, then print the chosen
+   profile before opening a session.
 2. Discover the real PID/window and bind its exact identity. Confirm its native
    selector or URL selector matches; never choose a profile from the task name
    alone.
 3. Select one surface for the current task and resolve a target by stable ID.
-   Treat labels and localized names as discovery aliases.
+   Treat labels and localized names only as discovery aliases.
 4. Reject actions not present in `supported_actions`. Dispatch through the
    surface's owning route; do not force `profile --action` onto a non-accessibility
    surface.

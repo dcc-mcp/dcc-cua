@@ -197,6 +197,7 @@ fn list_semantic_profiles() -> Result<(), Box<dyn std::error::Error>> {
                 "display_name": profile.display_name,
                 "preferred_route": profile.settings.preferred_route,
                 "dialog_style": profile.settings.dialog_style,
+                "supported_locales": profile.supported_locales(),
                 "surface_count": profile.surfaces.len(),
             })
         })
