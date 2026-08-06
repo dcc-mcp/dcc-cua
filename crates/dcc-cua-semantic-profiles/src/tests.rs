@@ -82,22 +82,16 @@ fn fab_profile_matches_browser_urls_without_matching_unrelated_hosts() {
 }
 
 #[rstest]
-fn typed_routes_map_to_registered_dcc_tools() {
-    assert_eq!(
-        SemanticRoute::UnrealTypedApi.typed_tool_name(),
-        Some("unreal_remote_call")
-    );
-    assert_eq!(
-        SemanticRoute::MayaTypedApi.typed_tool_name(),
-        Some("maya_command")
-    );
+fn typed_routes_belong_to_the_dcc_mcp_gateway() {
+    assert!(SemanticRoute::UnrealTypedApi.is_gateway_typed_api());
+    assert!(SemanticRoute::MayaTypedApi.is_gateway_typed_api());
     for route in [
         SemanticRoute::Accessibility,
         SemanticRoute::BrowserDom,
         SemanticRoute::OsNativeDialog,
         SemanticRoute::VisualFallback,
     ] {
-        assert_eq!(route.typed_tool_name(), None);
+        assert!(!route.is_gateway_typed_api());
     }
 }
 

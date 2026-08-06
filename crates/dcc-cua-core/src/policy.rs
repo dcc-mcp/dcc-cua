@@ -287,10 +287,6 @@ pub(crate) fn native_tool_allowed_globally(name: &str) -> bool {
             | "set_config"
             | "replay_trajectory"
             | "install_ffmpeg"
-            // DCC typed tools (ADR 0002): loopback-only endpoints registered
-            // through the upstream ToolRegistry; not bound to a native window.
-            | "maya_command"
-            | "unreal_remote_call"
     )
 }
 

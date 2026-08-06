@@ -6,7 +6,6 @@ use rstest::rstest;
 use serde_json::json;
 
 use super::*;
-use cua_driver_core::tool::Tool;
 
 use crate::contracts::{
     DEFAULT_SNAPSHOT_MAX_DEPTH, DEFAULT_SNAPSHOT_MAX_ELEMENTS, MAX_SNAPSHOT_DEPTH,
@@ -1066,211 +1065,19 @@ fn window_queries_require_a_selector_and_match_native_rows() {
     assert!(query.validate_selectors().is_ok());
 }
 
-// ── DCC typed tools (ADR 0002) ────────────────────────────────────────────────
+// ── DCC typed tools (ADR 0002, revised) ───────────────────────────────────────
+// Upstream risk classification fails closed for unknown tool names, so DCC
+// typed execution lives in the DCC-MCP gateway. The host registers no tools
+// and never advertises maya/unreal names on any CUA route.
 
-fn tool_error_text(result: &cua_driver_core::protocol::ToolResult) -> String {
-    assert_eq!(result.is_error, Some(true));
-    serde_json::to_string(&result.content).expect("tool content serializes")
+#[rstest]
+fn host_runtime_registers_no_host_tools() {
+    assert!(driver_host_options().register_host_tools.is_none());
 }
 
 #[rstest]
-fn dcc_host_tools_register_into_the_upstream_registry() {
-    let mut registry = cua_driver_core::tool::ToolRegistry::new();
-    crate::dcc_tools::register_dcc_host_tools(&mut registry);
-    let names: Vec<&str> = registry.tool_names().collect();
-    assert!(names.contains(&"maya_command"));
-    assert!(names.contains(&"unreal_remote_call"));
-    let maya = registry.get_def("maya_command").expect("maya def");
-    assert!(maya.destructive);
-    assert_eq!(maya.input_schema["required"], json!(["port", "command"]));
-    let unreal = registry.get_def("unreal_remote_call").expect("unreal def");
-    assert_eq!(
-        unreal.input_schema["required"],
-        json!(["port", "method", "path"])
-    );
-}
-
-#[rstest]
-fn dcc_typed_tools_are_allowed_on_the_grant_gated_global_route() {
-    assert!(native_tool_allowed_globally("maya_command"));
-    assert!(native_tool_allowed_globally("unreal_remote_call"));
-    assert!(native_tool_allowed_in_window_session("maya_command"));
-    assert!(native_tool_allowed_in_window_session("unreal_remote_call"));
-}
-
-#[rstest]
-#[tokio::test]
-async fn unreal_remote_call_rejects_invalid_arguments() {
-    let cases = [
-        (
-            json!({"port": 30010, "method": "DELETE", "path": "/remote/object/call"}),
-            "method must be one of",
-        ),
-        (
-            json!({"port": 30010, "method": "GET", "path": "/api/other"}),
-            "path must start with /remote/",
-        ),
-        (
-            json!({"port": 30010, "method": "GET", "path": "/remote/a b"}),
-            "path must start with /remote/",
-        ),
-        (
-            json!({"port": 30010, "method": "POST", "path": "/remote/object/call", "body": []}),
-            "body must be a JSON object",
-        ),
-    ];
-    let tool = crate::dcc_tools::unreal::UnrealRemoteCallTool::new();
-    for (args, message) in cases {
-        let result = tool.invoke(args).await;
-        assert!(
-            tool_error_text(&result).contains(message),
-            "missing {message:?} in {content:?}",
-            content = result.content
-        );
+fn dcc_typed_tool_names_are_not_routable_through_cua() {
+    for name in ["maya_command", "unreal_remote_call"] {
+        assert!(!native_tool_allowed_globally(name), "{name} must not route");
     }
-}
-
-#[rstest]
-#[tokio::test]
-async fn maya_command_reports_unreachable_ports_as_typed_errors() {
-    let tool = crate::dcc_tools::maya::MayaCommandTool::new();
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let port = listener.local_addr().unwrap().port();
-    drop(listener);
-    let result = tool
-        .invoke(json!({"port": port, "command": "ls", "timeout_ms": 2000}))
-        .await;
-    // Windows retries SYN on refused loopback ports, so the per-call timeout
-    // can win the race; both outcomes carry a structured dcc_typed_* code.
-    let text = tool_error_text(&result);
-    assert!(
-        text.contains("dcc_typed_unreachable") || text.contains("dcc_typed_timeout"),
-        "missing dcc_typed_* code in {text}"
-    );
-}
-
-#[rstest]
-#[tokio::test]
-async fn maya_command_round_trips_a_nul_terminated_reply() {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let port = listener.local_addr().unwrap().port();
-    tokio::spawn(async move {
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        let (mut stream, _) = listener.accept().await.unwrap();
-        let mut buffer = [0_u8; 1024];
-        let read = stream.read(&mut buffer).await.unwrap();
-        assert_eq!(&buffer[..read], b"ls;\n");
-        stream.write_all(b"pCube1\n\0").await.unwrap();
-    });
-    let tool = crate::dcc_tools::maya::MayaCommandTool::new();
-    let result = tool.invoke(json!({"port": port, "command": "ls;"})).await;
-    assert_ne!(result.is_error, Some(true));
-    let structured = result.structured_content.expect("structured reply");
-    assert_eq!(structured["reply"], json!("pCube1"));
-    assert_eq!(structured["port"], json!(port));
-}
-
-#[rstest]
-#[tokio::test]
-async fn maya_command_rejects_invalid_arguments() {
-    let cases = [
-        (json!([]), "must be a JSON object"),
-        (json!({}), "port must be an integer"),
-        (
-            json!({"port": 0, "command": "ls"}),
-            "port must be an integer",
-        ),
-        (
-            json!({"port": 70000, "command": "ls"}),
-            "port must be an integer",
-        ),
-        (json!({"port": 7001}), "command must be a non-empty string"),
-        (
-            json!({"port": 7001, "command": ""}),
-            "command must be a non-empty string",
-        ),
-        (
-            json!({"port": 7001, "command": "ls", "timeout_ms": 0}),
-            "timeout_ms must be",
-        ),
-        (
-            json!({"port": 7001, "command": "ls", "timeout_ms": 60001}),
-            "timeout_ms must be",
-        ),
-    ];
-    let tool = crate::dcc_tools::maya::MayaCommandTool::new();
-    for (args, message) in cases {
-        let result = tool.invoke(args).await;
-        assert!(
-            tool_error_text(&result).contains(message),
-            "missing {message:?} in {content:?}",
-            content = result.content
-        );
-    }
-}
-
-#[rstest]
-#[tokio::test]
-async fn unreal_remote_call_round_trips_json_over_loopback_http() {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let port = listener.local_addr().unwrap().port();
-    tokio::spawn(async move {
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        let (mut stream, _) = listener.accept().await.unwrap();
-        let mut request = Vec::new();
-        let mut chunk = [0_u8; 4096];
-        loop {
-            let read = stream.read(&mut chunk).await.unwrap();
-            request.extend_from_slice(&chunk[..read]);
-            if request.windows(4).any(|window| window == b"\r\n\r\n") {
-                break;
-            }
-        }
-        let text = String::from_utf8_lossy(&request);
-        assert!(text.starts_with("PUT /remote/object/call HTTP/1.1"));
-        let body = br#"{"ReturnValue":true}"#;
-        let response = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
-            body.len()
-        );
-        stream.write_all(response.as_bytes()).await.unwrap();
-        stream.write_all(body).await.unwrap();
-    });
-    let tool = crate::dcc_tools::unreal::UnrealRemoteCallTool::new();
-    let result = tool
-        .invoke(json!({
-            "port": port,
-            "method": "PUT",
-            "path": "/remote/object/call",
-            "body": {"objectPath": "/Game/Maps.Maps:PersistentLevel"},
-        }))
-        .await;
-    assert_ne!(result.is_error, Some(true));
-    let structured = result.structured_content.expect("structured reply");
-    assert_eq!(structured["status"], json!(200));
-    assert_eq!(structured["body"]["ReturnValue"], json!(true));
-}
-
-#[rstest]
-#[tokio::test]
-async fn unreal_remote_call_marks_http_errors_as_tool_errors() {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let port = listener.local_addr().unwrap().port();
-    tokio::spawn(async move {
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        let (mut stream, _) = listener.accept().await.unwrap();
-        let mut chunk = [0_u8; 4096];
-        let _ = stream.read(&mut chunk).await.unwrap();
-        stream
-            .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 2\r\n\r\n{}")
-            .await
-            .unwrap();
-    });
-    let tool = crate::dcc_tools::unreal::UnrealRemoteCallTool::new();
-    let result = tool
-        .invoke(json!({"port": port, "method": "GET", "path": "/remote/info"}))
-        .await;
-    assert_eq!(result.is_error, Some(true));
-    let structured = result.structured_content.expect("structured reply");
-    assert_eq!(structured["status"], json!(404));
 }

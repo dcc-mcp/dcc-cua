@@ -1,7 +1,7 @@
 # ADR 0002: DCC/浏览器扩展策略对比 — 外层 SurfaceAdapter vs upstream `register_host_tools`
 
-- Status: Accepted（方案 C）
-- Date: 2026-08-05
+- Status: Superseded（方案 C 实测不可行，改为 Gateway 分工，见"实测修订"）
+- Date: 2026-08-05（修订：2026-08-06）
 
 ## 背景
 
@@ -96,8 +96,45 @@ C 的代价是同时承担 B 的 upstream 内部依赖风险，但避免 A 的�
 二次开发只剩两块真正的增量：(1) DCC typed 工具本体，(2) 主机侧安全壳与语义 profile。
 若希望与 upstream 内部 API 完全隔离、接受多维护一层注册表，则选 A。
 
-## 决策
+## 决策（原始，已被推翻）
 
 采用方案 C：DCC typed 工具经 `register_host_tools` 注册进 upstream ToolRegistry；
 路由与语义增强留在 `dcc-cua-semantic-profiles`；`ComputerUseSession` 保持安全壳职责，
 仅做去重清理，不新建外层 adapter crate。
+
+## 实测修订（2026-08-06）
+
+方案 C 实现后端到端实测暴露一个此前对比矩阵遗漏的硬约束：
+
+**upstream 风险分类闸门对 host 工具 fail-closed。** 每次工具调用都经过
+`cua_driver_core::authorization::authorize_tool_call_with_context`，其中
+`classify_tool_call`/`advertised_risk_for` 是**硬编码的工具名 match**，
+未知名字一律 `RiskClass::Unclassified` → 拒绝
+（`tool 'maya_command' has no reviewed risk classification`）。
+upstream 没有为 host 工具提供风险分类扩展点（`ToolDef` 的
+`read_only`/`destructive` 注解不参与风险派生），任何 permission mode
+（含 unrestricted + bypass）都无法放行。也就是说：`register_host_tools`
+注册的工具能出现在 `tools` 列表，但**永远不可调用**——该扩展点在当前
+pinned rev 下对第三方工具事实上不可用（upstream 自己的
+`check_update_tool` 之所以可用，是因为 `check_for_update` 名字被硬编码进
+R0 分类）。
+
+单元测试直接调 `tool.invoke()` 绕过了授权边界，因此 CI 未暴露此问题；
+经 `call_global_tool` 走完整分发链路的实测才发现。
+
+**修订后的决策——按职责分工，不再让 CUA 承载 typed execution：**
+
+- **DCC typed execution（Maya commandPort、Unreal Remote Control 等）
+  归 DCC-MCP Gateway/adapter 所有**。移除 `dcc_tools` 模块、
+  `register_host_tools` 注册与 `cua-driver-core` 依赖。
+- **dcc-cua 只负责 exact-window UI 观察/动作与 UI fallback**：
+  窗口发现、快照、语义/视觉动作、验证、control banner。
+- `SemanticRoute::{MayaTypedApi,UnrealTypedApi}` 保留为**声明式路由意图**
+  （`is_gateway_typed_api()`），供上层把请求路由给 Gateway；
+  profile 本身不再映射到任何 CUA 工具名。
+- 若未来 upstream 为 host 工具开放风险分类扩展点（或接受相关 PR），
+  可重新评估方案 C。
+
+本次保留的增量：安全壳去重（结构化 UIA fallback 触发、共享 action builder、
+统一 denied-word 常量）与 semantic-profiles 增强（外部 profile 目录、
+denied-word 豁免）不受影响，照常合入。

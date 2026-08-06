@@ -106,19 +106,14 @@ pub enum SemanticRoute {
 }
 
 impl SemanticRoute {
-    /// The registered CUA tool that executes this route's typed API, if any.
-    /// Accessibility/browser/dialog/visual routes stay on the host's fenced
-    /// observation-action paths and have no direct tool mapping.
+    /// Whether this route's execution belongs to a typed DCC API owned by the
+    /// DCC-MCP gateway. CUA never executes typed routes itself: the upstream
+    /// driver has no host risk-classification extension point (ADR 0002,
+    /// revised), so profiles only declare the routing intent and the host
+    /// keeps exact-window UI observation/action as the fallback.
     #[must_use]
-    pub const fn typed_tool_name(self) -> Option<&'static str> {
-        match self {
-            Self::UnrealTypedApi => Some("unreal_remote_call"),
-            Self::MayaTypedApi => Some("maya_command"),
-            Self::Accessibility
-            | Self::BrowserDom
-            | Self::OsNativeDialog
-            | Self::VisualFallback => None,
-        }
+    pub const fn is_gateway_typed_api(self) -> bool {
+        matches!(self, Self::UnrealTypedApi | Self::MayaTypedApi)
     }
 }
 

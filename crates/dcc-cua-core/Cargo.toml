@@ -14,14 +14,9 @@ name = "dcc_cua_core"
 path = "src/lib.rs"
 
 [dependencies]
-async-trait = { workspace = true }
 base64 = "0.22"
 # Upstreamed Windows discovery and foreground-input fixes: https://github.com/trycua/cua/pull/2812
 cua-driver-contract = { git = "https://github.com/trycua/cua.git", rev = "441cae0d4d4048524ce2f7eeabfb63a6c9a422d3", package = "cua-driver-contract" }
-# Host-tool extension surface (ADR 0002): `Tool` + `ToolRegistry` for
-# `DriverHostOptions.register_host_tools`. Internal upstream crate — verify
-# the `tool` module signatures whenever the pinned rev changes.
-cua-driver-core = { git = "https://github.com/trycua/cua.git", rev = "441cae0d4d4048524ce2f7eeabfb63a6c9a422d3", package = "cua-driver-core", default-features = false }
 cua-driver-sdk = { git = "https://github.com/trycua/cua.git", rev = "441cae0d4d4048524ce2f7eeabfb63a6c9a422d3", package = "cua-driver-sdk" }
 cursor-overlay = { git = "https://github.com/trycua/cua.git", rev = "441cae0d4d4048524ce2f7eeabfb63a6c9a422d3", package = "cursor-overlay" }
 dcc-cua-indicator = { path = "../dcc-cua-indicator" }
@@ -29,7 +24,7 @@ png = "0.17"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
-tokio = { version = "1", features = ["io-util", "net", "rt", "sync", "time"] }
+tokio = { version = "1", features = ["rt", "sync", "time"] }
 dcc-cua-workspace-hack = { version = "0.2.0", path = "../dcc-cua-workspace-hack" }
 
 [target.'cfg(windows)'.dependencies]
