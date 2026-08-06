@@ -105,6 +105,7 @@ pub const HOST_CAPABILITIES: &[&str] = &[
     "cursor_position",
     "scoped_desktop_sessions",
     "scoped_desktop_raw_input",
+    "trusted_confirmation_grants",
     "application_launch",
     "application_terminate",
     "session_scoped_application_lifecycle",
@@ -620,10 +621,9 @@ impl WaitCondition {
 
 impl HostAction {
     fn reject_policy(&self) -> Option<(&'static str, &'static str)> {
-        const HARD_DENY: [&str; 6] = [
+        const HARD_DENY: [&str; 5] = [
             "terminal_or_run_dialog",
             "credential_or_authentication",
-            "windows_security_or_privacy",
             "safety_bypass",
             "password_change",
             "escape_scope",
@@ -639,7 +639,15 @@ impl HostAction {
             })
     }
 
-    fn requires_approval(&self) -> bool {
+    fn requires_approval(&self, allow_trusted_confirmation: bool) -> bool {
+        if allow_trusted_confirmation
+            && matches!(
+                self.intent.as_str(),
+                "windows_security_or_privacy" | "human_verification"
+            )
+        {
+            return false;
+        }
         !matches!(
             self.intent.as_str(),
             "observe" | "activate" | "navigate" | "ordinary_edit"

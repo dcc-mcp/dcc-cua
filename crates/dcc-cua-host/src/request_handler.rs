@@ -185,6 +185,7 @@ pub(super) async fn handle_request(
                     runtime_session_id,
                     task_grant_id: grant.task_grant_id,
                     allow_raw_input: grant.allow_raw_input,
+                    allow_trusted_confirmation: grant.allow_trusted_confirmation,
                     capability: capability.clone(),
                     interrupt_generation: session_generation,
                     session,
@@ -276,7 +277,7 @@ pub(super) async fn handle_request(
                     None,
                 ));
             }
-            if action.requires_approval() {
+            if action.requires_approval(host.allow_trusted_confirmation) {
                 return Ok((
                     json!({
                         "type":"action_completed",
@@ -568,6 +569,7 @@ pub(super) async fn handle_request(
                     allow_native_tool: grant.allow_native_tool,
                     allow_menu_invoke: grant.allow_menu_invoke,
                     allow_session_escalation: grant.allow_session_escalation,
+                    allow_trusted_confirmation: grant.allow_trusted_confirmation,
                     capability: capability.clone(),
                     session,
                     browser: BrowserSession::default(),
@@ -1200,7 +1202,7 @@ pub(super) async fn handle_request(
                     None,
                 ));
             }
-            if action.requires_approval() {
+            if action.requires_approval(host.allow_trusted_confirmation) {
                 return Ok((
                     json!({
                         "type":"action_completed",

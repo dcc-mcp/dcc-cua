@@ -40,6 +40,8 @@ pub(super) struct TaskGrant {
     pub(super) allow_menu_invoke: bool,
     #[serde(default)]
     pub(super) allow_session_escalation: bool,
+    #[serde(default)]
+    pub(super) allow_trusted_confirmation: bool,
 }
 
 impl TaskGrant {

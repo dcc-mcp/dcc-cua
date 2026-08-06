@@ -77,8 +77,30 @@ fn fab_profile_matches_browser_urls_without_matching_unrelated_hosts() {
     assert!(profile.matches_url("https://www.fab.com/listings/asset"));
     assert!(profile.matches_url("https://store.epicgames.com/en-US/p/fab"));
     assert!(profile.matches_window("EpicGamesLauncher.exe", "Epic Games Launcher"));
+    assert!(profile.matches_window("EpicGamesLauncher.exe", "Epic Games 启动器"));
     assert!(!profile.matches_url("https://example.com/fab"));
     assert!(profile.settings.destructive_confirmation_required);
+    let launcher = profile
+        .surface("launcher_download")
+        .expect("Launcher fallback surface");
+    assert_eq!(launcher.route, SemanticRoute::VisualFallback);
+    assert!(
+        profile
+            .resolve_target("launcher_download", "human_verification")
+            .expect("human verification target")
+            .supports_action("request_confirmation")
+    );
+    let ue_download = builtin_profile("ue")
+        .expect("UE profile")
+        .resolve_target("fab", "download")
+        .expect("UE Fab download target");
+    assert_eq!(
+        ue_download
+            .fallback
+            .as_ref()
+            .map(|fallback| (fallback.profile_id.as_str(), fallback.surface_id.as_str())),
+        Some(("fab", "launcher_download"))
+    );
 }
 
 #[rstest]

@@ -57,6 +57,14 @@ pub struct SemanticTarget {
     pub automation_ids: Vec<String>,
     #[serde(default)]
     pub supported_actions: Vec<String>,
+    #[serde(default)]
+    pub fallback: Option<SemanticFallback>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SemanticFallback {
+    pub profile_id: String,
+    pub surface_id: String,
 }
 
 impl SemanticTarget {
@@ -134,6 +142,8 @@ pub enum ProfileError {
     DuplicateSurface(String, String),
     #[error("profile {0:?} surface {1:?} contains duplicate target id {2:?}")]
     DuplicateTarget(String, String, String),
+    #[error("profile {0:?} target {1:?} contains an empty fallback")]
+    InvalidFallback(String, String),
 }
 
 impl SemanticProfile {
@@ -170,6 +180,14 @@ impl SemanticProfile {
                     return Err(ProfileError::DuplicateTarget(
                         self.id.clone(),
                         surface.id.clone(),
+                        target.id.clone(),
+                    ));
+                }
+                if target.fallback.as_ref().is_some_and(|fallback| {
+                    fallback.profile_id.trim().is_empty() || fallback.surface_id.trim().is_empty()
+                }) {
+                    return Err(ProfileError::InvalidFallback(
+                        self.id.clone(),
                         target.id.clone(),
                     ));
                 }
