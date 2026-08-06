@@ -444,6 +444,39 @@ fn hard_denied_intents_do_not_reach_cua() {
         steps: None,
     };
     assert!(action.reject_policy().is_some());
+    assert!(action.requires_approval(true));
+}
+
+#[rstest]
+#[case("windows_security_or_privacy")]
+#[case("human_verification")]
+fn trusted_confirmation_intents_require_the_explicit_grant(#[case] intent: &str) {
+    let action = HostAction {
+        action: "click".into(),
+        element_index: None,
+        element_token: None,
+        delivery_mode: None,
+        input_kind: "raw_input".into(),
+        intent: intent.into(),
+        x: Some(10.0),
+        y: Some(10.0),
+        button: Some("left".into()),
+        scroll_x: None,
+        scroll_y: None,
+        scroll_by: None,
+        path: Vec::new(),
+        text: None,
+        delay_ms: None,
+        type_chars_only: false,
+        checked: None,
+        keys: Vec::new(),
+        modifiers: Vec::new(),
+        duration_ms: None,
+        steps: None,
+    };
+    assert!(action.reject_policy().is_none());
+    assert!(action.requires_approval(false));
+    assert!(!action.requires_approval(true));
 }
 
 #[rstest]
@@ -546,6 +579,7 @@ fn app_launch_grant_defaults_to_denied() {
     assert!(!grant.allow_native_tool);
     assert!(!grant.allow_menu_invoke);
     assert!(!grant.allow_session_escalation);
+    assert!(!grant.allow_trusted_confirmation);
     assert_eq!(
         error_code(&HostError::Protocol(
             "browser download is not granted".into()

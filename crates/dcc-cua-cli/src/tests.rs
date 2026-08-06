@@ -271,6 +271,13 @@ fn manifest_is_a_machine_readable_core_launch_contract() {
     assert!(
         manifest["host"]["capabilities"]
             .as_array()
+            .is_some_and(|values| values
+                .iter()
+                .any(|value| value == "trusted_confirmation_grants"))
+    );
+    assert!(
+        manifest["host"]["capabilities"]
+            .as_array()
             .is_some_and(|values| values.iter().any(|value| value == "two_axis_scroll"))
     );
     assert!(

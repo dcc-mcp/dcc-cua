@@ -69,8 +69,10 @@ CUA's typed CDP routes first, then a browser semantic/DOM adapter, exact-window
 OS accessibility, and finally explicitly approved exact-window pixels. It does
 not enter UIA before proving an available CDP route. Unreal/Fab flows belong in
 the Unreal or browser adapter and should combine typed Unreal APIs with scoped
-CUA; Fab account, purchase, and download confirmation remain explicit
-user-approved operations.
+CUA. If the in-editor Fab download route is unavailable, the UE profile points
+to the Fab profile's Epic Games Launcher fallback. Fab account and purchase
+boundaries remain explicit; security and human-verification clicks additionally
+require a trusted-confirmation task grant.
 
 ### Independent semantic profiles
 
@@ -525,6 +527,12 @@ exact current `dialog_id` for accept/dismiss.
 Attaching to a logged-in Chromium profile keeps CUA's R2 gate: launch the Host
 with `dcc-cua host --grant existing-profile` and also set the session's
 `allow_browser_prepare` grant. Without both approvals, attachment is refused.
+Full-access agents may set `allow_trusted_confirmation: true` on the exact
+window or desktop task grant. This permits only actions declared with
+`intent: "windows_security_or_privacy"` or `intent: "human_verification"`;
+terminal/run-dialog, credential, password-change, scope-escape, and safety-bypass
+intents remain hard-denied. The grant defaults to false and does not follow from
+raw-input, browser-profile, or session-escalation access.
 
 On Windows, non-pixel semantic access reuses one exact PID/HWND UIA worker per
 session; CUA remains the cross-platform, browser, and visual backend. An
