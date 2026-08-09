@@ -553,15 +553,8 @@ async fn controlled_electron_round_trip() {
     assert_eq!(opened.value["banner"]["stop_key"], "Escape");
     assert_eq!(opened.value["cursor"]["visible"], true);
     assert_eq!(opened.value["cursor"]["shape"], "mouse_pointer");
-    assert_eq!(opened.value["cursor"]["theme"], "cua.default");
-    assert_eq!(
-        opened.value["cursor"]["render_backend"],
-        if cfg!(windows) {
-            "host-native-overlay"
-        } else {
-            "cua-driver-sdk"
-        }
-    );
+    assert_eq!(opened.value["cursor"]["theme"], "com.dcc-mcp.cursor");
+    assert_eq!(opened.value["cursor"]["render_backend"], "cua-driver-sdk");
 
     if opened.value["cursor"]["render_backend"] != "unavailable" {
         host_request(
@@ -589,7 +582,10 @@ async fn controlled_electron_round_trip() {
         )
         .await;
         let cursor_state = cursor_state.value["result"].to_string();
-        assert!(cursor_state.contains("cua.default"), "{cursor_state}");
+        assert!(
+            cursor_state.contains("com.dcc-mcp.cursor"),
+            "{cursor_state}"
+        );
         assert!(cursor_state.contains("enabled"), "{cursor_state}");
     }
 

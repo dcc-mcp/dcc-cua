@@ -11,6 +11,12 @@ fn default_endpoint_uses_the_shared_protocol_contract() {
     );
 }
 
+#[rstest]
+fn live_observation_state_is_pipeline_safe() {
+    assert!(is_pipeline_safe_method("live_observation_state"));
+    assert!(!is_pipeline_safe_method("live_observation_start"));
+}
+
 async fn write_frame<W: AsyncWrite + Unpin>(
     writer: &mut W,
     body: &[u8],

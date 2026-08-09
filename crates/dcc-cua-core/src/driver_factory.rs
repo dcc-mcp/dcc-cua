@@ -5,10 +5,53 @@ use cua_driver_sdk::{
 };
 use cursor_overlay::CursorConfig;
 
-use crate::contracts::ConfiguredDriverOptions;
+use crate::contracts::{
+    ComputerUseError, ComputerUseErrorCode, ComputerUseResult, ConfiguredDriverOptions,
+    MOUSE_CURSOR_THEME,
+};
 use crate::platform_process::prepare_platform_process;
 
-pub(crate) const UPSTREAM_CURSOR_RENDERER_ENABLED: bool = cfg!(target_os = "linux");
+pub(crate) const UPSTREAM_CURSOR_RENDERER_ENABLED: bool = cfg!(any(windows, target_os = "linux"));
+pub(crate) const BUNDLED_CURSOR_THEME: &[u8] =
+    include_bytes!("../../../assets/cursor-theme/dcc-cua.cua-theme");
+
+pub(crate) fn ensure_bundled_cursor_theme() -> ComputerUseResult<()> {
+    let theme = cursor_overlay::decode_theme(BUNDLED_CURSOR_THEME).map_err(|error| {
+        ComputerUseError::new(
+            ComputerUseErrorCode::BackendUnavailable,
+            format!("decode bundled cursor theme: {error}"),
+        )
+    })?;
+    if theme.id != MOUSE_CURSOR_THEME {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::BackendUnavailable,
+            "bundled cursor theme does not match the runtime contract",
+        ));
+    }
+
+    let root = cursor_overlay::theme_store_root().map_err(|error| {
+        ComputerUseError::new(
+            ComputerUseErrorCode::BackendUnavailable,
+            format!("resolve CUA cursor theme store: {error}"),
+        )
+    })?;
+    std::fs::create_dir_all(&root).map_err(|error| {
+        ComputerUseError::new(
+            ComputerUseErrorCode::BackendUnavailable,
+            format!("create CUA cursor theme store {}: {error}", root.display()),
+        )
+    })?;
+    let path = root.join(format!("{MOUSE_CURSOR_THEME}.cua-theme"));
+    if std::fs::read(&path).is_ok_and(|installed| installed == BUNDLED_CURSOR_THEME) {
+        return Ok(());
+    }
+    std::fs::write(&path, BUNDLED_CURSOR_THEME).map_err(|error| {
+        ComputerUseError::new(
+            ComputerUseErrorCode::BackendUnavailable,
+            format!("install bundled cursor theme {}: {error}", path.display()),
+        )
+    })
+}
 
 pub(crate) fn create_embedded() -> Result<(Arc<CuaDriver>, bool), DriverError> {
     prepare_platform_process();
@@ -37,9 +80,10 @@ pub(crate) fn create_authorized(
 pub(crate) fn driver_host_options() -> DriverHostOptions {
     DriverHostOptions {
         cursor: CursorConfig {
-            // Windows keeps the custom Host-owned pointer. The embedded CUA
-            // runtime owns it on Linux; packaged macOS uses a private worker.
+            // Embedded Windows and Linux use CUA's native theme renderer;
+            // packaged macOS uses the same renderer through a private worker.
             enabled: UPSTREAM_CURSOR_RENDERER_ENABLED,
+            theme_id: MOUSE_CURSOR_THEME.into(),
             ..CursorConfig::default()
         },
         host_owns_permission_ux: true,

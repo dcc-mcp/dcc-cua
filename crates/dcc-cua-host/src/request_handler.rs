@@ -188,6 +188,7 @@ pub(super) async fn handle_request(
                     allow_trusted_confirmation: grant.allow_trusted_confirmation,
                     capability: capability.clone(),
                     interrupt_generation: session_generation,
+                    interrupted: false,
                     session,
                     latest_shared_image: None,
                 },
@@ -254,7 +255,9 @@ pub(super) async fn handle_request(
             observation_id,
             action,
             capture_after,
+            post_snapshot_delay_ms,
         } => {
+            let post_snapshot_delay = post_snapshot_delay(capture_after, post_snapshot_delay_ms)?;
             let host = authorized_desktop_session(
                 desktop_sessions,
                 &session_id,
@@ -296,6 +299,7 @@ pub(super) async fn handle_request(
             };
             let action_id = format!("cua-desktop-action-{}", Uuid::new_v4());
             if capture_after {
+                tokio::time::sleep(post_snapshot_delay).await;
                 return match host.session.screenshot().await {
                     Ok(snapshot) => desktop_action_completed_with_snapshot_response(
                         &session_id,
@@ -326,14 +330,16 @@ pub(super) async fn handle_request(
                     }
                 };
             }
-            action_completed_response(
+            let (mut response, attachment) = action_completed_response(
                 &session_id,
                 action_id,
                 "desktop CUA action completed",
                 result,
                 mode,
                 &mut host.latest_shared_image,
-            )
+            )?;
+            response["observation_required"] = Value::Bool(true);
+            Ok((response, attachment))
         }
         Request::StopDesktopSession { session_id } => {
             let mut host = desktop_sessions
@@ -509,6 +515,66 @@ pub(super) async fn handle_request(
                 None,
             ))
         }
+        Request::LiveObservationStart {
+            session_id,
+            task_grant_id,
+            window_capability,
+            request,
+        } => {
+            let host =
+                authorized_session(sessions, &session_id, &task_grant_id, &window_capability)
+                    .await?;
+            if !host.allow_live_observation {
+                return Err(HostError::Protocol(
+                    "live observation is not granted".into(),
+                ));
+            }
+            let result = host.session.start_live_observation(&request).await?;
+            host.invalidate_observations();
+            Ok((
+                json!({"type":"live_observation_started", "session_id":session_id, "result":result}),
+                None,
+            ))
+        }
+        Request::LiveObservationState {
+            session_id,
+            task_grant_id,
+            window_capability,
+        } => {
+            let host =
+                authorized_session(sessions, &session_id, &task_grant_id, &window_capability)
+                    .await?;
+            if !host.allow_live_observation {
+                return Err(HostError::Protocol(
+                    "live observation is not granted".into(),
+                ));
+            }
+            let result = host.session.live_observation_state();
+            Ok((
+                json!({"type":"live_observation_state", "session_id":session_id, "result":result}),
+                None,
+            ))
+        }
+        Request::LiveObservationStop {
+            session_id,
+            task_grant_id,
+            window_capability,
+        } => {
+            let host =
+                authorized_session(sessions, &session_id, &task_grant_id, &window_capability)
+                    .await?;
+            if !host.allow_live_observation {
+                return Err(HostError::Protocol(
+                    "live observation is not granted".into(),
+                ));
+            }
+            let result = host.session.stop_live_observation().await;
+            host.invalidate_observations();
+            Ok((
+                json!({"type":"live_observation_stopped", "session_id":session_id, "result":result}),
+                None,
+            ))
+        }
         Request::OpenSession {
             session_id,
             mut grant,
@@ -537,12 +603,37 @@ pub(super) async fn handle_request(
                 runtime_session_id.clone(),
             )?;
             let started = session.start().await?;
+            let showcase = if let Some(output_dir) = grant.showcase_output_dir.as_deref() {
+                if !grant.allow_recording {
+                    let _ = session.stop().await;
+                    return Err(HostError::Protocol(
+                        "showcase recording requires allow_recording".into(),
+                    ));
+                }
+                match session
+                    .recording_start(&ComputerUseRecordingStartRequest {
+                        output_dir: output_dir.to_owned(),
+                        record_video: true,
+                    })
+                    .await
+                {
+                    Ok(result) => Some(result),
+                    Err(error) => {
+                        let _ = session.stop().await;
+                        return Err(error.into());
+                    }
+                }
+            } else {
+                None
+            };
             launch_sessions.remove(&session_id);
             let Some(target) = session.target() else {
                 let _ = session.stop().await;
                 return Err(HostError::Protocol("CUA did not return a target".into()));
             };
-            let marker = session.status()["marker"].clone();
+            let status = session.status();
+            let marker = status["marker"].clone();
+            let banner = status["banner"].clone();
             let cursor = json!({
                 "visible": marker["visible"],
                 "shape": "mouse_pointer",
@@ -563,6 +654,7 @@ pub(super) async fn handle_request(
                     allow_clipboard_read: grant.allow_clipboard_read,
                     allow_clipboard_write: grant.allow_clipboard_write,
                     allow_recording: grant.allow_recording,
+                    allow_live_observation: grant.allow_live_observation,
                     allow_browser_input: grant.allow_browser_input,
                     allow_browser_prepare: grant.allow_browser_prepare,
                     allow_browser_download: grant.allow_browser_download,
@@ -571,6 +663,7 @@ pub(super) async fn handle_request(
                     allow_session_escalation: grant.allow_session_escalation,
                     allow_trusted_confirmation: grant.allow_trusted_confirmation,
                     capability: capability.clone(),
+                    interrupted: false,
                     session,
                     browser: BrowserSession::default(),
                     latest_observation_id: None,
@@ -586,8 +679,9 @@ pub(super) async fn handle_request(
                     "window_capability": capability,
                     "target": target_wire(&target),
                     "marker": marker,
-                    "banner": started["banner"].clone(),
+                    "banner": banner,
                     "cursor": cursor,
+                    "showcase": showcase,
                 }),
                 None,
             ))
@@ -1181,9 +1275,11 @@ pub(super) async fn handle_request(
             accessibility_state_id,
             action,
             capture_after,
+            post_snapshot_delay_ms,
             post_snapshot_max_depth,
             post_snapshot_max_nodes,
         } => {
+            let post_snapshot_delay = post_snapshot_delay(capture_after, post_snapshot_delay_ms)?;
             let host =
                 authorized_session(sessions, &session_id, &task_grant_id, &window_capability)
                     .await?;
@@ -1239,6 +1335,7 @@ pub(super) async fn handle_request(
             };
             let action_id = format!("cua-action-{}", Uuid::new_v4());
             if capture_after {
+                tokio::time::sleep(post_snapshot_delay).await;
                 return match host
                     .session
                     .screenshot_with_bounds(post_snapshot_max_nodes, post_snapshot_max_depth)
@@ -1285,14 +1382,16 @@ pub(super) async fn handle_request(
             host.latest_observation_id = None;
             host.latest_accessibility_state_id = None;
             host.latest_accessibility_root = None;
-            action_completed_response(
+            let (mut response, attachment) = action_completed_response(
                 &session_id,
                 action_id,
                 "CUA action completed",
                 result,
                 mode,
                 &mut host.latest_shared_image,
-            )
+            )?;
+            response["observation_required"] = Value::Bool(true);
+            Ok((response, attachment))
         }
         Request::ResumeSession {
             session_id,
@@ -1332,19 +1431,10 @@ pub(super) async fn handle_request(
             let host =
                 authorized_session(sessions, &session_id, &task_grant_id, &window_capability)
                     .await?;
-            let cursor_position = (tool == "move_cursor").then(|| {
-                (
-                    arguments["x"].as_f64().unwrap_or_default(),
-                    arguments["y"].as_f64().unwrap_or_default(),
-                )
-            });
             let result = {
                 let _input_turn = RAW_INPUT_QUEUE.lock().await;
                 host.session.cursor_tool(&tool, arguments).await?
             };
-            if let Some((x, y)) = cursor_position {
-                host.session.set_control_cursor_position(x, y);
-            }
             let marker = host.session.status()["marker"].clone();
             Ok((
                 json!({"type":"cursor_tool_result", "session_id":session_id, "tool":tool, "result":result, "marker":marker}),
@@ -1386,11 +1476,28 @@ pub(super) async fn handle_request(
 }
 
 pub(super) const fn cursor_render_backend(upstream_cursor_renderer_enabled: bool) -> &'static str {
-    if cfg!(windows) {
-        "host-native-overlay"
-    } else if upstream_cursor_renderer_enabled {
+    if upstream_cursor_renderer_enabled {
         "cua-driver-sdk"
     } else {
         "unavailable"
     }
+}
+
+pub(super) fn post_snapshot_delay(
+    capture_after: bool,
+    delay_ms: u64,
+) -> Result<std::time::Duration, HostError> {
+    if delay_ms > MAX_POST_SNAPSHOT_DELAY_MS {
+        return Err(HostError::ComputerUse(ComputerUseError::new(
+            ComputerUseErrorCode::InvalidAction,
+            format!("post_snapshot_delay_ms must be at most {MAX_POST_SNAPSHOT_DELAY_MS}"),
+        )));
+    }
+    if !capture_after && delay_ms != 0 {
+        return Err(HostError::ComputerUse(ComputerUseError::new(
+            ComputerUseErrorCode::InvalidAction,
+            "post_snapshot_delay_ms requires capture_after",
+        )));
+    }
+    Ok(std::time::Duration::from_millis(delay_ms))
 }

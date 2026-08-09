@@ -34,12 +34,17 @@ pub(crate) const MAX_NATIVE_TOOL_ARGUMENT_BYTES: usize = 1024 * 1024;
 pub(crate) const MAX_NATIVE_TOOL_IMAGES: usize = 8;
 pub(crate) const MAX_NATIVE_TOOL_IMAGE_BYTES: usize = 64 * 1024 * 1024;
 pub(crate) const MAX_NATIVE_TOOL_TOTAL_IMAGE_BYTES: usize = 64 * 1024 * 1024;
-pub(crate) const MOUSE_CURSOR_THEME: &str = "cua.default";
+pub(crate) const MOUSE_CURSOR_THEME: &str = "com.dcc-mcp.cursor";
 pub(crate) const DEFAULT_SNAPSHOT_MAX_ELEMENTS: u32 = 512;
 pub(crate) const DEFAULT_SNAPSHOT_MAX_DEPTH: u32 = 16;
 pub(crate) const MAX_SNAPSHOT_ELEMENTS: u32 = 2_000;
 pub(crate) const MAX_SNAPSHOT_DEPTH: u32 = 25;
 pub(crate) static OBSERVATION_COUNTER: AtomicU64 = AtomicU64::new(1);
+pub const DEFAULT_LIVE_OBSERVATION_FPS: u32 = 10;
+pub const MAX_LIVE_OBSERVATION_FPS: u32 = 30;
+pub const DEFAULT_LIVE_OBSERVATION_MAX_DIMENSION: u32 = 1_568;
+pub const MIN_LIVE_OBSERVATION_MAX_DIMENSION: u32 = 256;
+pub const MAX_LIVE_OBSERVATION_MAX_DIMENSION: u32 = 4_096;
 
 /// Exact identity supplied by the adapter/runtime. Agent input cannot widen it.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -330,6 +335,54 @@ pub struct ComputerUseRecordingStartRequest {
     pub output_dir: String,
     #[serde(default)]
     pub record_video: bool,
+}
+
+/// A bounded exact-window latest-frame feed for latency-sensitive agents.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ComputerUseLiveObservationStartRequest {
+    #[serde(default = "default_live_observation_fps")]
+    pub fps: u32,
+    #[serde(default = "default_live_observation_max_dimension")]
+    pub max_dimension: u32,
+}
+
+impl Default for ComputerUseLiveObservationStartRequest {
+    fn default() -> Self {
+        Self {
+            fps: DEFAULT_LIVE_OBSERVATION_FPS,
+            max_dimension: DEFAULT_LIVE_OBSERVATION_MAX_DIMENSION,
+        }
+    }
+}
+
+impl ComputerUseLiveObservationStartRequest {
+    pub fn validate(&self) -> ComputerUseResult<()> {
+        if !(1..=MAX_LIVE_OBSERVATION_FPS).contains(&self.fps) {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::InvalidAction,
+                format!("live observation fps must be 1..={MAX_LIVE_OBSERVATION_FPS}"),
+            ));
+        }
+        if !(MIN_LIVE_OBSERVATION_MAX_DIMENSION..=MAX_LIVE_OBSERVATION_MAX_DIMENSION)
+            .contains(&self.max_dimension)
+        {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::InvalidAction,
+                format!(
+                    "live observation max_dimension must be {MIN_LIVE_OBSERVATION_MAX_DIMENSION}..={MAX_LIVE_OBSERVATION_MAX_DIMENSION}"
+                ),
+            ));
+        }
+        Ok(())
+    }
+}
+
+const fn default_live_observation_fps() -> u32 {
+    DEFAULT_LIVE_OBSERVATION_FPS
+}
+
+const fn default_live_observation_max_dimension() -> u32 {
+    DEFAULT_LIVE_OBSERVATION_MAX_DIMENSION
 }
 
 #[derive(Debug, Clone, PartialEq)]

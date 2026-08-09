@@ -1,12 +1,14 @@
 use std::env;
 use std::fs;
 use std::io::Read;
-#[cfg(target_os = "macos")]
 use std::path::PathBuf;
+use std::{collections::BTreeMap, time::Instant};
 
 mod authorization;
 mod host_lifecycle;
 mod manifest;
+mod profile_package;
+mod profile_state;
 mod semantic_profile;
 mod update;
 
@@ -35,6 +37,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = env::args().skip(1);
     let command = args.next().unwrap_or_else(|| "help".into());
     let flags = args.collect::<Vec<_>>();
+    if is_help_request(&command, &flags) {
+        print_help();
+        return Ok(());
+    }
     if command == "__private-worker" {
         let generation =
             flag_value(&flags, "--generation").ok_or("private worker requires --generation")?;
@@ -86,8 +92,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         list_semantic_profiles()?;
         return Ok(());
     }
+    if command == "profile" && profile_package::is_management_command(&flags) {
+        profile_package::execute(&flags)?;
+        return Ok(());
+    }
+    if command == "profile" && flags.first().is_some_and(|value| value == "match") {
+        match_semantic_profile(&flags)?;
+        return Ok(());
+    }
     if command == "profile" && flag_value(&flags, "--app").is_none() {
         inspect_semantic_profile(&flags)?;
+        return Ok(());
+    }
+    if command == "profile-state" {
+        profile_state::execute(&flags).await?;
         return Ok(());
     }
     if command == "update" {
@@ -139,7 +157,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "desktop-act" => desktop_act(&driver, &flags).await?,
         "doctor" => doctor(&driver).await?,
         "profile" => semantic_profile::execute(&driver, &flags).await?,
-        "help" | "--help" | "-h" => print_help(),
         friendly if is_friendly_action(friendly) => {
             friendly_action(&driver, &flags, friendly).await?
         }
@@ -189,19 +206,37 @@ async fn list_windows(
 }
 
 fn list_semantic_profiles() -> Result<(), Box<dyn std::error::Error>> {
-    let profiles = builtin_profiles()
+    let mut profiles = builtin_profiles()
         .iter()
         .map(|profile| {
             json!({
                 "id": profile.id,
                 "display_name": profile.display_name,
+                "source": "builtin",
+                "version": profile.profile_version,
+                "application": profile.application,
+                "extends": profile.extends,
+                "status": "ready",
                 "preferred_route": profile.settings.preferred_route,
                 "dialog_style": profile.settings.dialog_style,
                 "supported_locales": profile.supported_locales(),
                 "surface_count": profile.surfaces.len(),
+                "state_source_count": profile.state_sources.len(),
             })
         })
         .collect::<Vec<_>>();
+    profiles.extend(profile_package::installed_profile_summaries(None)?);
+    profiles.sort_by(|left, right| {
+        left.get("id")
+            .and_then(serde_json::Value::as_str)
+            .cmp(&right.get("id").and_then(serde_json::Value::as_str))
+            .then_with(|| {
+                right
+                    .get("source")
+                    .and_then(serde_json::Value::as_str)
+                    .cmp(&left.get("source").and_then(serde_json::Value::as_str))
+            })
+    });
     println!("{}", serde_json::to_string_pretty(&profiles)?);
     Ok(())
 }
@@ -212,13 +247,104 @@ fn inspect_semantic_profile(flags: &[String]) -> Result<(), Box<dyn std::error::
     Ok(())
 }
 
+fn match_semantic_profile(flags: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let application_name =
+        flag_value(flags, "--app").ok_or("profile match requires --app APPLICATION_NAME")?;
+    let window_title = flag_value(flags, "--title").unwrap_or_default();
+
+    let mut catalog = builtin_profiles()
+        .iter()
+        .cloned()
+        .map(|profile| (profile.id.clone(), ("builtin", profile)))
+        .collect::<BTreeMap<_, _>>();
+    for profile in profile_package::installed_ready_profiles(None)? {
+        // This mirrors explicit loading: an installed Profile with the same ID
+        // is the user's intentional override of a built-in.
+        catalog.insert(profile.id.clone(), ("user", profile));
+    }
+
+    let candidates = catalog
+        .into_values()
+        .map(|(source, profile)| (source.to_owned(), profile))
+        .collect::<Vec<_>>();
+    let result = profile_match_result(candidates, &application_name, &window_title);
+    println!("{}", serde_json::to_string_pretty(&result)?);
+    Ok(())
+}
+
+fn profile_match_result(
+    catalog: Vec<(String, SemanticProfile)>,
+    application_name: &str,
+    window_title: &str,
+) -> serde_json::Value {
+    let mut candidates = catalog
+        .into_iter()
+        .filter(|(_, profile)| profile.matches_window(application_name, window_title))
+        .map(|(source, profile)| {
+            let version_specific = !profile.application.versions.is_empty();
+            (source, profile, version_specific)
+        })
+        .collect::<Vec<_>>();
+    candidates.sort_by(|left, right| {
+        right
+            .2
+            .cmp(&left.2)
+            .then_with(|| {
+                left.1
+                    .application
+                    .versions
+                    .len()
+                    .cmp(&right.1.application.versions.len())
+            })
+            .then_with(|| right.0.cmp(&left.0))
+            .then_with(|| left.1.id.cmp(&right.1.id))
+    });
+
+    let top_specificity = candidates
+        .first()
+        .map(|(_, profile, specific)| (*specific, profile.application.versions.len()));
+    let top_count = top_specificity.map_or(0, |specificity| {
+        candidates
+            .iter()
+            .take_while(|(_, profile, specific)| {
+                (*specific, profile.application.versions.len()) == specificity
+            })
+            .count()
+    });
+    let selected = (top_count == 1).then(|| candidates[0].1.id.clone());
+    let candidates = candidates
+        .into_iter()
+        .map(|(source, profile, version_specific)| {
+            json!({
+                "id": profile.id,
+                "profile_version": profile.profile_version,
+                "application": profile.application,
+                "extends": profile.extends,
+                "source": source,
+                "version_specific": version_specific,
+            })
+        })
+        .collect::<Vec<_>>();
+    json!({
+        "application_name": application_name,
+        "window_title": window_title,
+        "selected": selected,
+        "ambiguous": top_count > 1,
+        "candidates": candidates,
+    })
+}
+
 fn load_semantic_profile(flags: &[String]) -> Result<SemanticProfile, Box<dyn std::error::Error>> {
     if let Some(path) = flag_value(flags, "--profile-file") {
         let input = fs::read_to_string(&path)?;
-        return Ok(parse_profile(&input)?);
+        let profile = parse_profile(&input)?;
+        return Ok(profile_package::resolve_profile_with_store(profile, None)?);
     }
     let id =
         flag_value(flags, "--id").ok_or("profile requires --id PROFILE or --profile-file PATH")?;
+    if let Some(profile) = profile_package::load_installed_profile(&id, None)? {
+        return Ok(profile);
+    }
     builtin_profile(&id)
         .cloned()
         .ok_or_else(|| format!("unknown semantic profile: {id}").into())
@@ -290,7 +416,7 @@ async fn call_tool(
         .any(|flag| flag_value(flags, flag).is_some());
     let result = if has_target {
         let scope = select_scope(driver, flags).await?;
-        let app = flag_value(flags, "--app").unwrap_or_else(|| "DCC application".into());
+        let app = application_label(flags);
         let session_id =
             flag_value(flags, "--session").unwrap_or_else(|| "dcc-cua-call-cli".into());
         let mut session = driver.session(scope, app, session_id)?;
@@ -415,6 +541,31 @@ async fn host_batch(flags: &[String]) -> Result<(), Box<dyn std::error::Error>> 
 }
 
 async fn host_jsonl(flags: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let started = Instant::now();
+    let mut metrics = HostJsonlMetrics::with_output(
+        flag_value(flags, "--metrics-output").map(PathBuf::from),
+        started,
+    );
+    let run_result = match metrics.checkpoint() {
+        Ok(()) => host_jsonl_inner(flags, &mut metrics).await,
+        Err(error) => Err(error),
+    };
+    let report_result = metrics.finish(run_result.is_ok());
+    match (run_result, report_result) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(error), Ok(())) => Err(error),
+        (Ok(()), Err(error)) => Err(error),
+        (Err(run_error), Err(report_error)) => Err(format!(
+            "host-jsonl failed: {run_error}; metrics report failed: {report_error}"
+        )
+        .into()),
+    }
+}
+
+async fn host_jsonl_inner(
+    flags: &[String],
+    metrics: &mut HostJsonlMetrics,
+) -> Result<(), Box<dyn std::error::Error>> {
     let snapshot_transport = snapshot_transport(flags)?;
     let mut connection = connect_host(flags, snapshot_transport).await?;
     let output_dir = flag_value(flags, "--output-dir");
@@ -427,6 +578,7 @@ async fn host_jsonl(flags: &[String]) -> Result<(), Box<dyn std::error::Error>> 
     let mut output = BufWriter::new(stdout);
     let mut index = 0_usize;
     let parallel_discovery = has_flag(flags, "--parallel-discovery");
+    let showcase_dir = showcase_directory(flags)?;
     let mut pending_line = None;
 
     loop {
@@ -448,7 +600,8 @@ async fn host_jsonl(flags: &[String]) -> Result<(), Box<dyn std::error::Error>> 
         if line.is_empty() {
             continue;
         }
-        let request = match parse_jsonl_request(line) {
+        metrics.record_input(line);
+        let mut request = match parse_jsonl_request(line) {
             Ok(request) => request,
             Err(error) => {
                 write_jsonl_response(
@@ -458,11 +611,16 @@ async fn host_jsonl(flags: &[String]) -> Result<(), Box<dyn std::error::Error>> 
                         "code": "invalid_request",
                         "message": error,
                     }),
+                    metrics,
                 )
                 .await?;
                 continue;
             }
         };
+        metrics.record_request(&request);
+        if let Some(directory) = showcase_dir.as_deref() {
+            enable_showcase(&mut request, directory, line_index)?;
+        }
 
         if parallel_discovery && is_parallel_discovery_method(&request.method) {
             let mut batch = vec![(line_index, request)];
@@ -486,6 +644,8 @@ async fn host_jsonl(flags: &[String]) -> Result<(), Box<dyn std::error::Error>> 
                 index = index.saturating_add(1);
                 match parse_jsonl_request(next_line.trim()) {
                     Ok(next_request) if is_parallel_discovery_method(&next_request.method) => {
+                        metrics.record_input(next_line.trim());
+                        metrics.record_request(&next_request);
                         batch.push((next_index, next_request));
                     }
                     Ok(_) => {
@@ -493,6 +653,7 @@ async fn host_jsonl(flags: &[String]) -> Result<(), Box<dyn std::error::Error>> 
                         break;
                     }
                     Err(error) => {
+                        metrics.record_input(next_line.trim());
                         write_jsonl_response(
                             &mut output,
                             json!({
@@ -500,6 +661,7 @@ async fn host_jsonl(flags: &[String]) -> Result<(), Box<dyn std::error::Error>> 
                                 "code": "invalid_request",
                                 "message": error,
                             }),
+                            metrics,
                         )
                         .await?;
                     }
@@ -532,6 +694,7 @@ async fn host_jsonl(flags: &[String]) -> Result<(), Box<dyn std::error::Error>> 
                                         "code": "output_error",
                                         "message": error.to_string(),
                                     }),
+                                    metrics,
                                 )
                                 .await?;
                                 return Err(error);
@@ -540,11 +703,12 @@ async fn host_jsonl(flags: &[String]) -> Result<(), Box<dyn std::error::Error>> 
                     }
                     Err(error @ HostClientError::Remote { .. }) => host_error_value(&error),
                     Err(error) => {
-                        write_jsonl_response(&mut output, host_error_value(&error)).await?;
+                        write_jsonl_response(&mut output, host_error_value(&error), metrics)
+                            .await?;
                         return Err(error.into());
                     }
                 };
-                write_jsonl_response(&mut output, response).await?;
+                write_jsonl_response(&mut output, response, metrics).await?;
             }
             continue;
         }
@@ -575,6 +739,7 @@ async fn host_jsonl(flags: &[String]) -> Result<(), Box<dyn std::error::Error>> 
                             "code": "output_error",
                             "message": error.to_string(),
                         }),
+                        metrics,
                     )
                     .await?;
                     return Err(error);
@@ -582,11 +747,11 @@ async fn host_jsonl(flags: &[String]) -> Result<(), Box<dyn std::error::Error>> 
             },
             Err(error @ HostClientError::Remote { .. }) => host_error_value(&error),
             Err(error) => {
-                write_jsonl_response(&mut output, host_error_value(&error)).await?;
+                write_jsonl_response(&mut output, host_error_value(&error), metrics).await?;
                 return Err(error.into());
             }
         };
-        write_jsonl_response(&mut output, response).await?;
+        write_jsonl_response(&mut output, response, metrics).await?;
     }
     connection.shutdown().await?;
     Ok(())
@@ -596,6 +761,283 @@ struct JsonlRequest {
     request_id: Option<String>,
     method: String,
     params: serde_json::Value,
+}
+
+#[derive(Debug, Default)]
+struct HostJsonlMetrics {
+    input_lines_total: u64,
+    requests_total: u64,
+    action_requests_total: u64,
+    post_action_snapshot_requests_total: u64,
+    standalone_snapshot_requests_total: u64,
+    errors_total: u64,
+    json_input_bytes: u64,
+    json_output_bytes: u64,
+    methods: BTreeMap<String, u64>,
+    action_kinds: BTreeMap<String, u64>,
+    error_codes: BTreeMap<String, u64>,
+    checkpoint: Option<HostJsonlMetricsCheckpoint>,
+}
+
+#[derive(Debug)]
+struct HostJsonlMetricsReport<'a> {
+    schema: &'static str,
+    run_status: HostJsonlRunStatus,
+    transport_success: Option<bool>,
+    elapsed_ms: u64,
+    input_lines_total: u64,
+    requests_total: u64,
+    action_requests_total: u64,
+    post_action_snapshot_requests_total: u64,
+    standalone_snapshot_requests_total: u64,
+    errors_total: u64,
+    json_input_bytes: u64,
+    json_output_bytes: u64,
+    methods: &'a BTreeMap<String, u64>,
+    action_kinds: &'a BTreeMap<String, u64>,
+    error_codes: &'a BTreeMap<String, u64>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum HostJsonlRunStatus {
+    Running,
+    Succeeded,
+    Failed,
+}
+
+impl HostJsonlRunStatus {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Running => "running",
+            Self::Succeeded => "succeeded",
+            Self::Failed => "failed",
+        }
+    }
+
+    const fn transport_success(self) -> Option<bool> {
+        match self {
+            Self::Running => None,
+            Self::Succeeded => Some(true),
+            Self::Failed => Some(false),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct HostJsonlMetricsCheckpoint {
+    path: PathBuf,
+    started: Instant,
+}
+
+impl HostJsonlMetrics {
+    fn with_output(path: Option<PathBuf>, started: Instant) -> Self {
+        Self {
+            checkpoint: path.map(|path| HostJsonlMetricsCheckpoint { path, started }),
+            ..Self::default()
+        }
+    }
+
+    fn record_input(&mut self, line: &str) {
+        self.input_lines_total = self.input_lines_total.saturating_add(1);
+        self.json_input_bytes = self
+            .json_input_bytes
+            .saturating_add(line.len().try_into().unwrap_or(u64::MAX));
+    }
+
+    fn record_request(&mut self, request: &JsonlRequest) {
+        self.requests_total = self.requests_total.saturating_add(1);
+        *self.methods.entry(request.method.clone()).or_default() += 1;
+        if is_action_request(&request.method) {
+            self.action_requests_total = self.action_requests_total.saturating_add(1);
+            if let Some(kind) = request
+                .params
+                .get("action")
+                .and_then(|action| action.get("action"))
+                .and_then(serde_json::Value::as_str)
+            {
+                *self.action_kinds.entry(kind.to_owned()).or_default() += 1;
+            }
+        }
+        if request.method == "execute_action"
+            && request
+                .params
+                .get("capture_after")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+        {
+            self.post_action_snapshot_requests_total =
+                self.post_action_snapshot_requests_total.saturating_add(1);
+        }
+        if is_standalone_snapshot_request(&request.method) {
+            self.standalone_snapshot_requests_total =
+                self.standalone_snapshot_requests_total.saturating_add(1);
+        }
+    }
+
+    fn record_output(&mut self, value: &serde_json::Value, body_bytes: usize) {
+        self.json_output_bytes = self
+            .json_output_bytes
+            .saturating_add(body_bytes.try_into().unwrap_or(u64::MAX));
+        if value.get("type").and_then(serde_json::Value::as_str) == Some("error") {
+            self.errors_total = self.errors_total.saturating_add(1);
+            if let Some(code) = value.get("code").and_then(serde_json::Value::as_str) {
+                *self.error_codes.entry(code.to_owned()).or_default() += 1;
+            }
+        }
+    }
+
+    fn report(
+        &self,
+        run_status: HostJsonlRunStatus,
+        elapsed: std::time::Duration,
+    ) -> HostJsonlMetricsReport<'_> {
+        HostJsonlMetricsReport {
+            schema: "dcc-cua.host-jsonl.metrics.v2",
+            run_status,
+            transport_success: run_status.transport_success(),
+            elapsed_ms: elapsed.as_millis().try_into().unwrap_or(u64::MAX),
+            input_lines_total: self.input_lines_total,
+            requests_total: self.requests_total,
+            action_requests_total: self.action_requests_total,
+            post_action_snapshot_requests_total: self.post_action_snapshot_requests_total,
+            standalone_snapshot_requests_total: self.standalone_snapshot_requests_total,
+            errors_total: self.errors_total,
+            json_input_bytes: self.json_input_bytes,
+            json_output_bytes: self.json_output_bytes,
+            methods: &self.methods,
+            action_kinds: &self.action_kinds,
+            error_codes: &self.error_codes,
+        }
+    }
+
+    fn checkpoint(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let Some(checkpoint) = &self.checkpoint else {
+            return Ok(());
+        };
+        write_host_jsonl_metrics(
+            Some(&checkpoint.path),
+            &self.report(HostJsonlRunStatus::Running, checkpoint.started.elapsed()),
+        )
+    }
+
+    fn finish(&self, succeeded: bool) -> Result<(), Box<dyn std::error::Error>> {
+        let Some(checkpoint) = &self.checkpoint else {
+            return Ok(());
+        };
+        let status = if succeeded {
+            HostJsonlRunStatus::Succeeded
+        } else {
+            HostJsonlRunStatus::Failed
+        };
+        write_host_jsonl_metrics(
+            Some(&checkpoint.path),
+            &self.report(status, checkpoint.started.elapsed()),
+        )
+    }
+}
+
+fn is_action_request(method: &str) -> bool {
+    matches!(
+        method,
+        "execute_action"
+            | "execute_desktop_action"
+            | "browser_click"
+            | "browser_type"
+            | "browser_pointer"
+            | "browser_navigate"
+            | "browser_set_input_files"
+            | "browser_dialog"
+    )
+}
+
+fn is_standalone_snapshot_request(method: &str) -> bool {
+    matches!(
+        method,
+        "snapshot" | "desktop_snapshot" | "desktop_session_snapshot" | "browser_snapshot"
+    )
+}
+
+fn write_host_jsonl_metrics(
+    path: Option<&std::path::Path>,
+    report: &HostJsonlMetricsReport<'_>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let Some(path) = path else {
+        return Ok(());
+    };
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        fs::create_dir_all(parent)?;
+    }
+    let value = json!({
+        "schema": report.schema,
+        "run_status": report.run_status.as_str(),
+        "transport_success": report.transport_success,
+        "elapsed_ms": report.elapsed_ms,
+        "input_lines_total": report.input_lines_total,
+        "requests_total": report.requests_total,
+        "action_requests_total": report.action_requests_total,
+        "post_action_snapshot_requests_total": report.post_action_snapshot_requests_total,
+        "standalone_snapshot_requests_total": report.standalone_snapshot_requests_total,
+        "errors_total": report.errors_total,
+        "json_input_bytes": report.json_input_bytes,
+        "json_output_bytes": report.json_output_bytes,
+        "methods": report.methods,
+        "action_kinds": report.action_kinds,
+        "error_codes": report.error_codes,
+    });
+    write_json_atomically(path, &serde_json::to_vec_pretty(&value)?)?;
+    Ok(())
+}
+
+fn write_json_atomically(path: &std::path::Path, bytes: &[u8]) -> Result<(), std::io::Error> {
+    let file_name = path
+        .file_name()
+        .ok_or_else(|| std::io::Error::other("metrics output requires a file name"))?
+        .to_string_lossy();
+    let temporary = path.with_file_name(format!(".{file_name}.dcc-cua-{}.tmp", std::process::id()));
+    fs::write(&temporary, bytes)?;
+    replace_file(&temporary, path).inspect_err(|_| {
+        let _ = fs::remove_file(&temporary);
+    })
+}
+
+#[cfg(unix)]
+fn replace_file(source: &std::path::Path, destination: &std::path::Path) -> std::io::Result<()> {
+    fs::rename(source, destination)
+}
+
+#[cfg(windows)]
+fn replace_file(source: &std::path::Path, destination: &std::path::Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
+    };
+
+    let source = source
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let destination = destination
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    // SAFETY: Both paths are valid, NUL-terminated UTF-16 buffers that remain alive for the call.
+    let succeeded = unsafe {
+        MoveFileExW(
+            source.as_ptr(),
+            destination.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if succeeded == 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
 }
 
 fn parse_jsonl_request(line: &str) -> Result<JsonlRequest, String> {
@@ -644,7 +1086,18 @@ fn jsonl_response_value(
     index: usize,
 ) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
     let mut value = response.value;
-    if let Some(bytes) = response.binary_attachment {
+    let shared_image = value
+        .get("image")
+        .is_some_and(|image| image["encoding"] == "shared_memory");
+    let bytes = match response.binary_attachment {
+        Some(bytes) => Some(bytes),
+        None if shared_image => {
+            let descriptor = serde_json::from_value(value["image"].clone())?;
+            Some(SharedImageReader::open(descriptor)?.read()?)
+        }
+        None => None,
+    };
+    if let Some(bytes) = bytes {
         let directory = output_dir.ok_or(
             "JSONL response contains image bytes; pass --output-dir or negotiate shared_memory",
         )?;
@@ -684,12 +1137,18 @@ fn host_error_value(error: &HostClientError) -> serde_json::Value {
 async fn write_jsonl_response<W: AsyncWrite + Unpin>(
     output: &mut W,
     value: serde_json::Value,
+    metrics: &mut HostJsonlMetrics,
 ) -> Result<(), std::io::Error> {
     let body =
         serde_json::to_vec(&value).map_err(|error| std::io::Error::other(error.to_string()))?;
     output.write_all(&body).await?;
     output.write_all(b"\n").await?;
-    output.flush().await
+    output.flush().await?;
+    metrics.record_output(&value, body.len());
+    metrics
+        .checkpoint()
+        .map_err(|error| std::io::Error::other(error.to_string()))?;
+    Ok(())
 }
 
 fn parse_host_batch(
@@ -784,19 +1243,74 @@ async fn connect_host(
     flags: &[String],
     snapshot_transport: SnapshotTransport,
 ) -> Result<HostConnection, Box<dyn std::error::Error>> {
+    let agent_name = flag_value(flags, "--agent-name").unwrap_or_else(|| "dcc-cua-cli".into());
     if let Some(binary_path) = flag_value(flags, "--spawn") {
         return Ok(HostConnection::Spawned(Box::new(
-            HostProcess::spawn(binary_path, "dcc-cua-cli", snapshot_transport).await?,
+            HostProcess::spawn(binary_path, agent_name, snapshot_transport).await?,
         )));
     }
     Ok(match flag_value(flags, "--endpoint") {
         Some(endpoint) => HostConnection::Endpoint(
-            HostClient::connect_with_transport(endpoint, "dcc-cua-cli", snapshot_transport).await?,
+            HostClient::connect_with_transport(endpoint, agent_name, snapshot_transport).await?,
         ),
         None => HostConnection::Endpoint(
-            HostClient::connect_default_with_transport("dcc-cua-cli", snapshot_transport).await?,
+            HostClient::connect_default_with_transport(agent_name, snapshot_transport).await?,
         ),
     })
+}
+
+fn showcase_directory(flags: &[String]) -> Result<Option<String>, Box<dyn std::error::Error>> {
+    if !has_flag(flags, "--showcase") {
+        return Ok(None);
+    }
+    let directory = flag_value(flags, "--showcase-dir")
+        .map(std::path::PathBuf::from)
+        .unwrap_or(env::current_dir()?.join("artifacts").join("showcase"));
+    fs::create_dir_all(&directory)?;
+    Ok(Some(
+        fs::canonicalize(directory)?.to_string_lossy().into_owned(),
+    ))
+}
+
+fn enable_showcase(
+    request: &mut JsonlRequest,
+    directory: &str,
+    request_index: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if request.method != "open_session" {
+        return Ok(());
+    }
+    let grant = request
+        .params
+        .get_mut("grant")
+        .and_then(serde_json::Value::as_object_mut)
+        .ok_or("showcase open_session requires params.grant")?;
+    let session_directory = reserve_showcase_session_directory(directory, request_index)?;
+    grant.insert("allow_recording".into(), json!(true));
+    grant.insert("showcase_output_dir".into(), json!(session_directory));
+    Ok(())
+}
+
+fn reserve_showcase_session_directory(
+    directory: &str,
+    request_index: usize,
+) -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
+    let root = std::path::Path::new(directory);
+    fs::create_dir_all(root)?;
+    for attempt in 0_u32.. {
+        let name = if attempt == 0 {
+            format!("session-{request_index}")
+        } else {
+            format!("session-{request_index}-{attempt}")
+        };
+        let candidate = root.join(name);
+        match fs::create_dir(&candidate) {
+            Ok(()) => return Ok(fs::canonicalize(candidate)?),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error.into()),
+        }
+    }
+    unreachable!("the showcase session suffix space is unbounded for this process")
 }
 
 fn response_image(
@@ -904,7 +1418,7 @@ async fn terminate_app(
         );
     }
     let scope = select_scope(driver, flags).await?;
-    let app = flag_value(flags, "--app").unwrap_or_else(|| "DCC application".into());
+    let app = application_label(flags);
     let session_id = flag_value(flags, "--session").unwrap_or_else(|| "dcc-cua-cli".into());
     let mut session = driver.session(scope, app, session_id)?;
     session.start().await?;
@@ -921,7 +1435,7 @@ async fn clipboard_read(
     flags: &[String],
 ) -> Result<(), Box<dyn std::error::Error>> {
     let scope = select_scope(driver, flags).await?;
-    let app = flag_value(flags, "--app").unwrap_or_else(|| "DCC application".into());
+    let app = application_label(flags);
     let session_id = flag_value(flags, "--session").unwrap_or_else(|| "dcc-cua-cli".into());
     let mut session = driver.session(scope, app, session_id)?;
     session.start().await?;
@@ -945,7 +1459,7 @@ async fn clipboard_write(
         file_path: flag_value(flags, "--file-path"),
     };
     let scope = select_scope(driver, flags).await?;
-    let app = flag_value(flags, "--app").unwrap_or_else(|| "DCC application".into());
+    let app = application_label(flags);
     let session_id = flag_value(flags, "--session").unwrap_or_else(|| "dcc-cua-cli".into());
     let mut session = driver.session(scope, app, session_id)?;
     session.start().await?;
@@ -962,7 +1476,7 @@ async fn snapshot(
     flags: &[String],
 ) -> Result<(), Box<dyn std::error::Error>> {
     let scope = select_scope(driver, flags).await?;
-    let app = flag_value(flags, "--app").unwrap_or_else(|| "DCC application".into());
+    let app = application_label(flags);
     let session_id = flag_value(flags, "--session").unwrap_or_else(|| "dcc-cua-cli".into());
     let output = flag_value(flags, "--output").unwrap_or_else(|| "screenshot.png".into());
     let mut session = driver.session(scope, app, session_id)?;
@@ -1005,7 +1519,7 @@ async fn accessibility_snapshot(
     flags: &[String],
 ) -> Result<(), Box<dyn std::error::Error>> {
     let scope = select_scope(driver, flags).await?;
-    let app = flag_value(flags, "--app").unwrap_or_else(|| "DCC application".into());
+    let app = application_label(flags);
     let session_id =
         flag_value(flags, "--session").unwrap_or_else(|| "dcc-cua-accessibility-cli".into());
     let max_elements = bounded_u32(flags, "--max-elements", 5_000, 5_000)?;
@@ -1036,7 +1550,7 @@ async fn window_state(
     flags: &[String],
 ) -> Result<(), Box<dyn std::error::Error>> {
     let scope = select_scope(driver, flags).await?;
-    let app = flag_value(flags, "--app").unwrap_or_else(|| "DCC application".into());
+    let app = application_label(flags);
     let session_id = flag_value(flags, "--session").unwrap_or_else(|| "dcc-cua-window-cli".into());
     let mut session = driver.session(scope, app, session_id)?;
     session.start().await?;
@@ -1053,7 +1567,7 @@ async fn activate_window(
     flags: &[String],
 ) -> Result<(), Box<dyn std::error::Error>> {
     let scope = select_scope(driver, flags).await?;
-    let app = flag_value(flags, "--app").unwrap_or_else(|| "DCC application".into());
+    let app = application_label(flags);
     let session_id =
         flag_value(flags, "--session").unwrap_or_else(|| "dcc-cua-activate-cli".into());
     let mut session = driver.session(scope, app, session_id)?;
@@ -1071,7 +1585,7 @@ async fn set_window_frame(
     flags: &[String],
 ) -> Result<(), Box<dyn std::error::Error>> {
     let scope = select_scope(driver, flags).await?;
-    let app = flag_value(flags, "--app").unwrap_or_else(|| "DCC application".into());
+    let app = application_label(flags);
     let session_id =
         flag_value(flags, "--session").unwrap_or_else(|| "dcc-cua-window-frame-cli".into());
     let frame = window_frame_request(flags)?;
@@ -1108,7 +1622,7 @@ async fn invoke_menu(
     flags: &[String],
 ) -> Result<(), Box<dyn std::error::Error>> {
     let scope = select_scope(driver, flags).await?;
-    let app = flag_value(flags, "--app").unwrap_or_else(|| "DCC application".into());
+    let app = application_label(flags);
     let session_id = flag_value(flags, "--session").unwrap_or_else(|| "dcc-cua-menu-cli".into());
     let request = menu_request(flags)?;
     let mut session = driver.session(scope, app, session_id)?;
@@ -1134,7 +1648,7 @@ async fn zoom(
     flags: &[String],
 ) -> Result<(), Box<dyn std::error::Error>> {
     let scope = select_scope(driver, flags).await?;
-    let app = flag_value(flags, "--app").unwrap_or_else(|| "DCC application".into());
+    let app = application_label(flags);
     let session_id = flag_value(flags, "--session").unwrap_or_else(|| "dcc-cua-zoom-cli".into());
     let coordinate = |name: &str| -> Result<f64, Box<dyn std::error::Error>> {
         flag_value(flags, name)
@@ -1197,7 +1711,7 @@ async fn execute_action(
 ) -> Result<(), Box<dyn std::error::Error>> {
     default_activated_action_to_foreground(flags, &mut action);
     let scope = select_scope(driver, flags).await?;
-    let app = flag_value(flags, "--app").unwrap_or_else(|| "DCC application".into());
+    let app = application_label(flags);
     let session_id = flag_value(flags, "--session").unwrap_or_else(|| "dcc-cua-cli".into());
     let mut session = driver.session(scope, app, session_id)?;
     session.start().await?;
@@ -1335,6 +1849,11 @@ fn action_from_command(
         "click" | "double-click" | "right-click" | "toggle" => {
             apply_element_selector(&mut action, flags, command)?;
             action.button = flag_value(flags, "--button");
+            if command == "click" {
+                action.duration_ms = flag_value(flags, "--duration-ms")
+                    .map(|value| value.parse::<u64>())
+                    .transpose()?;
+            }
             let coordinate_present =
                 flag_value(flags, "--x").is_some() || flag_value(flags, "--y").is_some();
             if (action.element_index.is_some() || action.element_token.is_some())
@@ -1539,7 +2058,7 @@ async fn verify_state(
     flags: &[String],
 ) -> Result<(), Box<dyn std::error::Error>> {
     let scope = select_scope(driver, flags).await?;
-    let app = flag_value(flags, "--app").unwrap_or_else(|| "DCC application".into());
+    let app = application_label(flags);
     let session_id = flag_value(flags, "--session").unwrap_or_else(|| "dcc-cua-verify-cli".into());
     let expect_json = flag_value(flags, "--expect-json")
         .ok_or("verify requires --expect-json with a JSON predicate array")?;
@@ -1768,6 +2287,12 @@ fn flag_value(flags: &[String], name: &str) -> Option<String> {
         .cloned()
 }
 
+fn application_label(flags: &[String]) -> String {
+    flag_value(flags, "--app")
+        .or_else(|| flag_value(flags, "--title"))
+        .unwrap_or_else(|| "Application".into())
+}
+
 fn flag_values(flags: &[String], name: &str) -> Vec<String> {
     flags
         .windows(2)
@@ -1796,6 +2321,12 @@ fn has_flag(flags: &[String], name: &str) -> bool {
     flags.iter().any(|flag| flag == name)
 }
 
+fn is_help_request(command: &str, flags: &[String]) -> bool {
+    matches!(command, "help" | "--help" | "-h")
+        || has_flag(flags, "--help")
+        || has_flag(flags, "-h")
+}
+
 fn print_help() {
     println!(
         r#"dcc-cua
@@ -1805,15 +2336,20 @@ fn print_help() {
   apps
   tools
   call --tool NAME [--json JSON|--json-file PATH] [--app APP|--pid PID --window-id ID] [--output FILE]
-  ping [--endpoint PATH|--spawn BINARY]
+  ping [--endpoint PATH|--spawn BINARY] [--agent-name NAME]
   interrupt-all [--endpoint PATH]
-  host-call --method NAME [--json JSON|--json-file PATH] [--endpoint PATH|--spawn BINARY] [--snapshot-transport binary_frame|shared_memory] [--output FILE]
-  host-batch --json JSON_ARRAY [--endpoint PATH|--spawn BINARY] [--snapshot-transport binary_frame|shared_memory] [--output-dir DIR]
-  host-jsonl [--endpoint PATH|--spawn BINARY] [--parallel-discovery] [--snapshot-transport binary_frame|shared_memory] [--output-dir DIR]
+  host-call --method NAME [--json JSON|--json-file PATH] [--endpoint PATH|--spawn BINARY] [--agent-name NAME] [--snapshot-transport binary_frame|shared_memory] [--output FILE]
+  host-batch --json JSON_ARRAY [--endpoint PATH|--spawn BINARY] [--agent-name NAME] [--snapshot-transport binary_frame|shared_memory] [--output-dir DIR]
+  host-jsonl [--endpoint PATH|--spawn BINARY] [--agent-name NAME] [--parallel-discovery] [--showcase] [--showcase-dir DIR] [--snapshot-transport binary_frame|shared_memory] [--output-dir DIR] [--metrics-output FILE]
   host-ensure [--endpoint PATH] [--grant existing-profile]
   manifest
-  profiles                         # list built-in profiles; use --profile-file for custom JSON
+  profiles                         # list built-in and installed profile packages
+  profile validate PACKAGE_DIR [--profile-store DIR]
+  profile install PACKAGE_DIR [--replace] [--profile-store DIR]
+  profile uninstall ID --confirm [--profile-store DIR]
+  profile match --app APP [--title TITLE]
   profile --id ue|maya|fab|... [--profile-file PATH] [--app APP] [--surface ID] [--query TARGET] [--action ACTION] [--activate] [--max-elements N] [--max-depth N]
+  profile-state --id PROFILE|--profile-file PATH [--source ID] [--etag ETAG] [--watch] [--poll-ms N] [--max-updates N]
   update [--check]
   desktop-snapshot [--output FILE]
   screen-size
@@ -1834,11 +2370,11 @@ fn print_help() {
 Host uses versioned big-endian JSON frames. Hello version 1 negotiates binary-frame or shared-memory snapshots and supports request_id correlation."#
     );
     println!(
-        "Profiles are built-in or user-supplied JSON; window snapshots/actions accept --escalate --escalation-reason REASON when an explicit desktop visual fallback approval is required; --activate keeps custom-rendered foreground capture and actions in one session."
+        "Profiles are built-in, installed from ~/.dcc-cua/profiles, or loaded explicitly from JSON; package installation copies declarative content only and never launches bundled code. Window snapshots/actions accept --escalate --escalation-reason REASON when an explicit desktop visual fallback approval is required; --activate keeps custom-rendered foreground capture and actions in one session."
     );
     println!("Zoom: zoom --app APP --x1 N --y1 N --x2 N --y2 N [--output FILE].");
     println!(
-        "Friendly actions: click/double-click/right-click/toggle [--x X --y Y|--element-index N|--element-token TOKEN] [--button left|middle|right], drag --from-x X --from-y Y --to-x X --to-y Y [--button B --modifier M --duration-ms N --steps N], type [--text TEXT] [--focused|--x X --y Y|--element-index N], set-text/set-value, press [--key K] [--modifier M] [--x X --y Y|--element-index N], hotkey [--key K ...] [--x X --y Y], scroll [--scroll-x N|--scroll-y N] [--by line|page] [--x X --y Y|--element-index N], move."
+        "Friendly actions: click [--x X --y Y|--element-index N|--element-token TOKEN] [--button left|middle|right --duration-ms N], double-click/right-click/toggle [--x X --y Y|--element-index N|--element-token TOKEN] [--button left|middle|right], drag --from-x X --from-y Y --to-x X --to-y Y [--button B --modifier M --duration-ms N --steps N], type [--text TEXT] [--focused|--x X --y Y|--element-index N], set-text/set-value, press [--key K] [--modifier M] [--x X --y Y|--element-index N], hotkey [--key K ...] [--x X --y Y], scroll [--scroll-x N|--scroll-y N] [--by line|page] [--x X --y Y|--element-index N], move."
     );
     println!(
         "Semantic tree: accessibility --app APP [--max-elements N] [--max-depth N]. Window: window-state|activate|set-window-frame|invoke-menu --app APP."

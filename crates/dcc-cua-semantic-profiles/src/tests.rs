@@ -5,13 +5,13 @@ use serde_json::json;
 #[rstest]
 fn builtins_are_valid_and_have_independent_ids() {
     let profiles = builtin_profiles();
-    assert_eq!(profiles.len(), 3);
+    assert_eq!(profiles.len(), 4);
     assert_eq!(
         profiles
             .iter()
             .map(|profile| profile.id.as_str())
             .collect::<Vec<_>>(),
-        ["ue", "maya", "fab"]
+        ["ue", "maya", "maya-2024", "fab"]
     );
 }
 
@@ -85,6 +85,58 @@ fn maya_profile_uses_os_native_dialogs() {
 }
 
 #[rstest]
+fn maya_2024_inherits_common_surfaces_and_matches_only_its_host_version() {
+    let profile = builtin_profile("maya-2024").expect("Maya 2024 profile");
+    assert_eq!(profile.profile_version, "1.0.0");
+    assert_eq!(profile.application.family, "autodesk-maya");
+    assert_eq!(profile.application.versions, ["2024"]);
+    assert_eq!(
+        profile.extends.as_ref().map(|parent| parent.id.as_str()),
+        Some("maya")
+    );
+    assert_eq!(
+        profile.selectors,
+        builtin_profile("maya").unwrap().selectors
+    );
+    assert!(profile.surface("home").is_some());
+    assert!(profile.resolve_target("dialog", "file_dialog").is_some());
+    assert!(profile.matches_window("maya.exe", "Autodesk Maya 2024: scene.ma"));
+    assert!(!profile.matches_window("maya.exe", "Autodesk Maya 2025: scene.ma"));
+}
+
+#[rstest]
+fn unresolved_child_may_omit_selectors_but_resolution_cannot() {
+    let parent = builtin_profile("maya").expect("Maya parent");
+    let mut child = builtin_profile("maya-2024").expect("Maya child").clone();
+    child.selectors.clear();
+    assert!(child.validate().is_ok());
+    assert!(
+        !resolve_profile(parent, &child)
+            .expect("resolved child")
+            .selectors
+            .is_empty()
+    );
+
+    let mut unresolved_parent = parent.clone();
+    unresolved_parent.selectors.clear();
+    assert!(matches!(
+        unresolved_parent.validate(),
+        Err(ProfileError::MissingSelector(..))
+    ));
+}
+
+#[rstest]
+fn inheritance_rejects_an_incompatible_parent_version() {
+    let parent = builtin_profile("maya").expect("Maya parent");
+    let mut child = builtin_profile("maya-2024").expect("Maya child").clone();
+    child.extends.as_mut().unwrap().version = ">=2.0".into();
+    assert!(matches!(
+        resolve_profile(parent, &child),
+        Err(ProfileError::ParentVersionMismatch(..))
+    ));
+}
+
+#[rstest]
 fn fab_profile_matches_browser_urls_without_matching_unrelated_hosts() {
     let profile = builtin_profile("fab").expect("Fab profile");
     assert!(profile.matches_url("https://www.fab.com/listings/asset"));
@@ -120,8 +172,10 @@ fn fab_profile_matches_browser_urls_without_matching_unrelated_hosts() {
 #[rstest]
 fn invalid_profile_rejects_duplicate_targets() {
     let input = r#"{
-        "schema_version": 1,
+        "schema_version": 3,
         "id": "test",
+        "profile_version": "1.0.0",
+        "application": {"family": "test", "versions": []},
         "display_name": "Test",
         "selectors": [{"application_names": ["test.exe"]}],
         "surfaces": [{
@@ -145,8 +199,10 @@ fn invalid_profile_rejects_duplicate_targets() {
 #[rstest]
 fn invalid_profile_rejects_malformed_locale_tags() {
     let input = r#"{
-        "schema_version": 1,
+        "schema_version": 3,
         "id": "test",
+        "profile_version": "1.0.0",
+        "application": {"family": "test", "versions": []},
         "display_name": "Test",
         "selectors": [{"application_names": ["test.exe"]}],
         "surfaces": [{
@@ -171,5 +227,152 @@ fn invalid_profile_rejects_malformed_locale_tags() {
     assert!(matches!(
         parse_profile(&empty_alias),
         Err(ProfileError::InvalidLocalizedAliases(..))
+    ));
+}
+
+#[rstest]
+fn key_bindings_are_bounded_and_require_a_supported_action() {
+    let valid = r#"{
+        "schema_version": 3,
+        "id": "game",
+        "profile_version": "1.0.0",
+        "application": {"family": "game", "versions": []},
+        "display_name": "Game",
+        "selectors": [{"application_names": ["game.exe"]}],
+        "surfaces": [{
+            "id": "inventory",
+            "label": "Inventory",
+            "role": "inventory",
+            "route": "visual_fallback",
+            "targets": [{
+                "id": "backpack",
+                "label": "Backpack",
+                "role": "shortcut",
+                "supported_actions": ["toggle"],
+                "key_bindings": {"toggle": ["SPACE"]}
+            }]
+        }],
+        "settings": {"dialog_style": "application_rendered", "preferred_route": "visual_fallback"}
+    }"#;
+    let profile = parse_profile(valid).unwrap();
+    assert_eq!(
+        profile
+            .resolve_target("inventory", "backpack")
+            .unwrap()
+            .key_binding("TOGGLE"),
+        Some(["SPACE".to_owned()].as_slice())
+    );
+
+    let invalid = valid.replace(
+        "\"supported_actions\": [\"toggle\"]",
+        "\"supported_actions\": [\"inspect\"]",
+    );
+    assert!(matches!(
+        parse_profile(&invalid),
+        Err(ProfileError::InvalidKeyBinding(..))
+    ));
+}
+
+#[rstest]
+fn profile_accepts_a_bounded_read_only_loopback_state_source() {
+    let input = r#"{
+        "schema_version": 3,
+        "id": "the-bazaar",
+        "profile_version": "1.0.0",
+        "application": {"family": "the-bazaar", "versions": []},
+        "display_name": "The Bazaar",
+        "selectors": [{"application_names": ["TheBazaar.exe"]}],
+        "surfaces": [],
+        "state_sources": [{
+            "id": "bazaar-agent",
+            "type": "loopback_http_json",
+            "mode": "read_only",
+            "url": "http://127.0.0.1:47900/v1/context",
+            "expected_schema_version": "2.2.0",
+            "schema_version_pointer": "/schemaVersion",
+            "tick_pointer": "/tickId",
+            "use_etag": true,
+            "timeout_ms": 1000,
+            "max_response_bytes": 1048576,
+            "optional": true
+        }],
+        "settings": {"dialog_style": "application_rendered", "preferred_route": "visual_fallback"}
+    }"#;
+
+    let profile = parse_profile(input).expect("valid profile state source");
+    let source = profile
+        .state_source("bazaar-agent")
+        .expect("state source by id");
+    assert_eq!(source.mode, StateSourceMode::ReadOnly);
+    assert_eq!(source.url, "http://127.0.0.1:47900/v1/context");
+    assert_eq!(source.expected_schema_version, "2.2.0");
+    assert!(source.use_etag);
+    assert!(source.optional);
+}
+
+#[rstest]
+#[case("http://localhost:47900/v1/context")]
+#[case("https://127.0.0.1:47900/v1/context")]
+#[case("http://127.0.0.1:47900/v1/context?token=secret")]
+#[case("http://example.com:47900/v1/context")]
+fn profile_rejects_state_sources_that_are_not_literal_http_loopback(#[case] url: &str) {
+    let input = format!(
+        r#"{{
+            "schema_version": 3,
+            "id": "unsafe",
+            "profile_version": "1.0.0",
+            "application": {{"family": "unsafe", "versions": []}},
+            "display_name": "Unsafe",
+            "selectors": [{{"application_names": ["unsafe.exe"]}}],
+            "surfaces": [],
+            "state_sources": [{{
+                "id": "state",
+                "type": "loopback_http_json",
+                "mode": "read_only",
+                "url": "{url}",
+                "expected_schema_version": "1.0.0",
+                "schema_version_pointer": "/schemaVersion",
+                "tick_pointer": "/tickId",
+                "timeout_ms": 1000,
+                "max_response_bytes": 1048576
+            }}],
+            "settings": {{"dialog_style": "application_rendered", "preferred_route": "visual_fallback"}}
+        }}"#
+    );
+
+    assert!(matches!(
+        parse_profile(&input),
+        Err(ProfileError::InvalidStateSourceUrl(..))
+    ));
+}
+
+#[rstest]
+fn profile_rejects_undeclared_state_source_capabilities() {
+    let input = r#"{
+        "schema_version": 3,
+        "id": "unsafe",
+        "profile_version": "1.0.0",
+        "application": {"family": "unsafe", "versions": []},
+        "display_name": "Unsafe",
+        "selectors": [{"application_names": ["unsafe.exe"]}],
+        "surfaces": [],
+        "state_sources": [{
+            "id": "state",
+            "type": "loopback_http_json",
+            "mode": "read_only",
+            "url": "http://127.0.0.1:47900/v1/context",
+            "expected_schema_version": "1.0.0",
+            "schema_version_pointer": "/schemaVersion",
+            "tick_pointer": "/tickId",
+            "timeout_ms": 1000,
+            "max_response_bytes": 1048576,
+            "action_url": "http://127.0.0.1:47900/v1/action"
+        }],
+        "settings": {"dialog_style": "application_rendered", "preferred_route": "visual_fallback"}
+    }"#;
+
+    assert!(matches!(
+        parse_profile(input),
+        Err(ProfileError::InvalidJson(_))
     ));
 }

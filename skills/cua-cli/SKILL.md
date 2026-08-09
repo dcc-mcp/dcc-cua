@@ -62,6 +62,18 @@ typed route cannot cover.
    target that cannot be represented by an exact window. Keep the scope and
    coordinate source explicit.
 
+For fast visual loops on Windows, keep one `host-jsonl` connection open, grant
+`allow_live_observation: true` in `open_session`, then send
+`live_observation_start` with `{"fps":10,"max_dimension":1568}`. Subsequent `snapshot` requests wait
+for and return only a newer exact-window WGC frame without UIA work. Query
+`live_observation_state` for capture/replacement counts and always send
+`live_observation_stop` before `stop_session`. Use a separate
+`accessibility_snapshot` only when semantic controls are required.
+For a custom-rendered transition, set `capture_after: true` and a bounded
+`post_snapshot_delay_ms` (up to 5000) so one request returns the settled frame;
+do not sleep and issue a redundant standalone snapshot. When `capture_after`
+is false, treat `observation_required: true` as a mandatory snapshot fence.
+
 ## Profile-guided routing
 
 A semantic profile is not an automation script. It describes how an agent

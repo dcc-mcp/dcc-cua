@@ -29,6 +29,10 @@ pub(super) struct TaskGrant {
     #[serde(default)]
     pub(super) allow_recording: bool,
     #[serde(default)]
+    pub(super) showcase_output_dir: Option<String>,
+    #[serde(default)]
+    pub(super) allow_live_observation: bool,
+    #[serde(default)]
     pub(super) allow_browser_input: bool,
     #[serde(default)]
     pub(super) allow_browser_prepare: bool,

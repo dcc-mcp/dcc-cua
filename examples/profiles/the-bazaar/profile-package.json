@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "kind": "dcc-cua-profile-package",
+  "id": "the-bazaar",
+  "version": "1.0.0",
+  "display_name": "The Bazaar",
+  "description": "Adaptive The Bazaar CUA vocabulary, policy, fixtures, and an independently launched read-only semantic companion.",
+  "license": "MIT",
+  "entry": "profile.json",
+  "contents": [
+    "profile.json",
+    "SKILL.md",
+    "README.md",
+    "LICENSE",
+    "fixtures",
+    "knowledge",
+    "companion/Cargo.toml",
+    "companion/Cargo.lock",
+    "companion/companion.example.json",
+    "companion/src"
+  ],
+  "capabilities": [
+    "semantic_profile",
+    "agent_skill",
+    "read_only_state_source",
+    "reference_companion",
+    "local_knowledge_seed"
+  ],
+  "platforms": ["windows"]
+}

@@ -8,22 +8,81 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::OnceLock;
 
+use semver::{Version, VersionReq};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
+use url::Url;
 
-pub const PROFILE_SCHEMA_VERSION: u32 = 1;
+pub const PROFILE_SCHEMA_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SemanticProfile {
     pub schema_version: u32,
     pub id: String,
+    pub profile_version: String,
+    pub application: ProfileApplication,
+    #[serde(default)]
+    pub extends: Option<ProfileReference>,
     pub display_name: String,
     #[serde(default)]
     pub selectors: Vec<ProfileSelector>,
     #[serde(default)]
     pub surfaces: Vec<SemanticSurface>,
+    #[serde(default)]
+    pub state_sources: Vec<StateSource>,
     pub settings: ProfileSettings,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProfileApplication {
+    pub family: String,
+    #[serde(default)]
+    pub versions: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProfileReference {
+    pub id: String,
+    pub version: String,
+}
+
+/// A bounded, read-only application state source declared by a profile.
+///
+/// Profiles describe how to reach state that is already exposed by a trusted
+/// local application companion. They never declare a process to launch,
+/// credentials, arbitrary headers, or an action endpoint.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StateSource {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub source_type: StateSourceType,
+    pub mode: StateSourceMode,
+    pub url: String,
+    pub expected_schema_version: String,
+    pub schema_version_pointer: String,
+    pub tick_pointer: String,
+    #[serde(default)]
+    pub use_etag: bool,
+    pub timeout_ms: u64,
+    pub max_response_bytes: u64,
+    #[serde(default)]
+    pub optional: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StateSourceType {
+    LoopbackHttpJson,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StateSourceMode {
+    ReadOnly,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -61,6 +120,8 @@ pub struct SemanticTarget {
     pub automation_ids: Vec<String>,
     #[serde(default)]
     pub supported_actions: Vec<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub key_bindings: BTreeMap<String, Vec<String>>,
     #[serde(default)]
     pub fallback: Option<SemanticFallback>,
 }
@@ -77,6 +138,14 @@ impl SemanticTarget {
         self.supported_actions
             .iter()
             .any(|candidate| candidate.eq_ignore_ascii_case(action))
+    }
+
+    #[must_use]
+    pub fn key_binding(&self, action: &str) -> Option<&[String]> {
+        self.key_bindings
+            .iter()
+            .find(|(candidate, _)| candidate.eq_ignore_ascii_case(action))
+            .map(|(_, keys)| keys.as_slice())
     }
 
     #[must_use]
@@ -150,6 +219,16 @@ pub enum ProfileError {
     UnsupportedSchema(String, u32),
     #[error("profile id is required")]
     MissingId,
+    #[error("profile {0:?} has invalid profile_version {1:?}")]
+    InvalidProfileVersion(String, String),
+    #[error("profile {0:?} has invalid application compatibility")]
+    InvalidApplication(String),
+    #[error("profile {0:?} has invalid parent reference")]
+    InvalidParent(String),
+    #[error("profile {0:?} requires parent {1:?} matching {2:?}")]
+    ParentVersionMismatch(String, String, String),
+    #[error("profile {0:?} cannot inherit application family {1:?}")]
+    ParentApplicationMismatch(String, String),
     #[error("profile {0:?} must define at least one selector or URL host")]
     MissingSelector(String),
     #[error("profile {0:?} contains duplicate surface id {1:?}")]
@@ -158,10 +237,20 @@ pub enum ProfileError {
     DuplicateTarget(String, String, String),
     #[error("profile {0:?} target {1:?} contains an empty fallback")]
     InvalidFallback(String, String),
+    #[error("profile {0:?} target {1:?} contains invalid key binding for {2:?}")]
+    InvalidKeyBinding(String, String, String),
     #[error("profile {0:?} contains invalid locale tag {1:?}")]
     InvalidLocale(String, String),
     #[error("profile {0:?} locale {1:?} must contain non-empty aliases")]
     InvalidLocalizedAliases(String, String),
+    #[error("profile {0:?} contains duplicate state source id {1:?}")]
+    DuplicateStateSource(String, String),
+    #[error("profile {0:?} state source {1:?} must use a literal HTTP loopback URL")]
+    InvalidStateSourceUrl(String, String),
+    #[error("profile {0:?} state source {1:?} has an invalid state contract")]
+    InvalidStateContract(String, String),
+    #[error("profile {0:?} state source {1:?} exceeds runtime bounds")]
+    InvalidStateSourceBounds(String, String),
 }
 
 impl SemanticProfile {
@@ -175,6 +264,29 @@ impl SemanticProfile {
         if self.id.trim().is_empty() {
             return Err(ProfileError::MissingId);
         }
+        if Version::parse(&self.profile_version).is_err() {
+            return Err(ProfileError::InvalidProfileVersion(
+                self.id.clone(),
+                self.profile_version.clone(),
+            ));
+        }
+        if self.application.family.trim().is_empty()
+            || self.application.family.chars().count() > 80
+            || self
+                .application
+                .versions
+                .iter()
+                .any(|version| version.trim().is_empty() || version.chars().count() > 32)
+        {
+            return Err(ProfileError::InvalidApplication(self.id.clone()));
+        }
+        if let Some(parent) = &self.extends
+            && (parent.id.trim().is_empty()
+                || parent.id == self.id
+                || VersionReq::parse(&parent.version).is_err())
+        {
+            return Err(ProfileError::InvalidParent(self.id.clone()));
+        }
         let has_selector = self.selectors.iter().any(|selector| {
             !selector.application_names.is_empty()
                 || !selector.window_title_contains.is_empty()
@@ -184,7 +296,10 @@ impl SemanticProfile {
                     .any(|aliases| !aliases.is_empty())
                 || !selector.url_hosts.is_empty()
         });
-        if !has_selector {
+        // A child may inherit selectors from its parent. The resolved profile
+        // is validated again by `resolve_profile`, so an inheritance chain can
+        // never produce an executable profile without a selector.
+        if !has_selector && self.extends.is_none() {
             return Err(ProfileError::MissingSelector(self.id.clone()));
         }
         if let Some(locale) = &self.settings.default_locale
@@ -194,6 +309,17 @@ impl SemanticProfile {
         }
         for selector in &self.selectors {
             validate_localized_aliases(&self.id, &selector.localized_window_title_contains)?;
+        }
+
+        let mut state_source_ids = HashSet::new();
+        for source in &self.state_sources {
+            if source.id.trim().is_empty() || !state_source_ids.insert(source.id.as_str()) {
+                return Err(ProfileError::DuplicateStateSource(
+                    self.id.clone(),
+                    source.id.clone(),
+                ));
+            }
+            source.validate(&self.id)?;
         }
 
         let mut surface_ids = HashSet::new();
@@ -221,6 +347,21 @@ impl SemanticProfile {
                         target.id.clone(),
                     ));
                 }
+                for (action, keys) in &target.key_bindings {
+                    if !target.supports_action(action)
+                        || keys.is_empty()
+                        || keys.len() > 4
+                        || keys
+                            .iter()
+                            .any(|key| key.is_empty() || key.chars().count() > 32)
+                    {
+                        return Err(ProfileError::InvalidKeyBinding(
+                            self.id.clone(),
+                            target.id.clone(),
+                            action.clone(),
+                        ));
+                    }
+                }
                 validate_localized_aliases(&self.id, &target.localized_names)?;
             }
         }
@@ -229,7 +370,7 @@ impl SemanticProfile {
 
     #[must_use]
     pub fn matches_window(&self, application_name: &str, window_title: &str) -> bool {
-        self.selectors.iter().any(|selector| {
+        let selector_matches = self.selectors.iter().any(|selector| {
             let has_titles = !selector.window_title_contains.is_empty()
                 || selector
                     .localized_window_title_contains
@@ -251,7 +392,13 @@ impl SemanticProfile {
                     .chain(selector.localized_window_title_contains.values().flatten())
                     .any(|value| normalized_title.contains(&normalize_text(value)));
             app_matches && title_matches
-        })
+        });
+        selector_matches
+            && (self.application.versions.is_empty()
+                || self.application.versions.iter().any(|version| {
+                    contains_version_token(application_name, version)
+                        || contains_version_token(window_title, version)
+                }))
     }
 
     #[must_use]
@@ -270,6 +417,13 @@ impl SemanticProfile {
     #[must_use]
     pub fn surface(&self, id: &str) -> Option<&SemanticSurface> {
         self.surfaces.iter().find(|surface| surface.id == id)
+    }
+
+    #[must_use]
+    pub fn state_source(&self, id: &str) -> Option<&StateSource> {
+        self.state_sources
+            .iter()
+            .find(|source| source.id.eq_ignore_ascii_case(id))
     }
 
     #[must_use]
@@ -332,6 +486,56 @@ impl SemanticProfile {
     }
 }
 
+impl StateSource {
+    fn validate(&self, profile_id: &str) -> Result<(), ProfileError> {
+        let url = Url::parse(&self.url).map_err(|_| {
+            ProfileError::InvalidStateSourceUrl(profile_id.to_owned(), self.id.clone())
+        })?;
+        let literal_loopback = matches!(url.host_str(), Some("127.0.0.1" | "[::1]" | "::1"));
+        if self.source_type != StateSourceType::LoopbackHttpJson
+            || self.mode != StateSourceMode::ReadOnly
+            || url.scheme() != "http"
+            || !literal_loopback
+            || url.port().is_none()
+            || !url.username().is_empty()
+            || url.password().is_some()
+            || url.query().is_some()
+            || url.fragment().is_some()
+        {
+            return Err(ProfileError::InvalidStateSourceUrl(
+                profile_id.to_owned(),
+                self.id.clone(),
+            ));
+        }
+        if self.expected_schema_version.trim().is_empty()
+            || self.expected_schema_version.len() > 64
+            || !valid_json_pointer(&self.schema_version_pointer)
+            || !valid_json_pointer(&self.tick_pointer)
+        {
+            return Err(ProfileError::InvalidStateContract(
+                profile_id.to_owned(),
+                self.id.clone(),
+            ));
+        }
+        if !(50..=10_000).contains(&self.timeout_ms)
+            || !(1_024..=8 * 1_024 * 1_024).contains(&self.max_response_bytes)
+        {
+            return Err(ProfileError::InvalidStateSourceBounds(
+                profile_id.to_owned(),
+                self.id.clone(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+fn valid_json_pointer(pointer: &str) -> bool {
+    !pointer.is_empty()
+        && pointer.len() <= 256
+        && pointer.starts_with('/')
+        && !pointer.chars().any(char::is_control)
+}
+
 fn normalize_text(value: &str) -> String {
     // ponytail: std Unicode lowercase is enough for observed UIs; add NFKC
     // case-folding only when a real alias demonstrates the need.
@@ -340,6 +544,12 @@ fn normalize_text(value: &str) -> String {
         .collect::<Vec<_>>()
         .join(" ")
         .to_lowercase()
+}
+
+fn contains_version_token(value: &str, version: &str) -> bool {
+    value
+        .split(|character: char| !character.is_ascii_alphanumeric() && character != '.')
+        .any(|token| token.eq_ignore_ascii_case(version))
 }
 
 fn validate_localized_aliases(
@@ -404,18 +614,110 @@ pub fn parse_profile(input: &str) -> Result<SemanticProfile, ProfileError> {
     Ok(profile)
 }
 
+pub fn resolve_profile(
+    parent: &SemanticProfile,
+    child: &SemanticProfile,
+) -> Result<SemanticProfile, ProfileError> {
+    parent.validate()?;
+    child.validate()?;
+    let Some(reference) = &child.extends else {
+        return Ok(child.clone());
+    };
+    let requirement = VersionReq::parse(&reference.version)
+        .map_err(|_| ProfileError::InvalidParent(child.id.clone()))?;
+    let parent_version = Version::parse(&parent.profile_version).map_err(|_| {
+        ProfileError::InvalidProfileVersion(parent.id.clone(), parent.profile_version.clone())
+    })?;
+    if reference.id != parent.id || !requirement.matches(&parent_version) {
+        return Err(ProfileError::ParentVersionMismatch(
+            child.id.clone(),
+            reference.id.clone(),
+            reference.version.clone(),
+        ));
+    }
+    if !child
+        .application
+        .family
+        .eq_ignore_ascii_case(&parent.application.family)
+    {
+        return Err(ProfileError::ParentApplicationMismatch(
+            child.id.clone(),
+            parent.application.family.clone(),
+        ));
+    }
+
+    let mut resolved = child.clone();
+    if resolved.selectors.is_empty() {
+        resolved.selectors.clone_from(&parent.selectors);
+    }
+    resolved.state_sources = merge_by_id(&parent.state_sources, &child.state_sources, |source| {
+        source.id.as_str()
+    });
+    resolved.surfaces = merge_surfaces(&parent.surfaces, &child.surfaces);
+    resolved.validate()?;
+    Ok(resolved)
+}
+
+fn merge_by_id<T: Clone>(parent: &[T], child: &[T], id: impl Fn(&T) -> &str) -> Vec<T> {
+    let mut merged = parent.to_vec();
+    for value in child {
+        if let Some(index) = merged
+            .iter()
+            .position(|candidate| id(candidate) == id(value))
+        {
+            merged[index] = value.clone();
+        } else {
+            merged.push(value.clone());
+        }
+    }
+    merged
+}
+
+fn merge_surfaces(parent: &[SemanticSurface], child: &[SemanticSurface]) -> Vec<SemanticSurface> {
+    let mut merged = parent.to_vec();
+    for child_surface in child {
+        if let Some(index) = merged
+            .iter()
+            .position(|surface| surface.id == child_surface.id)
+        {
+            let mut surface = child_surface.clone();
+            surface.targets =
+                merge_by_id(&merged[index].targets, &child_surface.targets, |target| {
+                    target.id.as_str()
+                });
+            merged[index] = surface;
+        } else {
+            merged.push(child_surface.clone());
+        }
+    }
+    merged
+}
+
 pub fn builtin_profiles() -> &'static [SemanticProfile] {
     static PROFILES: OnceLock<Vec<SemanticProfile>> = OnceLock::new();
     PROFILES
         .get_or_init(|| {
-            [
+            let mut profiles = [
                 include_str!("../profiles/ue.json"),
                 include_str!("../profiles/maya.json"),
+                include_str!("../profiles/maya-2024.json"),
                 include_str!("../profiles/fab.json"),
             ]
             .into_iter()
             .map(|profile| parse_profile(profile).expect("built-in semantic profile is valid"))
-            .collect()
+            .collect::<Vec<_>>();
+            let child_index = profiles
+                .iter()
+                .position(|profile| profile.id == "maya-2024")
+                .expect("Maya 2024 profile");
+            let parent = profiles
+                .iter()
+                .find(|profile| profile.id == "maya")
+                .expect("Maya base profile")
+                .clone();
+            profiles[child_index] = resolve_profile(&parent, &profiles[child_index])
+                .expect("built-in Maya 2024 inheritance is valid");
+            profiles
         })
         .as_slice()
 }

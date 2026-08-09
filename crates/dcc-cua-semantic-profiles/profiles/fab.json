@@ -1,6 +1,8 @@
 {
-  "schema_version": 1,
+  "schema_version": 3,
   "id": "fab",
+  "profile_version": "1.0.0",
+  "application": {"family": "epic-fab", "versions": []},
   "display_name": "Fab marketplace",
   "selectors": [
     {"application_names": ["chrome.exe", "msedge.exe", "firefox.exe"], "window_title_contains": ["Fab", "Epic Games"]},

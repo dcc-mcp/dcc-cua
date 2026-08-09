@@ -1,0 +1,22 @@
+{
+  "schema_version": 3,
+  "id": "maya-2024",
+  "profile_version": "1.0.0",
+  "application": {
+    "family": "autodesk-maya",
+    "versions": ["2024"]
+  },
+  "extends": {
+    "id": "maya",
+    "version": "^1.0"
+  },
+  "display_name": "Autodesk Maya 2024",
+  "selectors": [],
+  "surfaces": [],
+  "settings": {
+    "dialog_style": "os_native",
+    "preferred_route": "accessibility",
+    "default_locale": "en",
+    "destructive_confirmation_required": true
+  }
+}

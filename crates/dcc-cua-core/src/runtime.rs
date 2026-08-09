@@ -5,13 +5,15 @@ use std::time::{Duration, Instant};
 
 use base64::Engine;
 use cua_driver_sdk::CuaDriver;
-use dcc_cua_indicator::{BannerTarget, ControlBanner, localized_control_label, session_color};
+use dcc_cua_indicator::{BannerActivity, BannerTarget, ControlBanner, localized_control_label};
 use serde_json::{Value, json};
 
 use crate::contracts::*;
 use crate::interactive_desktop;
+use crate::live_observation::LiveObservation;
 use crate::observation::semantic_observation;
 use crate::policy::*;
+use crate::showcase::{ShowcaseRecorder, fit_dimensions_with_bounds, resize_bgra};
 use crate::window_target::{WindowTarget, validate_target_policy};
 #[cfg(windows)]
 use crate::windows_uia_fallback::WindowsUiaFallback;
@@ -22,6 +24,36 @@ mod menu_commands;
 mod window_commands;
 
 const INPUT_CALL_TIMEOUT: Duration = Duration::from_secs(15);
+const CURSOR_GLIDE_MS: u64 = 180;
+const SESSION_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
+
+fn banner_activity_for_action(action: &ComputerUseAction) -> BannerActivity {
+    match action.action.as_str() {
+        "type" | "type_chars" | "set_text" | "set_value" | "keypress" | "keyboard_shortcut" => {
+            BannerActivity::KeyboardInput
+        }
+        _ => BannerActivity::PointerInput,
+    }
+}
+
+pub(crate) fn held_coordinate_click_as_drag(
+    action: &ComputerUseAction,
+) -> Option<ComputerUseAction> {
+    let (Some(duration_ms), Some(x), Some(y)) = (action.duration_ms, action.x, action.y) else {
+        return None;
+    };
+    if action.action != "click" || duration_ms == 0 {
+        return None;
+    }
+
+    let mut drag = action.clone();
+    drag.action = "drag".into();
+    drag.x = None;
+    drag.y = None;
+    drag.path = vec![ComputerUsePoint { x, y }; 2];
+    drag.steps = Some(20);
+    Some(drag)
+}
 
 async fn call_driver_tool(
     driver: &CuaDriver,
@@ -72,6 +104,7 @@ pub struct ComputerUseDriver {
 
 impl ComputerUseDriver {
     pub fn create() -> ComputerUseResult<Self> {
+        crate::driver_factory::ensure_bundled_cursor_theme()?;
         crate::driver_factory::create_embedded()
             .map(Self::from_driver)
             .map_err(|error| map_driver_error("create CUA runtime", error))
@@ -83,6 +116,7 @@ impl ComputerUseDriver {
     /// CUA can keep AppKit on the worker's main thread and render its native
     /// per-session cursor without turning the Host itself into an app bundle.
     pub fn create_private_worker(options: PrivateWorkerOptions) -> ComputerUseResult<Self> {
+        crate::driver_factory::ensure_bundled_cursor_theme()?;
         crate::driver_factory::create_private_worker(options)
             .map(Self::from_driver)
             .map_err(|error| map_driver_error("create CUA private worker", error))
@@ -97,6 +131,7 @@ impl ComputerUseDriver {
         options: ConfiguredDriverOptions,
         host: Arc<dyn DriverAuthorizationHost>,
     ) -> ComputerUseResult<Self> {
+        crate::driver_factory::ensure_bundled_cursor_theme()?;
         crate::driver_factory::create_authorized(options, host)
             .map(Self::from_driver)
             .map_err(|error| map_driver_error("create authorized CUA runtime", error))
@@ -171,6 +206,63 @@ impl ComputerUseDriver {
         on_screen_only: bool,
     ) -> ComputerUseResult<Vec<Value>> {
         list_windows_with_driver(&self.driver, pid, on_screen_only).await
+    }
+
+    #[cfg(not(windows))]
+    pub(crate) async fn capture_exact_window_png(
+        &self,
+        process_id: u32,
+        window_handle: u64,
+        session_id: &str,
+    ) -> ComputerUseResult<Vec<u8>> {
+        let matches_target = |windows: &[Value]| {
+            windows.iter().any(|window| {
+                WindowTarget::from_value(window).is_some_and(|target| {
+                    target.pid == process_id && target.window_id == window_handle
+                })
+            })
+        };
+        let before = self.list_windows_filtered(Some(process_id), false).await?;
+        if !matches_target(&before) {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::InvalidTarget,
+                "live observation target identity changed",
+            ));
+        }
+        let result = call_driver_tool(
+            &self.driver,
+            "get_window_state",
+            json!({
+                "window_id": window_handle,
+                "pid": process_id,
+                "include_screenshot": true,
+                "max_elements": 1,
+                "max_depth": 1,
+                "session": session_id,
+            })
+            .to_string(),
+            "capture portable live window frame",
+        )
+        .await?;
+        ensure_tool_ok("capture portable live window frame", &result)?;
+        let after = self.list_windows_filtered(Some(process_id), false).await?;
+        if !matches_target(&after) {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::InvalidTarget,
+                "live observation target identity changed during capture",
+            ));
+        }
+        let image = result.images.first().ok_or_else(|| {
+            ComputerUseError::new(
+                ComputerUseErrorCode::CaptureFailed,
+                "CUA live window state returned no screenshot",
+            )
+        })?;
+        base64::engine::general_purpose::STANDARD
+            .decode(&image.data_base64)
+            .map_err(|error| {
+                ComputerUseError::new(ComputerUseErrorCode::CaptureFailed, error.to_string())
+            })
     }
 
     /// Wait until the bounded native window query returns at least one row.
@@ -487,7 +579,217 @@ async fn enable_session_marker(
         cleanup_started_session(driver, session_id).await;
         return Err(error);
     }
+    let result = call_driver_tool(
+        &driver.driver,
+        "set_agent_cursor_motion",
+        json!({"session": session_id, "glide_duration_ms": CURSOR_GLIDE_MS}).to_string(),
+        context,
+    )
+    .await;
+    let result = match result {
+        Ok(result) => result,
+        Err(error) => {
+            cleanup_started_session(driver, session_id).await;
+            return Err(error);
+        }
+    };
+    if let Err(error) = ensure_tool_ok(context, &result) {
+        cleanup_started_session(driver, session_id).await;
+        return Err(error);
+    }
     Ok(())
+}
+
+#[cfg(windows)]
+pub(crate) fn uses_windows_foreground_fast_path(action: &ComputerUseAction) -> bool {
+    action.delivery_mode.as_deref() == Some("foreground")
+        && matches!(
+            action.action.as_str(),
+            "click"
+                | "double_click"
+                | "right_click"
+                | "toggle"
+                | "drag"
+                | "keypress"
+                | "keyboard_shortcut"
+        )
+}
+
+#[cfg(windows)]
+async fn perform_windows_foreground_fast_action(
+    action: &ComputerUseAction,
+    session_id: &str,
+    target: &WindowTarget,
+) -> ComputerUseResult<Option<ComputerUseToolResult>> {
+    if !uses_windows_foreground_fast_path(action) {
+        return Ok(None);
+    }
+
+    dcc_cua_platform_windows::activate_window(dcc_cua_platform_windows::UiaTarget {
+        process_id: target.pid,
+        window_handle: target.window_id,
+    })
+    .map_err(|error| {
+        ComputerUseError::new(
+            ComputerUseErrorCode::InputFailed,
+            format!("activate the exact Windows target before pointer input: {error}"),
+        )
+    })?;
+
+    let window_id = target.window_id;
+    let [left, top, _, _] = target.bounds;
+    let screen_point =
+        |point: ComputerUsePoint| (left + point.x.round() as i32, top + point.y.round() as i32);
+    let animate_to = |x: i32, y: i32| {
+        platform_windows::overlay::send_command(
+            session_id.to_owned(),
+            cursor_overlay::OverlayCommand::PinAbove(target.window_id),
+        );
+        tokio::time::timeout(
+            Duration::from_millis(CURSOR_GLIDE_MS + 70),
+            platform_windows::overlay::animate_cursor_to(
+                session_id.to_owned(),
+                f64::from(x),
+                f64::from(y),
+            ),
+        )
+    };
+
+    let text = if matches!(action.action.as_str(), "keypress" | "keyboard_shortcut") {
+        let key = action.keys.last().cloned().unwrap_or_default();
+        let modifiers = if action.action == "keyboard_shortcut" {
+            action.keys[..action.keys.len().saturating_sub(1)].to_vec()
+        } else {
+            action.modifiers.clone()
+        };
+        tokio::task::spawn_blocking(move || {
+            let modifiers: Vec<&str> = modifiers.iter().map(String::as_str).collect();
+            platform_windows::input::keyboard::send_key_synthesized(window_id, &key, &modifiers)
+        })
+        .await
+        .map_err(|error| {
+            ComputerUseError::new(
+                ComputerUseErrorCode::InputFailed,
+                format!("join Windows foreground keypress: {error}"),
+            )
+        })?
+        .map_err(|error| {
+            ComputerUseError::new(
+                ComputerUseErrorCode::InputFailed,
+                format!("send Windows foreground keypress: {error}"),
+            )
+        })?;
+        "Sent scoped Windows keypress.".to_owned()
+    } else if action.action == "drag" {
+        let first = action.path.first().copied().unwrap_or(ComputerUsePoint {
+            x: action.x.unwrap_or_default(),
+            y: action.y.unwrap_or_default(),
+        });
+        let last = action.path.last().copied().unwrap_or(first);
+        let (from_x, from_y) = screen_point(first);
+        let (to_x, to_y) = screen_point(last);
+        let _ = animate_to(from_x, from_y).await;
+        platform_windows::overlay::send_command(
+            session_id.to_owned(),
+            cursor_overlay::OverlayCommand::ClickPulse {
+                x: f64::from(from_x),
+                y: f64::from(from_y),
+            },
+        );
+        platform_windows::overlay::send_command(
+            session_id.to_owned(),
+            cursor_overlay::OverlayCommand::MoveTo {
+                x: f64::from(to_x),
+                y: f64::from(to_y),
+                end_heading_radians: std::f64::consts::FRAC_PI_4,
+            },
+        );
+        let duration_ms = action.duration_ms.unwrap_or(500);
+        let steps = action.steps.unwrap_or(20);
+        let button = action.button.as_deref().unwrap_or("left").to_owned();
+        tokio::task::spawn_blocking(move || {
+            platform_windows::input::mouse::send_drag_synthesized(
+                window_id,
+                from_x,
+                from_y,
+                to_x,
+                to_y,
+                duration_ms,
+                steps as usize,
+                &button,
+            )
+        })
+        .await
+        .map_err(|error| {
+            ComputerUseError::new(
+                ComputerUseErrorCode::InputFailed,
+                format!("join Windows foreground drag: {error}"),
+            )
+        })?
+        .map_err(|error| {
+            ComputerUseError::new(
+                ComputerUseErrorCode::InputFailed,
+                format!("send Windows foreground drag: {error}"),
+            )
+        })?;
+        format!("Sent scoped Windows drag from ({from_x}, {from_y}) to ({to_x}, {to_y}).")
+    } else {
+        let (x, y) = screen_point(ComputerUsePoint {
+            x: action.x.unwrap_or_default(),
+            y: action.y.unwrap_or_default(),
+        });
+        let _ = animate_to(x, y).await;
+        platform_windows::overlay::send_command(
+            session_id.to_owned(),
+            cursor_overlay::OverlayCommand::ClickPulse {
+                x: f64::from(x),
+                y: f64::from(y),
+            },
+        );
+        let count = usize::from(action.action == "double_click") + 1;
+        let button = action
+            .button
+            .as_deref()
+            .unwrap_or(if action.action == "right_click" {
+                "right"
+            } else {
+                "left"
+            })
+            .to_owned();
+        let modifiers = action.modifiers.clone();
+        tokio::task::spawn_blocking(move || {
+            let modifiers: Vec<&str> = modifiers.iter().map(String::as_str).collect();
+            platform_windows::input::mouse::send_click_synthesized_active_mods(
+                window_id, x, y, count, &button, &modifiers,
+            )
+        })
+        .await
+        .map_err(|error| {
+            ComputerUseError::new(
+                ComputerUseErrorCode::InputFailed,
+                format!("join Windows foreground click: {error}"),
+            )
+        })?
+        .map_err(|error| {
+            ComputerUseError::new(
+                ComputerUseErrorCode::InputFailed,
+                format!("send Windows foreground click: {error}"),
+            )
+        })?;
+        format!("Sent scoped Windows click at ({x}, {y}).")
+    };
+
+    Ok(Some(ComputerUseToolResult {
+        value: json!({
+            "success": true,
+            "route": "windows_scoped_fast_input",
+            "delivery": {"mode": "foreground"},
+            "effect": "unverifiable",
+        }),
+        text,
+        images: Vec::new(),
+        degraded: false,
+    }))
 }
 
 async fn cleanup_started_session(driver: &ComputerUseDriver, session_id: &str) {
@@ -501,6 +803,11 @@ async fn cleanup_started_session(driver: &ComputerUseDriver, session_id: &str) {
 }
 
 /// A long-lived, exact-window Computer Use session.
+struct ActiveShowcase {
+    recorder: ShowcaseRecorder,
+    owns_live_observation: bool,
+}
+
 pub struct ComputerUseSession {
     driver: ComputerUseDriver,
     scope: ComputerUseTargetScope,
@@ -511,8 +818,11 @@ pub struct ComputerUseSession {
     control_banner: Option<ControlBanner>,
     target: Option<WindowTarget>,
     pub(crate) observation: Option<ComputerUseObservation>,
+    live_observation: Option<LiveObservation>,
+    showcase: Option<ActiveShowcase>,
     #[cfg(windows)]
     pub(crate) windows_uia: Option<WindowsUiaFallback>,
+    last_upstream_session_refresh: Option<Instant>,
     active: bool,
     escalated: bool,
 }
@@ -733,8 +1043,11 @@ impl ComputerUseSession {
             control_banner: None,
             target: None,
             observation: None,
+            live_observation: None,
+            showcase: None,
             #[cfg(windows)]
             windows_uia: None,
+            last_upstream_session_refresh: None,
             active: false,
             escalated: false,
         })
@@ -749,29 +1062,14 @@ impl ComputerUseSession {
             ));
         }
         let target = self.resolve_target().await?;
-        let result = call_driver_tool(
-            &self.driver.driver,
-            "start_session",
-            json!({
-                "session": self.session_id,
-                "capture_scope": "window",
-                "cursor_theme": {"theme_id": MOUSE_CURSOR_THEME, "reduced_motion": "auto"},
-                "_public_session_label": self.marker.label,
-            })
-            .to_string(),
-            "start CUA session",
-        )
-        .await?;
-        ensure_tool_ok("start CUA session", &result)?;
-        enable_session_marker(&self.driver, &self.session_id, "show CUA marker").await?;
-        let control_banner = match ControlBanner::start_with_color(
-            BannerTarget {
-                process_id: target.pid,
-                window_handle: target.window_id,
-                label: self.marker.label.clone(),
-            },
-            session_color(&self.agent_name, &self.session_id),
-        ) {
+        self.start_upstream_session("start CUA session").await?;
+        self.last_upstream_session_refresh = Some(Instant::now());
+        let control_banner = match ControlBanner::start(BannerTarget {
+            process_id: target.pid,
+            window_handle: target.window_id,
+            agent_name: self.agent_name.clone(),
+            application_name: self.app_name.clone(),
+        }) {
             Ok(banner) => banner,
             Err(error) => {
                 cleanup_started_session(&self.driver, &self.session_id).await;
@@ -783,6 +1081,7 @@ impl ComputerUseSession {
         };
         self.target = Some(target.clone());
         self.control_banner = Some(control_banner);
+        self.set_banner_activity(BannerActivity::Ready);
         #[cfg(windows)]
         {
             self.windows_uia = None;
@@ -800,6 +1099,36 @@ impl ComputerUseSession {
         }))
     }
 
+    async fn start_upstream_session(&self, context: &str) -> ComputerUseResult<()> {
+        let result = call_driver_tool(
+            &self.driver.driver,
+            "start_session",
+            json!({
+                "session": self.session_id,
+                "capture_scope": "window",
+                "cursor_theme": {"theme_id": MOUSE_CURSOR_THEME, "reduced_motion": "auto"},
+                "_public_session_label": self.marker.label,
+            })
+            .to_string(),
+            context,
+        )
+        .await?;
+        ensure_tool_ok(context, &result)?;
+        enable_session_marker(&self.driver, &self.session_id, context).await
+    }
+
+    async fn refresh_upstream_session_if_needed(&mut self) -> ComputerUseResult<()> {
+        if self
+            .last_upstream_session_refresh
+            .is_some_and(|refreshed| refreshed.elapsed() < SESSION_REFRESH_INTERVAL)
+        {
+            return Ok(());
+        }
+        self.start_upstream_session("refresh CUA session").await?;
+        self.last_upstream_session_refresh = Some(Instant::now());
+        Ok(())
+    }
+
     /// Capture a fresh exact-window observation. Every action must consume it.
     pub async fn screenshot(&mut self) -> ComputerUseResult<ComputerUseScreenshot> {
         self.screenshot_with_bounds(DEFAULT_SNAPSHOT_MAX_ELEMENTS, DEFAULT_SNAPSHOT_MAX_DEPTH)
@@ -813,6 +1142,10 @@ impl ComputerUseSession {
         max_depth: u32,
     ) -> ComputerUseResult<ComputerUseScreenshot> {
         self.ensure_active()?;
+        self.set_banner_activity(BannerActivity::Observing);
+        if self.live_observation.is_some() {
+            return self.live_observation_screenshot().await;
+        }
         let target = self.revalidate_target().await?;
         #[cfg(windows)]
         if self.windows_uia.is_some() {
@@ -905,6 +1238,7 @@ impl ComputerUseSession {
         };
         self.target = Some(target);
         self.observation = Some(observation.clone());
+        self.set_banner_activity(BannerActivity::Ready);
         Ok(ComputerUseScreenshot {
             data,
             observation,
@@ -912,9 +1246,136 @@ impl ComputerUseSession {
         })
     }
 
+    async fn live_observation_screenshot(&mut self) -> ComputerUseResult<ComputerUseScreenshot> {
+        let previous_sequence = self
+            .observation
+            .as_ref()
+            .and_then(|observation| observation.capture_provenance["live_frame_sequence"].as_u64());
+        let max_dimension = self
+            .live_observation
+            .as_ref()
+            .expect("live observation was checked")
+            .max_dimension();
+        let frame = self
+            .live_observation
+            .as_mut()
+            .expect("live observation was checked")
+            .latest_after(previous_sequence)
+            .await?;
+        let target = self.revalidate_target().await?;
+        let (source_width, source_height) = frame.dimensions();
+        let (width, height) =
+            fit_dimensions_with_bounds(source_width, source_height, max_dimension, max_dimension);
+        let encoded_frame = Arc::clone(&frame);
+        let data = tokio::task::spawn_blocking(move || {
+            let bgra = resize_bgra(
+                encoded_frame.bgra(),
+                source_width,
+                source_height,
+                width,
+                height,
+            );
+            encode_bgra_to_png(&bgra, width, height)
+        })
+        .await
+        .map_err(|error| {
+            ComputerUseError::new(
+                ComputerUseErrorCode::CaptureFailed,
+                format!("live frame PNG encoding task failed: {error}"),
+            )
+        })??;
+        let accessibility = json!({
+            "degraded": true,
+            "accessibility_available": false,
+            "fallback": "live_observation",
+            "window_id": target.window_id,
+            "pid": target.pid,
+        });
+        let observation = ComputerUseObservation {
+            observation_id: format!(
+                "{}-{}",
+                self.session_id,
+                OBSERVATION_COUNTER.fetch_add(1, Ordering::Relaxed)
+            ),
+            window_handle: target.window_id,
+            process_id: target.pid,
+            window_title: target.title.clone(),
+            width,
+            height,
+            source_rect: target.bounds,
+            capture_backend: "cua-live-wgc-latest-frame".into(),
+            capture_provenance: json!({
+                "backend": "cua-live-wgc-latest-frame",
+                "pixels_captured": true,
+                "scope": "window",
+                "process_id": target.pid,
+                "window_handle": target.window_id,
+                "live_frame_sequence": frame.sequence(),
+                "captured_at_ms": frame.captured_at_ms(),
+                "frame_age_ms": frame.age_ms(),
+                "native_frame_width": source_width,
+                "native_frame_height": source_height,
+                "max_dimension": max_dimension,
+                "frames_skipped_since_previous_observation": previous_sequence
+                    .map_or(0, |sequence| frame.sequence().saturating_sub(sequence).saturating_sub(1)),
+                "accessibility_available": false,
+            }),
+            session_id: self.session_id.clone(),
+        };
+        self.target = Some(target);
+        self.observation = Some(observation.clone());
+        self.set_banner_activity(BannerActivity::Observing);
+        Ok(ComputerUseScreenshot {
+            data,
+            observation,
+            accessibility,
+        })
+    }
+
+    /// Start exact-window latest-frame prefetch without changing the action fence.
+    pub async fn start_live_observation(
+        &mut self,
+        request: &ComputerUseLiveObservationStartRequest,
+    ) -> ComputerUseResult<Value> {
+        self.ensure_active()?;
+        request.validate()?;
+        if let Some(observation) = &self.live_observation {
+            return Ok(observation.state());
+        }
+        self.set_banner_activity(BannerActivity::Observing);
+        let target = self.revalidate_target().await?;
+        let observation = LiveObservation::start(
+            self.driver.clone(),
+            self.session_id.clone(),
+            target.pid,
+            target.window_id,
+            request,
+        )
+        .await?;
+        let state = observation.state();
+        self.live_observation = Some(observation);
+        Ok(state)
+    }
+
+    #[must_use]
+    pub fn live_observation_state(&self) -> Value {
+        self.live_observation
+            .as_ref()
+            .map_or_else(|| json!({"active": false}), LiveObservation::state)
+    }
+
+    pub async fn stop_live_observation(&mut self) -> Value {
+        let result = match self.live_observation.take() {
+            Some(observation) => observation.stop().await,
+            None => json!({"active": false}),
+        };
+        self.set_banner_activity(BannerActivity::Ready);
+        result
+    }
+
     /// Capture a native-resolution crop from the latest window observation.
     pub async fn zoom(
-        &self,
+        &mut self,
         request: &ComputerUseZoomRequest,
     ) -> ComputerUseResult<ComputerUseToolResult> {
         self.ensure_active()?;
@@ -1076,6 +1537,7 @@ impl ComputerUseSession {
         };
         self.target = Some(target.clone());
         self.observation = Some(observation.clone());
+        self.set_banner_activity(BannerActivity::Ready);
         Ok(ComputerUseScreenshot {
             data,
             observation,
@@ -1138,7 +1600,7 @@ impl ComputerUseSession {
     /// Verification is read-only and remains target-bound; the CUA driver
     /// owns predicate semantics and returns tri-state evidence.
     pub async fn verify_state(
-        &self,
+        &mut self,
         expect: Value,
         timeout_ms: Option<u64>,
         stable_samples: Option<u64>,
@@ -1146,6 +1608,7 @@ impl ComputerUseSession {
     ) -> ComputerUseResult<ComputerUseVerification> {
         self.ensure_active()?;
         validate_verify_state_request(&expect, timeout_ms, stable_samples)?;
+        self.set_banner_activity(BannerActivity::Waiting);
         let expect = expect.as_array().expect("verify state was validated");
         let target = self.revalidate_target().await?;
         let result = self
@@ -1178,6 +1641,7 @@ impl ComputerUseSession {
         let image = image.transpose().map_err(|error| {
             ComputerUseError::new(ComputerUseErrorCode::CaptureFailed, error.to_string())
         })?;
+        self.set_banner_activity(BannerActivity::Ready);
         Ok(ComputerUseVerification { value, image })
     }
 
@@ -1198,6 +1662,12 @@ impl ComputerUseSession {
         }
         self.ensure_active()?;
         let target = self.revalidate_target().await?;
+        self.set_banner_activity(match name {
+            "browser_type" => BannerActivity::KeyboardInput,
+            "browser_navigate" | "browser_prepare" => BannerActivity::Navigating,
+            "get_browser_state" => BannerActivity::Observing,
+            _ => BannerActivity::PointerInput,
+        });
         let schema = self.driver.tool_schema(name).await?;
         let mut object = arguments.as_object().cloned().ok_or_else(|| {
             ComputerUseError::new(
@@ -1303,12 +1773,14 @@ impl ComputerUseSession {
         )
         .await?;
         ensure_tool_ok(&format!("call CUA {name}"), &result)?;
-        serde_json::from_str(&result.raw_json).map_err(|error| {
+        let value = serde_json::from_str(&result.raw_json).map_err(|error| {
             ComputerUseError::new(
                 ComputerUseErrorCode::BackendUnavailable,
                 format!("CUA {name} returned invalid JSON: {error}"),
             )
-        })
+        })?;
+        self.set_banner_activity(BannerActivity::Ready);
+        Ok(value)
     }
 
     /// Call the one browser destructive tool through CUA's trusted adapter
@@ -1344,7 +1816,7 @@ impl ComputerUseSession {
     }
 
     /// Read clipboard types, optionally including privacy-sensitive text.
-    pub async fn clipboard_read(&self, include_text: bool) -> ComputerUseResult<Value> {
+    pub async fn clipboard_read(&mut self, include_text: bool) -> ComputerUseResult<Value> {
         self.ensure_active()?;
         self.revalidate_target().await?;
         self.call_bound_tool_value("clipboard_read", json!({"include_text": include_text}))
@@ -1353,7 +1825,7 @@ impl ComputerUseSession {
 
     /// Replace the clipboard with exactly one validated value.
     pub async fn clipboard_write(
-        &self,
+        &mut self,
         request: &ComputerUseClipboardWriteRequest,
     ) -> ComputerUseResult<Value> {
         validate_clipboard_write_request(request)?;
@@ -1370,36 +1842,116 @@ impl ComputerUseSession {
 
     /// Start trajectory/evidence recording for this exact CUA session.
     pub async fn recording_start(
-        &self,
+        &mut self,
         request: &ComputerUseRecordingStartRequest,
     ) -> ComputerUseResult<Value> {
         validate_recording_start_request(request)?;
         self.ensure_active()?;
         self.revalidate_target().await?;
-        self.call_bound_tool_value(
-            "start_recording",
-            json!({
-                "output_dir": request.output_dir,
-                "record_video": request.record_video,
-            }),
+        if self.showcase.is_some() {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::InvalidAction,
+                "showcase recording is already active",
+            ));
+        }
+        self.set_banner_activity(BannerActivity::Recording);
+        let trajectory = self
+            .call_bound_tool_value(
+                "start_recording",
+                json!({
+                    "output_dir": request.output_dir,
+                    "record_video": false,
+                }),
+            )
+            .await?;
+        if !request.record_video {
+            return Ok(trajectory);
+        }
+
+        let owns_live_observation = self.live_observation.is_none();
+        if owns_live_observation
+            && let Err(error) = self
+                .start_live_observation(&ComputerUseLiveObservationStartRequest {
+                    fps: 10,
+                    ..Default::default()
+                })
+                .await
+        {
+            let _ = self
+                .call_bound_tool_value("stop_recording", json!({}))
+                .await;
+            self.set_banner_activity(BannerActivity::Ready);
+            return Err(error);
+        }
+        let observation = self
+            .live_observation
+            .as_ref()
+            .expect("live observation was started");
+        match ShowcaseRecorder::start(
+            observation.subscribe(),
+            &request.output_dir,
+            observation.fps(),
         )
         .await
+        {
+            Ok(recorder) => {
+                let video = recorder.state();
+                self.showcase = Some(ActiveShowcase {
+                    recorder,
+                    owns_live_observation,
+                });
+                self.set_banner_activity(BannerActivity::Recording);
+                Ok(json!({"trajectory": trajectory, "video": video}))
+            }
+            Err(error) => {
+                let _ = self
+                    .call_bound_tool_value("stop_recording", json!({}))
+                    .await;
+                if owns_live_observation {
+                    self.stop_live_observation().await;
+                }
+                self.set_banner_activity(BannerActivity::Ready);
+                Err(error)
+            }
+        }
     }
 
     /// Stop recording and return the finalized recording state.
-    pub async fn recording_stop(&self) -> ComputerUseResult<Value> {
+    pub async fn recording_stop(&mut self) -> ComputerUseResult<Value> {
         self.ensure_active()?;
+        let video = match self.showcase.take() {
+            Some(showcase) => {
+                let owns_live_observation = showcase.owns_live_observation;
+                let result = showcase.recorder.stop().await?;
+                if owns_live_observation {
+                    self.stop_live_observation().await;
+                }
+                Some(result)
+            }
+            None => None,
+        };
         self.revalidate_target().await?;
-        self.call_bound_tool_value("stop_recording", json!({}))
-            .await
+        let trajectory = self
+            .call_bound_tool_value("stop_recording", json!({}))
+            .await?;
+        self.set_banner_activity(BannerActivity::Ready);
+        Ok(video.map_or(
+            trajectory.clone(),
+            |video| json!({"trajectory": trajectory, "video": video}),
+        ))
     }
 
     /// Read the current recording state without exposing arbitrary CUA calls.
-    pub async fn recording_state(&self) -> ComputerUseResult<Value> {
+    pub async fn recording_state(&mut self) -> ComputerUseResult<Value> {
         self.ensure_active()?;
         self.revalidate_target().await?;
-        self.call_bound_tool_value("get_recording_state", json!({}))
-            .await
+        let trajectory = self
+            .call_bound_tool_value("get_recording_state", json!({}))
+            .await?;
+        Ok(self.showcase.as_ref().map_or(
+            trajectory.clone(),
+            |showcase| json!({"trajectory": trajectory, "video": showcase.recorder.state()}),
+        ))
     }
 
     /// Execute one scoped action through CUA after a fresh target fence.
@@ -1408,6 +1960,7 @@ impl ComputerUseSession {
         action: &ComputerUseAction,
     ) -> ComputerUseResult<ComputerUseToolResult> {
         self.ensure_active()?;
+        self.refresh_upstream_session_if_needed().await?;
         validate_action(action)?;
         let observation = self.observation.clone().ok_or_else(|| {
             ComputerUseError::new(
@@ -1429,6 +1982,7 @@ impl ComputerUseSession {
             ));
         }
         validate_action_observation(action, &observation)?;
+        self.set_banner_activity(banner_activity_for_action(action));
         #[cfg(windows)]
         if is_windows_uia_semantic_action(action, &observation) {
             let fallback = self.windows_uia.as_ref().ok_or_else(|| {
@@ -1446,17 +2000,95 @@ impl ComputerUseSession {
                 "capture_provenance": observation.capture_provenance,
                 "windows_uia": result.value,
             });
+            self.set_banner_activity(BannerActivity::Ready);
             return Ok(result);
         }
         interactive_desktop::require_available()?;
         let fallback = observation.capture_provenance["accessibility_available"] == false;
         let visual_action;
-        let args = if fallback {
+        let effective_action = if fallback {
             visual_action = action_for_window_visual_fallback(action, &observation)?;
-            action_arguments(&visual_action, &self.session_id, &target)
+            &visual_action
         } else {
-            action_arguments(action, &self.session_id, &target)
+            action
         };
+        let held_click = held_coordinate_click_as_drag(effective_action);
+        let effective_action = held_click.as_ref().unwrap_or(effective_action);
+        #[cfg(windows)]
+        let target = if effective_action.delivery_mode.as_deref() == Some("foreground")
+            && !target.is_foreground
+        {
+            dcc_cua_platform_windows::activate_window(dcc_cua_platform_windows::UiaTarget {
+                process_id: target.pid,
+                window_handle: target.window_id,
+            })
+            .map_err(|error| {
+                ComputerUseError::new(
+                    ComputerUseErrorCode::InputFailed,
+                    format!("activate the exact Windows target before pointer input: {error}"),
+                )
+            })?;
+            let target = self.revalidate_target().await?;
+            if !target.is_foreground {
+                return Err(ComputerUseError::new(
+                    ComputerUseErrorCode::InputFailed,
+                    "the exact Windows target is not foreground before pointer input",
+                ));
+            }
+            target
+        } else {
+            target
+        };
+        #[cfg(windows)]
+        if fallback
+            && let Some(mut result) =
+                perform_windows_foreground_fast_action(effective_action, &self.session_id, &target)
+                    .await?
+        {
+            result.value = json!({
+                "success": true,
+                "action": action,
+                "target": target,
+                "marker": self.marker,
+                "capture_provenance": observation.capture_provenance,
+                "cua": result.value,
+            });
+            self.set_banner_activity(BannerActivity::Ready);
+            return Ok(result);
+        }
+        #[cfg(windows)]
+        if effective_action.action == "move"
+            && effective_action.delivery_mode.as_deref() == Some("foreground")
+        {
+            let mut point = json!({"x": effective_action.x, "y": effective_action.y});
+            map_window_cursor_move(
+                point.as_object_mut().expect("cursor point is an object"),
+                &target,
+            )?;
+            let x = point["x"].as_f64().expect("validated cursor x") as i32;
+            let y = point["y"].as_f64().expect("validated cursor y") as i32;
+            platform_windows::input::mouse::move_cursor_desktop(x, y).map_err(|error| {
+                ComputerUseError::new(
+                    ComputerUseErrorCode::BackendUnavailable,
+                    format!("move foreground cursor: {error}"),
+                )
+            })?;
+            self.set_banner_activity(BannerActivity::Ready);
+            return Ok(ComputerUseToolResult {
+                value: json!({
+                    "success": true,
+                    "action": action,
+                    "target": target,
+                    "marker": self.marker,
+                    "capture_provenance": observation.capture_provenance,
+                    "cua": {"scope": "window", "path": "SetCursorPos", "x": x, "y": y},
+                }),
+                text: format!("Moved the OS pointer inside the target window to ({x}, {y})."),
+                images: Vec::new(),
+                degraded: false,
+            });
+        }
+        let args = action_arguments(effective_action, &self.session_id, &target);
         let name = args["_tool"].as_str().unwrap_or_default().to_string();
         let mut args = args;
         args.as_object_mut()
@@ -1473,6 +2105,7 @@ impl ComputerUseSession {
             Err(error) => {
                 self.active = false;
                 self.observation = None;
+                self.live_observation.take();
                 self.marker.visible = false;
                 return Err(error);
             }
@@ -1488,14 +2121,16 @@ impl ComputerUseSession {
             "capture_provenance": observation.capture_provenance,
             "cua": result.value,
         });
+        self.set_banner_activity(BannerActivity::Ready);
         Ok(result)
     }
 
     async fn call_bound_tool(
-        &self,
+        &mut self,
         name: &str,
         arguments: Value,
     ) -> ComputerUseResult<cua_driver_sdk::ToolResult> {
+        self.refresh_upstream_session_if_needed().await?;
         let mut object = arguments.as_object().cloned().ok_or_else(|| {
             ComputerUseError::new(
                 ComputerUseErrorCode::InvalidAction,
@@ -1515,7 +2150,7 @@ impl ComputerUseSession {
     }
 
     async fn call_bound_tool_value(
-        &self,
+        &mut self,
         name: &str,
         arguments: Value,
     ) -> ComputerUseResult<Value> {
@@ -1529,10 +2164,14 @@ impl ComputerUseSession {
     }
 
     pub async fn stop(&mut self) -> ComputerUseResult<Value> {
+        if self.showcase.is_some() {
+            let _ = self.recording_stop().await;
+        }
+        self.stop_live_observation().await;
         if !self.active {
             return Ok(json!({"success": true, "active": false}));
         }
-        self.control_banner.take();
+        self.set_banner_activity(BannerActivity::Stopping);
         let result = call_driver_tool(
             &self.driver.driver,
             "end_session",
@@ -1553,7 +2192,9 @@ impl ComputerUseSession {
         }
         let result = result?;
         ensure_tool_ok("stop CUA session", &result)?;
+        self.control_banner.take();
         self.active = false;
+        self.last_upstream_session_refresh = None;
         self.marker.visible = false;
         self.target = None;
         self.observation = None;
@@ -1565,7 +2206,7 @@ impl ComputerUseSession {
     }
 
     /// Read CUA's live capture policy for this exact session.
-    pub async fn session_state(&self) -> ComputerUseResult<Value> {
+    pub async fn session_state(&mut self) -> ComputerUseResult<Value> {
         self.ensure_active()?;
         self.call_bound_tool_value("get_session_state", json!({}))
             .await
@@ -1615,6 +2256,7 @@ impl ComputerUseSession {
         let target = self.revalidate_target().await?;
         if moves_cursor {
             map_window_cursor_move(&mut object, &target)?;
+            self.set_banner_activity(BannerActivity::PointerInput);
         }
         let result = self
             .call_bound_tool_value(name, Value::Object(object))
@@ -1622,6 +2264,7 @@ impl ComputerUseSession {
         if let Some(enabled) = enabled {
             self.marker.visible = enabled;
         }
+        self.set_banner_activity(BannerActivity::Ready);
         Ok(result)
     }
 
@@ -1674,6 +2317,9 @@ impl ComputerUseSession {
                     "target_frame_visible": false,
                     "interrupted": false,
                     "stop_key": "Escape",
+                    "activity": "stopping",
+                    "activity_label": "Stopping…",
+                    "placement": "unavailable",
                 })
             },
             |banner| json!(banner.status()),
@@ -1686,9 +2332,9 @@ impl ComputerUseSession {
             .is_some_and(ControlBanner::interrupted)
     }
 
-    pub fn set_control_cursor_position(&self, x: f64, y: f64) {
+    pub fn set_banner_activity(&self, activity: BannerActivity) {
         if let Some(banner) = &self.control_banner {
-            banner.set_cursor_position(x, y);
+            banner.set_activity(activity);
         }
     }
 
@@ -1710,6 +2356,7 @@ impl ComputerUseSession {
     /// Activate only the exact target through CUA's scoped window action.
     pub async fn activate(&mut self) -> ComputerUseResult<Value> {
         self.ensure_active()?;
+        self.set_banner_activity(BannerActivity::Navigating);
         let target = self.revalidate_target().await?;
         let result = match await_input_call(
             self.driver.driver.call_tool(
@@ -1730,20 +2377,37 @@ impl ComputerUseSession {
             Err(error) => {
                 self.active = false;
                 self.observation = None;
+                self.live_observation.take();
                 self.marker.visible = false;
                 return Err(error);
             }
         }
         .map_err(|error| map_driver_error("activate CUA window", error))?;
         ensure_tool_ok("activate CUA window", &result)?;
-        let activation = native_tool_result(result)?;
-        let target = self.revalidate_target().await?;
+        let mut activation = native_tool_result(result)?;
+        let mut target = self.revalidate_target().await?;
+        #[cfg(windows)]
+        if !target.is_foreground {
+            dcc_cua_platform_windows::activate_window(dcc_cua_platform_windows::UiaTarget {
+                process_id: target.pid,
+                window_handle: target.window_id,
+            })
+            .map_err(|error| {
+                ComputerUseError::new(
+                    ComputerUseErrorCode::InputFailed,
+                    format!("activate the exact Windows target: {error}"),
+                )
+            })?;
+            target = self.revalidate_target().await?;
+            activation.value["fallback"] = json!("windows_exact_foreground");
+        }
         if !target.is_foreground {
             return Err(ComputerUseError::new(
                 ComputerUseErrorCode::InputFailed,
                 "CUA reported activation success but the exact target is not foreground",
             ));
         }
+        self.set_banner_activity(BannerActivity::Ready);
         Ok(json!({
             "success": true,
             "target": target,

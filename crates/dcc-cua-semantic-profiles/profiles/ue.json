@@ -1,6 +1,8 @@
 {
-  "schema_version": 1,
+  "schema_version": 3,
   "id": "ue",
+  "profile_version": "1.0.0",
+  "application": {"family": "unreal-engine", "versions": []},
   "display_name": "Unreal Engine",
   "selectors": [
     {"application_names": ["UnrealEditor.exe", "UE4Editor.exe", "UE5Editor.exe"], "window_title_contains": ["Unreal Editor", "PCG Fab", "Fab"], "localized_window_title_contains": {"zh-CN": ["虚幻编辑器"], "zh-TW": ["虛幻編輯器"]}}

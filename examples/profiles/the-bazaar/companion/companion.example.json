@@ -1,0 +1,35 @@
+{
+  "logPath": "C:\\path\\to\\The Bazaar\\Player.log",
+  "databasePath": "C:\\path\\to\\The Bazaar\\prod\\cache\\GameData.db",
+  "cardIdentityCachePath": "C:\\Users\\you\\.dcc-cua\\knowledge\\the-bazaar\\card-identities.json",
+  "listen": "127.0.0.1:47900",
+  "hero": "Vanessa",
+  "instanceOverrides": {},
+  "skillNames": [],
+  "skillInstanceOverrides": {},
+  "currentProgress": {
+    "day": null,
+    "hour": null,
+    "level": null,
+    "health": null,
+    "maxHealth": null,
+    "gold": null,
+    "wins": null,
+    "losses": null,
+    "lossStreak": null,
+    "prestige": null,
+    "maxPrestige": null,
+    "sourceObservationId": null,
+    "provenance": "volatile_visual_observation"
+  },
+  "decisionPolicy": {
+    "goldFloor": 30,
+    "shopRerollCap": 1,
+    "safeOpponentLevelGap": 2
+  },
+  "candidateRegions": [
+    {"x": 0.18, "y": 0.17, "width": 0.18, "height": 0.36},
+    {"x": 0.41, "y": 0.17, "width": 0.18, "height": 0.36},
+    {"x": 0.64, "y": 0.17, "width": 0.18, "height": 0.36}
+  ]
+}

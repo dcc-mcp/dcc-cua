@@ -2,84 +2,64 @@ use rstest::rstest;
 
 use super::*;
 
+#[cfg(windows)]
+#[test]
+fn native_overlays_are_hit_test_transparent_and_never_activate() {
+    assert_eq!(platform::overlay_input_result(0x0084).unwrap().0, -1);
+    assert_eq!(platform::overlay_input_result(0x0021).unwrap().0, 3);
+    assert!(platform::overlay_input_result(0x000f).is_none());
+}
+
 #[rstest]
-#[case(0, 1, "CUA Control")]
-#[case(1, 0, "CUA Control")]
-#[case(1, 1, "")]
-fn banner_target_requires_exact_bounded_identity(
+#[case(0, 1)]
+#[case(1, 0)]
+fn banner_target_requires_exact_process_and_window(
     #[case] process_id: u32,
     #[case] window_handle: u64,
-    #[case] label: &str,
 ) {
     let error = BannerTarget {
         process_id,
         window_handle,
-        label: label.into(),
+        agent_name: "Codex".into(),
+        application_name: "Maya".into(),
     }
     .validate()
     .expect_err("invalid banner target must be rejected");
     assert!(matches!(error, IndicatorError::InvalidTarget(_)));
 }
 
-#[cfg(windows)]
 #[rstest]
-#[case(0, 244)]
-#[case(450, 188)]
-#[case(900, 132)]
-#[case(1_350, 188)]
-#[case(1_800, 244)]
-fn target_frame_uses_a_smooth_breathing_cycle(#[case] elapsed_ms: u64, #[case] alpha: u8) {
-    assert_eq!(
-        platform::breathing_frame_alpha(std::time::Duration::from_millis(elapsed_ms)),
-        alpha
-    );
-}
-
-#[cfg(windows)]
-#[rstest]
-#[case(48, 244, 48)]
-#[case(244, 244, 244)]
-#[case(48, 132, 26)]
-#[case(244, 132, 132)]
-fn target_frame_preserves_transparent_gradient_while_breathing(
-    #[case] maximum: u8,
-    #[case] breathing: u8,
-    #[case] alpha: u8,
+#[case(BannerActivity::Connecting, "正在连接…")]
+#[case(BannerActivity::Ready, "已连接 · 等待操作")]
+#[case(BannerActivity::Observing, "正在观察画面")]
+#[case(BannerActivity::PointerInput, "正在使用鼠标")]
+#[case(BannerActivity::KeyboardInput, "正在输入文本")]
+#[case(BannerActivity::Navigating, "正在切换界面")]
+#[case(BannerActivity::Waiting, "正在等待应用")]
+#[case(BannerActivity::Recording, "正在录制")]
+#[case(BannerActivity::Stopping, "正在停止…")]
+fn every_banner_activity_has_operator_visible_copy(
+    #[case] activity: BannerActivity,
+    #[case] expected: &str,
 ) {
-    assert_eq!(platform::gradient_frame_alpha(maximum, breathing), alpha);
+    assert_eq!(activity.localized_label("zh-CN"), expected);
+    assert_eq!(BannerActivity::from_code(activity as u8), activity);
 }
 
-#[cfg(windows)]
 #[rstest]
-fn target_frame_fades_from_the_window_edge_toward_transparent_content() {
-    let layers = platform::FRAME_LAYER_MAX_ALPHA;
-    assert_eq!(layers[0], 210);
-    assert_eq!(layers[layers.len() - 1], 4);
-    assert!(layers.windows(2).all(|pair| pair[0] > pair[1]));
-}
-
-#[cfg(windows)]
-#[rstest]
-fn cursor_uses_a_small_black_pointer_over_a_larger_hollow_halo() {
-    assert_eq!(platform::CURSOR_POINTER_SIZE, 24);
-    assert_eq!(platform::CURSOR_HALO_SIZE, 68);
-    assert_eq!(platform::CURSOR_POINTER_COLOR.0, 0);
-    assert_eq!(platform::CURSOR_HALO_COLOR.0, 0x0092_CF9A);
-}
-
-#[cfg(windows)]
-#[rstest]
-fn cursor_halo_is_transparent_in_the_center_and_diffuses_outward() {
-    let alpha = platform::CURSOR_HALO_LAYER_ALPHA;
-    assert_eq!(alpha.len(), 8);
-    assert!(alpha.windows(2).all(|pair| pair[0] < pair[1]));
-    assert_eq!(platform::cursor_halo_outer_inset(68, 0), 0);
-    assert_eq!(platform::cursor_halo_outer_inset(68, 7), 19);
-    assert_eq!(platform::cursor_halo_inner_inset(68, 0), 31);
-    assert_eq!(platform::cursor_halo_inner_inset(68, 7), 23);
-    assert!((0..8).all(|layer| {
-        platform::cursor_halo_outer_inset(68, layer) < platform::cursor_halo_inner_inset(68, layer)
-    }));
+fn input_states_share_the_warning_color_without_session_randomization() {
+    assert_eq!(
+        BannerActivity::PointerInput.color(),
+        BannerActivity::KeyboardInput.color()
+    );
+    assert_eq!(
+        BannerActivity::Ready.color(),
+        BannerColor {
+            red: 115,
+            green: 215,
+            blue: 167,
+        }
+    );
 }
 
 #[rstest]
@@ -101,14 +81,6 @@ fn programmatic_interrupt_advances_the_shared_generation() {
 }
 
 #[rstest]
-fn session_colors_are_stable_and_avoid_the_default_banner_hue() {
-    let first = session_color("agent", "session-1");
-    assert_eq!(first, session_color("agent", "session-1"));
-    assert!(first.hue().abs_diff(BannerColor::DEFAULT.hue()) >= 45);
-    assert_ne!(first, session_color("agent", "session-2"));
-}
-
-#[rstest]
 #[case("en-US", "agent is controlling Blender")]
 #[case("zh-CN", "agent 正在操作 Blender")]
 #[case("ja-JP", "agent が Blender を操作中")]
@@ -127,27 +99,126 @@ fn control_labels_strip_control_characters_and_bound_names() {
 
 #[cfg(windows)]
 #[rstest]
-fn an_existing_host_hotkey_uses_the_shared_escape_event() {
-    let error = windows::core::Error::from_hresult(windows::core::HRESULT::from_win32(
-        windows::Win32::Foundation::ERROR_HOTKEY_ALREADY_REGISTERED.0,
-    ));
-    assert!(platform::hotkey_already_registered(&error));
+fn a_windowed_target_places_the_banner_above_the_window() {
+    let geometry = platform::geometry_for_test(
+        platform::TargetGeometry {
+            x: 200,
+            y: 200,
+            width: 1200,
+            height: 700,
+            dpi: 96,
+        },
+        monitor(),
+    );
+    assert_eq!(geometry, (560, 148, 480, 44, false));
+}
+
+#[rstest]
+#[case(0, 132)]
+#[case(450, 90)]
+#[case(900, 48)]
+#[case(1_350, 90)]
+#[case(1_800, 132)]
+fn target_frame_uses_one_subtle_breathing_cycle(#[case] elapsed_ms: u64, #[case] alpha: u8) {
+    assert_eq!(
+        breathing_frame_alpha(Duration::from_millis(elapsed_ms)),
+        alpha
+    );
+}
+
+#[rstest]
+#[case(0, 132)]
+#[case(1, 119)]
+#[case(5, 74)]
+#[case(10, 33)]
+#[case(15, 8)]
+#[case(19, 0)]
+fn target_frame_fades_inward_across_forty_pixels(#[case] band: usize, #[case] alpha: u8) {
+    assert_eq!(target_frame_band_alpha(132, band), alpha);
+}
+
+#[rstest]
+#[case(40)]
+#[case(60)]
+#[case(80)]
+#[case(100)]
+#[case(53)]
+fn target_frame_bands_cover_the_scaled_gradient_without_gaps(#[case] thickness: i32) {
+    let bands = (0..TARGET_FRAME_GRADIENT_STEPS)
+        .map(|band| target_frame_band_insets(thickness, band).expect("valid band"))
+        .collect::<Vec<_>>();
+    assert_eq!(bands.first(), Some(&(0, bands[0].1)));
+    assert_eq!(bands.last().map(|band| band.1), Some(thickness));
+    for pair in bands.windows(2) {
+        assert_eq!(pair[0].1, pair[1].0, "gradient bands must meet exactly");
+    }
+    assert!(bands.iter().all(|(outer, inner)| outer < inner));
+}
+
+#[rstest]
+fn target_frame_gradient_is_exactly_forty_device_independent_pixels() {
+    assert_eq!(TARGET_FRAME_THICKNESS_DIP, 40);
+    assert_eq!(TARGET_FRAME_GRADIENT_STEPS, 20);
+    assert_eq!(target_frame_band_insets(40, 0), Some((0, 2)));
+    assert_eq!(target_frame_band_insets(40, 19), Some((38, 40)));
+}
+
+#[rstest]
+fn target_frame_alpha_is_monotonic_from_edge_to_center() {
+    let alphas = (0..TARGET_FRAME_GRADIENT_STEPS)
+        .map(|band| target_frame_band_alpha(TARGET_FRAME_ALPHA_MAX, band))
+        .collect::<Vec<_>>();
+    assert!(alphas.windows(2).all(|pair| pair[0] >= pair[1]));
+    assert_eq!(alphas[0], TARGET_FRAME_ALPHA_MAX);
+    assert_eq!(alphas.last(), Some(&0));
 }
 
 #[cfg(windows)]
 #[rstest]
-#[case(false, true, 64, 64, true)]
-#[case(true, true, 64, 64, false)]
-#[case(true, true, 64, 80, true)]
-fn cursor_shape_is_initialized_when_the_hidden_marker_first_appears(
-    #[case] was_visible: bool,
-    #[case] is_visible: bool,
-    #[case] previous_size: i32,
-    #[case] current_size: i32,
-    #[case] update: bool,
-) {
+fn a_fullscreen_target_places_the_banner_inside_the_safe_inset() {
+    let geometry = platform::geometry_for_test(
+        platform::TargetGeometry {
+            x: 0,
+            y: 0,
+            width: 1920,
+            height: 1080,
+            dpi: 96,
+        },
+        monitor(),
+    );
+    assert_eq!(geometry, (720, 16, 480, 44, true));
+}
+
+#[cfg(windows)]
+fn monitor() -> platform::MonitorGeometry {
+    platform::MonitorGeometry {
+        left: 0,
+        top: 0,
+        right: 1920,
+        bottom: 1080,
+        work_left: 0,
+        work_top: 0,
+        work_right: 1920,
+        work_bottom: 1040,
+    }
+}
+
+#[cfg(windows)]
+#[rstest]
+fn escape_hook_recognizes_key_transitions_without_exclusive_registration() {
+    use windows::Win32::UI::Input::KeyboardAndMouse::VK_ESCAPE;
+    use windows::Win32::UI::WindowsAndMessaging::{HC_ACTION, WM_KEYDOWN, WM_KEYUP};
+
     assert_eq!(
-        platform::cursor_shape_needs_update(was_visible, is_visible, previous_size, current_size),
-        update
+        platform::escape_key_transition(HC_ACTION as i32, WM_KEYDOWN, VK_ESCAPE.0 as u32),
+        Some(true)
+    );
+    assert_eq!(
+        platform::escape_key_transition(HC_ACTION as i32, WM_KEYUP, VK_ESCAPE.0 as u32),
+        Some(false)
+    );
+    assert_eq!(
+        platform::escape_key_transition(HC_ACTION as i32, WM_KEYDOWN, b'A'.into()),
+        None
     );
 }

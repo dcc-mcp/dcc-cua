@@ -5,6 +5,87 @@ use super::authorization::{existing_profile_grant_requested, host_private_worker
 use super::*;
 
 #[rstest]
+#[case("help", &[])]
+#[case("--help", &[])]
+#[case("host-jsonl", &["--help"])]
+#[case("profile", &["-h"])]
+fn help_requests_are_handled_before_driver_or_host_start(
+    #[case] command: &str,
+    #[case] flags: &[&str],
+) {
+    let flags = flags
+        .iter()
+        .map(|flag| (*flag).to_owned())
+        .collect::<Vec<_>>();
+    assert!(is_help_request(command, &flags));
+}
+
+#[rstest]
+fn ordinary_subcommands_are_not_help_requests() {
+    assert!(!is_help_request(
+        "host-jsonl",
+        &["--metrics-output".into(), "metrics.json".into()]
+    ));
+}
+
+#[rstest]
+fn showcase_is_added_only_to_open_session_grants() {
+    let directory = std::env::temp_dir().join(format!(
+        "dcc-cua-showcase-test-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let mut open = JsonlRequest {
+        request_id: None,
+        method: "open_session".into(),
+        params: json!({"grant": {"task_grant_id": "task-1"}}),
+    };
+    enable_showcase(&mut open, directory.to_str().unwrap(), 7).unwrap();
+    assert_eq!(open.params["grant"]["allow_recording"], true);
+    assert!(
+        open.params["grant"]["showcase_output_dir"]
+            .as_str()
+            .unwrap()
+            .ends_with("session-7")
+    );
+
+    let mut snapshot = JsonlRequest {
+        request_id: None,
+        method: "snapshot".into(),
+        params: json!({}),
+    };
+    enable_showcase(&mut snapshot, directory.to_str().unwrap(), 8).unwrap();
+    assert_eq!(snapshot.params, json!({}));
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[rstest]
+fn showcase_session_directory_never_reuses_an_existing_recording() {
+    let directory = std::env::temp_dir().join(format!(
+        "dcc-cua-showcase-collision-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let first = reserve_showcase_session_directory(directory.to_str().unwrap(), 0).unwrap();
+    std::fs::write(first.join("showcase.mp4"), b"existing").unwrap();
+    let second = reserve_showcase_session_directory(directory.to_str().unwrap(), 0).unwrap();
+
+    assert_ne!(first, second);
+    assert_eq!(
+        std::fs::read(first.join("showcase.mp4")).unwrap(),
+        b"existing"
+    );
+    assert!(second.ends_with("session-0-1"));
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[rstest]
 fn target_binding_requires_the_profile_selector_to_match() {
     let profile = dcc_cua_semantic_profiles::builtin_profile("ue").expect("UE profile");
     assert!(semantic_profile::target_matches_profile(
@@ -21,6 +102,27 @@ fn target_binding_requires_the_profile_selector_to_match() {
             "title": "notes"
         }))
     ));
+}
+
+#[rstest]
+fn profile_matching_prefers_a_unique_host_version_variant() {
+    let catalog = ["maya", "maya-2024"]
+        .into_iter()
+        .map(|id| {
+            (
+                "builtin".to_owned(),
+                dcc_cua_semantic_profiles::builtin_profile(id)
+                    .expect("built-in Profile")
+                    .clone(),
+            )
+        })
+        .collect();
+    let result = profile_match_result(catalog, "maya.exe", "Autodesk Maya 2024: scene.ma");
+
+    assert_eq!(result["selected"], "maya-2024");
+    assert_eq!(result["ambiguous"], false);
+    assert_eq!(result["candidates"][0]["id"], "maya-2024");
+    assert_eq!(result["candidates"][1]["id"], "maya");
 }
 
 #[rstest]
@@ -97,6 +199,36 @@ fn response_image_reads_host_owned_shared_memory() {
 }
 
 #[rstest]
+fn jsonl_response_writes_host_owned_shared_memory() {
+    let image = dcc_cua_shm::SharedImage::from_bytes(b"png", "image/png").unwrap();
+    let mut descriptor = serde_json::to_value(image.descriptor()).unwrap();
+    descriptor["encoding"] = json!("shared_memory");
+    let response = HostResponse {
+        value: json!({"image": descriptor}),
+        binary_attachment: None,
+    };
+    let output_dir = std::env::temp_dir().join(format!(
+        "dcc-cua-jsonl-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&output_dir).unwrap();
+    let value = jsonl_response_value(response, output_dir.to_str(), 7).unwrap();
+    let output = output_dir.join("response-7.bin");
+    assert_eq!(std::fs::read(&output).unwrap(), b"png");
+    assert_eq!(
+        std::path::Path::new(value["_dcc_cua_binary_output"].as_str().unwrap())
+            .canonicalize()
+            .unwrap(),
+        output.canonicalize().unwrap()
+    );
+    std::fs::remove_dir_all(output_dir).unwrap();
+}
+
+#[rstest]
 fn failed_post_snapshot_reports_that_the_action_already_ran() {
     let value = window_post_snapshot_value(
         Err(dcc_cua_core::ComputerUseError::new(
@@ -136,8 +268,10 @@ fn profile_loader_accepts_user_authored_json() {
     std::fs::write(
         &path,
         r#"{
-            "schema_version": 1,
+            "schema_version": 3,
             "id": "custom-maya",
+            "profile_version": "1.0.0",
+            "application": {"family": "autodesk-maya", "versions": []},
             "display_name": "Custom Maya",
             "selectors": [{
                 "application_names": ["maya.exe"],
@@ -211,6 +345,94 @@ fn parallel_discovery_is_limited_to_stateless_methods() {
     assert!(is_parallel_discovery_method("cursor_position"));
     assert!(!is_parallel_discovery_method("snapshot"));
     assert!(!is_parallel_discovery_method("desktop_snapshot"));
+}
+
+#[test]
+fn host_jsonl_metrics_separate_decisions_from_observation_cost() {
+    let mut metrics = HostJsonlMetrics::default();
+    let action =
+        parse_jsonl_request(r#"{"method":"execute_action","params":{"capture_after":true}}"#)
+            .unwrap();
+    let snapshot = parse_jsonl_request(r#"{"method":"snapshot","params":{}}"#).unwrap();
+    metrics.record_input(r#"{"method":"execute_action"}"#);
+    metrics.record_request(&action);
+    metrics.record_request(&snapshot);
+    metrics.record_output(&json!({"type": "action_completed"}), 40);
+
+    let report = metrics.report(
+        HostJsonlRunStatus::Succeeded,
+        std::time::Duration::from_millis(125),
+    );
+    assert_eq!(report.run_status, HostJsonlRunStatus::Succeeded);
+    assert_eq!(report.transport_success, Some(true));
+    assert_eq!(report.action_requests_total, 1);
+    assert_eq!(report.post_action_snapshot_requests_total, 1);
+    assert_eq!(report.standalone_snapshot_requests_total, 1);
+    assert_eq!(report.errors_total, 0);
+    assert_eq!(report.elapsed_ms, 125);
+    assert_eq!(report.json_output_bytes, 40);
+    assert_eq!(report.action_kinds.get("click"), None);
+}
+
+#[test]
+fn host_jsonl_metrics_count_protocol_errors_without_claiming_task_failure() {
+    let mut metrics = HostJsonlMetrics::default();
+    metrics.record_output(&json!({"type": "error", "code": "invalid_request"}), 52);
+    let report = metrics.report(HostJsonlRunStatus::Failed, std::time::Duration::ZERO);
+    assert_eq!(report.transport_success, Some(false));
+    assert_eq!(report.errors_total, 1);
+    assert_eq!(report.error_codes["invalid_request"], 1);
+    assert_eq!(report.schema, "dcc-cua.host-jsonl.metrics.v2");
+}
+
+#[test]
+fn host_jsonl_metrics_break_down_action_kinds() {
+    let mut metrics = HostJsonlMetrics::default();
+    for request in [
+        r#"{"method":"execute_action","params":{"action":{"action":"move"}}}"#,
+        r#"{"method":"execute_action","params":{"action":{"action":"click"}}}"#,
+        r#"{"method":"execute_desktop_action","params":{"action":{"action":"click"}}}"#,
+    ] {
+        metrics.record_request(&parse_jsonl_request(request).unwrap());
+    }
+
+    let report = metrics.report(HostJsonlRunStatus::Running, std::time::Duration::ZERO);
+    assert_eq!(report.action_requests_total, 3);
+    assert_eq!(report.action_kinds["move"], 1);
+    assert_eq!(report.action_kinds["click"], 2);
+}
+
+#[test]
+fn host_jsonl_metrics_checkpoint_is_readable_before_eof() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("metrics.json");
+    let mut metrics = HostJsonlMetrics::with_output(Some(path.clone()), Instant::now());
+    metrics.checkpoint().unwrap();
+
+    let running: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(running["schema"], "dcc-cua.host-jsonl.metrics.v2");
+    assert_eq!(running["run_status"], "running");
+    assert!(running["transport_success"].is_null());
+    assert_eq!(running["requests_total"], 0);
+
+    let request = parse_jsonl_request(r#"{"method":"snapshot","params":{}}"#).unwrap();
+    metrics.record_request(&request);
+    metrics.record_output(&json!({"type": "snapshot"}), 24);
+    metrics.checkpoint().unwrap();
+    let updated: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(updated["run_status"], "running");
+    assert_eq!(updated["requests_total"], 1);
+    assert_eq!(updated["standalone_snapshot_requests_total"], 1);
+    assert_eq!(updated["action_kinds"], json!({}));
+    assert_eq!(updated["error_codes"], json!({}));
+
+    metrics.finish(true).unwrap();
+    let finished: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(finished["run_status"], "succeeded");
+    assert_eq!(finished["transport_success"], true);
 }
 
 #[rstest]
@@ -508,6 +730,13 @@ fn friendly_actions_build_bounded_cua_requests() {
     .unwrap();
     assert_eq!(press.modifiers, vec!["CTRL"]);
     assert_eq!(press.x, Some(12.0));
+
+    let held_click = action_from_command(
+        "click",
+        &strings(["--x", "12", "--y", "34", "--duration-ms", "320"]),
+    )
+    .unwrap();
+    assert_eq!(held_click.duration_ms, Some(320));
 
     let drag = action_from_command(
         "drag",

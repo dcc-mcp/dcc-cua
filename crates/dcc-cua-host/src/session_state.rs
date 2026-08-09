@@ -13,6 +13,7 @@ pub(super) struct HostSession {
     pub(super) allow_clipboard_read: bool,
     pub(super) allow_clipboard_write: bool,
     pub(super) allow_recording: bool,
+    pub(super) allow_live_observation: bool,
     pub(super) allow_browser_input: bool,
     pub(super) allow_browser_prepare: bool,
     pub(super) allow_browser_download: bool,
@@ -21,6 +22,7 @@ pub(super) struct HostSession {
     pub(super) allow_session_escalation: bool,
     pub(super) allow_trusted_confirmation: bool,
     pub(super) capability: String,
+    pub(super) interrupted: bool,
     pub(super) session: ComputerUseSession,
     pub(super) browser: BrowserSession,
     pub(super) latest_observation_id: Option<String>,
@@ -46,6 +48,7 @@ pub(super) struct HostDesktopSession {
     pub(super) allow_trusted_confirmation: bool,
     pub(super) capability: String,
     pub(super) interrupt_generation: u64,
+    pub(super) interrupted: bool,
     pub(super) session: ComputerUseDesktopSession,
     pub(super) latest_shared_image: Option<SharedImage>,
 }

@@ -29,10 +29,6 @@ pub(crate) fn diagnostic() -> Value {
 }
 
 pub(crate) fn require_available() -> ComputerUseResult<()> {
-    #[cfg(windows)]
-    // Raw input can establish foreground itself; only the connected session is a prerequisite.
-    let report = windows_diagnostic(windows_session_state(), true);
-    #[cfg(not(windows))]
     let report = diagnostic();
     if report["success"] == true {
         return Ok(());
