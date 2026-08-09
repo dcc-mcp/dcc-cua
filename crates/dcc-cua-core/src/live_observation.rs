@@ -324,7 +324,13 @@ async fn run_portable_capture_loop(
                     );
                 });
             }
-            Err(error) => sender.send_modify(|status| status.record_error(error.message)),
+            Err(error) => {
+                let terminal = terminal_capture_error(&error);
+                sender.send_modify(|status| status.record_error(error.message));
+                if terminal {
+                    return;
+                }
+            }
         }
         tokio::time::sleep(interval.saturating_sub(capture_started.elapsed())).await;
     }
