@@ -1,20 +1,26 @@
 #[cfg(any(target_os = "macos", test))]
 use std::path::Path;
+#[cfg(not(target_os = "macos"))]
 use std::sync::Arc;
 
+#[cfg(not(target_os = "macos"))]
 use async_trait::async_trait;
 #[cfg(any(target_os = "macos", test))]
 use dcc_cua_core::PrivateWorkerOptions;
 use dcc_cua_core::{
-    ComputerUseDriver, ConfiguredDriverOptions, DriverAuthorizationAction,
-    DriverAuthorizationDecision, DriverAuthorizationHost, DriverAuthorizationHostError,
-    DriverAuthorizationRequest, RuntimeAuthorizationOptions, SessionPermissionMode,
+    ComputerUseDriver, ConfiguredDriverOptions, RuntimeAuthorizationOptions, SessionPermissionMode,
+};
+#[cfg(not(target_os = "macos"))]
+use dcc_cua_core::{
+    DriverAuthorizationAction, DriverAuthorizationDecision, DriverAuthorizationHost,
+    DriverAuthorizationHostError, DriverAuthorizationRequest,
 };
 
 const EXISTING_PROFILE_GRANT: &str = "existing-profile";
 #[cfg(any(target_os = "macos", test))]
 const PRIVATE_WORKER_HOST_ID: &str = "com.dcc-cua.host";
 
+#[cfg(not(target_os = "macos"))]
 pub(crate) fn driver_for_host(
     flags: &[String],
 ) -> Result<ComputerUseDriver, Box<dyn std::error::Error>> {
@@ -110,8 +116,10 @@ pub(crate) fn existing_profile_grant_requested(flags: &[String]) -> Result<bool,
     Ok(requested)
 }
 
+#[cfg(not(target_os = "macos"))]
 struct ExistingProfileAuthorizationHost;
 
+#[cfg(not(target_os = "macos"))]
 #[async_trait]
 impl DriverAuthorizationHost for ExistingProfileAuthorizationHost {
     async fn authorize(
