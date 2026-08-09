@@ -1,68 +1,66 @@
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use windows::Win32::Foundation::{
-    COLORREF, CloseHandle, ERROR_CLASS_ALREADY_EXISTS, ERROR_HOTKEY_ALREADY_REGISTERED, HANDLE,
-    HWND, LPARAM, LRESULT, POINT, RECT, WAIT_OBJECT_0, WPARAM,
+    COLORREF, ERROR_CLASS_ALREADY_EXISTS, HANDLE, HWND, LPARAM, LRESULT, RECT, WPARAM,
 };
 use windows::Win32::Globalization::GetUserDefaultLocaleName;
 use windows::Win32::Graphics::Gdi::{
     BeginPaint, CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, CombineRgn, CreateEllipticRgn, CreateFontW,
-    CreatePolygonRgn, CreateRoundRectRgn, CreateSolidBrush, DEFAULT_CHARSET, DEFAULT_PITCH,
-    DT_CENTER, DT_END_ELLIPSIS, DT_SINGLELINE, DT_VCENTER, DeleteObject, DrawTextW, EndPaint,
-    FW_SEMIBOLD, FillRect, FillRgn, HGDIOBJ, OUT_DEFAULT_PRECIS, PAINTSTRUCT, RGN_DIFF, RGN_ERROR,
-    SelectObject, SetBkMode, SetTextColor, SetWindowRgn, TRANSPARENT, WINDING,
+    CreateRoundRectRgn, CreateSolidBrush, DEFAULT_CHARSET, DEFAULT_PITCH, DT_CENTER,
+    DT_END_ELLIPSIS, DT_LEFT, DT_SINGLELINE, DT_VCENTER, DeleteObject, DrawTextW, EndPaint,
+    FW_NORMAL, FW_SEMIBOLD, FillRect, FillRgn, GetMonitorInfoW, HGDIOBJ, InvalidateRect,
+    MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow, OUT_DEFAULT_PRECIS, PAINTSTRUCT,
+    RGN_DIFF, RGN_ERROR, SelectObject, SetBkMode, SetTextColor, SetWindowRgn, TRANSPARENT,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::System::Threading::{CreateEventW, SetEvent, WaitForSingleObject};
 use windows::Win32::UI::HiDpi::{
     DPI_AWARENESS_CONTEXT, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForWindow,
     SetThreadDpiAwarenessContext,
 };
-use windows::Win32::UI::Input::KeyboardAndMouse::{
-    MOD_NOREPEAT, RegisterHotKey, UnregisterHotKey, VK_ESCAPE,
-};
+use windows::Win32::UI::Input::KeyboardAndMouse::VK_ESCAPE;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetClassNameW, GetClientRect,
-    GetCursorPos, GetPropW, GetWindowRect, GetWindowTextLengthW, GetWindowTextW,
-    GetWindowThreadProcessId, HWND_TOPMOST, IsIconic, IsWindow, IsWindowVisible, LWA_ALPHA, MSG,
-    PM_REMOVE, PeekMessageW, RegisterClassW, RemovePropW, SW_HIDE, SW_SHOWNOACTIVATE,
-    SWP_NOACTIVATE, SWP_SHOWWINDOW, SetLayeredWindowAttributes, SetPropW, SetWindowDisplayAffinity,
-    SetWindowPos, ShowWindow, TranslateMessage, WDA_EXCLUDEFROMCAPTURE, WINDOW_EX_STYLE,
-    WINDOW_STYLE, WM_HOTKEY, WM_PAINT, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE,
-    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
+    CallNextHookEx, CreateWindowExW, DI_NORMAL, DefWindowProcW, DestroyWindow, DispatchMessageW,
+    DrawIconEx, GCLP_HICON, GCLP_HICONSM, GetClassLongPtrW, GetClientRect, GetPropW, GetWindowRect,
+    GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, HC_ACTION, HHOOK, HICON,
+    HTTRANSPARENT, HWND_TOPMOST, ICON_SMALL2, IsIconic, IsWindow, IsWindowVisible, KBDLLHOOKSTRUCT,
+    LWA_ALPHA, MA_NOACTIVATE, MSG, PM_REMOVE, PeekMessageW, RegisterClassW, RemovePropW,
+    SEND_MESSAGE_TIMEOUT_FLAGS, SMTO_ABORTIFHUNG, SW_HIDE, SW_SHOWNOACTIVATE, SWP_NOACTIVATE,
+    SWP_SHOWWINDOW, SendMessageTimeoutW, SetLayeredWindowAttributes, SetPropW,
+    SetWindowDisplayAffinity, SetWindowPos, SetWindowsHookExW, ShowWindow, TranslateMessage,
+    UnhookWindowsHookEx, WDA_EXCLUDEFROMCAPTURE, WH_KEYBOARD_LL, WINDOW_EX_STYLE, WINDOW_STYLE,
+    WM_GETICON, WM_KEYDOWN, WM_KEYUP, WM_MOUSEACTIVATE, WM_NCHITTEST, WM_PAINT, WM_SYSKEYDOWN,
+    WM_SYSKEYUP, WNDCLASSW, WNDPROC, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+    WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
 };
 use windows::core::{HRESULT, PCWSTR, w};
 
 use super::{
-    BannerColor, BannerStatus, BannerTarget, IndicatorError, broadcast_interrupt,
-    interrupt_generation, interrupt_generation_changed,
+    BannerActivity, BannerStatus, BannerTarget, IndicatorError, TARGET_FRAME_ALPHA_MAX,
+    TARGET_FRAME_GRADIENT_STEPS, TARGET_FRAME_THICKNESS_DIP, breathing_frame_alpha,
+    broadcast_interrupt, interrupt_generation, interrupt_generation_changed,
+    target_frame_band_alpha, target_frame_band_insets,
 };
 
 const BANNER_CLASS: PCWSTR = w!("DccCuaControlBanner");
 const FRAME_CLASS: PCWSTR = w!("DccCuaControlFrame");
-const CURSOR_HALO_CLASS: PCWSTR = w!("DccCuaControlCursorHalo");
-const CURSOR_POINTER_CLASS: PCWSTR = w!("DccCuaControlCursorPointer");
-const OVERLAY_COLOR_PROP: PCWSTR = w!("DccCuaOverlayColor");
-pub(super) const CURSOR_HALO_COLOR: COLORREF = COLORREF(0x0092_CF9A);
-pub(super) const CURSOR_POINTER_COLOR: COLORREF = COLORREF(0x0000_0000);
-const CURSOR_POINTER_OUTLINE_COLOR: COLORREF = COLORREF(0x00FF_FFFF);
-const BANNER_ALPHA: u8 = 200;
-pub(super) const CURSOR_HALO_SIZE: i32 = 68;
-pub(super) const CURSOR_POINTER_SIZE: i32 = 24;
-pub(super) const CURSOR_HALO_LAYER_ALPHA: [u8; 8] = [6, 8, 10, 13, 17, 22, 28, 36];
-const CURSOR_HALO_INNER_INSET_PERCENT: [i32; 8] = [46, 44, 42, 40, 39, 37, 35, 34];
-pub(super) const FRAME_LAYER_MAX_ALPHA: [u8; 8] = [210, 181, 151, 121, 91, 61, 31, 4];
-const FRAME_ALPHA_MIN: u8 = 132;
-const FRAME_ALPHA_MAX: u8 = 244;
-const FRAME_PULSE_PERIOD: Duration = Duration::from_millis(1_800);
-const FRAME_PULSE_INTERVAL: Duration = Duration::from_millis(50);
-const HOTKEY_ID: i32 = 0x4443;
-const ESCAPE_EVENT_NAME: PCWSTR = w!("DccCuaEscape");
-const FRAME_INTERVAL: Duration = Duration::from_millis(16);
+const OVERLAY_ACTIVITY_PROP: PCWSTR = w!("DccCuaBannerActivity");
+const OVERLAY_ICON_PROP: PCWSTR = w!("DccCuaBannerIcon");
+const BANNER_ALPHA: u8 = 248;
+const FRAME_INTERVAL: Duration = Duration::from_millis(33);
+const SURFACE: COLORREF = rgb(24, 28, 35);
+const LINE: COLORREF = rgb(45, 51, 61);
+const TEXT: COLORREF = rgb(255, 255, 255);
+const MUTED: COLORREF = rgb(184, 193, 199);
+const ACCENT: COLORREF = rgb(168, 118, 255);
 static ESCAPE_HUB: OnceLock<Result<EscapeHub, String>> = OnceLock::new();
+static ESCAPE_DOWN: AtomicBool = AtomicBool::new(false);
+
+const fn rgb(red: u8, green: u8, blue: u8) -> COLORREF {
+    COLORREF((blue as u32) << 16 | (green as u32) << 8 | red as u32)
+}
 
 pub(super) fn system_language_tag() -> String {
     let mut locale = [0_u16; 85];
@@ -78,29 +76,31 @@ pub(super) struct PlatformBanner {
     active: Arc<AtomicBool>,
     interrupted: Arc<AtomicBool>,
     visible: Arc<AtomicBool>,
-    cursor_position: Arc<Mutex<Option<(f64, f64)>>>,
+    inside_target: Arc<AtomicBool>,
+    activity: Arc<AtomicU8>,
     thread: Option<JoinHandle<()>>,
 }
 
 impl PlatformBanner {
-    pub(super) fn start(target: BannerTarget, color: BannerColor) -> Result<Self, IndicatorError> {
+    pub(super) fn start(target: BannerTarget) -> Result<Self, IndicatorError> {
         let escape_hub = escape_hub()?;
-        let cursor_position = Arc::new(Mutex::new(None));
-        let runtime = BannerRuntime {
-            hub_active: Arc::clone(&escape_hub.active),
-            generation: interrupt_generation(),
-            cursor_position: Arc::clone(&cursor_position),
-            color,
-        };
         let stop = Arc::new(AtomicBool::new(false));
         let active = Arc::new(AtomicBool::new(false));
         let interrupted = Arc::new(AtomicBool::new(false));
         let visible = Arc::new(AtomicBool::new(false));
+        let inside_target = Arc::new(AtomicBool::new(false));
+        let activity = Arc::new(AtomicU8::new(BannerActivity::Connecting as u8));
+        let runtime = BannerRuntime {
+            hub_active: Arc::clone(&escape_hub.active),
+            generation: interrupt_generation(),
+            activity: Arc::clone(&activity),
+        };
         let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
         let thread_stop = Arc::clone(&stop);
         let thread_active = Arc::clone(&active);
         let thread_interrupted = Arc::clone(&interrupted);
         let thread_visible = Arc::clone(&visible);
+        let thread_inside_target = Arc::clone(&inside_target);
         let thread = thread::Builder::new()
             .name("dcc-cua-control-banner".into())
             .spawn(move || {
@@ -110,6 +110,7 @@ impl PlatformBanner {
                     &thread_active,
                     &thread_interrupted,
                     &thread_visible,
+                    &thread_inside_target,
                     &runtime,
                     &ready_tx,
                 );
@@ -129,7 +130,8 @@ impl PlatformBanner {
                 active,
                 interrupted,
                 visible,
-                cursor_position,
+                inside_target,
+                activity,
                 thread: Some(thread),
             }),
             Ok(Err(error)) => {
@@ -148,6 +150,7 @@ impl PlatformBanner {
     }
 
     pub(super) fn status(&self) -> BannerStatus {
+        let activity = BannerActivity::from_code(self.activity.load(Ordering::Acquire));
         BannerStatus {
             backend: "win32",
             visible: self.visible.load(Ordering::Acquire),
@@ -155,7 +158,14 @@ impl PlatformBanner {
             interrupted: self.interrupted(),
             stop_key: "Escape",
             label: String::new(),
-            color: BannerColor::DEFAULT,
+            activity,
+            activity_label: activity.localized_label(&system_language_tag()).into(),
+            placement: if self.inside_target.load(Ordering::Acquire) {
+                "target_safe_inset"
+            } else {
+                "window_edge"
+            },
+            color: activity.color(),
         }
     }
 
@@ -163,16 +173,15 @@ impl PlatformBanner {
         self.interrupted.load(Ordering::Acquire) || !self.active.load(Ordering::Acquire)
     }
 
-    pub(super) fn set_cursor_position(&self, x: f64, y: f64) {
-        *self
-            .cursor_position
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some((x, y));
+    pub(super) fn set_activity(&self, activity: BannerActivity) {
+        self.activity.store(activity as u8, Ordering::Release);
     }
 }
 
 impl Drop for PlatformBanner {
     fn drop(&mut self) {
+        self.activity
+            .store(BannerActivity::Stopping as u8, Ordering::Release);
         self.stop.store(true, Ordering::Release);
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
@@ -184,24 +193,17 @@ struct OverlayWindow(HWND);
 
 impl Drop for OverlayWindow {
     fn drop(&mut self) {
-        let _ = unsafe { RemovePropW(self.0, OVERLAY_COLOR_PROP) };
+        let _ = unsafe { RemovePropW(self.0, OVERLAY_ACTIVITY_PROP) };
+        let _ = unsafe { RemovePropW(self.0, OVERLAY_ICON_PROP) };
         let _ = unsafe { DestroyWindow(self.0) };
     }
 }
 
-struct RegisteredHotKey;
+struct RegisteredKeyboardHook(HHOOK);
 
-impl Drop for RegisteredHotKey {
+impl Drop for RegisteredKeyboardHook {
     fn drop(&mut self) {
-        let _ = unsafe { UnregisterHotKey(None, HOTKEY_ID) };
-    }
-}
-
-struct EscapeEvent(HANDLE);
-
-impl Drop for EscapeEvent {
-    fn drop(&mut self) {
-        let _ = unsafe { CloseHandle(self.0) };
+        let _ = unsafe { UnhookWindowsHookEx(self.0) };
     }
 }
 
@@ -212,8 +214,7 @@ struct EscapeHub {
 struct BannerRuntime {
     hub_active: Arc<AtomicBool>,
     generation: u64,
-    cursor_position: Arc<Mutex<Option<(f64, f64)>>>,
-    color: BannerColor,
+    activity: Arc<AtomicU8>,
 }
 
 impl EscapeHub {
@@ -251,17 +252,9 @@ fn run_escape_hub(
     active: &AtomicBool,
     ready: &std::sync::mpsc::SyncSender<Result<(), String>>,
 ) -> Result<(), String> {
-    let event = EscapeEvent(
-        unsafe { CreateEventW(None, false, false, ESCAPE_EVENT_NAME) }
-            .map_err(|error| format!("create shared Escape event: {error}"))?,
-    );
-    let owns_hotkey =
-        match unsafe { RegisterHotKey(None, HOTKEY_ID, MOD_NOREPEAT, VK_ESCAPE.0 as u32) } {
-            Ok(()) => true,
-            Err(error) if hotkey_already_registered(&error) => false,
-            Err(error) => return Err(format!("reserve Escape stop key: {error}")),
-        };
-    let _hotkey = owns_hotkey.then_some(RegisteredHotKey);
+    let hook = unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, Some(low_level_keyboard_hook), None, 0) }
+        .map_err(|error| format!("install Escape stop hook: {error}"))?;
+    let _hook = RegisteredKeyboardHook(hook);
     active.store(true, Ordering::Release);
     ready
         .try_send(Ok(()))
@@ -269,26 +262,50 @@ fn run_escape_hub(
     let mut message = MSG::default();
     loop {
         while unsafe { PeekMessageW(&mut message, None, 0, 0, PM_REMOVE) }.as_bool() {
-            if owns_hotkey && message.message == WM_HOTKEY && message.wParam.0 == HOTKEY_ID as usize
-            {
-                broadcast_interrupt();
-                unsafe { SetEvent(event.0) }
-                    .map_err(|error| format!("broadcast Escape stop: {error}"))?;
-            }
             unsafe {
                 let _ = TranslateMessage(&message);
                 DispatchMessageW(&message);
             }
         }
-        if !owns_hotkey && unsafe { WaitForSingleObject(event.0, 0) } == WAIT_OBJECT_0 {
-            broadcast_interrupt();
-        }
         thread::sleep(FRAME_INTERVAL);
     }
 }
 
-pub(super) fn hotkey_already_registered(error: &windows::core::Error) -> bool {
-    error.code() == HRESULT::from_win32(ERROR_HOTKEY_ALREADY_REGISTERED.0)
+unsafe extern "system" fn low_level_keyboard_hook(
+    code: i32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    if code == HC_ACTION as i32 {
+        let event = wparam.0 as u32;
+        let keyboard = unsafe { (lparam.0 as *const KBDLLHOOKSTRUCT).as_ref() };
+        if let Some(is_down) =
+            keyboard.and_then(|keyboard| escape_key_transition(code, event, keyboard.vkCode))
+        {
+            if is_down {
+                if !ESCAPE_DOWN.swap(true, Ordering::AcqRel) {
+                    broadcast_interrupt();
+                }
+            } else {
+                ESCAPE_DOWN.store(false, Ordering::Release);
+            }
+            // Escape is the operator's stop control while a banner is active;
+            // do not also deliver it to the controlled application.
+            return LRESULT(1);
+        }
+    }
+    unsafe { CallNextHookEx(None, code, wparam, lparam) }
+}
+
+pub(super) fn escape_key_transition(code: i32, message: u32, virtual_key: u32) -> Option<bool> {
+    if code != HC_ACTION as i32 || virtual_key != VK_ESCAPE.0 as u32 {
+        return None;
+    }
+    match message {
+        WM_KEYDOWN | WM_SYSKEYDOWN => Some(true),
+        WM_KEYUP | WM_SYSKEYUP => Some(false),
+        _ => None,
+    }
 }
 
 struct ThreadDpiAwareness {
@@ -314,56 +331,44 @@ impl Drop for ThreadDpiAwareness {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_banner(
     target: BannerTarget,
     stop: &AtomicBool,
     active: &AtomicBool,
     interrupted: &AtomicBool,
     visible: &AtomicBool,
+    inside_target: &AtomicBool,
     runtime: &BannerRuntime,
     ready: &std::sync::mpsc::SyncSender<Result<(), String>>,
 ) -> Result<(), IndicatorError> {
     let _dpi_awareness = ThreadDpiAwareness::enter()?;
     let target_window = HWND(target.window_handle as *mut core::ffi::c_void);
     validate_target(target_window, target.process_id)?;
+    let identity = target.identity();
     let overlay = OverlayWindow(create_overlay(
-        BANNER_CLASS,
-        &target.label,
-        BANNER_ALPHA,
-        Some(COLORREF(runtime.color.colorref())),
+        &identity,
+        BannerActivity::Connecting,
+        target_icon(target_window),
     )?);
-    let frames = FRAME_LAYER_MAX_ALPHA
-        .iter()
-        .map(|alpha| {
-            create_overlay(
-                FRAME_CLASS,
-                "",
-                *alpha,
-                Some(COLORREF(runtime.color.frame().colorref())),
-            )
-            .map(OverlayWindow)
-        })
+    let frames = (0..TARGET_FRAME_GRADIENT_STEPS)
+        .map(|_| create_frame_overlay().map(OverlayWindow))
         .collect::<Result<Vec<_>, _>>()?;
-    let cursor_halos = CURSOR_HALO_LAYER_ALPHA
-        .iter()
-        .map(|alpha| create_overlay(CURSOR_HALO_CLASS, "", *alpha, None).map(OverlayWindow))
-        .collect::<Result<Vec<_>, _>>()?;
-    let cursor_pointer = OverlayWindow(create_overlay(CURSOR_POINTER_CLASS, "", u8::MAX, None)?);
     let target_geometry = read_target_geometry(target_window)?;
-    let mut geometry = banner_geometry(target_geometry);
-    let mut frame_geometries = target_frame_geometries(target_geometry);
-    let mut cursor_state = cursor_geometry(target_geometry, None);
-    let pulse_started = Instant::now();
-    let mut pulse_updated = Duration::ZERO;
-    let mut frame_alpha = FRAME_ALPHA_MAX;
+    let mut geometry = banner_geometry(target_geometry, read_monitor_geometry(target_window)?);
+    let mut frame_geometry = target_frame_geometry(target_geometry);
     position_banner(overlay.0, geometry, true)?;
-    for (frame, geometry) in frames.iter().zip(frame_geometries) {
-        position_target_frame(frame.0, geometry, true)?;
+    for (band, frame) in frames.iter().enumerate() {
+        set_overlay_alpha(
+            frame.0,
+            target_frame_band_alpha(TARGET_FRAME_ALPHA_MAX, band),
+        )?;
+        position_target_frame(frame.0, frame_geometry, band, true)?;
     }
-    for (layer, halo) in cursor_halos.iter().enumerate() {
-        position_cursor_halo(halo.0, cursor_state, layer, true)?;
-    }
-    position_cursor_pointer(cursor_pointer.0, cursor_state, true)?;
+    inside_target.store(geometry.inside_target, Ordering::Release);
+    let mut displayed_activity = BannerActivity::Connecting;
+    let pulse_started = Instant::now();
+    let mut frame_alpha = TARGET_FRAME_ALPHA_MAX;
     active.store(true, Ordering::Release);
     visible.store(true, Ordering::Release);
     ready
@@ -386,61 +391,26 @@ fn run_banner(
                 DispatchMessageW(&message);
             }
         }
-        if stop.load(Ordering::Acquire) {
-            break;
+        let next_activity = BannerActivity::from_code(runtime.activity.load(Ordering::Acquire));
+        if next_activity != displayed_activity {
+            set_activity_property(overlay.0, next_activity)?;
+            let _ = unsafe { InvalidateRect(Some(overlay.0), None, false) };
+            displayed_activity = next_activity;
+        }
+        let next_frame_alpha = breathing_frame_alpha(pulse_started.elapsed());
+        if next_frame_alpha != frame_alpha {
+            for (band, frame) in frames.iter().enumerate() {
+                set_overlay_alpha(frame.0, target_frame_band_alpha(next_frame_alpha, band))?;
+            }
+            frame_alpha = next_frame_alpha;
         }
         validate_target(target_window, target.process_id)?;
         let target_visible = unsafe {
             IsWindowVisible(target_window).as_bool() && !IsIconic(target_window).as_bool()
         };
         if target_visible {
-            let pulse_elapsed = pulse_started.elapsed();
-            let next_frame_alpha = breathing_frame_alpha(pulse_elapsed);
-            if pulse_elapsed.saturating_sub(pulse_updated) >= FRAME_PULSE_INTERVAL
-                && next_frame_alpha != frame_alpha
-            {
-                for (frame, maximum) in frames.iter().zip(FRAME_LAYER_MAX_ALPHA) {
-                    set_overlay_alpha(frame.0, gradient_frame_alpha(maximum, next_frame_alpha))?;
-                }
-                for (halo, maximum) in cursor_halos.iter().zip(CURSOR_HALO_LAYER_ALPHA) {
-                    set_overlay_alpha(halo.0, gradient_frame_alpha(maximum, next_frame_alpha))?;
-                }
-                frame_alpha = next_frame_alpha;
-                pulse_updated = pulse_elapsed;
-            }
-            let next_target_geometry = read_target_geometry(target_window)?;
-            let requested_cursor = *runtime
-                .cursor_position
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let next_cursor_geometry = cursor_geometry(next_target_geometry, requested_cursor);
-            if next_cursor_geometry != cursor_state {
-                for (layer, halo) in cursor_halos.iter().enumerate() {
-                    position_cursor_halo(
-                        halo.0,
-                        next_cursor_geometry,
-                        layer,
-                        cursor_shape_needs_update(
-                            cursor_state.visible,
-                            next_cursor_geometry.visible,
-                            cursor_state.halo_size,
-                            next_cursor_geometry.halo_size,
-                        ),
-                    )?;
-                }
-                position_cursor_pointer(
-                    cursor_pointer.0,
-                    next_cursor_geometry,
-                    cursor_shape_needs_update(
-                        cursor_state.visible,
-                        next_cursor_geometry.visible,
-                        cursor_state.pointer_size,
-                        next_cursor_geometry.pointer_size,
-                    ),
-                )?;
-                cursor_state = next_cursor_geometry;
-            }
-            let next_geometry = banner_geometry(next_target_geometry);
+            let next_target = read_target_geometry(target_window)?;
+            let next_geometry = banner_geometry(next_target, read_monitor_geometry(target_window)?);
             if next_geometry != geometry {
                 position_banner(
                     overlay.0,
@@ -449,35 +419,26 @@ fn run_banner(
                         || next_geometry.height != geometry.height,
                 )?;
                 geometry = next_geometry;
+                inside_target.store(geometry.inside_target, Ordering::Release);
             }
-            let next_frame_geometries = target_frame_geometries(next_target_geometry);
-            if next_frame_geometries != frame_geometries {
-                for ((frame, next), previous) in frames
-                    .iter()
-                    .zip(next_frame_geometries)
-                    .zip(frame_geometries)
-                {
+            let next_frame_geometry = target_frame_geometry(next_target);
+            if next_frame_geometry != frame_geometry {
+                for (band, frame) in frames.iter().enumerate() {
                     position_target_frame(
                         frame.0,
-                        next,
-                        next.width != previous.width
-                            || next.height != previous.height
-                            || next.thickness != previous.thickness
-                            || next.corner_radius != previous.corner_radius,
+                        next_frame_geometry,
+                        band,
+                        next_frame_geometry.width != frame_geometry.width
+                            || next_frame_geometry.height != frame_geometry.height
+                            || next_frame_geometry.thickness != frame_geometry.thickness,
                     )?;
                 }
-                frame_geometries = next_frame_geometries;
+                frame_geometry = next_frame_geometry;
             }
             if !visible.swap(true, Ordering::AcqRel) {
                 let _ = unsafe { ShowWindow(overlay.0, SW_SHOWNOACTIVATE) };
                 for frame in &frames {
                     let _ = unsafe { ShowWindow(frame.0, SW_SHOWNOACTIVATE) };
-                }
-                if cursor_state.visible {
-                    for halo in &cursor_halos {
-                        let _ = unsafe { ShowWindow(halo.0, SW_SHOWNOACTIVATE) };
-                    }
-                    let _ = unsafe { ShowWindow(cursor_pointer.0, SW_SHOWNOACTIVATE) };
                 }
             }
         } else if visible.swap(false, Ordering::AcqRel) {
@@ -485,10 +446,6 @@ fn run_banner(
             for frame in &frames {
                 let _ = unsafe { ShowWindow(frame.0, SW_HIDE) };
             }
-            for halo in &cursor_halos {
-                let _ = unsafe { ShowWindow(halo.0, SW_HIDE) };
-            }
-            let _ = unsafe { ShowWindow(cursor_pointer.0, SW_HIDE) };
         }
         thread::sleep(FRAME_INTERVAL);
     }
@@ -511,16 +468,71 @@ fn validate_target(window: HWND, expected_pid: u32) -> Result<(), IndicatorError
     Ok(())
 }
 
+fn target_icon(window: HWND) -> Option<HICON> {
+    for icon_kind in [ICON_SMALL2, 0, 1] {
+        let mut value = 0_usize;
+        let sent = unsafe {
+            SendMessageTimeoutW(
+                window,
+                WM_GETICON,
+                WPARAM(icon_kind as usize),
+                LPARAM(0),
+                SEND_MESSAGE_TIMEOUT_FLAGS(SMTO_ABORTIFHUNG.0),
+                100,
+                Some(&mut value),
+            )
+        };
+        if sent.0 != 0 && value != 0 {
+            return Some(HICON(value as *mut core::ffi::c_void));
+        }
+    }
+    [GCLP_HICONSM, GCLP_HICON]
+        .into_iter()
+        .map(|index| unsafe { GetClassLongPtrW(window, index) })
+        .find(|value| *value != 0)
+        .map(|value| HICON(value as *mut core::ffi::c_void))
+}
+
 fn create_overlay(
-    class_name: PCWSTR,
-    label: &str,
-    alpha: u8,
-    color: Option<COLORREF>,
+    identity: &str,
+    activity: BannerActivity,
+    icon: Option<HICON>,
 ) -> Result<HWND, IndicatorError> {
-    register_class(class_name)?;
+    let window = create_window(BANNER_CLASS, Some(window_proc), identity, BANNER_ALPHA)?;
+    if let Err(error) = set_activity_property(window, activity) {
+        let _ = unsafe { DestroyWindow(window) };
+        return Err(error);
+    }
+    if let Some(icon) = icon
+        && let Err(error) = unsafe { SetPropW(window, OVERLAY_ICON_PROP, Some(HANDLE(icon.0))) }
+    {
+        let _ = unsafe { DestroyWindow(window) };
+        return Err(IndicatorError::Backend(format!(
+            "set target application icon: {error}"
+        )));
+    }
+    Ok(window)
+}
+
+fn create_frame_overlay() -> Result<HWND, IndicatorError> {
+    create_window(
+        FRAME_CLASS,
+        Some(frame_window_proc),
+        "",
+        TARGET_FRAME_ALPHA_MAX,
+    )
+}
+
+fn create_window(
+    class_name: PCWSTR,
+    procedure: WNDPROC,
+    title: &str,
+    alpha: u8,
+) -> Result<HWND, IndicatorError> {
+    register_class(class_name, procedure)?;
     let instance = unsafe { GetModuleHandleW(None) }
         .map_err(|error| IndicatorError::Backend(format!("resolve module handle: {error}")))?;
-    let label = wide(label);
+    let title = wide(title);
     let window = unsafe {
         CreateWindowExW(
             WINDOW_EX_STYLE(
@@ -531,7 +543,7 @@ fn create_overlay(
                     | WS_EX_LAYERED.0,
             ),
             class_name,
-            PCWSTR(label.as_ptr()),
+            PCWSTR(title.as_ptr()),
             WINDOW_STYLE(WS_POPUP.0),
             0,
             0,
@@ -544,23 +556,12 @@ fn create_overlay(
         )
     }
     .map_err(|error| IndicatorError::Backend(format!("create indicator window: {error}")))?;
-    if let Some(color) = color
-        && let Err(error) = unsafe {
-            SetPropW(
-                window,
-                OVERLAY_COLOR_PROP,
-                Some(HANDLE(color.0 as usize as *mut std::ffi::c_void)),
-            )
-        }
+    if let Err(error) = unsafe { SetLayeredWindowAttributes(window, COLORREF(0), alpha, LWA_ALPHA) }
     {
         let _ = unsafe { DestroyWindow(window) };
         return Err(IndicatorError::Backend(format!(
-            "set indicator color: {error}"
+            "set indicator opacity: {error}"
         )));
-    }
-    if let Err(error) = set_overlay_alpha(window, alpha) {
-        let _ = unsafe { DestroyWindow(window) };
-        return Err(error);
     }
     if let Err(error) = unsafe { SetWindowDisplayAffinity(window, WDA_EXCLUDEFROMCAPTURE) } {
         let _ = unsafe { DestroyWindow(window) };
@@ -571,11 +572,24 @@ fn create_overlay(
     Ok(window)
 }
 
-fn register_class(class_name: PCWSTR) -> Result<(), IndicatorError> {
+fn set_activity_property(window: HWND, activity: BannerActivity) -> Result<(), IndicatorError> {
+    unsafe {
+        SetPropW(
+            window,
+            OVERLAY_ACTIVITY_PROP,
+            Some(HANDLE(
+                (usize::from(activity as u8) + 1) as *mut core::ffi::c_void,
+            )),
+        )
+    }
+    .map_err(|error| IndicatorError::Backend(format!("set banner activity: {error}")))
+}
+
+fn register_class(class_name: PCWSTR, procedure: WNDPROC) -> Result<(), IndicatorError> {
     let instance = unsafe { GetModuleHandleW(None) }
         .map_err(|error| IndicatorError::Backend(format!("resolve module handle: {error}")))?;
     let class = WNDCLASSW {
-        lpfnWndProc: Some(window_proc),
+        lpfnWndProc: procedure,
         hInstance: instance.into(),
         lpszClassName: class_name,
         ..Default::default()
@@ -598,62 +612,28 @@ struct BannerGeometry {
     y: i32,
     width: i32,
     height: i32,
+    inside_target: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-struct TargetGeometry {
-    x: i32,
-    y: i32,
-    width: i32,
-    height: i32,
-    dpi: u32,
+pub(super) struct TargetGeometry {
+    pub(super) x: i32,
+    pub(super) y: i32,
+    pub(super) width: i32,
+    pub(super) height: i32,
+    pub(super) dpi: u32,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-struct CursorGeometry {
-    x: i32,
-    y: i32,
-    halo_size: i32,
-    pointer_size: i32,
-    visible: bool,
-}
-
-pub(super) fn cursor_shape_needs_update(
-    was_visible: bool,
-    is_visible: bool,
-    previous_size: i32,
-    current_size: i32,
-) -> bool {
-    previous_size != current_size || (!was_visible && is_visible)
-}
-
-fn cursor_geometry(target: TargetGeometry, requested: Option<(f64, f64)>) -> CursorGeometry {
-    let point = if let Some((x, y)) = requested {
-        POINT {
-            x: target.x + x.round().clamp(0.0, f64::from(target.width - 1)) as i32,
-            y: target.y + y.round().clamp(0.0, f64::from(target.height - 1)) as i32,
-        }
-    } else {
-        let mut point = POINT::default();
-        if unsafe { GetCursorPos(&mut point) }.is_ok() {
-            point
-        } else {
-            POINT {
-                x: target.x - 1,
-                y: target.y - 1,
-            }
-        }
-    };
-    CursorGeometry {
-        x: point.x,
-        y: point.y,
-        halo_size: scale(CURSOR_HALO_SIZE, target.dpi),
-        pointer_size: scale(CURSOR_POINTER_SIZE, target.dpi),
-        visible: point.x >= target.x
-            && point.x < target.x + target.width
-            && point.y >= target.y
-            && point.y < target.y + target.height,
-    }
+pub(super) struct MonitorGeometry {
+    pub(super) left: i32,
+    pub(super) top: i32,
+    pub(super) right: i32,
+    pub(super) bottom: i32,
+    pub(super) work_left: i32,
+    pub(super) work_top: i32,
+    pub(super) work_right: i32,
+    pub(super) work_bottom: i32,
 }
 
 fn read_target_geometry(target: HWND) -> Result<TargetGeometry, IndicatorError> {
@@ -675,16 +655,54 @@ fn read_target_geometry(target: HWND) -> Result<TargetGeometry, IndicatorError> 
     })
 }
 
-fn banner_geometry(target: TargetGeometry) -> BannerGeometry {
-    let width = (target.width / 4)
-        .clamp(scale(300, target.dpi), scale(600, target.dpi))
-        .min((target.width - scale(24, target.dpi)).max(scale(240, target.dpi)));
-    let height = (width * 44 / 480).max(scale(28, target.dpi));
+fn read_monitor_geometry(target: HWND) -> Result<MonitorGeometry, IndicatorError> {
+    let monitor = unsafe { MonitorFromWindow(target, MONITOR_DEFAULTTONEAREST) };
+    let mut info = MONITORINFO {
+        cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+        ..Default::default()
+    };
+    if !unsafe { GetMonitorInfoW(monitor, &mut info) }.as_bool() {
+        return Err(IndicatorError::Backend(format!(
+            "read target monitor: {}",
+            windows::core::Error::from_win32()
+        )));
+    }
+    Ok(MonitorGeometry {
+        left: info.rcMonitor.left,
+        top: info.rcMonitor.top,
+        right: info.rcMonitor.right,
+        bottom: info.rcMonitor.bottom,
+        work_left: info.rcWork.left,
+        work_top: info.rcWork.top,
+        work_right: info.rcWork.right,
+        work_bottom: info.rcWork.bottom,
+    })
+}
+
+fn banner_geometry(target: TargetGeometry, monitor: MonitorGeometry) -> BannerGeometry {
+    let height = scale(44, target.dpi);
+    let available_width = (monitor.work_right - monitor.work_left - scale(16, target.dpi)).max(1);
+    let width = scale(480, target.dpi).min(available_width);
+    let gap = scale(8, target.dpi);
+    let inset = scale(16, target.dpi);
+    let fullscreen = (target.x - monitor.left).abs() <= 2
+        && (target.y - monitor.top).abs() <= 2
+        && (target.x + target.width - monitor.right).abs() <= 2
+        && (target.y + target.height - monitor.bottom).abs() <= 2;
+    let inside_target = fullscreen || target.y - height - gap < monitor.work_top;
+    let y = if inside_target {
+        (target.y + inset).min(monitor.work_bottom - height)
+    } else {
+        target.y - height - gap
+    };
+    let x = (target.x + (target.width - width) / 2)
+        .clamp(monitor.work_left, monitor.work_right - width);
     BannerGeometry {
-        x: target.x + (target.width - width) / 2,
-        y: target.y + scale(37, target.dpi),
+        x,
+        y,
         width,
         height,
+        inside_target,
     }
 }
 
@@ -698,36 +716,15 @@ struct TargetFrameGeometry {
     corner_radius: i32,
 }
 
-fn target_frame_geometries(
-    target: TargetGeometry,
-) -> [TargetFrameGeometry; FRAME_LAYER_MAX_ALPHA.len()] {
-    let total_thickness = scale(35, target.dpi);
-    let corner_radius = scale(10, target.dpi);
-    std::array::from_fn(|layer| {
-        let inset = total_thickness * layer as i32 / FRAME_LAYER_MAX_ALPHA.len() as i32;
-        let next_inset = total_thickness * (layer as i32 + 1) / FRAME_LAYER_MAX_ALPHA.len() as i32;
-        TargetFrameGeometry {
-            x: target.x + inset,
-            y: target.y + inset,
-            width: target.width - inset * 2,
-            height: target.height - inset * 2,
-            thickness: next_inset - inset,
-            corner_radius: (corner_radius - inset).max(1),
-        }
-    })
-}
-
-pub(super) fn breathing_frame_alpha(elapsed: Duration) -> u8 {
-    let phase = elapsed.as_secs_f64() / FRAME_PULSE_PERIOD.as_secs_f64();
-    let wave = (phase * std::f64::consts::TAU).cos().mul_add(0.5, 0.5);
-    f64::from(FRAME_ALPHA_MIN)
-        .mul_add(1.0 - wave, f64::from(FRAME_ALPHA_MAX) * wave)
-        .round() as u8
-}
-
-pub(super) fn gradient_frame_alpha(maximum: u8, breathing: u8) -> u8 {
-    ((u16::from(maximum) * u16::from(breathing) + u16::from(FRAME_ALPHA_MAX) / 2)
-        / u16::from(FRAME_ALPHA_MAX)) as u8
+fn target_frame_geometry(target: TargetGeometry) -> TargetFrameGeometry {
+    TargetFrameGeometry {
+        x: target.x,
+        y: target.y,
+        width: target.width,
+        height: target.height,
+        thickness: scale(TARGET_FRAME_THICKNESS_DIP, target.dpi),
+        corner_radius: scale(10, target.dpi),
+    }
 }
 
 fn position_banner(
@@ -736,14 +733,15 @@ fn position_banner(
     update_shape: bool,
 ) -> Result<(), IndicatorError> {
     if update_shape {
+        let radius = scale(12, unsafe { GetDpiForWindow(window) }.max(96));
         let region = unsafe {
             CreateRoundRectRgn(
                 0,
                 0,
                 geometry.width,
                 geometry.height,
-                geometry.height,
-                geometry.height,
+                radius * 2,
+                radius * 2,
             )
         };
         if region.0.is_null() {
@@ -781,28 +779,30 @@ fn position_banner(
 fn position_target_frame(
     window: HWND,
     geometry: TargetFrameGeometry,
+    band: usize,
     update_shape: bool,
 ) -> Result<(), IndicatorError> {
     if update_shape {
+        let (outer_inset, inner_inset) = target_frame_band_insets(geometry.thickness, band)
+            .ok_or_else(|| IndicatorError::Backend("invalid target frame band".into()))?;
         let outer = unsafe {
             CreateRoundRectRgn(
-                0,
-                0,
-                geometry.width,
-                geometry.height,
-                geometry.corner_radius * 2,
-                geometry.corner_radius * 2,
+                outer_inset,
+                outer_inset,
+                geometry.width - outer_inset,
+                geometry.height - outer_inset,
+                (geometry.corner_radius - outer_inset).max(1) * 2,
+                (geometry.corner_radius - outer_inset).max(1) * 2,
             )
         };
-        let inner_radius = (geometry.corner_radius - geometry.thickness).max(1);
         let inner = unsafe {
             CreateRoundRectRgn(
-                geometry.thickness,
-                geometry.thickness,
-                geometry.width - geometry.thickness,
-                geometry.height - geometry.thickness,
-                inner_radius * 2,
-                inner_radius * 2,
+                inner_inset,
+                inner_inset,
+                geometry.width - inner_inset,
+                geometry.height - inner_inset,
+                (geometry.corner_radius - inner_inset).max(1) * 2,
+                (geometry.corner_radius - inner_inset).max(1) * 2,
             )
         };
         if outer.0.is_null() || inner.0.is_null() {
@@ -833,152 +833,23 @@ fn position_target_frame(
         )
     }
     .map_err(|error| IndicatorError::Backend(format!("position target frame: {error}")))?;
-    if !unsafe { IsWindowVisible(window).as_bool() } {
-        return Err(IndicatorError::Backend(
-            "Windows did not make the target frame visible".into(),
-        ));
-    }
     Ok(())
-}
-
-fn position_cursor_halo(
-    window: HWND,
-    geometry: CursorGeometry,
-    layer: usize,
-    update_shape: bool,
-) -> Result<(), IndicatorError> {
-    if !geometry.visible {
-        let _ = unsafe { ShowWindow(window, SW_HIDE) };
-        return Ok(());
-    }
-    if update_shape {
-        let outer_inset = cursor_halo_outer_inset(geometry.halo_size, layer);
-        let inner_inset = cursor_halo_inner_inset(geometry.halo_size, layer);
-        let outer = unsafe {
-            CreateEllipticRgn(
-                outer_inset,
-                outer_inset,
-                geometry.halo_size - outer_inset,
-                geometry.halo_size - outer_inset,
-            )
-        };
-        let inner = unsafe {
-            CreateEllipticRgn(
-                inner_inset,
-                inner_inset,
-                geometry.halo_size - inner_inset,
-                geometry.halo_size - inner_inset,
-            )
-        };
-        if outer.0.is_null() || inner.0.is_null() {
-            let _ = unsafe { DeleteObject(HGDIOBJ(outer.0)) };
-            let _ = unsafe { DeleteObject(HGDIOBJ(inner.0)) };
-            return Err(IndicatorError::Backend(
-                "Windows could not create the mouse halo shape".into(),
-            ));
-        }
-        let combined = unsafe { CombineRgn(Some(outer), Some(outer), Some(inner), RGN_DIFF) };
-        let _ = unsafe { DeleteObject(HGDIOBJ(inner.0)) };
-        if combined == RGN_ERROR || unsafe { SetWindowRgn(window, Some(outer), true) } == 0 {
-            let _ = unsafe { DeleteObject(HGDIOBJ(outer.0)) };
-            return Err(IndicatorError::Backend(
-                "Windows rejected the mouse halo shape".into(),
-            ));
-        }
-    }
-    let center_x = geometry.x + geometry.pointer_size * 10 / 100;
-    let center_y = geometry.y + geometry.pointer_size * 18 / 100;
-    unsafe {
-        SetWindowPos(
-            window,
-            Some(HWND_TOPMOST),
-            center_x - geometry.halo_size / 2,
-            center_y - geometry.halo_size / 2,
-            geometry.halo_size,
-            geometry.halo_size,
-            SWP_NOACTIVATE | SWP_SHOWWINDOW,
-        )
-    }
-    .map_err(|error| IndicatorError::Backend(format!("position mouse halo: {error}")))?;
-    Ok(())
-}
-
-pub(super) fn cursor_halo_outer_inset(size: i32, layer: usize) -> i32 {
-    size * 28 * layer as i32 / 100 / (CURSOR_HALO_LAYER_ALPHA.len() as i32 - 1)
-}
-
-pub(super) fn cursor_halo_inner_inset(size: i32, layer: usize) -> i32 {
-    size * CURSOR_HALO_INNER_INSET_PERCENT[layer] / 100
-}
-
-fn position_cursor_pointer(
-    window: HWND,
-    geometry: CursorGeometry,
-    update_shape: bool,
-) -> Result<(), IndicatorError> {
-    if !geometry.visible {
-        let _ = unsafe { ShowWindow(window, SW_HIDE) };
-        return Ok(());
-    }
-    if update_shape {
-        let points = cursor_pointer_polygon(geometry.pointer_size, 0);
-        let region = unsafe { CreatePolygonRgn(&points, WINDING) };
-        if region.0.is_null() {
-            return Err(IndicatorError::Backend(
-                "Windows could not create the mouse pointer shape".into(),
-            ));
-        }
-        if unsafe { SetWindowRgn(window, Some(region), true) } == 0 {
-            let _ = unsafe { DeleteObject(HGDIOBJ(region.0)) };
-            return Err(IndicatorError::Backend(
-                "Windows rejected the mouse pointer shape".into(),
-            ));
-        }
-    }
-    unsafe {
-        SetWindowPos(
-            window,
-            Some(HWND_TOPMOST),
-            geometry.x - geometry.pointer_size * 8 / 100,
-            geometry.y - geometry.pointer_size * 4 / 100,
-            geometry.pointer_size,
-            geometry.pointer_size,
-            SWP_NOACTIVATE | SWP_SHOWWINDOW,
-        )
-    }
-    .map_err(|error| IndicatorError::Backend(format!("position mouse pointer: {error}")))?;
-    Ok(())
-}
-
-fn cursor_pointer_polygon(size: i32, layer: usize) -> [POINT; 7] {
-    const SHAPE: [(f64, f64); 7] = [
-        (0.08, 0.04),
-        (0.08, 0.78),
-        (0.29, 0.60),
-        (0.46, 0.95),
-        (0.63, 0.86),
-        (0.46, 0.55),
-        (0.76, 0.55),
-    ];
-    const CENTER: (f64, f64) = (0.34, 0.53);
-    let factor = 1.0 - layer as f64 * 0.06;
-    SHAPE.map(|(x, y)| POINT {
-        x: ((CENTER.0 + (x - CENTER.0) * factor) * f64::from(size)).round() as i32,
-        y: ((CENTER.1 + (y - CENTER.1) * factor) * f64::from(size)).round() as i32,
-    })
 }
 
 fn set_overlay_alpha(window: HWND, alpha: u8) -> Result<(), IndicatorError> {
     unsafe { SetLayeredWindowAttributes(window, COLORREF(0), alpha, LWA_ALPHA) }
-        .map_err(|error| IndicatorError::Backend(format!("set overlay alpha: {error}")))
+        .map_err(|error| IndicatorError::Backend(format!("set indicator opacity: {error}")))
 }
 
-unsafe extern "system" fn window_proc(
+unsafe extern "system" fn frame_window_proc(
     window: HWND,
     message: u32,
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
+    if let Some(result) = overlay_input_result(message) {
+        return result;
+    }
     if message != WM_PAINT {
         return unsafe { DefWindowProcW(window, message, wparam, lparam) };
     }
@@ -987,81 +858,272 @@ unsafe extern "system" fn window_proc(
     if !device.0.is_null() {
         let mut bounds = RECT::default();
         let _ = unsafe { GetClientRect(window, &raw mut bounds) };
-        let text_length = unsafe { GetWindowTextLengthW(window) }.max(0) as usize;
-        let mut class_name = [0_u16; 64];
-        let class_length = unsafe { GetClassNameW(window, &mut class_name) }.max(0) as usize;
-        let class_name = String::from_utf16_lossy(&class_name[..class_length]);
-        if class_name == "DccCuaControlCursorPointer" {
-            paint_cursor_pointer(device, bounds);
-            let _ = unsafe { EndPaint(window, &paint) };
-            return LRESULT(0);
-        }
-        let color = match class_name.as_str() {
-            "DccCuaControlCursorHalo" => CURSOR_HALO_COLOR,
-            _ => {
-                let value = unsafe { GetPropW(window, OVERLAY_COLOR_PROP) };
-                if value.0.is_null() {
-                    COLORREF(BannerColor::DEFAULT.colorref())
-                } else {
-                    COLORREF(value.0 as u32)
-                }
-            }
-        };
-        let brush = unsafe { CreateSolidBrush(color) };
+        let brush = unsafe { CreateSolidBrush(ACCENT) };
         let _ = unsafe { FillRect(device, &bounds, brush) };
         let _ = unsafe { DeleteObject(HGDIOBJ(brush.0)) };
-        let mut text = vec![0_u16; text_length + 1];
-        let copied = unsafe { GetWindowTextW(window, &mut text) }.max(0) as usize;
-        text.truncate(copied);
-        let dpi = unsafe { GetDpiForWindow(window) }.max(96);
-        let font_height = ((bounds.bottom - bounds.top) * 16 / 44).max(scale(11, dpi));
-        let font = unsafe {
-            CreateFontW(
-                -font_height,
-                0,
-                0,
-                0,
-                FW_SEMIBOLD.0 as i32,
-                0,
-                0,
-                0,
-                DEFAULT_CHARSET,
-                OUT_DEFAULT_PRECIS,
-                CLIP_DEFAULT_PRECIS,
-                CLEARTYPE_QUALITY,
-                u32::from(DEFAULT_PITCH.0),
-                w!("Segoe UI Semibold"),
-            )
-        };
-        if !font.0.is_null() {
-            let previous = unsafe { SelectObject(device, HGDIOBJ(font.0)) };
-            let _ = unsafe { SetBkMode(device, TRANSPARENT) };
-            let _ = unsafe { SetTextColor(device, COLORREF(0x00FF_FFFF)) };
-            let format = windows::Win32::Graphics::Gdi::DRAW_TEXT_FORMAT(
-                DT_CENTER.0 | DT_VCENTER.0 | DT_SINGLELINE.0 | DT_END_ELLIPSIS.0,
-            );
-            let _ = unsafe { DrawTextW(device, &mut text, &raw mut bounds, format) };
-            let _ = unsafe { SelectObject(device, previous) };
-            let _ = unsafe { DeleteObject(HGDIOBJ(font.0)) };
-        }
     }
     let _ = unsafe { EndPaint(window, &paint) };
     LRESULT(0)
 }
 
-fn paint_cursor_pointer(device: windows::Win32::Graphics::Gdi::HDC, bounds: RECT) {
-    let outline = unsafe { CreateSolidBrush(CURSOR_POINTER_OUTLINE_COLOR) };
-    let _ = unsafe { FillRect(device, &bounds, outline) };
-    let _ = unsafe { DeleteObject(HGDIOBJ(outline.0)) };
-
-    let size = (bounds.right - bounds.left).min(bounds.bottom - bounds.top);
-    let inner = unsafe { CreatePolygonRgn(&cursor_pointer_polygon(size, 1), WINDING) };
-    if !inner.0.is_null() {
-        let fill = unsafe { CreateSolidBrush(CURSOR_POINTER_COLOR) };
-        let _ = unsafe { FillRgn(device, inner, fill) };
-        let _ = unsafe { DeleteObject(HGDIOBJ(fill.0)) };
-        let _ = unsafe { DeleteObject(HGDIOBJ(inner.0)) };
+unsafe extern "system" fn window_proc(
+    window: HWND,
+    message: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    if let Some(result) = overlay_input_result(message) {
+        return result;
     }
+    if message != WM_PAINT {
+        return unsafe { DefWindowProcW(window, message, wparam, lparam) };
+    }
+    let mut paint = PAINTSTRUCT::default();
+    let device = unsafe { BeginPaint(window, &raw mut paint) };
+    if !device.0.is_null() {
+        let mut bounds = RECT::default();
+        let _ = unsafe { GetClientRect(window, &raw mut bounds) };
+        let dpi = unsafe { GetDpiForWindow(window) }.max(96);
+        paint_surface(device, bounds, dpi);
+        let icon_value = unsafe { GetPropW(window, OVERLAY_ICON_PROP) };
+        if icon_value.0.is_null() {
+            paint_fallback_icon(device, dpi);
+        } else {
+            let icon_size = scale(24, dpi);
+            let _ = unsafe {
+                DrawIconEx(
+                    device,
+                    scale(10, dpi),
+                    scale(10, dpi),
+                    HICON(icon_value.0),
+                    icon_size,
+                    icon_size,
+                    0,
+                    None,
+                    DI_NORMAL,
+                )
+            };
+        }
+        let activity_value = unsafe { GetPropW(window, OVERLAY_ACTIVITY_PROP) };
+        let activity = if activity_value.0.is_null() {
+            BannerActivity::Ready
+        } else {
+            BannerActivity::from_code((activity_value.0 as usize - 1) as u8)
+        };
+        paint_activity(device, activity, dpi);
+        let identity = window_text(window);
+        paint_copy(device, bounds, dpi, &identity, activity);
+    }
+    let _ = unsafe { EndPaint(window, &paint) };
+    LRESULT(0)
+}
+
+pub(super) fn overlay_input_result(message: u32) -> Option<LRESULT> {
+    match message {
+        WM_NCHITTEST => Some(LRESULT(HTTRANSPARENT as isize)),
+        WM_MOUSEACTIVATE => Some(LRESULT(MA_NOACTIVATE as isize)),
+        _ => None,
+    }
+}
+
+fn paint_surface(device: windows::Win32::Graphics::Gdi::HDC, bounds: RECT, dpi: u32) {
+    let radius = scale(12, dpi);
+    let outer =
+        unsafe { CreateRoundRectRgn(0, 0, bounds.right, bounds.bottom, radius * 2, radius * 2) };
+    let inner = unsafe {
+        CreateRoundRectRgn(
+            1,
+            1,
+            bounds.right - 1,
+            bounds.bottom - 1,
+            radius * 2,
+            radius * 2,
+        )
+    };
+    if !outer.0.is_null() && !inner.0.is_null() {
+        let border = unsafe { CreateSolidBrush(LINE) };
+        let surface = unsafe { CreateSolidBrush(SURFACE) };
+        let _ = unsafe { FillRgn(device, outer, border) };
+        let _ = unsafe { FillRgn(device, inner, surface) };
+        let _ = unsafe { DeleteObject(HGDIOBJ(border.0)) };
+        let _ = unsafe { DeleteObject(HGDIOBJ(surface.0)) };
+    } else {
+        let surface = unsafe { CreateSolidBrush(SURFACE) };
+        let _ = unsafe { FillRect(device, &bounds, surface) };
+        let _ = unsafe { DeleteObject(HGDIOBJ(surface.0)) };
+    }
+    let _ = unsafe { DeleteObject(HGDIOBJ(outer.0)) };
+    let _ = unsafe { DeleteObject(HGDIOBJ(inner.0)) };
+}
+
+fn paint_fallback_icon(device: windows::Win32::Graphics::Gdi::HDC, dpi: u32) {
+    let left = scale(10, dpi);
+    let top = scale(10, dpi);
+    let size = scale(24, dpi);
+    let region = unsafe {
+        CreateRoundRectRgn(
+            left,
+            top,
+            left + size,
+            top + size,
+            scale(7, dpi),
+            scale(7, dpi),
+        )
+    };
+    if !region.0.is_null() {
+        let brush = unsafe { CreateSolidBrush(ACCENT) };
+        let _ = unsafe { FillRgn(device, region, brush) };
+        let _ = unsafe { DeleteObject(HGDIOBJ(brush.0)) };
+        let _ = unsafe { DeleteObject(HGDIOBJ(region.0)) };
+    }
+    draw_text(
+        device,
+        "D",
+        RECT {
+            left,
+            top,
+            right: left + size,
+            bottom: top + size,
+        },
+        scale(12, dpi),
+        FW_SEMIBOLD.0 as i32,
+        TEXT,
+        true,
+    );
+}
+
+fn paint_activity(device: windows::Win32::Graphics::Gdi::HDC, activity: BannerActivity, dpi: u32) {
+    let left = scale(43, dpi);
+    let top = scale(18, dpi);
+    let size = scale(8, dpi);
+    let region = unsafe { CreateEllipticRgn(left, top, left + size, top + size) };
+    if !region.0.is_null() {
+        let color = activity.color();
+        let brush = unsafe { CreateSolidBrush(rgb(color.red, color.green, color.blue)) };
+        let _ = unsafe { FillRgn(device, region, brush) };
+        let _ = unsafe { DeleteObject(HGDIOBJ(brush.0)) };
+        let _ = unsafe { DeleteObject(HGDIOBJ(region.0)) };
+    }
+}
+
+fn paint_copy(
+    device: windows::Win32::Graphics::Gdi::HDC,
+    bounds: RECT,
+    dpi: u32,
+    identity: &str,
+    activity: BannerActivity,
+) {
+    let stop_width = scale(78, dpi);
+    let divider_x = bounds.right - stop_width - scale(9, dpi);
+    let divider = RECT {
+        left: divider_x,
+        top: scale(10, dpi),
+        right: divider_x + 1,
+        bottom: bounds.bottom - scale(10, dpi),
+    };
+    let brush = unsafe { CreateSolidBrush(LINE) };
+    let _ = unsafe { FillRect(device, &divider, brush) };
+    let _ = unsafe { DeleteObject(HGDIOBJ(brush.0)) };
+    let text_left = scale(58, dpi);
+    let text_right = divider_x - scale(10, dpi);
+    draw_text(
+        device,
+        identity,
+        RECT {
+            left: text_left,
+            top: scale(3, dpi),
+            right: text_right,
+            bottom: scale(23, dpi),
+        },
+        scale(12, dpi),
+        FW_SEMIBOLD.0 as i32,
+        TEXT,
+        false,
+    );
+    draw_text(
+        device,
+        activity.localized_label(&system_language_tag()),
+        RECT {
+            left: text_left,
+            top: scale(21, dpi),
+            right: text_right,
+            bottom: scale(41, dpi),
+        },
+        scale(11, dpi),
+        FW_NORMAL.0 as i32,
+        MUTED,
+        false,
+    );
+    let stop_label = if system_language_tag().starts_with("zh") {
+        "Esc 停止"
+    } else {
+        "Esc Stop"
+    };
+    draw_text(
+        device,
+        stop_label,
+        RECT {
+            left: divider_x + scale(6, dpi),
+            top: 0,
+            right: bounds.right - scale(4, dpi),
+            bottom: bounds.bottom,
+        },
+        scale(11, dpi),
+        FW_SEMIBOLD.0 as i32,
+        MUTED,
+        true,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_text(
+    device: windows::Win32::Graphics::Gdi::HDC,
+    text: &str,
+    mut bounds: RECT,
+    height: i32,
+    weight: i32,
+    color: COLORREF,
+    centered: bool,
+) {
+    let font = unsafe {
+        CreateFontW(
+            -height,
+            0,
+            0,
+            0,
+            weight,
+            0,
+            0,
+            0,
+            DEFAULT_CHARSET,
+            OUT_DEFAULT_PRECIS,
+            CLIP_DEFAULT_PRECIS,
+            CLEARTYPE_QUALITY,
+            u32::from(DEFAULT_PITCH.0),
+            w!("Segoe UI"),
+        )
+    };
+    if font.0.is_null() {
+        return;
+    }
+    let previous = unsafe { SelectObject(device, HGDIOBJ(font.0)) };
+    let _ = unsafe { SetBkMode(device, TRANSPARENT) };
+    let _ = unsafe { SetTextColor(device, color) };
+    let mut text = text.encode_utf16().collect::<Vec<_>>();
+    let horizontal = if centered { DT_CENTER.0 } else { DT_LEFT.0 };
+    let format = windows::Win32::Graphics::Gdi::DRAW_TEXT_FORMAT(
+        horizontal | DT_VCENTER.0 | DT_SINGLELINE.0 | DT_END_ELLIPSIS.0,
+    );
+    let _ = unsafe { DrawTextW(device, &mut text, &raw mut bounds, format) };
+    let _ = unsafe { SelectObject(device, previous) };
+    let _ = unsafe { DeleteObject(HGDIOBJ(font.0)) };
+}
+
+fn window_text(window: HWND) -> String {
+    let length = unsafe { GetWindowTextLengthW(window) }.max(0) as usize;
+    let mut text = vec![0_u16; length + 1];
+    let copied = unsafe { GetWindowTextW(window, &mut text) }.max(0) as usize;
+    String::from_utf16_lossy(&text[..copied])
 }
 
 fn scale(value: i32, dpi: u32) -> i32 {
@@ -1070,4 +1132,19 @@ fn scale(value: i32, dpi: u32) -> i32 {
 
 fn wide(value: &str) -> Vec<u16> {
     value.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+#[cfg(test)]
+pub(super) fn geometry_for_test(
+    target: TargetGeometry,
+    monitor: MonitorGeometry,
+) -> (i32, i32, i32, i32, bool) {
+    let value = banner_geometry(target, monitor);
+    (
+        value.x,
+        value.y,
+        value.width,
+        value.height,
+        value.inside_target,
+    )
 }

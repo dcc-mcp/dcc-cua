@@ -7,6 +7,8 @@ use super::{
 };
 
 #[cfg(windows)]
+use super::PersistentWgcCapture;
+#[cfg(windows)]
 use super::windows::foreground_restore_required;
 
 #[rstest]
@@ -118,5 +120,33 @@ fn background_action_only_restores_focus_stolen_by_the_controlled_process(
     assert_eq!(
         foreground_restore_required(expected, current, current_process_id, controlled_process_id),
         required
+    );
+}
+
+#[cfg(windows)]
+#[test]
+#[ignore = "requires DCC_CUA_TEST_WINDOW_HANDLE for an existing rendered window"]
+fn persistent_wgc_captures_consecutive_real_frames() {
+    let window_handle = std::env::var("DCC_CUA_TEST_WINDOW_HANDLE")
+        .expect("DCC_CUA_TEST_WINDOW_HANDLE")
+        .parse::<u64>()
+        .expect("numeric HWND");
+    let mut capture = PersistentWgcCapture::new(window_handle).expect("persistent WGC session");
+    let started = std::time::Instant::now();
+    let (_, first_width, first_height) = capture
+        .next_frame(std::time::Duration::from_secs(3))
+        .expect("first WGC frame");
+    let first_elapsed = started.elapsed();
+    let second_started = std::time::Instant::now();
+    let (_, second_width, second_height) = capture
+        .next_frame(std::time::Duration::from_secs(3))
+        .expect("second WGC frame");
+    let second_elapsed = second_started.elapsed();
+    assert_eq!((first_width, first_height), (second_width, second_height));
+    assert!(first_width > 0 && first_height > 0);
+    println!(
+        "persistent WGC {first_width}x{first_height}: first={}ms second={}ms",
+        first_elapsed.as_millis(),
+        second_elapsed.as_millis()
     );
 }

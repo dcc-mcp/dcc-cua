@@ -9,12 +9,16 @@ mod contracts;
 mod snapshot;
 
 #[cfg(windows)]
+mod wgc;
+#[cfg(windows)]
 mod windows;
 
 pub use contracts::{UiaAction, UiaError, UiaTarget};
 
 #[cfg(windows)]
-pub use windows::UiaSession;
+pub use wgc::{PersistentWgcCapture, WgcCaptureError};
+#[cfg(windows)]
+pub use windows::{UiaSession, activate_window};
 
 #[cfg(not(windows))]
 pub struct UiaSession;

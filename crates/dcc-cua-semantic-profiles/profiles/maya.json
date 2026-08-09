@@ -1,6 +1,8 @@
 {
-  "schema_version": 1,
+  "schema_version": 3,
   "id": "maya",
+  "profile_version": "1.0.0",
+  "application": {"family": "autodesk-maya", "versions": []},
   "display_name": "Autodesk Maya",
   "selectors": [
     {"application_names": ["maya.exe", "maya"], "window_title_contains": ["Autodesk Maya", "Maya"]}

@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DCC CUA Adaptive Encounter Bench</title>
+  <style>
+    :root { color-scheme: dark; font-family: Inter, "Segoe UI", sans-serif; }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; color: #f4f2ff; background: radial-gradient(circle at 50% 0%, #252142, #090b14 62%); }
+    main { width: min(1040px, calc(100vw - 48px)); margin: 0 auto; padding: 36px 0; }
+    header { display: flex; align-items: end; justify-content: space-between; gap: 24px; margin-bottom: 24px; }
+    h1 { margin: 0 0 6px; font-size: 28px; letter-spacing: -.02em; }
+    p { margin: 0; color: #aaa6bd; }
+    .state { display: grid; grid-template-columns: repeat(7, minmax(80px, 1fr)); gap: 8px; margin-bottom: 22px; }
+    .stat { padding: 12px 14px; border: 1px solid #343048; border-radius: 12px; background: rgba(18, 18, 30, .8); }
+    .stat span { display: block; color: #88839e; font-size: 11px; text-transform: uppercase; letter-spacing: .08em; }
+    .stat strong { display: block; margin-top: 5px; font-size: 18px; }
+    .cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; }
+    .card { position: relative; min-height: 330px; padding: 22px; border: 1px solid #403a57; border-radius: 20px; color: inherit; text-align: left; background: linear-gradient(160deg, #242039, #12131d 72%); cursor: pointer; transition: transform .15s ease, border-color .15s ease, box-shadow .15s ease; }
+    .card:hover { transform: translateY(-3px); border-color: #8e79ff; box-shadow: 0 18px 48px rgba(36, 23, 74, .45); }
+    .card.selected { border-color: #bcadff; box-shadow: 0 0 0 2px rgba(142, 121, 255, .25), 0 18px 56px rgba(75, 49, 151, .5); }
+    .orb { width: 86px; height: 86px; margin: 8px auto 24px; border-radius: 50%; background: radial-gradient(circle at 35% 30%, #f1eaff, #745ce0 36%, #2b214a 72%); box-shadow: 0 0 40px rgba(128, 96, 255, .45); }
+    .card:nth-child(2) .orb { background: radial-gradient(circle at 35% 30%, #e5fbff, #38a9c9 38%, #163244 74%); }
+    .card:nth-child(3) .orb { background: radial-gradient(circle at 35% 30%, #ffe9d7, #d34b55 38%, #4b1824 74%); }
+    .position { color: #aaa5bd; font-size: 12px; letter-spacing: .08em; text-transform: uppercase; }
+    .details { margin-top: 18px; padding-top: 16px; border-top: 1px solid #383348; color: #c8c4d7; line-height: 1.75; }
+    .hidden { color: #7f7a91; filter: blur(4px); user-select: none; }
+    .hint { margin-top: 18px; text-align: center; color: #827d94; font-size: 13px; }
+    #result { min-width: 210px; padding: 12px 15px; border: 1px solid #363147; border-radius: 12px; color: #aaa6bd; background: #11121c; }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div><h1>选择下一场遭遇</h1><p>按当前进度取最高可承受收益，不要固定追某个位置或流派。</p></div>
+      <div id="result">等待选择</div>
+    </header>
+    <section id="state" class="state"></section>
+    <section id="cards" class="cards"></section>
+    <p class="hint">右键查看卡片等级与当前构筑收益 · 左键确认选择</p>
+  </main>
+  <script>
+    let scenario = null;
+    let inspectedIds = [];
+    let selectedId = null;
+    let interactionCount = 0;
+
+    function syncResult() {
+      window.__benchmarkResult = { selectedId, inspectedIds: [...inspectedIds], interactionCount };
+    }
+
+    function stat(label, value) {
+      return `<div class="stat"><span>${label}</span><strong>${value}</strong></div>`;
+    }
+
+    function render() {
+      document.getElementById('state').innerHTML = [
+        stat('天数', scenario.day), stat('等级', scenario.heroLevel), stat('生命', scenario.health),
+        stat('金币', scenario.gold), stat('玩家胜场', scenario.pvpWins),
+        stat('声望', scenario.prestige), stat('阶段', scenario.runPhase),
+        stat('安全等级上限', scenario.maxSafeOpponentLevel)
+      ].join('');
+      document.getElementById('cards').innerHTML = scenario.candidates.map(candidate => {
+        const revealed = inspectedIds.includes(candidate.id);
+        const selected = selectedId === candidate.id ? ' selected' : '';
+        return `<button class="card${selected}" data-id="${candidate.id}">
+          <div class="position">${candidate.label}</div><div class="orb"></div>
+          <div class="details ${revealed ? '' : 'hidden'}">
+            <div>对手等级 <strong>${revealed ? candidate.level : '??'}</strong></div>
+            <div>当前构筑收益 <strong>${revealed ? candidate.currentBuildUtility : '??'}</strong></div>
+            ${scenario.mustPreserveActiveEffect ? `<div>保留活跃效果 <strong>${revealed ? (candidate.preservesActiveEffect ? '是' : '否') : '??'}</strong></div>` : ''}
+            <div>${revealed ? candidate.reward : '右键检查详情'}</div>
+          </div>
+        </button>`;
+      }).join('');
+      document.querySelectorAll('.card').forEach(card => {
+        card.addEventListener('contextmenu', event => {
+          event.preventDefault();
+          inspectCandidate(card.dataset.id);
+        });
+        card.addEventListener('click', () => selectCandidate(card.dataset.id));
+      });
+      syncResult();
+    }
+
+    window.inspectCandidate = function (id) {
+      interactionCount += 1;
+      if (!inspectedIds.includes(id)) inspectedIds.push(id);
+      render();
+    };
+
+    window.selectCandidate = function (id) {
+      interactionCount += 1;
+      selectedId = id;
+      document.getElementById('result').textContent = `已选择：${scenario.candidates.find(c => c.id === id).label}`;
+      render();
+    };
+
+    window.setScenario = function (value) {
+      scenario = value;
+      inspectedIds = [];
+      selectedId = null;
+      interactionCount = 0;
+      document.getElementById('result').textContent = `策略：${scenario.mode}`;
+      if (scenario.activeEffect) {
+        document.querySelector('header p').textContent = `活跃效果：${scenario.activeEffect}`;
+      } else {
+        document.querySelector('header p').textContent = '按当前玩家对战进度取最高可承受收益，不把野怪胜负计入战绩。';
+      }
+      render();
+    };
+    syncResult();
+  </script>
+</body>
+</html>

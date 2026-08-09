@@ -7,20 +7,17 @@ use crate::endpoint::endpoint_singleton_name;
 #[cfg(unix)]
 use crate::endpoint::{prepare_unix_endpoint_parent, stale_unix_socket_error};
 use crate::request_handler::bind_launched_process;
+use crate::request_handler::post_snapshot_delay;
 
 #[rstest]
 fn cursor_render_backend_matches_the_native_platform_owner() {
-    let expected = if cfg!(windows) {
-        "host-native-overlay"
-    } else if cfg!(target_os = "linux") {
+    let enabled = cfg!(any(windows, target_os = "linux"));
+    let expected = if enabled {
         "cua-driver-sdk"
     } else {
         "unavailable"
     };
-    assert_eq!(
-        request_handler::cursor_render_backend(cfg!(target_os = "linux")),
-        expected
-    );
+    assert_eq!(request_handler::cursor_render_backend(enabled), expected);
 }
 
 #[rstest]
@@ -40,6 +37,7 @@ fn capabilities_follow_the_selected_cursor_runtime() {
         capabilities.contains(&"windows_background_uia_fallback"),
         cfg!(windows)
     );
+    assert!(capabilities.contains(&"live_observation_latest_frame"));
 }
 
 #[rstest]
@@ -87,11 +85,7 @@ fn runtime_session_ids_are_rewritten_in_nested_host_responses() {
 fn private_worker_enables_the_upstream_cursor_backend() {
     assert_eq!(
         request_handler::cursor_render_backend(true),
-        if cfg!(windows) {
-            "host-native-overlay"
-        } else {
-            "cua-driver-sdk"
-        }
+        "cua-driver-sdk"
     );
 }
 
@@ -573,6 +567,8 @@ fn app_launch_grant_defaults_to_denied() {
     assert!(!grant.allow_clipboard_read);
     assert!(!grant.allow_clipboard_write);
     assert!(!grant.allow_recording);
+    assert!(grant.showcase_output_dir.is_none());
+    assert!(!grant.allow_live_observation);
     assert!(!grant.allow_browser_input);
     assert!(!grant.allow_browser_prepare);
     assert!(!grant.allow_browser_download);
@@ -599,6 +595,52 @@ fn app_launch_grant_defaults_to_denied() {
         ))),
         "interactive_desktop_unavailable"
     );
+}
+
+#[rstest]
+fn post_snapshot_delay_is_bounded_and_requires_capture() {
+    assert_eq!(post_snapshot_delay(true, 1_500).unwrap().as_millis(), 1_500);
+    assert!(post_snapshot_delay(true, MAX_POST_SNAPSHOT_DELAY_MS + 1).is_err());
+    assert!(post_snapshot_delay(false, 1).is_err());
+}
+
+#[rstest]
+fn live_observation_requests_parse() {
+    assert!(matches!(
+        serde_json::from_value::<Request>(json!({
+            "method": "live_observation_start",
+            "params": {
+                "session_id": "session-1",
+                "task_grant_id": "task-1",
+                "window_capability": "cap-1",
+                "request": {"fps": 15}
+            }
+        })),
+        Ok(Request::LiveObservationStart { request, .. })
+            if request.fps == 15 && request.max_dimension == 1_568
+    ));
+    assert!(matches!(
+        serde_json::from_value::<Request>(json!({
+            "method": "live_observation_state",
+            "params": {
+                "session_id": "session-1",
+                "task_grant_id": "task-1",
+                "window_capability": "cap-1"
+            }
+        })),
+        Ok(Request::LiveObservationState { .. })
+    ));
+    assert!(matches!(
+        serde_json::from_value::<Request>(json!({
+            "method": "live_observation_stop",
+            "params": {
+                "session_id": "session-1",
+                "task_grant_id": "task-1",
+                "window_capability": "cap-1"
+            }
+        })),
+        Ok(Request::LiveObservationStop { .. })
+    ));
 }
 
 #[rstest]
@@ -829,12 +871,14 @@ fn app_requests_parse_with_host_params_frames() {
                     "element_token": "token-1"
                 },
                 "capture_after": true,
+                "post_snapshot_delay_ms": 1500,
                 "post_snapshot_max_nodes": 256,
                 "post_snapshot_max_depth": 12
             }
         })),
         Ok(Request::ExecuteAction {
             capture_after: true,
+            post_snapshot_delay_ms: 1500,
             post_snapshot_max_nodes: 256,
             post_snapshot_max_depth: 12,
             ..
@@ -942,6 +986,7 @@ fn app_requests_parse_with_host_params_frames() {
                 "desktop_capability": "cap-1",
                 "observation_id": "desktop-obs-1",
                 "capture_after": true,
+                "post_snapshot_delay_ms": 750,
                 "action": {
                     "action": "click",
                     "input_kind": "raw_input",
@@ -953,6 +998,7 @@ fn app_requests_parse_with_host_params_frames() {
         })),
         Ok(Request::ExecuteDesktopAction {
             capture_after: true,
+            post_snapshot_delay_ms: 750,
             ..
         })
     ));

@@ -14,6 +14,8 @@ use cua_driver_sdk::worker::{
 use cua_driver_sdk::{CuaDriver, CuaDriverSession, DriverHostOptions};
 use serde_json::Value;
 
+use crate::contracts::MOUSE_CURSOR_THEME;
+
 /// Serve one parent-owned private-worker generation over inherited stdio.
 pub async fn run_private_worker(generation: String) -> Result<(), String> {
     if generation.is_empty()
@@ -72,10 +74,15 @@ pub async fn run_private_worker(generation: String) -> Result<(), String> {
         return Ok(());
     }
 
+    crate::driver_factory::ensure_bundled_cursor_theme().map_err(|error| error.to_string())?;
+
     let driver = match CuaDriver::try_create_configured_for_host(
         initialization.configured_driver,
         DriverHostOptions {
-            cursor: cursor_overlay::CursorConfig::default(),
+            cursor: cursor_overlay::CursorConfig {
+                theme_id: MOUSE_CURSOR_THEME.into(),
+                ..cursor_overlay::CursorConfig::default()
+            },
             host_owns_permission_ux: true,
             host_bundle_id: Some(initialization.host_bundle_id.clone()),
             claude_code_compatibility: false,

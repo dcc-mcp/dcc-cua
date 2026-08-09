@@ -1,0 +1,71 @@
+{
+  "schemaVersion": "2.5.0",
+  "tickId": 42,
+  "run": {
+    "appState": "ChoiceState",
+    "progress": {
+      "day": 7,
+      "hour": 4,
+      "level": 7,
+      "health": 1650,
+      "maxHealth": 1650,
+      "gold": 48,
+      "wins": 2,
+      "losses": 3,
+      "lossStreak": 0,
+      "prestige": 10,
+      "maxPrestige": 20,
+      "sourceObservationId": "fixture-observation-393",
+      "provenance": "fixture"
+    },
+    "pendingChoice": true,
+    "choiceKind": "encounter"
+  },
+  "stateCompleteness": {
+    "board": {"status": "verified", "reason": "authoritative_multi_card_spawn_with_resolved_identities"},
+    "stash": {"status": "partial", "reason": "player_log_exposes_incremental_stash_deltas_not_a_full_snapshot"},
+    "skills": {"status": "partial", "reason": "selected_skill_instance_requires_verified_name_mapping"},
+    "selection": {"status": "partial", "reason": "pending_candidates_require_localized_inspection"},
+    "economy": {"status": "partial", "reason": "volatile_observation_snapshot_not_reconciled_from_player_log"}
+  },
+  "decisionSupport": {
+    "sourcePriority": ["current_run_verified_state", "relationship_graph", "recent_combat_records", "ten_win_corpus"],
+    "tenWinRole": "population_prior_not_route_authority",
+    "mode": "immediate_pvp_survival",
+    "recommendation": "choose_guaranteed_survival_before_the_next_pvp_then_preserve_active_constraints",
+    "pivotRule": "pivot_only_when_the_immediate_verified_graph_improves_or_current_constraints_are_broken",
+    "canForceTenWinRoute": false,
+    "hardConstraints": ["preserve_exactly_one_weapon_unless_replacement_is_strictly_better", "preserve_double_honing_on_the_single_weapon"],
+    "blockedMutations": ["force_ten_win_archetype_by_name_only", "add_second_weapon_without_replacing_the_first"],
+    "goldFloor": 30,
+    "spendBudget": 14,
+    "shopRerollCap": 1,
+    "maxSafeOpponentLevel": 9,
+    "currentLossStreak": 0,
+    "currentWins": 2,
+    "winsToGoal": 8,
+    "currentPrestige": 10,
+    "maxPrestige": 20,
+    "nextPvpLossCost": 7,
+    "prestigeAfterNextPvpLoss": 3,
+    "combatReviewPolicy": {
+      "pvpResultRequired": true,
+      "pvpProgressFields": ["wins_before_after", "prestige_before_after", "day"],
+      "pveResultRequired": false,
+      "pveReviewFocus": ["measured_output_deficits", "loot_identity", "reward_chain_completion"]
+    },
+    "encounterPolicy": {
+      "inspectionRule": "resolve_each_candidate_once_before_selection",
+      "eligibilityRule": "opponent_level_at_or_below_max_safe_unless_recent_combat_proves_margin",
+      "rankPriority": ["guaranteed_next_pvp_survival_gain", "immediate_active_relationship_gain", "recent_pvp_deficit_repair", "reward_value"],
+      "unsafeFallback": "choose_lowest_measured_risk_when_no_candidate_is_eligible",
+      "repeatRule": "do_not_reinspect_unchanged_candidate_state"
+    },
+    "reasons": ["active_relationships=4", "broken_relationships=0", "wins=2", "prestige=10", "next_pvp_loss_cost=7", "verified_spend_budget=18"]
+  },
+  "expected": {
+    "selectLevel12Opponent": false,
+    "forceTenWinArchetype": false,
+    "preserveCurrentCore": true
+  }
+}

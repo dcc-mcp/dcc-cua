@@ -21,6 +21,7 @@ use task_grant::TaskGrant;
 pub use task_grant::{MAX_APPLICATION_LABEL_CHARS, MAX_TASK_GRANT_ID_CHARS};
 
 pub const HOST_HELLO_TIMEOUT_MS: u64 = 10_000;
+pub const MAX_POST_SNAPSHOT_DELAY_MS: u64 = 5_000;
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -43,10 +44,10 @@ use dcc_cua_browser::{
 use dcc_cua_core::{
     ComputerUseAction, ComputerUseClipboardWriteRequest, ComputerUseDesktopSnapshot,
     ComputerUseDriver, ComputerUseError, ComputerUseErrorCode, ComputerUseImage,
-    ComputerUseMenuRequest, ComputerUsePoint, ComputerUseRecordingStartRequest, ComputerUseResult,
-    ComputerUseScreenshot, ComputerUseTargetScope, ComputerUseToolResult,
-    ComputerUseWindowFrameRequest, ComputerUseWindowQuery, ComputerUseWindowWaitRequest,
-    ComputerUseZoomRequest,
+    ComputerUseLiveObservationStartRequest, ComputerUseMenuRequest, ComputerUsePoint,
+    ComputerUseRecordingStartRequest, ComputerUseResult, ComputerUseScreenshot,
+    ComputerUseTargetScope, ComputerUseToolResult, ComputerUseWindowFrameRequest,
+    ComputerUseWindowQuery, ComputerUseWindowWaitRequest, ComputerUseZoomRequest,
 };
 use dcc_cua_indicator::{broadcast_interrupt, interrupt_generation, interrupt_generation_changed};
 use dcc_cua_shm::SharedImage;
@@ -62,6 +63,7 @@ pub const HOST_CAPABILITIES: &[&str] = &[
     "isolated_runtime_sessions",
     "observation_fencing",
     "action_post_snapshot",
+    "action_post_snapshot_delay",
     "semantic_element_tokens",
     "background_first_input_delivery",
     "scoped_raw_input",
@@ -112,6 +114,7 @@ pub const HOST_CAPABILITIES: &[&str] = &[
     "clipboard_read",
     "clipboard_write",
     "trajectory_recording",
+    "live_observation_latest_frame",
     "browser_exact_binding",
     "browser_prepare",
     "browser_semantic_snapshot",
@@ -223,6 +226,8 @@ enum Request {
         action: HostAction,
         #[serde(default)]
         capture_after: bool,
+        #[serde(default)]
+        post_snapshot_delay_ms: u64,
     },
     StopDesktopSession {
         session_id: String,
@@ -262,6 +267,22 @@ enum Request {
         window_capability: String,
     },
     RecordingState {
+        session_id: String,
+        task_grant_id: String,
+        window_capability: String,
+    },
+    LiveObservationStart {
+        session_id: String,
+        task_grant_id: String,
+        window_capability: String,
+        request: ComputerUseLiveObservationStartRequest,
+    },
+    LiveObservationState {
+        session_id: String,
+        task_grant_id: String,
+        window_capability: String,
+    },
+    LiveObservationStop {
         session_id: String,
         task_grant_id: String,
         window_capability: String,
@@ -421,6 +442,8 @@ enum Request {
         action: HostAction,
         #[serde(default)]
         capture_after: bool,
+        #[serde(default)]
+        post_snapshot_delay_ms: u64,
         #[serde(default)]
         post_snapshot_max_depth: u32,
         #[serde(default)]
@@ -889,6 +912,7 @@ where
     let mut desktop_shared_image = None;
     let cancellation_registry = Arc::new(Mutex::new(HashMap::new()));
     let hello_deadline = tokio::time::Instant::now() + hello_timeout;
+    let mut observed_interrupt_generation = interrupt_generation();
 
     let connection_result = async {
         while let Some(frame) = if snapshot_transport.is_none() {
@@ -904,7 +928,12 @@ where
                 ))
             })??
         } else {
-            read_frame(&mut reader, MAX_JSON_FRAME_BYTES).await?
+            read_frame_with_interrupt_poll(
+                &mut reader,
+                &mut sessions,
+                &mut observed_interrupt_generation,
+            )
+            .await?
         } {
         reap_completed_parallel_requests(&mut parallel_tasks);
         let (request_id, request) = match parse_request_frame(&frame) {
@@ -1084,6 +1113,50 @@ where
         cleanup_sessions(&driver, sessions),
     )
     .await
+}
+
+async fn read_frame_with_interrupt_poll<R>(
+    reader: &mut R,
+    sessions: &mut ConnectionSessions,
+    observed_generation: &mut u64,
+) -> Result<Option<Vec<u8>>, HostError>
+where
+    R: AsyncRead + Unpin,
+{
+    let mut pending_frame = Box::pin(read_frame(reader, MAX_JSON_FRAME_BYTES));
+    let mut poll = tokio::time::interval(Duration::from_millis(50));
+    poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        tokio::select! {
+            frame = &mut pending_frame => return frame,
+            _ = poll.tick() => {
+                let current = interrupt_generation();
+                if interrupt_generation_changed(*observed_generation, current) {
+                    stop_connection_control_sessions(sessions).await;
+                    *observed_generation = current;
+                }
+            }
+        }
+    }
+}
+
+async fn stop_connection_control_sessions(sessions: &mut ConnectionSessions) {
+    for session in sessions.windows.values_mut() {
+        if session.interrupted {
+            continue;
+        }
+        session.interrupted = true;
+        let _ = session.session.stop().await;
+        session.invalidate_observations();
+    }
+    for session in sessions.desktops.values_mut() {
+        if session.interrupted {
+            continue;
+        }
+        session.interrupted = true;
+        let _ = session.session.stop().await;
+        session.latest_shared_image = None;
+    }
 }
 
 async fn finalize_connection(
@@ -1435,6 +1508,13 @@ async fn authorized_session<'a>(
 }
 
 async fn ensure_session_not_interrupted(session: &mut HostSession) -> Result<(), HostError> {
+    if session.interrupted {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::UserInterrupted,
+            "Escape or a shared Host stop interrupted this session; the session is stopped",
+        )
+        .into());
+    }
     if session.session.control_banner_interrupted() {
         let cleanup_note = session
             .session
@@ -1443,6 +1523,7 @@ async fn ensure_session_not_interrupted(session: &mut HostSession) -> Result<(),
             .err()
             .map(|error| format!("; CUA cleanup also failed: {error}"))
             .unwrap_or_default();
+        session.interrupted = true;
         return Err(ComputerUseError::new(
             ComputerUseErrorCode::UserInterrupted,
             format!(
@@ -1468,6 +1549,13 @@ async fn authorized_desktop_session<'a>(
             "desktop session grant or capability mismatch".into(),
         ));
     }
+    if session.interrupted {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::UserInterrupted,
+            "Escape or a shared Host stop interrupted this desktop session; the session is stopped",
+        )
+        .into());
+    }
     if interrupt_generation_changed(session.interrupt_generation, interrupt_generation()) {
         let cleanup_note = session
             .session
@@ -1476,6 +1564,7 @@ async fn authorized_desktop_session<'a>(
             .err()
             .map(|error| format!("; CUA cleanup also failed: {error}"))
             .unwrap_or_default();
+        session.interrupted = true;
         return Err(ComputerUseError::new(
             ComputerUseErrorCode::UserInterrupted,
             format!("a shared Host stop interrupted this desktop session{cleanup_note}"),

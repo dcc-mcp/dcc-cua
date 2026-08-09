@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 1,
+  "provider": "bazaardb",
+  "records": {
+    "7317d6a2-adea-442c-9e97-7f7bbf64ae99": {
+      "externalCardId": "l1n7dqkk5gpl0n6h52880y0jq5",
+      "canonicalName": "Unibou",
+      "cardType": "item",
+      "url": "https://bazaardb.gg/card/l1n7dqkk5gpl0n6h52880y0jq5/Unibou",
+      "sourcePatch": "16.2 (Jul 17)",
+      "verifiedAt": "2026-08-09",
+      "matchBasis": ["local_template_uuid", "canonical_name", "card_type"]
+    },
+    "865a673a-beae-4f5c-b04a-dd3fd026bc6d": {
+      "externalCardId": "p29lb7zh58cjqxx312j9jhc34k",
+      "canonicalName": "Flagship",
+      "cardType": "item",
+      "url": "https://bazaardb.gg/card/p29lb7zh58cjqxx312j9jhc34k/Flagship",
+      "sourcePatch": "16.2 (Jul 17)",
+      "verifiedAt": "2026-08-09",
+      "matchBasis": ["local_template_uuid", "canonical_name", "card_type"]
+    },
+    "d8106a24-647f-40c6-8587-22f977931d76": {
+      "externalCardId": "13wwjw6vl2ssqqcc4sh6f1qx2md",
+      "canonicalName": "Water Wheel",
+      "cardType": "item",
+      "url": "https://bazaardb.gg/card/13wwjw6vl2ssqqcc4sh6f1qx2md/Water-Wheel",
+      "sourcePatch": "16.2 (Jul 17)",
+      "verifiedAt": "2026-08-09",
+      "matchBasis": ["local_template_uuid", "canonical_name", "card_type"]
+    },
+    "b23c5988-7091-4b77-a7fb-134c0d0a3285": {
+      "externalCardId": "ajvdim21upzc9vy723alj67id",
+      "canonicalName": "Honing Steel",
+      "cardType": "item",
+      "url": "https://bazaardb.gg/card/ajvdim21upzc9vy723alj67id/Honing-Steel",
+      "sourcePatch": "16.2 (Jul 17)",
+      "verifiedAt": "2026-08-09",
+      "matchBasis": ["local_template_uuid", "canonical_name", "card_type"]
+    },
+    "63e5a09e-ad7c-44ee-ba7d-d1b515ae8e9e": {
+      "externalCardId": "hn4n4qhc9t3hklm0zysh76jn90",
+      "canonicalName": "Fishing Net",
+      "cardType": "item",
+      "url": "https://bazaardb.gg/card/hn4n4qhc9t3hklm0zysh76jn90/Fishing-Net",
+      "sourcePatch": "16.2 (Jul 17)",
+      "verifiedAt": "2026-08-09",
+      "matchBasis": ["local_template_uuid", "canonical_name", "card_type"]
+    }
+  }
+}

@@ -253,23 +253,13 @@ fn resolve_windows_target(
     scope: &ComputerUseTargetScope,
     window_id: u64,
 ) -> ComputerUseResult<Option<WindowTarget>> {
-    use std::ffi::c_void;
     use windows_sys::Win32::Foundation::RECT;
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        GetForegroundWindow, GetWindowRect, GetWindowThreadProcessId, IsIconic, IsWindow,
-        IsWindowVisible,
+        GetForegroundWindow, GetWindowRect, IsIconic, IsWindowVisible,
     };
 
-    let hwnd = window_id as *mut c_void;
-    if hwnd.is_null() || unsafe { IsWindow(hwnd) } == 0 {
-        return Err(ComputerUseError::new(
-            ComputerUseErrorCode::MissingWindow,
-            format!("native window {window_id} is no longer valid"),
-        ));
-    }
-
-    let mut pid = 0_u32;
-    unsafe { GetWindowThreadProcessId(hwnd, &mut pid) };
+    let hwnd = window_id as *mut std::ffi::c_void;
+    let pid = windows_window_process_id(window_id)?;
     if scope.process_id.is_some_and(|expected| expected != pid) {
         return Err(ComputerUseError::new(
             ComputerUseErrorCode::InvalidTarget,
@@ -314,4 +304,26 @@ fn resolve_windows_target(
         z_index: None,
         is_foreground: foreground,
     }))
+}
+
+#[cfg(windows)]
+pub(crate) fn windows_window_process_id(window_id: u64) -> ComputerUseResult<u32> {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GetWindowThreadProcessId, IsWindow};
+
+    let hwnd = window_id as *mut std::ffi::c_void;
+    if hwnd.is_null() || unsafe { IsWindow(hwnd) } == 0 {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::MissingWindow,
+            format!("native window {window_id} is no longer valid"),
+        ));
+    }
+    let mut process_id = 0_u32;
+    unsafe { GetWindowThreadProcessId(hwnd, &mut process_id) };
+    if process_id == 0 {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::MissingWindow,
+            format!("native window {window_id} has no owning process"),
+        ));
+    }
+    Ok(process_id)
 }

@@ -177,6 +177,68 @@ fn restore_foreground(expected: usize, controlled_process_id: u32) -> Result<(),
     }
 }
 
+pub fn activate_window(target: UiaTarget) -> Result<(), UiaError> {
+    let expected = target.window_handle as windows_sys::Win32::Foundation::HWND;
+    if expected.is_null() || unsafe { IsWindow(expected) } == 0 {
+        return Err(UiaError::InvalidTarget(
+            "the exact target window no longer exists".into(),
+        ));
+    }
+    let mut actual_process_id = 0;
+    unsafe { GetWindowThreadProcessId(expected, &mut actual_process_id) };
+    if actual_process_id != target.process_id {
+        return Err(UiaError::InvalidTarget(
+            "the exact target window no longer belongs to the granted process".into(),
+        ));
+    }
+    if unsafe { GetForegroundWindow() } == expected {
+        return Ok(());
+    }
+
+    unsafe { SetForegroundWindow(expected) };
+    if unsafe { GetForegroundWindow() } == expected {
+        return Ok(());
+    }
+
+    let current = unsafe { GetForegroundWindow() };
+    let current_thread = unsafe { GetCurrentThreadId() };
+    let foreground_thread = unsafe { GetWindowThreadProcessId(current, std::ptr::null_mut()) };
+    let expected_thread = unsafe { GetWindowThreadProcessId(expected, std::ptr::null_mut()) };
+    let attached_foreground = foreground_thread != 0
+        && foreground_thread != current_thread
+        && unsafe { AttachThreadInput(current_thread, foreground_thread, 1) } != 0;
+    let attached_expected = expected_thread != 0
+        && expected_thread != current_thread
+        && expected_thread != foreground_thread
+        && unsafe { AttachThreadInput(current_thread, expected_thread, 1) } != 0;
+    unsafe {
+        BringWindowToTop(expected);
+        SetForegroundWindow(expected);
+    }
+    let activated = (0..20).any(|_| {
+        if unsafe { GetForegroundWindow() } == expected {
+            return true;
+        }
+        thread::sleep(Duration::from_millis(5));
+        false
+    });
+    unsafe {
+        if attached_expected {
+            AttachThreadInput(current_thread, expected_thread, 0);
+        }
+        if attached_foreground {
+            AttachThreadInput(current_thread, foreground_thread, 0);
+        }
+    }
+    if activated {
+        Ok(())
+    } else {
+        Err(UiaError::BackendUnavailable(
+            "Windows could not make the exact target window foreground".into(),
+        ))
+    }
+}
+
 fn foreground_restore_still_required(expected: usize, controlled_process_id: u32) -> bool {
     let current = unsafe { GetForegroundWindow() };
     let mut current_process_id = 0;

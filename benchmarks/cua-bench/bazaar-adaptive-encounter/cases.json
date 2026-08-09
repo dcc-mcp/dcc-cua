@@ -1,0 +1,80 @@
+[
+  {
+    "id": "day7-measured-recovery",
+    "day": 7,
+    "heroLevel": 7,
+    "health": 1650,
+    "gold": 44,
+    "pvpWins": 2,
+    "prestige": 4,
+    "runPhase": "mid_recovery",
+    "mode": "measured_recovery",
+    "maxSafeOpponentLevel": 9,
+    "actionBudget": 4,
+    "requiredInspections": 3,
+    "candidates": [
+      {"id": "left", "label": "左侧遭遇", "level": 8, "currentBuildUtility": 74, "reward": "稳定生存组件"},
+      {"id": "center", "label": "中间遭遇", "level": 9, "currentBuildUtility": 86, "reward": "强化当前核心组件"},
+      {"id": "right", "label": "右侧遭遇", "level": 12, "currentBuildUtility": 96, "reward": "高价值稀有组件"}
+    ]
+  },
+  {
+    "id": "healthy-opportunity-window",
+    "day": 7,
+    "heroLevel": 9,
+    "health": 4200,
+    "gold": 51,
+    "pvpWins": 5,
+    "prestige": 12,
+    "runPhase": "mid_growth",
+    "mode": "measured_growth",
+    "maxSafeOpponentLevel": 12,
+    "actionBudget": 4,
+    "requiredInspections": 3,
+    "candidates": [
+      {"id": "left", "label": "左侧遭遇", "level": 9, "currentBuildUtility": 70, "reward": "通用组件"},
+      {"id": "center", "label": "中间遭遇", "level": 10, "currentBuildUtility": 82, "reward": "经济组件"},
+      {"id": "right", "label": "右侧遭遇", "level": 12, "currentBuildUtility": 96, "reward": "核心稀有组件"}
+    ]
+  },
+  {
+    "id": "low-health-survival",
+    "day": 8,
+    "heroLevel": 7,
+    "health": 620,
+    "gold": 33,
+    "pvpWins": 3,
+    "prestige": 1,
+    "runPhase": "lethal_prestige",
+    "mode": "survival",
+    "maxSafeOpponentLevel": 7,
+    "actionBudget": 4,
+    "requiredInspections": 3,
+    "candidates": [
+      {"id": "left", "label": "左侧遭遇", "level": 7, "currentBuildUtility": 61, "reward": "低风险恢复"},
+      {"id": "center", "label": "中间遭遇", "level": 8, "currentBuildUtility": 88, "reward": "高收益组件"},
+      {"id": "right", "label": "右侧遭遇", "level": 10, "currentBuildUtility": 94, "reward": "稀有组件"}
+    ]
+  },
+  {
+    "id": "preserve-active-relationship",
+    "day": 6,
+    "heroLevel": 7,
+    "health": 2700,
+    "gold": 38,
+    "pvpWins": 4,
+    "prestige": 8,
+    "runPhase": "mid_growth",
+    "mode": "measured_growth",
+    "maxSafeOpponentLevel": 9,
+    "mustPreserveActiveEffect": true,
+    "activeEffect": "背包中的每日成长效果与核心武器左右联动",
+    "actionBudget": 4,
+    "requiredInspections": 3,
+    "candidates": [
+      {"id": "left", "label": "左侧遭遇", "level": 9, "currentBuildUtility": 93, "preservesActiveEffect": true, "reward": "保持现有背包被动与左右联动"},
+      {"id": "center", "label": "中间遭遇", "level": 9, "currentBuildUtility": 99, "preservesActiveEffect": false, "reward": "卖出活跃背包效果后转新流派"},
+      {"id": "right", "label": "右侧遭遇", "level": 8, "currentBuildUtility": 72, "preservesActiveEffect": true, "reward": "通用组件"}
+    ]
+  }
+]

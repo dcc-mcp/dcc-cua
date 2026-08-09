@@ -4,18 +4,48 @@
 //! separate, non-activating safety banner that tells the operator which app is
 //! under agent control and provides the Escape stop boundary.
 
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use serde::Serialize;
 use thiserror::Error;
 
-const MAX_LABEL_CHARS: usize = 512;
 const MAX_DISPLAY_NAME_CHARS: usize = 80;
-// Win32 COLORREF is BGR; DEFAULT is RGB (10, 132, 255), whose hue is ~209°.
-const DEFAULT_HUE_DEGREES: u16 = 209;
+const TARGET_FRAME_THICKNESS_DIP: i32 = 40;
+const TARGET_FRAME_GRADIENT_STEPS: usize = 20;
+const TARGET_FRAME_PULSE_PERIOD: Duration = Duration::from_millis(1_800);
+const TARGET_FRAME_ALPHA_MIN: u8 = 48;
+const TARGET_FRAME_ALPHA_MAX: u8 = 132;
 static INTERRUPT_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+#[must_use]
+fn breathing_frame_alpha(elapsed: Duration) -> u8 {
+    let phase = elapsed.as_secs_f64() / TARGET_FRAME_PULSE_PERIOD.as_secs_f64();
+    let wave = (phase * std::f64::consts::TAU).cos().mul_add(0.5, 0.5);
+    f64::from(TARGET_FRAME_ALPHA_MIN)
+        .mul_add(1.0 - wave, f64::from(TARGET_FRAME_ALPHA_MAX) * wave)
+        .round() as u8
+}
+
+#[must_use]
+fn target_frame_band_alpha(alpha: u8, band: usize) -> u8 {
+    let remaining = TARGET_FRAME_GRADIENT_STEPS
+        .saturating_sub(band)
+        .min(TARGET_FRAME_GRADIENT_STEPS);
+    let divisor = TARGET_FRAME_GRADIENT_STEPS * TARGET_FRAME_GRADIENT_STEPS;
+    (usize::from(alpha) * remaining * remaining / divisor) as u8
+}
+
+#[must_use]
+fn target_frame_band_insets(thickness: i32, band: usize) -> Option<(i32, i32)> {
+    if thickness <= 0 || band >= TARGET_FRAME_GRADIENT_STEPS {
+        return None;
+    }
+    let steps = TARGET_FRAME_GRADIENT_STEPS as i32;
+    let outer = thickness * band as i32 / steps;
+    let inner = thickness * (band as i32 + 1) / steps;
+    Some((outer, inner))
+}
 
 /// Broadcast a cooperative stop to every control session in this Host process.
 pub fn broadcast_interrupt() -> u64 {
@@ -39,7 +69,8 @@ pub fn interrupt_generation_changed(started: u64, current: u64) -> bool {
 pub struct BannerTarget {
     pub process_id: u32,
     pub window_handle: u64,
-    pub label: String,
+    pub agent_name: String,
+    pub application_name: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -49,84 +80,101 @@ pub struct BannerColor {
     pub blue: u8,
 }
 
-impl BannerColor {
-    pub const DEFAULT: Self = Self {
-        red: 10,
-        green: 132,
-        blue: 255,
-    };
-
-    #[must_use]
-    pub fn from_hue(hue: u16) -> Self {
-        Self::from_hsv(hue, 0.78, 0.9)
-    }
-
-    #[must_use]
-    fn from_hsv(hue: u16, saturation: f32, value: f32) -> Self {
-        let hue = f32::from(hue % 360) / 60.0;
-        let chroma = value * saturation;
-        let x = chroma * (1.0 - ((hue % 2.0) - 1.0).abs());
-        let m = value - chroma;
-        let (red, green, blue) = match hue as u32 {
-            0 => (chroma, x, 0.0),
-            1 => (x, chroma, 0.0),
-            2 => (0.0, chroma, x),
-            3 => (0.0, x, chroma),
-            4 => (x, 0.0, chroma),
-            _ => (chroma, 0.0, x),
-        };
-        Self {
-            red: ((red + m) * 255.0).round() as u8,
-            green: ((green + m) * 255.0).round() as u8,
-            blue: ((blue + m) * 255.0).round() as u8,
-        }
-    }
-
-    #[must_use]
-    pub fn frame(self) -> Self {
-        Self::from_hsv(self.hue(), 0.55, 0.98)
-    }
-
-    #[must_use]
-    pub fn colorref(self) -> u32 {
-        (u32::from(self.blue) << 16) | (u32::from(self.green) << 8) | u32::from(self.red)
-    }
-
-    #[must_use]
-    pub fn hue(self) -> u16 {
-        let red = f32::from(self.red) / 255.0;
-        let green = f32::from(self.green) / 255.0;
-        let blue = f32::from(self.blue) / 255.0;
-        let maximum = red.max(green).max(blue);
-        let minimum = red.min(green).min(blue);
-        let delta = maximum - minimum;
-        if delta == 0.0 {
-            return 0;
-        }
-        let hue = if maximum == red {
-            60.0 * ((green - blue) / delta).rem_euclid(6.0)
-        } else if maximum == green {
-            60.0 * ((blue - red) / delta + 2.0)
-        } else {
-            60.0 * ((red - green) / delta + 4.0)
-        };
-        hue.round() as u16 % 360
-    }
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+#[repr(u8)]
+pub enum BannerActivity {
+    Connecting,
+    #[default]
+    Ready,
+    Observing,
+    PointerInput,
+    KeyboardInput,
+    Navigating,
+    Waiting,
+    Recording,
+    Stopping,
 }
 
-/// Generate a stable-but-session-random color, excluding the default banner hue.
-#[must_use]
-pub fn session_color(agent_name: &str, session_id: &str) -> BannerColor {
-    let mut hasher = DefaultHasher::new();
-    agent_name.hash(&mut hasher);
-    session_id.hash(&mut hasher);
-    let hue = (hasher.finish() % 360) as u16;
-    let hue = if hue.abs_diff(DEFAULT_HUE_DEGREES) < 45 {
-        (hue + 180) % 360
-    } else {
-        hue
-    };
-    BannerColor::from_hue(hue)
+impl BannerActivity {
+    #[must_use]
+    pub const fn color(self) -> BannerColor {
+        match self {
+            Self::Connecting | Self::Observing | Self::Navigating => BannerColor {
+                red: 110,
+                green: 182,
+                blue: 255,
+            },
+            Self::Ready => BannerColor {
+                red: 115,
+                green: 215,
+                blue: 167,
+            },
+            Self::PointerInput | Self::KeyboardInput | Self::Waiting => BannerColor {
+                red: 243,
+                green: 201,
+                blue: 107,
+            },
+            Self::Recording => BannerColor {
+                red: 255,
+                green: 137,
+                blue: 137,
+            },
+            Self::Stopping => BannerColor {
+                red: 127,
+                green: 137,
+                blue: 148,
+            },
+        }
+    }
+
+    #[must_use]
+    pub(crate) const fn from_code(code: u8) -> Self {
+        match code {
+            0 => Self::Connecting,
+            2 => Self::Observing,
+            3 => Self::PointerInput,
+            4 => Self::KeyboardInput,
+            5 => Self::Navigating,
+            6 => Self::Waiting,
+            7 => Self::Recording,
+            8 => Self::Stopping,
+            _ => Self::Ready,
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn localized_label(self, language_tag: &str) -> &'static str {
+        let chinese = language_tag
+            .split(['-', '_'])
+            .next()
+            .is_some_and(|language| language.eq_ignore_ascii_case("zh"));
+        if chinese {
+            match self {
+                Self::Connecting => "正在连接…",
+                Self::Ready => "已连接 · 等待操作",
+                Self::Observing => "正在观察画面",
+                Self::PointerInput => "正在使用鼠标",
+                Self::KeyboardInput => "正在输入文本",
+                Self::Navigating => "正在切换界面",
+                Self::Waiting => "正在等待应用",
+                Self::Recording => "正在录制",
+                Self::Stopping => "正在停止…",
+            }
+        } else {
+            match self {
+                Self::Connecting => "Connecting…",
+                Self::Ready => "Connected · Ready",
+                Self::Observing => "Observing screen",
+                Self::PointerInput => "Using pointer",
+                Self::KeyboardInput => "Entering text",
+                Self::Navigating => "Navigating",
+                Self::Waiting => "Waiting for application",
+                Self::Recording => "Recording",
+                Self::Stopping => "Stopping…",
+            }
+        }
+    }
 }
 
 /// Build the human-facing control label in the operating system language.
@@ -193,13 +241,17 @@ impl BannerTarget {
                 "control banner requires an exact process and window".into(),
             ));
         }
-        let label_len = self.label.chars().count();
-        if label_len == 0 || label_len > MAX_LABEL_CHARS {
-            return Err(IndicatorError::InvalidTarget(format!(
-                "control banner label must contain 1..{MAX_LABEL_CHARS} characters"
-            )));
-        }
+        display_name(&self.agent_name, "Agent");
+        display_name(&self.application_name, "application");
         Ok(())
+    }
+
+    fn identity(&self) -> String {
+        format!(
+            "{} · {}",
+            display_name(&self.agent_name, "Agent"),
+            display_name(&self.application_name, "application")
+        )
     }
 }
 
@@ -211,6 +263,9 @@ pub struct BannerStatus {
     pub interrupted: bool,
     pub stop_key: &'static str,
     pub label: String,
+    pub activity: BannerActivity,
+    pub activity_label: String,
+    pub placement: &'static str,
     pub color: BannerColor,
 }
 
@@ -225,25 +280,16 @@ pub enum IndicatorError {
 pub struct ControlBanner {
     generation: u64,
     label: String,
-    color: BannerColor,
     platform: platform::PlatformBanner,
 }
 
 impl ControlBanner {
     pub fn start(target: BannerTarget) -> Result<Self, IndicatorError> {
-        Self::start_with_color(target, BannerColor::DEFAULT)
-    }
-
-    pub fn start_with_color(
-        target: BannerTarget,
-        color: BannerColor,
-    ) -> Result<Self, IndicatorError> {
         target.validate()?;
         Ok(Self {
             generation: interrupt_generation(),
-            label: target.label.clone(),
-            color,
-            platform: platform::PlatformBanner::start(target, color)?,
+            label: target.identity(),
+            platform: platform::PlatformBanner::start(target)?,
         })
     }
 
@@ -252,7 +298,6 @@ impl ControlBanner {
         let mut status = self.platform.status();
         status.interrupted = self.interrupted();
         status.label = self.label.clone();
-        status.color = self.color;
         status
     }
 
@@ -262,8 +307,8 @@ impl ControlBanner {
             || self.platform.interrupted()
     }
 
-    pub fn set_cursor_position(&self, x: f64, y: f64) {
-        self.platform.set_cursor_position(x, y);
+    pub fn set_activity(&self, activity: BannerActivity) {
+        self.platform.set_activity(activity);
     }
 }
 
@@ -272,19 +317,23 @@ mod platform;
 
 #[cfg(not(windows))]
 mod platform {
-    use super::{BannerColor, BannerStatus, BannerTarget, IndicatorError};
+    use std::sync::atomic::{AtomicU8, Ordering};
 
-    pub(super) struct PlatformBanner;
+    use super::{BannerActivity, BannerStatus, BannerTarget, IndicatorError, system_language_tag};
+
+    pub(super) struct PlatformBanner {
+        activity: AtomicU8,
+    }
 
     impl PlatformBanner {
-        pub(super) fn start(
-            _target: BannerTarget,
-            _color: BannerColor,
-        ) -> Result<Self, IndicatorError> {
-            Ok(Self)
+        pub(super) fn start(_target: BannerTarget) -> Result<Self, IndicatorError> {
+            Ok(Self {
+                activity: AtomicU8::new(BannerActivity::Ready as u8),
+            })
         }
 
         pub(super) fn status(&self) -> BannerStatus {
+            let activity = BannerActivity::from_code(self.activity.load(Ordering::Acquire));
             BannerStatus {
                 backend: "unavailable",
                 visible: false,
@@ -292,7 +341,10 @@ mod platform {
                 interrupted: false,
                 stop_key: "Escape",
                 label: String::new(),
-                color: BannerColor::DEFAULT,
+                activity,
+                activity_label: activity.localized_label(&system_language_tag()).into(),
+                placement: "unavailable",
+                color: activity.color(),
             }
         }
 
@@ -300,7 +352,9 @@ mod platform {
             false
         }
 
-        pub(super) fn set_cursor_position(&self, _x: f64, _y: f64) {}
+        pub(super) fn set_activity(&self, activity: BannerActivity) {
+            self.activity.store(activity as u8, Ordering::Release);
+        }
     }
 }
 

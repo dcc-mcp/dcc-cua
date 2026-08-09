@@ -4,7 +4,7 @@ use serde_json::json;
 
 use super::{
     action_result_value, bounded_u32, flag_value, has_flag, load_semantic_profile, maybe_escalate,
-    select_scope, semantic_post_snapshot_value,
+    select_scope, semantic_post_snapshot_value, window_post_snapshot_value,
 };
 
 pub(crate) async fn execute(
@@ -34,9 +34,15 @@ pub(crate) async fn execute(
         )
     })?;
     let action_name = flag_value(flags, "--action");
-    if action_name.is_some() && surface.route != SemanticRoute::Accessibility {
+    let key_binding = action_name
+        .as_deref()
+        .and_then(|action| target.key_binding(action));
+    if action_name.is_some()
+        && surface.route != SemanticRoute::Accessibility
+        && key_binding.is_none()
+    {
         return Err(format!(
-            "profile surface {surface_id:?} uses {:?}; profile CLI actions currently require the accessibility route",
+            "profile surface {surface_id:?} uses {:?}; actions require accessibility or a key binding",
             surface.route
         )
         .into());
@@ -56,15 +62,23 @@ pub(crate) async fn execute(
         } else {
             None
         };
-        let root = session
-            .accessibility_snapshot(max_elements, max_depth)
-            .await?;
-        let observation = session.latest_observation().cloned().ok_or_else(|| {
-            dcc_cua_core::ComputerUseError::new(
-                dcc_cua_core::ComputerUseErrorCode::CaptureFailed,
-                "semantic snapshot returned no observation metadata",
-            )
-        })?;
+        let (root, observation) = if key_binding.is_some() {
+            let snapshot = session
+                .screenshot_with_bounds(max_elements, max_depth)
+                .await?;
+            (snapshot.accessibility, snapshot.observation)
+        } else {
+            let root = session
+                .accessibility_snapshot(max_elements, max_depth)
+                .await?;
+            let observation = session.latest_observation().cloned().ok_or_else(|| {
+                dcc_cua_core::ComputerUseError::new(
+                    dcc_cua_core::ComputerUseErrorCode::CaptureFailed,
+                    "semantic snapshot returned no observation metadata",
+                )
+            })?;
+            (root, observation)
+        };
         let exact_target = session.target();
         if !target_matches_profile(&profile, exact_target.as_ref()) {
             return Err(dcc_cua_core::ComputerUseError::new(
@@ -87,24 +101,31 @@ pub(crate) async fn execute(
                     format!("profile target {query:?} does not support action {action_name:?}"),
                 ));
             }
-            if matches.len() != 1 {
-                return Err(dcc_cua_core::ComputerUseError::new(
-                    dcc_cua_core::ComputerUseErrorCode::InvalidAction,
-                    format!(
-                        "profile target {query:?} matched {} live elements",
-                        matches.len()
-                    ),
-                ));
-            }
-            let element = &matches[0];
-            let action = ComputerUseAction {
-                action: action_name.to_owned(),
-                element_index: element["element_index"].as_u64().map(|index| index as u32),
-                element_token: element["element_token"].as_str().map(str::to_owned),
-                observation_id: Some(observation.observation_id.clone()),
-                ..ComputerUseAction::default()
+            let action = if let Some(keys) = key_binding {
+                key_binding_action(keys, &observation.observation_id)
+            } else {
+                if matches.len() != 1 {
+                    return Err(dcc_cua_core::ComputerUseError::new(
+                        dcc_cua_core::ComputerUseErrorCode::InvalidAction,
+                        format!(
+                            "profile target {query:?} matched {} live elements",
+                            matches.len()
+                        ),
+                    ));
+                }
+                let element = &matches[0];
+                ComputerUseAction {
+                    action: action_name.to_owned(),
+                    element_index: element["element_index"].as_u64().map(|index| index as u32),
+                    element_token: element["element_token"].as_str().map(str::to_owned),
+                    observation_id: Some(observation.observation_id.clone()),
+                    ..ComputerUseAction::default()
+                }
             };
-            if action.element_index.is_none() && action.element_token.is_none() {
+            if action.element_index.is_none()
+                && action.element_token.is_none()
+                && key_binding.is_none()
+            {
                 return Err(dcc_cua_core::ComputerUseError::new(
                     dcc_cua_core::ComputerUseErrorCode::InvalidAction,
                     "profile match has no live element locator",
@@ -115,12 +136,21 @@ pub(crate) async fn execute(
             None
         };
         let post_snapshot = if action_result.is_some() {
-            Some(semantic_post_snapshot_value(
-                session
-                    .accessibility_snapshot(max_elements, max_depth)
-                    .await,
-                None,
-            ))
+            Some(if key_binding.is_some() {
+                window_post_snapshot_value(
+                    session
+                        .screenshot_with_bounds(max_elements, max_depth)
+                        .await,
+                    None,
+                )
+            } else {
+                semantic_post_snapshot_value(
+                    session
+                        .accessibility_snapshot(max_elements, max_depth)
+                        .await,
+                    None,
+                )
+            })
         } else {
             None
         };
@@ -143,15 +173,17 @@ pub(crate) async fn execute(
         "{}",
         serde_json::to_string_pretty(&json!({
             "success": true,
-            "profile": profile,
-            "surface": surface,
-            "target": target,
+            "profile_id": profile.id,
+            "surface_id": surface.id,
+            "target_id": target.id,
+            "route": surface.route,
             "matched_elements": matches,
             "match_count": matches.len(),
             "observation_id": observation.observation_id,
             "exact_target": exact_target,
             "activation": activation,
             "executed_action": action_name,
+            "key_binding": key_binding,
             "action": action_result,
             "post_snapshot": post_snapshot,
             "semantic_snapshot": {
@@ -162,6 +194,20 @@ pub(crate) async fn execute(
         }))?
     );
     Ok(())
+}
+
+fn key_binding_action(keys: &[String], observation_id: &str) -> ComputerUseAction {
+    ComputerUseAction {
+        action: if keys.len() == 1 {
+            "keypress".into()
+        } else {
+            "keyboard_shortcut".into()
+        },
+        observation_id: Some(observation_id.to_owned()),
+        delivery_mode: Some("foreground".into()),
+        keys: keys.to_vec(),
+        ..ComputerUseAction::default()
+    }
 }
 
 pub(crate) fn target_matches_profile(
@@ -177,4 +223,18 @@ pub(crate) fn target_matches_profile(
     ) || target["url"]
         .as_str()
         .is_some_and(|url| profile.matches_url(url))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn profile_key_binding_becomes_a_fenced_foreground_action() {
+        let action = key_binding_action(&["SPACE".into()], "observation-1");
+        assert_eq!(action.action, "keypress");
+        assert_eq!(action.keys, ["SPACE"]);
+        assert_eq!(action.delivery_mode.as_deref(), Some("foreground"));
+        assert_eq!(action.observation_id.as_deref(), Some("observation-1"));
+    }
 }

@@ -710,6 +710,7 @@ fn is_pipeline_safe_method(method: &str) -> bool {
             | "find"
             | "browser_snapshot"
             | "recording_state"
+            | "live_observation_state"
             | "clipboard_read"
             | "desktop_session_snapshot"
     )

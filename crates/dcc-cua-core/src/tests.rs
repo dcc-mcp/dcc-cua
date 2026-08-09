@@ -1,6 +1,6 @@
 use std::future::pending;
 use std::io::Cursor;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use rstest::rstest;
 use serde_json::json;
@@ -8,13 +8,24 @@ use serde_json::json;
 use super::*;
 use crate::contracts::{
     DEFAULT_SNAPSHOT_MAX_DEPTH, DEFAULT_SNAPSHOT_MAX_ELEMENTS, MAX_SNAPSHOT_DEPTH,
-    MAX_SNAPSHOT_ELEMENTS, MAX_TEXT_UTF16_UNITS,
+    MAX_SNAPSHOT_ELEMENTS, MAX_TEXT_UTF16_UNITS, MOUSE_CURSOR_THEME,
 };
-use crate::driver_factory::{UPSTREAM_CURSOR_RENDERER_ENABLED, driver_host_options};
+use crate::driver_factory::{
+    BUNDLED_CURSOR_THEME, UPSTREAM_CURSOR_RENDERER_ENABLED, driver_host_options,
+};
 use crate::interactive_desktop::windows_diagnostic;
+use crate::live_observation::{
+    LiveObservationFrame, LiveObservationStatus, decode_png_to_bgra, terminal_capture_error,
+    wait_for_latest_frame,
+};
 use crate::policy::*;
 use crate::runtime::application::{launch_arguments, validate_launch_request};
-use crate::runtime::{await_input_call, diagnostic_tool_check, tool_schema_from_inventory};
+#[cfg(windows)]
+use crate::runtime::uses_windows_foreground_fast_path;
+use crate::runtime::{
+    await_input_call, diagnostic_tool_check, held_coordinate_click_as_drag,
+    tool_schema_from_inventory,
+};
 use crate::window_target::{WindowTarget, validate_target_policy};
 
 #[rstest]
@@ -32,13 +43,65 @@ async fn input_calls_have_a_hard_timeout() {
     assert!(error.message.contains("window session was invalidated"));
 }
 
+#[cfg(windows)]
+#[rstest]
+fn windows_fast_route_is_bounded_to_foreground_raw_actions() {
+    assert!(uses_windows_foreground_fast_path(&ComputerUseAction {
+        action: "click".into(),
+        delivery_mode: Some("foreground".into()),
+        ..Default::default()
+    }));
+    assert!(!uses_windows_foreground_fast_path(&ComputerUseAction {
+        action: "click".into(),
+        delivery_mode: Some("background".into()),
+        ..Default::default()
+    }));
+    assert!(!uses_windows_foreground_fast_path(&ComputerUseAction {
+        action: "type".into(),
+        delivery_mode: Some("foreground".into()),
+        ..Default::default()
+    }));
+    assert!(uses_windows_foreground_fast_path(&ComputerUseAction {
+        action: "keypress".into(),
+        delivery_mode: Some("foreground".into()),
+        ..Default::default()
+    }));
+}
+
+#[rstest]
+fn held_coordinate_click_reuses_the_drag_contract() {
+    let drag = held_coordinate_click_as_drag(&ComputerUseAction {
+        action: "click".into(),
+        x: Some(12.0),
+        y: Some(34.0),
+        duration_ms: Some(320),
+        ..Default::default()
+    })
+    .expect("held click becomes a stationary drag");
+
+    assert_eq!(drag.action, "drag");
+    assert_eq!(drag.path, vec![ComputerUsePoint { x: 12.0, y: 34.0 }; 2]);
+    assert_eq!(drag.duration_ms, Some(320));
+    assert_eq!(drag.steps, Some(20));
+}
+
 #[rstest]
 fn host_runtime_uses_the_upstream_cursor_renderer_only_where_it_can_run() {
     let options = driver_host_options();
-    assert_eq!(UPSTREAM_CURSOR_RENDERER_ENABLED, cfg!(target_os = "linux"));
+    assert_eq!(
+        UPSTREAM_CURSOR_RENDERER_ENABLED,
+        cfg!(any(windows, target_os = "linux"))
+    );
     assert_eq!(options.cursor.enabled, UPSTREAM_CURSOR_RENDERER_ENABLED);
     assert!(options.host_owns_permission_ux);
     assert!(options.prepare_desktop_environment);
+}
+
+#[rstest]
+fn bundled_cursor_theme_matches_runtime_contract() {
+    let theme = cursor_overlay::decode_theme(BUNDLED_CURSOR_THEME).expect("valid bundled theme");
+    assert_eq!(theme.id, MOUSE_CURSOR_THEME);
+    assert_eq!(theme.actions.len(), 12);
 }
 
 #[rstest]
@@ -627,6 +690,17 @@ fn action_rejects_unknown_delivery_mode_and_unbounded_token() {
     assert!(
         validate_action(&ComputerUseAction {
             action: "click".into(),
+            x: Some(10.0),
+            y: Some(20.0),
+            duration_ms: Some(100),
+            ..Default::default()
+        })
+        .is_ok()
+    );
+    assert!(
+        validate_action(&ComputerUseAction {
+            action: "click".into(),
+            element_index: Some(1),
             duration_ms: Some(100),
             ..Default::default()
         })
@@ -1062,4 +1136,123 @@ fn window_queries_require_a_selector_and_match_native_rows() {
         &json!({"app_name":"UE5Editor.exe", "title":"Other", "pid":42, "window_id":7})
     ));
     assert!(query.validate_selectors().is_ok());
+}
+
+#[rstest]
+fn live_observation_fps_is_bounded() {
+    assert_eq!(
+        ComputerUseLiveObservationStartRequest::default(),
+        ComputerUseLiveObservationStartRequest {
+            fps: 10,
+            max_dimension: 1_568,
+        }
+    );
+    for fps in [0, 31] {
+        assert!(
+            ComputerUseLiveObservationStartRequest {
+                fps,
+                ..Default::default()
+            }
+            .validate()
+            .is_err()
+        );
+    }
+    for max_dimension in [255, 4_097] {
+        assert!(
+            ComputerUseLiveObservationStartRequest {
+                max_dimension,
+                ..Default::default()
+            }
+            .validate()
+            .is_err()
+        );
+    }
+}
+
+#[test]
+fn live_observation_stops_on_terminal_capture_errors() {
+    assert!(terminal_capture_error(&ComputerUseError::new(
+        ComputerUseErrorCode::InvalidTarget,
+        "window identity changed",
+    )));
+    assert!(terminal_capture_error(&ComputerUseError::new(
+        ComputerUseErrorCode::InteractiveDesktopUnavailable,
+        "desktop disconnected",
+    )));
+    assert!(!terminal_capture_error(&ComputerUseError::new(
+        ComputerUseErrorCode::CaptureFailed,
+        "transient WGC failure",
+    )));
+}
+
+#[cfg(windows)]
+#[rstest]
+fn live_observation_png_converts_bgra_to_rgba() {
+    let png = encode_bgra_to_png(&[3, 2, 1, 4], 1, 1).unwrap();
+    let mut reader = png::Decoder::new(Cursor::new(&png)).read_info().unwrap();
+    let mut bytes = vec![0; reader.output_buffer_size()];
+    let info = reader.next_frame(&mut bytes).unwrap();
+    assert_eq!(&bytes[..info.buffer_size()], &[1, 2, 3, 4]);
+    assert_eq!(decode_png_to_bgra(&png).unwrap(), (vec![3, 2, 1, 4], 1, 1));
+}
+
+#[rstest]
+fn live_observation_keeps_only_the_latest_frame() {
+    let status = LiveObservationStatus::default()
+        .with_frame(LiveObservationFrame::for_test(1, vec![1]))
+        .with_frame(LiveObservationFrame::for_test(2, vec![2]));
+
+    assert_eq!(status.latest().expect("latest frame").sequence(), 2);
+    assert_eq!(status.frames_captured(), 2);
+    assert_eq!(status.frames_replaced(), 1);
+}
+
+#[rstest]
+fn live_observation_state_reports_recent_rate_and_capture_cost() {
+    let started = Instant::now();
+    let mut status = LiveObservationStatus::default();
+    status.publish_frame(
+        LiveObservationFrame::for_test_bgra_at(1, vec![1], 1, 1, started),
+        Duration::from_millis(6),
+        "test_capture",
+    );
+    status.publish_frame(
+        LiveObservationFrame::for_test_bgra_at(
+            2,
+            vec![2],
+            1,
+            1,
+            started + Duration::from_millis(100),
+        ),
+        Duration::from_millis(8),
+        "test_capture",
+    );
+
+    let state = status.as_json(true, 10);
+    assert_eq!(state["active"], true);
+    assert_eq!(state["target_fps"], 10);
+    assert_eq!(state["recent_effective_fps"], 10.0);
+    assert_eq!(state["last_capture_duration_ms"], 8);
+    assert_eq!(state["max_capture_duration_ms"], 8);
+    assert_eq!(state["capture_mode"], "test_capture");
+}
+
+#[rstest]
+#[tokio::test]
+async fn live_observation_returns_a_frame_newer_than_the_decision_frame() {
+    let (sender, mut receiver) = tokio::sync::watch::channel(
+        LiveObservationStatus::default().with_frame(LiveObservationFrame::for_test(1, vec![1])),
+    );
+    sender.send_modify(|status| {
+        status.publish_frame(
+            LiveObservationFrame::for_test(2, vec![2]),
+            Duration::from_millis(7),
+            "test_capture",
+        );
+    });
+
+    let frame = wait_for_latest_frame(&mut receiver, Some(1), Duration::from_millis(10))
+        .await
+        .expect("fresh latest frame");
+    assert_eq!(frame.sequence(), 2);
 }

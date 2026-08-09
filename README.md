@@ -30,13 +30,17 @@ provides:
   the packaged macOS Host,
   plus a Host-owned, localized `<agent> is controlling <app>` safety banner
   with a session-specific hue and softly breathing target-window frame on
-  Windows. Linux reuses CUA's native
-  per-session cursor and badge; macOS re-enters the same `dcc-cua` executable
+  Windows. Windows and Linux reuse CUA's native per-session cursor and badge;
+  macOS re-enters the same `dcc-cua` executable
   as a private SDK worker so AppKit remains on that worker's main thread.
   Headless macOS sessions still return CUA's structured readiness refusal. All
   supported indicators are click-through and excluded from agent captures.
   Windows physical Escape and the cross-platform `interrupt_all` Host request
   advance the same Host-process stop generation for every active connection.
+  The Windows Escape boundary uses a non-exclusive low-level hook only while a
+  control banner is active, so another application's global hotkey cannot
+  silently disable the stop control; the key is consumed instead of also being
+  delivered to the controlled application.
 
 The repository is a Cargo workspace with eleven product responsibilities plus
 the Hakari dependency-unification support crate:
@@ -52,8 +56,8 @@ the Hakari dependency-unification support crate:
 - `dcc-cua-host`: long-lived versioned IPC and request
   routing;
 - `dcc-cua-indicator`: Host-process stop generation plus the Windows control
-  banner/frame and physical Escape boundary; Linux cursor/badge rendering stays
-  in the CUA SDK, while the packaged macOS Host uses its self-hosted private-worker overlay;
+  banner/frame and physical Escape boundary; cursor/badge rendering stays in
+  the CUA SDK, while the packaged macOS Host uses its self-hosted private-worker overlay;
 - `dcc-cua-platform-windows`: exact PID/HWND Windows UI Automation worker
   for background semantic fallback when CUA's combined window-state path is
   unavailable;
@@ -84,8 +88,8 @@ require a trusted-confirmation task grant.
 ### Independent semantic profiles
 
 The `dcc-cua-semantic-profiles` crate is the application-specific extension
-point for deeper semantics. It ships validated profiles for `ue`, `maya`, and
-`fab` without adding application branches to the generic Core or Host. Each
+point for deeper semantics. It ships validated profiles for `ue`, `maya`,
+`maya-2024`, and `fab` without adding application branches to the generic Core or Host. Each
 profile describes window/URL selectors, semantic surfaces and targets, the
 preferred route, and dialog policy. The built-ins are the official defaults;
 users and studios can supply a compatible JSON profile through the same CLI
@@ -98,9 +102,12 @@ actions, and post-action verification.
 
 | Field | Agent meaning |
 | --- | --- |
+| `profile_version` | SemVer of the Profile data. In a package it must equal `profile-package.json.version`. |
+| `application` | Stable host family plus optional exact host-version tokens. `maya-2024` therefore cannot match a Maya 2025 title. |
+| `extends` | Optional single parent ID plus SemVer requirement. Runtime resolves and flattens inheritance before the Agent uses the Profile. It never inherits authorization or window scope. |
 | `selectors` | Candidate application/window or URL identities. Selector objects are OR alternatives. Inside one object, the application constraint is ANDed with one match from the combined generic/localized title aliases. URL-only selectors never match native windows. |
 | `surfaces[]` | A stable task area such as `outliner`, `dialog`, or `launcher_download`. Its `route` selects the owning executor. |
-| `targets[]` | Stable intent vocabulary. `names`, BCP-47 keyed `localized_names`, and `automation_ids` narrow live matches; `supported_actions` is an allow-list, not an instruction to act. |
+| `targets[]` | Stable intent vocabulary. `names`, BCP-47 keyed `localized_names`, and `automation_ids` narrow live matches; `supported_actions` is an allow-list. Optional `key_bindings` maps a supported semantic action to 1-4 verified keys. |
 | `fallback` | A reference to another `profile_id` and `surface_id`. The agent must re-discover, bind, observe, and verify that route; no transition is automatic. |
 | `settings` | Profile-wide route preference, optional `default_locale` for untagged aliases, dialog style, and destructive-confirmation policy. Surface routes take precedence for a concrete task. |
 
@@ -112,7 +119,7 @@ Route ownership is explicit:
 | `unreal_typed_api` | The Unreal adapter/Skill executes the typed operation and returns authoritative state. |
 | `browser_dom` | The exact-bound browser adapter executes DOM work. Do not substitute the in-app Browser skill. |
 | `os_native_dialog` | The platform-native dialog path binds and controls the exact dialog window. |
-| `visual_fallback` | `dcc-cua` uses a fresh exact-window visual observation; desktop scope remains explicit and separate. |
+| `visual_fallback` | `dcc-cua` uses a fresh exact-window visual observation; desktop scope remains explicit and separate. A declared `key_bindings` action may execute after that same observation fence. |
 
 Multilingual aliases are additive and locale-agnostic at runtime. Every alias is
 eligible to match, so an agent does not need to guess the current UI locale
@@ -127,7 +134,10 @@ aliases when known. Existing profiles that only use `window_title_contains` and
 Use this profile-aware agent loop:
 
 1. Run `dcc-cua profiles`, inspect its `supported_locales`, and print the
-   candidate with `dcc-cua profile --id ID`.
+   candidate with `dcc-cua profile --id ID`. When the application/window is
+   already known, use `dcc-cua profile match --app APP --title TITLE`; a unique
+   version-specific match wins over the family Profile, while equally specific
+   candidates are reported as ambiguous instead of being guessed.
 2. Discover the real PID/window with `dcc-cua list --on-screen`, then bind that
    exact identity. Confirm that its application/title or URL matches a selector.
 3. Choose the task surface and query the stable target ID. Use localized names
@@ -147,6 +157,8 @@ Inspect the extension catalog without starting a DCC process:
 ```powershell
 dcc-cua profiles
 dcc-cua profile --id maya
+dcc-cua profile --id maya-2024
+dcc-cua profile match --app maya.exe --title "Autodesk Maya 2024: scene.ma"
 dcc-cua profile --profile-file C:\profiles\maya-studio.json
 ```
 
@@ -216,6 +228,24 @@ vx cargo fmt --all -- --check
 vx cargo nextest run --workspace --all-targets --locked
 vx cargo test --workspace --doc --locked
 ```
+
+Use Cua-Bench only as an external development harness for deterministic tasks
+with reset and outcome evaluators. Drive those tasks through the same
+`host-jsonl` contract used in production, and report success, action count,
+standalone snapshot count, errors, elapsed time, and wire bytes. Keep transport
+microbenchmarks in Rust and do not add Cua-Bench, its Python environment, or VM
+providers to the shipped runtime. A live game session without a reset/oracle is
+showcase evidence, not a repeatable benchmark.
+
+Pass `--metrics-output artifacts/cua-bench/dcc-cua-metrics.json` to the
+development `host-jsonl` bridge. The bridge atomically refreshes the report
+after every response, so a long-running task can be inspected before EOF.
+`run_status` is `running`, `succeeded`, or `failed`; `transport_success` is null
+until the bridge finishes. The report separates action requests, post-action
+snapshots, standalone snapshots, errors, elapsed time, and JSON payload bytes.
+`action_kinds` and `error_codes` make repeated pointer motion and platform
+refusals visible without reparsing the full JSONL trajectory. Cua-Bench remains
+responsible for reset and outcome evaluation.
 
 On Windows, `vx.toml` selects MSVC 14.44 with Spectre-mitigated libraries and
 injects its Windows SDK environment into Cargo. Release archives contain one `dcc-cua`
@@ -349,6 +379,19 @@ Clipboard access is session-scoped and grant-gated: `clipboard_read` does not
 return text unless the caller asks for it, and `clipboard_write` accepts exactly
 one bounded text, image path, or regular-file path. Recording is also
 grant-gated through `recording_start`, `recording_stop`, and `recording_state`.
+On Windows, `live_observation_start` prefetches the exact window's latest raw
+WGC frame with a requested ceiling of 1..30 FPS. It owns one persistent D3D11
+device, capture session, frame pool, and reusable staging texture for the feed;
+if that backend cannot initialize, the state identifies the one-shot WGC
+fallback instead of silently claiming the fast path. Decision snapshots preserve
+the full-window coordinate mapping while bounding their longest edge with
+`max_dimension` (default 1568, accepted range 256..4096); showcase recording
+keeps its independent video sizing. State reports the lifetime `effective_fps`,
+EWMA `recent_effective_fps`, `last_capture_duration_ms`,
+`max_capture_duration_ms`, and `capture_mode`. While active, `snapshot` consumes
+only a newer frame, encodes that selected frame once, and skips UIA; use
+`accessibility_snapshot` separately when semantic state is needed. Stop it with
+`live_observation_stop`.
 
 ## Host IPC
 
@@ -382,9 +425,10 @@ let stopped = host.interrupt_all().await?;
 
 `HostClient::interrupt_all` and `dcc-cua interrupt-all [--endpoint PATH]`
 broadcast a cooperative safety stop to every connection in the selected Host
-process. The calling connection is cleaned up before acknowledgement; other
-window and desktop sessions return `user_interrupted` at their next bounded
-operation or wait checkpoint. An already-running native SDK call remains
+process. Each connection polls the shared stop generation while otherwise idle,
+then proactively stops live observation, finalizes recording, invalidates
+frames, and tears down window/desktop sessions before another request arrives.
+Those sessions return `user_interrupted` on subsequent use. An already-running native SDK call remains
 bounded by the Host action timeout because CUA exposes no portable preemption
 primitive.
 
@@ -471,6 +515,9 @@ Clients have 10 seconds from connection acceptance to complete `hello`;
 negotiated Host connections remain long-lived without an idle deadline.
 EOF, transport failures, and malformed frames all abort outstanding discovery
 work and stop every private window, desktop, and launch session on that connection.
+`--metrics-output FILE` atomically checkpoints development metrics after every
+response and finalizes them at EOF or failure; it does not alter response JSONL
+or the production Host protocol.
 
 ```text
 {"request_id":"core-task-42","method":"list_apps","params":{}}
@@ -514,7 +561,8 @@ The supported request surface is `hello`, `ping`, `list_apps`, `list_tools`, `li
 `browser_prepare`, `browser_navigate`, `browser_click`, `browser_type`, `browser_pointer`,
 `browser_set_input_files`, `browser_download`, `browser_dialog`,
 `clipboard_read`, `clipboard_write`, `recording_start`, `recording_stop`,
-`recording_state`,
+`recording_state`, `live_observation_start`, `live_observation_state`,
+`live_observation_stop`,
 `desktop_snapshot`, `screen_size`, `cursor_position`, `open_desktop_session`,
 `desktop_session_snapshot`, `execute_desktop_action`, `stop_desktop_session`,
 `zoom`,
@@ -522,12 +570,16 @@ The supported request surface is `hello`, `ping`, `list_apps`, `list_tools`, `li
 `stop_session`; `cancel` is available while `wait_for` is active and
 `cancel_window_wait` while `wait_for_window` is active on the same connection.
 `execute_action` accepts `capture_after: true` plus optional
-`post_snapshot_max_nodes` and `post_snapshot_max_depth`. The Host then performs
+`post_snapshot_delay_ms` (0..5000), `post_snapshot_max_nodes`, and
+`post_snapshot_max_depth`. The Host then performs
 the mutation and captures the next exact-window observation in one serialized
 request, returns its screenshot and semantic tree as `post_snapshot`, and keeps
 that observation current for the next action. The handshake advertises this as
-`action_post_snapshot`. If only the post-action capture fails, the response
+`action_post_snapshot` and `action_post_snapshot_delay`. Use the delay for
+custom-rendered applications that need a bounded settle period instead of
+issuing a second snapshot. If only the post-action capture fails, the response
 still reports the completed mutation and sets `observation_required: true`.
+An action without `capture_after` also sets `observation_required: true`.
 `execute_desktop_action` accepts the same `capture_after: true` flag and returns
 the next full-display image and desktop state in `post_snapshot`; it has no
 window accessibility-tree bounds.
@@ -558,7 +610,8 @@ and returns a fresh `accessibility_state_id`. `wait_for` is bounded to 30 second
 `allow_app_terminate: true` grant and force-closes only the exact session target;
 neither permission inherits from an open DCC window
 session. Clipboard operations require `allow_clipboard_read` or
-`allow_clipboard_write`; recording operations require `allow_recording: true`.
+`allow_clipboard_write`; recording operations require `allow_recording: true`;
+live observation requires `allow_live_observation: true`.
 Grant IDs are capped at 128 characters and application labels at 80; both reject
 control characters and surrounding whitespace. The manifest exposes these
 limits under `host.grant_limits` for non-DCC callers.
@@ -665,9 +718,11 @@ escalation reasons; it does not widen the session to desktop control.
 `get_agent_cursor_state`; `move_cursor` is forced to `scope: "window"`, and the
 session id is always injected by Host, so the mouse-shaped marker cannot be
 redirected to another session or move the real system pointer.
-CUA owns the cursor state and scoped motion. The Host mirrors successful moves
-into a larger native mouse-pointer overlay on Windows. Linux and the packaged
-macOS Host render the session-owned cursor and badge in the official CUA runtime.
+CUA owns the cursor state, scoped motion, and native cursor/badge renderer on
+Windows and Linux. `dcc-cua` embeds and installs its purple 12-state CUA v2
+theme as `com.dcc-mcp.cursor` in the standard CUA theme store. The packaged
+macOS Host selects the same theme through its private worker. Application
+identity remains the real executable icon in the dynamic control banner.
 
 The safety banner remains a native overlay rather than a WebView. Static SVG
 art can be added as a cached theme layer later, while the app name and stop

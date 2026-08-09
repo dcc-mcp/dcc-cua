@@ -7,11 +7,13 @@
 mod contracts;
 mod driver_factory;
 mod interactive_desktop;
+mod live_observation;
 mod observation;
 mod platform_process;
 mod policy;
 mod private_worker;
 mod runtime;
+mod showcase;
 mod window_target;
 mod windows_uia_fallback;
 

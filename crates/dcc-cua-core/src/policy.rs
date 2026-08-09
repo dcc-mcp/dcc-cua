@@ -7,6 +7,47 @@ use serde_json::{Value, json};
 use crate::contracts::*;
 use crate::window_target::WindowTarget;
 
+#[cfg(windows)]
+pub(crate) fn encode_bgra_to_png(
+    bgra: &[u8],
+    width: u32,
+    height: u32,
+) -> ComputerUseResult<Vec<u8>> {
+    let expected = u64::from(width)
+        .checked_mul(u64::from(height))
+        .and_then(|pixels| pixels.checked_mul(4))
+        .and_then(|bytes| usize::try_from(bytes).ok())
+        .ok_or_else(|| {
+            ComputerUseError::new(
+                ComputerUseErrorCode::CaptureFailed,
+                "live observation frame dimensions overflow",
+            )
+        })?;
+    if bgra.len() != expected {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::CaptureFailed,
+            "live observation returned an invalid BGRA frame",
+        ));
+    }
+    let mut rgba = bgra.to_vec();
+    for pixel in rgba.chunks_exact_mut(4) {
+        pixel.swap(0, 2);
+    }
+    let mut output = Vec::new();
+    let mut encoder = png::Encoder::new(&mut output, width, height);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    encoder.set_compression(png::Compression::Fast);
+    let mut writer = encoder.write_header().map_err(|error| {
+        ComputerUseError::new(ComputerUseErrorCode::CaptureFailed, error.to_string())
+    })?;
+    writer.write_image_data(&rgba).map_err(|error| {
+        ComputerUseError::new(ComputerUseErrorCode::CaptureFailed, error.to_string())
+    })?;
+    drop(writer);
+    Ok(output)
+}
+
 pub(crate) fn bounded_snapshot_elements(value: u32) -> u32 {
     if value == 0 {
         DEFAULT_SNAPSHOT_MAX_ELEMENTS
@@ -550,10 +591,21 @@ pub(crate) fn validate_action(action: &ComputerUseAction) -> ComputerUseResult<(
                 "duration_ms must be at most 10000",
             ));
         }
-        if action.action != "drag" {
+        if !matches!(action.action.as_str(), "click" | "drag") {
             return Err(ComputerUseError::new(
                 ComputerUseErrorCode::InvalidAction,
-                "duration_ms is supported only for drag",
+                "duration_ms is supported only for coordinate click and drag",
+            ));
+        }
+        if action.action == "click"
+            && (action.x.is_none()
+                || action.element_index.is_some()
+                || action.element_token.is_some()
+                || !action.modifiers.is_empty())
+        {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::InvalidAction,
+                "click duration_ms requires coordinates and no modifiers",
             ));
         }
     }

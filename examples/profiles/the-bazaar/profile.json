@@ -1,0 +1,275 @@
+{
+  "schema_version": 3,
+  "id": "the-bazaar",
+  "profile_version": "1.0.0",
+  "application": {"family": "the-bazaar", "versions": []},
+  "display_name": "The Bazaar",
+  "selectors": [
+    {
+      "application_names": ["TheBazaar.exe"],
+      "window_title_contains": ["The Bazaar"]
+    }
+  ],
+  "surfaces": [
+    {
+      "id": "inventory",
+      "label": "Board and backpack",
+      "role": "inventory",
+      "route": "visual_fallback",
+      "targets": [
+        {
+          "id": "backpack",
+          "label": "Backpack",
+          "role": "shortcut",
+          "localized_names": {"zh-CN": ["背包"]},
+          "supported_actions": ["toggle"],
+          "key_bindings": {"toggle": ["SPACE"]}
+        },
+        {
+          "id": "owned_item",
+          "label": "Owned item",
+          "role": "item",
+          "localized_names": {"zh-CN": ["已拥有物品"]},
+          "supported_actions": ["inspect", "move", "sell"],
+          "key_bindings": {"sell": ["Z"]}
+        },
+        {
+          "id": "capacity",
+          "label": "Board and backpack capacity",
+          "role": "status",
+          "localized_names": {"zh-CN": ["棋盘容量", "背包容量", "空位"]},
+          "supported_actions": ["inspect"]
+        },
+        {
+          "id": "effect_activation_scope",
+          "label": "Board, stash, owned, and event-triggered effect scope",
+          "role": "status",
+          "localized_names": {"zh-CN": ["战场生效", "背包被动", "持有生效", "每日触发", "惰性库存"]},
+          "supported_actions": ["inspect", "verify", "persist"]
+        }
+      ]
+    },
+    {
+      "id": "merchant",
+      "label": "Merchant inventory",
+      "role": "shop",
+      "route": "visual_fallback",
+      "targets": [
+        {
+          "id": "shop_item",
+          "label": "Shop item",
+          "role": "item",
+          "localized_names": {"zh-CN": ["商店物品"]},
+          "supported_actions": ["inspect", "buy"]
+        },
+        {
+          "id": "reroll",
+          "label": "Top shop reroll",
+          "role": "button",
+          "localized_names": {"zh-CN": ["顶部刷新", "刷新"]},
+          "supported_actions": ["inspect", "click"]
+        },
+        {
+          "id": "leave",
+          "label": "Leave merchant",
+          "role": "button",
+          "localized_names": {"zh-CN": ["离开"]},
+          "supported_actions": ["click"]
+        }
+      ]
+    },
+    {
+      "id": "reward",
+      "label": "Encounter reward",
+      "role": "reward",
+      "route": "visual_fallback",
+      "targets": [
+        {
+          "id": "reward_item",
+          "label": "Reward item",
+          "role": "item",
+          "localized_names": {"zh-CN": ["奖励物品"]},
+          "supported_actions": ["inspect", "claim"]
+        },
+        {
+          "id": "claim_capacity",
+          "label": "Reward placement capacity",
+          "role": "status",
+          "localized_names": {"zh-CN": ["奖励落位空间", "棋盘或背包空位"]},
+          "supported_actions": ["inspect"]
+        },
+        {
+          "id": "event_candidate",
+          "label": "Second-stage event candidate",
+          "role": "item",
+          "localized_names": {"zh-CN": ["事件候选物品", "事件候选技能"]},
+          "supported_actions": ["inspect", "claim"]
+        },
+        {
+          "id": "candidate_identity",
+          "label": "Exact candidate identity and current-build effect",
+          "role": "status",
+          "localized_names": {"zh-CN": ["候选精确身份", "候选当前版本效果", "实例和模板标识"]},
+          "supported_actions": ["inspect", "verify"]
+        },
+        {
+          "id": "event_exit",
+          "label": "Exit without claiming event candidate",
+          "role": "button",
+          "localized_names": {"zh-CN": ["退出事件", "放弃候选"]},
+          "supported_actions": ["click"]
+        }
+      ]
+    },
+    {
+      "id": "encounter",
+      "label": "Encounter selection and combat",
+      "role": "encounter",
+      "route": "visual_fallback",
+      "targets": [
+        {
+          "id": "encounter_card",
+          "label": "Encounter card",
+          "role": "card",
+          "localized_names": {"zh-CN": ["遭遇卡"]},
+          "supported_actions": ["inspect", "select"]
+        },
+        {
+          "id": "combat",
+          "label": "Combat",
+          "role": "combat",
+          "localized_names": {"zh-CN": ["战斗"]},
+          "supported_actions": ["observe", "review"]
+        },
+        {
+          "id": "combat_record",
+          "label": "Post-combat record",
+          "role": "statistics",
+          "localized_names": {"zh-CN": ["对战记录", "战斗统计"]},
+          "supported_actions": ["inspect"]
+        },
+        {
+          "id": "effective_health_budget",
+          "label": "Opponent effective-health and required-damage budget",
+          "role": "statistics",
+          "localized_names": {"zh-CN": ["有效生命预算", "最低伤害阈值", "护盾与治疗预算", "安全伤害余量"]},
+          "supported_actions": ["inspect", "verify", "persist"]
+        },
+        {
+          "id": "combat_record_magnifier",
+          "label": "Open post-combat record before continuing",
+          "role": "button",
+          "localized_names": {"zh-CN": ["对战记录放大镜", "战斗统计详情"]},
+          "supported_actions": ["click"]
+        },
+        {
+          "id": "combat_continue",
+          "label": "Continue after combat record is persisted",
+          "role": "button",
+          "localized_names": {"zh-CN": ["继续"]},
+          "supported_actions": ["click"]
+        }
+      ]
+    },
+    {
+      "id": "run_state",
+      "label": "Run state",
+      "role": "status",
+      "route": "visual_fallback",
+      "targets": [
+        {
+          "id": "pending_rune_or_skill_reward",
+          "label": "Pending rune or skill reward",
+          "role": "status",
+          "localized_names": {"zh-CN": ["待领取符文", "待领取技能", "技能候选"]},
+          "supported_actions": ["inspect"]
+        },
+        {
+          "id": "level_up_state",
+          "label": "Level-up reward state",
+          "role": "status",
+          "localized_names": {"zh-CN": ["等级提升", "升级奖励"]},
+          "supported_actions": ["inspect"]
+        },
+        {
+          "id": "day_clock",
+          "label": "Day and hour compass",
+          "role": "status",
+          "localized_names": {"zh-CN": ["时间/天数", "左侧罗盘", "中心天数", "外圈小时刻度"]},
+          "supported_actions": ["inspect"]
+        },
+        {
+          "id": "relationship_graph",
+          "label": "Active, dormant, and broken card relationships",
+          "role": "status",
+          "localized_names": {"zh-CN": ["卡组关系图", "左右位置联动", "生效休眠断裂效果"]},
+          "supported_actions": ["inspect", "verify", "persist"]
+        }
+      ]
+    },
+    {
+      "id": "level_up",
+      "label": "Level-up reward chain",
+      "role": "reward",
+      "route": "visual_fallback",
+      "targets": [
+        {
+          "id": "level_up_choice",
+          "label": "Level-up reward choice",
+          "role": "card",
+          "localized_names": {"zh-CN": ["升级选项", "等级提升选项"]},
+          "supported_actions": ["inspect", "select"]
+        },
+        {
+          "id": "generated_reward",
+          "label": "Generated item, skill, rune, loot, or applied upgrade",
+          "role": "item",
+          "localized_names": {"zh-CN": ["升级战利品", "升级物品", "升级技能", "升级符文", "升级后的物品", "升级结果"]},
+          "supported_actions": ["inspect", "claim", "apply", "verify"]
+        },
+        {
+          "id": "pedestal_target",
+          "label": "Item target dragged into a generated pedestal",
+          "role": "item",
+          "localized_names": {"zh-CN": ["升级台目标", "附魔台目标", "拖入基座的物品"]},
+          "supported_actions": ["inspect", "drag_to_pedestal", "verify"]
+        },
+        {
+          "id": "level_up_receipt",
+          "label": "Verified level-up reward receipt",
+          "role": "statistics",
+          "localized_names": {"zh-CN": ["升级奖励收据", "升级战利品记录"]},
+          "supported_actions": ["inspect", "persist"]
+        },
+        {
+          "id": "reward_chain_complete",
+          "label": "Level-up reward chain completion",
+          "role": "status",
+          "localized_names": {"zh-CN": ["升级奖励已领取", "返回遭遇选择"]},
+          "supported_actions": ["verify"]
+        }
+      ]
+    }
+  ],
+  "state_sources": [
+    {
+      "id": "bazaar-agent",
+      "type": "loopback_http_json",
+      "mode": "read_only",
+      "url": "http://127.0.0.1:47900/v1/context",
+      "expected_schema_version": "2.5.0",
+      "schema_version_pointer": "/schemaVersion",
+      "tick_pointer": "/tickId",
+      "use_etag": true,
+      "timeout_ms": 1000,
+      "max_response_bytes": 1048576,
+      "optional": true
+    }
+  ],
+  "settings": {
+    "dialog_style": "application_rendered",
+    "preferred_route": "visual_fallback",
+    "default_locale": "zh-CN",
+    "destructive_confirmation_required": false
+  }
+}
