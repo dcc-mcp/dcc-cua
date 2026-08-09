@@ -28,7 +28,13 @@ pub(crate) struct LiveObservationFrame {
 }
 
 impl LiveObservationFrame {
-    fn new(sequence: u64, bgra: Vec<u8>, width: u32, height: u32) -> Self {
+    pub(crate) fn new(
+        sequence: u64,
+        bgra: Vec<u8>,
+        width: u32,
+        height: u32,
+        captured_at: Instant,
+    ) -> Self {
         Self {
             sequence,
             bgra,
@@ -37,26 +43,7 @@ impl LiveObservationFrame {
             captured_at_ms: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .map_or(0, |duration| duration.as_millis()),
-            captured_at: Instant::now(),
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn for_test(sequence: u64, bgra: Vec<u8>) -> Self {
-        Self::new(sequence, bgra, 1, 1)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn for_test_bgra_at(
-        sequence: u64,
-        bgra: Vec<u8>,
-        width: u32,
-        height: u32,
-        captured_at: Instant,
-    ) -> Self {
-        Self {
             captured_at,
-            ..Self::new(sequence, bgra, width, height)
         }
     }
 
@@ -101,12 +88,6 @@ pub(crate) struct LiveObservationStatus {
 }
 
 impl LiveObservationStatus {
-    #[cfg(test)]
-    pub(crate) fn with_frame(mut self, frame: LiveObservationFrame) -> Self {
-        self.publish_frame(frame, Duration::ZERO, "test_capture");
-        self
-    }
-
     pub(crate) fn publish_frame(
         &mut self,
         frame: LiveObservationFrame,
@@ -147,16 +128,6 @@ impl LiveObservationStatus {
 
     pub(crate) fn latest(&self) -> Option<Arc<LiveObservationFrame>> {
         self.latest.clone()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn frames_captured(&self) -> u64 {
-        self.frames_captured
-    }
-
-    #[cfg(test)]
-    pub(crate) fn frames_replaced(&self) -> u64 {
-        self.frames_replaced
     }
 
     pub(crate) fn as_json(&self, active: bool, fps: u32) -> Value {
@@ -347,7 +318,7 @@ async fn run_portable_capture_loop(
                 sequence = sequence.saturating_add(1);
                 sender.send_modify(|status| {
                     status.publish_frame(
-                        LiveObservationFrame::new(sequence, bgra, width, height),
+                        LiveObservationFrame::new(sequence, bgra, width, height, Instant::now()),
                         capture_started.elapsed(),
                         "driver_png_decode",
                     );
@@ -521,7 +492,7 @@ fn run_windows_capture_loop(
                 sequence = sequence.saturating_add(1);
                 sender.send_modify(|status| {
                     status.publish_frame(
-                        LiveObservationFrame::new(sequence, bgra, width, height),
+                        LiveObservationFrame::new(sequence, bgra, width, height, Instant::now()),
                         capture_started.elapsed(),
                         capture_mode,
                     );

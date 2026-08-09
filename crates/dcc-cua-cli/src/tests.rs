@@ -1,6 +1,10 @@
 use rstest::rstest;
 use serde_json::json;
 
+use super::actions::{
+    action_from_command, bind_fresh_element_token, default_activated_action_to_foreground,
+    menu_request, window_frame_request,
+};
 use super::authorization::{existing_profile_grant_requested, host_private_worker_options};
 use super::*;
 
@@ -347,7 +351,7 @@ fn parallel_discovery_is_limited_to_stateless_methods() {
     assert!(!is_parallel_discovery_method("desktop_snapshot"));
 }
 
-#[test]
+#[rstest]
 fn host_jsonl_metrics_separate_decisions_from_observation_cost() {
     let mut metrics = HostJsonlMetrics::default();
     let action =
@@ -374,7 +378,7 @@ fn host_jsonl_metrics_separate_decisions_from_observation_cost() {
     assert_eq!(report.action_kinds.get("click"), None);
 }
 
-#[test]
+#[rstest]
 fn host_jsonl_metrics_count_protocol_errors_without_claiming_task_failure() {
     let mut metrics = HostJsonlMetrics::default();
     metrics.record_output(&json!({"type": "error", "code": "invalid_request"}), 52);
@@ -385,7 +389,7 @@ fn host_jsonl_metrics_count_protocol_errors_without_claiming_task_failure() {
     assert_eq!(report.schema, "dcc-cua.host-jsonl.metrics.v2");
 }
 
-#[test]
+#[rstest]
 fn host_jsonl_metrics_break_down_action_kinds() {
     let mut metrics = HostJsonlMetrics::default();
     for request in [
@@ -402,7 +406,7 @@ fn host_jsonl_metrics_break_down_action_kinds() {
     assert_eq!(report.action_kinds["click"], 2);
 }
 
-#[test]
+#[rstest]
 fn host_jsonl_metrics_checkpoint_is_readable_before_eof() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("metrics.json");

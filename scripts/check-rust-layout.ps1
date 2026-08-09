@@ -15,7 +15,10 @@ Get-ChildItem -Path (Join-Path $PSScriptRoot "..\crates") -Recurse -Filter *.rs 
             $violations.Add("$relative has $($sourceLines.Count) lines; maximum is $maxLines")
         }
 
-        $isTestFile = $path -match "[\\/]src[\\/]tests\.rs$" -or $path -match "[\\/]tests[\\/]"
+        $isTestFile = (
+            $path -match "[\\/]src[\\/]" -and
+            (Split-Path -Leaf $path) -eq "tests.rs"
+        ) -or $path -match "[\\/]tests[\\/]"
         if ($isTestFile) {
             if ($content -notmatch "use rstest::rstest;") {
                 $violations.Add("$relative must import rstest")

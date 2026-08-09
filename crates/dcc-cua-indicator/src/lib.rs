@@ -11,15 +11,21 @@ use serde::Serialize;
 use thiserror::Error;
 
 const MAX_DISPLAY_NAME_CHARS: usize = 80;
-const TARGET_FRAME_THICKNESS_DIP: i32 = 40;
-const TARGET_FRAME_GRADIENT_STEPS: usize = 20;
-const TARGET_FRAME_PULSE_PERIOD: Duration = Duration::from_millis(1_800);
-const TARGET_FRAME_ALPHA_MIN: u8 = 48;
-const TARGET_FRAME_ALPHA_MAX: u8 = 132;
+/// Default physical target-frame thickness in device-independent pixels.
+pub const TARGET_FRAME_THICKNESS_DIP: i32 = 40;
+/// Number of bands used to approximate the target-frame gradient.
+pub const TARGET_FRAME_GRADIENT_STEPS: usize = 20;
+/// Duration of one complete target-frame breathing cycle.
+pub const TARGET_FRAME_PULSE_PERIOD: Duration = Duration::from_millis(1_800);
+/// Lowest target-frame opacity during a breathing cycle.
+pub const TARGET_FRAME_ALPHA_MIN: u8 = 48;
+/// Highest target-frame opacity during a breathing cycle.
+pub const TARGET_FRAME_ALPHA_MAX: u8 = 132;
 static INTERRUPT_GENERATION: AtomicU64 = AtomicU64::new(0);
 
 #[must_use]
-fn breathing_frame_alpha(elapsed: Duration) -> u8 {
+/// Compute the breathing opacity for a point in the shared theme cycle.
+pub fn breathing_frame_alpha(elapsed: Duration) -> u8 {
     let phase = elapsed.as_secs_f64() / TARGET_FRAME_PULSE_PERIOD.as_secs_f64();
     let wave = (phase * std::f64::consts::TAU).cos().mul_add(0.5, 0.5);
     f64::from(TARGET_FRAME_ALPHA_MIN)
@@ -28,7 +34,8 @@ fn breathing_frame_alpha(elapsed: Duration) -> u8 {
 }
 
 #[must_use]
-fn target_frame_band_alpha(alpha: u8, band: usize) -> u8 {
+/// Compute the opacity of one gradient band from the current edge opacity.
+pub fn target_frame_band_alpha(alpha: u8, band: usize) -> u8 {
     let remaining = TARGET_FRAME_GRADIENT_STEPS
         .saturating_sub(band)
         .min(TARGET_FRAME_GRADIENT_STEPS);
@@ -37,7 +44,8 @@ fn target_frame_band_alpha(alpha: u8, band: usize) -> u8 {
 }
 
 #[must_use]
-fn target_frame_band_insets(thickness: i32, band: usize) -> Option<(i32, i32)> {
+/// Compute the outer and inner inset of one gradient band.
+pub fn target_frame_band_insets(thickness: i32, band: usize) -> Option<(i32, i32)> {
     if thickness <= 0 || band >= TARGET_FRAME_GRADIENT_STEPS {
         return None;
     }

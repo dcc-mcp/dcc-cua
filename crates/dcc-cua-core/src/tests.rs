@@ -1169,7 +1169,7 @@ fn live_observation_fps_is_bounded() {
     }
 }
 
-#[test]
+#[rstest]
 fn live_observation_stops_on_terminal_capture_errors() {
     assert!(terminal_capture_error(&ComputerUseError::new(
         ComputerUseErrorCode::InvalidTarget,
@@ -1185,7 +1185,6 @@ fn live_observation_stops_on_terminal_capture_errors() {
     )));
 }
 
-#[cfg(windows)]
 #[rstest]
 fn live_observation_png_converts_bgra_to_rgba() {
     let png = encode_bgra_to_png(&[3, 2, 1, 4], 1, 1).unwrap();
@@ -1198,13 +1197,21 @@ fn live_observation_png_converts_bgra_to_rgba() {
 
 #[rstest]
 fn live_observation_keeps_only_the_latest_frame() {
-    let status = LiveObservationStatus::default()
-        .with_frame(LiveObservationFrame::for_test(1, vec![1]))
-        .with_frame(LiveObservationFrame::for_test(2, vec![2]));
+    let mut status = LiveObservationStatus::default();
+    status.publish_frame(
+        LiveObservationFrame::new(1, vec![1], 1, 1, Instant::now()),
+        Duration::ZERO,
+        "test_capture",
+    );
+    status.publish_frame(
+        LiveObservationFrame::new(2, vec![2], 1, 1, Instant::now()),
+        Duration::ZERO,
+        "test_capture",
+    );
 
     assert_eq!(status.latest().expect("latest frame").sequence(), 2);
-    assert_eq!(status.frames_captured(), 2);
-    assert_eq!(status.frames_replaced(), 1);
+    assert_eq!(status.as_json(true, 10)["frames_captured"], 2);
+    assert_eq!(status.as_json(true, 10)["frames_replaced"], 1);
 }
 
 #[rstest]
@@ -1212,18 +1219,12 @@ fn live_observation_state_reports_recent_rate_and_capture_cost() {
     let started = Instant::now();
     let mut status = LiveObservationStatus::default();
     status.publish_frame(
-        LiveObservationFrame::for_test_bgra_at(1, vec![1], 1, 1, started),
+        LiveObservationFrame::new(1, vec![1], 1, 1, started),
         Duration::from_millis(6),
         "test_capture",
     );
     status.publish_frame(
-        LiveObservationFrame::for_test_bgra_at(
-            2,
-            vec![2],
-            1,
-            1,
-            started + Duration::from_millis(100),
-        ),
+        LiveObservationFrame::new(2, vec![2], 1, 1, started + Duration::from_millis(100)),
         Duration::from_millis(8),
         "test_capture",
     );
@@ -1240,12 +1241,16 @@ fn live_observation_state_reports_recent_rate_and_capture_cost() {
 #[rstest]
 #[tokio::test]
 async fn live_observation_returns_a_frame_newer_than_the_decision_frame() {
-    let (sender, mut receiver) = tokio::sync::watch::channel(
-        LiveObservationStatus::default().with_frame(LiveObservationFrame::for_test(1, vec![1])),
+    let mut status = LiveObservationStatus::default();
+    status.publish_frame(
+        LiveObservationFrame::new(1, vec![1], 1, 1, Instant::now()),
+        Duration::ZERO,
+        "test_capture",
     );
+    let (sender, mut receiver) = tokio::sync::watch::channel(status);
     sender.send_modify(|status| {
         status.publish_frame(
-            LiveObservationFrame::for_test(2, vec![2]),
+            LiveObservationFrame::new(2, vec![2], 1, 1, Instant::now()),
             Duration::from_millis(7),
             "test_capture",
         );

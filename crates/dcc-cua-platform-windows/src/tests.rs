@@ -124,7 +124,7 @@ fn background_action_only_restores_focus_stolen_by_the_controlled_process(
 }
 
 #[cfg(windows)]
-#[test]
+#[rstest]
 #[ignore = "requires DCC_CUA_TEST_WINDOW_HANDLE for an existing rendered window"]
 fn persistent_wgc_captures_consecutive_real_frames() {
     let window_handle = std::env::var("DCC_CUA_TEST_WINDOW_HANDLE")
