@@ -52,10 +52,12 @@ winnow = { version = "1" }
 aho-corasick = { version = "1" }
 futures-sink = { version = "0.3" }
 getrandom = { version = "0.4", default-features = false, features = ["std", "sys_rng"] }
+idna = { version = "1" }
 indexmap = { version = "2", features = ["serde"] }
 ipnet = { version = "2" }
 libc = { version = "0.2", features = ["extra_traits"] }
 linux-raw-sys = { version = "0.12", default-features = false, features = ["auxvec", "elf", "errno", "general", "if_ether", "ioctl", "net", "netlink", "no_std", "prctl", "system", "xdp"] }
+percent-encoding = { version = "2" }
 regex-automata = { version = "0.4", default-features = false, features = ["dfa", "hybrid", "meta", "nfa", "perf", "std", "unicode"] }
 regex-syntax = { version = "0.8" }
 rustix = { version = "1", features = ["event", "fs", "net", "pipe", "process", "system", "time"] }
@@ -88,12 +90,14 @@ core-foundation-sys = { version = "0.8" }
 errno = { version = "0.3" }
 futures-sink = { version = "0.3" }
 getrandom = { version = "0.4", default-features = false, features = ["std", "sys_rng"] }
+idna = { version = "1" }
 indexmap = { version = "2", features = ["serde"] }
 ipnet = { version = "2" }
 libc = { version = "0.2" }
 objc2 = { version = "0.5" }
 objc2-app-kit = { version = "0.2", features = ["NSApplication", "NSCell", "NSColor", "NSControl", "NSEvent", "NSGraphicsContext", "NSImage", "NSImageView", "NSResponder", "NSRunningApplication", "NSScreen", "NSTextField", "NSView", "NSWindow", "NSWorkspace", "block2", "libc"] }
 objc2-foundation = { version = "0.2", features = ["NSAppleEventDescriptor", "NSArray", "NSAttributedString", "NSBundle", "NSCoder", "NSData", "NSDate", "NSDictionary", "NSError", "NSException", "NSFileManager", "NSFormatter", "NSGeometry", "NSItemProvider", "NSLocale", "NSNotification", "NSNull", "NSObjCRuntime", "NSObject", "NSOperation", "NSRange", "NSRunLoop", "NSSet", "NSString", "NSTextCheckingResult", "NSThread", "NSURL", "NSUndoManager", "NSUserActivity", "NSValue", "block2", "libc"] }
+percent-encoding = { version = "2" }
 regex-automata = { version = "0.4", default-features = false, features = ["dfa", "hybrid", "meta", "nfa", "perf", "std", "unicode"] }
 regex-syntax = { version = "0.8" }
 serde = { version = "1", default-features = false, features = ["rc"] }
@@ -117,12 +121,14 @@ core-foundation-sys = { version = "0.8" }
 errno = { version = "0.3" }
 futures-sink = { version = "0.3" }
 getrandom = { version = "0.4", default-features = false, features = ["std", "sys_rng"] }
+idna = { version = "1" }
 indexmap = { version = "2", features = ["serde"] }
 ipnet = { version = "2" }
 libc = { version = "0.2" }
 objc2 = { version = "0.5" }
 objc2-app-kit = { version = "0.2", features = ["NSApplication", "NSCell", "NSColor", "NSControl", "NSEvent", "NSGraphicsContext", "NSImage", "NSImageView", "NSResponder", "NSRunningApplication", "NSScreen", "NSTextField", "NSView", "NSWindow", "NSWorkspace", "block2", "libc"] }
 objc2-foundation = { version = "0.2", features = ["NSAppleEventDescriptor", "NSArray", "NSAttributedString", "NSBundle", "NSCoder", "NSData", "NSDate", "NSDictionary", "NSError", "NSException", "NSFileManager", "NSFormatter", "NSGeometry", "NSItemProvider", "NSLocale", "NSNotification", "NSNull", "NSObjCRuntime", "NSObject", "NSOperation", "NSRange", "NSRunLoop", "NSSet", "NSString", "NSTextCheckingResult", "NSThread", "NSURL", "NSUndoManager", "NSUserActivity", "NSValue", "block2", "libc"] }
+percent-encoding = { version = "2" }
 regex-automata = { version = "0.4", default-features = false, features = ["dfa", "hybrid", "meta", "nfa", "perf", "std", "unicode"] }
 regex-syntax = { version = "0.8" }
 serde = { version = "1", default-features = false, features = ["rc"] }
@@ -143,8 +149,10 @@ regex-syntax = { version = "0.8" }
 aho-corasick = { version = "1" }
 futures-sink = { version = "0.3" }
 getrandom = { version = "0.4", default-features = false, features = ["std", "sys_rng"] }
+idna = { version = "1" }
 indexmap = { version = "2", features = ["serde"] }
 ipnet = { version = "2" }
+percent-encoding = { version = "2" }
 regex-automata = { version = "0.4", default-features = false, features = ["dfa", "hybrid", "meta", "nfa", "perf", "std", "unicode"] }
 regex-syntax = { version = "0.8" }
 serde = { version = "1", default-features = false, features = ["rc"] }
@@ -152,9 +160,9 @@ serde_core = { version = "1", default-features = false, features = ["rc"] }
 slab = { version = "0.4" }
 smallvec = { version = "1", default-features = false, features = ["const_new"] }
 uuid = { version = "1", features = ["fast-rng", "v4"] }
-windows = { version = "0.61", features = ["Win32_Globalization", "Win32_Graphics_Gdi", "Win32_Security", "Win32_System_Console", "Win32_System_JobObjects", "Win32_System_LibraryLoader", "Win32_System_Threading", "Win32_UI_HiDpi", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
-windows-sys-b21d60becc0929df = { package = "windows-sys", version = "0.52", features = ["Win32_Foundation", "Win32_Security_Cryptography", "Win32_Storage_FileSystem", "Win32_System_Environment", "Win32_System_LibraryLoader", "Win32_System_Memory", "Win32_System_Threading", "Win32_UI_Shell"] }
-windows-sys-d4189bed749088b6 = { package = "windows-sys", version = "0.61", features = ["Wdk_Foundation", "Wdk_Storage_FileSystem", "Wdk_System_IO", "Win32_Networking_WinSock", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Console", "Win32_System_IO", "Win32_System_Memory", "Win32_System_Pipes", "Win32_System_RemoteDesktop", "Win32_System_SystemServices", "Win32_System_Threading", "Win32_System_WindowsProgramming", "Win32_UI_HiDpi", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
+windows-332723e2a07a5e2a = { package = "windows", version = "0.58", features = ["ApplicationModel", "Foundation_Collections", "Graphics_Capture", "Graphics_DirectX_Direct3D11", "Management_Deployment", "Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D11", "Win32_Graphics_Dwm", "Win32_Graphics_Dxgi_Common", "Win32_Graphics_Gdi", "Win32_Graphics_OpenGL", "Win32_Media", "Win32_Security", "Win32_Storage_FileSystem", "Win32_Storage_Xps", "Win32_System_Com_StructuredStorage", "Win32_System_Diagnostics_ToolHelp", "Win32_System_LibraryLoader", "Win32_System_Registry", "Win32_System_RemoteDesktop", "Win32_System_StationsAndDesktops", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_System_WinRT_Direct3D11", "Win32_System_WinRT_Graphics_Capture", "Win32_UI_Accessibility", "Win32_UI_Controls", "Win32_UI_HiDpi", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Input_Pointer", "Win32_UI_Shell_Common", "Win32_UI_Shell_PropertiesSystem", "Win32_UI_WindowsAndMessaging"] }
+windows-d4189bed749088b6 = { package = "windows", version = "0.61", features = ["Win32_Globalization", "Win32_Graphics_Gdi", "Win32_Security", "Win32_System_Console", "Win32_System_JobObjects", "Win32_System_LibraryLoader", "Win32_System_Threading", "Win32_UI_HiDpi", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.61", features = ["Wdk_Foundation", "Wdk_Storage_FileSystem", "Wdk_System_IO", "Win32_Networking_WinSock", "Win32_Security_Authorization", "Win32_Security_Cryptography", "Win32_Storage_FileSystem", "Win32_System_Console", "Win32_System_IO", "Win32_System_Memory", "Win32_System_Pipes", "Win32_System_RemoteDesktop", "Win32_System_SystemServices", "Win32_System_Threading", "Win32_System_WindowsProgramming", "Win32_UI_HiDpi", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
 
 [target.x86_64-pc-windows-msvc.build-dependencies]
 aho-corasick = { version = "1", default-features = false, features = ["perf-literal", "std"] }
@@ -162,6 +170,6 @@ getrandom = { version = "0.4", default-features = false, features = ["std"] }
 indexmap = { version = "2" }
 regex-automata = { version = "0.4", default-features = false, features = ["dfa-onepass", "hybrid", "meta", "nfa-backtrack", "perf-inline", "perf-literal", "std", "unicode"] }
 regex-syntax = { version = "0.8" }
-windows-sys-b21d60becc0929df = { package = "windows-sys", version = "0.52", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
 
 ### END HAKARI SECTION

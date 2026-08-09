@@ -7,7 +7,6 @@ use serde_json::{Value, json};
 use crate::contracts::*;
 use crate::window_target::WindowTarget;
 
-#[cfg(windows)]
 pub(crate) fn encode_bgra_to_png(
     bgra: &[u8],
     width: u32,

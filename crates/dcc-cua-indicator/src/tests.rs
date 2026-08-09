@@ -3,7 +3,7 @@ use rstest::rstest;
 use super::*;
 
 #[cfg(windows)]
-#[test]
+#[rstest]
 fn native_overlays_are_hit_test_transparent_and_never_activate() {
     assert_eq!(platform::overlay_input_result(0x0084).unwrap().0, -1);
     assert_eq!(platform::overlay_input_result(0x0021).unwrap().0, 3);
@@ -100,7 +100,7 @@ fn control_labels_strip_control_characters_and_bound_names() {
 #[cfg(windows)]
 #[rstest]
 fn a_windowed_target_places_the_banner_above_the_window() {
-    let geometry = platform::geometry_for_test(
+    let geometry = platform::banner_geometry(
         platform::TargetGeometry {
             x: 200,
             y: 200,
@@ -110,7 +110,16 @@ fn a_windowed_target_places_the_banner_above_the_window() {
         },
         monitor(),
     );
-    assert_eq!(geometry, (560, 148, 480, 44, false));
+    assert_eq!(
+        (
+            geometry.x,
+            geometry.y,
+            geometry.width,
+            geometry.height,
+            geometry.inside_target,
+        ),
+        (560, 148, 480, 44, false)
+    );
 }
 
 #[rstest]
@@ -176,7 +185,7 @@ fn target_frame_alpha_is_monotonic_from_edge_to_center() {
 #[cfg(windows)]
 #[rstest]
 fn a_fullscreen_target_places_the_banner_inside_the_safe_inset() {
-    let geometry = platform::geometry_for_test(
+    let geometry = platform::banner_geometry(
         platform::TargetGeometry {
             x: 0,
             y: 0,
@@ -186,7 +195,16 @@ fn a_fullscreen_target_places_the_banner_inside_the_safe_inset() {
         },
         monitor(),
     );
-    assert_eq!(geometry, (720, 16, 480, 44, true));
+    assert_eq!(
+        (
+            geometry.x,
+            geometry.y,
+            geometry.width,
+            geometry.height,
+            geometry.inside_target,
+        ),
+        (720, 16, 480, 44, true)
+    );
 }
 
 #[cfg(windows)]

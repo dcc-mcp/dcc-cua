@@ -607,12 +607,12 @@ fn register_class(class_name: PCWSTR, procedure: WNDPROC) -> Result<(), Indicato
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-struct BannerGeometry {
-    x: i32,
-    y: i32,
-    width: i32,
-    height: i32,
-    inside_target: bool,
+pub(super) struct BannerGeometry {
+    pub(super) x: i32,
+    pub(super) y: i32,
+    pub(super) width: i32,
+    pub(super) height: i32,
+    pub(super) inside_target: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -679,7 +679,7 @@ fn read_monitor_geometry(target: HWND) -> Result<MonitorGeometry, IndicatorError
     })
 }
 
-fn banner_geometry(target: TargetGeometry, monitor: MonitorGeometry) -> BannerGeometry {
+pub(super) fn banner_geometry(target: TargetGeometry, monitor: MonitorGeometry) -> BannerGeometry {
     let height = scale(44, target.dpi);
     let available_width = (monitor.work_right - monitor.work_left - scale(16, target.dpi)).max(1);
     let width = scale(480, target.dpi).min(available_width);
@@ -1132,19 +1132,4 @@ fn scale(value: i32, dpi: u32) -> i32 {
 
 fn wide(value: &str) -> Vec<u16> {
     value.encode_utf16().chain(std::iter::once(0)).collect()
-}
-
-#[cfg(test)]
-pub(super) fn geometry_for_test(
-    target: TargetGeometry,
-    monitor: MonitorGeometry,
-) -> (i32, i32, i32, i32, bool) {
-    let value = banner_geometry(target, monitor);
-    (
-        value.x,
-        value.y,
-        value.width,
-        value.height,
-        value.inside_target,
-    )
 }
