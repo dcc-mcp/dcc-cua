@@ -1048,6 +1048,7 @@ dependencies = [
  "dcc-cua-workspace-hack",
  "mp4",
  "openh264",
+ "platform-macos",
  "platform-windows",
  "png 0.17.16",
  "rstest",

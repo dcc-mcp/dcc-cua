@@ -146,6 +146,28 @@ fn host_grant_parser_rejects_missing_and_unknown_values() {
 }
 
 #[rstest]
+#[case(vec!["profiles"], None)]
+#[case(vec!["__private-worker", "--generation", "worker-1"], Some("worker-1"))]
+#[case(vec!["__private-worker", "--generation=worker-2"], Some("worker-2"))]
+fn private_worker_entry_is_selected_before_the_async_cli(
+    #[case] arguments: Vec<&str>,
+    #[case] expected: Option<&str>,
+) {
+    let arguments = arguments.into_iter().map(str::to_owned).collect::<Vec<_>>();
+    assert_eq!(
+        private_worker_generation_from(&arguments)
+            .unwrap()
+            .as_deref(),
+        expected
+    );
+}
+
+#[rstest]
+fn private_worker_entry_requires_a_generation() {
+    assert!(private_worker_generation_from(&["__private-worker".into()]).is_err());
+}
+
+#[rstest]
 fn macos_host_worker_is_private_and_standard_by_default() {
     let path = if cfg!(windows) {
         std::path::Path::new(r"C:\release\dcc-cua.exe")

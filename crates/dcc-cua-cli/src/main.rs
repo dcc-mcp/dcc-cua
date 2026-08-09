@@ -39,8 +39,21 @@ use tokio::io::{AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader, BufWriter
 
 const PARALLEL_DISCOVERY_WINDOW_MS: u64 = 5;
 
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(target_os = "macos")]
+    {
+        let arguments = env::args().skip(1).collect::<Vec<_>>();
+        if let Some(generation) = private_worker_generation_from(&arguments)? {
+            dcc_cua_core::run_private_worker_with_appkit(generation)
+                .map_err(std::io::Error::other)?;
+            return Ok(());
+        }
+    }
+    async_main()
+}
+
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = env::args().skip(1);
     let command = args.next().unwrap_or_else(|| "help".into());
     let flags = args.collect::<Vec<_>>();
@@ -170,6 +183,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         other => return Err(format!("unknown command: {other}; use `help`").into()),
     }
     Ok(())
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn private_worker_generation_from(arguments: &[String]) -> Result<Option<String>, String> {
+    if arguments.first().map(String::as_str) != Some("__private-worker") {
+        return Ok(None);
+    }
+    let flags = &arguments[1..];
+    flag_value(flags, "--generation")
+        .or_else(|| {
+            flags
+                .iter()
+                .find_map(|flag| flag.strip_prefix("--generation=").map(str::to_owned))
+        })
+        .ok_or_else(|| "private worker requires --generation".to_owned())
+        .map(Some)
 }
 
 fn host_driver(flags: &[String]) -> Result<ComputerUseDriver, Box<dyn std::error::Error>> {
