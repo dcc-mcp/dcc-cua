@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.3.0](https://github.com/dcc-mcp/dcc-cua/compare/v0.2.0...v0.3.0) (2026-08-09)
+
+
+### Features
+
+* add live observation and versioned profiles ([a3a8f8c](https://github.com/dcc-mcp/dcc-cua/commit/a3a8f8ce243057b4502a6c3be5724ee2547fb63f))
+* add multilingual semantic profiles ([009ad0e](https://github.com/dcc-mcp/dcc-cua/commit/009ad0e064bc9fbcf78760f251ad068504a349d1))
+* add trusted confirmation fallbacks ([03c1a21](https://github.com/dcc-mcp/dcc-cua/commit/03c1a214305f3c0aeffeea38e8e7d58bb0e30027))
+* embed private CUA worker ([6851534](https://github.com/dcc-mcp/dcc-cua/commit/685153481a18d55eb9f7e0efd2ec76025aca7015))
+
+
+### Bug Fixes
+
+* embed macOS Swift runtime paths ([71593c6](https://github.com/dcc-mcp/dcc-cua/commit/71593c65fde3e2625359222968f97a997bd5fb4a))
+* restore cross-platform build gates ([473a846](https://github.com/dcc-mcp/dcc-cua/commit/473a8462381886fa39fd4dcebf207c82ce565c1e))
+* run macOS worker UI on main thread ([d42aeb6](https://github.com/dcc-mcp/dcc-cua/commit/d42aeb631263733b66ffa5fe38ff01756e70f9d3))
+* scope host authorization to supported platforms ([ee8c871](https://github.com/dcc-mcp/dcc-cua/commit/ee8c8718812e6b4f04e2ce5c9d784a55d7d1a228))
+* stabilize activated semantic actions ([#34](https://github.com/dcc-mcp/dcc-cua/issues/34)) ([a38d7fd](https://github.com/dcc-mcp/dcc-cua/commit/a38d7fd86456678e212e2b5e8b84fcb78db8879d))
+
 ## [0.2.0](https://github.com/dcc-mcp/dcc-cua/compare/v0.1.2...v0.2.0) (2026-08-05)
 
 
