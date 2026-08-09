@@ -19,6 +19,8 @@ mod windows_uia_fallback;
 
 pub use contracts::*;
 pub use private_worker::run_private_worker;
+#[cfg(target_os = "macos")]
+pub use private_worker::run_private_worker_with_appkit;
 pub use runtime::*;
 
 #[cfg(test)]

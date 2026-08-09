@@ -16,8 +16,65 @@ use serde_json::Value;
 
 use crate::contracts::MOUSE_CURSOR_THEME;
 
+struct InitializationSignal(Option<std::sync::mpsc::SyncSender<bool>>);
+
+impl InitializationSignal {
+    fn ready(&mut self) {
+        if let Some(sender) = self.0.take() {
+            let _ = sender.send(true);
+        }
+    }
+}
+
+impl Drop for InitializationSignal {
+    fn drop(&mut self) {
+        if let Some(sender) = self.0.take() {
+            let _ = sender.send(false);
+        }
+    }
+}
+
+/// Run a private worker while reserving the macOS process main thread for
+/// AppKit. The protocol runtime owns a background thread and terminates the
+/// process after the private channel closes because AppKit is process-long.
+#[cfg(target_os = "macos")]
+pub fn run_private_worker_with_appkit(generation: String) -> Result<(), String> {
+    let (initialized_tx, initialized_rx) = std::sync::mpsc::sync_channel(1);
+    std::thread::Builder::new()
+        .name("dcc-cua-private-worker".into())
+        .spawn(move || {
+            let result = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .map_err(|error| error.to_string())
+                .and_then(|runtime| {
+                    runtime.block_on(run_private_worker_inner(generation, Some(initialized_tx)))
+                });
+            if let Err(error) = &result {
+                eprintln!("dcc-cua private worker: {error}");
+            }
+            std::process::exit(i32::from(result.is_err()));
+        })
+        .map_err(|error| format!("spawn private worker runtime: {error}"))?;
+
+    if initialized_rx.recv().unwrap_or(false) {
+        platform_macos::cursor::overlay::run_on_main_thread();
+        Ok(())
+    } else {
+        Err("private worker runtime did not initialize AppKit".into())
+    }
+}
+
 /// Serve one parent-owned private-worker generation over inherited stdio.
 pub async fn run_private_worker(generation: String) -> Result<(), String> {
+    run_private_worker_inner(generation, None).await
+}
+
+async fn run_private_worker_inner(
+    generation: String,
+    initialized: Option<std::sync::mpsc::SyncSender<bool>>,
+) -> Result<(), String> {
+    let mut initialized = InitializationSignal(initialized);
     if generation.is_empty()
         || generation.len() > 128
         || !generation
@@ -107,6 +164,7 @@ pub async fn run_private_worker(generation: String) -> Result<(), String> {
             return Ok(());
         }
     };
+    initialized.ready();
     let metadata = driver.metadata().await.map_err(|error| error.to_string())?;
     write_response(
         &mut writer,
