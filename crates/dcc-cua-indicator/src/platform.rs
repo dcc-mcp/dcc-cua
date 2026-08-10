@@ -23,19 +23,19 @@ use windows::Win32::UI::HiDpi::{
 use windows::Win32::UI::Input::KeyboardAndMouse::VK_ESCAPE;
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, CreateWindowExW, DI_NORMAL, DefWindowProcW, DestroyWindow, DispatchMessageW,
-    DrawIconEx, GA_ROOTOWNER, GCLP_HICON, GCLP_HICONSM, GetAncestor, GetClassLongPtrW,
-    GetClientRect, GetForegroundWindow, GetPropW, GetWindowRect, GetWindowTextLengthW,
-    GetWindowTextW, GetWindowThreadProcessId, HC_ACTION, HHOOK, HICON, HTTRANSPARENT, ICON_SMALL2,
-    IsIconic, IsWindow, IsWindowVisible, KBDLLHOOKSTRUCT, LLKHF_INJECTED, LWA_ALPHA, MA_NOACTIVATE,
-    MSG, PM_REMOVE, PeekMessageW, RegisterClassW, RemovePropW, SEND_MESSAGE_TIMEOUT_FLAGS,
-    SMTO_ABORTIFHUNG, SPI_GETCLIENTAREAANIMATION, SW_HIDE, SW_SHOWNOACTIVATE, SWP_NOACTIVATE,
-    SWP_NOZORDER, SWP_SHOWWINDOW, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SendMessageTimeoutW,
-    SetLayeredWindowAttributes, SetPropW, SetWindowDisplayAffinity, SetWindowPos,
-    SetWindowsHookExW, ShowWindow, SystemParametersInfoW, TranslateMessage, UnhookWindowsHookEx,
-    WDA_EXCLUDEFROMCAPTURE, WH_KEYBOARD_LL, WINDOW_EX_STYLE, WINDOW_STYLE, WM_GETICON,
-    WM_GETOBJECT, WM_KEYDOWN, WM_KEYUP, WM_MOUSEACTIVATE, WM_NCHITTEST, WM_PAINT, WM_SYSKEYDOWN,
-    WM_SYSKEYUP, WNDCLASSW, WNDPROC, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
-    WS_EX_TRANSPARENT, WS_POPUP,
+    DrawIconEx, GA_ROOTOWNER, GCLP_HICON, GCLP_HICONSM, GW_HWNDPREV, GetAncestor, GetClassLongPtrW,
+    GetClientRect, GetForegroundWindow, GetPropW, GetWindow, GetWindowRect, GetWindowTextLengthW,
+    GetWindowTextW, GetWindowThreadProcessId, HC_ACTION, HHOOK, HICON, HTTRANSPARENT,
+    HWND_NOTOPMOST, HWND_TOP, ICON_SMALL2, IsIconic, IsWindow, IsWindowVisible, KBDLLHOOKSTRUCT,
+    LLKHF_INJECTED, LWA_ALPHA, MA_NOACTIVATE, MSG, PM_REMOVE, PeekMessageW, RegisterClassW,
+    RemovePropW, SEND_MESSAGE_TIMEOUT_FLAGS, SMTO_ABORTIFHUNG, SPI_GETCLIENTAREAANIMATION, SW_HIDE,
+    SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOOWNERZORDER, SWP_NOSIZE, SWP_SHOWWINDOW,
+    SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SendMessageTimeoutW, SetLayeredWindowAttributes, SetPropW,
+    SetWindowDisplayAffinity, SetWindowPos, SetWindowsHookExW, ShowWindow, SystemParametersInfoW,
+    TranslateMessage, UnhookWindowsHookEx, WDA_EXCLUDEFROMCAPTURE, WH_KEYBOARD_LL, WINDOW_EX_STYLE,
+    WINDOW_STYLE, WM_GETICON, WM_KEYDOWN, WM_KEYUP, WM_MOUSEACTIVATE, WM_NCHITTEST, WM_PAINT,
+    WM_SYSKEYDOWN, WM_SYSKEYUP, WNDCLASSW, WNDPROC, WS_EX_LAYERED, WS_EX_NOACTIVATE,
+    WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT, WS_POPUP,
 };
 use windows::core::{BOOL, HRESULT, PCWSTR, w};
 
@@ -98,7 +98,7 @@ pub(super) enum TargetPresentationPolicy {
     Hidden,
     ExactTargetForeground,
     OwnedModalForeground,
-    TargetOwnedBehindUnrelatedForeground,
+    TargetScopedBehindUnrelatedForeground,
 }
 
 impl TargetPresentationPolicy {
@@ -124,7 +124,7 @@ pub(super) fn target_presentation_policy(
     } else if foreground_root_owner == Some(target_root_owner) {
         TargetPresentationPolicy::OwnedModalForeground
     } else {
-        TargetPresentationPolicy::TargetOwnedBehindUnrelatedForeground
+        TargetPresentationPolicy::TargetScopedBehindUnrelatedForeground
     }
 }
 
@@ -560,24 +560,23 @@ fn run_banner(
     validate_target(target_window, target.process_id)?;
     let identity = target.identity();
     let overlay = OverlayWindow(create_overlay(
-        target_window,
         &identity,
         BannerActivity::Connecting,
         target_icon(target_window),
     )?);
     let frames = (0..TARGET_FRAME_GRADIENT_STEPS)
-        .map(|_| create_frame_overlay(target_window).map(OverlayWindow))
+        .map(|_| create_frame_overlay().map(OverlayWindow))
         .collect::<Result<Vec<_>, _>>()?;
     let target_geometry = read_target_geometry(target_window)?;
     let mut geometry = banner_geometry(target_geometry, read_monitor_geometry(target_window)?);
     let mut frame_geometry = target_frame_geometry(target_geometry);
-    position_banner(overlay.0, geometry, true)?;
+    position_banner(overlay.0, target_window, geometry, true)?;
     for (band, frame) in frames.iter().enumerate() {
         set_overlay_alpha(
             frame.0,
             target_frame_band_alpha(TARGET_FRAME_ALPHA_MAX, band),
         )?;
-        position_target_frame(frame.0, frame_geometry, band, true)?;
+        position_target_frame(frame.0, target_window, frame_geometry, band, true)?;
     }
     inside_target.store(geometry.inside_target, Ordering::Release);
     let _active_banner = ActiveBannerRegistration::acquire();
@@ -640,6 +639,7 @@ fn run_banner(
             if next_geometry != geometry {
                 position_banner(
                     overlay.0,
+                    target_window,
                     next_geometry,
                     next_geometry.width != geometry.width
                         || next_geometry.height != geometry.height,
@@ -652,6 +652,7 @@ fn run_banner(
                 for (band, frame) in frames.iter().enumerate() {
                     position_target_frame(
                         frame.0,
+                        target_window,
                         next_frame_geometry,
                         band,
                         next_frame_geometry.width != frame_geometry.width
@@ -720,18 +721,11 @@ fn target_icon(window: HWND) -> Option<HICON> {
 }
 
 fn create_overlay(
-    owner: HWND,
     identity: &str,
     activity: BannerActivity,
     icon: Option<HICON>,
 ) -> Result<HWND, IndicatorError> {
-    let window = create_window(
-        owner,
-        BANNER_CLASS,
-        Some(window_proc),
-        identity,
-        BANNER_ALPHA,
-    )?;
+    let window = create_window(BANNER_CLASS, Some(window_proc), identity, BANNER_ALPHA)?;
     if let Err(error) = set_activity_property(window, activity) {
         let _ = unsafe { DestroyWindow(window) };
         return Err(error);
@@ -755,9 +749,8 @@ fn create_overlay(
     Ok(window)
 }
 
-pub(super) fn create_frame_overlay(owner: HWND) -> Result<HWND, IndicatorError> {
+pub(super) fn create_frame_overlay() -> Result<HWND, IndicatorError> {
     create_window(
-        owner,
         FRAME_CLASS,
         Some(frame_window_proc),
         "",
@@ -766,7 +759,6 @@ pub(super) fn create_frame_overlay(owner: HWND) -> Result<HWND, IndicatorError> 
 }
 
 fn create_window(
-    owner: HWND,
     class_name: PCWSTR,
     procedure: WNDPROC,
     title: &str,
@@ -788,7 +780,7 @@ fn create_window(
             0,
             1,
             1,
-            Some(owner),
+            None,
             None,
             Some(instance.into()),
             None,
@@ -1007,8 +999,11 @@ fn target_frame_geometry(target: TargetGeometry) -> TargetFrameGeometry {
     }
 }
 
-pub(super) fn position_target_owned_overlay(
+/// Keep the overlay immediately above the exact target without joining its
+/// accessibility tree or entering the global topmost band.
+pub(super) fn position_target_scoped_overlay(
     window: HWND,
+    target: HWND,
     x: i32,
     y: i32,
     width: i32,
@@ -1017,18 +1012,34 @@ pub(super) fn position_target_owned_overlay(
     unsafe {
         SetWindowPos(
             window,
-            None,
+            Some(HWND_NOTOPMOST),
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER,
+        )?;
+        let previous = GetWindow(target, GW_HWNDPREV).unwrap_or(HWND(core::ptr::null_mut()));
+        let insert_after = if previous.0.is_null() {
+            HWND_TOP
+        } else {
+            previous
+        };
+        SetWindowPos(
+            window,
+            Some(insert_after),
             x,
             y,
             width,
             height,
-            SWP_NOACTIVATE | SWP_NOZORDER | SWP_SHOWWINDOW,
+            SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_NOOWNERZORDER,
         )
     }
 }
 
 fn position_banner(
     window: HWND,
+    target: HWND,
     geometry: BannerGeometry,
     update_shape: bool,
 ) -> Result<(), IndicatorError> {
@@ -1056,8 +1067,9 @@ fn position_banner(
             ));
         }
     }
-    position_target_owned_overlay(
+    position_target_scoped_overlay(
         window,
+        target,
         geometry.x,
         geometry.y,
         geometry.width,
@@ -1074,6 +1086,7 @@ fn position_banner(
 
 fn position_target_frame(
     window: HWND,
+    target: HWND,
     geometry: TargetFrameGeometry,
     band: usize,
     update_shape: bool,
@@ -1117,8 +1130,9 @@ fn position_target_frame(
             ));
         }
     }
-    position_target_owned_overlay(
+    position_target_scoped_overlay(
         window,
+        target,
         geometry.x,
         geometry.y,
         geometry.width,
@@ -1139,7 +1153,7 @@ unsafe extern "system" fn frame_window_proc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
-    if let Some(result) = overlay_message_result(message) {
+    if let Some(result) = overlay_input_result(message) {
         return result;
     }
     if message != WM_PAINT {
@@ -1164,7 +1178,7 @@ unsafe extern "system" fn window_proc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
-    if let Some(result) = overlay_message_result(message) {
+    if let Some(result) = overlay_input_result(message) {
         return result;
     }
     if message != WM_PAINT {
@@ -1222,9 +1236,8 @@ unsafe extern "system" fn window_proc(
     LRESULT(0)
 }
 
-pub(super) fn overlay_message_result(message: u32) -> Option<LRESULT> {
+pub(super) fn overlay_input_result(message: u32) -> Option<LRESULT> {
     match message {
-        WM_GETOBJECT => Some(LRESULT(0)),
         WM_NCHITTEST => Some(LRESULT(HTTRANSPARENT as isize)),
         WM_MOUSEACTIVATE => Some(LRESULT(MA_NOACTIVATE as isize)),
         _ => None,

@@ -4,18 +4,15 @@ use super::*;
 
 #[cfg(windows)]
 #[rstest]
-fn native_overlays_are_noninteractive_and_excluded_from_uia() {
-    use windows::Win32::UI::WindowsAndMessaging::WM_GETOBJECT;
-
-    assert_eq!(platform::overlay_message_result(0x0084).unwrap().0, -1);
-    assert_eq!(platform::overlay_message_result(0x0021).unwrap().0, 3);
-    assert_eq!(platform::overlay_message_result(WM_GETOBJECT).unwrap().0, 0);
-    assert!(platform::overlay_message_result(0x000f).is_none());
+fn native_overlays_are_hit_test_transparent_and_never_activate() {
+    assert_eq!(platform::overlay_input_result(0x0084).unwrap().0, -1);
+    assert_eq!(platform::overlay_input_result(0x0021).unwrap().0, 3);
+    assert!(platform::overlay_input_result(0x000f).is_none());
 }
 
 #[cfg(windows)]
 #[rstest]
-fn exact_target_foreground_uses_target_owned_overlay_policy() {
+fn exact_target_foreground_uses_target_scoped_overlay_policy() {
     let policy =
         platform::target_presentation_policy(true, false, 0x100, 0x100, Some(0x100), Some(0x100));
 
@@ -47,18 +44,18 @@ fn unrelated_foreground_keeps_the_indicator_behind_that_window() {
 
     assert_eq!(
         policy,
-        platform::TargetPresentationPolicy::TargetOwnedBehindUnrelatedForeground
+        platform::TargetPresentationPolicy::TargetScopedBehindUnrelatedForeground
     );
     assert!(policy.is_visible());
 }
 
 #[cfg(windows)]
 #[rstest]
-fn native_overlay_is_owned_by_the_exact_target_without_global_topmost() {
+fn native_overlay_tracks_the_exact_target_without_global_topmost() {
     use windows::Win32::Foundation::HWND;
     use windows::Win32::UI::WindowsAndMessaging::{
-        CreateWindowExW, DestroyWindow, GW_OWNER, GWL_EXSTYLE, GetWindow, GetWindowLongPtrW,
-        WINDOW_EX_STYLE, WINDOW_STYLE, WS_EX_TOPMOST, WS_POPUP,
+        CreateWindowExW, DestroyWindow, GW_HWNDNEXT, GW_OWNER, GWL_EXSTYLE, GetWindow,
+        GetWindowLongPtrW, WINDOW_EX_STYLE, WINDOW_STYLE, WS_EX_TOPMOST, WS_POPUP,
     };
     use windows::core::w;
 
@@ -89,17 +86,19 @@ fn native_overlay_is_owned_by_the_exact_target_without_global_topmost() {
         }
         .expect("create an isolated Win32 target window"),
     );
-    let overlay = TestWindow(
-        platform::create_frame_overlay(target.0)
-            .expect("create an overlay owned by the isolated target"),
-    );
-    platform::position_target_owned_overlay(overlay.0, 4, 4, 48, 48)
-        .expect("position the target-owned overlay without changing its z-order");
+    let overlay = TestWindow(platform::create_frame_overlay().expect("create an isolated overlay"));
+    platform::position_target_scoped_overlay(overlay.0, target.0, 4, 4, 48, 48)
+        .expect("position the overlay directly above the exact target");
 
+    let owner = unsafe { GetWindow(overlay.0, GW_OWNER) }.unwrap_or(HWND(core::ptr::null_mut()));
+    assert!(
+        owner.0.is_null(),
+        "the overlay must not become part of the target accessibility tree",
+    );
     assert_eq!(
-        unsafe { GetWindow(overlay.0, GW_OWNER) }.expect("read overlay owner"),
+        unsafe { GetWindow(overlay.0, GW_HWNDNEXT) }.expect("read overlay z-order successor"),
         target.0,
-        "the exact granted target HWND must own the overlay",
+        "the exact granted target HWND must remain directly below the overlay",
     );
     let ex_style = unsafe { GetWindowLongPtrW(overlay.0, GWL_EXSTYLE) } as u32;
     assert_eq!(
