@@ -710,17 +710,25 @@ async fn host_jsonl_inner(
                 let request_id = request
                     .request_id
                     .unwrap_or_else(|| format!("host-jsonl-{request_index}"));
-                metadata.push(request_index);
+                metadata.push((request_index, request.method.clone()));
                 requests.push((request_id, request.method, request.params));
             }
             let host_results = connection
                 .client_mut()
                 .request_batch_with_ids_all(requests)
                 .await?;
-            for (request_index, host_result) in metadata.into_iter().zip(host_results) {
+            for ((request_index, request_method), host_result) in
+                metadata.into_iter().zip(host_results)
+            {
                 let response = match host_result {
                     Ok(response) => {
-                        match jsonl_response_value(response, output_dir.as_deref(), request_index) {
+                        match measured_jsonl_response_value(
+                            response,
+                            output_dir.as_deref(),
+                            request_index,
+                            metrics,
+                            &request_method,
+                        ) {
                             Ok(value) => value,
                             Err(error) => {
                                 write_jsonl_response(
@@ -737,10 +745,15 @@ async fn host_jsonl_inner(
                             }
                         }
                     }
-                    Err(error @ HostClientError::Remote { .. }) => host_error_value(&error),
+                    Err(error @ HostClientError::Remote { .. }) => {
+                        let value = host_error_value(&error);
+                        metrics.record_response(&request_method, &value);
+                        value
+                    }
                     Err(error) => {
-                        write_jsonl_response(&mut output, host_error_value(&error), metrics)
-                            .await?;
+                        let value = host_error_value(&error);
+                        metrics.record_response(&request_method, &value);
+                        write_jsonl_response(&mut output, value, metrics).await?;
                         return Err(error.into());
                     }
                 };
@@ -749,6 +762,7 @@ async fn host_jsonl_inner(
             continue;
         }
 
+        let request_method = request.method.clone();
         let host_result = match request.request_id {
             Some(request_id) => {
                 connection
@@ -764,8 +778,13 @@ async fn host_jsonl_inner(
             }
         };
         let response = match host_result {
-            Ok(response) => match jsonl_response_value(response, output_dir.as_deref(), line_index)
-            {
+            Ok(response) => match measured_jsonl_response_value(
+                response,
+                output_dir.as_deref(),
+                line_index,
+                metrics,
+                &request_method,
+            ) {
                 Ok(value) => value,
                 Err(error) => {
                     write_jsonl_response(
@@ -781,9 +800,15 @@ async fn host_jsonl_inner(
                     return Err(error);
                 }
             },
-            Err(error @ HostClientError::Remote { .. }) => host_error_value(&error),
+            Err(error @ HostClientError::Remote { .. }) => {
+                let value = host_error_value(&error);
+                metrics.record_response(&request_method, &value);
+                value
+            }
             Err(error) => {
-                write_jsonl_response(&mut output, host_error_value(&error), metrics).await?;
+                let value = host_error_value(&error);
+                metrics.record_response(&request_method, &value);
+                write_jsonl_response(&mut output, value, metrics).await?;
                 return Err(error.into());
             }
         };
@@ -799,16 +824,42 @@ struct JsonlRequest {
     params: serde_json::Value,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct HostJsonlImageMetrics {
+    images_total: u64,
+    pixels_total: u64,
+    encoded_bytes_total: u64,
+    unknown_dimensions_total: u64,
+}
+
+struct JsonlResponseOutput {
+    value: serde_json::Value,
+    image_metrics: HostJsonlImageMetrics,
+}
+
 #[derive(Debug, Default)]
 struct HostJsonlMetrics {
     input_lines_total: u64,
     requests_total: u64,
     action_requests_total: u64,
+    action_attempts_total: u64,
+    action_succeeded_total: u64,
+    action_rejected_total: u64,
     post_action_snapshot_requests_total: u64,
+    visual_observation_requests_total: u64,
+    semantic_observation_requests_total: u64,
+    post_action_observation_requests_total: u64,
     standalone_snapshot_requests_total: u64,
     errors_total: u64,
     json_input_bytes: u64,
     json_output_bytes: u64,
+    image_outputs_total: u64,
+    image_pixels_total: u64,
+    image_encoded_bytes_total: u64,
+    image_unknown_dimensions_total: u64,
+    live_observation_start_requests_total: u64,
+    live_observation_stop_requests_total: u64,
+    live_observation_final_states_total: u64,
     methods: BTreeMap<String, u64>,
     action_kinds: BTreeMap<String, u64>,
     error_codes: BTreeMap<String, u64>,
@@ -824,11 +875,24 @@ struct HostJsonlMetricsReport<'a> {
     input_lines_total: u64,
     requests_total: u64,
     action_requests_total: u64,
+    action_attempts_total: u64,
+    action_succeeded_total: u64,
+    action_rejected_total: u64,
     post_action_snapshot_requests_total: u64,
+    visual_observation_requests_total: u64,
+    semantic_observation_requests_total: u64,
+    post_action_observation_requests_total: u64,
     standalone_snapshot_requests_total: u64,
     errors_total: u64,
     json_input_bytes: u64,
     json_output_bytes: u64,
+    image_outputs_total: u64,
+    image_pixels_total: u64,
+    image_encoded_bytes_total: u64,
+    image_unknown_dimensions_total: u64,
+    live_observation_start_requests_total: u64,
+    live_observation_stop_requests_total: u64,
+    live_observation_final_states_total: u64,
     methods: &'a BTreeMap<String, u64>,
     action_kinds: &'a BTreeMap<String, u64>,
     error_codes: &'a BTreeMap<String, u64>,
@@ -885,6 +949,7 @@ impl HostJsonlMetrics {
         *self.methods.entry(request.method.clone()).or_default() += 1;
         if is_action_request(&request.method) {
             self.action_requests_total = self.action_requests_total.saturating_add(1);
+            self.action_attempts_total = self.action_attempts_total.saturating_add(1);
             if let Some(kind) = request
                 .params
                 .get("action")
@@ -894,19 +959,42 @@ impl HostJsonlMetrics {
                 *self.action_kinds.entry(kind.to_owned()).or_default() += 1;
             }
         }
-        if request.method == "execute_action"
-            && request
-                .params
-                .get("capture_after")
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(false)
+        if matches!(
+            request.method.as_str(),
+            "execute_action" | "execute_desktop_action"
+        ) && request
+            .params
+            .get("capture_after")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)
         {
             self.post_action_snapshot_requests_total =
                 self.post_action_snapshot_requests_total.saturating_add(1);
+            self.post_action_observation_requests_total = self
+                .post_action_observation_requests_total
+                .saturating_add(1);
+            self.visual_observation_requests_total =
+                self.visual_observation_requests_total.saturating_add(1);
         }
         if is_standalone_snapshot_request(&request.method) {
             self.standalone_snapshot_requests_total =
                 self.standalone_snapshot_requests_total.saturating_add(1);
+        }
+        if is_visual_observation_request(request) {
+            self.visual_observation_requests_total =
+                self.visual_observation_requests_total.saturating_add(1);
+        }
+        if is_semantic_observation_request(&request.method) {
+            self.semantic_observation_requests_total =
+                self.semantic_observation_requests_total.saturating_add(1);
+        }
+        if request.method == "live_observation_start" {
+            self.live_observation_start_requests_total =
+                self.live_observation_start_requests_total.saturating_add(1);
+        }
+        if request.method == "live_observation_stop" {
+            self.live_observation_stop_requests_total =
+                self.live_observation_stop_requests_total.saturating_add(1);
         }
     }
 
@@ -922,24 +1010,70 @@ impl HostJsonlMetrics {
         }
     }
 
+    fn record_response(&mut self, method: &str, value: &serde_json::Value) {
+        if is_action_request(method) {
+            if is_rejected_action_response(value) {
+                self.action_rejected_total = self.action_rejected_total.saturating_add(1);
+            } else {
+                self.action_succeeded_total = self.action_succeeded_total.saturating_add(1);
+            }
+        }
+        if method == "live_observation_stop"
+            && value.get("type").and_then(serde_json::Value::as_str)
+                == Some("live_observation_stopped")
+            && value
+                .get("result")
+                .and_then(|result| result.get("active"))
+                .and_then(serde_json::Value::as_bool)
+                == Some(false)
+        {
+            self.live_observation_final_states_total =
+                self.live_observation_final_states_total.saturating_add(1);
+        }
+    }
+
+    fn record_images(&mut self, images: HostJsonlImageMetrics) {
+        self.image_outputs_total = self.image_outputs_total.saturating_add(images.images_total);
+        self.image_pixels_total = self.image_pixels_total.saturating_add(images.pixels_total);
+        self.image_encoded_bytes_total = self
+            .image_encoded_bytes_total
+            .saturating_add(images.encoded_bytes_total);
+        self.image_unknown_dimensions_total = self
+            .image_unknown_dimensions_total
+            .saturating_add(images.unknown_dimensions_total);
+    }
+
     fn report(
         &self,
         run_status: HostJsonlRunStatus,
         elapsed: std::time::Duration,
     ) -> HostJsonlMetricsReport<'_> {
         HostJsonlMetricsReport {
-            schema: "dcc-cua.host-jsonl.metrics.v2",
+            schema: "dcc-cua.host-jsonl.metrics.v3",
             run_status,
             transport_success: run_status.transport_success(),
             elapsed_ms: elapsed.as_millis().try_into().unwrap_or(u64::MAX),
             input_lines_total: self.input_lines_total,
             requests_total: self.requests_total,
             action_requests_total: self.action_requests_total,
+            action_attempts_total: self.action_attempts_total,
+            action_succeeded_total: self.action_succeeded_total,
+            action_rejected_total: self.action_rejected_total,
             post_action_snapshot_requests_total: self.post_action_snapshot_requests_total,
+            visual_observation_requests_total: self.visual_observation_requests_total,
+            semantic_observation_requests_total: self.semantic_observation_requests_total,
+            post_action_observation_requests_total: self.post_action_observation_requests_total,
             standalone_snapshot_requests_total: self.standalone_snapshot_requests_total,
             errors_total: self.errors_total,
             json_input_bytes: self.json_input_bytes,
             json_output_bytes: self.json_output_bytes,
+            image_outputs_total: self.image_outputs_total,
+            image_pixels_total: self.image_pixels_total,
+            image_encoded_bytes_total: self.image_encoded_bytes_total,
+            image_unknown_dimensions_total: self.image_unknown_dimensions_total,
+            live_observation_start_requests_total: self.live_observation_start_requests_total,
+            live_observation_stop_requests_total: self.live_observation_stop_requests_total,
+            live_observation_final_states_total: self.live_observation_final_states_total,
             methods: &self.methods,
             action_kinds: &self.action_kinds,
             error_codes: &self.error_codes,
@@ -986,10 +1120,40 @@ fn is_action_request(method: &str) -> bool {
     )
 }
 
+fn is_rejected_action_response(value: &serde_json::Value) -> bool {
+    value.get("type").and_then(serde_json::Value::as_str) == Some("error")
+        || value.get("success").and_then(serde_json::Value::as_bool) == Some(false)
+}
+
 fn is_standalone_snapshot_request(method: &str) -> bool {
     matches!(
         method,
         "snapshot" | "desktop_snapshot" | "desktop_session_snapshot" | "browser_snapshot"
+    )
+}
+
+fn is_visual_observation_request(request: &JsonlRequest) -> bool {
+    is_standalone_snapshot_request(&request.method)
+        || request.method == "zoom"
+        || (request.method == "verify_state"
+            && request
+                .params
+                .get("include_screenshot")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false))
+}
+
+fn is_semantic_observation_request(method: &str) -> bool {
+    matches!(
+        method,
+        "accessibility_snapshot"
+            | "find"
+            | "get_session_state"
+            | "get_input_state"
+            | "poll_session_events"
+            | "get_window_state"
+            | "verify_state"
+            | "wait_for"
     )
 }
 
@@ -1014,11 +1178,24 @@ fn write_host_jsonl_metrics(
         "input_lines_total": report.input_lines_total,
         "requests_total": report.requests_total,
         "action_requests_total": report.action_requests_total,
+        "action_attempts_total": report.action_attempts_total,
+        "action_succeeded_total": report.action_succeeded_total,
+        "action_rejected_total": report.action_rejected_total,
         "post_action_snapshot_requests_total": report.post_action_snapshot_requests_total,
+        "visual_observation_requests_total": report.visual_observation_requests_total,
+        "semantic_observation_requests_total": report.semantic_observation_requests_total,
+        "post_action_observation_requests_total": report.post_action_observation_requests_total,
         "standalone_snapshot_requests_total": report.standalone_snapshot_requests_total,
         "errors_total": report.errors_total,
         "json_input_bytes": report.json_input_bytes,
         "json_output_bytes": report.json_output_bytes,
+        "image_outputs_total": report.image_outputs_total,
+        "image_pixels_total": report.image_pixels_total,
+        "image_encoded_bytes_total": report.image_encoded_bytes_total,
+        "image_unknown_dimensions_total": report.image_unknown_dimensions_total,
+        "live_observation_start_requests_total": report.live_observation_start_requests_total,
+        "live_observation_stop_requests_total": report.live_observation_stop_requests_total,
+        "live_observation_final_states_total": report.live_observation_final_states_total,
         "methods": report.methods,
         "action_kinds": report.action_kinds,
         "error_codes": report.error_codes,
@@ -1116,11 +1293,24 @@ fn parse_jsonl_request(line: &str) -> Result<JsonlRequest, String> {
     })
 }
 
-fn jsonl_response_value(
+fn measured_jsonl_response_value(
     response: HostResponse,
     output_dir: Option<&str>,
     index: usize,
+    metrics: &mut HostJsonlMetrics,
+    request_method: &str,
 ) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    metrics.record_response(request_method, &response.value);
+    let output = jsonl_response_value_with_metrics(response, output_dir, index)?;
+    metrics.record_images(output.image_metrics);
+    Ok(output.value)
+}
+
+fn jsonl_response_value_with_metrics(
+    response: HostResponse,
+    output_dir: Option<&str>,
+    index: usize,
+) -> Result<JsonlResponseOutput, Box<dyn std::error::Error>> {
     let mut value = response.value;
     let shared_image = value
         .get("image")
@@ -1133,6 +1323,7 @@ fn jsonl_response_value(
         }
         None => None,
     };
+    let image_metrics = response_image_metrics(&value, bytes.as_deref());
     if let Some(bytes) = bytes {
         let directory = output_dir.ok_or(
             "JSONL response contains image bytes; pass --output-dir or negotiate shared_memory",
@@ -1141,7 +1332,80 @@ fn jsonl_response_value(
         fs::write(&path, bytes)?;
         value["_dcc_cua_binary_output"] = json!(path);
     }
-    Ok(value)
+    Ok(JsonlResponseOutput {
+        value,
+        image_metrics,
+    })
+}
+
+fn response_image_metrics(
+    value: &serde_json::Value,
+    bytes: Option<&[u8]>,
+) -> HostJsonlImageMetrics {
+    let Some(bytes) = bytes else {
+        return HostJsonlImageMetrics::default();
+    };
+    let mut metrics = HostJsonlImageMetrics::default();
+    let attachments = value
+        .get("attachments")
+        .and_then(serde_json::Value::as_array);
+    if let Some(attachments) = attachments.filter(|attachments| !attachments.is_empty()) {
+        for attachment in attachments {
+            let Some(offset) = attachment
+                .get("offset")
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|offset| usize::try_from(offset).ok())
+            else {
+                continue;
+            };
+            let Some(length) = attachment
+                .get("length")
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|length| usize::try_from(length).ok())
+            else {
+                continue;
+            };
+            let Some(end) = offset.checked_add(length) else {
+                continue;
+            };
+            let Some(image) = bytes.get(offset..end) else {
+                continue;
+            };
+            record_encoded_image(&mut metrics, image);
+        }
+    } else if value.get("image").is_some() {
+        let length = value["image"]
+            .get("length")
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|length| usize::try_from(length).ok())
+            .unwrap_or(bytes.len());
+        if let Some(image) = bytes.get(..length) {
+            record_encoded_image(&mut metrics, image);
+        }
+    }
+    metrics
+}
+
+fn record_encoded_image(metrics: &mut HostJsonlImageMetrics, image: &[u8]) {
+    metrics.images_total = metrics.images_total.saturating_add(1);
+    metrics.encoded_bytes_total = metrics
+        .encoded_bytes_total
+        .saturating_add(image.len().try_into().unwrap_or(u64::MAX));
+    if let Some(pixels) = png_pixel_count(image) {
+        metrics.pixels_total = metrics.pixels_total.saturating_add(pixels);
+    } else {
+        metrics.unknown_dimensions_total = metrics.unknown_dimensions_total.saturating_add(1);
+    }
+}
+
+fn png_pixel_count(image: &[u8]) -> Option<u64> {
+    const PNG_SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
+    if image.len() < 24 || image.get(..8)? != PNG_SIGNATURE || image.get(12..16)? != b"IHDR" {
+        return None;
+    }
+    let width = u32::from_be_bytes(image.get(16..20)?.try_into().ok()?);
+    let height = u32::from_be_bytes(image.get(20..24)?.try_into().ok()?);
+    u64::from(width).checked_mul(u64::from(height))
 }
 
 fn host_error_value(error: &HostClientError) -> serde_json::Value {

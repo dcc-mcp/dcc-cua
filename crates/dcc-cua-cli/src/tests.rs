@@ -8,6 +8,52 @@ use super::actions::{
 use super::authorization::{existing_profile_grant_requested, host_private_worker_options};
 use super::*;
 
+#[test]
+fn input_state_methods_are_counted_as_nonvisual_semantic_observations() {
+    assert!(is_semantic_observation_request("get_input_state"));
+    assert!(is_semantic_observation_request("poll_session_events"));
+    assert!(!is_action_request("poll_session_events"));
+}
+
+#[test]
+fn manifest_advertises_the_session_input_event_contract() {
+    let manifest = manifest::document();
+    let events = &manifest["host"]["session_events"];
+    assert_eq!(events["state_method"], "get_input_state");
+    assert_eq!(events["poll_method"], "poll_session_events");
+    assert_eq!(
+        events["max_poll_timeout_ms"],
+        dcc_cua_host::MAX_SESSION_EVENT_POLL_TIMEOUT_MS
+    );
+    assert_eq!(
+        events["queue_capacity"],
+        dcc_cua_host::MAX_SESSION_INPUT_EVENTS
+    );
+    assert_eq!(events["recovery_notifies_only"], true);
+    assert_eq!(events["automatic_input"], false);
+    assert_eq!(
+        events["state_components"],
+        json!(["interactive_input", "target_window"])
+    );
+    assert_eq!(events["cursor_field"], "latest_sequence");
+    assert_eq!(events["component_sequence"], "last_transition");
+    assert_eq!(
+        events["target_event_types"],
+        json!([
+            "target_minimized",
+            "target_restored",
+            "target_unavailable",
+            "target_available"
+        ])
+    );
+    assert_eq!(events["target_recovery"]["operation"], "restore_activate");
+    assert_eq!(
+        events["target_recovery"]["exact_grant_binding_required"],
+        true
+    );
+    assert_eq!(events["target_recovery"]["blind_retry"], false);
+}
+
 #[rstest]
 #[case("help", &[])]
 #[case("--help", &[])]
@@ -242,7 +288,9 @@ fn jsonl_response_writes_host_owned_shared_memory() {
             .as_nanos()
     ));
     std::fs::create_dir_all(&output_dir).unwrap();
-    let value = jsonl_response_value(response, output_dir.to_str(), 7).unwrap();
+    let value = jsonl_response_value_with_metrics(response, output_dir.to_str(), 7)
+        .unwrap()
+        .value;
     let output = output_dir.join("response-7.bin");
     assert_eq!(std::fs::read(&output).unwrap(), b"png");
     assert_eq!(
@@ -252,6 +300,108 @@ fn jsonl_response_writes_host_owned_shared_memory() {
         output.canonicalize().unwrap()
     );
     std::fs::remove_dir_all(output_dir).unwrap();
+}
+
+#[rstest]
+fn host_jsonl_metrics_charge_binary_and_shared_memory_images_equally() {
+    let png = [
+        137, 80, 78, 71, 13, 10, 26, 10, // PNG signature
+        0, 0, 0, 13, b'I', b'H', b'D', b'R', // IHDR
+        0, 0, 0, 3, 0, 0, 0, 2, // 3 x 2 pixels
+    ];
+    let binary = HostResponse {
+        value: json!({
+            "type": "snapshot",
+            "image": {
+                "encoding": "binary_frame",
+                "length": png.len(),
+                "mime_type": "image/png"
+            }
+        }),
+        binary_attachment: Some(png.to_vec()),
+    };
+    let shared_image = dcc_cua_shm::SharedImage::from_bytes(&png, "image/png").unwrap();
+    let mut descriptor = serde_json::to_value(shared_image.descriptor()).unwrap();
+    descriptor["encoding"] = json!("shared_memory");
+    let shared = HostResponse {
+        value: json!({"type": "snapshot", "image": descriptor}),
+        binary_attachment: None,
+    };
+    let output_dir = tempfile::tempdir().unwrap();
+
+    let mut binary_metrics = HostJsonlMetrics::default();
+    measured_jsonl_response_value(
+        binary,
+        output_dir.path().to_str(),
+        1,
+        &mut binary_metrics,
+        "snapshot",
+    )
+    .unwrap();
+    let mut shared_metrics = HostJsonlMetrics::default();
+    measured_jsonl_response_value(
+        shared,
+        output_dir.path().to_str(),
+        2,
+        &mut shared_metrics,
+        "snapshot",
+    )
+    .unwrap();
+    let binary_report =
+        binary_metrics.report(HostJsonlRunStatus::Succeeded, std::time::Duration::ZERO);
+    let shared_report =
+        shared_metrics.report(HostJsonlRunStatus::Succeeded, std::time::Duration::ZERO);
+
+    assert_eq!(
+        binary_report.image_outputs_total,
+        shared_report.image_outputs_total
+    );
+    assert_eq!(
+        binary_report.image_pixels_total,
+        shared_report.image_pixels_total
+    );
+    assert_eq!(
+        binary_report.image_encoded_bytes_total,
+        shared_report.image_encoded_bytes_total
+    );
+    assert_eq!(binary_report.image_outputs_total, 1);
+    assert_eq!(binary_report.image_pixels_total, 6);
+    assert_eq!(binary_report.image_encoded_bytes_total, png.len() as u64);
+    assert_eq!(binary_report.image_unknown_dimensions_total, 0);
+    assert_eq!(shared_report.image_unknown_dimensions_total, 0);
+}
+
+#[rstest]
+fn host_jsonl_metrics_count_images_with_unknown_dimensions() {
+    let jpeg = [0xff, 0xd8, 0xff, 0xd9];
+    let response = HostResponse {
+        value: json!({
+            "type": "snapshot",
+            "image": {
+                "encoding": "binary_frame",
+                "length": jpeg.len(),
+                "mime_type": "image/jpeg"
+            }
+        }),
+        binary_attachment: Some(jpeg.to_vec()),
+    };
+    let output_dir = tempfile::tempdir().unwrap();
+    let mut metrics = HostJsonlMetrics::default();
+
+    measured_jsonl_response_value(
+        response,
+        output_dir.path().to_str(),
+        1,
+        &mut metrics,
+        "snapshot",
+    )
+    .unwrap();
+    let report = metrics.report(HostJsonlRunStatus::Succeeded, std::time::Duration::ZERO);
+
+    assert_eq!(report.image_outputs_total, 1);
+    assert_eq!(report.image_pixels_total, 0);
+    assert_eq!(report.image_encoded_bytes_total, jpeg.len() as u64);
+    assert_eq!(report.image_unknown_dimensions_total, 1);
 }
 
 #[rstest]
@@ -374,7 +524,7 @@ fn parallel_discovery_is_limited_to_stateless_methods() {
 }
 
 #[rstest]
-fn host_jsonl_metrics_separate_decisions_from_observation_cost() {
+fn host_jsonl_metrics_separate_actions_from_observation_cost() {
     let mut metrics = HostJsonlMetrics::default();
     let action =
         parse_jsonl_request(r#"{"method":"execute_action","params":{"capture_after":true}}"#)
@@ -401,6 +551,139 @@ fn host_jsonl_metrics_separate_decisions_from_observation_cost() {
 }
 
 #[rstest]
+fn host_jsonl_metrics_count_capture_after_as_a_visual_observation_request() {
+    let mut metrics = HostJsonlMetrics::default();
+    let request = parse_jsonl_request(
+        r#"{"method":"execute_action","params":{"capture_after":true,"action":{"action":"click"}}}"#,
+    )
+    .unwrap();
+
+    metrics.record_request(&request);
+    let report = metrics.report(
+        HostJsonlRunStatus::Succeeded,
+        std::time::Duration::from_millis(10),
+    );
+
+    assert_eq!(report.action_attempts_total, 1);
+    assert_eq!(report.visual_observation_requests_total, 1);
+    assert_eq!(report.semantic_observation_requests_total, 0);
+    assert_eq!(report.post_action_observation_requests_total, 1);
+}
+
+#[rstest]
+fn host_jsonl_metrics_count_desktop_capture_after_as_a_visual_observation_request() {
+    let mut metrics = HostJsonlMetrics::default();
+    let request = parse_jsonl_request(
+        r#"{"method":"execute_desktop_action","params":{"capture_after":true,"action":{"action":"click"}}}"#,
+    )
+    .unwrap();
+
+    metrics.record_request(&request);
+    let report = metrics.report(HostJsonlRunStatus::Succeeded, std::time::Duration::ZERO);
+
+    assert_eq!(report.action_attempts_total, 1);
+    assert_eq!(report.visual_observation_requests_total, 1);
+    assert_eq!(report.post_action_observation_requests_total, 1);
+    assert_eq!(report.post_action_snapshot_requests_total, 1);
+}
+
+#[rstest]
+fn host_jsonl_metrics_count_failed_actions_as_attempted_and_rejected() {
+    let request = parse_jsonl_request(
+        r#"{"method":"execute_action","params":{"action":{"action":"click"}}}"#,
+    )
+    .unwrap();
+
+    for response in [
+        json!({"type": "error", "code": "stale_observation"}),
+        json!({
+            "type": "action_completed",
+            "success": false,
+            "error": "approval_required"
+        }),
+    ] {
+        let mut metrics = HostJsonlMetrics::default();
+        metrics.record_request(&request);
+        metrics.record_response(&request.method, &response);
+        let report = metrics.report(HostJsonlRunStatus::Failed, std::time::Duration::ZERO);
+
+        assert_eq!(report.action_attempts_total, 1);
+        assert_eq!(report.action_succeeded_total, 0);
+        assert_eq!(report.action_rejected_total, 1);
+    }
+}
+
+#[rstest]
+fn host_jsonl_metrics_count_successful_action_responses() {
+    let mut metrics = HostJsonlMetrics::default();
+    let request = parse_jsonl_request(
+        r#"{"method":"execute_action","params":{"action":{"action":"click"}}}"#,
+    )
+    .unwrap();
+    metrics.record_request(&request);
+
+    measured_jsonl_response_value(
+        HostResponse {
+            value: json!({"type": "action_completed", "success": true}),
+            binary_attachment: None,
+        },
+        None,
+        0,
+        &mut metrics,
+        &request.method,
+    )
+    .unwrap();
+    let report = metrics.report(HostJsonlRunStatus::Succeeded, std::time::Duration::ZERO);
+
+    assert_eq!(report.action_attempts_total, 1);
+    assert_eq!(report.action_succeeded_total, 1);
+    assert_eq!(report.action_rejected_total, 0);
+}
+
+#[rstest]
+fn host_jsonl_metrics_count_live_observation_lifecycle_and_final_state() {
+    let mut metrics = HostJsonlMetrics::default();
+    let start = parse_jsonl_request(r#"{"method":"live_observation_start","params":{}}"#).unwrap();
+    let stop = parse_jsonl_request(r#"{"method":"live_observation_stop","params":{}}"#).unwrap();
+
+    metrics.record_request(&start);
+    metrics.record_response(
+        &start.method,
+        &json!({"type": "live_observation_started", "result": {"active": true}}),
+    );
+    metrics.record_request(&stop);
+    metrics.record_response(
+        &stop.method,
+        &json!({"type": "live_observation_stopped", "result": {"active": false}}),
+    );
+    let report = metrics.report(HostJsonlRunStatus::Succeeded, std::time::Duration::ZERO);
+
+    assert_eq!(report.live_observation_start_requests_total, 1);
+    assert_eq!(report.live_observation_stop_requests_total, 1);
+    assert_eq!(report.live_observation_final_states_total, 1);
+}
+
+#[rstest]
+fn host_jsonl_metrics_separate_semantic_and_visual_observation_requests() {
+    let mut metrics = HostJsonlMetrics::default();
+    let semantic =
+        parse_jsonl_request(r#"{"method":"accessibility_snapshot","params":{}}"#).unwrap();
+    let visual = parse_jsonl_request(r#"{"method":"zoom","params":{}}"#).unwrap();
+    let verified_with_image =
+        parse_jsonl_request(r#"{"method":"verify_state","params":{"include_screenshot":true}}"#)
+            .unwrap();
+
+    metrics.record_request(&semantic);
+    metrics.record_request(&visual);
+    metrics.record_request(&verified_with_image);
+    let report = metrics.report(HostJsonlRunStatus::Succeeded, std::time::Duration::ZERO);
+
+    assert_eq!(report.semantic_observation_requests_total, 2);
+    assert_eq!(report.visual_observation_requests_total, 2);
+    assert_eq!(report.post_action_observation_requests_total, 0);
+}
+
+#[rstest]
 fn host_jsonl_metrics_count_protocol_errors_without_claiming_task_failure() {
     let mut metrics = HostJsonlMetrics::default();
     metrics.record_output(&json!({"type": "error", "code": "invalid_request"}), 52);
@@ -408,7 +691,7 @@ fn host_jsonl_metrics_count_protocol_errors_without_claiming_task_failure() {
     assert_eq!(report.transport_success, Some(false));
     assert_eq!(report.errors_total, 1);
     assert_eq!(report.error_codes["invalid_request"], 1);
-    assert_eq!(report.schema, "dcc-cua.host-jsonl.metrics.v2");
+    assert_eq!(report.schema, "dcc-cua.host-jsonl.metrics.v3");
 }
 
 #[rstest]
@@ -437,10 +720,23 @@ fn host_jsonl_metrics_checkpoint_is_readable_before_eof() {
 
     let running: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-    assert_eq!(running["schema"], "dcc-cua.host-jsonl.metrics.v2");
+    assert_eq!(running["schema"], "dcc-cua.host-jsonl.metrics.v3");
     assert_eq!(running["run_status"], "running");
     assert!(running["transport_success"].is_null());
     assert_eq!(running["requests_total"], 0);
+    assert_eq!(running["action_attempts_total"], 0);
+    assert_eq!(running["action_succeeded_total"], 0);
+    assert_eq!(running["action_rejected_total"], 0);
+    assert_eq!(running["visual_observation_requests_total"], 0);
+    assert_eq!(running["semantic_observation_requests_total"], 0);
+    assert_eq!(running["post_action_observation_requests_total"], 0);
+    assert_eq!(running["image_outputs_total"], 0);
+    assert_eq!(running["image_pixels_total"], 0);
+    assert_eq!(running["image_encoded_bytes_total"], 0);
+    assert_eq!(running["image_unknown_dimensions_total"], 0);
+    assert_eq!(running["live_observation_start_requests_total"], 0);
+    assert_eq!(running["live_observation_stop_requests_total"], 0);
+    assert_eq!(running["live_observation_final_states_total"], 0);
 
     let request = parse_jsonl_request(r#"{"method":"snapshot","params":{}}"#).unwrap();
     metrics.record_request(&request);
@@ -451,6 +747,7 @@ fn host_jsonl_metrics_checkpoint_is_readable_before_eof() {
     assert_eq!(updated["run_status"], "running");
     assert_eq!(updated["requests_total"], 1);
     assert_eq!(updated["standalone_snapshot_requests_total"], 1);
+    assert_eq!(updated["visual_observation_requests_total"], 1);
     assert_eq!(updated["action_kinds"], json!({}));
     assert_eq!(updated["error_codes"], json!({}));
 

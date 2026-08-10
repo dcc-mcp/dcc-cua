@@ -1111,6 +1111,7 @@ version = "0.3.0"
 dependencies = [
  "dcc-cua-workspace-hack",
  "rstest",
+ "serde",
  "serde_json",
  "thiserror 2.0.19",
  "uuid",

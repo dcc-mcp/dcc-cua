@@ -262,7 +262,7 @@ fn resolve_windows_target(
     let pid = windows_window_process_id(window_id)?;
     if scope.process_id.is_some_and(|expected| expected != pid) {
         return Err(ComputerUseError::new(
-            ComputerUseErrorCode::InvalidTarget,
+            ComputerUseErrorCode::TargetUnavailable,
             "native window process identity changed",
         ));
     }
@@ -274,7 +274,7 @@ fn resolve_windows_target(
         .is_some_and(|expected| expected != title)
     {
         return Err(ComputerUseError::new(
-            ComputerUseErrorCode::InvalidTarget,
+            ComputerUseErrorCode::TargetUnavailable,
             "native window title identity changed",
         ));
     }

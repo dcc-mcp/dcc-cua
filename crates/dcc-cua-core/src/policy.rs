@@ -514,6 +514,25 @@ pub(crate) fn validate_action(action: &ComputerUseAction) -> ComputerUseResult<(
             "delivery_mode must be background or foreground",
         ));
     }
+    if action
+        .input_backend_id
+        .as_deref()
+        .is_some_and(|backend_id| {
+            backend_id.is_empty()
+                || backend_id.len() > MAX_INPUT_BACKEND_ID_CHARS
+                || backend_id.split('.').any(|segment| {
+                    segment.is_empty()
+                        || !segment.bytes().all(|byte| {
+                            byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_'
+                        })
+                })
+        })
+    {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::InvalidAction,
+            "input_backend_id must be a lowercase dotted identifier of at most 64 characters",
+        ));
+    }
     if action.action == "scroll" {
         validate_scroll(action)?;
     } else if action.scroll_x.is_some() || action.scroll_y.is_some() || action.scroll_by.is_some() {
@@ -1107,6 +1126,14 @@ fn classify_driver_failure(
     let lower = format!("{code} {message}").to_ascii_lowercase();
     if lower.contains("interrupt") || lower.contains("user_interrupted") {
         ComputerUseErrorCode::UserInterrupted
+    } else if lower.contains("interactive_desktop_unavailable")
+        || lower.contains("input_gate_stage=")
+    {
+        ComputerUseErrorCode::InteractiveDesktopUnavailable
+    } else if lower.contains("target_minimized") {
+        ComputerUseErrorCode::TargetMinimized
+    } else if lower.contains("target_unavailable") || lower.contains("missing_window") {
+        ComputerUseErrorCode::TargetUnavailable
     } else if lower.contains("browser_") || lower.contains("browser") {
         ComputerUseErrorCode::BrowserRefused
     } else if lower.contains("clipboard") {

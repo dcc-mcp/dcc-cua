@@ -9,12 +9,12 @@ impl ComputerUseSession {
     ) -> ComputerUseResult<Value> {
         request.validate()?;
         self.ensure_active()?;
-        let target = self.revalidate_target().await?;
+        let target = self.preflight_mutating_bound_tool().await?;
 
         // The backend may mutate before a timeout or partial result is observed.
-        self.observation = None;
+        self.invalidate_action_observations();
         let result = self
-            .call_bound_tool(
+            .call_bound_tool_without_refresh(
                 "set_window_frame",
                 json!({
                     "pid": target.pid,
@@ -25,10 +25,12 @@ impl ComputerUseSession {
                     "height": request.height,
                 }),
             )
-            .await?;
+            .await;
+        let result = self.finish_observation_sensitive_attempt(result)?;
         let effect = validated_action_effect(&result, "set_window_frame")?;
         let result = native_tool_result(result)?;
-        let target = self.revalidate_target().await?;
+        let target = self.require_observed_target_available().await?;
+        self.require_observed_input_available()?;
         self.target = Some(target.clone());
         let success = effect == "confirmed";
 

@@ -11,14 +11,19 @@ use serde_json::{Value, json};
 use uuid::Uuid;
 use windows_sys::Win32::{
     System::Threading::{AttachThreadInput, GetCurrentThreadId},
-    UI::WindowsAndMessaging::{
-        BringWindowToTop, GetForegroundWindow, GetWindowThreadProcessId, IsWindow,
-        SetForegroundWindow,
+    UI::{
+        Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON, VK_MBUTTON, VK_RBUTTON},
+        WindowsAndMessaging::{
+            BringWindowToTop, GUITHREADINFO, GetForegroundWindow, GetGUIThreadInfo,
+            GetWindowThreadProcessId, IsIconic, IsWindow, IsWindowVisible, SW_RESTORE,
+            SetForegroundWindow, ShowWindowAsync,
+        },
     },
 };
 
 use crate::{
-    UiaAction, UiaError, UiaTarget,
+    UiaAction, UiaError, UiaTarget, WindowsForegroundRelation, WindowsPointerButton,
+    WindowsRawInputSnapshot, WindowsWindowIdentity,
     snapshot::{ElementFence, SnapshotState, normalize, resolve_index},
 };
 
@@ -27,6 +32,85 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 const STDERR_LIMIT: u64 = 64 * 1024;
 const BACKEND: &str = include_str!("../assets/windows_uia_backend.ps1");
 const HELPERS: &str = include_str!("../assets/windows_uia_helpers.ps1");
+
+fn live_window_identity(
+    window_handle: windows_sys::Win32::Foundation::HWND,
+) -> Option<WindowsWindowIdentity> {
+    if window_handle.is_null() || unsafe { IsWindow(window_handle) } == 0 {
+        return None;
+    }
+    let mut process_id = 0;
+    unsafe { GetWindowThreadProcessId(window_handle, &mut process_id) };
+    (process_id != 0).then_some(WindowsWindowIdentity {
+        window_handle: window_handle as usize as u64,
+        process_id,
+    })
+}
+
+/// Sample the system and target GUI-thread state immediately after a scoped
+/// synthetic mouse-button DOWN. This reports evidence; it does not claim that
+/// an arbitrary target framework consumed the event.
+pub fn snapshot_raw_pointer_input_after_down(
+    target: UiaTarget,
+    button: WindowsPointerButton,
+) -> Result<WindowsRawInputSnapshot, UiaError> {
+    let expected = target.window_handle as windows_sys::Win32::Foundation::HWND;
+    if expected.is_null() || unsafe { IsWindow(expected) } == 0 {
+        return Err(UiaError::InvalidTarget(
+            "the exact target window no longer exists after button-down".into(),
+        ));
+    }
+    let mut actual_target_process_id = 0;
+    let target_thread =
+        unsafe { GetWindowThreadProcessId(expected, &mut actual_target_process_id) };
+    if target_thread == 0 || actual_target_process_id != target.process_id {
+        return Err(UiaError::InvalidTarget(
+            "the exact target window changed ownership after button-down".into(),
+        ));
+    }
+
+    let virtual_key = match button {
+        WindowsPointerButton::Left => VK_LBUTTON,
+        WindowsPointerButton::Right => VK_RBUTTON,
+        WindowsPointerButton::Middle => VK_MBUTTON,
+    };
+    let async_button_down =
+        unsafe { GetAsyncKeyState(i32::from(virtual_key)) } as u16 & 0x8000 != 0;
+
+    let foreground = live_window_identity(unsafe { GetForegroundWindow() });
+    let foreground_relation = match foreground {
+        Some(identity) if identity.window_handle == target.window_handle => {
+            WindowsForegroundRelation::ExactTarget
+        }
+        Some(identity) if identity.process_id == target.process_id => {
+            WindowsForegroundRelation::SameProcess
+        }
+        Some(_) => WindowsForegroundRelation::ForeignProcess,
+        None => WindowsForegroundRelation::NoForeground,
+    };
+
+    let mut thread_info: GUITHREADINFO = unsafe { std::mem::zeroed() };
+    thread_info.cbSize = std::mem::size_of::<GUITHREADINFO>() as u32;
+    let capture_query_succeeded = unsafe { GetGUIThreadInfo(target_thread, &mut thread_info) } != 0;
+    let target_thread_capture = capture_query_succeeded
+        .then(|| live_window_identity(thread_info.hwndCapture))
+        .flatten();
+    let capture_owned_by_target_process =
+        target_thread_capture.is_some_and(|identity| identity.process_id == target.process_id);
+
+    Ok(WindowsRawInputSnapshot {
+        async_button_down,
+        target: WindowsWindowIdentity {
+            window_handle: target.window_handle,
+            process_id: target.process_id,
+        },
+        foreground,
+        foreground_relation,
+        target_thread_capture,
+        capture_query_succeeded,
+        capture_owned_by_target_process,
+    })
+}
 
 pub struct UiaSession {
     target: UiaTarget,
@@ -177,20 +261,22 @@ fn restore_foreground(expected: usize, controlled_process_id: u32) -> Result<(),
     }
 }
 
-pub fn activate_window(target: UiaTarget) -> Result<(), UiaError> {
-    let expected = target.window_handle as windows_sys::Win32::Foundation::HWND;
-    if expected.is_null() || unsafe { IsWindow(expected) } == 0 {
-        return Err(UiaError::InvalidTarget(
-            "the exact target window no longer exists".into(),
+pub fn activate_window(
+    target: UiaTarget,
+    input_available: impl FnOnce() -> Result<(), UiaError>,
+) -> Result<(), UiaError> {
+    input_gated_window_mutation(input_available, || activate_window_after_gate(target))?;
+    let expected = require_available_window_handle(target, "activation final validation")?;
+    if unsafe { GetForegroundWindow() } != expected {
+        return Err(UiaError::BackendUnavailable(
+            "the exact target was no longer foreground at activation final validation".into(),
         ));
     }
-    let mut actual_process_id = 0;
-    unsafe { GetWindowThreadProcessId(expected, &mut actual_process_id) };
-    if actual_process_id != target.process_id {
-        return Err(UiaError::InvalidTarget(
-            "the exact target window no longer belongs to the granted process".into(),
-        ));
-    }
+    Ok(())
+}
+
+fn activate_window_after_gate(target: UiaTarget) -> Result<(), UiaError> {
+    let expected = require_available_window_handle(target, "activation")?;
     if unsafe { GetForegroundWindow() } == expected {
         return Ok(());
     }
@@ -211,6 +297,20 @@ pub fn activate_window(target: UiaTarget) -> Result<(), UiaError> {
         && expected_thread != current_thread
         && expected_thread != foreground_thread
         && unsafe { AttachThreadInput(current_thread, expected_thread, 1) } != 0;
+    let expected = match require_available_window_handle(target, "fallback activation") {
+        Ok(expected) => expected,
+        Err(error) => {
+            unsafe {
+                if attached_expected {
+                    AttachThreadInput(current_thread, expected_thread, 0);
+                }
+                if attached_foreground {
+                    AttachThreadInput(current_thread, foreground_thread, 0);
+                }
+            }
+            return Err(error);
+        }
+    };
     unsafe {
         BringWindowToTop(expected);
         SetForegroundWindow(expected);
@@ -237,6 +337,147 @@ pub fn activate_window(target: UiaTarget) -> Result<(), UiaError> {
             "Windows could not make the exact target window foreground".into(),
         ))
     }
+}
+
+fn require_exact_window_handle(
+    target: UiaTarget,
+    operation: &str,
+) -> Result<windows_sys::Win32::Foundation::HWND, UiaError> {
+    let expected = target.window_handle as windows_sys::Win32::Foundation::HWND;
+    let exists = !expected.is_null() && unsafe { IsWindow(expected) } != 0;
+    let mut actual_process_id = 0;
+    if exists {
+        unsafe { GetWindowThreadProcessId(expected, &mut actual_process_id) };
+    }
+    if !exact_window_ownership_matches(exists, target.process_id, actual_process_id) {
+        return Err(UiaError::InvalidTarget(format!(
+            "the exact {operation} target no longer exists or belongs to the granted process"
+        )));
+    }
+    Ok(expected)
+}
+
+fn require_available_window_handle(
+    target: UiaTarget,
+    operation: &str,
+) -> Result<windows_sys::Win32::Foundation::HWND, UiaError> {
+    let expected = require_exact_window_handle(target, operation)?;
+    let exists = unsafe { IsWindow(expected) } != 0;
+    let visible = exists && unsafe { IsWindowVisible(expected) } != 0;
+    let minimized = exists && unsafe { IsIconic(expected) } != 0;
+    let mut actual_process_id = 0;
+    if exists {
+        unsafe { GetWindowThreadProcessId(expected, &mut actual_process_id) };
+    }
+    if !exact_window_available_for_activation(
+        exists,
+        visible,
+        minimized,
+        target.process_id,
+        actual_process_id,
+    ) {
+        let state = if minimized {
+            "target_minimized"
+        } else {
+            "target_unavailable"
+        };
+        return Err(UiaError::InvalidTarget(format!(
+            "{state}: the exact {operation} target must be visible and not minimized"
+        )));
+    }
+    Ok(expected)
+}
+
+pub(crate) const fn exact_window_ownership_matches(
+    window_exists: bool,
+    expected_process_id: u32,
+    actual_process_id: u32,
+) -> bool {
+    window_exists && actual_process_id != 0 && actual_process_id == expected_process_id
+}
+
+pub(crate) const fn exact_window_available_for_activation(
+    window_exists: bool,
+    visible: bool,
+    minimized: bool,
+    expected_process_id: u32,
+    actual_process_id: u32,
+) -> bool {
+    exact_window_ownership_matches(window_exists, expected_process_id, actual_process_id)
+        && visible
+        && !minimized
+}
+
+pub(crate) fn input_gated_window_mutation<T, E>(
+    input_available: impl FnOnce() -> Result<(), E>,
+    mutation: impl FnOnce() -> Result<T, E>,
+) -> Result<T, E> {
+    input_available()?;
+    mutation()
+}
+
+pub(crate) fn run_restore_activate_mutation_sequence<E>(
+    restore_input_available: impl FnOnce() -> Result<(), E>,
+    restore: impl FnOnce() -> Result<(), E>,
+    activate_input_available: impl FnOnce() -> Result<(), E>,
+    activate: impl FnOnce() -> Result<(), E>,
+) -> Result<(), E> {
+    input_gated_window_mutation(restore_input_available, restore)?;
+    input_gated_window_mutation(activate_input_available, activate)
+}
+
+/// Restore and foreground one exact PID/HWND target after an explicit Host
+/// request. No input is injected and no other process window is eligible.
+pub fn restore_and_activate_window(
+    target: UiaTarget,
+    restore_input_available: impl FnOnce() -> Result<(), UiaError>,
+    activate_input_available: impl FnOnce() -> Result<(), UiaError>,
+) -> Result<(), UiaError> {
+    let expected = require_exact_window_handle(target, "restore")?;
+    run_restore_activate_mutation_sequence(
+        restore_input_available,
+        || {
+            require_exact_window_handle(target, "restore")?;
+            if unsafe { IsIconic(expected) } != 0 {
+                if unsafe { ShowWindowAsync(expected, SW_RESTORE) } == 0 {
+                    return Err(UiaError::BackendUnavailable(
+                        "Windows refused to request restoration of the exact target".into(),
+                    ));
+                }
+                let restored = (0..40).any(|_| {
+                    if unsafe { IsIconic(expected) } == 0 {
+                        return true;
+                    }
+                    thread::sleep(Duration::from_millis(10));
+                    false
+                });
+                if !restored {
+                    return Err(UiaError::BackendUnavailable(
+                        "the exact target remained minimized after the explicit restore request"
+                            .into(),
+                    ));
+                }
+            }
+            Ok(())
+        },
+        activate_input_available,
+        || activate_window_after_gate(target),
+    )?;
+    let mut final_process_id = 0;
+    let final_exists = unsafe { IsWindow(expected) } != 0;
+    if final_exists {
+        unsafe { GetWindowThreadProcessId(expected, &mut final_process_id) };
+    }
+    if !exact_window_ownership_matches(final_exists, target.process_id, final_process_id)
+        || unsafe { IsIconic(expected) } != 0
+        || unsafe { IsWindowVisible(expected) } == 0
+        || unsafe { GetForegroundWindow() } != expected
+    {
+        return Err(UiaError::BackendUnavailable(
+            "the exact target did not finish restored, visible, and foreground".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn foreground_restore_still_required(expected: usize, controlled_process_id: u32) -> bool {
