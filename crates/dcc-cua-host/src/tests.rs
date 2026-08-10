@@ -6,8 +6,13 @@ use super::*;
 use crate::endpoint::endpoint_singleton_name;
 #[cfg(unix)]
 use crate::endpoint::{prepare_unix_endpoint_parent, stale_unix_socket_error};
+use crate::request_handler::acquire_raw_input_turn;
 use crate::request_handler::bind_launched_process;
+use crate::request_handler::finish_window_mutation_attempt;
+use crate::request_handler::poll_session_events_timeout;
 use crate::request_handler::post_snapshot_delay;
+use crate::request_handler::take_connection_session;
+use crate::session_events::SessionInputEventQueue;
 
 #[rstest]
 fn cursor_render_backend_matches_the_native_platform_owner() {
@@ -25,9 +30,11 @@ fn capabilities_follow_the_selected_cursor_runtime() {
     let cursor_available = cfg!(any(windows, target_os = "linux"));
     let capabilities = host_capabilities(cursor_available);
     assert!(capabilities.contains(&"scoped_window_frame"));
+    assert!(capabilities.contains(&"open_session_activate_before"));
     assert!(capabilities.contains(&"native_menu_path"));
     assert!(capabilities.contains(&"host_wide_interrupt"));
     assert!(capabilities.contains(&"isolated_runtime_sessions"));
+    assert!(capabilities.contains(&"indicator_motion_policy"));
     assert_eq!(capabilities.contains(&"cursor_controls"), cursor_available);
     assert_eq!(
         capabilities.contains(&"cua_cursor_marker"),
@@ -37,7 +44,624 @@ fn capabilities_follow_the_selected_cursor_runtime() {
         capabilities.contains(&"windows_background_uia_fallback"),
         cfg!(windows)
     );
+    assert_eq!(
+        capabilities.contains(&"input_backend:windows.send_input.v1"),
+        cfg!(windows)
+    );
+    assert_eq!(
+        capabilities.contains(&"input_backend:windows.send_input.relative_drag.v1"),
+        cfg!(windows)
+    );
+    assert_eq!(
+        capabilities.contains(&"input_backend:windows.send_input.combined_down_drag.v1"),
+        cfg!(windows)
+    );
+    assert_eq!(
+        capabilities.contains(&"input_backend:windows.synthetic_touch.v1"),
+        cfg!(windows)
+    );
     assert!(capabilities.contains(&"live_observation_latest_frame"));
+    assert!(capabilities.contains(&"session_input_state_events"));
+    assert!(capabilities.contains(&"session_target_state_events"));
+    assert_eq!(
+        capabilities.contains(&"exact_window_restore_activate"),
+        cfg!(windows)
+    );
+}
+
+#[test]
+fn get_input_state_is_a_typed_session_scoped_request() {
+    let request = serde_json::from_value::<Request>(json!({
+        "method": "get_input_state",
+        "params": {
+            "session_id": "session-1",
+            "task_grant_id": "grant-1",
+            "window_capability": "capability-1"
+        }
+    }))
+    .unwrap();
+
+    assert!(matches!(
+        request,
+        Request::GetInputState {
+            session_id,
+            task_grant_id,
+            window_capability,
+        } if session_id == "session-1"
+            && task_grant_id == "grant-1"
+            && window_capability == "capability-1"
+    ));
+}
+
+#[test]
+fn poll_session_events_is_a_bounded_session_scoped_long_poll() {
+    let request = serde_json::from_value::<Request>(json!({
+        "method": "poll_session_events",
+        "params": {
+            "session_id": "session-1",
+            "task_grant_id": "grant-1",
+            "window_capability": "capability-1",
+            "after_sequence": 9,
+            "timeout_ms": 250
+        }
+    }))
+    .unwrap();
+
+    assert!(matches!(
+        request,
+        Request::PollSessionEvents {
+            session_id,
+            after_sequence: 9,
+            timeout_ms: 250,
+            ..
+        } if session_id == "session-1"
+    ));
+    assert!(poll_session_events_timeout(MAX_SESSION_EVENT_POLL_TIMEOUT_MS + 1).is_err());
+    assert_eq!(poll_session_events_timeout(250).unwrap().as_millis(), 250);
+}
+
+#[test]
+fn stop_session_ownership_removes_its_event_subscription() {
+    let mut subscriptions = HashMap::new();
+    subscriptions.insert(
+        "session-1".to_owned(),
+        SessionInputEventQueue::new(
+            dcc_cua_core::ComputerUseInputTarget {
+                session_id: "session-1".into(),
+                process_id: 42,
+                window_handle: 77,
+            },
+            dcc_cua_core::ComputerUseInputReadiness {
+                status: dcc_cua_core::ComputerUseInputStatus::Ready,
+                code: "interactive_desktop_ready".into(),
+                reason: None,
+            },
+            dcc_cua_core::ComputerUseTargetAvailability {
+                status: dcc_cua_core::ComputerUseTargetStatus::Available,
+                code: "target_available".into(),
+                visible: true,
+                minimized: false,
+                foreground: true,
+            },
+            100,
+        ),
+    );
+
+    let removed = take_connection_session(&mut subscriptions, "session-1").unwrap();
+
+    assert!(!subscriptions.contains_key("session-1"));
+    assert_eq!(removed.current().target.session_id, "session-1");
+    assert!(take_connection_session(&mut subscriptions, "session-1").is_err());
+}
+
+fn target_availability(
+    status: dcc_cua_core::ComputerUseTargetStatus,
+) -> dcc_cua_core::ComputerUseTargetAvailability {
+    dcc_cua_core::ComputerUseTargetAvailability {
+        status,
+        code: match status {
+            dcc_cua_core::ComputerUseTargetStatus::Available => "target_available",
+            dcc_cua_core::ComputerUseTargetStatus::Minimized => "target_minimized",
+            dcc_cua_core::ComputerUseTargetStatus::Unavailable => "target_unavailable",
+        }
+        .into(),
+        visible: status == dcc_cua_core::ComputerUseTargetStatus::Available,
+        minimized: status == dcc_cua_core::ComputerUseTargetStatus::Minimized,
+        foreground: status == dcc_cua_core::ComputerUseTargetStatus::Available,
+    }
+}
+
+fn cached_host_session(driver: &ComputerUseDriver) -> HostSession {
+    let session = driver
+        .session(
+            ComputerUseTargetScope {
+                process_id: Some(42),
+                window_handle: Some(77),
+                window_title: None,
+            },
+            "Test DCC",
+            "runtime-session-1",
+        )
+        .unwrap();
+    HostSession {
+        runtime_session_id: "runtime-session-1".into(),
+        task_grant_id: "grant-1".into(),
+        allow_raw_input: true,
+        allow_app_terminate: false,
+        allow_clipboard_read: false,
+        allow_clipboard_write: false,
+        allow_recording: false,
+        allow_live_observation: false,
+        allow_browser_input: false,
+        allow_browser_prepare: false,
+        allow_browser_download: false,
+        allow_native_tool: false,
+        allow_menu_invoke: false,
+        allow_session_escalation: false,
+        allow_trusted_confirmation: false,
+        allow_restore_activate: cfg!(windows),
+        capability: "capability-1".into(),
+        interrupted: false,
+        session,
+        browser: BrowserSession::default(),
+        latest_observation_id: Some("observation-before-transition".into()),
+        latest_accessibility_state_id: Some("accessibility-before-transition".into()),
+        latest_accessibility_root: Some(json!({"elements": [{"element_token": "old-token"}]})),
+        latest_shared_image: Some(SharedImage::from_bytes(b"old", "image/png").unwrap()),
+        input_events: SessionInputEventQueue::new_with_restore_capability(
+            dcc_cua_core::ComputerUseInputTarget {
+                session_id: "session-1".into(),
+                process_id: 42,
+                window_handle: 77,
+            },
+            dcc_cua_core::ComputerUseInputReadiness {
+                status: dcc_cua_core::ComputerUseInputStatus::Ready,
+                code: "interactive_desktop_ready".into(),
+                reason: None,
+            },
+            target_availability(dcc_cua_core::ComputerUseTargetStatus::Available),
+            cfg!(windows),
+            100,
+        ),
+    }
+}
+
+fn assert_stale_observation(error: HostError, message_fragment: &str) {
+    let HostError::ComputerUse(error) = error else {
+        panic!("expected typed Computer Use error, got {error}");
+    };
+    assert_eq!(error.code, ComputerUseErrorCode::StaleObservation);
+    assert!(
+        error.message.contains(message_fragment),
+        "{}",
+        error.message
+    );
+}
+
+async fn assert_cached_action_references_are_stale(
+    driver: &ComputerUseDriver,
+    sessions: &mut ConnectionSessions,
+    fresh_observation_id: &str,
+) {
+    let mut snapshot_transport = Some(SnapshotTransport::BinaryFrame);
+    let mut desktop_shared_image = None;
+    let cancellation_registry = Arc::new(Mutex::new(HashMap::new()));
+    let raw_error = handle_request(
+        driver,
+        sessions,
+        &mut snapshot_transport,
+        &mut desktop_shared_image,
+        &cancellation_registry,
+        serde_json::from_value(json!({
+            "method": "execute_action",
+            "params": {
+                "session_id": "session-1",
+                "task_grant_id": "grant-1",
+                "window_capability": "capability-1",
+                "observation_id": "observation-before-transition",
+                "accessibility_state_id": "accessibility-before-transition",
+                "action": {
+                    "action": "click",
+                    "input_kind": "raw_input",
+                    "intent": "ordinary_edit",
+                    "x": 10,
+                    "y": 20
+                }
+            }
+        }))
+        .unwrap(),
+    )
+    .await
+    .unwrap_err();
+    assert_stale_observation(raw_error, "latest host snapshot");
+
+    sessions
+        .windows
+        .get_mut("session-1")
+        .unwrap()
+        .latest_observation_id = Some(fresh_observation_id.into());
+    let semantic_error = handle_request(
+        driver,
+        sessions,
+        &mut snapshot_transport,
+        &mut desktop_shared_image,
+        &cancellation_registry,
+        serde_json::from_value(json!({
+            "method": "execute_action",
+            "params": {
+                "session_id": "session-1",
+                "task_grant_id": "grant-1",
+                "window_capability": "capability-1",
+                "observation_id": fresh_observation_id,
+                "accessibility_state_id": "accessibility-before-transition",
+                "action": {
+                    "action": "click",
+                    "input_kind": "semantic",
+                    "intent": "ordinary_edit",
+                    "element_token": "old-token"
+                }
+            }
+        }))
+        .unwrap(),
+    )
+    .await
+    .unwrap_err();
+    assert_stale_observation(semantic_error, "latest accessibility_state_id");
+}
+
+#[rstest]
+#[tokio::test]
+async fn material_target_transition_invalidates_old_raw_and_accessibility_references() {
+    let driver = ComputerUseDriver::create().unwrap();
+    let mut sessions = ConnectionSessions::default();
+    sessions
+        .windows
+        .insert("session-1".into(), cached_host_session(&driver));
+
+    let host = sessions.windows.get_mut("session-1").unwrap();
+    assert!(host.observe_target_availability(target_availability(
+        dcc_cua_core::ComputerUseTargetStatus::Minimized
+    )));
+    assert!(host.observe_target_availability(target_availability(
+        dcc_cua_core::ComputerUseTargetStatus::Available
+    )));
+    assert!(host.latest_shared_image.is_none());
+    assert_cached_action_references_are_stale(&driver, &mut sessions, "observation-after-restore")
+        .await;
+}
+
+#[rstest]
+#[tokio::test]
+async fn get_window_state_material_transition_invalidates_old_raw_and_accessibility_references() {
+    let driver = ComputerUseDriver::create().unwrap();
+    let mut sessions = ConnectionSessions::default();
+    sessions
+        .windows
+        .insert("session-1".into(), cached_host_session(&driver));
+
+    let host = sessions.windows.get_mut("session-1").unwrap();
+    let minimized = request_handler::observed_window_state_response(
+        host,
+        "session-1",
+        json!({
+            "process_id": 42,
+            "window_handle": 77,
+            "exists": true,
+            "visible": false,
+            "minimized": true,
+            "foreground": false,
+            "bounds": [-32000, -32000, 800, 600]
+        }),
+    );
+    assert_eq!(minimized["type"], "window_state");
+    assert_eq!(minimized["state"]["minimized"], true);
+    let restored = request_handler::observed_window_state_response(
+        host,
+        "session-1",
+        json!({
+            "process_id": 42,
+            "window_handle": 77,
+            "exists": true,
+            "visible": true,
+            "minimized": false,
+            "foreground": true,
+            "bounds": [100, 100, 800, 600]
+        }),
+    );
+    assert_eq!(restored["state"]["minimized"], false);
+    assert!(host.latest_shared_image.is_none());
+
+    assert_cached_action_references_are_stale(
+        &driver,
+        &mut sessions,
+        "observation-after-get-window-state",
+    )
+    .await;
+}
+
+#[rstest]
+#[tokio::test]
+async fn minimized_action_rejection_then_restore_keeps_old_raw_and_accessibility_references_stale()
+{
+    let driver = ComputerUseDriver::create().unwrap();
+    let mut sessions = ConnectionSessions::default();
+    sessions
+        .windows
+        .insert("session-1".into(), cached_host_session(&driver));
+
+    let host = sessions.windows.get_mut("session-1").unwrap();
+    let rejection = host
+        .finish_observation_sensitive_attempt::<()>(Err(ComputerUseError::new(
+            ComputerUseErrorCode::TargetMinimized,
+            "the action observed the exact target minimized",
+        )))
+        .unwrap_err();
+    assert_eq!(rejection.code, ComputerUseErrorCode::TargetMinimized);
+    let restored = request_handler::observed_window_state_response(
+        host,
+        "session-1",
+        json!({
+            "process_id": 42,
+            "window_handle": 77,
+            "exists": true,
+            "visible": true,
+            "minimized": false,
+            "foreground": true,
+            "bounds": [100, 100, 800, 600]
+        }),
+    );
+    assert_eq!(restored["state"]["minimized"], false);
+
+    assert_cached_action_references_are_stale(
+        &driver,
+        &mut sessions,
+        "observation-after-action-target-rejection",
+    )
+    .await;
+}
+
+#[rstest]
+#[tokio::test]
+async fn unavailable_snapshot_rejection_then_restore_keeps_old_observation_references_stale() {
+    let driver = ComputerUseDriver::create().unwrap();
+    let mut sessions = ConnectionSessions::default();
+    sessions
+        .windows
+        .insert("session-1".into(), cached_host_session(&driver));
+
+    let host = sessions.windows.get_mut("session-1").unwrap();
+    let rejection = host
+        .finish_observation_sensitive_attempt::<ComputerUseScreenshot>(Err(ComputerUseError::new(
+            ComputerUseErrorCode::TargetUnavailable,
+            "the snapshot observed the exact target unavailable",
+        )))
+        .unwrap_err();
+    assert_eq!(rejection.code, ComputerUseErrorCode::TargetUnavailable);
+    request_handler::observed_window_state_response(
+        host,
+        "session-1",
+        json!({
+            "process_id": 42,
+            "window_handle": 77,
+            "exists": true,
+            "visible": true,
+            "minimized": false,
+            "foreground": true,
+            "bounds": [100, 100, 800, 600]
+        }),
+    );
+
+    assert_cached_action_references_are_stale(
+        &driver,
+        &mut sessions,
+        "observation-after-snapshot-target-rejection",
+    )
+    .await;
+}
+
+#[rstest]
+#[tokio::test]
+async fn locked_action_rejection_then_resume_keeps_old_observation_references_stale() {
+    let driver = ComputerUseDriver::create().unwrap();
+    let mut sessions = ConnectionSessions::default();
+    sessions
+        .windows
+        .insert("session-1".into(), cached_host_session(&driver));
+
+    let host = sessions.windows.get_mut("session-1").unwrap();
+    let rejection = host
+        .finish_observation_sensitive_attempt::<()>(Err(ComputerUseError::new(
+            ComputerUseErrorCode::InteractiveDesktopUnavailable,
+            "the action observed a locked interactive desktop",
+        )))
+        .unwrap_err();
+    assert_eq!(
+        rejection.code,
+        ComputerUseErrorCode::InteractiveDesktopUnavailable
+    );
+    assert_eq!(
+        host.input_events.current().status,
+        dcc_cua_core::ComputerUseInputStatus::Suspended
+    );
+    host.observe_input_readiness(
+        dcc_cua_core::ComputerUseInputReadiness {
+            status: dcc_cua_core::ComputerUseInputStatus::Ready,
+            code: "interactive_desktop_ready".into(),
+            reason: None,
+        },
+        400,
+    );
+
+    assert_cached_action_references_are_stale(
+        &driver,
+        &mut sessions,
+        "observation-after-action-input-rejection",
+    )
+    .await;
+}
+
+#[rstest]
+fn invalid_target_rejection_invalidates_evidence_without_synthesizing_target_unavailable() {
+    let driver = ComputerUseDriver::create().unwrap();
+    let mut host = cached_host_session(&driver);
+
+    let rejection = host
+        .finish_observation_sensitive_attempt::<()>(Err(ComputerUseError::new(
+            ComputerUseErrorCode::InvalidTarget,
+            "the requested native tool is not bindable to this session",
+        )))
+        .unwrap_err();
+
+    assert_eq!(rejection.code, ComputerUseErrorCode::InvalidTarget);
+    assert!(host.latest_observation_id.is_none());
+    assert!(host.latest_accessibility_state_id.is_none());
+    assert!(host.latest_shared_image.is_none());
+    assert_eq!(
+        host.input_events.target_state().status,
+        dcc_cua_core::ComputerUseTargetStatus::Available
+    );
+    assert_eq!(host.input_events.latest_sequence(), 1);
+    assert!(host.input_events.events_after(1).is_empty());
+}
+
+#[rstest]
+fn find_cache_read_rejects_a_newly_minimized_target_and_invalidates_old_uia_evidence() {
+    let driver = ComputerUseDriver::create().unwrap();
+    let mut host = cached_host_session(&driver);
+
+    let error = request_handler::finish_target_sensitive_cached_read(
+        &mut host,
+        Ok(target_availability(
+            dcc_cua_core::ComputerUseTargetStatus::Minimized,
+        )),
+    )
+    .unwrap_err();
+
+    assert_eq!(error.code, ComputerUseErrorCode::TargetMinimized);
+    assert!(host.latest_observation_id.is_none());
+    assert!(host.latest_accessibility_state_id.is_none());
+    assert!(host.latest_accessibility_root.is_none());
+    assert!(host.latest_shared_image.is_none());
+    assert_eq!(
+        host.input_events.target_state().status,
+        dcc_cua_core::ComputerUseTargetStatus::Minimized
+    );
+}
+
+#[rstest]
+#[tokio::test]
+async fn input_suspend_resume_invalidates_old_raw_and_accessibility_references() {
+    let driver = ComputerUseDriver::create().unwrap();
+    let mut sessions = ConnectionSessions::default();
+    sessions
+        .windows
+        .insert("session-1".into(), cached_host_session(&driver));
+
+    let host = sessions.windows.get_mut("session-1").unwrap();
+    assert!(host.observe_input_readiness(
+        dcc_cua_core::ComputerUseInputReadiness {
+            status: dcc_cua_core::ComputerUseInputStatus::Suspended,
+            code: "interactive_desktop_unavailable".into(),
+            reason: Some("workstation locked".into()),
+        },
+        200,
+    ));
+    assert!(host.observe_input_readiness(
+        dcc_cua_core::ComputerUseInputReadiness {
+            status: dcc_cua_core::ComputerUseInputStatus::Ready,
+            code: "interactive_desktop_ready".into(),
+            reason: None,
+        },
+        300,
+    ));
+    assert!(host.latest_shared_image.is_none());
+    assert_cached_action_references_are_stale(&driver, &mut sessions, "observation-after-unlock")
+        .await;
+}
+
+#[rstest]
+#[tokio::test]
+async fn future_poll_cursor_returns_an_immediate_session_resync_page() {
+    let driver = ComputerUseDriver::create().unwrap();
+    let mut sessions = ConnectionSessions::default();
+    sessions
+        .windows
+        .insert("session-1".into(), cached_host_session(&driver));
+    let mut snapshot_transport = Some(SnapshotTransport::BinaryFrame);
+    let mut desktop_shared_image = None;
+    let cancellation_registry = Arc::new(Mutex::new(HashMap::new()));
+
+    let (response, attachment) = tokio::time::timeout(
+        Duration::from_millis(250),
+        handle_request(
+            &driver,
+            &mut sessions,
+            &mut snapshot_transport,
+            &mut desktop_shared_image,
+            &cancellation_registry,
+            serde_json::from_value(json!({
+                "method": "poll_session_events",
+                "params": {
+                    "session_id": "session-1",
+                    "task_grant_id": "grant-1",
+                    "window_capability": "capability-1",
+                    "after_sequence": 99,
+                    "timeout_ms": 30_000
+                }
+            }))
+            .unwrap(),
+        ),
+    )
+    .await
+    .expect("future cursor must never enter the long-poll wait")
+    .unwrap();
+
+    assert!(attachment.is_none());
+    assert_eq!(response["type"], "session_events");
+    assert_eq!(response["resync_required"], true);
+    assert_eq!(response["timed_out"], false);
+    assert_eq!(response["after_sequence"], 99);
+    let latest_sequence = sessions.windows["session-1"].input_events.latest_sequence();
+    assert_eq!(response["latest_sequence"], latest_sequence);
+    assert!(latest_sequence < 99);
+    assert_eq!(
+        response["current_state"]["target"]["session_id"],
+        "session-1"
+    );
+    assert_eq!(
+        response["current_target_state"]["target"]["session_id"],
+        "session-1"
+    );
+}
+
+#[rstest]
+fn exact_restore_recovery_is_advertised_only_when_the_platform_can_execute_it() {
+    let exact_grant: TaskGrant = serde_json::from_value(json!({
+        "task_grant_id": "grant-1",
+        "application_label": "Test DCC",
+        "process_id": 42,
+        "window_handle": 77
+    }))
+    .unwrap();
+
+    assert_eq!(
+        request_handler::restore_activate_available(&exact_grant),
+        cfg!(windows)
+    );
+}
+
+#[rstest]
+#[case(ComputerUseErrorCode::InvalidTarget)]
+#[case(ComputerUseErrorCode::BackendUnavailable)]
+fn banner_failure_cleanup_keeps_the_original_typed_error_code(#[case] code: ComputerUseErrorCode) {
+    let error = stopped_banner_failure(
+        ComputerUseError::new(code, "presenter stopped"),
+        "; CUA cleanup also failed: worker unavailable",
+    );
+
+    assert_eq!(error.code, code);
+    assert!(error.message.contains("presenter stopped"));
+    assert!(error.message.contains("cleanup also failed"));
 }
 
 #[rstest]
@@ -175,6 +799,16 @@ async fn process_connection_requires_hello_pings_and_rejects_duplicate_hello() {
         response["capabilities"]
             .as_array()
             .is_some_and(|items| { items.iter().any(|item| item == "serialized_raw_input") })
+    );
+
+    assert!(
+        tokio::time::timeout(
+            std::time::Duration::from_millis(300),
+            read_frame(&mut client, MAX_JSON_FRAME_BYTES),
+        )
+        .await
+        .is_err(),
+        "session event monitoring must never emit an unsolicited Host frame",
     );
 
     write_json_request(
@@ -408,8 +1042,65 @@ fn request_frame_preserves_correlation_on_deserialization_errors() {
 #[rstest]
 fn window_state_wire_surface_matches_cua_capability() {
     assert!(serde_json::from_value::<WindowOperation>(json!("activate")).is_ok());
+    assert!(serde_json::from_value::<WindowOperation>(json!("restore_activate")).is_ok());
     assert!(serde_json::from_value::<WindowOperation>(json!("restore")).is_err());
     assert!(serde_json::from_value::<WindowOperation>(json!("show")).is_err());
+}
+
+#[test]
+fn restore_activate_is_an_explicit_exact_session_scoped_request() {
+    let request = serde_json::from_value::<Request>(json!({
+        "method": "change_window_state",
+        "params": {
+            "session_id": "session-1",
+            "task_grant_id": "grant-1",
+            "window_capability": "capability-1",
+            "operation": "restore_activate"
+        }
+    }))
+    .unwrap();
+
+    assert!(matches!(
+        request,
+        Request::ChangeWindowState {
+            session_id,
+            task_grant_id,
+            window_capability,
+            operation: WindowOperation::RestoreActivate,
+        } if session_id == "session-1"
+            && task_grant_id == "grant-1"
+            && window_capability == "capability-1"
+    ));
+}
+
+#[test]
+fn restore_activate_response_preserves_core_recovery_fences() {
+    let response = request_handler::window_state_changed_response(
+        "session-1",
+        "restore_activate",
+        json!({"minimized": false, "foreground": true}),
+        json!({
+            "success": true,
+            "automatic_input": false,
+            "fresh_observation_required": true,
+        }),
+    );
+
+    assert_eq!(response["type"], "window_state_changed");
+    assert_eq!(response["operation"], "restore_activate");
+    assert_eq!(response["result"]["automatic_input"], false);
+    assert_eq!(response["result"]["fresh_observation_required"], true);
+}
+
+#[test]
+fn failed_window_mutation_still_invalidates_host_observation_cache() {
+    let invalidated = std::cell::Cell::new(false);
+
+    let result =
+        finish_window_mutation_attempt(Err::<(), _>("foreground denied"), || invalidated.set(true));
+
+    assert_eq!(result, Err("foreground denied"));
+    assert!(invalidated.get());
 }
 
 #[rstest]
@@ -419,6 +1110,7 @@ fn hard_denied_intents_do_not_reach_cua() {
         element_index: None,
         element_token: None,
         delivery_mode: None,
+        input_backend_id: None,
         input_kind: "raw_input".into(),
         intent: "terminal_or_run_dialog".into(),
         x: None,
@@ -450,6 +1142,7 @@ fn trusted_confirmation_intents_require_the_explicit_grant(#[case] intent: &str)
         element_index: None,
         element_token: None,
         delivery_mode: None,
+        input_backend_id: None,
         input_kind: "raw_input".into(),
         intent: intent.into(),
         x: Some(10.0),
@@ -480,6 +1173,7 @@ fn semantic_actions_require_element_locator() {
         element_index: None,
         element_token: None,
         delivery_mode: None,
+        input_backend_id: None,
         input_kind: "semantic".into(),
         intent: "ordinary_edit".into(),
         x: None,
@@ -509,6 +1203,7 @@ fn semantic_actions_forward_element_tokens_and_delivery_mode() {
         element_index: None,
         element_token: Some("element-token".into()),
         delivery_mode: Some("background".into()),
+        input_backend_id: None,
         input_kind: "semantic".into(),
         intent: "ordinary_edit".into(),
         x: None,
@@ -530,6 +1225,43 @@ fn semantic_actions_forward_element_tokens_and_delivery_mode() {
     let action = action.into_computer_use("obs-1".into()).unwrap();
     assert_eq!(action.element_token.as_deref(), Some("element-token"));
     assert_eq!(action.delivery_mode.as_deref(), Some("background"));
+}
+
+#[test]
+fn host_action_forwards_the_explicit_input_backend_id() {
+    let action: HostAction = serde_json::from_value(json!({
+        "action": "drag",
+        "input_kind": "raw_input",
+        "intent": "ordinary_edit",
+        "delivery_mode": "foreground",
+        "input_backend_id": "windows.synthetic_touch.v1",
+        "path": [{"x": 1.0, "y": 2.0}, {"x": 3.0, "y": 4.0}]
+    }))
+    .unwrap();
+    let action = action.into_computer_use("obs-1".into()).unwrap();
+    assert_eq!(
+        action.input_backend_id.as_deref(),
+        Some("windows.synthetic_touch.v1")
+    );
+}
+
+#[test]
+fn host_action_forwards_the_combined_down_drag_backend_id() {
+    let action: HostAction = serde_json::from_value(json!({
+        "action": "drag",
+        "input_kind": "raw_input",
+        "intent": "ordinary_edit",
+        "delivery_mode": "foreground",
+        "input_backend_id": "windows.send_input.combined_down_drag.v1",
+        "button": "left",
+        "path": [{"x": 1.0, "y": 2.0}, {"x": 3.0, "y": 4.0}]
+    }))
+    .unwrap();
+    let action = action.into_computer_use("obs-1".into()).unwrap();
+    assert_eq!(
+        action.input_backend_id.as_deref(),
+        Some("windows.send_input.combined_down_drag.v1")
+    );
 }
 
 #[rstest]
@@ -595,6 +1327,28 @@ fn app_launch_grant_defaults_to_denied() {
         ))),
         "interactive_desktop_unavailable"
     );
+    assert_eq!(
+        error_code(&HostError::ComputerUse(ComputerUseError::new(
+            ComputerUseErrorCode::CompletionUnknown,
+            "activation completion is unknown",
+        ))),
+        "completion_unknown"
+    );
+}
+
+#[rstest]
+#[case(ComputerUseErrorCode::InvalidTarget, "invalid_target")]
+#[case(ComputerUseErrorCode::TargetMinimized, "target_minimized")]
+#[case(ComputerUseErrorCode::TargetUnavailable, "target_unavailable")]
+#[case(ComputerUseErrorCode::MissingWindow, "target_unavailable")]
+fn target_error_codes_keep_wire_contract(
+    #[case] code: ComputerUseErrorCode,
+    #[case] expected: &str,
+) {
+    assert_eq!(
+        error_code(&HostError::ComputerUse(ComputerUseError::new(code, "test"))),
+        expected
+    );
 }
 
 #[rstest]
@@ -640,6 +1394,76 @@ fn live_observation_requests_parse() {
             }
         })),
         Ok(Request::LiveObservationStop { .. })
+    ));
+}
+
+#[rstest]
+fn open_session_bootstrap_activation_is_explicit_and_defaults_off() {
+    let default_request = serde_json::from_value::<Request>(json!({
+        "method": "open_session",
+        "params": {
+            "session_id": "session-default",
+            "grant": {
+                "task_grant_id": "task-1",
+                "application_label": "The Bazaar",
+                "process_id": 4242,
+                "window_handle": 31337
+            }
+        }
+    }))
+    .unwrap();
+    assert!(matches!(
+        default_request,
+        Request::OpenSession {
+            activate_before: false,
+            indicator_motion: IndicatorMotionPolicy::Auto,
+            ..
+        }
+    ));
+
+    let bootstrap_request = serde_json::from_value::<Request>(json!({
+        "method": "open_session",
+        "params": {
+            "session_id": "session-bootstrap",
+            "activate_before": true,
+            "grant": {
+                "task_grant_id": "task-1",
+                "application_label": "The Bazaar",
+                "process_id": 4242,
+                "window_handle": 31337
+            }
+        }
+    }))
+    .unwrap();
+    assert!(matches!(
+        bootstrap_request,
+        Request::OpenSession {
+            activate_before: true,
+            indicator_motion: IndicatorMotionPolicy::Auto,
+            ..
+        }
+    ));
+
+    let animated_request = serde_json::from_value::<Request>(json!({
+        "method": "open_session",
+        "params": {
+            "session_id": "session-animated",
+            "indicator_motion": "animate",
+            "grant": {
+                "task_grant_id": "task-1",
+                "application_label": "The Bazaar",
+                "process_id": 4242,
+                "window_handle": 31337
+            }
+        }
+    }))
+    .unwrap();
+    assert!(matches!(
+        animated_request,
+        Request::OpenSession {
+            indicator_motion: IndicatorMotionPolicy::Animate,
+            ..
+        }
     ));
 }
 
@@ -1291,7 +2115,11 @@ fn action_response_preserves_tool_metadata_and_images() {
         "action-1".into(),
         "CUA action completed",
         ComputerUseToolResult {
-            value: json!({"success": true, "cua": {"accepted": true}}),
+            value: json!({
+                "success": true,
+                "cua": {"accepted": true},
+                "banner": {"activity": "observing", "live_observation": true},
+            }),
             text: "clicked".into(),
             images: vec![dcc_cua_core::ComputerUseImage {
                 data: vec![7, 8],
@@ -1306,10 +2134,60 @@ fn action_response_preserves_tool_metadata_and_images() {
     assert_eq!(response["type"], "action_completed");
     assert_eq!(response["action_id"], "action-1");
     assert_eq!(response["result"]["cua"]["accepted"], true);
+    assert_eq!(response["result"]["banner"]["activity"], "observing");
+    assert_eq!(response["result"]["banner"]["live_observation"], true);
     assert_eq!(response["text"], "clicked");
     assert_eq!(response["degraded"], true);
     assert_eq!(response["image"]["length"], 2);
     assert_eq!(attachment, Some(vec![7, 8]));
+}
+
+#[rstest]
+fn action_response_preserves_structured_rejected_input_outcome() {
+    let mut shared = None;
+    let (response, attachment) = action_completed_response(
+        "session-1",
+        "action-1".into(),
+        "CUA action stopped after its delivery probe",
+        ComputerUseToolResult {
+            value: json!({
+                "success": false,
+                "cua": {
+                    "effect": "unverifiable",
+                    "delivery": {
+                        "backend_id": "windows.synthetic_touch.v1",
+                        "api_accepted": false,
+                        "consumer_effect_confirmed": false,
+                        "completion_known": false,
+                        "delivered": false,
+                        "verification_required": true,
+                        "target_fence": {"process_id": 42, "window_handle": 7},
+                        "input_trace": {"schema_version": 1}
+                    }
+                }
+            }),
+            text: "drag path was not sent".into(),
+            images: Vec::new(),
+            degraded: true,
+        },
+        SnapshotTransport::BinaryFrame,
+        &mut shared,
+    )
+    .unwrap();
+
+    assert_eq!(response["success"], false);
+    assert_eq!(response["degraded"], true);
+    assert_eq!(
+        response["result"]["cua"]["delivery"]["backend_id"],
+        "windows.synthetic_touch.v1"
+    );
+    assert_eq!(response["result"]["cua"]["delivery"]["api_accepted"], false);
+    assert_eq!(response["result"]["cua"]["delivery"]["delivered"], false);
+    assert_eq!(
+        response["result"]["cua"]["delivery"]["input_trace"]["schema_version"],
+        1
+    );
+    assert!(attachment.is_none());
 }
 
 #[rstest]
@@ -1384,6 +2262,70 @@ fn action_post_snapshot_reuses_the_single_attachment_frame() {
     assert_eq!(response["post_snapshot"]["image"]["index"], 1);
     assert_eq!(response["post_snapshot"]["image"]["offset"], 2);
     assert_eq!(attachment, Some(vec![7, 8, 1, 2, 3]));
+}
+
+#[rstest]
+fn post_input_focus_loss_keeps_the_fresh_observation_and_no_retry_contract() {
+    let mut shared = None;
+    let (response, attachment) = action_completed_with_snapshot_response(
+        "session-1",
+        "action-focus-lost".into(),
+        ComputerUseToolResult {
+            value: json!({
+                "success": true,
+                "cua": {
+                    "delivery": {
+                        "mode": "foreground",
+                        "confirmed": false,
+                        "input_sent": true,
+                        "retry_safe": false,
+                        "verification_required": true,
+                        "failure_phase": "post_input_focus_lost"
+                    },
+                    "effect": "unverifiable"
+                }
+            }),
+            text: "input was sent; inspect the post-action observation".into(),
+            images: Vec::new(),
+            degraded: true,
+        },
+        ComputerUseScreenshot {
+            data: vec![1, 2, 3],
+            observation: dcc_cua_core::ComputerUseObservation {
+                observation_id: "obs-after-focus-loss".into(),
+                window_handle: 7,
+                process_id: 42,
+                window_title: "DCC".into(),
+                width: 1280,
+                height: 720,
+                source_rect: [0, 0, 1280, 720],
+                capture_backend: "test".into(),
+                capture_provenance: json!({}),
+                session_id: "session-1".into(),
+            },
+            accessibility: json!({"elements": []}),
+        },
+        SnapshotTransport::BinaryFrame,
+        &mut shared,
+    )
+    .unwrap();
+
+    assert_eq!(response["success"], true);
+    assert_eq!(response["degraded"], true);
+    assert_eq!(response["result"]["cua"]["delivery"]["input_sent"], true);
+    assert_eq!(response["result"]["cua"]["delivery"]["retry_safe"], false);
+    assert_eq!(response["result"]["cua"]["effect"], "unverifiable");
+    assert_eq!(
+        response["result"]["cua"]["delivery"]["verification_required"],
+        true
+    );
+    assert!(response["result"]["cua"]["verification_required"].is_null());
+    assert_eq!(response["post_snapshot"]["success"], true);
+    assert_eq!(
+        response["post_snapshot"]["observation_id"],
+        "obs-after-focus-loss"
+    );
+    assert_eq!(attachment, Some(vec![1, 2, 3]));
 }
 
 #[rstest]
@@ -1640,23 +2582,33 @@ async fn parallel_discovery_tasks_are_reaped_and_bounded() {
 
 #[rstest]
 #[tokio::test]
-async fn raw_input_turns_wait_for_the_shared_fifo() {
-    let first_turn = RAW_INPUT_QUEUE.lock().await;
-    let (acquired_tx, mut acquired_rx) = tokio::sync::oneshot::channel();
+async fn raw_input_turn_remains_exclusive_through_post_action_capture() {
+    let (action_completed_tx, action_completed_rx) = tokio::sync::oneshot::channel();
+    let (capture_completed_tx, capture_completed_rx) = tokio::sync::oneshot::channel();
+    let first_turn = tokio::spawn(async move {
+        let _input_turn = acquire_raw_input_turn(true).await.expect("raw input lock");
+        action_completed_tx.send(()).unwrap();
+        capture_completed_rx.await.unwrap();
+    });
+    action_completed_rx.await.unwrap();
+
+    let (second_started_tx, mut second_started_rx) = tokio::sync::oneshot::channel();
     let waiting_turn = tokio::spawn(async move {
-        let _second_turn = RAW_INPUT_QUEUE.lock().await;
-        acquired_tx.send(()).unwrap();
+        let _input_turn = acquire_raw_input_turn(true).await.expect("raw input lock");
+        second_started_tx.send(()).unwrap();
     });
 
     assert!(
-        tokio::time::timeout(std::time::Duration::from_millis(25), &mut acquired_rx)
+        tokio::time::timeout(std::time::Duration::from_millis(25), &mut second_started_rx,)
             .await
-            .is_err()
+            .is_err(),
+        "another raw-input turn must stay blocked while capture_after is in flight",
     );
-    drop(first_turn);
-    tokio::time::timeout(std::time::Duration::from_secs(1), &mut acquired_rx)
+    capture_completed_tx.send(()).unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(1), &mut second_started_rx)
         .await
         .unwrap()
         .unwrap();
+    first_turn.await.unwrap();
     waiting_turn.await.unwrap();
 }

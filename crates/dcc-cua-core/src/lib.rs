@@ -6,6 +6,7 @@
 
 mod contracts;
 mod driver_factory;
+mod input_state;
 mod interactive_desktop;
 mod live_observation;
 mod observation;
@@ -18,6 +19,7 @@ mod window_target;
 mod windows_uia_fallback;
 
 pub use contracts::*;
+pub use input_state::*;
 pub use private_worker::run_private_worker;
 #[cfg(target_os = "macos")]
 pub use private_worker::run_private_worker_with_appkit;

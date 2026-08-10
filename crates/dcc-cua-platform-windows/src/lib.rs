@@ -13,12 +13,17 @@ mod wgc;
 #[cfg(windows)]
 mod windows;
 
-pub use contracts::{UiaAction, UiaError, UiaTarget};
+pub use contracts::{
+    UiaAction, UiaError, UiaTarget, WindowsForegroundRelation, WindowsPointerButton,
+    WindowsRawInputSnapshot, WindowsWindowIdentity,
+};
 
 #[cfg(windows)]
 pub use wgc::{PersistentWgcCapture, WgcCaptureError};
 #[cfg(windows)]
-pub use windows::{UiaSession, activate_window};
+pub use windows::{
+    UiaSession, activate_window, restore_and_activate_window, snapshot_raw_pointer_input_after_down,
+};
 
 #[cfg(not(windows))]
 pub struct UiaSession;

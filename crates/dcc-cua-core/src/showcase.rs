@@ -1,6 +1,8 @@
 use std::fs::File;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use mp4::{AvcConfig, FourCC, Mp4Config, Mp4Sample, Mp4Writer};
 use openh264::OpenH264API;
@@ -17,6 +19,7 @@ use crate::{ComputerUseError, ComputerUseErrorCode, ComputerUseResult};
 
 const MAX_WIDTH: u32 = 1600;
 const MAX_HEIGHT: u32 = 900;
+const SEGMENT_DURATION_MS: u64 = 5 * 60 * 1000;
 
 struct PendingSample {
     start_time: u64,
@@ -24,10 +27,39 @@ struct PendingSample {
     bytes: Vec<u8>,
 }
 
+#[derive(Clone, Copy)]
+struct VideoFormat {
+    width: u32,
+    height: u32,
+    fps: u32,
+}
+
+#[derive(Clone, serde::Serialize)]
+struct ShowcaseSegment {
+    index: u32,
+    path: PathBuf,
+    start_ms: u64,
+    duration_ms: u64,
+    frames: u64,
+    width: u32,
+    height: u32,
+    fps: u32,
+    finalized: bool,
+}
+
+#[derive(Clone, Default)]
+struct ShowcaseProgress {
+    segments: Vec<ShowcaseSegment>,
+    current_partial: Option<PathBuf>,
+}
+
 pub(crate) struct ShowcaseRecorder {
     path: PathBuf,
     producer: JoinHandle<()>,
     encoder: JoinHandle<ComputerUseResult<Value>>,
+    terminal_reason: Arc<Mutex<Option<Value>>>,
+    outcome: Arc<Mutex<Option<Value>>>,
+    progress: Arc<Mutex<ShowcaseProgress>>,
 }
 
 impl ShowcaseRecorder {
@@ -39,21 +71,61 @@ impl ShowcaseRecorder {
         let path = Path::new(output_dir).join("showcase.mp4");
         let (frame_sender, frame_receiver) = sync_channel(2);
         let (ready_sender, ready_receiver) = oneshot::channel();
+        let terminal_reason = Arc::new(Mutex::new(None));
+        let outcome = Arc::new(Mutex::new(None));
+        let progress = Arc::new(Mutex::new(ShowcaseProgress::default()));
         let encoder_path = path.clone();
+        let encoder_terminal_reason = Arc::clone(&terminal_reason);
+        let encoder_outcome = Arc::clone(&outcome);
+        let encoder_progress = Arc::clone(&progress);
         let encoder = tokio::task::spawn_blocking(move || {
-            encode_frames(frame_receiver, &encoder_path, fps, ready_sender)
+            let result = encode_frames_with_progress(
+                frame_receiver,
+                &encoder_path,
+                fps,
+                ready_sender,
+                &encoder_progress,
+            );
+            let terminal_reason = lock_unpoisoned(&encoder_terminal_reason).clone();
+            let progress = lock_unpoisoned(&encoder_progress).clone();
+            let state = match &result {
+                Ok(state) => attach_terminal_reason(state.clone(), terminal_reason),
+                Err(error) => json!({
+                    "active": false,
+                    "backend": "embedded-openh264",
+                    "path": encoder_path.to_string_lossy(),
+                    "manifest_path": manifest_output_path(&encoder_path).to_string_lossy(),
+                    "finalized": false,
+                    "segments": progress.segments,
+                    "current_partial": progress.current_partial,
+                    "error": {
+                        "code": error.code,
+                        "message": error.message,
+                    },
+                    "terminal_reason": terminal_reason,
+                }),
+            };
+            *lock_unpoisoned(&encoder_outcome) = Some(state.clone());
+            result.map(|_| state)
         });
+        let producer_terminal_reason = Arc::clone(&terminal_reason);
         let producer = tokio::spawn(async move {
             send_latest(&frames, &frame_sender);
+            latch_terminal_reason(&frames, &producer_terminal_reason);
             while frames.changed().await.is_ok() {
                 send_latest(&frames, &frame_sender);
+                latch_terminal_reason(&frames, &producer_terminal_reason);
             }
+            latch_terminal_reason(&frames, &producer_terminal_reason);
         });
         match ready_receiver.await {
             Ok(Ok(())) => Ok(Self {
                 path,
                 producer,
                 encoder,
+                terminal_reason,
+                outcome,
+                progress,
             }),
             Ok(Err(error)) => {
                 producer.abort();
@@ -70,10 +142,30 @@ impl ShowcaseRecorder {
     }
 
     pub(crate) fn state(&self) -> Value {
+        if let Some(outcome) = lock_unpoisoned(&self.outcome).clone() {
+            return outcome;
+        }
+        let progress = lock_unpoisoned(&self.progress).clone();
+        let manifest_path = manifest_output_path(&self.path);
+        if let Some(terminal_reason) = lock_unpoisoned(&self.terminal_reason).clone() {
+            return json!({
+                "active": false,
+                "backend": "embedded-openh264",
+                "path": self.path.to_string_lossy(),
+                "manifest_path": manifest_path.to_string_lossy(),
+                "finalized": false,
+                "segments": progress.segments,
+                "current_partial": progress.current_partial,
+                "terminal_reason": terminal_reason,
+            });
+        }
         json!({
             "active": !self.encoder.is_finished(),
             "backend": "embedded-openh264",
             "path": self.path.to_string_lossy(),
+            "manifest_path": manifest_path.to_string_lossy(),
+            "segments": progress.segments,
+            "current_partial": progress.current_partial,
         })
     }
 
@@ -87,6 +179,35 @@ impl ShowcaseRecorder {
             )
         })?
     }
+}
+
+fn attach_terminal_reason(mut state: Value, terminal_reason: Option<Value>) -> Value {
+    if let Some(terminal_reason) = terminal_reason {
+        state
+            .as_object_mut()
+            .expect("showcase encoder state is an object")
+            .insert("terminal_reason".into(), terminal_reason);
+    }
+    state
+}
+
+fn latch_terminal_reason(
+    frames: &watch::Receiver<LiveObservationStatus>,
+    terminal_reason: &Mutex<Option<Value>>,
+) {
+    let Some(reason) = frames.borrow().terminal_reason() else {
+        return;
+    };
+    let mut terminal_reason = lock_unpoisoned(terminal_reason);
+    if terminal_reason.is_none() {
+        *terminal_reason = Some(reason);
+    }
+}
+
+fn lock_unpoisoned<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 impl Drop for ShowcaseRecorder {
@@ -104,17 +225,35 @@ fn send_latest(
     }
 }
 
+#[cfg(test)]
 fn encode_frames(
     frames: Receiver<std::sync::Arc<LiveObservationFrame>>,
     path: &Path,
     fps: u32,
     ready: oneshot::Sender<ComputerUseResult<()>>,
 ) -> ComputerUseResult<Value> {
+    encode_frames_with_progress(
+        frames,
+        path,
+        fps,
+        ready,
+        &Mutex::new(ShowcaseProgress::default()),
+    )
+}
+
+fn encode_frames_with_progress(
+    frames: Receiver<std::sync::Arc<LiveObservationFrame>>,
+    path: &Path,
+    fps: u32,
+    ready: oneshot::Sender<ComputerUseResult<()>>,
+    progress: &Mutex<ShowcaseProgress>,
+) -> ComputerUseResult<Value> {
     let first = frames
         .recv()
         .map_err(|_| capture_error("no showcase frame available"))?;
     let (source_width, source_height) = first.dimensions();
     let (width, height) = fit_dimensions(source_width, source_height);
+    let video_format = VideoFormat { width, height, fps };
     let config = EncoderConfig::new()
         .bitrate(BitRate::from_bps(8_000_000))
         .max_frame_rate(FrameRate::from_hz(fps as f32))
@@ -134,10 +273,147 @@ fn encode_frames(
         .map_err(capture_error)?;
     let (sps, pps) = parameter_sets(&first_stream)?;
 
+    let mut segment_index = 0_u32;
+    let mut segment_path = segment_output_path(path, segment_index);
+    let mut partial_path = partial_segment_path(&segment_path);
+    ensure_final_path_available(&segment_path)?;
+    let mut writer = start_segment_writer(&partial_path, width, height, sps, pps)?;
+    lock_unpoisoned(progress).current_partial = Some(partial_path.clone());
+    let mut pending = pending_sample(&first_stream, 0)?
+        .ok_or_else(|| capture_error("OpenH264 omitted the first video sample"))?;
+    let _ = ready.send(Ok(()));
+
+    let mut frame_count = 1_u64;
+    let mut segment_frame_count = 1_u64;
+    let mut segment_start_ms = 0_u64;
+    let first_captured_at = first.captured_at();
+    let nominal_duration = (1000 / fps).max(1);
+    let mut final_duration = nominal_duration;
+    for frame in frames {
+        let (frame_width, frame_height) = frame.dimensions();
+        let bgra = resize_bgra(frame.bgra(), frame_width, frame_height, width, height);
+        let elapsed_ms = u64::try_from(
+            frame
+                .captured_at()
+                .saturating_duration_since(first_captured_at)
+                .as_millis(),
+        )
+        .unwrap_or(u64::MAX);
+        if elapsed_ms.saturating_sub(segment_start_ms) >= SEGMENT_DURATION_MS {
+            final_duration = u32::try_from(
+                elapsed_ms
+                    .saturating_sub(segment_start_ms)
+                    .saturating_sub(pending.start_time),
+            )
+            .unwrap_or(u32::MAX)
+            .max(1);
+            let segment_duration_ms = pending.start_time.saturating_add(u64::from(final_duration));
+            write_sample(&mut writer, pending, final_duration)?;
+            finalize_segment(writer, &partial_path, &segment_path)?;
+            let mut current_progress = lock_unpoisoned(progress);
+            current_progress.current_partial = None;
+            current_progress.segments.push(segment_state(
+                segment_index,
+                &segment_path,
+                segment_start_ms,
+                segment_duration_ms,
+                segment_frame_count,
+                video_format,
+            ));
+
+            segment_index = segment_index.saturating_add(1);
+            segment_start_ms = elapsed_ms;
+            segment_path = segment_output_path(path, segment_index);
+            partial_path = partial_segment_path(&segment_path);
+            encoder.force_intra_frame();
+            let stream = encoder
+                .encode(&YUVBuffer::from_rgb_source(BgraSliceU8::new(
+                    &bgra,
+                    (width as usize, height as usize),
+                )))
+                .map_err(capture_error)?;
+            let (sps, pps) = parameter_sets(&stream)?;
+            ensure_final_path_available(&segment_path)?;
+            writer = start_segment_writer(&partial_path, width, height, sps, pps)?;
+            current_progress.current_partial = Some(partial_path.clone());
+            drop(current_progress);
+            pending = pending_sample(&stream, 0)?
+                .ok_or_else(|| capture_error("OpenH264 omitted a segment's first video sample"))?;
+            segment_frame_count = 1;
+            frame_count = frame_count.saturating_add(1);
+            final_duration = nominal_duration;
+            continue;
+        }
+        let stream = encoder
+            .encode(&YUVBuffer::from_rgb_source(BgraSliceU8::new(
+                &bgra,
+                (width as usize, height as usize),
+            )))
+            .map_err(capture_error)?;
+        let Some(mut current) =
+            pending_sample(&stream, elapsed_ms.saturating_sub(segment_start_ms))?
+        else {
+            continue;
+        };
+        current.start_time = current.start_time.max(pending.start_time.saturating_add(1));
+        final_duration = u32::try_from(current.start_time - pending.start_time)
+            .unwrap_or(u32::MAX)
+            .max(1);
+        write_sample(&mut writer, pending, final_duration)?;
+        pending = current;
+        frame_count = frame_count.saturating_add(1);
+        segment_frame_count = segment_frame_count.saturating_add(1);
+    }
+    let segment_duration_ms = pending.start_time.saturating_add(u64::from(final_duration));
+    let duration_ms = segment_start_ms.saturating_add(segment_duration_ms);
+    write_sample(&mut writer, pending, final_duration)?;
+    finalize_segment(writer, &partial_path, &segment_path)?;
+    let mut current_progress = lock_unpoisoned(progress);
+    current_progress.current_partial = None;
+    current_progress.segments.push(segment_state(
+        segment_index,
+        &segment_path,
+        segment_start_ms,
+        segment_duration_ms,
+        segment_frame_count,
+        video_format,
+    ));
+    let segments = current_progress.segments.clone();
+    drop(current_progress);
+    let manifest_path = manifest_output_path(path);
+    let state = json!({
+        "active": false,
+        "backend": "embedded-openh264",
+        "path": path.to_string_lossy(),
+        "manifest_path": manifest_path.to_string_lossy(),
+        "width": width,
+        "height": height,
+        "fps": fps,
+        "frames": frame_count,
+        "duration_ms": duration_ms,
+        "finalized": true,
+        "segments": segments,
+        "current_partial": Value::Null,
+    });
+    write_manifest(&manifest_path, &state)?;
+    Ok(state)
+}
+
+fn start_segment_writer(
+    path: &Path,
+    width: u32,
+    height: u32,
+    sps: Vec<u8>,
+    pps: Vec<u8>,
+) -> ComputerUseResult<Mp4Writer<File>> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(capture_error)?;
     }
-    let file = File::create(path).map_err(capture_error)?;
+    let file = File::options()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(capture_error)?;
     let mut writer = Mp4Writer::write_start(
         file,
         &Mp4Config {
@@ -159,55 +435,96 @@ fn encode_frames(
             .into(),
         )
         .map_err(capture_error)?;
-    let mut pending = pending_sample(&first_stream, 0)?
-        .ok_or_else(|| capture_error("OpenH264 omitted the first video sample"))?;
-    let _ = ready.send(Ok(()));
+    Ok(writer)
+}
 
-    let mut frame_count = 1_u64;
-    let first_captured_at = first.captured_at();
-    let nominal_duration = (1000 / fps).max(1);
-    let mut final_duration = nominal_duration;
-    for frame in frames {
-        let (frame_width, frame_height) = frame.dimensions();
-        let bgra = resize_bgra(frame.bgra(), frame_width, frame_height, width, height);
-        let stream = encoder
-            .encode(&YUVBuffer::from_rgb_source(BgraSliceU8::new(
-                &bgra,
-                (width as usize, height as usize),
-            )))
-            .map_err(capture_error)?;
-        let elapsed_ms = u64::try_from(
-            frame
-                .captured_at()
-                .saturating_duration_since(first_captured_at)
-                .as_millis(),
-        )
-        .unwrap_or(u64::MAX);
-        let Some(mut current) = pending_sample(&stream, elapsed_ms)? else {
-            continue;
-        };
-        current.start_time = current.start_time.max(pending.start_time.saturating_add(1));
-        final_duration = u32::try_from(current.start_time - pending.start_time)
-            .unwrap_or(u32::MAX)
-            .max(1);
-        write_sample(&mut writer, pending, final_duration)?;
-        pending = current;
-        frame_count = frame_count.saturating_add(1);
-    }
-    let duration_ms = pending.start_time.saturating_add(u64::from(final_duration));
-    write_sample(&mut writer, pending, final_duration)?;
+fn finalize_segment(
+    mut writer: Mp4Writer<File>,
+    partial_path: &Path,
+    final_path: &Path,
+) -> ComputerUseResult<()> {
     writer.write_end().map_err(capture_error)?;
-    Ok(json!({
-        "active": false,
-        "backend": "embedded-openh264",
-        "path": path.to_string_lossy(),
-        "width": width,
-        "height": height,
-        "fps": fps,
-        "frames": frame_count,
-        "duration_ms": duration_ms,
-        "finalized": true,
-    }))
+    let file = writer.into_writer();
+    file.sync_all().map_err(capture_error)?;
+    drop(file);
+    std::fs::rename(partial_path, final_path).map_err(capture_error)
+}
+
+fn ensure_final_path_available(path: &Path) -> ComputerUseResult<()> {
+    if path.exists() {
+        return Err(capture_error(format!(
+            "showcase segment already exists: {}",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
+fn segment_output_path(path: &Path, index: u32) -> PathBuf {
+    if index == 0 {
+        return path.to_path_buf();
+    }
+    let stem = path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("showcase");
+    path.with_file_name(format!("{stem}-{:04}.mp4", index + 1))
+}
+
+fn partial_segment_path(path: &Path) -> PathBuf {
+    let stem = path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("showcase");
+    path.with_file_name(format!("{stem}.partial.mp4"))
+}
+
+fn manifest_output_path(path: &Path) -> PathBuf {
+    let stem = path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("showcase");
+    path.with_file_name(format!("{stem}.manifest.json"))
+}
+
+fn write_manifest(path: &Path, manifest: &Value) -> ComputerUseResult<()> {
+    ensure_final_path_available(path)?;
+    let stem = path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("showcase.manifest");
+    let partial_path = path.with_file_name(format!("{stem}.partial.json"));
+    let mut file = File::options()
+        .write(true)
+        .create_new(true)
+        .open(&partial_path)
+        .map_err(capture_error)?;
+    serde_json::to_writer_pretty(&mut file, manifest).map_err(capture_error)?;
+    file.write_all(b"\n").map_err(capture_error)?;
+    file.sync_all().map_err(capture_error)?;
+    drop(file);
+    std::fs::rename(partial_path, path).map_err(capture_error)
+}
+
+fn segment_state(
+    index: u32,
+    path: &Path,
+    start_ms: u64,
+    duration_ms: u64,
+    frames: u64,
+    format: VideoFormat,
+) -> ShowcaseSegment {
+    ShowcaseSegment {
+        index,
+        path: path.to_path_buf(),
+        start_ms,
+        duration_ms,
+        frames,
+        width: format.width,
+        height: format.height,
+        fps: format.fps,
+        finalized: true,
+    }
 }
 
 fn pending_sample(

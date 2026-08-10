@@ -1512,7 +1512,7 @@ async fn controlled_native_menu_round_trip() {
 #[cfg(all(feature = "gui-e2e", windows))]
 #[rstest]
 #[tokio::test]
-async fn windows_endpoint_sessions_keep_injected_escape_local_and_share_user_interrupt() {
+async fn windows_endpoint_sessions_keep_background_uia_and_distinguish_injected_escape() {
     let binary = std::env::var_os("DCC_CUA_E2E_BINARY")
         .map(PathBuf::from)
         .expect("DCC_CUA_E2E_BINARY must point to dcc-cua");
@@ -1776,37 +1776,38 @@ async fn windows_endpoint_sessions_keep_injected_escape_local_and_share_user_int
     .await;
     assert_eq!(pressed.value["success"], true, "{}", pressed.value);
     tokio::time::sleep(Duration::from_millis(100)).await;
-    let interrupted_client = 1 - active_client;
-    let (_, session_id, grant_id, capability, _) = sessions
-        .iter()
-        .find(|(client_index, ..)| *client_index == interrupted_client)
-        .expect("other endpoint client session");
-    let still_active = client_request(
-        &mut clients[interrupted_client],
-        "get_session_state",
-        json!({
-            "session_id": session_id,
-            "task_grant_id": grant_id,
-            "window_capability": capability,
-        }),
-    )
-    .await;
-    assert_eq!(
-        still_active.value["type"], "session_state",
-        "agent-injected Escape must not broadcast a user interruption: {}",
-        still_active.value
-    );
+    for (client_index, session_id, grant_id, capability, _) in &sessions {
+        let alive = client_request(
+            &mut clients[*client_index],
+            "get_session_state",
+            json!({
+                "session_id": session_id,
+                "task_grant_id": grant_id,
+                "window_capability": capability,
+            }),
+        )
+        .await;
+        assert_eq!(
+            alive.value["state"]["structuredContent"]["session"],
+            session_id.as_str(),
+            "agent-injected Escape must not interrupt Host sessions: {}",
+            alive.value
+        );
+    }
+
     let interrupted = client_request(&mut clients[active_client], "interrupt_all", json!({})).await;
     assert_eq!(interrupted.value["scope"], "host_process");
-    expect_user_interrupted(
-        &mut clients[interrupted_client],
-        json!({
-            "session_id": session_id,
-            "task_grant_id": grant_id,
-            "window_capability": capability,
-        }),
-    )
-    .await;
+    for (client_index, session_id, grant_id, capability, _) in &sessions {
+        expect_user_interrupted(
+            &mut clients[*client_index],
+            json!({
+                "session_id": session_id,
+                "task_grant_id": grant_id,
+                "window_capability": capability,
+            }),
+        )
+            .await;
+    }
 
     drop(clients);
     drop(fixture_reaper);

@@ -17,6 +17,12 @@ fn live_observation_state_is_pipeline_safe() {
     assert!(!is_pipeline_safe_method("live_observation_start"));
 }
 
+#[test]
+fn input_state_read_is_pipeline_safe_but_event_long_poll_is_not() {
+    assert!(is_pipeline_safe_method("get_input_state"));
+    assert!(!is_pipeline_safe_method("poll_session_events"));
+}
+
 async fn write_frame<W: AsyncWrite + Unpin>(
     writer: &mut W,
     body: &[u8],

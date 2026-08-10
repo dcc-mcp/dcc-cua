@@ -7,6 +7,7 @@
 
 mod endpoint;
 mod request_handler;
+mod session_events;
 mod session_identity;
 mod session_state;
 mod task_grant;
@@ -22,6 +23,8 @@ pub use task_grant::{MAX_APPLICATION_LABEL_CHARS, MAX_TASK_GRANT_ID_CHARS};
 
 pub const HOST_HELLO_TIMEOUT_MS: u64 = 10_000;
 pub const MAX_POST_SNAPSHOT_DELAY_MS: u64 = 5_000;
+pub const MAX_SESSION_EVENT_POLL_TIMEOUT_MS: u64 = 30_000;
+pub const MAX_SESSION_INPUT_EVENTS: usize = 64;
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -46,8 +49,9 @@ use dcc_cua_core::{
     ComputerUseDriver, ComputerUseError, ComputerUseErrorCode, ComputerUseImage,
     ComputerUseLiveObservationStartRequest, ComputerUseMenuRequest, ComputerUsePoint,
     ComputerUseRecordingStartRequest, ComputerUseResult, ComputerUseScreenshot,
-    ComputerUseTargetScope, ComputerUseToolResult, ComputerUseWindowFrameRequest,
-    ComputerUseWindowQuery, ComputerUseWindowWaitRequest, ComputerUseZoomRequest,
+    ComputerUseSessionStartRequest, ComputerUseTargetScope, ComputerUseToolResult,
+    ComputerUseWindowFrameRequest, ComputerUseWindowQuery, ComputerUseWindowWaitRequest,
+    ComputerUseZoomRequest, IndicatorMotionPolicy,
 };
 use dcc_cua_indicator::{broadcast_interrupt, interrupt_generation, interrupt_generation_changed};
 use dcc_cua_shm::SharedImage;
@@ -68,11 +72,17 @@ pub const HOST_CAPABILITIES: &[&str] = &[
     "background_first_input_delivery",
     "scoped_raw_input",
     "serialized_raw_input",
+    "input_backend:windows.send_input.v1",
+    "input_backend:windows.send_input.relative_drag.v1",
+    "input_backend:windows.send_input.combined_down_drag.v1",
+    "input_backend:windows.synthetic_touch.v1",
     "host_wide_interrupt",
     "accessibility_snapshot",
     "accessibility_find",
     "state_verification",
     "session_state",
+    "session_input_state_events",
+    "session_target_state_events",
     "session_escalation",
     "cursor_controls",
     "uia_snapshot_and_actions",
@@ -90,6 +100,9 @@ pub const HOST_CAPABILITIES: &[&str] = &[
     "cua_cursor_marker",
     "cross_platform_window_control",
     "scoped_window_activate",
+    "exact_window_restore_activate",
+    "open_session_activate_before",
+    "indicator_motion_policy",
     "scoped_window_frame",
     "native_menu_path",
     "degraded_window_visual_fallback",
@@ -140,6 +153,8 @@ pub fn host_capabilities(cursor_controls_available: bool) -> Vec<&'static str> {
             (!matches!(*capability, "cursor_controls" | "cua_cursor_marker")
                 || cursor_controls_available)
                 && (*capability != "windows_background_uia_fallback" || cfg!(windows))
+                && (*capability != "exact_window_restore_activate" || cfg!(windows))
+                && (!capability.starts_with("input_backend:windows.") || cfg!(windows))
         })
         .collect()
 }
@@ -290,6 +305,10 @@ enum Request {
     OpenSession {
         session_id: String,
         grant: TaskGrant,
+        #[serde(default)]
+        activate_before: bool,
+        #[serde(default)]
+        indicator_motion: IndicatorMotionPolicy,
     },
     GetWindowState {
         session_id: String,
@@ -459,6 +478,19 @@ enum Request {
         task_grant_id: String,
         window_capability: String,
     },
+    GetInputState {
+        session_id: String,
+        task_grant_id: String,
+        window_capability: String,
+    },
+    PollSessionEvents {
+        session_id: String,
+        task_grant_id: String,
+        window_capability: String,
+        after_sequence: u64,
+        #[serde(default)]
+        timeout_ms: u64,
+    },
     CursorTool {
         session_id: String,
         task_grant_id: String,
@@ -527,6 +559,7 @@ impl SnapshotTransport {
 #[serde(rename_all = "snake_case")]
 enum WindowOperation {
     Activate,
+    RestoreActivate,
 }
 
 #[derive(Debug, Deserialize)]
@@ -538,6 +571,8 @@ struct HostAction {
     element_token: Option<String>,
     #[serde(default)]
     delivery_mode: Option<String>,
+    #[serde(default)]
+    input_backend_id: Option<String>,
     input_kind: String,
     intent: String,
     #[serde(default)]
@@ -709,6 +744,7 @@ impl HostAction {
             element_index: self.element_index,
             element_token: self.element_token,
             delivery_mode: self.delivery_mode,
+            input_backend_id: self.input_backend_id,
             x: self.x,
             y: self.y,
             button: self.button,
@@ -1124,18 +1160,34 @@ where
     R: AsyncRead + Unpin,
 {
     let mut pending_frame = Box::pin(read_frame(reader, MAX_JSON_FRAME_BYTES));
-    let mut poll = tokio::time::interval(Duration::from_millis(50));
-    poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut interrupt_poll = tokio::time::interval(Duration::from_millis(50));
+    interrupt_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut session_state_poll = tokio::time::interval(Duration::from_millis(250));
+    session_state_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         tokio::select! {
             frame = &mut pending_frame => return frame,
-            _ = poll.tick() => {
+            _ = interrupt_poll.tick() => {
                 let current = interrupt_generation();
                 if interrupt_generation_changed(*observed_generation, current) {
                     stop_connection_control_sessions(sessions).await;
                     *observed_generation = current;
                 }
             }
+            _ = session_state_poll.tick() => {
+                refresh_connection_session_states(&mut sessions.windows).await;
+            }
+        }
+    }
+}
+
+async fn refresh_connection_session_states(sessions: &mut HashMap<String, HostSession>) {
+    let (readiness, observed_at) = session_events::input_readiness_sample();
+    for session in sessions.values_mut() {
+        session.observe_input_readiness(readiness.clone(), observed_at);
+        let availability = session.session.target_availability().await;
+        if let Ok(availability) = session.finish_observation_sensitive_attempt(availability) {
+            session.observe_target_availability(availability);
         }
     }
 }
@@ -1495,6 +1547,17 @@ async fn authorized_session<'a>(
     grant_id: &str,
     capability: &str,
 ) -> Result<&'a mut HostSession, HostError> {
+    let session = session_with_capability(sessions, session_id, grant_id, capability)?;
+    ensure_session_not_interrupted(session).await?;
+    Ok(session)
+}
+
+fn session_with_capability<'a>(
+    sessions: &'a mut HashMap<String, HostSession>,
+    session_id: &str,
+    grant_id: &str,
+    capability: &str,
+) -> Result<&'a mut HostSession, HostError> {
     let session = sessions
         .get_mut(session_id)
         .ok_or_else(|| HostError::Protocol("session not found".into()))?;
@@ -1503,7 +1566,6 @@ async fn authorized_session<'a>(
             "session grant or capability mismatch".into(),
         ));
     }
-    ensure_session_not_interrupted(session).await?;
     Ok(session)
 }
 
@@ -1532,7 +1594,27 @@ async fn ensure_session_not_interrupted(session: &mut HostSession) -> Result<(),
         )
         .into());
     }
+    if let Some(failure) = session.session.control_banner_failure() {
+        let cleanup_note = session
+            .session
+            .stop()
+            .await
+            .err()
+            .map(|error| format!("; CUA cleanup also failed: {error}"))
+            .unwrap_or_default();
+        return Err(stopped_banner_failure(failure, &cleanup_note).into());
+    }
     Ok(())
+}
+
+fn stopped_banner_failure(failure: ComputerUseError, cleanup_note: &str) -> ComputerUseError {
+    ComputerUseError::new(
+        failure.code,
+        format!(
+            "the visible control banner failed and the session was stopped: {}{cleanup_note}",
+            failure.message
+        ),
+    )
 }
 
 async fn authorized_desktop_session<'a>(
@@ -1672,9 +1754,10 @@ fn action_completed_response(
         mode,
         shared_image,
     )?;
+    let success = tool_response["result"]["success"].as_bool().unwrap_or(true);
     let mut response = json!({
         "type": "action_completed",
-        "success": true,
+        "success": success,
         "action_id": action_id,
         "target_closed": false,
         "policy_tier": "task_grant",
@@ -1788,6 +1871,8 @@ fn error_code(error: &HostError) -> &'static str {
             ComputerUseErrorCode::StaleObservation => "stale_observation",
             ComputerUseErrorCode::UserInterrupted => "user_interrupted",
             ComputerUseErrorCode::InvalidTarget => "invalid_target",
+            ComputerUseErrorCode::TargetMinimized => "target_minimized",
+            ComputerUseErrorCode::TargetUnavailable => "target_unavailable",
             ComputerUseErrorCode::BrowserRefused => "browser_refused",
             ComputerUseErrorCode::ClipboardRefused => "clipboard_refused",
             ComputerUseErrorCode::RecordingRefused => "recording_refused",
@@ -1796,8 +1881,9 @@ fn error_code(error: &HostError) -> &'static str {
                 "interactive_desktop_unavailable"
             }
             ComputerUseErrorCode::InputFailed => "input_failed",
+            ComputerUseErrorCode::CompletionUnknown => "completion_unknown",
             ComputerUseErrorCode::InvalidAction => "invalid_request",
-            ComputerUseErrorCode::MissingWindow => "invalid_target",
+            ComputerUseErrorCode::MissingWindow => "target_unavailable",
             ComputerUseErrorCode::BackendUnavailable => "backend_unavailable",
         },
         HostError::Io(_) => "backend_unavailable",

@@ -164,8 +164,8 @@ impl BrowserSession {
     }
 
     pub async fn prepare(
-        &self,
-        native: &ComputerUseSession,
+        &mut self,
+        native: &mut ComputerUseSession,
         request: BrowserPrepareRequest,
     ) -> ComputerUseResult<BrowserResult> {
         if request
@@ -187,12 +187,13 @@ impl BrowserSession {
         if let Some(value) = request.strategy {
             args["strategy"] = value;
         }
+        self.begin_snapshot_sensitive_native_attempt();
         BrowserResult::from_value(native.call_browser_tool("browser_prepare", args).await?)
     }
 
     pub async fn snapshot(
         &mut self,
-        native: &ComputerUseSession,
+        native: &mut ComputerUseSession,
         request: BrowserSnapshotRequest,
     ) -> ComputerUseResult<BrowserResult> {
         if request.snapshot_format != "dom_refs_v1" && request.snapshot_format != "semantic_v2" {
@@ -219,6 +220,7 @@ impl BrowserSession {
                 if request.tab_id.is_some() {
                     return Err(invalid("tab_id requires target_id"));
                 }
+                self.begin_snapshot_sensitive_native_attempt();
                 let result = BrowserResult::from_value(
                     native.call_browser_tool("get_browser_state", args).await?,
                 )?;
@@ -235,6 +237,7 @@ impl BrowserSession {
                 }
                 args["target_id"] = json!(target_id);
                 args["tab_id"] = json!(tab_id);
+                self.begin_snapshot_sensitive_native_attempt();
                 let result = BrowserResult::from_value(
                     native.call_browser_tool("get_browser_state", args).await?,
                 )?;
@@ -247,11 +250,12 @@ impl BrowserSession {
 
     pub async fn navigate(
         &mut self,
-        native: &ComputerUseSession,
+        native: &mut ComputerUseSession,
         request: BrowserNavigateRequest,
     ) -> ComputerUseResult<BrowserResult> {
         self.require_exact_target(&request.target_id)?;
         validate_url(&request.url)?;
+        self.begin_snapshot_sensitive_native_attempt();
         let result = BrowserResult::from_value(
             native
                 .call_browser_tool(
@@ -264,13 +268,12 @@ impl BrowserSession {
                 )
                 .await?,
         )?;
-        self.clear_snapshot();
         Ok(result)
     }
 
     pub async fn click(
         &mut self,
-        native: &ComputerUseSession,
+        native: &mut ComputerUseSession,
         request: BrowserClickRequest,
     ) -> ComputerUseResult<BrowserResult> {
         self.require_mutation_target(&request.target_id, &request.tab_id, &request.snapshot_id)?;
@@ -296,15 +299,15 @@ impl BrowserSession {
             args["x"] = json!(value);
             args["y"] = json!(request.y.expect("x/y pair validated"));
         }
+        self.begin_snapshot_sensitive_native_attempt();
         let result =
             BrowserResult::from_value(native.call_browser_tool("browser_click", args).await?)?;
-        self.clear_snapshot();
         Ok(result)
     }
 
     pub async fn type_text(
         &mut self,
-        native: &ComputerUseSession,
+        native: &mut ComputerUseSession,
         request: BrowserTypeRequest,
     ) -> ComputerUseResult<BrowserResult> {
         self.require_mutation_target(&request.target_id, &request.tab_id, &request.snapshot_id)?;
@@ -322,6 +325,7 @@ impl BrowserSession {
                 "browser_type mode must be insert_text or keystrokes",
             ));
         }
+        self.begin_snapshot_sensitive_native_attempt();
         let result = BrowserResult::from_value(
             native
                 .call_browser_tool(
@@ -337,13 +341,12 @@ impl BrowserSession {
                 )
                 .await?,
         )?;
-        self.clear_snapshot();
         Ok(result)
     }
 
     pub async fn pointer(
         &mut self,
-        native: &ComputerUseSession,
+        native: &mut ComputerUseSession,
         request: BrowserPointerRequest,
     ) -> ComputerUseResult<BrowserResult> {
         self.require_mutation_target(&request.target_id, &request.tab_id, &request.snapshot_id)?;
@@ -382,20 +385,21 @@ impl BrowserSession {
                 args[key] = json!(value);
             }
         }
+        self.begin_snapshot_sensitive_native_attempt();
         let result =
             BrowserResult::from_value(native.call_browser_tool("browser_pointer", args).await?)?;
-        self.clear_snapshot();
         Ok(result)
     }
 
     pub async fn set_input_files(
         &mut self,
-        native: &ComputerUseSession,
+        native: &mut ComputerUseSession,
         request: BrowserSetInputFilesRequest,
     ) -> ComputerUseResult<BrowserResult> {
         self.require_mutation_target(&request.target_id, &request.tab_id, &request.snapshot_id)?;
         validate_ref(&request.element_ref, "browser_set_input_files ref")?;
         let files = validate_upload_paths(&request.files)?;
+        self.begin_snapshot_sensitive_native_attempt();
         let result = BrowserResult::from_value(
             native
                 .call_browser_tool(
@@ -409,18 +413,18 @@ impl BrowserSession {
                 )
                 .await?,
         )?;
-        self.clear_snapshot();
         Ok(result)
     }
 
     pub async fn download(
         &mut self,
-        native: &ComputerUseSession,
+        native: &mut ComputerUseSession,
         request: BrowserDownloadRequest,
     ) -> ComputerUseResult<BrowserResult> {
         self.require_mutation_target(&request.target_id, &request.tab_id, &request.snapshot_id)?;
         validate_ref(&request.element_ref, "browser_download ref")?;
         let destination_root = validate_destination_root(&request.destination_root)?;
+        self.begin_snapshot_sensitive_native_attempt();
         let result = BrowserResult::from_value(
             native
                 .call_browser_download_tool(json!({
@@ -431,13 +435,12 @@ impl BrowserSession {
                 }))
                 .await?,
         )?;
-        self.clear_snapshot();
         Ok(result)
     }
 
     pub async fn dialog(
         &mut self,
-        native: &ComputerUseSession,
+        native: &mut ComputerUseSession,
         request: BrowserDialogRequest,
     ) -> ComputerUseResult<BrowserResult> {
         self.require_exact_target(&request.target_id)?;
@@ -456,11 +459,11 @@ impl BrowserSession {
             args["prompt_text"] = json!(prompt_text);
         }
         let action = request.action;
+        if action != "inspect" {
+            self.begin_snapshot_sensitive_native_attempt();
+        }
         let result =
             BrowserResult::from_value(native.call_browser_tool("browser_dialog", args).await?)?;
-        if action != "inspect" {
-            self.clear_snapshot();
-        }
         Ok(result)
     }
 
@@ -533,6 +536,10 @@ impl BrowserSession {
     fn clear_snapshot(&mut self) {
         self.latest_snapshot_id = None;
         self.latest_tab_id = None;
+    }
+
+    fn begin_snapshot_sensitive_native_attempt(&mut self) {
+        self.clear_snapshot();
     }
 }
 

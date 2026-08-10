@@ -44,6 +44,23 @@ fn geometry_changes_invalidate_only_the_browser_snapshot() {
 }
 
 #[rstest]
+fn native_attempt_preclear_preserves_binding_and_fences_snapshot() {
+    let mut session = BrowserSession {
+        target_id: Some("target-1".into()),
+        mutation_allowed: true,
+        latest_snapshot_id: Some("snapshot-1".into()),
+        latest_tab_id: Some("tab-1".into()),
+    };
+
+    session.begin_snapshot_sensitive_native_attempt();
+
+    assert_eq!(session.target_id.as_deref(), Some("target-1"));
+    assert!(session.mutation_allowed);
+    assert!(session.latest_snapshot_id.is_none());
+    assert!(session.latest_tab_id.is_none());
+}
+
+#[rstest]
 fn browser_file_paths_require_direct_files_and_direct_directory() {
     assert!(validate_upload_paths(&[]).is_err());
     assert!(validate_upload_paths(&["relative.txt".into()]).is_err());

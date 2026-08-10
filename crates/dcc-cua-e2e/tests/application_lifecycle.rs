@@ -272,8 +272,10 @@ async fn host_launches_records_and_terminates_one_exact_application() {
         }),
     )
     .await;
+    assert_eq!(state.value["result"]["status"], "active");
+    assert_eq!(state.value["result"]["healthy"], true);
     assert!(
-        state.value["result"]["structuredContent"]["next_turn"]
+        state.value["result"]["trajectory"]["structuredContent"]["next_turn"]
             .as_u64()
             .is_some_and(|turn| turn >= 2),
         "recording did not observe the Host mutation: {}",

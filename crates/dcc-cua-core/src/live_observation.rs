@@ -1,6 +1,7 @@
 #[cfg(any(not(windows), test))]
 use std::io::Cursor;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use dcc_cua_indicator::{interrupt_generation, interrupt_generation_changed};
@@ -16,6 +17,34 @@ use crate::{
 };
 
 const FIRST_FRAME_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+static LIVE_OBSERVATION_STREAM_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct LiveObservationFence {
+    stream_id: u64,
+    sequence: u64,
+}
+
+impl LiveObservationFence {
+    pub(crate) const fn new(stream_id: u64, sequence: u64) -> Self {
+        Self {
+            stream_id,
+            sequence,
+        }
+    }
+
+    pub(crate) const fn sequence_for(self, stream_id: u64) -> Option<u64> {
+        if self.stream_id == stream_id {
+            Some(self.sequence)
+        } else {
+            None
+        }
+    }
+
+    pub(crate) const fn stream_id(self) -> u64 {
+        self.stream_id
+    }
+}
 
 #[derive(Debug)]
 pub(crate) struct LiveObservationFrame {
@@ -85,6 +114,26 @@ pub(crate) struct LiveObservationStatus {
     max_capture_duration_ms: u64,
     capture_mode: Option<&'static str>,
     last_error: Option<String>,
+    terminal_reason: Option<LiveObservationTerminalReason>,
+}
+
+#[derive(Clone, Debug)]
+struct LiveObservationTerminalReason {
+    code: ComputerUseErrorCode,
+    message: String,
+    timestamp_ms: u128,
+    last_sequence: Option<u64>,
+}
+
+impl LiveObservationTerminalReason {
+    fn as_json(&self) -> Value {
+        json!({
+            "code": self.code,
+            "message": self.message,
+            "timestamp_ms": self.timestamp_ms,
+            "last_sequence": self.last_sequence,
+        })
+    }
 }
 
 impl LiveObservationStatus {
@@ -126,6 +175,30 @@ impl LiveObservationStatus {
         self.last_error = Some(message.into());
     }
 
+    pub(crate) fn record_terminal_error(&mut self, error: &ComputerUseError) {
+        self.record_error(error.message.clone());
+        self.terminal_reason = Some(LiveObservationTerminalReason {
+            code: error.code,
+            message: error.message.clone(),
+            timestamp_ms: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_or(0, |duration| duration.as_millis()),
+            last_sequence: self.latest.as_ref().map(|frame| frame.sequence()),
+        });
+    }
+
+    pub(crate) fn terminal_reason(&self) -> Option<Value> {
+        self.terminal_reason
+            .as_ref()
+            .map(LiveObservationTerminalReason::as_json)
+    }
+
+    fn terminal_error(&self) -> Option<ComputerUseError> {
+        self.terminal_reason
+            .as_ref()
+            .map(|reason| ComputerUseError::new(reason.code, reason.message.clone()))
+    }
+
     pub(crate) fn latest(&self) -> Option<Arc<LiveObservationFrame>> {
         self.latest.clone()
     }
@@ -157,6 +230,7 @@ impl LiveObservationStatus {
             "frames_replaced": self.frames_replaced,
             "capture_failures": self.capture_failures,
             "last_error": self.last_error,
+            "terminal_reason": self.terminal_reason(),
         })
     }
 }
@@ -169,6 +243,9 @@ pub(crate) async fn wait_for_latest_frame(
     let deadline = tokio::time::Instant::now() + wait;
     loop {
         let status = receiver.borrow_and_update().clone();
+        if let Some(error) = status.terminal_error() {
+            return Err(error);
+        }
         if let Some(frame) = status
             .latest()
             .filter(|frame| after_sequence.is_none_or(|sequence| frame.sequence() > sequence))
@@ -195,14 +272,91 @@ pub(crate) async fn wait_for_latest_frame(
     }
 }
 
+/// Combine the decision-frame fence with the sequence that was latest when an
+/// action completed. A post-action observation must be strictly newer than
+/// both; otherwise a prefetched frame from before the action can be mistaken
+/// for evidence of its effect.
+#[cfg(test)]
+pub(crate) fn post_action_sequence_fence(
+    stream_id: u64,
+    decision: Option<LiveObservationFence>,
+    action_completion: Option<LiveObservationFence>,
+) -> Option<u64> {
+    observation_sequence_fence(stream_id, decision, action_completion, None)
+}
+
+/// Require a live frame newer than every evidence invalidation boundary.
+/// Transition fences are independent from post-action fences because input or
+/// target suspension preserves the producer while invalidating consumers.
+pub(crate) fn observation_sequence_fence(
+    stream_id: u64,
+    decision: Option<LiveObservationFence>,
+    action_completion: Option<LiveObservationFence>,
+    transition: Option<LiveObservationFence>,
+) -> Option<u64> {
+    decision
+        .and_then(|fence| fence.sequence_for(stream_id))
+        .max(action_completion.and_then(|fence| fence.sequence_for(stream_id)))
+        .max(transition.and_then(|fence| fence.sequence_for(stream_id)))
+}
+
 pub(crate) struct LiveObservation {
+    stream_id: u64,
     fps: u32,
     max_dimension: u32,
     receiver: watch::Receiver<LiveObservationStatus>,
     task: JoinHandle<()>,
 }
 
+#[cfg(test)]
+pub(crate) struct LiveObservationTestPublisher {
+    sender: watch::Sender<LiveObservationStatus>,
+}
+
+#[cfg(test)]
+impl LiveObservationTestPublisher {
+    pub(crate) fn publish_frame(&self, sequence: u64, capture_mode: &'static str) {
+        self.sender.send_modify(|status| {
+            status.publish_frame(
+                LiveObservationFrame::new(sequence, vec![0; 4], 1, 1, std::time::Instant::now()),
+                Duration::ZERO,
+                capture_mode,
+            );
+        });
+    }
+}
+
 impl LiveObservation {
+    #[cfg(test)]
+    pub(crate) fn from_test_frame(stream_id: u64, sequence: u64) -> Self {
+        Self::from_test_stream(stream_id, sequence).0
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_test_stream(
+        stream_id: u64,
+        sequence: u64,
+    ) -> (Self, LiveObservationTestPublisher) {
+        let mut status = LiveObservationStatus::default();
+        status.publish_frame(
+            LiveObservationFrame::new(sequence, vec![0; 4], 1, 1, std::time::Instant::now()),
+            Duration::ZERO,
+            "test_capture",
+        );
+        let (sender, receiver) = watch::channel(status);
+        let task = tokio::spawn(async { std::future::pending::<()>().await });
+        (
+            Self {
+                stream_id,
+                fps: 1,
+                max_dimension: 1,
+                receiver,
+                task,
+            },
+            LiveObservationTestPublisher { sender },
+        )
+    }
+
     pub(crate) async fn start(
         driver: ComputerUseDriver,
         session_id: String,
@@ -211,6 +365,7 @@ impl LiveObservation {
         request: &ComputerUseLiveObservationStartRequest,
     ) -> ComputerUseResult<Self> {
         request.validate()?;
+        let stream_id = LIVE_OBSERVATION_STREAM_COUNTER.fetch_add(1, Ordering::Relaxed);
         #[cfg(not(windows))]
         {
             let fps = request.fps;
@@ -225,6 +380,7 @@ impl LiveObservation {
                 sender,
             ));
             let mut observation = Self {
+                stream_id,
                 fps,
                 max_dimension: request.max_dimension,
                 receiver,
@@ -236,7 +392,7 @@ impl LiveObservation {
         #[cfg(windows)]
         {
             let _ = (driver, session_id);
-            crate::interactive_desktop::require_available()?;
+            crate::interactive_desktop::require_exact_window_observation_available()?;
             ensure_window_owner(process_id, window_handle)?;
             let fps = request.fps;
             let (sender, receiver) = watch::channel(LiveObservationStatus::default());
@@ -248,6 +404,7 @@ impl LiveObservation {
                 sender,
             ));
             let mut observation = Self {
+                stream_id,
                 fps,
                 max_dimension: request.max_dimension,
                 receiver,
@@ -265,10 +422,28 @@ impl LiveObservation {
         wait_for_latest_frame(&mut self.receiver, sequence, FIRST_FRAME_TIMEOUT).await
     }
 
-    pub(crate) fn state(&self) -> Value {
+    pub(crate) fn latest_fence(&self) -> Option<LiveObservationFence> {
         self.receiver
             .borrow()
-            .as_json(!self.task.is_finished(), self.fps)
+            .latest()
+            .map(|frame| LiveObservationFence::new(self.stream_id, frame.sequence()))
+    }
+
+    pub(crate) const fn stream_id(&self) -> u64 {
+        self.stream_id
+    }
+
+    pub(crate) fn state(&self) -> Value {
+        let mut state = self
+            .receiver
+            .borrow()
+            .as_json(!self.task.is_finished(), self.fps);
+        state["stream_id"] = json!(self.stream_id);
+        state
+    }
+
+    pub(crate) fn is_active(&self) -> bool {
+        !self.task.is_finished()
     }
 
     pub(crate) fn subscribe(&self) -> watch::Receiver<LiveObservationStatus> {
@@ -324,12 +499,12 @@ async fn run_portable_capture_loop(
                     );
                 });
             }
+            Err(error) if terminal_capture_error(&error) => {
+                sender.send_modify(|status| status.record_terminal_error(&error));
+                return;
+            }
             Err(error) => {
-                let terminal = terminal_capture_error(&error);
                 sender.send_modify(|status| status.record_error(error.message));
-                if terminal {
-                    return;
-                }
             }
         }
         tokio::time::sleep(interval.saturating_sub(capture_started.elapsed())).await;
@@ -343,6 +518,26 @@ pub(crate) fn terminal_capture_error(error: &ComputerUseError) -> bool {
             | ComputerUseErrorCode::InvalidTarget
             | ComputerUseErrorCode::InteractiveDesktopUnavailable
     )
+}
+
+#[derive(Debug)]
+pub(crate) enum CaptureFailureDisposition {
+    Retry(ComputerUseError),
+    Terminal(ComputerUseError),
+}
+
+pub(crate) fn live_capture_failure_disposition(
+    capture_error: ComputerUseError,
+    observation_availability: ComputerUseResult<()>,
+) -> CaptureFailureDisposition {
+    if let Err(desktop_error) = observation_availability {
+        return CaptureFailureDisposition::Terminal(desktop_error);
+    }
+    if terminal_capture_error(&capture_error) {
+        CaptureFailureDisposition::Terminal(capture_error)
+    } else {
+        CaptureFailureDisposition::Retry(capture_error)
+    }
 }
 
 #[cfg(any(not(windows), test))]
@@ -416,8 +611,12 @@ async fn run_capture_loop(
     })
     .await
     {
+        let error = ComputerUseError::new(
+            ComputerUseErrorCode::CaptureFailed,
+            format!("persistent WGC worker failed: {error}"),
+        );
         join_error_sender.send_modify(|status| {
-            status.record_error(format!("persistent WGC worker failed: {error}"));
+            status.record_terminal_error(&error);
         });
     }
 }
@@ -505,14 +704,17 @@ fn run_windows_capture_loop(
                 });
             }
             Err(error) => {
-                if let Err(desktop_error) = crate::interactive_desktop::require_available() {
-                    sender.send_modify(|status| status.record_error(desktop_error.message));
-                    return;
-                }
-                let terminal = terminal_capture_error(&error);
-                sender.send_modify(|status| status.record_error(error.message));
-                if terminal {
-                    return;
+                match live_capture_failure_disposition(
+                    error,
+                    crate::interactive_desktop::require_exact_window_observation_available(),
+                ) {
+                    CaptureFailureDisposition::Terminal(error) => {
+                        sender.send_modify(|status| status.record_terminal_error(&error));
+                        return;
+                    }
+                    CaptureFailureDisposition::Retry(error) => {
+                        sender.send_modify(|status| status.record_error(error.message));
+                    }
                 }
             }
         }
