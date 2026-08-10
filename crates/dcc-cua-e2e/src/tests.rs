@@ -1512,7 +1512,7 @@ async fn controlled_native_menu_round_trip() {
 #[cfg(all(feature = "gui-e2e", windows))]
 #[rstest]
 #[tokio::test]
-async fn windows_endpoint_sessions_keep_background_uia_and_share_escape() {
+async fn windows_endpoint_sessions_keep_injected_escape_local_and_share_user_interrupt() {
     let binary = std::env::var_os("DCC_CUA_E2E_BINARY")
         .map(PathBuf::from)
         .expect("DCC_CUA_E2E_BINARY must point to dcc-cua");
@@ -1781,6 +1781,23 @@ async fn windows_endpoint_sessions_keep_background_uia_and_share_escape() {
         .iter()
         .find(|(client_index, ..)| *client_index == interrupted_client)
         .expect("other endpoint client session");
+    let still_active = client_request(
+        &mut clients[interrupted_client],
+        "get_session_state",
+        json!({
+            "session_id": session_id,
+            "task_grant_id": grant_id,
+            "window_capability": capability,
+        }),
+    )
+    .await;
+    assert_eq!(
+        still_active.value["type"], "session_state",
+        "agent-injected Escape must not broadcast a user interruption: {}",
+        still_active.value
+    );
+    let interrupted = client_request(&mut clients[active_client], "interrupt_all", json!({})).await;
+    assert_eq!(interrupted.value["scope"], "host_process");
     expect_user_interrupted(
         &mut clients[interrupted_client],
         json!({
