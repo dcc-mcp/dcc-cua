@@ -50,7 +50,7 @@ fn unrelated_foreground_keeps_the_indicator_behind_that_window() {
 }
 
 #[cfg(windows)]
-#[test]
+#[rstest]
 fn native_overlay_is_owned_by_the_exact_target_without_global_topmost() {
     use windows::Win32::Foundation::HWND;
     use windows::Win32::UI::WindowsAndMessaging::{
@@ -236,7 +236,7 @@ fn stale_activity_guard_cannot_clear_a_newer_operation() {
     assert_eq!(activity.load(), BannerActivity::Ready);
 }
 
-#[test]
+#[rstest]
 fn indicator_failures_preserve_target_loss_as_a_typed_status() {
     let failure = BannerFailure::from(&IndicatorError::InvalidTarget(
         "control target window no longer exists".into(),
@@ -253,7 +253,7 @@ fn indicator_failures_preserve_target_loss_as_a_typed_status() {
     );
 }
 
-#[test]
+#[rstest]
 fn backend_indicator_failures_remain_distinct_from_target_loss() {
     let failure = BannerFailure::from(&IndicatorError::Backend("paint failed".into()));
 

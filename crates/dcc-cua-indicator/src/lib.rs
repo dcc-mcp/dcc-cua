@@ -138,6 +138,7 @@ pub fn breathing_frame_alpha(elapsed: Duration) -> u8 {
         .round() as u8
 }
 
+#[cfg(any(test, windows))]
 #[must_use]
 pub(crate) fn indicator_frame_alpha(motion: IndicatorMotionStatus, elapsed: Duration) -> u8 {
     if motion.motion_enabled {
