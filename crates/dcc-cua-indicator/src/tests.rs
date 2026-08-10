@@ -4,10 +4,13 @@ use super::*;
 
 #[cfg(windows)]
 #[rstest]
-fn native_overlays_are_hit_test_transparent_and_never_activate() {
-    assert_eq!(platform::overlay_input_result(0x0084).unwrap().0, -1);
-    assert_eq!(platform::overlay_input_result(0x0021).unwrap().0, 3);
-    assert!(platform::overlay_input_result(0x000f).is_none());
+fn native_overlays_are_noninteractive_and_excluded_from_uia() {
+    use windows::Win32::UI::WindowsAndMessaging::WM_GETOBJECT;
+
+    assert_eq!(platform::overlay_message_result(0x0084).unwrap().0, -1);
+    assert_eq!(platform::overlay_message_result(0x0021).unwrap().0, 3);
+    assert_eq!(platform::overlay_message_result(WM_GETOBJECT).unwrap().0, 0);
+    assert!(platform::overlay_message_result(0x000f).is_none());
 }
 
 #[cfg(windows)]

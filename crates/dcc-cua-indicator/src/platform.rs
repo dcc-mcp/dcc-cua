@@ -32,9 +32,10 @@ use windows::Win32::UI::WindowsAndMessaging::{
     SWP_NOZORDER, SWP_SHOWWINDOW, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SendMessageTimeoutW,
     SetLayeredWindowAttributes, SetPropW, SetWindowDisplayAffinity, SetWindowPos,
     SetWindowsHookExW, ShowWindow, SystemParametersInfoW, TranslateMessage, UnhookWindowsHookEx,
-    WDA_EXCLUDEFROMCAPTURE, WH_KEYBOARD_LL, WINDOW_EX_STYLE, WINDOW_STYLE, WM_GETICON, WM_KEYDOWN,
-    WM_KEYUP, WM_MOUSEACTIVATE, WM_NCHITTEST, WM_PAINT, WM_SYSKEYDOWN, WM_SYSKEYUP, WNDCLASSW,
-    WNDPROC, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT, WS_POPUP,
+    WDA_EXCLUDEFROMCAPTURE, WH_KEYBOARD_LL, WINDOW_EX_STYLE, WINDOW_STYLE, WM_GETICON,
+    WM_GETOBJECT, WM_KEYDOWN, WM_KEYUP, WM_MOUSEACTIVATE, WM_NCHITTEST, WM_PAINT, WM_SYSKEYDOWN,
+    WM_SYSKEYUP, WNDCLASSW, WNDPROC, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+    WS_EX_TRANSPARENT, WS_POPUP,
 };
 use windows::core::{BOOL, HRESULT, PCWSTR, w};
 
@@ -1138,7 +1139,7 @@ unsafe extern "system" fn frame_window_proc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
-    if let Some(result) = overlay_input_result(message) {
+    if let Some(result) = overlay_message_result(message) {
         return result;
     }
     if message != WM_PAINT {
@@ -1163,7 +1164,7 @@ unsafe extern "system" fn window_proc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
-    if let Some(result) = overlay_input_result(message) {
+    if let Some(result) = overlay_message_result(message) {
         return result;
     }
     if message != WM_PAINT {
@@ -1221,8 +1222,9 @@ unsafe extern "system" fn window_proc(
     LRESULT(0)
 }
 
-pub(super) fn overlay_input_result(message: u32) -> Option<LRESULT> {
+pub(super) fn overlay_message_result(message: u32) -> Option<LRESULT> {
     match message {
+        WM_GETOBJECT => Some(LRESULT(0)),
         WM_NCHITTEST => Some(LRESULT(HTTRANSPARENT as isize)),
         WM_MOUSEACTIVATE => Some(LRESULT(MA_NOACTIVATE as isize)),
         _ => None,
