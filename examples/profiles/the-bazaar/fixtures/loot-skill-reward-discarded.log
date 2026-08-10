@@ -1,0 +1,8 @@
+[00:00:00.000] [AppState] State changed from [null] to [StartRunAppState]
+[00:00:01.000] [AppState] State changed from [ReplayState] to [LootState]
+[00:00:02.000] [GameSimHandler] Cards Dealt: [skl_reward [Medium] |
+[00:00:03.000] [NetworkManager] [HttpGameClient] Sending ExitCurrentStateCommand to /commands
+[00:00:03.200] [NetworkManager] [HttpGameClient] /commands | ExitCurrentStateCommand response | 200 ms
+[00:00:03.300] [AppState] State changed from [LootState] to [ChoiceState]
+[00:00:03.310] [GameSimHandler] Cards Dealt: [enc_next [Medium] |
+[00:00:03.320] [GameSimHandler] Cards Disposed: skl_reward | com_previous |

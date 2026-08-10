@@ -1,0 +1,26 @@
+# BEGIN EXPLICITLY SYNTHETIC BOOTSTRAP: establishes one run and exact locations.
+[16:46:21.136] [AppState] State changed from [null] to [StartRunAppState]
+[00:11:50.000] [BoardManager] Card Purchased: InstanceId: itm_wFPcN6k - TemplateIdtpl-mantis - Target:PlayerSocket_2 - SectionPlayer
+[00:11:50.001] [BoardManager] Card Purchased: InstanceId: itm_FFIhpYN - TemplateIdtpl-fireflies - Target:PlayerSocket_1 - SectionPlayer
+[03:31:20.000] [BoardManager] Card Purchased: InstanceId: itm_b0UO1QF - TemplateId014d9c98-e823-443c-98a3-6367ab81c956 - Target:PlayerSocket_3 - SectionPlayer
+# END EXPLICITLY SYNTHETIC BOOTSTRAP.
+# BEGIN UNMODIFIED PLAYER.LOG EXCERPTS observed on 2026-08-10. They are test
+# evidence only, not a claim about the current live game state.
+[00:11:51.641] [CardOperationUtility] Successfully moved card itm_wFPcN6k to Socket_1
+[00:11:51.643] [CardOperationUtility] Successfully moved card itm_FFIhpYN to Socket_2
+[00:11:51.649] [NetworkManager] [HttpGameClient] Sending MoveItemCommand to /commands
+[00:11:51.929] [NetworkManager] [HttpGameClient] Captured request id: 4
+[00:11:51.930] [NetworkManager] [HttpGameClient] /commands | MoveItemCommand response | 280 ms
+[00:11:51.930] [NetMessageProcessor] Received [NetMessageGameSim]  |  Id: [VC8]
+[00:11:51.930] [GameMessageHandler] Processing [NetMessageGameSim]  |  Id: [VC8]
+[00:11:51.931] [GameMessageHandler] Finished processing [NetMessageGameSim]  |  Id: [VC8]
+[03:31:21.987] [CardOperationUtility] Successfully removed item itm_b0UO1QF from player's inventory
+[03:31:21.990] [NetworkManager] [HttpGameClient] Sending SellCardCommand to /commands
+[03:31:22.220] [NetworkManager] [HttpGameClient] Captured request id: 21
+[03:31:22.220] [NetworkManager] [HttpGameClient] /commands | SellCardCommand response | 229 ms
+[03:31:22.220] [NetMessageProcessor] Received [NetMessageGameSim]  |  Id: [o5R]
+[03:31:22.220] [GameMessageHandler] Processing [NetMessageGameSim]  |  Id: [o5R]
+[03:31:22.220] [GameSimHandler] Cards Disposed:
+[03:31:22.221] [BoardManager] Sold Card itm_b0UO1QF for 1 gold.
+[03:31:22.222] [GameMessageHandler] Finished processing [NetMessageGameSim]  |  Id: [o5R]
+# END UNMODIFIED PLAYER.LOG EXCERPTS.

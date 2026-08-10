@@ -7,8 +7,18 @@ publish = false
 [workspace]
 
 [dependencies]
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+lz4_flex = "0.11"
+rmp-serde = "1"
+rmpv = "1"
 rusqlite = { version = "0.37", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
+serde_bytes = "0.11"
 serde_json = "1"
 thiserror = "2"
 tiny_http = "0.12"
+uuid = "1"
+
+[dev-dependencies]
+base64 = "0.22"
+tempfile = "3"

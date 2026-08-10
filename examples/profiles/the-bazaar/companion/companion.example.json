@@ -2,15 +2,24 @@
   "logPath": "C:\\path\\to\\The Bazaar\\Player.log",
   "databasePath": "C:\\path\\to\\The Bazaar\\prod\\cache\\GameData.db",
   "cardIdentityCachePath": "C:\\Users\\you\\.dcc-cua\\knowledge\\the-bazaar\\card-identities.json",
+  "candidateIdentityProvider": {
+    "kind": "bpp_combat_replay",
+    "directoryPath": "C:\\path\\to\\The Bazaar\\BazaarPlusPlusV5\\CombatReplays",
+    "maxFileAgeSeconds": 43200
+  },
   "listen": "127.0.0.1:47900",
   "hero": "Vanessa",
   "instanceOverrides": {},
   "skillNames": [],
   "skillInstanceOverrides": {},
   "currentProgress": {
+    "runId": "copy run.runId from the same live context",
     "day": null,
     "hour": null,
     "level": null,
+    "gameBuild": null,
+    "sourceStateTickId": null,
+    "verification": "unverified",
     "health": null,
     "maxHealth": null,
     "gold": null,
@@ -22,6 +31,16 @@
     "sourceObservationId": null,
     "provenance": "volatile_visual_observation"
   },
+  "currentStorageObservation": {
+    "runId": "copy run.runId from the same live context",
+    "sourceStateTickId": null,
+    "sourceObservationId": null,
+    "verification": "unverified",
+    "usableSlotIds": [],
+    "occupiedSpans": [],
+    "provenance": "volatile_visual_storage_observation"
+  },
+  "currentInventoryMutationObservations": [],
   "decisionPolicy": {
     "goldFloor": 30,
     "shopRerollCap": 1,

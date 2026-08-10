@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "purpose": "Pinned real-wire fixture for typed BazaarPlusPlus PvpReplayPayload v1 DespawnMessageBytes decoding.",
+  "gameBuild": "1.0.11894",
+  "payloadVersion": 1,
+  "messageId": "H5B",
+  "despawnMessageBytesFile": "day-3-choice-despawn.mpack.b64",
+  "decodedByteLength": 1378,
+  "sha256": "d196979e9a0b90018b31c1645be37ca204dee9037133a4f1dff4717489352191",
+  "expectedChoiceMappings": {
+    "enc_6PMgGlG": "dc12f4bd-6c33-41f0-b7ad-d62a0be09a47",
+    "enc_Kr4eMFa": "956e9c74-7d98-4a2b-b500-def577914945",
+    "enc_W13jGim": "90e47f27-241c-4769-a6c6-a100d2a33421"
+  },
+  "privacy": "Contains only protocol identifiers and game-state values; no account, opponent, or user name."
+}

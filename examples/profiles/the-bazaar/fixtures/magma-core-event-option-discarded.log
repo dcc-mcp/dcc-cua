@@ -1,0 +1,20 @@
+[16:46:21.136] [AppState] State changed from [null] to [StartRunAppState]
+[05:30:11.790] [GameMessageHandler] Processing [NetMessageGameSim]  |  Id: [cj9]
+[05:30:11.790] [AppState] State changed from [EncounterState] to [ChoiceState]
+[05:30:11.790] [GameSimHandler] Cards Dealt: [enc_zT1DxhF [Medium] | [enc_3A8MupV [Medium] | [enc_ZbRP2Kj [Medium] |
+[05:30:11.794] [GameMessageHandler] Finished processing [NetMessageGameSim]  |  Id: [cj9]
+[05:33:53.582] [NetworkManager] [HttpGameClient] Sending SelectEncounterCommand to /commands
+[05:33:53.742] [NetworkManager] [HttpGameClient] /commands | SelectEncounterCommand response | 160 ms
+[05:33:53.743] [GameMessageHandler] Processing [NetMessageGameSim]  |  Id: [4FQ]
+[05:33:53.743] [AppState] State changed from [ChoiceState] to [EncounterState]
+[05:33:53.743] [GameSimHandler] Cards Dealt: [itm_gKj7HU5 [Small] |
+[05:33:53.743] [BoardManager] Card Purchased: InstanceId: enc_ZbRP2Kj - TemplateId731fdecd-bc3f-48a7-bdf9-4096f3eaa963 - Target:OpponentSocket_5 - SectionOpponent
+[05:33:53.745] [GameSimHandler] Cards Disposed: enc_zT1DxhF  |  enc_3A8MupV  |
+[05:33:53.745] [GameMessageHandler] Finished processing [NetMessageGameSim]  |  Id: [4FQ]
+[05:40:00.000] [NetworkManager] [HttpGameClient] Sending ExitCurrentStateCommand to /commands [SYNTHETIC TEST CONTINUATION: lines 14-20 are not live evidence]
+[05:40:00.160] [NetworkManager] [HttpGameClient] /commands | ExitCurrentStateCommand response | 160 ms
+[05:40:00.160] [GameMessageHandler] Processing [NetMessageGameSim]  |  Id: [next]
+[05:40:00.161] [AppState] State changed from [EncounterState] to [ChoiceState]
+[05:40:00.161] [GameSimHandler] Cards Dealt: [enc_next_a [Medium] | [enc_next_b [Medium] |
+[05:40:00.163] [GameSimHandler] Cards Disposed: itm_gKj7HU5  |
+[05:40:00.164] [GameMessageHandler] Finished processing [NetMessageGameSim]  |  Id: [next]

@@ -1,0 +1,9 @@
+[00:00:00.000] [AppState] State changed from [null] to [StartRunAppState]
+[00:00:01.000] [AppState] State changed from [ReplayState] to [LootState]
+[00:00:02.000] [GameSimHandler] Cards Dealt: [skl_reward [Medium] |
+[00:00:03.000] [AppState] Selected skill skl_reward to socket SkillSocket_0
+[00:00:03.010] [NetworkManager] [HttpGameClient] Sending SelectSkillCommand to /commands
+[00:00:03.200] [NetworkManager] [HttpGameClient] /commands | SelectSkillCommand response | 190 ms
+[00:00:03.300] [AppState] State changed from [LootState] to [ChoiceState]
+[00:00:03.310] [GameSimHandler] Cards Dealt: [enc_next_a [Medium] | [enc_next_b [Medium] |
+[00:00:03.320] [GameSimHandler] Cards Disposed: com_previous |

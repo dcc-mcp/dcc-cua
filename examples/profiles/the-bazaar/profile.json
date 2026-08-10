@@ -1,7 +1,7 @@
 {
   "schema_version": 3,
   "id": "the-bazaar",
-  "profile_version": "1.0.0",
+  "profile_version": "1.7.0",
   "application": {"family": "the-bazaar", "versions": []},
   "display_name": "The Bazaar",
   "selectors": [
@@ -35,16 +35,37 @@
         },
         {
           "id": "capacity",
-          "label": "Board and backpack capacity",
+          "label": "Unlocked board capacity and size-compatible stash placements",
           "role": "status",
-          "localized_names": {"zh-CN": ["棋盘容量", "背包容量", "空位"]},
+          "localized_names": {"zh-CN": ["已解锁棋盘容量", "连续可用槽位", "背包物品可放置位置"]},
           "supported_actions": ["inspect"]
+        },
+        {
+          "id": "storage_fit_preflight",
+          "label": "Verified storage fit preflight",
+          "role": "status",
+          "localized_names": {"zh-CN": ["背包连续空间预检", "购买前背包容量验证"]},
+          "supported_actions": ["inspect", "verify"]
         },
         {
           "id": "effect_activation_scope",
           "label": "Board, stash, owned, and event-triggered effect scope",
           "role": "status",
           "localized_names": {"zh-CN": ["战场生效", "背包被动", "持有生效", "每日触发", "惰性库存"]},
+          "supported_actions": ["inspect", "verify", "persist"]
+        },
+        {
+          "id": "upgrade_opportunity",
+          "label": "Tier fusion and item-upgrade opportunity evidence",
+          "role": "status",
+          "localized_names": {"zh-CN": ["卡牌升阶机会", "同阶融合候选", "升级台候选"]},
+          "supported_actions": ["inspect", "verify"]
+        },
+        {
+          "id": "inventory_mutation_receipt",
+          "label": "Fenced sell and atomic swap receipt",
+          "role": "statistics",
+          "localized_names": {"zh-CN": ["库存事务收据", "出售收据", "双向换位收据"]},
           "supported_actions": ["inspect", "verify", "persist"]
         }
       ]
@@ -61,6 +82,13 @@
           "role": "item",
           "localized_names": {"zh-CN": ["商店物品"]},
           "supported_actions": ["inspect", "buy"]
+        },
+        {
+          "id": "purchase_receipt",
+          "label": "Verified item purchase receipt",
+          "role": "statistics",
+          "localized_names": {"zh-CN": ["购买收据", "物品购买结果"]},
+          "supported_actions": ["inspect", "verify"]
         },
         {
           "id": "reroll",
@@ -92,10 +120,17 @@
           "supported_actions": ["inspect", "claim"]
         },
         {
+          "id": "reward_skill",
+          "label": "Reward skill selected by left click",
+          "role": "skill",
+          "localized_names": {"zh-CN": ["奖励技能", "左键领取技能"]},
+          "supported_actions": ["inspect", "select", "claim"]
+        },
+        {
           "id": "claim_capacity",
-          "label": "Reward placement capacity",
+          "label": "Reward contiguous placement capacity",
           "role": "status",
-          "localized_names": {"zh-CN": ["奖励落位空间", "棋盘或背包空位"]},
+          "localized_names": {"zh-CN": ["奖励可放置位置", "棋盘或背包连续可用槽位"]},
           "supported_actions": ["inspect"]
         },
         {
@@ -114,10 +149,10 @@
         },
         {
           "id": "event_exit",
-          "label": "Exit without claiming event candidate",
+          "label": "Discard the current choice or pending reward and exit",
           "role": "button",
-          "localized_names": {"zh-CN": ["退出事件", "放弃候选"]},
-          "supported_actions": ["click"]
+          "localized_names": {"zh-CN": ["退出并丢弃当前候选", "退出并丢弃待领取奖励", "放弃候选"]},
+          "supported_actions": ["discard_pending_reward", "discard_current_choice"]
         }
       ]
     },
@@ -177,6 +212,20 @@
       "role": "status",
       "route": "visual_fallback",
       "targets": [
+        {
+          "id": "choice_fence",
+          "label": "Exact run, tick, message, kind, and ordered-candidate choice fence",
+          "role": "status",
+          "localized_names": {"zh-CN": ["选择围栏", "选择状态指纹", "有序候选标识"]},
+          "supported_actions": ["inspect", "verify"]
+        },
+        {
+          "id": "decision_receipt",
+          "label": "Fenced choice decision receipt",
+          "role": "statistics",
+          "localized_names": {"zh-CN": ["选择决策收据", "放弃选择结果"]},
+          "supported_actions": ["inspect", "persist"]
+        },
         {
           "id": "pending_rune_or_skill_reward",
           "label": "Pending rune or skill reward",
@@ -257,7 +306,7 @@
       "type": "loopback_http_json",
       "mode": "read_only",
       "url": "http://127.0.0.1:47900/v1/context",
-      "expected_schema_version": "2.5.0",
+      "expected_schema_version": "3.6.0",
       "schema_version_pointer": "/schemaVersion",
       "tick_pointer": "/tickId",
       "use_etag": true,
@@ -270,6 +319,6 @@
     "dialog_style": "application_rendered",
     "preferred_route": "visual_fallback",
     "default_locale": "zh-CN",
-    "destructive_confirmation_required": false
+    "destructive_confirmation_required": true
   }
 }
