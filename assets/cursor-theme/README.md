@@ -6,6 +6,10 @@ It reuses CUA's canonical 12-state vector cursor and applies the DCC CUA purple
 palette; application identity remains the real executable icon in the dynamic
 control banner.
 
+Palette and motion tokens come from
+`crates/dcc-cua-indicator/theme/dcc-cua-theme.json`. Do not
+hard-code a second accent in this builder or in a platform presenter.
+
 Rebuild from a compatible CUA v2 `.lottie` source:
 
 ```powershell

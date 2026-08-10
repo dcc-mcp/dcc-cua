@@ -43,6 +43,7 @@ quote = { version = "1" }
 semver = { version = "1" }
 serde = { version = "1", features = ["derive"] }
 serde_core = { version = "1", default-features = false, features = ["alloc", "result", "std"] }
+serde_json = { version = "1" }
 syn-7b89eefb6aaa9bf3 = { package = "syn", version = "3", features = ["full", "visit-mut"] }
 syn-f595c2ba2a3f28df = { package = "syn", version = "2", features = ["extra-traits", "fold", "full", "visit", "visit-mut"] }
 toml_parser = { version = "1" }

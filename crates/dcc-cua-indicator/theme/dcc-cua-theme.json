@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "id": "com.dcc-mcp.theme",
+  "cursor": {
+    "theme_id": "com.dcc-mcp.cursor",
+    "accent": "#A663FF",
+    "reduced_motion": "auto"
+  },
+  "indicator": {
+    "surface": "#181C23",
+    "line": "#2D333D",
+    "text": "#FFFFFF",
+    "muted": "#B8C1C7",
+    "accent": "#A663FF",
+    "recording": "#FF8989",
+    "status": {
+      "information": "#6EB6FF",
+      "ready": "#73D7A7",
+      "action": "#F3C96B",
+      "recording": "#FF8989",
+      "stopping": "#7F8994"
+    },
+    "frame": {
+      "thickness_dip": 40,
+      "gradient_steps": 20,
+      "pulse_period_ms": 1800,
+      "alpha_min": 48,
+      "alpha_max": 132
+    }
+  }
+}

@@ -1,5 +1,5 @@
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -23,43 +23,136 @@ use windows::Win32::UI::HiDpi::{
 use windows::Win32::UI::Input::KeyboardAndMouse::VK_ESCAPE;
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, CreateWindowExW, DI_NORMAL, DefWindowProcW, DestroyWindow, DispatchMessageW,
-    DrawIconEx, GCLP_HICON, GCLP_HICONSM, GetClassLongPtrW, GetClientRect, GetPropW, GetWindowRect,
-    GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, HC_ACTION, HHOOK, HICON,
-    HTTRANSPARENT, HWND_TOPMOST, ICON_SMALL2, IsIconic, IsWindow, IsWindowVisible, KBDLLHOOKSTRUCT,
-    LWA_ALPHA, MA_NOACTIVATE, MSG, PM_REMOVE, PeekMessageW, RegisterClassW, RemovePropW,
-    SEND_MESSAGE_TIMEOUT_FLAGS, SMTO_ABORTIFHUNG, SW_HIDE, SW_SHOWNOACTIVATE, SWP_NOACTIVATE,
-    SWP_SHOWWINDOW, SendMessageTimeoutW, SetLayeredWindowAttributes, SetPropW,
-    SetWindowDisplayAffinity, SetWindowPos, SetWindowsHookExW, ShowWindow, TranslateMessage,
-    UnhookWindowsHookEx, WDA_EXCLUDEFROMCAPTURE, WH_KEYBOARD_LL, WINDOW_EX_STYLE, WINDOW_STYLE,
-    WM_GETICON, WM_KEYDOWN, WM_KEYUP, WM_MOUSEACTIVATE, WM_NCHITTEST, WM_PAINT, WM_SYSKEYDOWN,
-    WM_SYSKEYUP, WNDCLASSW, WNDPROC, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
-    WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
+    DrawIconEx, GA_ROOTOWNER, GCLP_HICON, GCLP_HICONSM, GW_HWNDPREV, GetAncestor, GetClassLongPtrW,
+    GetClientRect, GetForegroundWindow, GetPropW, GetWindow, GetWindowRect, GetWindowTextLengthW,
+    GetWindowTextW, GetWindowThreadProcessId, HC_ACTION, HHOOK, HICON, HTTRANSPARENT,
+    HWND_NOTOPMOST, HWND_TOP, ICON_SMALL2, IsIconic, IsWindow, IsWindowVisible, KBDLLHOOKSTRUCT,
+    LLKHF_INJECTED, LWA_ALPHA, MA_NOACTIVATE, MSG, PM_REMOVE, PeekMessageW, RegisterClassW,
+    RemovePropW, SEND_MESSAGE_TIMEOUT_FLAGS, SMTO_ABORTIFHUNG, SPI_GETCLIENTAREAANIMATION, SW_HIDE,
+    SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOOWNERZORDER, SWP_NOSIZE, SWP_SHOWWINDOW,
+    SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SendMessageTimeoutW, SetLayeredWindowAttributes, SetPropW,
+    SetWindowDisplayAffinity, SetWindowPos, SetWindowsHookExW, ShowWindow, SystemParametersInfoW,
+    TranslateMessage, UnhookWindowsHookEx, WDA_EXCLUDEFROMCAPTURE, WH_KEYBOARD_LL, WINDOW_EX_STYLE,
+    WINDOW_STYLE, WM_GETICON, WM_KEYDOWN, WM_KEYUP, WM_MOUSEACTIVATE, WM_NCHITTEST, WM_PAINT,
+    WM_SYSKEYDOWN, WM_SYSKEYUP, WNDCLASSW, WNDPROC, WS_EX_LAYERED, WS_EX_NOACTIVATE,
+    WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT, WS_POPUP,
 };
-use windows::core::{HRESULT, PCWSTR, w};
+use windows::core::{BOOL, HRESULT, PCWSTR, w};
 
 use super::{
-    BannerActivity, BannerStatus, BannerTarget, IndicatorError, TARGET_FRAME_ALPHA_MAX,
-    TARGET_FRAME_GRADIENT_STEPS, TARGET_FRAME_THICKNESS_DIP, breathing_frame_alpha,
-    broadcast_interrupt, interrupt_generation, interrupt_generation_changed,
-    target_frame_band_alpha, target_frame_band_insets,
+    BannerActivity, BannerActivitySignal, BannerFailure, BannerIndicators, BannerStatus,
+    BannerTarget, IndicatorError, IndicatorMotionPolicy, IndicatorMotionStatus,
+    TARGET_FRAME_ALPHA_MAX, TARGET_FRAME_GRADIENT_STEPS, TARGET_FRAME_THICKNESS_DIP,
+    broadcast_interrupt, indicator_frame_alpha, interrupt_generation, interrupt_generation_changed,
+    target_frame_band_alpha, target_frame_band_insets, theme_tokens,
 };
 
 const BANNER_CLASS: PCWSTR = w!("DccCuaControlBanner");
 const FRAME_CLASS: PCWSTR = w!("DccCuaControlFrame");
 const OVERLAY_ACTIVITY_PROP: PCWSTR = w!("DccCuaBannerActivity");
+const OVERLAY_RECORDING_PROP: PCWSTR = w!("DccCuaBannerRecording");
+const OVERLAY_LIVE_PROP: PCWSTR = w!("DccCuaBannerLiveObservation");
 const OVERLAY_ICON_PROP: PCWSTR = w!("DccCuaBannerIcon");
 const BANNER_ALPHA: u8 = 248;
 const FRAME_INTERVAL: Duration = Duration::from_millis(33);
-const SURFACE: COLORREF = rgb(24, 28, 35);
-const LINE: COLORREF = rgb(45, 51, 61);
-const TEXT: COLORREF = rgb(255, 255, 255);
-const MUTED: COLORREF = rgb(184, 193, 199);
-const ACCENT: COLORREF = rgb(168, 118, 255);
+const SURFACE: COLORREF = rgb(
+    theme_tokens::SURFACE.0,
+    theme_tokens::SURFACE.1,
+    theme_tokens::SURFACE.2,
+);
+const LINE: COLORREF = rgb(
+    theme_tokens::LINE.0,
+    theme_tokens::LINE.1,
+    theme_tokens::LINE.2,
+);
+const TEXT: COLORREF = rgb(
+    theme_tokens::TEXT.0,
+    theme_tokens::TEXT.1,
+    theme_tokens::TEXT.2,
+);
+const MUTED: COLORREF = rgb(
+    theme_tokens::MUTED.0,
+    theme_tokens::MUTED.1,
+    theme_tokens::MUTED.2,
+);
+const ACCENT: COLORREF = rgb(
+    theme_tokens::ACCENT.0,
+    theme_tokens::ACCENT.1,
+    theme_tokens::ACCENT.2,
+);
+const RECORDING: COLORREF = rgb(
+    theme_tokens::RECORDING.0,
+    theme_tokens::RECORDING.1,
+    theme_tokens::RECORDING.2,
+);
 static ESCAPE_HUB: OnceLock<Result<EscapeHub, String>> = OnceLock::new();
 static ESCAPE_DOWN: AtomicBool = AtomicBool::new(false);
+static ACTIVE_BANNERS: AtomicUsize = AtomicUsize::new(0);
 
 const fn rgb(red: u8, green: u8, blue: u8) -> COLORREF {
     COLORREF((blue as u32) << 16 | (green as u32) << 8 | red as u32)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum TargetPresentationPolicy {
+    Hidden,
+    ExactTargetForeground,
+    OwnedModalForeground,
+    TargetScopedBehindUnrelatedForeground,
+}
+
+impl TargetPresentationPolicy {
+    pub(super) const fn is_visible(self) -> bool {
+        !matches!(self, Self::Hidden)
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn target_presentation_policy(
+    target_visible: bool,
+    target_minimized: bool,
+    target_window: u64,
+    target_root_owner: u64,
+    foreground_window: Option<u64>,
+    foreground_root_owner: Option<u64>,
+) -> TargetPresentationPolicy {
+    if !target_visible || target_minimized {
+        return TargetPresentationPolicy::Hidden;
+    }
+    if foreground_window == Some(target_window) {
+        TargetPresentationPolicy::ExactTargetForeground
+    } else if foreground_root_owner == Some(target_root_owner) {
+        TargetPresentationPolicy::OwnedModalForeground
+    } else {
+        TargetPresentationPolicy::TargetScopedBehindUnrelatedForeground
+    }
+}
+
+fn window_handle_value(window: HWND) -> u64 {
+    window.0 as usize as u64
+}
+
+fn root_owner_value(window: HWND) -> u64 {
+    let root_owner = unsafe { GetAncestor(window, GA_ROOTOWNER) };
+    if root_owner.0.is_null() {
+        window_handle_value(window)
+    } else {
+        window_handle_value(root_owner)
+    }
+}
+
+fn current_target_presentation(target_window: HWND) -> TargetPresentationPolicy {
+    let foreground = unsafe { GetForegroundWindow() };
+    let foreground_window = (!foreground.0.is_null()).then(|| window_handle_value(foreground));
+    let foreground_root_owner = (!foreground.0.is_null()).then(|| root_owner_value(foreground));
+    target_presentation_policy(
+        unsafe { IsWindowVisible(target_window).as_bool() },
+        unsafe { IsIconic(target_window).as_bool() },
+        window_handle_value(target_window),
+        root_owner_value(target_window),
+        foreground_window,
+        foreground_root_owner,
+    )
 }
 
 pub(super) fn system_language_tag() -> String {
@@ -77,23 +170,39 @@ pub(super) struct PlatformBanner {
     interrupted: Arc<AtomicBool>,
     visible: Arc<AtomicBool>,
     inside_target: Arc<AtomicBool>,
-    activity: Arc<AtomicU8>,
+    activity: Arc<BannerActivitySignal>,
+    recording: Arc<AtomicBool>,
+    live_observation: Arc<AtomicBool>,
+    motion: IndicatorMotionStatus,
+    backend_failure: Arc<Mutex<Option<BannerFailure>>>,
     thread: Option<JoinHandle<()>>,
 }
 
 impl PlatformBanner {
-    pub(super) fn start(target: BannerTarget) -> Result<Self, IndicatorError> {
+    pub(super) fn start(
+        target: BannerTarget,
+        requested_motion: IndicatorMotionPolicy,
+    ) -> Result<Self, IndicatorError> {
         let escape_hub = escape_hub()?;
+        let motion = IndicatorMotionStatus::resolve_from_system(
+            requested_motion,
+            system_animation_preference(),
+        );
         let stop = Arc::new(AtomicBool::new(false));
         let active = Arc::new(AtomicBool::new(false));
         let interrupted = Arc::new(AtomicBool::new(false));
         let visible = Arc::new(AtomicBool::new(false));
         let inside_target = Arc::new(AtomicBool::new(false));
-        let activity = Arc::new(AtomicU8::new(BannerActivity::Connecting as u8));
+        let activity = Arc::new(BannerActivitySignal::new(BannerActivity::Connecting));
+        let recording = Arc::new(AtomicBool::new(false));
+        let live_observation = Arc::new(AtomicBool::new(false));
+        let backend_failure = Arc::new(Mutex::new(None));
         let runtime = BannerRuntime {
             hub_active: Arc::clone(&escape_hub.active),
             generation: interrupt_generation(),
             activity: Arc::clone(&activity),
+            recording: Arc::clone(&recording),
+            live_observation: Arc::clone(&live_observation),
         };
         let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
         let thread_stop = Arc::clone(&stop);
@@ -101,6 +210,7 @@ impl PlatformBanner {
         let thread_interrupted = Arc::clone(&interrupted);
         let thread_visible = Arc::clone(&visible);
         let thread_inside_target = Arc::clone(&inside_target);
+        let thread_backend_failure = Arc::clone(&backend_failure);
         let thread = thread::Builder::new()
             .name("dcc-cua-control-banner".into())
             .spawn(move || {
@@ -112,10 +222,14 @@ impl PlatformBanner {
                     &thread_visible,
                     &thread_inside_target,
                     &runtime,
+                    motion,
                     &ready_tx,
                 );
                 if let Err(error) = result {
-                    let _ = ready_tx.try_send(Err(error.to_string()));
+                    if let Ok(mut stored) = thread_backend_failure.lock() {
+                        *stored = Some(BannerFailure::from(&error));
+                    }
+                    let _ = ready_tx.try_send(Err(error));
                 }
                 thread_active.store(false, Ordering::Release);
                 thread_visible.store(false, Ordering::Release);
@@ -132,12 +246,16 @@ impl PlatformBanner {
                 visible,
                 inside_target,
                 activity,
+                recording,
+                live_observation,
+                motion,
+                backend_failure,
                 thread: Some(thread),
             }),
             Ok(Err(error)) => {
                 stop.store(true, Ordering::Release);
                 let _ = thread.join();
-                Err(IndicatorError::Backend(error))
+                Err(error)
             }
             Err(error) => {
                 stop.store(true, Ordering::Release);
@@ -150,9 +268,26 @@ impl PlatformBanner {
     }
 
     pub(super) fn status(&self) -> BannerStatus {
-        let activity = BannerActivity::from_code(self.activity.load(Ordering::Acquire));
+        let indicators = BannerIndicators {
+            recording: self.recording.load(Ordering::Acquire),
+            live_observation: self.live_observation.load(Ordering::Acquire),
+        };
+        let activity = self.activity.load().presented_with(indicators);
+        let failure = self.backend_failure.lock().map_or_else(
+            |_| {
+                Some(BannerFailure::from(&IndicatorError::Backend(
+                    "control-banner error state is unavailable".into(),
+                )))
+            },
+            |failure| failure.clone(),
+        );
+        let last_error = failure.as_ref().map(|failure| failure.message.clone());
         BannerStatus {
             backend: "win32",
+            healthy: last_error.is_none(),
+            running: self.active.load(Ordering::Acquire),
+            last_error,
+            failure,
             visible: self.visible.load(Ordering::Acquire),
             target_frame_visible: self.visible.load(Ordering::Acquire),
             interrupted: self.interrupted(),
@@ -160,28 +295,43 @@ impl PlatformBanner {
             label: String::new(),
             activity,
             activity_label: activity.localized_label(&system_language_tag()).into(),
+            recording: indicators.recording,
+            live_observation: indicators.live_observation,
             placement: if self.inside_target.load(Ordering::Acquire) {
                 "target_safe_inset"
             } else {
                 "window_edge"
             },
             color: activity.color(),
+            motion: self.motion,
         }
     }
 
     pub(super) fn interrupted(&self) -> bool {
-        self.interrupted.load(Ordering::Acquire) || !self.active.load(Ordering::Acquire)
+        self.interrupted.load(Ordering::Acquire)
     }
 
     pub(super) fn set_activity(&self, activity: BannerActivity) {
-        self.activity.store(activity as u8, Ordering::Release);
+        self.activity.set(activity);
+    }
+
+    pub(super) fn activity_handle(&self) -> Arc<BannerActivitySignal> {
+        Arc::clone(&self.activity)
+    }
+
+    pub(super) fn set_recording(&self, recording: bool) {
+        self.recording.store(recording, Ordering::Release);
+    }
+
+    pub(super) fn set_live_observation(&self, live_observation: bool) {
+        self.live_observation
+            .store(live_observation, Ordering::Release);
     }
 }
 
 impl Drop for PlatformBanner {
     fn drop(&mut self) {
-        self.activity
-            .store(BannerActivity::Stopping as u8, Ordering::Release);
+        self.activity.set(BannerActivity::Stopping);
         self.stop.store(true, Ordering::Release);
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
@@ -194,6 +344,8 @@ struct OverlayWindow(HWND);
 impl Drop for OverlayWindow {
     fn drop(&mut self) {
         let _ = unsafe { RemovePropW(self.0, OVERLAY_ACTIVITY_PROP) };
+        let _ = unsafe { RemovePropW(self.0, OVERLAY_RECORDING_PROP) };
+        let _ = unsafe { RemovePropW(self.0, OVERLAY_LIVE_PROP) };
         let _ = unsafe { RemovePropW(self.0, OVERLAY_ICON_PROP) };
         let _ = unsafe { DestroyWindow(self.0) };
     }
@@ -207,6 +359,23 @@ impl Drop for RegisteredKeyboardHook {
     }
 }
 
+struct ActiveBannerRegistration;
+
+impl ActiveBannerRegistration {
+    fn acquire() -> Self {
+        ACTIVE_BANNERS.fetch_add(1, Ordering::AcqRel);
+        Self
+    }
+}
+
+impl Drop for ActiveBannerRegistration {
+    fn drop(&mut self) {
+        if ACTIVE_BANNERS.fetch_sub(1, Ordering::AcqRel) == 1 {
+            ESCAPE_DOWN.store(false, Ordering::Release);
+        }
+    }
+}
+
 struct EscapeHub {
     active: Arc<AtomicBool>,
 }
@@ -214,7 +383,9 @@ struct EscapeHub {
 struct BannerRuntime {
     hub_active: Arc<AtomicBool>,
     generation: u64,
-    activity: Arc<AtomicU8>,
+    activity: Arc<BannerActivitySignal>,
+    recording: Arc<AtomicBool>,
+    live_observation: Arc<AtomicBool>,
 }
 
 impl EscapeHub {
@@ -279,9 +450,15 @@ unsafe extern "system" fn low_level_keyboard_hook(
     if code == HC_ACTION as i32 {
         let event = wparam.0 as u32;
         let keyboard = unsafe { (lparam.0 as *const KBDLLHOOKSTRUCT).as_ref() };
-        if let Some(is_down) =
-            keyboard.and_then(|keyboard| escape_key_transition(code, event, keyboard.vkCode))
-        {
+        if let Some(is_down) = keyboard.and_then(|keyboard| {
+            escape_key_transition_for_active_banners(
+                ACTIVE_BANNERS.load(Ordering::Acquire),
+                code,
+                event,
+                keyboard.vkCode,
+                keyboard.flags.0,
+            )
+        }) {
             if is_down {
                 if !ESCAPE_DOWN.swap(true, Ordering::AcqRel) {
                     broadcast_interrupt();
@@ -297,8 +474,29 @@ unsafe extern "system" fn low_level_keyboard_hook(
     unsafe { CallNextHookEx(None, code, wparam, lparam) }
 }
 
-pub(super) fn escape_key_transition(code: i32, message: u32, virtual_key: u32) -> Option<bool> {
-    if code != HC_ACTION as i32 || virtual_key != VK_ESCAPE.0 as u32 {
+pub(super) fn escape_key_transition_for_active_banners(
+    active_banners: usize,
+    code: i32,
+    message: u32,
+    virtual_key: u32,
+    flags: u32,
+) -> Option<bool> {
+    if active_banners == 0 {
+        return None;
+    }
+    escape_key_transition(code, message, virtual_key, flags)
+}
+
+pub(super) fn escape_key_transition(
+    code: i32,
+    message: u32,
+    virtual_key: u32,
+    flags: u32,
+) -> Option<bool> {
+    if code != HC_ACTION as i32
+        || virtual_key != VK_ESCAPE.0 as u32
+        || flags & LLKHF_INJECTED.0 != 0
+    {
         return None;
     }
     match message {
@@ -331,6 +529,20 @@ impl Drop for ThreadDpiAwareness {
     }
 }
 
+fn system_animation_preference() -> Option<bool> {
+    let mut enabled = BOOL(1);
+    unsafe {
+        SystemParametersInfoW(
+            SPI_GETCLIENTAREAANIMATION,
+            0,
+            Some((&raw mut enabled).cast()),
+            SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+        )
+    }
+    .ok()
+    .map(|()| enabled.as_bool())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run_banner(
     target: BannerTarget,
@@ -340,7 +552,8 @@ fn run_banner(
     visible: &AtomicBool,
     inside_target: &AtomicBool,
     runtime: &BannerRuntime,
-    ready: &std::sync::mpsc::SyncSender<Result<(), String>>,
+    motion: IndicatorMotionStatus,
+    ready: &std::sync::mpsc::SyncSender<Result<(), IndicatorError>>,
 ) -> Result<(), IndicatorError> {
     let _dpi_awareness = ThreadDpiAwareness::enter()?;
     let target_window = HWND(target.window_handle as *mut core::ffi::c_void);
@@ -357,16 +570,19 @@ fn run_banner(
     let target_geometry = read_target_geometry(target_window)?;
     let mut geometry = banner_geometry(target_geometry, read_monitor_geometry(target_window)?);
     let mut frame_geometry = target_frame_geometry(target_geometry);
-    position_banner(overlay.0, geometry, true)?;
+    position_banner(overlay.0, target_window, geometry, true)?;
     for (band, frame) in frames.iter().enumerate() {
         set_overlay_alpha(
             frame.0,
             target_frame_band_alpha(TARGET_FRAME_ALPHA_MAX, band),
         )?;
-        position_target_frame(frame.0, frame_geometry, band, true)?;
+        position_target_frame(frame.0, target_window, frame_geometry, band, true)?;
     }
     inside_target.store(geometry.inside_target, Ordering::Release);
+    let _active_banner = ActiveBannerRegistration::acquire();
     let mut displayed_activity = BannerActivity::Connecting;
+    let mut displayed_recording = false;
+    let mut displayed_live_observation = false;
     let pulse_started = Instant::now();
     let mut frame_alpha = TARGET_FRAME_ALPHA_MAX;
     active.store(true, Ordering::Release);
@@ -391,13 +607,24 @@ fn run_banner(
                 DispatchMessageW(&message);
             }
         }
-        let next_activity = BannerActivity::from_code(runtime.activity.load(Ordering::Acquire));
-        if next_activity != displayed_activity {
+        let indicators = BannerIndicators {
+            recording: runtime.recording.load(Ordering::Acquire),
+            live_observation: runtime.live_observation.load(Ordering::Acquire),
+        };
+        let next_activity = runtime.activity.load().presented_with(indicators);
+        if next_activity != displayed_activity
+            || indicators.recording != displayed_recording
+            || indicators.live_observation != displayed_live_observation
+        {
             set_activity_property(overlay.0, next_activity)?;
+            set_recording_property(overlay.0, indicators.recording)?;
+            set_live_observation_property(overlay.0, indicators.live_observation)?;
             let _ = unsafe { InvalidateRect(Some(overlay.0), None, false) };
             displayed_activity = next_activity;
+            displayed_recording = indicators.recording;
+            displayed_live_observation = indicators.live_observation;
         }
-        let next_frame_alpha = breathing_frame_alpha(pulse_started.elapsed());
+        let next_frame_alpha = indicator_frame_alpha(motion, pulse_started.elapsed());
         if next_frame_alpha != frame_alpha {
             for (band, frame) in frames.iter().enumerate() {
                 set_overlay_alpha(frame.0, target_frame_band_alpha(next_frame_alpha, band))?;
@@ -405,15 +632,14 @@ fn run_banner(
             frame_alpha = next_frame_alpha;
         }
         validate_target(target_window, target.process_id)?;
-        let target_visible = unsafe {
-            IsWindowVisible(target_window).as_bool() && !IsIconic(target_window).as_bool()
-        };
-        if target_visible {
+        let presentation = current_target_presentation(target_window);
+        if presentation.is_visible() {
             let next_target = read_target_geometry(target_window)?;
             let next_geometry = banner_geometry(next_target, read_monitor_geometry(target_window)?);
             if next_geometry != geometry {
                 position_banner(
                     overlay.0,
+                    target_window,
                     next_geometry,
                     next_geometry.width != geometry.width
                         || next_geometry.height != geometry.height,
@@ -426,6 +652,7 @@ fn run_banner(
                 for (band, frame) in frames.iter().enumerate() {
                     position_target_frame(
                         frame.0,
+                        target_window,
                         next_frame_geometry,
                         band,
                         next_frame_geometry.width != frame_geometry.width
@@ -503,6 +730,14 @@ fn create_overlay(
         let _ = unsafe { DestroyWindow(window) };
         return Err(error);
     }
+    if let Err(error) = set_recording_property(window, false) {
+        let _ = unsafe { DestroyWindow(window) };
+        return Err(error);
+    }
+    if let Err(error) = set_live_observation_property(window, false) {
+        let _ = unsafe { DestroyWindow(window) };
+        return Err(error);
+    }
     if let Some(icon) = icon
         && let Err(error) = unsafe { SetPropW(window, OVERLAY_ICON_PROP, Some(HANDLE(icon.0))) }
     {
@@ -514,7 +749,7 @@ fn create_overlay(
     Ok(window)
 }
 
-fn create_frame_overlay() -> Result<HWND, IndicatorError> {
+pub(super) fn create_frame_overlay() -> Result<HWND, IndicatorError> {
     create_window(
         FRAME_CLASS,
         Some(frame_window_proc),
@@ -536,11 +771,7 @@ fn create_window(
     let window = unsafe {
         CreateWindowExW(
             WINDOW_EX_STYLE(
-                WS_EX_TOPMOST.0
-                    | WS_EX_TOOLWINDOW.0
-                    | WS_EX_NOACTIVATE.0
-                    | WS_EX_TRANSPARENT.0
-                    | WS_EX_LAYERED.0,
+                WS_EX_TOOLWINDOW.0 | WS_EX_NOACTIVATE.0 | WS_EX_TRANSPARENT.0 | WS_EX_LAYERED.0,
             ),
             class_name,
             PCWSTR(title.as_ptr()),
@@ -583,6 +814,47 @@ fn set_activity_property(window: HWND, activity: BannerActivity) -> Result<(), I
         )
     }
     .map_err(|error| IndicatorError::Backend(format!("set banner activity: {error}")))
+}
+
+fn set_recording_property(window: HWND, recording: bool) -> Result<(), IndicatorError> {
+    if recording {
+        unsafe {
+            SetPropW(
+                window,
+                OVERLAY_RECORDING_PROP,
+                Some(HANDLE(
+                    core::ptr::NonNull::<core::ffi::c_void>::dangling().as_ptr(),
+                )),
+            )
+        }
+        .map_err(|error| IndicatorError::Backend(format!("set banner recording state: {error}")))
+    } else {
+        let _ = unsafe { RemovePropW(window, OVERLAY_RECORDING_PROP) };
+        Ok(())
+    }
+}
+
+fn set_live_observation_property(
+    window: HWND,
+    live_observation: bool,
+) -> Result<(), IndicatorError> {
+    if live_observation {
+        unsafe {
+            SetPropW(
+                window,
+                OVERLAY_LIVE_PROP,
+                Some(HANDLE(
+                    core::ptr::NonNull::<core::ffi::c_void>::dangling().as_ptr(),
+                )),
+            )
+        }
+        .map_err(|error| {
+            IndicatorError::Backend(format!("set banner live-observation state: {error}"))
+        })
+    } else {
+        let _ = unsafe { RemovePropW(window, OVERLAY_LIVE_PROP) };
+        Ok(())
+    }
 }
 
 fn register_class(class_name: PCWSTR, procedure: WNDPROC) -> Result<(), IndicatorError> {
@@ -727,8 +999,47 @@ fn target_frame_geometry(target: TargetGeometry) -> TargetFrameGeometry {
     }
 }
 
+/// Keep the overlay immediately above the exact target without joining its
+/// accessibility tree or entering the global topmost band.
+pub(super) fn position_target_scoped_overlay(
+    window: HWND,
+    target: HWND,
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+) -> windows::core::Result<()> {
+    unsafe {
+        SetWindowPos(
+            window,
+            Some(HWND_NOTOPMOST),
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER,
+        )?;
+        let previous = GetWindow(target, GW_HWNDPREV).unwrap_or(HWND(core::ptr::null_mut()));
+        let insert_after = if previous.0.is_null() {
+            HWND_TOP
+        } else {
+            previous
+        };
+        SetWindowPos(
+            window,
+            Some(insert_after),
+            x,
+            y,
+            width,
+            height,
+            SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_NOOWNERZORDER,
+        )
+    }
+}
+
 fn position_banner(
     window: HWND,
+    target: HWND,
     geometry: BannerGeometry,
     update_shape: bool,
 ) -> Result<(), IndicatorError> {
@@ -756,17 +1067,14 @@ fn position_banner(
             ));
         }
     }
-    unsafe {
-        SetWindowPos(
-            window,
-            Some(HWND_TOPMOST),
-            geometry.x,
-            geometry.y,
-            geometry.width,
-            geometry.height,
-            SWP_NOACTIVATE | SWP_SHOWWINDOW,
-        )
-    }
+    position_target_scoped_overlay(
+        window,
+        target,
+        geometry.x,
+        geometry.y,
+        geometry.width,
+        geometry.height,
+    )
     .map_err(|error| IndicatorError::Backend(format!("position banner: {error}")))?;
     if !unsafe { IsWindowVisible(window).as_bool() } {
         return Err(IndicatorError::Backend(
@@ -778,6 +1086,7 @@ fn position_banner(
 
 fn position_target_frame(
     window: HWND,
+    target: HWND,
     geometry: TargetFrameGeometry,
     band: usize,
     update_shape: bool,
@@ -821,17 +1130,14 @@ fn position_target_frame(
             ));
         }
     }
-    unsafe {
-        SetWindowPos(
-            window,
-            Some(HWND_TOPMOST),
-            geometry.x,
-            geometry.y,
-            geometry.width,
-            geometry.height,
-            SWP_NOACTIVATE | SWP_SHOWWINDOW,
-        )
-    }
+    position_target_scoped_overlay(
+        window,
+        target,
+        geometry.x,
+        geometry.y,
+        geometry.width,
+        geometry.height,
+    )
     .map_err(|error| IndicatorError::Backend(format!("position target frame: {error}")))?;
     Ok(())
 }
@@ -910,9 +1216,21 @@ unsafe extern "system" fn window_proc(
         } else {
             BannerActivity::from_code((activity_value.0 as usize - 1) as u8)
         };
+        let recording = !unsafe { GetPropW(window, OVERLAY_RECORDING_PROP) }
+            .0
+            .is_null();
+        let live_observation = !unsafe { GetPropW(window, OVERLAY_LIVE_PROP) }.0.is_null();
         paint_activity(device, activity, dpi);
         let identity = window_text(window);
-        paint_copy(device, bounds, dpi, &identity, activity);
+        paint_copy(
+            device,
+            bounds,
+            dpi,
+            &identity,
+            activity,
+            recording,
+            live_observation,
+        );
     }
     let _ = unsafe { EndPaint(window, &paint) };
     LRESULT(0)
@@ -1012,6 +1330,8 @@ fn paint_copy(
     dpi: u32,
     identity: &str,
     activity: BannerActivity,
+    recording: bool,
+    live_observation: bool,
 ) {
     let stop_width = scale(78, dpi);
     let divider_x = bounds.right - stop_width - scale(9, dpi);
@@ -1025,7 +1345,10 @@ fn paint_copy(
     let _ = unsafe { FillRect(device, &divider, brush) };
     let _ = unsafe { DeleteObject(HGDIOBJ(brush.0)) };
     let text_left = scale(58, dpi);
-    let text_right = divider_x - scale(10, dpi);
+    let recording_width = if recording { scale(48, dpi) } else { 0 };
+    let live_width = if live_observation { scale(52, dpi) } else { 0 };
+    let badges_left = divider_x - recording_width - live_width;
+    let text_right = badges_left - scale(7, dpi);
     draw_text(
         device,
         identity,
@@ -1040,6 +1363,22 @@ fn paint_copy(
         TEXT,
         false,
     );
+    let mut badge_left = badges_left;
+    if recording {
+        paint_persistent_badge(device, "REC", badge_left, recording_width, RECORDING, dpi);
+        badge_left += recording_width;
+    }
+    if live_observation {
+        let live_color = BannerActivity::Observing.color();
+        paint_persistent_badge(
+            device,
+            "LIVE",
+            badge_left,
+            live_width,
+            rgb(live_color.red, live_color.green, live_color.blue),
+            dpi,
+        );
+    }
     draw_text(
         device,
         activity.localized_label(&system_language_tag()),
@@ -1072,6 +1411,41 @@ fn paint_copy(
         FW_SEMIBOLD.0 as i32,
         MUTED,
         true,
+    );
+}
+
+fn paint_persistent_badge(
+    device: windows::Win32::Graphics::Gdi::HDC,
+    label: &str,
+    left: i32,
+    width: i32,
+    color: COLORREF,
+    dpi: u32,
+) {
+    let dot_size = scale(7, dpi);
+    let dot_left = left + scale(3, dpi);
+    let dot_top = scale(18, dpi);
+    let dot =
+        unsafe { CreateEllipticRgn(dot_left, dot_top, dot_left + dot_size, dot_top + dot_size) };
+    if !dot.0.is_null() {
+        let brush = unsafe { CreateSolidBrush(color) };
+        let _ = unsafe { FillRgn(device, dot, brush) };
+        let _ = unsafe { DeleteObject(HGDIOBJ(brush.0)) };
+        let _ = unsafe { DeleteObject(HGDIOBJ(dot.0)) };
+    }
+    draw_text(
+        device,
+        label,
+        RECT {
+            left: dot_left + scale(10, dpi),
+            top: scale(11, dpi),
+            right: left + width - scale(3, dpi),
+            bottom: scale(33, dpi),
+        },
+        scale(10, dpi),
+        FW_SEMIBOLD.0 as i32,
+        color,
+        false,
     );
 }
 

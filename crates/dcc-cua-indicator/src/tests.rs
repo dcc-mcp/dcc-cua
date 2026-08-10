@@ -10,6 +10,104 @@ fn native_overlays_are_hit_test_transparent_and_never_activate() {
     assert!(platform::overlay_input_result(0x000f).is_none());
 }
 
+#[cfg(windows)]
+#[rstest]
+fn exact_target_foreground_uses_target_scoped_overlay_policy() {
+    let policy =
+        platform::target_presentation_policy(true, false, 0x100, 0x100, Some(0x100), Some(0x100));
+
+    assert_eq!(
+        policy,
+        platform::TargetPresentationPolicy::ExactTargetForeground
+    );
+    assert!(policy.is_visible());
+}
+
+#[cfg(windows)]
+#[rstest]
+fn target_owned_modal_foreground_keeps_the_indicator_visible() {
+    let policy =
+        platform::target_presentation_policy(true, false, 0x100, 0x100, Some(0x200), Some(0x100));
+
+    assert_eq!(
+        policy,
+        platform::TargetPresentationPolicy::OwnedModalForeground
+    );
+    assert!(policy.is_visible());
+}
+
+#[cfg(windows)]
+#[rstest]
+fn unrelated_foreground_keeps_the_indicator_behind_that_window() {
+    let policy =
+        platform::target_presentation_policy(true, false, 0x100, 0x100, Some(0x300), Some(0x300));
+
+    assert_eq!(
+        policy,
+        platform::TargetPresentationPolicy::TargetScopedBehindUnrelatedForeground
+    );
+    assert!(policy.is_visible());
+}
+
+#[cfg(windows)]
+#[rstest]
+fn native_overlay_tracks_the_exact_target_without_global_topmost() {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        CreateWindowExW, DestroyWindow, GW_HWNDNEXT, GW_OWNER, GWL_EXSTYLE, GetWindow,
+        GetWindowLongPtrW, WINDOW_EX_STYLE, WINDOW_STYLE, WS_EX_TOPMOST, WS_POPUP,
+    };
+    use windows::core::w;
+
+    struct TestWindow(HWND);
+
+    impl Drop for TestWindow {
+        fn drop(&mut self) {
+            let _ = unsafe { DestroyWindow(self.0) };
+        }
+    }
+
+    let target = TestWindow(
+        unsafe {
+            CreateWindowExW(
+                WINDOW_EX_STYLE(0),
+                w!("STATIC"),
+                w!("dcc-cua-indicator-test-target"),
+                WINDOW_STYLE(WS_POPUP.0),
+                0,
+                0,
+                64,
+                64,
+                None,
+                None,
+                None,
+                None,
+            )
+        }
+        .expect("create an isolated Win32 target window"),
+    );
+    let overlay = TestWindow(platform::create_frame_overlay().expect("create an isolated overlay"));
+    platform::position_target_scoped_overlay(overlay.0, target.0, 4, 4, 48, 48)
+        .expect("position the overlay directly above the exact target");
+
+    let owner = unsafe { GetWindow(overlay.0, GW_OWNER) }.unwrap_or(HWND(core::ptr::null_mut()));
+    assert!(
+        owner.0.is_null(),
+        "the overlay must not become part of the target accessibility tree",
+    );
+    assert_eq!(
+        unsafe { GetWindow(overlay.0, GW_HWNDNEXT) }.expect("read overlay z-order successor"),
+        target.0,
+        "the exact granted target HWND must remain directly below the overlay",
+    );
+    let ex_style = unsafe { GetWindowLongPtrW(overlay.0, GWL_EXSTYLE) } as u32;
+    assert_eq!(
+        ex_style & WS_EX_TOPMOST.0,
+        0,
+        "a target-owned overlay must not leak above unrelated foreground windows",
+    );
+}
+
 #[rstest]
 #[case(0, 1)]
 #[case(1, 0)]
@@ -38,6 +136,7 @@ fn banner_target_requires_exact_process_and_window(
 #[case(BannerActivity::Waiting, "正在等待应用")]
 #[case(BannerActivity::Recording, "正在录制")]
 #[case(BannerActivity::Stopping, "正在停止…")]
+#[case(BannerActivity::Operating, "正在操作")]
 fn every_banner_activity_has_operator_visible_copy(
     #[case] activity: BannerActivity,
     #[case] expected: &str,
@@ -59,6 +158,221 @@ fn input_states_share_the_warning_color_without_session_randomization() {
             green: 215,
             blue: 167,
         }
+    );
+    assert_eq!(
+        BannerActivity::Operating.color(),
+        BannerActivity::PointerInput.color(),
+    );
+    assert_eq!(
+        BannerActivity::Operating.localized_label("en-US"),
+        "Operating",
+    );
+}
+
+#[rstest]
+fn persistent_banner_indicators_do_not_replace_the_current_operation() {
+    let indicators = BannerIndicators {
+        recording: true,
+        live_observation: true,
+    };
+
+    assert_eq!(
+        BannerActivity::PointerInput.presented_with(indicators),
+        BannerActivity::PointerInput,
+        "a pointer action must remain visible while showcase recording continues",
+    );
+    assert_eq!(
+        indicators.badges(),
+        [
+            Some(BannerBadge::Recording),
+            Some(BannerBadge::LiveObservation),
+        ],
+        "persistent REC and LIVE badges must remain visible during an operation",
+    );
+    assert_eq!(
+        BannerActivity::Ready.presented_with(indicators),
+        BannerActivity::Observing,
+        "an idle session with live observation should return to observing",
+    );
+    assert!(indicators.recording);
+}
+
+#[rstest]
+fn trajectory_only_recording_remains_visible_while_idle() {
+    let indicators = BannerIndicators {
+        recording: true,
+        live_observation: false,
+    };
+
+    assert_eq!(
+        BannerActivity::Ready.presented_with(indicators),
+        BannerActivity::Recording,
+    );
+}
+
+#[rstest]
+fn activity_guard_restores_idle_after_error_paths() {
+    let activity = std::sync::Arc::new(BannerActivitySignal::new(BannerActivity::Ready));
+    {
+        let _guard = BannerActivityGuard::begin(
+            std::sync::Arc::clone(&activity),
+            BannerActivity::PointerInput,
+        );
+    }
+    assert_eq!(activity.load(), BannerActivity::Ready);
+}
+
+#[rstest]
+fn stale_activity_guard_cannot_clear_a_newer_operation() {
+    let activity = std::sync::Arc::new(BannerActivitySignal::new(BannerActivity::Ready));
+    let stale = BannerActivityGuard::begin(
+        std::sync::Arc::clone(&activity),
+        BannerActivity::PointerInput,
+    );
+    let current =
+        BannerActivityGuard::begin(std::sync::Arc::clone(&activity), BannerActivity::Operating);
+
+    drop(stale);
+    assert_eq!(activity.load(), BannerActivity::Operating);
+    drop(current);
+    assert_eq!(activity.load(), BannerActivity::Ready);
+}
+
+#[rstest]
+fn indicator_failures_preserve_target_loss_as_a_typed_status() {
+    let failure = BannerFailure::from(&IndicatorError::InvalidTarget(
+        "control target window no longer exists".into(),
+    ));
+
+    assert_eq!(failure.kind, BannerFailureKind::TargetLost);
+    assert_eq!(
+        failure.message,
+        "invalid banner target: control target window no longer exists"
+    );
+    assert_eq!(
+        serde_json::to_value(&failure).expect("banner failure serializes")["kind"],
+        "target_lost"
+    );
+}
+
+#[rstest]
+fn backend_indicator_failures_remain_distinct_from_target_loss() {
+    let failure = BannerFailure::from(&IndicatorError::Backend("paint failed".into()));
+
+    assert_eq!(failure.kind, BannerFailureKind::Backend);
+    assert_eq!(
+        failure.message,
+        "control banner backend failed: paint failed"
+    );
+}
+
+#[rstest]
+fn shared_theme_contract_drives_cursor_indicator_and_motion_tokens() {
+    let contract: serde_json::Value =
+        serde_json::from_str(include_str!("../theme/dcc-cua-theme.json"))
+            .expect("packaged theme contract must be valid JSON");
+    assert_eq!(contract["cursor"]["theme_id"], SHARED_CURSOR_THEME_ID,);
+    assert_eq!(
+        contract["cursor"]["reduced_motion"],
+        SHARED_REDUCED_MOTION_POLICY,
+    );
+    let accent = contract["cursor"]["accent"]
+        .as_str()
+        .expect("cursor accent is a string");
+    assert_eq!(accent, "#A663FF");
+    assert_eq!(color_from_token(theme_tokens::ACCENT), SHARED_CURSOR_ACCENT,);
+}
+
+#[rstest]
+#[case(
+    IndicatorMotionPolicy::Auto,
+    true,
+    ResolvedIndicatorMotion::Animate,
+    true,
+    IndicatorMotionSource::SystemPreference
+)]
+#[case(
+    IndicatorMotionPolicy::Auto,
+    false,
+    ResolvedIndicatorMotion::Reduce,
+    false,
+    IndicatorMotionSource::SystemPreference
+)]
+#[case(
+    IndicatorMotionPolicy::Reduce,
+    true,
+    ResolvedIndicatorMotion::Reduce,
+    false,
+    IndicatorMotionSource::SessionOverride
+)]
+#[case(
+    IndicatorMotionPolicy::Animate,
+    false,
+    ResolvedIndicatorMotion::Animate,
+    true,
+    IndicatorMotionSource::SessionOverride
+)]
+fn session_motion_policy_resolves_to_auditable_indicator_behavior(
+    #[case] requested: IndicatorMotionPolicy,
+    #[case] system_animations: bool,
+    #[case] resolved: ResolvedIndicatorMotion,
+    #[case] motion_enabled: bool,
+    #[case] source: IndicatorMotionSource,
+) {
+    let status = IndicatorMotionStatus::resolve(requested, system_animations);
+    assert_eq!(
+        status,
+        IndicatorMotionStatus {
+            requested,
+            resolved,
+            motion_enabled,
+            source,
+        }
+    );
+    let alpha_at_start = indicator_frame_alpha(status, Duration::ZERO);
+    let alpha_at_quarter_cycle = indicator_frame_alpha(status, Duration::from_millis(450));
+    if motion_enabled {
+        assert_ne!(alpha_at_start, alpha_at_quarter_cycle);
+    } else {
+        assert_eq!(alpha_at_start, TARGET_FRAME_ALPHA_MAX);
+        assert_eq!(alpha_at_quarter_cycle, TARGET_FRAME_ALPHA_MAX);
+    }
+}
+
+#[rstest]
+fn unavailable_system_preference_fails_closed_without_defeating_an_explicit_override() {
+    assert_eq!(
+        IndicatorMotionStatus::resolve_from_system(IndicatorMotionPolicy::Auto, None),
+        IndicatorMotionStatus {
+            requested: IndicatorMotionPolicy::Auto,
+            resolved: ResolvedIndicatorMotion::Reduce,
+            motion_enabled: false,
+            source: IndicatorMotionSource::SafeFallback,
+        }
+    );
+    assert_eq!(
+        IndicatorMotionStatus::resolve_from_system(IndicatorMotionPolicy::Animate, None),
+        IndicatorMotionStatus {
+            requested: IndicatorMotionPolicy::Animate,
+            resolved: ResolvedIndicatorMotion::Animate,
+            motion_enabled: true,
+            source: IndicatorMotionSource::SessionOverride,
+        }
+    );
+}
+
+#[rstest]
+fn indicator_motion_evidence_has_a_stable_public_wire_shape() {
+    let status = IndicatorMotionStatus::resolve(IndicatorMotionPolicy::Animate, false);
+
+    assert_eq!(
+        serde_json::to_value(status).expect("motion evidence serializes"),
+        serde_json::json!({
+            "requested": "animate",
+            "resolved": "animate",
+            "motion_enabled": true,
+            "source": "session_override"
+        })
     );
 }
 
@@ -225,18 +539,68 @@ fn monitor() -> platform::MonitorGeometry {
 #[rstest]
 fn escape_hook_recognizes_key_transitions_without_exclusive_registration() {
     use windows::Win32::UI::Input::KeyboardAndMouse::VK_ESCAPE;
-    use windows::Win32::UI::WindowsAndMessaging::{HC_ACTION, WM_KEYDOWN, WM_KEYUP};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        HC_ACTION, LLKHF_INJECTED, WM_KEYDOWN, WM_KEYUP,
+    };
 
     assert_eq!(
-        platform::escape_key_transition(HC_ACTION as i32, WM_KEYDOWN, VK_ESCAPE.0 as u32),
+        platform::escape_key_transition(HC_ACTION as i32, WM_KEYDOWN, VK_ESCAPE.0 as u32, 0),
         Some(true)
     );
     assert_eq!(
-        platform::escape_key_transition(HC_ACTION as i32, WM_KEYUP, VK_ESCAPE.0 as u32),
+        platform::escape_key_transition(HC_ACTION as i32, WM_KEYUP, VK_ESCAPE.0 as u32, 0),
         Some(false)
     );
     assert_eq!(
-        platform::escape_key_transition(HC_ACTION as i32, WM_KEYDOWN, b'A'.into()),
+        platform::escape_key_transition(HC_ACTION as i32, WM_KEYDOWN, b'A'.into(), 0),
         None
+    );
+    assert_eq!(
+        platform::escape_key_transition(
+            HC_ACTION as i32,
+            WM_KEYDOWN,
+            VK_ESCAPE.0 as u32,
+            LLKHF_INJECTED.0,
+        ),
+        None,
+        "agent-injected Escape must reach the granted target instead of stopping the Host",
+    );
+}
+
+#[cfg(windows)]
+#[rstest]
+fn escape_hook_is_a_complete_passthrough_without_active_banners() {
+    use windows::Win32::UI::Input::KeyboardAndMouse::VK_ESCAPE;
+    use windows::Win32::UI::WindowsAndMessaging::{HC_ACTION, WM_KEYDOWN, WM_KEYUP};
+
+    assert_eq!(
+        platform::escape_key_transition_for_active_banners(
+            0,
+            HC_ACTION as i32,
+            WM_KEYDOWN,
+            VK_ESCAPE.0 as u32,
+            0,
+        ),
+        None,
+    );
+    assert_eq!(
+        platform::escape_key_transition_for_active_banners(
+            0,
+            HC_ACTION as i32,
+            WM_KEYUP,
+            VK_ESCAPE.0 as u32,
+            0,
+        ),
+        None,
+    );
+    assert_eq!(
+        platform::escape_key_transition_for_active_banners(
+            1,
+            HC_ACTION as i32,
+            WM_KEYDOWN,
+            VK_ESCAPE.0 as u32,
+            0,
+        ),
+        Some(true),
     );
 }
