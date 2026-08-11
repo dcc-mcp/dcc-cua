@@ -67,7 +67,8 @@ typed route cannot cover.
 
 For fast visual loops on Windows, keep one `host-jsonl` connection open, grant
 `allow_live_observation: true` in `open_session`, then send
-`live_observation_start` with `{"fps":10,"max_dimension":1568}`. Subsequent `snapshot` requests wait
+`live_observation_start` with a `params.request` payload of
+`{"fps":10,"max_dimension":1568}`. Subsequent `snapshot` requests wait
 for and return only a newer exact-window WGC frame without UIA work. Query
 `live_observation_state` for capture/replacement counts and always send
 `live_observation_stop` before `stop_session`. Use a separate
