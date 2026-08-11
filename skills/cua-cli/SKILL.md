@@ -73,6 +73,10 @@ for and return only a newer exact-window WGC frame without UIA work. Query
 `live_observation_state` for capture/replacement counts and always send
 `live_observation_stop` before `stop_session`. Use a separate
 `accessibility_snapshot` only when semantic controls are required.
+For custom-rendered real-time games, start live observation before the first
+movement action even when the initial snapshot reports a few UIA nodes. Those
+nodes may be only a title bar; held movement must remain on the exact-window
+WGC/scoped-input route rather than falling back to a generic key tap.
 For a custom-rendered transition, set `capture_after: true` and a bounded
 `post_snapshot_delay_ms` (up to 5000) so one request returns the settled frame;
 do not sleep and issue a redundant standalone snapshot. When `capture_after`
@@ -95,10 +99,12 @@ For real-time games and other held-key controls, use a bounded held keypress:
 ```
 
 `duration_ms` is a bounded key-down/key-up interval (currently at most 10
-seconds). It requires exactly one key and no modifiers. A plain `keypress` is a
-tap and is not a substitute for a held WASD movement input. After every held
-interval, take a fresh exact-window snapshot and verify the game state; stop or
-release input at a checkpoint rather than leaving a key logically held.
+seconds). It accepts one or two unique WASD/arrow keys with no modifiers, so a
+game that supports diagonal movement may use `{"keys":["W","D"]}`. A plain
+`keypress` is a tap and is not a substitute for a held WASD movement input.
+After every held interval, take a fresh exact-window snapshot and verify the
+game state; stop or release input at a checkpoint rather than leaving a key
+logically held.
 
 ## Profile-guided routing
 
@@ -151,7 +157,7 @@ disconnected session, policy/authorization failure, or `user_interrupted`, stop
 the current stage and recover the environment before retrying; do not switch to
 another input technology.
 
-The ControlBanner and target frame are visible on the physical desktop so users
-know control is active, while the indicator windows are excluded from CUA
-observations. That is intentional and must not be “fixed” by painting the
-banner into screenshots.
+The ControlBanner and target frame are visible on the physical desktop and in
+the exact-window observation so users and agents can verify that control is
+active. The banner remains owned by the Host and must not be painted into game
+content or synthesized by the client.

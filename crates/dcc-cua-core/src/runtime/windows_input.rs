@@ -1472,6 +1472,13 @@ pub(crate) fn uses_windows_foreground_fast_path(action: &ComputerUseAction) -> b
         )
 }
 
+#[cfg(windows)]
+pub(crate) fn uses_windows_foreground_held_key_fast_path(action: &ComputerUseAction) -> bool {
+    action.delivery_mode.as_deref() == Some("foreground")
+        && action.action == "keypress"
+        && action.duration_ms.is_some()
+}
+
 #[cfg(any(windows, test))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct WindowsPostInputFocusLoss {
@@ -1558,6 +1565,7 @@ pub(crate) async fn perform_windows_foreground_fast_action(
 
     let text = if matches!(action.action.as_str(), "keypress" | "keyboard_shortcut") {
         let key = action.keys.last().cloned().unwrap_or_default();
+        let keys = action.keys.clone();
         let modifiers = if action.action == "keyboard_shortcut" {
             action.keys[..action.keys.len().saturating_sub(1)].to_vec()
         } else {
@@ -1586,7 +1594,7 @@ pub(crate) async fn perform_windows_foreground_fast_action(
                     )
                 })?;
                 if let Some(duration_ms) = hold_duration_ms {
-                    super::windows_held_key::send_windows_key_hold(window_id, &key, duration_ms)
+                    super::windows_held_key::send_windows_key_holds(window_id, &keys, duration_ms)
                 } else {
                     let modifiers: Vec<&str> = modifiers.iter().map(String::as_str).collect();
                     platform_windows::input::keyboard::send_key_synthesized(

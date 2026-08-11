@@ -35,6 +35,11 @@ invent a game-specific driver or bypass the exact-window Host boundary.
    `banner.visible=true`, `banner.target_frame_visible=true`, and
    `input_state.status=ready`. Keep this connection and banner alive until the
    terminal result.
+4. For a custom-rendered real-time game, start `live_observation` immediately
+   after `open_session`, even if the initial accessibility snapshot contains a
+   title bar. UIA title-bar nodes are not gameplay evidence and can otherwise
+   select the generic tap route; held movement requires a newer WGC frame and
+   the exact-window scoped input route.
 
 ## Game control loop
 
@@ -49,14 +54,26 @@ select upgrade → snapshot → repeat → terminal proof`
   foreground held keypress, for example:
 
   ```json
-  {"action":"keypress","keys":["W"],"duration_ms":1000,"delivery_mode":"foreground"}
+  {"action":"keypress","keys":["W","D"],"duration_ms":1000,"delivery_mode":"foreground"}
   ```
 
-  Use short directional intervals and fresh snapshots between them. Do not
-  issue a long unverified stream of input.
+  Use short single- or diagonal-direction intervals and fresh snapshots
+  between them. Choose each direction deterministically from the latest frame:
+  estimate the player's center, identify the nearest enemy or collision
+  footprint, and steer along the largest-clearance direction. Prefer a
+  diagonal escape when two axes are blocked, then replan after the next frame.
+  Do not use random movement or a fixed square patrol, and do not issue a long
+  unverified stream of input.
 - After each action, verify an independent visual state change: timer/health,
   player/enemy position, level-up overlay, pause state, defeat, or victory.
   “Input sent” alone is not game success.
+- For real-time combat, treat avoidance as a closed-loop controller rather than
+  a macro: `snapshot → detect player/enemy/obstacles → choose clearance vector
+  → held WASD/diagonal input (≤2 s) → snapshot`. If the frame is degraded or
+  the target is not visible, stop movement and recover observation first.
+- Keep the live observation active for the whole combat loop. A snapshot backed
+  only by UIA metadata is suitable for semantic menu actions, not for movement
+  or enemy avoidance.
 - When a level-up/choice overlay appears, select only from the visible choices
   (for keyboard games, usually `1`, `2`, or `3`), then snapshot again. Do not
   reuse the previous observation ID.
