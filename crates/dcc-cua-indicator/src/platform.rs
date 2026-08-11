@@ -27,17 +27,16 @@ use windows::Win32::UI::WindowsAndMessaging::{
     DrawIconEx, GA_ROOTOWNER, GCLP_HICON, GCLP_HICONSM, GW_HWNDPREV, GetAncestor, GetClassLongPtrW,
     GetClientRect, GetForegroundWindow, GetPropW, GetWindow, GetWindowRect, GetWindowTextLengthW,
     GetWindowTextW, GetWindowThreadProcessId, HC_ACTION, HHOOK, HICON, HTTRANSPARENT,
-    HWND_NOTOPMOST, HWND_TOP, ICON_SMALL2, IsIconic, IsWindow, IsWindowVisible, KBDLLHOOKSTRUCT,
-    LLKHF_INJECTED, LWA_ALPHA, MA_NOACTIVATE, MSG, PM_REMOVE, PeekMessageW, RegisterClassW,
-    RemovePropW, SEND_MESSAGE_TIMEOUT_FLAGS, SET_WINDOW_POS_FLAGS, SMTO_ABORTIFHUNG,
-    SPI_GETCLIENTAREAANIMATION, SW_HIDE, SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOMOVE,
-    SWP_NOOWNERZORDER, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW,
+    HWND_NOTOPMOST, HWND_TOP, HWND_TOPMOST, ICON_SMALL2, IsIconic, IsWindow, IsWindowVisible,
+    KBDLLHOOKSTRUCT, LLKHF_INJECTED, LWA_ALPHA, MA_NOACTIVATE, MSG, PM_REMOVE, PeekMessageW,
+    RegisterClassW, RemovePropW, SEND_MESSAGE_TIMEOUT_FLAGS, SET_WINDOW_POS_FLAGS,
+    SMTO_ABORTIFHUNG, SPI_GETCLIENTAREAANIMATION, SW_HIDE, SW_SHOWNOACTIVATE, SWP_NOACTIVATE,
+    SWP_NOMOVE, SWP_NOOWNERZORDER, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW,
     SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SendMessageTimeoutW, SetLayeredWindowAttributes, SetPropW,
-    SetWindowDisplayAffinity, SetWindowPos, SetWindowsHookExW, ShowWindow, SystemParametersInfoW,
-    TranslateMessage, UnhookWindowsHookEx, WDA_EXCLUDEFROMCAPTURE, WH_KEYBOARD_LL, WINDOW_EX_STYLE,
-    WINDOW_STYLE, WM_GETICON, WM_KEYDOWN, WM_KEYUP, WM_MOUSEACTIVATE, WM_NCHITTEST, WM_PAINT,
-    WM_SYSKEYDOWN, WM_SYSKEYUP, WNDCLASSW, WNDPROC, WS_EX_LAYERED, WS_EX_NOACTIVATE,
-    WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT, WS_POPUP,
+    SetWindowPos, SetWindowsHookExW, ShowWindow, SystemParametersInfoW, TranslateMessage,
+    UnhookWindowsHookEx, WH_KEYBOARD_LL, WINDOW_EX_STYLE, WINDOW_STYLE, WM_GETICON, WM_KEYDOWN,
+    WM_KEYUP, WM_MOUSEACTIVATE, WM_NCHITTEST, WM_PAINT, WM_SYSKEYDOWN, WM_SYSKEYUP, WNDCLASSW,
+    WNDPROC, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT, WS_POPUP,
 };
 use windows::core::{BOOL, HRESULT, PCWSTR, w};
 
@@ -918,12 +917,6 @@ fn create_window(
             "set indicator opacity: {error}"
         )));
     }
-    if let Err(error) = unsafe { SetWindowDisplayAffinity(window, WDA_EXCLUDEFROMCAPTURE) } {
-        let _ = unsafe { DestroyWindow(window) };
-        return Err(IndicatorError::Backend(format!(
-            "exclude indicator from capture: {error}"
-        )));
-    }
     Ok(window)
 }
 
@@ -1191,6 +1184,49 @@ pub(super) fn position_target_scoped_overlay(
     height: i32,
     show_window: bool,
 ) -> windows::core::Result<()> {
+    position_target_scoped_overlay_with_z_order(
+        window,
+        target,
+        x,
+        y,
+        width,
+        height,
+        show_window,
+        false,
+    )
+}
+
+fn position_banner_overlay(
+    window: HWND,
+    target: HWND,
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+    show_window: bool,
+) -> windows::core::Result<()> {
+    position_target_scoped_overlay_with_z_order(
+        window,
+        target,
+        x,
+        y,
+        width,
+        height,
+        show_window,
+        true,
+    )
+}
+
+fn position_target_scoped_overlay_with_z_order(
+    window: HWND,
+    target: HWND,
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+    show_window: bool,
+    topmost: bool,
+) -> windows::core::Result<()> {
     unsafe {
         SetWindowPos(
             window,
@@ -1201,11 +1237,15 @@ pub(super) fn position_target_scoped_overlay(
             0,
             SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER,
         )?;
-        let previous = GetWindow(target, GW_HWNDPREV).unwrap_or(HWND(core::ptr::null_mut()));
-        let insert_after = if previous.0.is_null() {
-            HWND_TOP
+        let insert_after = if topmost {
+            HWND_TOPMOST
         } else {
-            previous
+            let previous = GetWindow(target, GW_HWNDPREV).unwrap_or(HWND(core::ptr::null_mut()));
+            if previous.0.is_null() {
+                HWND_TOP
+            } else {
+                previous
+            }
         };
         let visibility = if show_window {
             SWP_SHOWWINDOW
@@ -1254,7 +1294,7 @@ fn position_banner(
             ));
         }
     }
-    position_target_scoped_overlay(
+    position_banner_overlay(
         window,
         target,
         geometry.x,

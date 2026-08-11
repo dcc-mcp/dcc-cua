@@ -627,11 +627,29 @@ pub(crate) fn validate_action(action: &ComputerUseAction) -> ComputerUseResult<(
             ));
         }
         if action.action == "keypress"
-            && (duration_ms == 0 || action.keys.len() != 1 || !action.modifiers.is_empty())
+            && (duration_ms == 0
+                || action.keys.is_empty()
+                || action.keys.len() > 2
+                || !action.modifiers.is_empty()
+                || action
+                    .keys
+                    .iter()
+                    .map(|key| key.trim().to_ascii_lowercase())
+                    .any(|key| {
+                        !matches!(
+                            key.as_str(),
+                            "w" | "a" | "s" | "d" | "up" | "down" | "left" | "right"
+                        )
+                    })
+                || action.keys.iter().enumerate().any(|(index, key)| {
+                    action.keys[..index]
+                        .iter()
+                        .any(|previous| previous.eq_ignore_ascii_case(key))
+                }))
         {
             return Err(ComputerUseError::new(
                 ComputerUseErrorCode::InvalidAction,
-                "keypress duration_ms requires one key, no modifiers, and a non-zero duration",
+                "keypress duration_ms requires one or two unique WASD/arrow keys, no modifiers, and a non-zero duration",
             ));
         }
     }
