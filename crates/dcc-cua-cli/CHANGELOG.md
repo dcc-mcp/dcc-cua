@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/dcc-mcp/dcc-cua/compare/v0.3.1...v0.4.0) (2026-08-11)
+
+
+### Features
+
+* harden long-running CUA sessions ([#47](https://github.com/dcc-mcp/dcc-cua/issues/47)) ([4db06bb](https://github.com/dcc-mcp/dcc-cua/commit/4db06bb4a6222baa99adc6ee5fcda2aaebecdb18))
+
 ## [0.3.1](https://github.com/dcc-mcp/dcc-cua/compare/v0.3.0...v0.3.1) (2026-08-11)
 
 
