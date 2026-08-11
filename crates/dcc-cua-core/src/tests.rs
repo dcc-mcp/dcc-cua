@@ -20,7 +20,8 @@ use crate::driver_factory::{
 };
 use crate::interactive_desktop::{
     platform_managed_diagnostic, require_desktop_observation_from,
-    require_exact_window_observation_from, require_input_available_from, windows_diagnostic,
+    require_exact_window_observation_from, require_input_available_from,
+    require_window_activation_from, windows_diagnostic, windows_diagnostic_with_thread_fallback,
 };
 use crate::live_observation::{
     CaptureFailureDisposition, LiveObservation, LiveObservationFence, LiveObservationFrame,
@@ -527,6 +528,37 @@ fn input_desktop_probe_error_fails_closed() {
 }
 
 #[rstest]
+fn denied_input_desktop_probe_accepts_only_a_verified_default_thread_desktop() {
+    let ready = windows_diagnostic_with_thread_fallback(
+        Ok(0),
+        Err("OpenInputDesktop: access denied"),
+        Ok(Some("Default")),
+        Ok(()),
+        true,
+    );
+    let no_foreground = windows_diagnostic_with_thread_fallback(
+        Ok(0),
+        Err("OpenInputDesktop: access denied"),
+        Ok(Some("Default")),
+        Ok(()),
+        false,
+    );
+    let secure = windows_diagnostic_with_thread_fallback(
+        Ok(0),
+        Err("OpenInputDesktop: access denied"),
+        Ok(Some("Winlogon")),
+        Ok(()),
+        true,
+    );
+
+    assert_eq!(ready["success"], true);
+    assert_eq!(ready["input_ready"], true);
+    assert_eq!(ready["input_desktop_source"], "current_thread_fallback");
+    assert_eq!(no_foreground["success"], false);
+    assert_eq!(secure["success"], false);
+}
+
+#[rstest]
 fn unreadable_input_desktop_only_allows_an_exact_window_observation_attempt() {
     let diagnostic =
         windows_diagnostic(Ok(0), Err("OpenInputDesktop: access denied"), Ok(()), false);
@@ -538,6 +570,16 @@ fn unreadable_input_desktop_only_allows_an_exact_window_observation_attempt() {
         desktop_error.code,
         ComputerUseErrorCode::InteractiveDesktopUnavailable
     );
+}
+
+#[rstest]
+fn exact_window_activation_uses_the_observation_gate_not_the_raw_input_gate() {
+    let unreadable_default_desktop =
+        windows_diagnostic(Ok(0), Err("OpenInputDesktop: access denied"), Ok(()), true);
+    let secure_desktop = windows_diagnostic(Ok(0), Ok(Some("Winlogon")), Ok(()), false);
+
+    assert!(require_window_activation_from(&unreadable_default_desktop).is_ok());
+    assert!(require_window_activation_from(&secure_desktop).is_err());
 }
 
 #[rstest]
@@ -1304,6 +1346,40 @@ fn windows_uia_tokens_route_only_supported_semantic_actions() {
 }
 
 #[rstest]
+fn windows_uia_semantic_actions_do_not_require_the_physical_input_desktop() {
+    let observation = ComputerUseObservation {
+        observation_id: "observation".into(),
+        window_handle: 7,
+        process_id: 42,
+        window_title: "DCC".into(),
+        width: 100,
+        height: 100,
+        source_rect: [0, 0, 100, 100],
+        capture_backend: "windows_uia".into(),
+        capture_provenance: json!({"accessibility_backend":"windows_uia"}),
+        session_id: "session".into(),
+    };
+
+    assert!(!action_requires_physical_input_desktop(
+        &ComputerUseAction {
+            action: "click".into(),
+            element_token: Some("dcc-wuia:snapshot:2".into()),
+            ..Default::default()
+        },
+        &observation,
+    ));
+    assert!(action_requires_physical_input_desktop(
+        &ComputerUseAction {
+            action: "click".into(),
+            x: Some(10.0),
+            y: Some(20.0),
+            ..Default::default()
+        },
+        &observation,
+    ));
+}
+
+#[rstest]
 fn semantic_only_observations_reject_unscoped_pixel_actions() {
     let observation = ComputerUseObservation {
         observation_id: "observation".into(),
@@ -1339,6 +1415,13 @@ fn semantic_only_observations_reject_unscoped_pixel_actions() {
         )
         .is_ok()
     );
+}
+
+#[rstest]
+fn upstream_window_inventory_miss_routes_to_the_exact_native_capture() {
+    assert!(is_uia_snapshot_message(
+        "No window with window_id 65916 exists. Call list_windows for candidates."
+    ));
 }
 
 #[rstest]

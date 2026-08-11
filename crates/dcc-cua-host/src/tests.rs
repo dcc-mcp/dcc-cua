@@ -1458,6 +1458,7 @@ fn request_frame_preserves_correlation_on_deserialization_errors() {
 fn window_state_wire_surface_matches_cua_capability() {
     assert!(serde_json::from_value::<WindowOperation>(json!("activate")).is_ok());
     assert!(serde_json::from_value::<WindowOperation>(json!("restore_activate")).is_ok());
+    assert!(serde_json::from_value::<WindowOperation>(json!("close")).is_ok());
     assert!(serde_json::from_value::<WindowOperation>(json!("restore")).is_err());
     assert!(serde_json::from_value::<WindowOperation>(json!("show")).is_err());
 }

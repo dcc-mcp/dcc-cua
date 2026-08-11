@@ -10,13 +10,16 @@ use std::{
 use serde_json::{Value, json};
 use uuid::Uuid;
 use windows_sys::Win32::{
+    Foundation::RECT,
     System::Threading::{AttachThreadInput, GetCurrentThreadId},
     UI::{
         Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON, VK_MBUTTON, VK_RBUTTON},
         WindowsAndMessaging::{
-            BringWindowToTop, GUITHREADINFO, GetForegroundWindow, GetGUIThreadInfo,
-            GetWindowThreadProcessId, IsIconic, IsWindow, IsWindowVisible, SW_RESTORE,
-            SetForegroundWindow, ShowWindowAsync,
+            BringWindowToTop, GUITHREADINFO, GetForegroundWindow, GetGUIThreadInfo, GetWindowRect,
+            GetWindowThreadProcessId, HWND_NOTOPMOST, HWND_TOP, HWND_TOPMOST, IsIconic, IsWindow,
+            IsWindowVisible, PostMessageW, SW_RESTORE, SWP_ASYNCWINDOWPOS, SWP_NOMOVE, SWP_NOSIZE,
+            SWP_NOZORDER, SWP_SHOWWINDOW, SetForegroundWindow, SetWindowPos, ShowWindowAsync,
+            WM_CLOSE,
         },
     },
 };
@@ -32,6 +35,95 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 const STDERR_LIMIT: u64 = 64 * 1024;
 const BACKEND: &str = include_str!("../assets/windows_uia_backend.ps1");
 const HELPERS: &str = include_str!("../assets/windows_uia_helpers.ps1");
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum ActivationZOrder {
+    TopMost,
+    NotTopMost,
+}
+
+pub(super) fn activation_topmost_bounce(mut apply: impl FnMut(ActivationZOrder)) {
+    apply(ActivationZOrder::TopMost);
+    apply(ActivationZOrder::NotTopMost);
+}
+
+pub(super) fn window_frame_matches(actual: [i32; 4], requested: [i32; 4]) -> bool {
+    actual == requested
+}
+
+pub fn set_window_frame(
+    target: UiaTarget,
+    requested: [i32; 4],
+    mutation_available: impl FnOnce() -> Result<(), UiaError>,
+) -> Result<[i32; 4], UiaError> {
+    mutation_available()?;
+    let expected = require_exact_window_handle(target, "window frame mutation")?;
+    let [x, y, width, height] = requested;
+    if width <= 0 || height <= 0 {
+        return Err(UiaError::InvalidAction(
+            "window frame width and height must be positive".into(),
+        ));
+    }
+    let applied = unsafe {
+        SetWindowPos(
+            expected,
+            std::ptr::null_mut(),
+            x,
+            y,
+            width,
+            height,
+            SWP_ASYNCWINDOWPOS | SWP_NOZORDER,
+        )
+    } != 0;
+    if !applied {
+        return Err(UiaError::BackendUnavailable(format!(
+            "SetWindowPos failed: {}",
+            std::io::Error::last_os_error()
+        )));
+    }
+    for _ in 0..40 {
+        let expected = require_exact_window_handle(target, "window frame validation")?;
+        let mut rect = RECT::default();
+        if unsafe { GetWindowRect(expected, &mut rect) } != 0 {
+            let actual = [
+                rect.left,
+                rect.top,
+                rect.right - rect.left,
+                rect.bottom - rect.top,
+            ];
+            if window_frame_matches(actual, requested) {
+                return Ok(actual);
+            }
+        }
+        thread::sleep(Duration::from_millis(5));
+    }
+    Err(UiaError::BackendUnavailable(
+        "the exact window did not reach the requested frame".into(),
+    ))
+}
+
+pub fn post_close_window(
+    target: UiaTarget,
+    mutation_available: impl FnOnce() -> Result<(), UiaError>,
+) -> Result<(), UiaError> {
+    mutation_available()?;
+    let expected = require_exact_window_handle(target, "window close")?;
+    if unsafe { PostMessageW(expected, WM_CLOSE, 0, 0) } == 0 {
+        return Err(UiaError::BackendUnavailable(format!(
+            "PostMessageW(WM_CLOSE) failed: {}",
+            std::io::Error::last_os_error()
+        )));
+    }
+    for _ in 0..80 {
+        if unsafe { IsWindow(expected) } == 0 {
+            return Ok(());
+        }
+        thread::sleep(Duration::from_millis(25));
+    }
+    Err(UiaError::BackendUnavailable(
+        "the exact window did not close after WM_CLOSE".into(),
+    ))
+}
 
 fn live_window_identity(
     window_handle: windows_sys::Win32::Foundation::HWND,
@@ -293,9 +385,9 @@ fn restore_foreground(expected: usize, controlled_process_id: u32) -> Result<(),
 
 pub fn activate_window(
     target: UiaTarget,
-    input_available: impl FnOnce() -> Result<(), UiaError>,
+    activation_available: impl FnOnce() -> Result<(), UiaError>,
 ) -> Result<(), UiaError> {
-    input_gated_window_mutation(input_available, || activate_window_after_gate(target))?;
+    input_gated_window_mutation(activation_available, || activate_window_after_gate(target))?;
     let expected = require_available_window_handle(target, "activation final validation")?;
     if unsafe { GetForegroundWindow() } != expected {
         return Err(UiaError::BackendUnavailable(
@@ -316,34 +408,50 @@ fn activate_window_after_gate(target: UiaTarget) -> Result<(), UiaError> {
         return Ok(());
     }
 
-    let current = unsafe { GetForegroundWindow() };
-    let current_thread = unsafe { GetCurrentThreadId() };
-    let foreground_thread = unsafe { GetWindowThreadProcessId(current, std::ptr::null_mut()) };
-    let expected_thread = unsafe { GetWindowThreadProcessId(expected, std::ptr::null_mut()) };
-    let attached_foreground = foreground_thread != 0
-        && foreground_thread != current_thread
-        && unsafe { AttachThreadInput(current_thread, foreground_thread, 1) } != 0;
-    let attached_expected = expected_thread != 0
-        && expected_thread != current_thread
-        && expected_thread != foreground_thread
-        && unsafe { AttachThreadInput(current_thread, expected_thread, 1) } != 0;
-    let expected = match require_available_window_handle(target, "fallback activation") {
-        Ok(expected) => expected,
-        Err(error) => {
-            unsafe {
-                if attached_expected {
-                    AttachThreadInput(current_thread, expected_thread, 0);
-                }
-                if attached_foreground {
-                    AttachThreadInput(current_thread, foreground_thread, 0);
-                }
-            }
-            return Err(error);
-        }
-    };
+    let expected = require_available_window_handle(target, "fallback activation")?;
     unsafe {
-        BringWindowToTop(expected);
+        SetWindowPos(
+            expected,
+            HWND_TOP,
+            0,
+            0,
+            0,
+            0,
+            SWP_ASYNCWINDOWPOS | SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
+        );
         SetForegroundWindow(expected);
+    }
+    if unsafe { GetForegroundWindow() } != expected {
+        let mut topmost_applied = false;
+        let mut topmost_released = false;
+        activation_topmost_bounce(|step| {
+            let insert_after = match step {
+                ActivationZOrder::TopMost => HWND_TOPMOST,
+                ActivationZOrder::NotTopMost => HWND_NOTOPMOST,
+            };
+            let succeeded = unsafe {
+                SetWindowPos(
+                    expected,
+                    insert_after,
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_ASYNCWINDOWPOS | SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
+                )
+            } != 0;
+            match step {
+                ActivationZOrder::TopMost => topmost_applied = succeeded,
+                ActivationZOrder::NotTopMost => topmost_released = succeeded,
+            }
+        });
+        if topmost_applied && !topmost_released {
+            return Err(UiaError::BackendUnavailable(
+                "Windows raised the exact target but could not release temporary topmost state"
+                    .into(),
+            ));
+        }
+        unsafe { SetForegroundWindow(expected) };
     }
     let activated = (0..20).any(|_| {
         if unsafe { GetForegroundWindow() } == expected {
@@ -352,14 +460,6 @@ fn activate_window_after_gate(target: UiaTarget) -> Result<(), UiaError> {
         thread::sleep(Duration::from_millis(5));
         false
     });
-    unsafe {
-        if attached_expected {
-            AttachThreadInput(current_thread, expected_thread, 0);
-        }
-        if attached_foreground {
-            AttachThreadInput(current_thread, foreground_thread, 0);
-        }
-    }
     if activated {
         Ok(())
     } else {

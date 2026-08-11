@@ -362,6 +362,20 @@ function Find-By-Id($element, [string]$controlId, [int]$depth, [string]$path) {
   return $null
 }
 
+function Invoke-LegacyDefaultAction($element) {
+  try {
+    $pattern = $null
+    if (-not $element.TryGetCurrentPattern(
+      [System.Windows.Automation.LegacyIAccessiblePattern]::Pattern,
+      [ref]$pattern
+    )) { return $false }
+    $pattern.DoDefaultAction()
+    return $true
+  } catch {
+    return $false
+  }
+}
+
 function Invoke-Action($element) {
   $action = [string]$payload.action.action
   if ($action -eq "focus") {
@@ -414,13 +428,16 @@ function Invoke-Action($element) {
       $pattern.Toggle()
       return @{ok = $true; message = "toggled control"}
     }
+    if (Invoke-LegacyDefaultAction $element) {
+      return @{ok = $true; message = "invoked legacy accessible default action"}
+    }
     if (Invoke-NativeButtonClick $element) {
       return @{ok = $true; message = "invoked native button"}
     }
     return @{
       ok = $false
       error = "unsupported_action"
-      message = "click requires InvokePattern, TogglePattern, or a native button handle"
+      message = "click requires InvokePattern, TogglePattern, LegacyIAccessiblePattern, or a native button handle"
     }
   }
   return @{ok = $false; error = "unsupported_action"; message = "unsupported Windows UIA action"}

@@ -15,6 +15,48 @@ use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 
 mod recording;
 
+#[cfg(windows)]
+#[rstest]
+fn upstream_start_timeout_is_the_only_failure_allowed_to_enter_visual_only_mode() {
+    let timeout = ComputerUseError::new(
+        ComputerUseErrorCode::InputFailed,
+        "CUA start CUA session timed out after 15000 ms",
+    );
+    let backend_failure = ComputerUseError::new(
+        ComputerUseErrorCode::BackendUnavailable,
+        "CUA start CUA session failed before dispatch",
+    );
+
+    assert!(visual_only_start_degradation(&timeout).is_some());
+    assert!(visual_only_start_degradation(&backend_failure).is_none());
+}
+
+#[cfg(windows)]
+#[rstest]
+#[tokio::test]
+async fn visual_only_session_never_reenters_the_unresponsive_upstream_driver() {
+    let (mut session, calls) = counting_session();
+    session.upstream_session_state = UpstreamSessionState::VisualOnly {
+        reason: "simulated upstream timeout".into(),
+    };
+
+    session
+        .refresh_upstream_session_before_observation_if_needed()
+        .await
+        .expect("visual fallback skips upstream refresh");
+    let error = session
+        .require_current_upstream_session_for_evidence()
+        .unwrap_err();
+
+    assert_eq!(calls.load(AtomicOrdering::SeqCst), 0);
+    assert_eq!(error.code, ComputerUseErrorCode::BackendUnavailable);
+    assert_eq!(session.status()["upstream_session"]["state"], "visual_only");
+    assert_eq!(
+        session.status()["upstream_session"]["requires_explicit_escalation"],
+        true
+    );
+}
+
 #[rstest]
 fn failed_window_restore_still_invalidates_action_cache_before_mutation() {
     let invalidated = Cell::new(false);
@@ -262,6 +304,7 @@ fn counting_session_with_envelope(
         )
         .expect("test session");
     session.active = true;
+    session.upstream_session_state = UpstreamSessionState::Active;
     session.target = Some(WindowTarget {
         pid: 42,
         window_id: 77,
@@ -401,6 +444,7 @@ async fn refresh_timeout_stales_action_evidence_without_ending_the_long_running_
         )
         .unwrap();
     session.active = true;
+    session.upstream_session_state = UpstreamSessionState::Active;
     session.target = Some(WindowTarget {
         pid: 42,
         window_id: 77,
@@ -477,6 +521,7 @@ async fn an_action_never_crosses_a_due_upstream_session_refresh() {
         )
         .unwrap();
     session.active = true;
+    session.upstream_session_state = UpstreamSessionState::Active;
     session.observation = Some(ComputerUseObservation {
         observation_id: "observation-before-refresh".into(),
         window_handle: 77,
@@ -527,6 +572,7 @@ async fn successful_refresh_before_observation_requires_a_strictly_new_live_fram
         )
         .unwrap();
     session.active = true;
+    session.upstream_session_state = UpstreamSessionState::Active;
     session.observation = Some(ComputerUseObservation {
         observation_id: "observation-before-refresh".into(),
         window_handle: 77,
@@ -1286,6 +1332,7 @@ async fn unavailable_input_gate_makes_direct_core_action_evidence_stale_after_re
         )
         .unwrap();
     session.active = true;
+    session.upstream_session_state = UpstreamSessionState::Active;
     session.observation = Some(ComputerUseObservation {
         observation_id: "observation-before-lock".into(),
         window_handle: 77,
@@ -1355,6 +1402,7 @@ async fn target_revalidation_failure_makes_direct_core_action_evidence_stale_aft
         )
         .unwrap();
     session.active = true;
+    session.upstream_session_state = UpstreamSessionState::Active;
     session.observation = Some(ComputerUseObservation {
         observation_id: "observation-before-target-loss".into(),
         window_handle: 77,

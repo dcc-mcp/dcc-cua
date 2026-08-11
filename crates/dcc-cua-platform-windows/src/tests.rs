@@ -17,9 +17,10 @@ use super::{
 use super::PersistentWgcCapture;
 #[cfg(windows)]
 use super::windows::{
-    completed_action_result, exact_window_available_for_activation, exact_window_ownership_matches,
+    ActivationZOrder, activation_topmost_bounce, completed_action_result,
+    exact_window_available_for_activation, exact_window_ownership_matches,
     foreground_restore_required, input_gated_window_mutation,
-    run_restore_activate_mutation_sequence,
+    run_restore_activate_mutation_sequence, window_frame_matches,
 };
 
 #[rstest]
@@ -116,6 +117,14 @@ fn portable_contract_construction_does_not_require_windows() {
 }
 
 #[rstest]
+fn windows_uia_click_has_a_scoped_legacy_default_action_fallback() {
+    let backend = include_str!("../assets/windows_uia_backend.ps1");
+
+    assert!(backend.contains("LegacyIAccessiblePattern"));
+    assert!(backend.contains("DoDefaultAction()"));
+}
+
+#[rstest]
 fn raw_input_debug_snapshot_has_a_stable_typed_wire_shape() {
     let snapshot = WindowsRawInputSnapshot {
         async_button_down: true,
@@ -201,6 +210,32 @@ fn restore_activation_requires_the_exact_live_pid_hwnd_ownership_fence() {
     assert!(exact_window_ownership_matches(true, 42, 42));
     assert!(!exact_window_ownership_matches(false, 42, 42));
     assert!(!exact_window_ownership_matches(true, 42, 43));
+}
+
+#[cfg(windows)]
+#[rstest]
+fn activation_topmost_fallback_always_releases_topmost_state() {
+    let mut steps = Vec::new();
+
+    activation_topmost_bounce(|step| steps.push(step));
+
+    assert_eq!(
+        steps,
+        vec![ActivationZOrder::TopMost, ActivationZOrder::NotTopMost]
+    );
+}
+
+#[cfg(windows)]
+#[rstest]
+fn exact_window_frame_verification_is_coordinate_and_size_strict() {
+    assert!(window_frame_matches(
+        [100, 100, 698, 209],
+        [100, 100, 698, 209]
+    ));
+    assert!(!window_frame_matches(
+        [100, 100, 698, 209],
+        [101, 100, 698, 209]
+    ));
 }
 
 #[cfg(windows)]

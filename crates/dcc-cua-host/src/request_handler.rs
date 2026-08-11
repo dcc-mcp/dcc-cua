@@ -888,6 +888,7 @@ async fn handle_request_inner(
             let status = session.status();
             let marker = status["marker"].clone();
             let banner = status["banner"].clone();
+            let upstream_session = status["upstream_session"].clone();
             let cursor = json!({
                 "visible": marker["visible"],
                 "shape": "mouse_pointer",
@@ -957,6 +958,7 @@ async fn handle_request_inner(
                 "target": target_wire(&target),
                 "marker": marker,
                 "banner": banner,
+                "upstream_session": upstream_session,
                 "cursor": cursor,
                 "showcase": showcase,
                 "input_state": initial_input_state,
@@ -1019,6 +1021,27 @@ async fn handle_request_inner(
                         host.observe_target_availability(availability);
                     }
                     ("restore_activate", result?)
+                }
+                WindowOperation::Close => {
+                    if !host.allow_trusted_confirmation {
+                        return Err(HostError::ComputerUse(ComputerUseError::new(
+                            ComputerUseErrorCode::InvalidAction,
+                            "close requires explicit trusted action-time confirmation",
+                        )));
+                    }
+                    let result = host.session.close_window().await;
+                    let result = host.finish_observation_sensitive_attempt(result);
+                    let result =
+                        finish_window_mutation_attempt(result, || host.invalidate_observations())?;
+                    return Ok((
+                        window_state_changed_response(
+                            &session_id,
+                            "close",
+                            json!({"exists": false}),
+                            result,
+                        ),
+                        None,
+                    ));
                 }
             };
             let state = host.session.window_state().await;
