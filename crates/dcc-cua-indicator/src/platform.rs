@@ -7,6 +7,7 @@ use windows::Win32::Foundation::{
     COLORREF, ERROR_CLASS_ALREADY_EXISTS, HANDLE, HWND, LPARAM, LRESULT, RECT, WPARAM,
 };
 use windows::Win32::Globalization::GetUserDefaultLocaleName;
+use windows::Win32::Graphics::Dwm::{DWMWA_EXTENDED_FRAME_BOUNDS, DwmGetWindowAttribute};
 use windows::Win32::Graphics::Gdi::{
     BeginPaint, CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, CombineRgn, CreateEllipticRgn, CreateFontW,
     CreateRoundRectRgn, CreateSolidBrush, DEFAULT_CHARSET, DEFAULT_PITCH, DT_CENTER,
@@ -28,8 +29,9 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GetWindowTextW, GetWindowThreadProcessId, HC_ACTION, HHOOK, HICON, HTTRANSPARENT,
     HWND_NOTOPMOST, HWND_TOP, ICON_SMALL2, IsIconic, IsWindow, IsWindowVisible, KBDLLHOOKSTRUCT,
     LLKHF_INJECTED, LWA_ALPHA, MA_NOACTIVATE, MSG, PM_REMOVE, PeekMessageW, RegisterClassW,
-    RemovePropW, SEND_MESSAGE_TIMEOUT_FLAGS, SMTO_ABORTIFHUNG, SPI_GETCLIENTAREAANIMATION, SW_HIDE,
-    SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOOWNERZORDER, SWP_NOSIZE, SWP_SHOWWINDOW,
+    RemovePropW, SEND_MESSAGE_TIMEOUT_FLAGS, SET_WINDOW_POS_FLAGS, SMTO_ABORTIFHUNG,
+    SPI_GETCLIENTAREAANIMATION, SW_HIDE, SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOMOVE,
+    SWP_NOOWNERZORDER, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW,
     SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SendMessageTimeoutW, SetLayeredWindowAttributes, SetPropW,
     SetWindowDisplayAffinity, SetWindowPos, SetWindowsHookExW, ShowWindow, SystemParametersInfoW,
     TranslateMessage, UnhookWindowsHookEx, WDA_EXCLUDEFROMCAPTURE, WH_KEYBOARD_LL, WINDOW_EX_STYLE,
@@ -44,7 +46,8 @@ use super::{
     BannerTarget, IndicatorError, IndicatorMotionPolicy, IndicatorMotionStatus,
     TARGET_FRAME_ALPHA_MAX, TARGET_FRAME_GRADIENT_STEPS, TARGET_FRAME_THICKNESS_DIP,
     broadcast_interrupt, indicator_frame_alpha, interrupt_generation, interrupt_generation_changed,
-    target_frame_band_alpha, target_frame_band_insets, theme_tokens,
+    target_frame_band_alpha, target_frame_has_visible_band, theme_tokens,
+    visible_target_frame_band,
 };
 
 const BANNER_CLASS: PCWSTR = w!("DccCuaControlBanner");
@@ -104,6 +107,30 @@ pub(super) enum TargetPresentationPolicy {
 impl TargetPresentationPolicy {
     pub(super) const fn is_visible(self) -> bool {
         !matches!(self, Self::Hidden)
+    }
+}
+
+pub(super) struct TargetOverlaySyncState {
+    previous: TargetPresentationPolicy,
+}
+
+impl TargetOverlaySyncState {
+    pub(super) const fn new(previous: TargetPresentationPolicy) -> Self {
+        Self { previous }
+    }
+
+    /// Return true only when a presentation transition can put the exact target
+    /// above its unowned overlays. Stable polling ticks deliberately do no work.
+    pub(super) fn observe(&mut self, current: TargetPresentationPolicy) -> bool {
+        let previous = std::mem::replace(&mut self.previous, current);
+        let entered_target_foreground = current != previous
+            && matches!(
+                current,
+                TargetPresentationPolicy::ExactTargetForeground
+                    | TargetPresentationPolicy::OwnedModalForeground
+            );
+        current.is_visible()
+            && (matches!(previous, TargetPresentationPolicy::Hidden) || entered_target_foreground)
     }
 }
 
@@ -169,6 +196,7 @@ pub(super) struct PlatformBanner {
     active: Arc<AtomicBool>,
     interrupted: Arc<AtomicBool>,
     visible: Arc<AtomicBool>,
+    frame_visible: Arc<AtomicBool>,
     inside_target: Arc<AtomicBool>,
     activity: Arc<BannerActivitySignal>,
     recording: Arc<AtomicBool>,
@@ -192,6 +220,7 @@ impl PlatformBanner {
         let active = Arc::new(AtomicBool::new(false));
         let interrupted = Arc::new(AtomicBool::new(false));
         let visible = Arc::new(AtomicBool::new(false));
+        let frame_visible = Arc::new(AtomicBool::new(false));
         let inside_target = Arc::new(AtomicBool::new(false));
         let activity = Arc::new(BannerActivitySignal::new(BannerActivity::Connecting));
         let recording = Arc::new(AtomicBool::new(false));
@@ -209,6 +238,7 @@ impl PlatformBanner {
         let thread_active = Arc::clone(&active);
         let thread_interrupted = Arc::clone(&interrupted);
         let thread_visible = Arc::clone(&visible);
+        let thread_frame_visible = Arc::clone(&frame_visible);
         let thread_inside_target = Arc::clone(&inside_target);
         let thread_backend_failure = Arc::clone(&backend_failure);
         let thread = thread::Builder::new()
@@ -220,6 +250,7 @@ impl PlatformBanner {
                     &thread_active,
                     &thread_interrupted,
                     &thread_visible,
+                    &thread_frame_visible,
                     &thread_inside_target,
                     &runtime,
                     motion,
@@ -233,6 +264,7 @@ impl PlatformBanner {
                 }
                 thread_active.store(false, Ordering::Release);
                 thread_visible.store(false, Ordering::Release);
+                thread_frame_visible.store(false, Ordering::Release);
             })
             .map_err(|error| {
                 IndicatorError::Backend(format!("failed to start banner thread: {error}"))
@@ -244,6 +276,7 @@ impl PlatformBanner {
                 active,
                 interrupted,
                 visible,
+                frame_visible,
                 inside_target,
                 activity,
                 recording,
@@ -289,7 +322,7 @@ impl PlatformBanner {
             last_error,
             failure,
             visible: self.visible.load(Ordering::Acquire),
-            target_frame_visible: self.visible.load(Ordering::Acquire),
+            target_frame_visible: self.frame_visible.load(Ordering::Acquire),
             interrupted: self.interrupted(),
             stop_key: "Escape",
             label: String::new(),
@@ -348,6 +381,64 @@ impl Drop for OverlayWindow {
         let _ = unsafe { RemovePropW(self.0, OVERLAY_LIVE_PROP) };
         let _ = unsafe { RemovePropW(self.0, OVERLAY_ICON_PROP) };
         let _ = unsafe { DestroyWindow(self.0) };
+    }
+}
+
+/// Hidden PMv2 window used to resolve the selected monitor's effective DPI.
+///
+/// The foreign target can legitimately report only 96 or the system DPI. A
+/// controlled window created on the indicator thread instead follows monitor
+/// migration while remaining ownerless, non-activating, and invisible.
+pub(super) struct DpiProbeWindow(HWND);
+
+impl DpiProbeWindow {
+    pub(super) fn create(_awareness: &ThreadDpiAwareness) -> Result<Self, IndicatorError> {
+        create_window(FRAME_CLASS, Some(frame_window_proc), "", 0).map(Self)
+    }
+
+    pub(super) const fn handle(&self) -> HWND {
+        self.0
+    }
+
+    fn dpi_for_target(&self, target: HWND, target_rect: RECT) -> Option<u32> {
+        if unsafe { IsWindowVisible(self.handle()).as_bool() } {
+            return None;
+        }
+        let monitor = unsafe { MonitorFromWindow(target, MONITOR_DEFAULTTONEAREST) };
+        if monitor.0.is_null() {
+            return None;
+        }
+        let mut info = MONITORINFO {
+            cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+            ..Default::default()
+        };
+        if !unsafe { GetMonitorInfoW(monitor, &mut info) }.as_bool() {
+            return None;
+        }
+        let (x, y) = dpi_probe_point(target_rect, info.rcMonitor);
+        unsafe {
+            SetWindowPos(
+                self.handle(),
+                None,
+                x,
+                y,
+                0,
+                0,
+                SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOSIZE,
+            )
+        }
+        .ok()?;
+        if unsafe { IsWindowVisible(self.handle()).as_bool() } {
+            return None;
+        }
+        let dpi = unsafe { GetDpiForWindow(self.handle()) };
+        (dpi > 0).then_some(dpi)
+    }
+}
+
+impl Drop for DpiProbeWindow {
+    fn drop(&mut self) {
+        let _ = unsafe { DestroyWindow(self.handle()) };
     }
 }
 
@@ -506,12 +597,12 @@ pub(super) fn escape_key_transition(
     }
 }
 
-struct ThreadDpiAwareness {
+pub(super) struct ThreadDpiAwareness {
     previous: DPI_AWARENESS_CONTEXT,
 }
 
 impl ThreadDpiAwareness {
-    fn enter() -> Result<Self, IndicatorError> {
+    pub(super) fn enter() -> Result<Self, IndicatorError> {
         let previous =
             unsafe { SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) };
         if previous.0.is_null() {
@@ -550,12 +641,13 @@ fn run_banner(
     active: &AtomicBool,
     interrupted: &AtomicBool,
     visible: &AtomicBool,
+    frame_visible: &AtomicBool,
     inside_target: &AtomicBool,
     runtime: &BannerRuntime,
     motion: IndicatorMotionStatus,
     ready: &std::sync::mpsc::SyncSender<Result<(), IndicatorError>>,
 ) -> Result<(), IndicatorError> {
-    let _dpi_awareness = ThreadDpiAwareness::enter()?;
+    let dpi_awareness = ThreadDpiAwareness::enter()?;
     let target_window = HWND(target.window_handle as *mut core::ffi::c_void);
     validate_target(target_window, target.process_id)?;
     let identity = target.identity();
@@ -567,7 +659,8 @@ fn run_banner(
     let frames = (0..TARGET_FRAME_GRADIENT_STEPS)
         .map(|_| create_frame_overlay().map(OverlayWindow))
         .collect::<Result<Vec<_>, _>>()?;
-    let target_geometry = read_target_geometry(target_window)?;
+    let dpi_probe = DpiProbeWindow::create(&dpi_awareness).ok();
+    let target_geometry = read_target_geometry(target_window, dpi_probe.as_ref())?;
     let mut geometry = banner_geometry(target_geometry, read_monitor_geometry(target_window)?);
     let mut frame_geometry = target_frame_geometry(target_geometry);
     position_banner(overlay.0, target_window, geometry, true)?;
@@ -579,6 +672,15 @@ fn run_banner(
         position_target_frame(frame.0, target_window, frame_geometry, band, true)?;
     }
     inside_target.store(geometry.inside_target, Ordering::Release);
+    let initial_presentation = current_target_presentation(target_window);
+    let mut overlay_sync = TargetOverlaySyncState::new(initial_presentation);
+    let initial_visible = initial_presentation.is_visible();
+    if !initial_visible {
+        let _ = unsafe { ShowWindow(overlay.0, SW_HIDE) };
+        for frame in &frames {
+            let _ = unsafe { ShowWindow(frame.0, SW_HIDE) };
+        }
+    }
     let _active_banner = ActiveBannerRegistration::acquire();
     let mut displayed_activity = BannerActivity::Connecting;
     let mut displayed_recording = false;
@@ -586,7 +688,11 @@ fn run_banner(
     let pulse_started = Instant::now();
     let mut frame_alpha = TARGET_FRAME_ALPHA_MAX;
     active.store(true, Ordering::Release);
-    visible.store(true, Ordering::Release);
+    visible.store(initial_visible, Ordering::Release);
+    frame_visible.store(
+        initial_visible && target_frame_has_visible_band(frame_geometry.thickness),
+        Ordering::Release,
+    );
     ready
         .try_send(Ok(()))
         .map_err(|error| IndicatorError::Backend(format!("signal banner readiness: {error}")))?;
@@ -633,8 +739,9 @@ fn run_banner(
         }
         validate_target(target_window, target.process_id)?;
         let presentation = current_target_presentation(target_window);
+        let reassert_z_order = overlay_sync.observe(presentation);
         if presentation.is_visible() {
-            let next_target = read_target_geometry(target_window)?;
+            let next_target = read_target_geometry(target_window, dpi_probe.as_ref())?;
             let next_geometry = banner_geometry(next_target, read_monitor_geometry(target_window)?);
             if next_geometry != geometry {
                 position_banner(
@@ -662,17 +769,34 @@ fn run_banner(
                 }
                 frame_geometry = next_frame_geometry;
             }
-            if !visible.swap(true, Ordering::AcqRel) {
+            if reassert_z_order {
+                position_banner(overlay.0, target_window, geometry, false)?;
+                for (band, frame) in frames.iter().enumerate() {
+                    position_target_frame(frame.0, target_window, frame_geometry, band, false)?;
+                }
+            } else if !visible.load(Ordering::Acquire) {
                 let _ = unsafe { ShowWindow(overlay.0, SW_SHOWNOACTIVATE) };
-                for frame in &frames {
-                    let _ = unsafe { ShowWindow(frame.0, SW_SHOWNOACTIVATE) };
+                for (band, frame) in frames.iter().enumerate() {
+                    let command =
+                        if visible_target_frame_band(frame_geometry.thickness, band).is_some() {
+                            SW_SHOWNOACTIVATE
+                        } else {
+                            SW_HIDE
+                        };
+                    let _ = unsafe { ShowWindow(frame.0, command) };
                 }
             }
+            visible.store(true, Ordering::Release);
+            frame_visible.store(
+                target_frame_has_visible_band(frame_geometry.thickness),
+                Ordering::Release,
+            );
         } else if visible.swap(false, Ordering::AcqRel) {
             let _ = unsafe { ShowWindow(overlay.0, SW_HIDE) };
             for frame in &frames {
                 let _ = unsafe { ShowWindow(frame.0, SW_HIDE) };
             }
+            frame_visible.store(false, Ordering::Release);
         }
         thread::sleep(FRAME_INTERVAL);
     }
@@ -908,11 +1032,27 @@ pub(super) struct MonitorGeometry {
     pub(super) work_bottom: i32,
 }
 
-fn read_target_geometry(target: HWND) -> Result<TargetGeometry, IndicatorError> {
-    let mut target_rect = RECT::default();
-    unsafe { GetWindowRect(target, &mut target_rect) }
+fn read_target_geometry(
+    target: HWND,
+    dpi_probe: Option<&DpiProbeWindow>,
+) -> Result<TargetGeometry, IndicatorError> {
+    let mut window_rect = RECT::default();
+    unsafe { GetWindowRect(target, &mut window_rect) }
         .map_err(|error| IndicatorError::Backend(format!("read target bounds: {error}")))?;
-    let dpi = unsafe { GetDpiForWindow(target) }.max(96);
+    let mut extended_frame = RECT::default();
+    let extended_frame = unsafe {
+        DwmGetWindowAttribute(
+            target,
+            DWMWA_EXTENDED_FRAME_BOUNDS,
+            (&raw mut extended_frame).cast(),
+            std::mem::size_of::<RECT>() as u32,
+        )
+    }
+    .ok()
+    .map(|()| extended_frame);
+    let target_rect = visible_target_rect(window_rect, extended_frame);
+    let probe_dpi = dpi_probe.and_then(|probe| probe.dpi_for_target(target, target_rect));
+    let dpi = resolve_indicator_dpi(probe_dpi, unsafe { GetDpiForWindow(target) });
     if target_rect.right <= target_rect.left || target_rect.bottom <= target_rect.top {
         return Err(IndicatorError::InvalidTarget(
             "control target window has empty bounds".into(),
@@ -925,6 +1065,46 @@ fn read_target_geometry(target: HWND) -> Result<TargetGeometry, IndicatorError> 
         height: target_rect.bottom - target_rect.top,
         dpi,
     })
+}
+
+pub(super) fn resolve_indicator_dpi(
+    controlled_probe_dpi: Option<u32>,
+    target_window_dpi: u32,
+) -> u32 {
+    controlled_probe_dpi
+        .filter(|dpi| *dpi > 0)
+        .unwrap_or(target_window_dpi)
+        .max(96)
+}
+
+pub(super) fn dpi_probe_point(target_rect: RECT, monitor_rect: RECT) -> (i32, i32) {
+    let intersection_left = target_rect.left.max(monitor_rect.left);
+    let intersection_top = target_rect.top.max(monitor_rect.top);
+    let intersection_right = target_rect.right.min(monitor_rect.right);
+    let intersection_bottom = target_rect.bottom.min(monitor_rect.bottom);
+    let (left, top, right, bottom) =
+        if intersection_right > intersection_left && intersection_bottom > intersection_top {
+            (
+                intersection_left,
+                intersection_top,
+                intersection_right,
+                intersection_bottom,
+            )
+        } else {
+            (
+                monitor_rect.left,
+                monitor_rect.top,
+                monitor_rect.right,
+                monitor_rect.bottom,
+            )
+        };
+    (left + (right - left) / 2, top + (bottom - top) / 2)
+}
+
+pub(super) fn visible_target_rect(fallback: RECT, extended_frame: Option<RECT>) -> RECT {
+    extended_frame
+        .filter(|bounds| bounds.right > bounds.left && bounds.bottom > bounds.top)
+        .unwrap_or(fallback)
 }
 
 fn read_monitor_geometry(target: HWND) -> Result<MonitorGeometry, IndicatorError> {
@@ -979,22 +1159,23 @@ pub(super) fn banner_geometry(target: TargetGeometry, monitor: MonitorGeometry) 
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-struct TargetFrameGeometry {
-    x: i32,
-    y: i32,
-    width: i32,
-    height: i32,
-    thickness: i32,
-    corner_radius: i32,
+pub(super) struct TargetFrameGeometry {
+    pub(super) x: i32,
+    pub(super) y: i32,
+    pub(super) width: i32,
+    pub(super) height: i32,
+    pub(super) thickness: i32,
+    pub(super) corner_radius: i32,
 }
 
-fn target_frame_geometry(target: TargetGeometry) -> TargetFrameGeometry {
+pub(super) fn target_frame_geometry(target: TargetGeometry) -> TargetFrameGeometry {
+    let safe_depth = target.width.min(target.height).saturating_sub(1).max(0) / 2;
     TargetFrameGeometry {
         x: target.x,
         y: target.y,
         width: target.width,
         height: target.height,
-        thickness: scale(TARGET_FRAME_THICKNESS_DIP, target.dpi),
+        thickness: scale(TARGET_FRAME_THICKNESS_DIP, target.dpi).min(safe_depth),
         corner_radius: scale(10, target.dpi),
     }
 }
@@ -1008,6 +1189,7 @@ pub(super) fn position_target_scoped_overlay(
     y: i32,
     width: i32,
     height: i32,
+    show_window: bool,
 ) -> windows::core::Result<()> {
     unsafe {
         SetWindowPos(
@@ -1025,6 +1207,11 @@ pub(super) fn position_target_scoped_overlay(
         } else {
             previous
         };
+        let visibility = if show_window {
+            SWP_SHOWWINDOW
+        } else {
+            SET_WINDOW_POS_FLAGS(0)
+        };
         SetWindowPos(
             window,
             Some(insert_after),
@@ -1032,7 +1219,7 @@ pub(super) fn position_target_scoped_overlay(
             y,
             width,
             height,
-            SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_NOOWNERZORDER,
+            SWP_NOACTIVATE | visibility | SWP_NOOWNERZORDER,
         )
     }
 }
@@ -1074,6 +1261,7 @@ fn position_banner(
         geometry.y,
         geometry.width,
         geometry.height,
+        true,
     )
     .map_err(|error| IndicatorError::Backend(format!("position banner: {error}")))?;
     if !unsafe { IsWindowVisible(window).as_bool() } {
@@ -1091,9 +1279,12 @@ fn position_target_frame(
     band: usize,
     update_shape: bool,
 ) -> Result<(), IndicatorError> {
+    let Some((outer_inset, inner_inset)) = visible_target_frame_band(geometry.thickness, band)
+    else {
+        let _ = unsafe { ShowWindow(window, SW_HIDE) };
+        return Ok(());
+    };
     if update_shape {
-        let (outer_inset, inner_inset) = target_frame_band_insets(geometry.thickness, band)
-            .ok_or_else(|| IndicatorError::Backend("invalid target frame band".into()))?;
         let outer = unsafe {
             CreateRoundRectRgn(
                 outer_inset,
@@ -1137,6 +1328,7 @@ fn position_target_frame(
         geometry.y,
         geometry.width,
         geometry.height,
+        true,
     )
     .map_err(|error| IndicatorError::Backend(format!("position target frame: {error}")))?;
     Ok(())

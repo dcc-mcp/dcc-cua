@@ -21,7 +21,7 @@
       "stopping": "#7F8994"
     },
     "frame": {
-      "thickness_dip": 40,
+      "thickness_dip": 45,
       "gradient_steps": 20,
       "pulse_period_ms": 1800,
       "alpha_min": 48,
