@@ -1,0 +1,140 @@
+{
+  "schema_version": 3,
+  "id": "shijie-qunchao",
+  "profile_version": "1.0.0",
+  "application": {"family": "shijie-qunchao", "versions": []},
+  "display_name": "蚀界群潮",
+  "selectors": [
+    {
+      "application_names": ["DccMcpGame.exe"],
+      "window_title_contains": ["蚀界群潮"]
+    }
+  ],
+  "surfaces": [
+    {
+      "id": "title",
+      "label": "Title screen",
+      "role": "screen",
+      "route": "visual_fallback",
+      "targets": [
+        {
+          "id": "start_run",
+          "label": "Start expedition",
+          "role": "button",
+          "localized_names": {"zh-CN": ["开始游戏", "开始远征"]},
+          "supported_actions": ["inspect", "start"],
+          "key_bindings": {"start": ["ENTER", "SPACE"]}
+        }
+      ]
+    },
+    {
+      "id": "combat",
+      "label": "Real-time combat",
+      "role": "combat",
+      "route": "visual_fallback",
+      "targets": [
+        {
+          "id": "move_up",
+          "label": "Move up",
+          "role": "input",
+          "localized_names": {"zh-CN": ["向上移动"]},
+          "supported_actions": ["hold", "move"],
+          "key_bindings": {"move": ["W"]}
+        },
+        {
+          "id": "move_left",
+          "label": "Move left",
+          "role": "input",
+          "localized_names": {"zh-CN": ["向左移动"]},
+          "supported_actions": ["hold", "move"],
+          "key_bindings": {"move": ["A"]}
+        },
+        {
+          "id": "move_down",
+          "label": "Move down",
+          "role": "input",
+          "localized_names": {"zh-CN": ["向下移动"]},
+          "supported_actions": ["hold", "move"],
+          "key_bindings": {"move": ["S"]}
+        },
+        {
+          "id": "move_right",
+          "label": "Move right",
+          "role": "input",
+          "localized_names": {"zh-CN": ["向右移动"]},
+          "supported_actions": ["hold", "move"],
+          "key_bindings": {"move": ["D"]}
+        },
+        {
+          "id": "pause",
+          "label": "Pause combat",
+          "role": "button",
+          "localized_names": {"zh-CN": ["暂停"]},
+          "supported_actions": ["toggle"],
+          "key_bindings": {"toggle": ["P"]}
+        }
+      ]
+    },
+    {
+      "id": "upgrade",
+      "label": "Upgrade choice",
+      "role": "reward",
+      "route": "visual_fallback",
+      "targets": [
+        {
+          "id": "choice_one",
+          "label": "Upgrade choice one",
+          "role": "option",
+          "localized_names": {"zh-CN": ["升级选项 1", "升级选项一"]},
+          "supported_actions": ["inspect", "select"],
+          "key_bindings": {"select": ["1"]}
+        },
+        {
+          "id": "choice_two",
+          "label": "Upgrade choice two",
+          "role": "option",
+          "localized_names": {"zh-CN": ["升级选项 2", "升级选项二"]},
+          "supported_actions": ["inspect", "select"],
+          "key_bindings": {"select": ["2"]}
+        },
+        {
+          "id": "choice_three",
+          "label": "Upgrade choice three",
+          "role": "option",
+          "localized_names": {"zh-CN": ["升级选项 3", "升级选项三"]},
+          "supported_actions": ["inspect", "select"],
+          "key_bindings": {"select": ["3"]}
+        }
+      ]
+    },
+    {
+      "id": "run_state",
+      "label": "Run state",
+      "role": "status",
+      "route": "visual_fallback",
+      "targets": [
+        {
+          "id": "victory",
+          "label": "Victory state",
+          "role": "status",
+          "localized_names": {"zh-CN": ["通关", "胜利", "挑战完成", "生存 10:00"]},
+          "supported_actions": ["inspect", "verify"]
+        },
+        {
+          "id": "defeat",
+          "label": "Defeat state",
+          "role": "status",
+          "localized_names": {"zh-CN": ["失败", "死亡", "败北"]},
+          "supported_actions": ["inspect", "verify", "restart"],
+          "key_bindings": {"restart": ["R"]}
+        }
+      ]
+    }
+  ],
+  "settings": {
+    "dialog_style": "application_rendered",
+    "preferred_route": "visual_fallback",
+    "default_locale": "zh-CN",
+    "destructive_confirmation_required": false
+  }
+}
