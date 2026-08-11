@@ -1,3 +1,4 @@
+use super::gates::{run_gated_preinvalidated_window_mutation, run_preinvalidated_window_mutation};
 use super::*;
 use cua_driver_sdk::remote::{
     DRIVER_ENVELOPE_VERSION, DriverChannelCapabilities, DriverEnvelopeChannel,
@@ -6,12 +7,48 @@ use cua_driver_sdk::remote::{
 use cua_driver_sdk::worker::ActionCompletion;
 use cua_driver_sdk::{CuaDriver, DriverError, TrustedSessionOptions};
 use rstest::rstest;
+use std::cell::Cell;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 
 mod recording;
+
+#[rstest]
+fn failed_window_restore_still_invalidates_action_cache_before_mutation() {
+    let invalidated = Cell::new(false);
+
+    let result = run_preinvalidated_window_mutation(
+        || invalidated.set(true),
+        || {
+            assert!(invalidated.get(), "cache must be stale before mutation");
+            Err::<(), _>("foreground denied")
+        },
+    );
+
+    assert_eq!(result, Err("foreground denied"));
+    assert!(invalidated.get());
+}
+
+#[rstest]
+fn restore_input_gate_failure_never_reaches_mutation_or_cache_invalidation() {
+    let invalidations = Cell::new(0);
+    let mutations = Cell::new(0);
+
+    let result = run_gated_preinvalidated_window_mutation(
+        || Err::<(), _>("desktop locked"),
+        || invalidations.set(invalidations.get() + 1),
+        || {
+            mutations.set(mutations.get() + 1);
+            Ok(())
+        },
+    );
+
+    assert_eq!(result, Err("desktop locked"));
+    assert_eq!(invalidations.get(), 0);
+    assert_eq!(mutations.get(), 0);
+}
 
 #[derive(Clone)]
 struct CountingRemoteChannel {
@@ -270,8 +307,6 @@ async fn session_health_probe_components_never_activate_or_send_input() {
         "health probes called a mutation or input tool: {names:?}"
     );
 }
-
-use std::cell::Cell;
 
 #[rstest]
 #[tokio::test]

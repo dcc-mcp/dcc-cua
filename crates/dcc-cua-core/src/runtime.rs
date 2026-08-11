@@ -40,10 +40,6 @@ pub(crate) use session::{
     gated_exact_window_observation, gated_exact_window_publication,
     preflight_live_observation_start, resolved_application_name,
 };
-#[cfg(test)]
-pub(crate) use session::{
-    run_gated_preinvalidated_window_mutation, run_preinvalidated_window_mutation,
-};
 #[cfg(any(windows, test))]
 mod windows_input;
 #[cfg(any(windows, test))]

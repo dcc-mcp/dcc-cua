@@ -1,10 +1,8 @@
 use super::*;
 
 mod gates;
-#[cfg(any(windows, test))]
-pub(crate) use gates::run_gated_preinvalidated_window_mutation;
-#[cfg(test)]
-pub(crate) use gates::run_preinvalidated_window_mutation;
+#[cfg(windows)]
+use gates::run_gated_preinvalidated_window_mutation;
 use gates::{BrowserToolDisposition, browser_tool_requires_input, browser_tool_route};
 pub(crate) use gates::{
     ensure_target_available_for_action, gated_cursor_operation, gated_desktop_observation,

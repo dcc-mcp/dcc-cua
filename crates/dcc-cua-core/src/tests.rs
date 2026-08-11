@@ -41,7 +41,6 @@ use crate::runtime::{
     gated_cursor_operation, gated_desktop_observation, gated_exact_window_observation,
     gated_exact_window_publication, held_coordinate_click_as_drag, input_backend_rejection_result,
     live_observation_start_disposition, map_indicator_error, preflight_live_observation_start,
-    run_gated_preinvalidated_window_mutation, run_preinvalidated_window_mutation,
     run_windows_combined_down_drag_sequence, run_windows_fenced_absolute_path,
     run_windows_fenced_absolute_path_with_trace, run_windows_separated_raw_drag_sequence,
     tool_schema_from_inventory, wait_for_window_probe_until,
@@ -1642,41 +1641,6 @@ fn minimized_exact_target_pauses_every_action_before_any_input_path() {
     assert!(error.message.contains("target_minimized"));
     assert!(error.message.contains("automatic_input=false"));
     assert!(error.message.contains("restore_activate"));
-}
-
-#[rstest]
-fn failed_window_restore_still_invalidates_action_cache_before_mutation() {
-    let invalidated = Cell::new(false);
-
-    let result = run_preinvalidated_window_mutation(
-        || invalidated.set(true),
-        || {
-            assert!(invalidated.get(), "cache must be stale before mutation");
-            Err::<(), _>("foreground denied")
-        },
-    );
-
-    assert_eq!(result, Err("foreground denied"));
-    assert!(invalidated.get());
-}
-
-#[rstest]
-fn restore_input_gate_failure_never_reaches_mutation_or_cache_invalidation() {
-    let invalidations = Cell::new(0);
-    let mutations = Cell::new(0);
-
-    let result = run_gated_preinvalidated_window_mutation(
-        || Err::<(), _>("desktop locked"),
-        || invalidations.set(invalidations.get() + 1),
-        || {
-            mutations.set(mutations.get() + 1);
-            Ok(())
-        },
-    );
-
-    assert_eq!(result, Err("desktop locked"));
-    assert_eq!(invalidations.get(), 0);
-    assert_eq!(mutations.get(), 0);
 }
 
 #[rstest]
