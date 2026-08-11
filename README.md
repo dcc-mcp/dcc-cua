@@ -40,7 +40,9 @@ provides:
   The Windows Escape boundary uses a non-exclusive low-level hook only while a
   control banner is active, so another application's global hotkey cannot
   silently disable the stop control; the key is consumed instead of also being
-  delivered to the controlled application.
+  delivered to the controlled application. Agent-injected Escape is not an
+  operator stop signal: it passes through to the granted target window and
+  does not advance the shared stop generation.
 
 Windows mixed-DPI acceptance can be collected without activating or inputting
 into the target with `python -B scripts/indicator-acceptance-probe.py
@@ -238,7 +240,8 @@ vx cargo test --workspace --doc --locked
 Use Cua-Bench only as an external development harness for deterministic tasks
 with reset and outcome evaluators. Drive those tasks through the same
 `host-jsonl` contract used in production, and report success, action count,
-standalone snapshot count, errors, elapsed time, and wire bytes. Keep transport
+visual/semantic/post-action observation count, image pixels/encoded bytes,
+errors, elapsed time, and wire bytes. Keep transport
 microbenchmarks in Rust and do not add Cua-Bench, its Python environment, or VM
 providers to the shipped runtime. A live game session without a reset/oracle is
 showcase evidence, not a repeatable benchmark.
@@ -247,8 +250,9 @@ Pass `--metrics-output artifacts/cua-bench/dcc-cua-metrics.json` to the
 development `host-jsonl` bridge. The bridge atomically refreshes the report
 after every response, so a long-running task can be inspected before EOF.
 `run_status` is `running`, `succeeded`, or `failed`; `transport_success` is null
-until the bridge finishes. The report separates action requests, post-action
-snapshots, standalone snapshots, errors, elapsed time, and JSON payload bytes.
+until the bridge finishes. The v3 report separates attempted/succeeded/rejected
+actions, visual/semantic/post-action observations, image pixels/encoded bytes,
+live-observation start/clean-stop lifecycle, errors, elapsed time, and JSON payload bytes.
 `action_kinds` and `error_codes` make repeated pointer motion and platform
 refusals visible without reparsing the full JSONL trajectory. Cua-Bench remains
 responsible for reset and outcome evaluation.
@@ -312,12 +316,18 @@ target; if an application has multiple windows, pass `--pid` and
 driver/window discovery. It reports the upstream structured checks for native
 accessibility, screen capture, platform support, and input readiness, and exits
 non-zero when the authoritative health status is not `ok`. Its `ready` field
-also becomes false when the current Windows session is disconnected, locked,
-or has no interactive foreground window, even if UIA and screen-capture
-permissions remain available. The report includes the native WTS session state;
-desktop capture and raw mouse/keyboard routes fail before input with
-`interactive_desktop_unavailable`, while exact-element Windows UIA operations
-can continue through their background semantic path.
+also becomes false when the current Windows session is disconnected, its input
+desktop is not the interactive `Default` desktop, or the process cannot read
+the current input surface, even if UIA and screen-capture permissions remain
+available. A temporarily absent foreground window is reported as diagnostic
+state but does not by itself imply that the desktop is locked. Exact-window
+capture and showcase recording remain independently observable, while raw
+input first requires a successful read-only cursor probe and then activates and
+revalidates the granted PID/HWND before injection. The report includes the
+native WTS, observation, and input-surface state; raw mouse/keyboard routes fail
+before input with `interactive_desktop_unavailable`, while
+exact-element Windows UIA operations can continue through their background
+semantic path.
 
 `list` accepts optional `--app`, `--pid`, `--window-id`, `--title`, and
 `--on-screen` filters. `--app` is case-insensitive; `--title` is exact and
@@ -358,9 +368,12 @@ Their banner and frame exist only for that command's session lifetime. Core and
 other multi-step agents should keep one Host IPC session open so the same exact
 PID/HWND retains its visible banner, breathing frame, cursor, and observation
 fence across actions. The Windows UIA worker starts through a separate readiness
-handshake. A CUA action or window activation that does not return within 15
-seconds invalidates that window session instead of blocking the Host
-indefinitely.
+handshake. A due upstream-session refresh never crosses an action request: Core
+refreshes before the next observation and requires a new observation fence
+before input. A refresh or activation timeout leaves the local long-running
+session alive and returns a typed no-blind-retry result. Only a timeout after an
+action was actually dispatched is completion-unknown and invalidates that exact
+local window session.
 
 The shared Core window session owns this ControlBanner, so direct `dcc-cua`
 window actions and Host IPC sessions use the same visible banner and target
@@ -385,11 +398,12 @@ Clipboard access is session-scoped and grant-gated: `clipboard_read` does not
 return text unless the caller asks for it, and `clipboard_write` accepts exactly
 one bounded text, image path, or regular-file path. Recording is also
 grant-gated through `recording_start`, `recording_stop`, and `recording_state`.
-On Windows, `live_observation_start` prefetches the exact window's latest raw
-WGC frame with a requested ceiling of 1..30 FPS. It owns one persistent D3D11
+`live_observation_start` prefetches the exact window's latest frame with a
+requested ceiling of 1..30 FPS. Windows owns one persistent D3D11
 device, capture session, frame pool, and reusable staging texture for the feed;
 if that backend cannot initialize, the state identifies the one-shot WGC
-fallback instead of silently claiming the fast path. Decision snapshots preserve
+fallback instead of silently claiming the fast path. macOS and Linux retain the
+same latest-frame contract through bounded driver PNG capture/decode. Decision snapshots preserve
 the full-window coordinate mapping while bounding their longest edge with
 `max_dimension` (default 1568, accepted range 256..4096); showcase recording
 keeps its independent video sizing. State reports the lifetime `effective_fps`,
@@ -398,6 +412,21 @@ EWMA `recent_effective_fps`, `last_capture_duration_ms`,
 only a newer frame, encodes that selected frame once, and skips UIA; use
 `accessibility_snapshot` separately when semantic state is needed. Stop it with
 `live_observation_stop`.
+
+Showcase video rolls into independently decodable five-minute MP4 segments so
+an interrupted long run cannot invalidate footage that was already finalized.
+The first segment retains the compatible `showcase.mp4` path; later segments
+use ordered names such as `showcase-0002.mp4`. Only the active tail is written
+as `*.partial.mp4` and exposed as `current_partial`. Each completed segment
+starts with an IDR access unit and carries its own SPS/PPS track configuration.
+`recording_stop` finalizes the tail, clears `current_partial`, and atomically
+publishes `showcase.manifest.json` with the ordered, non-overlapping segment
+timeline. If the interactive desktop is temporarily unavailable, the live
+producer and recording owner remain active but report `paused` and
+`video_paused`; cached frames are not encoded again. Capture resumes in the same
+stream only after a strictly newer frame, while a missing window or changed
+PID/HWND owner remains terminal. A crash can therefore strand only the
+explicitly partial tail, not the earlier readable segments.
 
 ## Host IPC
 
@@ -431,10 +460,11 @@ let stopped = host.interrupt_all().await?;
 
 `HostClient::interrupt_all` and `dcc-cua interrupt-all [--endpoint PATH]`
 broadcast a cooperative safety stop to every connection in the selected Host
-process. Each connection polls the shared stop generation while otherwise idle,
-then proactively stops live observation, finalizes recording, invalidates
-frames, and tears down window/desktop sessions before another request arrives.
-Those sessions return `user_interrupted` on subsequent use. An already-running native SDK call remains
+process. The calling connection is cleaned up before acknowledgement. Other
+connections poll the shared stop generation while otherwise idle, then
+proactively stop live observation, finalize recording, invalidate frames, and
+retain interrupted window/desktop tombstones; those sessions return
+`user_interrupted` on subsequent use. An already-running native SDK call remains
 bounded by the Host action timeout because CUA exposes no portable preemption
 primitive.
 
@@ -562,7 +592,7 @@ binary frame following the JSON response is the concatenation of those images;
 each descriptor gives its `offset`, `length`, and `mime_type`.
 
 The supported request surface is `hello`, `ping`, `list_apps`, `list_tools`, `list_windows`, `wait_for_window`, `launch_app`, `open_session`,
-`get_window_state`, `change_window_state` (`activate`), `set_window_frame`, `invoke_menu`, `snapshot`,
+`get_window_state`, `change_window_state` (`activate` or `restore_activate`), `set_window_frame`, `invoke_menu`, `snapshot`,
 `accessibility_snapshot`, `verify_state`, `call_tool`, `call_global_tool`, `get_session_state`, `cursor_tool`, `escalate_session`, `find`, `wait_for`, `browser_snapshot`,
 `browser_prepare`, `browser_navigate`, `browser_click`, `browser_type`, `browser_pointer`,
 `browser_set_input_files`, `browser_download`, `browser_dialog`,
@@ -572,9 +602,28 @@ The supported request surface is `hello`, `ping`, `list_apps`, `list_tools`, `li
 `desktop_snapshot`, `screen_size`, `cursor_position`, `open_desktop_session`,
 `desktop_session_snapshot`, `execute_desktop_action`, `stop_desktop_session`,
 `zoom`,
-`execute_action`, `resume_session`, `terminate_app`, and
+`get_input_state`, `poll_session_events`, `execute_action`, `resume_session`, `terminate_app`, and
 `stop_session`; `cancel` is available while `wait_for` is active and
 `cancel_window_wait` while `wait_for_window` is active on the same connection.
+
+`get_input_state` and `poll_session_events` expose one bounded, per-session
+event stream with orthogonal `current_state` (interactive input) and
+`current_target_state` (exact-window availability). Always continue polling
+from the response-level `latest_sequence`; component `sequence` fields identify
+only that component's last transition. The stream deduplicates unchanged
+statuses without advancing the cursor while refreshing their sampled metadata,
+reports overflow with `resync_required`, and emits
+`target_minimized`/`target_restored` as well as input suspend/resume events.
+`foreground` is sampled target metadata, not a separate transition event.
+A minimized target pauses every action with `automatic_input=false`. For a
+grant originally bound to an exact PID/HWND, an agent may explicitly request
+`change_window_state` with `operation: "restore_activate"`; this restores only
+that HWND, validates ownership and final foreground state, and still requires a
+fresh observation. It never runs automatically or blind-retries. Interactive
+desktop readiness is checked again immediately before each Windows mutation,
+and all action/UIA/browser/shared observation caches are invalidated even when
+the restore attempt only partially succeeds. Live observation, showcase, and
+recording ownership remain intact.
 `execute_action` accepts `capture_after: true` plus optional
 `post_snapshot_delay_ms` (0..5000), `post_snapshot_max_nodes`, and
 `post_snapshot_max_depth`. The Host then performs
@@ -604,6 +653,16 @@ these are applied by the native backend before the response crosses IPC.
 `open_session` grants may bind an exact `window_title` when Core does not yet
 have the PID/HWND; the Host still requires the title to resolve to exactly one
 native window before starting the CUA session.
+`open_session.params.activate_before` performs only exact PID/HWND activation;
+it does not restore a minimized target. The Host revalidates the same identity
+at the Windows mutation boundary and validates the final foreground state. The
+option defaults to `false`; title-only and process-only bootstrap activation
+fail closed, and no general native-tool permission is granted. To recover a
+minimized exact target, open without bootstrap activation and issue the explicit
+grant-scoped `restore_activate` operation before taking a fresh observation.
+If it becomes minimized after the session opens, use the typed target event
+contract above. `activate` retains its existing semantics; only the explicit
+`restore_activate` operation performs an exact restore before activation.
 `wait_for_window` accepts `query` with `app`, `process_id`, `window_handle`,
 `window_title`, and `on_screen_only`; its `timeout_ms` is capped at 30 seconds.
 When a request ID is supplied, cancel it on the same connection with
@@ -690,8 +749,12 @@ While `wait_for` is running, the same connection accepts `cancel` with the
 exact session grant and window capability; the host returns both a cancellation
 acknowledgement and the wait's cancelled terminal response. Other requests stay
 ordered and are rejected until that wait completes.
-`activate` is scoped through CUA's `bring_to_front` operation; the returned
-window state is always revalidated against the exact PID/HWND target.
+On Windows, `activate` uses the input-gated exact PID/HWND foreground primitive;
+other platforms retain CUA's scoped `bring_to_front` operation. It never
+restores a minimized target, and the returned state is independently
+revalidated. An activation timeout is `completion_unknown`, requires a fresh
+observation, and never authorizes a blind retry or tears down live observation,
+showcase, or recording ownership.
 `set_window_frame` reuses CUA's native cross-platform mutation and independent
 geometry readback. Moving or resizing a window invalidates native and browser
 observations, so callers must snapshot again before the next action.

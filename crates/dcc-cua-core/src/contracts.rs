@@ -11,11 +11,18 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use thiserror::Error;
 
+pub use dcc_cua_indicator::IndicatorMotionPolicy;
+
 pub(crate) const MAX_TEXT_UTF16_UNITS: usize = 4_096;
 pub(crate) const MAX_TYPE_CHAR_DELAY_MS: u64 = 200;
 pub(crate) const MAX_KEY_TOKENS: usize = 16;
 pub(crate) const MAX_MODIFIER_TOKENS: usize = 8;
 pub(crate) const MAX_MODIFIER_CHARS: usize = 32;
+pub(crate) const MAX_INPUT_BACKEND_ID_CHARS: usize = 64;
+pub const WINDOWS_SEND_INPUT_BACKEND_ID: &str = "windows.send_input.v1";
+pub const WINDOWS_RELATIVE_SEND_INPUT_BACKEND_ID: &str = "windows.send_input.relative_drag.v1";
+pub const WINDOWS_COMBINED_DOWN_DRAG_BACKEND_ID: &str = "windows.send_input.combined_down_drag.v1";
+pub const WINDOWS_SYNTHETIC_TOUCH_BACKEND_ID: &str = "windows.synthetic_touch.v1";
 pub(crate) const MAX_DRAG_POINTS: usize = 256;
 pub(crate) const MAX_DRAG_DURATION_MS: u64 = 10_000;
 pub(crate) const MAX_DRAG_STEPS: u32 = 200;
@@ -46,6 +53,28 @@ pub const DEFAULT_LIVE_OBSERVATION_MAX_DIMENSION: u32 = 1_568;
 pub const MIN_LIVE_OBSERVATION_MAX_DIMENSION: u32 = 256;
 pub const MAX_LIVE_OBSERVATION_MAX_DIMENSION: u32 = 4_096;
 
+/// Monotonic receipt for the action evidence currently owned by a session.
+///
+/// Callers may retain observation-derived identifiers only while this value
+/// remains unchanged. The numeric representation stays private so consumers
+/// compare typed receipts instead of manufacturing generations.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ActionEvidenceEpoch(u64);
+
+impl ActionEvidenceEpoch {
+    pub(crate) fn advanced(self) -> Self {
+        Self(
+            self.0
+                .checked_add(1)
+                .expect("action evidence epoch exhausted"),
+        )
+    }
+
+    pub(crate) fn opaque_token(self) -> String {
+        format!("action-evidence-v1:{:016x}", self.0)
+    }
+}
+
 /// Exact identity supplied by the adapter/runtime. Agent input cannot widen it.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ComputerUseTargetScope {
@@ -71,6 +100,35 @@ impl ComputerUseTargetScope {
             return Err(ComputerUseError::new(
                 ComputerUseErrorCode::InvalidTarget,
                 format!("window_title must contain 1..{MAX_WINDOW_QUERY_CHARS} characters"),
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Options for starting one exact-window Computer Use session.
+///
+/// Bootstrap activation is opt-in because it deliberately changes foreground
+/// state. When requested, callers must bind both the process and native window
+/// identity so activation cannot widen a title-only or process-only scope.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ComputerUseSessionStartRequest {
+    #[serde(default)]
+    pub activate_before: bool,
+    #[serde(default)]
+    pub indicator_motion: IndicatorMotionPolicy,
+}
+
+impl ComputerUseSessionStartRequest {
+    pub(crate) fn validate_for_scope(
+        &self,
+        scope: &ComputerUseTargetScope,
+    ) -> ComputerUseResult<()> {
+        if self.activate_before && (scope.process_id.is_none() || scope.window_handle.is_none()) {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::InvalidTarget,
+                "activate_before requires an exact process_id and window_handle",
             ));
         }
         Ok(())
@@ -240,6 +298,8 @@ pub struct ComputerUseAction {
     pub element_token: Option<String>,
     #[serde(default)]
     pub delivery_mode: Option<String>,
+    #[serde(default)]
+    pub input_backend_id: Option<String>,
     pub x: Option<f64>,
     pub y: Option<f64>,
     pub button: Option<String>,
@@ -431,11 +491,15 @@ pub enum ComputerUseErrorCode {
     RecordingRefused,
     MissingWindow,
     InvalidTarget,
+    TargetMinimized,
+    TargetUnavailable,
     StaleObservation,
     UserInterrupted,
     InvalidAction,
     InteractiveDesktopUnavailable,
     InputFailed,
+    SessionRefreshRequired,
+    CompletionUnknown,
     CaptureFailed,
 }
 
@@ -463,4 +527,51 @@ pub struct ComputerUseMarker {
     pub visible: bool,
     pub label: String,
     pub backend: &'static str,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ComputerUseCleanupPhase {
+    RecordingStop,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ComputerUseCleanupIssue {
+    pub phase: ComputerUseCleanupPhase,
+    pub code: ComputerUseErrorCode,
+    pub message: String,
+}
+
+impl ComputerUseCleanupIssue {
+    pub(crate) fn from_error(phase: ComputerUseCleanupPhase, error: ComputerUseError) -> Self {
+        Self {
+            phase,
+            code: error.code,
+            message: error.message,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ComputerUseSessionStopResult {
+    pub success: bool,
+    pub active: bool,
+    pub cleanup_pending: bool,
+    pub cleanup_issues: Vec<ComputerUseCleanupIssue>,
+    pub marker: ComputerUseMarker,
+}
+
+impl ComputerUseSessionStopResult {
+    pub(crate) fn completed(
+        marker: ComputerUseMarker,
+        cleanup_issues: Vec<ComputerUseCleanupIssue>,
+    ) -> Self {
+        Self {
+            success: cleanup_issues.is_empty(),
+            active: false,
+            cleanup_pending: false,
+            cleanup_issues,
+            marker,
+        }
+    }
 }

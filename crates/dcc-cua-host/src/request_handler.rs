@@ -1,5 +1,92 @@
 use super::*;
 
+pub(super) async fn acquire_raw_input_turn(
+    enabled: bool,
+) -> Option<tokio::sync::MutexGuard<'static, ()>> {
+    if enabled {
+        Some(RAW_INPUT_QUEUE.lock().await)
+    } else {
+        None
+    }
+}
+
+pub(super) fn finish_window_mutation_attempt<T, E>(
+    result: Result<T, E>,
+    invalidate: impl FnOnce(),
+) -> Result<T, E> {
+    invalidate();
+    result
+}
+
+pub(super) fn window_state_changed_response(
+    session_id: &str,
+    operation: &str,
+    state: Value,
+    result: Value,
+) -> Value {
+    json!({
+        "type": "window_state_changed",
+        "session_id": session_id,
+        "operation": operation,
+        "state": state,
+        "result": result,
+    })
+}
+
+pub(super) fn session_stopped_response(
+    session_id: &str,
+    result: ComputerUseSessionStopResult,
+) -> Value {
+    json!({
+        "type": "session_stopped",
+        "session_id": session_id,
+        "success": result.success,
+        "active": result.active,
+        "cleanup_pending": result.cleanup_pending,
+        "cleanup_issues": result.cleanup_issues,
+        "marker": result.marker,
+    })
+}
+
+pub(super) fn observed_window_state_response(
+    host: &mut HostSession,
+    session_id: &str,
+    state: Value,
+) -> Value {
+    host.observe_target_state(&state);
+    json!({"type":"window_state", "session_id":session_id, "state":state})
+}
+
+pub(super) fn finish_target_sensitive_cached_read(
+    host: &mut HostSession,
+    availability: ComputerUseResult<dcc_cua_core::ComputerUseTargetAvailability>,
+) -> ComputerUseResult<()> {
+    let availability = host.finish_observation_sensitive_attempt(availability)?;
+    let status = availability.status;
+    host.observe_target_availability(availability);
+    if host.input_events.current().status == dcc_cua_core::ComputerUseInputStatus::Suspended {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::InteractiveDesktopUnavailable,
+            host.input_events
+                .current()
+                .reason
+                .clone()
+                .unwrap_or_else(|| "interactive desktop is unavailable".into()),
+        ));
+    }
+    match status {
+        dcc_cua_core::ComputerUseTargetStatus::Available => Ok(()),
+        dcc_cua_core::ComputerUseTargetStatus::Minimized => Err(ComputerUseError::new(
+            ComputerUseErrorCode::TargetMinimized,
+            "target_minimized: cached accessibility evidence is stale; automatic_input=false",
+        )),
+        dcc_cua_core::ComputerUseTargetStatus::Unavailable => Err(ComputerUseError::new(
+            ComputerUseErrorCode::TargetUnavailable,
+            "target_unavailable: cached accessibility evidence is stale; automatic_input=false",
+        )),
+    }
+}
+
 pub(super) fn bind_launched_process(
     launched: &HostLaunchSession,
     grant: &mut TaskGrant,
@@ -23,7 +110,158 @@ pub(super) fn bind_launched_process(
     Ok(())
 }
 
+pub(super) fn restore_activate_available(grant: &TaskGrant) -> bool {
+    cfg!(windows) && grant.process_id.is_some() && grant.window_handle.is_some()
+}
+
+pub(super) fn session_health_state_changed(
+    evidence_epoch_before: dcc_cua_core::ActionEvidenceEpoch,
+    transition_sequence_before: u64,
+    action_evidence_epoch: dcc_cua_core::ActionEvidenceEpoch,
+    transition_sequence: u64,
+) -> bool {
+    evidence_epoch_before != action_evidence_epoch
+        || transition_sequence_before != transition_sequence
+}
+
+async fn refresh_session_health_input_and_target(host: &mut HostSession) -> bool {
+    host.refresh_input_readiness();
+    let availability = host.session.target_availability().await;
+    let target_probe_failed = availability.is_err();
+    if let Ok(availability) = host.finish_observation_sensitive_attempt(availability) {
+        host.observe_target_availability(availability);
+    }
+    target_probe_failed
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct WindowEvidenceEpochRoute {
+    session_id: String,
+    publication: HostEvidencePublication,
+}
+
+pub(super) fn window_evidence_epoch_route(request: &Request) -> Option<WindowEvidenceEpochRoute> {
+    let standard = |session_id: &str| WindowEvidenceEpochRoute {
+        session_id: session_id.to_owned(),
+        publication: HostEvidencePublication::None,
+    };
+    match request {
+        Request::BrowserSnapshot { session_id, .. } => Some(WindowEvidenceEpochRoute {
+            session_id: session_id.clone(),
+            publication: HostEvidencePublication::BrowserSnapshot,
+        }),
+        Request::TerminateApp { session_id, .. }
+        | Request::ClipboardRead { session_id, .. }
+        | Request::ClipboardWrite { session_id, .. }
+        | Request::RecordingStart { session_id, .. }
+        | Request::RecordingStop { session_id, .. }
+        | Request::RecordingState { session_id, .. }
+        | Request::LiveObservationStart { session_id, .. }
+        | Request::LiveObservationState { session_id, .. }
+        | Request::LiveObservationStop { session_id, .. }
+        | Request::GetWindowState { session_id, .. }
+        | Request::ChangeWindowState { session_id, .. }
+        | Request::SetWindowFrame { session_id, .. }
+        | Request::InvokeMenu { session_id, .. }
+        | Request::Snapshot { session_id, .. }
+        | Request::Zoom { session_id, .. }
+        | Request::AccessibilitySnapshot { session_id, .. }
+        | Request::VerifyState { session_id, .. }
+        | Request::CallTool { session_id, .. }
+        | Request::BrowserPrepare { session_id, .. }
+        | Request::BrowserNavigate { session_id, .. }
+        | Request::BrowserClick { session_id, .. }
+        | Request::BrowserType { session_id, .. }
+        | Request::BrowserPointer { session_id, .. }
+        | Request::BrowserSetInputFiles { session_id, .. }
+        | Request::BrowserDownload { session_id, .. }
+        | Request::BrowserDialog { session_id, .. }
+        | Request::Find { session_id, .. }
+        | Request::WaitFor { session_id, .. }
+        | Request::ExecuteAction { session_id, .. }
+        | Request::ResumeSession { session_id, .. }
+        | Request::GetSessionState { session_id, .. }
+        | Request::GetInputState { session_id, .. }
+        | Request::SessionHealth { session_id, .. }
+        | Request::PollSessionEvents { session_id, .. }
+        | Request::CursorTool { session_id, .. }
+        | Request::EscalateSession { session_id, .. } => Some(standard(session_id)),
+        Request::Hello(_)
+        | Request::Ping {}
+        | Request::Doctor {}
+        | Request::InterruptAll {}
+        | Request::ListApps {}
+        | Request::ListTools {}
+        | Request::ListWindows { .. }
+        | Request::WaitForWindow(_)
+        | Request::DesktopSnapshot {}
+        | Request::ScreenSize {}
+        | Request::CursorPosition {}
+        | Request::OpenDesktopSession { .. }
+        | Request::DesktopSessionSnapshot { .. }
+        | Request::ExecuteDesktopAction { .. }
+        | Request::StopDesktopSession { .. }
+        | Request::LaunchApp { .. }
+        | Request::OpenSession { .. }
+        | Request::CallGlobalTool { .. }
+        | Request::StopSession { .. }
+        | Request::Cancel { .. }
+        | Request::CancelWindowWait { .. } => None,
+    }
+}
+
+fn prepare_window_evidence_request(
+    sessions: &mut ConnectionSessions,
+    route: Option<&WindowEvidenceEpochRoute>,
+) {
+    if let Some(host) = route.and_then(|route| sessions.windows.get_mut(&route.session_id)) {
+        host.synchronize_action_evidence_epoch();
+    }
+}
+
+pub(super) fn finish_window_evidence_request<T>(
+    sessions: &mut ConnectionSessions,
+    route: Option<WindowEvidenceEpochRoute>,
+    result: Result<T, HostError>,
+) -> Result<T, HostError> {
+    if let Some(route) = route
+        && let Some(host) = sessions.windows.get_mut(&route.session_id)
+    {
+        if result.is_ok() {
+            host.synchronize_action_evidence_epoch_with(route.publication);
+        } else {
+            host.synchronize_action_evidence_epoch();
+            if route.publication == HostEvidencePublication::BrowserSnapshot {
+                host.discard_browser_evidence();
+            }
+        }
+    }
+    result
+}
+
 pub(super) async fn handle_request(
+    driver: &ComputerUseDriver,
+    sessions: &mut ConnectionSessions,
+    snapshot_transport: &mut Option<SnapshotTransport>,
+    desktop_shared_image: &mut Option<SharedImage>,
+    cancellation_registry: &CancellationRegistry,
+    request: Request,
+) -> Result<(Value, Option<Vec<u8>>), HostError> {
+    let evidence_route = window_evidence_epoch_route(&request);
+    prepare_window_evidence_request(sessions, evidence_route.as_ref());
+    let result = handle_request_inner(
+        driver,
+        sessions,
+        snapshot_transport,
+        desktop_shared_image,
+        cancellation_registry,
+        request,
+    )
+    .await;
+    finish_window_evidence_request(sessions, evidence_route, result)
+}
+
+async fn handle_request_inner(
     driver: &ComputerUseDriver,
     sessions: &mut ConnectionSessions,
     snapshot_transport: &mut Option<SnapshotTransport>,
@@ -293,14 +531,14 @@ pub(super) async fn handle_request(
                 ));
             }
             let action = action.into_computer_use(observation_id)?;
-            let result = {
-                let _input_turn = RAW_INPUT_QUEUE.lock().await;
-                host.session.perform_action(&action).await?
-            };
+            let input_turn = acquire_raw_input_turn(true).await;
+            let result = host.session.perform_action(&action).await?;
             let action_id = format!("cua-desktop-action-{}", Uuid::new_v4());
             if capture_after {
                 tokio::time::sleep(post_snapshot_delay).await;
-                return match host.session.screenshot().await {
+                let snapshot = host.session.screenshot().await;
+                drop(input_turn);
+                return match snapshot {
                     Ok(snapshot) => desktop_action_completed_with_snapshot_response(
                         &session_id,
                         action_id,
@@ -330,6 +568,7 @@ pub(super) async fn handle_request(
                     }
                 };
             }
+            drop(input_turn);
             let (mut response, attachment) = action_completed_response(
                 &session_id,
                 action_id,
@@ -415,7 +654,8 @@ pub(super) async fn handle_request(
                         "application termination is not granted".into(),
                     ));
                 }
-                host.session.terminate_app().await?
+                let result = host.session.terminate_app().await;
+                host.finish_observation_sensitive_attempt(result)?
             };
             sessions.remove(&session_id);
             Ok((
@@ -439,7 +679,8 @@ pub(super) async fn handle_request(
             if !host.allow_clipboard_read {
                 return Err(HostError::Protocol("clipboard read is not granted".into()));
             }
-            let result = host.session.clipboard_read(include_text).await?;
+            let result = host.session.clipboard_read(include_text).await;
+            let result = host.finish_observation_sensitive_attempt(result)?;
             Ok((
                 json!({"type":"clipboard_read", "session_id":session_id, "result":result}),
                 None,
@@ -457,7 +698,8 @@ pub(super) async fn handle_request(
             if !host.allow_clipboard_write {
                 return Err(HostError::Protocol("clipboard write is not granted".into()));
             }
-            let result = host.session.clipboard_write(&write).await?;
+            let result = host.session.clipboard_write(&write).await;
+            let result = host.finish_observation_sensitive_attempt(result)?;
             Ok((
                 json!({"type":"clipboard_written", "session_id":session_id, "result":result}),
                 None,
@@ -475,7 +717,8 @@ pub(super) async fn handle_request(
             if !host.allow_recording {
                 return Err(HostError::Protocol("recording is not granted".into()));
             }
-            let result = host.session.recording_start(&request).await?;
+            let result = host.session.recording_start(&request).await;
+            let result = host.finish_observation_sensitive_attempt(result)?;
             Ok((
                 json!({"type":"recording_started", "session_id":session_id, "result":result}),
                 None,
@@ -492,7 +735,8 @@ pub(super) async fn handle_request(
             if !host.allow_recording {
                 return Err(HostError::Protocol("recording is not granted".into()));
             }
-            let result = host.session.recording_stop().await?;
+            let result = host.session.recording_stop().await;
+            let result = host.finish_observation_sensitive_attempt(result)?;
             Ok((
                 json!({"type":"recording_stopped", "session_id":session_id, "result":result}),
                 None,
@@ -509,7 +753,8 @@ pub(super) async fn handle_request(
             if !host.allow_recording {
                 return Err(HostError::Protocol("recording is not granted".into()));
             }
-            let result = host.session.recording_state().await?;
+            let result = host.session.recording_state().await;
+            let result = host.finish_observation_sensitive_attempt(result)?;
             Ok((
                 json!({"type":"recording_state", "session_id":session_id, "result":result}),
                 None,
@@ -529,7 +774,8 @@ pub(super) async fn handle_request(
                     "live observation is not granted".into(),
                 ));
             }
-            let result = host.session.start_live_observation(&request).await?;
+            let result = host.session.start_live_observation(&request).await;
+            let result = host.finish_observation_sensitive_attempt(result)?;
             host.invalidate_observations();
             Ok((
                 json!({"type":"live_observation_started", "session_id":session_id, "result":result}),
@@ -578,6 +824,8 @@ pub(super) async fn handle_request(
         Request::OpenSession {
             session_id,
             mut grant,
+            activate_before,
+            indicator_motion,
         } => {
             if sessions.contains_key(&session_id) {
                 return Err(HostError::Protocol("session already exists".into()));
@@ -587,6 +835,7 @@ pub(super) async fn handle_request(
             if let Some(launched) = &launched {
                 bind_launched_process(launched, &mut grant)?;
             }
+            let allow_restore_activate = restore_activate_available(&grant);
             let scope = ComputerUseTargetScope {
                 process_id: grant.process_id,
                 window_handle: grant.window_handle,
@@ -602,7 +851,12 @@ pub(super) async fn handle_request(
                 agent_name.clone(),
                 runtime_session_id.clone(),
             )?;
-            let started = session.start().await?;
+            let started = session
+                .start_with_request(&ComputerUseSessionStartRequest {
+                    activate_before,
+                    indicator_motion,
+                })
+                .await?;
             let showcase = if let Some(output_dir) = grant.showcase_output_dir.as_deref() {
                 if !grant.allow_recording {
                     let _ = session.stop().await;
@@ -644,6 +898,26 @@ pub(super) async fn handle_request(
                 "motion_backend": "cua-driver-sdk",
             });
             let capability = format!("cua-window-{}", Uuid::new_v4());
+            let input_target = match input_target_from_cua(&session_id, &target) {
+                Ok(target) => target,
+                Err(error) => {
+                    let _ = session.stop().await;
+                    return Err(error);
+                }
+            };
+            let (input_readiness, observed_at) = crate::session_events::input_readiness_sample();
+            let input_events =
+                crate::session_events::SessionInputEventQueue::new_with_restore_capability(
+                    input_target,
+                    input_readiness,
+                    dcc_cua_core::ComputerUseTargetAvailability::from_window_state(&target),
+                    allow_restore_activate,
+                    observed_at,
+                );
+            let initial_input_state = input_events.current().clone();
+            let initial_target_state = input_events.target_state().clone();
+            let initial_sequence = input_events.latest_sequence();
+            let synchronized_action_evidence_epoch = session.action_evidence_epoch();
             sessions.insert(
                 session_id.clone(),
                 HostSession {
@@ -662,29 +936,37 @@ pub(super) async fn handle_request(
                     allow_menu_invoke: grant.allow_menu_invoke,
                     allow_session_escalation: grant.allow_session_escalation,
                     allow_trusted_confirmation: grant.allow_trusted_confirmation,
+                    allow_restore_activate,
                     capability: capability.clone(),
                     interrupted: false,
                     session,
+                    synchronized_action_evidence_epoch,
+                    browser_evidence_epoch: None,
                     browser: BrowserSession::default(),
                     latest_observation_id: None,
                     latest_accessibility_state_id: None,
                     latest_accessibility_root: None,
                     latest_shared_image: None,
+                    input_events,
                 },
             );
-            Ok((
-                json!({
-                    "type": "session_opened",
-                    "session_id": session_id,
-                    "window_capability": capability,
-                    "target": target_wire(&target),
-                    "marker": marker,
-                    "banner": banner,
-                    "cursor": cursor,
-                    "showcase": showcase,
-                }),
-                None,
-            ))
+            let mut response = json!({
+                "type": "session_opened",
+                "session_id": session_id,
+                "window_capability": capability,
+                "target": target_wire(&target),
+                "marker": marker,
+                "banner": banner,
+                "cursor": cursor,
+                "showcase": showcase,
+                "input_state": initial_input_state,
+                "target_state": initial_target_state,
+                "latest_sequence": initial_sequence,
+            });
+            if let Some(activation) = started.get("activation") {
+                response["activation"] = activation.clone();
+            }
+            Ok((response, None))
         }
         Request::GetWindowState {
             session_id,
@@ -694,9 +976,10 @@ pub(super) async fn handle_request(
             let host =
                 authorized_session(sessions, &session_id, &task_grant_id, &window_capability)
                     .await?;
-            let state = host.session.window_state().await?;
+            let state = host.session.window_state().await;
+            let state = host.finish_observation_sensitive_attempt(state)?;
             Ok((
-                json!({"type":"window_state", "session_id":session_id, "state":state}),
+                observed_window_state_response(host, &session_id, state),
                 None,
             ))
         }
@@ -709,16 +992,40 @@ pub(super) async fn handle_request(
             let host =
                 authorized_session(sessions, &session_id, &task_grant_id, &window_capability)
                     .await?;
-            let WindowOperation::Activate = operation;
-            host.session.activate().await?;
-            let state = host.session.window_state().await?;
+            let _input_turn = RAW_INPUT_QUEUE.lock().await;
+            let (operation, result) = match operation {
+                WindowOperation::Activate => {
+                    let result = host.session.activate().await;
+                    let result = host.finish_observation_sensitive_attempt(result);
+                    let result =
+                        finish_window_mutation_attempt(result, || host.invalidate_observations())?;
+                    ("activate", result)
+                }
+                WindowOperation::RestoreActivate => {
+                    if !host.allow_restore_activate {
+                        return Err(HostError::ComputerUse(ComputerUseError::new(
+                            ComputerUseErrorCode::InvalidTarget,
+                            "restore_activate requires an exact process_id and window_handle grant binding",
+                        )));
+                    }
+                    let result = host.session.restore_activate().await;
+                    let result = host.finish_observation_sensitive_attempt(result);
+                    let result =
+                        finish_window_mutation_attempt(result, || host.invalidate_observations());
+                    let availability = host.session.target_availability().await;
+                    if let Ok(availability) =
+                        host.finish_observation_sensitive_attempt(availability)
+                    {
+                        host.observe_target_availability(availability);
+                    }
+                    ("restore_activate", result?)
+                }
+            };
+            let state = host.session.window_state().await;
+            let state = host.finish_observation_sensitive_attempt(state)?;
+            host.observe_target_state(&state);
             Ok((
-                json!({
-                    "type":"window_state_changed",
-                    "session_id":session_id,
-                    "operation":"activate",
-                    "state":state,
-                }),
+                window_state_changed_response(&session_id, operation, state, result),
                 None,
             ))
         }
@@ -732,8 +1039,10 @@ pub(super) async fn handle_request(
             let host =
                 authorized_session(sessions, &session_id, &task_grant_id, &window_capability)
                     .await?;
-            host.invalidate_observations();
-            let result = host.session.set_window_frame(&frame).await?;
+            let _input_turn = RAW_INPUT_QUEUE.lock().await;
+            let result = host.session.set_window_frame(&frame).await;
+            let result = host.finish_observation_sensitive_attempt(result);
+            let result = finish_window_mutation_attempt(result, || host.invalidate_observations())?;
             Ok((
                 json!({
                     "type":"window_frame_set",
@@ -758,8 +1067,10 @@ pub(super) async fn handle_request(
                     "native menu invocation is not granted".into(),
                 ));
             }
-            host.invalidate_observations();
-            let result = host.session.invoke_menu(&request).await?;
+            let _input_turn = RAW_INPUT_QUEUE.lock().await;
+            let result = host.session.invoke_menu(&request).await;
+            let result = host.finish_observation_sensitive_attempt(result);
+            let result = finish_window_mutation_attempt(result, || host.invalidate_observations())?;
             Ok((
                 json!({
                     "type":"menu_invoked",
@@ -781,14 +1092,16 @@ pub(super) async fn handle_request(
                 authorized_session(sessions, &session_id, &task_grant_id, &window_capability)
                     .await?;
             let activation = if activate_before {
-                Some(host.session.activate().await?)
+                let activation = host.session.activate().await;
+                Some(host.finish_observation_sensitive_attempt(activation)?)
             } else {
                 None
             };
             let screenshot = host
                 .session
                 .screenshot_with_bounds(max_nodes, max_depth)
-                .await?;
+                .await;
+            let screenshot = host.finish_observation_sensitive_attempt(screenshot)?;
             let observation_id = screenshot.observation.observation_id.clone();
             host.latest_observation_id = Some(observation_id.clone());
             host.latest_accessibility_state_id = Some(observation_id.clone());
@@ -844,7 +1157,8 @@ pub(super) async fn handle_request(
                 authorized_session(sessions, &session_id, &task_grant_id, &window_capability)
                     .await?;
             let observation_id = request.observation_id.clone();
-            let result = host.session.zoom(&request).await?;
+            let result = host.session.zoom(&request).await;
+            let result = host.finish_observation_sensitive_attempt(result)?;
             let (mut response, attachment) = native_tool_response_with_transport(
                 Some(&session_id),
                 "zoom",
@@ -869,7 +1183,8 @@ pub(super) async fn handle_request(
             let root = host
                 .session
                 .accessibility_snapshot(max_nodes, max_depth)
-                .await?;
+                .await;
+            let root = host.finish_observation_sensitive_attempt(root)?;
             let observation_id = host
                 .session
                 .latest_observation_id()
@@ -912,7 +1227,8 @@ pub(super) async fn handle_request(
             let verification = host
                 .session
                 .verify_state(expect, timeout_ms, stable_samples, include_screenshot)
-                .await?;
+                .await;
+            let verification = host.finish_observation_sensitive_attempt(verification)?;
             let image_transport = verification
                 .image
                 .map(|image| image_response(image, mode, &mut host.latest_shared_image))
@@ -945,7 +1261,8 @@ pub(super) async fn handle_request(
                     "native CUA tool calls are not granted".into(),
                 ));
             }
-            let result = host.session.call_tool(&tool, arguments).await?;
+            let result = host.session.call_tool(&tool, arguments).await;
+            let result = host.finish_observation_sensitive_attempt(result)?;
             native_tool_response_with_transport(
                 Some(&session_id),
                 &tool,
@@ -977,7 +1294,8 @@ pub(super) async fn handle_request(
             let host =
                 authorized_session(sessions, &session_id, &task_grant_id, &window_capability)
                     .await?;
-            let result = host.browser.snapshot(&host.session, request).await?;
+            let result = host.browser.snapshot(&mut host.session, request).await;
+            let result = host.finish_browser_snapshot_attempt(result)?;
             browser_response(
                 "browser_snapshot",
                 session_id,
@@ -1000,7 +1318,8 @@ pub(super) async fn handle_request(
                     "browser preparation is not granted".into(),
                 ));
             }
-            let result = host.browser.prepare(&host.session, request).await?;
+            let result = host.browser.prepare(&mut host.session, request).await;
+            let result = host.finish_observation_sensitive_attempt(result)?;
             browser_response(
                 "browser_prepared",
                 session_id,
@@ -1021,7 +1340,8 @@ pub(super) async fn handle_request(
             if !host.allow_browser_input {
                 return Err(HostError::Protocol("browser input is not granted".into()));
             }
-            let result = host.browser.navigate(&host.session, request).await?;
+            let result = host.browser.navigate(&mut host.session, request).await;
+            let result = host.finish_observation_sensitive_attempt(result)?;
             browser_response(
                 "browser_navigated",
                 session_id,
@@ -1042,7 +1362,9 @@ pub(super) async fn handle_request(
             if !host.allow_browser_input {
                 return Err(HostError::Protocol("browser input is not granted".into()));
             }
-            let result = host.browser.click(&host.session, request).await?;
+            host.require_current_browser_evidence_epoch()?;
+            let result = host.browser.click(&mut host.session, request).await;
+            let result = host.finish_observation_sensitive_attempt(result)?;
             browser_response(
                 "browser_clicked",
                 session_id,
@@ -1063,7 +1385,9 @@ pub(super) async fn handle_request(
             if !host.allow_browser_input {
                 return Err(HostError::Protocol("browser input is not granted".into()));
             }
-            let result = host.browser.type_text(&host.session, request).await?;
+            host.require_current_browser_evidence_epoch()?;
+            let result = host.browser.type_text(&mut host.session, request).await;
+            let result = host.finish_observation_sensitive_attempt(result)?;
             browser_response(
                 "browser_typed",
                 session_id,
@@ -1084,7 +1408,9 @@ pub(super) async fn handle_request(
             if !host.allow_browser_input {
                 return Err(HostError::Protocol("browser input is not granted".into()));
             }
-            let result = host.browser.pointer(&host.session, request).await?;
+            host.require_current_browser_evidence_epoch()?;
+            let result = host.browser.pointer(&mut host.session, request).await;
+            let result = host.finish_observation_sensitive_attempt(result)?;
             browser_response(
                 "browser_pointer_completed",
                 session_id,
@@ -1105,7 +1431,12 @@ pub(super) async fn handle_request(
             if !host.allow_browser_input {
                 return Err(HostError::Protocol("browser input is not granted".into()));
             }
-            let result = host.browser.set_input_files(&host.session, request).await?;
+            host.require_current_browser_evidence_epoch()?;
+            let result = host
+                .browser
+                .set_input_files(&mut host.session, request)
+                .await;
+            let result = host.finish_observation_sensitive_attempt(result)?;
             browser_response(
                 "browser_files_uploaded",
                 session_id,
@@ -1128,7 +1459,9 @@ pub(super) async fn handle_request(
                     "browser download is not granted".into(),
                 ));
             }
-            let result = host.browser.download(&host.session, request).await?;
+            host.require_current_browser_evidence_epoch()?;
+            let result = host.browser.download(&mut host.session, request).await;
+            let result = host.finish_observation_sensitive_attempt(result)?;
             browser_response(
                 "browser_downloaded",
                 session_id,
@@ -1149,7 +1482,8 @@ pub(super) async fn handle_request(
             if !host.allow_browser_input {
                 return Err(HostError::Protocol("browser input is not granted".into()));
             }
-            let result = host.browser.dialog(&host.session, request).await?;
+            let result = host.browser.dialog(&mut host.session, request).await;
+            let result = host.finish_observation_sensitive_attempt(result)?;
             browser_response(
                 "browser_dialog_completed",
                 session_id,
@@ -1168,6 +1502,9 @@ pub(super) async fn handle_request(
             let host =
                 authorized_session(sessions, &session_id, &task_grant_id, &window_capability)
                     .await?;
+            host.refresh_input_readiness();
+            let availability = host.session.target_availability().await;
+            finish_target_sensitive_cached_read(host, availability)?;
             let root = host.latest_accessibility_root.clone().ok_or_else(|| {
                 HostError::ComputerUse(ComputerUseError::new(
                     ComputerUseErrorCode::StaleObservation,
@@ -1212,60 +1549,15 @@ pub(super) async fn handle_request(
             let host =
                 authorized_session(sessions, &session_id, &task_grant_id, &window_capability)
                     .await?;
-            let started = Instant::now();
-            loop {
-                ensure_session_not_interrupted(host).await?;
-                let root = tokio::select! {
-                    _ = cancellation.handle.cancelled() => {
-                        return Ok((json!({
-                            "type":"wait_cancelled",
-                            "success":false,
-                            "session_id":session_id,
-                            "error_code":"cancelled",
-                            "elapsed_ms":started.elapsed().as_millis(),
-                        }), None));
-                    }
-                    result = host.session.accessibility_snapshot(5_000, 25) => result?,
-                };
-                ensure_session_not_interrupted(host).await?;
-                if wait_condition_matches(&root, &condition) {
-                    return Ok((
-                        json!({
-                            "type":"wait_completed",
-                            "success":true,
-                            "session_id":session_id,
-                            "condition":condition.kind,
-                            "elapsed_ms":started.elapsed().as_millis(),
-                        }),
-                        None,
-                    ));
-                }
-                if started.elapsed().as_millis() >= u128::from(timeout_ms) {
-                    return Ok((
-                        json!({
-                            "type":"wait_completed",
-                            "success":false,
-                            "session_id":session_id,
-                            "condition":condition.kind,
-                            "error_code":"timeout",
-                            "elapsed_ms":started.elapsed().as_millis(),
-                        }),
-                        None,
-                    ));
-                }
-                tokio::select! {
-                    _ = cancellation.handle.cancelled() => {
-                        return Ok((json!({
-                            "type":"wait_cancelled",
-                            "success":false,
-                            "session_id":session_id,
-                            "error_code":"cancelled",
-                            "elapsed_ms":started.elapsed().as_millis(),
-                        }), None));
-                    }
-                    _ = tokio::time::sleep(std::time::Duration::from_millis(interval_ms)) => {}
-                }
-            }
+            crate::wait::handle_wait_for(
+                host,
+                &cancellation.handle,
+                &session_id,
+                &condition,
+                timeout_ms,
+                interval_ms,
+            )
+            .await
         }
         Request::ExecuteAction {
             session_id,
@@ -1327,20 +1619,19 @@ pub(super) async fn handle_request(
             }
             let raw_input = action.input_kind == "raw_input";
             let action = action.into_computer_use(observation_id)?;
-            let result = if raw_input {
-                let _input_turn = RAW_INPUT_QUEUE.lock().await;
-                host.session.perform_action(&action).await?
-            } else {
-                host.session.perform_action(&action).await?
-            };
+            let input_turn = acquire_raw_input_turn(raw_input).await;
+            let result = host.session.perform_action(&action).await;
+            let result = host.finish_observation_sensitive_attempt(result)?;
             let action_id = format!("cua-action-{}", Uuid::new_v4());
             if capture_after {
                 tokio::time::sleep(post_snapshot_delay).await;
-                return match host
+                let screenshot = host
                     .session
                     .screenshot_with_bounds(post_snapshot_max_nodes, post_snapshot_max_depth)
-                    .await
-                {
+                    .await;
+                let screenshot = host.finish_observation_sensitive_attempt(screenshot);
+                drop(input_turn);
+                return match screenshot {
                     Ok(screenshot) => {
                         let observation_id = screenshot.observation.observation_id.clone();
                         host.latest_observation_id = Some(observation_id.clone());
@@ -1379,6 +1670,7 @@ pub(super) async fn handle_request(
                     }
                 };
             }
+            drop(input_turn);
             host.latest_observation_id = None;
             host.latest_accessibility_state_id = None;
             host.latest_accessibility_root = None;
@@ -1415,11 +1707,122 @@ pub(super) async fn handle_request(
             let host =
                 authorized_session(sessions, &session_id, &task_grant_id, &window_capability)
                     .await?;
-            let state = host.session.session_state().await?;
+            let state = host.session.session_state().await;
+            let state = host.finish_observation_sensitive_attempt(state)?;
             Ok((
                 json!({"type":"session_state", "session_id":session_id, "state":state}),
                 None,
             ))
+        }
+        Request::GetInputState {
+            session_id,
+            task_grant_id,
+            window_capability,
+        } => {
+            let host =
+                session_with_capability(sessions, &session_id, &task_grant_id, &window_capability)?;
+            host.refresh_input_readiness();
+            let availability = host.session.target_availability().await;
+            if let Ok(availability) = host.finish_observation_sensitive_attempt(availability) {
+                host.observe_target_availability(availability);
+            }
+            Ok((
+                json!({
+                    "type": "input_state",
+                    "session_id": session_id,
+                    "state": host.input_events.current(),
+                    "target_state": host.input_events.target_state(),
+                    "latest_sequence": host.input_events.latest_sequence(),
+                }),
+                None,
+            ))
+        }
+        Request::SessionHealth {
+            session_id,
+            task_grant_id,
+            window_capability,
+            policy,
+        } => {
+            let host =
+                session_with_capability(sessions, &session_id, &task_grant_id, &window_capability)?;
+            let evidence_epoch_before = host.session.action_evidence_epoch();
+            let transition_sequence_before = host.input_events.latest_sequence();
+            let mut target_probe_failed = refresh_session_health_input_and_target(host).await;
+            let recording = if host.allow_recording {
+                let state = host.session.recording_state().await;
+                match host.finish_observation_sensitive_attempt(state) {
+                    Ok(state) => ComputerUseRecordingHealth::from_state(true, &state, &policy),
+                    Err(_) => ComputerUseRecordingHealth::from_state(true, &Value::Null, &policy),
+                }
+            } else {
+                ComputerUseRecordingHealth::from_state(false, &Value::Null, &policy)
+            };
+            // Close the preflight fence after the recording probe so an input
+            // or exact-target transition cannot produce a mixed safe snapshot.
+            target_probe_failed |= refresh_session_health_input_and_target(host).await;
+            let action_evidence_epoch = host.session.action_evidence_epoch();
+            let transition_sequence = host.input_events.latest_sequence();
+            let interrupted = host.interrupted
+                || host.session.control_banner_interrupted()
+                || host.session.control_banner_failure().is_some();
+            let health = ComputerUseSessionHealth::evaluate(ComputerUseSessionHealthEvaluation {
+                policy,
+                input_state: host.input_events.current().clone(),
+                target_state: host.input_events.target_state().clone(),
+                recording,
+                action_evidence_epoch,
+                transition_sequence,
+                state_changed_during_probe: session_health_state_changed(
+                    evidence_epoch_before,
+                    transition_sequence_before,
+                    action_evidence_epoch,
+                    transition_sequence,
+                ),
+                interrupted,
+                target_probe_failed,
+            });
+            Ok((
+                json!({"type":"session_health", "session_id":session_id, "health":health}),
+                None,
+            ))
+        }
+        Request::PollSessionEvents {
+            session_id,
+            task_grant_id,
+            window_capability,
+            after_sequence,
+            timeout_ms,
+        } => {
+            let timeout = poll_session_events_timeout(timeout_ms)?;
+            let deadline = tokio::time::Instant::now() + timeout;
+            loop {
+                let deadline_reached = tokio::time::Instant::now() >= deadline;
+                let mut page = {
+                    let host = session_with_capability(
+                        sessions,
+                        &session_id,
+                        &task_grant_id,
+                        &window_capability,
+                    )?;
+                    host.refresh_input_readiness();
+                    let availability = host.session.target_availability().await;
+                    if let Ok(availability) =
+                        host.finish_observation_sensitive_attempt(availability)
+                    {
+                        host.observe_target_availability(availability);
+                    }
+                    host.input_events
+                        .page_after(after_sequence, deadline_reached)
+                };
+                if page.resync_required || !page.events.is_empty() {
+                    page.timed_out = false;
+                }
+                if page.timed_out || page.resync_required || !page.events.is_empty() {
+                    return Ok((session_events_response(&session_id, page)?, None));
+                }
+                let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+                tokio::time::sleep(remaining.min(std::time::Duration::from_millis(100))).await;
+            }
         }
         Request::CursorTool {
             session_id,
@@ -1433,7 +1836,8 @@ pub(super) async fn handle_request(
                     .await?;
             let result = {
                 let _input_turn = RAW_INPUT_QUEUE.lock().await;
-                host.session.cursor_tool(&tool, arguments).await?
+                let result = host.session.cursor_tool(&tool, arguments).await;
+                host.finish_observation_sensitive_attempt(result)?
             };
             let marker = host.session.status()["marker"].clone();
             Ok((
@@ -1456,23 +1860,57 @@ pub(super) async fn handle_request(
                     "session escalation is not granted".into(),
                 ));
             }
-            let result = host.session.escalate(&reason, detail.as_deref()).await?;
+            let result = host.session.escalate(&reason, detail.as_deref()).await;
+            let result = host.finish_observation_sensitive_attempt(result)?;
             Ok((
                 json!({"type":"session_escalated", "session_id":session_id, "result":result}),
                 None,
             ))
         }
         Request::StopSession { session_id } => {
-            let mut host = sessions
-                .remove(&session_id)
-                .ok_or_else(|| HostError::Protocol("session not found".into()))?;
+            let mut host = take_connection_session(sessions, &session_id)?;
             let result = host.session.stop().await?;
-            Ok((
-                json!({"type":"session_stopped", "session_id":session_id, "cleanup_pending":result["cleanup_pending"].as_bool().unwrap_or(false)}),
-                None,
-            ))
+            Ok((session_stopped_response(&session_id, result), None))
         }
     }
+}
+
+pub(super) fn take_connection_session<T>(
+    sessions: &mut std::collections::HashMap<String, T>,
+    session_id: &str,
+) -> Result<T, HostError> {
+    sessions
+        .remove(session_id)
+        .ok_or_else(|| HostError::Protocol("session not found".into()))
+}
+
+fn input_target_from_cua(
+    session_id: &str,
+    target: &Value,
+) -> Result<dcc_cua_core::ComputerUseInputTarget, HostError> {
+    let process_id = target["pid"]
+        .as_u64()
+        .and_then(|value| u32::try_from(value).ok())
+        .ok_or_else(|| HostError::Protocol("CUA target PID is invalid".into()))?;
+    let window_handle = target["window_id"]
+        .as_u64()
+        .ok_or_else(|| HostError::Protocol("CUA target window handle is invalid".into()))?;
+    Ok(dcc_cua_core::ComputerUseInputTarget {
+        session_id: session_id.to_owned(),
+        process_id,
+        window_handle,
+    })
+}
+
+fn session_events_response(
+    session_id: &str,
+    page: dcc_cua_core::ComputerUseSessionEventsPage,
+) -> Result<Value, HostError> {
+    let mut response =
+        serde_json::to_value(page).map_err(|error| HostError::Protocol(error.to_string()))?;
+    response["type"] = Value::String("session_events".into());
+    response["session_id"] = Value::String(session_id.to_owned());
+    Ok(response)
 }
 
 pub(super) const fn cursor_render_backend(upstream_cursor_renderer_enabled: bool) -> &'static str {
@@ -1500,4 +1938,15 @@ pub(super) fn post_snapshot_delay(
         )));
     }
     Ok(std::time::Duration::from_millis(delay_ms))
+}
+
+pub(super) fn poll_session_events_timeout(
+    timeout_ms: u64,
+) -> Result<std::time::Duration, HostError> {
+    if timeout_ms > MAX_SESSION_EVENT_POLL_TIMEOUT_MS {
+        return Err(HostError::Protocol(format!(
+            "timeout_ms must be at most {MAX_SESSION_EVENT_POLL_TIMEOUT_MS}"
+        )));
+    }
+    Ok(std::time::Duration::from_millis(timeout_ms))
 }

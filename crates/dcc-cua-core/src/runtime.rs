@@ -5,12 +5,15 @@ use std::time::{Duration, Instant};
 
 use base64::Engine;
 use cua_driver_sdk::CuaDriver;
-use dcc_cua_indicator::{BannerActivity, BannerTarget, ControlBanner, localized_control_label};
+use dcc_cua_indicator::{
+    BannerActivity, BannerActivityGuard, BannerFailureKind, BannerTarget, ControlBanner,
+    IndicatorError, localized_control_label,
+};
 use serde_json::{Value, json};
 
 use crate::contracts::*;
 use crate::interactive_desktop;
-use crate::live_observation::LiveObservation;
+use crate::live_observation::{LiveObservation, LiveObservationFence, observation_sequence_fence};
 use crate::observation::semantic_observation;
 use crate::policy::*;
 use crate::showcase::{ShowcaseRecorder, fit_dimensions_with_bounds, resize_bgra};
@@ -19,22 +22,234 @@ use crate::window_target::{WindowTarget, validate_target_policy};
 use crate::windows_uia_fallback::WindowsUiaFallback;
 
 mod action_result;
+#[cfg(any(windows, test))]
+mod drag_sequences;
+#[cfg(any(windows, test))]
+pub(crate) use drag_sequences::*;
 pub(crate) mod application;
 mod menu_commands;
+mod recording;
+pub(crate) use recording::{
+    RecordingHealth, RecordingKeepalive, RecordingVideoTerminalEvidence, aggregate_recording_state,
+    call_recording_tool_without_refresh, probe_recording_state,
+};
 mod session;
+#[allow(unused_imports)]
+pub(crate) use session::{
+    ensure_target_available_for_action, gated_cursor_operation, gated_desktop_observation,
+    gated_exact_window_observation, gated_exact_window_publication,
+    preflight_live_observation_start, resolved_application_name,
+};
+#[cfg(any(windows, test))]
+mod windows_input;
+#[cfg(any(windows, test))]
+pub(crate) use windows_input::*;
 mod window_commands;
+
+#[cfg(any(not(windows), test))]
+pub(crate) fn activation_completion_unknown(error: ComputerUseError) -> ComputerUseError {
+    let detail = error
+        .message
+        .replace("; the window session was invalidated", "");
+    ComputerUseError::new(
+        ComputerUseErrorCode::CompletionUnknown,
+        format!(
+            "{detail}; completion_unknown=true; automatic_input=false; blind_retry=false; fresh_observation_required=true"
+        ),
+    )
+}
+
+#[cfg(windows)]
+fn windows_platform_input_gate(
+    stage: &'static str,
+) -> Result<(), dcc_cua_platform_windows::UiaError> {
+    interactive_desktop::require_input_available().map_err(|error| {
+        dcc_cua_platform_windows::UiaError::PermissionDenied(format!(
+            "input_gate_stage={stage}: {error}"
+        ))
+    })
+}
+
+#[cfg(windows)]
+pub(crate) fn map_windows_window_mutation_error(
+    context: &str,
+    error: dcc_cua_platform_windows::UiaError,
+) -> ComputerUseError {
+    let code = match &error {
+        dcc_cua_platform_windows::UiaError::PermissionDenied(message)
+            if message.contains("input_gate_stage=") =>
+        {
+            ComputerUseErrorCode::InteractiveDesktopUnavailable
+        }
+        dcc_cua_platform_windows::UiaError::InvalidTarget(message)
+            if message.contains("target_minimized:") =>
+        {
+            ComputerUseErrorCode::TargetMinimized
+        }
+        dcc_cua_platform_windows::UiaError::InvalidTarget(_) => {
+            ComputerUseErrorCode::TargetUnavailable
+        }
+        _ => ComputerUseErrorCode::InputFailed,
+    };
+    ComputerUseError::new(code, format!("{context}: {error}"))
+}
 
 const INPUT_CALL_TIMEOUT: Duration = Duration::from_secs(15);
 const CURSOR_GLIDE_MS: u64 = 180;
 const SESSION_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
+const RECORDING_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30);
+#[cfg(any(windows, test))]
+const RAW_DRAG_PRE_DOWN_SETTLE: Duration = Duration::from_millis(50);
+#[cfg(any(windows, test))]
+const RAW_DRAG_DROP_SETTLE: Duration = Duration::from_millis(75);
+#[cfg(any(windows, test))]
+const RAW_DRAG_POST_UP_SETTLE: Duration = Duration::from_millis(50);
+#[cfg(windows)]
+pub(crate) const RELATIVE_DRAG_MAX_ATTEMPTS_PER_WAYPOINT: usize = 6;
+#[cfg(windows)]
+const RELATIVE_DRAG_ENDPOINT_TOLERANCE_PX: i32 = 0;
+#[cfg(windows)]
+const RELATIVE_DRAG_QUANTIZED_STALL_TOLERANCE_PX: i32 = 1;
+#[cfg(windows)]
+const RELATIVE_DRAG_INTERMEDIATE_TOLERANCE_PX: i32 = 1;
+#[cfg(windows)]
+const RELATIVE_DRAG_DAMPING_MIN_EFFECTIVE_COMMAND_PX: i32 = 2;
+#[cfg(windows)]
+const RELATIVE_DRAG_STAGNATION_ESCAPE_MAX_RESIDUAL_PX: i32 = 3;
+#[cfg(windows)]
+const RELATIVE_DRAG_STAGNATION_ESCAPE_MAX_COMMAND_PX: i32 = 4;
 
-fn banner_activity_for_action(action: &ComputerUseAction) -> BannerActivity {
-    match action.action.as_str() {
-        "type" | "type_chars" | "set_text" | "set_value" | "keypress" | "keyboard_shortcut" => {
-            BannerActivity::KeyboardInput
-        }
-        _ => BannerActivity::PointerInput,
+pub(crate) fn explicit_input_backend_rejection(action: &ComputerUseAction) -> Option<String> {
+    action.input_backend_id.as_ref()?;
+    #[cfg(windows)]
+    {
+        select_windows_foreground_drag_backend(action).err()
     }
+    #[cfg(not(windows))]
+    {
+        Some(format!(
+            "input backend {:?} is not supported on this platform",
+            action.input_backend_id.as_deref().unwrap_or_default()
+        ))
+    }
+}
+
+fn input_target_fence(target: &WindowTarget, foreground_verified: bool) -> Value {
+    json!({
+        "process_id": target.pid,
+        "window_handle": target.window_id,
+        "exact_window": true,
+        "foreground_required": true,
+        "foreground_verified": foreground_verified,
+    })
+}
+
+pub(crate) fn input_backend_rejection_result(
+    backend_id: &str,
+    reason: &str,
+    target: &WindowTarget,
+) -> ComputerUseToolResult {
+    ComputerUseToolResult {
+        value: json!({
+            "success": false,
+            "route": "input_backend_selection",
+            "delivery": {
+                "mode": "foreground",
+                "backend_id": backend_id,
+                "api_accepted": false,
+                "consumer_effect_confirmed": false,
+                "completion_known": false,
+                "verification_required": true,
+                "retry_safe": false,
+                "fallback_attempted": false,
+                "rejection_reason": reason,
+                "target_fence": input_target_fence(target, target.is_foreground),
+            },
+            "effect": "not_attempted",
+        }),
+        text: format!("Rejected input backend {backend_id:?} without attempting input: {reason}"),
+        images: Vec::new(),
+        degraded: true,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ActionBannerPhase {
+    Preparing,
+    #[cfg(any(windows, test))]
+    Injecting,
+}
+
+pub(crate) fn banner_activity_for_action_phase(
+    _action: &ComputerUseAction,
+    phase: ActionBannerPhase,
+) -> BannerActivity {
+    match phase {
+        ActionBannerPhase::Preparing => BannerActivity::Operating,
+        #[cfg(any(windows, test))]
+        ActionBannerPhase::Injecting => match _action.action.as_str() {
+            "type" | "type_chars" | "set_text" | "set_value" | "keypress" | "keyboard_shortcut" => {
+                BannerActivity::KeyboardInput
+            }
+            _ => BannerActivity::PointerInput,
+        },
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LiveObservationStartDisposition {
+    ReuseExisting,
+    StartedNew,
+}
+
+pub(crate) fn live_observation_start_disposition(
+    state: Option<&Value>,
+) -> LiveObservationStartDisposition {
+    if state.is_some_and(|state| state["active"] == true && state["terminal_reason"].is_null()) {
+        LiveObservationStartDisposition::ReuseExisting
+    } else {
+        LiveObservationStartDisposition::StartedNew
+    }
+}
+
+pub(crate) fn banner_activity_for_bound_tool(name: &str) -> BannerActivity {
+    match name {
+        "browser_navigate" | "browser_prepare" => BannerActivity::Navigating,
+        "get_browser_state" => BannerActivity::Observing,
+        _ => BannerActivity::Operating,
+    }
+}
+
+pub(crate) fn attach_banner_status(mut value: Value, banner: Value) -> Value {
+    if let Some(object) = value.as_object_mut() {
+        object.insert("banner".into(), banner);
+        value
+    } else {
+        json!({"cua": value, "banner": banner})
+    }
+}
+
+pub(crate) fn attach_indicator_motion_to_activation(
+    mut activation: Value,
+    banner: &Value,
+) -> Value {
+    let Some(motion) = banner.get("motion") else {
+        return activation;
+    };
+    if let Some(object) = activation.as_object_mut() {
+        object.insert("indicator_motion".into(), motion.clone());
+        activation
+    } else {
+        json!({"cua": activation, "indicator_motion": motion})
+    }
+}
+
+pub(crate) fn map_indicator_error(context: &str, error: IndicatorError) -> ComputerUseError {
+    let code = match error {
+        IndicatorError::InvalidTarget(_) => ComputerUseErrorCode::InvalidTarget,
+        IndicatorError::Backend(_) => ComputerUseErrorCode::BackendUnavailable,
+    };
+    ComputerUseError::new(code, format!("{context}: {error}"))
 }
 
 pub(crate) fn held_coordinate_click_as_drag(
@@ -85,12 +300,19 @@ pub(crate) async fn await_input_call<T>(
     tokio::time::timeout(timeout, future).await.map_err(|_| {
         ComputerUseError::new(
             ComputerUseErrorCode::InputFailed,
-            format!(
-                "CUA {operation} timed out after {} ms; the window session was invalidated",
-                timeout.as_millis()
-            ),
+            format!("CUA {operation} timed out after {} ms", timeout.as_millis()),
         )
     })
+}
+
+pub(crate) fn action_dispatch_completion_unknown(error: ComputerUseError) -> ComputerUseError {
+    ComputerUseError::new(
+        ComputerUseErrorCode::CompletionUnknown,
+        format!(
+            "{}; phase=action_dispatch; action_attempted=true; input_sent=unknown; completion_unknown=true; local_session_invalidated=true; automatic_input=false; blind_retry=false; fresh_observation_required=true",
+            error.message
+        ),
+    )
 }
 
 /// One shared CUA runtime. Create it once per host process.
@@ -273,10 +495,17 @@ impl ComputerUseDriver {
     ) -> ComputerUseResult<Value> {
         let (timeout_ms, interval_ms) = request.limits()?;
         let started = Instant::now();
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
         loop {
-            let mut windows = self
-                .list_windows_filtered(request.query.process_id, request.query.on_screen_only)
-                .await?;
+            let mut windows = match wait_for_window_probe_until(
+                deadline,
+                self.list_windows_filtered(request.query.process_id, request.query.on_screen_only),
+            )
+            .await
+            {
+                WindowWaitProbeOutcome::TimedOut => return Err(window_wait_timeout()),
+                WindowWaitProbeOutcome::Completed(result) => result?,
+            };
             windows.retain(|window| request.query.matches_window(window));
             if !windows.is_empty() {
                 return Ok(json!({
@@ -285,13 +514,16 @@ impl ComputerUseDriver {
                     "waited_ms": started.elapsed().as_millis(),
                 }));
             }
-            if started.elapsed() >= Duration::from_millis(timeout_ms) {
-                return Err(ComputerUseError::new(
-                    ComputerUseErrorCode::MissingWindow,
-                    "window query timed out",
-                ));
+            if matches!(
+                wait_for_window_probe_until(
+                    deadline,
+                    tokio::time::sleep(Duration::from_millis(interval_ms)),
+                )
+                .await,
+                WindowWaitProbeOutcome::TimedOut
+            ) {
+                return Err(window_wait_timeout());
             }
-            tokio::time::sleep(Duration::from_millis(interval_ms)).await;
         }
     }
 
@@ -348,7 +580,8 @@ impl ComputerUseDriver {
             && permissions["success"] == true
             && health["success"] == true
             && health["result"]["overall"] == "ok"
-            && interactive_desktop["success"] == true;
+            && interactive_desktop["success"] == true
+            && interactive_desktop["input_ready"] == true;
         json!({
             "type": "diagnostics",
             "schema_version": 1,
@@ -429,7 +662,7 @@ impl ComputerUseDriver {
         &self,
         session: Option<&str>,
     ) -> ComputerUseResult<ComputerUseDesktopSnapshot> {
-        interactive_desktop::require_available()?;
+        interactive_desktop::require_desktop_observation_available()?;
         let mut arguments = json!({});
         if let Some(session) = session {
             arguments["session"] = Value::String(session.to_owned());
@@ -601,198 +834,6 @@ async fn enable_session_marker(
     Ok(())
 }
 
-#[cfg(windows)]
-pub(crate) fn uses_windows_foreground_fast_path(action: &ComputerUseAction) -> bool {
-    action.delivery_mode.as_deref() == Some("foreground")
-        && matches!(
-            action.action.as_str(),
-            "click"
-                | "double_click"
-                | "right_click"
-                | "toggle"
-                | "drag"
-                | "keypress"
-                | "keyboard_shortcut"
-        )
-}
-
-#[cfg(windows)]
-async fn perform_windows_foreground_fast_action(
-    action: &ComputerUseAction,
-    session_id: &str,
-    target: &WindowTarget,
-) -> ComputerUseResult<Option<ComputerUseToolResult>> {
-    if !uses_windows_foreground_fast_path(action) {
-        return Ok(None);
-    }
-
-    dcc_cua_platform_windows::activate_window(dcc_cua_platform_windows::UiaTarget {
-        process_id: target.pid,
-        window_handle: target.window_id,
-    })
-    .map_err(|error| {
-        ComputerUseError::new(
-            ComputerUseErrorCode::InputFailed,
-            format!("activate the exact Windows target before pointer input: {error}"),
-        )
-    })?;
-
-    let window_id = target.window_id;
-    let [left, top, _, _] = target.bounds;
-    let screen_point =
-        |point: ComputerUsePoint| (left + point.x.round() as i32, top + point.y.round() as i32);
-    let animate_to = |x: i32, y: i32| {
-        platform_windows::overlay::send_command(
-            session_id.to_owned(),
-            cursor_overlay::OverlayCommand::PinAbove(target.window_id),
-        );
-        tokio::time::timeout(
-            Duration::from_millis(CURSOR_GLIDE_MS + 70),
-            platform_windows::overlay::animate_cursor_to(
-                session_id.to_owned(),
-                f64::from(x),
-                f64::from(y),
-            ),
-        )
-    };
-
-    let text = if matches!(action.action.as_str(), "keypress" | "keyboard_shortcut") {
-        let key = action.keys.last().cloned().unwrap_or_default();
-        let modifiers = if action.action == "keyboard_shortcut" {
-            action.keys[..action.keys.len().saturating_sub(1)].to_vec()
-        } else {
-            action.modifiers.clone()
-        };
-        tokio::task::spawn_blocking(move || {
-            let modifiers: Vec<&str> = modifiers.iter().map(String::as_str).collect();
-            platform_windows::input::keyboard::send_key_synthesized(window_id, &key, &modifiers)
-        })
-        .await
-        .map_err(|error| {
-            ComputerUseError::new(
-                ComputerUseErrorCode::InputFailed,
-                format!("join Windows foreground keypress: {error}"),
-            )
-        })?
-        .map_err(|error| {
-            ComputerUseError::new(
-                ComputerUseErrorCode::InputFailed,
-                format!("send Windows foreground keypress: {error}"),
-            )
-        })?;
-        "Sent scoped Windows keypress.".to_owned()
-    } else if action.action == "drag" {
-        let first = action.path.first().copied().unwrap_or(ComputerUsePoint {
-            x: action.x.unwrap_or_default(),
-            y: action.y.unwrap_or_default(),
-        });
-        let last = action.path.last().copied().unwrap_or(first);
-        let (from_x, from_y) = screen_point(first);
-        let (to_x, to_y) = screen_point(last);
-        let _ = animate_to(from_x, from_y).await;
-        platform_windows::overlay::send_command(
-            session_id.to_owned(),
-            cursor_overlay::OverlayCommand::ClickPulse {
-                x: f64::from(from_x),
-                y: f64::from(from_y),
-            },
-        );
-        platform_windows::overlay::send_command(
-            session_id.to_owned(),
-            cursor_overlay::OverlayCommand::MoveTo {
-                x: f64::from(to_x),
-                y: f64::from(to_y),
-                end_heading_radians: std::f64::consts::FRAC_PI_4,
-            },
-        );
-        let duration_ms = action.duration_ms.unwrap_or(500);
-        let steps = action.steps.unwrap_or(20);
-        let button = action.button.as_deref().unwrap_or("left").to_owned();
-        tokio::task::spawn_blocking(move || {
-            platform_windows::input::mouse::send_drag_synthesized(
-                window_id,
-                from_x,
-                from_y,
-                to_x,
-                to_y,
-                duration_ms,
-                steps as usize,
-                &button,
-            )
-        })
-        .await
-        .map_err(|error| {
-            ComputerUseError::new(
-                ComputerUseErrorCode::InputFailed,
-                format!("join Windows foreground drag: {error}"),
-            )
-        })?
-        .map_err(|error| {
-            ComputerUseError::new(
-                ComputerUseErrorCode::InputFailed,
-                format!("send Windows foreground drag: {error}"),
-            )
-        })?;
-        format!("Sent scoped Windows drag from ({from_x}, {from_y}) to ({to_x}, {to_y}).")
-    } else {
-        let (x, y) = screen_point(ComputerUsePoint {
-            x: action.x.unwrap_or_default(),
-            y: action.y.unwrap_or_default(),
-        });
-        let _ = animate_to(x, y).await;
-        platform_windows::overlay::send_command(
-            session_id.to_owned(),
-            cursor_overlay::OverlayCommand::ClickPulse {
-                x: f64::from(x),
-                y: f64::from(y),
-            },
-        );
-        let count = usize::from(action.action == "double_click") + 1;
-        let button = action
-            .button
-            .as_deref()
-            .unwrap_or(if action.action == "right_click" {
-                "right"
-            } else {
-                "left"
-            })
-            .to_owned();
-        let modifiers = action.modifiers.clone();
-        tokio::task::spawn_blocking(move || {
-            let modifiers: Vec<&str> = modifiers.iter().map(String::as_str).collect();
-            platform_windows::input::mouse::send_click_synthesized_active_mods(
-                window_id, x, y, count, &button, &modifiers,
-            )
-        })
-        .await
-        .map_err(|error| {
-            ComputerUseError::new(
-                ComputerUseErrorCode::InputFailed,
-                format!("join Windows foreground click: {error}"),
-            )
-        })?
-        .map_err(|error| {
-            ComputerUseError::new(
-                ComputerUseErrorCode::InputFailed,
-                format!("send Windows foreground click: {error}"),
-            )
-        })?;
-        format!("Sent scoped Windows click at ({x}, {y}).")
-    };
-
-    Ok(Some(ComputerUseToolResult {
-        value: json!({
-            "success": true,
-            "route": "windows_scoped_fast_input",
-            "delivery": {"mode": "foreground"},
-            "effect": "unverifiable",
-        }),
-        text,
-        images: Vec::new(),
-        degraded: false,
-    }))
-}
-
 async fn cleanup_started_session(driver: &ComputerUseDriver, session_id: &str) {
     let _ = call_driver_tool(
         &driver.driver,
@@ -809,6 +850,11 @@ struct ActiveShowcase {
     owns_live_observation: bool,
 }
 
+struct LiveObservationStartOutcome {
+    state: Value,
+    disposition: LiveObservationStartDisposition,
+}
+
 pub struct ComputerUseSession {
     driver: ComputerUseDriver,
     scope: ComputerUseTargetScope,
@@ -819,8 +865,16 @@ pub struct ComputerUseSession {
     control_banner: Option<ControlBanner>,
     target: Option<WindowTarget>,
     pub(crate) observation: Option<ComputerUseObservation>,
+    action_evidence_epoch: ActionEvidenceEpoch,
     live_observation: Option<LiveObservation>,
+    post_action_live_sequence_fence: Option<LiveObservationFence>,
+    observation_transition_live_sequence_fence: Option<LiveObservationFence>,
     showcase: Option<ActiveShowcase>,
+    last_recording_video: Option<RecordingVideoTerminalEvidence>,
+    recording_active: bool,
+    recording_expected_video: bool,
+    recording_health: Option<RecordingHealth>,
+    recording_keepalive: Option<RecordingKeepalive>,
     #[cfg(windows)]
     pub(crate) windows_uia: Option<WindowsUiaFallback>,
     last_upstream_session_refresh: Option<Instant>,
@@ -880,7 +934,7 @@ impl ComputerUseDesktopSession {
                 "desktop session is already active",
             ));
         }
-        interactive_desktop::require_available()?;
+        interactive_desktop::require_desktop_observation_available()?;
         let result = call_driver_tool(
             &self.driver.driver,
             "start_session",
@@ -949,7 +1003,7 @@ impl ComputerUseDesktopSession {
                 "take a fresh desktop snapshot before acting",
             ));
         }
-        interactive_desktop::require_available()?;
+        interactive_desktop::require_input_available()?;
         let arguments = desktop_action_arguments(action, &self.session_id);
         let tool = arguments["_tool"].as_str().unwrap_or_default().to_owned();
         let mut arguments = arguments;
@@ -1070,6 +1124,30 @@ pub(crate) fn mark_foreground_by_z_index(windows: &mut [WindowTarget]) {
     for window in windows {
         window.is_foreground = window.z_index == Some(highest);
     }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum WindowWaitProbeOutcome<T> {
+    TimedOut,
+    Completed(T),
+}
+
+pub(crate) async fn wait_for_window_probe_until<T>(
+    deadline: tokio::time::Instant,
+    probe: impl std::future::Future<Output = T>,
+) -> WindowWaitProbeOutcome<T> {
+    tokio::select! {
+        biased;
+        _ = tokio::time::sleep_until(deadline) => WindowWaitProbeOutcome::TimedOut,
+        result = probe => WindowWaitProbeOutcome::Completed(result),
+    }
+}
+
+fn window_wait_timeout() -> ComputerUseError {
+    ComputerUseError::new(
+        ComputerUseErrorCode::MissingWindow,
+        "window query timed out",
+    )
 }
 
 async fn list_windows_with_driver(

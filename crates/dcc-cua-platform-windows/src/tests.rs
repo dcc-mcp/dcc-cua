@@ -1,17 +1,26 @@
 use rstest::rstest;
+
+#[cfg(windows)]
+use crate::wgc::{
+    WgcCompositorTiming, WgcCompositorTimingUnavailable, WgcFrameMeasurement,
+    compositor_timing_from_100ns,
+};
 use serde_json::json;
 
 use super::{
-    UiaAction, UiaTarget,
+    UiaAction, UiaTarget, WindowsForegroundRelation, WindowsRawInputSnapshot,
+    WindowsWindowIdentity,
     snapshot::{TOKEN_PREFIX, normalize, resolve_index},
 };
 
 #[cfg(windows)]
 use super::PersistentWgcCapture;
 #[cfg(windows)]
-use super::windows::completed_action_result;
-#[cfg(windows)]
-use super::windows::foreground_restore_required;
+use super::windows::{
+    completed_action_result, exact_window_available_for_activation, exact_window_ownership_matches,
+    foreground_restore_required, input_gated_window_mutation,
+    run_restore_activate_mutation_sequence,
+};
 
 #[rstest]
 fn snapshot_normalization_emits_flat_agent_friendly_elements() {
@@ -106,6 +115,67 @@ fn portable_contract_construction_does_not_require_windows() {
     assert_eq!(action.element_index, Some(1));
 }
 
+#[rstest]
+fn raw_input_debug_snapshot_has_a_stable_typed_wire_shape() {
+    let snapshot = WindowsRawInputSnapshot {
+        async_button_down: true,
+        target: WindowsWindowIdentity {
+            window_handle: 0x1234,
+            process_id: 42,
+        },
+        foreground: Some(WindowsWindowIdentity {
+            window_handle: 0x1234,
+            process_id: 42,
+        }),
+        foreground_relation: WindowsForegroundRelation::ExactTarget,
+        target_thread_capture: Some(WindowsWindowIdentity {
+            window_handle: 0x5678,
+            process_id: 42,
+        }),
+        capture_query_succeeded: true,
+        capture_owned_by_target_process: true,
+    };
+
+    assert!(snapshot.allows_drag_path());
+    assert_eq!(
+        serde_json::to_value(snapshot).unwrap(),
+        json!({
+            "async_button_down": true,
+            "target": {"window_handle": 0x1234, "process_id": 42},
+            "foreground": {"window_handle": 0x1234, "process_id": 42},
+            "foreground_relation": "exact_target",
+            "target_thread_capture": {"window_handle": 0x5678, "process_id": 42},
+            "capture_query_succeeded": true,
+            "capture_owned_by_target_process": true,
+        })
+    );
+}
+
+#[rstest]
+#[case(false, WindowsForegroundRelation::ExactTarget)]
+#[case(true, WindowsForegroundRelation::SameProcess)]
+#[case(true, WindowsForegroundRelation::ForeignProcess)]
+#[case(true, WindowsForegroundRelation::NoForeground)]
+fn raw_input_debug_snapshot_refuses_an_unobserved_down_or_non_exact_foreground(
+    #[case] async_button_down: bool,
+    #[case] foreground_relation: WindowsForegroundRelation,
+) {
+    let snapshot = WindowsRawInputSnapshot {
+        async_button_down,
+        target: WindowsWindowIdentity {
+            window_handle: 0x1234,
+            process_id: 42,
+        },
+        foreground: None,
+        foreground_relation,
+        target_thread_capture: None,
+        capture_query_succeeded: false,
+        capture_owned_by_target_process: false,
+    };
+
+    assert!(!snapshot.allows_drag_path());
+}
+
 #[cfg(windows)]
 #[rstest]
 #[case(10, 10, 42, 42, false)]
@@ -123,6 +193,160 @@ fn background_action_only_restores_focus_stolen_by_the_controlled_process(
         foreground_restore_required(expected, current, current_process_id, controlled_process_id),
         required
     );
+}
+
+#[cfg(windows)]
+#[rstest]
+fn restore_activation_requires_the_exact_live_pid_hwnd_ownership_fence() {
+    assert!(exact_window_ownership_matches(true, 42, 42));
+    assert!(!exact_window_ownership_matches(false, 42, 42));
+    assert!(!exact_window_ownership_matches(true, 42, 43));
+}
+
+#[cfg(windows)]
+#[rstest]
+fn missing_wgc_frame_timestamp_is_typed_unavailable() {
+    assert_eq!(
+        compositor_timing_from_100ns(None, Some(20_000)),
+        WgcCompositorTiming::Unavailable {
+            reason: WgcCompositorTimingUnavailable::FrameTimestampUnavailable,
+        }
+    );
+}
+
+#[cfg(windows)]
+#[rstest]
+#[case(None, WgcCompositorTimingUnavailable::PerformanceCounterUnavailable)]
+#[case(Some(9_999), WgcCompositorTimingUnavailable::TimestampAfterPublish)]
+fn unavailable_publish_clock_never_fabricates_compositor_latency(
+    #[case] publish_time_100ns: Option<i64>,
+    #[case] expected_reason: WgcCompositorTimingUnavailable,
+) {
+    assert_eq!(
+        compositor_timing_from_100ns(Some(10_000), publish_time_100ns),
+        WgcCompositorTiming::Unavailable {
+            reason: expected_reason,
+        }
+    );
+}
+
+#[cfg(windows)]
+#[rstest]
+fn wgc_measurement_keeps_source_wait_separate_from_readback() {
+    let measurement = WgcFrameMeasurement::new(
+        std::time::Duration::from_millis(900),
+        std::time::Duration::from_millis(8),
+        std::time::Duration::from_millis(5),
+        std::time::Duration::from_millis(2),
+        Some(10_000),
+    )
+    .at_publish_time_100ns(Some(20_000));
+
+    assert_eq!(
+        measurement.source_wait,
+        std::time::Duration::from_millis(900)
+    );
+    assert_eq!(
+        measurement.readback_total,
+        std::time::Duration::from_millis(8)
+    );
+    assert_eq!(
+        measurement.gpu_copy_map,
+        std::time::Duration::from_millis(5)
+    );
+    assert_eq!(measurement.cpu_copy, std::time::Duration::from_millis(2));
+    assert_eq!(
+        measurement.compositor,
+        WgcCompositorTiming::Available {
+            system_relative_time_100ns: 10_000,
+            compositor_to_publish: std::time::Duration::from_millis(1),
+        }
+    );
+}
+
+#[cfg(windows)]
+#[rstest]
+fn ordinary_activation_rejects_minimized_or_hidden_exact_targets() {
+    assert!(exact_window_available_for_activation(
+        true, true, false, 42, 42
+    ));
+    assert!(!exact_window_available_for_activation(
+        true, true, true, 42, 42
+    ));
+    assert!(!exact_window_available_for_activation(
+        true, false, false, 42, 42
+    ));
+    assert!(!exact_window_available_for_activation(
+        true, true, false, 42, 43
+    ));
+}
+
+#[cfg(windows)]
+#[rstest]
+fn locked_desktop_gate_prevents_each_platform_window_mutation() {
+    let mutations = std::cell::Cell::new(0);
+
+    let result = input_gated_window_mutation(
+        || Err::<(), _>("desktop locked"),
+        || {
+            mutations.set(mutations.get() + 1);
+            Ok(())
+        },
+    );
+
+    assert_eq!(result, Err("desktop locked"));
+    assert_eq!(mutations.get(), 0);
+}
+
+#[cfg(windows)]
+#[rstest]
+fn restore_activate_sequence_stops_at_each_failed_input_gate() {
+    let restore_calls = std::cell::Cell::new(0);
+    let activate_calls = std::cell::Cell::new(0);
+    let first_gate = run_restore_activate_mutation_sequence(
+        || Err::<(), _>("locked before restore"),
+        || {
+            restore_calls.set(restore_calls.get() + 1);
+            Ok(())
+        },
+        || Ok(()),
+        || {
+            activate_calls.set(activate_calls.get() + 1);
+            Ok(())
+        },
+    );
+    assert_eq!(first_gate, Err("locked before restore"));
+    assert_eq!((restore_calls.get(), activate_calls.get()), (0, 0));
+
+    let second_gate = run_restore_activate_mutation_sequence(
+        || Ok(()),
+        || {
+            restore_calls.set(restore_calls.get() + 1);
+            Ok(())
+        },
+        || Err("locked before activate"),
+        || {
+            activate_calls.set(activate_calls.get() + 1);
+            Ok(())
+        },
+    );
+    assert_eq!(second_gate, Err("locked before activate"));
+    assert_eq!((restore_calls.get(), activate_calls.get()), (1, 0));
+
+    let success = run_restore_activate_mutation_sequence(
+        || Ok::<(), &str>(()),
+        || {
+            restore_calls.set(restore_calls.get() + 1);
+            Ok(())
+        },
+        || Ok(()),
+        || {
+            activate_calls.set(activate_calls.get() + 1);
+            Ok(())
+        },
+    );
+    assert_eq!(success, Ok(()));
+    assert_eq!((restore_calls.get(), activate_calls.get()), (2, 1));
 }
 
 #[cfg(windows)]

@@ -1,9 +1,14 @@
+use std::cell::{Cell, RefCell};
+#[cfg(windows)]
+use std::collections::VecDeque;
 use std::future::pending;
 use std::io::Cursor;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use dcc_cua_indicator::{BannerActivity, IndicatorError};
 use rstest::rstest;
-use serde_json::json;
+use serde_json::{Value, json};
 
 use super::*;
 use crate::contracts::{
@@ -13,20 +18,72 @@ use crate::contracts::{
 use crate::driver_factory::{
     BUNDLED_CURSOR_THEME, UPSTREAM_CURSOR_RENDERER_ENABLED, driver_host_options,
 };
-use crate::interactive_desktop::windows_diagnostic;
+use crate::interactive_desktop::{
+    platform_managed_diagnostic, require_desktop_observation_from,
+    require_exact_window_observation_from, require_input_available_from, windows_diagnostic,
+};
 use crate::live_observation::{
-    LiveObservationFrame, LiveObservationStatus, decode_png_to_bgra, terminal_capture_error,
-    wait_for_latest_frame,
+    CaptureFailureDisposition, LiveObservation, LiveObservationFence, LiveObservationFrame,
+    LiveObservationStatus, decode_png_to_bgra, live_capture_failure_disposition,
+    observation_sequence_fence, terminal_capture_error, wait_for_latest_frame,
 };
 use crate::policy::*;
-use crate::runtime::application::{launch_arguments, validate_launch_request};
 #[cfg(windows)]
-use crate::runtime::uses_windows_foreground_fast_path;
+use crate::runtime::RawDragSequenceOutcome;
+use crate::runtime::application::{launch_arguments, validate_launch_request};
 use crate::runtime::{
-    await_input_call, diagnostic_tool_check, held_coordinate_click_as_drag,
-    tool_schema_from_inventory,
+    ActionBannerPhase, CombinedDownDragAfterDown, CombinedDownDragCleanup, CombinedDownDragPrelude,
+    CombinedDownInjection, LiveObservationStartDisposition, RecordingHealth, RecordingKeepalive,
+    SingleInputInjection, WindowWaitProbeOutcome, action_dispatch_completion_unknown,
+    activation_completion_unknown, aggregate_recording_state, attach_banner_status,
+    attach_indicator_motion_to_activation, await_input_call, banner_activity_for_action_phase,
+    banner_activity_for_bound_tool, diagnostic_tool_check, ensure_target_available_for_action,
+    gated_cursor_operation, gated_desktop_observation, gated_exact_window_observation,
+    gated_exact_window_publication, held_coordinate_click_as_drag, input_backend_rejection_result,
+    live_observation_start_disposition, map_indicator_error, preflight_live_observation_start,
+    run_windows_combined_down_drag_sequence, run_windows_fenced_absolute_path,
+    run_windows_fenced_absolute_path_with_trace, run_windows_separated_raw_drag_sequence,
+    tool_schema_from_inventory, wait_for_window_probe_until,
+};
+#[cfg(windows)]
+use crate::runtime::{
+    RELATIVE_DRAG_MAX_ATTEMPTS_PER_WAYPOINT, RelativeMoveInjection, WindowsForegroundDragBackend,
+    WindowsPostButtonUpSnapshot, WindowsRawDragInputTrace,
+    inject_windows_combined_input_batch_with, map_windows_window_mutation_error,
+    run_windows_calibrated_relative_path, select_windows_foreground_drag_backend,
+    uses_windows_foreground_fast_path, windows_combined_raw_drag_outcome,
+    windows_combined_source_move_and_left_down_inputs, windows_raw_drag_delivery,
+    windows_synthetic_touch_attempt, windows_synthetic_touch_result,
 };
 use crate::window_target::{WindowTarget, validate_target_policy};
+
+macro_rules! run_combined_down_drag_sequence {
+    (
+        $inspect_pre:expr,
+        $allow_pre:expr,
+        $inject_batch:expr,
+        $inspect_after:expr,
+        $allow_path:expr,
+        $move_path:expr,
+        $settle:expr,
+        $inject_up:expr,
+        $inspect_post:expr,
+        $allow_release:expr $(,)?
+    ) => {
+        run_windows_combined_down_drag_sequence(
+            CombinedDownDragPrelude::new($inspect_pre, $allow_pre, $inject_batch),
+            CombinedDownDragAfterDown::new($inspect_after, $allow_path),
+            $move_path,
+            $settle,
+            CombinedDownDragCleanup::new($inject_up, $inspect_post, $allow_release),
+        )
+    };
+}
+
+mod drag;
+mod drag_windows;
+mod live_observation;
+mod recording_session;
 
 #[rstest]
 #[tokio::test]
@@ -40,7 +97,186 @@ async fn input_calls_have_a_hard_timeout() {
     .unwrap_err();
     assert_eq!(error.code, ComputerUseErrorCode::InputFailed);
     assert!(error.message.contains("window activation timed out"));
-    assert!(error.message.contains("window session was invalidated"));
+    assert!(!error.message.contains("session was invalidated"));
+}
+
+#[rstest]
+#[tokio::test(start_paused = true)]
+async fn window_wait_probe_obeys_the_absolute_request_deadline() {
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(25);
+
+    let outcome = wait_for_window_probe_until(deadline, async {
+        tokio::time::sleep(Duration::from_secs(30)).await;
+        7_u8
+    })
+    .await;
+
+    assert!(matches!(outcome, WindowWaitProbeOutcome::TimedOut));
+}
+
+#[rstest]
+fn activation_timeout_is_typed_completion_unknown_without_blind_retry() {
+    let error = activation_completion_unknown(ComputerUseError::new(
+        ComputerUseErrorCode::InputFailed,
+        "window activation timed out",
+    ));
+
+    assert_eq!(error.code, ComputerUseErrorCode::CompletionUnknown);
+    assert!(error.message.contains("completion_unknown=true"));
+    assert!(error.message.contains("automatic_input=false"));
+    assert!(error.message.contains("blind_retry=false"));
+    assert!(!error.message.contains("session was invalidated"));
+}
+
+#[rstest]
+fn action_dispatch_timeout_reports_attempted_input_and_real_session_invalidation() {
+    let error = action_dispatch_completion_unknown(ComputerUseError::new(
+        ComputerUseErrorCode::InputFailed,
+        "CUA action timed out after 15000 ms",
+    ));
+
+    assert_eq!(error.code, ComputerUseErrorCode::CompletionUnknown);
+    assert!(error.message.contains("action_attempted=true"));
+    assert!(error.message.contains("input_sent=unknown"));
+    assert!(error.message.contains("completion_unknown=true"));
+    assert!(error.message.contains("local_session_invalidated=true"));
+    assert!(error.message.contains("blind_retry=false"));
+}
+
+#[rstest]
+#[case("click", ActionBannerPhase::Preparing, BannerActivity::Operating)]
+#[case("type", ActionBannerPhase::Preparing, BannerActivity::Operating)]
+#[case("click", ActionBannerPhase::Injecting, BannerActivity::PointerInput)]
+#[case("type", ActionBannerPhase::Injecting, BannerActivity::KeyboardInput)]
+fn action_banner_activity_distinguishes_preparation_from_real_injection(
+    #[case] action: &str,
+    #[case] phase: ActionBannerPhase,
+    #[case] expected: BannerActivity,
+) {
+    assert_eq!(
+        banner_activity_for_action_phase(
+            &ComputerUseAction {
+                action: action.into(),
+                ..Default::default()
+            },
+            phase,
+        ),
+        expected
+    );
+}
+
+#[rstest]
+#[case("browser_navigate", BannerActivity::Navigating)]
+#[case("get_browser_state", BannerActivity::Observing)]
+#[case("browser_type", BannerActivity::Operating)]
+#[case("unknown_extension", BannerActivity::Operating)]
+fn opaque_input_tools_never_claim_a_specific_injection_state(
+    #[case] name: &str,
+    #[case] expected: BannerActivity,
+) {
+    assert_eq!(banner_activity_for_bound_tool(name), expected);
+}
+
+#[rstest]
+#[tokio::test]
+async fn cursor_input_gate_blocks_only_real_pointer_movement_before_backend_execution() {
+    let move_called = Cell::new(false);
+    let denied = || {
+        Err(ComputerUseError::new(
+            ComputerUseErrorCode::InteractiveDesktopUnavailable,
+            "Windows input surface is unavailable",
+        ))
+    };
+    let move_error = gated_cursor_operation(true, denied, || {
+        move_called.set(true);
+        async { Ok::<_, ComputerUseError>(()) }
+    })
+    .await
+    .expect_err("move_cursor must stop at the input gate");
+    assert_eq!(
+        move_error.code,
+        ComputerUseErrorCode::InteractiveDesktopUnavailable
+    );
+    assert!(!move_called.get());
+
+    let visual_called = Cell::new(false);
+    gated_cursor_operation(false, denied, || {
+        visual_called.set(true);
+        async { Ok::<_, ComputerUseError>(()) }
+    })
+    .await
+    .expect("cursor marker/theme/state tools remain available without raw input");
+    assert!(visual_called.get());
+}
+
+#[rstest]
+#[case(
+    IndicatorError::InvalidTarget("gone".into()),
+    ComputerUseErrorCode::InvalidTarget
+)]
+#[case(
+    IndicatorError::Backend("paint failed".into()),
+    ComputerUseErrorCode::BackendUnavailable
+)]
+fn indicator_errors_keep_typed_core_failure_semantics(
+    #[case] error: IndicatorError,
+    #[case] expected: ComputerUseErrorCode,
+) {
+    assert_eq!(map_indicator_error("start banner", error).code, expected);
+}
+
+#[rstest]
+fn banner_debug_state_is_attached_without_hiding_upstream_session_state() {
+    let state = attach_banner_status(
+        json!({"active": true, "capture_scope": "window"}),
+        json!({
+            "activity": "observing",
+            "recording": true,
+            "motion": {
+                "requested": "auto",
+                "resolved": "reduce",
+                "motion_enabled": false,
+                "source": "system_preference"
+            }
+        }),
+    );
+
+    assert_eq!(state["active"], true);
+    assert_eq!(state["capture_scope"], "window");
+    assert_eq!(state["banner"]["activity"], "observing");
+    assert_eq!(state["banner"]["recording"], true);
+    assert_eq!(state["banner"]["motion"]["requested"], "auto");
+    assert_eq!(state["banner"]["motion"]["resolved"], "reduce");
+    assert_eq!(state["banner"]["motion"]["motion_enabled"], false);
+    assert_eq!(state["banner"]["motion"]["source"], "system_preference");
+}
+
+#[rstest]
+fn banner_debug_state_wraps_non_object_upstream_values() {
+    let state = attach_banner_status(json!(null), json!({"activity": "ready"}));
+
+    assert_eq!(state["cua"], Value::Null);
+    assert_eq!(state["banner"]["activity"], "ready");
+}
+
+#[rstest]
+fn bootstrap_activation_evidence_reports_the_resolved_indicator_motion() {
+    let activation = attach_indicator_motion_to_activation(
+        json!({"success": true, "target": {"pid": 42, "window_id": 31337}}),
+        &json!({
+            "motion": {
+                "requested": "animate",
+                "resolved": "animate",
+                "motion_enabled": true,
+                "source": "session_override"
+            }
+        }),
+    );
+
+    assert_eq!(activation["indicator_motion"]["requested"], "animate");
+    assert_eq!(activation["indicator_motion"]["resolved"], "animate");
+    assert_eq!(activation["indicator_motion"]["motion_enabled"], true);
+    assert_eq!(activation["indicator_motion"]["source"], "session_override");
 }
 
 #[cfg(windows)]
@@ -66,6 +302,82 @@ fn windows_fast_route_is_bounded_to_foreground_raw_actions() {
         delivery_mode: Some("foreground".into()),
         ..Default::default()
     }));
+}
+
+#[rstest]
+fn post_click_focus_loss_is_sent_but_never_retry_safe() {
+    let outcome = windows_post_input_focus_loss(
+        "foreground_unavailable: exact target HWND 0x3b61b48 or a verified same-process \
+         post-action window was not foreground after the click \
+         (actual foreground HWND 0x2792020)",
+    )
+    .expect("post-input focus loss must be classified");
+
+    assert_eq!(
+        outcome.actual_foreground_window.as_deref(),
+        Some("0x2792020")
+    );
+    assert!(outcome.input_sent);
+    assert!(!outcome.delivery_confirmed);
+    assert!(!outcome.retry_safe);
+    assert!(outcome.verification_required);
+    assert_eq!(outcome.effect, "unverifiable");
+}
+
+#[rstest]
+fn pre_input_activation_failure_remains_a_hard_error() {
+    assert!(
+        windows_post_input_focus_loss(
+            "foreground_unavailable: Windows did not activate exact target HWND 0x3b61b48"
+        )
+        .is_none()
+    );
+}
+
+#[cfg(windows)]
+#[rstest]
+#[case(
+    "target_minimized: exact activation target must be visible",
+    ComputerUseErrorCode::TargetMinimized
+)]
+#[case(
+    "the exact activation target no longer exists or belongs to the granted process",
+    ComputerUseErrorCode::TargetUnavailable
+)]
+fn window_mutation_identity_fences_keep_typed_target_failures(
+    #[case] message: &str,
+    #[case] expected: ComputerUseErrorCode,
+) {
+    let error = map_windows_window_mutation_error(
+        "activate exact target",
+        dcc_cua_platform_windows::UiaError::InvalidTarget(message.into()),
+    );
+
+    assert_eq!(error.code, expected);
+}
+
+#[cfg(windows)]
+#[rstest]
+fn late_synthetic_touch_input_gate_stays_typed_and_never_injects() {
+    let injection_calls = Cell::new(0_u8);
+    let error = windows_synthetic_touch_attempt(
+        Err(ComputerUseError::new(
+            ComputerUseErrorCode::InteractiveDesktopUnavailable,
+            "input_gate_stage=synthetic_touch_activation: secure desktop",
+        )),
+        || {
+            injection_calls.set(injection_calls.get() + 1);
+            Ok(())
+        },
+        &test_window_target(),
+    )
+    .expect_err("a late input gate must remain a typed hard error");
+
+    assert_eq!(
+        error.code,
+        ComputerUseErrorCode::InteractiveDesktopUnavailable
+    );
+    assert_eq!(injection_calls.get(), 0);
 }
 
 #[rstest]
@@ -133,8 +445,114 @@ fn diagnostics_prefer_upstream_structured_content() {
 }
 
 #[rstest]
+fn platform_managed_desktop_preserves_the_portable_input_contract() {
+    let diagnostic = platform_managed_diagnostic();
+
+    assert!(require_input_available_from(&diagnostic).is_ok());
+    assert_eq!(diagnostic["input_ready"], true);
+}
+
+#[rstest]
+fn active_default_input_desktop_without_foreground_is_ready() {
+    let diagnostic = windows_diagnostic(Ok(0), Ok(Some("Default")), Ok(()), false);
+
+    assert_eq!(diagnostic["success"], true);
+    assert_eq!(diagnostic["code"], "interactive_desktop_ready");
+    assert_eq!(diagnostic["observation_ready"], true);
+    assert_eq!(diagnostic["input_ready"], true);
+    assert_eq!(diagnostic["input_surface_ready"], true);
+    assert_eq!(diagnostic["input_desktop"], "Default");
+    assert_eq!(diagnostic["foreground_present"], false);
+    assert!(
+        diagnostic["message"]
+            .as_str()
+            .expect("diagnostic message")
+            .contains("no foreground window")
+    );
+}
+
+#[rstest]
+fn unreadable_input_surface_blocks_input_without_stopping_observation() {
+    let diagnostic = windows_diagnostic(
+        Ok(0),
+        Ok(Some("Default")),
+        Err("GetCursorPos failed: Access is denied. (os error 5)"),
+        false,
+    );
+
+    assert_eq!(diagnostic["success"], true);
+    assert_eq!(diagnostic["code"], "interactive_desktop_ready");
+    assert_eq!(diagnostic["observation_ready"], true);
+    assert_eq!(diagnostic["input_ready"], false);
+    assert_eq!(
+        diagnostic["input_code"],
+        "interactive_input_surface_unavailable"
+    );
+    assert_eq!(diagnostic["input_desktop"], "Default");
+    assert_eq!(diagnostic["input_surface_ready"], false);
+    assert_eq!(
+        diagnostic["input_surface_error"],
+        "GetCursorPos failed: Access is denied. (os error 5)"
+    );
+    assert_eq!(diagnostic["foreground_present"], false);
+}
+
+#[rstest]
+fn active_secure_input_desktop_fails_closed() {
+    let diagnostic = windows_diagnostic(Ok(0), Ok(Some("Winlogon")), Ok(()), false);
+
+    assert_eq!(diagnostic["success"], false);
+    assert_eq!(diagnostic["code"], "interactive_desktop_unavailable");
+    assert_eq!(diagnostic["observation_ready"], false);
+    assert_eq!(diagnostic["input_ready"], false);
+    assert_eq!(diagnostic["input_desktop"], "Winlogon");
+    assert_eq!(diagnostic["foreground_present"], false);
+}
+
+#[rstest]
+fn input_desktop_probe_error_fails_closed() {
+    let diagnostic =
+        windows_diagnostic(Ok(0), Err("OpenInputDesktop: access denied"), Ok(()), false);
+
+    assert_eq!(diagnostic["success"], false);
+    assert_eq!(diagnostic["observation_ready"], true);
+    assert_eq!(diagnostic["input_ready"], false);
+    assert_eq!(diagnostic["code"], "interactive_desktop_unknown");
+    assert_eq!(diagnostic["input_desktop"], serde_json::Value::Null);
+    assert_eq!(
+        diagnostic["input_desktop_error"],
+        "OpenInputDesktop: access denied"
+    );
+    assert_eq!(diagnostic["foreground_present"], false);
+}
+
+#[rstest]
+fn unreadable_input_desktop_only_allows_an_exact_window_observation_attempt() {
+    let diagnostic =
+        windows_diagnostic(Ok(0), Err("OpenInputDesktop: access denied"), Ok(()), false);
+
+    assert!(require_exact_window_observation_from(&diagnostic).is_ok());
+    let desktop_error = require_desktop_observation_from(&diagnostic)
+        .expect_err("desktop observation must retain the readable Default-desktop gate");
+    assert_eq!(
+        desktop_error.code,
+        ComputerUseErrorCode::InteractiveDesktopUnavailable
+    );
+}
+
+#[rstest]
+fn missing_input_desktop_identity_fails_closed() {
+    let diagnostic = windows_diagnostic(Ok(0), Ok(None), Ok(()), false);
+
+    assert_eq!(diagnostic["success"], false);
+    assert_eq!(diagnostic["code"], "interactive_desktop_unknown");
+    assert_eq!(diagnostic["input_desktop"], serde_json::Value::Null);
+    assert_eq!(diagnostic["foreground_present"], false);
+}
+
+#[rstest]
 #[case(Ok(0), true, true, "interactive_desktop_ready", "active")]
-#[case(Ok(0), false, false, "interactive_desktop_unavailable", "active")]
+#[case(Ok(0), false, true, "interactive_desktop_ready", "active")]
 #[case(Ok(4), true, false, "interactive_session_not_active", "disconnected")]
 #[case(Ok(1), true, false, "interactive_session_not_active", "not_active")]
 fn windows_session_state_fences_raw_input(
@@ -144,17 +562,28 @@ fn windows_session_state_fences_raw_input(
     #[case] code: &str,
     #[case] state_name: &str,
 ) {
-    let diagnostic = windows_diagnostic(state, foreground);
+    let diagnostic = windows_diagnostic(state, Ok(Some("Default")), Ok(()), foreground);
     assert_eq!(diagnostic["success"], success);
     assert_eq!(diagnostic["code"], code);
+    assert_eq!(diagnostic["observation_ready"], success);
+    assert_eq!(diagnostic["input_ready"], success);
     assert_eq!(diagnostic["session_state"], state_name);
+    assert_eq!(diagnostic["input_desktop"], "Default");
+    assert_eq!(diagnostic["foreground_present"], foreground);
 }
 
 #[rstest]
 fn windows_session_query_failure_is_not_ready() {
-    let diagnostic = windows_diagnostic(Err("access denied".into()), true);
+    let diagnostic = windows_diagnostic(
+        Err("access denied".into()),
+        Ok(Some("Default")),
+        Ok(()),
+        true,
+    );
     assert_eq!(diagnostic["success"], false);
     assert_eq!(diagnostic["code"], "interactive_session_unknown");
+    assert_eq!(diagnostic["input_desktop"], "Default");
+    assert_eq!(diagnostic["foreground_present"], true);
     assert!(
         diagnostic["message"]
             .as_str()
@@ -182,6 +611,80 @@ fn scope_requires_exact_identity_and_action_rejects_unbounded_text() {
     assert_eq!(
         validate_action(&action).unwrap_err().code,
         ComputerUseErrorCode::InvalidAction
+    );
+}
+
+#[rstest]
+fn bootstrap_activation_requires_exact_pid_and_window_handle() {
+    let request = ComputerUseSessionStartRequest {
+        activate_before: true,
+        indicator_motion: IndicatorMotionPolicy::Auto,
+    };
+    for scope in [
+        ComputerUseTargetScope {
+            process_id: Some(42),
+            ..Default::default()
+        },
+        ComputerUseTargetScope {
+            window_handle: Some(31337),
+            ..Default::default()
+        },
+        ComputerUseTargetScope {
+            window_title: Some("Synthetic Test App".into()),
+            ..Default::default()
+        },
+    ] {
+        let error = request.validate_for_scope(&scope).unwrap_err();
+        assert_eq!(error.code, ComputerUseErrorCode::InvalidTarget);
+        assert!(error.message.contains("exact process_id and window_handle"));
+    }
+
+    assert!(
+        request
+            .validate_for_scope(&ComputerUseTargetScope {
+                process_id: Some(42),
+                window_handle: Some(31337),
+                window_title: None,
+            })
+            .is_ok()
+    );
+    assert!(
+        ComputerUseSessionStartRequest::default()
+            .validate_for_scope(&ComputerUseTargetScope {
+                window_title: Some("Synthetic Test App".into()),
+                ..Default::default()
+            })
+            .is_ok()
+    );
+}
+
+#[rstest]
+fn session_start_motion_policy_is_explicit_non_persistent_and_defaults_accessibly() {
+    let default_request: ComputerUseSessionStartRequest =
+        serde_json::from_value(json!({})).expect("default request");
+    let animated_request: ComputerUseSessionStartRequest =
+        serde_json::from_value(json!({"indicator_motion": "animate"})).expect("animated request");
+    let next_request: ComputerUseSessionStartRequest =
+        serde_json::from_value(json!({})).expect("next default request");
+
+    assert_eq!(
+        default_request.indicator_motion,
+        IndicatorMotionPolicy::Auto
+    );
+    assert_eq!(
+        animated_request.indicator_motion,
+        IndicatorMotionPolicy::Animate
+    );
+    assert_eq!(next_request.indicator_motion, IndicatorMotionPolicy::Auto);
+    assert_eq!(
+        serde_json::to_value(animated_request).expect("request serializes")["indicator_motion"],
+        "animate"
+    );
+    assert!(
+        serde_json::from_value::<ComputerUseSessionStartRequest>(
+            json!({"indicator_motion": "sometimes"})
+        )
+        .is_err()
     );
 }
 
@@ -250,6 +753,31 @@ fn native_target_policy_denies_terminal_processes() {
     assert_eq!(
         validate_target_policy(&target).unwrap_err().code,
         ComputerUseErrorCode::InvalidTarget
+    );
+}
+
+#[rstest]
+fn generic_application_labels_resolve_from_the_exact_window() {
+    let target = WindowTarget {
+        pid: 42,
+        window_id: 84,
+        title: "Synthetic Test App".into(),
+        app_name: "synthetic-test-app.exe".into(),
+        bounds: [0, 0, 1280, 720],
+        is_on_screen: true,
+        is_minimized: false,
+        z_index: Some(0),
+        is_foreground: true,
+    };
+
+    assert_eq!(
+        crate::runtime::resolved_application_name("Application", &target),
+        "Synthetic Test App",
+    );
+    assert_eq!(
+        crate::runtime::resolved_application_name("Maya 2024", &target),
+        "Maya 2024",
+        "an explicit profile/application identity must remain authoritative",
     );
 }
 
@@ -371,6 +899,176 @@ fn tool_provider_timeout_is_backend_unavailable() {
             .code,
         ComputerUseErrorCode::BackendUnavailable
     );
+}
+
+#[rstest]
+#[case("target_minimized", ComputerUseErrorCode::TargetMinimized)]
+#[case("target_unavailable", ComputerUseErrorCode::TargetUnavailable)]
+#[case("missing_window", ComputerUseErrorCode::TargetUnavailable)]
+#[case(
+    "interactive_desktop_unavailable",
+    ComputerUseErrorCode::InteractiveDesktopUnavailable
+)]
+#[case(
+    "input_gate_stage=foreground_dispatch",
+    ComputerUseErrorCode::InteractiveDesktopUnavailable
+)]
+fn exact_status_driver_markers_override_browser_and_uia_classification(
+    #[case] marker: &str,
+    #[case] expected: ComputerUseErrorCode,
+) {
+    let result = cua_driver_sdk::ToolResult {
+        is_error: true,
+        error_code: Some(marker.into()),
+        raw_json: "{}".into(),
+        text: "browser UIA operation rejected the exact target".into(),
+        structured_json: None,
+        images: Vec::new(),
+        degraded: false,
+        action: None,
+        verification: None,
+    };
+    assert_eq!(
+        ensure_tool_ok("perform browser operation", &result)
+            .unwrap_err()
+            .code,
+        expected
+    );
+    assert_eq!(
+        map_driver_error(
+            "perform browser operation",
+            format!("browser UIA failure: {marker}")
+        )
+        .code,
+        expected
+    );
+}
+
+#[rstest]
+#[tokio::test]
+async fn denied_desktop_fallback_never_reaches_the_capture_backend() {
+    let capture_called = Cell::new(false);
+    let denied = Err(ComputerUseError::new(
+        ComputerUseErrorCode::InteractiveDesktopUnavailable,
+        "Windows input desktop could not be read",
+    ));
+
+    let error = gated_desktop_observation(denied, || {
+        capture_called.set(true);
+        async { Ok::<_, ComputerUseError>(()) }
+    })
+    .await
+    .expect_err("desktop fallback must stop at its desktop-observation gate");
+
+    assert_eq!(
+        error.code,
+        ComputerUseErrorCode::InteractiveDesktopUnavailable
+    );
+    assert!(!capture_called.get());
+}
+
+#[rstest]
+#[tokio::test]
+async fn exact_observation_publication_rechecks_readiness_after_the_capture_await() {
+    let gate_calls = Cell::new(0_u8);
+    let capture_calls = Cell::new(0_u8);
+
+    let error = gated_exact_window_observation(
+        || {
+            let call = gate_calls.get() + 1;
+            gate_calls.set(call);
+            if call == 1 {
+                Ok(())
+            } else {
+                Err(ComputerUseError::new(
+                    ComputerUseErrorCode::InteractiveDesktopUnavailable,
+                    "workstation locked while capture was in flight",
+                ))
+            }
+        },
+        || async {
+            capture_calls.set(capture_calls.get() + 1);
+            Ok::<_, ComputerUseError>("captured evidence")
+        },
+    )
+    .await
+    .expect_err("post-lock evidence must not be published");
+
+    assert_eq!(
+        error.code,
+        ComputerUseErrorCode::InteractiveDesktopUnavailable
+    );
+    assert_eq!(gate_calls.get(), 2);
+    assert_eq!(capture_calls.get(), 1);
+}
+
+#[rstest]
+#[tokio::test]
+async fn exact_observation_publication_rechecks_after_the_final_async_stage() {
+    let gate_calls = Cell::new(0_u8);
+    let publish_calls = Cell::new(0_u8);
+
+    let error = gated_exact_window_publication(
+        || {
+            let call = gate_calls.get() + 1;
+            gate_calls.set(call);
+            if call < 3 {
+                Ok(())
+            } else {
+                Err(ComputerUseError::new(
+                    ComputerUseErrorCode::InteractiveDesktopUnavailable,
+                    "the desktop locked during final image processing",
+                ))
+            }
+        },
+        || async { Ok::<_, ComputerUseError>("captured") },
+        |captured| async move { Ok::<_, ComputerUseError>(format!("{captured}-encoded")) },
+        |_| {
+            publish_calls.set(publish_calls.get() + 1);
+        },
+    )
+    .await
+    .expect_err("the last readiness fence must run immediately before publication");
+
+    assert_eq!(
+        error.code,
+        ComputerUseErrorCode::InteractiveDesktopUnavailable
+    );
+    assert_eq!(gate_calls.get(), 3);
+    assert_eq!(publish_calls.get(), 0);
+}
+
+#[rstest]
+#[tokio::test]
+async fn exact_observation_publication_rejects_a_target_minimized_during_finalization() {
+    let gate_calls = Cell::new(0_u8);
+    let publish_calls = Cell::new(0_u8);
+
+    let error = gated_exact_window_publication(
+        || {
+            let call = gate_calls.get() + 1;
+            gate_calls.set(call);
+            if call < 3 {
+                Ok(())
+            } else {
+                Err(ComputerUseError::new(
+                    ComputerUseErrorCode::TargetMinimized,
+                    "target_minimized: the exact target changed during finalization",
+                ))
+            }
+        },
+        || async { Ok::<_, ComputerUseError>("captured") },
+        |captured| async move { Ok::<_, ComputerUseError>(format!("{captured}-finalized")) },
+        |_| {
+            publish_calls.set(publish_calls.get() + 1);
+        },
+    )
+    .await
+    .expect_err("a newly minimized target must not publish the completed frame");
+
+    assert_eq!(error.code, ComputerUseErrorCode::TargetMinimized);
+    assert_eq!(gate_calls.get(), 3);
+    assert_eq!(publish_calls.get(), 0);
 }
 
 #[rstest]
@@ -717,6 +1415,40 @@ fn action_rejects_unknown_delivery_mode_and_unbounded_token() {
 }
 
 #[rstest]
+fn unsupported_input_backend_is_a_structured_non_fallback_result() {
+    let result = input_backend_rejection_result(
+        "windows.unknown.v1",
+        "unsupported input backend",
+        &test_window_target(),
+    );
+    assert_eq!(result.value["success"], false);
+    assert_eq!(result.value["route"], "input_backend_selection");
+    assert_eq!(
+        result.value["delivery"],
+        json!({
+            "mode": "foreground",
+            "backend_id": "windows.unknown.v1",
+            "api_accepted": false,
+            "consumer_effect_confirmed": false,
+            "completion_known": false,
+            "verification_required": true,
+            "retry_safe": false,
+            "fallback_attempted": false,
+            "rejection_reason": "unsupported input backend",
+            "target_fence": {
+                "process_id": 42,
+                "window_handle": 7,
+                "exact_window": true,
+                "foreground_required": true,
+                "foreground_verified": true
+            }
+        })
+    );
+    assert_eq!(result.value["effect"], "not_attempted");
+    assert!(result.degraded);
+}
+
+#[rstest]
 fn semantic_value_actions_require_and_encode_element_values() {
     let action = ComputerUseAction {
         action: "set_text".into(),
@@ -894,6 +1626,21 @@ fn test_window_target() -> WindowTarget {
         z_index: Some(1),
         is_foreground: true,
     }
+}
+
+#[rstest]
+fn minimized_exact_target_pauses_every_action_before_any_input_path() {
+    let mut target = test_window_target();
+    target.is_minimized = true;
+    target.is_on_screen = false;
+    target.is_foreground = false;
+
+    let error = ensure_target_available_for_action(&target).unwrap_err();
+
+    assert_eq!(error.code, ComputerUseErrorCode::TargetMinimized);
+    assert!(error.message.contains("target_minimized"));
+    assert!(error.message.contains("automatic_input=false"));
+    assert!(error.message.contains("restore_activate"));
 }
 
 #[rstest]
@@ -1084,35 +1831,6 @@ fn launch_requires_one_safe_application_selector() {
 }
 
 #[rstest]
-fn clipboard_and_recording_requests_are_bounded() {
-    assert!(
-        validate_clipboard_write_request(&ComputerUseClipboardWriteRequest::default()).is_err()
-    );
-    assert!(
-        validate_clipboard_write_request(&ComputerUseClipboardWriteRequest {
-            text: Some("hello".into()),
-            image_path: Some("C:\\image.png".into()),
-            file_path: None,
-        })
-        .is_err()
-    );
-    assert!(
-        validate_recording_start_request(&ComputerUseRecordingStartRequest {
-            output_dir: "relative/output".into(),
-            record_video: false,
-        })
-        .is_err()
-    );
-    assert!(
-        validate_recording_start_request(&ComputerUseRecordingStartRequest {
-            output_dir: "~/cua-recordings".into(),
-            record_video: false,
-        })
-        .is_ok()
-    );
-}
-
-#[rstest]
 fn window_queries_require_a_selector_and_match_native_rows() {
     assert!(ComputerUseWindowQuery::default().validate().is_err());
     assert!(
@@ -1136,128 +1854,4 @@ fn window_queries_require_a_selector_and_match_native_rows() {
         &json!({"app_name":"UE5Editor.exe", "title":"Other", "pid":42, "window_id":7})
     ));
     assert!(query.validate_selectors().is_ok());
-}
-
-#[rstest]
-fn live_observation_fps_is_bounded() {
-    assert_eq!(
-        ComputerUseLiveObservationStartRequest::default(),
-        ComputerUseLiveObservationStartRequest {
-            fps: 10,
-            max_dimension: 1_568,
-        }
-    );
-    for fps in [0, 31] {
-        assert!(
-            ComputerUseLiveObservationStartRequest {
-                fps,
-                ..Default::default()
-            }
-            .validate()
-            .is_err()
-        );
-    }
-    for max_dimension in [255, 4_097] {
-        assert!(
-            ComputerUseLiveObservationStartRequest {
-                max_dimension,
-                ..Default::default()
-            }
-            .validate()
-            .is_err()
-        );
-    }
-}
-
-#[rstest]
-fn live_observation_stops_on_terminal_capture_errors() {
-    assert!(terminal_capture_error(&ComputerUseError::new(
-        ComputerUseErrorCode::InvalidTarget,
-        "window identity changed",
-    )));
-    assert!(terminal_capture_error(&ComputerUseError::new(
-        ComputerUseErrorCode::InteractiveDesktopUnavailable,
-        "desktop disconnected",
-    )));
-    assert!(!terminal_capture_error(&ComputerUseError::new(
-        ComputerUseErrorCode::CaptureFailed,
-        "transient WGC failure",
-    )));
-}
-
-#[rstest]
-fn live_observation_png_converts_bgra_to_rgba() {
-    let png = encode_bgra_to_png(&[3, 2, 1, 4], 1, 1).unwrap();
-    let mut reader = png::Decoder::new(Cursor::new(&png)).read_info().unwrap();
-    let mut bytes = vec![0; reader.output_buffer_size()];
-    let info = reader.next_frame(&mut bytes).unwrap();
-    assert_eq!(&bytes[..info.buffer_size()], &[1, 2, 3, 4]);
-    assert_eq!(decode_png_to_bgra(&png).unwrap(), (vec![3, 2, 1, 4], 1, 1));
-}
-
-#[rstest]
-fn live_observation_keeps_only_the_latest_frame() {
-    let mut status = LiveObservationStatus::default();
-    status.publish_frame(
-        LiveObservationFrame::new(1, vec![1], 1, 1, Instant::now()),
-        Duration::ZERO,
-        "test_capture",
-    );
-    status.publish_frame(
-        LiveObservationFrame::new(2, vec![2], 1, 1, Instant::now()),
-        Duration::ZERO,
-        "test_capture",
-    );
-
-    assert_eq!(status.latest().expect("latest frame").sequence(), 2);
-    assert_eq!(status.as_json(true, 10)["frames_captured"], 2);
-    assert_eq!(status.as_json(true, 10)["frames_replaced"], 1);
-}
-
-#[rstest]
-fn live_observation_state_reports_recent_rate_and_capture_cost() {
-    let started = Instant::now();
-    let mut status = LiveObservationStatus::default();
-    status.publish_frame(
-        LiveObservationFrame::new(1, vec![1], 1, 1, started),
-        Duration::from_millis(6),
-        "test_capture",
-    );
-    status.publish_frame(
-        LiveObservationFrame::new(2, vec![2], 1, 1, started + Duration::from_millis(100)),
-        Duration::from_millis(8),
-        "test_capture",
-    );
-
-    let state = status.as_json(true, 10);
-    assert_eq!(state["active"], true);
-    assert_eq!(state["target_fps"], 10);
-    assert_eq!(state["recent_effective_fps"], 10.0);
-    assert_eq!(state["last_capture_duration_ms"], 8);
-    assert_eq!(state["max_capture_duration_ms"], 8);
-    assert_eq!(state["capture_mode"], "test_capture");
-}
-
-#[rstest]
-#[tokio::test]
-async fn live_observation_returns_a_frame_newer_than_the_decision_frame() {
-    let mut status = LiveObservationStatus::default();
-    status.publish_frame(
-        LiveObservationFrame::new(1, vec![1], 1, 1, Instant::now()),
-        Duration::ZERO,
-        "test_capture",
-    );
-    let (sender, mut receiver) = tokio::sync::watch::channel(status);
-    sender.send_modify(|status| {
-        status.publish_frame(
-            LiveObservationFrame::new(2, vec![2], 1, 1, Instant::now()),
-            Duration::from_millis(7),
-            "test_capture",
-        );
-    });
-
-    let frame = wait_for_latest_frame(&mut receiver, Some(1), Duration::from_millis(10))
-        .await
-        .expect("fresh latest frame");
-    assert_eq!(frame.sequence(), 2);
 }

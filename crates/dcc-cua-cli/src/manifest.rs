@@ -1,11 +1,79 @@
 use dcc_cua_host::{
     HOST_HELLO_TIMEOUT_MS, HOST_PROTOCOL_VERSION, HostTransport, MAX_APPLICATION_LABEL_CHARS,
     MAX_BINARY_FRAME_BYTES, MAX_HOST_CONNECTIONS, MAX_JSON_FRAME_BYTES,
-    MAX_PARALLEL_DISCOVERY_REQUESTS, MAX_TASK_GRANT_ID_CHARS, host_capabilities,
+    MAX_PARALLEL_DISCOVERY_REQUESTS, MAX_SESSION_EVENT_POLL_TIMEOUT_MS, MAX_SESSION_INPUT_EVENTS,
+    MAX_TASK_GRANT_ID_CHARS, host_capabilities,
 };
 use serde_json::{Value, json};
 
 pub(crate) fn document() -> Value {
+    let session_events = json!({
+        "state_method": "get_input_state",
+        "poll_method": "poll_session_events",
+        "max_poll_timeout_ms": MAX_SESSION_EVENT_POLL_TIMEOUT_MS,
+        "queue_capacity": MAX_SESSION_INPUT_EVENTS,
+        "observed_at": "unix_epoch_milliseconds",
+        "sequence_scope": "per_session",
+        "cursor_field": "latest_sequence",
+        "component_sequence": "last_transition",
+        "state_components": ["interactive_input", "target_window"],
+        "overflow_contract": "resync_required_with_current_state",
+        "recovery_notifies_only": true,
+        "automatic_input": false,
+        "resume_requirements": [
+            "exact_target_revalidation",
+            "fresh_observation",
+            "foreground_or_explicit_activation",
+            "explicit_upstream_session_refresh_when_required"
+        ],
+        "target_event_types": [
+            "target_minimized",
+            "target_restored",
+            "target_unavailable",
+            "target_available"
+        ],
+        "target_recovery": {
+            "operation": "restore_activate",
+            "request_method": "change_window_state",
+            "exact_grant_binding_required": true,
+            "explicit_request_required": true,
+            "automatic_input": false,
+            "fresh_observation_required": true,
+            "blind_retry": false,
+        },
+    });
+    let session_health = json!({
+        "method": "session_health",
+        "components": [
+            "interactive_input",
+            "exact_target_window",
+            "recording",
+            "action_evidence_epoch",
+            "transition_sequence"
+        ],
+        "policy_defaults": {
+            "require_recording_healthy": false,
+            "require_recording_progress": false,
+        },
+        "recording_progress_fingerprint": [
+            "lane",
+            "trajectory_turn",
+            "finalized_segments",
+            "current_partial_size_bytes",
+            "current_partial_modified_at_unix_ms"
+        ],
+        "recording_progress_authority": {
+            "video_present": "video",
+            "otherwise": "trajectory",
+        },
+        "consistency_fence": ["action_evidence_epoch", "transition_sequence"],
+        "state_changed_during_probe_blocker": "state_changed_during_probe",
+        "safe_to_input_authority": "preflight_only",
+        "automatic_activation": false,
+        "automatic_input": false,
+        "fresh_observation_required": true,
+        "replaces_execute_action_gate": false,
+    });
     json!({
         "schema_version": 1,
         "name": "dcc-cua",
@@ -31,6 +99,8 @@ pub(crate) fn document() -> Value {
                 "task_grant_id_max_chars": MAX_TASK_GRANT_ID_CHARS,
                 "application_label_max_chars": MAX_APPLICATION_LABEL_CHARS,
             },
+            "session_events": session_events,
+            "session_health": session_health,
             "capabilities": host_capabilities(cfg!(any(windows, target_os = "linux", target_os = "macos"))),
         },
         "core_bridge": {

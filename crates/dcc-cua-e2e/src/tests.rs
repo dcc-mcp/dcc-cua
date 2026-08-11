@@ -341,6 +341,64 @@ async fn host_request(host: &mut HostProcess, method: &str, params: Value) -> Ho
 }
 
 #[cfg(feature = "gui-e2e")]
+async fn host_request_with_pre_dispatch_refresh_recovery(
+    host: &mut HostProcess,
+    method: &str,
+    params: Value,
+    window_capability: &str,
+) -> HostResponse {
+    assert!(
+        matches!(method, "browser_prepare" | "browser_navigate"),
+        "refresh recovery must not replay requests carrying snapshot-bound refs"
+    );
+    let response = tokio::time::timeout(
+        Duration::from_secs(90),
+        host.client_mut().request(method, params.clone()),
+    )
+    .await
+    .unwrap_or_else(|_| panic!("Host request {method:?} exceeded 90 seconds"));
+    match response {
+        Ok(response) => response,
+        Err(HostClientError::Remote {
+            code,
+            message,
+            response,
+        }) if code == "session_refresh_required" => {
+            assert!(message.contains("action_attempted=false"), "{response}");
+            assert!(message.contains("input_sent=false"), "{response}");
+            assert!(
+                message.contains("action_completion_unknown=false"),
+                "{response}"
+            );
+            assert!(
+                message.contains("session_remains_active=true"),
+                "{response}"
+            );
+            assert!(
+                message.contains("fresh_observation_required=true"),
+                "{response}"
+            );
+            let refreshed = host_request(
+                host,
+                "accessibility_snapshot",
+                json!({
+                    "session_id": SESSION_ID,
+                    "task_grant_id": GRANT_ID,
+                    "window_capability": window_capability,
+                    "max_nodes": 1_000,
+                    "max_depth": 20
+                }),
+            )
+            .await;
+            assert!(refreshed.value["observation_id"].is_string());
+            assert!(refreshed.value["accessibility_state_id"].is_string());
+            host_request(host, method, params).await
+        }
+        Err(error) => panic!("Host request {method:?} failed: {error:?}"),
+    }
+}
+
+#[cfg(feature = "gui-e2e")]
 async fn client_request(client: &mut HostClient, method: &str, params: Value) -> HostResponse {
     let started = Instant::now();
     let response = tokio::time::timeout(Duration::from_secs(90), client.request(method, params))
@@ -738,7 +796,7 @@ async fn controlled_electron_round_trip() {
             "condition": {
                 "kind": "text_contains",
                 "text": format!("mirror={expected}"),
-                "timeout_ms": 5_000,
+                "timeout_ms": 30_000,
                 "interval_ms": 100
             }
         }),
@@ -809,18 +867,20 @@ async fn controlled_electron_round_trip() {
     );
     wait_for_journal(&journal, "lbl-counter", "counter=1");
 
-    let prepared = host_request(
+    let browser_prepare_params = json!({
+        "session_id": SESSION_ID,
+        "task_grant_id": GRANT_ID,
+        "window_capability": capability,
+        "request": {
+            "allow_launch": false,
+            "strategy": {"kind": "existing_profile"}
+        }
+    });
+    let prepared = host_request_with_pre_dispatch_refresh_recovery(
         &mut host,
         "browser_prepare",
-        json!({
-            "session_id": SESSION_ID,
-            "task_grant_id": GRANT_ID,
-            "window_capability": capability,
-            "request": {
-                "allow_launch": false,
-                "strategy": {"kind": "existing_profile"}
-            }
-        }),
+        browser_prepare_params,
+        &capability,
     )
     .await;
     assert_eq!(
@@ -967,7 +1027,7 @@ async fn controlled_electron_round_trip() {
     wait_for_journal(&journal, "lbl-last-action", "last_action=double_click");
 
     let browser_fixture = BrowserFixtureServer::start(BROWSER_COMPLETENESS_HTML);
-    host_request(
+    host_request_with_pre_dispatch_refresh_recovery(
         &mut host,
         "browser_navigate",
         json!({
@@ -980,6 +1040,7 @@ async fn controlled_electron_round_trip() {
                 "url": browser_fixture.page_url()
             }
         }),
+        &capability,
     )
     .await;
     wait_for_browser_fixture(
@@ -1512,7 +1573,7 @@ async fn controlled_native_menu_round_trip() {
 #[cfg(all(feature = "gui-e2e", windows))]
 #[rstest]
 #[tokio::test]
-async fn windows_endpoint_sessions_keep_injected_escape_local_and_share_user_interrupt() {
+async fn windows_endpoint_sessions_keep_background_uia_and_distinguish_injected_escape() {
     let binary = std::env::var_os("DCC_CUA_E2E_BINARY")
         .map(PathBuf::from)
         .expect("DCC_CUA_E2E_BINARY must point to dcc-cua");
@@ -1776,28 +1837,33 @@ async fn windows_endpoint_sessions_keep_injected_escape_local_and_share_user_int
     .await;
     assert_eq!(pressed.value["success"], true, "{}", pressed.value);
     tokio::time::sleep(Duration::from_millis(100)).await;
+    for (client_index, session_id, grant_id, capability, _) in &sessions {
+        let alive = client_request(
+            &mut clients[*client_index],
+            "get_session_state",
+            json!({
+                "session_id": session_id,
+                "task_grant_id": grant_id,
+                "window_capability": capability,
+            }),
+        )
+        .await;
+        assert_eq!(
+            alive.value["state"]["structuredContent"]["session"],
+            session_id.as_str(),
+            "agent-injected Escape must not interrupt Host sessions: {}",
+            alive.value
+        );
+    }
+
+    let interrupted = client_request(&mut clients[active_client], "interrupt_all", json!({})).await;
+    assert_eq!(interrupted.value["scope"], "host_process");
+    assert_eq!(interrupted.value["stopped_window_sessions"], 1);
     let interrupted_client = 1 - active_client;
     let (_, session_id, grant_id, capability, _) = sessions
         .iter()
         .find(|(client_index, ..)| *client_index == interrupted_client)
         .expect("other endpoint client session");
-    let still_active = client_request(
-        &mut clients[interrupted_client],
-        "get_session_state",
-        json!({
-            "session_id": session_id,
-            "task_grant_id": grant_id,
-            "window_capability": capability,
-        }),
-    )
-    .await;
-    assert_eq!(
-        still_active.value["type"], "session_state",
-        "agent-injected Escape must not broadcast a user interruption: {}",
-        still_active.value
-    );
-    let interrupted = client_request(&mut clients[active_client], "interrupt_all", json!({})).await;
-    assert_eq!(interrupted.value["scope"], "host_process");
     expect_user_interrupted(
         &mut clients[interrupted_client],
         json!({

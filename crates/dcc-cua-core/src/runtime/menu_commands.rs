@@ -9,12 +9,12 @@ impl ComputerUseSession {
     ) -> ComputerUseResult<Value> {
         request.validate()?;
         self.ensure_active()?;
-        let target = self.revalidate_target().await?;
+        let target = self.preflight_mutating_bound_tool().await?;
 
         // Menu invocation may mutate before an unverifiable result is returned.
-        self.observation = None;
+        self.invalidate_action_observations();
         let result = self
-            .call_bound_tool(
+            .call_bound_tool_without_refresh(
                 "invoke_menu",
                 json!({
                     "pid": target.pid,
@@ -22,10 +22,12 @@ impl ComputerUseSession {
                     "path": &request.path,
                 }),
             )
-            .await?;
+            .await;
+        let result = self.finish_observation_sensitive_attempt(result)?;
         let effect = validated_action_effect(&result, "invoke_menu")?;
         let result = native_tool_result(result)?;
-        let target = self.revalidate_target().await?;
+        let target = self.require_observed_target_available().await?;
+        self.require_observed_input_available()?;
         self.target = Some(target.clone());
         let success = matches!(effect.as_str(), "confirmed" | "unverifiable");
 
