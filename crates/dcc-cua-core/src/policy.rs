@@ -609,10 +609,10 @@ pub(crate) fn validate_action(action: &ComputerUseAction) -> ComputerUseResult<(
                 "duration_ms must be at most 10000",
             ));
         }
-        if !matches!(action.action.as_str(), "click" | "drag") {
+        if !matches!(action.action.as_str(), "click" | "drag" | "keypress") {
             return Err(ComputerUseError::new(
                 ComputerUseErrorCode::InvalidAction,
-                "duration_ms is supported only for coordinate click and drag",
+                "duration_ms is supported only for coordinate click, drag, and keypress",
             ));
         }
         if action.action == "click"
@@ -624,6 +624,14 @@ pub(crate) fn validate_action(action: &ComputerUseAction) -> ComputerUseResult<(
             return Err(ComputerUseError::new(
                 ComputerUseErrorCode::InvalidAction,
                 "click duration_ms requires coordinates and no modifiers",
+            ));
+        }
+        if action.action == "keypress"
+            && (duration_ms == 0 || action.keys.len() != 1 || !action.modifiers.is_empty())
+        {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::InvalidAction,
+                "keypress duration_ms requires one key, no modifiers, and a non-zero duration",
             ));
         }
     }

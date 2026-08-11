@@ -16,10 +16,18 @@ pub(crate) fn diagnostic() -> Value {
     #[cfg(windows)]
     {
         let desktop = platform_windows::diagnostics::desktop_state();
-        let input_desktop = desktop
+        let thread_desktop = desktop
             .input_desktop_error
             .as_deref()
-            .map_or_else(|| Ok(desktop.input_desktop_name.as_deref()), Err);
+            .and_then(|_| thread_desktop_name().ok().flatten());
+        let input_desktop = desktop.input_desktop_error.as_deref().map_or_else(
+            || Ok(desktop.input_desktop_name.as_deref()),
+            |error| {
+                thread_desktop
+                    .as_deref()
+                    .map_or_else(|| Err(error), |name| Ok(Some(name)))
+            },
+        );
         let input_surface = windows_input_surface();
         windows_diagnostic(
             windows_session_state(),
@@ -98,17 +106,78 @@ pub(crate) fn require_input_available_from(report: &Value) -> ComputerUseResult<
 
 #[cfg(windows)]
 fn windows_input_surface() -> Result<(), String> {
-    use windows_sys::Win32::{Foundation::POINT, UI::WindowsAndMessaging::GetCursorPos};
+    use windows_sys::Win32::{
+        Foundation::POINT,
+        UI::WindowsAndMessaging::{CURSORINFO, GetCursorInfo, GetCursorPos},
+    };
 
     let mut point = POINT { x: 0, y: 0 };
     // SAFETY: `point` is valid for one synchronous Win32 output write.
     if unsafe { GetCursorPos(&raw mut point) } == 0 {
+        let cursor_pos_error = std::io::Error::last_os_error();
+        let mut cursor_info = CURSORINFO::default();
+        // SAFETY: `cursor_info` is initialized with the ABI-required cbSize and
+        // is valid for one synchronous Win32 output write. GetCursorInfo is a
+        // read-only input-surface probe; it does not relax the desktop checks.
+        if unsafe { GetCursorInfo(&raw mut cursor_info) } != 0 {
+            return Ok(());
+        }
         return Err(format!(
-            "GetCursorPos failed: {}",
+            "GetCursorPos failed: {cursor_pos_error}; GetCursorInfo failed: {}",
             std::io::Error::last_os_error()
         ));
     }
     Ok(())
+}
+
+#[cfg(windows)]
+fn thread_desktop_name() -> Result<Option<String>, String> {
+    use std::{mem, ptr};
+    use windows_sys::Win32::System::{
+        StationsAndDesktops::{GetThreadDesktop, GetUserObjectInformationW, UOI_NAME},
+        Threading::GetCurrentThreadId,
+    };
+
+    // SAFETY: the current thread ID is valid for the lifetime of this call;
+    // GetThreadDesktop returns a borrowed desktop handle that must not be closed.
+    let desktop = unsafe { GetThreadDesktop(GetCurrentThreadId()) };
+    if desktop.is_null() {
+        return Err(std::io::Error::last_os_error().to_string());
+    }
+
+    let mut required_bytes = 0_u32;
+    // SAFETY: the null buffer is an explicit size query for this desktop handle.
+    let queried = unsafe {
+        GetUserObjectInformationW(desktop, UOI_NAME, ptr::null_mut(), 0, &mut required_bytes)
+    };
+    if queried != 0 || required_bytes < mem::size_of::<u16>() as u32 {
+        return Ok(None);
+    }
+
+    let units = (required_bytes as usize).div_ceil(mem::size_of::<u16>());
+    let mut buffer = vec![0_u16; units];
+    // SAFETY: the buffer is writable for the reported size and the output length
+    // pointer is valid for the duration of the call.
+    let succeeded = unsafe {
+        GetUserObjectInformationW(
+            desktop,
+            UOI_NAME,
+            buffer.as_mut_ptr().cast(),
+            required_bytes,
+            &mut required_bytes,
+        )
+    } != 0;
+    if !succeeded {
+        return Err(std::io::Error::last_os_error().to_string());
+    }
+
+    let length = buffer
+        .iter()
+        .position(|value| *value == 0)
+        .unwrap_or(buffer.len());
+    String::from_utf16(&buffer[..length])
+        .map(Some)
+        .map_err(|error| format!("thread desktop name is not valid UTF-16: {error}"))
 }
 
 #[cfg(windows)]

@@ -1,0 +1,37 @@
+{
+  "name": "dcc-cua-computer-use",
+  "version": "0.4.0",
+  "description": "Exact-window Computer Use skills for dcc-cua, including persistent control banners and packaged game acceptance.",
+  "author": {
+    "name": "loonghao",
+    "email": "hal.long@outlook.com",
+    "url": "https://github.com/dcc-mcp"
+  },
+  "homepage": "https://github.com/dcc-mcp/dcc-cua",
+  "repository": "https://github.com/dcc-mcp/dcc-cua",
+  "license": "MIT",
+  "keywords": [
+    "dcc-cua",
+    "computer-use",
+    "exact-window",
+    "game-testing",
+    "WASD"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "dcc-cua",
+    "shortDescription": "Operate exact-window CUA sessions",
+    "longDescription": "Use dcc-cua for scoped snapshots, verified input, persistent control banners, and packaged game acceptance.",
+    "developerName": "loonghao",
+    "category": "Productivity",
+    "capabilities": ["Read", "Write"],
+    "websiteURL": "https://github.com/dcc-mcp/dcc-cua",
+    "defaultPrompt": [
+      "Control this exact application window with dcc-cua and verify every action.",
+      "Run a long packaged-game acceptance test with a persistent ControlBanner session.",
+      "Use bounded held WASD keypresses and save final gameplay evidence."
+    ],
+    "screenshots": [],
+    "brandColor": "#00A8C6"
+  }
+}

@@ -1397,6 +1397,25 @@ fn action_rejects_unknown_delivery_mode_and_unbounded_token() {
     );
     assert!(
         validate_action(&ComputerUseAction {
+            action: "keypress".into(),
+            keys: vec!["W".into()],
+            duration_ms: Some(1_000),
+            delivery_mode: Some("foreground".into()),
+            ..Default::default()
+        })
+        .is_ok()
+    );
+    assert!(
+        validate_action(&ComputerUseAction {
+            action: "keypress".into(),
+            keys: vec!["W".into(), "A".into()],
+            duration_ms: Some(1_000),
+            ..Default::default()
+        })
+        .is_err()
+    );
+    assert!(
+        validate_action(&ComputerUseAction {
             action: "click".into(),
             element_index: Some(1),
             duration_ms: Some(100),
