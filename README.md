@@ -42,6 +42,12 @@ provides:
   silently disable the stop control; the key is consumed instead of also being
   delivered to the controlled application.
 
+Windows mixed-DPI acceptance can be collected without activating or inputting
+into the target with `python -B scripts/indicator-acceptance-probe.py
+--target-pid <pid> --target-hwnd <hwnd>`. The probe emits JSONL and fails closed
+unless the exact 45-DIP frame, 20-band fade, motion policy, monitor migration,
+window styles, and target-scoped z-order contract are all observed.
+
 The repository is a Cargo workspace with eleven product responsibilities plus
 the Hakari dependency-unification support crate:
 
