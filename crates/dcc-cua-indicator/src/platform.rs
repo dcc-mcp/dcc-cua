@@ -1185,13 +1185,15 @@ pub(super) fn position_target_scoped_overlay(
     show_window: bool,
 ) -> windows::core::Result<()> {
     position_target_scoped_overlay_with_z_order(
-        window,
-        target,
-        x,
-        y,
-        width,
-        height,
-        show_window,
+        TargetScopedOverlayPosition {
+            window,
+            target,
+            x,
+            y,
+            width,
+            height,
+            show_window,
+        },
         false,
     )
 }
@@ -1206,18 +1208,20 @@ fn position_banner_overlay(
     show_window: bool,
 ) -> windows::core::Result<()> {
     position_target_scoped_overlay_with_z_order(
-        window,
-        target,
-        x,
-        y,
-        width,
-        height,
-        show_window,
+        TargetScopedOverlayPosition {
+            window,
+            target,
+            x,
+            y,
+            width,
+            height,
+            show_window,
+        },
         true,
     )
 }
 
-fn position_target_scoped_overlay_with_z_order(
+struct TargetScopedOverlayPosition {
     window: HWND,
     target: HWND,
     x: i32,
@@ -1225,8 +1229,21 @@ fn position_target_scoped_overlay_with_z_order(
     width: i32,
     height: i32,
     show_window: bool,
+}
+
+fn position_target_scoped_overlay_with_z_order(
+    position: TargetScopedOverlayPosition,
     topmost: bool,
 ) -> windows::core::Result<()> {
+    let TargetScopedOverlayPosition {
+        window,
+        target,
+        x,
+        y,
+        width,
+        height,
+        show_window,
+    } = position;
     unsafe {
         SetWindowPos(
             window,
