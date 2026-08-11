@@ -62,9 +62,9 @@ impl DriverEnvelopeChannel for CountingRemoteChannel {
                         "window_id": 77,
                         "title": "Test DCC",
                         "app_name": "test.exe",
-                        "bounds": [0, 0, 800, 600],
+                        "bounds": {"x": 0, "y": 0, "width": 800, "height": 600},
                         "is_foreground": true,
-                        "is_minimized": false,
+                        "minimized": false,
                         "is_on_screen": true
                     }]
                 }),
@@ -551,6 +551,31 @@ async fn successful_session_state_refresh_invalidates_the_previous_observation()
         .unwrap_err();
     assert_eq!(retry.code, ComputerUseErrorCode::StaleObservation);
     assert_eq!(calls.load(AtomicOrdering::SeqCst), 2);
+}
+
+#[cfg(not(windows))]
+#[rstest]
+#[tokio::test]
+async fn accessibility_snapshot_refreshes_a_due_upstream_session_before_observing() {
+    let (mut session, calls, names) = counting_session_with_names();
+    session.live_observation = None;
+
+    session
+        .accessibility_snapshot(128, 16)
+        .await
+        .expect("semantic observation after refresh");
+
+    assert!(session.last_upstream_session_refresh.is_some());
+    assert_eq!(calls.load(AtomicOrdering::SeqCst), 4);
+    assert_eq!(
+        *names.lock().expect("read remote tool names"),
+        [
+            "start_session",
+            "list_windows",
+            "get_window_state",
+            "list_windows"
+        ]
+    );
 }
 
 #[rstest]

@@ -133,6 +133,7 @@ pub(super) fn browser_tool_requires_input(name: &str, arguments: &Value) -> bool
     browser_tool_route(name, arguments) == Some(BrowserToolDisposition::PotentialMutation)
 }
 
+#[cfg(any(windows, test))]
 pub(crate) fn run_preinvalidated_window_mutation<T, E>(
     invalidate: impl FnOnce(),
     mutation: impl FnOnce() -> Result<T, E>,
@@ -141,6 +142,7 @@ pub(crate) fn run_preinvalidated_window_mutation<T, E>(
     mutation()
 }
 
+#[cfg(any(windows, test))]
 pub(crate) fn run_gated_preinvalidated_window_mutation<T, E>(
     gate: impl FnOnce() -> Result<(), E>,
     invalidate: impl FnOnce(),

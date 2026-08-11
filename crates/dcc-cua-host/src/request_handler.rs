@@ -1549,61 +1549,15 @@ async fn handle_request_inner(
             let host =
                 authorized_session(sessions, &session_id, &task_grant_id, &window_capability)
                     .await?;
-            let started = Instant::now();
-            loop {
-                ensure_session_not_interrupted(host).await?;
-                let root = tokio::select! {
-                    _ = cancellation.handle.cancelled() => {
-                        return Ok((json!({
-                            "type":"wait_cancelled",
-                            "success":false,
-                            "session_id":session_id,
-                            "error_code":"cancelled",
-                            "elapsed_ms":started.elapsed().as_millis(),
-                        }), None));
-                    }
-                    result = host.session.accessibility_snapshot(5_000, 25) => result,
-                };
-                let root = host.finish_observation_sensitive_attempt(root)?;
-                ensure_session_not_interrupted(host).await?;
-                if wait_condition_matches(&root, &condition) {
-                    return Ok((
-                        json!({
-                            "type":"wait_completed",
-                            "success":true,
-                            "session_id":session_id,
-                            "condition":condition.kind,
-                            "elapsed_ms":started.elapsed().as_millis(),
-                        }),
-                        None,
-                    ));
-                }
-                if started.elapsed().as_millis() >= u128::from(timeout_ms) {
-                    return Ok((
-                        json!({
-                            "type":"wait_completed",
-                            "success":false,
-                            "session_id":session_id,
-                            "condition":condition.kind,
-                            "error_code":"timeout",
-                            "elapsed_ms":started.elapsed().as_millis(),
-                        }),
-                        None,
-                    ));
-                }
-                tokio::select! {
-                    _ = cancellation.handle.cancelled() => {
-                        return Ok((json!({
-                            "type":"wait_cancelled",
-                            "success":false,
-                            "session_id":session_id,
-                            "error_code":"cancelled",
-                            "elapsed_ms":started.elapsed().as_millis(),
-                        }), None));
-                    }
-                    _ = tokio::time::sleep(std::time::Duration::from_millis(interval_ms)) => {}
-                }
-            }
+            crate::wait::handle_wait_for(
+                host,
+                &cancellation.handle,
+                &session_id,
+                &condition,
+                timeout_ms,
+                interval_ms,
+            )
+            .await
         }
         Request::ExecuteAction {
             session_id,

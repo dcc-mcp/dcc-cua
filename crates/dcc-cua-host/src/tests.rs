@@ -1422,6 +1422,22 @@ fn wait_cancellation_requires_exact_credentials() {
 }
 
 #[rstest]
+#[tokio::test(start_paused = true)]
+async fn wait_probe_obeys_the_absolute_request_deadline() {
+    let registry = Arc::new(Mutex::new(HashMap::new()));
+    let guard = register_wait(&registry, "session-1", "grant-1", "cap-1").unwrap();
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(25);
+
+    let outcome = wait::wait_for_probe_until(&guard.handle, deadline, async {
+        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+        7_u8
+    })
+    .await;
+
+    assert!(matches!(outcome, wait::WaitProbeOutcome::TimedOut));
+}
+
+#[rstest]
 fn window_wait_cancellation_uses_the_request_id_handle() {
     let registry = Arc::new(Mutex::new(HashMap::new()));
     let guard = register_window_wait(&registry, "window-wait-1").unwrap();

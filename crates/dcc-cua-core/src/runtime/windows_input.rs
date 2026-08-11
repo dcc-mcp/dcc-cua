@@ -397,6 +397,10 @@ pub(crate) fn windows_combined_raw_drag_outcome(
     RawDragSequenceOutcome {
         trace,
         path_sent: sequence.path_sent,
+        // Combined drag already carries its typed primary phase and error in
+        // the input trace. This field is reserved for the separated path,
+        // whose primary and cleanup failures must survive together.
+        primary_error: None,
         release_error,
     }
 }
@@ -819,9 +823,13 @@ pub(crate) fn windows_raw_drag_delivery(
         .trace
         .release_succeeded(outcome.release_error.as_ref());
     let api_accepted = outcome.path_sent && release_succeeded == Some(true);
-    let failure_phase = outcome
-        .trace
-        .delivery_failure_phase(outcome.path_sent, release_succeeded);
+    let failure_phase = if outcome.primary_error.is_some() {
+        Some("absolute_path")
+    } else {
+        outcome
+            .trace
+            .delivery_failure_phase(outcome.path_sent, release_succeeded)
+    };
     let foreground_verified = outcome
         .trace
         .live_pre_batch_foreground_verified(target.is_foreground);
@@ -835,6 +843,7 @@ pub(crate) fn windows_raw_drag_delivery(
         "input_sent": outcome.trace.input_sent(),
         "delivered": outcome.path_sent,
         "path_sent": outcome.path_sent,
+        "primary_error": outcome.primary_error,
         "retry_safe": false,
         "verification_required": true,
         "fallback_attempted": false,
@@ -1402,6 +1411,7 @@ fn send_windows_calibrated_relative_drag(
         return Ok(RawDragSequenceOutcome {
             trace,
             path_sent: false,
+            primary_error: None,
             release_error: release_result.err(),
         });
     }
@@ -1442,6 +1452,7 @@ fn send_windows_calibrated_relative_drag(
     Ok(RawDragSequenceOutcome {
         trace,
         path_sent,
+        primary_error: None,
         release_error: release_result.err(),
     })
 }
@@ -1757,6 +1768,12 @@ pub(crate) async fn perform_windows_foreground_fast_action(
             format!(
                 "Completed the scoped Windows drag path to ({to_x}, {to_y}), but LEFTUP cleanup \
                  was not verified; no fallback backend was used."
+            )
+        } else if outcome.primary_error.is_some() {
+            format!(
+                "Stopped scoped Windows drag before completing the path to ({to_x}, {to_y}); \
+                 movement may have been partial, button-up cleanup was attempted, and the typed \
+                 delivery records both failures without authorizing a retry."
             )
         } else if outcome.trace.relative_path_attempted() {
             format!(

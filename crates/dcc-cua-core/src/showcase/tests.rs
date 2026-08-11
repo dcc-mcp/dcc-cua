@@ -1356,3 +1356,32 @@ async fn showcase_refuses_to_overwrite_an_existing_mp4() {
     assert_eq!(std::fs::read(&path).unwrap(), b"existing-showcase");
     std::fs::remove_dir_all(directory).unwrap();
 }
+
+#[rstest]
+#[tokio::test]
+async fn showcase_finalize_does_not_overwrite_a_concurrently_created_mp4() {
+    let directory = std::env::temp_dir().join(format!("dcc-cua-showcase-{}", uuid::Uuid::new_v4()));
+    let final_path = directory.join("showcase.mp4");
+    let partial_path = directory.join("showcase.partial.mp4");
+    let mut status = LiveObservationStatus::default();
+    status.publish_frame(
+        LiveObservationFrame::new(1, vec![1; 16 * 16 * 4], 16, 16, std::time::Instant::now()),
+        std::time::Duration::from_millis(4),
+        "test_capture",
+    );
+    let (_sender, receiver) = watch::channel(status);
+    let recorder = ShowcaseRecorder::start(receiver, directory.to_str().unwrap(), 10)
+        .await
+        .expect("showcase recorder");
+    assert!(partial_path.is_file());
+
+    std::fs::write(&final_path, b"concurrent-showcase").unwrap();
+    let error = recorder
+        .stop()
+        .await
+        .expect_err("finalization must not replace a concurrently created showcase");
+
+    assert_eq!(error.code, ComputerUseErrorCode::CaptureFailed);
+    assert_eq!(std::fs::read(&final_path).unwrap(), b"concurrent-showcase");
+    std::fs::remove_dir_all(directory).unwrap();
+}

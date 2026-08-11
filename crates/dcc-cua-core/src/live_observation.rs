@@ -107,6 +107,7 @@ impl LiveObservationFrame {
 
 #[derive(Clone, Debug)]
 pub(crate) enum CompositorTiming {
+    #[cfg(any(windows, test))]
     Available {
         system_relative_time_100ns: i64,
         compositor_to_publish: Duration,
@@ -123,6 +124,7 @@ impl CompositorTiming {
 
     fn as_json(&self) -> Value {
         match self {
+            #[cfg(any(windows, test))]
             Self::Available {
                 system_relative_time_100ns,
                 compositor_to_publish,
@@ -149,6 +151,7 @@ pub(crate) struct FrameCaptureMeasurement {
 }
 
 impl FrameCaptureMeasurement {
+    #[cfg(any(windows, test))]
     pub(crate) const fn measured(
         source_wait: Duration,
         readback_total: Duration,
@@ -296,6 +299,7 @@ impl LiveObservationStatus {
         update_optional_max(&mut self.max_gpu_copy_map_ms, self.last_gpu_copy_map_ms);
         update_optional_max(&mut self.max_cpu_copy_ms, self.last_cpu_copy_ms);
         let compositor_to_publish_ms = match &measurement.compositor {
+            #[cfg(any(windows, test))]
             CompositorTiming::Available {
                 compositor_to_publish,
                 ..
@@ -679,6 +683,7 @@ fn capture_failure_disposition(error: ComputerUseError) -> CaptureFailureDisposi
     }
 }
 
+#[cfg(any(windows, test))]
 pub(crate) fn live_capture_failure_disposition(
     capture_error: ComputerUseError,
     observation_availability: ComputerUseResult<()>,

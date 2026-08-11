@@ -160,6 +160,13 @@ impl HostSession {
         self.synchronize_action_evidence_epoch();
     }
 
+    pub(super) fn abandon_wait_probe(&mut self) {
+        // A cancelled Windows UIA future can leave its spawn_blocking worker
+        // running. Drop the retained fallback and advance the evidence epoch so
+        // the next semantic request never waits on that abandoned worker.
+        self.invalidate_action_observations();
+    }
+
     pub(super) fn synchronize_action_evidence_epoch(&mut self) -> bool {
         self.synchronize_action_evidence_epoch_with(HostEvidencePublication::None)
     }

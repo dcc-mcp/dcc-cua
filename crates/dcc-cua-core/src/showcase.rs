@@ -938,7 +938,27 @@ fn finalize_segment(
     let file = writer.into_writer();
     file.sync_all().map_err(capture_error)?;
     drop(file);
-    std::fs::rename(partial_path, final_path).map_err(capture_error)
+    publish_without_overwrite(partial_path, final_path)
+}
+
+fn publish_without_overwrite(partial_path: &Path, final_path: &Path) -> ComputerUseResult<()> {
+    // Both paths live in the same output directory. Linking the fully synced
+    // partial into its final name is an atomic create-if-absent operation on
+    // supported filesystems, unlike rename which replaces an existing target
+    // on Unix. If the filesystem cannot provide that guarantee, fail closed.
+    std::fs::hard_link(partial_path, final_path).map_err(|error| {
+        capture_error(format!(
+            "publish {} without overwriting an existing output: {error}",
+            final_path.display()
+        ))
+    })?;
+    std::fs::remove_file(partial_path).map_err(|error| {
+        capture_error(format!(
+            "published {} but failed to remove partial {}: {error}",
+            final_path.display(),
+            partial_path.display()
+        ))
+    })
 }
 
 fn ensure_final_path_available(path: &Path) -> ComputerUseResult<()> {
@@ -994,7 +1014,7 @@ fn write_manifest(path: &Path, manifest: &Value) -> ComputerUseResult<()> {
     file.write_all(b"\n").map_err(capture_error)?;
     file.sync_all().map_err(capture_error)?;
     drop(file);
-    std::fs::rename(partial_path, path).map_err(capture_error)
+    publish_without_overwrite(&partial_path, path)
 }
 
 fn segment_state(

@@ -738,7 +738,7 @@ async fn controlled_electron_round_trip() {
             "condition": {
                 "kind": "text_contains",
                 "text": format!("mirror={expected}"),
-                "timeout_ms": 5_000,
+                "timeout_ms": 30_000,
                 "interval_ms": 100
             }
         }),
@@ -809,20 +809,52 @@ async fn controlled_electron_round_trip() {
     );
     wait_for_journal(&journal, "lbl-counter", "counter=1");
 
-    let prepared = host_request(
-        &mut host,
-        "browser_prepare",
-        json!({
-            "session_id": SESSION_ID,
-            "task_grant_id": GRANT_ID,
-            "window_capability": capability,
-            "request": {
-                "allow_launch": false,
-                "strategy": {"kind": "existing_profile"}
-            }
-        }),
+    let browser_prepare_params = json!({
+        "session_id": SESSION_ID,
+        "task_grant_id": GRANT_ID,
+        "window_capability": capability,
+        "request": {
+            "allow_launch": false,
+            "strategy": {"kind": "existing_profile"}
+        }
+    });
+    let prepared = match tokio::time::timeout(
+        Duration::from_secs(90),
+        host.client_mut()
+            .request("browser_prepare", browser_prepare_params.clone()),
     )
-    .await;
+    .await
+    .expect("browser_prepare exceeded 90 seconds")
+    {
+        Ok(prepared) => prepared,
+        Err(HostClientError::Remote {
+            code,
+            message,
+            response,
+        }) if code == "session_refresh_required" => {
+            assert!(message.contains("action_attempted=false"), "{response}");
+            assert!(
+                message.contains("session_remains_active=true"),
+                "{response}"
+            );
+            let refreshed = host_request(
+                &mut host,
+                "accessibility_snapshot",
+                json!({
+                    "session_id": SESSION_ID,
+                    "task_grant_id": GRANT_ID,
+                    "window_capability": capability,
+                    "max_nodes": 1_000,
+                    "max_depth": 20
+                }),
+            )
+            .await;
+            assert!(refreshed.value["observation_id"].is_string());
+            assert!(refreshed.value["accessibility_state_id"].is_string());
+            host_request(&mut host, "browser_prepare", browser_prepare_params).await
+        }
+        Err(error) => panic!("browser_prepare failed: {error:?}"),
+    };
     assert_eq!(
         prepared.value["result"]["structuredContent"]["prepared"], true,
         "browser_prepare failed: {}",

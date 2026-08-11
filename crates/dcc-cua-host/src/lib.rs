@@ -11,6 +11,7 @@ mod session_events;
 mod session_identity;
 mod session_state;
 mod task_grant;
+mod wait;
 mod wire;
 pub use dcc_cua_protocol::{
     HOST_PROTOCOL_VERSION, MAX_BINARY_FRAME_BYTES, MAX_HOST_CONNECTIONS, MAX_JSON_FRAME_BYTES,

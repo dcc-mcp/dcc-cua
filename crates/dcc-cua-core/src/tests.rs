@@ -1,4 +1,5 @@
 use std::cell::{Cell, RefCell};
+#[cfg(windows)]
 use std::collections::VecDeque;
 use std::future::pending;
 use std::io::Cursor;
@@ -27,11 +28,13 @@ use crate::live_observation::{
     observation_sequence_fence, terminal_capture_error, wait_for_latest_frame,
 };
 use crate::policy::*;
+#[cfg(windows)]
+use crate::runtime::RawDragSequenceOutcome;
 use crate::runtime::application::{launch_arguments, validate_launch_request};
 use crate::runtime::{
     ActionBannerPhase, CombinedDownDragAfterDown, CombinedDownDragCleanup, CombinedDownDragPrelude,
-    CombinedDownInjection, LiveObservationStartDisposition, RawDragSequenceOutcome,
-    RecordingHealth, RecordingKeepalive, SingleInputInjection, action_dispatch_completion_unknown,
+    CombinedDownInjection, LiveObservationStartDisposition, RecordingHealth, RecordingKeepalive,
+    SingleInputInjection, WindowWaitProbeOutcome, action_dispatch_completion_unknown,
     activation_completion_unknown, aggregate_recording_state, attach_banner_status,
     attach_indicator_motion_to_activation, await_input_call, banner_activity_for_action_phase,
     banner_activity_for_bound_tool, diagnostic_tool_check, ensure_target_available_for_action,
@@ -41,7 +44,7 @@ use crate::runtime::{
     run_gated_preinvalidated_window_mutation, run_preinvalidated_window_mutation,
     run_windows_combined_down_drag_sequence, run_windows_fenced_absolute_path,
     run_windows_fenced_absolute_path_with_trace, run_windows_separated_raw_drag_sequence,
-    tool_schema_from_inventory,
+    tool_schema_from_inventory, wait_for_window_probe_until,
 };
 #[cfg(windows)]
 use crate::runtime::{
@@ -96,6 +99,20 @@ async fn input_calls_have_a_hard_timeout() {
     assert_eq!(error.code, ComputerUseErrorCode::InputFailed);
     assert!(error.message.contains("window activation timed out"));
     assert!(!error.message.contains("session was invalidated"));
+}
+
+#[rstest]
+#[tokio::test(start_paused = true)]
+async fn window_wait_probe_obeys_the_absolute_request_deadline() {
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(25);
+
+    let outcome = wait_for_window_probe_until(deadline, async {
+        tokio::time::sleep(Duration::from_secs(30)).await;
+        7_u8
+    })
+    .await;
+
+    assert!(matches!(outcome, WindowWaitProbeOutcome::TimedOut));
 }
 
 #[rstest]

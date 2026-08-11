@@ -588,7 +588,7 @@ fn raw_drag_settles_at_the_drop_before_up_and_after_up() {
 fn raw_drag_releases_the_button_when_a_path_move_fails() {
     let events = RefCell::new(Vec::new());
 
-    let error = run_windows_separated_raw_drag_sequence(
+    let outcome = run_windows_separated_raw_drag_sequence(
         || {
             events
                 .borrow_mut()
@@ -613,9 +613,11 @@ fn raw_drag_releases_the_button_when_a_path_move_fails() {
             Ok(())
         },
     )
-    .expect_err("failed path movement must fail the drag");
+    .expect("failed path movement must preserve the typed cleanup outcome");
 
-    assert_eq!(error, "path move failed");
+    assert!(!outcome.path_sent);
+    assert_eq!(outcome.primary_error, Some("path move failed"));
+    assert_eq!(outcome.release_error, None);
     assert_eq!(
         events.into_inner(),
         vec![
@@ -771,6 +773,24 @@ fn raw_drag_rejected_probe_keeps_best_effort_release_failure_in_the_outcome() {
     .expect("the typed rejected outcome must survive cleanup failure");
 
     assert!(!outcome.path_sent);
+    assert_eq!(outcome.release_error, Some("button-up was not inserted"));
+}
+
+#[rstest]
+fn raw_drag_path_and_release_failures_are_both_preserved() {
+    let outcome = run_windows_separated_raw_drag_sequence(
+        || Ok::<_, &'static str>(()),
+        |_| {},
+        || Ok(1),
+        |_| (),
+        |_| true,
+        || Err("path move failed"),
+        || Err("button-up was not inserted"),
+    )
+    .expect("post-button-down failures must return a structured attempt outcome");
+
+    assert!(!outcome.path_sent);
+    assert_eq!(outcome.primary_error, Some("path move failed"));
     assert_eq!(outcome.release_error, Some("button-up was not inserted"));
 }
 
@@ -1034,6 +1054,7 @@ fn raw_drag_delivery_is_unverified_and_carries_typed_after_down_trace() {
     let outcome = RawDragSequenceOutcome::<_, String> {
         trace,
         path_sent: true,
+        primary_error: None,
         release_error: None,
     };
     let delivery = windows_raw_drag_delivery(&outcome, &test_window_target());
@@ -1098,6 +1119,7 @@ fn rejected_raw_drag_delivery_keeps_trace_and_reports_no_path_delivery() {
             },
         ),
         path_sent: false,
+        primary_error: None,
         release_error: None,
     };
 
@@ -1111,6 +1133,25 @@ fn rejected_raw_drag_delivery_keeps_trace_and_reports_no_path_delivery() {
         delivery["input_trace"]["after_down"]["async_button_down"],
         false
     );
+}
+
+#[cfg(windows)]
+#[rstest]
+fn separated_raw_drag_delivery_preserves_primary_and_cleanup_failures() {
+    let outcome = RawDragSequenceOutcome::<_, String> {
+        trace: WindowsRawDragInputTrace::new("left", 1, exact_raw_input_snapshot(true)),
+        path_sent: false,
+        primary_error: Some("absolute path injection failed".into()),
+        release_error: Some("button-up was not inserted".into()),
+    };
+
+    let delivery = windows_raw_drag_delivery(&outcome, &test_window_target());
+    assert_eq!(delivery["api_accepted"], false);
+    assert_eq!(delivery["failure_phase"], "absolute_path");
+    assert_eq!(delivery["primary_error"], "absolute path injection failed");
+    assert_eq!(delivery["cleanup_error"], "button-up was not inserted");
+    assert_eq!(delivery["release_succeeded"], false);
+    assert_eq!(delivery["retry_safe"], false);
 }
 
 #[cfg(windows)]
@@ -1149,6 +1190,7 @@ fn rejected_relative_drag_is_typed_unverified_and_never_falls_back() {
     let outcome = RawDragSequenceOutcome::<_, String> {
         trace,
         path_sent: false,
+        primary_error: None,
         release_error: None,
     };
 

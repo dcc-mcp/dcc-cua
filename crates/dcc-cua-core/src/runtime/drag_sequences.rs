@@ -5,18 +5,8 @@ use super::*;
 pub(crate) struct RawDragSequenceOutcome<T, E> {
     pub trace: T,
     pub path_sent: bool,
+    pub primary_error: Option<E>,
     pub release_error: Option<E>,
-}
-
-#[cfg(any(windows, test))]
-impl<T, E> RawDragSequenceOutcome<T, E> {
-    fn completed(trace: T) -> Self {
-        Self {
-            trace,
-            path_sent: true,
-            release_error: None,
-        }
-    }
 }
 
 #[cfg(any(windows, test))]
@@ -41,6 +31,7 @@ pub(crate) fn run_windows_separated_raw_drag_sequence<E, T>(
         return Ok(RawDragSequenceOutcome {
             trace,
             path_sent: false,
+            primary_error: None,
             release_error: release_result.err(),
         });
     }
@@ -54,10 +45,14 @@ pub(crate) fn run_windows_separated_raw_drag_sequence<E, T>(
     if release_result.is_ok() {
         settle(RAW_DRAG_POST_UP_SETTLE);
     }
-    match (path_result, release_result) {
-        (Ok(()), Ok(())) => Ok(RawDragSequenceOutcome::completed(trace)),
-        (Err(error), _) | (Ok(()), Err(error)) => Err(error),
-    }
+    let primary_error = path_result.err();
+    let path_sent = primary_error.is_none();
+    Ok(RawDragSequenceOutcome {
+        trace,
+        path_sent,
+        primary_error,
+        release_error: release_result.err(),
+    })
 }
 
 #[cfg(any(windows, test))]

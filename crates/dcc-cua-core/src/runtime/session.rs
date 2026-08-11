@@ -5,8 +5,11 @@ use gates::{BrowserToolDisposition, browser_tool_requires_input, browser_tool_ro
 pub(crate) use gates::{
     ensure_target_available_for_action, gated_cursor_operation, gated_desktop_observation,
     gated_exact_window_observation, gated_exact_window_publication, gated_upstream_session_refresh,
-    preflight_live_observation_start, run_gated_preinvalidated_window_mutation,
-    run_preinvalidated_window_mutation,
+    preflight_live_observation_start,
+};
+#[cfg(any(windows, test))]
+pub(crate) use gates::{
+    run_gated_preinvalidated_window_mutation, run_preinvalidated_window_mutation,
 };
 mod browser;
 mod observation;
@@ -62,6 +65,7 @@ fn mutation_known_failure(context: &str, error: cua_driver_sdk::DriverError) -> 
     )
 }
 
+#[cfg(any(windows, test))]
 fn local_mutation_attempt_failure(error: ComputerUseError) -> ComputerUseError {
     ComputerUseError::new(
         error.code,
@@ -947,11 +951,13 @@ impl ComputerUseSession {
         result
     }
 
+    #[cfg(any(windows, test))]
     fn complete_mutating_action(&mut self, result: ComputerUseToolResult) -> ComputerUseToolResult {
         self.invalidate_action_observations();
         self.complete_action(result)
     }
 
+    #[cfg(windows)]
     fn complete_attempted_fast_action(
         &mut self,
         result: ComputerUseToolResult,
@@ -959,6 +965,7 @@ impl ComputerUseSession {
         self.complete_mutating_action(result)
     }
 
+    #[cfg(any(windows, test))]
     fn run_gated_implicit_activation_attempt<T>(
         &mut self,
         preflight: ComputerUseResult<()>,
@@ -971,6 +978,7 @@ impl ComputerUseSession {
         )
     }
 
+    #[cfg(any(windows, test))]
     fn finish_local_mutation_attempt<T>(
         &mut self,
         result: ComputerUseResult<T>,
@@ -1620,10 +1628,10 @@ impl ComputerUseSession {
     async fn finish_exact_activation(
         &self,
         expected: &WindowTarget,
-        mut activation: ComputerUseToolResult,
+        activation: ComputerUseToolResult,
         context: &str,
     ) -> ComputerUseResult<(WindowTarget, ComputerUseToolResult)> {
-        let mut target = self.resolve_target().await?;
+        let target = self.resolve_target().await?;
         if target.pid != expected.pid || target.window_id != expected.window_id {
             return Err(ComputerUseError::new(
                 ComputerUseErrorCode::TargetUnavailable,
@@ -1631,26 +1639,31 @@ impl ComputerUseSession {
             ));
         }
         #[cfg(windows)]
-        if !target.is_foreground {
-            dcc_cua_platform_windows::activate_window(
-                dcc_cua_platform_windows::UiaTarget {
-                    process_id: target.pid,
-                    window_handle: target.window_id,
-                },
-                || windows_platform_input_gate("exact_activation_fallback"),
-            )
-            .map_err(|error| {
-                map_windows_window_mutation_error("activate the exact Windows target", error)
-            })?;
-            target = self.resolve_target().await?;
-            if target.pid != expected.pid || target.window_id != expected.window_id {
-                return Err(ComputerUseError::new(
-                    ComputerUseErrorCode::TargetUnavailable,
-                    format!("the exact target identity changed during {context}"),
-                ));
+        let (target, activation) = {
+            let mut target = target;
+            let mut activation = activation;
+            if !target.is_foreground {
+                dcc_cua_platform_windows::activate_window(
+                    dcc_cua_platform_windows::UiaTarget {
+                        process_id: target.pid,
+                        window_handle: target.window_id,
+                    },
+                    || windows_platform_input_gate("exact_activation_fallback"),
+                )
+                .map_err(|error| {
+                    map_windows_window_mutation_error("activate the exact Windows target", error)
+                })?;
+                target = self.resolve_target().await?;
+                if target.pid != expected.pid || target.window_id != expected.window_id {
+                    return Err(ComputerUseError::new(
+                        ComputerUseErrorCode::TargetUnavailable,
+                        format!("the exact target identity changed during {context}"),
+                    ));
+                }
+                activation.value["fallback"] = json!("windows_exact_foreground");
             }
-            activation.value["fallback"] = json!("windows_exact_foreground");
-        }
+            (target, activation)
+        };
         if !target.is_foreground {
             return Err(ComputerUseError::new(
                 ComputerUseErrorCode::InputFailed,
@@ -1769,6 +1782,7 @@ impl ComputerUseSession {
         }
         self.require_observed_input_available()?;
         let _banner_activity = self.begin_banner_activity(BannerActivity::Navigating);
+        #[cfg(windows)]
         let expected = self.revalidate_observed_target().await?;
         #[cfg(windows)]
         let mutation_gate =

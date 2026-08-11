@@ -39,6 +39,9 @@ pub(crate) use session::{
     ensure_target_available_for_action, gated_cursor_operation, gated_desktop_observation,
     gated_exact_window_observation, gated_exact_window_publication,
     preflight_live_observation_start, resolved_application_name,
+};
+#[cfg(any(windows, test))]
+pub(crate) use session::{
     run_gated_preinvalidated_window_mutation, run_preinvalidated_window_mutation,
 };
 #[cfg(any(windows, test))]
@@ -177,16 +180,18 @@ pub(crate) fn input_backend_rejection_result(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ActionBannerPhase {
     Preparing,
+    #[cfg(any(windows, test))]
     Injecting,
 }
 
 pub(crate) fn banner_activity_for_action_phase(
-    action: &ComputerUseAction,
+    _action: &ComputerUseAction,
     phase: ActionBannerPhase,
 ) -> BannerActivity {
     match phase {
         ActionBannerPhase::Preparing => BannerActivity::Operating,
-        ActionBannerPhase::Injecting => match action.action.as_str() {
+        #[cfg(any(windows, test))]
+        ActionBannerPhase::Injecting => match _action.action.as_str() {
             "type" | "type_chars" | "set_text" | "set_value" | "keypress" | "keyboard_shortcut" => {
                 BannerActivity::KeyboardInput
             }
@@ -494,10 +499,17 @@ impl ComputerUseDriver {
     ) -> ComputerUseResult<Value> {
         let (timeout_ms, interval_ms) = request.limits()?;
         let started = Instant::now();
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
         loop {
-            let mut windows = self
-                .list_windows_filtered(request.query.process_id, request.query.on_screen_only)
-                .await?;
+            let mut windows = match wait_for_window_probe_until(
+                deadline,
+                self.list_windows_filtered(request.query.process_id, request.query.on_screen_only),
+            )
+            .await
+            {
+                WindowWaitProbeOutcome::TimedOut => return Err(window_wait_timeout()),
+                WindowWaitProbeOutcome::Completed(result) => result?,
+            };
             windows.retain(|window| request.query.matches_window(window));
             if !windows.is_empty() {
                 return Ok(json!({
@@ -506,13 +518,16 @@ impl ComputerUseDriver {
                     "waited_ms": started.elapsed().as_millis(),
                 }));
             }
-            if started.elapsed() >= Duration::from_millis(timeout_ms) {
-                return Err(ComputerUseError::new(
-                    ComputerUseErrorCode::MissingWindow,
-                    "window query timed out",
-                ));
+            if matches!(
+                wait_for_window_probe_until(
+                    deadline,
+                    tokio::time::sleep(Duration::from_millis(interval_ms)),
+                )
+                .await,
+                WindowWaitProbeOutcome::TimedOut
+            ) {
+                return Err(window_wait_timeout());
             }
-            tokio::time::sleep(Duration::from_millis(interval_ms)).await;
         }
     }
 
@@ -1113,6 +1128,30 @@ pub(crate) fn mark_foreground_by_z_index(windows: &mut [WindowTarget]) {
     for window in windows {
         window.is_foreground = window.z_index == Some(highest);
     }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum WindowWaitProbeOutcome<T> {
+    TimedOut,
+    Completed(T),
+}
+
+pub(crate) async fn wait_for_window_probe_until<T>(
+    deadline: tokio::time::Instant,
+    probe: impl std::future::Future<Output = T>,
+) -> WindowWaitProbeOutcome<T> {
+    tokio::select! {
+        biased;
+        _ = tokio::time::sleep_until(deadline) => WindowWaitProbeOutcome::TimedOut,
+        result = probe => WindowWaitProbeOutcome::Completed(result),
+    }
+}
+
+fn window_wait_timeout() -> ComputerUseError {
+    ComputerUseError::new(
+        ComputerUseErrorCode::MissingWindow,
+        "window query timed out",
+    )
 }
 
 async fn list_windows_with_driver(

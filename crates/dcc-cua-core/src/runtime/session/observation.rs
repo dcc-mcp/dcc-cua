@@ -517,6 +517,9 @@ impl ComputerUseSession {
         max_depth: u32,
     ) -> ComputerUseResult<Value> {
         self.ensure_active()?;
+        let _banner_activity = self.begin_banner_activity(BannerActivity::Observing);
+        self.refresh_upstream_session_before_observation_if_needed()
+            .await?;
         let target = self.require_observed_target_available().await?;
         self.require_observed_exact_window_observation_available()?;
         #[cfg(windows)]
