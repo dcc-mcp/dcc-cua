@@ -341,6 +341,64 @@ async fn host_request(host: &mut HostProcess, method: &str, params: Value) -> Ho
 }
 
 #[cfg(feature = "gui-e2e")]
+async fn host_request_with_pre_dispatch_refresh_recovery(
+    host: &mut HostProcess,
+    method: &str,
+    params: Value,
+    window_capability: &str,
+) -> HostResponse {
+    assert!(
+        matches!(method, "browser_prepare" | "browser_navigate"),
+        "refresh recovery must not replay requests carrying snapshot-bound refs"
+    );
+    let response = tokio::time::timeout(
+        Duration::from_secs(90),
+        host.client_mut().request(method, params.clone()),
+    )
+    .await
+    .unwrap_or_else(|_| panic!("Host request {method:?} exceeded 90 seconds"));
+    match response {
+        Ok(response) => response,
+        Err(HostClientError::Remote {
+            code,
+            message,
+            response,
+        }) if code == "session_refresh_required" => {
+            assert!(message.contains("action_attempted=false"), "{response}");
+            assert!(message.contains("input_sent=false"), "{response}");
+            assert!(
+                message.contains("action_completion_unknown=false"),
+                "{response}"
+            );
+            assert!(
+                message.contains("session_remains_active=true"),
+                "{response}"
+            );
+            assert!(
+                message.contains("fresh_observation_required=true"),
+                "{response}"
+            );
+            let refreshed = host_request(
+                host,
+                "accessibility_snapshot",
+                json!({
+                    "session_id": SESSION_ID,
+                    "task_grant_id": GRANT_ID,
+                    "window_capability": window_capability,
+                    "max_nodes": 1_000,
+                    "max_depth": 20
+                }),
+            )
+            .await;
+            assert!(refreshed.value["observation_id"].is_string());
+            assert!(refreshed.value["accessibility_state_id"].is_string());
+            host_request(host, method, params).await
+        }
+        Err(error) => panic!("Host request {method:?} failed: {error:?}"),
+    }
+}
+
+#[cfg(feature = "gui-e2e")]
 async fn client_request(client: &mut HostClient, method: &str, params: Value) -> HostResponse {
     let started = Instant::now();
     let response = tokio::time::timeout(Duration::from_secs(90), client.request(method, params))
@@ -818,43 +876,13 @@ async fn controlled_electron_round_trip() {
             "strategy": {"kind": "existing_profile"}
         }
     });
-    let prepared = match tokio::time::timeout(
-        Duration::from_secs(90),
-        host.client_mut()
-            .request("browser_prepare", browser_prepare_params.clone()),
+    let prepared = host_request_with_pre_dispatch_refresh_recovery(
+        &mut host,
+        "browser_prepare",
+        browser_prepare_params,
+        &capability,
     )
-    .await
-    .expect("browser_prepare exceeded 90 seconds")
-    {
-        Ok(prepared) => prepared,
-        Err(HostClientError::Remote {
-            code,
-            message,
-            response,
-        }) if code == "session_refresh_required" => {
-            assert!(message.contains("action_attempted=false"), "{response}");
-            assert!(
-                message.contains("session_remains_active=true"),
-                "{response}"
-            );
-            let refreshed = host_request(
-                &mut host,
-                "accessibility_snapshot",
-                json!({
-                    "session_id": SESSION_ID,
-                    "task_grant_id": GRANT_ID,
-                    "window_capability": capability,
-                    "max_nodes": 1_000,
-                    "max_depth": 20
-                }),
-            )
-            .await;
-            assert!(refreshed.value["observation_id"].is_string());
-            assert!(refreshed.value["accessibility_state_id"].is_string());
-            host_request(&mut host, "browser_prepare", browser_prepare_params).await
-        }
-        Err(error) => panic!("browser_prepare failed: {error:?}"),
-    };
+    .await;
     assert_eq!(
         prepared.value["result"]["structuredContent"]["prepared"], true,
         "browser_prepare failed: {}",
@@ -999,7 +1027,7 @@ async fn controlled_electron_round_trip() {
     wait_for_journal(&journal, "lbl-last-action", "last_action=double_click");
 
     let browser_fixture = BrowserFixtureServer::start(BROWSER_COMPLETENESS_HTML);
-    host_request(
+    host_request_with_pre_dispatch_refresh_recovery(
         &mut host,
         "browser_navigate",
         json!({
@@ -1012,6 +1040,7 @@ async fn controlled_electron_round_trip() {
                 "url": browser_fixture.page_url()
             }
         }),
+        &capability,
     )
     .await;
     wait_for_browser_fixture(
