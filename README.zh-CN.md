@@ -144,6 +144,14 @@ dcc-cua update --check
 必须传入 `--pid` 和 `--window-id`。优先使用观察结果中的 `element_token` 或
 `element_index`，自绘界面才使用坐标。
 
+元素索引和 token 只属于生成它们的那一次无障碍快照，不能与像素快照、其他后端、
+其他窗口或旧持久会话的索引/token 混用。友好的语义 CLI 命令会先获取最新无障碍
+快照，再把索引绑定为当前 token 后投递。
+
+Windows 后台 UIA 动作可能已经成功，但系统拒绝恢复原前台窗口，或原窗口在动作中
+消失。此时结果仍为成功并带有 `action_executed: true`，恢复失败单独记录在
+`foreground_restore.success: false`。调用方不得重试输入，应重新观察并验证应用状态。
+
 单次窗口操作会尝试生成新的操作后截图。如果输入已执行但截图失败，结果会返回
 `action_was_executed: true`，调用方不得盲目重试。完整命令和参数见
 [CLI 参考](README.md#cli)。

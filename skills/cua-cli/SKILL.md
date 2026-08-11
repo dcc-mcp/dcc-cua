@@ -51,12 +51,15 @@ typed route cannot cover.
 
    Prefer an accessibility element index/token. Use coordinates only for a
    custom-drawn surface after a fresh pixel snapshot. A semantic action gets a
-   fresh accessibility observation; do not reuse stale element indexes.
+   fresh accessibility observation; do not reuse stale element indexes or mix
+   tokens from pixel snapshots, other backends, windows, or sessions.
 
 4. Verify state after every mutation. A successful input call proves that input
    was delivered, not that the application reached the requested state. Use a
    post-snapshot, changed title/tree/value, or an independent application state
-   check as the acceptance oracle.
+   check as the acceptance oracle. If a Windows background UIA result reports
+   `action_executed: true` with `foreground_restore.success: false`, do not
+   retry the input; only the independent foreground restoration failed.
 
 5. Use `desktop-snapshot`/`desktop-act` only for a deliberately desktop-scoped
    target that cannot be represented by an exact window. Keep the scope and
