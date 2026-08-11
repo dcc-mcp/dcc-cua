@@ -1,5 +1,6 @@
 use rstest::rstest;
 
+#[cfg(windows)]
 use crate::wgc::{
     WgcCompositorTiming, WgcCompositorTimingUnavailable, WgcFrameMeasurement,
     compositor_timing_from_100ns,
@@ -194,6 +195,7 @@ fn background_action_only_restores_focus_stolen_by_the_controlled_process(
     );
 }
 
+#[cfg(windows)]
 #[rstest]
 fn restore_activation_requires_the_exact_live_pid_hwnd_ownership_fence() {
     assert!(exact_window_ownership_matches(true, 42, 42));
@@ -201,6 +203,7 @@ fn restore_activation_requires_the_exact_live_pid_hwnd_ownership_fence() {
     assert!(!exact_window_ownership_matches(true, 42, 43));
 }
 
+#[cfg(windows)]
 #[rstest]
 fn missing_wgc_frame_timestamp_is_typed_unavailable() {
     assert_eq!(
@@ -211,6 +214,7 @@ fn missing_wgc_frame_timestamp_is_typed_unavailable() {
     );
 }
 
+#[cfg(windows)]
 #[rstest]
 #[case(None, WgcCompositorTimingUnavailable::PerformanceCounterUnavailable)]
 #[case(Some(9_999), WgcCompositorTimingUnavailable::TimestampAfterPublish)]
@@ -226,6 +230,7 @@ fn unavailable_publish_clock_never_fabricates_compositor_latency(
     );
 }
 
+#[cfg(windows)]
 #[rstest]
 fn wgc_measurement_keeps_source_wait_separate_from_readback() {
     let measurement = WgcFrameMeasurement::new(
@@ -259,6 +264,7 @@ fn wgc_measurement_keeps_source_wait_separate_from_readback() {
     );
 }
 
+#[cfg(windows)]
 #[rstest]
 fn ordinary_activation_rejects_minimized_or_hidden_exact_targets() {
     assert!(exact_window_available_for_activation(
@@ -275,6 +281,7 @@ fn ordinary_activation_rejects_minimized_or_hidden_exact_targets() {
     ));
 }
 
+#[cfg(windows)]
 #[rstest]
 fn locked_desktop_gate_prevents_each_platform_window_mutation() {
     let mutations = std::cell::Cell::new(0);
@@ -291,6 +298,7 @@ fn locked_desktop_gate_prevents_each_platform_window_mutation() {
     assert_eq!(mutations.get(), 0);
 }
 
+#[cfg(windows)]
 #[rstest]
 fn restore_activate_sequence_stops_at_each_failed_input_gate() {
     let restore_calls = std::cell::Cell::new(0);
