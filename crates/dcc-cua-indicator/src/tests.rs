@@ -38,6 +38,80 @@ fn target_owned_modal_foreground_keeps_the_indicator_visible() {
 
 #[cfg(windows)]
 #[rstest]
+fn same_bounds_foreign_to_target_foreground_requests_exactly_one_z_order_resync() {
+    let mut sync = platform::TargetOverlaySyncState::new(
+        platform::TargetPresentationPolicy::TargetScopedBehindUnrelatedForeground,
+    );
+
+    let resyncs = [
+        platform::TargetPresentationPolicy::TargetScopedBehindUnrelatedForeground,
+        platform::TargetPresentationPolicy::ExactTargetForeground,
+        platform::TargetPresentationPolicy::ExactTargetForeground,
+    ]
+    .into_iter()
+    .filter(|presentation| sync.observe(*presentation))
+    .count();
+
+    assert_eq!(resyncs, 1);
+}
+
+#[cfg(windows)]
+#[rstest]
+fn hidden_to_visible_restore_requests_exactly_one_z_order_resync() {
+    let mut sync =
+        platform::TargetOverlaySyncState::new(platform::TargetPresentationPolicy::Hidden);
+
+    let resyncs = [
+        platform::TargetPresentationPolicy::Hidden,
+        platform::TargetPresentationPolicy::ExactTargetForeground,
+        platform::TargetPresentationPolicy::ExactTargetForeground,
+    ]
+    .into_iter()
+    .filter(|presentation| sync.observe(*presentation))
+    .count();
+
+    assert_eq!(resyncs, 1);
+}
+
+#[cfg(windows)]
+#[rstest]
+#[case(platform::TargetPresentationPolicy::ExactTargetForeground)]
+#[case(platform::TargetPresentationPolicy::TargetScopedBehindUnrelatedForeground)]
+fn entering_owned_modal_foreground_requests_exactly_one_z_order_resync(
+    #[case] previous: platform::TargetPresentationPolicy,
+) {
+    let mut sync = platform::TargetOverlaySyncState::new(previous);
+
+    assert!(sync.observe(platform::TargetPresentationPolicy::OwnedModalForeground));
+    assert!(!sync.observe(platform::TargetPresentationPolicy::OwnedModalForeground));
+}
+
+#[cfg(windows)]
+#[rstest]
+fn hidden_to_owned_modal_restore_requests_exactly_one_z_order_resync() {
+    let mut sync =
+        platform::TargetOverlaySyncState::new(platform::TargetPresentationPolicy::Hidden);
+
+    assert!(sync.observe(platform::TargetPresentationPolicy::OwnedModalForeground));
+    assert!(!sync.observe(platform::TargetPresentationPolicy::OwnedModalForeground));
+}
+
+#[cfg(windows)]
+#[rstest]
+fn stable_visible_ticks_do_not_churn_target_relative_z_order() {
+    let mut sync = platform::TargetOverlaySyncState::new(
+        platform::TargetPresentationPolicy::TargetScopedBehindUnrelatedForeground,
+    );
+
+    assert!(
+        [platform::TargetPresentationPolicy::TargetScopedBehindUnrelatedForeground; 8]
+            .into_iter()
+            .all(|presentation| !sync.observe(presentation))
+    );
+}
+
+#[cfg(windows)]
+#[rstest]
 fn unrelated_foreground_keeps_the_indicator_behind_that_window() {
     let policy =
         platform::target_presentation_policy(true, false, 0x100, 0x100, Some(0x300), Some(0x300));
@@ -55,7 +129,7 @@ fn native_overlay_tracks_the_exact_target_without_global_topmost() {
     use windows::Win32::Foundation::HWND;
     use windows::Win32::UI::WindowsAndMessaging::{
         CreateWindowExW, DestroyWindow, GW_HWNDNEXT, GW_OWNER, GWL_EXSTYLE, GetWindow,
-        GetWindowLongPtrW, WINDOW_EX_STYLE, WINDOW_STYLE, WS_EX_TOPMOST, WS_POPUP,
+        GetWindowLongPtrW, IsWindowVisible, WINDOW_EX_STYLE, WINDOW_STYLE, WS_EX_TOPMOST, WS_POPUP,
     };
     use windows::core::w;
 
@@ -87,8 +161,9 @@ fn native_overlay_tracks_the_exact_target_without_global_topmost() {
         .expect("create an isolated Win32 target window"),
     );
     let overlay = TestWindow(platform::create_frame_overlay().expect("create an isolated overlay"));
-    platform::position_target_scoped_overlay(overlay.0, target.0, 4, 4, 48, 48)
+    platform::position_target_scoped_overlay(overlay.0, target.0, 4, 4, 48, 48, false)
         .expect("position the overlay directly above the exact target");
+    assert!(!unsafe { IsWindowVisible(overlay.0).as_bool() });
 
     let owner = unsafe { GetWindow(overlay.0, GW_OWNER) }.unwrap_or(HWND(core::ptr::null_mut()));
     assert!(
@@ -456,7 +531,7 @@ fn target_frame_uses_one_subtle_breathing_cycle(#[case] elapsed_ms: u64, #[case]
 #[case(10, 33)]
 #[case(15, 8)]
 #[case(19, 0)]
-fn target_frame_fades_inward_across_forty_pixels(#[case] band: usize, #[case] alpha: u8) {
+fn target_frame_fades_inward_across_forty_five_pixels(#[case] band: usize, #[case] alpha: u8) {
     assert_eq!(target_frame_band_alpha(132, band), alpha);
 }
 
@@ -479,11 +554,311 @@ fn target_frame_bands_cover_the_scaled_gradient_without_gaps(#[case] thickness: 
 }
 
 #[rstest]
-fn target_frame_gradient_is_exactly_forty_device_independent_pixels() {
-    assert_eq!(TARGET_FRAME_THICKNESS_DIP, 40);
+fn target_frame_gradient_is_exactly_forty_five_device_independent_pixels() {
+    assert_eq!(TARGET_FRAME_THICKNESS_DIP, 45);
     assert_eq!(TARGET_FRAME_GRADIENT_STEPS, 20);
-    assert_eq!(target_frame_band_insets(40, 0), Some((0, 2)));
-    assert_eq!(target_frame_band_insets(40, 19), Some((38, 40)));
+    assert_eq!(target_frame_band_insets(45, 0), Some((0, 2)));
+    assert_eq!(target_frame_band_insets(45, 19), Some((42, 45)));
+}
+
+#[cfg(windows)]
+#[rstest]
+#[case(96, 45)]
+#[case(120, 56)]
+#[case(144, 68)]
+#[case(192, 90)]
+fn target_frame_scales_forty_five_dip_from_the_exact_target_monitor(
+    #[case] dpi: u32,
+    #[case] expected_physical_pixels: i32,
+) {
+    let geometry = platform::target_frame_geometry(platform::TargetGeometry {
+        x: -2_560,
+        y: -1_440,
+        width: 2_560,
+        height: 1_440,
+        dpi,
+    });
+
+    assert_eq!(geometry.thickness, expected_physical_pixels);
+}
+
+#[cfg(windows)]
+#[rstest]
+#[case(144, 96, 144)]
+#[case(192, 96, 192)]
+#[case(192, 120, 192)]
+fn controlled_probe_dpi_is_authoritative_for_legacy_target_windows(
+    #[case] probe_dpi: u32,
+    #[case] target_window_dpi: u32,
+    #[case] expected: u32,
+) {
+    assert_eq!(
+        platform::resolve_indicator_dpi(Some(probe_dpi), target_window_dpi),
+        expected,
+    );
+}
+
+#[cfg(windows)]
+#[rstest]
+#[case(None, 144, 144)]
+#[case(Some(0), 120, 120)]
+#[case(None, 0, 96)]
+fn controlled_probe_failure_falls_back_to_the_target_window(
+    #[case] probe_dpi: Option<u32>,
+    #[case] target_window_dpi: u32,
+    #[case] expected: u32,
+) {
+    assert_eq!(
+        platform::resolve_indicator_dpi(probe_dpi, target_window_dpi),
+        expected,
+    );
+}
+
+#[cfg(windows)]
+#[rstest]
+fn indicator_dpi_resolution_does_not_call_the_legacy_monitor_dpi_api() {
+    let forbidden_api = ["Get", "Dpi", "For", "Monitor"].concat();
+    assert!(
+        !include_str!("platform.rs").contains(&forbidden_api),
+        "a PMv2 indicator thread must resolve monitor DPI through its controlled HWND",
+    );
+}
+
+#[cfg(windows)]
+#[rstest]
+fn controlled_dpi_probe_is_hidden_ownerless_nonactivating_and_raii_cleaned_up() {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GW_OWNER, GWL_EXSTYLE, GetWindow, GetWindowLongPtrW, IsWindow, IsWindowVisible,
+        WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
+    };
+
+    let awareness = platform::ThreadDpiAwareness::enter().expect("enter PMv2 for the DPI probe");
+    let probe =
+        platform::DpiProbeWindow::create(&awareness).expect("create a hidden PMv2 DPI probe");
+    let handle = probe.handle();
+    assert!(!unsafe { IsWindowVisible(handle).as_bool() });
+    assert!(
+        unsafe { GetWindow(handle, GW_OWNER) }
+            .map(|owner| owner.0.is_null())
+            .unwrap_or(true),
+    );
+    let ex_style = unsafe { GetWindowLongPtrW(handle, GWL_EXSTYLE) } as u32;
+    assert_ne!(ex_style & WS_EX_TOOLWINDOW.0, 0);
+    assert_ne!(ex_style & WS_EX_NOACTIVATE.0, 0);
+    assert_eq!(ex_style & WS_EX_TOPMOST.0, 0);
+
+    drop(probe);
+    assert!(!unsafe { IsWindow(Some(handle)).as_bool() });
+}
+
+#[cfg(windows)]
+#[rstest]
+fn dpi_probe_point_stays_inside_the_selected_negative_coordinate_monitor() {
+    use windows::Win32::Foundation::RECT;
+
+    let point = platform::dpi_probe_point(
+        RECT {
+            left: -2_400,
+            top: -1_300,
+            right: -640,
+            bottom: -100,
+        },
+        RECT {
+            left: -2_560,
+            top: -1_440,
+            right: 0,
+            bottom: 0,
+        },
+    );
+
+    assert_eq!(point, (-1_520, -700));
+}
+
+#[cfg(windows)]
+#[rstest]
+fn dpi_unaware_target_migration_recomputes_the_physical_gradient_depth() {
+    let geometry = |x, probe_dpi| {
+        platform::target_frame_geometry(platform::TargetGeometry {
+            x,
+            y: 80,
+            width: 1_600,
+            height: 900,
+            dpi: platform::resolve_indicator_dpi(Some(probe_dpi), 96),
+        })
+    };
+
+    let primary = geometry(120, 96);
+    let secondary = geometry(-2_560, 144);
+
+    assert_eq!((primary.x, primary.thickness), (120, 45));
+    assert_eq!((secondary.x, secondary.thickness), (-2_560, 68));
+}
+
+#[cfg(windows)]
+#[rstest]
+fn target_frame_preserves_negative_secondary_monitor_coordinates() {
+    let geometry = platform::target_frame_geometry(platform::TargetGeometry {
+        x: -2_560,
+        y: -1_440,
+        width: 2_560,
+        height: 1_440,
+        dpi: 144,
+    });
+
+    assert_eq!(
+        (geometry.x, geometry.y, geometry.width, geometry.height),
+        (-2_560, -1_440, 2_560, 1_440)
+    );
+    assert_eq!(geometry.thickness, 68);
+}
+
+#[cfg(windows)]
+#[rstest]
+#[case(60, 50, 24)]
+#[case(24, 24, 11)]
+#[case(2, 2, 0)]
+fn target_frame_never_consumes_the_entire_small_target(
+    #[case] width: i32,
+    #[case] height: i32,
+    #[case] expected_thickness: i32,
+) {
+    let geometry = platform::target_frame_geometry(platform::TargetGeometry {
+        x: 320,
+        y: 240,
+        width,
+        height,
+        dpi: 96,
+    });
+
+    assert_eq!(geometry.thickness, expected_thickness);
+}
+
+#[rstest]
+fn small_target_skips_zero_width_gradient_bands_without_losing_edge_coverage() {
+    assert_eq!(visible_target_frame_band(11, 0), None);
+    assert_eq!(visible_target_frame_band(11, 1), Some((0, 1)));
+    assert_eq!(visible_target_frame_band(11, 19), Some((10, 11)));
+    assert_eq!(
+        (0..TARGET_FRAME_GRADIENT_STEPS)
+            .filter(|band| visible_target_frame_band(11, *band).is_some())
+            .count(),
+        11
+    );
+}
+
+#[rstest]
+fn target_frame_visibility_reports_whether_any_gradient_band_can_render() {
+    assert!(!target_frame_has_visible_band(0));
+    assert!(target_frame_has_visible_band(1));
+    assert!(target_frame_has_visible_band(11));
+}
+
+#[cfg(windows)]
+#[rstest]
+fn target_frame_re_resolves_position_and_dpi_when_the_target_changes_monitors() {
+    let primary = platform::target_frame_geometry(platform::TargetGeometry {
+        x: 120,
+        y: 80,
+        width: 1_600,
+        height: 900,
+        dpi: 96,
+    });
+    let secondary = platform::target_frame_geometry(platform::TargetGeometry {
+        x: -2_560,
+        y: -1_440,
+        width: 2_560,
+        height: 1_440,
+        dpi: 144,
+    });
+
+    assert_eq!((primary.x, primary.y, primary.thickness), (120, 80, 45));
+    assert_eq!(
+        (secondary.x, secondary.y, secondary.thickness),
+        (-2_560, -1_440, 68)
+    );
+    assert!(primary != secondary);
+}
+
+#[cfg(windows)]
+#[rstest]
+fn banner_stays_on_a_negative_coordinate_secondary_monitor() {
+    let geometry = platform::banner_geometry(
+        platform::TargetGeometry {
+            x: -2_400,
+            y: -1_300,
+            width: 1_600,
+            height: 900,
+            dpi: 144,
+        },
+        platform::MonitorGeometry {
+            left: -2_560,
+            top: -1_440,
+            right: 0,
+            bottom: 0,
+            work_left: -2_560,
+            work_top: -1_440,
+            work_right: 0,
+            work_bottom: -60,
+        },
+    );
+
+    assert!(geometry.x < 0);
+    assert!(geometry.y < 0);
+    assert!(geometry.x >= -2_560);
+    assert!(geometry.x + geometry.width <= 0);
+}
+
+#[cfg(windows)]
+#[rstest]
+fn maximized_target_uses_the_visible_dwm_frame_instead_of_invisible_resize_borders() {
+    use windows::Win32::Foundation::RECT;
+
+    let visible = platform::visible_target_rect(
+        RECT {
+            left: -8,
+            top: -8,
+            right: 1_928,
+            bottom: 1_088,
+        },
+        Some(RECT {
+            left: 0,
+            top: 0,
+            right: 1_920,
+            bottom: 1_080,
+        }),
+    );
+
+    assert_eq!(
+        (visible.left, visible.top, visible.right, visible.bottom),
+        (0, 0, 1_920, 1_080)
+    );
+}
+
+#[cfg(windows)]
+#[rstest]
+fn invalid_dwm_frame_falls_back_to_the_window_rect() {
+    use windows::Win32::Foundation::RECT;
+
+    let fallback = RECT {
+        left: -2_560,
+        top: 80,
+        right: -640,
+        bottom: 1_160,
+    };
+    let visible = platform::visible_target_rect(
+        fallback,
+        Some(RECT {
+            left: 10,
+            top: 10,
+            right: 10,
+            bottom: 10,
+        }),
+    );
+
+    assert_eq!(
+        (visible.left, visible.top, visible.right, visible.bottom),
+        (fallback.left, fallback.top, fallback.right, fallback.bottom)
+    );
 }
 
 #[rstest]

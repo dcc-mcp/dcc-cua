@@ -17,7 +17,10 @@ mod theme_tokens {
 }
 
 const MAX_DISPLAY_NAME_CHARS: usize = 80;
-/// Default physical target-frame thickness in device-independent pixels.
+/// Nominal target-frame thickness in device-independent pixels.
+///
+/// Windows scales this value using the exact target window's current monitor
+/// DPI, preserving the same visual thickness when the target crosses displays.
 pub const TARGET_FRAME_THICKNESS_DIP: i32 = theme_tokens::FRAME_THICKNESS_DIP;
 /// Number of bands used to approximate the target-frame gradient.
 pub const TARGET_FRAME_GRADIENT_STEPS: usize = theme_tokens::FRAME_GRADIENT_STEPS;
@@ -168,6 +171,18 @@ pub fn target_frame_band_insets(thickness: i32, band: usize) -> Option<(i32, i32
     let outer = thickness * band as i32 / steps;
     let inner = thickness * (band as i32 + 1) / steps;
     Some((outer, inner))
+}
+
+#[cfg(any(test, windows))]
+pub(crate) fn visible_target_frame_band(thickness: i32, band: usize) -> Option<(i32, i32)> {
+    target_frame_band_insets(thickness, band).filter(|(outer, inner)| outer < inner)
+}
+
+#[cfg(any(test, windows))]
+#[must_use]
+pub(crate) fn target_frame_has_visible_band(thickness: i32) -> bool {
+    (0..TARGET_FRAME_GRADIENT_STEPS)
+        .any(|band| visible_target_frame_band(thickness, band).is_some())
 }
 
 /// Broadcast a cooperative stop to every control session in this Host process.
