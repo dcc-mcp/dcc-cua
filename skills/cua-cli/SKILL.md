@@ -102,9 +102,12 @@ For real-time games and other held-key controls, use a bounded held keypress:
 seconds). It accepts one or two unique WASD/arrow keys with no modifiers, so a
 game that supports diagonal movement may use `{"keys":["W","D"]}`. A plain
 `keypress` is a tap and is not a substitute for a held WASD movement input.
-After every held interval, take a fresh exact-window snapshot and verify the
-game state; stop or release input at a checkpoint rather than leaving a key
-logically held.
+The Host watches the shared Escape interrupt while the key is held, releases
+every key it pressed, and returns `user_interrupted`; this makes the visible
+ControlBanner stop control effective even during a long interval. After every
+held interval, take a fresh exact-window snapshot and verify the game state;
+prefer short intervals and stop or release input at a checkpoint rather than
+leaving a key logically held.
 
 ## Profile-guided routing
 
@@ -157,7 +160,9 @@ disconnected session, policy/authorization failure, or `user_interrupted`, stop
 the current stage and recover the environment before retrying; do not switch to
 another input technology.
 
-The ControlBanner and target frame are visible on the physical desktop and in
-the exact-window observation so users and agents can verify that control is
-active. The banner remains owned by the Host and must not be painted into game
-content or synthesized by the client.
+The ControlBanner is visible on the physical desktop and its structured status
+(`visible`, `healthy`, `target_frame_visible`, and `interrupted`) is returned by
+the Host so users and agents can verify that control is active. Exact-window
+WGC frames intentionally contain only the target window; the external banner
+is not expected to appear in those PNG pixels. The banner remains owned by the
+Host and must not be painted into game content or synthesized by the client.

@@ -28,6 +28,22 @@ use crate::live_observation::{
     observation_sequence_fence, terminal_capture_error, wait_for_latest_frame,
 };
 use crate::policy::*;
+
+#[cfg(windows)]
+#[rstest]
+fn held_key_wait_stops_when_the_control_banner_is_interrupted() {
+    let started = dcc_cua_indicator::interrupt_generation().wrapping_add(1);
+
+    assert!(crate::runtime::windows_held_key::wait_for_held_key_duration(1_000, started));
+}
+
+#[cfg(windows)]
+#[rstest]
+fn held_key_wait_completes_without_an_interrupt() {
+    let started = dcc_cua_indicator::interrupt_generation();
+
+    assert!(!crate::runtime::windows_held_key::wait_for_held_key_duration(0, started));
+}
 #[cfg(windows)]
 use crate::runtime::RawDragSequenceOutcome;
 use crate::runtime::application::{launch_arguments, validate_launch_request};
