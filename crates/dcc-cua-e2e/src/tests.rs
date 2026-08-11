@@ -1829,17 +1829,21 @@ async fn windows_endpoint_sessions_keep_background_uia_and_distinguish_injected_
 
     let interrupted = client_request(&mut clients[active_client], "interrupt_all", json!({})).await;
     assert_eq!(interrupted.value["scope"], "host_process");
-    for (client_index, session_id, grant_id, capability, _) in &sessions {
-        expect_user_interrupted(
-            &mut clients[*client_index],
-            json!({
-                "session_id": session_id,
-                "task_grant_id": grant_id,
-                "window_capability": capability,
-            }),
-        )
-        .await;
-    }
+    assert_eq!(interrupted.value["stopped_window_sessions"], 1);
+    let interrupted_client = 1 - active_client;
+    let (_, session_id, grant_id, capability, _) = sessions
+        .iter()
+        .find(|(client_index, ..)| *client_index == interrupted_client)
+        .expect("other endpoint client session");
+    expect_user_interrupted(
+        &mut clients[interrupted_client],
+        json!({
+            "session_id": session_id,
+            "task_grant_id": grant_id,
+            "window_capability": capability,
+        }),
+    )
+    .await;
 
     drop(clients);
     drop(fixture_reaper);

@@ -460,10 +460,11 @@ let stopped = host.interrupt_all().await?;
 
 `HostClient::interrupt_all` and `dcc-cua interrupt-all [--endpoint PATH]`
 broadcast a cooperative safety stop to every connection in the selected Host
-process. Each connection polls the shared stop generation while otherwise idle,
-then proactively stops live observation, finalizes recording, invalidates
-frames, and tears down window/desktop sessions before another request arrives.
-Those sessions return `user_interrupted` on subsequent use. An already-running native SDK call remains
+process. The calling connection is cleaned up before acknowledgement. Other
+connections poll the shared stop generation while otherwise idle, then
+proactively stop live observation, finalize recording, invalidate frames, and
+retain interrupted window/desktop tombstones; those sessions return
+`user_interrupted` on subsequent use. An already-running native SDK call remains
 bounded by the Host action timeout because CUA exposes no portable preemption
 primitive.
 
