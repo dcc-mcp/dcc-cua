@@ -41,7 +41,7 @@ pub(crate) use session::{
     preflight_live_observation_start, resolved_application_name,
 };
 #[cfg(windows)]
-mod windows_held_key;
+pub(crate) mod windows_held_key;
 #[cfg(any(windows, test))]
 mod windows_input;
 #[cfg(any(windows, test))]

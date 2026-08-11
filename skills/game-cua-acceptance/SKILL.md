@@ -64,6 +64,10 @@ select upgrade → snapshot → repeat → terminal proof`
   diagonal escape when two axes are blocked, then replan after the next frame.
   Do not use random movement or a fixed square patrol, and do not issue a long
   unverified stream of input.
+- Keep the hold interval short enough for the frame cadence (normally
+  200–1000 ms). Escape is cooperative cancellation: the Host releases all
+  keys from an interrupted hold and returns `user_interrupted`, so do not
+  assume a key remains down after a stop request.
 - After each action, verify an independent visual state change: timer/health,
   player/enemy position, level-up overlay, pause state, defeat, or victory.
   “Input sent” alone is not game success.
@@ -92,8 +96,11 @@ Save exact-window PNGs and structured responses for:
 - meaningful progress checkpoints;
 - the final victory/survival screen, score, timer, or explicit success state.
 
-Record the capture provenance, PID, HWND, observation ID, and banner state with
-the evidence. A local build or a successful input response is not final proof.
+Record the capture provenance, PID, HWND, observation ID, and structured banner
+state with the evidence. The banner is an external Host-owned overlay, so its
+label need not be present in an exact-window PNG; use the returned banner
+fields and a physical-desktop check for overlay visibility. A local build or a
+successful input response is not final proof.
 If CUA lacks a required capability, first preserve the reproduction and
 structured error, then make the smallest regression-safe fix in this project,
 validate it, submit the PR, and resume the same acceptance workflow.

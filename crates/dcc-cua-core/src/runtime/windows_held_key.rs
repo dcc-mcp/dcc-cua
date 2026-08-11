@@ -5,8 +5,7 @@ pub(super) fn send_windows_key_holds(
     keys: &[String],
     duration_ms: u64,
 ) -> ComputerUseResult<()> {
-    use std::thread::sleep;
-    use std::time::Duration;
+    let started_interrupt_generation = dcc_cua_indicator::interrupt_generation();
     use windows_sys::Win32::UI::{
         Input::KeyboardAndMouse::{
             INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP,
@@ -76,7 +75,7 @@ pub(super) fn send_windows_key_holds(
         ));
     }
 
-    sleep(Duration::from_millis(duration_ms));
+    let interrupted = wait_for_held_key_duration(duration_ms, started_interrupt_generation);
     for key in virtual_keys.iter().rev() {
         let key_up = make_input(*key, true);
         let released = unsafe { SendInput(1, &key_up, input_size) };
@@ -90,7 +89,35 @@ pub(super) fn send_windows_key_holds(
             ));
         }
     }
+    if interrupted {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::UserInterrupted,
+            "Windows held keypress interrupted; all keys were released",
+        ));
+    }
     Ok(())
+}
+
+pub(crate) fn wait_for_held_key_duration(
+    duration_ms: u64,
+    started_interrupt_generation: u64,
+) -> bool {
+    use dcc_cua_indicator::{interrupt_generation, interrupt_generation_changed};
+    use std::cmp::min;
+    use std::thread::sleep;
+    use std::time::{Duration, Instant};
+
+    let deadline = Instant::now() + Duration::from_millis(duration_ms);
+    loop {
+        if interrupt_generation_changed(started_interrupt_generation, interrupt_generation()) {
+            return true;
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return false;
+        }
+        sleep(min(remaining, Duration::from_millis(20)));
+    }
 }
 
 fn windows_key_virtual_code(key: &str) -> ComputerUseResult<u16> {
