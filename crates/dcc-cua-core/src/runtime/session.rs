@@ -1,7 +1,7 @@
 use super::*;
 
 mod gates;
-#[cfg(windows)]
+#[cfg(any(windows, test))]
 use gates::run_gated_preinvalidated_window_mutation;
 use gates::{BrowserToolDisposition, browser_tool_requires_input, browser_tool_route};
 pub(crate) use gates::{
