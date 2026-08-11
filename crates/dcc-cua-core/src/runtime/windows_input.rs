@@ -1574,6 +1574,7 @@ pub(crate) async fn perform_windows_foreground_fast_action(
                     ActionBannerPhase::Injecting,
                 ))
             });
+            let hold_duration_ms = action.duration_ms;
             tokio::task::spawn_blocking(move || {
                 dcc_cua_platform_windows::activate_window(key_target, || {
                     windows_platform_input_gate("foreground_keypress")
@@ -1584,14 +1585,20 @@ pub(crate) async fn perform_windows_foreground_fast_action(
                         error,
                     )
                 })?;
-                let modifiers: Vec<&str> = modifiers.iter().map(String::as_str).collect();
-                platform_windows::input::keyboard::send_key_synthesized(window_id, &key, &modifiers)
+                if let Some(duration_ms) = hold_duration_ms {
+                    send_windows_key_hold(window_id, &key, duration_ms)
+                } else {
+                    let modifiers: Vec<&str> = modifiers.iter().map(String::as_str).collect();
+                    platform_windows::input::keyboard::send_key_synthesized(
+                        window_id, &key, &modifiers,
+                    )
                     .map_err(|error| {
                         ComputerUseError::new(
                             ComputerUseErrorCode::InputFailed,
                             format!("send Windows foreground keypress: {error}"),
                         )
                     })
+                }
             })
             .await
             .map_err(|error| {
@@ -1601,7 +1608,10 @@ pub(crate) async fn perform_windows_foreground_fast_action(
                 )
             })??;
         }
-        "Sent scoped Windows keypress.".to_owned()
+        action.duration_ms.map_or_else(
+            || "Sent scoped Windows keypress.".to_owned(),
+            |duration_ms| format!("Sent scoped Windows held keypress for {duration_ms} ms."),
+        )
     } else if action.action == "drag" {
         let first = action.path.first().copied().unwrap_or(ComputerUsePoint {
             x: action.x.unwrap_or_default(),
@@ -1938,4 +1948,166 @@ pub(crate) async fn perform_windows_foreground_fast_action(
         images: Vec::new(),
         degraded,
     }))
+}
+
+#[cfg(windows)]
+fn send_windows_key_hold(window_id: u64, key: &str, duration_ms: u64) -> ComputerUseResult<()> {
+    use std::thread::sleep;
+    use std::time::Duration;
+    use windows_sys::Win32::UI::{
+        Input::KeyboardAndMouse::{
+            INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP,
+            KEYEVENTF_SCANCODE, MAPVK_VK_TO_VSC, MapVirtualKeyW, SendInput,
+        },
+        WindowsAndMessaging::GetForegroundWindow,
+    };
+
+    let target = window_id as usize as *mut core::ffi::c_void;
+    if unsafe { GetForegroundWindow() } != target {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::InputFailed,
+            format!(
+                "send Windows held key refused: exact target HWND 0x{window_id:x} is not foreground"
+            ),
+        ));
+    }
+
+    let virtual_key = windows_key_virtual_code(key)?;
+    let scan_code = unsafe { MapVirtualKeyW(virtual_key as u32, MAPVK_VK_TO_VSC) } as u16;
+    let mut flags = if scan_code == 0 {
+        0
+    } else {
+        KEYEVENTF_SCANCODE
+    };
+    if windows_key_is_extended(virtual_key) {
+        flags |= KEYEVENTF_EXTENDEDKEY;
+    }
+    let key_down = INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: INPUT_0 {
+            ki: KEYBDINPUT {
+                wVk: if scan_code == 0 { virtual_key } else { 0 },
+                wScan: scan_code,
+                dwFlags: flags,
+                time: 0,
+                dwExtraInfo: 0,
+            },
+        },
+    };
+    let key_up = INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: INPUT_0 {
+            ki: KEYBDINPUT {
+                wVk: if scan_code == 0 { virtual_key } else { 0 },
+                wScan: scan_code,
+                dwFlags: flags | KEYEVENTF_KEYUP,
+                time: 0,
+                dwExtraInfo: 0,
+            },
+        },
+    };
+    let input_size = std::mem::size_of::<INPUT>() as i32;
+    let inserted = unsafe { SendInput(1, &key_down, input_size) };
+    if inserted != 1 {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::InputFailed,
+            format!(
+                "send Windows held key-down inserted {inserted}/1 events: {}",
+                std::io::Error::last_os_error()
+            ),
+        ));
+    }
+
+    sleep(Duration::from_millis(duration_ms));
+    let released = unsafe { SendInput(1, &key_up, input_size) };
+    if released != 1 {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::InputFailed,
+            format!(
+                "send Windows held key-up inserted {released}/1 events: {}",
+                std::io::Error::last_os_error()
+            ),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn windows_key_virtual_code(key: &str) -> ComputerUseResult<u16> {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::*;
+
+    let normalized = key.trim().to_ascii_lowercase();
+    let value = match normalized.as_str() {
+        "enter" | "return" => VK_RETURN,
+        "tab" => VK_TAB,
+        "escape" | "esc" => VK_ESCAPE,
+        "space" | " " => VK_SPACE,
+        "backspace" | "back" => VK_BACK,
+        "delete" | "del" => VK_DELETE,
+        "up" => VK_UP,
+        "down" => VK_DOWN,
+        "left" => VK_LEFT,
+        "right" => VK_RIGHT,
+        "home" => VK_HOME,
+        "end" => VK_END,
+        "pageup" | "pgup" => VK_PRIOR,
+        "pagedown" | "pgdn" => VK_NEXT,
+        "f1" => VK_F1,
+        "f2" => VK_F2,
+        "f3" => VK_F3,
+        "f4" => VK_F4,
+        "f5" => VK_F5,
+        "f6" => VK_F6,
+        "f7" => VK_F7,
+        "f8" => VK_F8,
+        "f9" => VK_F9,
+        "f10" => VK_F10,
+        "f11" => VK_F11,
+        "f12" => VK_F12,
+        _ if normalized.len() == 1 => {
+            let ch = normalized.as_bytes()[0];
+            if ch.is_ascii_alphanumeric() {
+                if ch.is_ascii_lowercase() {
+                    u16::from(ch - b'a' + b'A')
+                } else {
+                    u16::from(ch)
+                }
+            } else {
+                return Err(ComputerUseError::new(
+                    ComputerUseErrorCode::InvalidAction,
+                    format!("unsupported held key: {key}"),
+                ));
+            }
+        }
+        _ => {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::InvalidAction,
+                format!("unsupported held key: {key}"),
+            ));
+        }
+    };
+    Ok(value)
+}
+
+#[cfg(windows)]
+fn windows_key_is_extended(key: u16) -> bool {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::*;
+    matches!(
+        key,
+        VK_DELETE
+            | VK_INSERT
+            | VK_HOME
+            | VK_END
+            | VK_PRIOR
+            | VK_NEXT
+            | VK_UP
+            | VK_DOWN
+            | VK_LEFT
+            | VK_RIGHT
+            | VK_RCONTROL
+            | VK_RMENU
+            | VK_RWIN
+            | VK_NUMLOCK
+            | VK_SNAPSHOT
+    )
 }

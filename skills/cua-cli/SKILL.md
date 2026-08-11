@@ -11,7 +11,7 @@ metadata:
     dcc: computer-use
     layer: infrastructure
     compatibility: dcc-cua 0.2+ on Windows, macOS, or Linux.
-    version: "0.3.0"
+    version: "0.4.0"
     search-hint: "dcc-cua CLI exact window multilingual profile localized aliases snapshot act verify UIA visual control banner long task recovery"
     tags: "computer-use, ui-control, infrastructure, read-only"
 ---
@@ -76,6 +76,28 @@ For a custom-rendered transition, set `capture_after: true` and a bounded
 `post_snapshot_delay_ms` (up to 5000) so one request returns the settled frame;
 do not sleep and issue a redundant standalone snapshot. When `capture_after`
 is false, treat `observation_required: true` as a mandatory snapshot fence.
+
+For a task that lasts longer than one turn, use one persistent `host-jsonl`
+connection and keep its `open_session` active. The Host-owned ControlBanner and
+target frame are the user-visible control lease; keep them visible for the whole
+task and close the session only at a checkpoint or terminal result. Do not
+replace a long task with repeated one-shot CLI processes, because that drops the
+same-session banner and loses observation/session continuity. Prefer the
+`snapshot → execute_action → snapshot` loop on that one connection. If the
+Host reports a suspended input state, take a fresh snapshot and inspect the
+structured reason; never blind-retry an input whose dispatch status is unknown.
+
+For real-time games and other held-key controls, use a bounded held keypress:
+
+```json
+{"action":"keypress","keys":["D"],"duration_ms":1000,"delivery_mode":"foreground"}
+```
+
+`duration_ms` is a bounded key-down/key-up interval (currently at most 10
+seconds). It requires exactly one key and no modifiers. A plain `keypress` is a
+tap and is not a substitute for a held WASD movement input. After every held
+interval, take a fresh exact-window snapshot and verify the game state; stop or
+release input at a checkpoint rather than leaving a key logically held.
 
 ## Profile-guided routing
 
