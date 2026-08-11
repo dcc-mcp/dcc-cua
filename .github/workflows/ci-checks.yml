@@ -62,6 +62,8 @@ jobs:
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo nextest run --workspace --all-targets --locked
       - run: cargo test --workspace --doc --locked
+      - if: matrix.os == 'windows-latest'
+        run: python -B -m unittest scripts.test_indicator_acceptance_probe
       - name: Compile GUI E2E on every target
         run: cargo nextest run --locked -p dcc-cua-e2e --features gui-e2e --no-run
 
