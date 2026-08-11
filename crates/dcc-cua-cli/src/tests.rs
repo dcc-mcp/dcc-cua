@@ -2,8 +2,8 @@ use rstest::rstest;
 use serde_json::json;
 
 use super::actions::{
-    action_from_command, bind_fresh_element_token, default_activated_action_to_foreground,
-    menu_request, window_frame_request,
+    action_from_command, action_result_value, bind_fresh_element_token,
+    default_activated_action_to_foreground, menu_request, window_frame_request,
 };
 use super::authorization::{existing_profile_grant_requested, host_private_worker_options};
 use super::*;
@@ -848,6 +848,30 @@ fn activated_actions_use_foreground_and_fresh_semantic_tokens() {
     action.delivery_mode = Some("background".into());
     default_activated_action_to_foreground(&strings(["--activate"]), &mut action);
     assert_eq!(action.delivery_mode.as_deref(), Some("background"));
+}
+
+#[rstest]
+fn cli_preserves_completed_action_restore_diagnostics() {
+    let value = action_result_value(ComputerUseToolResult {
+        value: json!({
+            "success": true,
+            "action_executed": true,
+            "foreground_restore": {
+                "requested": true,
+                "success": false,
+                "message": "foreground changed"
+            }
+        }),
+        text: "clicked".into(),
+        images: Vec::new(),
+        degraded: false,
+    });
+
+    assert_eq!(value["success"], true);
+    assert_eq!(value["action_executed"], true);
+    assert_eq!(value["foreground_restore"]["success"], false);
+    assert_eq!(value["degraded"], false);
+    assert_eq!(value["image_count"], 0);
 }
 
 fn strings<const N: usize>(values: [&str; N]) -> Vec<String> {
