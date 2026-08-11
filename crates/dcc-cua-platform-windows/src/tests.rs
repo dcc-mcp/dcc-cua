@@ -9,6 +9,8 @@ use super::{
 #[cfg(windows)]
 use super::PersistentWgcCapture;
 #[cfg(windows)]
+use super::windows::completed_action_result;
+#[cfg(windows)]
 use super::windows::foreground_restore_required;
 
 #[rstest]
@@ -121,6 +123,38 @@ fn background_action_only_restores_focus_stolen_by_the_controlled_process(
         foreground_restore_required(expected, current, current_process_id, controlled_process_id),
         required
     );
+}
+
+#[cfg(windows)]
+#[rstest]
+fn completed_background_action_reports_restore_failure_without_becoming_retryable() {
+    let result = completed_action_result(
+        &json!({"ok": true, "message": "clicked", "control": {"name": "OK"}}),
+        Some(Err(super::UiaError::BackendUnavailable(
+            "foreground changed".into(),
+        ))),
+    )
+    .unwrap();
+
+    assert_eq!(result["success"], true);
+    assert_eq!(result["action_executed"], true);
+    assert_eq!(result["foreground_restore"]["requested"], true);
+    assert_eq!(result["foreground_restore"]["success"], false);
+    assert_eq!(
+        result["foreground_restore"]["message"],
+        "foreground changed"
+    );
+}
+
+#[cfg(windows)]
+#[rstest]
+fn backend_action_failure_remains_an_error_even_when_restore_succeeds() {
+    let result = completed_action_result(
+        &json!({"ok": false, "error": "not_found", "message": "control disappeared"}),
+        Some(Ok(())),
+    );
+
+    assert!(matches!(result, Err(super::UiaError::StaleSnapshot(_))));
 }
 
 #[cfg(windows)]

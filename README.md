@@ -709,6 +709,19 @@ which preserves the user's foreground and lets CUA select its accessibility or
 synthetic-event route. Use `foreground` only after CUA reports that the
 background route is unavailable.
 
+Element indexes and tokens belong to the exact accessibility snapshot that
+created them. They are not interchangeable with indexes or tokens from a pixel
+snapshot, another backend, another window, or an earlier persistent session.
+The friendly semantic CLI commands take a fresh accessibility snapshot and
+rebind an index to its current token before delivery.
+
+On Windows, a background UIA action can succeed even when Windows refuses to
+restore the previous foreground window (or that window disappears during the
+action). In that case the action result remains successful with
+`action_executed: true` and reports the independent failure under
+`foreground_restore.success: false`. Do not retry the input; take a fresh
+observation and verify application state.
+
 `get_session_state` reads CUA's live capture policy. `escalate_session` grants
 pixel fallback only inside the existing exact-window scope and requires the
 separate `allow_session_escalation: true` grant plus one of CUA's bounded

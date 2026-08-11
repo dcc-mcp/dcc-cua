@@ -90,18 +90,10 @@ impl UiaSession {
         });
         let raw = self.request(&payload);
         self.snapshot = None;
-        let foreground = foreground
-            .map(|(window, process_id)| restore_foreground(window, process_id))
-            .transpose();
+        let foreground =
+            foreground.map(|(window, process_id)| restore_foreground(window, process_id));
         let raw = raw?;
-        foreground?;
-        ensure_ok(&raw)?;
-        Ok(json!({
-            "backend": "windows_uia",
-            "success": true,
-            "message": raw.get("message").cloned().unwrap_or(Value::Null),
-            "control": raw.get("control").cloned().unwrap_or(Value::Null),
-        }))
+        completed_action_result(&raw, foreground)
     }
 
     fn scope(&self, allow_owned_standard_menu_popup: bool) -> Value {
@@ -123,6 +115,44 @@ impl UiaSession {
             .as_mut()
             .expect("worker was initialized")
             .request(payload)
+    }
+}
+
+pub(crate) fn completed_action_result(
+    raw: &Value,
+    foreground_restore: Option<Result<(), UiaError>>,
+) -> Result<Value, UiaError> {
+    ensure_ok(raw)?;
+    let foreground_restore = match foreground_restore {
+        None => Value::Null,
+        Some(Ok(())) => json!({
+            "requested": true,
+            "success": true,
+        }),
+        Some(Err(error)) => json!({
+            "requested": true,
+            "success": false,
+            "message": error_detail(&error),
+        }),
+    };
+    Ok(json!({
+        "backend": "windows_uia",
+        "success": true,
+        "action_executed": true,
+        "message": raw.get("message").cloned().unwrap_or(Value::Null),
+        "control": raw.get("control").cloned().unwrap_or(Value::Null),
+        "foreground_restore": foreground_restore,
+    }))
+}
+
+fn error_detail(error: &UiaError) -> &str {
+    match error {
+        UiaError::InvalidTarget(message)
+        | UiaError::StaleSnapshot(message)
+        | UiaError::PermissionDenied(message)
+        | UiaError::InvalidAction(message)
+        | UiaError::BackendUnavailable(message) => message,
+        UiaError::Unsupported => "Windows UI Automation fallback is unavailable on this platform",
     }
 }
 
