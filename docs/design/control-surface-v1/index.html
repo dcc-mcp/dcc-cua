@@ -1,0 +1,416 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DCC-CUA Control Surface Audit</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --canvas: #0c0e12;
+      --surface: #181c23;
+      --surface-2: #11151b;
+      --line: #2d333d;
+      --text: #f7f8fa;
+      --muted: #b8c1c7;
+      --subtle: #7f8994;
+      --purple: #a876ff;
+      --blue: #6eb6ff;
+      --green: #73d7a7;
+      --yellow: #f3c96b;
+      --red: #ff8989;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      background: var(--canvas);
+      color: var(--text);
+      font-family: "Segoe UI", "Noto Sans SC", system-ui, sans-serif;
+      font-size: 14px;
+      line-height: 1.5;
+    }
+
+    main {
+      width: 1440px;
+      margin: 0 auto;
+      padding: 64px;
+    }
+
+    header { margin-bottom: 52px; }
+    section { margin-top: 52px; }
+
+    .eyebrow {
+      margin: 0 0 14px;
+      color: var(--purple);
+      font-size: 13px;
+      font-weight: 650;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+    }
+
+    h1, h2, h3, p { margin-top: 0; }
+    h1 { margin-bottom: 14px; font-size: 48px; line-height: 1.22; letter-spacing: -.035em; }
+    h2 { margin-bottom: 22px; font-size: 28px; line-height: 1.3; letter-spacing: -.02em; }
+    h3 { margin-bottom: 10px; font-size: 19px; }
+    .lede { width: 1080px; margin: 0; color: var(--muted); font-size: 19px; }
+
+    .grid-2, .grid-3, .state-grid {
+      display: grid;
+      gap: 24px;
+    }
+
+    .grid-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .grid-3, .state-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+
+    .card {
+      min-width: 0;
+      padding: 24px;
+      border: 1px solid var(--line);
+      border-radius: 20px;
+      background: var(--surface);
+    }
+
+    .reference-frame {
+      display: grid;
+      place-items: center;
+      height: 300px;
+      margin: 16px 0;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: #0f1217;
+    }
+
+    .reference-frame img { display: block; max-width: 100%; max-height: 100%; object-fit: contain; }
+    .reference-frame.target img { width: 596px; image-rendering: pixelated; }
+    .caption, .contract-body { margin: 0; color: var(--muted); }
+
+    .contract { position: relative; padding-top: 32px; }
+    .contract::before {
+      content: "";
+      position: absolute;
+      top: 22px;
+      left: 24px;
+      right: 24px;
+      height: 4px;
+      border-radius: 999px;
+      background: var(--accent);
+    }
+
+    .contract-owner {
+      margin: 13px 0 8px;
+      color: var(--accent);
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: .1em;
+    }
+
+    .contract-never { margin: 15px 0 0; color: var(--subtle); font-size: 13px; }
+
+    .spec-panel {
+      display: grid;
+      grid-template-columns: 1.35fr .65fr;
+      gap: 24px;
+      align-items: stretch;
+    }
+
+    .banner-stage {
+      display: grid;
+      place-items: center;
+      min-height: 220px;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background:
+        radial-gradient(circle at 50% 0%, rgba(168, 118, 255, .12), transparent 44%),
+        #0f1217;
+    }
+
+    .control-banner {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      height: 44px;
+      padding: 5px 6px 5px 8px;
+      border: 1px solid rgba(168, 118, 255, .58);
+      border-radius: 13px;
+      background: rgba(24, 28, 35, .96);
+      box-shadow: 0 10px 30px rgba(0, 0, 0, .34), inset 0 1px rgba(255, 255, 255, .045);
+      white-space: nowrap;
+    }
+
+    .app-icon {
+      width: 26px;
+      height: 26px;
+      flex: 0 0 auto;
+      border-radius: 6px;
+      object-fit: contain;
+    }
+
+    .identity { display: flex; align-items: baseline; gap: 6px; }
+    .agent-app { color: var(--text); font-size: 13px; font-weight: 650; }
+    .activity { color: var(--muted); font-size: 12px; }
+
+    .state-dot {
+      width: 7px;
+      height: 7px;
+      flex: 0 0 auto;
+      border-radius: 50%;
+      background: var(--state, var(--purple));
+      box-shadow: 0 0 0 3px color-mix(in srgb, var(--state, var(--purple)) 16%, transparent);
+    }
+
+    .separator { width: 1px; height: 20px; background: var(--line); }
+
+    .stop {
+      height: 30px;
+      padding: 0 10px;
+      border: 1px solid #3d454f;
+      border-radius: 9px;
+      background: #252b33;
+      color: #d9dde2;
+      font: inherit;
+      font-size: 12px;
+      font-weight: 650;
+    }
+
+    .anatomy { display: grid; gap: 10px; margin-top: 18px; }
+    .anatomy-row { display: grid; grid-template-columns: 24px 112px 1fr; gap: 10px; align-items: start; }
+    .anatomy-index { color: var(--purple); font-weight: 700; }
+    .anatomy-name { color: var(--text); font-weight: 650; }
+    .anatomy-note { color: var(--muted); }
+
+    .placement-card { padding-bottom: 18px; }
+    .placement-title { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+    .placement-title h3 { margin: 0; }
+    .placement-title span { color: var(--subtle); font-size: 12px; }
+
+    .desktop {
+      position: relative;
+      height: 360px;
+      overflow: hidden;
+      border: 1px solid #3c424c;
+      border-radius: 14px;
+      background: linear-gradient(145deg, #1a2230, #0f1218 64%);
+    }
+
+    .desktop-windowed { padding: 60px 42px 28px; }
+    .app-window {
+      position: relative;
+      height: 100%;
+      border: 1px solid #38404a;
+      border-radius: 10px;
+      background: #222831;
+      box-shadow: 0 22px 60px rgba(0,0,0,.38);
+    }
+
+    .window-titlebar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      height: 32px;
+      padding: 0 12px;
+      border-bottom: 1px solid #343b45;
+      color: #c8ced5;
+      font-size: 11px;
+    }
+
+    .window-titlebar img { width: 16px; height: 16px; border-radius: 4px; }
+    .viewport-lines { height: calc(100% - 32px); background: linear-gradient(90deg, transparent 49.8%, rgba(255,255,255,.04) 50%, transparent 50.2%), linear-gradient(transparent 49.8%, rgba(255,255,255,.04) 50%, transparent 50.2%); background-size: 56px 56px; }
+    .desktop-windowed > .control-banner { position: absolute; top: 9px; left: 50%; transform: translateX(-50%); }
+
+    .desktop-fullscreen { background: linear-gradient(145deg, #273142, #161b22 70%); }
+    .fullscreen-toolbar { height: 42px; border-bottom: 1px solid #363d47; background: rgba(18,22,28,.86); }
+    .desktop-fullscreen > .control-banner { position: absolute; top: 16px; left: 50%; z-index: 2; transform: translateX(-50%); }
+    .fullscreen-grid { height: calc(100% - 42px); background: linear-gradient(90deg, transparent 49.8%, rgba(255,255,255,.035) 50%, transparent 50.2%), linear-gradient(transparent 49.8%, rgba(255,255,255,.035) 50%, transparent 50.2%); background-size: 64px 64px; }
+
+    .state-grid { row-gap: 16px; }
+    .state-card { padding: 18px; border: 1px solid var(--line); border-radius: 16px; background: var(--surface); }
+    .state-meta { display: flex; justify-content: space-between; margin-bottom: 13px; color: var(--subtle); font-size: 12px; }
+    .state-meta strong { color: var(--text); font-size: 13px; }
+    .state-card .control-banner { max-width: 100%; }
+    .state-card .identity { min-width: 0; }
+    .state-card .activity { overflow: hidden; text-overflow: ellipsis; }
+
+    table { width: 100%; border-collapse: collapse; overflow: hidden; border: 1px solid var(--line); border-radius: 16px; background: var(--surface); }
+    th, td { padding: 16px 18px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+    th { color: var(--subtle); font-size: 12px; letter-spacing: .08em; }
+    td { color: var(--muted); }
+    td:first-child { color: var(--text); font-weight: 650; }
+    tr:last-child td { border-bottom: 0; }
+    code { color: #d5bfff; font-family: "Cascadia Mono", Consolas, monospace; }
+
+    .decision {
+      display: flex;
+      justify-content: space-between;
+      gap: 36px;
+      align-items: center;
+      padding: 26px 28px;
+      border: 1px solid rgba(168, 118, 255, .45);
+      border-radius: 20px;
+      background: linear-gradient(110deg, rgba(168,118,255,.15), rgba(24,28,35,.96) 44%);
+    }
+
+    .decision h2 { margin: 0 0 6px; }
+    .decision p { margin: 0; color: var(--muted); }
+    .decision-tag { flex: 0 0 auto; padding: 7px 11px; border: 1px solid rgba(168,118,255,.6); border-radius: 999px; color: #dac7ff; font-size: 12px; font-weight: 700; letter-spacing: .08em; }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <p class="eyebrow">DCC-CUA · Control Surface · Design Lock V1</p>
+      <h1>安全边界应该安静、清楚、始终可见</h1>
+      <p class="lede">CUA 负责指针语义与临近反馈；DCC-CUA 只负责安全状态、真实应用身份、动态活动与紧急停止。两层不再重复表达。</p>
+    </header>
+
+    <section>
+      <p class="eyebrow">01 · Source of truth</p>
+      <h2>先分清哪一层应该被用户看见</h2>
+      <div class="grid-2">
+        <article class="card">
+          <h3>目标：轻、近、语义化</h3>
+          <div class="reference-frame target"><img src="assets/target-reference.png" alt="用户提供的紧凑紫色光标控件参考"></div>
+          <p class="caption">这张紧凑紫色控件属于 CUA cursor overlay：跟随指针，承载 session、delivery 与 target chips。</p>
+        </article>
+        <article class="card">
+          <h3>已有：12 个语义光标状态</h3>
+          <div class="reference-frame"><img src="assets/cursor-theme-states.png" alt="DCC CUA 12 状态光标主题"></div>
+          <p class="caption">保留并完善 <code>.cua-theme</code>；DCC-CUA Host 不再复制指针、光环或临近标签。</p>
+        </article>
+      </div>
+    </section>
+
+    <section>
+      <p class="eyebrow">02 · Ownership contract</p>
+      <h2>一条信息只由一层负责</h2>
+      <div class="grid-3">
+        <article class="card contract" style="--accent: var(--purple)">
+          <p class="contract-owner">CUA CURSOR OVERLAY</p>
+          <h3>指针附近的即时反馈</h3>
+          <p class="contract-body">12 个语义动作、session badge、delivery chip、target chip；始终贴近当前交互点。</p>
+          <p class="contract-never">不负责 · 应用身份、安全边界与 Esc 停止。</p>
+        </article>
+        <article class="card contract" style="--accent: var(--blue)">
+          <p class="contract-owner">DCC-CUA CORE</p>
+          <h3>解析真实运行上下文</h3>
+          <p class="contract-body">从绑定窗口解析 agent、application、activity、theme id，并持续输出可信状态。</p>
+          <p class="contract-never">不负责 · 绘制重复 UI 或猜测当前应用。</p>
+        </article>
+        <article class="card contract" style="--accent: var(--green)">
+          <p class="contract-owner">DCC-CUA INDICATOR</p>
+          <h3>可验证的安全控制面</h3>
+          <p class="contract-body">真实应用图标、动态活动文本、Esc 停止、窗口/全屏放置与捕获保护。</p>
+          <p class="contract-never">不负责 · 自绘指针、光环或随机 session 色。</p>
+        </article>
+      </div>
+    </section>
+
+    <section>
+      <p class="eyebrow">03 · Compact safety surface</p>
+      <h2>Banner 只保留做决定所需的信息</h2>
+      <div class="spec-panel">
+        <article class="card banner-stage">
+          <div class="control-banner" style="--state: var(--purple)">
+            <img class="app-icon" src="assets/maya.png" alt="Maya">
+            <span class="state-dot"></span>
+            <span class="identity"><span class="agent-app">Codex · Maya</span><span class="activity">正在使用鼠标</span></span>
+            <span class="separator"></span>
+            <button class="stop" type="button">Esc 停止</button>
+          </div>
+        </article>
+        <article class="card">
+          <h3>44 px 单行安全条</h3>
+          <div class="anatomy">
+            <div class="anatomy-row"><span class="anatomy-index">01</span><span class="anatomy-name">应用身份</span><span class="anatomy-note">绑定 HWND 的真实图标与名称</span></div>
+            <div class="anatomy-row"><span class="anatomy-index">02</span><span class="anatomy-name">Agent</span><span class="anatomy-note">由 session 动态提供，不写死</span></div>
+            <div class="anatomy-row"><span class="anatomy-index">03</span><span class="anatomy-name">活动</span><span class="anatomy-note">文本表达全部运行状态</span></div>
+            <div class="anatomy-row"><span class="anatomy-index">04</span><span class="anatomy-name">紧急停止</span><span class="anatomy-note">Esc 始终可见且可键盘触达</span></div>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <section>
+      <p class="eyebrow">04 · Placement</p>
+      <h2>窗口外优先，全屏时退回安全内边距</h2>
+      <div class="grid-2">
+        <article class="card placement-card">
+          <div class="placement-title"><h3>窗口化应用</h3><span>目标窗口上方 · monitor work area 内</span></div>
+          <div class="desktop desktop-windowed">
+            <div class="control-banner" style="--state: var(--purple)">
+              <img class="app-icon" src="assets/maya.png" alt="Maya"><span class="state-dot"></span>
+              <span class="identity"><span class="agent-app">Codex · Maya</span><span class="activity">正在观察画面</span></span>
+              <span class="separator"></span><button class="stop" type="button">Esc 停止</button>
+            </div>
+            <div class="app-window"><div class="window-titlebar"><img src="assets/maya.png" alt="">Autodesk Maya 2026</div><div class="viewport-lines"></div></div>
+          </div>
+        </article>
+        <article class="card placement-card">
+          <div class="placement-title"><h3>全屏 / 顶边贴合</h3><span>目标窗口内部 · top safe inset 16 px</span></div>
+          <div class="desktop desktop-fullscreen">
+            <div class="control-banner" style="--state: var(--green)">
+              <img class="app-icon" src="assets/the-bazaar.png" alt="The Bazaar"><span class="state-dot"></span>
+              <span class="identity"><span class="agent-app">Codex · The Bazaar</span><span class="activity">正在使用鼠标</span></span>
+              <span class="separator"></span><button class="stop" type="button">Esc 停止</button>
+            </div>
+            <div class="fullscreen-toolbar"></div><div class="fullscreen-grid"></div>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <section>
+      <p class="eyebrow">05 · Complete runtime states</p>
+      <h2>所有状态都用文本表达，不依赖颜色猜测</h2>
+      <div class="state-grid" id="state-grid"></div>
+    </section>
+
+    <section>
+      <p class="eyebrow">06 · Implementation contract</p>
+      <h2>代码只需要收敛到一条可信数据链</h2>
+      <table>
+        <thead><tr><th>输入</th><th>解析位置</th><th>显示结果</th><th>失败策略</th></tr></thead>
+        <tbody>
+          <tr><td>Agent identity</td><td><code>dcc-cua-core</code> session metadata</td><td><code>Codex · Maya</code></td><td>未知时显示“本地 Agent”，不伪造平台名</td></tr>
+          <tr><td>Application</td><td>绑定 PID / HWND 的 executable + window title</td><td>真实应用图标与规范名称</td><td>图标缺失时使用 DCC-CUA 产品图标</td></tr>
+          <tr><td>Activity</td><td>统一 runtime state</td><td>连接、观察、输入、等待、录制、停止</td><td>未知值归一为 Ready，并保留诊断字段</td></tr>
+          <tr><td>Placement</td><td>target rect + current monitor work area</td><td>外部优先；无空间则内部 16 px</td><td>clamp 到当前 monitor，不跨屏漂移</td></tr>
+          <tr><td>Capture</td><td>Host-owned overlay policy</td><td>用户可见，模型截图默认排除</td><td>策略不可用时明确记录 capability</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="decision">
+      <div><h2>设计决策：删掉重复表达，保留可信控制</h2><p>无第二个指针、无 8 层光环、无随机 session 色、无固定 application 文案。</p></div>
+      <span class="decision-tag">READY FOR CODE REVIEW</span>
+    </section>
+  </main>
+
+  <script>
+    const states = [
+      ["CONNECTING", "正在连接 Maya…", "maya.png", "#f3c96b"],
+      ["READY", "已连接 · 等待操作", "maya.png", "#73d7a7"],
+      ["OBSERVING", "正在观察画面", "3dsmax.png", "#6eb6ff"],
+      ["POINTER INPUT", "正在使用鼠标", "3dsmax.png", "#a876ff"],
+      ["KEYBOARD INPUT", "正在输入文本", "maya.png", "#a876ff"],
+      ["NAVIGATING", "正在切换界面", "3dsmax.png", "#6eb6ff"],
+      ["WAITING", "正在等待应用", "the-bazaar.png", "#f3c96b"],
+      ["RECORDING", "正在录制", "the-bazaar.png", "#ff8989"],
+      ["STOPPING", "正在停止…", "the-bazaar.png", "#7f8994"]
+    ];
+
+    document.querySelector("#state-grid").innerHTML = states.map(([label, activity, icon, color]) => `
+      <article class="state-card">
+        <div class="state-meta"><strong>${label}</strong><span>${activity}</span></div>
+        <div class="control-banner" style="--state: ${color}">
+          <img class="app-icon" src="assets/${icon}" alt="">
+          <span class="state-dot"></span>
+          <span class="identity"><span class="agent-app">Codex · ${icon === "maya.png" ? "Maya" : icon === "3dsmax.png" ? "3ds Max" : "The Bazaar"}</span><span class="activity">${activity}</span></span>
+          <span class="separator"></span><button class="stop" type="button">Esc 停止</button>
+        </div>
+      </article>`).join("");
+  </script>
+</body>
+</html>
