@@ -8,14 +8,16 @@ use super::actions::{
 use super::authorization::{existing_profile_grant_requested, host_private_worker_options};
 use super::*;
 
-#[test]
+#[rstest]
 fn input_state_methods_are_counted_as_nonvisual_semantic_observations() {
     assert!(is_semantic_observation_request("get_input_state"));
     assert!(is_semantic_observation_request("poll_session_events"));
+    assert!(is_semantic_observation_request("session_health"));
     assert!(!is_action_request("poll_session_events"));
+    assert!(!is_action_request("session_health"));
 }
 
-#[test]
+#[rstest]
 fn manifest_advertises_the_session_input_event_contract() {
     let manifest = manifest::document();
     let events = &manifest["host"]["session_events"];
@@ -52,6 +54,55 @@ fn manifest_advertises_the_session_input_event_contract() {
         true
     );
     assert_eq!(events["target_recovery"]["blind_retry"], false);
+}
+
+#[rstest]
+fn manifest_advertises_the_atomic_session_health_preflight_contract() {
+    let manifest = manifest::document();
+    let health = &manifest["host"]["session_health"];
+
+    assert_eq!(health["method"], "session_health");
+    assert_eq!(
+        health["components"],
+        json!([
+            "interactive_input",
+            "exact_target_window",
+            "recording",
+            "action_evidence_epoch",
+            "transition_sequence"
+        ])
+    );
+    assert_eq!(
+        health["policy_defaults"]["require_recording_healthy"],
+        false
+    );
+    assert_eq!(
+        health["policy_defaults"]["require_recording_progress"],
+        false
+    );
+    assert_eq!(health["safe_to_input_authority"], "preflight_only");
+    assert_eq!(health["automatic_activation"], false);
+    assert_eq!(health["automatic_input"], false);
+    assert_eq!(health["fresh_observation_required"], true);
+    assert_eq!(health["replaces_execute_action_gate"], false);
+    assert_eq!(
+        health["recording_progress_authority"]["video_present"],
+        "video"
+    );
+    assert_eq!(
+        health["state_changed_during_probe_blocker"],
+        "state_changed_during_probe"
+    );
+    assert_eq!(
+        health["recording_progress_fingerprint"],
+        json!([
+            "lane",
+            "trajectory_turn",
+            "finalized_segments",
+            "current_partial_size_bytes",
+            "current_partial_modified_at_unix_ms"
+        ])
+    );
 }
 
 #[rstest]

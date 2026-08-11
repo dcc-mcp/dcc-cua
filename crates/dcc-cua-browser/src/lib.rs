@@ -458,10 +458,7 @@ impl BrowserSession {
         if let Some(prompt_text) = request.prompt_text {
             args["prompt_text"] = json!(prompt_text);
         }
-        let action = request.action;
-        if action != "inspect" {
-            self.begin_snapshot_sensitive_native_attempt();
-        }
+        self.begin_dialog_attempt();
         let result =
             BrowserResult::from_value(native.call_browser_tool("browser_dialog", args).await?)?;
         Ok(result)
@@ -540,6 +537,10 @@ impl BrowserSession {
 
     fn begin_snapshot_sensitive_native_attempt(&mut self) {
         self.clear_snapshot();
+    }
+
+    fn begin_dialog_attempt(&mut self) {
+        self.begin_snapshot_sensitive_native_attempt();
     }
 }
 

@@ -368,9 +368,12 @@ Their banner and frame exist only for that command's session lifetime. Core and
 other multi-step agents should keep one Host IPC session open so the same exact
 PID/HWND retains its visible banner, breathing frame, cursor, and observation
 fence across actions. The Windows UIA worker starts through a separate readiness
-handshake. A CUA action or window activation that does not return within 15
-seconds invalidates that window session instead of blocking the Host
-indefinitely.
+handshake. A due upstream-session refresh never crosses an action request: Core
+refreshes before the next observation and requires a new observation fence
+before input. A refresh or activation timeout leaves the local long-running
+session alive and returns a typed no-blind-retry result. Only a timeout after an
+action was actually dispatched is completion-unknown and invalidates that exact
+local window session.
 
 The shared Core window session owns this ControlBanner, so direct `dcc-cua`
 window actions and Host IPC sessions use the same visible banner and target
@@ -418,8 +421,12 @@ as `*.partial.mp4` and exposed as `current_partial`. Each completed segment
 starts with an IDR access unit and carries its own SPS/PPS track configuration.
 `recording_stop` finalizes the tail, clears `current_partial`, and atomically
 publishes `showcase.manifest.json` with the ordered, non-overlapping segment
-timeline. A crash can therefore strand only the explicitly partial tail, not
-the earlier readable segments.
+timeline. If the interactive desktop is temporarily unavailable, the live
+producer and recording owner remain active but report `paused` and
+`video_paused`; cached frames are not encoded again. Capture resumes in the same
+stream only after a strictly newer frame, while a missing window or changed
+PID/HWND owner remains terminal. A crash can therefore strand only the
+explicitly partial tail, not the earlier readable segments.
 
 ## Host IPC
 

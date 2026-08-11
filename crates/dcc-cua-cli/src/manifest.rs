@@ -42,6 +42,38 @@ pub(crate) fn document() -> Value {
             "blind_retry": false,
         },
     });
+    let session_health = json!({
+        "method": "session_health",
+        "components": [
+            "interactive_input",
+            "exact_target_window",
+            "recording",
+            "action_evidence_epoch",
+            "transition_sequence"
+        ],
+        "policy_defaults": {
+            "require_recording_healthy": false,
+            "require_recording_progress": false,
+        },
+        "recording_progress_fingerprint": [
+            "lane",
+            "trajectory_turn",
+            "finalized_segments",
+            "current_partial_size_bytes",
+            "current_partial_modified_at_unix_ms"
+        ],
+        "recording_progress_authority": {
+            "video_present": "video",
+            "otherwise": "trajectory",
+        },
+        "consistency_fence": ["action_evidence_epoch", "transition_sequence"],
+        "state_changed_during_probe_blocker": "state_changed_during_probe",
+        "safe_to_input_authority": "preflight_only",
+        "automatic_activation": false,
+        "automatic_input": false,
+        "fresh_observation_required": true,
+        "replaces_execute_action_gate": false,
+    });
     json!({
         "schema_version": 1,
         "name": "dcc-cua",
@@ -68,6 +100,7 @@ pub(crate) fn document() -> Value {
                 "application_label_max_chars": MAX_APPLICATION_LABEL_CHARS,
             },
             "session_events": session_events,
+            "session_health": session_health,
             "capabilities": host_capabilities(cfg!(any(windows, target_os = "linux", target_os = "macos"))),
         },
         "core_bridge": {

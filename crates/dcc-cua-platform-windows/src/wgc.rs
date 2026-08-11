@@ -22,6 +22,7 @@ use windows::{
             },
             Dxgi::IDXGIDevice,
         },
+        System::Performance::{QueryPerformanceCounter, QueryPerformanceFrequency},
         System::WinRT::{
             Direct3D11::{CreateDirect3D11DeviceFromDXGIDevice, IDirect3DDxgiInterfaceAccess},
             Graphics::Capture::IGraphicsCaptureItemInterop,
@@ -38,6 +39,155 @@ const MAX_CAPTURE_PIXELS: usize = 64 * 1024 * 1024;
 #[derive(Debug, Error)]
 #[error("persistent WGC capture failed: {0}")]
 pub struct WgcCaptureError(String);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WgcCompositorTimingUnavailable {
+    FrameTimestampUnavailable,
+    PerformanceCounterUnavailable,
+    TimestampAfterPublish,
+    LatencyOverflow,
+}
+
+impl WgcCompositorTimingUnavailable {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::FrameTimestampUnavailable => "frame_timestamp_unavailable",
+            Self::PerformanceCounterUnavailable => "performance_counter_unavailable",
+            Self::TimestampAfterPublish => "timestamp_after_publish",
+            Self::LatencyOverflow => "latency_overflow",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WgcCompositorTiming {
+    Available {
+        system_relative_time_100ns: i64,
+        compositor_to_publish: Duration,
+    },
+    Unavailable {
+        reason: WgcCompositorTimingUnavailable,
+    },
+}
+
+pub(crate) fn compositor_timing_from_100ns(
+    system_relative_time_100ns: Option<i64>,
+    publish_time_100ns: Option<i64>,
+) -> WgcCompositorTiming {
+    let Some(system_relative_time_100ns) = system_relative_time_100ns else {
+        return WgcCompositorTiming::Unavailable {
+            reason: WgcCompositorTimingUnavailable::FrameTimestampUnavailable,
+        };
+    };
+    let Some(publish_time_100ns) = publish_time_100ns else {
+        return WgcCompositorTiming::Unavailable {
+            reason: WgcCompositorTimingUnavailable::PerformanceCounterUnavailable,
+        };
+    };
+    let Some(delta_100ns) = publish_time_100ns.checked_sub(system_relative_time_100ns) else {
+        return WgcCompositorTiming::Unavailable {
+            reason: WgcCompositorTimingUnavailable::LatencyOverflow,
+        };
+    };
+    let Ok(delta_100ns) = u64::try_from(delta_100ns) else {
+        return WgcCompositorTiming::Unavailable {
+            reason: WgcCompositorTimingUnavailable::TimestampAfterPublish,
+        };
+    };
+    let Some(nanoseconds) = delta_100ns.checked_mul(100) else {
+        return WgcCompositorTiming::Unavailable {
+            reason: WgcCompositorTimingUnavailable::LatencyOverflow,
+        };
+    };
+    WgcCompositorTiming::Available {
+        system_relative_time_100ns,
+        compositor_to_publish: Duration::from_nanos(nanoseconds),
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Timings measured around one frame after it is available from the WGC pool.
+/// `source_wait` is deliberately separate from GPU/CPU readback work.
+pub struct WgcFrameMeasurement {
+    pub source_wait: Duration,
+    pub readback_total: Duration,
+    pub gpu_copy_map: Duration,
+    pub cpu_copy: Duration,
+    compositor_system_relative_time_100ns: Option<i64>,
+}
+
+impl WgcFrameMeasurement {
+    pub const fn new(
+        source_wait: Duration,
+        readback_total: Duration,
+        gpu_copy_map: Duration,
+        cpu_copy: Duration,
+        compositor_system_relative_time_100ns: Option<i64>,
+    ) -> Self {
+        Self {
+            source_wait,
+            readback_total,
+            gpu_copy_map,
+            cpu_copy,
+            compositor_system_relative_time_100ns,
+        }
+    }
+
+    pub(crate) fn at_publish_time_100ns(
+        self,
+        publish_time_100ns: Option<i64>,
+    ) -> WgcPublishedFrameMeasurement {
+        WgcPublishedFrameMeasurement {
+            source_wait: self.source_wait,
+            readback_total: self.readback_total,
+            gpu_copy_map: self.gpu_copy_map,
+            cpu_copy: self.cpu_copy,
+            compositor: compositor_timing_from_100ns(
+                self.compositor_system_relative_time_100ns,
+                publish_time_100ns,
+            ),
+        }
+    }
+
+    pub fn at_publish(self) -> WgcPublishedFrameMeasurement {
+        self.at_publish_time_100ns(performance_counter_time_100ns())
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WgcPublishedFrameMeasurement {
+    pub source_wait: Duration,
+    pub readback_total: Duration,
+    pub gpu_copy_map: Duration,
+    pub cpu_copy: Duration,
+    pub compositor: WgcCompositorTiming,
+}
+
+#[derive(Debug)]
+pub struct PersistentWgcFrame {
+    pub bgra: Vec<u8>,
+    pub width: u32,
+    pub height: u32,
+    pub measurement: WgcFrameMeasurement,
+}
+
+fn performance_counter_time_100ns() -> Option<i64> {
+    let mut counter = 0_i64;
+    let mut frequency = 0_i64;
+    unsafe {
+        QueryPerformanceCounter(&mut counter).ok()?;
+        QueryPerformanceFrequency(&mut frequency).ok()?;
+    }
+    if counter < 0 || frequency <= 0 {
+        return None;
+    }
+    i64::try_from(
+        i128::from(counter)
+            .checked_mul(10_000_000)?
+            .checked_div(i128::from(frequency))?,
+    )
+    .ok()
+}
 
 fn capture_error(context: &str, error: impl std::fmt::Display) -> WgcCaptureError {
     WgcCaptureError(format!("{context}: {error}"))
@@ -140,10 +290,20 @@ impl PersistentWgcCapture {
         })
     }
 
+    /// Compatibility API returning only pixels and dimensions.
     pub fn next_frame(
         &mut self,
         timeout: Duration,
     ) -> Result<(Vec<u8>, u32, u32), WgcCaptureError> {
+        self.next_measured_frame(timeout)
+            .map(|frame| (frame.bgra, frame.width, frame.height))
+    }
+
+    /// Capture one frame with source-wait, readback, and optional compositor timing.
+    pub fn next_measured_frame(
+        &mut self,
+        timeout: Duration,
+    ) -> Result<PersistentWgcFrame, WgcCaptureError> {
         if unsafe { IsIconic(self.hwnd) }.as_bool() {
             return Err(invalid_target(
                 "WGC target became minimized; restore the exact target first",
@@ -151,9 +311,10 @@ impl PersistentWgcCapture {
         }
         self.resize_pool_if_needed()?;
         let deadline = Instant::now() + timeout;
+        let source_wait_started = Instant::now();
         loop {
             if let Some(frame) = self.take_latest_available_frame() {
-                return self.read_frame(&frame);
+                return self.read_frame(&frame, source_wait_started.elapsed());
             }
             if Instant::now() >= deadline {
                 return Err(invalid_target(format!(
@@ -202,7 +363,14 @@ impl PersistentWgcCapture {
     fn read_frame(
         &mut self,
         frame: &Direct3D11CaptureFrame,
-    ) -> Result<(Vec<u8>, u32, u32), WgcCaptureError> {
+        source_wait: Duration,
+    ) -> Result<PersistentWgcFrame, WgcCaptureError> {
+        let readback_started = Instant::now();
+        let compositor_system_relative_time_100ns = frame
+            .SystemRelativeTime()
+            .ok()
+            .map(|timestamp| timestamp.Duration)
+            .filter(|timestamp| *timestamp >= 0);
         let content_size = frame
             .ContentSize()
             .map_err(|error| capture_error("read WGC frame content size", error))?;
@@ -250,6 +418,7 @@ impl PersistentWgcCapture {
             .as_ref()
             .expect("staging texture is initialized")
             .0;
+        let gpu_copy_map_started = Instant::now();
         unsafe { self.d3d_context.CopyResource(staging, &texture) };
         let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
         unsafe {
@@ -257,6 +426,8 @@ impl PersistentWgcCapture {
                 .Map(staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped))
         }
         .map_err(|error| capture_error("map WGC staging texture", error))?;
+        let gpu_copy_map = gpu_copy_map_started.elapsed();
+        let cpu_copy_started = Instant::now();
         let width = width as usize;
         let height = height as usize;
         let pixel_count = width
@@ -283,7 +454,20 @@ impl PersistentWgcCapture {
             };
         }
         unsafe { self.d3d_context.Unmap(staging, 0) };
-        Ok((bgra, width as u32, height as u32))
+        let cpu_copy = cpu_copy_started.elapsed();
+        let readback_total = readback_started.elapsed();
+        Ok(PersistentWgcFrame {
+            bgra,
+            width: width as u32,
+            height: height as u32,
+            measurement: WgcFrameMeasurement::new(
+                source_wait,
+                readback_total,
+                gpu_copy_map,
+                cpu_copy,
+                compositor_system_relative_time_100ns,
+            ),
+        })
     }
 }
 

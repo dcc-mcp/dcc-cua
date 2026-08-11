@@ -61,6 +61,23 @@ fn native_attempt_preclear_preserves_binding_and_fences_snapshot() {
 }
 
 #[rstest]
+fn dialog_inspection_preclear_rejects_the_old_snapshot_for_an_immediate_click() {
+    let mut session = BrowserSession {
+        target_id: Some("target-1".into()),
+        mutation_allowed: true,
+        latest_snapshot_id: Some("p1".into()),
+        latest_tab_id: Some("tab-1".into()),
+    };
+
+    session.begin_dialog_attempt();
+
+    let error = session
+        .require_mutation_target("target-1", "tab-1", "p1")
+        .unwrap_err();
+    assert_eq!(error.code, ComputerUseErrorCode::StaleObservation);
+}
+
+#[rstest]
 fn browser_file_paths_require_direct_files_and_direct_directory() {
     assert!(validate_upload_paths(&[]).is_err());
     assert!(validate_upload_paths(&["relative.txt".into()]).is_err());

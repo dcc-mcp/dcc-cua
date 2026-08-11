@@ -708,6 +708,7 @@ fn is_pipeline_safe_method(method: &str) -> bool {
             | "verify_state"
             | "get_session_state"
             | "get_input_state"
+            | "session_health"
             | "find"
             | "browser_snapshot"
             | "recording_state"

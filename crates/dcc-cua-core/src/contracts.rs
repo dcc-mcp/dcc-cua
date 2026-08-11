@@ -53,6 +53,28 @@ pub const DEFAULT_LIVE_OBSERVATION_MAX_DIMENSION: u32 = 1_568;
 pub const MIN_LIVE_OBSERVATION_MAX_DIMENSION: u32 = 256;
 pub const MAX_LIVE_OBSERVATION_MAX_DIMENSION: u32 = 4_096;
 
+/// Monotonic receipt for the action evidence currently owned by a session.
+///
+/// Callers may retain observation-derived identifiers only while this value
+/// remains unchanged. The numeric representation stays private so consumers
+/// compare typed receipts instead of manufacturing generations.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ActionEvidenceEpoch(u64);
+
+impl ActionEvidenceEpoch {
+    pub(crate) fn advanced(self) -> Self {
+        Self(
+            self.0
+                .checked_add(1)
+                .expect("action evidence epoch exhausted"),
+        )
+    }
+
+    pub(crate) fn opaque_token(self) -> String {
+        format!("action-evidence-v1:{:016x}", self.0)
+    }
+}
+
 /// Exact identity supplied by the adapter/runtime. Agent input cannot widen it.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ComputerUseTargetScope {
@@ -476,6 +498,7 @@ pub enum ComputerUseErrorCode {
     InvalidAction,
     InteractiveDesktopUnavailable,
     InputFailed,
+    SessionRefreshRequired,
     CompletionUnknown,
     CaptureFailed,
 }
@@ -504,4 +527,51 @@ pub struct ComputerUseMarker {
     pub visible: bool,
     pub label: String,
     pub backend: &'static str,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ComputerUseCleanupPhase {
+    RecordingStop,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ComputerUseCleanupIssue {
+    pub phase: ComputerUseCleanupPhase,
+    pub code: ComputerUseErrorCode,
+    pub message: String,
+}
+
+impl ComputerUseCleanupIssue {
+    pub(crate) fn from_error(phase: ComputerUseCleanupPhase, error: ComputerUseError) -> Self {
+        Self {
+            phase,
+            code: error.code,
+            message: error.message,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ComputerUseSessionStopResult {
+    pub success: bool,
+    pub active: bool,
+    pub cleanup_pending: bool,
+    pub cleanup_issues: Vec<ComputerUseCleanupIssue>,
+    pub marker: ComputerUseMarker,
+}
+
+impl ComputerUseSessionStopResult {
+    pub(crate) fn completed(
+        marker: ComputerUseMarker,
+        cleanup_issues: Vec<ComputerUseCleanupIssue>,
+    ) -> Self {
+        Self {
+            success: cleanup_issues.is_empty(),
+            active: false,
+            cleanup_pending: false,
+            cleanup_issues,
+            marker,
+        }
+    }
 }

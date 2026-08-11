@@ -11,6 +11,7 @@ use crate::request_handler::bind_launched_process;
 use crate::request_handler::finish_window_mutation_attempt;
 use crate::request_handler::poll_session_events_timeout;
 use crate::request_handler::post_snapshot_delay;
+use crate::request_handler::session_stopped_response;
 use crate::request_handler::take_connection_session;
 use crate::session_events::SessionInputEventQueue;
 
@@ -63,13 +64,14 @@ fn capabilities_follow_the_selected_cursor_runtime() {
     assert!(capabilities.contains(&"live_observation_latest_frame"));
     assert!(capabilities.contains(&"session_input_state_events"));
     assert!(capabilities.contains(&"session_target_state_events"));
+    assert!(capabilities.contains(&"session_health"));
     assert_eq!(
         capabilities.contains(&"exact_window_restore_activate"),
         cfg!(windows)
     );
 }
 
-#[test]
+#[rstest]
 fn get_input_state_is_a_typed_session_scoped_request() {
     let request = serde_json::from_value::<Request>(json!({
         "method": "get_input_state",
@@ -93,7 +95,7 @@ fn get_input_state_is_a_typed_session_scoped_request() {
     ));
 }
 
-#[test]
+#[rstest]
 fn poll_session_events_is_a_bounded_session_scoped_long_poll() {
     let request = serde_json::from_value::<Request>(json!({
         "method": "poll_session_events",
@@ -120,12 +122,12 @@ fn poll_session_events_is_a_bounded_session_scoped_long_poll() {
     assert_eq!(poll_session_events_timeout(250).unwrap().as_millis(), 250);
 }
 
-#[test]
+#[rstest]
 fn stop_session_ownership_removes_its_event_subscription() {
     let mut subscriptions = HashMap::new();
     subscriptions.insert(
         "session-1".to_owned(),
-        SessionInputEventQueue::new(
+        SessionInputEventQueue::new_with_restore_capability(
             dcc_cua_core::ComputerUseInputTarget {
                 session_id: "session-1".into(),
                 process_id: 42,
@@ -143,6 +145,7 @@ fn stop_session_ownership_removes_its_event_subscription() {
                 minimized: false,
                 foreground: true,
             },
+            true,
             100,
         ),
     );
@@ -183,6 +186,7 @@ fn cached_host_session(driver: &ComputerUseDriver) -> HostSession {
             "runtime-session-1",
         )
         .unwrap();
+    let synchronized_action_evidence_epoch = session.action_evidence_epoch();
     HostSession {
         runtime_session_id: "runtime-session-1".into(),
         task_grant_id: "grant-1".into(),
@@ -203,6 +207,8 @@ fn cached_host_session(driver: &ComputerUseDriver) -> HostSession {
         capability: "capability-1".into(),
         interrupted: false,
         session,
+        synchronized_action_evidence_epoch,
+        browser_evidence_epoch: Some(synchronized_action_evidence_epoch),
         browser: BrowserSession::default(),
         latest_observation_id: Some("observation-before-transition".into()),
         latest_accessibility_state_id: Some("accessibility-before-transition".into()),
@@ -522,6 +528,399 @@ fn invalid_target_rejection_invalidates_evidence_without_synthesizing_target_una
     );
     assert_eq!(host.input_events.latest_sequence(), 1);
     assert!(host.input_events.events_after(1).is_empty());
+}
+
+#[rstest]
+fn session_refresh_required_invalidates_evidence_without_synthesizing_availability_events() {
+    let driver = ComputerUseDriver::create().unwrap();
+    let mut host = cached_host_session(&driver);
+
+    let rejection = host
+        .finish_observation_sensitive_attempt::<()>(Err(ComputerUseError::new(
+            ComputerUseErrorCode::SessionRefreshRequired,
+            "session_refresh_required: action_attempted=false",
+        )))
+        .unwrap_err();
+
+    assert_eq!(rejection.code, ComputerUseErrorCode::SessionRefreshRequired);
+    assert!(host.latest_observation_id.is_none());
+    assert!(host.latest_accessibility_state_id.is_none());
+    assert!(host.latest_accessibility_root.is_none());
+    assert!(host.latest_shared_image.is_none());
+    assert_eq!(
+        host.input_events.current().status,
+        dcc_cua_core::ComputerUseInputStatus::Ready
+    );
+    assert_eq!(
+        host.input_events.target_state().status,
+        dcc_cua_core::ComputerUseTargetStatus::Available
+    );
+    assert_eq!(host.input_events.latest_sequence(), 1);
+    assert!(host.input_events.events_after(1).is_empty());
+}
+
+#[rstest]
+fn successful_core_refresh_epoch_reconciles_all_host_observation_caches() {
+    let driver = ComputerUseDriver::create().unwrap();
+    let mut host = cached_host_session(&driver);
+    let previous_epoch = host.session.action_evidence_epoch();
+
+    host.session.invalidate_action_observations();
+    host.finish_observation_sensitive_attempt(Ok(())).unwrap();
+
+    assert!(host.session.action_evidence_epoch() > previous_epoch);
+    assert!(host.latest_observation_id.is_none());
+    assert!(host.latest_accessibility_state_id.is_none());
+    assert!(host.latest_accessibility_root.is_none());
+    assert!(host.latest_shared_image.is_none());
+}
+
+#[rstest]
+fn successful_get_session_state_route_reconciles_epoch_at_the_public_request_boundary() {
+    let driver = ComputerUseDriver::create().unwrap();
+    let mut sessions = ConnectionSessions::default();
+    sessions
+        .windows
+        .insert("session-1".into(), cached_host_session(&driver));
+    let request = Request::GetSessionState {
+        session_id: "session-1".into(),
+        task_grant_id: "grant-1".into(),
+        window_capability: "capability-1".into(),
+    };
+    let route = request_handler::window_evidence_epoch_route(&request);
+    sessions
+        .windows
+        .get_mut("session-1")
+        .unwrap()
+        .session
+        .invalidate_action_observations();
+
+    request_handler::finish_window_evidence_request(
+        &mut sessions,
+        route,
+        Ok((json!({"type": "session_state"}), None::<Vec<u8>>)),
+    )
+    .unwrap();
+
+    let host = sessions.windows.get("session-1").unwrap();
+    assert!(host.latest_observation_id.is_none());
+    assert!(host.latest_accessibility_state_id.is_none());
+    assert!(host.latest_accessibility_root.is_none());
+    assert!(host.latest_shared_image.is_none());
+}
+
+#[rstest]
+fn successful_live_observation_start_reconciles_cross_domain_evidence_at_the_public_boundary() {
+    let driver = ComputerUseDriver::create().unwrap();
+    let mut sessions = ConnectionSessions::default();
+    sessions
+        .windows
+        .insert("session-1".into(), cached_host_session(&driver));
+    let request: Request = serde_json::from_value(json!({
+        "method": "live_observation_start",
+        "params": {
+            "session_id": "session-1",
+            "task_grant_id": "grant-1",
+            "window_capability": "capability-1",
+            "request": {}
+        }
+    }))
+    .unwrap();
+    let route = request_handler::window_evidence_epoch_route(&request);
+    sessions
+        .windows
+        .get_mut("session-1")
+        .unwrap()
+        .session
+        .invalidate_action_observations();
+
+    request_handler::finish_window_evidence_request(
+        &mut sessions,
+        route,
+        Ok((json!({"type": "live_observation_started"}), None::<Vec<u8>>)),
+    )
+    .unwrap();
+
+    let host = &sessions.windows["session-1"];
+    assert!(host.latest_observation_id.is_none());
+    assert!(host.latest_accessibility_state_id.is_none());
+    assert!(host.latest_accessibility_root.is_none());
+    assert!(host.latest_shared_image.is_none());
+    assert!(host.browser_evidence_epoch.is_none());
+}
+
+#[rstest]
+#[tokio::test]
+async fn successful_session_state_refresh_rejects_previous_raw_uia_and_browser_evidence() {
+    let driver = ComputerUseDriver::create().unwrap();
+    let mut sessions = ConnectionSessions::default();
+    let mut host = cached_host_session(&driver);
+    host.allow_browser_input = true;
+    host.browser_evidence_epoch = Some(host.session.action_evidence_epoch());
+    sessions.windows.insert("session-1".into(), host);
+    let request = Request::GetSessionState {
+        session_id: "session-1".into(),
+        task_grant_id: "grant-1".into(),
+        window_capability: "capability-1".into(),
+    };
+    let route = request_handler::window_evidence_epoch_route(&request);
+    sessions
+        .windows
+        .get_mut("session-1")
+        .unwrap()
+        .session
+        .invalidate_action_observations();
+    request_handler::finish_window_evidence_request(
+        &mut sessions,
+        route,
+        Ok((json!({"type": "session_state"}), None::<Vec<u8>>)),
+    )
+    .unwrap();
+
+    assert!(sessions.windows["session-1"].latest_shared_image.is_none());
+    assert_cached_action_references_are_stale(
+        &driver,
+        &mut sessions,
+        "observation-after-session-refresh",
+    )
+    .await;
+
+    let mut snapshot_transport = Some(SnapshotTransport::BinaryFrame);
+    let mut desktop_shared_image = None;
+    let cancellation_registry = Arc::new(Mutex::new(HashMap::new()));
+    let error = handle_request(
+        &driver,
+        &mut sessions,
+        &mut snapshot_transport,
+        &mut desktop_shared_image,
+        &cancellation_registry,
+        serde_json::from_value(json!({
+            "method": "browser_click",
+            "params": {
+                "session_id": "session-1",
+                "task_grant_id": "grant-1",
+                "window_capability": "capability-1",
+                "request": {
+                    "target_id": "browser-target",
+                    "tab_id": "tab-1",
+                    "snapshot_id": "p1",
+                    "ref": "button-1"
+                }
+            }
+        }))
+        .unwrap(),
+    )
+    .await
+    .unwrap_err();
+
+    assert_stale_observation(
+        error,
+        "fresh browser snapshot after action evidence changed",
+    );
+}
+
+#[rstest]
+fn successful_browser_snapshot_mint_binds_the_new_epoch_without_reusing_native_evidence() {
+    let driver = ComputerUseDriver::create().unwrap();
+    let mut host = cached_host_session(&driver);
+    let previous_epoch = host.session.action_evidence_epoch();
+
+    host.session.invalidate_action_observations();
+    let plan = session_state::evidence_epoch_sync_plan(
+        host.synchronized_action_evidence_epoch,
+        host.session.action_evidence_epoch(),
+        HostEvidencePublication::BrowserSnapshot,
+    );
+    assert!(plan.epoch_changed);
+    assert!(!plan.invalidate_browser_snapshot);
+    assert!(plan.bind_browser_snapshot);
+    host.finish_browser_snapshot_attempt(Ok(())).unwrap();
+
+    let current_epoch = host.session.action_evidence_epoch();
+    assert!(current_epoch > previous_epoch);
+    assert_eq!(host.synchronized_action_evidence_epoch, current_epoch);
+    assert_eq!(host.browser_evidence_epoch, Some(current_epoch));
+    assert!(host.latest_observation_id.is_none());
+    assert!(host.latest_accessibility_state_id.is_none());
+    assert!(host.latest_accessibility_root.is_none());
+    assert!(host.latest_shared_image.is_none());
+}
+
+#[rstest]
+fn successful_native_snapshot_mint_survives_outer_epoch_reconciliation() {
+    let driver = ComputerUseDriver::create().unwrap();
+    let mut host = cached_host_session(&driver);
+    host.session.invalidate_action_observations();
+    host.finish_observation_sensitive_attempt(Ok(())).unwrap();
+    host.latest_observation_id = Some("observation-after-refresh".into());
+    host.latest_accessibility_state_id = Some("accessibility-after-refresh".into());
+    host.latest_accessibility_root = Some(json!({"elements": [{"name": "new"}]}));
+    host.latest_shared_image = Some(SharedImage::from_bytes(b"new", "image/png").unwrap());
+    let mut sessions = ConnectionSessions::default();
+    sessions.windows.insert("session-1".into(), host);
+    let route = request_handler::window_evidence_epoch_route(&Request::Snapshot {
+        session_id: "session-1".into(),
+        task_grant_id: "grant-1".into(),
+        window_capability: "capability-1".into(),
+        max_depth: 5,
+        max_nodes: 100,
+        activate_before: false,
+    });
+
+    request_handler::finish_window_evidence_request(
+        &mut sessions,
+        route,
+        Ok((json!({"type": "snapshot"}), None::<Vec<u8>>)),
+    )
+    .unwrap();
+
+    let host = &sessions.windows["session-1"];
+    assert_eq!(
+        host.latest_observation_id.as_deref(),
+        Some("observation-after-refresh")
+    );
+    assert_eq!(
+        host.latest_accessibility_state_id.as_deref(),
+        Some("accessibility-after-refresh")
+    );
+    assert!(host.latest_accessibility_root.is_some());
+    assert!(host.latest_shared_image.is_some());
+    assert!(host.browser_evidence_epoch.is_none());
+}
+
+#[rstest]
+fn action_capture_after_discards_old_browser_evidence_and_keeps_new_native_evidence() {
+    let driver = ComputerUseDriver::create().unwrap();
+    let mut host = cached_host_session(&driver);
+    assert!(host.browser_evidence_epoch.is_some());
+    host.session.invalidate_action_observations();
+    host.finish_observation_sensitive_attempt(Ok(())).unwrap();
+    host.latest_observation_id = Some("post-action-observation".into());
+    host.latest_accessibility_state_id = Some("post-action-accessibility".into());
+    host.latest_accessibility_root = Some(json!({"elements": [{"name": "post-action"}]}));
+    host.latest_shared_image = Some(SharedImage::from_bytes(b"post-action", "image/png").unwrap());
+    let mut sessions = ConnectionSessions::default();
+    sessions.windows.insert("session-1".into(), host);
+    let request: Request = serde_json::from_value(json!({
+        "method": "execute_action",
+        "params": {
+            "session_id": "session-1",
+            "task_grant_id": "grant-1",
+            "window_capability": "capability-1",
+            "observation_id": "observation-before-transition",
+            "accessibility_state_id": "accessibility-before-transition",
+            "capture_after": true,
+            "action": {
+                "action": "click",
+                "input_kind": "raw_input",
+                "intent": "ordinary_edit",
+                "x": 10,
+                "y": 20
+            }
+        }
+    }))
+    .unwrap();
+    let route = request_handler::window_evidence_epoch_route(&request);
+
+    request_handler::finish_window_evidence_request(
+        &mut sessions,
+        route,
+        Ok((json!({"type": "action_completed"}), None::<Vec<u8>>)),
+    )
+    .unwrap();
+
+    let host = &sessions.windows["session-1"];
+    assert!(host.browser_evidence_epoch.is_none());
+    assert_eq!(
+        host.latest_observation_id.as_deref(),
+        Some("post-action-observation")
+    );
+    assert_eq!(
+        host.latest_accessibility_state_id.as_deref(),
+        Some("post-action-accessibility")
+    );
+    assert!(host.latest_accessibility_root.is_some());
+    assert!(host.latest_shared_image.is_some());
+}
+
+#[rstest]
+fn post_preflight_action_failure_reconciles_epoch_before_error_return() {
+    let driver = ComputerUseDriver::create().unwrap();
+    let mut host = cached_host_session(&driver);
+    host.session.invalidate_action_observations();
+    let mut sessions = ConnectionSessions::default();
+    sessions.windows.insert("session-1".into(), host);
+    let request: Request = serde_json::from_value(json!({
+        "method": "execute_action",
+        "params": {
+            "session_id": "session-1",
+            "task_grant_id": "grant-1",
+            "window_capability": "capability-1",
+            "observation_id": "observation-before-transition",
+            "accessibility_state_id": "accessibility-before-transition",
+            "action": {
+                "action": "click",
+                "input_kind": "raw_input",
+                "intent": "ordinary_edit",
+                "x": 10,
+                "y": 20
+            }
+        }
+    }))
+    .unwrap();
+    let route = request_handler::window_evidence_epoch_route(&request);
+
+    let error = request_handler::finish_window_evidence_request::<(Value, Option<Vec<u8>>)>(
+        &mut sessions,
+        route,
+        Err(HostError::ComputerUse(ComputerUseError::new(
+            ComputerUseErrorCode::InputFailed,
+            "local mutation was attempted before failing",
+        ))),
+    )
+    .unwrap_err();
+
+    assert!(matches!(error, HostError::ComputerUse(_)));
+    let host = &sessions.windows["session-1"];
+    assert!(host.latest_observation_id.is_none());
+    assert!(host.latest_accessibility_state_id.is_none());
+    assert!(host.latest_accessibility_root.is_none());
+    assert!(host.latest_shared_image.is_none());
+    assert!(host.browser_evidence_epoch.is_none());
+}
+
+#[rstest]
+fn pre_dispatch_not_started_failure_preserves_current_cross_domain_evidence() {
+    let driver = ComputerUseDriver::create().unwrap();
+    let host = cached_host_session(&driver);
+    let current_epoch = host.session.action_evidence_epoch();
+    let mut sessions = ConnectionSessions::default();
+    sessions.windows.insert("session-1".into(), host);
+    let route = request_handler::window_evidence_epoch_route(&Request::CallTool {
+        session_id: "session-1".into(),
+        task_grant_id: "grant-1".into(),
+        window_capability: "capability-1".into(),
+        tool: "debug_window_info".into(),
+        arguments: json!({}),
+    });
+
+    request_handler::finish_window_evidence_request::<(Value, Option<Vec<u8>>)>(
+        &mut sessions,
+        route,
+        Err(HostError::ComputerUse(ComputerUseError::new(
+            ComputerUseErrorCode::InputFailed,
+            "phase=pre_dispatch; action_attempted=false; completion_unknown=false",
+        ))),
+    )
+    .unwrap_err();
+
+    let host = &sessions.windows["session-1"];
+    assert_eq!(host.synchronized_action_evidence_epoch, current_epoch);
+    assert!(host.latest_observation_id.is_some());
+    assert!(host.latest_accessibility_state_id.is_some());
+    assert!(host.latest_accessibility_root.is_some());
+    assert!(host.latest_shared_image.is_some());
+    assert_eq!(host.browser_evidence_epoch, Some(current_epoch));
 }
 
 #[rstest]
@@ -1047,7 +1446,7 @@ fn window_state_wire_surface_matches_cua_capability() {
     assert!(serde_json::from_value::<WindowOperation>(json!("show")).is_err());
 }
 
-#[test]
+#[rstest]
 fn restore_activate_is_an_explicit_exact_session_scoped_request() {
     let request = serde_json::from_value::<Request>(json!({
         "method": "change_window_state",
@@ -1073,7 +1472,7 @@ fn restore_activate_is_an_explicit_exact_session_scoped_request() {
     ));
 }
 
-#[test]
+#[rstest]
 fn restore_activate_response_preserves_core_recovery_fences() {
     let response = request_handler::window_state_changed_response(
         "session-1",
@@ -1092,7 +1491,7 @@ fn restore_activate_response_preserves_core_recovery_fences() {
     assert_eq!(response["result"]["fresh_observation_required"], true);
 }
 
-#[test]
+#[rstest]
 fn failed_window_mutation_still_invalidates_host_observation_cache() {
     let invalidated = std::cell::Cell::new(false);
 
@@ -1227,7 +1626,7 @@ fn semantic_actions_forward_element_tokens_and_delivery_mode() {
     assert_eq!(action.delivery_mode.as_deref(), Some("background"));
 }
 
-#[test]
+#[rstest]
 fn host_action_forwards_the_explicit_input_backend_id() {
     let action: HostAction = serde_json::from_value(json!({
         "action": "drag",
@@ -1245,7 +1644,7 @@ fn host_action_forwards_the_explicit_input_backend_id() {
     );
 }
 
-#[test]
+#[rstest]
 fn host_action_forwards_the_combined_down_drag_backend_id() {
     let action: HostAction = serde_json::from_value(json!({
         "action": "drag",
@@ -1334,6 +1733,13 @@ fn app_launch_grant_defaults_to_denied() {
         ))),
         "completion_unknown"
     );
+    assert_eq!(
+        error_code(&HostError::ComputerUse(ComputerUseError::new(
+            ComputerUseErrorCode::SessionRefreshRequired,
+            "refresh before taking a new observation",
+        ))),
+        "session_refresh_required"
+    );
 }
 
 #[rstest]
@@ -1405,7 +1811,7 @@ fn open_session_bootstrap_activation_is_explicit_and_defaults_off() {
             "session_id": "session-default",
             "grant": {
                 "task_grant_id": "task-1",
-                "application_label": "The Bazaar",
+                "application_label": "Synthetic Test App",
                 "process_id": 4242,
                 "window_handle": 31337
             }
@@ -1428,7 +1834,7 @@ fn open_session_bootstrap_activation_is_explicit_and_defaults_off() {
             "activate_before": true,
             "grant": {
                 "task_grant_id": "task-1",
-                "application_label": "The Bazaar",
+                "application_label": "Synthetic Test App",
                 "process_id": 4242,
                 "window_handle": 31337
             }
@@ -1451,7 +1857,7 @@ fn open_session_bootstrap_activation_is_explicit_and_defaults_off() {
             "indicator_motion": "animate",
             "grant": {
                 "task_grant_id": "task-1",
-                "application_label": "The Bazaar",
+                "application_label": "Synthetic Test App",
                 "process_id": 4242,
                 "window_handle": 31337
             }
@@ -1541,1074 +1947,6 @@ fn launch_ownership_requires_the_same_grant_and_process() {
     assert!(bind_launched_process(&launched, &mut wrong_label).is_err());
 }
 
-#[rstest]
-fn app_requests_parse_with_host_params_frames() {
-    assert!(matches!(
-        serde_json::from_value::<Request>(json!({
-            "method": "ping",
-            "params": {}
-        })),
-        Ok(Request::Ping {})
-    ));
-    assert!(matches!(
-        serde_json::from_value::<Request>(json!({
-            "method": "doctor",
-            "params": {}
-        })),
-        Ok(Request::Doctor {})
-    ));
-    assert!(matches!(
-        serde_json::from_value::<Request>(json!({
-            "method": "list_apps",
-            "params": {}
-        })),
-        Ok(Request::ListApps {})
-    ));
-    assert!(matches!(
-        serde_json::from_value::<Request>(json!({
-            "method": "list_tools",
-            "params": {}
-        })),
-        Ok(Request::ListTools {})
-    ));
-    assert!(matches!(
-        serde_json::from_value::<Request>(json!({
-            "method": "list_windows",
-            "params": {
-                "app": "chrome.exe",
-                "window_id": 42,
-                "window_title": "PCG Fab"
-            }
-        })),
-        Ok(Request::ListWindows {
-            window_id: Some(42),
-            window_title: Some(title),
-            ..
-        }) if title == "PCG Fab"
-    ));
-    assert!(matches!(
-        serde_json::from_value::<Request>(json!({
-            "method": "wait_for_window",
-            "params": {"query": {"app": "UE5Editor.exe"}, "timeout_ms": 1000}
-        })),
-        Ok(Request::WaitForWindow(..))
-    ));
-    assert!(matches!(
-        serde_json::from_value::<Request>(json!({
-            "method": "cancel_window_wait",
-            "params": {"wait_id": "window-wait-1"}
-        })),
-        Ok(Request::CancelWindowWait { .. })
-    ));
-    assert!(matches!(
-        serde_json::from_value::<Request>(json!({
-            "method": "desktop_snapshot",
-            "params": {}
-        })),
-        Ok(Request::DesktopSnapshot {})
-    ));
-    assert!(matches!(
-        serde_json::from_value::<Request>(json!({
-            "method": "snapshot",
-            "params": {
-                "session_id": "session-1",
-                "task_grant_id": "task-1",
-                "window_capability": "cap-1",
-                "activate_before": true
-            }
-        })),
-        Ok(Request::Snapshot {
-            max_depth: 0,
-            max_nodes: 0,
-            activate_before: true,
-            ..
-        })
-    ));
-    assert!(matches!(
-        serde_json::from_value::<Request>(json!({
-            "method": "zoom",
-            "params": {
-                "session_id": "session-1",
-                "task_grant_id": "task-1",
-                "window_capability": "cap-1",
-                "request": {
-                    "observation_id": "session-1-obs-1",
-                    "x1": 10,
-                    "y1": 20,
-                    "x2": 400,
-                    "y2": 200
-                }
-            }
-        })),
-        Ok(Request::Zoom { .. })
-    ));
-    assert!(matches!(
-        serde_json::from_value::<Request>(json!({
-            "method": "set_window_frame",
-            "params": {
-                "session_id": "session-1",
-                "task_grant_id": "task-1",
-                "window_capability": "cap-1",
-                "frame": {"x": -20.5, "y": 10, "width": 1280, "height": 720}
-            }
-        })),
-        Ok(Request::SetWindowFrame { frame, .. }) if frame.x == -20.5 && frame.width == 1280.0
-    ));
-    assert!(matches!(
-        serde_json::from_value::<Request>(json!({
-            "method": "invoke_menu",
-            "params": {
-                "session_id": "session-1",
-                "task_grant_id": "task-1",
-                "window_capability": "cap-1",
-                "request": {"path": ["Window", "Arrange", "Left"]}
-            }
-        })),
-        Ok(Request::InvokeMenu { request, .. }) if request.path[2] == "Left"
-    ));
-    assert!(matches!(
-        serde_json::from_value::<Request>(json!({
-            "method": "verify_state",
-            "params": {
-                "session_id": "session-1",
-                "task_grant_id": "task-1",
-                "window_capability": "cap-1",
-                "expect": [{"window": {"exists": true}}],
-                "stable_samples": 2
-            }
-        })),
-        Ok(Request::VerifyState { .. })
-    ));
-    assert!(matches!(
-        serde_json::from_value::<Request>(json!({
-            "method": "execute_action",
-            "params": {
-                "session_id": "session-1",
-                "task_grant_id": "task-1",
-                "window_capability": "cap-1",
-                "observation_id": "obs-1",
-                "accessibility_state_id": "obs-1",
-                "action": {
-                    "action": "click",
-                    "input_kind": "semantic",
-                    "intent": "ordinary_edit",
-                    "element_token": "token-1"
-                },
-                "capture_after": true,
-                "post_snapshot_delay_ms": 1500,
-                "post_snapshot_max_nodes": 256,
-                "post_snapshot_max_depth": 12
-            }
-        })),
-        Ok(Request::ExecuteAction {
-            capture_after: true,
-            post_snapshot_delay_ms: 1500,
-            post_snapshot_max_nodes: 256,
-            post_snapshot_max_depth: 12,
-            ..
-        })
-    ));
-    assert!(matches!(
-        serde_json::from_value::<Request>(json!({
-            "method": "call_tool",
-            "params": {
-                "session_id": "session-1",
-                "task_grant_id": "task-1",
-                "window_capability": "cap-1",
-                "tool": "debug_window_info",
-                "arguments": {}
-            }
-        })),
-        Ok(Request::CallTool { .. })
-    ));
-    assert!(matches!(
-        serde_json::from_value::<Request>(json!({
-            "method": "call_global_tool",
-            "params": {
-                "grant": {
-                    "task_grant_id": "task-1",
-                    "application_label": "Desktop",
-                    "allow_native_tool": true
-                },
-                "tool": "health_report",
-                "arguments": {}
-            }
-        })),
-        Ok(Request::CallGlobalTool { .. })
-    ));
-    assert!(matches!(
-        serde_json::from_value::<Request>(json!({
-            "method": "screen_size",
-            "params": {}
-        })),
-        Ok(Request::ScreenSize {})
-    ));
-    assert!(matches!(
-        serde_json::from_value::<Request>(json!({
-            "method": "get_session_state",
-            "params": {
-                "session_id": "session-1",
-                "task_grant_id": "task-1",
-                "window_capability": "cap-1"
-            }
-        })),
-        Ok(Request::GetSessionState { .. })
-    ));
-    assert!(matches!(
-        serde_json::from_value::<Request>(json!({
-            "method": "escalate_session",
-            "params": {
-                "session_id": "session-1",
-                "task_grant_id": "task-1",
-                "window_capability": "cap-1",
-                "reason": "foreground_ineffective",
-                "detail": "window route exhausted"
-            }
-        })),
-        Ok(Request::EscalateSession { .. })
-    ));
-    assert!(matches!(
-        serde_json::from_value::<Request>(json!({
-            "method": "cursor_tool",
-            "params": {
-                "session_id": "session-1",
-                "task_grant_id": "task-1",
-                "window_capability": "cap-1",
-                "tool": "set_agent_cursor_enabled",
-                "arguments": {"enabled": true}
-            }
-        })),
-        Ok(Request::CursorTool { .. })
-    ));
-    assert!(matches!(
-        serde_json::from_value::<Request>(json!({
-            "method": "cursor_position",
-            "params": {}
-        })),
-        Ok(Request::CursorPosition {})
-    ));
-    assert!(matches!(
-        serde_json::from_value::<Request>(json!({
-            "method": "open_desktop_session",
-            "params": {
-                "session_id": "desktop-1",
-                "grant": {
-                    "task_grant_id": "task-1",
-                    "application_label": "Desktop",
-                    "allow_raw_input": true
-                }
-            }
-        })),
-        Ok(Request::OpenDesktopSession { .. })
-    ));
-    assert!(matches!(
-        serde_json::from_value::<Request>(json!({
-            "method": "execute_desktop_action",
-            "params": {
-                "session_id": "desktop-1",
-                "task_grant_id": "task-1",
-                "desktop_capability": "cap-1",
-                "observation_id": "desktop-obs-1",
-                "capture_after": true,
-                "post_snapshot_delay_ms": 750,
-                "action": {
-                    "action": "click",
-                    "input_kind": "raw_input",
-                    "intent": "ordinary_edit",
-                    "x": 10,
-                    "y": 20
-                }
-            }
-        })),
-        Ok(Request::ExecuteDesktopAction {
-            capture_after: true,
-            post_snapshot_delay_ms: 750,
-            ..
-        })
-    ));
-    assert!(matches!(
-        serde_json::from_value::<Request>(json!({
-            "method": "launch_app",
-            "params": {
-                "session_id": "session-launch",
-                "grant": {
-                    "task_grant_id": "task-1",
-                    "application_label": "Unreal Editor",
-                    "allow_app_launch": true
-                },
-                "launch": {"name": "Calculator"}
-            }
-        })),
-        Ok(Request::LaunchApp { .. })
-    ));
-    assert!(
-        serde_json::from_value::<Request>(json!({
-            "method": "launch_app",
-            "params": {
-                "grant": {
-                    "task_grant_id": "task-1",
-                    "application_label": "Unreal Editor",
-                    "allow_app_launch": true
-                },
-                "launch": {"name": "Calculator"}
-            }
-        }))
-        .is_err()
-    );
-    let request = serde_json::from_value::<Request>(json!({
-        "method": "open_session",
-        "params": {
-            "session_id": "session-title",
-            "grant": {
-                "task_grant_id": "task-1",
-                "application_label": "Unreal Editor",
-                "window_title": "PCG Fab"
-            }
-        }
-    }))
-    .unwrap();
-    let Request::OpenSession { grant, .. } = request else {
-        panic!("expected open_session request");
-    };
-    assert_eq!(grant.window_title.as_deref(), Some("PCG Fab"));
-    assert!(matches!(
-        serde_json::from_value::<Request>(json!({
-            "method": "terminate_app",
-            "params": {
-                "session_id": "session-1",
-                "task_grant_id": "task-1",
-                "window_capability": "cap-1"
-            }
-        })),
-        Ok(Request::TerminateApp { .. })
-    ));
-    assert!(matches!(
-        serde_json::from_value::<Request>(json!({
-            "method": "wait_for",
-            "params": {
-                "session_id": "session-1",
-                "task_grant_id": "task-1",
-                "window_capability": "cap-1",
-                "condition": {
-                    "kind": "text_contains",
-                    "element_index": 3,
-                    "text": "Ready"
-                }
-            }
-        })),
-        Ok(Request::WaitFor { .. })
-    ));
-    assert!(matches!(
-        serde_json::from_value::<Request>(json!({
-            "method": "find",
-            "params": {
-                "session_id": "session-1",
-                "task_grant_id": "task-1",
-                "window_capability": "cap-1",
-                "query": {"text": "Ready", "max_results": 3}
-            }
-        })),
-        Ok(Request::Find { .. })
-    ));
-    assert!(matches!(
-        serde_json::from_value::<Request>(json!({
-            "method": "browser_snapshot",
-            "params": {
-                "session_id": "session-1",
-                "task_grant_id": "task-1",
-                "window_capability": "cap-1",
-                "request": {"snapshot_format": "semantic_v2"}
-            }
-        })),
-        Ok(Request::BrowserSnapshot { .. })
-    ));
-    assert!(matches!(
-        serde_json::from_value::<Request>(json!({
-            "method": "clipboard_write",
-            "params": {
-                "session_id": "session-1",
-                "task_grant_id": "task-1",
-                "window_capability": "cap-1",
-                "write": {"text": "hello"}
-            }
-        })),
-        Ok(Request::ClipboardWrite { .. })
-    ));
-    assert!(matches!(
-        serde_json::from_value::<Request>(json!({
-            "method": "recording_start",
-            "params": {
-                "session_id": "session-1",
-                "task_grant_id": "task-1",
-                "window_capability": "cap-1",
-                "request": {"output_dir": "C:/tmp/cua"}
-            }
-        })),
-        Ok(Request::RecordingStart { .. })
-    ));
-    assert!(matches!(
-        serde_json::from_value::<Request>(json!({
-            "method": "browser_prepare",
-            "params": {
-                "session_id": "session-1",
-                "task_grant_id": "task-1",
-                "window_capability": "cap-1",
-                "request": {"allow_launch": false}
-            }
-        })),
-        Ok(Request::BrowserPrepare { .. })
-    ));
-    assert!(matches!(
-        serde_json::from_value::<Request>(json!({
-            "method": "browser_type",
-            "params": {
-                "session_id": "session-1",
-                "task_grant_id": "task-1",
-                "window_capability": "cap-1",
-                "request": {
-                    "target_id": "target-1",
-                    "tab_id": "tab-1",
-                    "snapshot_id": "p1",
-                    "ref": "p1:2",
-                    "text": "Fab"
-                }
-            }
-        })),
-        Ok(Request::BrowserType { .. })
-    ));
-    assert!(matches!(
-        serde_json::from_value::<Request>(json!({
-            "method": "browser_set_input_files",
-            "params": {
-                "session_id": "session-1",
-                "task_grant_id": "task-1",
-                "window_capability": "cap-1",
-                "request": {
-                    "target_id": "target-1",
-                    "tab_id": "tab-1",
-                    "snapshot_id": "p1",
-                    "ref": "p1:4",
-                    "files": ["C:/tmp/input.fbx"]
-                }
-            }
-        })),
-        Ok(Request::BrowserSetInputFiles { .. })
-    ));
-    assert!(matches!(
-        serde_json::from_value::<Request>(json!({
-            "method": "browser_download",
-            "params": {
-                "session_id": "session-1",
-                "task_grant_id": "task-1",
-                "window_capability": "cap-1",
-                "request": {
-                    "target_id": "target-1",
-                    "tab_id": "tab-1",
-                    "snapshot_id": "p1",
-                    "ref": "p1:5",
-                    "destination_root": "C:/tmp/downloads"
-                }
-            }
-        })),
-        Ok(Request::BrowserDownload { .. })
-    ));
-    assert!(matches!(
-        serde_json::from_value::<Request>(json!({
-            "method": "browser_dialog",
-            "params": {
-                "session_id": "session-1",
-                "task_grant_id": "task-1",
-                "window_capability": "cap-1",
-                "request": {
-                    "target_id": "target-1",
-                    "tab_id": "tab-1",
-                    "action": "inspect"
-                }
-            }
-        })),
-        Ok(Request::BrowserDialog { .. })
-    ));
-}
-
-#[rstest]
-fn only_stateless_discovery_uses_parallel_dispatch() {
-    assert!(is_parallel_request(&Request::Ping {}));
-    assert!(is_parallel_request(&Request::ListApps {}));
-    assert!(is_parallel_request(&Request::ListTools {}));
-    assert!(is_parallel_request(&Request::ScreenSize {}));
-    assert!(is_parallel_request(&Request::CursorPosition {}));
-    assert!(!is_parallel_request(&Request::Doctor {}));
-    assert!(!is_parallel_request(&Request::DesktopSnapshot {}));
-}
-
-#[rstest]
-fn native_tool_response_moves_image_pixels_to_binary_attachment() {
-    let mut shared = None;
-    let (response, attachment) = native_tool_response_with_transport(
-        Some("session-1"),
-        "debug_window_info",
-        ComputerUseToolResult {
-            value: json!({
-                "content": [{"type": "image", "mimeType": "image/png", "data": "base64"}]
-            }),
-            text: String::new(),
-            images: vec![dcc_cua_core::ComputerUseImage {
-                data: vec![1, 2, 3],
-                mime_type: "image/png".into(),
-            }],
-            degraded: false,
-        },
-        SnapshotTransport::BinaryFrame,
-        &mut shared,
-    )
-    .unwrap();
-    assert_eq!(response["type"], "tool_result");
-    assert_eq!(response["result"]["content"][0]["data"], Value::Null);
-    assert_eq!(response["image"]["length"], 3);
-    assert_eq!(attachment, Some(vec![1, 2, 3]));
-}
-
-#[rstest]
-fn native_tool_response_concatenates_all_image_attachments() {
-    let mut shared = None;
-    let (response, attachment) = native_tool_response_with_transport(
-        None,
-        "page",
-        ComputerUseToolResult {
-            value: json!({
-                "content": [
-                    {"type": "image", "data": "first"},
-                    {"type": "image", "data": "second"}
-                ]
-            }),
-            text: String::new(),
-            images: vec![
-                dcc_cua_core::ComputerUseImage {
-                    data: vec![1, 2],
-                    mime_type: "image/png".into(),
-                },
-                dcc_cua_core::ComputerUseImage {
-                    data: vec![3, 4, 5],
-                    mime_type: "image/jpeg".into(),
-                },
-            ],
-            degraded: false,
-        },
-        SnapshotTransport::BinaryFrame,
-        &mut shared,
-    )
-    .unwrap();
-    assert_eq!(response["attachments"].as_array().map(Vec::len), Some(2));
-    assert_eq!(response["attachments"][1]["offset"], 2);
-    assert_eq!(response["result"]["content"][0]["data"], Value::Null);
-    assert_eq!(response["result"]["content"][1]["data"], Value::Null);
-    assert_eq!(response["result"]["content"][0]["attachment_index"], 0);
-    assert_eq!(response["result"]["content"][1]["length"], 3);
-    assert_eq!(attachment, Some(vec![1, 2, 3, 4, 5]));
-}
-
-#[rstest]
-fn action_response_preserves_tool_metadata_and_images() {
-    let mut shared = None;
-    let (response, attachment) = action_completed_response(
-        "session-1",
-        "action-1".into(),
-        "CUA action completed",
-        ComputerUseToolResult {
-            value: json!({
-                "success": true,
-                "cua": {"accepted": true},
-                "banner": {"activity": "observing", "live_observation": true},
-            }),
-            text: "clicked".into(),
-            images: vec![dcc_cua_core::ComputerUseImage {
-                data: vec![7, 8],
-                mime_type: "image/png".into(),
-            }],
-            degraded: true,
-        },
-        SnapshotTransport::BinaryFrame,
-        &mut shared,
-    )
-    .unwrap();
-    assert_eq!(response["type"], "action_completed");
-    assert_eq!(response["action_id"], "action-1");
-    assert_eq!(response["result"]["cua"]["accepted"], true);
-    assert_eq!(response["result"]["banner"]["activity"], "observing");
-    assert_eq!(response["result"]["banner"]["live_observation"], true);
-    assert_eq!(response["text"], "clicked");
-    assert_eq!(response["degraded"], true);
-    assert_eq!(response["image"]["length"], 2);
-    assert_eq!(attachment, Some(vec![7, 8]));
-}
-
-#[rstest]
-fn action_response_preserves_structured_rejected_input_outcome() {
-    let mut shared = None;
-    let (response, attachment) = action_completed_response(
-        "session-1",
-        "action-1".into(),
-        "CUA action stopped after its delivery probe",
-        ComputerUseToolResult {
-            value: json!({
-                "success": false,
-                "cua": {
-                    "effect": "unverifiable",
-                    "delivery": {
-                        "backend_id": "windows.synthetic_touch.v1",
-                        "api_accepted": false,
-                        "consumer_effect_confirmed": false,
-                        "completion_known": false,
-                        "delivered": false,
-                        "verification_required": true,
-                        "target_fence": {"process_id": 42, "window_handle": 7},
-                        "input_trace": {"schema_version": 1}
-                    }
-                }
-            }),
-            text: "drag path was not sent".into(),
-            images: Vec::new(),
-            degraded: true,
-        },
-        SnapshotTransport::BinaryFrame,
-        &mut shared,
-    )
-    .unwrap();
-
-    assert_eq!(response["success"], false);
-    assert_eq!(response["degraded"], true);
-    assert_eq!(
-        response["result"]["cua"]["delivery"]["backend_id"],
-        "windows.synthetic_touch.v1"
-    );
-    assert_eq!(response["result"]["cua"]["delivery"]["api_accepted"], false);
-    assert_eq!(response["result"]["cua"]["delivery"]["delivered"], false);
-    assert_eq!(
-        response["result"]["cua"]["delivery"]["input_trace"]["schema_version"],
-        1
-    );
-    assert!(attachment.is_none());
-}
-
-#[rstest]
-fn action_response_uses_shared_memory_for_one_image() {
-    let mut shared = None;
-    let (response, attachment) = action_completed_response(
-        "session-1",
-        "action-1".into(),
-        "CUA action completed",
-        ComputerUseToolResult {
-            value: json!({
-                "content": [{"type": "image", "data": "base64"}]
-            }),
-            text: "clicked".into(),
-            images: vec![dcc_cua_core::ComputerUseImage {
-                data: vec![7, 8],
-                mime_type: "image/png".into(),
-            }],
-            degraded: false,
-        },
-        SnapshotTransport::SharedMemory,
-        &mut shared,
-    )
-    .unwrap();
-    assert_eq!(response["image"]["encoding"], "shared_memory");
-    assert_eq!(
-        response["result"]["content"][0]["encoding"],
-        "shared_memory"
-    );
-    assert_eq!(response["result"]["content"][0]["data"], Value::Null);
-    assert!(attachment.is_none());
-    assert!(shared.is_some_and(|image| image.is_alive()));
-}
-
-#[rstest]
-fn action_post_snapshot_reuses_the_single_attachment_frame() {
-    let mut shared = None;
-    let (response, attachment) = action_completed_with_snapshot_response(
-        "session-1",
-        "action-1".into(),
-        ComputerUseToolResult {
-            value: json!({"accepted": true}),
-            text: "clicked".into(),
-            images: vec![ComputerUseImage {
-                data: vec![7, 8],
-                mime_type: "image/png".into(),
-            }],
-            degraded: false,
-        },
-        ComputerUseScreenshot {
-            data: vec![1, 2, 3],
-            observation: dcc_cua_core::ComputerUseObservation {
-                observation_id: "obs-after".into(),
-                window_handle: 7,
-                process_id: 42,
-                window_title: "DCC".into(),
-                width: 1280,
-                height: 720,
-                source_rect: [0, 0, 1280, 720],
-                capture_backend: "test".into(),
-                capture_provenance: json!({}),
-                session_id: "session-1".into(),
-            },
-            accessibility: json!({"elements": [{"element_token": "next"}]}),
-        },
-        SnapshotTransport::BinaryFrame,
-        &mut shared,
-    )
-    .unwrap();
-    assert_eq!(response["post_snapshot"]["observation_id"], "obs-after");
-    assert_eq!(response["post_snapshot"]["node_count"], 1);
-    assert_eq!(response["post_snapshot"]["image"]["index"], 1);
-    assert_eq!(response["post_snapshot"]["image"]["offset"], 2);
-    assert_eq!(attachment, Some(vec![7, 8, 1, 2, 3]));
-}
-
-#[rstest]
-fn post_input_focus_loss_keeps_the_fresh_observation_and_no_retry_contract() {
-    let mut shared = None;
-    let (response, attachment) = action_completed_with_snapshot_response(
-        "session-1",
-        "action-focus-lost".into(),
-        ComputerUseToolResult {
-            value: json!({
-                "success": true,
-                "cua": {
-                    "delivery": {
-                        "mode": "foreground",
-                        "confirmed": false,
-                        "input_sent": true,
-                        "retry_safe": false,
-                        "verification_required": true,
-                        "failure_phase": "post_input_focus_lost"
-                    },
-                    "effect": "unverifiable"
-                }
-            }),
-            text: "input was sent; inspect the post-action observation".into(),
-            images: Vec::new(),
-            degraded: true,
-        },
-        ComputerUseScreenshot {
-            data: vec![1, 2, 3],
-            observation: dcc_cua_core::ComputerUseObservation {
-                observation_id: "obs-after-focus-loss".into(),
-                window_handle: 7,
-                process_id: 42,
-                window_title: "DCC".into(),
-                width: 1280,
-                height: 720,
-                source_rect: [0, 0, 1280, 720],
-                capture_backend: "test".into(),
-                capture_provenance: json!({}),
-                session_id: "session-1".into(),
-            },
-            accessibility: json!({"elements": []}),
-        },
-        SnapshotTransport::BinaryFrame,
-        &mut shared,
-    )
-    .unwrap();
-
-    assert_eq!(response["success"], true);
-    assert_eq!(response["degraded"], true);
-    assert_eq!(response["result"]["cua"]["delivery"]["input_sent"], true);
-    assert_eq!(response["result"]["cua"]["delivery"]["retry_safe"], false);
-    assert_eq!(response["result"]["cua"]["effect"], "unverifiable");
-    assert_eq!(
-        response["result"]["cua"]["delivery"]["verification_required"],
-        true
-    );
-    assert!(response["result"]["cua"]["verification_required"].is_null());
-    assert_eq!(response["post_snapshot"]["success"], true);
-    assert_eq!(
-        response["post_snapshot"]["observation_id"],
-        "obs-after-focus-loss"
-    );
-    assert_eq!(attachment, Some(vec![1, 2, 3]));
-}
-
-#[rstest]
-fn desktop_action_post_snapshot_reuses_the_single_attachment_frame() {
-    let mut shared = None;
-    let (response, attachment) = desktop_action_completed_with_snapshot_response(
-        "desktop-1",
-        "action-1".into(),
-        ComputerUseToolResult {
-            value: json!({"accepted": true}),
-            text: "clicked".into(),
-            images: vec![ComputerUseImage {
-                data: vec![7, 8],
-                mime_type: "image/png".into(),
-            }],
-            degraded: false,
-        },
-        ComputerUseDesktopSnapshot {
-            data: vec![1, 2, 3],
-            state: json!({"screen_size": {"width": 1920, "height": 1080}}),
-            observation_id: "desktop-obs-after".into(),
-        },
-        SnapshotTransport::BinaryFrame,
-        &mut shared,
-    )
-    .unwrap();
-    assert_eq!(
-        response["post_snapshot"]["observation_id"],
-        "desktop-obs-after"
-    );
-    assert_eq!(
-        response["post_snapshot"]["state"]["screen_size"]["width"],
-        1920
-    );
-    assert_eq!(response["post_snapshot"]["image"]["index"], 1);
-    assert_eq!(response["post_snapshot"]["image"]["offset"], 2);
-    assert_eq!(attachment, Some(vec![7, 8, 1, 2, 3]));
-}
-
-#[rstest]
-fn browser_response_uses_shared_memory_for_one_image() {
-    let mut shared = None;
-    let (response, attachment) = browser_response(
-        "browser_snapshot",
-        "session-1".into(),
-        dcc_cua_browser::BrowserResult {
-            value: json!({
-                "content": [{"type":"image", "data": "base64"}]
-            }),
-            images: vec![dcc_cua_browser::BrowserImage {
-                data: vec![1, 2, 3],
-                mime_type: "image/png".into(),
-            }],
-        },
-        SnapshotTransport::SharedMemory,
-        &mut shared,
-    )
-    .unwrap();
-
-    assert_eq!(response["image"]["encoding"], "shared_memory");
-    assert_eq!(response["image"]["length"], 3);
-    assert_eq!(response["result"]["content"][0]["data"], Value::Null);
-    assert!(attachment.is_none());
-    assert!(shared.is_some_and(|image| image.is_alive()));
-}
-
-#[rstest]
-fn verification_images_follow_the_negotiated_transport() {
-    let mut shared = None;
-    let (shared_response, shared_attachment) = image_response(
-        ComputerUseImage {
-            data: vec![1, 2, 3],
-            mime_type: "image/png".into(),
-        },
-        SnapshotTransport::SharedMemory,
-        &mut shared,
-    )
-    .unwrap();
-    assert_eq!(shared_response["encoding"], "shared_memory");
-    assert!(shared_attachment.is_none());
-    assert!(shared.is_some_and(|image| image.is_alive()));
-
-    let mut no_shared_image = None;
-    let (binary_response, binary_attachment) = image_response(
-        ComputerUseImage {
-            data: vec![4, 5],
-            mime_type: "image/jpeg".into(),
-        },
-        SnapshotTransport::BinaryFrame,
-        &mut no_shared_image,
-    )
-    .unwrap();
-    assert_eq!(binary_response["encoding"], "binary_frame");
-    assert_eq!(binary_response["length"], 2);
-    assert_eq!(binary_attachment, Some(vec![4, 5]));
-    assert!(no_shared_image.is_none());
-}
-
-#[rstest]
-fn browser_response_concatenates_multiple_binary_images() {
-    let mut shared = None;
-    let (response, attachment) = browser_response(
-        "browser_snapshot",
-        "session-1".into(),
-        dcc_cua_browser::BrowserResult {
-            value: json!({
-                "content": [
-                    {"type":"image", "data": "first"},
-                    {"type":"image", "data": "second"}
-                ]
-            }),
-            images: vec![
-                dcc_cua_browser::BrowserImage {
-                    data: vec![1, 2],
-                    mime_type: "image/png".into(),
-                },
-                dcc_cua_browser::BrowserImage {
-                    data: vec![3, 4, 5],
-                    mime_type: "image/jpeg".into(),
-                },
-            ],
-        },
-        SnapshotTransport::BinaryFrame,
-        &mut shared,
-    )
-    .unwrap();
-
-    assert_eq!(response["attachments"].as_array().map(Vec::len), Some(2));
-    assert_eq!(response["attachments"][1]["offset"], 2);
-    assert_eq!(response["result"]["content"][1]["data"], Value::Null);
-    assert_eq!(attachment, Some(vec![1, 2, 3, 4, 5]));
-    assert!(shared.is_none());
-}
-
-#[rstest]
-fn find_queries_filter_semantic_elements() {
-    let root = json!({
-        "elements": [
-            {"element_index": 3, "role": "Button", "name": "Ready"},
-            {"element_index": 4, "role": "Text", "name": "Ready"},
-            {"element_index": 5, "role": "Button", "name": "Cancel"},
-            {"element_index": 6, "role": "Edit", "automation_id": "txt-input"}
-        ]
-    });
-    let query = FindQuery {
-        text: Some("ready".into()),
-        role: Some("button".into()),
-        element_index: None,
-        max_results: Some(10),
-    };
-    let matches = find_elements(&root, &query, query.validate().unwrap());
-    assert_eq!(matches.len(), 1);
-    assert_eq!(matches[0]["element_index"], 3);
-    let automation_match = find_elements(
-        &root,
-        &FindQuery {
-            text: Some("txt-input".into()),
-            role: None,
-            element_index: None,
-            max_results: Some(10),
-        },
-        10,
-    );
-    assert_eq!(automation_match[0]["element_index"], 6);
-    assert!(
-        FindQuery {
-            text: None,
-            role: None,
-            element_index: None,
-            max_results: None,
-        }
-        .validate()
-        .is_err()
-    );
-}
-
-#[rstest]
-fn wait_conditions_match_bounded_accessibility_elements() {
-    let root = json!({
-        "elements": [
-            {"element_index": 3, "role": "text", "name": "Ready to render", "value": "idle"}
-        ]
-    });
-    let condition = WaitCondition {
-        kind: "text_contains".into(),
-        element_index: Some(3),
-        text: Some("Ready".into()),
-        value: None,
-        timeout_ms: None,
-        interval_ms: None,
-    };
-    assert!(wait_condition_matches(&root, &condition));
-    assert!(!wait_condition_matches(
-        &root,
-        &WaitCondition {
-            kind: "value_equals".into(),
-            element_index: Some(3),
-            text: None,
-            value: Some("done".into()),
-            timeout_ms: None,
-            interval_ms: None,
-        }
-    ));
-    assert!(
-        WaitCondition {
-            kind: "text_equals".into(),
-            element_index: None,
-            text: Some("Ready to render".into()),
-            value: None,
-            timeout_ms: Some(60_000),
-            interval_ms: Some(1),
-        }
-        .validate()
-        .is_ok()
-    );
-}
-
-#[rstest]
-#[tokio::test]
-async fn parallel_discovery_tasks_are_reaped_and_bounded() {
-    let gate = Arc::new(tokio::sync::Notify::new());
-    let mut tasks = JoinSet::new();
-    for _ in 0..MAX_PARALLEL_DISCOVERY_REQUESTS {
-        let gate = Arc::clone(&gate);
-        tasks.spawn(async move {
-            gate.notified().await;
-            Ok(())
-        });
-    }
-    assert_eq!(tasks.len(), MAX_PARALLEL_DISCOVERY_REQUESTS);
-    gate.notify_one();
-    tokio::time::timeout(
-        std::time::Duration::from_secs(1),
-        await_parallel_request_capacity(&mut tasks),
-    )
-    .await
-    .unwrap();
-    assert_eq!(tasks.len(), MAX_PARALLEL_DISCOVERY_REQUESTS - 1);
-
-    tasks.abort_all();
-    while tasks.join_next().await.is_some() {}
-    for _ in 0..4 {
-        tasks.spawn(async { Ok(()) });
-    }
-    tokio::time::timeout(std::time::Duration::from_secs(1), async {
-        while !tasks.is_empty() {
-            tokio::task::yield_now().await;
-            reap_completed_parallel_requests(&mut tasks);
-        }
-    })
-    .await
-    .unwrap();
-}
-
-#[rstest]
-#[tokio::test]
-async fn raw_input_turn_remains_exclusive_through_post_action_capture() {
-    let (action_completed_tx, action_completed_rx) = tokio::sync::oneshot::channel();
-    let (capture_completed_tx, capture_completed_rx) = tokio::sync::oneshot::channel();
-    let first_turn = tokio::spawn(async move {
-        let _input_turn = acquire_raw_input_turn(true).await.expect("raw input lock");
-        action_completed_tx.send(()).unwrap();
-        capture_completed_rx.await.unwrap();
-    });
-    action_completed_rx.await.unwrap();
-
-    let (second_started_tx, mut second_started_rx) = tokio::sync::oneshot::channel();
-    let waiting_turn = tokio::spawn(async move {
-        let _input_turn = acquire_raw_input_turn(true).await.expect("raw input lock");
-        second_started_tx.send(()).unwrap();
-    });
-
-    assert!(
-        tokio::time::timeout(std::time::Duration::from_millis(25), &mut second_started_rx,)
-            .await
-            .is_err(),
-        "another raw-input turn must stay blocked while capture_after is in flight",
-    );
-    capture_completed_tx.send(()).unwrap();
-    tokio::time::timeout(std::time::Duration::from_secs(1), &mut second_started_rx)
-        .await
-        .unwrap()
-        .unwrap();
-    first_turn.await.unwrap();
-    waiting_turn.await.unwrap();
-}
+mod request_parsing;
+mod response_contracts;
+mod session_health;

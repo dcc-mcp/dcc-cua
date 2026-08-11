@@ -1806,7 +1806,7 @@ async fn windows_endpoint_sessions_keep_background_uia_and_distinguish_injected_
                 "window_capability": capability,
             }),
         )
-            .await;
+        .await;
     }
 
     drop(clients);

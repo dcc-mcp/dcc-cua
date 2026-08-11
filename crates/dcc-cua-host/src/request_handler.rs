@@ -33,6 +33,21 @@ pub(super) fn window_state_changed_response(
     })
 }
 
+pub(super) fn session_stopped_response(
+    session_id: &str,
+    result: ComputerUseSessionStopResult,
+) -> Value {
+    json!({
+        "type": "session_stopped",
+        "session_id": session_id,
+        "success": result.success,
+        "active": result.active,
+        "cleanup_pending": result.cleanup_pending,
+        "cleanup_issues": result.cleanup_issues,
+        "marker": result.marker,
+    })
+}
+
 pub(super) fn observed_window_state_response(
     host: &mut HostSession,
     session_id: &str,
@@ -99,7 +114,154 @@ pub(super) fn restore_activate_available(grant: &TaskGrant) -> bool {
     cfg!(windows) && grant.process_id.is_some() && grant.window_handle.is_some()
 }
 
+pub(super) fn session_health_state_changed(
+    evidence_epoch_before: dcc_cua_core::ActionEvidenceEpoch,
+    transition_sequence_before: u64,
+    action_evidence_epoch: dcc_cua_core::ActionEvidenceEpoch,
+    transition_sequence: u64,
+) -> bool {
+    evidence_epoch_before != action_evidence_epoch
+        || transition_sequence_before != transition_sequence
+}
+
+async fn refresh_session_health_input_and_target(host: &mut HostSession) -> bool {
+    host.refresh_input_readiness();
+    let availability = host.session.target_availability().await;
+    let target_probe_failed = availability.is_err();
+    if let Ok(availability) = host.finish_observation_sensitive_attempt(availability) {
+        host.observe_target_availability(availability);
+    }
+    target_probe_failed
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct WindowEvidenceEpochRoute {
+    session_id: String,
+    publication: HostEvidencePublication,
+}
+
+pub(super) fn window_evidence_epoch_route(request: &Request) -> Option<WindowEvidenceEpochRoute> {
+    let standard = |session_id: &str| WindowEvidenceEpochRoute {
+        session_id: session_id.to_owned(),
+        publication: HostEvidencePublication::None,
+    };
+    match request {
+        Request::BrowserSnapshot { session_id, .. } => Some(WindowEvidenceEpochRoute {
+            session_id: session_id.clone(),
+            publication: HostEvidencePublication::BrowserSnapshot,
+        }),
+        Request::TerminateApp { session_id, .. }
+        | Request::ClipboardRead { session_id, .. }
+        | Request::ClipboardWrite { session_id, .. }
+        | Request::RecordingStart { session_id, .. }
+        | Request::RecordingStop { session_id, .. }
+        | Request::RecordingState { session_id, .. }
+        | Request::LiveObservationStart { session_id, .. }
+        | Request::LiveObservationState { session_id, .. }
+        | Request::LiveObservationStop { session_id, .. }
+        | Request::GetWindowState { session_id, .. }
+        | Request::ChangeWindowState { session_id, .. }
+        | Request::SetWindowFrame { session_id, .. }
+        | Request::InvokeMenu { session_id, .. }
+        | Request::Snapshot { session_id, .. }
+        | Request::Zoom { session_id, .. }
+        | Request::AccessibilitySnapshot { session_id, .. }
+        | Request::VerifyState { session_id, .. }
+        | Request::CallTool { session_id, .. }
+        | Request::BrowserPrepare { session_id, .. }
+        | Request::BrowserNavigate { session_id, .. }
+        | Request::BrowserClick { session_id, .. }
+        | Request::BrowserType { session_id, .. }
+        | Request::BrowserPointer { session_id, .. }
+        | Request::BrowserSetInputFiles { session_id, .. }
+        | Request::BrowserDownload { session_id, .. }
+        | Request::BrowserDialog { session_id, .. }
+        | Request::Find { session_id, .. }
+        | Request::WaitFor { session_id, .. }
+        | Request::ExecuteAction { session_id, .. }
+        | Request::ResumeSession { session_id, .. }
+        | Request::GetSessionState { session_id, .. }
+        | Request::GetInputState { session_id, .. }
+        | Request::SessionHealth { session_id, .. }
+        | Request::PollSessionEvents { session_id, .. }
+        | Request::CursorTool { session_id, .. }
+        | Request::EscalateSession { session_id, .. } => Some(standard(session_id)),
+        Request::Hello(_)
+        | Request::Ping {}
+        | Request::Doctor {}
+        | Request::InterruptAll {}
+        | Request::ListApps {}
+        | Request::ListTools {}
+        | Request::ListWindows { .. }
+        | Request::WaitForWindow(_)
+        | Request::DesktopSnapshot {}
+        | Request::ScreenSize {}
+        | Request::CursorPosition {}
+        | Request::OpenDesktopSession { .. }
+        | Request::DesktopSessionSnapshot { .. }
+        | Request::ExecuteDesktopAction { .. }
+        | Request::StopDesktopSession { .. }
+        | Request::LaunchApp { .. }
+        | Request::OpenSession { .. }
+        | Request::CallGlobalTool { .. }
+        | Request::StopSession { .. }
+        | Request::Cancel { .. }
+        | Request::CancelWindowWait { .. } => None,
+    }
+}
+
+fn prepare_window_evidence_request(
+    sessions: &mut ConnectionSessions,
+    route: Option<&WindowEvidenceEpochRoute>,
+) {
+    if let Some(host) = route.and_then(|route| sessions.windows.get_mut(&route.session_id)) {
+        host.synchronize_action_evidence_epoch();
+    }
+}
+
+pub(super) fn finish_window_evidence_request<T>(
+    sessions: &mut ConnectionSessions,
+    route: Option<WindowEvidenceEpochRoute>,
+    result: Result<T, HostError>,
+) -> Result<T, HostError> {
+    if let Some(route) = route
+        && let Some(host) = sessions.windows.get_mut(&route.session_id)
+    {
+        if result.is_ok() {
+            host.synchronize_action_evidence_epoch_with(route.publication);
+        } else {
+            host.synchronize_action_evidence_epoch();
+            if route.publication == HostEvidencePublication::BrowserSnapshot {
+                host.discard_browser_evidence();
+            }
+        }
+    }
+    result
+}
+
 pub(super) async fn handle_request(
+    driver: &ComputerUseDriver,
+    sessions: &mut ConnectionSessions,
+    snapshot_transport: &mut Option<SnapshotTransport>,
+    desktop_shared_image: &mut Option<SharedImage>,
+    cancellation_registry: &CancellationRegistry,
+    request: Request,
+) -> Result<(Value, Option<Vec<u8>>), HostError> {
+    let evidence_route = window_evidence_epoch_route(&request);
+    prepare_window_evidence_request(sessions, evidence_route.as_ref());
+    let result = handle_request_inner(
+        driver,
+        sessions,
+        snapshot_transport,
+        desktop_shared_image,
+        cancellation_registry,
+        request,
+    )
+    .await;
+    finish_window_evidence_request(sessions, evidence_route, result)
+}
+
+async fn handle_request_inner(
     driver: &ComputerUseDriver,
     sessions: &mut ConnectionSessions,
     snapshot_transport: &mut Option<SnapshotTransport>,
@@ -755,6 +917,7 @@ pub(super) async fn handle_request(
             let initial_input_state = input_events.current().clone();
             let initial_target_state = input_events.target_state().clone();
             let initial_sequence = input_events.latest_sequence();
+            let synchronized_action_evidence_epoch = session.action_evidence_epoch();
             sessions.insert(
                 session_id.clone(),
                 HostSession {
@@ -777,6 +940,8 @@ pub(super) async fn handle_request(
                     capability: capability.clone(),
                     interrupted: false,
                     session,
+                    synchronized_action_evidence_epoch,
+                    browser_evidence_epoch: None,
                     browser: BrowserSession::default(),
                     latest_observation_id: None,
                     latest_accessibility_state_id: None,
@@ -1130,7 +1295,7 @@ pub(super) async fn handle_request(
                 authorized_session(sessions, &session_id, &task_grant_id, &window_capability)
                     .await?;
             let result = host.browser.snapshot(&mut host.session, request).await;
-            let result = host.finish_observation_sensitive_attempt(result)?;
+            let result = host.finish_browser_snapshot_attempt(result)?;
             browser_response(
                 "browser_snapshot",
                 session_id,
@@ -1197,6 +1362,7 @@ pub(super) async fn handle_request(
             if !host.allow_browser_input {
                 return Err(HostError::Protocol("browser input is not granted".into()));
             }
+            host.require_current_browser_evidence_epoch()?;
             let result = host.browser.click(&mut host.session, request).await;
             let result = host.finish_observation_sensitive_attempt(result)?;
             browser_response(
@@ -1219,6 +1385,7 @@ pub(super) async fn handle_request(
             if !host.allow_browser_input {
                 return Err(HostError::Protocol("browser input is not granted".into()));
             }
+            host.require_current_browser_evidence_epoch()?;
             let result = host.browser.type_text(&mut host.session, request).await;
             let result = host.finish_observation_sensitive_attempt(result)?;
             browser_response(
@@ -1241,6 +1408,7 @@ pub(super) async fn handle_request(
             if !host.allow_browser_input {
                 return Err(HostError::Protocol("browser input is not granted".into()));
             }
+            host.require_current_browser_evidence_epoch()?;
             let result = host.browser.pointer(&mut host.session, request).await;
             let result = host.finish_observation_sensitive_attempt(result)?;
             browser_response(
@@ -1263,6 +1431,7 @@ pub(super) async fn handle_request(
             if !host.allow_browser_input {
                 return Err(HostError::Protocol("browser input is not granted".into()));
             }
+            host.require_current_browser_evidence_epoch()?;
             let result = host
                 .browser
                 .set_input_files(&mut host.session, request)
@@ -1290,6 +1459,7 @@ pub(super) async fn handle_request(
                     "browser download is not granted".into(),
                 ));
             }
+            host.require_current_browser_evidence_epoch()?;
             let result = host.browser.download(&mut host.session, request).await;
             let result = host.finish_observation_sensitive_attempt(result)?;
             browser_response(
@@ -1613,6 +1783,55 @@ pub(super) async fn handle_request(
                 None,
             ))
         }
+        Request::SessionHealth {
+            session_id,
+            task_grant_id,
+            window_capability,
+            policy,
+        } => {
+            let host =
+                session_with_capability(sessions, &session_id, &task_grant_id, &window_capability)?;
+            let evidence_epoch_before = host.session.action_evidence_epoch();
+            let transition_sequence_before = host.input_events.latest_sequence();
+            let mut target_probe_failed = refresh_session_health_input_and_target(host).await;
+            let recording = if host.allow_recording {
+                let state = host.session.recording_state().await;
+                match host.finish_observation_sensitive_attempt(state) {
+                    Ok(state) => ComputerUseRecordingHealth::from_state(true, &state, &policy),
+                    Err(_) => ComputerUseRecordingHealth::from_state(true, &Value::Null, &policy),
+                }
+            } else {
+                ComputerUseRecordingHealth::from_state(false, &Value::Null, &policy)
+            };
+            // Close the preflight fence after the recording probe so an input
+            // or exact-target transition cannot produce a mixed safe snapshot.
+            target_probe_failed |= refresh_session_health_input_and_target(host).await;
+            let action_evidence_epoch = host.session.action_evidence_epoch();
+            let transition_sequence = host.input_events.latest_sequence();
+            let interrupted = host.interrupted
+                || host.session.control_banner_interrupted()
+                || host.session.control_banner_failure().is_some();
+            let health = ComputerUseSessionHealth::evaluate(ComputerUseSessionHealthEvaluation {
+                policy,
+                input_state: host.input_events.current().clone(),
+                target_state: host.input_events.target_state().clone(),
+                recording,
+                action_evidence_epoch,
+                transition_sequence,
+                state_changed_during_probe: session_health_state_changed(
+                    evidence_epoch_before,
+                    transition_sequence_before,
+                    action_evidence_epoch,
+                    transition_sequence,
+                ),
+                interrupted,
+                target_probe_failed,
+            });
+            Ok((
+                json!({"type":"session_health", "session_id":session_id, "health":health}),
+                None,
+            ))
+        }
         Request::PollSessionEvents {
             session_id,
             task_grant_id,
@@ -1697,10 +1916,7 @@ pub(super) async fn handle_request(
         Request::StopSession { session_id } => {
             let mut host = take_connection_session(sessions, &session_id)?;
             let result = host.session.stop().await?;
-            Ok((
-                json!({"type":"session_stopped", "session_id":session_id, "cleanup_pending":result["cleanup_pending"].as_bool().unwrap_or(false)}),
-                None,
-            ))
+            Ok((session_stopped_response(&session_id, result), None))
         }
     }
 }

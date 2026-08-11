@@ -19,7 +19,10 @@ pub use contracts::{
 };
 
 #[cfg(windows)]
-pub use wgc::{PersistentWgcCapture, WgcCaptureError};
+pub use wgc::{
+    PersistentWgcCapture, PersistentWgcFrame, WgcCaptureError, WgcCompositorTiming,
+    WgcCompositorTimingUnavailable, WgcFrameMeasurement, WgcPublishedFrameMeasurement,
+};
 #[cfg(windows)]
 pub use windows::{
     UiaSession, activate_window, restore_and_activate_window, snapshot_raw_pointer_input_after_down,

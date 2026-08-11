@@ -11,15 +11,19 @@ mod session_events;
 mod session_identity;
 mod session_state;
 mod task_grant;
+mod wire;
 pub use dcc_cua_protocol::{
     HOST_PROTOCOL_VERSION, MAX_BINARY_FRAME_BYTES, MAX_HOST_CONNECTIONS, MAX_JSON_FRAME_BYTES,
     MAX_PARALLEL_DISCOVERY_REQUESTS, MAX_REQUEST_ID_CHARS,
 };
 use request_handler::handle_request;
 use session_identity::{new_runtime_session_id, rewrite_session_aliases};
-use session_state::{ConnectionSessions, HostDesktopSession, HostLaunchSession, HostSession};
+use session_state::{
+    ConnectionSessions, HostDesktopSession, HostEvidencePublication, HostLaunchSession, HostSession,
+};
 use task_grant::TaskGrant;
 pub use task_grant::{MAX_APPLICATION_LABEL_CHARS, MAX_TASK_GRANT_ID_CHARS};
+use wire::*;
 
 pub const HOST_HELLO_TIMEOUT_MS: u64 = 10_000;
 pub const MAX_POST_SNAPSHOT_DELAY_MS: u64 = 5_000;
@@ -34,7 +38,7 @@ use std::time::{Duration, Instant};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use thiserror::Error;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::Mutex as AsyncMutex;
 use tokio::task::JoinSet;
 use uuid::Uuid;
@@ -48,10 +52,12 @@ use dcc_cua_core::{
     ComputerUseAction, ComputerUseClipboardWriteRequest, ComputerUseDesktopSnapshot,
     ComputerUseDriver, ComputerUseError, ComputerUseErrorCode, ComputerUseImage,
     ComputerUseLiveObservationStartRequest, ComputerUseMenuRequest, ComputerUsePoint,
-    ComputerUseRecordingStartRequest, ComputerUseResult, ComputerUseScreenshot,
-    ComputerUseSessionStartRequest, ComputerUseTargetScope, ComputerUseToolResult,
-    ComputerUseWindowFrameRequest, ComputerUseWindowQuery, ComputerUseWindowWaitRequest,
-    ComputerUseZoomRequest, IndicatorMotionPolicy,
+    ComputerUseRecordingHealth, ComputerUseRecordingStartRequest, ComputerUseResult,
+    ComputerUseScreenshot, ComputerUseSessionHealth, ComputerUseSessionHealthEvaluation,
+    ComputerUseSessionHealthPolicy, ComputerUseSessionStartRequest, ComputerUseSessionStopResult,
+    ComputerUseTargetScope, ComputerUseToolResult, ComputerUseWindowFrameRequest,
+    ComputerUseWindowQuery, ComputerUseWindowWaitRequest, ComputerUseZoomRequest,
+    IndicatorMotionPolicy,
 };
 use dcc_cua_indicator::{broadcast_interrupt, interrupt_generation, interrupt_generation_changed};
 use dcc_cua_shm::SharedImage;
@@ -81,6 +87,7 @@ pub const HOST_CAPABILITIES: &[&str] = &[
     "accessibility_find",
     "state_verification",
     "session_state",
+    "session_health",
     "session_input_state_events",
     "session_target_state_events",
     "session_escalation",
@@ -482,6 +489,13 @@ enum Request {
         session_id: String,
         task_grant_id: String,
         window_capability: String,
+    },
+    SessionHealth {
+        session_id: String,
+        task_grant_id: String,
+        window_capability: String,
+        #[serde(default)]
+        policy: ComputerUseSessionHealthPolicy,
     },
     PollSessionEvents {
         session_id: String,
@@ -1855,209 +1869,6 @@ fn desktop_action_completed_with_snapshot_response(
     }
     response["post_snapshot"] = post_snapshot;
     Ok((response, attachment))
-}
-
-fn target_wire(target: &Value) -> Value {
-    json!({
-        "process_id": target["pid"],
-        "window_handle": target["window_id"],
-        "window_title": target["title"],
-    })
-}
-
-fn error_code(error: &HostError) -> &'static str {
-    match error {
-        HostError::ComputerUse(error) => match error.code {
-            ComputerUseErrorCode::StaleObservation => "stale_observation",
-            ComputerUseErrorCode::UserInterrupted => "user_interrupted",
-            ComputerUseErrorCode::InvalidTarget => "invalid_target",
-            ComputerUseErrorCode::TargetMinimized => "target_minimized",
-            ComputerUseErrorCode::TargetUnavailable => "target_unavailable",
-            ComputerUseErrorCode::BrowserRefused => "browser_refused",
-            ComputerUseErrorCode::ClipboardRefused => "clipboard_refused",
-            ComputerUseErrorCode::RecordingRefused => "recording_refused",
-            ComputerUseErrorCode::CaptureFailed => "capture_failed",
-            ComputerUseErrorCode::InteractiveDesktopUnavailable => {
-                "interactive_desktop_unavailable"
-            }
-            ComputerUseErrorCode::InputFailed => "input_failed",
-            ComputerUseErrorCode::CompletionUnknown => "completion_unknown",
-            ComputerUseErrorCode::InvalidAction => "invalid_request",
-            ComputerUseErrorCode::MissingWindow => "target_unavailable",
-            ComputerUseErrorCode::BackendUnavailable => "backend_unavailable",
-        },
-        HostError::Io(_) => "backend_unavailable",
-        HostError::Protocol(message) if message.contains("version") => "protocol_mismatch",
-        HostError::Protocol(message) if message.contains("raw input") => "raw_input_not_granted",
-        HostError::Protocol(message) if message.contains("application launch") => {
-            "app_launch_not_granted"
-        }
-        HostError::Protocol(message) if message.contains("application termination") => {
-            "app_terminate_not_granted"
-        }
-        HostError::Protocol(message) if message.contains("browser input") => {
-            "browser_input_not_granted"
-        }
-        HostError::Protocol(message) if message.contains("browser preparation") => {
-            "browser_prepare_not_granted"
-        }
-        HostError::Protocol(message) if message.contains("browser download") => {
-            "browser_download_not_granted"
-        }
-        HostError::Protocol(message) if message.contains("clipboard read") => {
-            "clipboard_read_not_granted"
-        }
-        HostError::Protocol(message) if message.contains("clipboard write") => {
-            "clipboard_write_not_granted"
-        }
-        HostError::Protocol(message) if message.contains("recording") => "recording_not_granted",
-        HostError::Protocol(message) if message.contains("native CUA tool calls") => {
-            "native_tool_not_granted"
-        }
-        HostError::Protocol(message) if message.contains("native menu invocation") => {
-            "menu_invoke_not_granted"
-        }
-        HostError::Protocol(message) if message.contains("session escalation") => {
-            "session_escalation_not_granted"
-        }
-        HostError::Protocol(message) if message.contains("already running") => {
-            "request_in_progress"
-        }
-        HostError::Protocol(message)
-            if message.contains("no wait_for") || message.contains("no window_wait") =>
-        {
-            "request_not_found"
-        }
-        HostError::Protocol(message) if message.contains("cancel credentials") => "forbidden",
-        HostError::Protocol(message) if message.contains("accessibility") => "unsupported",
-        HostError::Protocol(_) => "invalid_request",
-    }
-}
-
-fn error_response(code: &str, message: impl Into<String>) -> Value {
-    json!({"type":"error", "code":code, "message":message.into()})
-}
-
-fn parse_request_frame(
-    frame: &[u8],
-) -> Result<(Option<String>, Request), (Option<String>, String)> {
-    let envelope = match serde_json::from_slice::<Value>(frame) {
-        Ok(envelope) => envelope,
-        Err(error) => return Err((None, error.to_string())),
-    };
-    let request_id = match request_id_from(&envelope) {
-        Ok(request_id) => request_id,
-        Err(error) => return Err((None, error)),
-    };
-    serde_json::from_value(envelope)
-        .map(|request| (request_id.clone(), request))
-        .map_err(|error| (request_id, error.to_string()))
-}
-
-fn request_id_from(value: &Value) -> Result<Option<String>, String> {
-    let Some(request_id) = value.get("request_id") else {
-        return Ok(None);
-    };
-    let request_id = request_id
-        .as_str()
-        .ok_or_else(|| "request_id must be a string".to_owned())?;
-    if request_id.is_empty() || request_id.chars().count() > MAX_REQUEST_ID_CHARS {
-        return Err(format!(
-            "request_id must contain 1..{MAX_REQUEST_ID_CHARS} characters"
-        ));
-    }
-    Ok(Some(request_id.to_owned()))
-}
-
-fn with_request_id(mut response: Value, request_id: Option<&str>) -> Value {
-    if let Some(request_id) = request_id {
-        response["request_id"] = Value::String(request_id.to_owned());
-    }
-    response
-}
-
-async fn read_frame<R: AsyncRead + Unpin>(
-    reader: &mut R,
-    max: usize,
-) -> Result<Option<Vec<u8>>, HostError> {
-    let mut prefix = [0_u8; 4];
-    match reader.read_exact(&mut prefix).await {
-        Ok(_) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
-        Err(error) => return Err(error.into()),
-    }
-    let length = u32::from_be_bytes(prefix) as usize;
-    if length == 0 || length > max {
-        return Err(HostError::Protocol(format!(
-            "frame length {length} exceeds the host limit"
-        )));
-    }
-    let mut body = vec![0_u8; length];
-    reader.read_exact(&mut body).await?;
-    Ok(Some(body))
-}
-
-async fn write_json_locked<W: AsyncWrite + Unpin>(
-    writer: &Arc<AsyncMutex<W>>,
-    value: Value,
-) -> Result<(), HostError> {
-    let mut writer = writer.lock().await;
-    write_json(&mut *writer, value).await
-}
-
-async fn write_response_locked<W: AsyncWrite + Unpin>(
-    writer: &Arc<AsyncMutex<W>>,
-    value: Value,
-    attachment: Option<&[u8]>,
-) -> Result<(), HostError> {
-    let mut writer = writer.lock().await;
-    write_response(&mut *writer, value, attachment).await
-}
-
-async fn write_json<W: AsyncWrite + Unpin>(writer: &mut W, value: Value) -> Result<(), HostError> {
-    let body =
-        serde_json::to_vec(&value).map_err(|error| HostError::Protocol(error.to_string()))?;
-    write_frame(writer, &body, MAX_JSON_FRAME_BYTES).await
-}
-
-async fn write_response<W: AsyncWrite + Unpin>(
-    writer: &mut W,
-    value: Value,
-    attachment: Option<&[u8]>,
-) -> Result<(), HostError> {
-    let body =
-        serde_json::to_vec(&value).map_err(|error| HostError::Protocol(error.to_string()))?;
-    write_frame_unflushed(writer, &body, MAX_JSON_FRAME_BYTES).await?;
-    if let Some(bytes) = attachment {
-        write_frame_unflushed(writer, bytes, MAX_BINARY_FRAME_BYTES).await?;
-    }
-    writer.flush().await?;
-    Ok(())
-}
-
-async fn write_frame<W: AsyncWrite + Unpin>(
-    writer: &mut W,
-    body: &[u8],
-    max: usize,
-) -> Result<(), HostError> {
-    write_frame_unflushed(writer, body, max).await?;
-    writer.flush().await?;
-    Ok(())
-}
-
-async fn write_frame_unflushed<W: AsyncWrite + Unpin>(
-    writer: &mut W,
-    body: &[u8],
-    max: usize,
-) -> Result<(), HostError> {
-    if body.is_empty() || body.len() > max || body.len() > u32::MAX as usize {
-        return Err(HostError::Protocol(
-            "frame payload is outside the host limit".into(),
-        ));
-    }
-    writer.write_all(&(body.len() as u32).to_be_bytes()).await?;
-    writer.write_all(body).await?;
-    Ok(())
 }
 
 #[cfg(test)]
