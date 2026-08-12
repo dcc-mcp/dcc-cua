@@ -329,6 +329,13 @@ before input with `interactive_desktop_unavailable`, while
 exact-element Windows UIA operations can continue through their background
 semantic path.
 
+Use `doctor --route visual` when the intended contract is exact-window capture
+plus bounded coordinate input on a custom-rendered DCC or game surface. The
+report keeps the strict aggregate `ready` field and adds independent `routes`
+for `full`, `visual`, and `semantic`; a degraded UIA provider therefore remains
+visible without incorrectly rejecting a healthy WGC/Win32 visual route. The
+default `doctor` behavior remains strict and backward compatible.
+
 `list` accepts optional `--app`, `--pid`, `--window-id`, `--title`, and
 `--on-screen` filters. `--app` is case-insensitive; `--title` is exact and
 bounded, so Core can select a UE/Fab subwindow without receiving the entire

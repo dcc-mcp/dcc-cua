@@ -128,6 +128,7 @@ dcc-cua profile --id maya --pid $pid --window-id $hwnd --surface home --query ne
 ```powershell
 dcc-cua manifest
 dcc-cua doctor
+dcc-cua doctor --route visual
 dcc-cua apps
 dcc-cua list --app maya.exe --on-screen
 dcc-cua snapshot --pid 4242 --window-id 123456 --output before.png
@@ -143,6 +144,11 @@ dcc-cua update --check
 图像传输和推荐启动参数，并明确声明不需要单独 driver。若同一应用有多个窗口，操作时
 必须传入 `--pid` 和 `--window-id`。优先使用观察结果中的 `element_token` 或
 `element_index`，自绘界面才使用坐标。
+
+`doctor` 默认继续执行严格的完整健康检查。对于 Houdini、Unreal 等自绘 DCC 界面，
+可用 `doctor --route visual` 单独验收精确窗口枚举、WGC 截图和受限坐标输入；输出仍会
+保留 UIA 降级信息，并分别报告 `full`、`visual`、`semantic` 三条路由，避免一个挂起的
+UIA provider 错误阻断健康的视觉控制路径。
 
 元素索引和 token 只属于生成它们的那一次无障碍快照，不能与像素快照、其他后端、
 其他窗口或旧持久会话的索引/token 混用。友好的语义 CLI 命令会先获取最新无障碍

@@ -590,10 +590,20 @@ impl ComputerUseDriver {
         };
         let permissions = diagnostic_tool_check(permissions);
         let health = diagnostic_tool_check(health);
-        let ready = driver["success"] == true
+        let base_ready = driver["success"] == true
             && window_inventory["success"] == true
             && permissions["success"] == true
-            && health["success"] == true
+            && health["success"] == true;
+        let visual_ready = base_ready
+            && diagnostic_health_check_passes(&health, "screen_capture_capability")
+            && interactive_desktop["success"] == true
+            && interactive_desktop["observation_ready"] == true
+            && interactive_desktop["input_ready"] == true;
+        let semantic_ready = base_ready && diagnostic_health_check_passes(&health, "ax_capability");
+        // Preserve the strict aggregate while exposing route-specific readiness.
+        // A hung UIA provider must remain visible without incorrectly rejecting
+        // healthy WGC/Win32 control of a custom-rendered DCC surface.
+        let ready = base_ready
             && health["result"]["overall"] == "ok"
             && interactive_desktop["success"] == true
             && interactive_desktop["input_ready"] == true;
@@ -602,6 +612,11 @@ impl ComputerUseDriver {
             "schema_version": 1,
             "backend": "cua-driver-sdk",
             "ready": ready,
+            "routes": {
+                "full": {"ready": ready},
+                "visual": {"ready": visual_ready},
+                "semantic": {"ready": semantic_ready},
+            },
             "checks": {
                 "driver": driver,
                 "window_inventory": window_inventory,
@@ -778,6 +793,18 @@ pub(crate) fn diagnostic_tool_check(result: ComputerUseResult<ComputerUseToolRes
             "message": error.message,
         }),
     }
+}
+
+pub(crate) fn diagnostic_health_check_passes(health: &Value, name: &str) -> bool {
+    health["result"]["checks"]
+        .as_array()
+        .and_then(|checks| {
+            checks
+                .iter()
+                .find(|check| check["name"].as_str() == Some(name))
+        })
+        .and_then(|check| check["status"].as_str())
+        .is_some_and(|status| status == "pass" || status == "skip")
 }
 
 pub(crate) fn tool_schema_from_inventory(

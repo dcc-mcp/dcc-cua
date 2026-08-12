@@ -85,7 +85,7 @@ pub(super) fn print_help() {
   desktop-act --action-json JSON [--session ID] [--output FILE]
   clipboard-read --app APP [--include-text]
   clipboard-write --app APP --text TEXT|--image-path FILE|--file-path FILE
-  doctor [--endpoint PATH|--spawn BINARY]
+  doctor [--route full|visual|semantic] [--endpoint PATH|--spawn BINARY]
   host [--stdio|--endpoint PATH] [--grant existing-profile]
 
 Host uses versioned big-endian JSON frames. Hello version 1 negotiates binary-frame or shared-memory snapshots and supports request_id correlation."#

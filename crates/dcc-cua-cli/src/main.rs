@@ -177,7 +177,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
         "verify" => verify_state(&driver, &flags).await?,
         "act" => act(&driver, &flags).await?,
         "desktop-act" => desktop_act(&driver, &flags).await?,
-        "doctor" => doctor(&driver).await?,
+        "doctor" => doctor(&driver, &flags).await?,
         "profile" => semantic_profile::execute(&driver, &flags).await?,
         friendly if is_friendly_action(friendly) => {
             friendly_action(&driver, &flags, friendly).await?
@@ -522,8 +522,9 @@ async fn host_doctor(flags: &[String]) -> Result<(), Box<dyn std::error::Error>>
     let response = connection.client_mut().doctor().await?;
     println!("{}", serde_json::to_string_pretty(&response.value)?);
     connection.shutdown().await?;
-    if response.value["ready"] != true {
-        return Err("CUA Host diagnostics are not ready".into());
+    let route = doctor_route(flags)?;
+    if !diagnostic_route_ready(&response.value, route) {
+        return Err(format!("CUA Host {route} diagnostics are not ready").into());
     }
     Ok(())
 }
@@ -1865,13 +1866,35 @@ async fn window_state(
     Ok(())
 }
 
-async fn doctor(driver: &ComputerUseDriver) -> Result<(), Box<dyn std::error::Error>> {
+async fn doctor(
+    driver: &ComputerUseDriver,
+    flags: &[String],
+) -> Result<(), Box<dyn std::error::Error>> {
     let report = driver.diagnostics().await;
     println!("{}", serde_json::to_string_pretty(&report)?);
-    if report["ready"] != true {
-        return Err("CUA diagnostics are not ready".into());
+    let route = doctor_route(flags)?;
+    if !diagnostic_route_ready(&report, route) {
+        return Err(format!("CUA {route} diagnostics are not ready").into());
     }
     Ok(())
+}
+
+fn doctor_route(flags: &[String]) -> Result<&str, Box<dyn std::error::Error>> {
+    let route = flag_value(flags, "--route").unwrap_or_else(|| "full".into());
+    match route.as_str() {
+        "full" => Ok("full"),
+        "visual" => Ok("visual"),
+        "semantic" => Ok("semantic"),
+        _ => Err("--route must be full, visual, or semantic".into()),
+    }
+}
+
+fn diagnostic_route_ready(report: &serde_json::Value, route: &str) -> bool {
+    if route == "full" {
+        report["ready"] == true
+    } else {
+        report["routes"][route]["ready"] == true
+    }
 }
 
 async fn maybe_escalate(

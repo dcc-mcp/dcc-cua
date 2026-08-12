@@ -9,6 +9,33 @@ use super::authorization::{existing_profile_grant_requested, host_private_worker
 use super::*;
 
 #[rstest]
+#[case("full", true)]
+#[case("visual", true)]
+#[case("semantic", false)]
+fn doctor_selects_the_requested_readiness_route(#[case] route: &str, #[case] expected: bool) {
+    let report = json!({
+        "ready": true,
+        "routes": {
+            "full": {"ready": false},
+            "visual": {"ready": true},
+            "semantic": {"ready": false}
+        }
+    });
+
+    assert_eq!(diagnostic_route_ready(&report, route), expected);
+}
+
+#[rstest]
+fn doctor_route_rejects_unknown_contracts() {
+    assert_eq!(doctor_route(&[]).unwrap(), "full");
+    assert_eq!(
+        doctor_route(&["--route".into(), "visual".into()]).unwrap(),
+        "visual"
+    );
+    assert!(doctor_route(&["--route".into(), "pixels".into()]).is_err());
+}
+
+#[rstest]
 fn input_state_methods_are_counted_as_nonvisual_semantic_observations() {
     assert!(is_semantic_observation_request("get_input_state"));
     assert!(is_semantic_observation_request("poll_session_events"));
