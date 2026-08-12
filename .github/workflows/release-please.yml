@@ -33,9 +33,11 @@ jobs:
         run: |
           $config = Get-Content release-please-config.json -Raw | ConvertFrom-Json
           $manifest = Get-Content .release-please-manifest.json -Raw | ConvertFrom-Json
-          if ($config.'release-type' -ne 'rust') { throw 'release-type must remain rust' }
+          if ($config.'release-type' -ne 'simple') { throw 'release-type must use the root release anchor' }
           if ($config.packages.'.'.component -ne 'dcc-cua') { throw 'unexpected release component' }
           if ($manifest.'.' -notmatch '^\d+\.\d+\.\d+$') { throw 'manifest version must be valid semver' }
+          $version = (Get-Content version.txt -Raw).Trim()
+          if ($version -ne $manifest.'.') { throw 'version anchor must match the release manifest' }
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.95.0
