@@ -7,6 +7,7 @@ use super::actions::{
     default_activated_action_to_foreground, menu_request, window_frame_request,
 };
 use super::authorization::{existing_profile_grant_requested, host_private_worker_options};
+use super::host_lifecycle::validate_host_version;
 use super::*;
 
 #[rstest]
@@ -1319,6 +1320,45 @@ fn activated_actions_use_foreground_and_fresh_semantic_tokens() {
     action.delivery_mode = Some("background".into());
     default_activated_action_to_foreground(&strings(["--activate"]), &mut action);
     assert_eq!(action.delivery_mode.as_deref(), Some("background"));
+}
+
+#[rstest]
+#[case("background")]
+#[case("foreground")]
+fn friendly_actions_honor_explicit_delivery_mode(#[case] mode: &str) {
+    let action = action_from_command(
+        "press",
+        &strings(["--key", "SPACE", "--delivery-mode", mode]),
+    )
+    .unwrap();
+    assert_eq!(action.delivery_mode.as_deref(), Some(mode));
+}
+
+#[test]
+fn friendly_actions_reject_unknown_delivery_mode() {
+    let error = action_from_command(
+        "press",
+        &strings(["--key", "SPACE", "--delivery-mode", "automatic"]),
+    )
+    .unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "--delivery-mode must be background or foreground"
+    );
+}
+
+#[test]
+fn host_ensure_requires_the_cli_host_version() {
+    validate_host_version(&json!({"host_version": env!("CARGO_PKG_VERSION")})).unwrap();
+
+    let mismatch = validate_host_version(&json!({"host_version": "0.5.2"})).unwrap_err();
+    assert!(mismatch.contains("running 0.5.2"));
+    assert!(mismatch.contains(env!("CARGO_PKG_VERSION")));
+
+    assert_eq!(
+        validate_host_version(&json!({})).unwrap_err(),
+        "Host ping did not report host_version"
+    );
 }
 
 #[rstest]

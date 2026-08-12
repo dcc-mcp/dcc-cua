@@ -291,6 +291,7 @@ pub(super) fn action_from_command(
         .into(),
         ..ComputerUseAction::default()
     };
+    action.delivery_mode = parse_delivery_mode(flags)?;
     match command {
         "click" | "double-click" | "right-click" | "toggle" => {
             apply_element_selector(&mut action, flags, command)?;
@@ -459,6 +460,16 @@ pub(super) fn action_from_command(
         _ => unreachable!("friendly action command is validated before parsing"),
     }
     Ok(action)
+}
+
+fn parse_delivery_mode(flags: &[String]) -> Result<Option<String>, Box<dyn std::error::Error>> {
+    let Some(mode) = flag_value(flags, "--delivery-mode") else {
+        return Ok(None);
+    };
+    if !matches!(mode.as_str(), "background" | "foreground") {
+        return Err("--delivery-mode must be background or foreground".into());
+    }
+    Ok(Some(mode))
 }
 
 fn value_flag(command: &str) -> &'static str {

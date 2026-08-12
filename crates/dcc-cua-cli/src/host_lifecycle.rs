@@ -14,6 +14,7 @@ pub(crate) async fn ensure(
     host_args: &[String],
 ) -> Result<Value, Box<dyn std::error::Error>> {
     if let Ok(ping) = ping(&endpoint).await {
+        validate_host_version(&ping)?;
         return Ok(ready_response("existing", &endpoint, None, ping));
     }
 
@@ -24,6 +25,10 @@ pub(crate) async fn ensure(
     let deadline = Instant::now() + HOST_START_TIMEOUT;
     loop {
         if let Ok(ping) = ping(&endpoint).await {
+            if let Err(error) = validate_host_version(&ping) {
+                stop_failed_child(&mut child);
+                return Err(error.into());
+            }
             let running = child.try_wait()?.is_none();
             return Ok(ready_response(
                 if running { "started" } else { "existing" },
@@ -43,6 +48,19 @@ pub(crate) async fn ensure(
 
     stop_failed_child(&mut child);
     Err(format!("Host endpoint did not become ready: {endpoint}").into())
+}
+
+pub(super) fn validate_host_version(ping: &Value) -> Result<(), String> {
+    let expected = env!("CARGO_PKG_VERSION");
+    let actual = ping["host_version"]
+        .as_str()
+        .ok_or_else(|| "Host ping did not report host_version".to_owned())?;
+    if actual != expected {
+        return Err(format!(
+            "Host version mismatch at the selected endpoint: running {actual}, CLI {expected}; stop the stale Host and run host-ensure again"
+        ));
+    }
+    Ok(())
 }
 
 fn host_command(binary: &std::path::Path, host_args: &[String]) -> Command {
