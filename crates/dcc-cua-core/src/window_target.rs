@@ -327,3 +327,54 @@ pub(crate) fn windows_window_process_id(window_id: u64) -> ComputerUseResult<u32
     }
     Ok(process_id)
 }
+
+/// Detect a visible same-process owned window that has taken foreground input
+/// from the exact granted HWND (for example a native or Qt modal file dialog).
+///
+/// This is intentionally detection-only. Following the returned HWND without
+/// a new exact-window grant would silently widen the action scope.
+#[cfg(windows)]
+pub(crate) fn windows_foreground_owned_takeover(
+    target: &WindowTarget,
+) -> ComputerUseResult<Option<WindowTarget>> {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GW_OWNER, GetForegroundWindow, GetWindow, GetWindowThreadProcessId,
+    };
+
+    let foreground = unsafe { GetForegroundWindow() };
+    let target_hwnd = target.window_id as *mut std::ffi::c_void;
+    if foreground.is_null() || foreground == target_hwnd {
+        return Ok(None);
+    }
+
+    let mut foreground_pid = 0_u32;
+    unsafe { GetWindowThreadProcessId(foreground, &mut foreground_pid) };
+    if foreground_pid != target.pid {
+        return Ok(None);
+    }
+
+    let mut owner = foreground;
+    let mut owned_by_target = false;
+    for _ in 0..16 {
+        owner = unsafe { GetWindow(owner, GW_OWNER) };
+        if owner.is_null() {
+            break;
+        }
+        if owner == target_hwnd {
+            owned_by_target = true;
+            break;
+        }
+    }
+    if !owned_by_target {
+        return Ok(None);
+    }
+
+    resolve_windows_target(
+        &ComputerUseTargetScope {
+            process_id: Some(target.pid),
+            window_handle: Some(foreground as usize as u64),
+            window_title: None,
+        },
+        foreground as usize as u64,
+    )
+}

@@ -1,5 +1,4 @@
 use super::*;
-
 mod gates;
 #[cfg(any(windows, test))]
 use gates::run_gated_preinvalidated_window_mutation;
@@ -749,6 +748,7 @@ impl ComputerUseSession {
                 "the exact target window changed after the screenshot",
             ));
         }
+        self.reject_owned_modal_takeover(&target)?;
         if action_requires_physical_input_desktop(action, &observation) {
             self.require_observed_input_available()?;
         }

@@ -13,6 +13,7 @@ use std::pin::Pin;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 
+mod modal_takeover;
 mod recording;
 mod visual_only;
 

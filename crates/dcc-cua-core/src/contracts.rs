@@ -532,6 +532,10 @@ pub enum ComputerUseErrorCode {
     InvalidTarget,
     TargetMinimized,
     TargetUnavailable,
+    /// A same-process owned window has taken over foreground input from the
+    /// exact granted HWND. Callers must explicitly rebind to the suggested
+    /// window; the runtime never widens the target implicitly.
+    TargetModalChanged,
     StaleObservation,
     UserInterrupted,
     InvalidAction,
