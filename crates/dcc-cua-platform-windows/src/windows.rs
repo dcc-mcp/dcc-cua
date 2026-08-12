@@ -17,9 +17,9 @@ use windows_sys::Win32::{
         WindowsAndMessaging::{
             BringWindowToTop, GUITHREADINFO, GetForegroundWindow, GetGUIThreadInfo, GetWindowRect,
             GetWindowThreadProcessId, HWND_NOTOPMOST, HWND_TOP, HWND_TOPMOST, IsIconic, IsWindow,
-            IsWindowVisible, PostMessageW, SW_RESTORE, SWP_ASYNCWINDOWPOS, SWP_NOMOVE, SWP_NOSIZE,
-            SWP_NOZORDER, SWP_SHOWWINDOW, SetForegroundWindow, SetWindowPos, ShowWindowAsync,
-            WM_CLOSE,
+            IsWindowVisible, PostMessageW, SMTO_ABORTIFHUNG, SW_RESTORE, SWP_ASYNCWINDOWPOS,
+            SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW, SendMessageTimeoutW,
+            SetForegroundWindow, SetWindowPos, ShowWindowAsync, WM_CLOSE, WM_NULL,
         },
     },
 };
@@ -32,6 +32,7 @@ use crate::{
 
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(15);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
+const ACTIVATION_INPUT_SYNC_TIMEOUT_MS: u32 = 250;
 const STDERR_LIMIT: u64 = 64 * 1024;
 const BACKEND: &str = include_str!("../assets/windows_uia_backend.ps1");
 const HELPERS: &str = include_str!("../assets/windows_uia_helpers.ps1");
@@ -403,9 +404,38 @@ pub fn activate_window(
 ) -> Result<(), UiaError> {
     input_gated_window_mutation(activation_available, || activate_window_after_gate(target))?;
     let expected = require_available_window_handle(target, "activation final validation")?;
+    synchronize_activated_input_queue(expected)?;
     if unsafe { GetForegroundWindow() } != expected {
         return Err(UiaError::BackendUnavailable(
             "the exact target was no longer foreground at activation final validation".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn synchronize_activated_input_queue(
+    expected: windows_sys::Win32::Foundation::HWND,
+) -> Result<(), UiaError> {
+    let mut message_result = 0;
+    let synchronized = unsafe {
+        SendMessageTimeoutW(
+            expected,
+            WM_NULL,
+            0,
+            0,
+            SMTO_ABORTIFHUNG,
+            ACTIVATION_INPUT_SYNC_TIMEOUT_MS,
+            &mut message_result,
+        )
+    } != 0;
+    if !synchronized {
+        return Err(UiaError::BackendUnavailable(
+            "the exact target did not process its foreground activation before input".into(),
+        ));
+    }
+    if unsafe { GetForegroundWindow() } != expected {
+        return Err(UiaError::BackendUnavailable(
+            "the exact target lost foreground while synchronizing activation input".into(),
         ));
     }
     Ok(())
