@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.1](https://github.com/dcc-mcp/dcc-cua/compare/v1.0.0...v1.0.1) (2026-08-12)
+
+
+### Bug Fixes
+
+* align install manifest identity ([#72](https://github.com/dcc-mcp/dcc-cua/issues/72)) ([493194e](https://github.com/dcc-mcp/dcc-cua/commit/493194e8a126e3c80e8b86342b3dfe3219174c8e))
+
 ## [1.0.0](https://github.com/dcc-mcp/dcc-cua/compare/v0.6.0...v1.0.0) (2026-08-12)
 
 
