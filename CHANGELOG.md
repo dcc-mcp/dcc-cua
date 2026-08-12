@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.0](https://github.com/dcc-mcp/dcc-cua/compare/v1.0.3...v1.1.0) (2026-08-12)
+
+
+### Features
+
+* add restore activate command ([#78](https://github.com/dcc-mcp/dcc-cua/issues/78)) ([5865b42](https://github.com/dcc-mcp/dcc-cua/commit/5865b4293e3b93a7565653d702f0ecfa9e28eb93))
+
 ## [1.0.3](https://github.com/dcc-mcp/dcc-cua/compare/v1.0.2...v1.0.3) (2026-08-12)
 
 
