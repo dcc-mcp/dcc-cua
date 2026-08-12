@@ -15,7 +15,7 @@ def build_manifest(archive: Path, version: str, target: str, url: str) -> dict:
     digest = hashlib.sha256(archive.read_bytes()).hexdigest()
     return {
         "schema_version": 1,
-        "product": "dcc-cua",
+        "name": "dcc-cua",
         "version": version,
         "target": target,
         "asset": {"name": archive.name, "url": url, "sha256": digest},
