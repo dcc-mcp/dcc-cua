@@ -1774,7 +1774,7 @@ async fn windows_endpoint_sessions_keep_background_uia_and_distinguish_injected_
             .find(|(client_index, ..)| *client_index == 0)
             .expect("first endpoint client session");
     let active_client = *active_client;
-    let activation = clients[active_client]
+    let bootstrap_activation = clients[active_client]
         .request(
             "change_window_state",
             json!({
@@ -1786,9 +1786,9 @@ async fn windows_endpoint_sessions_keep_background_uia_and_distinguish_injected_
         )
         .await;
     assert!(
-        activation.is_ok()
-            || matches!(&activation, Err(HostClientError::Remote { code, .. }) if code == "input_failed"),
-        "unexpected activation result before physical focus: {activation:?}"
+        bootstrap_activation.is_ok()
+            || matches!(&bootstrap_activation, Err(HostClientError::Remote { code, .. }) if code == "input_failed"),
+        "unexpected bootstrap activation result: {bootstrap_activation:?}"
     );
     physically_focus_window(*window_handle);
     client_request(
@@ -1855,6 +1855,22 @@ async fn windows_endpoint_sessions_keep_background_uia_and_distinguish_injected_
             alive.value
         );
     }
+
+    let activation = clients[active_client]
+        .request(
+            "change_window_state",
+            json!({
+                "session_id": first_session_id,
+                "task_grant_id": first_grant_id,
+                "window_capability": first_capability,
+                "operation": "activate"
+            }),
+        )
+        .await;
+    assert!(
+        activation.is_ok(),
+        "exact-window activation must cross a competing foreground thread: {activation:?}"
+    );
 
     let interrupted = client_request(&mut clients[active_client], "interrupt_all", json!({})).await;
     assert_eq!(interrupted.value["scope"], "host_process");
