@@ -5,7 +5,7 @@ use sha2::Digest;
 use super::actions::{
     action_from_command, action_result_value, bind_fresh_element_token,
     default_activated_action_to_foreground, map_visible_snapshot_coordinates, menu_request,
-    visible_snapshot_dimensions, window_frame_request,
+    require_exact_window_target, visible_snapshot_dimensions, window_frame_request,
 };
 use super::authorization::{existing_profile_grant_requested, host_private_worker_options};
 use super::host_lifecycle::validate_host_version;
@@ -1296,6 +1296,14 @@ fn friendly_visual_action_maps_the_visible_snapshot_into_the_fresh_observation()
     map_visible_snapshot_coordinates(&mut action, Some((1568, 931)), &observation).unwrap();
     assert_eq!(action.x, Some(1318.0 * 3840.0 / 1568.0));
     assert_eq!(action.y, Some(700.0 * 2280.0 / 931.0));
+}
+
+#[rstest]
+fn restore_activate_requires_an_exact_pid_and_window_pair() {
+    assert!(require_exact_window_target(&strings(["--pid", "42", "--window-id", "7"])).is_ok());
+    assert!(require_exact_window_target(&strings(["--pid", "42"])).is_err());
+    assert!(require_exact_window_target(&strings(["--window-id", "7"])).is_err());
+    assert!(require_exact_window_target(&strings(["--app", "TheBazaar.exe"])).is_err());
 }
 
 #[rstest]

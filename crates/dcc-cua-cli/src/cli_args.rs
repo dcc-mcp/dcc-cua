@@ -81,6 +81,7 @@ pub(super) fn print_help() {
   launch --name NAME|--bundle-id ID|--aumid ID|--path PATH|--launch-path PATH [--url URL] [--arg ARG] [--new-instance] [--start-minimized]
   terminate --app APP --confirm
   snapshot --app APP|--pid PID|--window-id ID|--title TITLE [--activate] [--escalate --escalation-reason REASON] [--escalation-detail NOTE] [--output FILE]
+  restore-activate --pid PID --window-id ID
   set-window-frame --app APP|--pid PID --window-id ID --x N --y N --width N --height N
   invoke-menu --app APP|--pid PID --window-id ID --menu TOP [--menu CHILD ...]
   act --app APP --action-json JSON [--output FILE]
@@ -102,7 +103,7 @@ Host uses versioned big-endian JSON frames. Hello version 1 negotiates binary-fr
         "Friendly window actions accept --delivery-mode background|foreground. x/y and drag paths are non-negative coordinates in the latest exact-window screenshot (not UIA virtual-desktop bounds). When coordinates come from a previously returned resized PNG, pass --observation-width and --observation-height together so the fresh action observation preserves that visible coordinate space. Desktop actions use signed virtual-desktop coordinates. Actions: click [--x X --y Y|--element-index N|--element-token TOKEN] [--button left|middle|right --duration-ms N], double-click/right-click/toggle [--x X --y Y|--element-index N|--element-token TOKEN] [--button left|middle|right], drag --from-x X --from-y Y --to-x X --to-y Y [--button B --modifier M --duration-ms N --steps N], type [--text TEXT] [--focused|--x X --y Y|--element-index N], set-text/set-value, press [--key K] [--modifier M] [--x X --y Y|--element-index N], hotkey [--key K ...] [--x X --y Y], scroll [--scroll-x N|--scroll-y N] [--by line|page] [--x X --y Y|--element-index N], move."
     );
     println!(
-        "Semantic tree: accessibility --app APP [--max-elements N] [--max-depth N]. Window: window-state|activate|set-window-frame|invoke-menu --app APP."
+        "Semantic tree: accessibility --app APP [--max-elements N] [--max-depth N]. Window: window-state|activate|restore-activate|set-window-frame|invoke-menu. restore-activate requires an exact --pid/--window-id pair."
     );
 }
 

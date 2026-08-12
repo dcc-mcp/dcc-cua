@@ -17,8 +17,8 @@ mod update;
 
 use actions::{
     act, action_result_value, activate_window, desktop_act, friendly_action, invoke_menu,
-    is_friendly_action, semantic_post_snapshot_value, set_window_frame, verify_state,
-    window_post_snapshot_value, zoom,
+    is_friendly_action, restore_activate_window, semantic_post_snapshot_value, set_window_frame,
+    verify_state, window_post_snapshot_value, zoom,
 };
 use cli_args::*;
 
@@ -176,6 +176,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
         "accessibility" => accessibility_snapshot(&driver, &flags).await?,
         "window-state" => window_state(&driver, &flags).await?,
         "activate" => activate_window(&driver, &flags).await?,
+        "restore-activate" => restore_activate_window(&driver, &flags).await?,
         "set-window-frame" => set_window_frame(&driver, &flags).await?,
         "invoke-menu" => invoke_menu(&driver, &flags).await?,
         "zoom" => zoom(&driver, &flags).await?,
