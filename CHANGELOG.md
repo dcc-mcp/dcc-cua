@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.1](https://github.com/dcc-mcp/dcc-cua/compare/v0.5.0...v0.5.1) (2026-08-12)
+
+
+### Bug Fixes
+
+* expose route-specific diagnostics readiness ([#56](https://github.com/dcc-mcp/dcc-cua/issues/56)) ([9b35f96](https://github.com/dcc-mcp/dcc-cua/commit/9b35f967f330310761d83f74bb3ffed19ae5bedd))
+
 ## [0.5.0](https://github.com/dcc-mcp/dcc-cua/compare/v0.4.0...v0.5.0) (2026-08-12)
 
 
