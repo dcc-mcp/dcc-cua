@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.5.3](https://github.com/dcc-mcp/dcc-cua/compare/v0.5.2...v0.5.3) (2026-08-12)
+
+
+### Bug Fixes
+
+* follow owned modal windows with explicit rebind ([#64](https://github.com/dcc-mcp/dcc-cua/issues/64)) ([8066f2e](https://github.com/dcc-mcp/dcc-cua/commit/8066f2e9fd57f36b9ed17d78ee20f035eaa28422))
+* **windows:** synchronize foreground activation before input ([#66](https://github.com/dcc-mcp/dcc-cua/issues/66)) ([9e00a47](https://github.com/dcc-mcp/dcc-cua/commit/9e00a473c5f2fe210d0751b027b8028455ac445d))
+
 ## [0.5.2](https://github.com/dcc-mcp/dcc-cua/compare/v0.5.1...v0.5.2) (2026-08-12)
 
 
