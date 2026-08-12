@@ -1819,17 +1819,33 @@ async fn windows_endpoint_sessions_keep_background_uia_and_distinguish_injected_
     )
     .await;
 
+    let (competing_client, competing_session, competing_grant, competing_capability, _) = sessions
+        .iter()
+        .find(|(client_index, ..)| *client_index != active_client)
+        .expect("competing WPF session");
+    let competing_activation = client_request(
+        &mut clients[*competing_client],
+        "change_window_state",
+        json!({
+            "session_id": competing_session,
+            "task_grant_id": competing_grant,
+            "window_capability": competing_capability,
+            "operation": "activate"
+        }),
+    )
+    .await;
+    assert_eq!(
+        competing_activation.value["success"], true,
+        "{}",
+        competing_activation.value
+    );
+
     windows_activation::assert_first_key_reaches_retained_focus(
         &mut clients[active_client],
         first_session_id,
         first_grant_id,
         first_capability,
         &escape_snapshot,
-        sessions
-            .iter()
-            .find(|(client_index, ..)| *client_index != active_client)
-            .map(|(_, _, _, _, window_handle)| *window_handle)
-            .expect("competing WPF window"),
     )
     .await;
 

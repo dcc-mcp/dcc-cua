@@ -8,7 +8,6 @@ pub(super) async fn assert_first_key_reaches_retained_focus(
     grant_id: &str,
     capability: &str,
     initial_snapshot: &HostResponse,
-    competing_window: u64,
 ) {
     let input_match = client_request(
         client,
@@ -49,7 +48,6 @@ pub(super) async fn assert_first_key_reaches_retained_focus(
     .await;
     assert_eq!(focused.value["success"], true, "{}", focused.value);
 
-    physically_focus_window(competing_window);
     let reactivated = client_request(
         client,
         "change_window_state",
