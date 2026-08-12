@@ -333,8 +333,11 @@ Use `doctor --route visual` when the intended contract is exact-window capture
 plus bounded coordinate input on a custom-rendered DCC or game surface. The
 report keeps the strict aggregate `ready` field and adds independent `routes`
 for `full`, `visual`, and `semantic`; a degraded UIA provider therefore remains
-visible without incorrectly rejecting a healthy WGC/Win32 visual route. The
-default `doctor` behavior remains strict and backward compatible.
+visible without incorrectly rejecting a healthy WGC/Win32 visual route. On
+Windows, a timed-out global UIA desktop enumeration is reported as a degraded
+`exact_window_uia_fallback` semantic route when UIA permission remains present;
+the fallback still requires an exact PID/HWND and a fresh fenced observation.
+The default `doctor` behavior remains strict and backward compatible.
 
 `list` accepts optional `--app`, `--pid`, `--window-id`, `--title`, and
 `--on-screen` filters. `--app` is case-insensitive; `--title` is exact and
@@ -347,7 +350,11 @@ intended for launch/switch orchestration before a target-bound action.
 elements and 16 levels). `accessibility` reads a larger semantic tree without
 transferring screenshot pixels when the agent needs to locate a deeply nested
 control. Prefer the returned `element_token`/`element_index` over guessed
-pixels, then verify the post-action state. `window-state`, `activate`,
+pixels, then verify the post-action state. UIA element `bounds` are explicitly
+tagged as `virtual_desktop`, while window pixel actions use non-negative
+coordinates from the latest exact-window screenshot. Desktop actions use signed
+virtual-desktop coordinates, including negative X/Y on Windows monitors left of
+or above the primary display. `window-state`, `activate`,
 `set-window-frame`, and `invoke-menu` operate on the same exact target scope.
 Long-lived recording remains on the persistent Host session so its start/stop
 lifecycle is not lost when a one-shot CLI process exits.
@@ -811,6 +818,10 @@ observation and verify application state.
 pixel fallback only inside the existing exact-window scope and requires the
 separate `allow_session_escalation: true` grant plus one of CUA's bounded
 escalation reasons; it does not widen the session to desktop control.
+The stable reasons are `ax_tree_pixel_mismatch`, `background_delivery_failed`,
+`foreground_ineffective`, `no_window_target`, `uia_timeout`, and `other`.
+Use `--escalation-detail` for the separate bounded audit note; `manifest`
+publishes the same enum and meanings for machine discovery.
 `cursor_tool` exposes `move_cursor`, `set_agent_cursor_enabled`,
 `set_agent_cursor_motion`, `set_agent_cursor_theme`, and
 `get_agent_cursor_state`; `move_cursor` is forced to `scope: "window"`, and the

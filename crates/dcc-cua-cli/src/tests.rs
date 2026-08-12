@@ -157,6 +157,41 @@ fn ordinary_subcommands_are_not_help_requests() {
 }
 
 #[rstest]
+fn escalation_help_lists_the_typed_policy_contract() {
+    let help = escalation_reason_help();
+    for reason in dcc_cua_core::COMPUTER_USE_ESCALATION_REASONS {
+        assert!(help.contains(reason.value));
+        assert!(help.contains(reason.meaning));
+    }
+    assert!(help.contains("uia_timeout"));
+    assert!(help.contains("escalation-detail"));
+}
+
+#[rstest]
+fn manifest_advertises_session_escalation_reasons() {
+    let escalation = &manifest::document()["host"]["session_escalation"];
+    assert_eq!(escalation["method"], "escalate_session");
+    assert_eq!(escalation["requires_explicit_grant"], true);
+    assert_eq!(
+        escalation["reason"]["enum"],
+        json!(
+            dcc_cua_core::COMPUTER_USE_ESCALATION_REASONS
+                .iter()
+                .map(|reason| reason.value)
+                .collect::<Vec<_>>()
+        )
+    );
+    assert_eq!(
+        escalation["reason"]["recommended"]["exact_window_uia_timeout"],
+        "uia_timeout"
+    );
+    assert_eq!(
+        escalation["fresh_observation_required_after_escalation"],
+        true
+    );
+}
+
+#[rstest]
 fn showcase_is_added_only_to_open_session_grants() {
     let directory = std::env::temp_dir().join(format!(
         "dcc-cua-showcase-test-{}-{}",

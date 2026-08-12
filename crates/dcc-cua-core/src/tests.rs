@@ -511,6 +511,37 @@ fn diagnostic_health_routes_distinguish_visual_capture_from_uia() {
 }
 
 #[rstest]
+fn global_uia_enumeration_timeout_keeps_exact_window_semantics_degraded() {
+    let permissions = json!({"result": {"uia": true}});
+    let health = json!({
+        "result": {
+            "checks": [{
+                "name": "ax_capability",
+                "status": "fail",
+                "data": {
+                    "error_detail": "UI Automation desktop enumeration exceeded 2000ms; a UIA provider may be hung."
+                }
+            }]
+        }
+    });
+
+    let route = diagnostic_semantic_route(true, &permissions, &health, true);
+    assert_eq!(route["ready"], true);
+    assert_eq!(route["degraded"], true);
+    assert_eq!(route["mode"], "exact_window_uia_fallback");
+    assert_eq!(route["global_enumeration_ready"], false);
+
+    assert_eq!(
+        diagnostic_semantic_route(true, &permissions, &health, false)["ready"],
+        false
+    );
+    assert_eq!(
+        diagnostic_semantic_route(true, &json!({"result": {"uia": false}}), &health, true)["ready"],
+        false
+    );
+}
+
+#[rstest]
 fn platform_managed_desktop_preserves_the_portable_input_contract() {
     let diagnostic = platform_managed_diagnostic();
 
@@ -1209,7 +1240,12 @@ fn native_tool_boundary_rejects_reserved_and_dedicated_routes() {
     assert!(native_tool_allowed_globally("get_accessibility_tree"));
     assert!(!native_tool_allowed_globally("launch_app"));
     assert!(validate_escalation_request("other", Some("reason")).is_ok());
-    assert!(validate_escalation_request("unknown", None).is_err());
+    assert!(validate_escalation_request("uia_timeout", None).is_ok());
+    let escalation_error = validate_escalation_request("unknown", None).unwrap_err();
+    assert!(escalation_error.message.contains("allowed values"));
+    for reason in COMPUTER_USE_ESCALATION_REASONS {
+        assert!(escalation_error.message.contains(reason.value));
+    }
     assert!(cursor_tool_allowed("get_agent_cursor_state"));
     assert!(cursor_tool_allowed("move_cursor"));
 }
@@ -1864,6 +1900,33 @@ fn desktop_actions_are_screen_scoped_and_observation_bound() {
     assert_eq!(type_args["_tool"], "type_text");
     assert_eq!(type_args["delay_ms"], 20);
     assert!(type_args.get("type_chars_only").is_none());
+
+    let negative_virtual_desktop_action = ComputerUseAction {
+        action: "click".into(),
+        x: Some(-2_400.0),
+        y: Some(80.0),
+        ..Default::default()
+    };
+    validate_action(&negative_virtual_desktop_action).unwrap();
+    let negative_args =
+        desktop_action_arguments(&negative_virtual_desktop_action, "desktop-session");
+    assert_eq!(negative_args["scope"], "desktop");
+    assert_eq!(negative_args["x"], -2_400.0);
+    assert_eq!(negative_args["y"], 80.0);
+}
+
+#[rstest]
+fn window_actions_reject_negative_screenshot_local_coordinates() {
+    let action = ComputerUseAction {
+        action: "click".into(),
+        x: Some(-10.0),
+        y: Some(20.0),
+        ..Default::default()
+    };
+
+    validate_action(&action).unwrap();
+    let error = validate_window_action_coordinates(&action).unwrap_err();
+    assert!(error.message.contains("screenshot-local"));
 }
 
 #[rstest]
