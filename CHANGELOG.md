@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.0.0](https://github.com/dcc-mcp/dcc-cua/compare/v0.6.0...v1.0.0) (2026-08-12)
+
+
+### ⚠ BREAKING CHANGES
+
+* generalize profile packages and context ([#71](https://github.com/dcc-mcp/dcc-cua/issues/71))
+
+### Features
+
+* add profile startup context ([#69](https://github.com/dcc-mcp/dcc-cua/issues/69)) ([898941e](https://github.com/dcc-mcp/dcc-cua/commit/898941e8043fbf7c940aa7584a02843853810ea0))
+* generalize profile packages and context ([#71](https://github.com/dcc-mcp/dcc-cua/issues/71)) ([d65b28e](https://github.com/dcc-mcp/dcc-cua/commit/d65b28e205c016ae6c0cc8608f83cc6888c3309c))
+
 ## [0.6.0](https://github.com/dcc-mcp/dcc-cua/compare/v0.5.3...v0.6.0) (2026-08-12)
 
 
