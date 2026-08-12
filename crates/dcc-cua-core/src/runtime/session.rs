@@ -63,12 +63,6 @@ fn mutation_known_failure(context: &str, error: cua_driver_sdk::DriverError) -> 
     )
 }
 
-#[cfg(windows)]
-fn visual_only_start_degradation(error: &ComputerUseError) -> Option<String> {
-    (error.code == ComputerUseErrorCode::InputFailed && error.message.contains("timed out"))
-        .then(|| error.message.clone())
-}
-
 #[cfg(any(windows, test))]
 fn local_mutation_attempt_failure(error: ComputerUseError) -> ComputerUseError {
     ComputerUseError::new(
@@ -1819,46 +1813,6 @@ impl ComputerUseSession {
         }
     }
 
-    /// Request a polite close for the exact Windows PID/HWND target.
-    /// This never terminates the owning process.
-    pub async fn close_window(&mut self) -> ComputerUseResult<Value> {
-        self.ensure_active()?;
-        if self.scope.process_id.is_none() || self.scope.window_handle.is_none() {
-            return Err(ComputerUseError::new(
-                ComputerUseErrorCode::InvalidTarget,
-                "close requires an exact process_id and window_handle grant binding",
-            ));
-        }
-        #[cfg(windows)]
-        {
-            let target = self.require_observed_target_available().await?;
-            self.invalidate_action_observations();
-            dcc_cua_platform_windows::post_close_window(
-                dcc_cua_platform_windows::UiaTarget {
-                    process_id: target.pid,
-                    window_handle: target.window_id,
-                },
-                || Ok(()),
-            )
-            .map_err(|error| {
-                map_windows_window_mutation_error("close the exact Windows target", error)
-            })?;
-            return Ok(json!({
-                "success": true,
-                "effect": "confirmed",
-                "target": {"process_id": target.pid, "window_handle": target.window_id},
-                "cua": {"path": "windows_exact_post_wm_close"},
-                "process_terminated": false,
-                "fresh_observation_required": true,
-            }));
-        }
-        #[cfg(not(windows))]
-        Err(ComputerUseError::new(
-            ComputerUseErrorCode::BackendUnavailable,
-            "exact polite window close is currently available only on Windows",
-        ))
-    }
-
     /// Explicitly restore and activate only the exact PID/HWND bound to this
     /// session. This operation never runs implicitly from an action retry.
     pub async fn restore_activate(&mut self) -> ComputerUseResult<Value> {
@@ -1888,9 +1842,7 @@ impl ComputerUseSession {
                         process_id: expected.pid,
                         window_handle: expected.window_id,
                     },
-                    || {
-                        windows_platform_input_gate("restore_pre_mutation")
-                    },
+                    || windows_platform_input_gate("restore_pre_mutation"),
                     || windows_platform_input_gate("activate_pre_mutation"),
                 )
                 .map_err(|error| {
@@ -1955,34 +1907,6 @@ impl ComputerUseSession {
             "termination": termination,
             "cleanup": cleanup,
         }))
-    }
-
-    pub fn status(&self) -> Value {
-        json!({
-            "active": self.active,
-            "escalated": self.escalated,
-            "session_id": self.session_id,
-            "target": self.target,
-            "banner": self.banner_status(),
-            "marker": self.marker,
-            "latest_observation_id": self.observation.as_ref().map(|value| &value.observation_id),
-            "backend": "cua-driver-sdk",
-            "upstream_session": self.upstream_session_status(),
-        })
-    }
-
-    fn upstream_session_status(&self) -> Value {
-        match &self.upstream_session_state {
-            UpstreamSessionState::Inactive => json!({"state": "inactive", "degraded": false}),
-            UpstreamSessionState::Active => json!({"state": "active", "degraded": false}),
-            UpstreamSessionState::VisualOnly { reason } => json!({
-                "state": "visual_only",
-                "degraded": true,
-                "reason": reason,
-                "requires_explicit_escalation": true,
-                "scope": "exact_window",
-            }),
-        }
     }
 
     async fn resolve_target(&self) -> ComputerUseResult<WindowTarget> {

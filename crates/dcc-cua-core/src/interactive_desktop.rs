@@ -236,18 +236,8 @@ pub(crate) fn windows_diagnostic_with_thread_fallback(
     windows_diagnostic_base(state, input_desktop, input_surface, foreground)
 }
 
-#[cfg(test)]
-pub(crate) fn windows_diagnostic(
-    state: Result<i32, String>,
-    input_desktop: Result<Option<&str>, &str>,
-    input_surface: Result<(), &str>,
-    foreground: bool,
-) -> Value {
-    windows_diagnostic_base(state, input_desktop, input_surface, foreground)
-}
-
 #[cfg(any(windows, test))]
-fn windows_diagnostic_base(
+pub(crate) fn windows_diagnostic_base(
     state: Result<i32, String>,
     input_desktop: Result<Option<&str>, &str>,
     input_surface: Result<(), &str>,

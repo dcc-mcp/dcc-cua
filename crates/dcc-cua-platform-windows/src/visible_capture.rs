@@ -27,7 +27,7 @@ fn capture_error(message: impl Into<String>) -> VisibleWindowCaptureError {
     VisibleWindowCaptureError(message.into())
 }
 
-fn obscured_from_covered_samples(covered_samples: usize) -> bool {
+pub(crate) fn obscured_from_covered_samples(covered_samples: usize) -> bool {
     covered_samples >= 2
 }
 
@@ -175,26 +175,5 @@ pub fn capture_visible_window(
             width: width as u32,
             height: height as u32,
         })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use rstest::rstest;
-
-    #[rstest]
-    #[case(0, false)]
-    #[case(1, false)]
-    #[case(2, true)]
-    #[case(5, true)]
-    fn visible_crop_requires_at_least_four_of_five_target_samples(
-        #[case] covered_samples: usize,
-        #[case] expected_obscured: bool,
-    ) {
-        assert_eq!(
-            obscured_from_covered_samples(covered_samples),
-            expected_obscured
-        );
     }
 }

@@ -3,6 +3,46 @@ use super::action_result::validated_action_effect;
 use super::*;
 
 impl ComputerUseSession {
+    /// Request a polite close for the exact Windows PID/HWND target.
+    /// This never terminates the owning process.
+    pub async fn close_window(&mut self) -> ComputerUseResult<Value> {
+        self.ensure_active()?;
+        if self.scope.process_id.is_none() || self.scope.window_handle.is_none() {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::InvalidTarget,
+                "close requires an exact process_id and window_handle grant binding",
+            ));
+        }
+        #[cfg(windows)]
+        {
+            let target = self.require_observed_target_available().await?;
+            self.invalidate_action_observations();
+            dcc_cua_platform_windows::post_close_window(
+                dcc_cua_platform_windows::UiaTarget {
+                    process_id: target.pid,
+                    window_handle: target.window_id,
+                },
+                || Ok(()),
+            )
+            .map_err(|error| {
+                map_windows_window_mutation_error("close the exact Windows target", error)
+            })?;
+            Ok(json!({
+                "success": true,
+                "effect": "confirmed",
+                "target": {"process_id": target.pid, "window_handle": target.window_id},
+                "cua": {"path": "windows_exact_post_wm_close"},
+                "process_terminated": false,
+                "fresh_observation_required": true,
+            }))
+        }
+        #[cfg(not(windows))]
+        Err(ComputerUseError::new(
+            ComputerUseErrorCode::BackendUnavailable,
+            "exact polite window close is currently available only on Windows",
+        ))
+    }
+
     /// Set and independently revalidate the exact target window frame through CUA.
     pub async fn set_window_frame(
         &mut self,
@@ -34,7 +74,7 @@ impl ComputerUseSession {
             })?;
             let target = self.require_observed_target_available().await?;
             self.target = Some(target.clone());
-            return Ok(json!({
+            Ok(json!({
                 "success": true,
                 "effect": "confirmed",
                 "requested_frame": request,
@@ -43,7 +83,7 @@ impl ComputerUseSession {
                 "cua": {"path": "windows_exact_set_window_pos"},
                 "text": "Set and verified the exact Windows PID/HWND frame.",
                 "degraded": false,
-            }));
+            }))
         }
 
         #[cfg(not(windows))]

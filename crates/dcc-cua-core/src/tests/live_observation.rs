@@ -35,7 +35,7 @@ fn terminal_live_observation_stream_is_never_reused() {
 async fn live_observation_reuse_rechecks_the_desktop_and_exact_target() {
     let reusable = json!({"active": true, "terminal_reason": null});
     let active_unknown_desktop =
-        windows_diagnostic(Ok(0), Err("OpenInputDesktop: access denied"), Ok(()), false);
+        windows_diagnostic_base(Ok(0), Err("OpenInputDesktop: access denied"), Ok(()), false);
     let target_checks = Cell::new(0_u32);
 
     let (disposition, target) = preflight_live_observation_start(
@@ -53,8 +53,8 @@ async fn live_observation_reuse_rechecks_the_desktop_and_exact_target() {
     assert_eq!(target_checks.get(), 1);
 
     for denied_diagnostic in [
-        windows_diagnostic(Ok(4), Ok(Some("Default")), Ok(()), false),
-        windows_diagnostic(Ok(0), Ok(Some("Winlogon")), Ok(()), false),
+        windows_diagnostic_base(Ok(4), Ok(Some("Default")), Ok(()), false),
+        windows_diagnostic_base(Ok(0), Ok(Some("Winlogon")), Ok(()), false),
     ] {
         let denied_target_checks = Cell::new(0_u32);
         let error = preflight_live_observation_start(
@@ -141,9 +141,9 @@ fn windows_capture_failure_policy_distinguishes_retry_from_terminal_fences() {
     let capture_failed =
         || ComputerUseError::new(ComputerUseErrorCode::CaptureFailed, "transient WGC failure");
     let active_unknown_desktop =
-        windows_diagnostic(Ok(0), Err("OpenInputDesktop: access denied"), Ok(()), false);
-    let disconnected = windows_diagnostic(Ok(4), Ok(Some("Default")), Ok(()), false);
-    let secure_desktop = windows_diagnostic(Ok(0), Ok(Some("Winlogon")), Ok(()), false);
+        windows_diagnostic_base(Ok(0), Err("OpenInputDesktop: access denied"), Ok(()), false);
+    let disconnected = windows_diagnostic_base(Ok(4), Ok(Some("Default")), Ok(()), false);
+    let secure_desktop = windows_diagnostic_base(Ok(0), Ok(Some("Winlogon")), Ok(()), false);
 
     let cases = [
         (

@@ -34,6 +34,7 @@ pub(crate) use recording::{
     call_recording_tool_without_refresh, probe_recording_state,
 };
 mod session;
+mod session_status;
 #[allow(unused_imports)]
 pub(crate) use session::{
     ensure_target_available_for_action, gated_cursor_operation, gated_desktop_observation,
@@ -871,7 +872,16 @@ struct LiveObservationStartOutcome {
 enum UpstreamSessionState {
     Inactive,
     Active,
-    VisualOnly { reason: String },
+    #[cfg(windows)]
+    VisualOnly {
+        reason: String,
+    },
+}
+
+#[cfg(windows)]
+fn visual_only_start_degradation(error: &ComputerUseError) -> Option<String> {
+    (error.code == ComputerUseErrorCode::InputFailed && error.message.contains("timed out"))
+        .then(|| error.message.clone())
 }
 
 pub struct ComputerUseSession {

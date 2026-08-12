@@ -12,6 +12,22 @@ use super::{
     WindowsWindowIdentity,
     snapshot::{TOKEN_PREFIX, normalize, resolve_index},
 };
+use crate::visible_capture::obscured_from_covered_samples;
+
+#[rstest]
+#[case(0, false)]
+#[case(1, false)]
+#[case(2, true)]
+#[case(5, true)]
+fn visible_crop_requires_at_least_four_of_five_target_samples(
+    #[case] covered_samples: usize,
+    #[case] expected_obscured: bool,
+) {
+    assert_eq!(
+        obscured_from_covered_samples(covered_samples),
+        expected_obscured
+    );
+}
 
 #[cfg(windows)]
 use super::PersistentWgcCapture;

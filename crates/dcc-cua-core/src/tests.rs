@@ -21,7 +21,8 @@ use crate::driver_factory::{
 use crate::interactive_desktop::{
     platform_managed_diagnostic, require_desktop_observation_from,
     require_exact_window_observation_from, require_input_available_from,
-    require_window_activation_from, windows_diagnostic, windows_diagnostic_with_thread_fallback,
+    require_window_activation_from, windows_diagnostic_base,
+    windows_diagnostic_with_thread_fallback,
 };
 use crate::live_observation::{
     CaptureFailureDisposition, LiveObservation, LiveObservationFence, LiveObservationFrame,
@@ -455,7 +456,7 @@ fn platform_managed_desktop_preserves_the_portable_input_contract() {
 
 #[rstest]
 fn active_default_input_desktop_without_foreground_is_ready() {
-    let diagnostic = windows_diagnostic(Ok(0), Ok(Some("Default")), Ok(()), false);
+    let diagnostic = windows_diagnostic_base(Ok(0), Ok(Some("Default")), Ok(()), false);
 
     assert_eq!(diagnostic["success"], true);
     assert_eq!(diagnostic["code"], "interactive_desktop_ready");
@@ -474,7 +475,7 @@ fn active_default_input_desktop_without_foreground_is_ready() {
 
 #[rstest]
 fn unreadable_input_surface_blocks_input_without_stopping_observation() {
-    let diagnostic = windows_diagnostic(
+    let diagnostic = windows_diagnostic_base(
         Ok(0),
         Ok(Some("Default")),
         Err("GetCursorPos failed: Access is denied. (os error 5)"),
@@ -500,7 +501,7 @@ fn unreadable_input_surface_blocks_input_without_stopping_observation() {
 
 #[rstest]
 fn active_secure_input_desktop_fails_closed() {
-    let diagnostic = windows_diagnostic(Ok(0), Ok(Some("Winlogon")), Ok(()), false);
+    let diagnostic = windows_diagnostic_base(Ok(0), Ok(Some("Winlogon")), Ok(()), false);
 
     assert_eq!(diagnostic["success"], false);
     assert_eq!(diagnostic["code"], "interactive_desktop_unavailable");
@@ -513,7 +514,7 @@ fn active_secure_input_desktop_fails_closed() {
 #[rstest]
 fn input_desktop_probe_error_fails_closed() {
     let diagnostic =
-        windows_diagnostic(Ok(0), Err("OpenInputDesktop: access denied"), Ok(()), false);
+        windows_diagnostic_base(Ok(0), Err("OpenInputDesktop: access denied"), Ok(()), false);
 
     assert_eq!(diagnostic["success"], false);
     assert_eq!(diagnostic["observation_ready"], true);
@@ -561,7 +562,7 @@ fn denied_input_desktop_probe_accepts_only_a_verified_default_thread_desktop() {
 #[rstest]
 fn unreadable_input_desktop_only_allows_an_exact_window_observation_attempt() {
     let diagnostic =
-        windows_diagnostic(Ok(0), Err("OpenInputDesktop: access denied"), Ok(()), false);
+        windows_diagnostic_base(Ok(0), Err("OpenInputDesktop: access denied"), Ok(()), false);
 
     assert!(require_exact_window_observation_from(&diagnostic).is_ok());
     let desktop_error = require_desktop_observation_from(&diagnostic)
@@ -575,8 +576,8 @@ fn unreadable_input_desktop_only_allows_an_exact_window_observation_attempt() {
 #[rstest]
 fn exact_window_activation_uses_the_observation_gate_not_the_raw_input_gate() {
     let unreadable_default_desktop =
-        windows_diagnostic(Ok(0), Err("OpenInputDesktop: access denied"), Ok(()), true);
-    let secure_desktop = windows_diagnostic(Ok(0), Ok(Some("Winlogon")), Ok(()), false);
+        windows_diagnostic_base(Ok(0), Err("OpenInputDesktop: access denied"), Ok(()), true);
+    let secure_desktop = windows_diagnostic_base(Ok(0), Ok(Some("Winlogon")), Ok(()), false);
 
     assert!(require_window_activation_from(&unreadable_default_desktop).is_ok());
     assert!(require_window_activation_from(&secure_desktop).is_err());
@@ -584,7 +585,7 @@ fn exact_window_activation_uses_the_observation_gate_not_the_raw_input_gate() {
 
 #[rstest]
 fn missing_input_desktop_identity_fails_closed() {
-    let diagnostic = windows_diagnostic(Ok(0), Ok(None), Ok(()), false);
+    let diagnostic = windows_diagnostic_base(Ok(0), Ok(None), Ok(()), false);
 
     assert_eq!(diagnostic["success"], false);
     assert_eq!(diagnostic["code"], "interactive_desktop_unknown");
@@ -604,7 +605,7 @@ fn windows_session_state_fences_raw_input(
     #[case] code: &str,
     #[case] state_name: &str,
 ) {
-    let diagnostic = windows_diagnostic(state, Ok(Some("Default")), Ok(()), foreground);
+    let diagnostic = windows_diagnostic_base(state, Ok(Some("Default")), Ok(()), foreground);
     assert_eq!(diagnostic["success"], success);
     assert_eq!(diagnostic["code"], code);
     assert_eq!(diagnostic["observation_ready"], success);
@@ -616,7 +617,7 @@ fn windows_session_state_fences_raw_input(
 
 #[rstest]
 fn windows_session_query_failure_is_not_ready() {
-    let diagnostic = windows_diagnostic(
+    let diagnostic = windows_diagnostic_base(
         Err("access denied".into()),
         Ok(Some("Default")),
         Ok(()),
