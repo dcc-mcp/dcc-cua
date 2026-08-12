@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.5.2](https://github.com/dcc-mcp/dcc-cua/compare/v0.5.1...v0.5.2) (2026-08-12)
+
+
+### Bug Fixes
+
+* clarify Windows CUA fallback contracts ([7c35660](https://github.com/dcc-mcp/dcc-cua/commit/7c356600b00c871fc0635dfafd3f809431898afe))
+* **windows:** activate exact windows across input threads ([#63](https://github.com/dcc-mcp/dcc-cua/issues/63)) ([936704a](https://github.com/dcc-mcp/dcc-cua/commit/936704ae93df42c871c314f313b1cd4d9b88e0ea))
+
 ## [0.5.1](https://github.com/dcc-mcp/dcc-cua/compare/v0.5.0...v0.5.1) (2026-08-12)
 
 
