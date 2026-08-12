@@ -231,7 +231,11 @@ impl UiaSession {
             "max_depth": max_depth.clamp(1, 64),
             "max_nodes": max_nodes.clamp(1, 5_000),
         });
-        let raw = self.request(&payload)?;
+        let first = self.request(&payload);
+        let raw = retry_read_only_after_backend_failure(first, || {
+            self.worker = None;
+            self.request(&payload)
+        })?;
         ensure_ok(&raw)?;
         let (value, state) = normalize(&raw)?;
         self.snapshot = Some(state);
@@ -291,6 +295,16 @@ impl UiaSession {
             .as_mut()
             .expect("worker was initialized")
             .request(payload)
+    }
+}
+
+pub(crate) fn retry_read_only_after_backend_failure<T>(
+    first: Result<T, UiaError>,
+    retry: impl FnOnce() -> Result<T, UiaError>,
+) -> Result<T, UiaError> {
+    match first {
+        Err(UiaError::BackendUnavailable(_)) => retry(),
+        result => result,
     }
 }
 
