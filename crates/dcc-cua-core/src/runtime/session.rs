@@ -1,5 +1,4 @@
 use super::*;
-
 mod gates;
 #[cfg(any(windows, test))]
 use gates::run_gated_preinvalidated_window_mutation;
@@ -749,21 +748,7 @@ impl ComputerUseSession {
                 "the exact target window changed after the screenshot",
             ));
         }
-        #[cfg(windows)]
-        if let Some(modal) = crate::window_target::windows_foreground_owned_takeover(&target)? {
-            // No activation or input has happened. Keep the old exact scope
-            // intact and require the caller to close/reopen against this HWND.
-            // Dropping the old banner avoids falsely advertising control of
-            // the blocked parent while the modal owns input.
-            self.control_banner = None;
-            return Err(ComputerUseError::new(
-                ComputerUseErrorCode::TargetModalChanged,
-                format!(
-                    "a same-process owned window has taken over input; action_attempted=false; input_sent=false; automatic_rebind=false; explicit_rebind_required=true; suggested_target={}",
-                    serde_json::to_string(&modal).unwrap_or_else(|_| "{}".into())
-                ),
-            ));
-        }
+        self.reject_owned_modal_takeover(&target)?;
         if action_requires_physical_input_desktop(action, &observation) {
             self.require_observed_input_available()?;
         }

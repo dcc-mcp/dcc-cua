@@ -378,17 +378,3 @@ pub(crate) fn windows_foreground_owned_takeover(
         foreground as usize as u64,
     )
 }
-
-#[cfg(test)]
-pub(crate) fn owned_foreground_takeover_relation(
-    target_window: u64,
-    target_pid: u32,
-    foreground_window: u64,
-    foreground_pid: u32,
-    owner_chain: &[u64],
-) -> bool {
-    foreground_window != 0
-        && foreground_window != target_window
-        && foreground_pid == target_pid
-        && owner_chain.contains(&target_window)
-}

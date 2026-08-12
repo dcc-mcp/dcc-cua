@@ -1,6 +1,30 @@
 use super::*;
 
 impl ComputerUseSession {
+    pub(super) fn reject_owned_modal_takeover(
+        &mut self,
+        target: &WindowTarget,
+    ) -> ComputerUseResult<()> {
+        #[cfg(windows)]
+        if let Some(modal) = crate::window_target::windows_foreground_owned_takeover(target)? {
+            // Detection never widens the exact target grant. Clear the stale
+            // parent Banner and require a fresh explicit PID/HWND bind.
+            self.control_banner = None;
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::TargetModalChanged,
+                format!(
+                    "a same-process owned window has taken over input; action_attempted=false; input_sent=false; automatic_rebind=false; explicit_rebind_required=true; suggested_target={}",
+                    serde_json::to_string(&modal).unwrap_or_else(|_| "{}".into())
+                ),
+            ));
+        }
+        #[cfg(not(windows))]
+        let _ = target;
+        Ok(())
+    }
+}
+
+impl ComputerUseSession {
     pub async fn screenshot(&mut self) -> ComputerUseResult<ComputerUseScreenshot> {
         self.screenshot_with_bounds(DEFAULT_SNAPSHOT_MAX_ELEMENTS, DEFAULT_SNAPSHOT_MAX_DEPTH)
             .await
