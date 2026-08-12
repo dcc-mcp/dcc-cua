@@ -25,6 +25,13 @@ invent a game-specific driver or bypass the exact-window Host boundary.
 
 ## Required setup
 
+For an installed semantic Profile that declares `startup_context`, run
+`dcc-cua profile match` and then `dcc-cua profile context` with the current
+catalog content ID before opening the control session. Read the stable rules
+and UI atlas first. Activate a seasonal playbook only on an exact catalog
+fence; a stale or missing playbook must fail closed to base rules and request a
+maintenance refresh.
+
 1. Start the named game visibly. On Windows, confirm the exact process and HWND
    with `dcc-cua list --app <game.exe> --on-screen`.
 2. Run `dcc-cua doctor` and keep the reported interactive desktop/input state.

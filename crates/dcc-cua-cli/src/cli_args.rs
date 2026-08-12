@@ -71,6 +71,7 @@ pub(super) fn print_help() {
   profile install PACKAGE_DIR [--replace] [--profile-store DIR]
   profile uninstall ID --confirm [--profile-store DIR]
   profile match --app APP [--title TITLE]
+  profile context --id PROFILE --catalog-content-id ID [--hero HERO] [--season ID] [--profile-store DIR] [--knowledge-root DIR]
   profile --id ue|maya|fab|... [--profile-file PATH] [--app APP] [--surface ID] [--query TARGET] [--action ACTION] [--activate] [--max-elements N] [--max-depth N]
   profile-state --id PROFILE|--profile-file PATH [--source ID] [--etag ETAG] [--watch] [--poll-ms N] [--max-updates N]
   update [--check]

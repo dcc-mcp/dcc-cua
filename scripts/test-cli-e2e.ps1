@@ -14,6 +14,7 @@ if ($PSVersionTable.PSVersion.Major -ge 6) {
 }
 $endpointRuntimeDir = $null
 $originalXdgRuntimeDir = $env:XDG_RUNTIME_DIR
+$profileStore = $null
 
 function Invoke-BinaryJson {
     param([string[]]$Arguments)
@@ -118,6 +119,37 @@ if ($manifest.host.snapshot_transports -notcontains "shared_memory" -or
     $manifest.host.capabilities -notcontains "host_diagnostics" -or
     $manifest.host.capabilities -notcontains "session_scoped_application_lifecycle") {
     throw "manifest omitted required Host capabilities"
+}
+
+$profileStore = Join-Path ([System.IO.Path]::GetTempPath()) "dcc-cua-profile-$([guid]::NewGuid().ToString('N'))"
+$profilePackage = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..\examples\profiles\the-bazaar")).Path
+$profileValidation = Invoke-BinaryJson -Arguments @(
+    "profile", "validate", $profilePackage,
+    "--profile-store", $profileStore
+)
+if ($profileValidation.id -ne "the-bazaar" -or
+    $profileValidation.capabilities -notcontains "startup_context") {
+    throw "The Bazaar profile package did not validate its startup context capability"
+}
+$profileInstallation = Invoke-BinaryJson -Arguments @(
+    "profile", "install", $profilePackage,
+    "--profile-store", $profileStore
+)
+if ($profileInstallation.id -ne "the-bazaar") {
+    throw "The Bazaar profile package installation failed"
+}
+$profileContext = Invoke-BinaryJson -Arguments @(
+    "profile", "context",
+    "--id", "the-bazaar",
+    "--catalog-content-id", "sha256:e2e-unmatched-catalog",
+    "--hero", "Pygmalien",
+    "--profile-store", $profileStore
+)
+if ($profileContext.profileId -ne "the-bazaar" -or
+    $null -eq $profileContext.baseRules -or
+    $profileContext.selection -ne "none" -or
+    $profileContext.requiresRefresh -ne $true) {
+    throw "profile context did not fail closed for an unmatched catalog"
 }
 
 $batchRequest = @(
@@ -366,6 +398,9 @@ finally {
 Write-Host "CLI E2E passed for ${expectedOs}: self-contained SDK runtime, manifest, diagnostics, session lifecycle, idempotent Host ensure, a ${streamBurstCount}-request long-lived discovery burst, bounded endpoint batch/stream Host IPC, error recovery, apps, and $($toolNames.Count) CUA tools."
 }
 finally {
+    if ($null -ne $profileStore -and (Test-Path -LiteralPath $profileStore)) {
+        Remove-Item -LiteralPath $profileStore -Recurse -Force
+    }
     if (-not $isWindowsHost) {
         if ($null -eq $originalXdgRuntimeDir) {
             Remove-Item Env:XDG_RUNTIME_DIR -ErrorAction SilentlyContinue

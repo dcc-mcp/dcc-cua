@@ -1,7 +1,7 @@
 {
   "schema_version": 3,
   "id": "the-bazaar",
-  "profile_version": "1.0.0",
+  "profile_version": "1.1.0",
   "application": {"family": "the-bazaar", "versions": []},
   "display_name": "The Bazaar",
   "selectors": [
