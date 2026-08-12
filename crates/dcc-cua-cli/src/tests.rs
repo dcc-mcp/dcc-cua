@@ -4,7 +4,8 @@ use sha2::Digest;
 
 use super::actions::{
     action_from_command, action_result_value, bind_fresh_element_token,
-    default_activated_action_to_foreground, menu_request, window_frame_request,
+    default_activated_action_to_foreground, map_visible_snapshot_coordinates, menu_request,
+    visible_snapshot_dimensions, window_frame_request,
 };
 use super::authorization::{existing_profile_grant_requested, host_private_worker_options};
 use super::host_lifecycle::validate_host_version;
@@ -1269,6 +1270,56 @@ fn friendly_actions_build_bounded_cua_requests() {
         8
     );
     assert!(bounded_u32(&strings(["--max-depth", "65"]), "--max-depth", 64, 64).is_err());
+}
+
+#[rstest]
+fn friendly_visual_action_maps_the_visible_snapshot_into_the_fresh_observation() {
+    let mut action = ComputerUseAction {
+        action: "double_click".into(),
+        x: Some(1318.0),
+        y: Some(700.0),
+        ..Default::default()
+    };
+    let observation = ComputerUseObservation {
+        observation_id: "fresh".into(),
+        window_handle: 7,
+        process_id: 42,
+        window_title: "Houdini".into(),
+        width: 3840,
+        height: 2280,
+        source_rect: [0, 0, 3840, 2280],
+        capture_backend: "dcc-cua-wgc-exact-window".into(),
+        capture_provenance: json!({"pixels_captured": true}),
+        session_id: "session".into(),
+    };
+
+    map_visible_snapshot_coordinates(&mut action, Some((1568, 931)), &observation).unwrap();
+    assert_eq!(action.x, Some(1318.0 * 3840.0 / 1568.0));
+    assert_eq!(action.y, Some(700.0 * 2280.0 / 931.0));
+}
+
+#[rstest]
+fn visible_snapshot_dimensions_require_a_complete_positive_pair() {
+    assert!(visible_snapshot_dimensions(&strings(["--observation-width", "1568"])).is_err());
+    assert!(
+        visible_snapshot_dimensions(&strings([
+            "--observation-width",
+            "0",
+            "--observation-height",
+            "931",
+        ]))
+        .is_err()
+    );
+    assert_eq!(
+        visible_snapshot_dimensions(&strings([
+            "--observation-width",
+            "1568",
+            "--observation-height",
+            "931",
+        ]))
+        .unwrap(),
+        Some((1568, 931))
+    );
 }
 
 #[rstest]
