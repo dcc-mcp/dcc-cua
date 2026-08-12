@@ -6,7 +6,6 @@
 ### Features
 
 * **host:** advertise multi-agent session concurrency ([6a6cfab](https://github.com/dcc-mcp/dcc-cua/commit/6a6cfab5a54e06e08f0fa0ebfde80859263d5ade))
-* **host:** advertise multi-agent session concurrency ([2599acb](https://github.com/dcc-mcp/dcc-cua/commit/2599acb0f825b5b7bc69d42b822b9399f9ac588c))
 
 ## [0.5.3](https://github.com/dcc-mcp/dcc-cua/compare/v0.5.2...v0.5.3) (2026-08-12)
 
