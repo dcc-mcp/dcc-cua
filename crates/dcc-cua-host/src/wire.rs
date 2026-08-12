@@ -76,6 +76,9 @@ pub(super) fn error_code(error: &HostError) -> &'static str {
         HostError::Protocol(message) if message.contains("session escalation") => {
             "session_escalation_not_granted"
         }
+        HostError::Protocol(message) if message.contains("connection session limit reached") => {
+            "session_limit_reached"
+        }
         HostError::Protocol(message) if message.contains("already running") => {
             "request_in_progress"
         }

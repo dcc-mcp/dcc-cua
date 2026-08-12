@@ -905,6 +905,18 @@ fn manifest_is_a_machine_readable_core_launch_contract() {
         manifest["host"]["max_connections"],
         dcc_cua_host::MAX_HOST_CONNECTIONS
     );
+    assert_eq!(
+        manifest["host"]["session_concurrency"]["max_sessions_per_connection"],
+        dcc_cua_host::MAX_SESSIONS_PER_CONNECTION
+    );
+    assert_eq!(
+        manifest["host"]["session_concurrency"]["model"],
+        "one_connection_per_agent"
+    );
+    assert_eq!(
+        manifest["host"]["session_concurrency"]["raw_input_arbitration"],
+        "host_global_fifo"
+    );
     assert_eq!(manifest["host"]["hello_timeout_ms"], 10_000);
     assert_eq!(manifest["host"]["max_parallel_discovery_requests"], 32);
     assert_eq!(

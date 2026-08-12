@@ -15,7 +15,7 @@ mod wait;
 mod wire;
 pub use dcc_cua_protocol::{
     HOST_PROTOCOL_VERSION, MAX_BINARY_FRAME_BYTES, MAX_HOST_CONNECTIONS, MAX_JSON_FRAME_BYTES,
-    MAX_PARALLEL_DISCOVERY_REQUESTS, MAX_REQUEST_ID_CHARS,
+    MAX_PARALLEL_DISCOVERY_REQUESTS, MAX_REQUEST_ID_CHARS, MAX_SESSIONS_PER_CONNECTION,
 };
 use request_handler::handle_request;
 use session_identity::{new_runtime_session_id, rewrite_session_aliases};
@@ -71,6 +71,7 @@ pub const HOST_CAPABILITIES: &[&str] = &[
     "exact_window_capabilities",
     "exact_window_state",
     "connection_scoped_sessions",
+    "multi_agent_sessions",
     "isolated_runtime_sessions",
     "observation_fencing",
     "action_post_snapshot",
