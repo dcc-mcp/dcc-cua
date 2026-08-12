@@ -34,8 +34,8 @@ jobs:
           $config = Get-Content release-please-config.json -Raw | ConvertFrom-Json
           $manifest = Get-Content .release-please-manifest.json -Raw | ConvertFrom-Json
           if ($config.'release-type' -ne 'rust') { throw 'release-type must remain rust' }
-          if ($config.packages.'crates/dcc-cua-cli'.component -ne 'dcc-cua') { throw 'unexpected release component' }
-          if ($manifest.'crates/dcc-cua-cli' -notmatch '^\d+\.\d+\.\d+$') { throw 'manifest version must be valid semver' }
+          if ($config.packages.'.'.component -ne 'dcc-cua') { throw 'unexpected release component' }
+          if ($manifest.'.' -notmatch '^\d+\.\d+\.\d+$') { throw 'manifest version must be valid semver' }
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.95.0
@@ -47,8 +47,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
-      release_created: ${{ steps.release.outputs['crates/dcc-cua-cli--release_created'] == 'true' || (github.event_name == 'workflow_dispatch' && inputs.release_tag != '') }}
-      tag_name: ${{ steps.release.outputs['crates/dcc-cua-cli--tag_name'] || inputs.release_tag }}
+      release_created: ${{ steps.release.outputs.release_created == 'true' || (github.event_name == 'workflow_dispatch' && inputs.release_tag != '') }}
+      tag_name: ${{ steps.release.outputs.tag_name || inputs.release_tag }}
     steps:
       - uses: googleapis/release-please-action@v5
         id: release
@@ -63,7 +63,7 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_VERSION: ${{ steps.release.outputs['crates/dcc-cua-cli--version'] }}
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
         run: |
           $releasePr = $null
           for ($attempt = 0; $attempt -lt 6 -and -not $releasePr; $attempt++) {

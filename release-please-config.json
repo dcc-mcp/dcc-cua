@@ -8,7 +8,7 @@
     }
   ],
   "packages": {
-    "crates/dcc-cua-cli": {
+    ".": {
       "release-type": "rust",
       "component": "dcc-cua"
     }
