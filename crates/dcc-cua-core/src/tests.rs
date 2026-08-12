@@ -492,6 +492,25 @@ fn diagnostics_prefer_upstream_structured_content() {
 }
 
 #[rstest]
+fn diagnostic_health_routes_distinguish_visual_capture_from_uia() {
+    let health = json!({
+        "result": {
+            "checks": [
+                {"name": "screen_capture_capability", "status": "pass"},
+                {"name": "ax_capability", "status": "fail"}
+            ]
+        }
+    });
+
+    assert!(diagnostic_health_check_passes(
+        &health,
+        "screen_capture_capability"
+    ));
+    assert!(!diagnostic_health_check_passes(&health, "ax_capability"));
+    assert!(!diagnostic_health_check_passes(&health, "missing"));
+}
+
+#[rstest]
 fn platform_managed_desktop_preserves_the_portable_input_contract() {
     let diagnostic = platform_managed_diagnostic();
 
