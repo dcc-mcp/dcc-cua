@@ -1,11 +1,12 @@
 use std::fs;
 
+use rstest::rstest;
 use serde_json::json;
 use tempfile::tempdir;
 
 use super::{select_playbook, validate_owned_document};
 
-#[test]
+#[rstest]
 fn exact_catalog_and_hero_select_user_playbook() {
     let package = tempdir().unwrap();
     let user = tempdir().unwrap();
@@ -45,7 +46,7 @@ fn exact_catalog_and_hero_select_user_playbook() {
     assert!(result.playbook.is_some());
 }
 
-#[test]
+#[rstest]
 fn catalog_mismatch_fails_closed() {
     let package = tempdir().unwrap();
     let user = tempdir().unwrap();
@@ -64,7 +65,7 @@ fn catalog_mismatch_fails_closed() {
     assert!(result.playbook.is_none());
 }
 
-#[test]
+#[rstest]
 fn owned_document_rejects_wrong_profile() {
     let error = validate_owned_document(
         &json!({"schemaVersion": 1, "profileId": "other"}),
