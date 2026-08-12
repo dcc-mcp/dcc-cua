@@ -18,6 +18,34 @@ pub(super) async fn activate_window(
     Ok(())
 }
 
+pub(super) async fn restore_activate_window(
+    driver: &ComputerUseDriver,
+    flags: &[String],
+) -> Result<(), Box<dyn std::error::Error>> {
+    require_exact_window_target(flags)?;
+    let scope = select_scope(driver, flags).await?;
+    let app = application_label(flags);
+    let session_id =
+        flag_value(flags, "--session").unwrap_or_else(|| "dcc-cua-restore-activate-cli".into());
+    let mut session = driver.session(scope, app, session_id)?;
+    session.start().await?;
+    let result = session.restore_activate().await;
+    let stop_result = session.stop().await;
+    let recovery = result?;
+    stop_result?;
+    println!("{}", serde_json::to_string_pretty(&recovery)?);
+    Ok(())
+}
+
+pub(super) fn require_exact_window_target(
+    flags: &[String],
+) -> Result<(), Box<dyn std::error::Error>> {
+    if flag_value(flags, "--pid").is_none() || flag_value(flags, "--window-id").is_none() {
+        return Err("restore-activate requires both --pid and --window-id".into());
+    }
+    Ok(())
+}
+
 pub(super) async fn set_window_frame(
     driver: &ComputerUseDriver,
     flags: &[String],
