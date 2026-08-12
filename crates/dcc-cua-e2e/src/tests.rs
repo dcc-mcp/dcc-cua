@@ -1835,7 +1835,7 @@ async fn windows_endpoint_sessions_keep_background_uia_and_distinguish_injected_
     )
     .await;
     assert_eq!(
-        competing_activation.value["success"], true,
+        competing_activation.value["result"]["success"], true,
         "{}",
         competing_activation.value
     );

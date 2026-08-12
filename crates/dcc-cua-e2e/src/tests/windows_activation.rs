@@ -59,7 +59,11 @@ pub(super) async fn assert_first_key_reaches_retained_focus(
         }),
     )
     .await;
-    assert_eq!(reactivated.value["success"], true, "{}", reactivated.value);
+    assert_eq!(
+        reactivated.value["result"]["success"], true,
+        "{}",
+        reactivated.value
+    );
 
     let select_snapshot = snapshot(client, session_id, grant_id, capability).await;
     let selected = client_request(
