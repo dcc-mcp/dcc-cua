@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.3](https://github.com/dcc-mcp/dcc-cua/compare/v1.0.2...v1.0.3) (2026-08-12)
+
+
+### Bug Fixes
+
+* **cli:** preserve visible snapshot coordinate space ([#76](https://github.com/dcc-mcp/dcc-cua/issues/76)) ([e925bf3](https://github.com/dcc-mcp/dcc-cua/commit/e925bf30a73780840610da38352096fa7819f1b1))
+
 ## [1.0.2](https://github.com/dcc-mcp/dcc-cua/compare/v1.0.1...v1.0.2) (2026-08-12)
 
 
