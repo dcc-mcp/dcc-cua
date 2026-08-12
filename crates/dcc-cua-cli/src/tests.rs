@@ -1,5 +1,6 @@
 use rstest::rstest;
 use serde_json::json;
+use sha2::Digest;
 
 use super::actions::{
     action_from_command, action_result_value, bind_fresh_element_token,
@@ -872,7 +873,7 @@ fn host_jsonl_metrics_checkpoint_is_readable_before_eof() {
 }
 
 #[rstest]
-fn updater_selects_the_exact_archive_instead_of_its_checksum() {
+fn updater_requires_the_exact_archive_and_checksum_sidecar() {
     let target = self_update::get_target();
     let archive = update::release_archive_name("0.1.0", target);
     let releases = [self_update::update::Release {
@@ -880,18 +881,66 @@ fn updater_selects_the_exact_archive_instead_of_its_checksum() {
         assets: vec![
             self_update::update::ReleaseAsset {
                 name: format!("{archive}.sha256"),
-                download_url: "checksum".into(),
+                download_url: format!(
+                    "https://github.com/dcc-mcp/dcc-cua/releases/download/v0.1.0/{archive}.sha256"
+                ),
             },
             self_update::update::ReleaseAsset {
                 name: archive.clone(),
-                download_url: "archive".into(),
+                download_url: format!(
+                    "https://github.com/dcc-mcp/dcc-cua/releases/download/v0.1.0/{archive}"
+                ),
             },
         ],
         ..Default::default()
     }];
-    let (_, selected) = update::latest_release_asset(&releases, target).unwrap();
+    let (_, selected, checksum) = update::latest_release_assets(&releases, target).unwrap();
     assert_eq!(selected.name, archive);
-    assert_eq!(selected.download_url, "archive");
+    assert!(selected.download_url.ends_with(&archive));
+    assert_eq!(checksum.name, format!("{archive}.sha256"));
+}
+
+#[rstest]
+#[case("x86_64-pc-windows-msvc", "zip")]
+#[case("x86_64-unknown-linux-gnu", "tar.gz")]
+#[case("aarch64-apple-darwin", "tar.gz")]
+fn updater_derives_archive_extension_from_selected_target(
+    #[case] target: &str,
+    #[case] extension: &str,
+) {
+    assert!(update::release_archive_name("1.2.3", target).ends_with(extension));
+}
+
+#[rstest]
+fn updater_rejects_an_asset_url_outside_the_exact_official_release() {
+    let target = "x86_64-pc-windows-msvc";
+    let archive = update::release_archive_name("0.1.0", target);
+    let releases = [self_update::update::Release {
+        version: "0.1.0".into(),
+        assets: vec![
+            self_update::update::ReleaseAsset {
+                name: archive.clone(),
+                download_url: format!("https://example.test/{archive}"),
+            },
+            self_update::update::ReleaseAsset {
+                name: format!("{archive}.sha256"),
+                download_url: format!("https://example.test/{archive}.sha256"),
+            },
+        ],
+        ..Default::default()
+    }];
+    assert!(update::latest_release_assets(&releases, target).is_none());
+}
+
+#[rstest]
+fn updater_rejects_a_sidecar_for_another_archive() {
+    let directory = tempfile::tempdir().unwrap();
+    let archive = directory.path().join("dcc-cua.zip");
+    std::fs::write(&archive, b"release bytes").unwrap();
+    let digest = format!("{:x}", sha2::Sha256::digest(b"release bytes"));
+    let error = update::verify_sha256(&archive, &format!("{digest}  other.zip"), "dcc-cua.zip")
+        .unwrap_err();
+    assert!(error.to_string().contains("exact archive"));
 }
 
 #[rstest]

@@ -16,7 +16,7 @@ cargo run -p dcc-cua-cli -- profile validate examples/profiles/the-bazaar
 cargo run -p dcc-cua-cli -- profile install examples/profiles/the-bazaar
 ```
 
-Installation copies the declared package contents atomically to `~/.dcc-cua/profiles/the-bazaar`.
+Installation copies the typed package artifacts atomically to `~/.dcc-cua/profiles/the-bazaar`.
 
 ## Run the optional companion
 

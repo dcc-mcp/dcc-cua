@@ -166,6 +166,10 @@ jobs:
             tar -czf "$archive" -C target/release dcc-cua LICENSE THIRD_PARTY_LICENSES.md README.md README.zh-CN.md assets skills
           fi
           sha256sum "$archive" > "${archive}.sha256"
+          asset_name="$(basename "$archive")"
+          asset_url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG_NAME}/${asset_name}"
+          manifest="dist/dcc-cua-install-manifest-${host}.json"
+          python scripts/write-install-manifest.py --archive "$archive" --version "$version" --target "$host" --url "$asset_url" --output "$manifest"
       - uses: actions/upload-artifact@v4
         with:
           name: dcc-cua-${{ matrix.platform }}

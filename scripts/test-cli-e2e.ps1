@@ -128,8 +128,9 @@ $profileValidation = Invoke-BinaryJson -Arguments @(
     "--profile-store", $profileStore
 )
 if ($profileValidation.id -ne "the-bazaar" -or
-    $profileValidation.capabilities -notcontains "startup_context") {
-    throw "The Bazaar profile package did not validate its startup context capability"
+    $profileValidation.requires.dcc_cua -ne ">=0.6.0" -or
+    @($profileValidation.artifacts | Where-Object { $_.type -eq "context_index" }).Count -ne 1) {
+    throw "The Bazaar profile package did not validate its typed context artifacts"
 }
 $profileInstallation = Invoke-BinaryJson -Arguments @(
     "profile", "install", $profilePackage,
@@ -141,15 +142,16 @@ if ($profileInstallation.id -ne "the-bazaar") {
 $profileContext = Invoke-BinaryJson -Arguments @(
     "profile", "context",
     "--id", "the-bazaar",
-    "--catalog-content-id", "sha256:e2e-unmatched-catalog",
-    "--hero", "Pygmalien",
+    "--identity", "game-data=sha256:e2e-unmatched-data",
+    "--selector", "character=Pygmalien",
     "--profile-store", $profileStore
 )
 if ($profileContext.profileId -ne "the-bazaar" -or
-    $null -eq $profileContext.baseRules -or
-    $profileContext.selection -ne "none" -or
-    $profileContext.requiresRefresh -ne $true) {
-    throw "profile context did not fail closed for an unmatched catalog"
+    $profileContext.schemaVersion -ne 2 -or
+    $profileContext.selection -ne "exact" -or
+    @($profileContext.documents).Count -ne 1 -or
+    $profileContext.documents[0].id -ne "base-rules") {
+    throw "profile context did not load the generic unfenced base document"
 }
 
 $batchRequest = @(

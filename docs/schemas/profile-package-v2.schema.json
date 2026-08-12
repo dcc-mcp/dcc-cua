@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dcc-mcp.dev/schemas/dcc-cua/profile-package-v2.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "kind", "id", "version", "display_name", "description", "license", "artifacts", "requires", "platforms"],
+  "properties": {
+    "schema_version": {"const": 2},
+    "kind": {"const": "dcc-cua-profile-package"},
+    "id": {"type": "string", "pattern": "^[A-Za-z0-9._-]{1,80}$"},
+    "version": {"type": "string"},
+    "display_name": {"type": "string", "minLength": 1},
+    "description": {"type": "string", "minLength": 1},
+    "license": {"type": "string", "minLength": 1},
+    "artifacts": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/artifact"}},
+    "requires": {"type": "object", "additionalProperties": false, "required": ["dcc_cua"], "properties": {"dcc_cua": {"type": "string", "minLength": 1}}},
+    "platforms": {"type": "array", "items": {"type": "string"}}
+  },
+  "$defs": {
+    "artifact": {
+      "type": "object", "additionalProperties": false, "required": ["type", "path"],
+      "properties": {
+        "type": {"enum": ["semantic_profile", "context_index", "context_document", "agent_skill", "documentation", "fixtures", "companion_source", "license"]},
+        "path": {"type": "string", "minLength": 1}
+      }
+    }
+  }
+}

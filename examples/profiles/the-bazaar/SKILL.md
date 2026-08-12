@@ -8,19 +8,18 @@ description: Operate The Bazaar through an exact-window dcc-cua Host session usi
 ## Mandatory startup context
 
 Before opening a Host session, match the exact application and load the
-profile-owned startup context generated for the installed catalog snapshot:
+profile-owned startup documents fenced to the installed data snapshot:
 
 ```powershell
 dcc-cua profile match --app TheBazaar.exe --title "The Bazaar"
-dcc-cua profile context --id the-bazaar --catalog-content-id "sha256:<GameData.db SHA-256>" --hero Pygmalien
+dcc-cua profile context --id the-bazaar --identity "game-data=sha256:<GameData.db SHA-256>" --selector "character=Pygmalien"
 ```
 
-Read every returned base rule and UI-atlas entry before observing the game.
-Use a seasonal playbook only when `selection` is `fresh_exact` or
-`seed_exact`. When `requiresRefresh` is true, retain the stable base rules but
-do not apply stale build, shop, or encounter advice. A maintenance workflow may
-generate a new playbook under `~/.dcc-cua/knowledge/the-bazaar/playbooks/`;
-gameplay never scrapes the web or rewrites knowledge on its hot path.
+Read every returned document before observing the game. When
+`requiresRefresh` is true, do not apply stale build, shop, or encounter advice.
+A maintenance workflow may generate documents under
+`~/.dcc-cua/knowledge/the-bazaar/`; gameplay never scrapes the web or rewrites
+knowledge on its hot path.
 
 Use `profile.json` to match `TheBazaar.exe`. Keep one exact PID/HWND Host session, live observation, shared-memory frames, and the custom CUA theme active. Never reuse coordinates after the window bounds or observation ID changes.
 

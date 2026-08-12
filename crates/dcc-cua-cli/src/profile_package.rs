@@ -13,7 +13,7 @@ use super::{flag_value, has_flag};
 
 const MANIFEST_FILE: &str = "profile-package.json";
 const PACKAGE_KIND: &str = "dcc-cua-profile-package";
-const PACKAGE_SCHEMA_VERSION: u32 = 1;
+const PACKAGE_SCHEMA_VERSION: u32 = 2;
 const MAX_PACKAGE_FILES: usize = 4096;
 const MAX_PACKAGE_BYTES: u64 = 64 * 1024 * 1024;
 
@@ -27,12 +27,37 @@ pub(crate) struct ProfilePackageManifest {
     pub display_name: String,
     pub description: String,
     pub license: String,
-    pub entry: String,
-    pub contents: Vec<String>,
-    #[serde(default)]
-    pub capabilities: Vec<String>,
+    pub artifacts: Vec<ProfilePackageArtifact>,
+    pub requires: ProfilePackageRequirements,
     #[serde(default)]
     pub platforms: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ProfilePackageArtifact {
+    #[serde(rename = "type")]
+    pub artifact_type: ProfilePackageArtifactType,
+    pub path: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ProfilePackageArtifactType {
+    SemanticProfile,
+    ContextIndex,
+    ContextDocument,
+    AgentSkill,
+    Documentation,
+    Fixtures,
+    CompanionSource,
+    License,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ProfilePackageRequirements {
+    pub dcc_cua: String,
 }
 
 #[derive(Clone, Debug)]
@@ -133,11 +158,12 @@ pub(crate) fn validate_package(
     let mut total_bytes = fs::metadata(&manifest_path)
         .map_err(|source| io_error(&manifest_path, source))?
         .len();
-    for content in &manifest.contents {
-        let relative = validated_relative_path(content)?;
+    for artifact in &manifest.artifacts {
+        let relative = validated_relative_path(&artifact.path)?;
         if !declared.insert(relative.clone()) {
             return Err(ProfilePackageError::Invalid(format!(
-                "contents contains duplicate path {content}"
+                "artifacts contains duplicate path {}",
+                artifact.path
             )));
         }
         if relative == Path::new(MANIFEST_FILE) {
@@ -147,17 +173,12 @@ pub(crate) fn validate_package(
         }
         inspect_tree(&root.join(&relative), &mut file_count, &mut total_bytes)?;
     }
-    if !declared.contains(Path::new(&manifest.entry)) {
-        return Err(ProfilePackageError::Invalid(
-            "entry must be declared in contents".into(),
-        ));
-    }
-    if !declared.contains(Path::new("SKILL.md")) {
-        return Err(ProfilePackageError::Invalid(
-            "contents must include SKILL.md so agents receive the package policy".into(),
-        ));
-    }
-    let entry_path = root.join(&manifest.entry);
+    let entry = manifest
+        .artifacts
+        .iter()
+        .find(|artifact| artifact.artifact_type == ProfilePackageArtifactType::SemanticProfile)
+        .expect("validated semantic profile artifact");
+    let entry_path = root.join(&entry.path);
     ensure_regular_file(&entry_path)?;
     let profile = parse_profile(&read_bounded(&entry_path, 1024 * 1024)?)
         .map_err(|error| ProfilePackageError::Invalid(format!("profile.json: {error}")))?;
@@ -217,8 +238,8 @@ pub(crate) fn install_package(
             &package.root.join(MANIFEST_FILE),
             &staging.join(MANIFEST_FILE),
         )?;
-        for content in &package.manifest.contents {
-            let relative = validated_relative_path(content)?;
+        for artifact in &package.manifest.artifacts {
+            let relative = validated_relative_path(&artifact.path)?;
             copy_tree(&package.root.join(&relative), &staging.join(&relative))?;
         }
         validate_package(&staging)
@@ -399,7 +420,8 @@ fn package_summary(package: &ValidatedProfilePackage, status: &str) -> Value {
         "status": status,
         "path": package.root,
         "license": package.manifest.license,
-        "capabilities": package.manifest.capabilities,
+        "artifacts": package.manifest.artifacts,
+        "requires": package.manifest.requires,
         "platforms": package.manifest.platforms,
         "preferred_route": package.profile.settings.preferred_route,
         "dialog_style": package.profile.settings.dialog_style,
@@ -463,14 +485,44 @@ fn validate_manifest(manifest: &ProfilePackageManifest) -> Result<(), ProfilePac
             "version must be SemVer in major.minor.patch form".into(),
         ));
     }
-    if manifest.entry != "profile.json" {
+    if manifest.artifacts.is_empty() {
         return Err(ProfilePackageError::Invalid(
-            "entry must be profile.json in package schema 1".into(),
+            "artifacts cannot be empty".into(),
         ));
     }
-    if manifest.contents.is_empty() {
+    if manifest.requires.dcc_cua.trim().is_empty() {
         return Err(ProfilePackageError::Invalid(
-            "contents cannot be empty".into(),
+            "requires.dcc_cua must declare a non-empty version requirement".into(),
+        ));
+    }
+    let minimum = manifest
+        .requires
+        .dcc_cua
+        .strip_prefix(">=")
+        .ok_or_else(|| {
+            ProfilePackageError::Invalid(
+                "requires.dcc_cua must use the >=major.minor.patch form".into(),
+            )
+        })?;
+    let required = semver_tuple(minimum).ok_or_else(|| {
+        ProfilePackageError::Invalid("requires.dcc_cua contains an invalid SemVer".into())
+    })?;
+    let current = semver_tuple(env!("CARGO_PKG_VERSION")).expect("package version is SemVer");
+    if current < required {
+        return Err(ProfilePackageError::Invalid(format!(
+            "profile requires dcc-cua {}, but this CLI is {}",
+            manifest.requires.dcc_cua,
+            env!("CARGO_PKG_VERSION")
+        )));
+    }
+    let semantic_profiles = manifest
+        .artifacts
+        .iter()
+        .filter(|artifact| artifact.artifact_type == ProfilePackageArtifactType::SemanticProfile)
+        .count();
+    if semantic_profiles != 1 {
+        return Err(ProfilePackageError::Invalid(
+            "artifacts must declare exactly one semantic_profile".into(),
         ));
     }
     Ok(())
@@ -497,6 +549,17 @@ fn is_semver(version: &str) -> bool {
         && parts
             .iter()
             .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
+}
+
+fn semver_tuple(version: &str) -> Option<(u64, u64, u64)> {
+    let core = version.split(['-', '+']).next()?;
+    let mut parts = core.split('.').map(str::parse::<u64>);
+    let tuple = (
+        parts.next()?.ok()?,
+        parts.next()?.ok()?,
+        parts.next()?.ok()?,
+    );
+    parts.next().is_none().then_some(tuple)
 }
 
 fn validated_relative_path(value: &str) -> Result<PathBuf, ProfilePackageError> {

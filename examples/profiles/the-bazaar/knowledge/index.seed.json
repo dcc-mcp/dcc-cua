@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 2,
+  "profileId": "the-bazaar",
+  "documents": [
+    {
+      "id": "base-rules",
+      "path": "knowledge/base-rules.seed.json",
+      "identities": {},
+      "selectors": {}
+    }
+  ]
+}

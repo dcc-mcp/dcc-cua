@@ -11,16 +11,18 @@ fn write_package(root: &Path, id: &str, version: &str) {
     fs::write(
         root.join(MANIFEST_FILE),
         serde_json::to_vec_pretty(&json!({
-            "schema_version": 1,
+            "schema_version": 2,
             "kind": "dcc-cua-profile-package",
             "id": id,
             "version": version,
             "display_name": "Test Profile",
             "description": "Deterministic test profile",
             "license": "MIT",
-            "entry": "profile.json",
-            "contents": ["profile.json", "SKILL.md", "fixtures"],
-            "capabilities": ["semantic_profile", "agent_skill"],
+            "artifacts": [
+                {"type": "semantic_profile", "path": "profile.json"},
+                {"type": "fixtures", "path": "fixtures"}
+            ],
+            "requires": {"dcc_cua": ">=0.6.0"},
             "platforms": ["windows", "macos", "linux"]
         }))
         .expect("manifest JSON"),
@@ -70,7 +72,7 @@ fn validates_installs_resolves_and_replaces_a_package_atomically() {
     fs::write(package.join("target").join("build-cache.bin"), [0_u8; 32]).expect("build cache");
 
     let validated = validate_package(&package).expect("valid package");
-    assert_eq!(validated.file_count, 4);
+    assert_eq!(validated.file_count, 3);
     assert_eq!(validated.profile.id, "test-profile");
 
     let installed = install_package(&package, Some(&store), false).expect("install");
@@ -101,7 +103,10 @@ fn rejects_traversal_and_identity_mismatch() {
     let mut manifest =
         serde_json::from_slice::<Value>(&fs::read(&manifest_path).expect("read manifest"))
             .expect("manifest JSON");
-    manifest["contents"] = json!(["profile.json", "SKILL.md", "../escape"]);
+    manifest["artifacts"] = json!([
+        {"type": "semantic_profile", "path": "profile.json"},
+        {"type": "fixtures", "path": "../escape"}
+    ]);
     fs::write(
         &manifest_path,
         serde_json::to_vec_pretty(&manifest).expect("manifest JSON"),

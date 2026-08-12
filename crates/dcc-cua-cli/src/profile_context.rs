@@ -1,175 +1,197 @@
+use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 
-use super::cli_args::flag_value;
-use super::profile_package::{ProfilePackageError, installed_package};
+use super::cli_args::{flag_value, flag_values};
+use super::profile_package::{ProfilePackageArtifactType, ProfilePackageError, installed_package};
 
-const BASE_RULES: &str = "knowledge/base-rules.seed.json";
-const SEED_INDEX: &str = "knowledge/playbooks/index.seed.json";
+const USER_INDEX: &str = "index.json";
 const MAX_CONTEXT_BYTES: u64 = 2 * 1024 * 1024;
 
-struct ContextSelection {
-    kind: String,
-    playbook: Option<Value>,
-    provenance: Value,
-    warnings: Vec<String>,
+#[derive(Debug)]
+struct SelectedDocument {
+    id: String,
+    document: Value,
+    index: PathBuf,
+    path: PathBuf,
 }
 
 pub(crate) fn execute(flags: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let id = flag_value(flags, "--id").ok_or("profile context requires --id PROFILE")?;
-    let content_id = flag_value(flags, "--catalog-content-id")
-        .ok_or("profile context requires --catalog-content-id ID")?;
-    let hero = flag_value(flags, "--hero");
-    let season = flag_value(flags, "--season");
+    let identities = parse_pairs(&flag_values(flags, "--identity"), "identity")?;
+    let selectors = parse_pairs(&flag_values(flags, "--selector"), "selector")?;
     let store = flag_value(flags, "--profile-store").map(PathBuf::from);
     let package = installed_package(&id, store.as_deref())?
         .ok_or_else(|| ProfilePackageError::NotInstalled(id.clone()))?;
-    let supports_context = package
-        .manifest
-        .capabilities
-        .iter()
-        .any(|capability| capability == "startup_context");
-    if !supports_context {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&json!({
-                "schemaVersion": 1,
-                "profileId": id,
-                "selection": "none",
-                "requiresRefresh": false,
-                "baseRules": null,
-                "uiAtlas": null,
-                "selectedPlaybook": null,
-                "warnings": ["installed profile does not declare startup_context"]
-            }))?
-        );
-        return Ok(());
-    }
 
-    let base = read_context_json(&package.root, BASE_RULES)?;
-    validate_owned_document(&base, &id, BASE_RULES)?;
+    let seed_indexes = package
+        .manifest
+        .artifacts
+        .iter()
+        .filter(|artifact| artifact.artifact_type == ProfilePackageArtifactType::ContextIndex)
+        .map(|artifact| {
+            (
+                package.root.join(&artifact.path),
+                package.root.clone(),
+                "seed",
+            )
+        })
+        .collect::<Vec<_>>();
     let knowledge_root = flag_value(flags, "--knowledge-root")
         .map(PathBuf::from)
         .unwrap_or(resolve_knowledge_root()?.join(&id));
-    let user_index = knowledge_root.join("playbooks/index.json");
-    let seed_index = package.root.join(SEED_INDEX);
-    let mut selected = select_playbook(
-        &id,
-        &content_id,
-        hero.as_deref(),
-        season.as_deref(),
-        &user_index,
-        &seed_index,
-        &package.root,
-        &knowledge_root,
-    )?;
-    if selected.playbook.is_none() {
-        selected
-            .warnings
-            .push("no exact catalog/hero playbook matched; loaded base rules only".into());
+    let mut indexes = Vec::new();
+    let user_index = knowledge_root.join(USER_INDEX);
+    if user_index.is_file() {
+        indexes.push((user_index, knowledge_root, "user"));
     }
+    indexes.extend(seed_indexes);
+
+    let selected = select_documents(&id, &identities, &selectors, &indexes)?;
+    let documents = selected
+        .iter()
+        .map(|item| {
+            json!({
+                "id": item.id,
+                "document": item.document,
+                "provenance": {"index": item.index, "path": item.path},
+            })
+        })
+        .collect::<Vec<_>>();
     let output = json!({
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "profileId": id,
-        "catalogContentId": content_id,
-        "hero": hero,
-        "season": season,
-        "selection": selected.kind,
-        "requiresRefresh": selected.playbook.is_none(),
-        "baseRules": base.get("rules").cloned().unwrap_or(Value::Null),
-        "uiAtlas": base.get("uiAtlas").cloned().unwrap_or(Value::Null),
-        "selectedPlaybook": selected.playbook,
-        "provenance": selected.provenance,
-        "sources": base.get("sources").cloned().unwrap_or_else(|| json!([])),
-        "warnings": selected.warnings,
+        "identities": identities,
+        "selectors": selectors,
+        "documents": documents,
+        "selection": if selected.is_empty() { "none" } else { "exact" },
+        "requiresRefresh": selected.is_empty(),
+        "warnings": if selected.is_empty() {
+            vec!["no document matched every identity fence and selector"]
+        } else {
+            Vec::<&str>::new()
+        },
     });
     let encoded = serde_json::to_vec(&output)?;
     if encoded.len() as u64 > MAX_CONTEXT_BYTES {
-        return Err("profile startup context exceeds the 2 MiB output limit".into());
+        return Err("profile context exceeds the 2 MiB output limit".into());
     }
     println!("{}", serde_json::to_string_pretty(&output)?);
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
-fn select_playbook(
+fn select_documents(
     profile_id: &str,
-    content_id: &str,
-    hero: Option<&str>,
-    season: Option<&str>,
-    user_index: &Path,
-    seed_index: &Path,
-    package_root: &Path,
-    knowledge_root: &Path,
-) -> Result<ContextSelection, Box<dyn std::error::Error>> {
-    let candidates = [
-        ("fresh_exact", user_index, knowledge_root),
-        ("seed_exact", seed_index, package_root),
-    ];
-    for (selection, index_path, root) in candidates {
-        if !index_path.is_file() {
-            continue;
-        }
+    identities: &BTreeMap<String, String>,
+    selectors: &BTreeMap<String, String>,
+    indexes: &[(PathBuf, PathBuf, &str)],
+) -> Result<Vec<SelectedDocument>, Box<dyn std::error::Error>> {
+    let mut selected = Vec::new();
+    let mut document_ids = BTreeSet::new();
+    for (index_path, root, _source) in indexes {
         let index = read_json_file(index_path)?;
         validate_owned_document(&index, profile_id, &index_path.display().to_string())?;
         let entries = index
-            .get("entries")
+            .get("documents")
             .and_then(Value::as_array)
-            .ok_or("playbook index entries must be an array")?;
-        let matching = entries.iter().filter(|entry| {
-            entry
-                .get("catalogContentIds")
-                .and_then(Value::as_array)
-                .is_some_and(|ids| ids.iter().any(|id| id.as_str() == Some(content_id)))
-                && hero.is_none_or(|expected| {
-                    entry
-                        .get("hero")
-                        .and_then(Value::as_str)
-                        .is_some_and(|actual| actual.eq_ignore_ascii_case(expected))
-                })
-                && season.is_none_or(|expected| {
-                    entry
-                        .get("seasonId")
-                        .and_then(Value::as_str)
-                        .is_some_and(|actual| actual.eq_ignore_ascii_case(expected))
-                })
-        });
-        let matches = matching.collect::<Vec<_>>();
-        if matches.len() > 1 {
-            return Err("multiple playbooks match the exact catalog/hero selection".into());
-        }
-        if let Some(entry) = matches.first() {
-            let relative = entry
-                .get("path")
-                .and_then(Value::as_str)
-                .ok_or("playbook index entry requires path")?;
+            .ok_or("context index documents must be an array")?;
+        for entry in entries {
+            let entry_id = required_string(entry, "id", "context index document")?;
+            let entry_identities = object_strings(entry.get("identities"), "identities")?;
+            let entry_selectors = object_strings(entry.get("selectors"), "selectors")?;
+            if !map_matches(&entry_identities, identities)
+                || !map_matches(&entry_selectors, selectors)
+            {
+                continue;
+            }
+            if !document_ids.insert(entry_id.to_owned()) {
+                return Err(format!("conflicting context document id: {entry_id}").into());
+            }
+            let relative = required_string(entry, "path", "context index document")?;
             let path = safe_child(root, relative)?;
             let document = read_json_file(&path)?;
             validate_owned_document(&document, profile_id, relative)?;
-            let fenced = document
-                .pointer("/catalogFence/contentId")
-                .and_then(Value::as_str)
-                == Some(content_id);
-            if !fenced {
-                return Err("selected playbook catalog fence does not match its index".into());
+            if document.get("id").and_then(Value::as_str) != Some(entry_id) {
+                return Err(format!("{relative} id does not match index entry {entry_id}").into());
             }
-            return Ok(ContextSelection {
-                kind: selection.into(),
-                playbook: Some(document),
-                provenance: json!({"index": index_path, "playbook": path}),
-                warnings: Vec::new(),
+            let fences = object_strings(document.get("fences"), "fences")?;
+            if fences != entry_identities || !map_matches(&fences, identities) {
+                return Err(
+                    format!("{relative} fences do not exactly match its index identities").into(),
+                );
+            }
+            selected.push(SelectedDocument {
+                id: entry_id.to_owned(),
+                document,
+                index: index_path.clone(),
+                path,
             });
         }
     }
-    Ok(ContextSelection {
-        kind: "none".into(),
-        playbook: None,
-        provenance: json!({}),
-        warnings: Vec::new(),
-    })
+    Ok(selected)
+}
+
+fn map_matches(required: &BTreeMap<String, String>, actual: &BTreeMap<String, String>) -> bool {
+    required
+        .iter()
+        .all(|(key, value)| actual.get(key) == Some(value))
+}
+
+fn parse_pairs(
+    values: &[String],
+    label: &str,
+) -> Result<BTreeMap<String, String>, Box<dyn std::error::Error>> {
+    let mut pairs = BTreeMap::new();
+    for value in values {
+        let (key, selected) = value
+            .split_once('=')
+            .ok_or_else(|| format!("{label} must be NAMESPACE=VALUE"))?;
+        if key.is_empty()
+            || selected.is_empty()
+            || !key
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+        {
+            return Err(format!("{label} must use a non-empty portable NAMESPACE=VALUE").into());
+        }
+        if pairs.insert(key.to_owned(), selected.to_owned()).is_some() {
+            return Err(format!("duplicate {label}: {key}").into());
+        }
+    }
+    Ok(pairs)
+}
+
+fn object_strings(
+    value: Option<&Value>,
+    label: &str,
+) -> Result<BTreeMap<String, String>, Box<dyn std::error::Error>> {
+    let value = value.ok_or_else(|| format!("{label} is required"))?;
+    let object = value
+        .as_object()
+        .ok_or_else(|| format!("{label} must be an object"))?;
+    object
+        .iter()
+        .map(|(key, value)| {
+            value
+                .as_str()
+                .map(|value| (key.clone(), value.to_owned()))
+                .ok_or_else(|| format!("{label}.{key} must be a string").into())
+        })
+        .collect()
+}
+
+fn required_string<'a>(
+    value: &'a Value,
+    key: &str,
+    label: &str,
+) -> Result<&'a str, Box<dyn std::error::Error>> {
+    value
+        .get(key)
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("{label} requires {key}").into())
 }
 
 fn validate_owned_document(
@@ -177,17 +199,13 @@ fn validate_owned_document(
     profile_id: &str,
     label: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    if value.get("schemaVersion").and_then(Value::as_u64) != Some(1) {
-        return Err(format!("{label} requires schemaVersion 1").into());
+    if value.get("schemaVersion").and_then(Value::as_u64) != Some(2) {
+        return Err(format!("{label} requires schemaVersion 2").into());
     }
     if value.get("profileId").and_then(Value::as_str) != Some(profile_id) {
         return Err(format!("{label} profileId does not match {profile_id}").into());
     }
     Ok(())
-}
-
-fn read_context_json(root: &Path, relative: &str) -> Result<Value, Box<dyn std::error::Error>> {
-    read_json_file(&safe_child(root, relative)?)
 }
 
 fn safe_child(root: &Path, relative: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
@@ -208,8 +226,11 @@ fn safe_child(root: &Path, relative: &str) -> Result<PathBuf, Box<dyn std::error
 }
 
 fn read_json_file(path: &Path) -> Result<Value, Box<dyn std::error::Error>> {
-    let metadata = fs::metadata(path)?;
-    if !metadata.is_file() || metadata.len() > MAX_CONTEXT_BYTES {
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink()
+        || !metadata.is_file()
+        || metadata.len() > MAX_CONTEXT_BYTES
+    {
         return Err(format!(
             "context file is not a bounded regular file: {}",
             path.display()

@@ -1,13 +1,16 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "kind": "dcc-cua-profile-package",
   "id": "shijie-qunchao",
   "version": "1.0.0",
   "display_name": "蚀界群潮",
   "description": "Reference profile for the internal real-time WASD game and its visual CUA acceptance loop.",
   "license": "MIT",
-  "entry": "profile.json",
-  "contents": ["profile.json", "SKILL.md", "README.md"],
-  "capabilities": ["semantic_profile", "agent_skill", "visual_fallback"],
+  "artifacts": [
+    {"type": "semantic_profile", "path": "profile.json"},
+    {"type": "agent_skill", "path": "SKILL.md"},
+    {"type": "documentation", "path": "README.md"}
+  ],
+  "requires": {"dcc_cua": ">=0.6.0"},
   "platforms": ["windows"]
 }

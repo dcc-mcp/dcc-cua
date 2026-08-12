@@ -1,32 +1,21 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "kind": "dcc-cua-profile-package",
   "id": "the-bazaar",
-  "version": "1.1.0",
+  "version": "2.0.0",
   "display_name": "The Bazaar",
   "description": "Adaptive The Bazaar CUA vocabulary, policy, fixtures, and an independently launched read-only semantic companion.",
   "license": "MIT",
-  "entry": "profile.json",
-  "contents": [
-    "profile.json",
-    "SKILL.md",
-    "README.md",
-    "LICENSE",
-    "fixtures",
-    "knowledge",
-    "companion/Cargo.toml",
-    "companion/Cargo.lock",
-    "companion/companion.example.json",
-    "companion/src"
+  "artifacts": [
+    {"type": "semantic_profile", "path": "profile.json"},
+    {"type": "context_index", "path": "knowledge/index.seed.json"},
+    {"type": "context_document", "path": "knowledge/base-rules.seed.json"},
+    {"type": "agent_skill", "path": "SKILL.md"},
+    {"type": "documentation", "path": "README.md"},
+    {"type": "license", "path": "LICENSE"},
+    {"type": "fixtures", "path": "fixtures"},
+    {"type": "companion_source", "path": "companion"}
   ],
-  "capabilities": [
-    "semantic_profile",
-    "agent_skill",
-    "read_only_state_source",
-    "reference_companion",
-    "local_knowledge_seed",
-    "startup_context",
-    "seasonal_playbooks"
-  ],
+  "requires": {"dcc_cua": ">=0.6.0"},
   "platforms": ["windows"]
 }
