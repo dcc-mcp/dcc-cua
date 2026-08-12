@@ -467,6 +467,9 @@ fn activate_window_after_gate(target: UiaTarget) -> Result<(), UiaError> {
         }
         unsafe { SetForegroundWindow(expected) };
     }
+    if unsafe { GetForegroundWindow() } != expected {
+        activate_with_attached_input(expected);
+    }
     let activated = (0..20).any(|_| {
         if unsafe { GetForegroundWindow() } == expected {
             return true;
@@ -480,6 +483,30 @@ fn activate_window_after_gate(target: UiaTarget) -> Result<(), UiaError> {
         Err(UiaError::BackendUnavailable(
             "Windows could not make the exact target window foreground".into(),
         ))
+    }
+}
+
+fn activate_with_attached_input(expected: windows_sys::Win32::Foundation::HWND) {
+    let current_thread = unsafe { GetCurrentThreadId() };
+    let foreground = unsafe { GetForegroundWindow() };
+    let foreground_thread = unsafe { GetWindowThreadProcessId(foreground, std::ptr::null_mut()) };
+    let expected_thread = unsafe { GetWindowThreadProcessId(expected, std::ptr::null_mut()) };
+    let attached_foreground = foreground_thread != 0
+        && foreground_thread != current_thread
+        && unsafe { AttachThreadInput(current_thread, foreground_thread, 1) } != 0;
+    let attached_expected = expected_thread != 0
+        && expected_thread != current_thread
+        && expected_thread != foreground_thread
+        && unsafe { AttachThreadInput(current_thread, expected_thread, 1) } != 0;
+    unsafe {
+        BringWindowToTop(expected);
+        SetForegroundWindow(expected);
+        if attached_expected {
+            AttachThreadInput(current_thread, expected_thread, 0);
+        }
+        if attached_foreground {
+            AttachThreadInput(current_thread, foreground_thread, 0);
+        }
     }
 }
 
