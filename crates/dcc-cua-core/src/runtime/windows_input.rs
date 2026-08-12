@@ -1472,6 +1472,13 @@ pub(crate) fn uses_windows_foreground_fast_path(action: &ComputerUseAction) -> b
         )
 }
 
+#[cfg(windows)]
+pub(crate) fn uses_windows_foreground_held_key_fast_path(action: &ComputerUseAction) -> bool {
+    action.delivery_mode.as_deref() == Some("foreground")
+        && action.action == "keypress"
+        && action.duration_ms.is_some()
+}
+
 #[cfg(any(windows, test))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct WindowsPostInputFocusLoss {
@@ -1558,6 +1565,7 @@ pub(crate) async fn perform_windows_foreground_fast_action(
 
     let text = if matches!(action.action.as_str(), "keypress" | "keyboard_shortcut") {
         let key = action.keys.last().cloned().unwrap_or_default();
+        let keys = action.keys.clone();
         let modifiers = if action.action == "keyboard_shortcut" {
             action.keys[..action.keys.len().saturating_sub(1)].to_vec()
         } else {
@@ -1574,6 +1582,7 @@ pub(crate) async fn perform_windows_foreground_fast_action(
                     ActionBannerPhase::Injecting,
                 ))
             });
+            let hold_duration_ms = action.duration_ms;
             tokio::task::spawn_blocking(move || {
                 dcc_cua_platform_windows::activate_window(key_target, || {
                     windows_platform_input_gate("foreground_keypress")
@@ -1584,14 +1593,20 @@ pub(crate) async fn perform_windows_foreground_fast_action(
                         error,
                     )
                 })?;
-                let modifiers: Vec<&str> = modifiers.iter().map(String::as_str).collect();
-                platform_windows::input::keyboard::send_key_synthesized(window_id, &key, &modifiers)
+                if let Some(duration_ms) = hold_duration_ms {
+                    super::windows_held_key::send_windows_key_holds(window_id, &keys, duration_ms)
+                } else {
+                    let modifiers: Vec<&str> = modifiers.iter().map(String::as_str).collect();
+                    platform_windows::input::keyboard::send_key_synthesized(
+                        window_id, &key, &modifiers,
+                    )
                     .map_err(|error| {
                         ComputerUseError::new(
                             ComputerUseErrorCode::InputFailed,
                             format!("send Windows foreground keypress: {error}"),
                         )
                     })
+                }
             })
             .await
             .map_err(|error| {
@@ -1601,7 +1616,10 @@ pub(crate) async fn perform_windows_foreground_fast_action(
                 )
             })??;
         }
-        "Sent scoped Windows keypress.".to_owned()
+        action.duration_ms.map_or_else(
+            || "Sent scoped Windows keypress.".to_owned(),
+            |duration_ms| format!("Sent scoped Windows held keypress for {duration_ms} ms."),
+        )
     } else if action.action == "drag" {
         let first = action.path.first().copied().unwrap_or(ComputerUsePoint {
             x: action.x.unwrap_or_default(),

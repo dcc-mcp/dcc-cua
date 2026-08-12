@@ -609,10 +609,10 @@ pub(crate) fn validate_action(action: &ComputerUseAction) -> ComputerUseResult<(
                 "duration_ms must be at most 10000",
             ));
         }
-        if !matches!(action.action.as_str(), "click" | "drag") {
+        if !matches!(action.action.as_str(), "click" | "drag" | "keypress") {
             return Err(ComputerUseError::new(
                 ComputerUseErrorCode::InvalidAction,
-                "duration_ms is supported only for coordinate click and drag",
+                "duration_ms is supported only for coordinate click, drag, and keypress",
             ));
         }
         if action.action == "click"
@@ -624,6 +624,32 @@ pub(crate) fn validate_action(action: &ComputerUseAction) -> ComputerUseResult<(
             return Err(ComputerUseError::new(
                 ComputerUseErrorCode::InvalidAction,
                 "click duration_ms requires coordinates and no modifiers",
+            ));
+        }
+        if action.action == "keypress"
+            && (duration_ms == 0
+                || action.keys.is_empty()
+                || action.keys.len() > 2
+                || !action.modifiers.is_empty()
+                || action
+                    .keys
+                    .iter()
+                    .map(|key| key.trim().to_ascii_lowercase())
+                    .any(|key| {
+                        !matches!(
+                            key.as_str(),
+                            "w" | "a" | "s" | "d" | "up" | "down" | "left" | "right"
+                        )
+                    })
+                || action.keys.iter().enumerate().any(|(index, key)| {
+                    action.keys[..index]
+                        .iter()
+                        .any(|previous| previous.eq_ignore_ascii_case(key))
+                }))
+        {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::InvalidAction,
+                "keypress duration_ms requires one or two unique WASD/arrow keys, no modifiers, and a non-zero duration",
             ));
         }
     }

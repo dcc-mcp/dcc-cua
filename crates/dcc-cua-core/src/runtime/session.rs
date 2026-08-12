@@ -801,7 +801,9 @@ impl ComputerUseSession {
         let held_click = held_coordinate_click_as_drag(effective_action);
         let effective_action = held_click.as_ref().unwrap_or(effective_action);
         #[cfg(windows)]
-        let uses_local_windows_fast_path = fallback || effective_action.input_backend_id.is_some();
+        let uses_local_windows_fast_path = fallback
+            || effective_action.input_backend_id.is_some()
+            || uses_windows_foreground_held_key_fast_path(effective_action);
         #[cfg(windows)]
         if uses_local_windows_fast_path
             && let Some(mut result) = windows_fast_preflight_rejection(effective_action, &target)

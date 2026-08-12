@@ -11,7 +11,7 @@ metadata:
     dcc: computer-use
     layer: infrastructure
     compatibility: dcc-cua 0.2+ on Windows, macOS, or Linux.
-    version: "0.3.0"
+    version: "0.4.0"
     search-hint: "dcc-cua CLI exact window multilingual profile localized aliases snapshot act verify UIA visual control banner long task recovery"
     tags: "computer-use, ui-control, infrastructure, read-only"
 ---
@@ -67,15 +67,47 @@ typed route cannot cover.
 
 For fast visual loops on Windows, keep one `host-jsonl` connection open, grant
 `allow_live_observation: true` in `open_session`, then send
-`live_observation_start` with `{"fps":10,"max_dimension":1568}`. Subsequent `snapshot` requests wait
+`live_observation_start` with a `params.request` payload of
+`{"fps":10,"max_dimension":1568}`. Subsequent `snapshot` requests wait
 for and return only a newer exact-window WGC frame without UIA work. Query
 `live_observation_state` for capture/replacement counts and always send
 `live_observation_stop` before `stop_session`. Use a separate
 `accessibility_snapshot` only when semantic controls are required.
+For custom-rendered real-time games, start live observation before the first
+movement action even when the initial snapshot reports a few UIA nodes. Those
+nodes may be only a title bar; held movement must remain on the exact-window
+WGC/scoped-input route rather than falling back to a generic key tap.
 For a custom-rendered transition, set `capture_after: true` and a bounded
 `post_snapshot_delay_ms` (up to 5000) so one request returns the settled frame;
 do not sleep and issue a redundant standalone snapshot. When `capture_after`
 is false, treat `observation_required: true` as a mandatory snapshot fence.
+
+For a task that lasts longer than one turn, use one persistent `host-jsonl`
+connection and keep its `open_session` active. The Host-owned ControlBanner and
+target frame are the user-visible control lease; keep them visible for the whole
+task and close the session only at a checkpoint or terminal result. Do not
+replace a long task with repeated one-shot CLI processes, because that drops the
+same-session banner and loses observation/session continuity. Prefer the
+`snapshot → execute_action → snapshot` loop on that one connection. If the
+Host reports a suspended input state, take a fresh snapshot and inspect the
+structured reason; never blind-retry an input whose dispatch status is unknown.
+
+For real-time games and other held-key controls, use a bounded held keypress:
+
+```json
+{"action":"keypress","keys":["D"],"duration_ms":1000,"delivery_mode":"foreground"}
+```
+
+`duration_ms` is a bounded key-down/key-up interval (currently at most 10
+seconds). It accepts one or two unique WASD/arrow keys with no modifiers, so a
+game that supports diagonal movement may use `{"keys":["W","D"]}`. A plain
+`keypress` is a tap and is not a substitute for a held WASD movement input.
+The Host watches the shared Escape interrupt while the key is held, releases
+every key it pressed, and returns `user_interrupted`; this makes the visible
+ControlBanner stop control effective even during a long interval. After every
+held interval, take a fresh exact-window snapshot and verify the game state;
+prefer short intervals and stop or release input at a checkpoint rather than
+leaving a key logically held.
 
 ## Profile-guided routing
 
@@ -128,7 +160,9 @@ disconnected session, policy/authorization failure, or `user_interrupted`, stop
 the current stage and recover the environment before retrying; do not switch to
 another input technology.
 
-The ControlBanner and target frame are visible on the physical desktop so users
-know control is active, while the indicator windows are excluded from CUA
-observations. That is intentional and must not be “fixed” by painting the
-banner into screenshots.
+The ControlBanner is visible on the physical desktop and its structured status
+(`visible`, `healthy`, `target_frame_visible`, and `interrupted`) is returned by
+the Host so users and agents can verify that control is active. Exact-window
+WGC frames intentionally contain only the target window; the external banner
+is not expected to appear in those PNG pixels. The banner remains owned by the
+Host and must not be painted into game content or synthesized by the client.

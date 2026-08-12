@@ -41,6 +41,8 @@ pub(crate) use session::{
     gated_exact_window_observation, gated_exact_window_publication,
     preflight_live_observation_start, resolved_application_name,
 };
+#[cfg(windows)]
+pub(crate) mod windows_held_key;
 #[cfg(any(windows, test))]
 mod windows_input;
 #[cfg(any(windows, test))]

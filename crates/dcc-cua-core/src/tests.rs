@@ -30,6 +30,22 @@ use crate::live_observation::{
     observation_sequence_fence, terminal_capture_error, wait_for_latest_frame,
 };
 use crate::policy::*;
+
+#[cfg(windows)]
+#[rstest]
+fn held_key_wait_stops_when_the_control_banner_is_interrupted() {
+    let started = dcc_cua_indicator::interrupt_generation().wrapping_add(1);
+
+    assert!(crate::runtime::windows_held_key::wait_for_held_key_duration(1_000, started));
+}
+
+#[cfg(windows)]
+#[rstest]
+fn held_key_wait_completes_without_an_interrupt() {
+    let started = dcc_cua_indicator::interrupt_generation();
+
+    assert!(!crate::runtime::windows_held_key::wait_for_held_key_duration(0, started));
+}
 #[cfg(windows)]
 use crate::runtime::RawDragSequenceOutcome;
 use crate::runtime::application::{launch_arguments, validate_launch_request};
@@ -53,9 +69,9 @@ use crate::runtime::{
     WindowsPostButtonUpSnapshot, WindowsRawDragInputTrace,
     inject_windows_combined_input_batch_with, map_windows_window_mutation_error,
     run_windows_calibrated_relative_path, select_windows_foreground_drag_backend,
-    uses_windows_foreground_fast_path, windows_combined_raw_drag_outcome,
-    windows_combined_source_move_and_left_down_inputs, windows_raw_drag_delivery,
-    windows_synthetic_touch_attempt, windows_synthetic_touch_result,
+    uses_windows_foreground_fast_path, uses_windows_foreground_held_key_fast_path,
+    windows_combined_raw_drag_outcome, windows_combined_source_move_and_left_down_inputs,
+    windows_raw_drag_delivery, windows_synthetic_touch_attempt, windows_synthetic_touch_result,
 };
 use crate::window_target::{WindowTarget, validate_target_policy};
 
@@ -84,6 +100,7 @@ macro_rules! run_combined_down_drag_sequence {
 
 mod drag;
 mod drag_windows;
+mod interactive_desktop_fallback;
 mod live_observation;
 mod recording_session;
 
@@ -304,6 +321,34 @@ fn windows_fast_route_is_bounded_to_foreground_raw_actions() {
         delivery_mode: Some("foreground".into()),
         ..Default::default()
     }));
+}
+
+#[cfg(windows)]
+#[rstest]
+fn windows_held_key_fast_route_is_selected_even_with_accessibility_nodes() {
+    assert!(uses_windows_foreground_held_key_fast_path(
+        &ComputerUseAction {
+            action: "keypress".into(),
+            delivery_mode: Some("foreground".into()),
+            duration_ms: Some(1_000),
+            ..Default::default()
+        }
+    ));
+    assert!(!uses_windows_foreground_held_key_fast_path(
+        &ComputerUseAction {
+            action: "keypress".into(),
+            delivery_mode: Some("foreground".into()),
+            ..Default::default()
+        }
+    ));
+    assert!(!uses_windows_foreground_held_key_fast_path(
+        &ComputerUseAction {
+            action: "keyboard_shortcut".into(),
+            delivery_mode: Some("foreground".into()),
+            duration_ms: Some(1_000),
+            ..Default::default()
+        }
+    ));
 }
 
 #[rstest]
@@ -529,37 +574,6 @@ fn input_desktop_probe_error_fails_closed() {
 }
 
 #[rstest]
-fn denied_input_desktop_probe_accepts_only_a_verified_default_thread_desktop() {
-    let ready = windows_diagnostic_with_thread_fallback(
-        Ok(0),
-        Err("OpenInputDesktop: access denied"),
-        Ok(Some("Default")),
-        Ok(()),
-        true,
-    );
-    let no_foreground = windows_diagnostic_with_thread_fallback(
-        Ok(0),
-        Err("OpenInputDesktop: access denied"),
-        Ok(Some("Default")),
-        Ok(()),
-        false,
-    );
-    let secure = windows_diagnostic_with_thread_fallback(
-        Ok(0),
-        Err("OpenInputDesktop: access denied"),
-        Ok(Some("Winlogon")),
-        Ok(()),
-        true,
-    );
-
-    assert_eq!(ready["success"], true);
-    assert_eq!(ready["input_ready"], true);
-    assert_eq!(ready["input_desktop_source"], "current_thread_fallback");
-    assert_eq!(no_foreground["success"], false);
-    assert_eq!(secure["success"], false);
-}
-
-#[rstest]
 fn unreadable_input_desktop_only_allows_an_exact_window_observation_attempt() {
     let diagnostic =
         windows_diagnostic_base(Ok(0), Err("OpenInputDesktop: access denied"), Ok(()), false);
@@ -571,16 +585,6 @@ fn unreadable_input_desktop_only_allows_an_exact_window_observation_attempt() {
         desktop_error.code,
         ComputerUseErrorCode::InteractiveDesktopUnavailable
     );
-}
-
-#[rstest]
-fn exact_window_activation_uses_the_observation_gate_not_the_raw_input_gate() {
-    let unreadable_default_desktop =
-        windows_diagnostic_base(Ok(0), Err("OpenInputDesktop: access denied"), Ok(()), true);
-    let secure_desktop = windows_diagnostic_base(Ok(0), Ok(Some("Winlogon")), Ok(()), false);
-
-    assert!(require_window_activation_from(&unreadable_default_desktop).is_ok());
-    assert!(require_window_activation_from(&secure_desktop).is_err());
 }
 
 #[rstest]
@@ -1478,6 +1482,34 @@ fn action_rejects_unknown_delivery_mode_and_unbounded_token() {
             ..Default::default()
         })
         .is_ok()
+    );
+    assert!(
+        validate_action(&ComputerUseAction {
+            action: "keypress".into(),
+            keys: vec!["W".into()],
+            duration_ms: Some(1_000),
+            delivery_mode: Some("foreground".into()),
+            ..Default::default()
+        })
+        .is_ok()
+    );
+    assert!(
+        validate_action(&ComputerUseAction {
+            action: "keypress".into(),
+            keys: vec!["W".into(), "A".into()],
+            duration_ms: Some(1_000),
+            ..Default::default()
+        })
+        .is_ok()
+    );
+    assert!(
+        validate_action(&ComputerUseAction {
+            action: "keypress".into(),
+            keys: vec!["W".into(), "Enter".into()],
+            duration_ms: Some(1_000),
+            ..Default::default()
+        })
+        .is_err()
     );
     assert!(
         validate_action(&ComputerUseAction {
