@@ -27,6 +27,7 @@ pub(super) fn error_code(error: &HostError) -> &'static str {
             ComputerUseErrorCode::InvalidTarget => "invalid_target",
             ComputerUseErrorCode::TargetMinimized => "target_minimized",
             ComputerUseErrorCode::TargetUnavailable => "target_unavailable",
+            ComputerUseErrorCode::TargetModalChanged => "target_modal_changed",
             ComputerUseErrorCode::BrowserRefused => "browser_refused",
             ComputerUseErrorCode::ClipboardRefused => "clipboard_refused",
             ComputerUseErrorCode::RecordingRefused => "recording_refused",

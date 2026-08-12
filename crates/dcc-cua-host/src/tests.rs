@@ -1763,6 +1763,7 @@ fn app_launch_grant_defaults_to_denied() {
 #[case(ComputerUseErrorCode::InvalidTarget, "invalid_target")]
 #[case(ComputerUseErrorCode::TargetMinimized, "target_minimized")]
 #[case(ComputerUseErrorCode::TargetUnavailable, "target_unavailable")]
+#[case(ComputerUseErrorCode::TargetModalChanged, "target_modal_changed")]
 #[case(ComputerUseErrorCode::MissingWindow, "target_unavailable")]
 fn target_error_codes_keep_wire_contract(
     #[case] code: ComputerUseErrorCode,

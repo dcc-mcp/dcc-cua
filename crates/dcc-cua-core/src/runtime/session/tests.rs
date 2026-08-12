@@ -1,5 +1,37 @@
 use super::gates::{run_gated_preinvalidated_window_mutation, run_preinvalidated_window_mutation};
 use super::*;
+
+#[test]
+fn owned_same_process_foreground_requires_explicit_modal_rebind() {
+    assert!(crate::window_target::owned_foreground_takeover_relation(
+        100,
+        42,
+        200,
+        42,
+        &[150, 100],
+    ));
+    assert!(!crate::window_target::owned_foreground_takeover_relation(
+        100,
+        42,
+        200,
+        7,
+        &[100],
+    ));
+    assert!(!crate::window_target::owned_foreground_takeover_relation(
+        100,
+        42,
+        200,
+        42,
+        &[300],
+    ));
+    assert!(!crate::window_target::owned_foreground_takeover_relation(
+        100,
+        42,
+        100,
+        42,
+        &[100],
+    ));
+}
 use cua_driver_sdk::remote::{
     DRIVER_ENVELOPE_VERSION, DriverChannelCapabilities, DriverEnvelopeChannel,
     DriverRequestEnvelope, DriverResponseEnvelope,
