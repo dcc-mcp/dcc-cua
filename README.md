@@ -512,6 +512,8 @@ primitive.
 `dcc-cua host-ensure [--endpoint PATH]` is the idempotent supervisor entry
 for Core and adapters. It first probes the local endpoint, starts this same
 version of `dcc-cua host` only when absent, and waits for a negotiated ping.
+An endpoint served by a different CLI version fails closed with restart
+guidance instead of being reported as ready.
 Windows also holds one named singleton per endpoint because named pipes alone
 permit multiple server instances; Unix keeps the existing socket bind as its
 singleton boundary. Independent Core bridges can therefore share one Host per
