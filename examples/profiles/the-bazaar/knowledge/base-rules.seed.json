@@ -1,0 +1,78 @@
+{
+  "schemaVersion": 1,
+  "profileId": "the-bazaar",
+  "locale": "zh-CN",
+  "verifiedAt": "2026-08-13",
+  "rules": [
+    {
+      "id": "ten-pvp-wins",
+      "summary": "一局目标是在威望耗尽前取得 10 场 PvP 胜利；只有明确战绩、胜负字段或胜场变化才能累计胜场。",
+      "authority": "local_game_data_and_verified_run_state",
+      "evidenceRequired": "explicit_result_or_wins_delta"
+    },
+    {
+      "id": "day-loss-cost",
+      "summary": "PvP 失败会损失威望，损失量与当天数相关；左侧罗盘中心是天数，外圈是当日进度。",
+      "authority": "local_game_data_and_ui_observation",
+      "evidenceRequired": "compass_plus_run_state"
+    },
+    {
+      "id": "skill-choice-required",
+      "summary": "进入技能或天赋候选后必须选择一个；没有理想联动时优先当前可触发的通用即时战力。",
+      "authority": "profile_policy",
+      "evidenceRequired": "selected_skill_receipt_and_new_skill_icon"
+    },
+    {
+      "id": "pending-reward-gate",
+      "summary": "升级、事件和战斗产生的技能、物品、符文或基座操作必须领取并验证后才能进入下一小时。",
+      "authority": "profile_policy",
+      "evidenceRequired": "reward_receipt_and_return_to_choice_state"
+    },
+    {
+      "id": "combat-result-proof",
+      "summary": "输入成功、血量领先、继续按钮和进入下一天都不是胜利证据。",
+      "authority": "profile_policy",
+      "evidenceRequired": "explicit_verdict_wins_prestige_delta_or_user_confirmation"
+    }
+  ],
+  "uiAtlas": [
+    {
+      "surfaceId": "run_state",
+      "coordinatePolicy": "relative_hint_reobserve_before_action",
+      "landmarks": [
+        "左侧罗盘：中心为天数，外圈为小时进度，威望和胜场必须与权威状态交叉验证",
+        "下方中央：英雄等级、技能图标与最大生命",
+        "右下：金币、收入和系统入口",
+        "中部横向十格：当前战斗棋盘；左下箱体切换背包",
+        "上部中央：当前遭遇、奖励、升级或战斗层；卡面外观不能单独证明语义"
+      ]
+    },
+    {
+      "surfaceId": "interaction",
+      "coordinatePolicy": "relative_hint_reobserve_before_action",
+      "landmarks": [
+        "每次输入前重新观察精确 PID/HWND；只使用最新 observation ID",
+        "技能选择一旦出现必须选取并验证新技能图标",
+        "背包出售通过当前版本已验证的出售交互完成，并核验物品消失与金币变化"
+      ]
+    }
+  ],
+  "sources": [
+    {
+      "id": "local-game-data",
+      "url": "local://GameData.db",
+      "kind": "local_primary",
+      "accessedAt": "2026-08-13",
+      "appliesTo": "installed catalog snapshot",
+      "confidence": "authoritative_for_current_static_data"
+    },
+    {
+      "id": "bazaar-prestige-guide",
+      "url": "https://mobalytics.gg/the-bazaar/guides/prestige",
+      "kind": "community_guide",
+      "accessedAt": "2026-08-13",
+      "appliesTo": "stable run structure; verify against local game data",
+      "confidence": "secondary"
+    }
+  ]
+}

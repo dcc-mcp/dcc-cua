@@ -9,6 +9,7 @@ mod authorization;
 mod cli_args;
 mod host_lifecycle;
 mod manifest;
+mod profile_context;
 mod profile_package;
 mod profile_state;
 mod semantic_profile;
@@ -120,6 +121,10 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
     }
     if command == "profile" && flags.first().is_some_and(|value| value == "match") {
         match_semantic_profile(&flags)?;
+        return Ok(());
+    }
+    if command == "profile" && flags.first().is_some_and(|value| value == "context") {
+        profile_context::execute(&flags)?;
         return Ok(());
     }
     if command == "profile" && flag_value(&flags, "--app").is_none() {

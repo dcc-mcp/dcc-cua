@@ -411,7 +411,19 @@ fn package_summary(package: &ValidatedProfilePackage, status: &str) -> Value {
     })
 }
 
-fn profile_store(override_path: Option<&Path>) -> Result<PathBuf, ProfilePackageError> {
+pub(crate) fn installed_package(
+    id: &str,
+    store: Option<&Path>,
+) -> Result<Option<ValidatedProfilePackage>, ProfilePackageError> {
+    validate_package_id(id)?;
+    let path = profile_store(store)?.join(id);
+    if !path.is_dir() {
+        return Ok(None);
+    }
+    validate_package(&path).map(Some)
+}
+
+pub(crate) fn profile_store(override_path: Option<&Path>) -> Result<PathBuf, ProfilePackageError> {
     if let Some(path) = override_path {
         return Ok(path.to_path_buf());
     }
