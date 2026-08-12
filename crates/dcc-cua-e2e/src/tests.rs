@@ -18,6 +18,9 @@ use rstest::rstest;
 #[cfg(feature = "gui-e2e")]
 use serde_json::{Value, json};
 
+#[cfg(all(feature = "gui-e2e", windows))]
+mod windows_activation;
+
 #[cfg(feature = "gui-e2e")]
 const FIXTURE_TITLE: &str = "CuaTestHarness Electron";
 #[cfg(feature = "gui-e2e")]
@@ -1815,6 +1818,34 @@ async fn windows_endpoint_sessions_keep_background_uia_and_distinguish_injected_
         }),
     )
     .await;
+
+    windows_activation::assert_first_key_reaches_retained_focus(
+        &mut clients[active_client],
+        first_session_id,
+        first_grant_id,
+        first_capability,
+        &escape_snapshot,
+        sessions
+            .iter()
+            .find(|(client_index, ..)| *client_index != active_client)
+            .map(|(_, _, _, _, window_handle)| *window_handle)
+            .expect("competing WPF window"),
+    )
+    .await;
+
+    let escape_snapshot = client_request(
+        &mut clients[active_client],
+        "snapshot",
+        json!({
+            "session_id": first_session_id,
+            "task_grant_id": first_grant_id,
+            "window_capability": first_capability,
+            "max_nodes": 1_000,
+            "max_depth": 20,
+        }),
+    )
+    .await;
+
     let pressed = client_request(
         &mut clients[active_client],
         "execute_action",
