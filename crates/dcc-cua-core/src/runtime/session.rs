@@ -138,6 +138,7 @@ impl ComputerUseSession {
             recording_keepalive: None,
             #[cfg(windows)]
             windows_uia: None,
+            upstream_session_state: UpstreamSessionState::Inactive,
             last_upstream_session_refresh: None,
             active: false,
             escalated: false,
@@ -176,8 +177,23 @@ impl ComputerUseSession {
         };
         self.app_name = resolved_application_name(&self.app_name, &target);
         self.marker.label = localized_control_label(&self.agent_name, &self.app_name);
-        self.start_upstream_session("start CUA session").await?;
-        self.last_upstream_session_refresh = Some(Instant::now());
+        self.upstream_session_state = match self.start_upstream_session("start CUA session").await {
+            Ok(()) => {
+                self.last_upstream_session_refresh = Some(Instant::now());
+                UpstreamSessionState::Active
+            }
+            Err(error) => {
+                #[cfg(windows)]
+                if let Some(reason) = visual_only_start_degradation(&error) {
+                    self.last_upstream_session_refresh = None;
+                    UpstreamSessionState::VisualOnly { reason }
+                } else {
+                    return Err(error);
+                }
+                #[cfg(not(windows))]
+                return Err(error);
+            }
+        };
         let control_banner = match ControlBanner::start_with_motion(
             BannerTarget {
                 process_id: target.pid,
@@ -211,6 +227,7 @@ impl ComputerUseSession {
             "banner": banner,
             "cursor_theme": MOUSE_CURSOR_THEME,
             "backend": "cua-driver-sdk",
+            "upstream_session": self.upstream_session_status(),
         });
         if let Some(activation) = activation {
             started["activation"] =
@@ -223,7 +240,7 @@ impl ComputerUseSession {
         &mut self,
         expected: &WindowTarget,
     ) -> ComputerUseResult<(WindowTarget, Value)> {
-        self.require_observed_input_available()?;
+        self.require_observed_window_activation_available()?;
         self.ensure_observed_target_available(expected)?;
         #[cfg(windows)]
         let activation = {
@@ -232,7 +249,7 @@ impl ComputerUseSession {
                     process_id: expected.pid,
                     window_handle: expected.window_id,
                 },
-                || windows_platform_input_gate("bootstrap_activation"),
+                || windows_platform_window_activation_gate("bootstrap_activation"),
             )
             .map_err(|error| {
                 map_windows_window_mutation_error("bootstrap exact CUA window activation", error)
@@ -312,6 +329,9 @@ impl ComputerUseSession {
     }
 
     async fn refresh_upstream_session_before_state_if_needed(&mut self) -> ComputerUseResult<()> {
+        if !matches!(self.upstream_session_state, UpstreamSessionState::Active) {
+            return Ok(());
+        }
         if !self.upstream_session_refresh_due() {
             return Ok(());
         }
@@ -328,6 +348,9 @@ impl ComputerUseSession {
     async fn refresh_upstream_session_before_observation_if_needed(
         &mut self,
     ) -> ComputerUseResult<()> {
+        if !matches!(self.upstream_session_state, UpstreamSessionState::Active) {
+            return Ok(());
+        }
         if !self.upstream_session_refresh_due() {
             return Ok(());
         }
@@ -352,6 +375,13 @@ impl ComputerUseSession {
     }
 
     fn require_current_upstream_session_for_evidence(&mut self) -> ComputerUseResult<()> {
+        if !matches!(self.upstream_session_state, UpstreamSessionState::Active) {
+            self.invalidate_action_observations();
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::BackendUnavailable,
+                "the upstream semantic session is unavailable; this session is restricted to explicitly approved exact-window visual fallback",
+            ));
+        }
         if !self.upstream_session_refresh_due() {
             return Ok(());
         }
@@ -708,7 +738,9 @@ impl ComputerUseSession {
                 "action observation_id does not match the latest screenshot",
             ));
         }
-        self.require_current_upstream_session_for_evidence()?;
+        if matches!(self.upstream_session_state, UpstreamSessionState::Active) {
+            self.require_current_upstream_session_for_evidence()?;
+        }
         let target = self.require_observed_target_available().await?;
         if target.window_id != observation.window_handle || target.pid != observation.process_id {
             return Err(ComputerUseError::new(
@@ -716,7 +748,9 @@ impl ComputerUseSession {
                 "the exact target window changed after the screenshot",
             ));
         }
-        self.require_observed_input_available()?;
+        if action_requires_physical_input_desktop(action, &observation) {
+            self.require_observed_input_available()?;
+        }
         validate_action_observation(action, &observation)?;
         if let Some(reason) = explicit_input_backend_rejection(action) {
             let backend_id = action.input_backend_id.as_deref().unwrap_or_default();
@@ -733,7 +767,6 @@ impl ComputerUseSession {
         }
         #[cfg(windows)]
         if is_windows_uia_semantic_action(action, &observation) {
-            self.require_observed_input_available()?;
             let fallback = self.windows_uia.as_ref().ok_or_else(|| {
                 ComputerUseError::new(
                     ComputerUseErrorCode::StaleObservation,
@@ -910,6 +943,7 @@ impl ComputerUseSession {
                 degraded: false,
             }));
         }
+        self.require_current_upstream_session_for_evidence()?;
         let args = action_arguments(effective_action, &self.session_id, &target);
         let name = args["_tool"].as_str().unwrap_or_default().to_string();
         let mut args = args;
@@ -1154,6 +1188,11 @@ impl ComputerUseSession {
         self.finish_observed_input_gate(result)
     }
 
+    pub(super) fn require_observed_window_activation_available(&mut self) -> ComputerUseResult<()> {
+        let result = interactive_desktop::require_window_activation_available();
+        self.finish_observed_input_gate(result)
+    }
+
     fn require_observed_exact_window_observation_available(&mut self) -> ComputerUseResult<()> {
         let result = interactive_desktop::require_exact_window_observation_available();
         self.finish_observed_input_gate(result)
@@ -1291,16 +1330,20 @@ impl ComputerUseSession {
             ));
         }
         self.set_banner_activity(BannerActivity::Stopping);
-        let result = call_driver_tool(
-            &self.driver.driver,
-            "end_session",
-            json!({"session": self.session_id}).to_string(),
-            "stop CUA session",
-        )
-        .await;
-        let result = match result {
-            Ok(result) => ensure_tool_ok("stop CUA session", &result),
-            Err(error) => Err(error),
+        let result = if matches!(self.upstream_session_state, UpstreamSessionState::Active) {
+            match call_driver_tool(
+                &self.driver.driver,
+                "end_session",
+                json!({"session": self.session_id}).to_string(),
+                "stop CUA session",
+            )
+            .await
+            {
+                Ok(result) => ensure_tool_ok("stop CUA session", &result),
+                Err(error) => Err(error),
+            }
+        } else {
+            Ok(())
         };
         self.invalidate_local_session().await;
         result?;
@@ -1325,6 +1368,7 @@ impl ComputerUseSession {
         self.set_banner_live_observation(false);
         self.control_banner.take();
         self.active = false;
+        self.upstream_session_state = UpstreamSessionState::Inactive;
         self.last_upstream_session_refresh = None;
         self.marker.visible = false;
         self.target = None;
@@ -1648,7 +1692,7 @@ impl ComputerUseSession {
                         process_id: target.pid,
                         window_handle: target.window_id,
                     },
-                    || windows_platform_input_gate("exact_activation_fallback"),
+                    || windows_platform_window_activation_gate("exact_activation_fallback"),
                 )
                 .map_err(|error| {
                     map_windows_window_mutation_error("activate the exact Windows target", error)
@@ -1676,15 +1720,16 @@ impl ComputerUseSession {
     /// Activate only the exact target through CUA's scoped window action.
     pub async fn activate(&mut self) -> ComputerUseResult<Value> {
         self.ensure_active()?;
-        self.require_observed_input_available()?;
+        self.require_observed_window_activation_available()?;
         let _banner_activity = self.begin_banner_activity(BannerActivity::Navigating);
         let target = self.require_observed_target_available().await?;
         #[cfg(windows)]
         {
             let expected_pid = target.pid;
             let expected_window = target.window_id;
-            let mutation_gate =
-                self.finish_observed_input_gate(interactive_desktop::require_input_available());
+            let mutation_gate = self.finish_observed_input_gate(
+                interactive_desktop::require_window_activation_available(),
+            );
             run_gated_preinvalidated_window_mutation(
                 || mutation_gate,
                 || self.invalidate_action_observations(),
@@ -1694,7 +1739,7 @@ impl ComputerUseSession {
                             process_id: expected_pid,
                             window_handle: expected_window,
                         },
-                        || windows_platform_input_gate("explicit_activation"),
+                        || windows_platform_window_activation_gate("explicit_activation"),
                     )
                     .map_err(|error| {
                         map_windows_window_mutation_error(
@@ -1705,7 +1750,7 @@ impl ComputerUseSession {
                 },
             )?;
             let target = self.require_observed_target_available().await?;
-            self.require_observed_input_available()?;
+            self.require_observed_window_activation_available()?;
             if target.pid != expected_pid || target.window_id != expected_window {
                 return Err(ComputerUseError::new(
                     ComputerUseErrorCode::TargetUnavailable,
@@ -1799,9 +1844,7 @@ impl ComputerUseSession {
                         process_id: expected.pid,
                         window_handle: expected.window_id,
                     },
-                    || {
-                        windows_platform_input_gate("restore_pre_mutation")
-                    },
+                    || windows_platform_input_gate("restore_pre_mutation"),
                     || windows_platform_input_gate("activate_pre_mutation"),
                 )
                 .map_err(|error| {
@@ -1866,19 +1909,6 @@ impl ComputerUseSession {
             "termination": termination,
             "cleanup": cleanup,
         }))
-    }
-
-    pub fn status(&self) -> Value {
-        json!({
-            "active": self.active,
-            "escalated": self.escalated,
-            "session_id": self.session_id,
-            "target": self.target,
-            "banner": self.banner_status(),
-            "marker": self.marker,
-            "latest_observation_id": self.observation.as_ref().map(|value| &value.observation_id),
-            "backend": "cua-driver-sdk",
-        })
     }
 
     async fn resolve_target(&self) -> ComputerUseResult<WindowTarget> {

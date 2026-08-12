@@ -14,6 +14,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 
 mod recording;
+mod visual_only;
 
 #[rstest]
 fn failed_window_restore_still_invalidates_action_cache_before_mutation() {
@@ -262,6 +263,7 @@ fn counting_session_with_envelope(
         )
         .expect("test session");
     session.active = true;
+    session.upstream_session_state = UpstreamSessionState::Active;
     session.target = Some(WindowTarget {
         pid: 42,
         window_id: 77,
@@ -401,6 +403,7 @@ async fn refresh_timeout_stales_action_evidence_without_ending_the_long_running_
         )
         .unwrap();
     session.active = true;
+    session.upstream_session_state = UpstreamSessionState::Active;
     session.target = Some(WindowTarget {
         pid: 42,
         window_id: 77,
@@ -477,6 +480,7 @@ async fn an_action_never_crosses_a_due_upstream_session_refresh() {
         )
         .unwrap();
     session.active = true;
+    session.upstream_session_state = UpstreamSessionState::Active;
     session.observation = Some(ComputerUseObservation {
         observation_id: "observation-before-refresh".into(),
         window_handle: 77,
@@ -527,6 +531,7 @@ async fn successful_refresh_before_observation_requires_a_strictly_new_live_fram
         )
         .unwrap();
     session.active = true;
+    session.upstream_session_state = UpstreamSessionState::Active;
     session.observation = Some(ComputerUseObservation {
         observation_id: "observation-before-refresh".into(),
         window_handle: 77,
@@ -1286,6 +1291,7 @@ async fn unavailable_input_gate_makes_direct_core_action_evidence_stale_after_re
         )
         .unwrap();
     session.active = true;
+    session.upstream_session_state = UpstreamSessionState::Active;
     session.observation = Some(ComputerUseObservation {
         observation_id: "observation-before-lock".into(),
         window_handle: 77,
@@ -1355,6 +1361,7 @@ async fn target_revalidation_failure_makes_direct_core_action_evidence_stale_aft
         )
         .unwrap();
     session.active = true;
+    session.upstream_session_state = UpstreamSessionState::Active;
     session.observation = Some(ComputerUseObservation {
         observation_id: "observation-before-target-loss".into(),
         window_handle: 77,

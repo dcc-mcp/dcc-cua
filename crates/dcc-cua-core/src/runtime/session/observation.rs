@@ -21,6 +21,16 @@ impl ComputerUseSession {
         }
         let target = self.require_observed_target_available().await?;
         #[cfg(windows)]
+        if matches!(
+            self.upstream_session_state,
+            UpstreamSessionState::VisualOnly { .. }
+        ) {
+            self.activate_windows_uia_fallback(&target);
+            return self
+                .capture_window_visually(&target, max_elements, max_depth)
+                .await;
+        }
+        #[cfg(windows)]
         if self.windows_uia.is_some() {
             return self
                 .capture_window_visually(&target, max_elements, max_depth)
@@ -385,15 +395,15 @@ impl ComputerUseSession {
             interactive_desktop::require_exact_window_observation_available(),
         )?;
         let (data, capture_backend, fallback, mut capture_provenance) = match exact_capture {
-            Ok(data) => (
-                data,
-                "cua-platform-windows-window",
-                "exact_window",
+            Ok(capture) => (
+                capture.data,
+                capture.backend,
+                capture.fallback,
                 json!({
-                    "backend": "cua-platform-windows-window",
+                    "backend": capture.backend,
                     "pixels_captured": true,
                     "scope": "window",
-                    "fallback": "exact_window",
+                    "fallback": capture.fallback,
                     "accessibility_available": false,
                     "process_id": target.pid,
                     "window_handle": target.window_id,

@@ -34,6 +34,7 @@ pub(crate) use recording::{
     call_recording_tool_without_refresh, probe_recording_state,
 };
 mod session;
+mod session_status;
 #[allow(unused_imports)]
 pub(crate) use session::{
     ensure_target_available_for_action, gated_cursor_operation, gated_desktop_observation,
@@ -73,13 +74,25 @@ fn windows_platform_input_gate(
 }
 
 #[cfg(windows)]
+fn windows_platform_window_activation_gate(
+    stage: &'static str,
+) -> Result<(), dcc_cua_platform_windows::UiaError> {
+    interactive_desktop::require_window_activation_available().map_err(|error| {
+        dcc_cua_platform_windows::UiaError::PermissionDenied(format!(
+            "activation_gate_stage={stage}: {error}"
+        ))
+    })
+}
+
+#[cfg(windows)]
 pub(crate) fn map_windows_window_mutation_error(
     context: &str,
     error: dcc_cua_platform_windows::UiaError,
 ) -> ComputerUseError {
     let code = match &error {
         dcc_cua_platform_windows::UiaError::PermissionDenied(message)
-            if message.contains("input_gate_stage=") =>
+            if message.contains("input_gate_stage=")
+                || message.contains("activation_gate_stage=") =>
         {
             ComputerUseErrorCode::InteractiveDesktopUnavailable
         }
@@ -857,6 +870,22 @@ struct LiveObservationStartOutcome {
     disposition: LiveObservationStartDisposition,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum UpstreamSessionState {
+    Inactive,
+    Active,
+    #[cfg(windows)]
+    VisualOnly {
+        reason: String,
+    },
+}
+
+#[cfg(windows)]
+fn visual_only_start_degradation(error: &ComputerUseError) -> Option<String> {
+    (error.code == ComputerUseErrorCode::InputFailed && error.message.contains("timed out"))
+        .then(|| error.message.clone())
+}
+
 pub struct ComputerUseSession {
     driver: ComputerUseDriver,
     scope: ComputerUseTargetScope,
@@ -879,6 +908,7 @@ pub struct ComputerUseSession {
     recording_keepalive: Option<RecordingKeepalive>,
     #[cfg(windows)]
     pub(crate) windows_uia: Option<WindowsUiaFallback>,
+    upstream_session_state: UpstreamSessionState,
     last_upstream_session_refresh: Option<Instant>,
     active: bool,
     escalated: bool,
@@ -1077,11 +1107,39 @@ fn desktop_crop_bounds(target: &WindowTarget) -> ComputerUseResult<([i32; 4], u3
     Ok((target.bounds, 96))
 }
 
+struct ExactWindowCapture {
+    data: Vec<u8>,
+    backend: &'static str,
+    fallback: &'static str,
+}
+
 #[cfg(windows)]
-async fn capture_exact_window(window_id: u64) -> ComputerUseResult<Vec<u8>> {
+async fn capture_exact_window(window_id: u64) -> ComputerUseResult<ExactWindowCapture> {
     tokio::task::spawn_blocking(move || {
-        platform_windows::capture::screenshot_window_bytes(window_id).map_err(|error| {
-            ComputerUseError::new(ComputerUseErrorCode::CaptureFailed, error.to_string())
+        let wgc_error = match dcc_cua_platform_windows::PersistentWgcCapture::new(window_id) {
+            Ok(mut capture) => match capture.next_frame(Duration::from_secs(5)) {
+                Ok((bgra, width, height)) => {
+                    return Ok(ExactWindowCapture {
+                        data: encode_bgra_to_png(&bgra, width, height)?,
+                        backend: "dcc-cua-wgc-exact-window",
+                        fallback: "exact_window_wgc",
+                    });
+                }
+                Err(error) => error.to_string(),
+            },
+            Err(error) => error.to_string(),
+        };
+        let visible =
+            dcc_cua_platform_windows::capture_visible_window(window_id).map_err(|error| {
+                ComputerUseError::new(
+                    ComputerUseErrorCode::CaptureFailed,
+                    format!("exact WGC capture failed ({wgc_error}); {error}"),
+                )
+            })?;
+        Ok(ExactWindowCapture {
+            data: encode_bgra_to_png(&visible.bgra, visible.width, visible.height)?,
+            backend: "dcc-cua-visible-exact-window",
+            fallback: "verified_same_process_visible_window_crop",
         })
     })
     .await
@@ -1094,7 +1152,7 @@ async fn capture_exact_window(window_id: u64) -> ComputerUseResult<Vec<u8>> {
 }
 
 #[cfg(not(windows))]
-async fn capture_exact_window(_window_id: u64) -> ComputerUseResult<Vec<u8>> {
+async fn capture_exact_window(_window_id: u64) -> ComputerUseResult<ExactWindowCapture> {
     Err(ComputerUseError::new(
         ComputerUseErrorCode::BackendUnavailable,
         "exact native window capture is unavailable on this platform",

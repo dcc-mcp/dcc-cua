@@ -9,6 +9,8 @@ mod contracts;
 mod snapshot;
 
 #[cfg(windows)]
+mod visible_capture;
+#[cfg(windows)]
 mod wgc;
 #[cfg(windows)]
 mod windows;
@@ -19,13 +21,16 @@ pub use contracts::{
 };
 
 #[cfg(windows)]
+pub use visible_capture::{VisibleWindowCapture, capture_visible_window};
+#[cfg(windows)]
 pub use wgc::{
     PersistentWgcCapture, PersistentWgcFrame, WgcCaptureError, WgcCompositorTiming,
     WgcCompositorTimingUnavailable, WgcFrameMeasurement, WgcPublishedFrameMeasurement,
 };
 #[cfg(windows)]
 pub use windows::{
-    UiaSession, activate_window, restore_and_activate_window, snapshot_raw_pointer_input_after_down,
+    UiaSession, activate_window, post_close_window, restore_and_activate_window, set_window_frame,
+    snapshot_raw_pointer_input_after_down,
 };
 
 #[cfg(not(windows))]

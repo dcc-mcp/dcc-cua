@@ -575,6 +575,7 @@ impl SnapshotTransport {
 enum WindowOperation {
     Activate,
     RestoreActivate,
+    Close,
 }
 
 #[derive(Debug, Deserialize)]

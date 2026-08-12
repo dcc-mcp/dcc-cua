@@ -20,7 +20,9 @@ use crate::driver_factory::{
 };
 use crate::interactive_desktop::{
     platform_managed_diagnostic, require_desktop_observation_from,
-    require_exact_window_observation_from, require_input_available_from, windows_diagnostic,
+    require_exact_window_observation_from, require_input_available_from,
+    require_window_activation_from, windows_diagnostic_base,
+    windows_diagnostic_with_thread_fallback,
 };
 use crate::live_observation::{
     CaptureFailureDisposition, LiveObservation, LiveObservationFence, LiveObservationFrame,
@@ -98,6 +100,7 @@ macro_rules! run_combined_down_drag_sequence {
 
 mod drag;
 mod drag_windows;
+mod interactive_desktop_fallback;
 mod live_observation;
 mod recording_session;
 
@@ -498,7 +501,7 @@ fn platform_managed_desktop_preserves_the_portable_input_contract() {
 
 #[rstest]
 fn active_default_input_desktop_without_foreground_is_ready() {
-    let diagnostic = windows_diagnostic(Ok(0), Ok(Some("Default")), Ok(()), false);
+    let diagnostic = windows_diagnostic_base(Ok(0), Ok(Some("Default")), Ok(()), false);
 
     assert_eq!(diagnostic["success"], true);
     assert_eq!(diagnostic["code"], "interactive_desktop_ready");
@@ -517,7 +520,7 @@ fn active_default_input_desktop_without_foreground_is_ready() {
 
 #[rstest]
 fn unreadable_input_surface_blocks_input_without_stopping_observation() {
-    let diagnostic = windows_diagnostic(
+    let diagnostic = windows_diagnostic_base(
         Ok(0),
         Ok(Some("Default")),
         Err("GetCursorPos failed: Access is denied. (os error 5)"),
@@ -543,7 +546,7 @@ fn unreadable_input_surface_blocks_input_without_stopping_observation() {
 
 #[rstest]
 fn active_secure_input_desktop_fails_closed() {
-    let diagnostic = windows_diagnostic(Ok(0), Ok(Some("Winlogon")), Ok(()), false);
+    let diagnostic = windows_diagnostic_base(Ok(0), Ok(Some("Winlogon")), Ok(()), false);
 
     assert_eq!(diagnostic["success"], false);
     assert_eq!(diagnostic["code"], "interactive_desktop_unavailable");
@@ -556,7 +559,7 @@ fn active_secure_input_desktop_fails_closed() {
 #[rstest]
 fn input_desktop_probe_error_fails_closed() {
     let diagnostic =
-        windows_diagnostic(Ok(0), Err("OpenInputDesktop: access denied"), Ok(()), false);
+        windows_diagnostic_base(Ok(0), Err("OpenInputDesktop: access denied"), Ok(()), false);
 
     assert_eq!(diagnostic["success"], false);
     assert_eq!(diagnostic["observation_ready"], true);
@@ -573,7 +576,7 @@ fn input_desktop_probe_error_fails_closed() {
 #[rstest]
 fn unreadable_input_desktop_only_allows_an_exact_window_observation_attempt() {
     let diagnostic =
-        windows_diagnostic(Ok(0), Err("OpenInputDesktop: access denied"), Ok(()), false);
+        windows_diagnostic_base(Ok(0), Err("OpenInputDesktop: access denied"), Ok(()), false);
 
     assert!(require_exact_window_observation_from(&diagnostic).is_ok());
     let desktop_error = require_desktop_observation_from(&diagnostic)
@@ -586,7 +589,7 @@ fn unreadable_input_desktop_only_allows_an_exact_window_observation_attempt() {
 
 #[rstest]
 fn missing_input_desktop_identity_fails_closed() {
-    let diagnostic = windows_diagnostic(Ok(0), Ok(None), Ok(()), false);
+    let diagnostic = windows_diagnostic_base(Ok(0), Ok(None), Ok(()), false);
 
     assert_eq!(diagnostic["success"], false);
     assert_eq!(diagnostic["code"], "interactive_desktop_unknown");
@@ -606,7 +609,7 @@ fn windows_session_state_fences_raw_input(
     #[case] code: &str,
     #[case] state_name: &str,
 ) {
-    let diagnostic = windows_diagnostic(state, Ok(Some("Default")), Ok(()), foreground);
+    let diagnostic = windows_diagnostic_base(state, Ok(Some("Default")), Ok(()), foreground);
     assert_eq!(diagnostic["success"], success);
     assert_eq!(diagnostic["code"], code);
     assert_eq!(diagnostic["observation_ready"], success);
@@ -618,7 +621,7 @@ fn windows_session_state_fences_raw_input(
 
 #[rstest]
 fn windows_session_query_failure_is_not_ready() {
-    let diagnostic = windows_diagnostic(
+    let diagnostic = windows_diagnostic_base(
         Err("access denied".into()),
         Ok(Some("Default")),
         Ok(()),
@@ -1348,6 +1351,40 @@ fn windows_uia_tokens_route_only_supported_semantic_actions() {
 }
 
 #[rstest]
+fn windows_uia_semantic_actions_do_not_require_the_physical_input_desktop() {
+    let observation = ComputerUseObservation {
+        observation_id: "observation".into(),
+        window_handle: 7,
+        process_id: 42,
+        window_title: "DCC".into(),
+        width: 100,
+        height: 100,
+        source_rect: [0, 0, 100, 100],
+        capture_backend: "windows_uia".into(),
+        capture_provenance: json!({"accessibility_backend":"windows_uia"}),
+        session_id: "session".into(),
+    };
+
+    assert!(!action_requires_physical_input_desktop(
+        &ComputerUseAction {
+            action: "click".into(),
+            element_token: Some("dcc-wuia:snapshot:2".into()),
+            ..Default::default()
+        },
+        &observation,
+    ));
+    assert!(action_requires_physical_input_desktop(
+        &ComputerUseAction {
+            action: "click".into(),
+            x: Some(10.0),
+            y: Some(20.0),
+            ..Default::default()
+        },
+        &observation,
+    ));
+}
+
+#[rstest]
 fn semantic_only_observations_reject_unscoped_pixel_actions() {
     let observation = ComputerUseObservation {
         observation_id: "observation".into(),
@@ -1383,6 +1420,13 @@ fn semantic_only_observations_reject_unscoped_pixel_actions() {
         )
         .is_ok()
     );
+}
+
+#[rstest]
+fn upstream_window_inventory_miss_routes_to_the_exact_native_capture() {
+    assert!(is_uia_snapshot_message(
+        "No window with window_id 65916 exists. Call list_windows for candidates."
+    ));
 }
 
 #[rstest]

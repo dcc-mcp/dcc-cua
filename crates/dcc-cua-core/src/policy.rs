@@ -874,6 +874,21 @@ pub(crate) fn is_windows_uia_semantic_action(
             && observation.capture_provenance["accessibility_backend"] == "windows_uia"))
 }
 
+pub(crate) fn action_requires_physical_input_desktop(
+    action: &ComputerUseAction,
+    observation: &ComputerUseObservation,
+) -> bool {
+    #[cfg(any(windows, test))]
+    {
+        !is_windows_uia_semantic_action(action, observation)
+    }
+    #[cfg(not(any(windows, test)))]
+    {
+        let _ = (action, observation);
+        true
+    }
+}
+
 pub(crate) fn validate_action_observation(
     action: &ComputerUseAction,
     observation: &ComputerUseObservation,
@@ -1205,6 +1220,7 @@ pub(crate) fn is_uia_snapshot_message(message: &str) -> bool {
     lower.contains("uia provider unresponsive")
         || lower.contains("get_window_state timed out")
         || (lower.contains("get_window_state") && lower.contains("desktop scope"))
+        || (lower.contains("no window with window_id") && lower.contains("exists"))
 }
 
 #[cfg(any(windows, test))]

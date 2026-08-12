@@ -13,30 +13,27 @@ const WINDOWS_SESSION_ACTIVE: i32 = 0;
 const WINDOWS_SESSION_DISCONNECTED: i32 = 4;
 
 pub(crate) fn diagnostic() -> Value {
-    #[cfg(windows)]
+    #[cfg(all(windows, not(test)))]
     {
         let desktop = platform_windows::diagnostics::desktop_state();
-        let thread_desktop = desktop
+        let input_desktop = desktop
             .input_desktop_error
             .as_deref()
-            .and_then(|_| thread_desktop_name().ok().flatten());
-        let input_desktop = desktop.input_desktop_error.as_deref().map_or_else(
-            || Ok(desktop.input_desktop_name.as_deref()),
-            |error| {
-                thread_desktop
-                    .as_deref()
-                    .map_or_else(|| Err(error), |name| Ok(Some(name)))
-            },
-        );
+            .map_or_else(|| Ok(desktop.input_desktop_name.as_deref()), Err);
         let input_surface = windows_input_surface();
-        windows_diagnostic(
+        let thread_desktop = thread_desktop_name();
+        windows_diagnostic_with_thread_fallback(
             windows_session_state(),
             input_desktop,
+            thread_desktop
+                .as_ref()
+                .map(|name| name.as_deref())
+                .map_err(String::as_str),
             input_surface.as_ref().map(|_| ()).map_err(String::as_str),
             desktop.has_foreground_window(),
         )
     }
-    #[cfg(not(windows))]
+    #[cfg(any(not(windows), test))]
     platform_managed_diagnostic()
 }
 
@@ -60,6 +57,11 @@ pub(crate) fn require_desktop_observation_available() -> ComputerUseResult<()> {
 pub(crate) fn require_exact_window_observation_available() -> ComputerUseResult<()> {
     let report = diagnostic();
     require_exact_window_observation_from(&report)
+}
+
+pub(crate) fn require_window_activation_available() -> ComputerUseResult<()> {
+    let report = diagnostic();
+    require_window_activation_from(&report)
 }
 
 pub(crate) fn require_desktop_observation_from(report: &Value) -> ComputerUseResult<()> {
@@ -86,6 +88,10 @@ pub(crate) fn require_exact_window_observation_from(report: &Value) -> ComputerU
     ))
 }
 
+pub(crate) fn require_window_activation_from(report: &Value) -> ComputerUseResult<()> {
+    require_exact_window_observation_from(report)
+}
+
 pub(crate) fn require_input_available() -> ComputerUseResult<()> {
     let report = diagnostic();
     require_input_available_from(&report)
@@ -104,7 +110,7 @@ pub(crate) fn require_input_available_from(report: &Value) -> ComputerUseResult<
     ))
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, not(test)))]
 fn windows_input_surface() -> Result<(), String> {
     use windows_sys::Win32::{
         Foundation::POINT,
@@ -130,7 +136,7 @@ fn windows_input_surface() -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, not(test)))]
 fn thread_desktop_name() -> Result<Option<String>, String> {
     use std::{mem, ptr};
     use windows_sys::Win32::System::{
@@ -180,7 +186,7 @@ fn thread_desktop_name() -> Result<Option<String>, String> {
         .map_err(|error| format!("thread desktop name is not valid UTF-16: {error}"))
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, not(test)))]
 fn windows_session_state() -> Result<i32, String> {
     use std::{mem, ptr};
     use windows_sys::Win32::System::RemoteDesktop::{
@@ -217,7 +223,32 @@ fn windows_session_state() -> Result<i32, String> {
 }
 
 #[cfg(any(windows, test))]
-pub(crate) fn windows_diagnostic(
+pub(crate) fn windows_diagnostic_with_thread_fallback(
+    state: Result<i32, String>,
+    input_desktop: Result<Option<&str>, &str>,
+    thread_desktop: Result<Option<&str>, &str>,
+    input_surface: Result<(), &str>,
+    foreground: bool,
+) -> Value {
+    let fallback_name = match (&input_desktop, &thread_desktop) {
+        (Err(_), Ok(Some(name))) if name.eq_ignore_ascii_case("Default") && foreground => {
+            Some(*name)
+        }
+        _ => None,
+    };
+    if let Some(name) = fallback_name {
+        let probe_error = input_desktop.expect_err("fallback requires an input desktop error");
+        let mut report = windows_diagnostic_base(state, Ok(Some(name)), input_surface, foreground);
+        report["code"] = Value::from("interactive_desktop_ready_thread_fallback");
+        report["input_desktop_source"] = Value::from("current_thread_fallback");
+        report["input_desktop_probe_error"] = Value::from(probe_error);
+        return report;
+    }
+    windows_diagnostic_base(state, input_desktop, input_surface, foreground)
+}
+
+#[cfg(any(windows, test))]
+pub(crate) fn windows_diagnostic_base(
     state: Result<i32, String>,
     input_desktop: Result<Option<&str>, &str>,
     input_surface: Result<(), &str>,

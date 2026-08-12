@@ -592,7 +592,7 @@ binary frame following the JSON response is the concatenation of those images;
 each descriptor gives its `offset`, `length`, and `mime_type`.
 
 The supported request surface is `hello`, `ping`, `list_apps`, `list_tools`, `list_windows`, `wait_for_window`, `launch_app`, `open_session`,
-`get_window_state`, `change_window_state` (`activate` or `restore_activate`), `set_window_frame`, `invoke_menu`, `snapshot`,
+`get_window_state`, `change_window_state` (`activate`, `restore_activate`, or `close`), `set_window_frame`, `invoke_menu`, `snapshot`,
 `accessibility_snapshot`, `verify_state`, `call_tool`, `call_global_tool`, `get_session_state`, `cursor_tool`, `escalate_session`, `find`, `wait_for`, `browser_snapshot`,
 `browser_prepare`, `browser_navigate`, `browser_click`, `browser_type`, `browser_pointer`,
 `browser_set_input_files`, `browser_download`, `browser_dialog`,
@@ -663,6 +663,9 @@ grant-scoped `restore_activate` operation before taking a fresh observation.
 If it becomes minimized after the session opens, use the typed target event
 contract above. `activate` retains its existing semantics; only the explicit
 `restore_activate` operation performs an exact restore before activation.
+`close` posts a polite `WM_CLOSE` only to an exact Windows PID/HWND target and
+requires `allow_trusted_confirmation: true`. It never terminates the process
+and reports failure unless the HWND actually disappears.
 `wait_for_window` accepts `query` with `app`, `process_id`, `window_handle`,
 `window_title`, and `on_screen_only`; its `timeout_ms` is capped at 30 seconds.
 When a request ID is supplied, cancel it on the same connection with
@@ -721,6 +724,11 @@ session; CUA remains the cross-platform, browser, and visual backend. An
 tokens without a screenshot, raw-input grant, or explicit window activation.
 The target application may still choose to activate itself when it opens a
 visible menu or dialog.
+If the upstream Windows session start itself times out, Host reports
+`upstream_session.state: "visual_only"` and never re-enters that unresponsive
+driver session. Exact local WGC/UIA observation remains available only after
+the existing explicit escalation grant; semantic or upstream evidence stays
+unavailable until a new session is opened.
 
 For native windows whose UIA/AX provider is unavailable (for example a
 game-engine editor or custom-rendered DCC surface), `snapshot` first attempts
@@ -755,7 +763,8 @@ restores a minimized target, and the returned state is independently
 revalidated. An activation timeout is `completion_unknown`, requires a fresh
 observation, and never authorizes a blind retry or tears down live observation,
 showcase, or recording ownership.
-`set_window_frame` reuses CUA's native cross-platform mutation and independent
+`set_window_frame` uses an exact PID/HWND `SetWindowPos` path on Windows and
+CUA's native cross-platform mutation elsewhere, followed by independent
 geometry readback. Moving or resizing a window invalidates native and browser
 observations, so callers must snapshot again before the next action.
 `invoke_menu` forwards CUA's live native menu-path resolver, never guesses
