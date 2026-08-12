@@ -14,6 +14,8 @@ use super::{
 };
 #[cfg(windows)]
 use crate::visible_capture::obscured_from_covered_samples;
+#[cfg(windows)]
+use crate::windows::retry_read_only_after_backend_failure;
 
 #[cfg(windows)]
 #[rstest]
@@ -432,6 +434,31 @@ fn backend_action_failure_remains_an_error_even_when_restore_succeeds() {
     );
 
     assert!(matches!(result, Err(super::UiaError::StaleSnapshot(_))));
+}
+
+#[cfg(windows)]
+#[rstest]
+fn read_only_uia_retry_is_single_and_backend_failure_only() {
+    let retries = std::cell::Cell::new(0);
+    let recovered = retry_read_only_after_backend_failure(
+        Err::<u32, _>(super::UiaError::BackendUnavailable("timed out".into())),
+        || {
+            retries.set(retries.get() + 1);
+            Ok(42)
+        },
+    );
+    assert_eq!(recovered.expect("read-only retry should recover"), 42);
+    assert_eq!(retries.get(), 1);
+
+    let invalid = retry_read_only_after_backend_failure(
+        Err::<u32, _>(super::UiaError::InvalidTarget("closed".into())),
+        || {
+            retries.set(retries.get() + 1);
+            Ok(7)
+        },
+    );
+    assert!(matches!(invalid, Err(super::UiaError::InvalidTarget(_))));
+    assert_eq!(retries.get(), 1);
 }
 
 #[cfg(windows)]
