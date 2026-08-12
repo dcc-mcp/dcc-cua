@@ -20,6 +20,8 @@ class InstallManifestTests(unittest.TestCase):
                 archive, "1.2.3", "target", "https://example.test/" + archive.name
             )
         self.assertEqual(result["target"], "target")
+        self.assertEqual(result["name"], "dcc-cua")
+        self.assertNotIn("product", result)
         self.assertEqual(len(result["asset"]["sha256"]), 64)
 
     def test_url_must_name_exact_archive(self):
