@@ -4,10 +4,13 @@ use std::io::{self, Write};
 use std::path::Path;
 
 use self_update::update::{Release, ReleaseAsset};
+use sha2::{Digest, Sha256};
 
 const OWNER: &str = "dcc-mcp";
 const REPOSITORY: &str = "dcc-cua";
 const BINARY: &str = "dcc-cua";
+const MAX_ARCHIVE_BYTES: u64 = 256 * 1024 * 1024;
+const MAX_BINARY_BYTES: u64 = 128 * 1024 * 1024;
 
 type UpdateResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
 
@@ -19,7 +22,7 @@ pub fn run(flags: &[String]) -> UpdateResult<()> {
         .repo_name(REPOSITORY)
         .build()?
         .fetch()?;
-    let (release, asset) = latest_release_asset(&releases, target)
+    let (release, asset, checksum) = latest_release_assets(&releases, target)
         .ok_or_else(|| format!("no complete {target} release bundle found"))?;
 
     if has_flag(flags, "--check") {
@@ -39,31 +42,48 @@ pub fn run(flags: &[String]) -> UpdateResult<()> {
     }
 
     confirm_update(current, &release.version)?;
-    install_release(&std::env::current_exe()?, asset)?;
+    install_release(&std::env::current_exe()?, asset, checksum)?;
     println!("dcc-cua updated to v{}", release.version);
     Ok(())
 }
 
 pub(crate) fn release_archive_name(version: &str, target: &str) -> String {
-    let extension = if cfg!(windows) { "zip" } else { "tar.gz" };
+    let extension = if target.contains("windows") {
+        "zip"
+    } else {
+        "tar.gz"
+    };
     format!("{BINARY}-{version}-{target}.{extension}")
 }
 
-pub(crate) fn latest_release_asset<'a>(
+pub(crate) fn latest_release_assets<'a>(
     releases: &'a [Release],
     target: &str,
-) -> Option<(&'a Release, &'a ReleaseAsset)> {
+) -> Option<(&'a Release, &'a ReleaseAsset, &'a ReleaseAsset)> {
     releases.iter().find_map(|release| {
         let expected = release_archive_name(&release.version, target);
-        release
-            .assets
-            .iter()
-            .find(|asset| asset.name == expected)
-            .map(|asset| (release, asset))
+        let archive = release.assets.iter().find(|asset| {
+            asset.name == expected
+                && asset.download_url == official_asset_url(&release.version, &expected)
+        })?;
+        let checksum_name = format!("{expected}.sha256");
+        let checksum = release.assets.iter().find(|asset| {
+            asset.name == checksum_name
+                && asset.download_url == official_asset_url(&release.version, &checksum_name)
+        })?;
+        Some((release, archive, checksum))
     })
 }
 
-fn install_release(executable: &Path, asset: &ReleaseAsset) -> UpdateResult<()> {
+fn official_asset_url(version: &str, name: &str) -> String {
+    format!("https://github.com/{OWNER}/{REPOSITORY}/releases/download/v{version}/{name}")
+}
+
+fn install_release(
+    executable: &Path,
+    asset: &ReleaseAsset,
+    checksum_asset: &ReleaseAsset,
+) -> UpdateResult<()> {
     let install_root = executable
         .parent()
         .ok_or("current executable has no installation directory")?;
@@ -81,14 +101,66 @@ fn install_release(executable: &Path, asset: &ReleaseAsset) -> UpdateResult<()> 
         )
         .download_to(&mut archive)?;
     archive.sync_all()?;
+    if archive.metadata()?.len() > MAX_ARCHIVE_BYTES {
+        return Err("release archive exceeds the 256 MiB update limit".into());
+    }
+    let checksum_path = transaction.path().join(&checksum_asset.name);
+    let mut checksum_file = File::create(&checksum_path)?;
+    download_asset(checksum_asset, &mut checksum_file)?;
+    checksum_file.sync_all()?;
+    verify_sha256(
+        &archive_path,
+        &fs::read_to_string(&checksum_path)?,
+        &asset.name,
+    )?;
 
     let extracted = transaction.path().join("extracted");
     fs::create_dir(&extracted)?;
-    self_update::Extract::from_source(&archive_path).extract_into(&extracted)?;
+    let binary_name = format!("{BINARY}{}", std::env::consts::EXE_SUFFIX);
+    self_update::Extract::from_source(&archive_path).extract_file(&extracted, &binary_name)?;
 
-    let new_executable = extracted.join(format!("{BINARY}{}", std::env::consts::EXE_SUFFIX));
+    let new_executable = extracted.join(binary_name);
     require_file(&new_executable)?;
+    let executable_metadata = fs::symlink_metadata(&new_executable)?;
+    if executable_metadata.file_type().is_symlink()
+        || !executable_metadata.is_file()
+        || executable_metadata.len() > MAX_BINARY_BYTES
+    {
+        return Err("release executable is not a bounded regular file".into());
+    }
     self_update::self_replace::self_replace(new_executable)?;
+    Ok(())
+}
+
+fn download_asset(asset: &ReleaseAsset, destination: &mut File) -> UpdateResult<()> {
+    let mut download = self_update::Download::from_url(&asset.download_url);
+    download
+        .show_progress(true)
+        .set_header(
+            "accept".parse().expect("valid static header name"),
+            "application/octet-stream"
+                .parse()
+                .expect("valid static header value"),
+        )
+        .download_to(destination)?;
+    Ok(())
+}
+
+pub(crate) fn verify_sha256(path: &Path, sidecar: &str, expected_name: &str) -> UpdateResult<()> {
+    let mut fields = sidecar.split_whitespace();
+    let expected = fields.next().ok_or("checksum sidecar is empty")?;
+    let name = fields
+        .next()
+        .ok_or("checksum sidecar must include the exact archive name")?
+        .trim_start_matches('*');
+    if fields.next().is_some() || name != expected_name || expected.len() != 64 {
+        return Err("checksum sidecar does not name the exact archive".into());
+    }
+    let bytes = fs::read(path)?;
+    let actual = format!("{:x}", Sha256::digest(bytes));
+    if !actual.eq_ignore_ascii_case(expected) {
+        return Err("release archive SHA-256 mismatch".into());
+    }
     Ok(())
 }
 

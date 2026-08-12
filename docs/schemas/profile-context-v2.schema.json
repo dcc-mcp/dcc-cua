@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dcc-mcp.dev/schemas/dcc-cua/profile-context-v2.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "profileId", "documents"],
+  "properties": {
+    "schemaVersion": {"const": 2},
+    "profileId": {"type": "string"},
+    "documents": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["id", "path", "identities", "selectors"], "properties": {
+      "id": {"type": "string", "minLength": 1}, "path": {"type": "string", "minLength": 1},
+      "identities": {"$ref": "#/$defs/stringMap"}, "selectors": {"$ref": "#/$defs/stringMap"}
+    }}
+  },
+  "$defs": {"stringMap": {"type": "object", "additionalProperties": {"type": "string"}}}
+}

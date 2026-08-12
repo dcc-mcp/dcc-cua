@@ -1,6 +1,8 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "profileId": "the-bazaar",
+  "id": "base-rules",
+  "fences": {},
   "locale": "zh-CN",
   "verifiedAt": "2026-08-13",
   "rules": [

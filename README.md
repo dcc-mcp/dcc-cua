@@ -108,6 +108,28 @@ an application, switch control routes, perform a fallback, or prove application
 state. Core and Host still own exact-window scope, fresh observations, grants,
 actions, and post-action verification.
 
+Portable profile packages use `profile-package.json` schema 2. The manifest
+declares typed `artifacts` rather than an untyped file list, requires exactly
+one `semantic_profile`, and declares the minimum compatible CLI through
+`requires.dcc_cua`. Skills, documentation, fixtures, context documents, and
+companion source are optional artifact types. A package is installed only after
+every declared artifact, version requirement, identity, path, and size limit is
+validated.
+
+Application startup knowledge uses generic identity-fenced documents, so the
+same contract can represent an Excel workbook/template, PowerPoint deck/theme,
+DCC plugin ABI, game data snapshot, or policy revision:
+
+```powershell
+dcc-cua profile context --id excel `
+  --identity document=sha256:... --identity template=quarterly-v3 `
+  --selector workflow=financial-review
+```
+
+Identity and selector values are exact and case-sensitive. Every matching
+document is returned; duplicate document IDs or an index/document fence
+disagreement fail closed. The JSON schemas live under `docs/schemas/`.
+
 | Field | Agent meaning |
 | --- | --- |
 | `profile_version` | SemVer of the Profile data. In a package it must equal `profile-package.json.version`. |
@@ -260,6 +282,11 @@ responsible for reset and outcome evaluation.
 On Windows, `vx.toml` selects MSVC 14.44 with Spectre-mitigated libraries and
 injects its Windows SDK environment into Cargo. Release archives contain one `dcc-cua`
 executable plus assets, Skills, and both project and upstream license notices.
+Each target also publishes a stable
+`dcc-cua-install-manifest-<target>.json` containing the exact HTTPS archive URL
+and SHA-256 digest for package managers such as `dcc-mcp-cli`. The built-in
+updater requires the exact `<archive>.sha256` sidecar and verifies it before
+extracting or replacing the executable.
 
 ## CLI
 
