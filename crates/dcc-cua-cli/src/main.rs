@@ -27,10 +27,10 @@ use dcc_cua_client::{
     SnapshotTransport, is_parallel_discovery_method,
 };
 use dcc_cua_core::{
-    ComputerUseAction, ComputerUseClipboardWriteRequest, ComputerUseDriver,
-    ComputerUseLaunchRequest, ComputerUseMenuRequest, ComputerUseTargetScope,
-    ComputerUseToolResult, ComputerUseWindowFrameRequest, ComputerUseWindowQuery,
-    ComputerUseWindowWaitRequest, ComputerUseZoomRequest,
+    ComputerUseAction, ComputerUseClipboardWriteRequest, ComputerUseDriver, ComputerUseError,
+    ComputerUseErrorCode, ComputerUseLaunchRequest, ComputerUseMenuRequest, ComputerUseObservation,
+    ComputerUseTargetScope, ComputerUseToolResult, ComputerUseWindowFrameRequest,
+    ComputerUseWindowQuery, ComputerUseWindowWaitRequest, ComputerUseZoomRequest,
 };
 use dcc_cua_host::{HostTransport, MAX_PARALLEL_DISCOVERY_REQUESTS, run as run_host};
 use dcc_cua_semantic_profiles::{

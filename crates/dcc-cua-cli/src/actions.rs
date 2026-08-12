@@ -156,6 +156,7 @@ async fn execute_action(
     let mut session = driver.session(scope, app, session_id)?;
     session.start().await?;
     let semantic_action = action.element_index.is_some() || action.element_token.is_some();
+    let visible_dimensions = visible_snapshot_dimensions(flags)?;
     let max_elements = bounded_u32(flags, "--max-elements", 5_000, 5_000)?;
     let max_depth = bounded_u32(flags, "--max-depth", 64, 64)?;
     let result = async {
@@ -187,6 +188,14 @@ async fn execute_action(
             (observation, action_result, post_snapshot)
         } else {
             let screenshot = session.screenshot().await?;
+            map_visible_snapshot_coordinates(
+                &mut action,
+                visible_dimensions,
+                &screenshot.observation,
+            )
+            .map_err(|message| {
+                ComputerUseError::new(ComputerUseErrorCode::InvalidAction, message)
+            })?;
             action.observation_id = Some(screenshot.observation.observation_id.clone());
             let action_result = session.perform_action(&action).await?;
             let post_snapshot = window_post_snapshot_value(
@@ -216,6 +225,54 @@ async fn execute_action(
             "post_snapshot": post_snapshot,
         }))?
     );
+    Ok(())
+}
+
+pub(super) fn visible_snapshot_dimensions(
+    flags: &[String],
+) -> Result<Option<(u32, u32)>, Box<dyn std::error::Error>> {
+    let width = flag_value(flags, "--observation-width");
+    let height = flag_value(flags, "--observation-height");
+    match (width, height) {
+        (None, None) => Ok(None),
+        (Some(width), Some(height)) => {
+            let width = width.parse::<u32>()?;
+            let height = height.parse::<u32>()?;
+            if width == 0 || height == 0 {
+                return Err("observation dimensions must be greater than zero".into());
+            }
+            Ok(Some((width, height)))
+        }
+        _ => Err("--observation-width and --observation-height must be provided together".into()),
+    }
+}
+
+pub(super) fn map_visible_snapshot_coordinates(
+    action: &mut ComputerUseAction,
+    visible_dimensions: Option<(u32, u32)>,
+    fresh_observation: &ComputerUseObservation,
+) -> Result<(), String> {
+    let Some((visible_width, visible_height)) = visible_dimensions else {
+        return Ok(());
+    };
+    let map = |x: f64, y: f64| -> Result<(f64, f64), String> {
+        if !x.is_finite() || !y.is_finite() || x < 0.0 || y < 0.0 {
+            return Err("visible snapshot coordinates must be finite and non-negative".into());
+        }
+        if x >= f64::from(visible_width) || y >= f64::from(visible_height) {
+            return Err("coordinates exceed the declared visible snapshot dimensions".into());
+        }
+        Ok((
+            x * f64::from(fresh_observation.width) / f64::from(visible_width),
+            y * f64::from(fresh_observation.height) / f64::from(visible_height),
+        ))
+    };
+    if let (Some(x), Some(y)) = (action.x, action.y) {
+        (action.x, action.y) = map(x, y).map(|(x, y)| (Some(x), Some(y)))?;
+    }
+    for point in &mut action.path {
+        (point.x, point.y) = map(point.x, point.y)?;
+    }
     Ok(())
 }
 
