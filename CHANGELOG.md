@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.2](https://github.com/dcc-mcp/dcc-cua/compare/v1.0.1...v1.0.2) (2026-08-12)
+
+
+### Bug Fixes
+
+* honor input delivery and reject stale hosts ([#74](https://github.com/dcc-mcp/dcc-cua/issues/74)) ([70b9252](https://github.com/dcc-mcp/dcc-cua/commit/70b925247d42b796dad00a39cbe48e464b914e9e))
+
 ## [1.0.1](https://github.com/dcc-mcp/dcc-cua/compare/v1.0.0...v1.0.1) (2026-08-12)
 
 
