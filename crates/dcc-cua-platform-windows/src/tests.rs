@@ -12,8 +12,10 @@ use super::{
     WindowsWindowIdentity,
     snapshot::{TOKEN_PREFIX, normalize, resolve_index},
 };
+#[cfg(windows)]
 use crate::visible_capture::obscured_from_covered_samples;
 
+#[cfg(windows)]
 #[rstest]
 #[case(0, false)]
 #[case(1, false)]
