@@ -1334,7 +1334,7 @@ fn friendly_actions_honor_explicit_delivery_mode(#[case] mode: &str) {
     assert_eq!(action.delivery_mode.as_deref(), Some(mode));
 }
 
-#[test]
+#[rstest]
 fn friendly_actions_reject_unknown_delivery_mode() {
     let error = action_from_command(
         "press",
@@ -1347,7 +1347,7 @@ fn friendly_actions_reject_unknown_delivery_mode() {
     );
 }
 
-#[test]
+#[rstest]
 fn host_ensure_requires_the_cli_host_version() {
     validate_host_version(&json!({"host_version": env!("CARGO_PKG_VERSION")})).unwrap();
 
