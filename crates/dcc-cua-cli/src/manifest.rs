@@ -3,7 +3,7 @@ use dcc_cua_host::{
     HOST_HELLO_TIMEOUT_MS, HOST_PROTOCOL_VERSION, HostTransport, MAX_APPLICATION_LABEL_CHARS,
     MAX_BINARY_FRAME_BYTES, MAX_HOST_CONNECTIONS, MAX_JSON_FRAME_BYTES,
     MAX_PARALLEL_DISCOVERY_REQUESTS, MAX_SESSION_EVENT_POLL_TIMEOUT_MS, MAX_SESSION_INPUT_EVENTS,
-    MAX_TASK_GRANT_ID_CHARS, host_capabilities,
+    MAX_SESSIONS_PER_CONNECTION, MAX_TASK_GRANT_ID_CHARS, host_capabilities,
 };
 use serde_json::{Value, json};
 
@@ -125,6 +125,16 @@ pub(crate) fn document() -> Value {
             "max_json_frame_bytes": MAX_JSON_FRAME_BYTES,
             "max_binary_frame_bytes": MAX_BINARY_FRAME_BYTES,
             "max_connections": MAX_HOST_CONNECTIONS,
+            "session_concurrency": {
+                "model": "one_connection_per_agent",
+                "max_sessions_per_connection": MAX_SESSIONS_PER_CONNECTION,
+                "session_ownership": "connection_scoped",
+                "same_public_session_id_across_connections": true,
+                "capabilities_are_connection_private": true,
+                "raw_input_arbitration": "host_global_fifo",
+                "background_actions_may_run_concurrently": true,
+                "disconnect_cleanup": "own_sessions_only",
+            },
             "hello_timeout_ms": HOST_HELLO_TIMEOUT_MS,
             "max_parallel_discovery_requests": MAX_PARALLEL_DISCOVERY_REQUESTS,
             "grant_limits": {

@@ -35,6 +35,7 @@ fn capabilities_follow_the_selected_cursor_runtime() {
     assert!(capabilities.contains(&"native_menu_path"));
     assert!(capabilities.contains(&"host_wide_interrupt"));
     assert!(capabilities.contains(&"isolated_runtime_sessions"));
+    assert!(capabilities.contains(&"multi_agent_sessions"));
     assert!(capabilities.contains(&"indicator_motion_policy"));
     assert_eq!(capabilities.contains(&"cursor_controls"), cursor_available);
     assert_eq!(
@@ -1967,4 +1968,5 @@ fn launch_ownership_requires_the_same_grant_and_process() {
 
 mod request_parsing;
 mod response_contracts;
+mod session_concurrency;
 mod session_health;

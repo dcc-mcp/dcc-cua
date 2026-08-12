@@ -10,6 +10,18 @@ pub(super) async fn acquire_raw_input_turn(
     }
 }
 
+pub(super) fn ensure_connection_session_capacity(
+    active_session_count: usize,
+) -> Result<(), HostError> {
+    if active_session_count < MAX_SESSIONS_PER_CONNECTION {
+        return Ok(());
+    }
+    Err(HostError::Protocol(format!(
+        "connection session limit reached (maximum {})",
+        MAX_SESSIONS_PER_CONNECTION
+    )))
+}
+
 pub(super) fn finish_window_mutation_attempt<T, E>(
     result: Result<T, E>,
     invalidate: impl FnOnce(),
@@ -410,6 +422,9 @@ async fn handle_request_inner(
             if desktop_sessions.contains_key(&session_id) {
                 return Err(HostError::Protocol("desktop session already exists".into()));
             }
+            ensure_connection_session_capacity(
+                sessions.len() + desktop_sessions.len() + launch_sessions.len(),
+            )?;
             grant.validate_identity()?;
             let session_generation = interrupt_generation();
             let runtime_session_id = new_runtime_session_id("desktop");
@@ -603,6 +618,9 @@ async fn handle_request_inner(
             if sessions.contains_key(&session_id) || launch_sessions.contains_key(&session_id) {
                 return Err(HostError::Protocol("session already exists".into()));
             }
+            ensure_connection_session_capacity(
+                sessions.len() + desktop_sessions.len() + launch_sessions.len(),
+            )?;
             grant.validate_identity()?;
             if !grant.allow_app_launch {
                 return Err(HostError::Protocol(
@@ -832,6 +850,11 @@ async fn handle_request_inner(
             }
             grant.validate_identity()?;
             let launched = launch_sessions.get(&session_id).cloned();
+            if launched.is_none() {
+                ensure_connection_session_capacity(
+                    sessions.len() + desktop_sessions.len() + launch_sessions.len(),
+                )?;
+            }
             if let Some(launched) = &launched {
                 bind_launched_process(launched, &mut grant)?;
             }

@@ -561,6 +561,17 @@ bounded batches on the same connection.
 The endpoint admits at most 32 simultaneous client connections and applies
 transport backpressure before creating another connection task. The manifest
 publishes both connection and per-connection discovery limits for supervisors.
+Each agent thread should own one persistent Host connection and open its own
+TaskGrant-bound window sessions on that connection. A connection may own up to
+16 window, desktop, and launch sessions in total. Different connections may use
+the same public `session_id`; their random window capabilities and observation
+state remain private to the owning connection. Background-safe actions can make
+progress independently, while physical desktop input is arbitrated by one
+host-global FIFO so two agents cannot interleave keys or pointer mutations.
+Disconnecting one agent stops only the sessions owned by that connection.
+Supervisors can discover this contract through
+`host.session_concurrency` and the `multi_agent_sessions` capability in
+`dcc-cua manifest`.
 Clients have 10 seconds from connection acceptance to complete `hello`;
 negotiated Host connections remain long-lived without an idle deadline.
 EOF, transport failures, and malformed frames all abort outstanding discovery
