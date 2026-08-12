@@ -101,6 +101,7 @@ macro_rules! run_combined_down_drag_sequence {
 mod drag;
 mod drag_windows;
 mod interactive_desktop_fallback;
+mod issues_58_60;
 mod live_observation;
 mod recording_session;
 
@@ -1209,7 +1210,12 @@ fn native_tool_boundary_rejects_reserved_and_dedicated_routes() {
     assert!(native_tool_allowed_globally("get_accessibility_tree"));
     assert!(!native_tool_allowed_globally("launch_app"));
     assert!(validate_escalation_request("other", Some("reason")).is_ok());
-    assert!(validate_escalation_request("unknown", None).is_err());
+    assert!(validate_escalation_request("uia_timeout", None).is_ok());
+    let escalation_error = validate_escalation_request("unknown", None).unwrap_err();
+    assert!(escalation_error.message.contains("allowed values"));
+    for reason in COMPUTER_USE_ESCALATION_REASONS {
+        assert!(escalation_error.message.contains(reason.value));
+    }
     assert!(cursor_tool_allowed("get_agent_cursor_state"));
     assert!(cursor_tool_allowed("move_cursor"));
 }

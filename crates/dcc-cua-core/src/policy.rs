@@ -215,23 +215,28 @@ pub(crate) fn validate_escalation_request(
     reason: &str,
     detail: Option<&str>,
 ) -> ComputerUseResult<()> {
-    const REASONS: [&str; 5] = [
-        "ax_tree_pixel_mismatch",
-        "background_delivery_failed",
-        "foreground_ineffective",
-        "no_window_target",
-        "other",
-    ];
-    if !REASONS.contains(&reason) {
+    if !COMPUTER_USE_ESCALATION_REASONS
+        .iter()
+        .any(|candidate| candidate.value == reason)
+    {
+        let allowed = COMPUTER_USE_ESCALATION_REASONS
+            .iter()
+            .map(|candidate| candidate.value)
+            .collect::<Vec<_>>()
+            .join(", ");
         return Err(ComputerUseError::new(
             ComputerUseErrorCode::InvalidAction,
-            "unsupported CUA session escalation reason",
+            format!(
+                "unsupported CUA session escalation reason; allowed values: {allowed}. Use uia_timeout after an exact-window UIAutomation timeout or background_delivery_failed after a delivery failure"
+            ),
         ));
     }
-    if detail.is_some_and(|value| value.chars().count() > 200) {
+    if detail.is_some_and(|value| value.chars().count() > MAX_ESCALATION_DETAIL_CHARS) {
         return Err(ComputerUseError::new(
             ComputerUseErrorCode::InvalidAction,
-            "CUA session escalation detail exceeds 200 characters",
+            format!(
+                "CUA session escalation detail exceeds {MAX_ESCALATION_DETAIL_CHARS} characters"
+            ),
         ));
     }
     Ok(())
@@ -549,10 +554,10 @@ pub(crate) fn validate_action(action: &ComputerUseAction) -> ComputerUseResult<(
         .iter()
         .flatten(),
     ) {
-        if !point.x.is_finite() || !point.y.is_finite() || point.x < 0.0 || point.y < 0.0 {
+        if !point.x.is_finite() || !point.y.is_finite() {
             return Err(ComputerUseError::new(
                 ComputerUseErrorCode::InvalidAction,
-                "coordinates must be finite and non-negative",
+                "coordinates must be finite",
             ));
         }
     }
@@ -664,6 +669,27 @@ pub(crate) fn validate_action(action: &ComputerUseAction) -> ComputerUseResult<(
             return Err(ComputerUseError::new(
                 ComputerUseErrorCode::InvalidAction,
                 "steps is supported only for drag",
+            ));
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_window_action_coordinates(
+    action: &ComputerUseAction,
+) -> ComputerUseResult<()> {
+    for point in action.path.iter().chain(
+        [action
+            .x
+            .zip(action.y)
+            .map(|(x, y)| ComputerUsePoint { x, y })]
+        .iter()
+        .flatten(),
+    ) {
+        if point.x < 0.0 || point.y < 0.0 {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::InvalidAction,
+                "window action coordinates must be non-negative screenshot-local pixels",
             ));
         }
     }

@@ -340,6 +340,45 @@ pub struct ComputerUsePoint {
     pub y: f64,
 }
 
+/// One stable, policy-significant reason for widening a window session to the
+/// explicitly approved visual fallback.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct ComputerUseEscalationReasonDescriptor {
+    pub value: &'static str,
+    pub meaning: &'static str,
+}
+
+/// Machine-readable escalation vocabulary shared by validation, CLI help, and
+/// the Host manifest. Existing string APIs remain intentionally compatible.
+pub const COMPUTER_USE_ESCALATION_REASONS: &[ComputerUseEscalationReasonDescriptor] = &[
+    ComputerUseEscalationReasonDescriptor {
+        value: "ax_tree_pixel_mismatch",
+        meaning: "the semantic tree and current pixels disagree",
+    },
+    ComputerUseEscalationReasonDescriptor {
+        value: "background_delivery_failed",
+        meaning: "a bounded background action could not be delivered",
+    },
+    ComputerUseEscalationReasonDescriptor {
+        value: "foreground_ineffective",
+        meaning: "an approved foreground action had no verified effect",
+    },
+    ComputerUseEscalationReasonDescriptor {
+        value: "no_window_target",
+        meaning: "no exact window target can satisfy the requested capture",
+    },
+    ComputerUseEscalationReasonDescriptor {
+        value: "uia_timeout",
+        meaning: "the exact-window UIAutomation read timed out",
+    },
+    ComputerUseEscalationReasonDescriptor {
+        value: "other",
+        meaning: "another bounded reason documented in escalation_detail",
+    },
+];
+
+pub const MAX_ESCALATION_DETAIL_CHARS: usize = 200;
+
 /// Metadata binding model coordinates to one fresh target capture.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ComputerUseObservation {

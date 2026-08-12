@@ -1,3 +1,4 @@
+use dcc_cua_core::{COMPUTER_USE_ESCALATION_REASONS, MAX_ESCALATION_DETAIL_CHARS};
 use dcc_cua_host::{
     HOST_HELLO_TIMEOUT_MS, HOST_PROTOCOL_VERSION, HostTransport, MAX_APPLICATION_LABEL_CHARS,
     MAX_BINARY_FRAME_BYTES, MAX_HOST_CONNECTIONS, MAX_JSON_FRAME_BYTES,
@@ -74,6 +75,37 @@ pub(crate) fn document() -> Value {
         "fresh_observation_required": true,
         "replaces_execute_action_gate": false,
     });
+    let session_escalation = json!({
+        "method": "escalate_session",
+        "requires_explicit_grant": true,
+        "reason": {
+            "type": "string",
+            "enum": COMPUTER_USE_ESCALATION_REASONS
+                .iter()
+                .map(|reason| reason.value)
+                .collect::<Vec<_>>(),
+            "meanings": COMPUTER_USE_ESCALATION_REASONS
+                .iter()
+                .map(|reason| {
+                    (
+                        reason.value.to_owned(),
+                        Value::String(reason.meaning.to_owned()),
+                    )
+                })
+                .collect::<serde_json::Map<_, _>>(),
+            "recommended": {
+                "exact_window_uia_timeout": "uia_timeout",
+                "background_delivery_failure": "background_delivery_failed",
+            },
+        },
+        "detail": {
+            "type": "string",
+            "required": false,
+            "max_chars": MAX_ESCALATION_DETAIL_CHARS,
+        },
+        "desktop_control_widened": false,
+        "fresh_observation_required_after_escalation": true,
+    });
     json!({
         "schema_version": 1,
         "name": "dcc-cua",
@@ -101,6 +133,7 @@ pub(crate) fn document() -> Value {
             },
             "session_events": session_events,
             "session_health": session_health,
+            "session_escalation": session_escalation,
             "capabilities": host_capabilities(cfg!(any(windows, target_os = "linux", target_os = "macos"))),
         },
         "core_bridge": {

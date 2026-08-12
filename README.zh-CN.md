@@ -143,12 +143,16 @@ dcc-cua update --check
 `manifest` 是供 Core 和独立调用方使用的稳定机器入口，包含平台、协议、能力、端点、
 图像传输和推荐启动参数，并明确声明不需要单独 driver。若同一应用有多个窗口，操作时
 必须传入 `--pid` 和 `--window-id`。优先使用观察结果中的 `element_token` 或
-`element_index`，自绘界面才使用坐标。
+`element_index`，自绘界面才使用坐标。窗口像素动作使用最新精确窗口截图内的非负局部
+坐标；UIA 元素 `bounds` 标记为 `virtual_desktop`，桌面动作则使用可为负数的虚拟桌面
+绝对坐标，因此无需为了操作左侧或上方显示器而移动用户窗口。
 
 `doctor` 默认继续执行严格的完整健康检查。对于 Houdini、Unreal 等自绘 DCC 界面，
 可用 `doctor --route visual` 单独验收精确窗口枚举、WGC 截图和受限坐标输入；输出仍会
 保留 UIA 降级信息，并分别报告 `full`、`visual`、`semantic` 三条路由，避免一个挂起的
 UIA provider 错误阻断健康的视觉控制路径。
+Windows 全局 UIA 枚举超时时，如果 UIA 权限仍有效，`semantic` 会明确报告为降级的
+`exact_window_uia_fallback`；该路径仍强制精确 PID/HWND 和 fresh observation。
 
 元素索引和 token 只属于生成它们的那一次无障碍快照，不能与像素快照、其他后端、
 其他窗口或旧持久会话的索引/token 混用。友好的语义 CLI 命令会先获取最新无障碍

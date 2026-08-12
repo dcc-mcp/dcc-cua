@@ -35,6 +35,7 @@ pub(crate) fn normalize(raw: &Value) -> Result<(Value, SnapshotState), UiaError>
         "accessibility_available": true,
         "backend": "windows_uia",
         "degraded": false,
+        "element_bounds_coordinate_space": "virtual_desktop",
         "elements": elements,
         "focus_runtime_id": raw.get("focus_runtime_id").cloned().unwrap_or(Value::Null),
         "node_count": node_count,

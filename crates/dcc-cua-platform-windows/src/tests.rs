@@ -83,6 +83,10 @@ fn snapshot_normalization_emits_flat_agent_friendly_elements() {
         }
     });
     let (snapshot, state) = normalize(&raw).unwrap();
+    assert_eq!(
+        snapshot["element_bounds_coordinate_space"],
+        "virtual_desktop"
+    );
     let elements = snapshot["elements"].as_array().unwrap();
     assert_eq!(elements.len(), 2);
     assert_eq!(elements[1]["role"], "MenuItem");

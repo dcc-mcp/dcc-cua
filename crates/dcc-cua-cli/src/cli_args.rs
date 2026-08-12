@@ -1,5 +1,7 @@
 //! Command-line argument helpers and stable help text.
 
+use dcc_cua_core::{COMPUTER_USE_ESCALATION_REASONS, MAX_ESCALATION_DETAIL_CHARS};
+
 pub(super) fn flag_value(flags: &[String], name: &str) -> Option<String> {
     flags
         .iter()
@@ -77,7 +79,7 @@ pub(super) fn print_help() {
   cursor-position
   launch --name NAME|--bundle-id ID|--aumid ID|--path PATH|--launch-path PATH [--url URL] [--arg ARG] [--new-instance] [--start-minimized]
   terminate --app APP --confirm
-  snapshot --app APP|--pid PID|--window-id ID|--title TITLE [--activate] [--output FILE]
+  snapshot --app APP|--pid PID|--window-id ID|--title TITLE [--activate] [--escalate --escalation-reason REASON] [--escalation-detail NOTE] [--output FILE]
   set-window-frame --app APP|--pid PID --window-id ID --x N --y N --width N --height N
   invoke-menu --app APP|--pid PID --window-id ID --menu TOP [--menu CHILD ...]
   act --app APP --action-json JSON [--output FILE]
@@ -93,11 +95,23 @@ Host uses versioned big-endian JSON frames. Hello version 1 negotiates binary-fr
     println!(
         "Profiles are built-in, installed from ~/.dcc-cua/profiles, or loaded explicitly from JSON; package installation copies declarative content only and never launches bundled code. Window snapshots/actions accept --escalate --escalation-reason REASON when an explicit desktop visual fallback approval is required; --activate keeps custom-rendered foreground capture and actions in one session."
     );
+    println!("{}", escalation_reason_help());
     println!("Zoom: zoom --app APP --x1 N --y1 N --x2 N --y2 N [--output FILE].");
     println!(
-        "Friendly actions: click [--x X --y Y|--element-index N|--element-token TOKEN] [--button left|middle|right --duration-ms N], double-click/right-click/toggle [--x X --y Y|--element-index N|--element-token TOKEN] [--button left|middle|right], drag --from-x X --from-y Y --to-x X --to-y Y [--button B --modifier M --duration-ms N --steps N], type [--text TEXT] [--focused|--x X --y Y|--element-index N], set-text/set-value, press [--key K] [--modifier M] [--x X --y Y|--element-index N], hotkey [--key K ...] [--x X --y Y], scroll [--scroll-x N|--scroll-y N] [--by line|page] [--x X --y Y|--element-index N], move."
+        "Friendly window actions: x/y and drag paths are non-negative coordinates in the latest exact-window screenshot (not UIA virtual-desktop bounds). Desktop actions use signed virtual-desktop coordinates. Actions: click [--x X --y Y|--element-index N|--element-token TOKEN] [--button left|middle|right --duration-ms N], double-click/right-click/toggle [--x X --y Y|--element-index N|--element-token TOKEN] [--button left|middle|right], drag --from-x X --from-y Y --to-x X --to-y Y [--button B --modifier M --duration-ms N --steps N], type [--text TEXT] [--focused|--x X --y Y|--element-index N], set-text/set-value, press [--key K] [--modifier M] [--x X --y Y|--element-index N], hotkey [--key K ...] [--x X --y Y], scroll [--scroll-x N|--scroll-y N] [--by line|page] [--x X --y Y|--element-index N], move."
     );
     println!(
         "Semantic tree: accessibility --app APP [--max-elements N] [--max-depth N]. Window: window-state|activate|set-window-frame|invoke-menu --app APP."
     );
+}
+
+pub(super) fn escalation_reason_help() -> String {
+    let values = COMPUTER_USE_ESCALATION_REASONS
+        .iter()
+        .map(|reason| format!("{} ({})", reason.value, reason.meaning))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "Escalation reasons: {values}. Use --escalation-detail NOTE for an optional audit note of at most {MAX_ESCALATION_DETAIL_CHARS} characters."
+    )
 }

@@ -726,6 +726,7 @@ impl ComputerUseSession {
             ActionBannerPhase::Preparing,
         ));
         validate_action(action)?;
+        validate_window_action_coordinates(action)?;
         let observation = self.observation.clone().ok_or_else(|| {
             ComputerUseError::new(
                 ComputerUseErrorCode::StaleObservation,

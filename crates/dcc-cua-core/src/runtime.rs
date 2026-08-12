@@ -599,7 +599,7 @@ impl ComputerUseDriver {
             && interactive_desktop["success"] == true
             && interactive_desktop["observation_ready"] == true
             && interactive_desktop["input_ready"] == true;
-        let semantic_ready = base_ready && diagnostic_health_check_passes(&health, "ax_capability");
+        let semantic = diagnostic_semantic_route(base_ready, &permissions, &health, cfg!(windows));
         // Preserve the strict aggregate while exposing route-specific readiness.
         // A hung UIA provider must remain visible without incorrectly rejecting
         // healthy WGC/Win32 control of a custom-rendered DCC surface.
@@ -615,7 +615,7 @@ impl ComputerUseDriver {
             "routes": {
                 "full": {"ready": ready},
                 "visual": {"ready": visual_ready},
-                "semantic": {"ready": semantic_ready},
+                "semantic": semantic,
             },
             "checks": {
                 "driver": driver,
@@ -796,15 +796,55 @@ pub(crate) fn diagnostic_tool_check(result: ComputerUseResult<ComputerUseToolRes
 }
 
 pub(crate) fn diagnostic_health_check_passes(health: &Value, name: &str) -> bool {
-    health["result"]["checks"]
-        .as_array()
-        .and_then(|checks| {
-            checks
-                .iter()
-                .find(|check| check["name"].as_str() == Some(name))
-        })
+    diagnostic_health_check(health, name)
         .and_then(|check| check["status"].as_str())
         .is_some_and(|status| status == "pass" || status == "skip")
+}
+
+fn diagnostic_health_check<'a>(health: &'a Value, name: &str) -> Option<&'a Value> {
+    health["result"]["checks"].as_array().and_then(|checks| {
+        checks
+            .iter()
+            .find(|check| check["name"].as_str() == Some(name))
+    })
+}
+
+pub(crate) fn diagnostic_semantic_route(
+    base_ready: bool,
+    permissions: &Value,
+    health: &Value,
+    supports_exact_windows_uia: bool,
+) -> Value {
+    if !base_ready {
+        return json!({"ready": false, "degraded": false});
+    }
+    if diagnostic_health_check_passes(health, "ax_capability") {
+        return json!({"ready": true, "degraded": false, "mode": "driver_accessibility"});
+    }
+
+    let failure_detail = diagnostic_health_check(health, "ax_capability").and_then(|check| {
+        check["data"]["error_detail"]
+            .as_str()
+            .or_else(|| check["error_detail"].as_str())
+            .or_else(|| check["summary"].as_str())
+    });
+    let global_enumeration_degraded = failure_detail.is_some_and(|detail| {
+        let detail = detail.to_ascii_lowercase();
+        detail.contains("desktop enumeration exceeded")
+            || detail.contains("busy with an earlier timed-out provider call")
+    });
+    let uia_permission = permissions["result"]["uia"].as_bool() == Some(true);
+    if supports_exact_windows_uia && uia_permission && global_enumeration_degraded {
+        return json!({
+            "ready": true,
+            "degraded": true,
+            "mode": "exact_window_uia_fallback",
+            "global_enumeration_ready": false,
+            "reason": "uia_global_enumeration_timeout",
+        });
+    }
+
+    json!({"ready": false, "degraded": false})
 }
 
 pub(crate) fn tool_schema_from_inventory(
