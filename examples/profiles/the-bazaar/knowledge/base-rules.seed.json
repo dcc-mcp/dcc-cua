@@ -35,6 +35,30 @@
       "summary": "输入成功、血量领先、继续按钮和进入下一天都不是胜利证据。",
       "authority": "profile_policy",
       "evidenceRequired": "explicit_verdict_wins_prestige_delta_or_user_confirmation"
+    },
+    {
+      "id": "six-hour-day-clock",
+      "summary": "常规一天有 6 个小时；每次遭遇只推进已验证的小时变化，第 6 小时玩家战前必须完成当日奖励、出售和锁血调整。",
+      "authority": "local_game_data_and_ui_observation",
+      "evidenceRequired": "compass_hour_delta_and_encounter_transition"
+    },
+    {
+      "id": "pvp-trophy-accounting",
+      "summary": "怪物战胜利不增加十胜进度；只在玩家战结算页的奖杯数字、权威胜场字段或明确胜场增量出现时更新十胜计数。",
+      "authority": "verified_run_observation",
+      "evidenceRequired": "pvp_result_trophy_or_wins_delta"
+    },
+    {
+      "id": "inventory-slot-ledger",
+      "summary": "连续操作中按棋盘和背包槽位维护物品、等级、数值和待处理状态；稳定槽位不重复展开，只重查新增、移动、升级、出售失败或语义不明的槽位。",
+      "authority": "profile_policy",
+      "evidenceRequired": "before_after_slot_delta"
+    },
+    {
+      "id": "economy-transition",
+      "summary": "先保当日即时战力和背包空间，再追终局组件；无当前战斗贡献的增幅或生成物应在购买前后用金币与槽位变化确认并及时出售。",
+      "authority": "profile_policy",
+      "evidenceRequired": "board_contribution_and_inventory_delta"
     }
   ],
   "uiAtlas": [
@@ -56,6 +80,41 @@
         "每次输入前重新观察精确 PID/HWND；只使用最新 observation ID",
         "技能选择一旦出现必须选取并验证新技能图标",
         "背包出售通过当前版本已验证的出售交互完成，并核验物品消失与金币变化"
+      ]
+    },
+    {
+      "surfaceId": "keyboard_shortcuts",
+      "coordinatePolicy": "key_binding_observed_reverify_after_patch",
+      "landmarks": [
+        "Space：开关储存箱；开关后必须用背包区域出现或消失验证状态",
+        "RMB：查看未解锁提示",
+        "Esc：进入设置或退出当前覆盖层；用户中断优先，恢复前必须重新观察",
+        "Z：出售当前已选中的物品；先单独选中并看到完整详情，再单独按 Z，随后核验槽位清空与金币变化",
+        "Ctrl：显示附魔预览；Shift：显示升级预览",
+        "Tab：开关卡牌图鉴；Caps Lock：开关终局阵容；F8：开关对局历史",
+        "快捷键来自当前版本的按键绑定页；补丁或用户改键后必须重新读取绑定，禁止永久硬编码"
+      ]
+    },
+    {
+      "surfaceId": "continuity_ledger",
+      "coordinatePolicy": "relative_slots_reobserve_changed_regions",
+      "landmarks": [
+        "棋盘账本：按从左到右槽位记录 canonical item、品质、显示数值和相邻关系",
+        "背包账本：按当前可见格位记录物品与待售、待换、待验证标记；关闭背包不清空账本",
+        "购买成功必须同时满足金币下降、商店状态变化或新物品槽位出现中的至少一个可归因证据",
+        "出售成功必须看到目标槽位消失或替换，并以金币增加交叉验证；仅详情高亮或按键发送不算成功",
+        "拖动成功以源槽位和目标槽位的双向变化确认；连续截图中未变化的稳定槽位沿用账本，不重复查看详情",
+        "焦点丢失、窗口切换或输入效果未知时冻结账本，先恢复 exact PID/HWND 并获取新观察，禁止盲重试"
+      ]
+    },
+    {
+      "surfaceId": "day_pacing",
+      "coordinatePolicy": "compass_relative_hint_reobserve_before_action",
+      "landmarks": [
+        "动作前读取罗盘中心天数与外圈已点亮小时；动作后只按明确新增的一格推进账本",
+        "第 1 至 5 小时优先即时战力、技能领取、经济和背包整理；不要为无证据的远期组件连续跳过锁血机会",
+        "第 6 小时玩家战前复核棋盘、技能、生命、金币和待处理奖励；进入战斗后不再做商店或背包操作",
+        "结算页记录奖杯数字、声望变化、等级、金币和当前棋盘；Continue 只表示离开结算页，不单独证明胜负"
       ]
     }
   ],
