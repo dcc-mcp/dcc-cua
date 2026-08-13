@@ -141,6 +141,7 @@ impl ComputerUseSession {
             last_upstream_session_refresh: None,
             active: false,
             escalated: false,
+            uia_timeout_escalated: false,
         })
     }
 
@@ -217,6 +218,7 @@ impl ComputerUseSession {
         }
         self.active = true;
         self.escalated = false;
+        self.uia_timeout_escalated = false;
         self.marker.visible = true;
         let banner = self.banner_status();
         let mut started = json!({
@@ -1051,25 +1053,6 @@ impl ComputerUseSession {
         self.finish_observation_sensitive_attempt(result)
     }
 
-    pub(super) fn finish_observation_sensitive_attempt<T>(
-        &mut self,
-        result: ComputerUseResult<T>,
-    ) -> ComputerUseResult<T> {
-        if result.as_ref().is_err_and(|error| {
-            matches!(
-                error.code,
-                ComputerUseErrorCode::MissingWindow
-                    | ComputerUseErrorCode::InvalidTarget
-                    | ComputerUseErrorCode::TargetMinimized
-                    | ComputerUseErrorCode::TargetUnavailable
-                    | ComputerUseErrorCode::InteractiveDesktopUnavailable
-            )
-        }) {
-            self.invalidate_action_observations();
-        }
-        result
-    }
-
     fn finish_observed_tool_attempt(
         &mut self,
         context: &str,
@@ -1331,7 +1314,9 @@ impl ComputerUseSession {
             ));
         }
         self.set_banner_activity(BannerActivity::Stopping);
-        let result = if matches!(self.upstream_session_state, UpstreamSessionState::Active) {
+        let result = if self.target.is_some()
+            && matches!(self.upstream_session_state, UpstreamSessionState::Active)
+        {
             match call_driver_tool(
                 &self.driver.driver,
                 "end_session",
@@ -1489,6 +1474,7 @@ impl ComputerUseSession {
         #[cfg(not(windows))]
         self.require_observed_target_available().await?;
         self.escalated = true;
+        self.uia_timeout_escalated = reason == "uia_timeout";
         Ok(json!({
             "approved": true,
             "capture_scope": "window",

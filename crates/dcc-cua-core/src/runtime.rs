@@ -1003,6 +1003,7 @@ pub struct ComputerUseSession {
     last_upstream_session_refresh: Option<Instant>,
     active: bool,
     escalated: bool,
+    pub(crate) uia_timeout_escalated: bool,
 }
 
 /// A bounded desktop-scope session for screen-absolute discovery and input.

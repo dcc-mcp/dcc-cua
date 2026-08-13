@@ -15,6 +15,7 @@ use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 
 #[cfg(windows)]
 mod continuity;
+mod degraded_shutdown;
 mod modal_takeover;
 mod recording;
 mod visual_only;
