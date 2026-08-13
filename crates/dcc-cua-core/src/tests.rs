@@ -1149,6 +1149,20 @@ fn desktop_fallback_crops_an_8_bit_rgba_png() {
 }
 
 #[rstest]
+fn exact_window_identity_failures_never_degrade_to_desktop_pixels() {
+    assert!(
+        !crate::runtime::exact_capture_failure_allows_desktop_fallback(
+            ComputerUseErrorCode::InvalidTarget
+        )
+    );
+    assert!(
+        crate::runtime::exact_capture_failure_allows_desktop_fallback(
+            ComputerUseErrorCode::CaptureFailed
+        )
+    );
+}
+
+#[rstest]
 fn desktop_fallback_maps_per_monitor_dpi_bounds_to_capture_pixels() {
     assert_eq!(
         scale_bounds_for_dpi([1, 1, 3118, 1982], 192).unwrap(),

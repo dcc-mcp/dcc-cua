@@ -7,8 +7,7 @@ use windows::Win32::{
         SelectObject,
     },
     UI::WindowsAndMessaging::{
-        GA_ROOT, GetAncestor, GetWindowRect, GetWindowThreadProcessId, IsIconic, IsWindow,
-        WindowFromPoint,
+        GA_ROOT, GetAncestor, GetWindowRect, IsIconic, IsWindow, WindowFromPoint,
     },
 };
 
@@ -27,7 +26,7 @@ fn capture_error(message: impl Into<String>) -> VisibleWindowCaptureError {
     VisibleWindowCaptureError(message.into())
 }
 
-pub(crate) fn obscured_from_covered_samples(covered_samples: usize) -> bool {
+pub(crate) const fn obscured_from_covered_samples(covered_samples: usize) -> bool {
     covered_samples >= 2
 }
 
@@ -37,6 +36,7 @@ unsafe fn root_or_self(window: HWND) -> HWND {
 }
 
 unsafe fn target_is_obscured(target: HWND, rect: RECT) -> bool {
+    let target_root = unsafe { root_or_self(target) };
     let width = rect.right - rect.left;
     let height = rect.bottom - rect.top;
     let center_x = rect.left + width / 2;
@@ -63,9 +63,6 @@ unsafe fn target_is_obscured(target: HWND, rect: RECT) -> bool {
             y: rect.top + height * 3 / 4,
         },
     ];
-    let target_root = unsafe { root_or_self(target) };
-    let mut target_process_id = 0_u32;
-    unsafe { GetWindowThreadProcessId(target_root, Some(&mut target_process_id)) };
     let covered_samples = points
         .into_iter()
         .filter(|point| {
@@ -73,13 +70,7 @@ unsafe fn target_is_obscured(target: HWND, rect: RECT) -> bool {
             if owner.0.is_null() {
                 return false;
             }
-            let owner_root = unsafe { root_or_self(owner) };
-            if owner_root == target_root {
-                return false;
-            }
-            let mut owner_process_id = 0_u32;
-            unsafe { GetWindowThreadProcessId(owner_root, Some(&mut owner_process_id)) };
-            owner_process_id == 0 || owner_process_id != target_process_id
+            (unsafe { root_or_self(owner) }) != target_root
         })
         .count();
     obscured_from_covered_samples(covered_samples)
