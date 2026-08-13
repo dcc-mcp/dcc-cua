@@ -738,7 +738,7 @@ impl ComputerUseSession {
                 "action observation_id does not match the latest screenshot",
             ));
         }
-        if matches!(self.upstream_session_state, UpstreamSessionState::Active) {
+        if self.action_requires_current_upstream_evidence(action, &observation) {
             self.require_current_upstream_session_for_evidence()?;
         }
         let target = self.require_observed_target_available().await?;

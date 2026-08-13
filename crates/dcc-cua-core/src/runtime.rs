@@ -84,6 +84,30 @@ fn windows_platform_window_activation_gate(
     })
 }
 
+impl ComputerUseSession {
+    #[cfg(windows)]
+    fn action_requires_current_upstream_evidence(
+        &self,
+        action: &ComputerUseAction,
+        observation: &ComputerUseObservation,
+    ) -> bool {
+        matches!(self.upstream_session_state, UpstreamSessionState::Active)
+            && !is_windows_uia_semantic_action(action, observation)
+            && observation.capture_provenance["accessibility_available"] != false
+            && action.input_backend_id.is_none()
+            && !uses_windows_foreground_held_key_fast_path(action)
+    }
+
+    #[cfg(not(windows))]
+    fn action_requires_current_upstream_evidence(
+        &self,
+        _action: &ComputerUseAction,
+        _observation: &ComputerUseObservation,
+    ) -> bool {
+        matches!(self.upstream_session_state, UpstreamSessionState::Active)
+    }
+}
+
 #[cfg(windows)]
 pub(crate) fn map_windows_window_mutation_error(
     context: &str,
