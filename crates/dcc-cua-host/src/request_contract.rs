@@ -90,3 +90,35 @@ pub(super) fn poll_session_events_timeout(
     }
     Ok(std::time::Duration::from_millis(timeout_ms))
 }
+
+pub(super) fn action_confirmation_refusal(
+    outcome: ActionConfirmationOutcome,
+) -> (Value, Option<Vec<u8>>) {
+    let (error, message) = match outcome {
+        ActionConfirmationOutcome::Denied => (
+            "confirmation_denied",
+            "the trusted action-time confirmation was denied",
+        ),
+        ActionConfirmationOutcome::Cancelled => (
+            "confirmation_cancelled",
+            "the trusted action-time confirmation was cancelled",
+        ),
+        ActionConfirmationOutcome::Required => (
+            "approval_required",
+            "trusted action-time confirmation is required",
+        ),
+        ActionConfirmationOutcome::Allowed => {
+            unreachable!("allowed confirmations are not refusals")
+        }
+    };
+    (
+        json!({
+            "type":"action_completed",
+            "success":false,
+            "policy_tier":"action_confirmation",
+            "message":message,
+            "error":error,
+        }),
+        None,
+    )
+}
