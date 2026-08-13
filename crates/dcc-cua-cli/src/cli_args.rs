@@ -2,6 +2,123 @@
 
 use dcc_cua_core::{COMPUTER_USE_ESCALATION_REASONS, MAX_ESCALATION_DETAIL_CHARS};
 
+const KNOWN_FLAG_NAMES: &[&str] = &[
+    "--action",
+    "--action-json",
+    "--activate",
+    "--agent-name",
+    "--app",
+    "--arg",
+    "--aumid",
+    "--bundle-id",
+    "--button",
+    "--by",
+    "--check",
+    "--confirm",
+    "--delay-ms",
+    "--delivery-mode",
+    "--duration-ms",
+    "--element-index",
+    "--element-token",
+    "--endpoint",
+    "--escalate",
+    "--escalation-detail",
+    "--escalation-reason",
+    "--etag",
+    "--expect-json",
+    "--file-path",
+    "--focused",
+    "--from-x",
+    "--from-y",
+    "--generation",
+    "--grant",
+    "--height",
+    "--help",
+    "--id",
+    "--identity",
+    "--image-path",
+    "--include-text",
+    "--json",
+    "--json-file",
+    "--key",
+    "--knowledge-root",
+    "--launch-path",
+    "--max-depth",
+    "--max-elements",
+    "--max-updates",
+    "--menu",
+    "--method",
+    "--metrics-output",
+    "--modifier",
+    "--name",
+    "--new-instance",
+    "--observation-height",
+    "--observation-width",
+    "--on-screen",
+    "--output",
+    "--output-dir",
+    "--parallel-discovery",
+    "--path",
+    "--pid",
+    "--poll-ms",
+    "--profile-file",
+    "--profile-store",
+    "--query",
+    "--replace",
+    "--response-format",
+    "--route",
+    "--scroll-x",
+    "--scroll-y",
+    "--selector",
+    "--session",
+    "--showcase",
+    "--showcase-dir",
+    "--snapshot-transport",
+    "--source",
+    "--spawn",
+    "--stable-samples",
+    "--start-minimized",
+    "--stdio",
+    "--steps",
+    "--surface",
+    "--text",
+    "--timeout-ms",
+    "--title",
+    "--tool",
+    "--to-x",
+    "--to-y",
+    "--url",
+    "--value",
+    "--watch",
+    "--width",
+    "--window-id",
+    "--x",
+    "--x1",
+    "--x2",
+    "--y",
+    "--y1",
+    "--y2",
+    "-h",
+];
+
+pub(super) fn reject_unknown_flags(flags: &[String]) -> Result<(), String> {
+    for argument in flags {
+        let Some(name) = (argument.starts_with("--") || argument == "-h").then(|| {
+            argument
+                .split_once('=')
+                .map_or(argument.as_str(), |(name, _)| name)
+        }) else {
+            continue;
+        };
+        if !KNOWN_FLAG_NAMES.contains(&name) {
+            return Err(format!(
+                "unknown option {name:?}; use `help` to list supported options"
+            ));
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn flag_value(flags: &[String], name: &str) -> Option<String> {
     flags
         .iter()

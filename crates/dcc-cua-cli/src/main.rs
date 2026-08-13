@@ -64,6 +64,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = env::args().skip(1);
     let command = args.next().unwrap_or_else(|| "help".into());
     let flags = args.collect::<Vec<_>>();
+    reject_unknown_flags(&flags)?;
     if is_help_request(&command, &flags) {
         print_help();
         return Ok(());

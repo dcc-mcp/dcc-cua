@@ -1109,8 +1109,10 @@ async fn attempted_implicit_activation_error_consumes_evidence_and_requires_fres
         .unwrap_err();
 
     assert_eq!(error.code, ComputerUseErrorCode::InputFailed);
-    assert!(error.message.contains("phase=local_mutation_dispatch"));
-    assert!(error.message.contains("action_attempted=true"));
+    assert!(error.message.contains("phase=activation_dispatch"));
+    assert!(error.message.contains("focus_mutation_attempted=true"));
+    assert!(error.message.contains("action_attempted=false"));
+    assert!(error.message.contains("input_sent=false"));
     assert!(error.message.contains("fresh_observation_required=true"));
     assert!(session.active);
     assert!(session.target.is_some());

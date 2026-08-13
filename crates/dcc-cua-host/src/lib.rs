@@ -7,6 +7,7 @@
 
 mod action_confirmation;
 mod endpoint;
+mod request_contract;
 mod request_handler;
 mod session_events;
 mod session_identity;
@@ -24,8 +25,6 @@ pub use dcc_cua_protocol::{
     HOST_PROTOCOL_VERSION, MAX_BINARY_FRAME_BYTES, MAX_HOST_CONNECTIONS, MAX_JSON_FRAME_BYTES,
     MAX_PARALLEL_DISCOVERY_REQUESTS, MAX_REQUEST_ID_CHARS, MAX_SESSIONS_PER_CONNECTION,
 };
-#[cfg(test)]
-use request_handler::handle_request;
 use request_handler::handle_request_with_confirmation_host;
 use session_identity::{new_runtime_session_id, rewrite_session_aliases};
 use session_state::{
@@ -959,14 +958,6 @@ async fn run_internal(
     }
 }
 
-#[cfg(test)]
-async fn process_connection<S>(driver: ComputerUseDriver, stream: S) -> Result<(), HostError>
-where
-    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
-{
-    process_connection_with_confirmation_host(driver, stream, None).await
-}
-
 async fn process_connection_with_confirmation_host<S>(
     driver: ComputerUseDriver,
     stream: S,
@@ -984,21 +975,6 @@ where
         confirmation_host,
     )
     .await
-}
-
-#[cfg(test)]
-async fn process_connection_parts<R, W>(
-    driver: ComputerUseDriver,
-    reader: R,
-    writer: W,
-    hello_timeout: Duration,
-) -> Result<(), HostError>
-where
-    R: AsyncRead + Unpin,
-    W: AsyncWrite + Unpin + Send + 'static,
-{
-    process_connection_parts_with_confirmation_host(driver, reader, writer, hello_timeout, None)
-        .await
 }
 
 async fn process_connection_parts_with_confirmation_host<R, W>(

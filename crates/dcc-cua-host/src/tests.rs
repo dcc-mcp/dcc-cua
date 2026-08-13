@@ -1,19 +1,37 @@
-use rstest::rstest;
-use serde_json::Value;
-use tokio::io::{AsyncWrite, DuplexStream};
-
 use super::*;
 use crate::endpoint::endpoint_singleton_name;
 #[cfg(unix)]
 use crate::endpoint::{prepare_unix_endpoint_parent, stale_unix_socket_error};
+use crate::request_contract::{
+    poll_session_events_timeout, post_snapshot_delay, take_connection_session,
+};
 use crate::request_handler::acquire_raw_input_turn;
 use crate::request_handler::bind_launched_process;
 use crate::request_handler::finish_window_mutation_attempt;
-use crate::request_handler::poll_session_events_timeout;
-use crate::request_handler::post_snapshot_delay;
 use crate::request_handler::session_stopped_response;
-use crate::request_handler::take_connection_session;
 use crate::session_events::SessionInputEventQueue;
+use rstest::rstest;
+use serde_json::Value;
+
+async fn handle_request(
+    driver: &ComputerUseDriver,
+    sessions: &mut ConnectionSessions,
+    snapshot_transport: &mut Option<SnapshotTransport>,
+    desktop_shared_image: &mut Option<SharedImage>,
+    cancellation_registry: &CancellationRegistry,
+    request: Request,
+) -> Result<(Value, Option<Vec<u8>>), HostError> {
+    request_handler::handle_request_with_confirmation_host(
+        driver,
+        None,
+        sessions,
+        snapshot_transport,
+        desktop_shared_image,
+        cancellation_registry,
+        request,
+    )
+    .await
+}
 
 #[rstest]
 fn cursor_render_backend_matches_the_native_platform_owner() {
@@ -23,7 +41,7 @@ fn cursor_render_backend_matches_the_native_platform_owner() {
     } else {
         "unavailable"
     };
-    assert_eq!(request_handler::cursor_render_backend(enabled), expected);
+    assert_eq!(request_contract::cursor_render_backend(enabled), expected);
 }
 
 #[rstest]
@@ -1108,7 +1126,7 @@ fn runtime_session_ids_are_rewritten_in_nested_host_responses() {
 #[rstest]
 fn private_worker_enables_the_upstream_cursor_backend() {
     assert_eq!(
-        request_handler::cursor_render_backend(true),
+        request_contract::cursor_render_backend(true),
         "cua-driver-sdk"
     );
 }
@@ -1119,198 +1137,6 @@ fn shared_interrupt_has_a_typed_host_request() {
         serde_json::from_value::<Request>(json!({"method":"interrupt_all", "params":{}})),
         Ok(Request::InterruptAll {})
     ));
-}
-
-async fn write_json_request(
-    writer: &mut (impl AsyncWrite + Unpin),
-    value: Value,
-) -> Result<(), HostError> {
-    write_frame(
-        writer,
-        &serde_json::to_vec(&value).unwrap(),
-        MAX_JSON_FRAME_BYTES,
-    )
-    .await
-}
-
-#[rstest]
-#[tokio::test]
-async fn process_connection_requires_hello_pings_and_rejects_duplicate_hello() {
-    let (mut client, server_stream): (DuplexStream, DuplexStream) = tokio::io::duplex(16 * 1024);
-    let server = tokio::spawn(process_connection(
-        ComputerUseDriver::create().unwrap(),
-        server_stream,
-    ));
-
-    write_json_request(
-        &mut client,
-        json!({"request_id":"pre-hello", "method":"ping", "params":{}}),
-    )
-    .await
-    .unwrap();
-    let response = read_frame(&mut client, MAX_JSON_FRAME_BYTES)
-        .await
-        .unwrap()
-        .unwrap();
-    let response: Value = serde_json::from_slice(&response).unwrap();
-    assert_eq!(response["type"], "error");
-    assert_eq!(response["code"], "protocol_error");
-    assert_eq!(response["request_id"], "pre-hello");
-
-    let hello = json!({
-        "request_id": "hello-1",
-        "method": "hello",
-        "params": {
-            "protocol_version": HOST_PROTOCOL_VERSION,
-            "client_name": "host-integration-test",
-            "snapshot_transport": "binary_frame"
-        }
-    });
-    write_json_request(&mut client, hello).await.unwrap();
-    let response = read_frame(&mut client, MAX_JSON_FRAME_BYTES)
-        .await
-        .unwrap()
-        .unwrap();
-    let response: Value = serde_json::from_slice(&response).unwrap();
-    assert_eq!(response["type"], "hello");
-    assert_eq!(response["request_id"], "hello-1");
-    assert_eq!(response["protocol_version"], HOST_PROTOCOL_VERSION);
-    assert!(
-        response["capabilities"]
-            .as_array()
-            .is_some_and(|items| { items.iter().any(|item| item == "pipelined_read_requests") })
-    );
-    assert!(
-        response["capabilities"]
-            .as_array()
-            .is_some_and(|items| { items.iter().any(|item| item == "window_inventory_filters") })
-    );
-    assert!(
-        response["capabilities"]
-            .as_array()
-            .is_some_and(|items| { items.iter().any(|item| item == "host_ping") })
-    );
-    assert!(
-        response["capabilities"]
-            .as_array()
-            .is_some_and(|items| { items.iter().any(|item| item == "host_diagnostics") })
-    );
-    assert!(
-        response["capabilities"]
-            .as_array()
-            .is_some_and(|items| { items.iter().any(|item| item == "serialized_raw_input") })
-    );
-
-    assert!(
-        tokio::time::timeout(
-            std::time::Duration::from_millis(300),
-            read_frame(&mut client, MAX_JSON_FRAME_BYTES),
-        )
-        .await
-        .is_err(),
-        "session event monitoring must never emit an unsolicited Host frame",
-    );
-
-    write_json_request(
-        &mut client,
-        json!({"request_id":"ping-1", "method":"ping", "params":{}}),
-    )
-    .await
-    .unwrap();
-    let response = read_frame(&mut client, MAX_JSON_FRAME_BYTES)
-        .await
-        .unwrap()
-        .unwrap();
-    let response: Value = serde_json::from_slice(&response).unwrap();
-    assert_eq!(response["type"], "pong");
-    assert_eq!(response["request_id"], "ping-1");
-    assert_eq!(response["protocol_version"], HOST_PROTOCOL_VERSION);
-
-    write_json_request(
-        &mut client,
-        json!({
-            "request_id": "hello-2",
-            "method": "hello",
-            "params": {
-                "protocol_version": HOST_PROTOCOL_VERSION,
-                "client_name": "host-integration-test",
-                "snapshot_transport": "shared_memory"
-            }
-        }),
-    )
-    .await
-    .unwrap();
-    let response = read_frame(&mut client, MAX_JSON_FRAME_BYTES)
-        .await
-        .unwrap()
-        .unwrap();
-    let response: Value = serde_json::from_slice(&response).unwrap();
-    assert_eq!(response["type"], "error");
-    assert_eq!(response["request_id"], "hello-2");
-    assert_eq!(response["code"], "invalid_request");
-
-    drop(client);
-    assert!(server.await.unwrap().is_ok());
-}
-
-#[rstest]
-#[tokio::test]
-async fn connection_closes_when_hello_misses_its_absolute_deadline() {
-    let (mut client, server_stream): (DuplexStream, DuplexStream) = tokio::io::duplex(4096);
-    let (reader, writer) = tokio::io::split(server_stream);
-    let server = tokio::spawn(process_connection_parts(
-        ComputerUseDriver::create().unwrap(),
-        reader,
-        writer,
-        std::time::Duration::from_millis(25),
-    ));
-
-    write_json_request(
-        &mut client,
-        json!({"request_id":"pre-hello", "method":"ping", "params":{}}),
-    )
-    .await
-    .unwrap();
-    let response = read_frame(&mut client, MAX_JSON_FRAME_BYTES)
-        .await
-        .unwrap()
-        .unwrap();
-    let response: Value = serde_json::from_slice(&response).unwrap();
-    assert_eq!(response["code"], "protocol_error");
-
-    let error = tokio::time::timeout(std::time::Duration::from_secs(1), server)
-        .await
-        .unwrap()
-        .unwrap()
-        .unwrap_err();
-    assert!(
-        error
-            .to_string()
-            .contains("hello was not completed within 25 ms")
-    );
-}
-
-#[rstest]
-#[tokio::test]
-async fn connection_finalizer_aborts_tasks_and_cleans_up_after_errors() {
-    let cleaned = Arc::new(AtomicBool::new(false));
-    let cleanup_flag = cleaned.clone();
-    let mut tasks = JoinSet::new();
-    tasks.spawn(std::future::pending::<Result<(), HostError>>());
-
-    let result = finalize_connection(
-        Err(HostError::Protocol("broken connection".into())),
-        &mut tasks,
-        async move {
-            cleanup_flag.store(true, Ordering::Release);
-            Ok(())
-        },
-    )
-    .await;
-
-    assert!(matches!(result, Err(HostError::Protocol(_))));
-    assert!(cleaned.load(Ordering::Acquire));
-    assert!(tasks.is_empty());
 }
 
 #[rstest]
@@ -1492,7 +1318,7 @@ fn restore_activate_is_an_explicit_exact_session_scoped_request() {
 
 #[rstest]
 fn restore_activate_response_preserves_core_recovery_fences() {
-    let response = request_handler::window_state_changed_response(
+    let response = request_contract::window_state_changed_response(
         "session-1",
         "restore_activate",
         json!({"minimized": false, "foreground": true}),
@@ -2153,6 +1979,7 @@ fn launch_ownership_requires_the_same_grant_and_process() {
     assert!(bind_launched_process(&launched, &mut wrong_label).is_err());
 }
 
+mod connection;
 mod request_parsing;
 mod response_contracts;
 mod session_concurrency;
