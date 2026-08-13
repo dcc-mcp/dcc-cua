@@ -105,6 +105,13 @@ impl ComputerUseSession {
         max_depth: u32,
         visual_fallback: &str,
     ) -> Value {
+        // Escalation is the caller's explicit approval to continue with pixels
+        // after the accessibility ladder has already failed. Retrying the same
+        // UIA provider here can add another full request timeout before a
+        // foreground pixel action and defeats that bounded fallback contract.
+        if self.uia_timeout_escalated {
+            return unavailable_visual_fallback_accessibility(target, visual_fallback);
+        }
         #[cfg(not(windows))]
         let _ = (max_elements, max_depth);
         #[cfg(windows)]
@@ -114,15 +121,24 @@ impl ComputerUseSession {
         {
             return value;
         }
-        json!({
-            "degraded": true,
-            "accessibility_available": false,
-            "fallback": visual_fallback,
-            "window_id": target.window_id,
-            "pid": target.pid,
-        })
+        unavailable_visual_fallback_accessibility(target, visual_fallback)
     }
+}
 
+fn unavailable_visual_fallback_accessibility(
+    target: &WindowTarget,
+    visual_fallback: &str,
+) -> Value {
+    json!({
+        "degraded": true,
+        "accessibility_available": false,
+        "fallback": visual_fallback,
+        "window_id": target.window_id,
+        "pid": target.pid,
+    })
+}
+
+impl ComputerUseSession {
     #[cfg(windows)]
     pub(crate) async fn windows_accessibility_snapshot(
         &mut self,

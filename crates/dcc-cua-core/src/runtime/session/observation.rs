@@ -1,6 +1,34 @@
 use super::*;
 
 impl ComputerUseSession {
+    pub(crate) fn finish_observation_sensitive_attempt<T>(
+        &mut self,
+        result: ComputerUseResult<T>,
+    ) -> ComputerUseResult<T> {
+        if result
+            .as_ref()
+            .is_err_and(|error| error.code == ComputerUseErrorCode::MissingWindow)
+        {
+            // The exact PID/HWND fence no longer exists. Drop local target
+            // ownership now so stop() cannot re-enter an upstream provider
+            // that was bound to the vanished window.
+            self.target = None;
+        }
+        if result.as_ref().is_err_and(|error| {
+            matches!(
+                error.code,
+                ComputerUseErrorCode::MissingWindow
+                    | ComputerUseErrorCode::InvalidTarget
+                    | ComputerUseErrorCode::TargetMinimized
+                    | ComputerUseErrorCode::TargetUnavailable
+                    | ComputerUseErrorCode::InteractiveDesktopUnavailable
+            )
+        }) {
+            self.invalidate_action_observations();
+        }
+        result
+    }
+
     pub(super) fn reject_owned_modal_takeover(
         &mut self,
         target: &WindowTarget,
