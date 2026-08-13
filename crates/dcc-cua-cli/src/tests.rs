@@ -12,6 +12,28 @@ use super::host_lifecycle::validate_host_version;
 use super::*;
 
 #[rstest]
+#[case("--name", "chrome")]
+#[case("--path", r"C:\Program Files\Browser\browser.exe")]
+fn launch_parser_preserves_an_explicit_browser_target_and_url(
+    #[case] selector: &str,
+    #[case] value: &str,
+) {
+    let flags = strings([selector, value, "--url", "https://example.test/repro"]);
+
+    let request = launch_request(&flags);
+
+    assert_eq!(
+        request.name.as_deref(),
+        (selector == "--name").then_some(value)
+    );
+    assert_eq!(
+        request.path.as_deref(),
+        (selector == "--path").then_some(value)
+    );
+    assert_eq!(request.urls, ["https://example.test/repro"]);
+}
+
+#[rstest]
 #[case("full", true)]
 #[case("visual", true)]
 #[case("semantic", false)]

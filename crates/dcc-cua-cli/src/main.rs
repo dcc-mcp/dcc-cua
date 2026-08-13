@@ -1658,7 +1658,16 @@ async fn launch_app(
     driver: &ComputerUseDriver,
     flags: &[String],
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let request = ComputerUseLaunchRequest {
+    let request = launch_request(flags);
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&driver.launch_app(&request).await?)?
+    );
+    Ok(())
+}
+
+fn launch_request(flags: &[String]) -> ComputerUseLaunchRequest {
+    ComputerUseLaunchRequest {
         name: flag_value(flags, "--name"),
         bundle_id: flag_value(flags, "--bundle-id"),
         aumid: flag_value(flags, "--aumid"),
@@ -1668,12 +1677,7 @@ async fn launch_app(
         additional_arguments: flag_values(flags, "--arg"),
         creates_new_application_instance: has_flag(flags, "--new-instance"),
         start_minimized: has_flag(flags, "--start-minimized"),
-    };
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&driver.launch_app(&request).await?)?
-    );
-    Ok(())
+    }
 }
 
 async fn terminate_app(

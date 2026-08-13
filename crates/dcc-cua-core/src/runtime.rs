@@ -144,6 +144,11 @@ pub(crate) fn map_windows_window_mutation_error(
 }
 
 const INPUT_CALL_TIMEOUT: Duration = Duration::from_secs(15);
+// The Windows SDK bounds app-name resolution, ShellExecute, and late-window
+// discovery separately. Keep our outer fence above their combined worst case
+// so the SDK can return its typed launch failure instead of racing a generic
+// 15-second InputFailed, while retaining a hard process-level deadline.
+const APPLICATION_LAUNCH_CALL_TIMEOUT: Duration = Duration::from_secs(35);
 const CURSOR_GLIDE_MS: u64 = 180;
 const SESSION_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 const RECORDING_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30);
@@ -326,7 +331,17 @@ async fn call_driver_tool(
     arguments: String,
     operation: &str,
 ) -> ComputerUseResult<cua_driver_sdk::ToolResult> {
-    call_driver_tool_with_timeout(driver, name, arguments, operation, INPUT_CALL_TIMEOUT).await
+    let name = name.into();
+    let timeout = driver_call_timeout(&name);
+    call_driver_tool_with_timeout(driver, name, arguments, operation, timeout).await
+}
+
+pub(crate) fn driver_call_timeout(tool_name: &str) -> Duration {
+    if tool_name == "launch_app" {
+        APPLICATION_LAUNCH_CALL_TIMEOUT
+    } else {
+        INPUT_CALL_TIMEOUT
+    }
 }
 
 async fn call_driver_tool_with_timeout(
