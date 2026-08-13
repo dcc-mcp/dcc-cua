@@ -1645,6 +1645,28 @@ fn semantic_actions_forward_element_tokens_and_delivery_mode() {
 }
 
 #[rstest]
+#[case("press", "keypress")]
+#[case("press_key", "keypress")]
+#[case("hotkey", "keyboard_shortcut")]
+fn host_action_normalizes_documented_keyboard_aliases(
+    #[case] alias: &str,
+    #[case] canonical: &str,
+) {
+    let action: HostAction = serde_json::from_value(json!({
+        "action": alias,
+        "input_kind": "raw_input",
+        "intent": "navigate",
+        "keys": ["SPACE"]
+    }))
+    .unwrap();
+
+    let action = action.into_computer_use("obs-1".into()).unwrap();
+
+    assert_eq!(action.action, canonical);
+    assert_eq!(action.keys, ["SPACE"]);
+}
+
+#[rstest]
 fn host_action_forwards_the_explicit_input_backend_id() {
     let action: HostAction = serde_json::from_value(json!({
         "action": "drag",
