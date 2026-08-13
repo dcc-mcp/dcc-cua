@@ -14,7 +14,7 @@ gui-e2e = []
 
 [dev-dependencies]
 # Language-independent Windows existing-profile browser proof: https://github.com/trycua/cua/pull/3135
-cua-driver-testkit = { git = "https://github.com/trycua/cua.git", rev = "bfd14092c122345f38ffe400f0843e4d62f4f76e", package = "cua-driver-testkit" }
+cua-driver-testkit = { git = "https://github.com/trycua/cua.git", rev = "a6de4f4549df4d7696c6acb795e7a39321621870", package = "cua-driver-testkit" }
 dcc-cua-client = { path = "../dcc-cua-client" }
 rstest.workspace = true
 serde_json = "1"
