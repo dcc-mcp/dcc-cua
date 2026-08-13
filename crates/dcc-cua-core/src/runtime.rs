@@ -95,7 +95,7 @@ impl ComputerUseSession {
             && !is_windows_uia_semantic_action(action, observation)
             && observation.capture_provenance["accessibility_available"] != false
             && action.input_backend_id.is_none()
-            && !uses_windows_foreground_held_key_fast_path(action)
+            && !uses_windows_foreground_fast_path(action)
     }
 
     #[cfg(not(windows))]

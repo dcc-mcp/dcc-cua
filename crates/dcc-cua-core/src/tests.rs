@@ -69,9 +69,9 @@ use crate::runtime::{
     WindowsPostButtonUpSnapshot, WindowsRawDragInputTrace,
     inject_windows_combined_input_batch_with, map_windows_window_mutation_error,
     run_windows_calibrated_relative_path, select_windows_foreground_drag_backend,
-    uses_windows_foreground_fast_path, uses_windows_foreground_held_key_fast_path,
-    windows_combined_raw_drag_outcome, windows_combined_source_move_and_left_down_inputs,
-    windows_raw_drag_delivery, windows_synthetic_touch_attempt, windows_synthetic_touch_result,
+    uses_windows_foreground_fast_path, windows_combined_raw_drag_outcome,
+    windows_combined_source_move_and_left_down_inputs, windows_raw_drag_delivery,
+    windows_synthetic_touch_attempt, windows_synthetic_touch_result,
 };
 use crate::window_target::{WindowTarget, validate_target_policy};
 
@@ -322,34 +322,6 @@ fn windows_fast_route_is_bounded_to_foreground_raw_actions() {
         delivery_mode: Some("foreground".into()),
         ..Default::default()
     }));
-}
-
-#[cfg(windows)]
-#[rstest]
-fn windows_held_key_fast_route_is_selected_even_with_accessibility_nodes() {
-    assert!(uses_windows_foreground_held_key_fast_path(
-        &ComputerUseAction {
-            action: "keypress".into(),
-            delivery_mode: Some("foreground".into()),
-            duration_ms: Some(1_000),
-            ..Default::default()
-        }
-    ));
-    assert!(!uses_windows_foreground_held_key_fast_path(
-        &ComputerUseAction {
-            action: "keypress".into(),
-            delivery_mode: Some("foreground".into()),
-            ..Default::default()
-        }
-    ));
-    assert!(!uses_windows_foreground_held_key_fast_path(
-        &ComputerUseAction {
-            action: "keyboard_shortcut".into(),
-            delivery_mode: Some("foreground".into()),
-            duration_ms: Some(1_000),
-            ..Default::default()
-        }
-    ));
 }
 
 #[rstest]

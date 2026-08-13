@@ -13,6 +13,7 @@ use std::pin::Pin;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 
+mod continuity;
 mod modal_takeover;
 mod recording;
 mod visual_only;
@@ -1272,37 +1273,6 @@ async fn due_refresh_fences_an_action_before_any_driver_call() {
 
     assert_eq!(error.code, ComputerUseErrorCode::SessionRefreshRequired);
     assert!(error.message.contains("action_attempted=false"));
-    assert_eq!(calls.load(AtomicOrdering::SeqCst), 0);
-    assert!(session.observation.is_none());
-}
-
-#[cfg(windows)]
-#[rstest]
-#[tokio::test]
-async fn due_upstream_refresh_does_not_fence_a_local_visual_action() {
-    let (mut session, calls) = counting_session();
-    session
-        .observation
-        .as_mut()
-        .expect("seeded observation")
-        .capture_provenance = json!({
-        "accessibility_available": false,
-        "backend": "windows_graphics_capture",
-        "scope": "window",
-    });
-
-    let error = session
-        .perform_action(&ComputerUseAction {
-            action: "click".into(),
-            observation_id: Some("observation-before-refresh".into()),
-            x: Some(10.0),
-            y: Some(10.0),
-            ..Default::default()
-        })
-        .await
-        .expect_err("the synthetic HWND must still fail exact-target revalidation");
-
-    assert_eq!(error.code, ComputerUseErrorCode::MissingWindow);
     assert_eq!(calls.load(AtomicOrdering::SeqCst), 0);
     assert!(session.observation.is_none());
 }
