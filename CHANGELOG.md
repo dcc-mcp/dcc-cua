@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.4](https://github.com/dcc-mcp/dcc-cua/compare/v1.1.3...v1.1.4) (2026-08-13)
+
+
+### Bug Fixes
+
+* scale foreground input coordinates ([df9f806](https://github.com/dcc-mcp/dcc-cua/commit/df9f80697a82c5daa95a02dd130d58042108bdc0))
+
 ## [1.1.3](https://github.com/dcc-mcp/dcc-cua/compare/v1.1.2...v1.1.3) (2026-08-13)
 
 
