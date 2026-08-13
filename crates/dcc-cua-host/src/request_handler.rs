@@ -31,36 +31,6 @@ pub(super) fn finish_window_mutation_attempt<T, E>(
     result
 }
 
-fn action_confirmation_refusal(outcome: ActionConfirmationOutcome) -> (Value, Option<Vec<u8>>) {
-    let (error, message) = match outcome {
-        ActionConfirmationOutcome::Denied => (
-            "confirmation_denied",
-            "the trusted action-time confirmation was denied",
-        ),
-        ActionConfirmationOutcome::Cancelled => (
-            "confirmation_cancelled",
-            "the trusted action-time confirmation was cancelled",
-        ),
-        ActionConfirmationOutcome::Required => (
-            "approval_required",
-            "trusted action-time confirmation is required",
-        ),
-        ActionConfirmationOutcome::Allowed => {
-            unreachable!("allowed confirmations are not refusals")
-        }
-    };
-    (
-        json!({
-            "type":"action_completed",
-            "success":false,
-            "policy_tier":"action_confirmation",
-            "message":message,
-            "error":error,
-        }),
-        None,
-    )
-}
-
 pub(super) fn session_stopped_response(
     session_id: &str,
     result: ComputerUseSessionStopResult,
