@@ -172,23 +172,23 @@ pub(super) fn action_from_json(
         .as_object_mut()
         .ok_or("act requires --action-json with a JSON object")?;
 
-    if let Some(action) = object.get_mut("action") {
-        if let Some(alias) = action.as_str() {
-            *action = serde_json::Value::String(
-                match alias {
-                    "press" | "press_key" => "keypress",
-                    "hotkey" => "keyboard_shortcut",
-                    other => other,
-                }
-                .into(),
-            );
-        }
+    if let Some(action) = object.get_mut("action")
+        && let Some(alias) = action.as_str()
+    {
+        *action = serde_json::Value::String(
+            match alias {
+                "press" | "press_key" => "keypress",
+                "hotkey" => "keyboard_shortcut",
+                other => other,
+            }
+            .into(),
+        );
     }
 
-    if !object.contains_key("keys") {
-        if let Some(key) = object.remove("key") {
-            object.insert("keys".into(), serde_json::Value::Array(vec![key]));
-        }
+    if !object.contains_key("keys")
+        && let Some(key) = object.remove("key")
+    {
+        object.insert("keys".into(), serde_json::Value::Array(vec![key]));
     }
 
     Ok(serde_json::from_value(value)?)
