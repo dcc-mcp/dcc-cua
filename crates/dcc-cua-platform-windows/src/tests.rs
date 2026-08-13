@@ -7,6 +7,11 @@ use crate::wgc::{
 };
 use serde_json::json;
 
+#[cfg(windows)]
+use super::{
+    ExactWindowCaptureRoute, capture_identity::route_for_same_executable_root_count,
+    capture_visible_window, exact_window_capture_route,
+};
 use super::{
     UiaAction, UiaTarget, WindowsForegroundRelation, WindowsRawInputSnapshot,
     WindowsWindowIdentity,
@@ -16,6 +21,15 @@ use super::{
 use crate::visible_capture::obscured_from_covered_samples;
 #[cfg(windows)]
 use crate::windows::retry_read_only_after_backend_failure;
+#[cfg(windows)]
+use windows_sys::Win32::{
+    Foundation::{HINSTANCE, HWND},
+    System::Threading::GetCurrentProcessId,
+    UI::WindowsAndMessaging::{
+        CreateWindowExW, DestroyWindow, HWND_TOPMOST, SWP_SHOWWINDOW, SendMessageW, SetWindowPos,
+        WM_PAINT, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
+    },
+};
 
 #[cfg(windows)]
 #[rstest]
@@ -42,6 +56,139 @@ use super::windows::{
     foreground_restore_required, input_gated_window_mutation,
     run_restore_activate_mutation_sequence, window_frame_matches,
 };
+
+#[cfg(windows)]
+#[rstest]
+#[case(1, ExactWindowCaptureRoute::Wgc)]
+#[case(2, ExactWindowCaptureRoute::VerifiedVisible)]
+#[case(3, ExactWindowCaptureRoute::VerifiedVisible)]
+fn same_executable_multi_window_capture_requires_independent_pixel_proof(
+    #[case] root_count: usize,
+    #[case] expected: ExactWindowCaptureRoute,
+) {
+    assert_eq!(route_for_same_executable_root_count(root_count), expected);
+}
+
+#[cfg(windows)]
+#[rstest]
+fn same_executable_windows_capture_pixels_from_their_exact_hwnds() {
+    const SS_BLACKRECT: u32 = 0x0000_0004;
+    const SS_WHITERECT: u32 = 0x0000_0006;
+    let black = ExactCaptureTestWindow::new("dcc-cua-black", SS_BLACKRECT, 40, 40);
+    let white = ExactCaptureTestWindow::new("dcc-cua-white", SS_WHITERECT, 360, 40);
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    let process_id = unsafe { GetCurrentProcessId() };
+
+    assert_eq!(
+        exact_window_capture_route(process_id, black.raw()).unwrap(),
+        ExactWindowCaptureRoute::VerifiedVisible
+    );
+    assert_eq!(
+        exact_window_capture_route(process_id, white.raw()).unwrap(),
+        ExactWindowCaptureRoute::VerifiedVisible
+    );
+
+    assert_exact_capture_luma_or_fail_closed(&black, 0..=31);
+    assert_exact_capture_luma_or_fail_closed(&white, 224..=255);
+}
+
+#[cfg(windows)]
+struct ExactCaptureTestWindow(HWND);
+
+#[cfg(windows)]
+impl ExactCaptureTestWindow {
+    fn new(title: &str, static_style: u32, x: i32, y: i32) -> Self {
+        let class = wide("STATIC");
+        let title = wide(title);
+        let hwnd = unsafe {
+            CreateWindowExW(
+                0,
+                class.as_ptr(),
+                title.as_ptr(),
+                WS_OVERLAPPEDWINDOW | WS_VISIBLE | static_style,
+                x,
+                y,
+                280,
+                220,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                HINSTANCE::default(),
+                std::ptr::null(),
+            )
+        };
+        assert!(!hwnd.is_null(), "create exact-window capture fixture");
+        unsafe {
+            SetWindowPos(hwnd, HWND_TOPMOST, x, y, 280, 220, SWP_SHOWWINDOW);
+            SendMessageW(hwnd, WM_PAINT, 0, 0);
+        }
+        Self(hwnd)
+    }
+
+    fn raw(&self) -> u64 {
+        self.0 as usize as u64
+    }
+
+    fn raise(&self) {
+        unsafe {
+            SetWindowPos(
+                self.0,
+                HWND_TOPMOST,
+                0,
+                0,
+                0,
+                0,
+                windows_sys::Win32::UI::WindowsAndMessaging::SWP_NOMOVE
+                    | windows_sys::Win32::UI::WindowsAndMessaging::SWP_NOSIZE
+                    | SWP_SHOWWINDOW,
+            );
+            SendMessageW(self.0, WM_PAINT, 0, 0);
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for ExactCaptureTestWindow {
+    fn drop(&mut self) {
+        unsafe { DestroyWindow(self.0) };
+    }
+}
+
+#[cfg(windows)]
+fn wide(value: &str) -> Vec<u16> {
+    value.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+#[cfg(windows)]
+fn center_luma(bgra: &[u8], width: u32, height: u32) -> u8 {
+    let index = ((height as usize / 2) * width as usize + width as usize / 2) * 4;
+    let blue = u16::from(bgra[index]);
+    let green = u16::from(bgra[index + 1]);
+    let red = u16::from(bgra[index + 2]);
+    ((red + green + blue) / 3) as u8
+}
+
+#[cfg(windows)]
+fn assert_exact_capture_luma_or_fail_closed(
+    window: &ExactCaptureTestWindow,
+    expected: std::ops::RangeInclusive<u8>,
+) {
+    window.raise();
+    match capture_visible_window(window.raw()) {
+        Ok(capture) => {
+            let luma = center_luma(&capture.bgra, capture.width, capture.height);
+            assert!(
+                expected.contains(&luma),
+                "exact HWND returned unexpected center luma {luma}"
+            );
+        }
+        Err(error) => assert!(
+            error
+                .to_string()
+                .contains("another root window covers the exact HWND"),
+            "ambiguous pixels must fail closed: {error}"
+        ),
+    }
+}
 
 #[rstest]
 fn snapshot_normalization_emits_flat_agent_friendly_elements() {
