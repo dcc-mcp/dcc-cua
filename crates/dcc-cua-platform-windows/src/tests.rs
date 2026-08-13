@@ -23,7 +23,7 @@ use crate::windows::retry_read_only_after_backend_failure;
 #[case(1, false)]
 #[case(2, true)]
 #[case(5, true)]
-fn visible_crop_requires_at_least_four_of_five_target_samples(
+fn visible_crop_requires_multiple_covered_target_samples(
     #[case] covered_samples: usize,
     #[case] expected_obscured: bool,
 ) {

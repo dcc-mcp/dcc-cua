@@ -1215,12 +1215,63 @@ struct ExactWindowCapture {
     fallback: &'static str,
 }
 
+pub(crate) const fn exact_capture_failure_allows_desktop_fallback(
+    code: ComputerUseErrorCode,
+) -> bool {
+    !matches!(code, ComputerUseErrorCode::InvalidTarget)
+}
+
 #[cfg(windows)]
-async fn capture_exact_window(window_id: u64) -> ComputerUseResult<ExactWindowCapture> {
+async fn capture_exact_window(
+    process_id: u32,
+    window_id: u64,
+) -> ComputerUseResult<ExactWindowCapture> {
     tokio::task::spawn_blocking(move || {
+        let route = dcc_cua_platform_windows::exact_window_capture_route(process_id, window_id)
+            .map_err(|error| {
+                ComputerUseError::new(ComputerUseErrorCode::InvalidTarget, error.to_string())
+            })?;
+        if route == dcc_cua_platform_windows::ExactWindowCaptureRoute::VerifiedVisible {
+            let visible = dcc_cua_platform_windows::capture_visible_window(window_id).map_err(
+                |error| {
+                    ComputerUseError::new(
+                        ComputerUseErrorCode::InvalidTarget,
+                        format!(
+                            "same-executable multi-window WGC identity is ambiguous; exact visible-window proof failed: {error}"
+                        ),
+                    )
+                },
+            )?;
+            dcc_cua_platform_windows::exact_window_capture_route(process_id, window_id).map_err(
+                |error| {
+                    ComputerUseError::new(ComputerUseErrorCode::InvalidTarget, error.to_string())
+                },
+            )?;
+            return Ok(ExactWindowCapture {
+                data: encode_bgra_to_png(&visible.bgra, visible.width, visible.height)?,
+                backend: "dcc-cua-visible-exact-window",
+                fallback: "same_executable_multi_window_exact_visible_proof",
+            });
+        }
         let wgc_error = match dcc_cua_platform_windows::PersistentWgcCapture::new(window_id) {
             Ok(mut capture) => match capture.next_frame(Duration::from_secs(5)) {
                 Ok((bgra, width, height)) => {
+                    if dcc_cua_platform_windows::exact_window_capture_route(
+                        process_id,
+                        window_id,
+                    )
+                    .map_err(|error| {
+                        ComputerUseError::new(
+                            ComputerUseErrorCode::InvalidTarget,
+                            error.to_string(),
+                        )
+                    })? != dcc_cua_platform_windows::ExactWindowCaptureRoute::Wgc
+                    {
+                        return Err(ComputerUseError::new(
+                            ComputerUseErrorCode::InvalidTarget,
+                            "another window from the target executable appeared during WGC capture; pixels were discarded",
+                        ));
+                    }
                     return Ok(ExactWindowCapture {
                         data: encode_bgra_to_png(&bgra, width, height)?,
                         backend: "dcc-cua-wgc-exact-window",
@@ -1254,7 +1305,10 @@ async fn capture_exact_window(window_id: u64) -> ComputerUseResult<ExactWindowCa
 }
 
 #[cfg(not(windows))]
-async fn capture_exact_window(_window_id: u64) -> ComputerUseResult<ExactWindowCapture> {
+async fn capture_exact_window(
+    _process_id: u32,
+    _window_id: u64,
+) -> ComputerUseResult<ExactWindowCapture> {
     Err(ComputerUseError::new(
         ComputerUseErrorCode::BackendUnavailable,
         "exact native window capture is unavailable on this platform",

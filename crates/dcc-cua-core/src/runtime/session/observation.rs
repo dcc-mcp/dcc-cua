@@ -442,7 +442,7 @@ impl ComputerUseSession {
         self.finish_observed_input_gate(
             interactive_desktop::require_exact_window_observation_available(),
         )?;
-        let exact_capture = capture_exact_window(target.window_id).await;
+        let exact_capture = capture_exact_window(target.pid, target.window_id).await;
         self.finish_observed_input_gate(
             interactive_desktop::require_exact_window_observation_available(),
         )?;
@@ -463,6 +463,9 @@ impl ComputerUseSession {
                 }),
             ),
             Err(exact_error) => {
+                if !exact_capture_failure_allows_desktop_fallback(exact_error.code) {
+                    return Err(exact_error);
+                }
                 if !target.is_on_screen || !target.is_foreground {
                     return Err(ComputerUseError::new(
                         ComputerUseErrorCode::CaptureFailed,

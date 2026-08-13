@@ -22,6 +22,7 @@ tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
 
 [target.'cfg(windows)'.dev-dependencies]
+dcc-cua-platform-windows = { path = "../dcc-cua-platform-windows" }
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
 
 [dependencies]

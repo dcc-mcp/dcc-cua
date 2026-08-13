@@ -531,6 +531,18 @@ impl LiveObservation {
             let _ = (driver, session_id);
             crate::interactive_desktop::require_exact_window_observation_available()?;
             ensure_window_owner(process_id, window_handle)?;
+            match dcc_cua_platform_windows::exact_window_capture_route(process_id, window_handle)
+                .map_err(|error| {
+                    ComputerUseError::new(ComputerUseErrorCode::InvalidTarget, error.to_string())
+                })? {
+                dcc_cua_platform_windows::ExactWindowCaptureRoute::Wgc => {}
+                dcc_cua_platform_windows::ExactWindowCaptureRoute::VerifiedVisible => {
+                    return Err(ComputerUseError::new(
+                        ComputerUseErrorCode::InvalidTarget,
+                        "live WGC pixels cannot prove the exact HWND while another visible window from the same executable exists",
+                    ));
+                }
+            }
             let fps = request.fps;
             let (sender, receiver) = watch::channel(LiveObservationStatus::default());
             let task = tokio::spawn(run_capture_loop(

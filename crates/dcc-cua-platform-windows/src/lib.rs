@@ -4,6 +4,8 @@
 //! Windows-only semantic fallback used when an application's UIA provider is
 //! usable but CUA's combined window snapshot path is not.
 
+#[cfg(windows)]
+mod capture_identity;
 mod contracts;
 #[cfg(any(windows, test))]
 mod snapshot;
@@ -20,6 +22,10 @@ pub use contracts::{
     WindowsRawInputSnapshot, WindowsWindowIdentity,
 };
 
+#[cfg(windows)]
+pub use capture_identity::{
+    ExactWindowCaptureIdentityError, ExactWindowCaptureRoute, exact_window_capture_route,
+};
 #[cfg(windows)]
 pub use visible_capture::{VisibleWindowCapture, capture_visible_window};
 #[cfg(windows)]
