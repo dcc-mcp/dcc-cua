@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.2](https://github.com/dcc-mcp/dcc-cua/compare/v1.1.1...v1.1.2) (2026-08-13)
+
+
+### Bug Fixes
+
+* register foreground action routing ([f8924d7](https://github.com/dcc-mcp/dcc-cua/commit/f8924d79e30806985c5dc2fa57ddbd643e277d3a))
+
 ## [1.1.1](https://github.com/dcc-mcp/dcc-cua/compare/v1.1.0...v1.1.1) (2026-08-13)
 
 
