@@ -161,7 +161,37 @@ pub(super) async fn act(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let action_json = flag_value(flags, "--action-json")
         .ok_or("act requires --action-json with a ComputerUseAction JSON object")?;
-    execute_action(driver, flags, serde_json::from_str(&action_json)?).await
+    execute_action(driver, flags, action_from_json(&action_json)?).await
+}
+
+pub(super) fn action_from_json(
+    action_json: &str,
+) -> Result<ComputerUseAction, Box<dyn std::error::Error>> {
+    let mut value: serde_json::Value = serde_json::from_str(action_json)?;
+    let object = value
+        .as_object_mut()
+        .ok_or("act requires --action-json with a JSON object")?;
+
+    if let Some(action) = object.get_mut("action") {
+        if let Some(alias) = action.as_str() {
+            *action = serde_json::Value::String(
+                match alias {
+                    "press" | "press_key" => "keypress",
+                    "hotkey" => "keyboard_shortcut",
+                    other => other,
+                }
+                .into(),
+            );
+        }
+    }
+
+    if !object.contains_key("keys") {
+        if let Some(key) = object.remove("key") {
+            object.insert("keys".into(), serde_json::Value::Array(vec![key]));
+        }
+    }
+
+    Ok(serde_json::from_value(value)?)
 }
 
 pub(super) async fn friendly_action(
