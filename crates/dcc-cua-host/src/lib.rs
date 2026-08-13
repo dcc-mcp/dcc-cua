@@ -745,10 +745,11 @@ impl HostAction {
                 "semantic actions require a current CUA element_index or element_token",
             ));
         }
-        let action = if self.action == "set_checked" {
-            "set_value".to_owned()
-        } else {
-            self.action
+        let action = match self.action.as_str() {
+            "set_checked" => "set_value".to_owned(),
+            "press" | "press_key" => "keypress".to_owned(),
+            "hotkey" => "keyboard_shortcut".to_owned(),
+            _ => self.action,
         };
         let text = if action == "set_value" && self.checked.is_some() {
             self.checked.map(|checked| checked.to_string())
