@@ -160,6 +160,33 @@ fn ordinary_subcommands_are_not_help_requests() {
 }
 
 #[rstest]
+fn unknown_cli_flags_fail_closed_before_dispatch() {
+    let error = reject_unknown_flags(&["--hwnd".into(), "123".into()]).unwrap_err();
+    assert_eq!(
+        error,
+        "unknown option \"--hwnd\"; use `help` to list supported options"
+    );
+}
+
+#[rstest]
+fn known_cli_flags_and_private_worker_equals_form_are_accepted() {
+    reject_unknown_flags(&[
+        "--window-id".into(),
+        "123".into(),
+        "--generation=worker-1".into(),
+        "-h".into(),
+    ])
+    .unwrap();
+}
+
+#[rstest]
+fn unknown_flag_cannot_be_hidden_as_a_missing_option_value() {
+    let error = reject_unknown_flags(&["--pid".into(), "--hwnd".into()]).unwrap_err();
+    assert!(error.contains("--hwnd"));
+    reject_unknown_flags(&["--x".into(), "-12".into()]).unwrap();
+}
+
+#[rstest]
 fn escalation_help_lists_the_typed_policy_contract() {
     let help = escalation_reason_help();
     for reason in dcc_cua_core::COMPUTER_USE_ESCALATION_REASONS {

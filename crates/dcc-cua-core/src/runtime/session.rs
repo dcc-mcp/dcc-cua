@@ -73,6 +73,17 @@ fn local_mutation_attempt_failure(error: ComputerUseError) -> ComputerUseError {
     )
 }
 
+#[cfg(any(windows, test))]
+fn local_activation_attempt_failure(error: ComputerUseError) -> ComputerUseError {
+    ComputerUseError::new(
+        error.code,
+        format!(
+            "{}; phase=activation_dispatch; focus_mutation_attempted=true; action_attempted=false; input_sent=false; effect_unknown=false; local_session_invalidated=false; session_remains_active=true; automatic_input=false; blind_retry=false; fresh_observation_required=true",
+            error.message
+        ),
+    )
+}
+
 #[cfg(windows)]
 fn windows_fast_preflight_rejection(
     action: &ComputerUseAction,
@@ -1011,7 +1022,7 @@ impl ComputerUseSession {
         run_gated_preinvalidated_window_mutation(
             || preflight,
             || self.invalidate_action_observations(),
-            || activation().map_err(local_mutation_attempt_failure),
+            || activation().map_err(local_activation_attempt_failure),
         )
     }
 
