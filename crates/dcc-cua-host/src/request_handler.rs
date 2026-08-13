@@ -45,6 +45,36 @@ pub(super) fn window_state_changed_response(
     })
 }
 
+fn action_confirmation_refusal(outcome: ActionConfirmationOutcome) -> (Value, Option<Vec<u8>>) {
+    let (error, message) = match outcome {
+        ActionConfirmationOutcome::Denied => (
+            "confirmation_denied",
+            "the trusted action-time confirmation was denied",
+        ),
+        ActionConfirmationOutcome::Cancelled => (
+            "confirmation_cancelled",
+            "the trusted action-time confirmation was cancelled",
+        ),
+        ActionConfirmationOutcome::Required => (
+            "approval_required",
+            "trusted action-time confirmation is required",
+        ),
+        ActionConfirmationOutcome::Allowed => {
+            unreachable!("allowed confirmations are not refusals")
+        }
+    };
+    (
+        json!({
+            "type":"action_completed",
+            "success":false,
+            "policy_tier":"action_confirmation",
+            "message":message,
+            "error":error,
+        }),
+        None,
+    )
+}
+
 pub(super) fn session_stopped_response(
     session_id: &str,
     result: ComputerUseSessionStopResult,
@@ -251,8 +281,30 @@ pub(super) fn finish_window_evidence_request<T>(
     result
 }
 
+#[cfg(test)]
 pub(super) async fn handle_request(
     driver: &ComputerUseDriver,
+    sessions: &mut ConnectionSessions,
+    snapshot_transport: &mut Option<SnapshotTransport>,
+    desktop_shared_image: &mut Option<SharedImage>,
+    cancellation_registry: &CancellationRegistry,
+    request: Request,
+) -> Result<(Value, Option<Vec<u8>>), HostError> {
+    handle_request_with_confirmation_host(
+        driver,
+        None,
+        sessions,
+        snapshot_transport,
+        desktop_shared_image,
+        cancellation_registry,
+        request,
+    )
+    .await
+}
+
+pub(super) async fn handle_request_with_confirmation_host(
+    driver: &ComputerUseDriver,
+    confirmation_host: Option<&dyn TrustedActionConfirmationHost>,
     sessions: &mut ConnectionSessions,
     snapshot_transport: &mut Option<SnapshotTransport>,
     desktop_shared_image: &mut Option<SharedImage>,
@@ -263,6 +315,7 @@ pub(super) async fn handle_request(
     prepare_window_evidence_request(sessions, evidence_route.as_ref());
     let result = handle_request_inner(
         driver,
+        confirmation_host,
         sessions,
         snapshot_transport,
         desktop_shared_image,
@@ -275,6 +328,7 @@ pub(super) async fn handle_request(
 
 async fn handle_request_inner(
     driver: &ComputerUseDriver,
+    confirmation_host: Option<&dyn TrustedActionConfirmationHost>,
     sessions: &mut ConnectionSessions,
     snapshot_transport: &mut Option<SnapshotTransport>,
     desktop_shared_image: &mut Option<SharedImage>,
@@ -443,6 +497,7 @@ async fn handle_request_inner(
                     interrupt_generation: session_generation,
                     interrupted: false,
                     session,
+                    latest_observation_id: None,
                     latest_shared_image: None,
                 },
             );
@@ -469,6 +524,7 @@ async fn handle_request_inner(
             )
             .await?;
             let snapshot = host.session.screenshot().await?;
+            let current_observation_id = snapshot.observation_id.clone();
             let (image, attachment) = match mode {
                 SnapshotTransport::SharedMemory => {
                     let shared = SharedImage::from_bytes(&snapshot.data, "image/png")
@@ -482,7 +538,7 @@ async fn handle_request_inner(
                 SnapshotTransport::BinaryFrame => (
                     json!({
                         "name": "",
-                        "id": snapshot.observation_id,
+                        "id": current_observation_id,
                         "length": snapshot.data.len(),
                         "mime_type": "image/png",
                         "encoding": "binary_frame",
@@ -490,6 +546,7 @@ async fn handle_request_inner(
                     Some(snapshot.data),
                 ),
             };
+            host.latest_observation_id = Some(snapshot.observation_id.clone());
             Ok((
                 json!({
                     "type":"desktop_snapshot",
@@ -533,20 +590,33 @@ async fn handle_request_inner(
                     None,
                 ));
             }
-            if action.requires_approval(host.allow_trusted_confirmation) {
-                return Ok((
-                    json!({
-                        "type":"action_completed",
-                        "success":false,
-                        "policy_tier":"action_confirmation",
-                        "message":"trusted action-time confirmation is required",
-                        "error":"approval_required",
-                    }),
-                    None,
-                ));
+            if host.latest_observation_id.as_deref() != Some(observation_id.as_str()) {
+                return Err(HostError::ComputerUse(ComputerUseError::new(
+                    ComputerUseErrorCode::StaleObservation,
+                    "desktop action observation_id does not match the latest host snapshot",
+                )));
+            }
+            if action.requires_approval() {
+                let request = TrustedActionConfirmationRequest::for_desktop_action(
+                    &session_id,
+                    &task_grant_id,
+                    &desktop_capability,
+                    &observation_id,
+                    &action,
+                )?;
+                let outcome = authorize_action_confirmation(
+                    confirmation_host,
+                    host.allow_trusted_confirmation,
+                    request,
+                )
+                .await;
+                if outcome != ActionConfirmationOutcome::Allowed {
+                    return Ok(action_confirmation_refusal(outcome));
+                }
             }
             let action = action.into_computer_use(observation_id)?;
             let input_turn = acquire_raw_input_turn(true).await;
+            host.latest_observation_id = None;
             let result = host.session.perform_action(&action).await?;
             let action_id = format!("cua-desktop-action-{}", Uuid::new_v4());
             if capture_after {
@@ -554,14 +624,17 @@ async fn handle_request_inner(
                 let snapshot = host.session.screenshot().await;
                 drop(input_turn);
                 return match snapshot {
-                    Ok(snapshot) => desktop_action_completed_with_snapshot_response(
-                        &session_id,
-                        action_id,
-                        result,
-                        snapshot,
-                        mode,
-                        &mut host.latest_shared_image,
-                    ),
+                    Ok(snapshot) => {
+                        host.latest_observation_id = Some(snapshot.observation_id.clone());
+                        desktop_action_completed_with_snapshot_response(
+                            &session_id,
+                            action_id,
+                            result,
+                            snapshot,
+                            mode,
+                            &mut host.latest_shared_image,
+                        )
+                    }
                     Err(error) => {
                         let code = error_code(&HostError::ComputerUse(error.clone()));
                         let (mut response, attachment) = action_completed_response(
@@ -1636,18 +1709,6 @@ async fn handle_request_inner(
                     None,
                 ));
             }
-            if action.requires_approval(host.allow_trusted_confirmation) {
-                return Ok((
-                    json!({
-                        "type":"action_completed",
-                        "success":false,
-                        "policy_tier":"action_confirmation",
-                        "message":"trusted action-time confirmation is required",
-                        "error":"approval_required",
-                    }),
-                    None,
-                ));
-            }
             if host.latest_observation_id.as_deref() != Some(observation_id.as_str()) {
                 return Err(HostError::ComputerUse(ComputerUseError::new(
                     ComputerUseErrorCode::StaleObservation,
@@ -1662,6 +1723,25 @@ async fn handle_request_inner(
                     ComputerUseErrorCode::StaleObservation,
                     "semantic action requires the latest accessibility_state_id",
                 )));
+            }
+            if action.requires_approval() {
+                let request = TrustedActionConfirmationRequest::for_window_action(
+                    &session_id,
+                    &task_grant_id,
+                    &window_capability,
+                    &observation_id,
+                    &accessibility_state_id,
+                    &action,
+                )?;
+                let outcome = authorize_action_confirmation(
+                    confirmation_host,
+                    host.allow_trusted_confirmation,
+                    request,
+                )
+                .await;
+                if outcome != ActionConfirmationOutcome::Allowed {
+                    return Ok(action_confirmation_refusal(outcome));
+                }
             }
             let raw_input = action.input_kind == "raw_input";
             let action = action.into_computer_use(observation_id)?;

@@ -776,12 +776,20 @@ exact current `dialog_id` for accept/dismiss.
 Attaching to a logged-in Chromium profile keeps CUA's R2 gate: launch the Host
 with `dcc-cua host --grant existing-profile` and also set the session's
 `allow_browser_prepare` grant. Without both approvals, attachment is refused.
-Full-access agents may set `allow_trusted_confirmation: true` on the exact
-window or desktop task grant. This permits only actions declared with
-`intent: "windows_security_or_privacy"` or `intent: "human_verification"`;
-terminal/run-dialog, credential, password-change, scope-escape, and safety-bypass
-intents remain hard-denied. The grant defaults to false and does not follow from
-raw-input, browser-profile, or session-escalation access.
+`allow_trusted_confirmation: true` on an exact window or desktop task grant
+only permits the Host to ask for confirmation; it never authorizes an action
+by itself. Embeddings that support confirmation must start the library Host
+with `dcc_cua_host::run_with_confirmation_host` and a constructor-owned
+`TrustedActionConfirmationHost`. The callback is not reachable through Host
+IPC. Each request binds the session, task grant, exact capability, current
+observation/accessibility state, intent, and complete action into a SHA-256
+digest. The Host accepts only an inline decision echoing that exact digest, so
+a decision cannot be replayed after the evidence or action changes. Missing,
+failed, or mismatched callbacks remain `approval_required`; explicit denial or
+cancellation has its own typed error. Terminal/run-dialog, credential,
+password-change, scope-escape, and safety-bypass intents remain hard-denied and
+never reach the callback. The task-grant gate defaults to false and does not
+follow from raw-input, browser-profile, or session-escalation access.
 
 On Windows, non-pixel semantic access reuses one exact PID/HWND UIA worker per
 session; CUA remains the cross-platform, browser, and visual backend. An

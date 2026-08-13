@@ -14,6 +14,7 @@ name = "dcc_cua_host"
 path = "src/lib.rs"
 
 [dependencies]
+async-trait.workspace = true
 dcc-cua-browser = { path = "../dcc-cua-browser" }
 dcc-cua-core = { path = "../dcc-cua-core" }
 dcc-cua-indicator = { path = "../dcc-cua-indicator" }
@@ -21,6 +22,7 @@ dcc-cua-protocol = { path = "../dcc-cua-protocol" }
 dcc-cua-shm = { path = "../dcc-cua-shm" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10.9"
 thiserror = "2"
 tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
 uuid = { version = "1", features = ["v4"] }
