@@ -157,6 +157,13 @@ pub(crate) fn document() -> Value {
         "runtime": {
             "backend": "cua-driver-sdk",
             "separate_driver_required": false,
+            "browser_prepare_existing_profile": {
+                "exact_window_required": true,
+                "control_discovery": "native_topology",
+                "localized_labels": "opaque",
+                "renderer_controls_rejected": true,
+                "state_confirmation": "native_tab_count_delta",
+            },
         },
     })
 }
