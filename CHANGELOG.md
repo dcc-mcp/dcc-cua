@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.1](https://github.com/dcc-mcp/dcc-cua/compare/v1.1.0...v1.1.1) (2026-08-13)
+
+
+### Bug Fixes
+
+* preserve local action continuity ([#80](https://github.com/dcc-mcp/dcc-cua/issues/80)) ([1381a04](https://github.com/dcc-mcp/dcc-cua/commit/1381a0420773ba8d13603edf969f6b91e8cd7154))
+
 ## [1.1.0](https://github.com/dcc-mcp/dcc-cua/compare/v1.0.3...v1.1.0) (2026-08-12)
 
 
