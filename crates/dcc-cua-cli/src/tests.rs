@@ -1238,6 +1238,17 @@ fn manifest_is_a_machine_readable_core_launch_contract() {
 }
 
 #[rstest]
+fn manifest_advertises_language_independent_existing_profile_setup() {
+    let setup = &manifest::document()["runtime"]["browser_prepare_existing_profile"];
+
+    assert_eq!(setup["exact_window_required"], true);
+    assert_eq!(setup["control_discovery"], "native_topology");
+    assert_eq!(setup["localized_labels"], "opaque");
+    assert_eq!(setup["renderer_controls_rejected"], true);
+    assert_eq!(setup["state_confirmation"], "native_tab_count_delta");
+}
+
+#[rstest]
 fn wait_window_builds_a_bounded_window_query() {
     let request = window_wait_request(&strings([
         "--app",
