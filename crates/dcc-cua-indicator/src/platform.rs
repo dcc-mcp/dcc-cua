@@ -57,6 +57,11 @@ const OVERLAY_LIVE_PROP: PCWSTR = w!("DccCuaBannerLiveObservation");
 const OVERLAY_ICON_PROP: PCWSTR = w!("DccCuaBannerIcon");
 const BANNER_ALPHA: u8 = 248;
 const FRAME_INTERVAL: Duration = Duration::from_millis(33);
+// Starting the Win32 overlay can be delayed by a saturated interactive
+// desktop (for example while a DCC is cooking and UIA providers are hung).
+// Keep the wait bounded, but give the dedicated banner thread enough time to
+// create and present every frame before refusing the control session.
+const BANNER_START_TIMEOUT: Duration = Duration::from_secs(8);
 const SURFACE: COLORREF = rgb(
     theme_tokens::SURFACE.0,
     theme_tokens::SURFACE.1,
@@ -269,7 +274,7 @@ impl PlatformBanner {
                 IndicatorError::Backend(format!("failed to start banner thread: {error}"))
             })?;
 
-        match ready_rx.recv_timeout(Duration::from_secs(2)) {
+        match ready_rx.recv_timeout(BANNER_START_TIMEOUT) {
             Ok(Ok(())) => Ok(Self {
                 stop,
                 active,
