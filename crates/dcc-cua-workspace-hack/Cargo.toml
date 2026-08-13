@@ -4,7 +4,7 @@
 
 [package]
 name = "dcc-cua-workspace-hack"
-version = "1.1.5"
+version = "1.1.6"
 edition.workspace = true
 rust-version.workspace = true
 description = "workspace-hack package, managed by hakari"

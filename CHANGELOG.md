@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.6](https://github.com/dcc-mcp/dcc-cua/compare/v1.1.5...v1.1.6) (2026-08-13)
+
+
+### Bug Fixes
+
+* preserve JSONL shared-memory snapshots ([#94](https://github.com/dcc-mcp/dcc-cua/issues/94)) ([9590d92](https://github.com/dcc-mcp/dcc-cua/commit/9590d9268dea4283e69f50b410ba2f55247d488a))
+
 ## [1.1.5](https://github.com/dcc-mcp/dcc-cua/compare/v1.1.4...v1.1.5) (2026-08-13)
 
 
