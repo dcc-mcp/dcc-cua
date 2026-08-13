@@ -404,9 +404,14 @@ fn jsonl_response_writes_host_owned_shared_memory() {
             .as_nanos()
     ));
     std::fs::create_dir_all(&output_dir).unwrap();
-    let value = jsonl_response_value_with_metrics(response, output_dir.to_str(), 7)
-        .unwrap()
-        .value;
+    let value = jsonl_response_value_with_metrics(
+        response,
+        output_dir.to_str(),
+        7,
+        HostJsonlResponseFormat::Host,
+    )
+    .unwrap()
+    .value;
     let output = output_dir.join("response-7.bin");
     assert_eq!(std::fs::read(&output).unwrap(), b"png");
     assert_eq!(
@@ -428,7 +433,7 @@ fn jsonl_response_preserves_shared_memory_when_no_output_directory_is_requested(
         binary_attachment: None,
     };
 
-    let value = jsonl_response_value_with_metrics(response, None, 7)
+    let value = jsonl_response_value_with_metrics(response, None, 7, HostJsonlResponseFormat::Host)
         .unwrap()
         .value;
 
@@ -440,11 +445,110 @@ fn jsonl_response_preserves_shared_memory_when_no_output_directory_is_requested(
 #[rstest]
 fn jsonl_output_error_preserves_the_host_request_id() {
     let request_id = json!("core-snapshot-1");
-    let value = jsonl_output_error_value("shared memory unavailable".into(), Some(&request_id));
+    let value =
+        mcp_output::output_error_value("shared memory unavailable".into(), Some(&request_id));
 
     assert_eq!(value["type"], "error");
     assert_eq!(value["code"], "output_error");
     assert_eq!(value["request_id"], "core-snapshot-1");
+}
+
+#[rstest]
+fn mcp_jsonl_output_error_preserves_the_host_request_id() {
+    let request_id = json!("core-snapshot-1");
+    let value =
+        mcp_output::output_error_value("shared memory unavailable".into(), Some(&request_id));
+    let output = mcp_output::format_value(value, HostJsonlResponseFormat::Mcp).unwrap();
+
+    assert_eq!(output["structuredContent"]["request_id"], "core-snapshot-1");
+    assert_eq!(output["structuredContent"]["code"], "output_error");
+    assert_eq!(output["isError"], true);
+}
+
+#[rstest]
+fn mcp_response_format_is_explicit_and_bounded() {
+    assert_eq!(
+        HostJsonlResponseFormat::parse(None).unwrap(),
+        HostJsonlResponseFormat::Host
+    );
+    assert_eq!(
+        HostJsonlResponseFormat::parse(Some("mcp")).unwrap(),
+        HostJsonlResponseFormat::Mcp
+    );
+    assert!(HostJsonlResponseFormat::parse(Some("base64")).is_err());
+}
+
+#[rstest]
+fn mcp_jsonl_response_promotes_shared_memory_snapshot_to_native_image() {
+    let image = dcc_cua_shm::SharedImage::from_bytes(b"png", "image/png").unwrap();
+    let mut descriptor = serde_json::to_value(image.descriptor()).unwrap();
+    descriptor["encoding"] = json!("shared_memory");
+    let response = HostResponse {
+        value: json!({
+            "type": "snapshot",
+            "observation_id": "obs-1",
+            "image": descriptor,
+        }),
+        binary_attachment: None,
+    };
+
+    let output = jsonl_response_value_with_metrics(response, None, 0, HostJsonlResponseFormat::Mcp)
+        .unwrap()
+        .value;
+
+    assert_eq!(output["content"][0]["type"], "text");
+    assert_eq!(output["content"][1]["type"], "image");
+    assert_eq!(output["content"][1]["mimeType"], "image/png");
+    assert_eq!(output["content"][1]["data"], "cG5n");
+    assert_eq!(output["structuredContent"]["observation_id"], "obs-1");
+    assert_eq!(output["isError"], false);
+}
+
+#[rstest]
+fn mcp_jsonl_response_splits_multiple_native_image_attachments() {
+    let value = json!({
+        "type": "tool_result",
+        "result": {
+            "content": [{"type": "text", "text": "bound 7412572"}]
+        },
+        "attachments": [
+            {"offset": 0, "length": 3, "mime_type": "image/png"},
+            {"offset": 3, "length": 4, "mime_type": "image/jpeg"}
+        ]
+    });
+
+    let output = mcp_output::call_tool_result(value, Some(b"pngjpeg")).unwrap();
+
+    assert_eq!(output["content"][0]["text"], "bound 7412572");
+    assert_eq!(output["content"][1]["data"], "cG5n");
+    assert_eq!(output["content"][1]["mimeType"], "image/png");
+    assert_eq!(output["content"][2]["data"], "anBlZw==");
+    assert_eq!(output["content"][2]["mimeType"], "image/jpeg");
+}
+
+#[rstest]
+fn mcp_jsonl_response_rejects_attachment_ranges_outside_the_frame() {
+    let value = json!({
+        "type": "snapshot",
+        "image": {"offset": 2, "length": 8, "mime_type": "image/png"}
+    });
+
+    let error = mcp_output::call_tool_result(value, Some(b"png")).unwrap_err();
+
+    assert!(error.contains("exceeds 3 bytes"));
+}
+
+#[rstest]
+fn mcp_jsonl_error_sets_call_tool_result_error_contract() {
+    let output = mcp_output::format_value(
+        json!({"type": "error", "code": "stale_observation", "message": "snapshot again"}),
+        HostJsonlResponseFormat::Mcp,
+    )
+    .unwrap();
+
+    assert_eq!(output["content"][0]["text"], "snapshot again");
+    assert_eq!(output["structuredContent"]["code"], "stale_observation");
+    assert_eq!(output["isError"], true);
 }
 
 #[rstest]
@@ -481,6 +585,7 @@ fn host_jsonl_metrics_charge_binary_and_shared_memory_images_equally() {
         1,
         &mut binary_metrics,
         "snapshot",
+        HostJsonlResponseFormat::Host,
     )
     .unwrap();
     let mut shared_metrics = HostJsonlMetrics::default();
@@ -490,6 +595,7 @@ fn host_jsonl_metrics_charge_binary_and_shared_memory_images_equally() {
         2,
         &mut shared_metrics,
         "snapshot",
+        HostJsonlResponseFormat::Host,
     )
     .unwrap();
     let binary_report =
@@ -539,6 +645,7 @@ fn host_jsonl_metrics_count_images_with_unknown_dimensions() {
         1,
         &mut metrics,
         "snapshot",
+        HostJsonlResponseFormat::Host,
     )
     .unwrap();
     let report = metrics.report(HostJsonlRunStatus::Succeeded, std::time::Duration::ZERO);
@@ -776,6 +883,7 @@ fn host_jsonl_metrics_count_successful_action_responses() {
         0,
         &mut metrics,
         &request.method,
+        HostJsonlResponseFormat::Host,
     )
     .unwrap();
     let report = metrics.report(HostJsonlRunStatus::Succeeded, std::time::Duration::ZERO);
@@ -1017,6 +1125,15 @@ fn manifest_is_a_machine_readable_core_launch_contract() {
         manifest["core_bridge"]["preferred_snapshot_transport"],
         "shared_memory"
     );
+    assert_eq!(
+        manifest["core_bridge"]["response_formats"],
+        json!(["host", "mcp"])
+    );
+    assert_eq!(
+        manifest["core_bridge"]["mcp_response_flag"],
+        json!(["--response-format", "mcp"])
+    );
+    assert_eq!(manifest["core_bridge"]["mcp_native_image_content"], true);
     assert!(
         manifest["host"]["capabilities"]
             .as_array()

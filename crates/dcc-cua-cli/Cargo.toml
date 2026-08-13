@@ -15,6 +15,7 @@ path = "src/main.rs"
 
 [dependencies]
 async-trait.workspace = true
+base64 = "0.22"
 dcc-cua-client = { path = "../dcc-cua-client" }
 dcc-cua-core = { path = "../dcc-cua-core" }
 dcc-cua-host = { path = "../dcc-cua-host" }

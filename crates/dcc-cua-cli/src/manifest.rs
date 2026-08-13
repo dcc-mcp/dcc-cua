@@ -149,6 +149,9 @@ pub(crate) fn document() -> Value {
         "core_bridge": {
             "command": ["host-jsonl"],
             "preferred_snapshot_transport": "shared_memory",
+            "response_formats": ["host", "mcp"],
+            "mcp_response_flag": ["--response-format", "mcp"],
+            "mcp_native_image_content": true,
             "rust_crate": "dcc-cua-client",
         },
         "runtime": {
