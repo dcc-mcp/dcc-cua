@@ -9,6 +9,7 @@ mod authorization;
 mod cli_args;
 mod host_lifecycle;
 mod manifest;
+mod mcp_output;
 mod profile_context;
 mod profile_package;
 mod profile_state;
@@ -21,6 +22,9 @@ use actions::{
     verify_state, window_post_snapshot_value, zoom,
 };
 use cli_args::*;
+use mcp_output::{
+    HostJsonlImageMetrics, HostJsonlResponseFormat, JsonlResponseOutput, response_image_metrics,
+};
 
 use dcc_cua_client::{
     HostClient, HostClientError, HostProcess, HostResponse, MAX_REQUEST_ID_CHARS,
@@ -612,6 +616,8 @@ async fn host_jsonl_inner(
     metrics: &mut HostJsonlMetrics,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let snapshot_transport = snapshot_transport(flags)?;
+    let response_format =
+        HostJsonlResponseFormat::parse(flag_value(flags, "--response-format").as_deref())?;
     let mut connection = connect_host(flags, snapshot_transport).await?;
     let output_dir = flag_value(flags, "--output-dir");
     if let Some(path) = output_dir.as_deref() {
@@ -651,11 +657,14 @@ async fn host_jsonl_inner(
             Err(error) => {
                 write_jsonl_response(
                     &mut output,
-                    json!({
-                        "type": "error",
-                        "code": "invalid_request",
-                        "message": error,
-                    }),
+                    mcp_output::format_value(
+                        json!({
+                            "type": "error",
+                            "code": "invalid_request",
+                            "message": error,
+                        }),
+                        response_format,
+                    )?,
                     metrics,
                 )
                 .await?;
@@ -701,11 +710,14 @@ async fn host_jsonl_inner(
                         metrics.record_input(next_line.trim());
                         write_jsonl_response(
                             &mut output,
-                            json!({
-                                "type": "error",
-                                "code": "invalid_request",
-                                "message": error,
-                            }),
+                            mcp_output::format_value(
+                                json!({
+                                    "type": "error",
+                                    "code": "invalid_request",
+                                    "message": error,
+                                }),
+                                response_format,
+                            )?,
                             metrics,
                         )
                         .await?;
@@ -738,15 +750,17 @@ async fn host_jsonl_inner(
                             request_index,
                             metrics,
                             &request_method,
+                            response_format,
                         ) {
                             Ok(value) => value,
                             Err(error) => {
+                                let value = mcp_output::output_error_value(
+                                    error.to_string(),
+                                    response_request_id.as_ref(),
+                                );
                                 write_jsonl_response(
                                     &mut output,
-                                    jsonl_output_error_value(
-                                        error.to_string(),
-                                        response_request_id.as_ref(),
-                                    ),
+                                    mcp_output::format_value(value, response_format)?,
                                     metrics,
                                 )
                                 .await?;
@@ -757,11 +771,12 @@ async fn host_jsonl_inner(
                     Err(error @ HostClientError::Remote { .. }) => {
                         let value = host_error_value(&error);
                         metrics.record_response(&request_method, &value);
-                        value
+                        mcp_output::format_value(value, response_format)?
                     }
                     Err(error) => {
                         let value = host_error_value(&error);
                         metrics.record_response(&request_method, &value);
+                        let value = mcp_output::format_value(value, response_format)?;
                         write_jsonl_response(&mut output, value, metrics).await?;
                         return Err(error.into());
                     }
@@ -795,15 +810,17 @@ async fn host_jsonl_inner(
                     line_index,
                     metrics,
                     &request_method,
+                    response_format,
                 ) {
                     Ok(value) => value,
                     Err(error) => {
+                        let value = mcp_output::output_error_value(
+                            error.to_string(),
+                            response_request_id.as_ref(),
+                        );
                         write_jsonl_response(
                             &mut output,
-                            jsonl_output_error_value(
-                                error.to_string(),
-                                response_request_id.as_ref(),
-                            ),
+                            mcp_output::format_value(value, response_format)?,
                             metrics,
                         )
                         .await?;
@@ -814,11 +831,12 @@ async fn host_jsonl_inner(
             Err(error @ HostClientError::Remote { .. }) => {
                 let value = host_error_value(&error);
                 metrics.record_response(&request_method, &value);
-                value
+                mcp_output::format_value(value, response_format)?
             }
             Err(error) => {
                 let value = host_error_value(&error);
                 metrics.record_response(&request_method, &value);
+                let value = mcp_output::format_value(value, response_format)?;
                 write_jsonl_response(&mut output, value, metrics).await?;
                 return Err(error.into());
             }
@@ -833,19 +851,6 @@ struct JsonlRequest {
     request_id: Option<String>,
     method: String,
     params: serde_json::Value,
-}
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-struct HostJsonlImageMetrics {
-    images_total: u64,
-    pixels_total: u64,
-    encoded_bytes_total: u64,
-    unknown_dimensions_total: u64,
-}
-
-struct JsonlResponseOutput {
-    value: serde_json::Value,
-    image_metrics: HostJsonlImageMetrics,
 }
 
 #[derive(Debug, Default)]
@@ -1311,9 +1316,10 @@ fn measured_jsonl_response_value(
     index: usize,
     metrics: &mut HostJsonlMetrics,
     request_method: &str,
+    response_format: HostJsonlResponseFormat,
 ) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
     metrics.record_response(request_method, &response.value);
-    let output = jsonl_response_value_with_metrics(response, output_dir, index)?;
+    let output = jsonl_response_value_with_metrics(response, output_dir, index, response_format)?;
     metrics.record_images(output.image_metrics);
     Ok(output.value)
 }
@@ -1322,6 +1328,7 @@ fn jsonl_response_value_with_metrics(
     response: HostResponse,
     output_dir: Option<&str>,
     index: usize,
+    response_format: HostJsonlResponseFormat,
 ) -> Result<JsonlResponseOutput, Box<dyn std::error::Error>> {
     let mut value = response.value;
     let shared_image = value
@@ -1336,10 +1343,20 @@ fn jsonl_response_value_with_metrics(
         }
         None => None,
     };
-    let image_metrics = response_image_metrics(
-        &value,
-        binary_attachment.as_deref().or(shared_bytes.as_deref()),
-    );
+    let attachment_bytes = binary_attachment.as_deref().or(shared_bytes.as_deref());
+    let image_metrics = response_image_metrics(&value, attachment_bytes);
+    if response_format == HostJsonlResponseFormat::Mcp {
+        if let (Some(bytes), Some(directory)) = (attachment_bytes, output_dir) {
+            let path = format!("{directory}/response-{index}.bin");
+            fs::write(&path, bytes)?;
+            value["_dcc_cua_binary_output"] = json!(path);
+        }
+        return Ok(JsonlResponseOutput {
+            value: mcp_output::call_tool_result(value, attachment_bytes)
+                .map_err(std::io::Error::other)?,
+            image_metrics,
+        });
+    }
     if let Some(bytes) = binary_attachment {
         let directory = output_dir.ok_or(
             "JSONL response contains image bytes; pass --output-dir or negotiate shared_memory",
@@ -1356,91 +1373,6 @@ fn jsonl_response_value_with_metrics(
         value,
         image_metrics,
     })
-}
-
-fn jsonl_output_error_value(
-    message: String,
-    request_id: Option<&serde_json::Value>,
-) -> serde_json::Value {
-    let mut value = json!({
-        "type": "error",
-        "code": "output_error",
-        "message": message,
-    });
-    if let Some(request_id) = request_id {
-        value["request_id"] = request_id.clone();
-    }
-    value
-}
-
-fn response_image_metrics(
-    value: &serde_json::Value,
-    bytes: Option<&[u8]>,
-) -> HostJsonlImageMetrics {
-    let Some(bytes) = bytes else {
-        return HostJsonlImageMetrics::default();
-    };
-    let mut metrics = HostJsonlImageMetrics::default();
-    let attachments = value
-        .get("attachments")
-        .and_then(serde_json::Value::as_array);
-    if let Some(attachments) = attachments.filter(|attachments| !attachments.is_empty()) {
-        for attachment in attachments {
-            let Some(offset) = attachment
-                .get("offset")
-                .and_then(serde_json::Value::as_u64)
-                .and_then(|offset| usize::try_from(offset).ok())
-            else {
-                continue;
-            };
-            let Some(length) = attachment
-                .get("length")
-                .and_then(serde_json::Value::as_u64)
-                .and_then(|length| usize::try_from(length).ok())
-            else {
-                continue;
-            };
-            let Some(end) = offset.checked_add(length) else {
-                continue;
-            };
-            let Some(image) = bytes.get(offset..end) else {
-                continue;
-            };
-            record_encoded_image(&mut metrics, image);
-        }
-    } else if value.get("image").is_some() {
-        let length = value["image"]
-            .get("length")
-            .and_then(serde_json::Value::as_u64)
-            .and_then(|length| usize::try_from(length).ok())
-            .unwrap_or(bytes.len());
-        if let Some(image) = bytes.get(..length) {
-            record_encoded_image(&mut metrics, image);
-        }
-    }
-    metrics
-}
-
-fn record_encoded_image(metrics: &mut HostJsonlImageMetrics, image: &[u8]) {
-    metrics.images_total = metrics.images_total.saturating_add(1);
-    metrics.encoded_bytes_total = metrics
-        .encoded_bytes_total
-        .saturating_add(image.len().try_into().unwrap_or(u64::MAX));
-    if let Some(pixels) = png_pixel_count(image) {
-        metrics.pixels_total = metrics.pixels_total.saturating_add(pixels);
-    } else {
-        metrics.unknown_dimensions_total = metrics.unknown_dimensions_total.saturating_add(1);
-    }
-}
-
-fn png_pixel_count(image: &[u8]) -> Option<u64> {
-    const PNG_SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
-    if image.len() < 24 || image.get(..8)? != PNG_SIGNATURE || image.get(12..16)? != b"IHDR" {
-        return None;
-    }
-    let width = u32::from_be_bytes(image.get(16..20)?.try_into().ok()?);
-    let height = u32::from_be_bytes(image.get(20..24)?.try_into().ok()?);
-    u64::from(width).checked_mul(u64::from(height))
 }
 
 fn host_error_value(error: &HostClientError) -> serde_json::Value {

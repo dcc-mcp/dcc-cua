@@ -577,6 +577,18 @@ image pixels out of the Host control pipe. The machine manifest publishes the
 transport-neutral `host-jsonl` entry point so Core can prefer shared memory and
 fall back to binary attachments when its native shared-memory reader is absent.
 
+Consumers that need a standard MCP tool-result envelope can opt in with
+`--response-format mcp`. Each JSONL response then contains `content`,
+`structuredContent`, and `isError`; window, desktop, post-action, browser, and
+native-tool image attachments are promoted to native MCP `image` content. The
+default `host` response format remains unchanged. This flag projects Host
+responses only—it does not turn the JSONL transport into an MCP JSON-RPC
+server.
+
+```bash
+dcc-cua host-jsonl --response-format mcp --snapshot-transport shared_memory
+```
+
 `--parallel-discovery` batches contiguous `ping`, `list_apps`, `list_tools`,
 `list_windows`, `screen_size`, and `cursor_position` requests for up to 5 ms or
 32 lines, preserves input order and `request_id`, and leaves stateful,

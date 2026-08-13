@@ -63,7 +63,7 @@ pub(super) fn print_help() {
   interrupt-all [--endpoint PATH]
   host-call --method NAME [--json JSON|--json-file PATH] [--endpoint PATH|--spawn BINARY] [--agent-name NAME] [--snapshot-transport binary_frame|shared_memory] [--output FILE]
   host-batch --json JSON_ARRAY [--endpoint PATH|--spawn BINARY] [--agent-name NAME] [--snapshot-transport binary_frame|shared_memory] [--output-dir DIR]
-  host-jsonl [--endpoint PATH|--spawn BINARY] [--agent-name NAME] [--parallel-discovery] [--showcase] [--showcase-dir DIR] [--snapshot-transport binary_frame|shared_memory] [--output-dir DIR] [--metrics-output FILE]
+  host-jsonl [--endpoint PATH|--spawn BINARY] [--agent-name NAME] [--parallel-discovery] [--showcase] [--showcase-dir DIR] [--snapshot-transport binary_frame|shared_memory] [--response-format host|mcp] [--output-dir DIR] [--metrics-output FILE]
   host-ensure [--endpoint PATH] [--grant existing-profile]
   manifest
   profiles                         # list built-in and installed profile packages
