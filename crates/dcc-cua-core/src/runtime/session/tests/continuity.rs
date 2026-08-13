@@ -16,7 +16,7 @@ async fn due_upstream_refresh_does_not_fence_a_local_visual_action() {
         "scope": "window",
     });
 
-    assert_exact_target_revalidation(&mut session, calls, None).await;
+    assert_exact_target_revalidation(&mut session, calls, "click", None).await;
 }
 
 #[cfg(windows)]
@@ -25,18 +25,27 @@ async fn due_upstream_refresh_does_not_fence_a_local_visual_action() {
 async fn due_upstream_refresh_does_not_fence_a_foreground_coordinate_action() {
     let (mut session, calls) = counting_session();
 
-    assert_exact_target_revalidation(&mut session, calls, Some("foreground")).await;
+    assert_exact_target_revalidation(&mut session, calls, "click", Some("foreground")).await;
+}
+
+#[rstest]
+#[tokio::test]
+async fn due_upstream_refresh_does_not_fence_a_foreground_cursor_move() {
+    let (mut session, calls) = counting_session();
+
+    assert_exact_target_revalidation(&mut session, calls, "move", Some("foreground")).await;
 }
 
 #[cfg(windows)]
 async fn assert_exact_target_revalidation(
     session: &mut ComputerUseSession,
     calls: Arc<AtomicUsize>,
+    action: &str,
     delivery_mode: Option<&str>,
 ) {
     let error = session
         .perform_action(&ComputerUseAction {
-            action: "click".into(),
+            action: action.into(),
             observation_id: Some("observation-before-refresh".into()),
             delivery_mode: delivery_mode.map(str::to_owned),
             x: Some(10.0),

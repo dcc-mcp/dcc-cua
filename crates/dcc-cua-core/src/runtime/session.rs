@@ -804,7 +804,7 @@ impl ComputerUseSession {
         #[cfg(windows)]
         let uses_local_windows_fast_path = fallback
             || effective_action.input_backend_id.is_some()
-            || uses_windows_foreground_fast_path(effective_action);
+            || uses_windows_local_foreground_path(effective_action);
         #[cfg(windows)]
         if uses_local_windows_fast_path
             && let Some(mut result) = windows_fast_preflight_rejection(effective_action, &target)
