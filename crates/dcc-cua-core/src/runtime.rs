@@ -86,6 +86,16 @@ fn windows_platform_window_activation_gate(
 
 impl ComputerUseSession {
     #[cfg(windows)]
+    fn action_uses_local_window_coordinates(action: &ComputerUseAction) -> bool {
+        action.input_backend_id.is_some() || uses_windows_local_foreground_path(action)
+    }
+
+    #[cfg(not(windows))]
+    fn action_uses_local_window_coordinates(_action: &ComputerUseAction) -> bool {
+        _action.input_backend_id.is_some()
+    }
+
+    #[cfg(windows)]
     fn action_requires_current_upstream_evidence(
         &self,
         action: &ComputerUseAction,

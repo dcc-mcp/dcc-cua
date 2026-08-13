@@ -793,7 +793,7 @@ impl ComputerUseSession {
         self.require_observed_input_available()?;
         let fallback = observation.capture_provenance["accessibility_available"] == false;
         let visual_action;
-        let effective_action = if fallback || action.input_backend_id.is_some() {
+        let effective_action = if fallback || Self::action_uses_local_window_coordinates(action) {
             visual_action = action_for_window_visual_fallback(action, &observation)?;
             &visual_action
         } else {

@@ -1,6 +1,39 @@
 use super::*;
 use rstest::rstest;
 
+#[rstest]
+fn windows_local_click_maps_snapshot_pixels_to_native_window_pixels() {
+    let observation = ComputerUseObservation {
+        session_id: "session".into(),
+        observation_id: "observation".into(),
+        process_id: 7,
+        window_handle: 11,
+        window_title: "scaled window".into(),
+        width: 1568,
+        height: 852,
+        source_rect: [-7691, -6, 3862, 2110],
+        capture_backend: "cua-driver-sdk".into(),
+        capture_provenance: json!({
+            "accessibility_available": true,
+            "backend": "cua-driver-sdk",
+            "pixels_captured": true,
+            "scope": "window"
+        }),
+    };
+    let action = ComputerUseAction {
+        action: "click".into(),
+        delivery_mode: Some("foreground".into()),
+        x: Some(590.0),
+        y: Some(250.0),
+        ..Default::default()
+    };
+
+    assert!(uses_windows_local_foreground_path(&action));
+    let mapped = action_for_window_visual_fallback(&action, &observation).unwrap();
+    assert!((mapped.x.unwrap() - 1_453.176_020_408_163_4).abs() < 0.001);
+    assert!((mapped.y.unwrap() - 619.131_455_399_061).abs() < 0.001);
+}
+
 #[cfg(windows)]
 #[rstest]
 #[tokio::test]
