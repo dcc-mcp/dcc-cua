@@ -251,6 +251,7 @@ pub(super) struct HostDesktopSession {
     pub(super) interrupt_generation: u64,
     pub(super) interrupted: bool,
     pub(super) session: ComputerUseDesktopSession,
+    pub(super) latest_observation_id: Option<String>,
     pub(super) latest_shared_image: Option<SharedImage>,
 }
 

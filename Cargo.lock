@@ -1082,6 +1082,7 @@ dependencies = [
 name = "dcc-cua-host"
 version = "1.2.0"
 dependencies = [
+ "async-trait",
  "dcc-cua-browser",
  "dcc-cua-core",
  "dcc-cua-indicator",
@@ -1091,6 +1092,7 @@ dependencies = [
  "rstest",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror 2.0.19",
  "tokio",
  "uuid",

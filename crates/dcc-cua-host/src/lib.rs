@@ -5,6 +5,7 @@
 //! framed payload when binary transport is selected, so control frames stay
 //! bounded and the transport does not base64-encode pixels.
 
+mod action_confirmation;
 mod endpoint;
 mod request_handler;
 mod session_events;
@@ -13,11 +14,19 @@ mod session_state;
 mod task_grant;
 mod wait;
 mod wire;
+use action_confirmation::{ActionConfirmationOutcome, authorize_action_confirmation};
+pub use action_confirmation::{
+    TRUSTED_ACTION_CONFIRMATION_SCHEMA, TrustedActionConfirmationAction,
+    TrustedActionConfirmationDecision, TrustedActionConfirmationHost,
+    TrustedActionConfirmationHostError, TrustedActionConfirmationRequest,
+};
 pub use dcc_cua_protocol::{
     HOST_PROTOCOL_VERSION, MAX_BINARY_FRAME_BYTES, MAX_HOST_CONNECTIONS, MAX_JSON_FRAME_BYTES,
     MAX_PARALLEL_DISCOVERY_REQUESTS, MAX_REQUEST_ID_CHARS, MAX_SESSIONS_PER_CONNECTION,
 };
+#[cfg(test)]
 use request_handler::handle_request;
+use request_handler::handle_request_with_confirmation_host;
 use session_identity::{new_runtime_session_id, rewrite_session_aliases};
 use session_state::{
     ConnectionSessions, HostDesktopSession, HostEvidencePublication, HostLaunchSession, HostSession,
@@ -579,7 +588,7 @@ enum WindowOperation {
     Close,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
 struct HostAction {
     action: String,
     #[serde(default)]
@@ -714,15 +723,7 @@ impl HostAction {
             })
     }
 
-    fn requires_approval(&self, allow_trusted_confirmation: bool) -> bool {
-        if allow_trusted_confirmation
-            && matches!(
-                self.intent.as_str(),
-                "windows_security_or_privacy" | "human_verification"
-            )
-        {
-            return false;
-        }
+    fn requires_approval(&self) -> bool {
         !matches!(
             self.intent.as_str(),
             "observe" | "activate" | "navigate" | "ordinary_edit"
@@ -920,39 +921,92 @@ fn cancel_wait(
 
 /// Run one long-lived host connection over stdio or the platform local endpoint.
 pub async fn run(driver: ComputerUseDriver, transport: HostTransport) -> Result<(), HostError> {
+    run_internal(driver, transport, None).await
+}
+
+/// Run a Host with a constructor-owned action-time confirmation callback.
+///
+/// The callback is never reachable from Host IPC. `allow_trusted_confirmation`
+/// in a task grant only permits a request to reach this boundary; it cannot
+/// authorize an action by itself.
+pub async fn run_with_confirmation_host(
+    driver: ComputerUseDriver,
+    transport: HostTransport,
+    confirmation_host: Arc<dyn TrustedActionConfirmationHost>,
+) -> Result<(), HostError> {
+    run_internal(driver, transport, Some(confirmation_host)).await
+}
+
+async fn run_internal(
+    driver: ComputerUseDriver,
+    transport: HostTransport,
+    confirmation_host: Option<Arc<dyn TrustedActionConfirmationHost>>,
+) -> Result<(), HostError> {
     match transport {
         HostTransport::Stdio => {
-            process_connection_parts(
+            process_connection_parts_with_confirmation_host(
                 driver,
                 tokio::io::stdin(),
                 tokio::io::stdout(),
                 Duration::from_millis(HOST_HELLO_TIMEOUT_MS),
+                confirmation_host,
             )
             .await
         }
-        HostTransport::Endpoint(endpoint) => endpoint::serve(driver, endpoint).await,
+        HostTransport::Endpoint(endpoint) => {
+            endpoint::serve(driver, endpoint, confirmation_host).await
+        }
     }
 }
 
+#[cfg(test)]
 async fn process_connection<S>(driver: ComputerUseDriver, stream: S) -> Result<(), HostError>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
+    process_connection_with_confirmation_host(driver, stream, None).await
+}
+
+async fn process_connection_with_confirmation_host<S>(
+    driver: ComputerUseDriver,
+    stream: S,
+    confirmation_host: Option<Arc<dyn TrustedActionConfirmationHost>>,
+) -> Result<(), HostError>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
     let (reader, writer) = tokio::io::split(stream);
-    process_connection_parts(
+    process_connection_parts_with_confirmation_host(
         driver,
         reader,
         writer,
         Duration::from_millis(HOST_HELLO_TIMEOUT_MS),
+        confirmation_host,
     )
     .await
 }
 
+#[cfg(test)]
 async fn process_connection_parts<R, W>(
     driver: ComputerUseDriver,
     reader: R,
     writer: W,
     hello_timeout: Duration,
+) -> Result<(), HostError>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin + Send + 'static,
+{
+    process_connection_parts_with_confirmation_host(driver, reader, writer, hello_timeout, None)
+        .await
+}
+
+async fn process_connection_parts_with_confirmation_host<R, W>(
+    driver: ComputerUseDriver,
+    reader: R,
+    writer: W,
+    hello_timeout: Duration,
+    confirmation_host: Option<Arc<dyn TrustedActionConfirmationHost>>,
 ) -> Result<(), HostError>
 where
     R: AsyncRead + Unpin,
@@ -1030,8 +1084,9 @@ where
             &request,
             Request::WaitFor { .. } | Request::WaitForWindow(_)
         ) {
-            let mut operation = Box::pin(handle_request(
+            let mut operation = Box::pin(handle_request_with_confirmation_host(
                 &driver,
+                confirmation_host.as_deref(),
                 &mut sessions,
                 &mut snapshot_transport,
                 &mut desktop_shared_image,
@@ -1135,8 +1190,9 @@ where
                 .await
             });
         } else {
-            let (mut response, attachment) = match Box::pin(handle_request(
+            let (mut response, attachment) = match Box::pin(handle_request_with_confirmation_host(
                 &driver,
+                confirmation_host.as_deref(),
                 &mut sessions,
                 &mut snapshot_transport,
                 &mut desktop_shared_image,
@@ -1225,6 +1281,7 @@ async fn stop_connection_control_sessions(sessions: &mut ConnectionSessions) {
         }
         session.interrupted = true;
         let _ = session.session.stop().await;
+        session.latest_observation_id = None;
         session.latest_shared_image = None;
     }
 }
