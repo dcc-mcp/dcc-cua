@@ -48,7 +48,6 @@ fn held_key_wait_completes_without_an_interrupt() {
 }
 #[cfg(windows)]
 use crate::runtime::RawDragSequenceOutcome;
-use crate::runtime::application::{launch_arguments, validate_launch_request};
 use crate::runtime::{
     ActionBannerPhase, CombinedDownDragAfterDown, CombinedDownDragCleanup, CombinedDownDragPrelude,
     CombinedDownInjection, LiveObservationStartDisposition, RecordingHealth, RecordingKeepalive,
@@ -102,6 +101,7 @@ mod drag;
 mod drag_windows;
 mod interactive_desktop_fallback;
 mod issues_58_60;
+mod launch;
 mod live_observation;
 mod recording_session;
 
@@ -1914,62 +1914,6 @@ fn window_visual_fallback_maps_capture_pixels_to_the_exact_target() {
         )
         .is_err()
     );
-}
-
-#[rstest]
-fn launch_requires_one_safe_application_selector() {
-    assert!(validate_launch_request(&ComputerUseLaunchRequest::default()).is_err());
-    assert!(
-        validate_launch_request(&ComputerUseLaunchRequest {
-            name: Some("Calculator".into()),
-            ..Default::default()
-        })
-        .is_ok()
-    );
-    assert!(
-        validate_launch_request(&ComputerUseLaunchRequest {
-            name: Some("Calculator".into()),
-            bundle_id: Some("com.example.Calculator".into()),
-            ..Default::default()
-        })
-        .is_err()
-    );
-    assert!(
-        validate_launch_request(&ComputerUseLaunchRequest {
-            urls: vec!["com.epicgames.launcher://fab/plugins/egl".into()],
-            ..Default::default()
-        })
-        .is_ok()
-    );
-    assert!(
-        validate_launch_request(&ComputerUseLaunchRequest {
-            urls: vec!["file:///C:/Windows/System32/cmd.exe".into()],
-            ..Default::default()
-        })
-        .is_err()
-    );
-    assert!(
-        validate_launch_request(&ComputerUseLaunchRequest {
-            launch_path: Some("powershell.exe".into()),
-            ..Default::default()
-        })
-        .is_err()
-    );
-    let json = serde_json::to_value(ComputerUseLaunchRequest {
-        name: Some("Calculator".into()),
-        ..Default::default()
-    })
-    .expect("launch request should serialize");
-    assert!(json.get("bundle_id").is_none());
-    let scoped = launch_arguments(
-        &ComputerUseLaunchRequest {
-            name: Some("Calculator".into()),
-            ..Default::default()
-        },
-        Some("private-runtime-session"),
-    )
-    .expect("session-scoped launch arguments");
-    assert_eq!(scoped["session"], "private-runtime-session");
 }
 
 #[rstest]
