@@ -1472,13 +1472,6 @@ pub(crate) fn uses_windows_foreground_fast_path(action: &ComputerUseAction) -> b
         )
 }
 
-#[cfg(windows)]
-pub(crate) fn uses_windows_foreground_held_key_fast_path(action: &ComputerUseAction) -> bool {
-    action.delivery_mode.as_deref() == Some("foreground")
-        && action.action == "keypress"
-        && action.duration_ms.is_some()
-}
-
 #[cfg(any(windows, test))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct WindowsPostInputFocusLoss {
