@@ -1472,6 +1472,12 @@ pub(crate) fn uses_windows_foreground_fast_path(action: &ComputerUseAction) -> b
         )
 }
 
+#[cfg(windows)]
+pub(crate) fn uses_windows_local_foreground_path(action: &ComputerUseAction) -> bool {
+    uses_windows_foreground_fast_path(action)
+        || (action.delivery_mode.as_deref() == Some("foreground") && action.action == "move")
+}
+
 #[cfg(any(windows, test))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct WindowsPostInputFocusLoss {
