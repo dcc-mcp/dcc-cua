@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.5](https://github.com/dcc-mcp/dcc-cua/compare/v1.1.4...v1.1.5) (2026-08-13)
+
+
+### Bug Fixes
+
+* normalize host keyboard action aliases ([cfb70e3](https://github.com/dcc-mcp/dcc-cua/commit/cfb70e3eb1eab38699520fc9e3d68ad9b9d15e0d))
+
 ## [1.1.4](https://github.com/dcc-mcp/dcc-cua/compare/v1.1.3...v1.1.4) (2026-08-13)
 
 
