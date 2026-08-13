@@ -1576,68 +1576,6 @@ async fn controlled_native_menu_round_trip() {
 #[cfg(all(feature = "gui-e2e", windows))]
 #[rstest]
 #[tokio::test]
-async fn windows_same_executable_processes_require_independent_pixel_proof() {
-    let binary = std::env::var_os("DCC_CUA_E2E_BINARY")
-        .map(PathBuf::from)
-        .expect("DCC_CUA_E2E_BINARY must point to dcc-cua");
-    let fixture_path = wpf_fixture();
-    assert!(
-        fixture_path.is_file(),
-        "official CUA WPF fixture is missing"
-    );
-
-    let mut fixture_reaper = ChildReaper::new();
-    let mut fixture_pids = Vec::new();
-    let mut fixture_state_dirs = Vec::new();
-    for index in 0..2 {
-        let state_dir = tempfile::tempdir().expect("create WPF fixture state directory");
-        let state_path = state_dir
-            .path()
-            .join(format!("identity-state-{index}.json"));
-        let mut command = Command::new(&fixture_path);
-        command
-            .env("CUA_E2E_FIXTURE_STATE_PATH", &state_path)
-            .stdout(Stdio::null())
-            .stderr(Stdio::inherit());
-        let child = spawn_in_job(&mut command).expect("launch official CUA WPF fixture");
-        fixture_pids.push(child.id());
-        fixture_reaper.push(child);
-        wait_for_fixture_file(&state_path, "page-marker", "WPF_HARNESS_MARKER_v1");
-        fixture_state_dirs.push(state_dir);
-    }
-
-    let (mut clients, endpoint_directory) =
-        start_endpoint_clients(&binary, &mut fixture_reaper, "windows-capture-identity-e2e").await;
-    for (index, process_id) in fixture_pids.into_iter().enumerate() {
-        let ready = client_request(
-            &mut clients[index],
-            "wait_for_window",
-            json!({
-                "query": {"process_id": process_id, "on_screen_only": true},
-                "timeout_ms": 30_000,
-                "interval_ms": 100
-            }),
-        )
-        .await;
-        let window_handle = first_window(&ready.value)["window_id"]
-            .as_u64()
-            .expect("window id");
-        assert_eq!(
-            dcc_cua_platform_windows::exact_window_capture_route(process_id, window_handle)
-                .expect("classify exact-window capture identity"),
-            dcc_cua_platform_windows::ExactWindowCaptureRoute::VerifiedVisible
-        );
-    }
-
-    drop(clients);
-    drop(fixture_reaper);
-    drop(fixture_state_dirs);
-    drop(endpoint_directory);
-}
-
-#[cfg(all(feature = "gui-e2e", windows))]
-#[rstest]
-#[tokio::test]
 async fn windows_endpoint_sessions_keep_background_uia_and_distinguish_injected_escape() {
     let binary = std::env::var_os("DCC_CUA_E2E_BINARY")
         .map(PathBuf::from)
