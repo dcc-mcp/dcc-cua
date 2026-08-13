@@ -3,7 +3,7 @@ use serde_json::json;
 use sha2::Digest;
 
 use super::actions::{
-    action_from_command, action_result_value, bind_fresh_element_token,
+    action_from_command, action_from_json, action_result_value, bind_fresh_element_token,
     default_activated_action_to_foreground, map_visible_snapshot_coordinates, menu_request,
     require_exact_window_target, visible_snapshot_dimensions, window_frame_request,
 };
@@ -1328,6 +1328,22 @@ fn visible_snapshot_dimensions_require_a_complete_positive_pair() {
         .unwrap(),
         Some((1568, 931))
     );
+}
+
+#[rstest]
+#[case("press", "escape", "keypress")]
+#[case("press_key", "h", "keypress")]
+#[case("hotkey", "b", "keyboard_shortcut")]
+fn raw_action_json_accepts_documented_keyboard_aliases(
+    #[case] alias: &str,
+    #[case] key: &str,
+    #[case] canonical: &str,
+) {
+    let action =
+        action_from_json(&serde_json::json!({"action": alias, "key": key}).to_string()).unwrap();
+
+    assert_eq!(action.action, canonical);
+    assert_eq!(action.keys, vec![key]);
 }
 
 #[rstest]
