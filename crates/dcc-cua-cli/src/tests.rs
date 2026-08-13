@@ -349,6 +349,13 @@ fn macos_host_worker_is_private_and_standard_by_default() {
             .authorization
             .unrestricted_acknowledged
     );
+    assert!(
+        options
+            .configured_driver
+            .authorization
+            .compatibility_capability_manifest_path
+            .is_none()
+    );
     assert!(options.environment.is_empty());
     assert!(options.inherit_stderr);
 }
@@ -370,6 +377,13 @@ fn explicit_existing_profile_grant_raises_only_the_private_worker_ceiling() {
             .configured_driver
             .authorization
             .unrestricted_acknowledged
+    );
+    assert!(
+        options
+            .configured_driver
+            .authorization
+            .compatibility_capability_manifest_path
+            .is_none()
     );
 }
 
