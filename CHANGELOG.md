@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.2.0](https://github.com/dcc-mcp/dcc-cua/compare/v1.1.6...v1.2.0) (2026-08-13)
+
+
+### Features
+
+* add MCP image results for host JSONL ([d883758](https://github.com/dcc-mcp/dcc-cua/commit/d8837581994b780122ed21f9f8f293135876a815))
+
+
+### Bug Fixes
+
+* bound degraded window shutdown ([57ad8f8](https://github.com/dcc-mcp/dcc-cua/commit/57ad8f83951274473101092595812495e1faf9e7))
+* tolerate delayed control banner startup ([95a8265](https://github.com/dcc-mcp/dcc-cua/commit/95a82651017b2c8c1f81dab22b2feea4a50fb4f2))
+
 ## [1.1.6](https://github.com/dcc-mcp/dcc-cua/compare/v1.1.5...v1.1.6) (2026-08-13)
 
 
