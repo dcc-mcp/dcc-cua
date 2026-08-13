@@ -731,6 +731,7 @@ async fn host_jsonl_inner(
             {
                 let response = match host_result {
                     Ok(response) => {
+                        let response_request_id = response.value.get("request_id").cloned();
                         match measured_jsonl_response_value(
                             response,
                             output_dir.as_deref(),
@@ -742,11 +743,10 @@ async fn host_jsonl_inner(
                             Err(error) => {
                                 write_jsonl_response(
                                     &mut output,
-                                    json!({
-                                        "type": "error",
-                                        "code": "output_error",
-                                        "message": error.to_string(),
-                                    }),
+                                    jsonl_output_error_value(
+                                        error.to_string(),
+                                        response_request_id.as_ref(),
+                                    ),
                                     metrics,
                                 )
                                 .await?;
@@ -787,28 +787,30 @@ async fn host_jsonl_inner(
             }
         };
         let response = match host_result {
-            Ok(response) => match measured_jsonl_response_value(
-                response,
-                output_dir.as_deref(),
-                line_index,
-                metrics,
-                &request_method,
-            ) {
-                Ok(value) => value,
-                Err(error) => {
-                    write_jsonl_response(
-                        &mut output,
-                        json!({
-                            "type": "error",
-                            "code": "output_error",
-                            "message": error.to_string(),
-                        }),
-                        metrics,
-                    )
-                    .await?;
-                    return Err(error);
+            Ok(response) => {
+                let response_request_id = response.value.get("request_id").cloned();
+                match measured_jsonl_response_value(
+                    response,
+                    output_dir.as_deref(),
+                    line_index,
+                    metrics,
+                    &request_method,
+                ) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        write_jsonl_response(
+                            &mut output,
+                            jsonl_output_error_value(
+                                error.to_string(),
+                                response_request_id.as_ref(),
+                            ),
+                            metrics,
+                        )
+                        .await?;
+                        return Err(error);
+                    }
                 }
-            },
+            }
             Err(error @ HostClientError::Remote { .. }) => {
                 let value = host_error_value(&error);
                 metrics.record_response(&request_method, &value);
@@ -1325,19 +1327,27 @@ fn jsonl_response_value_with_metrics(
     let shared_image = value
         .get("image")
         .is_some_and(|image| image["encoding"] == "shared_memory");
-    let bytes = match response.binary_attachment {
-        Some(bytes) => Some(bytes),
+    let binary_attachment = response.binary_attachment;
+    let shared_bytes = match &binary_attachment {
+        Some(_) => None,
         None if shared_image => {
             let descriptor = serde_json::from_value(value["image"].clone())?;
             Some(SharedImageReader::open(descriptor)?.read()?)
         }
         None => None,
     };
-    let image_metrics = response_image_metrics(&value, bytes.as_deref());
-    if let Some(bytes) = bytes {
+    let image_metrics = response_image_metrics(
+        &value,
+        binary_attachment.as_deref().or(shared_bytes.as_deref()),
+    );
+    if let Some(bytes) = binary_attachment {
         let directory = output_dir.ok_or(
             "JSONL response contains image bytes; pass --output-dir or negotiate shared_memory",
         )?;
+        let path = format!("{directory}/response-{index}.bin");
+        fs::write(&path, bytes)?;
+        value["_dcc_cua_binary_output"] = json!(path);
+    } else if let (Some(bytes), Some(directory)) = (shared_bytes, output_dir) {
         let path = format!("{directory}/response-{index}.bin");
         fs::write(&path, bytes)?;
         value["_dcc_cua_binary_output"] = json!(path);
@@ -1346,6 +1356,21 @@ fn jsonl_response_value_with_metrics(
         value,
         image_metrics,
     })
+}
+
+fn jsonl_output_error_value(
+    message: String,
+    request_id: Option<&serde_json::Value>,
+) -> serde_json::Value {
+    let mut value = json!({
+        "type": "error",
+        "code": "output_error",
+        "message": message,
+    });
+    if let Some(request_id) = request_id {
+        value["request_id"] = request_id.clone();
+    }
+    value
 }
 
 fn response_image_metrics(

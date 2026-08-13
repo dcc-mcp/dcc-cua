@@ -419,6 +419,35 @@ fn jsonl_response_writes_host_owned_shared_memory() {
 }
 
 #[rstest]
+fn jsonl_response_preserves_shared_memory_when_no_output_directory_is_requested() {
+    let image = dcc_cua_shm::SharedImage::from_bytes(b"png", "image/png").unwrap();
+    let mut descriptor = serde_json::to_value(image.descriptor()).unwrap();
+    descriptor["encoding"] = json!("shared_memory");
+    let response = HostResponse {
+        value: json!({"request_id": "core-snapshot-1", "image": descriptor.clone()}),
+        binary_attachment: None,
+    };
+
+    let value = jsonl_response_value_with_metrics(response, None, 7)
+        .unwrap()
+        .value;
+
+    assert_eq!(value["request_id"], "core-snapshot-1");
+    assert_eq!(value["image"], descriptor);
+    assert!(value.get("_dcc_cua_binary_output").is_none());
+}
+
+#[rstest]
+fn jsonl_output_error_preserves_the_host_request_id() {
+    let request_id = json!("core-snapshot-1");
+    let value = jsonl_output_error_value("shared memory unavailable".into(), Some(&request_id));
+
+    assert_eq!(value["type"], "error");
+    assert_eq!(value["code"], "output_error");
+    assert_eq!(value["request_id"], "core-snapshot-1");
+}
+
+#[rstest]
 fn host_jsonl_metrics_charge_binary_and_shared_memory_images_equally() {
     let png = [
         137, 80, 78, 71, 13, 10, 26, 10, // PNG signature
