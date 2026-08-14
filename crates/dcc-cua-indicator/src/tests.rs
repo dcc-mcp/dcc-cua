@@ -4,6 +4,33 @@ use super::*;
 
 #[cfg(windows)]
 #[rstest]
+fn compact_targets_hide_banner_and_identity_selects_stable_hues() {
+    assert!(platform::compact_target(platform::TargetGeometry {
+        x: 0,
+        y: 0,
+        width: 799,
+        height: 900,
+        dpi: 96,
+    }));
+    assert!(!platform::compact_target(platform::TargetGeometry {
+        x: 0,
+        y: 0,
+        width: 1200,
+        height: 700,
+        dpi: 96,
+    }));
+    assert_eq!(
+        platform::theme_for_identity("Agent A"),
+        platform::theme_for_identity("Agent A")
+    );
+    assert_ne!(
+        platform::theme_for_identity("Agent A"),
+        platform::theme_for_identity("Agent B")
+    );
+}
+
+#[cfg(windows)]
+#[rstest]
 fn native_overlays_are_hit_test_transparent_and_never_activate() {
     assert_eq!(platform::overlay_input_result(0x0084).unwrap().0, -1);
     assert_eq!(platform::overlay_input_result(0x0021).unwrap().0, 3);

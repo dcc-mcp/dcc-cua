@@ -55,6 +55,7 @@ const OVERLAY_ACTIVITY_PROP: PCWSTR = w!("DccCuaBannerActivity");
 const OVERLAY_RECORDING_PROP: PCWSTR = w!("DccCuaBannerRecording");
 const OVERLAY_LIVE_PROP: PCWSTR = w!("DccCuaBannerLiveObservation");
 const OVERLAY_ICON_PROP: PCWSTR = w!("DccCuaBannerIcon");
+const OVERLAY_THEME_PROP: PCWSTR = w!("DccCuaBannerTheme");
 const BANNER_ALPHA: u8 = 248;
 const FRAME_INTERVAL: Duration = Duration::from_millis(33);
 // Starting the Win32 overlay can be delayed by a saturated interactive
@@ -92,6 +93,14 @@ const RECORDING: COLORREF = rgb(
     theme_tokens::RECORDING.1,
     theme_tokens::RECORDING.2,
 );
+const SURFACE_VARIANTS: [COLORREF; 4] =
+    [SURFACE, rgb(24, 36, 58), rgb(42, 28, 58), rgb(20, 48, 43)];
+const LINE_VARIANTS: [COLORREF; 4] = [
+    LINE,
+    rgb(73, 143, 214),
+    rgb(167, 91, 220),
+    rgb(67, 183, 135),
+];
 static ESCAPE_HUB: OnceLock<Result<EscapeHub, String>> = OnceLock::new();
 static ESCAPE_DOWN: AtomicBool = AtomicBool::new(false);
 static ACTIVE_BANNERS: AtomicUsize = AtomicUsize::new(0);
@@ -665,6 +674,7 @@ fn run_banner(
         .collect::<Result<Vec<_>, _>>()?;
     let dpi_probe = DpiProbeWindow::create(&dpi_awareness).ok();
     let target_geometry = read_target_geometry(target_window, dpi_probe.as_ref())?;
+    let mut compact_hidden = compact_target(target_geometry);
     let mut geometry = banner_geometry(target_geometry, read_monitor_geometry(target_window)?);
     let mut frame_geometry = target_frame_geometry(target_geometry);
     position_banner(overlay.0, target_window, geometry, true)?;
@@ -678,7 +688,7 @@ fn run_banner(
     inside_target.store(geometry.inside_target, Ordering::Release);
     let initial_presentation = current_target_presentation(target_window);
     let mut overlay_sync = TargetOverlaySyncState::new(initial_presentation);
-    let initial_visible = initial_presentation.is_visible();
+    let initial_visible = initial_presentation.is_visible() && !compact_hidden;
     if !initial_visible {
         let _ = unsafe { ShowWindow(overlay.0, SW_HIDE) };
         for frame in &frames {
@@ -746,6 +756,24 @@ fn run_banner(
         let reassert_z_order = overlay_sync.observe(presentation);
         if presentation.is_visible() {
             let next_target = read_target_geometry(target_window, dpi_probe.as_ref())?;
+            let next_compact_hidden = compact_target(next_target);
+            if next_compact_hidden != compact_hidden {
+                compact_hidden = next_compact_hidden;
+                let command = if compact_hidden {
+                    SW_HIDE
+                } else {
+                    SW_SHOWNOACTIVATE
+                };
+                let _ = unsafe { ShowWindow(overlay.0, command) };
+                for frame in &frames {
+                    let _ = unsafe { ShowWindow(frame.0, command) };
+                }
+                visible.store(!compact_hidden, Ordering::Release);
+                frame_visible.store(
+                    !compact_hidden && target_frame_has_visible_band(frame_geometry.thickness),
+                    Ordering::Release,
+                );
+            }
             let next_geometry = banner_geometry(next_target, read_monitor_geometry(target_window)?);
             if next_geometry != geometry {
                 position_banner(
@@ -778,7 +806,7 @@ fn run_banner(
                 for (band, frame) in frames.iter().enumerate() {
                     position_target_frame(frame.0, target_window, frame_geometry, band, false)?;
                 }
-            } else if !visible.load(Ordering::Acquire) {
+            } else if !compact_hidden && !visible.load(Ordering::Acquire) {
                 let _ = unsafe { ShowWindow(overlay.0, SW_SHOWNOACTIVATE) };
                 for (band, frame) in frames.iter().enumerate() {
                     let command =
@@ -790,9 +818,9 @@ fn run_banner(
                     let _ = unsafe { ShowWindow(frame.0, command) };
                 }
             }
-            visible.store(true, Ordering::Release);
+            visible.store(!compact_hidden, Ordering::Release);
             frame_visible.store(
-                target_frame_has_visible_band(frame_geometry.thickness),
+                !compact_hidden && target_frame_has_visible_band(frame_geometry.thickness),
                 Ordering::Release,
             );
         } else if visible.swap(false, Ordering::AcqRel) {
@@ -854,6 +882,19 @@ fn create_overlay(
     icon: Option<HICON>,
 ) -> Result<HWND, IndicatorError> {
     let window = create_window(BANNER_CLASS, Some(window_proc), identity, BANNER_ALPHA)?;
+    let theme = theme_for_identity(identity);
+    if let Err(error) = unsafe {
+        SetPropW(
+            window,
+            OVERLAY_THEME_PROP,
+            Some(HANDLE((theme + 1) as *mut core::ffi::c_void)),
+        )
+    } {
+        let _ = unsafe { DestroyWindow(window) };
+        return Err(IndicatorError::Backend(format!(
+            "set banner theme: {error}"
+        )));
+    }
     if let Err(error) = set_activity_property(window, activity) {
         let _ = unsafe { DestroyWindow(window) };
         return Err(error);
@@ -1156,6 +1197,17 @@ pub(super) fn banner_geometry(target: TargetGeometry, monitor: MonitorGeometry) 
     }
 }
 
+pub(super) fn compact_target(target: TargetGeometry) -> bool {
+    target.width < scale(800, target.dpi) || target.height < scale(500, target.dpi)
+}
+
+pub(super) fn theme_for_identity(identity: &str) -> usize {
+    let hash = identity.bytes().fold(0_u32, |value, byte| {
+        value.wrapping_mul(33).wrapping_add(u32::from(byte))
+    });
+    (hash as usize) % SURFACE_VARIANTS.len()
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) struct TargetFrameGeometry {
     pub(super) x: i32,
@@ -1444,7 +1496,9 @@ unsafe extern "system" fn window_proc(
         let mut bounds = RECT::default();
         let _ = unsafe { GetClientRect(window, &raw mut bounds) };
         let dpi = unsafe { GetDpiForWindow(window) }.max(96);
-        paint_surface(device, bounds, dpi);
+        let theme_value = unsafe { GetPropW(window, OVERLAY_THEME_PROP) };
+        let theme = theme_value.0 as usize;
+        paint_surface(device, bounds, dpi, theme);
         let icon_value = unsafe { GetPropW(window, OVERLAY_ICON_PROP) };
         if icon_value.0.is_null() {
             paint_fallback_icon(device, dpi);
@@ -1498,7 +1552,7 @@ pub(super) fn overlay_input_result(message: u32) -> Option<LRESULT> {
     }
 }
 
-fn paint_surface(device: windows::Win32::Graphics::Gdi::HDC, bounds: RECT, dpi: u32) {
+fn paint_surface(device: windows::Win32::Graphics::Gdi::HDC, bounds: RECT, dpi: u32, theme: usize) {
     let radius = scale(12, dpi);
     let outer =
         unsafe { CreateRoundRectRgn(0, 0, bounds.right, bounds.bottom, radius * 2, radius * 2) };
@@ -1513,8 +1567,9 @@ fn paint_surface(device: windows::Win32::Graphics::Gdi::HDC, bounds: RECT, dpi: 
         )
     };
     if !outer.0.is_null() && !inner.0.is_null() {
-        let border = unsafe { CreateSolidBrush(LINE) };
-        let surface = unsafe { CreateSolidBrush(SURFACE) };
+        let border = unsafe { CreateSolidBrush(LINE_VARIANTS[theme.min(LINE_VARIANTS.len() - 1)]) };
+        let surface =
+            unsafe { CreateSolidBrush(SURFACE_VARIANTS[theme.min(SURFACE_VARIANTS.len() - 1)]) };
         let _ = unsafe { FillRgn(device, outer, border) };
         let _ = unsafe { FillRgn(device, inner, surface) };
         let _ = unsafe { DeleteObject(HGDIOBJ(border.0)) };
