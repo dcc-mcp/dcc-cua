@@ -402,8 +402,13 @@ pub fn activate_window(
     target: UiaTarget,
     activation_available: impl FnOnce() -> Result<(), UiaError>,
 ) -> Result<(), UiaError> {
+    let expected = require_available_window_handle(target, "activation frame capture")?;
+    let frame_before_activation = capture_visible_window_frame(expected);
     input_gated_window_mutation(activation_available, || activate_window_after_gate(target))?;
     let expected = require_available_window_handle(target, "activation final validation")?;
+    if let Some(frame) = frame_before_activation {
+        restore_window_frame_after_activation(expected, frame)?;
+    }
     synchronize_activated_input_queue(expected)?;
     if unsafe { GetForegroundWindow() } != expected {
         return Err(UiaError::BackendUnavailable(
@@ -411,6 +416,78 @@ pub fn activate_window(
         ));
     }
     Ok(())
+}
+
+fn capture_visible_window_frame(
+    expected: windows_sys::Win32::Foundation::HWND,
+) -> Option<[i32; 4]> {
+    if unsafe { IsWindowVisible(expected) } == 0 || unsafe { IsIconic(expected) } != 0 {
+        return None;
+    }
+    let mut rect = RECT::default();
+    (unsafe { GetWindowRect(expected, &mut rect) } != 0).then_some([
+        rect.left,
+        rect.top,
+        rect.right - rect.left,
+        rect.bottom - rect.top,
+    ])
+}
+
+fn restore_window_frame_after_activation(
+    expected: windows_sys::Win32::Foundation::HWND,
+    requested: [i32; 4],
+) -> Result<(), UiaError> {
+    let mut current = RECT::default();
+    if unsafe { GetWindowRect(expected, &mut current) } == 0 {
+        return Err(UiaError::BackendUnavailable(
+            "Windows could not read the exact target frame after activation".into(),
+        ));
+    }
+    let actual = [
+        current.left,
+        current.top,
+        current.right - current.left,
+        current.bottom - current.top,
+    ];
+    if window_frame_matches(actual, requested) {
+        return Ok(());
+    }
+    let [x, y, width, height] = requested;
+    if unsafe {
+        SetWindowPos(
+            expected,
+            std::ptr::null_mut(),
+            x,
+            y,
+            width,
+            height,
+            SWP_ASYNCWINDOWPOS | SWP_NOZORDER | SWP_SHOWWINDOW,
+        )
+    } == 0
+    {
+        return Err(UiaError::BackendUnavailable(format!(
+            "SetWindowPos failed while preserving the activation frame: {}",
+            std::io::Error::last_os_error()
+        )));
+    }
+    for _ in 0..40 {
+        let mut rect = RECT::default();
+        if unsafe { GetWindowRect(expected, &mut rect) } != 0 {
+            let actual = [
+                rect.left,
+                rect.top,
+                rect.right - rect.left,
+                rect.bottom - rect.top,
+            ];
+            if window_frame_matches(actual, requested) {
+                return Ok(());
+            }
+        }
+        thread::sleep(Duration::from_millis(5));
+    }
+    Err(UiaError::BackendUnavailable(
+        "the exact target frame changed during activation and could not be restored".into(),
+    ))
 }
 
 fn synchronize_activated_input_queue(
