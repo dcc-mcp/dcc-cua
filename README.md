@@ -327,7 +327,10 @@ cargo run -p dcc-cua-cli -- update --check
 
 `update` downloads one exact platform archive, validates the replacement
 executable, and replaces the CLI. The SDK runtime is statically linked into the
-same versioned executable.
+same versioned executable. Release discovery uses the GitHub REST API first and
+falls back to the public `releases/latest` redirect when the API is rate limited
+(HTTP 403); set `GITHUB_TOKEN` or `GH_TOKEN` to raise the unauthenticated API
+quota of 60 requests per hour per IP address.
 
 `manifest` is the stable machine-readable discovery entry for Core and other
 independent callers. It reports the current platform, Host protocol, frame

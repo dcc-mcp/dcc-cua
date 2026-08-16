@@ -144,7 +144,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
         tokio::task::spawn_blocking(move || update::run(&flags))
             .await
             .map_err(|error| std::io::Error::other(format!("update worker failed: {error}")))?
-            .map_err(|error| std::io::Error::other(error.to_string()))?;
+            .map_err(|error| -> Box<dyn std::error::Error> { error.to_string().into() })?;
         return Ok(());
     }
     let driver = if command == "host" {
