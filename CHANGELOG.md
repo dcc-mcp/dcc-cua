@@ -1,5 +1,29 @@
 # Changelog
 
+## [1.3.0](https://github.com/dcc-mcp/dcc-cua/compare/v1.2.0...v1.3.0) (2026-08-16)
+
+
+### Features
+
+* add responsive banner skins ([fb1a6ff](https://github.com/dcc-mcp/dcc-cua/commit/fb1a6fff01748a6de32c3f9d7d80120ab5a4a176))
+* add trusted action confirmation boundary ([f42ed75](https://github.com/dcc-mcp/dcc-cua/commit/f42ed75375c05ae7a6ef1649b6463c86036ed9a2))
+
+
+### Bug Fixes
+
+* advertise localized browser setup contract ([8256af9](https://github.com/dcc-mcp/dcc-cua/commit/8256af94442eef730e8ac54c7601a151aa2e456e))
+* bound Windows application launch deadline ([4c180fa](https://github.com/dcc-mcp/dcc-cua/commit/4c180fa6884e8d4e21e6c4b8098b0924f1c9a091))
+* fail closed on ambiguous window capture ([78f2b7e](https://github.com/dcc-mcp/dcc-cua/commit/78f2b7e4c69a3b1e95339b594857d2594b5c2d56))
+* fail closed on invalid input dispatch ([#102](https://github.com/dcc-mcp/dcc-cua/issues/102)) ([5d5d683](https://github.com/dcc-mcp/dcc-cua/commit/5d5d683aa5c7af9e777f2a9453e66c9d7a565de7))
+* pin foreground-proven browser setup ([9b98a83](https://github.com/dcc-mcp/dcc-cua/commit/9b98a83fdcf59aa33966afceac4912aa3ee36c96))
+* pin hardened localized browser proof ([beb64c5](https://github.com/dcc-mcp/dcc-cua/commit/beb64c51772b4b0798a30a034f50aaade7a7e389))
+* pin native browser tab invocation ([c72b25d](https://github.com/dcc-mcp/dcc-cua/commit/c72b25decc887b8e9441f145fafa2839710f02f2))
+* pin pre-enabled browser endpoint proof ([9c67598](https://github.com/dcc-mcp/dcc-cua/commit/9c675989ed44f5e291b8ad430f26eda0c18c1f0c))
+* preserve target frame during activation ([4351654](https://github.com/dcc-mcp/dcc-cua/commit/4351654ae318cd2ac2f1483cc16a0cb684ab06e0))
+* satisfy host layout policy ([6f290b9](https://github.com/dcc-mcp/dcc-cua/commit/6f290b9f6af3fd5d2c6dd92e91ea9100a27e47a7))
+* satisfy Windows capture test layout ([31b3f94](https://github.com/dcc-mcp/dcc-cua/commit/31b3f94a287d3f715e2075b0d7fa717773765044))
+* support localized Chromium target proof ([1f7e93f](https://github.com/dcc-mcp/dcc-cua/commit/1f7e93f3d07eaae057b565316372348a61289847))
+
 ## [1.2.0](https://github.com/dcc-mcp/dcc-cua/compare/v1.1.6...v1.2.0) (2026-08-13)
 
 
