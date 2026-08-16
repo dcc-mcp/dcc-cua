@@ -14,8 +14,7 @@ name = "dcc_cua_shm"
 path = "src/lib.rs"
 
 [dependencies]
-# Temporary upstream fix: https://github.com/loonghao/ipckit/pull/80
-ipckit = { git = "https://github.com/loonghao/ipckit.git", rev = "e2a0abc8dd7ce9f88f2d07b1923770bf7af09761" }
+ipckit = "0.1.12"
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"
 uuid = { version = "1", features = ["v4"] }
