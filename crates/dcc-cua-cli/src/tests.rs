@@ -1146,6 +1146,59 @@ fn updater_rejects_a_sidecar_for_another_archive() {
 }
 
 #[rstest]
+#[case(
+    "https://github.com/dcc-mcp/dcc-cua/releases/tag/v1.3.0",
+    Some("1.3.0")
+)]
+#[case(
+    "https://github.com/dcc-mcp/dcc-cua/releases/tag/v1.4.0-rc.1+build5",
+    Some("1.4.0-rc.1+build5")
+)]
+#[case("http://github.com/dcc-mcp/dcc-cua/releases/tag/v1.3.0", None)]
+#[case("https://evil.example/dcc-mcp/dcc-cua/releases/tag/v1.3.0", None)]
+#[case(
+    "https://github.com.evil.example/dcc-mcp/dcc-cua/releases/tag/v1.3.0",
+    None
+)]
+#[case("https://github.com/dcc-mcp/other/releases/tag/v1.3.0", None)]
+#[case("https://github.com/dcc-mcp/dcc-cua/releases/download/v1.3.0/x", None)]
+#[case("https://github.com/dcc-mcp/dcc-cua/releases/tag/v1.3.0/extra", None)]
+#[case("https://github.com/dcc-mcp/dcc-cua/releases/tag/v", None)]
+#[case(
+    "https://github.com/dcc-mcp/dcc-cua/releases/tag/v1.3.0?utm=track",
+    None
+)]
+#[case("https://github.com/dcc-mcp/dcc-cua/releases/latest", None)]
+#[case("https://github.com/dcc-mcp/dcc-cua/releases/tag/v%31.3.0", None)]
+fn updater_parses_only_the_official_latest_release_redirect(
+    #[case] location: &str,
+    #[case] expected: Option<&str>,
+) {
+    assert_eq!(
+        update::version_from_release_location(location).as_deref(),
+        expected
+    );
+}
+
+#[rstest]
+fn updater_synthesizes_a_fallback_release_with_exact_official_urls() {
+    let target = self_update::get_target();
+    let archive = update::release_archive_name("1.3.0", target);
+    let releases = [update::fallback_release("1.3.0", target)];
+    let (_, selected, checksum) = update::latest_release_assets(&releases, target).unwrap();
+    assert_eq!(selected.name, archive);
+    assert_eq!(
+        selected.download_url,
+        format!("https://github.com/dcc-mcp/dcc-cua/releases/download/v1.3.0/{archive}")
+    );
+    assert_eq!(checksum.name, format!("{archive}.sha256"));
+    assert_eq!(
+        checksum.download_url,
+        format!("https://github.com/dcc-mcp/dcc-cua/releases/download/v1.3.0/{archive}.sha256")
+    );
+}
+
+#[rstest]
 fn manifest_is_a_machine_readable_core_launch_contract() {
     let manifest = manifest::document();
     assert_eq!(manifest["schema_version"], 1);
