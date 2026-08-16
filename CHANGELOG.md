@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.3.1](https://github.com/dcc-mcp/dcc-cua/compare/v1.3.0...v1.3.1) (2026-08-16)
+
+
+### Bug Fixes
+
+* survive GitHub API rate-limit 403 in update ([2cf23cf](https://github.com/dcc-mcp/dcc-cua/commit/2cf23cfe5c4883e25699f2db39cf1e6f7cfff8ba))
+* survive GitHub API rate-limit 403 in update ([1d0271b](https://github.com/dcc-mcp/dcc-cua/commit/1d0271bcf23c2bee367e3d9d3a621f0e55759f4f))
+
 ## [1.3.0](https://github.com/dcc-mcp/dcc-cua/compare/v1.2.0...v1.3.0) (2026-08-16)
 
 
