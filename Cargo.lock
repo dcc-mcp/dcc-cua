@@ -998,7 +998,7 @@ checksum = "4583a4551df46e2792f82ceeac45e850d2e2d5debba0b91f102385cda5b11f06"
 
 [[package]]
 name = "dcc-cua-browser"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "base64 0.22.1",
  "dcc-cua-core",
@@ -1010,7 +1010,7 @@ dependencies = [
 
 [[package]]
 name = "dcc-cua-cli"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -1034,7 +1034,7 @@ dependencies = [
 
 [[package]]
 name = "dcc-cua-client"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "dcc-cua-protocol",
  "dcc-cua-workspace-hack",
@@ -1046,7 +1046,7 @@ dependencies = [
 
 [[package]]
 name = "dcc-cua-core"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "base64 0.22.1",
  "cua-driver-contract",
@@ -1071,7 +1071,7 @@ dependencies = [
 
 [[package]]
 name = "dcc-cua-e2e"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "cua-driver-testkit",
  "dcc-cua-client",
@@ -1086,7 +1086,7 @@ dependencies = [
 
 [[package]]
 name = "dcc-cua-host"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "async-trait",
  "dcc-cua-browser",
@@ -1107,7 +1107,7 @@ dependencies = [
 
 [[package]]
 name = "dcc-cua-indicator"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "dcc-cua-workspace-hack",
  "rstest",
@@ -1119,7 +1119,7 @@ dependencies = [
 
 [[package]]
 name = "dcc-cua-platform-windows"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "dcc-cua-workspace-hack",
  "rstest",
@@ -1133,7 +1133,7 @@ dependencies = [
 
 [[package]]
 name = "dcc-cua-protocol"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "dcc-cua-workspace-hack",
  "libc",
@@ -1143,7 +1143,7 @@ dependencies = [
 
 [[package]]
 name = "dcc-cua-semantic-profiles"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "dcc-cua-workspace-hack",
  "rstest",
@@ -1156,7 +1156,7 @@ dependencies = [
 
 [[package]]
 name = "dcc-cua-shm"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "dcc-cua-workspace-hack",
  "ipckit",
@@ -1168,7 +1168,7 @@ dependencies = [
 
 [[package]]
 name = "dcc-cua-workspace-hack"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "aho-corasick",
  "block2 0.5.1",
