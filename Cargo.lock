@@ -395,6 +395,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
+name = "base64"
+version = "0.23.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ac07cdecf99051d9a5238b80f35af32cdeba5b336e55d957b318b50137e18da5"
+
+[[package]]
 name = "base64ct"
 version = "1.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -881,7 +887,7 @@ source = "git+https://github.com/trycua/cua.git?rev=ff54be01bd386155257f20ca0e8f
 dependencies = [
  "anyhow",
  "async-trait",
- "base64",
+ "base64 0.22.1",
  "cua-driver-contract",
  "futures-util",
  "image",
@@ -994,7 +1000,7 @@ checksum = "4583a4551df46e2792f82ceeac45e850d2e2d5debba0b91f102385cda5b11f06"
 name = "dcc-cua-browser"
 version = "1.2.0"
 dependencies = [
- "base64",
+ "base64 0.22.1",
  "dcc-cua-core",
  "dcc-cua-workspace-hack",
  "rstest",
@@ -1007,7 +1013,7 @@ name = "dcc-cua-cli"
 version = "1.2.0"
 dependencies = [
  "async-trait",
- "base64",
+ "base64 0.22.1",
  "dcc-cua-client",
  "dcc-cua-core",
  "dcc-cua-host",
@@ -1042,7 +1048,7 @@ dependencies = [
 name = "dcc-cua-core"
 version = "1.2.0"
 dependencies = [
- "base64",
+ "base64 0.22.1",
  "cua-driver-contract",
  "cua-driver-sdk",
  "cursor-overlay",
@@ -2017,7 +2023,7 @@ version = "0.1.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "96547c2556ec9d12fb1578c4eaf448b04993e7fb79cbaad930a656880a6bdfa0"
 dependencies = [
- "base64",
+ "base64 0.22.1",
  "bytes",
  "futures-channel",
  "futures-util",
@@ -2204,10 +2210,11 @@ dependencies = [
 
 [[package]]
 name = "ipckit"
-version = "0.1.8"
-source = "git+https://github.com/loonghao/ipckit.git?rev=e2a0abc8dd7ce9f88f2d07b1923770bf7af09761#e2a0abc8dd7ce9f88f2d07b1923770bf7af09761"
+version = "0.1.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "38304f8823625b26a4bc6d4266da0da762d220afb3cd0bcf5c4069a65c60e305"
 dependencies = [
- "base64",
+ "base64 0.23.1",
  "bytes",
  "crossbeam-channel",
  "libc",
@@ -3179,7 +3186,7 @@ dependencies = [
  "ashpd",
  "async-trait",
  "atspi",
- "base64",
+ "base64 0.22.1",
  "clipboard-rs",
  "crossbeam-channel",
  "cua-driver-contract",
@@ -3216,7 +3223,7 @@ source = "git+https://github.com/trycua/cua.git?rev=ff54be01bd386155257f20ca0e8f
 dependencies = [
  "anyhow",
  "async-trait",
- "base64",
+ "base64 0.22.1",
  "block2 0.5.1",
  "clipboard-rs",
  "core-foundation",
@@ -3252,7 +3259,7 @@ source = "git+https://github.com/trycua/cua.git?rev=ff54be01bd386155257f20ca0e8f
 dependencies = [
  "anyhow",
  "async-trait",
- "base64",
+ "base64 0.22.1",
  "clipboard-rs",
  "cua-driver-contract",
  "cua-driver-core",
@@ -3671,7 +3678,7 @@ version = "0.13.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "219c5811de6525e5416c7d5d53bb656d3afdbc6c5af816e0802bcfa42dbdc1c3"
 dependencies = [
- "base64",
+ "base64 0.22.1",
  "bytes",
  "futures-channel",
  "futures-core",
@@ -4939,7 +4946,7 @@ version = "3.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dea7109cdcd5864d4eeb1b58a1648dc9bf520360d7af16ec26d0a9354bafcfc0"
 dependencies = [
- "base64",
+ "base64 0.22.1",
  "cookie_store",
  "encoding_rs",
  "flate2",
@@ -4961,7 +4968,7 @@ version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e994ba84b0bd1b1b0cf92878b7ef898a5c1760108fe7b6010327e274917a808c"
 dependencies = [
- "base64",
+ "base64 0.22.1",
  "http",
  "httparse",
  "log",
@@ -6090,7 +6097,7 @@ version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dba6063ff82cdbd9a765add16d369abe81e520f836054e997c2db217ceca40c0"
 dependencies = [
- "base64",
+ "base64 0.22.1",
  "ed25519-dalek",
  "thiserror 2.0.19",
 ]
