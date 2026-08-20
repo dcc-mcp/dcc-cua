@@ -590,6 +590,35 @@ fn mcp_jsonl_response_splits_multiple_native_image_attachments() {
 }
 
 #[rstest]
+fn mcp_jsonl_response_preserves_ancestor_scope_evidence() {
+    let value = json!({
+        "type": "browser_snapshot",
+        "result": {
+            "structuredContent": {
+                "status": "ok",
+                "snapshot": {
+                    "scope": "ancestor_subtree",
+                    "scope_anchor": {
+                        "requested_ref": "p1:7",
+                        "role": "row",
+                        "frame": "main",
+                        "distance": 1
+                    }
+                }
+            }
+        }
+    });
+
+    let output = mcp_output::call_tool_result(value, None).unwrap();
+
+    assert_eq!(
+        output["structuredContent"]["result"]["structuredContent"]["snapshot"]["scope_anchor"]["requested_ref"],
+        "p1:7"
+    );
+    assert_eq!(output["isError"], false);
+}
+
+#[rstest]
 fn mcp_jsonl_response_rejects_attachment_ranges_outside_the_frame() {
     let value = json!({
         "type": "snapshot",
@@ -1274,6 +1303,13 @@ fn manifest_is_a_machine_readable_core_launch_contract() {
         manifest["host"]["capabilities"]
             .as_array()
             .is_some_and(|values| values.iter().any(|value| value == "browser_exact_binding"))
+    );
+    assert!(
+        manifest["host"]["capabilities"]
+            .as_array()
+            .is_some_and(|values| values
+                .iter()
+                .any(|value| value == "nearest_ancestor_role_v1"))
     );
     assert!(
         manifest["host"]["capabilities"]

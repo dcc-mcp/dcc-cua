@@ -432,7 +432,28 @@ fn app_requests_parse_with_host_params_frames() {
                 "request": {"snapshot_format": "semantic_v2"}
             }
         })),
-        Ok(Request::BrowserSnapshot { .. })
+        Ok(Request::BrowserSnapshot { request, .. })
+            if request.scope_ancestor_role.is_none()
+    ));
+    assert!(matches!(
+        serde_json::from_value::<Request>(json!({
+            "method": "browser_snapshot",
+            "params": {
+                "session_id": "session-1",
+                "task_grant_id": "task-1",
+                "window_capability": "cap-1",
+                "request": {
+                    "snapshot_format": "semantic_v2",
+                    "scope_ref": "p1:7",
+                    "scope_ancestor_role": "row",
+                    "query": "View release options"
+                }
+            }
+        })),
+        Ok(Request::BrowserSnapshot { request, .. })
+            if request.scope_ref.as_deref() == Some("p1:7")
+                && request.scope_ancestor_role.as_deref() == Some("row")
+                && request.query.as_deref() == Some("View release options")
     ));
     assert!(matches!(
         serde_json::from_value::<Request>(json!({

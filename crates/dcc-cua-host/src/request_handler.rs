@@ -146,7 +146,7 @@ pub(super) fn window_evidence_epoch_route(request: &Request) -> Option<WindowEvi
     match request {
         Request::BrowserSnapshot { session_id, .. } => Some(WindowEvidenceEpochRoute {
             session_id: session_id.clone(),
-            publication: HostEvidencePublication::BrowserSnapshot,
+            publication: HostEvidencePublication::BrowserSnapshotAttempt,
         }),
         Request::TerminateApp { session_id, .. }
         | Request::ClipboardRead { session_id, .. }
@@ -229,7 +229,11 @@ pub(super) fn finish_window_evidence_request<T>(
             host.synchronize_action_evidence_epoch_with(route.publication);
         } else {
             host.synchronize_action_evidence_epoch();
-            if route.publication == HostEvidencePublication::BrowserSnapshot {
+            if matches!(
+                route.publication,
+                HostEvidencePublication::BrowserSnapshot
+                    | HostEvidencePublication::BrowserSnapshotAttempt
+            ) {
                 host.discard_browser_evidence();
             }
         }
@@ -1349,7 +1353,11 @@ async fn handle_request_inner(
                 authorized_session(sessions, &session_id, &task_grant_id, &window_capability)
                     .await?;
             let result = host.browser.snapshot(&mut host.session, request).await;
-            let result = host.finish_browser_snapshot_attempt(result)?;
+            let publishes_snapshot_evidence = result
+                .as_ref()
+                .is_ok_and(|result| result.publishes_snapshot_evidence());
+            let result =
+                host.finish_browser_snapshot_attempt(result, publishes_snapshot_evidence)?;
             browser_response(
                 "browser_snapshot",
                 session_id,

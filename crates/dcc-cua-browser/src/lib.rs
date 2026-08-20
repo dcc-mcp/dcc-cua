@@ -6,7 +6,7 @@
 
 use base64::Engine;
 use dcc_cua_core::{ComputerUseError, ComputerUseErrorCode, ComputerUseResult, ComputerUseSession};
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 use serde_json::{Value, json};
 use std::path::Path;
 
@@ -34,6 +34,38 @@ pub struct BrowserSession {
     mutation_allowed: bool,
     latest_snapshot_id: Option<String>,
     latest_tab_id: Option<String>,
+    pending_ancestor_continuation: Option<PendingAncestorContinuation>,
+}
+
+#[derive(Clone, Debug)]
+struct PendingAncestorContinuation {
+    token: String,
+    target_id: String,
+    tab_id: String,
+    snapshot_id: String,
+    anchor: Value,
+}
+
+#[derive(Clone, Debug)]
+enum AncestorScopeExpectation {
+    Initial {
+        requested_ref: String,
+        role: String,
+        target_id: String,
+        tab_id: String,
+    },
+    Continuation(PendingAncestorContinuation),
+    UntrackedContinuation {
+        target_id: String,
+        tab_id: String,
+    },
+}
+
+#[derive(Debug)]
+struct ValidatedAncestorScope {
+    snapshot_id: String,
+    anchor: Value,
+    continuation: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -46,6 +78,8 @@ pub struct BrowserSnapshotRequest {
     pub snapshot_format: String,
     #[serde(default)]
     pub scope_ref: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_nonnull_string")]
+    pub scope_ancestor_role: Option<String>,
     #[serde(default)]
     pub query: Option<String>,
     #[serde(default)]
@@ -201,20 +235,8 @@ impl BrowserSession {
                 "snapshot_format must be dom_refs_v1 or semantic_v2",
             ));
         }
-        let mut args = json!({
-            "snapshot_format": request.snapshot_format,
-            "include_screenshot": request.include_screenshot,
-        });
-        if let Some(value) = request.scope_ref {
-            args["scope_ref"] = json!(value);
-        }
-        if let Some(value) = request.query {
-            args["query"] = json!(value);
-        }
-        if let Some(value) = request.continuation {
-            args["continuation"] = json!(value);
-        }
-
+        let mut args = browser_snapshot_args(&request)?;
+        let expected_ancestor_scope = self.ancestor_scope_expectation(&request)?;
         match request.target_id {
             None => {
                 if request.tab_id.is_some() {
@@ -224,6 +246,16 @@ impl BrowserSession {
                 let result = BrowserResult::from_value(
                     native.call_browser_tool("get_browser_state", args).await?,
                 )?;
+                let validated = validate_ancestor_scope_response(
+                    &result.value,
+                    expected_ancestor_scope.as_ref(),
+                )?;
+                if validated.is_some() {
+                    return Err(ComputerUseError::new(
+                        ComputerUseErrorCode::BackendUnavailable,
+                        "CUA ancestor-scoped snapshot omitted its exact target and tab",
+                    ));
+                }
                 self.store_binding(&result.value)?;
                 Ok(result)
             }
@@ -241,8 +273,27 @@ impl BrowserSession {
                 let result = BrowserResult::from_value(
                     native.call_browser_tool("get_browser_state", args).await?,
                 )?;
-                self.latest_snapshot_id = browser_snapshot_id(&result.value);
-                self.latest_tab_id = Some(tab_id);
+                if browser_result_is_structured_refusal(&result.value)? {
+                    return Ok(result);
+                }
+                let validated = validate_ancestor_scope_response(
+                    &result.value,
+                    expected_ancestor_scope.as_ref(),
+                )?;
+                self.latest_snapshot_id = validated
+                    .as_ref()
+                    .map(|scope| scope.snapshot_id.clone())
+                    .or_else(|| browser_snapshot_id(&result.value));
+                self.latest_tab_id = Some(tab_id.clone());
+                self.pending_ancestor_continuation = validated.and_then(|scope| {
+                    scope.continuation.map(|token| PendingAncestorContinuation {
+                        token,
+                        target_id: target_id.clone(),
+                        tab_id: tab_id.clone(),
+                        snapshot_id: scope.snapshot_id,
+                        anchor: scope.anchor,
+                    })
+                });
                 Ok(result)
             }
         }
@@ -533,6 +584,58 @@ impl BrowserSession {
     fn clear_snapshot(&mut self) {
         self.latest_snapshot_id = None;
         self.latest_tab_id = None;
+        self.pending_ancestor_continuation = None;
+    }
+
+    fn ancestor_scope_expectation(
+        &self,
+        request: &BrowserSnapshotRequest,
+    ) -> ComputerUseResult<Option<AncestorScopeExpectation>> {
+        if let Some(role) = request.scope_ancestor_role.as_deref() {
+            return Ok(Some(AncestorScopeExpectation::Initial {
+                requested_ref: request.scope_ref.as_deref().unwrap_or_default().to_owned(),
+                role: role.to_ascii_lowercase(),
+                target_id: request.target_id.as_deref().unwrap_or_default().to_owned(),
+                tab_id: request.tab_id.as_deref().unwrap_or_default().to_owned(),
+            }));
+        }
+        let Some(token) = request.continuation.as_deref() else {
+            return Ok(None);
+        };
+        let Some(pending) = self.pending_ancestor_continuation.as_ref() else {
+            return Ok(
+                match (request.target_id.as_deref(), request.tab_id.as_deref()) {
+                    (Some(target_id), Some(tab_id)) => {
+                        Some(AncestorScopeExpectation::UntrackedContinuation {
+                            target_id: target_id.to_owned(),
+                            tab_id: tab_id.to_owned(),
+                        })
+                    }
+                    _ => None,
+                },
+            );
+        };
+        if token == pending.token.as_str()
+            && request.target_id.as_deref() == Some(pending.target_id.as_str())
+            && request.tab_id.as_deref() == Some(pending.tab_id.as_str())
+        {
+            if request.snapshot_format != "semantic_v2"
+                || request.scope_ref.is_some()
+                || request.query.is_some()
+            {
+                return Err(invalid(
+                    "tracked ancestor continuation requires semantic_v2 and cannot include scope_ref or query",
+                ));
+            }
+            Ok(Some(AncestorScopeExpectation::Continuation(
+                pending.clone(),
+            )))
+        } else {
+            Err(ComputerUseError::new(
+                ComputerUseErrorCode::StaleObservation,
+                "ancestor-scoped continuation does not match the latest exact tab evidence",
+            ))
+        }
     }
 
     fn begin_snapshot_sensitive_native_attempt(&mut self) {
@@ -545,6 +648,16 @@ impl BrowserSession {
 }
 
 impl BrowserResult {
+    #[must_use]
+    pub fn publishes_snapshot_evidence(&self) -> bool {
+        structured_content(&self.value).is_ok_and(|structured| {
+            structured["status"] == "ok"
+                && structured["mode"] == "snapshot"
+                && structured["refusal"].is_null()
+                && browser_snapshot_id(&self.value).is_some()
+        })
+    }
+
     fn from_value(mut value: Value) -> ComputerUseResult<Self> {
         let mut images = Vec::new();
         if let Some(content) = value["content"].as_array_mut() {
@@ -607,6 +720,257 @@ fn browser_snapshot_id(value: &Value) -> Option<String> {
         .as_str()
         .or_else(|| value["structuredContent"]["snapshot"]["id"].as_str())
         .map(ToOwned::to_owned)
+}
+
+fn deserialize_optional_nonnull_string<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    match Value::deserialize(deserializer)? {
+        Value::String(value) => Ok(Some(value)),
+        _ => Err(serde::de::Error::custom(
+            "scope_ancestor_role must be a string when present",
+        )),
+    }
+}
+
+fn browser_snapshot_args(request: &BrowserSnapshotRequest) -> ComputerUseResult<Value> {
+    validate_ancestor_scope_request(request)?;
+    let mut args = json!({
+        "snapshot_format": request.snapshot_format,
+        "include_screenshot": request.include_screenshot,
+    });
+    if let Some(value) = request.scope_ref.as_deref() {
+        args["scope_ref"] = json!(value);
+    }
+    if let Some(value) = request.scope_ancestor_role.as_deref() {
+        args["scope_ancestor_role"] = json!(value);
+    }
+    if let Some(value) = request.query.as_deref() {
+        args["query"] = json!(value);
+    }
+    if let Some(value) = request.continuation.as_deref() {
+        args["continuation"] = json!(value);
+    }
+    Ok(args)
+}
+
+fn validate_ancestor_scope_request(request: &BrowserSnapshotRequest) -> ComputerUseResult<()> {
+    let Some(role) = request.scope_ancestor_role.as_deref() else {
+        return Ok(());
+    };
+    if request.snapshot_format != "semantic_v2" {
+        return Err(invalid(
+            "scope_ancestor_role requires snapshot_format semantic_v2",
+        ));
+    }
+    if request.target_id.as_deref().is_none_or(str::is_empty)
+        || request.tab_id.as_deref().is_none_or(str::is_empty)
+    {
+        return Err(invalid(
+            "scope_ancestor_role requires both target_id and tab_id",
+        ));
+    }
+    if request.scope_ref.as_deref().is_none_or(str::is_empty) || request.query.is_none() {
+        return Err(invalid(
+            "scope_ancestor_role requires both scope_ref and query",
+        ));
+    }
+    if request.continuation.is_some() {
+        return Err(invalid(
+            "scope_ancestor_role cannot be combined with continuation",
+        ));
+    }
+    if role.is_empty()
+        || role.len() > 128
+        || !role.is_ascii()
+        || !role.as_bytes()[0].is_ascii_alphabetic()
+        || !role
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+    {
+        return Err(invalid(
+            "scope_ancestor_role must be an ASCII accessibility role of 1 to 128 bytes",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_ancestor_scope_response(
+    value: &Value,
+    expected: Option<&AncestorScopeExpectation>,
+) -> ComputerUseResult<Option<ValidatedAncestorScope>> {
+    let Some(expected) = expected else {
+        // Legacy direct scope_ref snapshots also carry a distance-zero anchor.
+        // They predate nearest_ancestor_role_v1 and remain pass-through.
+        return Ok(None);
+    };
+    let structured = structured_content(value)?;
+    if structured["status"] != "ok" || !structured["refusal"].is_null() {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::BackendUnavailable,
+            "CUA ancestor-scoped snapshot omitted a successful status",
+        ));
+    }
+    let snapshot = structured["snapshot"].as_object().ok_or_else(|| {
+        ComputerUseError::new(
+            ComputerUseErrorCode::BackendUnavailable,
+            "CUA ancestor-scoped snapshot omitted snapshot evidence",
+        )
+    })?;
+    let (expected_target_id, expected_tab_id) = match expected {
+        AncestorScopeExpectation::Initial {
+            target_id, tab_id, ..
+        }
+        | AncestorScopeExpectation::UntrackedContinuation { target_id, tab_id } => {
+            (target_id.as_str(), tab_id.as_str())
+        }
+        AncestorScopeExpectation::Continuation(pending) => {
+            (pending.target_id.as_str(), pending.tab_id.as_str())
+        }
+    };
+    if structured["target_id"].as_str() != Some(expected_target_id)
+        || structured["tab_id"].as_str() != Some(expected_tab_id)
+        || snapshot.get("format").and_then(Value::as_str) != Some("semantic_v2")
+    {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::BackendUnavailable,
+            "CUA ancestor-scoped snapshot returned inconsistent target, tab, or format evidence",
+        ));
+    }
+    let snapshot_id = snapshot
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            ComputerUseError::new(
+                ComputerUseErrorCode::BackendUnavailable,
+                "CUA ancestor-scoped snapshot omitted its snapshot id",
+            )
+        })?;
+    match structured.get("snapshot_id") {
+        None | Some(Value::Null) => {}
+        Some(Value::String(legacy_id)) if legacy_id == snapshot_id => {}
+        Some(_) => {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::BackendUnavailable,
+                "CUA ancestor-scoped snapshot returned conflicting snapshot ids",
+            ));
+        }
+    }
+    if matches!(
+        expected,
+        AncestorScopeExpectation::UntrackedContinuation { .. }
+    ) {
+        if snapshot.get("scope").and_then(Value::as_str) != Some("continuation") {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::BackendUnavailable,
+                "CUA untracked continuation returned inconsistent scope evidence",
+            ));
+        }
+        match snapshot.get("scope_anchor") {
+            Some(Value::Null) => return Ok(None),
+            Some(anchor) => match anchor.get("distance").and_then(Value::as_u64) {
+                Some(0) => return Ok(None),
+                Some(_) => {
+                    return Err(ComputerUseError::new(
+                        ComputerUseErrorCode::StaleObservation,
+                        "ancestor-scoped continuation is no longer tracked by this Host session",
+                    ));
+                }
+                None => {
+                    return Err(ComputerUseError::new(
+                        ComputerUseErrorCode::BackendUnavailable,
+                        "CUA continuation returned malformed scope anchor evidence",
+                    ));
+                }
+            },
+            None => {
+                return Err(ComputerUseError::new(
+                    ComputerUseErrorCode::BackendUnavailable,
+                    "CUA untracked continuation omitted scope anchor evidence",
+                ));
+            }
+        }
+    }
+    let anchor = snapshot
+        .get("scope_anchor")
+        .filter(|value| value.is_object())
+        .ok_or_else(|| {
+            ComputerUseError::new(
+                ComputerUseErrorCode::BackendUnavailable,
+                "CUA ancestor-scoped snapshot omitted scope_anchor evidence",
+            )
+        })?;
+    let scope = snapshot.get("scope").and_then(Value::as_str);
+    let evidence_matches = match expected {
+        AncestorScopeExpectation::Initial {
+            requested_ref,
+            role,
+            ..
+        } => {
+            scope == Some("ancestor_subtree")
+                && anchor.get("requested_ref").and_then(Value::as_str)
+                    == Some(requested_ref.as_str())
+                && anchor.get("role").and_then(Value::as_str) == Some(role.as_str())
+                && matches!(
+                    anchor.get("frame").and_then(Value::as_str),
+                    Some("main" | "iframe" | "oopif")
+                )
+                && anchor
+                    .get("distance")
+                    .and_then(Value::as_u64)
+                    .is_some_and(|distance| distance > 0)
+        }
+        AncestorScopeExpectation::Continuation(pending) => {
+            scope == Some("continuation")
+                && snapshot_id == pending.snapshot_id
+                && anchor == &pending.anchor
+        }
+        AncestorScopeExpectation::UntrackedContinuation { .. } => unreachable!("handled above"),
+    };
+    if !evidence_matches {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::BackendUnavailable,
+            "CUA ancestor-scoped snapshot returned inconsistent scope evidence",
+        ));
+    }
+    let continuation = match snapshot.get("continuation") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(token)) if !token.is_empty() => Some(token.clone()),
+        Some(_) => {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::BackendUnavailable,
+                "CUA ancestor-scoped snapshot returned an invalid continuation token",
+            ));
+        }
+    };
+    if matches!(
+        expected,
+        AncestorScopeExpectation::Continuation(pending)
+            if continuation.as_deref() == Some(pending.token.as_str())
+    ) {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::BackendUnavailable,
+            "CUA ancestor-scoped continuation token was not rotated",
+        ));
+    }
+    if continuation.is_some() && snapshot.get("complete").and_then(Value::as_bool) != Some(false) {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::BackendUnavailable,
+            "CUA ancestor-scoped snapshot returned a continuation for a complete page",
+        ));
+    }
+    Ok(Some(ValidatedAncestorScope {
+        snapshot_id: snapshot_id.to_owned(),
+        anchor: anchor.clone(),
+        continuation,
+    }))
+}
+
+fn browser_result_is_structured_refusal(value: &Value) -> ComputerUseResult<bool> {
+    let structured = structured_content(value)?;
+    Ok(structured["status"] == "refused" || !structured["refusal"].is_null())
 }
 
 fn validate_url(url: &str) -> ComputerUseResult<()> {

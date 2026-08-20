@@ -400,6 +400,46 @@ fn browser_response_uses_shared_memory_for_one_image() {
 }
 
 #[rstest]
+fn browser_response_preserves_ancestor_scope_evidence() {
+    let mut shared = None;
+    let (response, attachment) = browser_response(
+        "browser_snapshot",
+        "session-1".into(),
+        dcc_cua_browser::BrowserResult {
+            value: json!({
+                "structuredContent": {
+                    "status": "ok",
+                    "snapshot": {
+                        "scope": "ancestor_subtree",
+                        "scope_anchor": {
+                            "requested_ref": "p1:7",
+                            "role": "row",
+                            "frame": "main",
+                            "distance": 1
+                        }
+                    }
+                }
+            }),
+            images: Vec::new(),
+        },
+        SnapshotTransport::BinaryFrame,
+        &mut shared,
+    )
+    .unwrap();
+
+    assert_eq!(
+        response["result"]["structuredContent"]["snapshot"]["scope_anchor"]["requested_ref"],
+        "p1:7"
+    );
+    assert_eq!(
+        response["result"]["structuredContent"]["snapshot"]["scope"],
+        "ancestor_subtree"
+    );
+    assert!(attachment.is_none());
+    assert!(shared.is_none());
+}
+
+#[rstest]
 fn verification_images_follow_the_negotiated_transport() {
     let mut shared = None;
     let (shared_response, shared_attachment) = image_response(

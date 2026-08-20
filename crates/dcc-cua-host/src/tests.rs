@@ -55,6 +55,7 @@ fn capabilities_follow_the_selected_cursor_runtime() {
     assert!(capabilities.contains(&"isolated_runtime_sessions"));
     assert!(capabilities.contains(&"multi_agent_sessions"));
     assert!(capabilities.contains(&"indicator_motion_policy"));
+    assert!(capabilities.contains(&"nearest_ancestor_role_v1"));
     assert_eq!(capabilities.contains(&"cursor_controls"), cursor_available);
     assert_eq!(
         capabilities.contains(&"cua_cursor_marker"),
@@ -753,7 +754,7 @@ fn successful_browser_snapshot_mint_binds_the_new_epoch_without_reusing_native_e
     assert!(plan.epoch_changed);
     assert!(!plan.invalidate_browser_snapshot);
     assert!(plan.bind_browser_snapshot);
-    host.finish_browser_snapshot_attempt(Ok(())).unwrap();
+    host.finish_browser_snapshot_attempt(Ok(()), true).unwrap();
 
     let current_epoch = host.session.action_evidence_epoch();
     assert!(current_epoch > previous_epoch);
@@ -763,6 +764,43 @@ fn successful_browser_snapshot_mint_binds_the_new_epoch_without_reusing_native_e
     assert!(host.latest_accessibility_state_id.is_none());
     assert!(host.latest_accessibility_root.is_none());
     assert!(host.latest_shared_image.is_none());
+}
+
+#[rstest]
+fn structured_browser_refusal_does_not_publish_host_snapshot_evidence() {
+    let driver = ComputerUseDriver::create().unwrap();
+    let mut host = cached_host_session(&driver);
+    host.finish_browser_snapshot_attempt(Ok(()), false).unwrap();
+    assert!(host.browser_evidence_epoch.is_none());
+
+    let request: Request = serde_json::from_value(json!({
+        "method": "browser_snapshot",
+        "params": {
+            "session_id": "session-1",
+            "task_grant_id": "grant-1",
+            "window_capability": "capability-1",
+            "request": {
+                "target_id": "target-1",
+                "tab_id": "tab-1",
+                "snapshot_format": "semantic_v2"
+            }
+        }
+    }))
+    .unwrap();
+    let route = request_handler::window_evidence_epoch_route(&request);
+    let mut sessions = ConnectionSessions::default();
+    sessions.windows.insert("session-1".into(), host);
+    request_handler::finish_window_evidence_request(
+        &mut sessions,
+        route,
+        Ok((json!({"type": "browser_snapshot"}), None::<Vec<u8>>)),
+    )
+    .unwrap();
+    assert!(
+        sessions.windows["session-1"]
+            .browser_evidence_epoch
+            .is_none()
+    );
 }
 
 #[rstest]

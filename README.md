@@ -771,6 +771,17 @@ Host process keep refusing it.
 `browser_snapshot` first binds the exact native window, then snapshots a
 specific CUA tab; `browser_click`, `browser_type`, and `browser_pointer` require
 the latest browser `snapshot_id`, exact binding, and an explicit input route.
+Hosts advertising `nearest_ancestor_role_v1` accept `scope_ancestor_role` only
+for a `semantic_v2` tab snapshot with an exact `target_id`, `tab_id`,
+`scope_ref`, and `query`. CUA resolves the nearest same-frame ancestor with the
+requested accessibility role and refuses missing, ambiguous, stale, or
+unproven ancestry. A successful first page reports
+`snapshot.scope: "ancestor_subtree"` plus `scope_anchor` evidence containing
+the requested ref, normalized role, accessible name, frame kind, and positive
+ancestor distance. Scoped continuation tokens are connection-scoped and
+single-use; each continued page reports `snapshot.scope: "continuation"` and
+must preserve that exact anchor. A new observation invalidates prior refs and
+continuations.
 `browser_navigate`, `browser_set_input_files`, and `browser_download` invalidate
 the tab snapshot. Upload uses `allow_browser_input`; download is a separate
 destructive grant (`allow_browser_download`) and CUA's host approval evidence.
