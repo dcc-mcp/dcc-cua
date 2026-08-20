@@ -105,6 +105,18 @@ pub(crate) fn ensure_target_available_for_action(target: &WindowTarget) -> Compu
     Ok(())
 }
 
+pub(crate) fn ensure_target_available_for_bootstrap_activation(
+    target: &WindowTarget,
+) -> ComputerUseResult<()> {
+    if target.is_minimized {
+        // `activate_before` is the explicit recovery path for this state. The
+        // exact PID/HWND was already resolved, and the platform activation
+        // must restore it before the session publishes any observation.
+        return Ok(());
+    }
+    ensure_target_available_for_action(target)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum BrowserToolDisposition {
     ReadOnlyEvidence,

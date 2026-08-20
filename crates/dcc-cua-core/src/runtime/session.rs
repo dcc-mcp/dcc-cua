@@ -4,8 +4,9 @@ mod gates;
 use gates::run_gated_preinvalidated_window_mutation;
 use gates::{BrowserToolDisposition, browser_tool_requires_input, browser_tool_route};
 pub(crate) use gates::{
-    ensure_target_available_for_action, gated_cursor_operation, gated_desktop_observation,
-    gated_exact_window_observation, gated_exact_window_publication, gated_upstream_session_refresh,
+    ensure_target_available_for_action, ensure_target_available_for_bootstrap_activation,
+    gated_cursor_operation, gated_desktop_observation, gated_exact_window_observation,
+    gated_exact_window_publication, gated_upstream_session_refresh,
     preflight_live_observation_start,
 };
 mod browser;
@@ -253,7 +254,8 @@ impl ComputerUseSession {
         expected: &WindowTarget,
     ) -> ComputerUseResult<(WindowTarget, Value)> {
         self.require_observed_window_activation_available()?;
-        self.ensure_observed_target_available(expected)?;
+        let availability = ensure_target_available_for_bootstrap_activation(expected);
+        self.finish_observation_sensitive_attempt(availability)?;
         #[cfg(windows)]
         let activation = {
             let activation = dcc_cua_platform_windows::activate_window(
