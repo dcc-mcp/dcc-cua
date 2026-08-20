@@ -1,18 +1,20 @@
 use super::*;
 
-pub(super) const BROWSER_STATE_CALL_TIMEOUT: Duration = Duration::from_secs(60);
+pub(super) const BROWSER_TOOL_CALL_TIMEOUT: Duration = Duration::from_secs(60);
 
 pub(super) fn browser_tool_timeout(
     name: &str,
     _arguments: &serde_json::Map<String, Value>,
 ) -> Duration {
-    if name == "browser_prepare" || name == "get_browser_state" {
+    if name.starts_with("browser_") || name == "get_browser_state" {
         // Existing-profile binding may re-prove the endpoint and spend up to
         // 32 seconds on the one bounded, consent-aware reconnect. Semantic
         // snapshots also perform several individually bounded CDP proofs.
-        // Keep their read-only outer timeout above those contracts instead of
-        // cancelling the driver while it still owns a live evidence request.
-        BROWSER_STATE_CALL_TIMEOUT
+        // Browser mutations revalidate the same evidence before dispatch.
+        // Keep the outer timeout above those contracts instead of cancelling
+        // the driver during a live typed browser request. Completion semantics
+        // remain unchanged and no timeout is retried automatically.
+        BROWSER_TOOL_CALL_TIMEOUT
     } else {
         INPUT_CALL_TIMEOUT
     }
