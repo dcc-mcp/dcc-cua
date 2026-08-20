@@ -1,3 +1,4 @@
+use super::browser::{BROWSER_BIND_CALL_TIMEOUT, browser_tool_timeout};
 use super::gates::{run_gated_preinvalidated_window_mutation, run_preinvalidated_window_mutation};
 use super::*;
 use cua_driver_sdk::remote::{
@@ -1512,6 +1513,25 @@ fn browser_route_table_is_fail_closed(
 fn unknown_browser_route_is_rejected(#[case] name: &str, #[case] arguments: Value) {
     assert_eq!(browser_tool_route(name, &arguments), None);
     assert!(!browser_tool_requires_input(name, &arguments));
+}
+
+#[rstest]
+#[case("browser_prepare", json!({}), BROWSER_BIND_CALL_TIMEOUT)]
+#[case("get_browser_state", json!({}), BROWSER_BIND_CALL_TIMEOUT)]
+#[case(
+    "get_browser_state",
+    json!({"target_id": "target-1"}),
+    INPUT_CALL_TIMEOUT
+)]
+#[case("browser_snapshot", json!({}), INPUT_CALL_TIMEOUT)]
+fn browser_binding_timeout_covers_the_bounded_existing_profile_reconnect(
+    #[case] name: &str,
+    #[case] arguments: Value,
+    #[case] expected: Duration,
+) {
+    let object = arguments.as_object().expect("browser tool arguments");
+    assert_eq!(browser_tool_timeout(name, object), expected);
+    assert!(BROWSER_BIND_CALL_TIMEOUT > Duration::from_secs(32));
 }
 
 #[rstest]
