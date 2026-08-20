@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.3.2](https://github.com/dcc-mcp/dcc-cua/compare/v1.3.1...v1.3.2) (2026-08-20)
+
+
+### Bug Fixes
+
+* rebind browser evidence after session refresh ([6a91f19](https://github.com/dcc-mcp/dcc-cua/commit/6a91f19940c9d1108642258e9e875636f97650ae))
+* repair release metadata contracts ([0c4095d](https://github.com/dcc-mcp/dcc-cua/commit/0c4095dc2bf821962cadeb11e94f37668c1fe969))
+* restore Chrome existing-profile preparation ([90b491a](https://github.com/dcc-mcp/dcc-cua/commit/90b491a9180e9447d9580b8ac349091b4b32b7c5))
+
 ## [1.3.1](https://github.com/dcc-mcp/dcc-cua/compare/v1.3.0...v1.3.1) (2026-08-16)
 
 
