@@ -3,9 +3,9 @@
   "$id": "https://dcc-mcp.dev/schemas/dcc-cua/install-manifest-v1.schema.json",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "product", "version", "target", "asset"],
+  "required": ["schema_version", "name", "version", "target", "asset"],
   "properties": {
-    "schema_version": {"const": 1}, "product": {"const": "dcc-cua"},
+    "schema_version": {"const": 1}, "name": {"const": "dcc-cua"},
     "version": {"type": "string"}, "target": {"type": "string"},
     "asset": {"type": "object", "additionalProperties": false, "required": ["name", "url", "sha256"], "properties": {
       "name": {"type": "string", "minLength": 1}, "url": {"type": "string", "pattern": "^https://"},

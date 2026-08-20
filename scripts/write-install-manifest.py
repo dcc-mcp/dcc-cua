@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Write the stable per-target dcc-cua install manifest."""
+"""Write stable per-target dcc-cua release metadata."""
 
 from __future__ import annotations
 
@@ -22,6 +22,11 @@ def build_manifest(archive: Path, version: str, target: str, url: str) -> dict:
     }
 
 
+def build_checksum_sidecar(archive: Path, digest: str) -> str:
+    """Return a GNU-compatible checksum line for the published asset name."""
+    return f"{digest}  {archive.name}\n"
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--archive", type=Path, required=True)
@@ -29,9 +34,14 @@ def main() -> None:
     parser.add_argument("--target", required=True)
     parser.add_argument("--url", required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--checksum-output", type=Path, required=True)
     args = parser.parse_args()
     document = build_manifest(args.archive, args.version, args.target, args.url)
     args.output.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+    args.checksum_output.write_text(
+        build_checksum_sidecar(args.archive, document["asset"]["sha256"]),
+        encoding="utf-8",
+    )
 
 
 if __name__ == "__main__":

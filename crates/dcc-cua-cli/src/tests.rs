@@ -1140,9 +1140,29 @@ fn updater_rejects_a_sidecar_for_another_archive() {
     let archive = directory.path().join("dcc-cua.zip");
     std::fs::write(&archive, b"release bytes").unwrap();
     let digest = format!("{:x}", sha2::Sha256::digest(b"release bytes"));
-    let error = update::verify_sha256(&archive, &format!("{digest}  other.zip"), "dcc-cua.zip")
-        .unwrap_err();
+    let error = update::verify_sha256(
+        &archive,
+        &format!("{digest}  dist/dcc-cua.zip"),
+        "dcc-cua.zip",
+    )
+    .unwrap_err();
     assert!(error.to_string().contains("exact archive"));
+}
+
+#[rstest]
+#[case("  ")]
+#[case(" *")]
+fn updater_accepts_a_gnu_sidecar_for_the_exact_archive(#[case] separator: &str) {
+    let directory = tempfile::tempdir().unwrap();
+    let archive = directory.path().join("dcc-cua.zip");
+    std::fs::write(&archive, b"release bytes").unwrap();
+    let digest = format!("{:x}", sha2::Sha256::digest(b"release bytes"));
+    update::verify_sha256(
+        &archive,
+        &format!("{digest}{separator}dcc-cua.zip\n"),
+        "dcc-cua.zip",
+    )
+    .unwrap();
 }
 
 #[rstest]
