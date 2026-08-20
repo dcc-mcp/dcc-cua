@@ -148,6 +148,7 @@ pub const HOST_CAPABILITIES: &[&str] = &[
     "browser_exact_binding",
     "browser_prepare",
     "browser_semantic_snapshot",
+    "nearest_ancestor_role_v1",
     "browser_typed_actions",
     "browser_file_upload",
     "browser_file_download",

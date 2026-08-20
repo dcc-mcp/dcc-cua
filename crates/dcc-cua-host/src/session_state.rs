@@ -15,6 +15,7 @@ use crate::session_events::SessionInputEventQueue;
 pub(super) enum HostEvidencePublication {
     None,
     BrowserSnapshot,
+    BrowserSnapshotAttempt,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -197,12 +198,18 @@ impl HostSession {
     pub(super) fn finish_browser_snapshot_attempt<T>(
         &mut self,
         result: ComputerUseResult<T>,
+        publishes_snapshot_evidence: bool,
     ) -> ComputerUseResult<T> {
         match result {
-            Ok(value) => {
+            Ok(value) if publishes_snapshot_evidence => {
                 self.synchronize_action_evidence_epoch_with(
                     HostEvidencePublication::BrowserSnapshot,
                 );
+                Ok(value)
+            }
+            Ok(value) => {
+                self.discard_browser_evidence();
+                self.synchronize_action_evidence_epoch();
                 Ok(value)
             }
             Err(error) => {
