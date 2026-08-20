@@ -18,8 +18,14 @@ use rstest::rstest;
 #[cfg(feature = "gui-e2e")]
 use serde_json::{Value, json};
 
+#[cfg(feature = "gui-e2e")]
+mod browser_refresh;
 #[cfg(all(feature = "gui-e2e", windows))]
 mod windows_activation;
+#[cfg(feature = "gui-e2e")]
+use browser_refresh::{
+    browser_mutation_with_pre_dispatch_refresh_recovery, safe_pre_dispatch_refresh,
+};
 
 #[cfg(feature = "gui-e2e")]
 const FIXTURE_TITLE: &str = "CuaTestHarness Electron";
@@ -367,20 +373,7 @@ async fn host_request_with_pre_dispatch_refresh_recovery(
             message,
             response,
         }) if code == "session_refresh_required" => {
-            assert!(message.contains("action_attempted=false"), "{response}");
-            assert!(message.contains("input_sent=false"), "{response}");
-            assert!(
-                message.contains("action_completion_unknown=false"),
-                "{response}"
-            );
-            assert!(
-                message.contains("session_remains_active=true"),
-                "{response}"
-            );
-            assert!(
-                message.contains("fresh_observation_required=true"),
-                "{response}"
-            );
+            assert!(safe_pre_dispatch_refresh(&message), "{response}");
             let refreshed = host_request(
                 host,
                 "accessibility_snapshot",
@@ -916,74 +909,29 @@ async fn controlled_electron_round_trip() {
         .expect("active browser tab id")
         .to_owned();
 
-    let browser_snapshot = host_request(
-        &mut host,
-        "browser_snapshot",
-        json!({
-            "session_id": SESSION_ID,
-            "task_grant_id": GRANT_ID,
-            "window_capability": capability,
-            "request": {
-                "target_id": target_id,
-                "tab_id": tab_id,
-                "snapshot_format": "semantic_v2"
-            }
-        }),
-    )
-    .await;
-    let snapshot_id = browser_snapshot_id(&browser_snapshot.value);
-    let increment_ref = browser_ref_by_text(&browser_snapshot.value, "Increment");
-    host_request(
+    browser_mutation_with_pre_dispatch_refresh_recovery(
         &mut host,
         "browser_click",
-        json!({
-            "session_id": SESSION_ID,
-            "task_grant_id": GRANT_ID,
-            "window_capability": capability,
-            "request": {
-                "target_id": target_id,
-                "tab_id": tab_id,
-                "snapshot_id": snapshot_id,
-                "ref": increment_ref
-            }
-        }),
+        &target_id,
+        &tab_id,
+        &capability,
+        "Increment",
+        json!({}),
     )
     .await;
     wait_for_journal(&journal, "lbl-counter", "counter=2");
 
-    let browser_snapshot = host_request(
-        &mut host,
-        "browser_snapshot",
-        json!({
-            "session_id": SESSION_ID,
-            "task_grant_id": GRANT_ID,
-            "window_capability": capability,
-            "request": {
-                "target_id": target_id,
-                "tab_id": tab_id,
-                "snapshot_format": "semantic_v2"
-            }
-        }),
-    )
-    .await;
-    let snapshot_id = browser_snapshot_id(&browser_snapshot.value);
-    let input_ref = browser_ref_by_text(&browser_snapshot.value, "txt-input");
     let browser_expected = "browser-host-ipc-e2e";
-    host_request(
+    browser_mutation_with_pre_dispatch_refresh_recovery(
         &mut host,
         "browser_type",
+        &target_id,
+        &tab_id,
+        &capability,
+        "txt-input",
         json!({
-            "session_id": SESSION_ID,
-            "task_grant_id": GRANT_ID,
-            "window_capability": capability,
-            "request": {
-                "target_id": target_id,
-                "tab_id": tab_id,
-                "snapshot_id": snapshot_id,
-                "ref": input_ref,
-                "text": browser_expected,
-                "replace": true
-            }
+            "text": browser_expected,
+            "replace": true
         }),
     )
     .await;
@@ -993,37 +941,16 @@ async fn controlled_electron_round_trip() {
         &format!("mirror={browser_expected}"),
     );
 
-    let browser_snapshot = host_request(
-        &mut host,
-        "browser_snapshot",
-        json!({
-            "session_id": SESSION_ID,
-            "task_grant_id": GRANT_ID,
-            "window_capability": capability,
-            "request": {
-                "target_id": target_id,
-                "tab_id": tab_id,
-                "snapshot_format": "semantic_v2"
-            }
-        }),
-    )
-    .await;
-    let click_target_ref = browser_ref_by_text(&browser_snapshot.value, "Click target");
-    host_request(
+    browser_mutation_with_pre_dispatch_refresh_recovery(
         &mut host,
         "browser_pointer",
+        &target_id,
+        &tab_id,
+        &capability,
+        "Click target",
         json!({
-            "session_id": SESSION_ID,
-            "task_grant_id": GRANT_ID,
-            "window_capability": capability,
-            "request": {
-                "target_id": target_id,
-                "tab_id": tab_id,
-                "snapshot_id": browser_snapshot_id(&browser_snapshot.value),
-                "ref": click_target_ref,
-                "action": "double_click",
-                "input_route": "dom_event"
-            }
+            "action": "double_click",
+            "input_route": "dom_event"
         }),
     )
     .await;
@@ -1052,41 +979,18 @@ async fn controlled_electron_round_trip() {
         "BROWSER_COMPLETENESS_MARKER_v1",
     );
 
-    let browser_snapshot = host_request(
-        &mut host,
-        "browser_snapshot",
-        json!({
-            "session_id": SESSION_ID,
-            "task_grant_id": GRANT_ID,
-            "window_capability": capability,
-            "request": {
-                "target_id": target_id,
-                "tab_id": tab_id,
-                "snapshot_format": "semantic_v2"
-            }
-        }),
-    )
-    .await;
-    let upload_ref = browser_ref_by_text(&browser_snapshot.value, "standalone-upload");
     let upload_directory = tempfile::tempdir().expect("create browser upload directory");
     let upload_path = upload_directory.path().join("fixture-upload.txt");
     std::fs::write(&upload_path, b"fixture upload payload").expect("write browser upload file");
     let upload_path = std::fs::canonicalize(upload_path).expect("canonical browser upload file");
-    let uploaded = host_request(
+    let uploaded = browser_mutation_with_pre_dispatch_refresh_recovery(
         &mut host,
         "browser_set_input_files",
-        json!({
-            "session_id": SESSION_ID,
-            "task_grant_id": GRANT_ID,
-            "window_capability": capability,
-            "request": {
-                "target_id": target_id,
-                "tab_id": tab_id,
-                "snapshot_id": browser_snapshot_id(&browser_snapshot.value),
-                "ref": upload_ref,
-                "files": [upload_path]
-            }
-        }),
+        &target_id,
+        &tab_id,
+        &capability,
+        "standalone-upload",
+        json!({"files": [upload_path]}),
     )
     .await;
     assert!(
@@ -1120,37 +1024,16 @@ async fn controlled_electron_round_trip() {
         false
     );
 
-    let browser_snapshot = host_request(
-        &mut host,
-        "browser_snapshot",
-        json!({
-            "session_id": SESSION_ID,
-            "task_grant_id": GRANT_ID,
-            "window_capability": capability,
-            "request": {
-                "target_id": target_id,
-                "tab_id": tab_id,
-                "snapshot_format": "semantic_v2"
-            }
-        }),
-    )
-    .await;
-    let download_ref = browser_ref_by_text(&browser_snapshot.value, "standalone-download");
     let download_directory = tempfile::tempdir().expect("create browser download directory");
-    host_request(
+    browser_mutation_with_pre_dispatch_refresh_recovery(
         &mut host,
         "browser_download",
+        &target_id,
+        &tab_id,
+        &capability,
+        "standalone-download",
         json!({
-            "session_id": SESSION_ID,
-            "task_grant_id": GRANT_ID,
-            "window_capability": capability,
-            "request": {
-                "target_id": target_id,
-                "tab_id": tab_id,
-                "snapshot_id": browser_snapshot_id(&browser_snapshot.value),
-                "ref": download_ref,
-                "destination_root": download_directory.path()
-            }
+            "destination_root": download_directory.path()
         }),
     )
     .await;
