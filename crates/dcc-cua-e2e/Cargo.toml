@@ -13,8 +13,8 @@ repository.workspace = true
 gui-e2e = []
 
 [dev-dependencies]
-# Language-independent Windows existing-profile browser proof: https://github.com/trycua/cua/pull/3135
-cua-driver-testkit = { git = "https://github.com/trycua/cua.git", rev = "ff54be01bd386155257f20ca0e8fce4fcc6445e2", package = "cua-driver-testkit" }
+# Integrated Windows existing-profile browser proof: https://github.com/trycua/cua/pull/3135
+cua-driver-testkit = { git = "https://github.com/trycua/cua.git", rev = "9bf47f65dda1bc33bdd19dabb94c56b691f39ca0", package = "cua-driver-testkit" }
 dcc-cua-client = { path = "../dcc-cua-client" }
 rstest.workspace = true
 serde_json = "1"
