@@ -1,5 +1,24 @@
 use super::*;
 
+pub(super) const BROWSER_BIND_CALL_TIMEOUT: Duration = Duration::from_secs(60);
+
+pub(super) fn browser_tool_timeout(
+    name: &str,
+    arguments: &serde_json::Map<String, Value>,
+) -> Duration {
+    if name == "browser_prepare"
+        || (name == "get_browser_state" && !arguments.contains_key("target_id"))
+    {
+        // Existing-profile binding may re-prove the endpoint and spend up to
+        // 32 seconds on the one bounded, consent-aware reconnect. Keep the
+        // outer timeout above that contract instead of cancelling the driver
+        // while it still owns a live grant transition.
+        BROWSER_BIND_CALL_TIMEOUT
+    } else {
+        INPUT_CALL_TIMEOUT
+    }
+}
+
 impl ComputerUseSession {
     /// Call one of CUA's typed browser tools within this exact native window.
     ///
@@ -48,11 +67,7 @@ impl ComputerUseSession {
             object.insert("pid".into(), json!(target.pid));
             object.insert("window_id".into(), json!(target.window_id));
         }
-        let timeout = if name == "browser_prepare" {
-            Duration::from_secs(60)
-        } else {
-            INPUT_CALL_TIMEOUT
-        };
+        let timeout = browser_tool_timeout(name, &object);
         if publishes_browser_evidence {
             self.require_observed_exact_window_observation_available()?;
         }
