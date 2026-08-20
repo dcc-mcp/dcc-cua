@@ -1,4 +1,4 @@
-use super::super::browser::{BROWSER_STATE_CALL_TIMEOUT, browser_tool_timeout};
+use super::super::browser::{BROWSER_TOOL_CALL_TIMEOUT, browser_tool_timeout};
 use super::super::ensure_target_available_for_bootstrap_activation;
 use crate::ComputerUseErrorCode;
 use rstest::rstest;
@@ -37,14 +37,17 @@ fn bootstrap_activation_allows_only_the_explicit_minimized_recovery_path(
 }
 
 #[rstest]
-#[case("browser_prepare", json!({}), BROWSER_STATE_CALL_TIMEOUT)]
-#[case("get_browser_state", json!({}), BROWSER_STATE_CALL_TIMEOUT)]
+#[case("browser_prepare", json!({}), BROWSER_TOOL_CALL_TIMEOUT)]
+#[case("get_browser_state", json!({}), BROWSER_TOOL_CALL_TIMEOUT)]
 #[case(
     "get_browser_state",
     json!({"target_id": "target-1"}),
-    BROWSER_STATE_CALL_TIMEOUT
+    BROWSER_TOOL_CALL_TIMEOUT
 )]
-#[case("browser_snapshot", json!({}), INPUT_CALL_TIMEOUT)]
+#[case("browser_click", json!({}), BROWSER_TOOL_CALL_TIMEOUT)]
+#[case("browser_type", json!({}), BROWSER_TOOL_CALL_TIMEOUT)]
+#[case("browser_snapshot", json!({}), BROWSER_TOOL_CALL_TIMEOUT)]
+#[case("list_windows", json!({}), INPUT_CALL_TIMEOUT)]
 fn browser_binding_timeout_covers_the_bounded_existing_profile_reconnect(
     #[case] name: &str,
     #[case] arguments: Value,
@@ -52,5 +55,5 @@ fn browser_binding_timeout_covers_the_bounded_existing_profile_reconnect(
 ) {
     let object = arguments.as_object().expect("browser tool arguments");
     assert_eq!(browser_tool_timeout(name, object), expected);
-    assert!(BROWSER_STATE_CALL_TIMEOUT > Duration::from_secs(32));
+    assert!(BROWSER_TOOL_CALL_TIMEOUT > Duration::from_secs(32));
 }
