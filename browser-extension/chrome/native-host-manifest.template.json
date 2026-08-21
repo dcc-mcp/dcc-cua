@@ -1,0 +1,9 @@
+{
+  "name": "com.dcc_mcp.dcc_cua",
+  "description": "DCC-CUA Chrome extension native bridge",
+  "path": "__DCC_CUA_CHROME_HOST_PATH__",
+  "type": "stdio",
+  "allowed_origins": [
+    "chrome-extension://__DCC_CUA_CHROME_EXTENSION_ID__/"
+  ]
+}

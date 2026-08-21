@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dcc-mcp.dev/schemas/dcc-cua-browser-extension-v1.json",
+  "title": "DCC-CUA browser extension protocol v1",
+  "type": "object",
+  "oneOf": [
+    {
+      "properties": {
+        "schema": { "const": "dcc-cua.browser-extension.v1" },
+        "type": { "const": "hello" },
+        "protocol": {
+          "type": "object",
+          "properties": {
+            "min": { "const": 1 },
+            "max": { "const": 1 }
+          },
+          "required": ["min", "max"],
+          "additionalProperties": false
+        }
+      },
+      "required": ["schema", "type", "protocol"]
+    },
+    {
+      "properties": {
+        "schema": { "const": "dcc-cua.browser-extension.v1" },
+        "request_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "method": { "enum": ["ping", "snapshot", "click", "type", "unpair"] }
+      },
+      "required": ["schema", "request_id", "method"]
+    },
+    {
+      "properties": {
+        "schema": { "const": "dcc-cua.browser-extension.v1" },
+        "type": { "const": "response" },
+        "request_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "ok": { "type": "boolean" }
+      },
+      "required": ["schema", "type", "request_id", "ok"]
+    }
+  ]
+}
