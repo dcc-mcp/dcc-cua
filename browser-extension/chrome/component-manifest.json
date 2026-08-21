@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "name": "dcc-cua-browser-extension",
+  "version": "0.0.0",
+  "distribution": {
+    "ordinary_users": ["chrome_web_store", "edge_addons", "firefox_addons"],
+    "enterprise": "managed_policy",
+    "silent_sideload": false
+  },
+  "native_messaging": {
+    "host_name": "com.dcc_mcp.dcc_cua",
+    "protocol_min": 1,
+    "protocol_max": 1,
+    "exact_extension_origin_required": true
+  },
+  "permissions": {
+    "pairing": "explicit_action_click",
+    "blanket_host_permissions": false,
+    "navigation_invalidates_pairing": true
+  },
+  "capabilities": [
+    "explicit_tab_pairing_v1",
+    "semantic_snapshot_v1",
+    "dom_click_v1",
+    "dom_replace_text_v1"
+  ]
+}
