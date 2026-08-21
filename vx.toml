@@ -1,3 +1,6 @@
+[tools]
+node = "22"
+
 [tools.msvc]
 version = "14.44"
 os = ["windows"]
