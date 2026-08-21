@@ -14,6 +14,31 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  browser-extension:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: browser-extension/chrome/package-lock.json
+      - run: npm --prefix browser-extension/chrome ci
+      - run: npm --prefix browser-extension/chrome run check
+      - run: npm --prefix browser-extension/chrome test
+      - run: npm --prefix browser-extension/chrome run build
+      - run: python -B browser-extension/chrome/scripts/test_extension.py
+      - name: Package deterministic browser artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          for browser in chrome edge firefox; do
+            python -B browser-extension/chrome/scripts/package_extension.py \
+              --browser "$browser" \
+              --output "dist/dcc-cua-browser-extension-${browser}.zip"
+          done
+
   policy:
     runs-on: ubuntu-latest
     timeout-minutes: 10

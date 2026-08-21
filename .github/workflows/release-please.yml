@@ -34,10 +34,19 @@ jobs:
           $config = Get-Content release-please-config.json -Raw | ConvertFrom-Json
           $manifest = Get-Content .release-please-manifest.json -Raw | ConvertFrom-Json
           if ($config.'release-type' -ne 'simple') { throw 'release-type must use the root release anchor' }
+          if ($config.'separate-pull-requests' -ne $true) { throw 'release components must use separate pull requests' }
           if ($config.packages.'.'.component -ne 'dcc-cua') { throw 'unexpected release component' }
+          if ($config.packages.'browser-extension/chrome'.component -ne 'dcc-cua-browser-extension') { throw 'unexpected browser extension component' }
+          if ($config.packages.'browser-extension/chrome'.'include-component-in-tag' -ne $true) { throw 'browser extension tags must include the component' }
+          if ($config.packages.'browser-extension/chrome'.'release-as' -ne '0.1.0') { throw 'initial browser extension release must be 0.1.0' }
           if ($manifest.'.' -notmatch '^\d+\.\d+\.\d+$') { throw 'manifest version must be valid semver' }
+          if ($manifest.'browser-extension/chrome' -notmatch '^\d+\.\d+\.\d+$') { throw 'browser extension manifest version must be valid semver' }
           $version = (Get-Content version.txt -Raw).Trim()
           if ($version -ne $manifest.'.') { throw 'version anchor must match the release manifest' }
+          $extensionPackage = Get-Content browser-extension/chrome/package.json -Raw | ConvertFrom-Json
+          $extensionComponent = Get-Content browser-extension/chrome/component-manifest.json -Raw | ConvertFrom-Json
+          if ($extensionPackage.version -ne $manifest.'browser-extension/chrome') { throw 'browser package version must match the release manifest' }
+          if ($extensionComponent.version -ne $manifest.'browser-extension/chrome') { throw 'browser component version must match the release manifest' }
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.95.0
@@ -51,6 +60,9 @@ jobs:
     outputs:
       release_created: ${{ steps.release.outputs.release_created == 'true' || (github.event_name == 'workflow_dispatch' && inputs.release_tag != '') }}
       tag_name: ${{ steps.release.outputs.tag_name || inputs.release_tag }}
+      extension_release_created: ${{ steps.release.outputs['browser-extension/chrome--release_created'] == 'true' }}
+      extension_tag_name: ${{ steps.release.outputs['browser-extension/chrome--tag_name'] }}
+      extension_version: ${{ steps.release.outputs['browser-extension/chrome--version'] }}
     steps:
       - uses: googleapis/release-please-action@v5
         id: release
@@ -73,7 +85,7 @@ jobs:
                 ConvertFrom-Json |
                 Where-Object {
                   $_.title -like 'chore(main): release *' -and
-                  $_.headRefName -like 'release-please--branches--main--components--*'
+                  $_.headRefName -eq 'release-please--branches--main--components--dcc-cua'
                 } |
                 Select-Object -First 1
               if (-not $releasePr) { Start-Sleep -Seconds 5 }
@@ -190,4 +202,59 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG_NAME: ${{ needs.release-please.outputs.tag_name }}
+        run: gh release upload "$TAG_NAME" dist/* --repo "$GITHUB_REPOSITORY" --clobber
+
+  package-browser-extension:
+    needs: release-please
+    if: needs.release-please.outputs.extension_release_created == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.release-please.outputs.extension_tag_name }}
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: browser-extension/chrome/package-lock.json
+      - run: npm --prefix browser-extension/chrome ci
+      - run: npm --prefix browser-extension/chrome run check
+      - run: npm --prefix browser-extension/chrome test
+      - run: npm --prefix browser-extension/chrome run build
+      - run: python -B browser-extension/chrome/scripts/test_extension.py
+      - name: Package browser extensions
+        env:
+          EXTENSION_VERSION: ${{ needs.release-please.outputs.extension_version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for browser in chrome edge firefox; do
+            python -B browser-extension/chrome/scripts/package_extension.py \
+              --browser "$browser" \
+              --output "dist/dcc-cua-browser-extension-${EXTENSION_VERSION}-${browser}.zip" \
+              --version "${EXTENSION_VERSION}"
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dcc-cua-browser-extension
+          path: dist/*
+          if-no-files-found: error
+
+  attach-browser-extension-assets:
+    needs: [release-please, package-browser-extension]
+    if: needs.release-please.outputs.extension_release_created == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dcc-cua-browser-extension
+          path: dist
+      - name: Attach browser extension review artifacts
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ needs.release-please.outputs.extension_tag_name }}
         run: gh release upload "$TAG_NAME" dist/* --repo "$GITHUB_REPOSITORY" --clobber
