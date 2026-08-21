@@ -23,6 +23,10 @@ class ExtensionContractTests(unittest.TestCase):
             (REPOSITORY_ROOT / ".release-please-manifest.json").read_text(encoding="utf-8")
         )
         self.assertIs(config["separate-pull-requests"], True)
+        self.assertEqual(
+            "7ca17c38919e4cd40f5ce1fd05160349f6b88d70",
+            config["bootstrap-sha"],
+        )
         root_component = config["packages"]["."]
         extension = config["packages"]["browser-extension/chrome"]
         self.assertIn("browser-extension/**", root_component["exclude-paths"])
