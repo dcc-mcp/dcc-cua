@@ -134,8 +134,8 @@ async fn refresh_session_health_input_and_target(host: &mut HostSession) -> bool
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct WindowEvidenceEpochRoute {
-    session_id: String,
-    publication: HostEvidencePublication,
+    pub(super) session_id: String,
+    pub(super) publication: HostEvidencePublication,
 }
 
 pub(super) fn window_evidence_epoch_route(request: &Request) -> Option<WindowEvidenceEpochRoute> {
@@ -174,6 +174,8 @@ pub(super) fn window_evidence_epoch_route(request: &Request) -> Option<WindowEvi
         | Request::BrowserSetInputFiles { session_id, .. }
         | Request::BrowserDownload { session_id, .. }
         | Request::BrowserDialog { session_id, .. }
+        | Request::BrowserExtensionStatus { session_id, .. }
+        | Request::BrowserExtensionCall { session_id, .. }
         | Request::Find { session_id, .. }
         | Request::WaitFor { session_id, .. }
         | Request::ExecuteAction { session_id, .. }
@@ -187,6 +189,10 @@ pub(super) fn window_evidence_epoch_route(request: &Request) -> Option<WindowEvi
         Request::Hello(_)
         | Request::Ping {}
         | Request::Doctor {}
+        | Request::RegisterBrowserExtension { .. }
+        | Request::BrowserExtensionNext { .. }
+        | Request::CompleteBrowserExtension { .. }
+        | Request::UnregisterBrowserExtension { .. }
         | Request::InterruptAll {}
         | Request::ListApps {}
         | Request::ListTools {}
@@ -225,6 +231,9 @@ pub(super) fn finish_window_evidence_request<T>(
     if let Some(route) = route
         && let Some(host) = sessions.windows.get_mut(&route.session_id)
     {
+        if !host.interrupted {
+            host.mark_activity();
+        }
         if result.is_ok() {
             host.synchronize_action_evidence_epoch_with(route.publication);
         } else {
@@ -309,10 +318,20 @@ async fn handle_request_inner(
         launches: launch_sessions,
     } = sessions;
 
+    let request = match browser_extension::route_host_request(request, sessions).await {
+        browser_extension::RoutedBrowserExtensionRequest::Unhandled(request) => *request,
+        browser_extension::RoutedBrowserExtensionRequest::Handled(result) => return result,
+    };
     match request {
         Request::Hello(_) => unreachable!(),
         Request::Ping {} => Ok((ping_response(), None)),
         Request::Doctor {} => Ok((driver.diagnostics().await, None)),
+        Request::RegisterBrowserExtension { .. }
+        | Request::BrowserExtensionNext { .. }
+        | Request::CompleteBrowserExtension { .. }
+        | Request::UnregisterBrowserExtension { .. }
+        | Request::BrowserExtensionStatus { .. }
+        | Request::BrowserExtensionCall { .. } => unreachable!("extension request was routed"),
         Request::InterruptAll {} => {
             let generation = broadcast_interrupt();
             let (window_sessions, desktop_sessions, launch_sessions) =
@@ -856,11 +875,19 @@ async fn handle_request_inner(
             mut grant,
             activate_before,
             indicator_motion,
+            idle_timeout_ms,
         } => {
             if sessions.contains_key(&session_id) {
                 return Err(HostError::Protocol("session already exists".into()));
             }
             grant.validate_identity()?;
+            if !(MIN_SESSION_IDLE_TIMEOUT_MS..=MAX_SESSION_IDLE_TIMEOUT_MS)
+                .contains(&idle_timeout_ms)
+            {
+                return Err(HostError::Protocol(format!(
+                    "idle_timeout_ms must be between {MIN_SESSION_IDLE_TIMEOUT_MS} and {MAX_SESSION_IDLE_TIMEOUT_MS}"
+                )));
+            }
             let launched = launch_sessions.get(&session_id).cloned();
             if launched.is_none() {
                 ensure_connection_session_capacity(
@@ -941,6 +968,8 @@ async fn handle_request_inner(
                     return Err(error);
                 }
             };
+            let target_process_id = input_target.process_id;
+            let target_window_handle = input_target.window_handle;
             let (input_readiness, observed_at) = crate::session_events::input_readiness_sample();
             let input_events =
                 crate::session_events::SessionInputEventQueue::new_with_restore_capability(
@@ -958,6 +987,8 @@ async fn handle_request_inner(
                 session_id.clone(),
                 HostSession {
                     runtime_session_id,
+                    target_process_id,
+                    target_window_handle,
                     task_grant_id: grant.task_grant_id,
                     allow_raw_input: grant.allow_raw_input,
                     allow_app_terminate: grant.allow_app_terminate,
@@ -984,6 +1015,8 @@ async fn handle_request_inner(
                     latest_accessibility_root: None,
                     latest_shared_image: None,
                     input_events,
+                    idle_timeout: Duration::from_millis(idle_timeout_ms),
+                    last_activity: Instant::now(),
                 },
             );
             let mut response = json!({
@@ -999,6 +1032,7 @@ async fn handle_request_inner(
                 "input_state": initial_input_state,
                 "target_state": initial_target_state,
                 "latest_sequence": initial_sequence,
+                "idle_timeout_ms": idle_timeout_ms,
             });
             if let Some(activation) = started.get("activation") {
                 response["activation"] = activation.clone();

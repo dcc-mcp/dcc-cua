@@ -12,9 +12,11 @@ const KNOWN_FLAG_NAMES: &[&str] = &[
     "--aumid",
     "--bundle-id",
     "--button",
+    "--browser",
     "--by",
     "--check",
     "--confirm",
+    "--cdp-state",
     "--delay-ms",
     "--delivery-mode",
     "--duration-ms",
@@ -25,6 +27,7 @@ const KNOWN_FLAG_NAMES: &[&str] = &[
     "--escalation-detail",
     "--escalation-reason",
     "--etag",
+    "--extension-id",
     "--expect-json",
     "--file-path",
     "--focused",
@@ -182,6 +185,7 @@ pub(super) fn print_help() {
   host-batch --json JSON_ARRAY [--endpoint PATH|--spawn BINARY] [--agent-name NAME] [--snapshot-transport binary_frame|shared_memory] [--output-dir DIR]
   host-jsonl [--endpoint PATH|--spawn BINARY] [--agent-name NAME] [--parallel-discovery] [--showcase] [--showcase-dir DIR] [--snapshot-transport binary_frame|shared_memory] [--response-format host|mcp] [--output-dir DIR] [--metrics-output FILE]
   host-ensure [--endpoint PATH] [--grant existing-profile]
+  browser-extension plan|status|install-native-host --browser chrome|edge|firefox --extension-id PUBLISHED_ID [--cdp-state available|unavailable]
   manifest
   profiles                         # list built-in and installed profile packages
   profile validate PACKAGE_DIR [--profile-store DIR]

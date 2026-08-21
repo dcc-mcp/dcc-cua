@@ -50,6 +50,26 @@ Computer Use Automation 运行时和命令行工具，支持 Windows、Linux 和
 应用的 typed API，再使用 `dcc-cua` 的精确窗口语义或视觉控制。浏览器流程应走
 `dcc-cua` 的 `browser_dom` 路由，不要替换成 in-app Browser skill。
 
+一个逻辑任务应复用同一条 Host 连接和同一个 `open_session`。窗口会话默认空闲
+15 分钟后停止，也可通过 `idle_timeout_ms` 设置 1 秒到 24 小时的边界；每次通过
+授权的会话请求都会续租。嵌入方可直接使用
+`dcc_cua_client::LogicalTaskSession`，由它统一注入该任务私有的 session、grant 和
+window capability，避免跨任务误用。
+
+浏览器以 CDP 为默认 provider。只有 CDP 不可用，或必须控制用户已登录且明确配对
+的标签页时，才选择可选扩展：
+
+```powershell
+dcc-cua browser-extension plan --browser chrome --extension-id PUBLISHED_ID --cdp-state unavailable
+dcc-cua browser-extension install-native-host --browser chrome --extension-id PUBLISHED_ID
+```
+
+该安装命令只为精确的已发布扩展 ID 注册 Native Messaging Host，不会静默旁加载
+扩展。普通用户仍从浏览器商店安装签名扩展并授权，然后在目标标签页点击一次扩展
+图标完成配对。Agent 随后在原有逻辑任务会话上调用
+`browser_extension_status` 和 `browser_extension_call`；权限、来源、身份、配对或
+协议失败后不得静默切回 CDP。
+
 ## 独立语义 Profile
 
 `dcc-cua-semantic-profiles` 当前内置 `ue`、`maya` 和 `fab`。Profile 是声明式的

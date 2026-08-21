@@ -83,7 +83,12 @@ do not sleep and issue a redundant standalone snapshot. When `capture_after`
 is false, treat `observation_required: true` as a mandatory snapshot fence.
 
 For a task that lasts longer than one turn, use one persistent `host-jsonl`
-connection and keep its `open_session` active. The Host-owned ControlBanner and
+connection and keep its `open_session` active. Set one bounded
+`idle_timeout_ms` for the logical task (15 minutes by default); every authorized
+session request renews it. If it expires, open a fresh session and take a fresh
+observation—never replay the previous action. Embedders should prefer
+`dcc_cua_client::LogicalTaskSession`, which owns one negotiated connection and
+injects the exact session credentials into every request. The Host-owned ControlBanner and
 target frame are the user-visible control lease; keep them visible for the whole
 task and close the session only at a checkpoint or terminal result. Do not
 replace a long task with repeated one-shot CLI processes, because that drops the
@@ -140,14 +145,29 @@ of execution:
 
 The optional `dcc-cua-browser-extension` component is developed in this
 repository, built for Chrome, Edge, and Firefox, and released independently
-from the native binary. Its extension-owned
-`browser_dom` route requires an explicit user pairing for one exact tab and a
-successful versioned Native Messaging handshake. Never infer that the
-extension is installed from the native dcc-cua version, never silently install
-an unpacked extension, and never fall back to existing-profile CDP after an
-extension permission, origin, pairing, or protocol failure. Until the Host
-manifest advertises a compatible extension-provider capability, continue to
-treat the extension package as unavailable rather than partially active.
+from the native binary. Route browser work as follows:
+
+1. Keep CDP as the default. Run `dcc-cua browser-extension plan --browser
+   chrome|edge|firefox --extension-id PUBLISHED_ID --cdp-state
+   available|unavailable` when provider choice is unclear.
+2. If CDP is unavailable and the native host is not registered, ordinary users
+   must first install the signed store extension. With the exact published ID,
+   run `dcc-cua browser-extension install-native-host --browser BROWSER
+   --extension-id PUBLISHED_ID`. This registers the bridge only; it never
+   silently sideloads an unpacked extension.
+3. Ask the user to click the extension action in the exact tab. On the existing
+   logical-task Host session, call `browser_extension_status`; select only a
+   provider whose paired `origin` matches the task.
+4. Call `browser_extension_call` with that `provider_id`, `expected_origin`,
+   method, params, and the exact task session credentials. Reuse the same Host
+   connection/session until completion or idle expiry.
+
+The extension-owned `browser_dom` route requires that explicit pairing and a
+successful versioned Native Messaging handshake. Never infer installation from
+the native dcc-cua version, and never fall back to CDP after an extension
+permission, origin, pairing, identity, or protocol failure. The Host manifest
+must advertise `browser_provider:extension.v1`; otherwise treat the extension
+as unavailable rather than partially active.
 
 For an accessibility surface, use the identity returned by discovery:
 

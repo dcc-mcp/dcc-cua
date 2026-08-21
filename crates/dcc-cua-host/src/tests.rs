@@ -209,6 +209,8 @@ fn cached_host_session(driver: &ComputerUseDriver) -> HostSession {
     let synchronized_action_evidence_epoch = session.action_evidence_epoch();
     HostSession {
         runtime_session_id: "runtime-session-1".into(),
+        target_process_id: 42,
+        target_window_handle: 77,
         task_grant_id: "grant-1".into(),
         allow_raw_input: true,
         allow_app_terminate: false,
@@ -249,7 +251,87 @@ fn cached_host_session(driver: &ComputerUseDriver) -> HostSession {
             cfg!(windows),
             100,
         ),
+        idle_timeout: Duration::from_millis(DEFAULT_SESSION_IDLE_TIMEOUT_MS),
+        last_activity: Instant::now(),
     }
+}
+
+#[rstest]
+#[tokio::test]
+async fn authorized_session_renews_logical_task_activity() {
+    let driver = ComputerUseDriver::create().unwrap();
+    let mut sessions = HashMap::new();
+    let mut host = cached_host_session(&driver);
+    host.idle_timeout = Duration::from_secs(60);
+    host.last_activity = Instant::now() - Duration::from_secs(30);
+    let previous_activity = host.last_activity;
+    sessions.insert("task-1".into(), host);
+
+    let session = authorized_session(&mut sessions, "task-1", "grant-1", "capability-1")
+        .await
+        .unwrap();
+    assert!(session.last_activity > previous_activity);
+}
+
+#[rstest]
+fn completed_request_renews_activity_after_long_running_work() {
+    let driver = ComputerUseDriver::create().unwrap();
+    let mut sessions = ConnectionSessions::default();
+    let mut host = cached_host_session(&driver);
+    host.last_activity = Instant::now() - Duration::from_secs(30);
+    let previous_activity = host.last_activity;
+    sessions.windows.insert("task-1".into(), host);
+
+    request_handler::finish_window_evidence_request(
+        &mut sessions,
+        Some(request_handler::WindowEvidenceEpochRoute {
+            session_id: "task-1".into(),
+            publication: HostEvidencePublication::None,
+        }),
+        Ok::<_, HostError>(()),
+    )
+    .unwrap();
+
+    assert!(sessions.windows["task-1"].last_activity > previous_activity);
+}
+
+#[rstest]
+#[tokio::test]
+async fn expired_logical_task_session_is_stopped_and_rejected() {
+    let driver = ComputerUseDriver::create().unwrap();
+    let mut sessions = HashMap::new();
+    let mut host = cached_host_session(&driver);
+    host.idle_timeout = Duration::from_millis(1);
+    host.last_activity = Instant::now() - Duration::from_secs(1);
+    sessions.insert("task-1".into(), host);
+
+    let error = match authorized_session(&mut sessions, "task-1", "grant-1", "capability-1").await {
+        Ok(_) => panic!("expired session was unexpectedly authorized"),
+        Err(error) => error,
+    };
+    let HostError::ComputerUse(error) = error else {
+        panic!("expected typed session expiry error")
+    };
+    assert_eq!(error.code, ComputerUseErrorCode::SessionRefreshRequired);
+    assert!(error.message.contains("idle timeout"));
+    assert!(sessions["task-1"].interrupted);
+}
+
+#[rstest]
+#[tokio::test]
+async fn idle_reaper_removes_expired_sessions_only() {
+    let driver = ComputerUseDriver::create().unwrap();
+    let mut sessions = HashMap::new();
+    let mut expired = cached_host_session(&driver);
+    expired.idle_timeout = Duration::from_millis(1);
+    expired.last_activity = Instant::now() - Duration::from_secs(1);
+    sessions.insert("expired".into(), expired);
+    sessions.insert("active".into(), cached_host_session(&driver));
+
+    reap_idle_window_sessions(&mut sessions).await;
+
+    assert!(!sessions.contains_key("expired"));
+    assert!(sessions.contains_key("active"));
 }
 
 fn assert_stale_observation(error: HostError, message_fragment: &str) {
@@ -1811,6 +1893,7 @@ fn app_launch_grant_defaults_to_denied() {
     );
 }
 
+mod browser_extension;
 mod connection;
 mod request_contracts;
 mod request_parsing;

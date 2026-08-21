@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 use dcc_cua_browser::BrowserSession;
 use dcc_cua_core::{
@@ -41,6 +42,8 @@ pub(super) fn evidence_epoch_sync_plan(
 
 pub(super) struct HostSession {
     pub(super) runtime_session_id: String,
+    pub(super) target_process_id: u32,
+    pub(super) target_window_handle: u64,
     pub(super) task_grant_id: String,
     pub(super) allow_raw_input: bool,
     pub(super) allow_app_terminate: bool,
@@ -67,9 +70,19 @@ pub(super) struct HostSession {
     pub(super) latest_accessibility_root: Option<Value>,
     pub(super) latest_shared_image: Option<SharedImage>,
     pub(super) input_events: SessionInputEventQueue,
+    pub(super) idle_timeout: Duration,
+    pub(super) last_activity: Instant,
 }
 
 impl HostSession {
+    pub(super) fn is_idle_expired(&self) -> bool {
+        self.last_activity.elapsed() >= self.idle_timeout
+    }
+
+    pub(super) fn mark_activity(&mut self) {
+        self.last_activity = Instant::now();
+    }
+
     pub(super) fn finish_observation_sensitive_attempt<T>(
         &mut self,
         result: ComputerUseResult<T>,

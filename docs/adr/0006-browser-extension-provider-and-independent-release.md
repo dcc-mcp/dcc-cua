@@ -34,6 +34,14 @@ timing are independent from GitHub binary releases.
   Chromium native host manifests must allow the exact Chrome and Edge origins;
   Firefox manifests must allow the exact Firefox extension id. Wildcards are
   forbidden.
+- Keep CDP as the default provider. The CLI planner selects the extension only
+  when CDP is unavailable, reports missing registration/pairing as an explicit
+  next action, and never claims that Native Messaging registration installed a
+  store extension.
+- Register an explicitly paired extension with the persistent Host, bind it to
+  the browser process that launched the Native Messaging executable, and allow
+  calls only from an exact window session with the same process id and paired
+  origin. Provider secrets and pairing nonces are never exposed by status.
 - Negotiate a versioned protocol range. Host and extension SemVer versions are
   informational; compatibility is decided by protocol overlap and advertised
   capabilities.

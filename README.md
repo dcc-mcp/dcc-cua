@@ -502,6 +502,28 @@ let response = host.request("list_windows", serde_json::json!({})).await?;
 let stopped = host.interrupt_all().await?;
 ```
 
+For one logical task, consume the negotiated client into
+`LogicalTaskSession`. It opens exactly one window session, injects its private
+grant/capability into every scoped request, and returns the still-negotiated
+connection on `close`:
+
+```rust,no_run
+let host = dcc_cua_client::HostClient::connect_default("dcc-mcp-core").await?;
+let mut task = host.open_logical_task_session(
+    "task-42",
+    serde_json::json!({
+        "task_grant_id": "grant-42",
+        "application_label": "Chrome",
+        "process_id": 1200,
+        "window_handle": 2400,
+        "allow_browser_input": true
+    }),
+    15 * 60 * 1000,
+).await?;
+let snapshot = task.request("snapshot", serde_json::json!({})).await?;
+let host = task.close().await?;
+```
+
 `HostClient::interrupt_all` and `dcc-cua interrupt-all [--endpoint PATH]`
 broadcast a cooperative safety stop to every connection in the selected Host
 process. The calling connection is cleaned up before acknowledgement. Other
@@ -605,8 +627,12 @@ bounded batches on the same connection.
 The endpoint admits at most 32 simultaneous client connections and applies
 transport backpressure before creating another connection task. The manifest
 publishes both connection and per-connection discovery limits for supervisors.
-Each agent thread should own one persistent Host connection and open its own
-TaskGrant-bound window sessions on that connection. A connection may own up to
+Each logical agent task should own one persistent Host connection and one
+TaskGrant-bound window session on that connection. `open_session` defaults to a
+15-minute idle timeout, accepts a bounded `idle_timeout_ms` from 1 second to 24
+hours, and renews the lease after every authorized session request. Expiry
+stops the session, invalidates its observations, and requires a fresh session;
+it does not silently replay the previous request. A connection may own up to
 16 window, desktop, and launch sessions in total. Different connections may use
 the same public `session_id`; their random window capabilities and observation
 state remain private to the owning connection. Background-safe actions can make
@@ -616,13 +642,43 @@ Disconnecting one agent stops only the sessions owned by that connection.
 Supervisors can discover this contract through
 `host.session_concurrency` and the `multi_agent_sessions` capability in
 `dcc-cua manifest`.
-Clients have 10 seconds from connection acceptance to complete `hello`;
-negotiated Host connections remain long-lived without an idle deadline.
+Clients have 10 seconds from connection acceptance to complete `hello`.
+Negotiated Host connections remain long-lived, while their logical-task window
+sessions use the bounded idle lease above.
 EOF, transport failures, and malformed frames all abort outstanding discovery
 work and stop every private window, desktop, and launch session on that connection.
 `--metrics-output FILE` atomically checkpoints development metrics after every
 response and finalizes them at EOF or failure; it does not alter response JSONL
 or the production Host protocol.
+
+## Browser provider routing
+
+CDP remains the default provider for browser sessions that dcc-cua can bind and
+control directly. Use the optional extension only when CDP is unavailable or a
+user-owned signed-in tab must remain under the browser's extension permission
+boundary. The machine-readable planner makes that decision explicit:
+
+```powershell
+dcc-cua browser-extension plan --browser chrome --extension-id PUBLISHED_ID --cdp-state available
+dcc-cua browser-extension plan --browser chrome --extension-id PUBLISHED_ID --cdp-state unavailable
+dcc-cua browser-extension install-native-host --browser chrome --extension-id PUBLISHED_ID
+```
+
+`install-native-host` registers the current signed `dcc-cua` binary as
+`com.dcc_mcp.dcc_cua` for the exact published extension identity. It does not
+silently sideload an extension. Ordinary users install the signed store package
+with browser/user authorization, then click the extension action in the exact
+tab once. That click starts the Native Messaging bridge, which registers the
+paired provider with the persistent Host.
+
+On the existing logical-task session, call `browser_extension_status` with its
+exact session credentials. If a provider is ready, call
+`browser_extension_call` with the selected `provider_id`, exact expected
+origin, method (`snapshot`, `click`, `type`, or `unpair`), and method-specific
+params. Snapshot refs remain extension-owned and actions are fenced by the
+latest extension snapshot. A permission, origin, identity, pairing, or protocol
+failure is terminal for that route; do not silently fall back to CDP after such
+a failure.
 
 ```text
 {"request_id":"core-task-42","method":"list_apps","params":{}}
