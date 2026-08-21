@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.3.3](https://github.com/dcc-mcp/dcc-cua/compare/v1.3.2...v1.3.3) (2026-08-21)
+
+
+### Bug Fixes
+
+* **browser:** allow bounded semantic snapshot proofs ([58d1f93](https://github.com/dcc-mcp/dcc-cua/commit/58d1f93277edddd46769ba2dd7bc99d6d230c607))
+* **browser:** allow existing-profile bind reconnect ([d2ef726](https://github.com/dcc-mcp/dcc-cua/commit/d2ef7269991e19e9a4dda07902edb07c3f3f0f99))
+* **browser:** bound typed browser request deadlines ([d009004](https://github.com/dcc-mcp/dcc-cua/commit/d009004466a62c0716a8701d23ac568158789537))
+* **browser:** prove existing-profile socket readiness ([a7f1307](https://github.com/dcc-mcp/dcc-cua/commit/a7f1307efdee8aac151062c2f2af8b3701fee74d))
+* **browser:** scope repeated semantic actions exactly ([06c173b](https://github.com/dcc-mcp/dcc-cua/commit/06c173b0f62ddd460c1ce80edaf2e4e06e5ab51f))
+* **window:** restore minimized bootstrap targets ([8e2f9d9](https://github.com/dcc-mcp/dcc-cua/commit/8e2f9d93e3a23a01a8aea98466c9fbd97d4974a9))
+
 ## [1.3.2](https://github.com/dcc-mcp/dcc-cua/compare/v1.3.1...v1.3.2) (2026-08-20)
 
 
