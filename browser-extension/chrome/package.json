@@ -1,0 +1,25 @@
+{
+  "name": "@dcc-mcp/dcc-cua-browser-extension",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Cross-browser extension provider for exact, policy-bound dcc-cua browser control",
+  "type": "module",
+  "scripts": {
+    "postinstall": "wxt prepare",
+    "check": "wxt prepare && tsc --noEmit",
+    "test": "node --test tests/*.test.ts",
+    "build": "npm run build:chrome && npm run build:edge && npm run build:firefox",
+    "build:chrome": "wxt build -b chrome --mv3",
+    "build:edge": "wxt build -b edge --mv3",
+    "build:firefox": "wxt build -b firefox --mv3"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "22.20.1",
+    "typescript": "7.0.2",
+    "wxt": "0.21.4"
+  }
+}

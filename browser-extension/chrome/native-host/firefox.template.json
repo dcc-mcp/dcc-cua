@@ -1,0 +1,7 @@
+{
+  "name": "com.dcc_mcp.dcc_cua",
+  "description": "DCC-CUA browser extension native messaging bridge",
+  "path": "__DCC_CUA_NATIVE_HOST_PATH__",
+  "type": "stdio",
+  "allowed_extensions": ["__DCC_CUA_FIREFOX_EXTENSION_ID__"]
+}

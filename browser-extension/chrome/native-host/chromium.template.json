@@ -1,0 +1,10 @@
+{
+  "name": "com.dcc_mcp.dcc_cua",
+  "description": "DCC-CUA browser extension native messaging bridge",
+  "path": "__DCC_CUA_NATIVE_HOST_PATH__",
+  "type": "stdio",
+  "allowed_origins": [
+    "chrome-extension://__DCC_CUA_CHROME_EXTENSION_ID__/",
+    "chrome-extension://__DCC_CUA_EDGE_EXTENSION_ID__/"
+  ]
+}
