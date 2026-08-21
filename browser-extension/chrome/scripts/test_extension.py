@@ -43,7 +43,7 @@ class ExtensionContractTests(unittest.TestCase):
             [{"type": "json", "path": "component-manifest.json", "jsonpath": "$.version"}],
             extension["extra-files"],
         )
-        self.assertEqual("0.0.0", versions["browser-extension/chrome"])
+        self.assertRegex(str(versions["browser-extension/chrome"]), r"^\d+\.\d+\.\d+$")
 
     def test_release_workflow_routes_each_component_independently(self) -> None:
         workflow = (REPOSITORY_ROOT / ".github" / "workflows" / "release-please.yml").read_text(
@@ -80,7 +80,9 @@ class ExtensionContractTests(unittest.TestCase):
     def test_release_versions_are_single_sourced(self) -> None:
         package = json_file(ROOT / "package.json")
         component = json_file(ROOT / "component-manifest.json")
+        versions = json_file(REPOSITORY_ROOT / ".release-please-manifest.json")
         self.assertEqual(package["version"], component["version"])
+        self.assertEqual(package["version"], versions["browser-extension/chrome"])
         self.assertRegex(str(package["version"]), r"^\d+\.\d+\.\d+$")
         for browser in PACKAGE_EXTENSION.SUPPORTED_BROWSERS:
             manifest = json_file(ROOT / ".output" / f"{browser}-mv3" / "manifest.json")
