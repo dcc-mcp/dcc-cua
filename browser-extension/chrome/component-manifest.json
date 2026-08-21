@@ -1,9 +1,13 @@
 {
   "schema_version": 1,
   "name": "dcc-cua-browser-extension",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "distribution": {
-    "ordinary_users": ["chrome_web_store", "edge_addons", "firefox_addons"],
+    "ordinary_users": [
+      "chrome_web_store",
+      "edge_addons",
+      "firefox_addons"
+    ],
     "enterprise": "managed_policy",
     "silent_sideload": false
   },

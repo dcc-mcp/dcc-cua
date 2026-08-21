@@ -1,6 +1,6 @@
 {
   "name": "@dcc-mcp/dcc-cua-browser-extension",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "description": "Cross-browser extension provider for exact, policy-bound dcc-cua browser control",
   "type": "module",
