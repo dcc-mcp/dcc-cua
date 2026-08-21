@@ -20,8 +20,9 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf, Rea
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 
 pub use dcc_cua_protocol::{
-    HOST_PROTOCOL_VERSION, MAX_BINARY_FRAME_BYTES, MAX_JSON_FRAME_BYTES,
-    MAX_PARALLEL_DISCOVERY_REQUESTS, MAX_REQUEST_ID_CHARS,
+    DEFAULT_SESSION_IDLE_TIMEOUT_MS, HOST_PROTOCOL_VERSION, MAX_BINARY_FRAME_BYTES,
+    MAX_JSON_FRAME_BYTES, MAX_PARALLEL_DISCOVERY_REQUESTS, MAX_REQUEST_ID_CHARS,
+    MAX_SESSION_IDLE_TIMEOUT_MS, MIN_SESSION_IDLE_TIMEOUT_MS,
 };
 
 trait HostStream: AsyncRead + AsyncWrite + Unpin + Send {}
@@ -103,6 +104,94 @@ pub struct HostClient {
     hello_complete: bool,
     snapshot_transport: SnapshotTransport,
     capabilities: Vec<String>,
+}
+
+/// One logical agent task bound to one persistent Host connection and window session.
+///
+/// Scoped requests automatically receive the exact session id, task grant id,
+/// and window capability returned by `open_session`, preventing callers from
+/// accidentally mixing credentials from another task or Host connection.
+pub struct LogicalTaskSession {
+    client: HostClient,
+    session_id: String,
+    task_grant_id: String,
+    window_capability: String,
+    idle_timeout_ms: u64,
+}
+
+impl fmt::Debug for LogicalTaskSession {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("LogicalTaskSession")
+            .field("session_id", &self.session_id)
+            .field("task_grant_id", &self.task_grant_id)
+            .field("idle_timeout_ms", &self.idle_timeout_ms)
+            .field("client", &self.client)
+            .finish_non_exhaustive()
+    }
+}
+
+impl LogicalTaskSession {
+    #[must_use]
+    pub fn session_id(&self) -> &str {
+        &self.session_id
+    }
+
+    #[must_use]
+    pub fn task_grant_id(&self) -> &str {
+        &self.task_grant_id
+    }
+
+    #[must_use]
+    pub fn idle_timeout_ms(&self) -> u64 {
+        self.idle_timeout_ms
+    }
+
+    /// Send a request through this task's existing Host session.
+    ///
+    /// The caller supplies only method-specific fields. Exact session
+    /// credentials are inserted here and conflicting values are rejected.
+    pub async fn request(
+        &mut self,
+        method: impl Into<String>,
+        params: Value,
+    ) -> HostClientResult<HostResponse> {
+        let method = method.into();
+        if matches!(method.as_str(), "hello" | "open_session" | "stop_session") {
+            return Err(HostClientError::Protocol(format!(
+                "{method} is managed by LogicalTaskSession"
+            )));
+        }
+        let params = bind_task_credentials(
+            params,
+            &self.session_id,
+            &self.task_grant_id,
+            &self.window_capability,
+        )?;
+        self.client.request(method, params).await
+    }
+
+    /// Stop the task session and return the still-negotiated Host connection.
+    pub async fn close(mut self) -> HostClientResult<HostClient> {
+        self.client
+            .request(
+                "stop_session",
+                json!({
+                    "session_id": self.session_id,
+                }),
+            )
+            .await?;
+        Ok(self.client)
+    }
+
+    /// Return the negotiated Host connection without stopping the task.
+    ///
+    /// This is intended for ownership hand-off. Dropping the connection still
+    /// stops every connection-scoped session in the Host.
+    #[must_use]
+    pub fn into_client(self) -> HostClient {
+        self.client
+    }
 }
 
 /// A CUA Host child and its already-negotiated stdio client.
@@ -376,6 +465,66 @@ impl HostClient {
     /// Cooperatively stop every active session owned by this Host process.
     pub async fn interrupt_all(&mut self) -> HostClientResult<HostResponse> {
         self.request("interrupt_all", json!({})).await
+    }
+
+    /// Open one persistent window session for one logical task.
+    ///
+    /// This consumes the negotiated client so the returned task object is the
+    /// only owner of the connection and its connection-scoped capability.
+    pub async fn open_logical_task_session(
+        mut self,
+        session_id: impl Into<String>,
+        grant: Value,
+        idle_timeout_ms: u64,
+    ) -> HostClientResult<LogicalTaskSession> {
+        if !(MIN_SESSION_IDLE_TIMEOUT_MS..=MAX_SESSION_IDLE_TIMEOUT_MS).contains(&idle_timeout_ms) {
+            return Err(HostClientError::Protocol(format!(
+                "idle_timeout_ms must be between {MIN_SESSION_IDLE_TIMEOUT_MS} and {MAX_SESSION_IDLE_TIMEOUT_MS}"
+            )));
+        }
+        let session_id = session_id.into();
+        let task_grant_id = grant
+            .get("task_grant_id")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                HostClientError::Protocol(
+                    "logical task grant requires a non-empty task_grant_id".into(),
+                )
+            })?
+            .to_owned();
+        let response = self
+            .request(
+                "open_session",
+                json!({
+                    "session_id": session_id,
+                    "grant": grant,
+                    "idle_timeout_ms": idle_timeout_ms,
+                }),
+            )
+            .await?;
+        let returned_session_id = response.value["session_id"].as_str().ok_or_else(|| {
+            HostClientError::Protocol("open_session response omitted session_id".into())
+        })?;
+        if returned_session_id != session_id {
+            return Err(HostClientError::Protocol(
+                "open_session response changed the logical task session id".into(),
+            ));
+        }
+        let window_capability = response.value["window_capability"]
+            .as_str()
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                HostClientError::Protocol("open_session response omitted window_capability".into())
+            })?
+            .to_owned();
+        Ok(LogicalTaskSession {
+            client: self,
+            session_id,
+            task_grant_id,
+            window_capability,
+            idle_timeout_ms,
+        })
     }
 
     /// Send one request and read its JSON response plus an optional image frame.
@@ -690,6 +839,33 @@ impl HostClient {
             binary_attachment,
         })
     }
+}
+
+fn bind_task_credentials(
+    params: Value,
+    session_id: &str,
+    task_grant_id: &str,
+    window_capability: &str,
+) -> HostClientResult<Value> {
+    let mut params = params.as_object().cloned().ok_or_else(|| {
+        HostClientError::Protocol("logical task request params must be a JSON object".into())
+    })?;
+    for (key, expected) in [
+        ("session_id", session_id),
+        ("task_grant_id", task_grant_id),
+        ("window_capability", window_capability),
+    ] {
+        if let Some(actual) = params.get(key) {
+            if actual.as_str() != Some(expected) {
+                return Err(HostClientError::Protocol(format!(
+                    "logical task request cannot override {key}"
+                )));
+            }
+        } else {
+            params.insert(key.into(), Value::String(expected.to_owned()));
+        }
+    }
+    Ok(Value::Object(params))
 }
 
 fn is_pipeline_safe_method(method: &str) -> bool {

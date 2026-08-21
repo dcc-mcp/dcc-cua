@@ -6,6 +6,7 @@ use std::{collections::BTreeMap, time::Instant};
 
 mod actions;
 mod authorization;
+mod browser_extension;
 mod cli_args;
 mod host_lifecycle;
 mod manifest;
@@ -61,7 +62,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 #[tokio::main]
 async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut args = env::args().skip(1);
+    let arguments = env::args().skip(1).collect::<Vec<_>>();
+    if let Some(invocation_origin) = browser_extension::invocation_origin(&arguments) {
+        browser_extension::run_native_host(invocation_origin).await?;
+        return Ok(());
+    }
+    let mut args = arguments.into_iter();
     let command = args.next().unwrap_or_else(|| "help".into());
     let flags = args.collect::<Vec<_>>();
     reject_unknown_flags(&flags)?;
@@ -110,6 +116,10 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
             flag_value(&flags, "--endpoint").unwrap_or_else(HostTransport::default_endpoint);
         let response = host_lifecycle::ensure(endpoint, &flags).await?;
         println!("{}", serde_json::to_string_pretty(&response)?);
+        return Ok(());
+    }
+    if command == "browser-extension" {
+        browser_extension::execute_management(&flags)?;
         return Ok(());
     }
     if command == "manifest" {

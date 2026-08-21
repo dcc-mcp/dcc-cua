@@ -14,6 +14,9 @@ pub const MAX_REQUEST_ID_CHARS: usize = 128;
 pub const MAX_HOST_CONNECTIONS: usize = 32;
 pub const MAX_SESSIONS_PER_CONNECTION: usize = 16;
 pub const MAX_PARALLEL_DISCOVERY_REQUESTS: usize = 32;
+pub const DEFAULT_SESSION_IDLE_TIMEOUT_MS: u64 = 15 * 60 * 1_000;
+pub const MIN_SESSION_IDLE_TIMEOUT_MS: u64 = 1_000;
+pub const MAX_SESSION_IDLE_TIMEOUT_MS: u64 = 24 * 60 * 60 * 1_000;
 
 #[cfg(unix)]
 const UNIX_SOCKET_NAME: &str = "dcc-cua-v1.sock";

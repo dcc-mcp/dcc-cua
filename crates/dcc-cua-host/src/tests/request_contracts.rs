@@ -84,6 +84,7 @@ fn open_session_bootstrap_activation_is_explicit_and_defaults_off() {
         Request::OpenSession {
             activate_before: false,
             indicator_motion: IndicatorMotionPolicy::Auto,
+            idle_timeout_ms: DEFAULT_SESSION_IDLE_TIMEOUT_MS,
             ..
         }
     ));

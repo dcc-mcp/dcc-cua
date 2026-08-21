@@ -1,9 +1,10 @@
 use dcc_cua_core::{COMPUTER_USE_ESCALATION_REASONS, MAX_ESCALATION_DETAIL_CHARS};
 use dcc_cua_host::{
-    HOST_HELLO_TIMEOUT_MS, HOST_PROTOCOL_VERSION, HostTransport, MAX_APPLICATION_LABEL_CHARS,
-    MAX_BINARY_FRAME_BYTES, MAX_HOST_CONNECTIONS, MAX_JSON_FRAME_BYTES,
-    MAX_PARALLEL_DISCOVERY_REQUESTS, MAX_SESSION_EVENT_POLL_TIMEOUT_MS, MAX_SESSION_INPUT_EVENTS,
-    MAX_SESSIONS_PER_CONNECTION, MAX_TASK_GRANT_ID_CHARS, host_capabilities,
+    DEFAULT_SESSION_IDLE_TIMEOUT_MS, HOST_HELLO_TIMEOUT_MS, HOST_PROTOCOL_VERSION, HostTransport,
+    MAX_APPLICATION_LABEL_CHARS, MAX_BINARY_FRAME_BYTES, MAX_HOST_CONNECTIONS,
+    MAX_JSON_FRAME_BYTES, MAX_PARALLEL_DISCOVERY_REQUESTS, MAX_SESSION_EVENT_POLL_TIMEOUT_MS,
+    MAX_SESSION_IDLE_TIMEOUT_MS, MAX_SESSION_INPUT_EVENTS, MAX_SESSIONS_PER_CONNECTION,
+    MAX_TASK_GRANT_ID_CHARS, MIN_SESSION_IDLE_TIMEOUT_MS, host_capabilities,
 };
 use serde_json::{Value, json};
 
@@ -126,7 +127,7 @@ pub(crate) fn document() -> Value {
             "max_binary_frame_bytes": MAX_BINARY_FRAME_BYTES,
             "max_connections": MAX_HOST_CONNECTIONS,
             "session_concurrency": {
-                "model": "one_connection_per_agent",
+                "model": "one_connection_per_logical_task",
                 "max_sessions_per_connection": MAX_SESSIONS_PER_CONNECTION,
                 "session_ownership": "connection_scoped",
                 "same_public_session_id_across_connections": true,
@@ -134,6 +135,16 @@ pub(crate) fn document() -> Value {
                 "raw_input_arbitration": "host_global_fifo",
                 "background_actions_may_run_concurrently": true,
                 "disconnect_cleanup": "own_sessions_only",
+                "logical_task_session": {
+                    "client_type": "dcc_cua_client::LogicalTaskSession",
+                    "one_connection": true,
+                    "one_window_session": true,
+                    "activity_renews_lease": true,
+                    "default_idle_timeout_ms": DEFAULT_SESSION_IDLE_TIMEOUT_MS,
+                    "min_idle_timeout_ms": MIN_SESSION_IDLE_TIMEOUT_MS,
+                    "max_idle_timeout_ms": MAX_SESSION_IDLE_TIMEOUT_MS,
+                    "idle_expiry": "stop_and_require_fresh_session",
+                },
             },
             "hello_timeout_ms": HOST_HELLO_TIMEOUT_MS,
             "max_parallel_discovery_requests": MAX_PARALLEL_DISCOVERY_REQUESTS,
@@ -163,6 +174,20 @@ pub(crate) fn document() -> Value {
                 "localized_labels": "opaque",
                 "renderer_controls_rejected": true,
                 "state_confirmation": "native_tab_count_delta",
+            },
+            "browser_providers": {
+                "default": "cdp",
+                "selection_command": ["browser-extension", "plan"],
+                "extension": {
+                    "when": "cdp_unavailable_and_explicit_tab_pairing_required",
+                    "management_commands": ["plan", "status", "install-native-host"],
+                    "host_status_method": "browser_extension_status",
+                    "host_call_method": "browser_extension_call",
+                    "native_messaging_host": "com.dcc_mcp.dcc_cua",
+                    "ordinary_install": "signed_browser_store_with_user_authorization",
+                    "silent_sideload": false,
+                    "pairing": "explicit_action_click_in_exact_tab",
+                },
             },
         },
     })

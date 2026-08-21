@@ -79,6 +79,44 @@ async fn client_ping_uses_the_lightweight_host_route() {
 }
 
 #[rstest]
+#[tokio::test]
+async fn logical_task_reuses_one_connection_and_injects_exact_credentials() {
+    let (client_stream, server_stream) = tokio::io::duplex(8192);
+    let server = tokio::spawn(fake_logical_task_server(server_stream));
+    let mut client = HostClient::from_stream(client_stream);
+    client.hello("logical-task-client").await.unwrap();
+
+    let mut task = client
+        .open_logical_task_session(
+            "task-7",
+            json!({"task_grant_id":"grant-7", "process_id":42, "window_handle":99}),
+            60_000,
+        )
+        .await
+        .unwrap();
+    assert_eq!(task.session_id(), "task-7");
+    assert_eq!(task.task_grant_id(), "grant-7");
+    assert_eq!(task.idle_timeout_ms(), 60_000);
+    let snapshot = task
+        .request("snapshot", json!({"max_depth": 4}))
+        .await
+        .unwrap();
+    assert_eq!(snapshot.value["type"], "snapshot");
+    let mut client = task.close().await.unwrap();
+    assert_eq!(client.ping().await.unwrap().value["type"], "pong");
+    server.await.unwrap().unwrap();
+}
+
+#[rstest]
+fn logical_task_rejects_credential_override() {
+    let result = bind_task_credentials(json!({"session_id":"other"}), "task-7", "grant-7", "cap-7");
+    assert!(matches!(
+        result,
+        Err(HostClientError::Protocol(message)) if message.contains("cannot override session_id")
+    ));
+}
+
+#[rstest]
 fn stopped_host_process_reports_not_running() {
     let mut process = HostProcess {
         client: None,
@@ -605,4 +643,87 @@ async fn write_json_response(
     value["request_id"] = Value::String(request_id.to_owned());
     let body = serde_json::to_vec(&value).unwrap();
     write_frame(stream, &body, MAX_JSON_FRAME_BYTES).await
+}
+
+async fn fake_logical_task_server(mut stream: DuplexStream) -> HostClientResult<()> {
+    let hello: Value = serde_json::from_slice(
+        &read_frame(&mut stream, MAX_JSON_FRAME_BYTES)
+            .await?
+            .unwrap(),
+    )
+    .unwrap();
+    write_json_response(
+        &mut stream,
+        hello["request_id"].as_str().unwrap(),
+        json!({"type":"hello", "capabilities":[]}),
+    )
+    .await?;
+
+    let open: Value = serde_json::from_slice(
+        &read_frame(&mut stream, MAX_JSON_FRAME_BYTES)
+            .await?
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(open["method"], "open_session");
+    assert_eq!(open["params"]["session_id"], "task-7");
+    assert_eq!(open["params"]["grant"]["task_grant_id"], "grant-7");
+    assert_eq!(open["params"]["idle_timeout_ms"], 60_000);
+    write_json_response(
+        &mut stream,
+        open["request_id"].as_str().unwrap(),
+        json!({
+            "type":"session_opened",
+            "session_id":"task-7",
+            "window_capability":"cap-7",
+        }),
+    )
+    .await?;
+
+    let snapshot: Value = serde_json::from_slice(
+        &read_frame(&mut stream, MAX_JSON_FRAME_BYTES)
+            .await?
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(snapshot["method"], "snapshot");
+    assert_eq!(snapshot["params"]["session_id"], "task-7");
+    assert_eq!(snapshot["params"]["task_grant_id"], "grant-7");
+    assert_eq!(snapshot["params"]["window_capability"], "cap-7");
+    assert_eq!(snapshot["params"]["max_depth"], 4);
+    write_json_response(
+        &mut stream,
+        snapshot["request_id"].as_str().unwrap(),
+        json!({"type":"snapshot"}),
+    )
+    .await?;
+
+    let stop: Value = serde_json::from_slice(
+        &read_frame(&mut stream, MAX_JSON_FRAME_BYTES)
+            .await?
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(stop["method"], "stop_session");
+    assert_eq!(stop["params"]["session_id"], "task-7");
+    write_json_response(
+        &mut stream,
+        stop["request_id"].as_str().unwrap(),
+        json!({"type":"session_stopped", "session_id":"task-7"}),
+    )
+    .await?;
+
+    let ping: Value = serde_json::from_slice(
+        &read_frame(&mut stream, MAX_JSON_FRAME_BYTES)
+            .await?
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(ping["method"], "ping");
+    write_json_response(
+        &mut stream,
+        ping["request_id"].as_str().unwrap(),
+        json!({"type":"pong"}),
+    )
+    .await
 }

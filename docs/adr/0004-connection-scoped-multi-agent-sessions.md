@@ -21,7 +21,11 @@ existing TaskGrant and random window-capability boundary.
 
 ## Decision
 
-- One agent thread owns one persistent Host connection.
+- One logical agent task owns one persistent Host connection and reuses one
+  window session on it until completion or bounded idle expiry.
+- Window sessions default to a 15-minute idle lease, may request a bounded
+  1-second to 24-hour lease, and renew it after each authorized request. Idle
+  expiry stops the session and invalidates observations without replay.
 - Sessions, capabilities, observations, waits, recordings, and cancellation
   remain private to that connection.
 - Different connections may reuse a public session identifier because the

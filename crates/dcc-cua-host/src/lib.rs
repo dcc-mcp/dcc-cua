@@ -6,6 +6,7 @@
 //! bounded and the transport does not base64-encode pixels.
 
 mod action_confirmation;
+mod browser_extension;
 mod endpoint;
 mod request_contract;
 mod request_handler;
@@ -22,8 +23,10 @@ pub use action_confirmation::{
     TrustedActionConfirmationHostError, TrustedActionConfirmationRequest,
 };
 pub use dcc_cua_protocol::{
-    HOST_PROTOCOL_VERSION, MAX_BINARY_FRAME_BYTES, MAX_HOST_CONNECTIONS, MAX_JSON_FRAME_BYTES,
-    MAX_PARALLEL_DISCOVERY_REQUESTS, MAX_REQUEST_ID_CHARS, MAX_SESSIONS_PER_CONNECTION,
+    DEFAULT_SESSION_IDLE_TIMEOUT_MS, HOST_PROTOCOL_VERSION, MAX_BINARY_FRAME_BYTES,
+    MAX_HOST_CONNECTIONS, MAX_JSON_FRAME_BYTES, MAX_PARALLEL_DISCOVERY_REQUESTS,
+    MAX_REQUEST_ID_CHARS, MAX_SESSION_IDLE_TIMEOUT_MS, MAX_SESSIONS_PER_CONNECTION,
+    MIN_SESSION_IDLE_TIMEOUT_MS,
 };
 use request_handler::handle_request_with_confirmation_host;
 use session_identity::{new_runtime_session_id, rewrite_session_aliases};
@@ -153,6 +156,10 @@ pub const HOST_CAPABILITIES: &[&str] = &[
     "browser_file_upload",
     "browser_file_download",
     "browser_dialog",
+    "browser_provider:cdp.v1",
+    "browser_provider:extension.v1",
+    "browser_extension_native_messaging_v1",
+    "logical_task_session_idle_timeout",
     "request_correlation",
     "request_cancellation",
     "host_ping",
@@ -223,6 +230,43 @@ enum Request {
     Hello(HelloParams),
     Ping {},
     Doctor {},
+    RegisterBrowserExtension {
+        hello: Value,
+        invocation_origin: String,
+        browser_process_id: u32,
+    },
+    BrowserExtensionNext {
+        provider_id: String,
+        provider_secret: String,
+        #[serde(default = "default_browser_extension_poll_timeout_ms")]
+        timeout_ms: u64,
+    },
+    CompleteBrowserExtension {
+        provider_id: String,
+        provider_secret: String,
+        response: Value,
+    },
+    UnregisterBrowserExtension {
+        provider_id: String,
+        provider_secret: String,
+    },
+    BrowserExtensionStatus {
+        session_id: String,
+        task_grant_id: String,
+        window_capability: String,
+    },
+    BrowserExtensionCall {
+        session_id: String,
+        task_grant_id: String,
+        window_capability: String,
+        provider_id: String,
+        expected_origin: String,
+        method: String,
+        #[serde(default = "default_json_object")]
+        params: Value,
+        #[serde(default = "default_browser_extension_call_timeout_ms")]
+        timeout_ms: u64,
+    },
     InterruptAll {},
     ListApps {},
     ListTools {},
@@ -327,6 +371,8 @@ enum Request {
         activate_before: bool,
         #[serde(default)]
         indicator_motion: IndicatorMotionPolicy,
+        #[serde(default = "default_session_idle_timeout_ms")]
+        idle_timeout_ms: u64,
     },
     GetWindowState {
         session_id: String,
@@ -1226,8 +1272,39 @@ where
                 }
             }
             _ = session_state_poll.tick() => {
+                reap_idle_window_sessions(&mut sessions.windows).await;
                 refresh_connection_session_states(&mut sessions.windows).await;
             }
+        }
+    }
+}
+
+const fn default_session_idle_timeout_ms() -> u64 {
+    DEFAULT_SESSION_IDLE_TIMEOUT_MS
+}
+
+const fn default_browser_extension_poll_timeout_ms() -> u64 {
+    5_000
+}
+
+const fn default_browser_extension_call_timeout_ms() -> u64 {
+    10_000
+}
+
+fn default_json_object() -> Value {
+    json!({})
+}
+
+async fn reap_idle_window_sessions(sessions: &mut HashMap<String, HostSession>) {
+    let expired = sessions
+        .iter()
+        .filter(|(_, session)| session.is_idle_expired())
+        .map(|(session_id, _)| session_id.clone())
+        .collect::<Vec<_>>();
+    for session_id in expired {
+        if let Some(mut session) = sessions.remove(&session_id) {
+            let _ = session.session.stop().await;
+            session.invalidate_observations();
         }
     }
 }
@@ -1600,7 +1677,18 @@ async fn authorized_session<'a>(
     capability: &str,
 ) -> Result<&'a mut HostSession, HostError> {
     let session = session_with_capability(sessions, session_id, grant_id, capability)?;
+    if session.is_idle_expired() {
+        let _ = session.session.stop().await;
+        session.interrupted = true;
+        session.invalidate_observations();
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::SessionRefreshRequired,
+            "session idle timeout expired; open a new logical-task session",
+        )
+        .into());
+    }
     ensure_session_not_interrupted(session).await?;
+    session.mark_activity();
     Ok(session)
 }
 
@@ -1908,6 +1996,5 @@ fn desktop_action_completed_with_snapshot_response(
     response["post_snapshot"] = post_snapshot;
     Ok((response, attachment))
 }
-
 #[cfg(test)]
 mod tests;

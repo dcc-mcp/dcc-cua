@@ -1,4 +1,8 @@
 use rstest::rstest;
+
+use crate::browser_extension::{
+    invocation_origin, read_native_message, validate_extension_id, write_native_message,
+};
 use serde_json::json;
 use sha2::Digest;
 
@@ -10,6 +14,53 @@ use super::actions::{
 use super::authorization::{existing_profile_grant_requested, host_private_worker_options};
 use super::host_lifecycle::validate_host_version;
 use super::*;
+
+#[rstest]
+fn detects_chromium_and_firefox_native_invocations() {
+    assert_eq!(
+        invocation_origin(&["chrome-extension://extension-id/".into()]),
+        Some("chrome-extension://extension-id/".into())
+    );
+    assert_eq!(
+        invocation_origin(&[
+            "C:/native-host/firefox.json".into(),
+            "dcc-cua@example.org".into()
+        ]),
+        Some("dcc-cua@example.org".into())
+    );
+    assert_eq!(invocation_origin(&["host".into()]), None);
+    assert_eq!(
+        invocation_origin(&[
+            "launch".into(),
+            "--url".into(),
+            "chrome-extension://ordinary-cli-argument/".into(),
+        ]),
+        None
+    );
+}
+
+#[rstest]
+fn extension_identity_is_strictly_bounded() {
+    assert!(validate_extension_id("abcdefghijklmnop").is_ok());
+    assert!(validate_extension_id("dcc-cua@example.org").is_ok());
+    assert!(validate_extension_id("../not-an-id").is_err());
+    assert!(validate_extension_id("").is_err());
+}
+
+#[rstest]
+#[tokio::test]
+async fn native_message_framing_is_little_endian_and_round_trips() {
+    let (mut reader, mut writer) = tokio::io::duplex(1024);
+    let expected = json!({"type":"hello"});
+    let expected_for_writer = expected.clone();
+    let write = tokio::spawn(async move {
+        write_native_message(&mut writer, &expected_for_writer)
+            .await
+            .unwrap();
+    });
+    assert_eq!(read_native_message(&mut reader).await.unwrap(), expected);
+    write.await.unwrap();
+}
 
 #[rstest]
 #[case("--name", "chrome")]
@@ -1264,11 +1315,20 @@ fn manifest_is_a_machine_readable_core_launch_contract() {
     );
     assert_eq!(
         manifest["host"]["session_concurrency"]["model"],
-        "one_connection_per_agent"
+        "one_connection_per_logical_task"
     );
     assert_eq!(
         manifest["host"]["session_concurrency"]["raw_input_arbitration"],
         "host_global_fifo"
+    );
+    assert_eq!(
+        manifest["host"]["session_concurrency"]["logical_task_session"]["default_idle_timeout_ms"],
+        dcc_cua_host::DEFAULT_SESSION_IDLE_TIMEOUT_MS
+    );
+    assert_eq!(manifest["runtime"]["browser_providers"]["default"], "cdp");
+    assert_eq!(
+        manifest["runtime"]["browser_providers"]["extension"]["host_call_method"],
+        "browser_extension_call"
     );
     assert_eq!(manifest["host"]["hello_timeout_ms"], 10_000);
     assert_eq!(manifest["host"]["max_parallel_discovery_requests"], 32);
@@ -1303,6 +1363,13 @@ fn manifest_is_a_machine_readable_core_launch_contract() {
         manifest["host"]["capabilities"]
             .as_array()
             .is_some_and(|values| values.iter().any(|value| value == "browser_exact_binding"))
+    );
+    assert!(
+        manifest["host"]["capabilities"]
+            .as_array()
+            .is_some_and(|values| values
+                .iter()
+                .any(|value| value == "browser_provider:extension.v1"))
     );
     assert!(
         manifest["host"]["capabilities"]

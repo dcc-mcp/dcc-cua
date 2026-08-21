@@ -1187,6 +1187,7 @@ dependencies = [
  "dcc-cua-semantic-profiles",
  "dcc-cua-shm",
  "dcc-cua-workspace-hack",
+ "libc",
  "reqwest",
  "rstest",
  "self_update",
