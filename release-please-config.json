@@ -19,16 +19,17 @@
       "component": "dcc-cua-chrome",
       "package-name": "@dcc-mcp/dcc-cua-chrome",
       "include-component-in-tag": true,
+      "release-as": "0.1.0",
       "changelog-path": "CHANGELOG.md",
       "extra-files": [
         {
           "type": "json",
-          "path": "browser-extension/chrome/manifest.json",
+          "path": "manifest.json",
           "jsonpath": "$.version"
         },
         {
           "type": "json",
-          "path": "browser-extension/chrome/component-manifest.json",
+          "path": "component-manifest.json",
           "jsonpath": "$.version"
         }
       ]

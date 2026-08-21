@@ -33,13 +33,14 @@ class ExtensionContractTests(unittest.TestCase):
         self.assertEqual("node", extension["release-type"])
         self.assertEqual("dcc-cua-chrome", extension["component"])
         self.assertIs(extension["include-component-in-tag"], True)
+        self.assertEqual("0.1.0", extension["release-as"])
         extra_versions = {
             item["path"]: item["jsonpath"] for item in extension["extra-files"]
         }
         self.assertEqual(
             {
-                "browser-extension/chrome/component-manifest.json": "$.version",
-                "browser-extension/chrome/manifest.json": "$.version",
+                "component-manifest.json": "$.version",
+                "manifest.json": "$.version",
             },
             extra_versions,
         )
