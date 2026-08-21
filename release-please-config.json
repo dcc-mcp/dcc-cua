@@ -2,11 +2,35 @@
   "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
   "release-type": "simple",
   "include-component-in-tag": false,
+  "separate-pull-requests": true,
   "packages": {
     ".": {
       "release-type": "simple",
       "component": "dcc-cua",
-      "version-file": "version.txt"
+      "version-file": "version.txt",
+      "include-component-in-tag": false,
+      "exclude-paths": [
+        "browser-extension/**"
+      ]
+    },
+    "browser-extension/chrome": {
+      "release-type": "node",
+      "component": "dcc-cua-chrome",
+      "package-name": "@dcc-mcp/dcc-cua-chrome",
+      "include-component-in-tag": true,
+      "changelog-path": "CHANGELOG.md",
+      "extra-files": [
+        {
+          "type": "json",
+          "path": "browser-extension/chrome/manifest.json",
+          "jsonpath": "$.version"
+        },
+        {
+          "type": "json",
+          "path": "browser-extension/chrome/component-manifest.json",
+          "jsonpath": "$.version"
+        }
+      ]
     }
   }
 }

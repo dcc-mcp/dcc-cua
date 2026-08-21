@@ -14,6 +14,21 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  browser-extension:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+      - run: npm --prefix browser-extension/chrome run check
+      - run: npm --prefix browser-extension/chrome test
+      - run: python -B browser-extension/chrome/scripts/test_extension.py
+      - run: >-
+          python -B browser-extension/chrome/scripts/package_extension.py
+          --output dist/dcc-cua-chrome.zip
+
   policy:
     runs-on: ubuntu-latest
     timeout-minutes: 10

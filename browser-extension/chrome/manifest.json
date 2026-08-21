@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "DCC-CUA Browser Bridge",
+  "short_name": "DCC-CUA",
+  "version": "0.0.0",
+  "description": "Pairs one explicit Chrome tab with the local dcc-cua Host.",
+  "minimum_chrome_version": "120",
+  "permissions": [
+    "activeTab",
+    "nativeMessaging",
+    "scripting",
+    "storage"
+  ],
+  "background": {
+    "service_worker": "service-worker.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "Pair this tab with DCC-CUA"
+  }
+}
