@@ -1675,6 +1675,24 @@ fn coordinate_text_and_key_actions_forward_cua_focus_arguments() {
 }
 
 #[rstest]
+fn keyboard_shortcuts_merge_explicit_modifiers_for_every_input_route() {
+    let action = ComputerUseAction {
+        action: "keyboard_shortcut".into(),
+        keys: vec!["T".into()],
+        modifiers: vec!["CTRL".into()],
+        ..Default::default()
+    };
+
+    for arguments in [
+        action_arguments(&action, "session", &test_window_target()),
+        desktop_action_arguments(&action, "session"),
+    ] {
+        assert_eq!(arguments["_tool"], "hotkey");
+        assert_eq!(arguments["keys"], json!(["CTRL", "T"]));
+    }
+}
+
+#[rstest]
 #[case(-4, 0, "left", 4)]
 #[case(4, 0, "right", 4)]
 #[case(0, -5, "up", 5)]

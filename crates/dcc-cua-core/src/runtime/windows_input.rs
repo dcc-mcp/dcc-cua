@@ -1563,10 +1563,14 @@ pub(crate) async fn perform_windows_foreground_fast_action(
     let mut raw_drag_outcome = None;
 
     let text = if matches!(action.action.as_str(), "keypress" | "keyboard_shortcut") {
-        let key = action.keys.last().cloned().unwrap_or_default();
-        let keys = action.keys.clone();
+        let keys = if action.action == "keyboard_shortcut" {
+            keyboard_shortcut_keys(action)
+        } else {
+            action.keys.clone()
+        };
+        let key = keys.last().cloned().unwrap_or_default();
         let modifiers = if action.action == "keyboard_shortcut" {
-            action.keys[..action.keys.len().saturating_sub(1)].to_vec()
+            keys[..keys.len().saturating_sub(1)].to_vec()
         } else {
             action.modifiers.clone()
         };

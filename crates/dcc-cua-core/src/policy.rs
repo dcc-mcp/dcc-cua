@@ -736,6 +736,19 @@ pub(crate) fn validate_zoom_request(
     Ok(())
 }
 
+pub(crate) fn keyboard_shortcut_keys(action: &ComputerUseAction) -> Vec<String> {
+    let mut keys = action.modifiers.clone();
+    for key in &action.keys {
+        if !keys
+            .iter()
+            .any(|existing| existing.eq_ignore_ascii_case(key))
+        {
+            keys.push(key.clone());
+        }
+    }
+    keys
+}
+
 pub(crate) fn action_arguments(
     action: &ComputerUseAction,
     session: &str,
@@ -863,7 +876,7 @@ pub(crate) fn action_arguments(
             }
         }
         "keyboard_shortcut" => {
-            object.insert("keys".into(), json!(action.keys));
+            object.insert("keys".into(), json!(keyboard_shortcut_keys(action)));
             if let (Some(x), Some(y)) = (action.x, action.y) {
                 object.insert("x".into(), json!(x));
                 object.insert("y".into(), json!(y));
@@ -1026,7 +1039,7 @@ pub(crate) fn desktop_action_arguments(action: &ComputerUseAction, session: &str
             }
         }
         "keyboard_shortcut" => {
-            object.insert("keys".into(), json!(action.keys));
+            object.insert("keys".into(), json!(keyboard_shortcut_keys(action)));
         }
         _ => {}
     }
