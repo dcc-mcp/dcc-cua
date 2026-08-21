@@ -11,7 +11,7 @@ metadata:
     dcc: computer-use
     layer: infrastructure
     compatibility: dcc-cua 0.2+ on Windows, macOS, or Linux.
-    version: "0.4.0"
+    version: "0.4.1"
     search-hint: "dcc-cua CLI exact window multilingual profile localized aliases snapshot act verify UIA visual control banner long task recovery"
     tags: "computer-use, ui-control, infrastructure, read-only"
 ---
@@ -137,6 +137,17 @@ of execution:
    `surface_id`, discover and bind the new exact window, and take a new
    observation. Never carry an element token, index, or coordinate across the
    transition.
+
+The optional `dcc-cua-browser-extension` component is developed in this
+repository, built for Chrome, Edge, and Firefox, and released independently
+from the native binary. Its extension-owned
+`browser_dom` route requires an explicit user pairing for one exact tab and a
+successful versioned Native Messaging handshake. Never infer that the
+extension is installed from the native dcc-cua version, never silently install
+an unpacked extension, and never fall back to existing-profile CDP after an
+extension permission, origin, pairing, or protocol failure. Until the Host
+manifest advertises a compatible extension-provider capability, continue to
+treat the extension package as unavailable rather than partially active.
 
 For an accessibility surface, use the identity returned by discovery:
 
