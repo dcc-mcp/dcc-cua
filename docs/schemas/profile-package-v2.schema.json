@@ -1,27 +1,56 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://dcc-mcp.dev/schemas/dcc-cua/profile-package-v2.schema.json",
+  "title": "DCC CUA Profile package manifest v2",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "kind", "id", "version", "display_name", "description", "license", "artifacts", "requires", "platforms"],
+  "required": ["schema_version", "kind", "id", "version", "display_name", "description", "license", "artifacts", "requires"],
   "properties": {
     "schema_version": {"const": 2},
     "kind": {"const": "dcc-cua-profile-package"},
-    "id": {"type": "string", "pattern": "^[A-Za-z0-9._-]{1,80}$"},
-    "version": {"type": "string"},
-    "display_name": {"type": "string", "minLength": 1},
-    "description": {"type": "string", "minLength": 1},
-    "license": {"type": "string", "minLength": 1},
-    "artifacts": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/artifact"}},
-    "requires": {"type": "object", "additionalProperties": false, "required": ["dcc_cua"], "properties": {"dcc_cua": {"type": "string", "minLength": 1}}},
-    "platforms": {"type": "array", "items": {"type": "string"}}
+    "id": {"$ref": "#/$defs/id"},
+    "version": {"$ref": "#/$defs/semver"},
+    "display_name": {"type": "string", "minLength": 1, "pattern": "\\S"},
+    "description": {"type": "string", "minLength": 1, "pattern": "\\S"},
+    "license": {"type": "string", "minLength": 1, "pattern": "\\S"},
+    "artifacts": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 4096,
+      "items": {"$ref": "#/$defs/artifact"},
+      "contains": {
+        "type": "object",
+        "required": ["type"],
+        "properties": {"type": {"const": "semantic_profile"}}
+      },
+      "minContains": 1,
+      "maxContains": 1
+    },
+    "requires": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["dcc_cua"],
+      "properties": {
+        "dcc_cua": {"type": "string", "pattern": "^>=(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?$"}
+      }
+    },
+    "platforms": {"type": "array", "uniqueItems": true, "items": {"enum": ["windows", "macos", "linux"]}}
   },
   "$defs": {
+    "id": {"type": "string", "pattern": "^[a-z0-9._-]{1,80}$"},
+    "semver": {"type": "string", "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?$"},
     "artifact": {
-      "type": "object", "additionalProperties": false, "required": ["type", "path"],
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "path"],
       "properties": {
         "type": {"enum": ["semantic_profile", "context_index", "context_document", "agent_skill", "documentation", "fixtures", "companion_source", "license"]},
-        "path": {"type": "string", "minLength": 1}
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[^/\\\\:]+(?:/[^/\\\\:]+)*$",
+          "not": {"pattern": "(^|/)\\.{1,2}($|/)"}
+        }
       }
     }
   }

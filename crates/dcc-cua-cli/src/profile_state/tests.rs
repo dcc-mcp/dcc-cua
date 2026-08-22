@@ -192,7 +192,7 @@ async fn watcher_reuses_the_latest_etag_across_polls() {
     ))
     .expect("profile");
     let source = profile.state_source("bazaar-agent").expect("state source");
-    let mut watcher = StateWatcher::new(source, None);
+    let mut watcher = StateWatcher::new(source, None).expect("watcher");
 
     assert!(matches!(
         watcher.poll().await.expect("first poll"),
@@ -203,5 +203,72 @@ async fn watcher_reuses_the_latest_etag_across_polls() {
         StateRead::NotModified { .. }
     ));
     assert_eq!(watcher.etag(), Some("\"tick-1\""));
+    server.join().expect("loopback server thread");
+}
+
+#[rstest]
+#[tokio::test]
+async fn watcher_rejects_a_non_monotonic_semantic_tick() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind loopback server");
+    let port = listener.local_addr().expect("listener address").port();
+    let server = thread::spawn(move || {
+        for tick in [2, 1] {
+            let (mut stream, _) = listener.accept().expect("accept request");
+            let mut request = [0_u8; 2048];
+            let read = stream.read(&mut request).expect("read request");
+            assert!(read > 0, "request bytes");
+            let body = format!(r#"{{"schemaVersion":"2.2.0","tickId":{tick}}}"#);
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nETag: \"tick-{tick}\"\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .expect("write changed response");
+        }
+    });
+    let profile = parse_profile(&format!(
+        r#"{{
+            "schema_version": 3,
+            "id": "the-bazaar",
+            "profile_version": "1.0.0",
+            "application": {{"family": "the-bazaar", "versions": []}},
+            "display_name": "The Bazaar",
+            "selectors": [{{"application_names": ["TheBazaar.exe"]}}],
+            "surfaces": [],
+            "state_sources": [{{
+                "id": "bazaar-agent",
+                "type": "loopback_http_json",
+                "mode": "read_only",
+                "url": "http://127.0.0.1:{port}/v1/context",
+                "expected_schema_version": "2.2.0",
+                "schema_version_pointer": "/schemaVersion",
+                "tick_pointer": "/tickId",
+                "use_etag": true,
+                "timeout_ms": 1000,
+                "max_response_bytes": 1048576,
+                "optional": true
+            }}],
+            "settings": {{"dialog_style": "application_rendered", "preferred_route": "visual_fallback"}}
+        }}"#
+    ))
+    .expect("profile");
+    let source = profile.state_source("bazaar-agent").expect("state source");
+    let mut watcher = StateWatcher::new(source, None).expect("watcher");
+
+    watcher.poll().await.expect("first poll");
+    let error = watcher
+        .poll()
+        .await
+        .expect_err("stale tick must fail closed");
+
+    assert!(matches!(
+        error,
+        ProfileStateError::NonMonotonicTick {
+            previous: 2,
+            actual: 1
+        }
+    ));
+    assert_eq!(watcher.etag(), Some("\"tick-2\""));
     server.join().expect("loopback server thread");
 }

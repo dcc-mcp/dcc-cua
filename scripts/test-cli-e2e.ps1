@@ -15,6 +15,7 @@ if ($PSVersionTable.PSVersion.Major -ge 6) {
 $endpointRuntimeDir = $null
 $originalXdgRuntimeDir = $env:XDG_RUNTIME_DIR
 $profileStore = $null
+$profilePackageCopy = $null
 
 function Invoke-BinaryJson {
     param([string[]]$Arguments)
@@ -122,7 +123,18 @@ if ($manifest.host.snapshot_transports -notcontains "shared_memory" -or
 }
 
 $profileStore = Join-Path ([System.IO.Path]::GetTempPath()) "dcc-cua-profile-$([guid]::NewGuid().ToString('N'))"
-$profilePackage = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..\examples\profiles\the-bazaar")).Path
+$profilePackageSource = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..\examples\profiles\the-bazaar")).Path
+$profilePackageCopy = Join-Path ([System.IO.Path]::GetTempPath()) "dcc-cua-profile-source-$([guid]::NewGuid().ToString('N'))"
+Copy-Item -LiteralPath $profilePackageSource -Destination $profilePackageCopy -Recurse
+$profileManifestPath = Join-Path $profilePackageCopy "profile-package.json"
+$profileManifest = Get-Content -LiteralPath $profileManifestPath -Raw | ConvertFrom-Json
+$profileManifest.platforms = @($expectedOs)
+[System.IO.File]::WriteAllText(
+    $profileManifestPath,
+    ($profileManifest | ConvertTo-Json -Depth 10),
+    [System.Text.UTF8Encoding]::new($false)
+)
+$profilePackage = $profilePackageCopy
 $profileValidation = Invoke-BinaryJson -Arguments @(
     "profile", "validate", $profilePackage,
     "--profile-store", $profileStore
@@ -402,6 +414,9 @@ Write-Host "CLI E2E passed for ${expectedOs}: self-contained SDK runtime, manife
 finally {
     if ($null -ne $profileStore -and (Test-Path -LiteralPath $profileStore)) {
         Remove-Item -LiteralPath $profileStore -Recurse -Force
+    }
+    if ($null -ne $profilePackageCopy -and (Test-Path -LiteralPath $profilePackageCopy)) {
+        Remove-Item -LiteralPath $profilePackageCopy -Recurse -Force
     }
     if (-not $isWindowsHost) {
         if ($null -eq $originalXdgRuntimeDir) {
