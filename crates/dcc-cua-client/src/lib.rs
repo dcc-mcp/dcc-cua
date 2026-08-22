@@ -11,6 +11,10 @@ use std::{
     path::Path,
     pin::Pin,
     process::{ExitStatus, Stdio},
+    sync::{
+        Arc,
+        atomic::{AtomicU8, Ordering},
+    },
     task::{Context, Poll},
     time::Duration,
 };
@@ -42,12 +46,40 @@ pub enum HostClientError {
     Io(#[from] std::io::Error),
     #[error("host protocol failed: {0}")]
     Protocol(String),
+    #[error(
+        "host request timed out after {timeout_ms} ms; reconnect before sending another request"
+    )]
+    Timeout { timeout_ms: u128 },
     #[error("host returned {code}: {message}")]
     Remote {
         code: String,
         message: String,
         response: Value,
     },
+}
+
+const CONNECTION_READY: u8 = 0;
+const CONNECTION_IN_FLIGHT: u8 = 1;
+const CONNECTION_UNUSABLE: u8 = 2;
+
+struct RequestOperationGuard {
+    state: Arc<AtomicU8>,
+    complete: bool,
+}
+
+impl RequestOperationGuard {
+    fn complete(mut self) {
+        self.state.store(CONNECTION_READY, Ordering::Release);
+        self.complete = true;
+    }
+}
+
+impl Drop for RequestOperationGuard {
+    fn drop(&mut self) {
+        if !self.complete {
+            self.state.store(CONNECTION_UNUSABLE, Ordering::Release);
+        }
+    }
 }
 
 pub type HostClientResult<T> = Result<T, HostClientError>;
@@ -100,10 +132,12 @@ pub struct HostClient {
     reader: ReadHalf<BoxedHostStream>,
     writer: WriteHalf<BoxedHostStream>,
     pending_responses: HashMap<String, ReceivedResponse>,
+    outstanding_request_ids: HashSet<String>,
     next_request_id: u64,
     hello_complete: bool,
     snapshot_transport: SnapshotTransport,
     capabilities: Vec<String>,
+    connection_state: Arc<AtomicU8>,
 }
 
 /// One logical agent task bound to one persistent Host connection and window session.
@@ -169,6 +203,30 @@ impl LogicalTaskSession {
             &self.window_capability,
         )?;
         self.client.request(method, params).await
+    }
+
+    /// Send one bounded request through this task's existing Host session.
+    pub async fn request_with_timeout(
+        &mut self,
+        method: impl Into<String>,
+        params: Value,
+        timeout: Duration,
+    ) -> HostClientResult<HostResponse> {
+        let method = method.into();
+        if matches!(method.as_str(), "hello" | "open_session" | "stop_session") {
+            return Err(HostClientError::Protocol(format!(
+                "{method} is managed by LogicalTaskSession"
+            )));
+        }
+        let params = bind_task_credentials(
+            params,
+            &self.session_id,
+            &self.task_grant_id,
+            &self.window_capability,
+        )?;
+        self.client
+            .request_with_timeout(method, params, timeout)
+            .await
     }
 
     /// Stop the task session and return the still-negotiated Host connection.
@@ -341,11 +399,45 @@ impl fmt::Debug for HostClient {
             .field("hello_complete", &self.hello_complete)
             .field("snapshot_transport", &self.snapshot_transport)
             .field("capability_count", &self.capabilities.len())
+            .field(
+                "connection_usable",
+                &(self.connection_state.load(Ordering::Acquire) == CONNECTION_READY),
+            )
             .finish_non_exhaustive()
     }
 }
 
 impl HostClient {
+    fn begin_request_operation(&self) -> HostClientResult<RequestOperationGuard> {
+        match self.connection_state.compare_exchange(
+            CONNECTION_READY,
+            CONNECTION_IN_FLIGHT,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => Ok(RequestOperationGuard {
+                state: Arc::clone(&self.connection_state),
+                complete: false,
+            }),
+            Err(CONNECTION_UNUSABLE) => Err(HostClientError::Protocol(
+                "Host connection is unusable after an interrupted or incomplete request; reconnect before sending another request".into(),
+            )),
+            Err(_) => Err(HostClientError::Protocol(
+                "another Host request is already in flight on this connection".into(),
+            )),
+        }
+    }
+
+    fn finish_request_operation<T>(
+        guard: RequestOperationGuard,
+        result: HostClientResult<T>,
+    ) -> HostClientResult<T> {
+        if result.is_ok() || matches!(&result, Err(HostClientError::Remote { .. })) {
+            guard.complete();
+        }
+        result
+    }
+
     /// Connect to the platform-default per-user Host endpoint and negotiate it.
     pub async fn connect_default(client_name: impl Into<String>) -> HostClientResult<Self> {
         Self::connect(Self::default_endpoint(), client_name).await
@@ -398,10 +490,12 @@ impl HostClient {
             reader,
             writer,
             pending_responses: HashMap::new(),
+            outstanding_request_ids: HashSet::new(),
             next_request_id: 1,
             hello_complete: false,
             snapshot_transport,
             capabilities: Vec::new(),
+            connection_state: Arc::new(AtomicU8::new(CONNECTION_READY)),
         }
     }
 
@@ -541,6 +635,30 @@ impl HostClient {
         self.request_inner(&method.into(), params).await
     }
 
+    /// Send one bounded request.
+    ///
+    /// A timeout can occur after part of a frame was transferred, so the
+    /// connection fails closed and must be replaced instead of risking frame
+    /// or request-correlation reuse.
+    pub async fn request_with_timeout(
+        &mut self,
+        method: impl Into<String>,
+        params: Value,
+        timeout: Duration,
+    ) -> HostClientResult<HostResponse> {
+        if !self.hello_complete {
+            return Err(HostClientError::Protocol(
+                "hello must complete before stateful requests".into(),
+            ));
+        }
+        match tokio::time::timeout(timeout, self.request_inner(&method.into(), params)).await {
+            Ok(result) => result,
+            Err(_) => Err(HostClientError::Timeout {
+                timeout_ms: timeout.as_millis(),
+            }),
+        }
+    }
+
     /// Send one request with a caller-owned correlation id.
     ///
     /// The id is echoed by the Host on both success and error responses. This
@@ -562,6 +680,34 @@ impl HostClient {
         validate_request_id(&request_id)?;
         self.request_inner_with_id(&request_id, &method.into(), params)
             .await
+    }
+
+    /// Send one bounded request with a caller-owned correlation id.
+    pub async fn request_with_id_and_timeout(
+        &mut self,
+        request_id: impl Into<String>,
+        method: impl Into<String>,
+        params: Value,
+        timeout: Duration,
+    ) -> HostClientResult<HostResponse> {
+        if !self.hello_complete {
+            return Err(HostClientError::Protocol(
+                "hello must complete before stateful requests".into(),
+            ));
+        }
+        let request_id = request_id.into();
+        validate_request_id(&request_id)?;
+        match tokio::time::timeout(
+            timeout,
+            self.request_inner_with_id(&request_id, &method.into(), params),
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(_) => Err(HostClientError::Timeout {
+                timeout_ms: timeout.as_millis(),
+            }),
+        }
     }
 
     /// Send a sequence of read-only requests in one flushed write and return
@@ -631,22 +777,27 @@ impl HostClient {
                 "request_batch does not allow duplicate request ids".into(),
             ));
         }
-        let mut request_ids = Vec::with_capacity(requests.len());
-        for (request_id, method, params) in requests {
-            request_ids.push(
-                self.send_request_unflushed_with_id(&request_id, &method, params)
-                    .await?,
-            );
+        let guard = self.begin_request_operation()?;
+        let result = async {
+            let mut request_ids = Vec::with_capacity(requests.len());
+            for (request_id, method, params) in requests {
+                request_ids.push(
+                    self.send_request_unflushed_with_id(&request_id, &method, params)
+                        .await?,
+                );
+            }
+            if !request_ids.is_empty() {
+                self.writer.flush().await?;
+            }
+            let mut received = Vec::with_capacity(request_ids.len());
+            for request_id in request_ids {
+                let response = self.receive_for_request_raw(&request_id).await?;
+                received.push(response.into_result());
+            }
+            Ok(received)
         }
-        if !request_ids.is_empty() {
-            self.writer.flush().await?;
-        }
-        let mut received = Vec::with_capacity(request_ids.len());
-        for request_id in request_ids {
-            let response = self.receive_for_request_raw(&request_id).await?;
-            received.push(response.into_result());
-        }
-        Ok(received)
+        .await;
+        Self::finish_request_operation(guard, result)
     }
 
     /// Send a request while allowing the Host's same-connection cancellation
@@ -667,20 +818,25 @@ impl HostClient {
                 "hello must complete before stateful requests".into(),
             ));
         }
-        let request_id = self.send_request(&method.into(), params).await?;
-        tokio::pin!(cancel);
-        tokio::select! {
-            received = self.receive_for_request(&request_id) => {
-                received
-            }
-            _ = &mut cancel => {
-                let cancel_id = self.send_request("cancel", cancel_params).await?;
-                let cancel_result = self.receive_for_request(&cancel_id).await;
-                let request_result = self.receive_for_request(&request_id).await;
-                cancel_result?;
-                request_result
+        let guard = self.begin_request_operation()?;
+        let result = async {
+            let request_id = self.send_request(&method.into(), params).await?;
+            tokio::pin!(cancel);
+            tokio::select! {
+                received = self.receive_for_request(&request_id) => {
+                    received
+                }
+                _ = &mut cancel => {
+                    let cancel_id = self.send_request("cancel", cancel_params).await?;
+                    let cancel_result = self.receive_for_request(&cancel_id).await;
+                    let request_result = self.receive_for_request(&request_id).await;
+                    cancel_result?;
+                    request_result
+                }
             }
         }
+        .await;
+        Self::finish_request_operation(guard, result)
     }
 
     /// Wait for a native window while allowing a same-connection cancellation.
@@ -698,18 +854,23 @@ impl HostClient {
                 "hello must complete before stateful requests".into(),
             ));
         }
-        let request_id = self.send_request("wait_for_window", params).await?;
-        tokio::pin!(cancel);
-        tokio::select! {
-            received = self.receive_for_request(&request_id) => received,
-            _ = &mut cancel => {
-                let cancel_id = self
-                    .send_request("cancel_window_wait", json!({"wait_id": request_id}))
-                    .await?;
-                self.receive_for_request(&cancel_id).await?;
-                self.receive_for_request(&request_id).await
+        let guard = self.begin_request_operation()?;
+        let result = async {
+            let request_id = self.send_request("wait_for_window", params).await?;
+            tokio::pin!(cancel);
+            tokio::select! {
+                received = self.receive_for_request(&request_id) => received,
+                _ = &mut cancel => {
+                    let cancel_id = self
+                        .send_request("cancel_window_wait", json!({"wait_id": request_id}))
+                        .await?;
+                    self.receive_for_request(&cancel_id).await?;
+                    self.receive_for_request(&request_id).await
+                }
             }
         }
+        .await;
+        Self::finish_request_operation(guard, result)
     }
 
     async fn request_inner(
@@ -717,8 +878,13 @@ impl HostClient {
         method: &str,
         params: Value,
     ) -> HostClientResult<HostResponse> {
-        let request_id = self.send_request(method, params).await?;
-        self.receive_for_request(&request_id).await
+        let guard = self.begin_request_operation()?;
+        let result = async {
+            let request_id = self.send_request(method, params).await?;
+            self.receive_for_request(&request_id).await
+        }
+        .await;
+        Self::finish_request_operation(guard, result)
     }
 
     async fn request_inner_with_id(
@@ -727,10 +893,15 @@ impl HostClient {
         method: &str,
         params: Value,
     ) -> HostClientResult<HostResponse> {
-        let request_id = self
-            .send_request_with_id(request_id, method, params)
-            .await?;
-        self.receive_for_request(&request_id).await
+        let guard = self.begin_request_operation()?;
+        let result = async {
+            let request_id = self
+                .send_request_with_id(request_id, method, params)
+                .await?;
+            self.receive_for_request(&request_id).await
+        }
+        .await;
+        Self::finish_request_operation(guard, result)
     }
 
     async fn receive_for_request(&mut self, request_id: &str) -> HostClientResult<HostResponse> {
@@ -744,15 +915,33 @@ impl HostClient {
         request_id: &str,
     ) -> HostClientResult<ReceivedResponse> {
         if let Some(response) = self.pending_responses.remove(request_id) {
+            self.outstanding_request_ids.remove(request_id);
             return Ok(response);
         }
         loop {
             let response = self.receive_response().await?;
+            if !self
+                .outstanding_request_ids
+                .contains(response.request_id.as_str())
+            {
+                return Err(HostClientError::Protocol(format!(
+                    "Host returned an untracked request_id: {}",
+                    response.request_id
+                )));
+            }
             if response.request_id == request_id {
+                self.outstanding_request_ids.remove(request_id);
                 return Ok(response);
             }
-            self.pending_responses
-                .insert(response.request_id.clone(), response);
+            if self
+                .pending_responses
+                .insert(response.request_id.clone(), response)
+                .is_some()
+            {
+                return Err(HostClientError::Protocol(
+                    "Host returned a duplicate response for one request_id".into(),
+                ));
+            }
         }
     }
 
@@ -775,6 +964,7 @@ impl HostClient {
     ) -> HostClientResult<String> {
         validate_request_id(request_id)?;
         let request_id = request_id.to_owned();
+        self.register_outstanding_request(&request_id)?;
         let request = json!({
             "request_id": request_id,
             "method": method,
@@ -795,6 +985,7 @@ impl HostClient {
     ) -> HostClientResult<String> {
         validate_request_id(request_id)?;
         let request_id = request_id.to_owned();
+        self.register_outstanding_request(&request_id)?;
         let request = json!({
             "request_id": request_id,
             "method": method,
@@ -804,6 +995,22 @@ impl HostClient {
             .map_err(|error| HostClientError::Protocol(error.to_string()))?;
         write_frame_unflushed(&mut self.writer, &body, MAX_JSON_FRAME_BYTES).await?;
         Ok(request_id)
+    }
+
+    fn register_outstanding_request(&mut self, request_id: &str) -> HostClientResult<()> {
+        if self.outstanding_request_ids.len() >= MAX_PARALLEL_DISCOVERY_REQUESTS {
+            return Err(HostClientError::Protocol(format!(
+                "one client operation tracks at most {MAX_PARALLEL_DISCOVERY_REQUESTS} request ids"
+            )));
+        }
+        if !self.outstanding_request_ids.insert(request_id.to_owned())
+            || self.pending_responses.contains_key(request_id)
+        {
+            return Err(HostClientError::Protocol(format!(
+                "request_id {request_id} is already in flight"
+            )));
+        }
+        Ok(())
     }
 
     async fn receive_response(&mut self) -> HostClientResult<ReceivedResponse> {

@@ -431,6 +431,65 @@ async fn client_can_cancel_window_wait_with_generated_request_id() {
     server.await.unwrap().unwrap();
 }
 
+#[rstest]
+#[tokio::test]
+async fn timed_out_request_fails_closed_before_a_partial_frame_can_be_reused() {
+    let (client_stream, server_stream) = tokio::io::duplex(4096);
+    let server = tokio::spawn(fake_partial_response_server(server_stream));
+    let mut client = HostClient::from_stream(client_stream);
+    client.hello("timeout-client").await.unwrap();
+
+    assert!(matches!(
+        client
+            .request_with_timeout("screen_size", json!({}), Duration::from_millis(20))
+            .await,
+        Err(HostClientError::Timeout { .. })
+    ));
+    assert!(matches!(
+        client.ping().await,
+        Err(HostClientError::Protocol(message)) if message.contains("reconnect")
+    ));
+    server.abort();
+}
+
+#[rstest]
+#[tokio::test]
+async fn externally_cancelled_request_marks_the_connection_unusable() {
+    let (client_stream, server_stream) = tokio::io::duplex(4096);
+    let server = tokio::spawn(fake_partial_response_server(server_stream));
+    let mut client = HostClient::from_stream(client_stream);
+    client.hello("cancel-safety-client").await.unwrap();
+
+    assert!(
+        tokio::time::timeout(
+            Duration::from_millis(20),
+            client.request("screen_size", json!({})),
+        )
+        .await
+        .is_err()
+    );
+    assert!(matches!(
+        client.ping().await,
+        Err(HostClientError::Protocol(message)) if message.contains("reconnect")
+    ));
+    server.abort();
+}
+
+#[rstest]
+#[tokio::test]
+async fn client_rejects_an_untracked_response_id_instead_of_buffering_it() {
+    let (client_stream, server_stream) = tokio::io::duplex(4096);
+    let server = tokio::spawn(fake_unknown_response_id_server(server_stream));
+    let mut client = HostClient::from_stream(client_stream);
+    client.hello("correlation-client").await.unwrap();
+
+    assert!(matches!(
+        client.request("screen_size", json!({})).await,
+        Err(HostClientError::Protocol(message)) if message.contains("untracked request_id")
+    ));
+    server.await.unwrap().unwrap();
+}
+
 async fn fake_server(mut stream: DuplexStream) -> HostClientResult<()> {
     let hello = read_frame(&mut stream, MAX_JSON_FRAME_BYTES)
         .await?
@@ -460,6 +519,62 @@ async fn fake_server(mut stream: DuplexStream) -> HostClientResult<()> {
     )
     .await?;
     write_frame(&mut stream, b"png", MAX_BINARY_FRAME_BYTES).await
+}
+
+async fn fake_partial_response_server(mut stream: DuplexStream) -> HostClientResult<()> {
+    let hello: Value = serde_json::from_slice(
+        &read_frame(&mut stream, MAX_JSON_FRAME_BYTES)
+            .await?
+            .unwrap(),
+    )
+    .unwrap();
+    write_json_response(
+        &mut stream,
+        hello["request_id"].as_str().unwrap(),
+        json!({"type":"hello"}),
+    )
+    .await?;
+
+    let request: Value = serde_json::from_slice(
+        &read_frame(&mut stream, MAX_JSON_FRAME_BYTES)
+            .await?
+            .unwrap(),
+    )
+    .unwrap();
+    let body = serde_json::to_vec(&json!({
+        "type": "screen_size",
+        "request_id": request["request_id"],
+    }))
+    .unwrap();
+    stream.write_all(&(body.len() as u32).to_be_bytes()).await?;
+    stream.write_all(&body[..1]).await?;
+    stream.flush().await?;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    Ok(())
+}
+
+async fn fake_unknown_response_id_server(mut stream: DuplexStream) -> HostClientResult<()> {
+    let hello: Value = serde_json::from_slice(
+        &read_frame(&mut stream, MAX_JSON_FRAME_BYTES)
+            .await?
+            .unwrap(),
+    )
+    .unwrap();
+    write_json_response(
+        &mut stream,
+        hello["request_id"].as_str().unwrap(),
+        json!({"type":"hello"}),
+    )
+    .await?;
+    let _request = read_frame(&mut stream, MAX_JSON_FRAME_BYTES)
+        .await?
+        .unwrap();
+    write_json_response(
+        &mut stream,
+        "untracked-response",
+        json!({"type":"screen_size"}),
+    )
+    .await
 }
 
 async fn fake_ping_server(mut stream: DuplexStream) -> HostClientResult<()> {
