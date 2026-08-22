@@ -8,6 +8,7 @@
 mod action_confirmation;
 mod browser_extension;
 mod endpoint;
+mod error_contract;
 mod request_contract;
 mod request_handler;
 mod session_events;
@@ -28,6 +29,7 @@ pub use dcc_cua_protocol::{
     MAX_REQUEST_ID_CHARS, MAX_SESSION_IDLE_TIMEOUT_MS, MAX_SESSIONS_PER_CONNECTION,
     MIN_SESSION_IDLE_TIMEOUT_MS,
 };
+pub use error_contract::{HostError, HostProtocolErrorCode, HostTransport};
 use request_handler::handle_request_with_confirmation_host;
 use session_identity::{new_runtime_session_id, rewrite_session_aliases};
 use session_state::{
@@ -49,7 +51,6 @@ use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 use serde_json::{Value, json};
-use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::Mutex as AsyncMutex;
 use tokio::task::JoinSet;
@@ -198,30 +199,6 @@ fn rewrite_runtime_session_ids(value: &mut Value, sessions: &ConnectionSessions)
             }))
             .collect::<Vec<_>>();
     rewrite_session_aliases(value, &aliases);
-}
-
-/// Local transport selected by the CLI or embedding host.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum HostTransport {
-    Stdio,
-    Endpoint(String),
-}
-
-impl HostTransport {
-    #[must_use]
-    pub fn default_endpoint() -> String {
-        dcc_cua_protocol::default_endpoint()
-    }
-}
-
-#[derive(Debug, Error)]
-pub enum HostError {
-    #[error("host transport failed: {0}")]
-    Io(#[from] std::io::Error),
-    #[error("host protocol failed: {0}")]
-    Protocol(String),
-    #[error("{0}")]
-    ComputerUse(#[from] ComputerUseError),
 }
 
 #[derive(Debug, Deserialize)]
@@ -607,10 +584,13 @@ enum SnapshotTransport {
 impl SnapshotTransport {
     fn from_hello(params: &HelloParams) -> Result<Self, HostError> {
         if params.protocol_version != HOST_PROTOCOL_VERSION {
-            return Err(HostError::Protocol(format!(
-                "protocol version {} is not supported",
-                params.protocol_version
-            )));
+            return Err(HostError::coded_protocol(
+                HostProtocolErrorCode::ProtocolMismatch,
+                format!(
+                    "protocol version {} is not supported",
+                    params.protocol_version
+                ),
+            ));
         }
         match params
             .snapshot_transport
@@ -879,7 +859,10 @@ fn register_wait(
         .lock()
         .map_err(|_| HostError::Protocol("cancellation registry is unavailable".into()))?;
     if waits.contains_key(session_id) {
-        return Err(HostError::Protocol("wait_for is already running".into()));
+        return Err(HostError::coded_protocol(
+            HostProtocolErrorCode::RequestInProgress,
+            "wait_for is already running",
+        ));
     }
     waits.insert(session_id.to_owned(), handle.clone());
     Ok(CancellationGuard {
@@ -905,8 +888,9 @@ fn register_window_wait(
         .lock()
         .map_err(|_| HostError::Protocol("cancellation registry is unavailable".into()))?;
     if waits.contains_key(&key) {
-        return Err(HostError::Protocol(
-            "window_wait is already running for this wait_id".into(),
+        return Err(HostError::coded_protocol(
+            HostProtocolErrorCode::RequestInProgress,
+            "window_wait is already running for this wait_id",
         ));
     }
     waits.insert(key.clone(), handle.clone());
@@ -925,7 +909,12 @@ fn cancel_window_wait(registry: &CancellationRegistry, wait_id: &str) -> Result<
         .map_err(|_| HostError::Protocol("cancellation registry is unavailable".into()))?
         .get(&key)
         .cloned()
-        .ok_or_else(|| HostError::Protocol("no window_wait is running for this wait_id".into()))?;
+        .ok_or_else(|| {
+            HostError::coded_protocol(
+                HostProtocolErrorCode::RequestNotFound,
+                "no window_wait is running for this wait_id",
+            )
+        })?;
     handle.cancelled.store(true, Ordering::Release);
     handle.notify.notify_one();
     Ok(json!({
@@ -954,10 +943,16 @@ fn cancel_wait(
         .map_err(|_| HostError::Protocol("cancellation registry is unavailable".into()))?
         .get(session_id)
         .cloned()
-        .ok_or_else(|| HostError::Protocol("no wait_for is running for this session".into()))?;
+        .ok_or_else(|| {
+            HostError::coded_protocol(
+                HostProtocolErrorCode::RequestNotFound,
+                "no wait_for is running for this session",
+            )
+        })?;
     if handle.task_grant_id != task_grant_id || handle.window_capability != window_capability {
-        return Err(HostError::Protocol(
-            "cancel credentials do not match the running wait_for".into(),
+        return Err(HostError::coded_protocol(
+            HostProtocolErrorCode::Forbidden,
+            "cancel credentials do not match the running wait_for",
         ));
     }
     handle.cancelled.store(true, Ordering::Release);
@@ -1121,7 +1116,7 @@ where
                     result = &mut operation => {
                         let (mut response, attachment) = match result {
                             Ok(result) => result,
-                            Err(error) => (error_response(error_code(&error), error.to_string()), None),
+                            Err(error) => (host_error_response(&error), None),
                         };
                         drop(operation);
                         rewrite_runtime_session_ids(&mut response, &sessions);
@@ -1150,7 +1145,7 @@ where
                         if let Request::CancelWindowWait { wait_id } = next_request {
                             let response = match cancel_window_wait(&cancellation_registry, &wait_id) {
                                 Ok(response) => response,
-                                Err(error) => error_response(error_code(&error), error.to_string()),
+                                Err(error) => host_error_response(&error),
                             };
                             let cancelled = response["type"] == "window_wait_cancel_requested";
                             write_json_locked(&writer, with_request_id(response, cancel_id.as_deref())).await?;
@@ -1179,7 +1174,7 @@ where
                                 &window_capability,
                             ) {
                                 Ok(response) => response,
-                                Err(error) => error_response(error_code(&error), error.to_string()),
+                                Err(error) => host_error_response(&error),
                             };
                             write_json_locked(&writer, with_request_id(response, cancel_id.as_deref())).await?;
                         } else {
@@ -1203,7 +1198,7 @@ where
                 let (response, attachment) =
                     match handle_parallel_request(&task_driver, request).await {
                         Ok(result) => result,
-                        Err(error) => (error_response(error_code(&error), error.to_string()), None),
+                        Err(error) => (host_error_response(&error), None),
                     };
                 write_response_locked(
                     &task_writer,
@@ -1225,7 +1220,7 @@ where
             .await
             {
                 Ok(result) => result,
-                Err(error) => (error_response(error_code(&error), error.to_string()), None),
+                Err(error) => (host_error_response(&error), None),
             };
             rewrite_runtime_session_ids(&mut response, &sessions);
             write_response_locked(

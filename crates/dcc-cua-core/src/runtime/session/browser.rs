@@ -125,25 +125,49 @@ impl ComputerUseSession {
             Ok(Ok(value)) => Ok(value),
             Ok(Err(cua_driver_sdk::DriverError::ActionInterrupted { completion, reason })) => {
                 let completion = match completion {
-                    cua_driver_sdk::worker::ActionCompletion::NotStarted => "not_started",
-                    cua_driver_sdk::worker::ActionCompletion::Completed => "completed",
-                    cua_driver_sdk::worker::ActionCompletion::Unknown => "unknown",
+                    cua_driver_sdk::worker::ActionCompletion::NotStarted
+                    | cua_driver_sdk::worker::ActionCompletion::Completed => {
+                        ComputerUseCompletionState::Known
+                    }
+                    cua_driver_sdk::worker::ActionCompletion::Unknown => {
+                        ComputerUseCompletionState::Unknown
+                    }
                 };
                 Err(ComputerUseError::new(
                     ComputerUseErrorCode::BackendUnavailable,
-                    format!(
-                        "{context}: {reason}; phase=evidence_dispatch; evidence_completion={completion}; action_attempted=false; local_session_invalidated=false; session_remains_active=true; automatic_input=false; blind_retry=false"
-                    ),
-                ))
+                    format!("{context}: {reason}"),
+                )
+                .with_details(ComputerUseErrorDetails {
+                    phase: Some(ComputerUseErrorPhase::EvidenceDispatch),
+                    action_attempted: Some(false),
+                    input_sent: Some(ComputerUseInputState::NotSent),
+                    completion: Some(completion),
+                    local_session_invalidated: Some(false),
+                    session_remains_active: Some(true),
+                    automatic_input: Some(false),
+                    blind_retry: Some(false),
+                    ..Default::default()
+                }))
             }
             Ok(Err(error)) => Err(map_driver_error(context, error)),
-            Err(error) => Err(ComputerUseError::new(
-                error.code,
-                format!(
-                    "{}; phase=evidence_dispatch; action_attempted=false; local_session_invalidated=false; session_remains_active=true; automatic_input=false; blind_retry=false",
-                    error.message
-                ),
-            )),
+            Err(error) => {
+                let timed_out = error.details.as_ref().and_then(|details| details.timed_out);
+                Err(
+                    ComputerUseError::new(error.code, error.message).with_details(
+                        ComputerUseErrorDetails {
+                            timed_out,
+                            phase: Some(ComputerUseErrorPhase::EvidenceDispatch),
+                            action_attempted: Some(false),
+                            input_sent: Some(ComputerUseInputState::NotSent),
+                            local_session_invalidated: Some(false),
+                            session_remains_active: Some(true),
+                            automatic_input: Some(false),
+                            blind_retry: Some(false),
+                            ..Default::default()
+                        },
+                    ),
+                )
+            }
         }
     }
 

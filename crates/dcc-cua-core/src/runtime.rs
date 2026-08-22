@@ -51,14 +51,21 @@ mod window_commands;
 
 #[cfg(any(not(windows), test))]
 pub(crate) fn activation_completion_unknown(error: ComputerUseError) -> ComputerUseError {
-    let detail = error
-        .message
-        .replace("; the window session was invalidated", "");
-    ComputerUseError::new(
-        ComputerUseErrorCode::CompletionUnknown,
-        format!(
-            "{detail}; completion_unknown=true; automatic_input=false; blind_retry=false; fresh_observation_required=true"
-        ),
+    let timed_out = error.details.as_ref().and_then(|details| details.timed_out);
+    ComputerUseError::new(ComputerUseErrorCode::CompletionUnknown, error.message).with_details(
+        ComputerUseErrorDetails {
+            timed_out,
+            phase: Some(ComputerUseErrorPhase::ActivationDispatch),
+            action_attempted: Some(false),
+            focus_mutation_attempted: Some(true),
+            input_sent: Some(ComputerUseInputState::NotSent),
+            completion: Some(ComputerUseCompletionState::Unknown),
+            effect_unknown: Some(true),
+            automatic_input: Some(false),
+            blind_retry: Some(false),
+            fresh_observation_required: Some(true),
+            ..Default::default()
+        },
     )
 }
 
@@ -123,7 +130,22 @@ pub(crate) fn map_windows_window_mutation_error(
     context: &str,
     error: dcc_cua_platform_windows::UiaError,
 ) -> ComputerUseError {
+    let details = match &error {
+        dcc_cua_platform_windows::UiaError::ForegroundActivationRefused {
+            background_delivery_viable,
+            suggested_delivery_mode,
+            ..
+        } => Some(ComputerUseErrorDetails {
+            background_delivery_viable: Some(*background_delivery_viable),
+            suggested_delivery_mode: suggested_delivery_mode.clone(),
+            ..Default::default()
+        }),
+        _ => None,
+    };
     let code = match &error {
+        dcc_cua_platform_windows::UiaError::ForegroundActivationRefused { .. } => {
+            ComputerUseErrorCode::ForegroundActivationRefused
+        }
         dcc_cua_platform_windows::UiaError::PermissionDenied(message)
             if message.contains("input_gate_stage=")
                 || message.contains("activation_gate_stage=") =>
@@ -140,7 +162,11 @@ pub(crate) fn map_windows_window_mutation_error(
         }
         _ => ComputerUseErrorCode::InputFailed,
     };
-    ComputerUseError::new(code, format!("{context}: {error}"))
+    let error = ComputerUseError::new(code, format!("{context}: {error}"));
+    match details {
+        Some(details) => error.with_details(details),
+        None => error,
+    }
 }
 
 const INPUT_CALL_TIMEOUT: Duration = Duration::from_secs(15);
@@ -366,16 +392,29 @@ pub(crate) async fn await_input_call<T>(
             ComputerUseErrorCode::InputFailed,
             format!("CUA {operation} timed out after {} ms", timeout.as_millis()),
         )
+        .with_details(ComputerUseErrorDetails {
+            timed_out: Some(true),
+            ..Default::default()
+        })
     })
 }
 
 pub(crate) fn action_dispatch_completion_unknown(error: ComputerUseError) -> ComputerUseError {
-    ComputerUseError::new(
-        ComputerUseErrorCode::CompletionUnknown,
-        format!(
-            "{}; phase=action_dispatch; action_attempted=true; input_sent=unknown; completion_unknown=true; local_session_invalidated=true; automatic_input=false; blind_retry=false; fresh_observation_required=true",
-            error.message
-        ),
+    let timed_out = error.details.as_ref().and_then(|details| details.timed_out);
+    ComputerUseError::new(ComputerUseErrorCode::CompletionUnknown, error.message).with_details(
+        ComputerUseErrorDetails {
+            timed_out,
+            phase: Some(ComputerUseErrorPhase::ActionDispatch),
+            action_attempted: Some(true),
+            input_sent: Some(ComputerUseInputState::Unknown),
+            completion: Some(ComputerUseCompletionState::Unknown),
+            local_session_invalidated: Some(true),
+            session_remains_active: Some(false),
+            automatic_input: Some(false),
+            blind_retry: Some(false),
+            fresh_observation_required: Some(true),
+            ..Default::default()
+        },
     )
 }
 
@@ -998,8 +1037,12 @@ enum UpstreamSessionState {
 
 #[cfg(windows)]
 fn visual_only_start_degradation(error: &ComputerUseError) -> Option<String> {
-    (error.code == ComputerUseErrorCode::InputFailed && error.message.contains("timed out"))
-        .then(|| error.message.clone())
+    (error.code == ComputerUseErrorCode::InputFailed
+        && error
+            .details
+            .as_ref()
+            .is_some_and(|details| details.timed_out == Some(true)))
+    .then(|| error.message.clone())
 }
 
 pub struct ComputerUseSession {

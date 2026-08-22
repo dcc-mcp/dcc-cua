@@ -14,6 +14,27 @@ fn only_stateless_discovery_uses_parallel_dispatch() {
 }
 
 #[rstest]
+fn host_error_response_serializes_typed_computer_use_details() {
+    let error = HostError::ComputerUse(
+        ComputerUseError::new(
+            ComputerUseErrorCode::ForegroundActivationRefused,
+            "foreground activation refused",
+        )
+        .with_details(dcc_cua_core::ComputerUseErrorDetails {
+            background_delivery_viable: Some(true),
+            suggested_delivery_mode: Some("background".into()),
+            ..Default::default()
+        }),
+    );
+
+    let response = host_error_response(&error);
+
+    assert_eq!(response["code"], "foreground_activation_refused");
+    assert_eq!(response["details"]["background_delivery_viable"], true);
+    assert_eq!(response["details"]["suggested_delivery_mode"], "background");
+}
+
+#[rstest]
 fn native_tool_response_moves_image_pixels_to_binary_attachment() {
     let mut shared = None;
     let (response, attachment) = native_tool_response_with_transport(

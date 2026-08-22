@@ -41,60 +41,27 @@ pub(super) fn error_code(error: &HostError) -> &'static str {
             ComputerUseErrorCode::InvalidAction => "invalid_request",
             ComputerUseErrorCode::MissingWindow => "target_unavailable",
             ComputerUseErrorCode::BackendUnavailable => "backend_unavailable",
+            ComputerUseErrorCode::ForegroundActivationRefused => "foreground_activation_refused",
         },
         HostError::Io(_) => "backend_unavailable",
-        HostError::Protocol(message) if message.contains("version") => "protocol_mismatch",
-        HostError::Protocol(message) if message.contains("raw input") => "raw_input_not_granted",
-        HostError::Protocol(message) if message.contains("application launch") => {
-            "app_launch_not_granted"
-        }
-        HostError::Protocol(message) if message.contains("application termination") => {
-            "app_terminate_not_granted"
-        }
-        HostError::Protocol(message) if message.contains("browser input") => {
-            "browser_input_not_granted"
-        }
-        HostError::Protocol(message) if message.contains("browser preparation") => {
-            "browser_prepare_not_granted"
-        }
-        HostError::Protocol(message) if message.contains("browser download") => {
-            "browser_download_not_granted"
-        }
-        HostError::Protocol(message) if message.contains("clipboard read") => {
-            "clipboard_read_not_granted"
-        }
-        HostError::Protocol(message) if message.contains("clipboard write") => {
-            "clipboard_write_not_granted"
-        }
-        HostError::Protocol(message) if message.contains("recording") => "recording_not_granted",
-        HostError::Protocol(message) if message.contains("native CUA tool calls") => {
-            "native_tool_not_granted"
-        }
-        HostError::Protocol(message) if message.contains("native menu invocation") => {
-            "menu_invoke_not_granted"
-        }
-        HostError::Protocol(message) if message.contains("session escalation") => {
-            "session_escalation_not_granted"
-        }
-        HostError::Protocol(message) if message.contains("connection session limit reached") => {
-            "session_limit_reached"
-        }
-        HostError::Protocol(message) if message.contains("already running") => {
-            "request_in_progress"
-        }
-        HostError::Protocol(message)
-            if message.contains("no wait_for") || message.contains("no window_wait") =>
-        {
-            "request_not_found"
-        }
-        HostError::Protocol(message) if message.contains("cancel credentials") => "forbidden",
-        HostError::Protocol(message) if message.contains("accessibility") => "unsupported",
+        HostError::CodedProtocol { code, .. } => code.as_wire_code(),
         HostError::Protocol(_) => "invalid_request",
     }
 }
 
 pub(super) fn error_response(code: &str, message: impl Into<String>) -> Value {
     json!({"type":"error", "code":code, "message":message.into()})
+}
+
+pub(super) fn host_error_response(error: &HostError) -> Value {
+    let mut response = error_response(error_code(error), error.to_string());
+    if let HostError::ComputerUse(error) = error
+        && let Some(details) = &error.details
+    {
+        response["details"] =
+            serde_json::to_value(details).expect("ComputerUseErrorDetails must serialize");
+    }
+    response
 }
 
 pub(super) fn parse_request_frame(

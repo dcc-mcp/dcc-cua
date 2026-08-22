@@ -7,8 +7,8 @@ use tokio::sync::{Mutex, mpsc, oneshot};
 use uuid::Uuid;
 
 use crate::{
-    HostError, HostEvidencePublication, HostSession, MAX_REQUEST_ID_CHARS, Request,
-    authorized_session,
+    HostError, HostEvidencePublication, HostProtocolErrorCode, HostSession, MAX_REQUEST_ID_CHARS,
+    Request, authorized_session,
 };
 
 const EXTENSION_SCHEMA: &str = "dcc-cua.browser-extension.v1";
@@ -134,8 +134,9 @@ pub(super) async fn route_host_request(
                     Err(error) => return RoutedBrowserExtensionRequest::Handled(Err(error)),
                 };
             if matches!(method.as_str(), "click" | "type" | "unpair") && !host.allow_browser_input {
-                return RoutedBrowserExtensionRequest::Handled(Err(HostError::Protocol(
-                    "browser input is not granted for the logical task session".into(),
+                return RoutedBrowserExtensionRequest::Handled(Err(HostError::coded_protocol(
+                    HostProtocolErrorCode::BrowserInputNotGranted,
+                    "browser input is not granted for the logical task session",
                 )));
             }
             let response = browser_extension_registry()

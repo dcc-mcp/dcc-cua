@@ -1,5 +1,7 @@
 use super::*;
 use crate::request_contract::*;
+mod evidence_epoch;
+pub(super) use evidence_epoch::*;
 
 pub(super) async fn acquire_raw_input_turn(
     enabled: bool,
@@ -17,10 +19,17 @@ pub(super) fn ensure_connection_session_capacity(
     if active_session_count < MAX_SESSIONS_PER_CONNECTION {
         return Ok(());
     }
-    Err(HostError::Protocol(format!(
-        "connection session limit reached (maximum {})",
-        MAX_SESSIONS_PER_CONNECTION
-    )))
+    Err(HostError::coded_protocol(
+        HostProtocolErrorCode::SessionLimitReached,
+        format!(
+            "connection session limit reached (maximum {})",
+            MAX_SESSIONS_PER_CONNECTION
+        ),
+    ))
+}
+
+fn denied(code: HostProtocolErrorCode, capability: &'static str) -> HostError {
+    HostError::coded_protocol(code, format!("{capability} is not granted"))
 }
 
 pub(super) fn finish_window_mutation_attempt<T, E>(
@@ -130,124 +139,6 @@ async fn refresh_session_health_input_and_target(host: &mut HostSession) -> bool
         host.observe_target_availability(availability);
     }
     target_probe_failed
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct WindowEvidenceEpochRoute {
-    pub(super) session_id: String,
-    pub(super) publication: HostEvidencePublication,
-}
-
-pub(super) fn window_evidence_epoch_route(request: &Request) -> Option<WindowEvidenceEpochRoute> {
-    let standard = |session_id: &str| WindowEvidenceEpochRoute {
-        session_id: session_id.to_owned(),
-        publication: HostEvidencePublication::None,
-    };
-    match request {
-        Request::BrowserSnapshot { session_id, .. } => Some(WindowEvidenceEpochRoute {
-            session_id: session_id.clone(),
-            publication: HostEvidencePublication::BrowserSnapshotAttempt,
-        }),
-        Request::TerminateApp { session_id, .. }
-        | Request::ClipboardRead { session_id, .. }
-        | Request::ClipboardWrite { session_id, .. }
-        | Request::RecordingStart { session_id, .. }
-        | Request::RecordingStop { session_id, .. }
-        | Request::RecordingState { session_id, .. }
-        | Request::LiveObservationStart { session_id, .. }
-        | Request::LiveObservationState { session_id, .. }
-        | Request::LiveObservationStop { session_id, .. }
-        | Request::GetWindowState { session_id, .. }
-        | Request::ChangeWindowState { session_id, .. }
-        | Request::SetWindowFrame { session_id, .. }
-        | Request::InvokeMenu { session_id, .. }
-        | Request::Snapshot { session_id, .. }
-        | Request::Zoom { session_id, .. }
-        | Request::AccessibilitySnapshot { session_id, .. }
-        | Request::VerifyState { session_id, .. }
-        | Request::CallTool { session_id, .. }
-        | Request::BrowserPrepare { session_id, .. }
-        | Request::BrowserNavigate { session_id, .. }
-        | Request::BrowserClick { session_id, .. }
-        | Request::BrowserType { session_id, .. }
-        | Request::BrowserPointer { session_id, .. }
-        | Request::BrowserSetInputFiles { session_id, .. }
-        | Request::BrowserDownload { session_id, .. }
-        | Request::BrowserDialog { session_id, .. }
-        | Request::BrowserExtensionStatus { session_id, .. }
-        | Request::BrowserExtensionCall { session_id, .. }
-        | Request::Find { session_id, .. }
-        | Request::WaitFor { session_id, .. }
-        | Request::ExecuteAction { session_id, .. }
-        | Request::ResumeSession { session_id, .. }
-        | Request::GetSessionState { session_id, .. }
-        | Request::GetInputState { session_id, .. }
-        | Request::SessionHealth { session_id, .. }
-        | Request::PollSessionEvents { session_id, .. }
-        | Request::CursorTool { session_id, .. }
-        | Request::EscalateSession { session_id, .. } => Some(standard(session_id)),
-        Request::Hello(_)
-        | Request::Ping {}
-        | Request::Doctor {}
-        | Request::RegisterBrowserExtension { .. }
-        | Request::BrowserExtensionNext { .. }
-        | Request::CompleteBrowserExtension { .. }
-        | Request::UnregisterBrowserExtension { .. }
-        | Request::InterruptAll {}
-        | Request::ListApps {}
-        | Request::ListTools {}
-        | Request::ListWindows { .. }
-        | Request::WaitForWindow(_)
-        | Request::DesktopSnapshot {}
-        | Request::ScreenSize {}
-        | Request::CursorPosition {}
-        | Request::OpenDesktopSession { .. }
-        | Request::DesktopSessionSnapshot { .. }
-        | Request::ExecuteDesktopAction { .. }
-        | Request::StopDesktopSession { .. }
-        | Request::LaunchApp { .. }
-        | Request::OpenSession { .. }
-        | Request::CallGlobalTool { .. }
-        | Request::StopSession { .. }
-        | Request::Cancel { .. }
-        | Request::CancelWindowWait { .. } => None,
-    }
-}
-
-fn prepare_window_evidence_request(
-    sessions: &mut ConnectionSessions,
-    route: Option<&WindowEvidenceEpochRoute>,
-) {
-    if let Some(host) = route.and_then(|route| sessions.windows.get_mut(&route.session_id)) {
-        host.synchronize_action_evidence_epoch();
-    }
-}
-
-pub(super) fn finish_window_evidence_request<T>(
-    sessions: &mut ConnectionSessions,
-    route: Option<WindowEvidenceEpochRoute>,
-    result: Result<T, HostError>,
-) -> Result<T, HostError> {
-    if let Some(route) = route
-        && let Some(host) = sessions.windows.get_mut(&route.session_id)
-    {
-        if !host.interrupted {
-            host.mark_activity();
-        }
-        if result.is_ok() {
-            host.synchronize_action_evidence_epoch_with(route.publication);
-        } else {
-            host.synchronize_action_evidence_epoch();
-            if matches!(
-                route.publication,
-                HostEvidencePublication::BrowserSnapshot
-                    | HostEvidencePublication::BrowserSnapshotAttempt
-            ) {
-                host.discard_browser_evidence();
-            }
-        }
-    }
-    result
 }
 
 pub(super) async fn handle_request_with_confirmation_host(
@@ -534,7 +425,10 @@ async fn handle_request_inner(
             )
             .await?;
             if !host.allow_raw_input {
-                return Err(HostError::Protocol("raw input is not granted".into()));
+                return Err(denied(
+                    HostProtocolErrorCode::RawInputNotGranted,
+                    "raw input",
+                ));
             }
             if let Some((code, message)) = action.reject_policy() {
                 return Ok((
@@ -654,8 +548,9 @@ async fn handle_request_inner(
             )?;
             grant.validate_identity()?;
             if !grant.allow_app_launch {
-                return Err(HostError::Protocol(
-                    "application launch is not granted".into(),
+                return Err(denied(
+                    HostProtocolErrorCode::AppLaunchNotGranted,
+                    "application launch",
                 ));
             }
             let runtime_session_id = new_runtime_session_id("launch");
@@ -699,8 +594,9 @@ async fn handle_request_inner(
                     authorized_session(sessions, &session_id, &task_grant_id, &window_capability)
                         .await?;
                 if !host.allow_app_terminate {
-                    return Err(HostError::Protocol(
-                        "application termination is not granted".into(),
+                    return Err(denied(
+                        HostProtocolErrorCode::AppTerminateNotGranted,
+                        "application termination",
                     ));
                 }
                 let result = host.session.terminate_app().await;
@@ -726,7 +622,10 @@ async fn handle_request_inner(
                 authorized_session(sessions, &session_id, &task_grant_id, &window_capability)
                     .await?;
             if !host.allow_clipboard_read {
-                return Err(HostError::Protocol("clipboard read is not granted".into()));
+                return Err(denied(
+                    HostProtocolErrorCode::ClipboardReadNotGranted,
+                    "clipboard read",
+                ));
             }
             let result = host.session.clipboard_read(include_text).await;
             let result = host.finish_observation_sensitive_attempt(result)?;
@@ -745,7 +644,10 @@ async fn handle_request_inner(
                 authorized_session(sessions, &session_id, &task_grant_id, &window_capability)
                     .await?;
             if !host.allow_clipboard_write {
-                return Err(HostError::Protocol("clipboard write is not granted".into()));
+                return Err(denied(
+                    HostProtocolErrorCode::ClipboardWriteNotGranted,
+                    "clipboard write",
+                ));
             }
             let result = host.session.clipboard_write(&write).await;
             let result = host.finish_observation_sensitive_attempt(result)?;
@@ -764,7 +666,10 @@ async fn handle_request_inner(
                 authorized_session(sessions, &session_id, &task_grant_id, &window_capability)
                     .await?;
             if !host.allow_recording {
-                return Err(HostError::Protocol("recording is not granted".into()));
+                return Err(denied(
+                    HostProtocolErrorCode::RecordingNotGranted,
+                    "recording",
+                ));
             }
             let result = host.session.recording_start(&request).await;
             let result = host.finish_observation_sensitive_attempt(result)?;
@@ -782,7 +687,10 @@ async fn handle_request_inner(
                 authorized_session(sessions, &session_id, &task_grant_id, &window_capability)
                     .await?;
             if !host.allow_recording {
-                return Err(HostError::Protocol("recording is not granted".into()));
+                return Err(denied(
+                    HostProtocolErrorCode::RecordingNotGranted,
+                    "recording",
+                ));
             }
             let result = host.session.recording_stop().await;
             let result = host.finish_observation_sensitive_attempt(result)?;
@@ -800,7 +708,10 @@ async fn handle_request_inner(
                 authorized_session(sessions, &session_id, &task_grant_id, &window_capability)
                     .await?;
             if !host.allow_recording {
-                return Err(HostError::Protocol("recording is not granted".into()));
+                return Err(denied(
+                    HostProtocolErrorCode::RecordingNotGranted,
+                    "recording",
+                ));
             }
             let result = host.session.recording_state().await;
             let result = host.finish_observation_sensitive_attempt(result)?;
@@ -1155,8 +1066,9 @@ async fn handle_request_inner(
                 authorized_session(sessions, &session_id, &task_grant_id, &window_capability)
                     .await?;
             if !host.allow_menu_invoke {
-                return Err(HostError::Protocol(
-                    "native menu invocation is not granted".into(),
+                return Err(denied(
+                    HostProtocolErrorCode::MenuInvokeNotGranted,
+                    "native menu invocation",
                 ));
             }
             let _input_turn = RAW_INPUT_QUEUE.lock().await;
@@ -1349,8 +1261,9 @@ async fn handle_request_inner(
                 authorized_session(sessions, &session_id, &task_grant_id, &window_capability)
                     .await?;
             if !host.allow_native_tool {
-                return Err(HostError::Protocol(
-                    "native CUA tool calls are not granted".into(),
+                return Err(denied(
+                    HostProtocolErrorCode::NativeToolNotGranted,
+                    "native CUA tool calls",
                 ));
             }
             let result = host.session.call_tool(&tool, arguments).await;
@@ -1370,8 +1283,9 @@ async fn handle_request_inner(
         } => {
             grant.validate_identity()?;
             if !grant.allow_native_tool {
-                return Err(HostError::Protocol(
-                    "global native CUA tool calls are not granted".into(),
+                return Err(denied(
+                    HostProtocolErrorCode::NativeToolNotGranted,
+                    "global native CUA tool calls",
                 ));
             }
             let result = driver.call_global_tool(&tool, arguments).await?;
@@ -1410,8 +1324,9 @@ async fn handle_request_inner(
                 authorized_session(sessions, &session_id, &task_grant_id, &window_capability)
                     .await?;
             if !host.allow_browser_prepare {
-                return Err(HostError::Protocol(
-                    "browser preparation is not granted".into(),
+                return Err(denied(
+                    HostProtocolErrorCode::BrowserPrepareNotGranted,
+                    "browser preparation",
                 ));
             }
             let result = host.browser.prepare(&mut host.session, request).await;
@@ -1434,7 +1349,10 @@ async fn handle_request_inner(
                 authorized_session(sessions, &session_id, &task_grant_id, &window_capability)
                     .await?;
             if !host.allow_browser_input {
-                return Err(HostError::Protocol("browser input is not granted".into()));
+                return Err(denied(
+                    HostProtocolErrorCode::BrowserInputNotGranted,
+                    "browser input",
+                ));
             }
             let result = host.browser.navigate(&mut host.session, request).await;
             let result = host.finish_observation_sensitive_attempt(result)?;
@@ -1456,7 +1374,10 @@ async fn handle_request_inner(
                 authorized_session(sessions, &session_id, &task_grant_id, &window_capability)
                     .await?;
             if !host.allow_browser_input {
-                return Err(HostError::Protocol("browser input is not granted".into()));
+                return Err(denied(
+                    HostProtocolErrorCode::BrowserInputNotGranted,
+                    "browser input",
+                ));
             }
             host.require_current_browser_evidence_epoch()?;
             let result = host.browser.click(&mut host.session, request).await;
@@ -1479,7 +1400,10 @@ async fn handle_request_inner(
                 authorized_session(sessions, &session_id, &task_grant_id, &window_capability)
                     .await?;
             if !host.allow_browser_input {
-                return Err(HostError::Protocol("browser input is not granted".into()));
+                return Err(denied(
+                    HostProtocolErrorCode::BrowserInputNotGranted,
+                    "browser input",
+                ));
             }
             host.require_current_browser_evidence_epoch()?;
             let result = host.browser.type_text(&mut host.session, request).await;
@@ -1502,7 +1426,10 @@ async fn handle_request_inner(
                 authorized_session(sessions, &session_id, &task_grant_id, &window_capability)
                     .await?;
             if !host.allow_browser_input {
-                return Err(HostError::Protocol("browser input is not granted".into()));
+                return Err(denied(
+                    HostProtocolErrorCode::BrowserInputNotGranted,
+                    "browser input",
+                ));
             }
             host.require_current_browser_evidence_epoch()?;
             let result = host.browser.pointer(&mut host.session, request).await;
@@ -1525,7 +1452,10 @@ async fn handle_request_inner(
                 authorized_session(sessions, &session_id, &task_grant_id, &window_capability)
                     .await?;
             if !host.allow_browser_input {
-                return Err(HostError::Protocol("browser input is not granted".into()));
+                return Err(denied(
+                    HostProtocolErrorCode::BrowserInputNotGranted,
+                    "browser input",
+                ));
             }
             host.require_current_browser_evidence_epoch()?;
             let result = host
@@ -1551,8 +1481,9 @@ async fn handle_request_inner(
                 authorized_session(sessions, &session_id, &task_grant_id, &window_capability)
                     .await?;
             if !host.allow_browser_download {
-                return Err(HostError::Protocol(
-                    "browser download is not granted".into(),
+                return Err(denied(
+                    HostProtocolErrorCode::BrowserDownloadNotGranted,
+                    "browser download",
                 ));
             }
             host.require_current_browser_evidence_epoch()?;
@@ -1576,7 +1507,10 @@ async fn handle_request_inner(
                 authorized_session(sessions, &session_id, &task_grant_id, &window_capability)
                     .await?;
             if !host.allow_browser_input {
-                return Err(HostError::Protocol("browser input is not granted".into()));
+                return Err(denied(
+                    HostProtocolErrorCode::BrowserInputNotGranted,
+                    "browser input",
+                ));
             }
             let result = host.browser.dialog(&mut host.session, request).await;
             let result = host.finish_observation_sensitive_attempt(result)?;
@@ -1672,7 +1606,10 @@ async fn handle_request_inner(
                 authorized_session(sessions, &session_id, &task_grant_id, &window_capability)
                     .await?;
             if action.input_kind == "raw_input" && !host.allow_raw_input {
-                return Err(HostError::Protocol("raw input is not granted".into()));
+                return Err(denied(
+                    HostProtocolErrorCode::RawInputNotGranted,
+                    "raw input",
+                ));
             }
             if let Some((code, message)) = action.reject_policy() {
                 return Ok((
@@ -1959,8 +1896,9 @@ async fn handle_request_inner(
                 authorized_session(sessions, &session_id, &task_grant_id, &window_capability)
                     .await?;
             if !host.allow_session_escalation {
-                return Err(HostError::Protocol(
-                    "session escalation is not granted".into(),
+                return Err(denied(
+                    HostProtocolErrorCode::SessionEscalationNotGranted,
+                    "session escalation",
                 ));
             }
             let result = host.session.escalate(&reason, detail.as_deref()).await;

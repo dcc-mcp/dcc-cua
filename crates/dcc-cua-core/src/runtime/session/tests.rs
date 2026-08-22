@@ -5,6 +5,13 @@ use cua_driver_sdk::remote::{
     DriverRequestEnvelope, DriverResponseEnvelope,
 };
 use cua_driver_sdk::worker::ActionCompletion;
+
+fn structured_error_details(error: &ComputerUseError) -> &ComputerUseErrorDetails {
+    error
+        .details
+        .as_ref()
+        .unwrap_or_else(|| panic!("safety-relevant errors must expose structured details"))
+}
 use cua_driver_sdk::{CuaDriver, DriverError, TrustedSessionOptions};
 use rstest::rstest;
 use std::cell::Cell;
@@ -17,6 +24,7 @@ mod browser_boundaries;
 #[cfg(windows)]
 mod continuity;
 mod degraded_shutdown;
+mod dispatch_errors;
 mod modal_takeover;
 mod recording;
 mod visual_only;
@@ -148,7 +156,10 @@ impl DriverEnvelopeChannel for CountingRemoteChannel {
                 } else {
                     None
                 },
-                error_code: (!self.response_ok).then(|| "browser_refused".into()),
+                error_code: (!self.response_ok).then(|| match request.name.as_deref() {
+                    Some("browser_click") => "browser_refused".into(),
+                    _ => "backend_unavailable".into(),
+                }),
                 completion_known: self.completion_known,
             })
         })
@@ -441,21 +452,29 @@ async fn refresh_timeout_stales_action_evidence_without_ending_the_long_running_
         .finish_upstream_refresh_attempt::<()>(Err(ComputerUseError::new(
             ComputerUseErrorCode::InputFailed,
             "CUA refresh CUA session before observation timed out after 15000 ms",
-        )))
+        )
+        .with_details(ComputerUseErrorDetails {
+            timed_out: Some(true),
+            ..Default::default()
+        })))
         .unwrap_err();
 
     assert_eq!(error.code, ComputerUseErrorCode::CompletionUnknown);
-    assert!(error.message.contains("action_attempted=false"));
-    assert!(error.message.contains("input_sent=false"));
-    assert!(
-        error
-            .message
-            .contains("upstream_refresh_completion_unknown=true")
+    let details = structured_error_details(&error);
+    assert_eq!(details.timed_out, Some(true));
+    assert_eq!(
+        details.phase,
+        Some(ComputerUseErrorPhase::UpstreamSessionRefresh)
     );
-    assert!(error.message.contains("local_session_invalidated=false"));
-    assert!(error.message.contains("session_remains_active=true"));
-    assert!(error.message.contains("fresh_observation_required=true"));
-    assert!(!error.message.contains("window session was invalidated"));
+    assert_eq!(details.action_attempted, Some(false));
+    assert_eq!(details.input_sent, Some(ComputerUseInputState::NotSent));
+    assert_eq!(
+        details.completion,
+        Some(ComputerUseCompletionState::Unknown)
+    );
+    assert_eq!(details.local_session_invalidated, Some(false));
+    assert_eq!(details.session_remains_active, Some(true));
+    assert_eq!(details.fresh_observation_required, Some(true));
     assert!(session.active);
     assert_eq!(session.target.as_ref().map(|target| target.pid), Some(42));
     assert!(session.live_observation.is_some());
@@ -508,8 +527,9 @@ async fn an_action_never_crosses_a_due_upstream_session_refresh() {
         .unwrap_err();
 
     assert_eq!(error.code, ComputerUseErrorCode::SessionRefreshRequired);
-    assert!(error.message.contains("action_attempted=false"));
-    assert!(error.message.contains("fresh_observation_required=true"));
+    let details = structured_error_details(&error);
+    assert_eq!(details.action_attempted, Some(false));
+    assert_eq!(details.fresh_observation_required, Some(true));
     assert!(session.active);
     assert!(session.live_observation.is_some());
     assert!(session.recording_active);
@@ -637,88 +657,6 @@ async fn starting_a_new_live_observation_advances_the_action_evidence_epoch() {
 
 #[rstest]
 #[tokio::test]
-async fn unknown_action_transport_completion_invalidates_the_exact_session() {
-    let (mut session, calls) = counting_session();
-    let evidence_epoch_before_dispatch = session.action_evidence_epoch();
-
-    let error = session
-        .finish_typed_dispatch_result::<()>(
-            "execute CUA click",
-            Ok(Err(DriverError::ActionInterrupted {
-                completion: ActionCompletion::Unknown,
-                reason: "simulated action response loss".into(),
-            })),
-        )
-        .await
-        .unwrap_err();
-
-    assert_eq!(error.code, ComputerUseErrorCode::CompletionUnknown);
-    assert!(error.message.contains("action_attempted=true"));
-    assert!(error.message.contains("blind_retry=false"));
-    assert!(!session.active);
-    assert!(session.target.is_none());
-    assert!(session.action_evidence_epoch() > evidence_epoch_before_dispatch);
-    assert_eq!(calls.load(AtomicOrdering::SeqCst), 0);
-}
-
-#[rstest]
-#[tokio::test]
-async fn outer_action_transport_timeout_invalidates_the_exact_session() {
-    let (mut session, calls) = counting_session();
-
-    let error = session
-        .finish_typed_dispatch_result::<()>(
-            "execute CUA click",
-            Err(ComputerUseError::new(
-                ComputerUseErrorCode::InputFailed,
-                "execute CUA click timed out",
-            )),
-        )
-        .await
-        .unwrap_err();
-
-    assert_eq!(error.code, ComputerUseErrorCode::CompletionUnknown);
-    assert!(error.message.contains("action_attempted=true"));
-    assert!(error.message.contains("blind_retry=false"));
-    assert!(!session.active);
-    assert!(session.target.is_none());
-    assert_eq!(calls.load(AtomicOrdering::SeqCst), 0);
-}
-
-#[rstest]
-#[tokio::test]
-async fn not_started_action_transport_failure_preserves_the_exact_session() {
-    let (mut session, calls) = counting_session();
-    let evidence_epoch_before_dispatch = session.action_evidence_epoch();
-
-    let error = session
-        .finish_typed_dispatch_result::<()>(
-            "execute CUA click",
-            Ok(Err(DriverError::ActionInterrupted {
-                completion: ActionCompletion::NotStarted,
-                reason: "simulated pre-dispatch rejection".into(),
-            })),
-        )
-        .await
-        .unwrap_err();
-
-    assert_eq!(error.code, ComputerUseErrorCode::InputFailed);
-    assert!(error.message.contains("phase=pre_dispatch"));
-    assert!(error.message.contains("action_attempted=false"));
-    assert!(error.message.contains("blind_retry=false"));
-    assert!(!error.message.contains("completion_unknown=true"));
-    assert!(session.active);
-    assert_eq!(session.target.as_ref().map(|target| target.pid), Some(42));
-    assert!(session.observation.is_some());
-    assert_eq!(
-        session.action_evidence_epoch(),
-        evidence_epoch_before_dispatch
-    );
-    assert_eq!(calls.load(AtomicOrdering::SeqCst), 0);
-}
-
-#[rstest]
-#[tokio::test]
 async fn known_driver_tool_failure_invalidates_evidence_but_preserves_the_exact_session() {
     let (mut session, calls) = counting_session();
     session.recording_active = true;
@@ -738,9 +676,17 @@ async fn known_driver_tool_failure_invalidates_evidence_but_preserves_the_exact_
         .unwrap_err();
 
     assert_eq!(error.code, ComputerUseErrorCode::BrowserRefused);
-    assert!(error.message.contains("action_attempted=true"));
-    assert!(error.message.contains("completion_unknown=false"));
-    assert!(error.message.contains("fresh_observation_required=true"));
+    let details = error
+        .details
+        .as_ref()
+        .expect("known dispatch failure must expose structured action metadata");
+    assert_eq!(details.phase, Some(ComputerUseErrorPhase::ActionDispatch));
+    assert_eq!(details.action_attempted, Some(true));
+    assert_eq!(details.input_sent, Some(ComputerUseInputState::Unknown));
+    assert_eq!(details.completion, Some(ComputerUseCompletionState::Known));
+    assert_eq!(details.fresh_observation_required, Some(true));
+    assert!(!error.message.contains("action_attempted="));
+    assert!(!error.message.contains("completion_unknown="));
     assert!(session.active);
     assert!(session.target.is_some());
     assert!(session.observation.is_none());
@@ -781,9 +727,13 @@ async fn post_dispatch_sdk_failures_are_completion_unknown_and_terminal() {
             .unwrap_err();
 
         assert_eq!(error.code, ComputerUseErrorCode::CompletionUnknown);
-        assert!(error.message.contains("action_attempted=true"));
-        assert!(error.message.contains("completion_unknown=true"));
-        assert!(error.message.contains("blind_retry=false"));
+        let details = structured_error_details(&error);
+        assert_eq!(details.action_attempted, Some(true));
+        assert_eq!(
+            details.completion,
+            Some(ComputerUseCompletionState::Unknown)
+        );
+        assert_eq!(details.blind_retry, Some(false));
         assert!(!session.active);
         assert!(session.target.is_none());
         assert!(session.observation.is_none());
@@ -819,10 +769,11 @@ async fn typed_pre_dispatch_sdk_failures_preserve_session_and_evidence() {
             .unwrap_err();
 
         assert_ne!(error.code, ComputerUseErrorCode::CompletionUnknown);
-        assert!(error.message.contains("phase=pre_dispatch"));
-        assert!(error.message.contains("action_attempted=false"));
-        assert!(error.message.contains("input_sent=false"));
-        assert!(error.message.contains("blind_retry=false"));
+        let details = structured_error_details(&error);
+        assert_eq!(details.phase, Some(ComputerUseErrorPhase::PreDispatch));
+        assert_eq!(details.action_attempted, Some(false));
+        assert_eq!(details.input_sent, Some(ComputerUseInputState::NotSent));
+        assert_eq!(details.blind_retry, Some(false));
         assert!(session.active);
         assert!(session.target.is_some());
         assert!(session.observation.is_some());
@@ -920,11 +871,15 @@ async fn local_post_preflight_failure_invalidates_evidence_and_requires_fresh_ca
         .unwrap_err();
 
     assert_eq!(error.code, ComputerUseErrorCode::InputFailed);
-    assert!(error.message.contains("phase=local_mutation_dispatch"));
-    assert!(error.message.contains("action_attempted=true"));
-    assert!(error.message.contains("input_sent=unknown"));
-    assert!(error.message.contains("blind_retry=false"));
-    assert!(error.message.contains("fresh_observation_required=true"));
+    let details = structured_error_details(&error);
+    assert_eq!(
+        details.phase,
+        Some(ComputerUseErrorPhase::LocalMutationDispatch)
+    );
+    assert_eq!(details.action_attempted, Some(true));
+    assert_eq!(details.input_sent, Some(ComputerUseInputState::Unknown));
+    assert_eq!(details.blind_retry, Some(false));
+    assert_eq!(details.fresh_observation_required, Some(true));
     assert!(session.active);
     assert!(session.target.is_some());
     assert!(session.observation.is_none());
@@ -1053,7 +1008,10 @@ async fn successful_implicit_activation_consumes_evidence_before_a_later_not_sta
         .unwrap_err();
 
     assert_eq!(error.code, ComputerUseErrorCode::InputFailed);
-    assert!(error.message.contains("action_attempted=false"));
+    assert_eq!(
+        structured_error_details(&error).action_attempted,
+        Some(false)
+    );
     assert!(session.active);
     assert!(session.observation.is_none());
     assert_eq!(
@@ -1110,11 +1068,15 @@ async fn attempted_implicit_activation_error_consumes_evidence_and_requires_fres
         .unwrap_err();
 
     assert_eq!(error.code, ComputerUseErrorCode::InputFailed);
-    assert!(error.message.contains("phase=activation_dispatch"));
-    assert!(error.message.contains("focus_mutation_attempted=true"));
-    assert!(error.message.contains("action_attempted=false"));
-    assert!(error.message.contains("input_sent=false"));
-    assert!(error.message.contains("fresh_observation_required=true"));
+    let details = structured_error_details(&error);
+    assert_eq!(
+        details.phase,
+        Some(ComputerUseErrorPhase::ActivationDispatch)
+    );
+    assert_eq!(details.focus_mutation_attempted, Some(true));
+    assert_eq!(details.action_attempted, Some(false));
+    assert_eq!(details.input_sent, Some(ComputerUseInputState::NotSent));
+    assert_eq!(details.fresh_observation_required, Some(true));
     assert!(session.active);
     assert!(session.target.is_some());
     assert!(session.observation.is_none());
@@ -1160,10 +1122,13 @@ async fn unknown_read_only_evidence_completion_preserves_the_exact_session_and_r
         .unwrap_err();
 
     assert_eq!(error.code, ComputerUseErrorCode::BackendUnavailable);
-    assert!(error.message.contains("phase=evidence_dispatch"));
-    assert!(error.message.contains("action_attempted=false"));
-    assert!(!error.message.contains("action_attempted=true"));
-    assert!(!error.message.contains("completion_unknown=true"));
+    let details = structured_error_details(&error);
+    assert_eq!(details.phase, Some(ComputerUseErrorPhase::EvidenceDispatch));
+    assert_eq!(details.action_attempted, Some(false));
+    assert_eq!(
+        details.completion,
+        Some(ComputerUseCompletionState::Unknown)
+    );
     assert!(session.active);
     assert_eq!(session.target.as_ref().map(|target| target.pid), Some(42));
     assert!(session.observation.is_some());
@@ -1185,14 +1150,19 @@ async fn outer_read_only_evidence_timeout_preserves_the_exact_session_and_record
             Err(ComputerUseError::new(
                 ComputerUseErrorCode::InputFailed,
                 "call CUA get_browser_state timed out",
-            )),
+            )
+            .with_details(ComputerUseErrorDetails {
+                timed_out: Some(true),
+                ..Default::default()
+            })),
         )
         .unwrap_err();
 
     assert_eq!(error.code, ComputerUseErrorCode::InputFailed);
-    assert!(error.message.contains("phase=evidence_dispatch"));
-    assert!(error.message.contains("action_attempted=false"));
-    assert!(!error.message.contains("action_attempted=true"));
+    let details = structured_error_details(&error);
+    assert_eq!(details.phase, Some(ComputerUseErrorPhase::EvidenceDispatch));
+    assert_eq!(details.action_attempted, Some(false));
+    assert_eq!(details.timed_out, Some(true));
     assert!(session.active);
     assert_eq!(session.target.as_ref().map(|target| target.pid), Some(42));
     assert!(session.observation.is_some());
@@ -1230,7 +1200,10 @@ async fn assert_due_refresh_fences_evidence_tool(route: &str) {
     };
 
     assert_eq!(error.code, ComputerUseErrorCode::SessionRefreshRequired);
-    assert!(error.message.contains("action_attempted=false"));
+    assert_eq!(
+        structured_error_details(&error).action_attempted,
+        Some(false)
+    );
     assert_eq!(calls.load(AtomicOrdering::SeqCst), 0);
     assert!(session.observation.is_none());
 }
@@ -1255,7 +1228,10 @@ async fn due_refresh_fences_mutating_preflight_before_any_driver_call() {
     let error = session.preflight_mutating_bound_tool().await.unwrap_err();
 
     assert_eq!(error.code, ComputerUseErrorCode::SessionRefreshRequired);
-    assert!(error.message.contains("action_attempted=false"));
+    assert_eq!(
+        structured_error_details(&error).action_attempted,
+        Some(false)
+    );
     assert_eq!(calls.load(AtomicOrdering::SeqCst), 0);
     assert!(session.observation.is_none());
 }
@@ -1277,7 +1253,10 @@ async fn due_refresh_fences_an_action_before_any_driver_call() {
         .unwrap_err();
 
     assert_eq!(error.code, ComputerUseErrorCode::SessionRefreshRequired);
-    assert!(error.message.contains("action_attempted=false"));
+    assert_eq!(
+        structured_error_details(&error).action_attempted,
+        Some(false)
+    );
     assert_eq!(calls.load(AtomicOrdering::SeqCst), 0);
     assert!(session.observation.is_none());
 }
@@ -1538,7 +1517,10 @@ async fn assert_due_browser_mutation_is_fenced(name: &str, arguments: Value) {
         .unwrap_err();
 
     assert_eq!(error.code, ComputerUseErrorCode::SessionRefreshRequired);
-    assert!(error.message.contains("action_attempted=false"));
+    assert_eq!(
+        structured_error_details(&error).action_attempted,
+        Some(false)
+    );
     assert_eq!(calls.load(AtomicOrdering::SeqCst), 0);
     assert!(session.observation.is_none());
 }
@@ -1623,7 +1605,10 @@ async fn unknown_browser_mutation_dispatch_invalidates_the_exact_session() {
         .unwrap_err();
 
     assert_eq!(error.code, ComputerUseErrorCode::CompletionUnknown);
-    assert!(error.message.contains("action_attempted=true"));
+    assert_eq!(
+        structured_error_details(&error).action_attempted,
+        Some(true)
+    );
     assert!(!session.active);
     assert!(session.target.is_none());
     assert_eq!(calls.load(AtomicOrdering::SeqCst), 1);
@@ -1651,8 +1636,9 @@ async fn unknown_browser_evidence_dispatch_preserves_the_exact_session_and_recor
         .unwrap_err();
 
     assert_eq!(error.code, ComputerUseErrorCode::BackendUnavailable);
-    assert!(error.message.contains("phase=evidence_dispatch"));
-    assert!(error.message.contains("action_attempted=false"));
+    let details = structured_error_details(&error);
+    assert_eq!(details.phase, Some(ComputerUseErrorPhase::EvidenceDispatch));
+    assert_eq!(details.action_attempted, Some(false));
     assert!(session.active);
     assert!(session.target.is_some());
     assert!(session.observation.is_some());
@@ -1747,8 +1733,9 @@ async fn remote_driver_tool_failure_uses_known_attempted_mutation_semantics() {
         .unwrap_err();
 
     assert_eq!(error.code, ComputerUseErrorCode::BrowserRefused);
-    assert!(error.message.contains("action_attempted=true"));
-    assert!(error.message.contains("completion_unknown=false"));
+    let details = structured_error_details(&error);
+    assert_eq!(details.action_attempted, Some(true));
+    assert_eq!(details.completion, Some(ComputerUseCompletionState::Known));
     assert!(session.active);
     assert!(session.target.is_some());
     assert!(session.observation.is_none());
@@ -1870,8 +1857,9 @@ async fn known_attempted_cursor_move_failure_consumes_evidence_but_preserves_ses
         .unwrap_err();
 
     assert_eq!(error.code, ComputerUseErrorCode::BackendUnavailable);
-    assert!(error.message.contains("action_attempted=true"));
-    assert!(error.message.contains("completion_unknown=false"));
+    let details = structured_error_details(&error);
+    assert_eq!(details.action_attempted, Some(true));
+    assert_eq!(details.completion, Some(ComputerUseCompletionState::Known));
     assert!(session.active);
     assert!(session.target.is_some());
     assert!(session.observation.is_none());
@@ -1901,7 +1889,10 @@ async fn unknown_cursor_move_completion_invalidates_the_exact_session() {
         .unwrap_err();
 
     assert_eq!(error.code, ComputerUseErrorCode::CompletionUnknown);
-    assert!(error.message.contains("action_attempted=true"));
+    assert_eq!(
+        structured_error_details(&error).action_attempted,
+        Some(true)
+    );
     assert!(!session.active);
     assert!(session.target.is_none());
     assert!(session.observation.is_none());
@@ -1933,8 +1924,9 @@ async fn not_started_cursor_move_preserves_session_and_evidence() {
         .unwrap_err();
 
     assert_eq!(error.code, ComputerUseErrorCode::InputFailed);
-    assert!(error.message.contains("phase=pre_dispatch"));
-    assert!(error.message.contains("action_attempted=false"));
+    let details = structured_error_details(&error);
+    assert_eq!(details.phase, Some(ComputerUseErrorPhase::PreDispatch));
+    assert_eq!(details.action_attempted, Some(false));
     assert!(session.active);
     assert!(session.target.is_some());
     assert!(session.observation.is_some());
