@@ -9,6 +9,25 @@ const HOST_PROBE_TIMEOUT: Duration = Duration::from_millis(500);
 const HOST_START_TIMEOUT: Duration = Duration::from_secs(15);
 const HOST_START_RETRY_MS: u64 = 100;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum HostStartPollDecision {
+    Ready,
+    Retry,
+    Exhausted,
+}
+
+pub(super) const fn host_start_poll_decision(
+    endpoint_ready: bool,
+    spawned_child_exited: bool,
+    deadline_reached: bool,
+) -> HostStartPollDecision {
+    match (endpoint_ready, spawned_child_exited, deadline_reached) {
+        (true, _, _) => HostStartPollDecision::Ready,
+        (false, _, true) => HostStartPollDecision::Exhausted,
+        (false, true, false) | (false, false, false) => HostStartPollDecision::Retry,
+    }
+}
+
 pub(crate) async fn ensure(
     endpoint: String,
     host_args: &[String],
@@ -23,30 +42,46 @@ pub(crate) async fn ensure(
     let mut child = host_command(&binary, host_args).spawn()?;
     let child_pid = child.id();
     let deadline = Instant::now() + HOST_START_TIMEOUT;
+    let mut spawned_exit = None;
     loop {
-        if let Ok(ping) = ping(&endpoint).await {
-            if let Err(error) = validate_host_version(&ping) {
-                stop_failed_child(&mut child);
-                return Err(error.into());
+        let ping = ping(&endpoint).await.ok();
+        let child_status = child.try_wait()?;
+        if spawned_exit.is_none() {
+            spawned_exit = child_status.map(|status| status.to_string());
+        }
+        match host_start_poll_decision(
+            ping.is_some(),
+            child_status.is_some(),
+            Instant::now() >= deadline,
+        ) {
+            HostStartPollDecision::Ready => {
+                let ping = ping.expect("ready decision requires a successful Host probe");
+                if let Err(error) = validate_host_version(&ping) {
+                    stop_failed_child(&mut child);
+                    return Err(error.into());
+                }
+                let running = child_status.is_none();
+                return Ok(ready_response(
+                    if running { "started" } else { "existing" },
+                    &endpoint,
+                    running.then_some(child_pid),
+                    ping,
+                ));
             }
-            let running = child.try_wait()?.is_none();
-            return Ok(ready_response(
-                if running { "started" } else { "existing" },
-                &endpoint,
-                running.then_some(child_pid),
-                ping,
-            ));
+            HostStartPollDecision::Retry => {
+                tokio::time::sleep(Duration::from_millis(HOST_START_RETRY_MS)).await;
+            }
+            HostStartPollDecision::Exhausted => break,
         }
-        if let Some(status) = child.try_wait()? {
-            return Err(format!("Host exited before the endpoint was ready: {status}").into());
-        }
-        if Instant::now() >= deadline {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(HOST_START_RETRY_MS)).await;
     }
 
     stop_failed_child(&mut child);
+    if let Some(status) = spawned_exit {
+        return Err(format!(
+            "Host exited before this or a competing process made the endpoint ready: {status}"
+        )
+        .into());
+    }
     Err(format!("Host endpoint did not become ready: {endpoint}").into())
 }
 

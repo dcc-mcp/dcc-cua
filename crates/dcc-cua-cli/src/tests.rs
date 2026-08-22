@@ -13,7 +13,9 @@ use super::actions::{
     require_exact_window_target, visible_snapshot_dimensions, window_frame_request,
 };
 use super::authorization::{existing_profile_grant_requested, host_private_worker_options};
-use super::host_lifecycle::validate_host_version;
+use super::host_lifecycle::{
+    HostStartPollDecision, host_start_poll_decision, validate_host_version,
+};
 use super::*;
 
 #[rstest]
@@ -75,6 +77,22 @@ fn native_host_ack_matches_the_shared_protocol_fixture() {
             .as_array()
             .unwrap()
             .contains(&native_hello_ack())
+    );
+}
+
+#[rstest]
+fn host_ensure_keeps_probing_when_a_competing_spawn_wins() {
+    assert_eq!(
+        host_start_poll_decision(false, true, false),
+        HostStartPollDecision::Retry
+    );
+    assert_eq!(
+        host_start_poll_decision(true, true, false),
+        HostStartPollDecision::Ready
+    );
+    assert_eq!(
+        host_start_poll_decision(false, true, true),
+        HostStartPollDecision::Exhausted
     );
 }
 
