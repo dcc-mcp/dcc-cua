@@ -25,7 +25,7 @@ pub(crate) struct SnapshotState {
 pub(crate) fn normalize(raw: &Value) -> Result<(Value, SnapshotState), UiaError> {
     let root = raw
         .get("root")
-        .ok_or_else(|| UiaError::BackendUnavailable("snapshot returned no scoped root".into()))?;
+        .ok_or_else(|| UiaError::OperationFailed("snapshot returned no scoped root".into()))?;
     let snapshot_id = Uuid::new_v4().simple().to_string();
     let mut elements = Vec::new();
     let mut fences = Vec::new();

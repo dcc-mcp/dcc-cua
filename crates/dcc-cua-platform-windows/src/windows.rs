@@ -78,7 +78,7 @@ pub fn set_window_frame(
         )
     } != 0;
     if !applied {
-        return Err(UiaError::BackendUnavailable(format!(
+        return Err(UiaError::OperationFailed(format!(
             "SetWindowPos failed: {}",
             std::io::Error::last_os_error()
         )));
@@ -99,7 +99,7 @@ pub fn set_window_frame(
         }
         thread::sleep(Duration::from_millis(5));
     }
-    Err(UiaError::BackendUnavailable(
+    Err(UiaError::OperationFailed(
         "the exact window did not reach the requested frame".into(),
     ))
 }
@@ -111,7 +111,7 @@ pub fn post_close_window(
     mutation_available()?;
     let expected = require_exact_window_handle(target, "window close")?;
     if unsafe { PostMessageW(expected, WM_CLOSE, 0, 0) } == 0 {
-        return Err(UiaError::BackendUnavailable(format!(
+        return Err(UiaError::OperationFailed(format!(
             "PostMessageW(WM_CLOSE) failed: {}",
             std::io::Error::last_os_error()
         )));
@@ -122,7 +122,7 @@ pub fn post_close_window(
         }
         thread::sleep(Duration::from_millis(25));
     }
-    Err(UiaError::BackendUnavailable(
+    Err(UiaError::OperationFailed(
         "the exact window did not close after WM_CLOSE".into(),
     ))
 }
@@ -344,7 +344,8 @@ fn error_detail(error: &UiaError) -> &str {
         | UiaError::StaleSnapshot(message)
         | UiaError::PermissionDenied(message)
         | UiaError::InvalidAction(message)
-        | UiaError::BackendUnavailable(message) => message,
+        | UiaError::BackendUnavailable(message)
+        | UiaError::OperationFailed(message) => message,
         UiaError::InteractiveDesktopUnavailable { reason, .. } => reason,
         UiaError::ForegroundActivationRefused { reason, .. } => reason,
         UiaError::ProtocolMismatch { .. } => "UIA worker protocol mismatch",
@@ -452,7 +453,7 @@ fn restore_window_frame_after_activation(
 ) -> Result<(), UiaError> {
     let mut current = RECT::default();
     if unsafe { GetWindowRect(expected, &mut current) } == 0 {
-        return Err(UiaError::BackendUnavailable(
+        return Err(UiaError::OperationFailed(
             "Windows could not read the exact target frame after activation".into(),
         ));
     }
@@ -478,7 +479,7 @@ fn restore_window_frame_after_activation(
         )
     } == 0
     {
-        return Err(UiaError::BackendUnavailable(format!(
+        return Err(UiaError::OperationFailed(format!(
             "SetWindowPos failed while preserving the activation frame: {}",
             std::io::Error::last_os_error()
         )));
@@ -498,7 +499,7 @@ fn restore_window_frame_after_activation(
         }
         thread::sleep(Duration::from_millis(5));
     }
-    Err(UiaError::BackendUnavailable(
+    Err(UiaError::OperationFailed(
         "the exact target frame changed during activation and could not be restored".into(),
     ))
 }
@@ -519,7 +520,7 @@ fn synchronize_activated_input_queue(
         )
     } != 0;
     if !synchronized {
-        return Err(UiaError::BackendUnavailable(
+        return Err(UiaError::OperationFailed(
             "the exact target did not process its foreground activation before input".into(),
         ));
     }
@@ -700,7 +701,7 @@ pub fn restore_and_activate_window(
             require_exact_window_handle(target, "restore")?;
             if unsafe { IsIconic(expected) } != 0 {
                 if unsafe { ShowWindowAsync(expected, SW_RESTORE) } == 0 {
-                    return Err(UiaError::BackendUnavailable(
+                    return Err(UiaError::OperationFailed(
                         "Windows refused to request restoration of the exact target".into(),
                     ));
                 }
@@ -712,7 +713,7 @@ pub fn restore_and_activate_window(
                     false
                 });
                 if !restored {
-                    return Err(UiaError::BackendUnavailable(
+                    return Err(UiaError::OperationFailed(
                         "the exact target remained minimized after the explicit restore request"
                             .into(),
                     ));
@@ -733,7 +734,7 @@ pub fn restore_and_activate_window(
         || unsafe { IsWindowVisible(expected) } == 0
         || unsafe { GetForegroundWindow() } != expected
     {
-        return Err(UiaError::BackendUnavailable(
+        return Err(UiaError::OperationFailed(
             "the exact target did not finish restored, visible, and foreground".into(),
         ));
     }
@@ -764,7 +765,7 @@ pub(crate) fn foreground_restore_required(
 }
 
 fn background_delivery_error() -> UiaError {
-    UiaError::BackendUnavailable(
+    UiaError::OperationFailed(
         "Windows UIA action completed but could not preserve the foreground window".into(),
     )
 }
@@ -808,7 +809,7 @@ fn ensure_ok(value: &Value) -> Result<(), UiaError> {
         "permission_denied" => Err(UiaError::PermissionDenied(message)),
         "invalid_target" | "missing_window" => Err(UiaError::InvalidTarget(message)),
         "unsupported_action" => Err(UiaError::InvalidAction(message)),
-        _ => Err(UiaError::BackendUnavailable(message)),
+        _ => Err(UiaError::OperationFailed(message)),
     }
 }
 

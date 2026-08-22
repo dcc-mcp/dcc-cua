@@ -776,7 +776,7 @@ fn restore_activate_sequence_stops_at_each_failed_input_gate() {
 fn completed_background_action_reports_restore_failure_without_becoming_retryable() {
     let result = completed_action_result(
         &json!({"ok": true, "message": "clicked", "control": {"name": "OK"}}),
-        Some(Err(super::UiaError::BackendUnavailable(
+        Some(Err(super::UiaError::OperationFailed(
             "foreground changed".into(),
         ))),
     )
@@ -825,6 +825,18 @@ fn read_only_uia_retry_is_single_and_backend_failure_only() {
         },
     );
     assert!(matches!(invalid, Err(super::UiaError::InvalidTarget(_))));
+    assert_eq!(retries.get(), 1);
+
+    let terminal = retry_read_only_after_backend_failure(
+        Err::<u32, _>(super::UiaError::OperationFailed(
+            "provider rejected request".into(),
+        )),
+        || {
+            retries.set(retries.get() + 1);
+            Ok(7)
+        },
+    );
+    assert!(matches!(terminal, Err(super::UiaError::OperationFailed(_))));
     assert_eq!(retries.get(), 1);
 }
 
