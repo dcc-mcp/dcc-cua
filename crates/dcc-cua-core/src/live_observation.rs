@@ -570,10 +570,12 @@ impl LiveObservation {
             let (sender, receiver) = watch::channel(LiveObservationStatus::default());
             let shutdown = LiveObservationShutdown::default();
             let task = tokio::spawn(run_portable_capture_loop(
-                driver,
-                session_id,
-                process_id,
-                window_handle,
+                PortableCaptureTarget {
+                    driver,
+                    session_id,
+                    process_id,
+                    window_handle,
+                },
                 fps,
                 interrupt_generation(),
                 sender,
@@ -729,11 +731,16 @@ pub(crate) fn project_showcase_status(
 }
 
 #[cfg(not(windows))]
-async fn run_portable_capture_loop(
+struct PortableCaptureTarget {
     driver: ComputerUseDriver,
     session_id: String,
     process_id: u32,
     window_handle: u64,
+}
+
+#[cfg(not(windows))]
+async fn run_portable_capture_loop(
+    target: PortableCaptureTarget,
     fps: u32,
     started_interrupt_generation: u64,
     sender: watch::Sender<LiveObservationStatus>,
@@ -749,7 +756,11 @@ async fn run_portable_capture_loop(
             return;
         }
         let capture_started = Instant::now();
-        let capture = driver.capture_exact_window_png(process_id, window_handle, &session_id);
+        let capture = target.driver.capture_exact_window_png(
+            target.process_id,
+            target.window_handle,
+            &target.session_id,
+        );
         let capture = tokio::select! {
             () = shutdown.cancelled() => return,
             result = capture => result.and_then(|png| decode_png_to_bgra(&png)),
