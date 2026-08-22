@@ -62,18 +62,73 @@ impl LiveObservation {
             "test_capture",
         );
         let (sender, receiver) = watch::channel(status);
-        let task = tokio::spawn(async { std::future::pending::<()>().await });
+        let shutdown = LiveObservationShutdown::default();
+        let worker_shutdown = shutdown.clone();
+        let task = tokio::spawn(async move { worker_shutdown.cancelled().await });
         (
             Self {
                 stream_id,
                 fps: 1,
                 max_dimension: 1,
                 receiver,
+                shutdown,
                 task,
             },
             LiveObservationTestPublisher { sender },
         )
     }
+}
+
+#[rstest]
+#[tokio::test]
+async fn stop_requests_shutdown_and_waits_for_worker_acknowledgement() {
+    let (sender, receiver) = watch::channel(LiveObservationStatus::default());
+    let shutdown = LiveObservationShutdown::default();
+    let worker_shutdown = shutdown.clone();
+    let acknowledged = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let worker_acknowledged = Arc::clone(&acknowledged);
+    let task = tokio::spawn(async move {
+        worker_shutdown.cancelled().await;
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        worker_acknowledged.store(true, std::sync::atomic::Ordering::Release);
+        drop(sender);
+    });
+    let observation = LiveObservation {
+        stream_id: 1,
+        fps: 1,
+        max_dimension: 1,
+        receiver,
+        shutdown,
+        task,
+    };
+
+    let state = observation.stop().await;
+
+    assert!(acknowledged.load(std::sync::atomic::Ordering::Acquire));
+    assert_eq!(state["active"], false);
+}
+
+#[cfg(windows)]
+#[rstest]
+fn shutdown_wakes_a_blocking_capture_waiter() {
+    let shutdown = LiveObservationShutdown::default();
+    let worker_shutdown = shutdown.clone();
+    let (acknowledged, acknowledgement) = std::sync::mpsc::sync_channel(1);
+    let worker = std::thread::spawn(move || {
+        acknowledged
+            .send(worker_shutdown.wait_timeout(Duration::from_secs(5)))
+            .expect("acknowledge shutdown");
+    });
+
+    std::thread::sleep(Duration::from_millis(10));
+    shutdown.request();
+
+    assert!(
+        acknowledgement
+            .recv_timeout(Duration::from_millis(250))
+            .expect("blocking capture waiter should wake promptly")
+    );
+    worker.join().expect("join blocking capture waiter");
 }
 
 #[rstest]

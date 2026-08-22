@@ -195,6 +195,10 @@ async fn cursor_input_gate_blocks_only_real_pointer_movement_before_backend_exec
     IndicatorError::Backend("paint failed".into()),
     ComputerUseErrorCode::BackendUnavailable
 )]
+#[case(
+    IndicatorError::Rendering("initial paint failed".into()),
+    ComputerUseErrorCode::BackendUnavailable
+)]
 fn indicator_errors_keep_typed_core_failure_semantics(
     #[case] error: IndicatorError,
     #[case] expected: ComputerUseErrorCode,

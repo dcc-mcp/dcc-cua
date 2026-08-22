@@ -486,7 +486,28 @@ async fn handle_request_inner(
             let result = host.session.perform_action(&action).await?;
             let action_id = format!("cua-desktop-action-{}", Uuid::new_v4());
             if capture_after {
-                tokio::time::sleep(post_snapshot_delay).await;
+                if let Err(error) =
+                    wait_for_desktop_post_snapshot_delay(host, post_snapshot_delay).await
+                {
+                    drop(input_turn);
+                    let failure = host_error_response(&error);
+                    let (mut response, attachment) = action_completed_response(
+                        &session_id,
+                        action_id,
+                        "desktop CUA action completed, but the post-action snapshot was interrupted",
+                        result,
+                        mode,
+                        &mut host.latest_shared_image,
+                    )?;
+                    response["post_snapshot"] = json!({
+                        "success": false,
+                        "action_was_executed": true,
+                        "code": failure["code"].clone(),
+                        "message": failure["message"].clone(),
+                    });
+                    response["observation_required"] = Value::Bool(true);
+                    return Ok((response, attachment));
+                }
                 let snapshot = host.session.screenshot().await;
                 drop(input_turn);
                 return match snapshot {
@@ -1675,7 +1696,31 @@ async fn handle_request_inner(
             let result = host.finish_observation_sensitive_attempt(result)?;
             let action_id = format!("cua-action-{}", Uuid::new_v4());
             if capture_after {
-                tokio::time::sleep(post_snapshot_delay).await;
+                if let Err(error) =
+                    wait_for_window_post_snapshot_delay(host, post_snapshot_delay).await
+                {
+                    drop(input_turn);
+                    host.latest_observation_id = None;
+                    host.latest_accessibility_state_id = None;
+                    host.latest_accessibility_root = None;
+                    let failure = host_error_response(&error);
+                    let (mut response, attachment) = action_completed_response(
+                        &session_id,
+                        action_id,
+                        "CUA action completed, but the post-action snapshot was interrupted",
+                        result,
+                        mode,
+                        &mut host.latest_shared_image,
+                    )?;
+                    response["post_snapshot"] = json!({
+                        "success": false,
+                        "action_was_executed": true,
+                        "code": failure["code"].clone(),
+                        "message": failure["message"].clone(),
+                    });
+                    response["observation_required"] = Value::Bool(true);
+                    return Ok((response, attachment));
+                }
                 let screenshot = host
                     .session
                     .screenshot_with_bounds(post_snapshot_max_nodes, post_snapshot_max_depth)
@@ -1855,6 +1900,7 @@ async fn handle_request_inner(
                         &task_grant_id,
                         &window_capability,
                     )?;
+                    ensure_session_not_interrupted(host).await?;
                     host.refresh_input_readiness();
                     let availability = host.session.target_availability().await;
                     if let Ok(availability) =
@@ -1872,7 +1918,7 @@ async fn handle_request_inner(
                     return Ok((session_events_response(&session_id, page)?, None));
                 }
                 let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-                tokio::time::sleep(remaining.min(std::time::Duration::from_millis(100))).await;
+                tokio::time::sleep(interrupt_poll_slice(remaining)).await;
             }
         }
         Request::CursorTool {

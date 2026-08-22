@@ -467,6 +467,14 @@ pub struct BannerStatus {
 pub enum BannerFailureKind {
     TargetLost,
     Backend,
+    Rendering,
+}
+
+impl BannerFailureKind {
+    #[must_use]
+    pub const fn is_session_fatal(self) -> bool {
+        !matches!(self, Self::Rendering)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -481,6 +489,8 @@ pub enum IndicatorError {
     InvalidTarget(String),
     #[error("control banner backend failed: {0}")]
     Backend(String),
+    #[error("control banner rendering degraded: {0}")]
+    Rendering(String),
 }
 
 impl From<&IndicatorError> for BannerFailure {
@@ -489,6 +499,7 @@ impl From<&IndicatorError> for BannerFailure {
             kind: match error {
                 IndicatorError::InvalidTarget(_) => BannerFailureKind::TargetLost,
                 IndicatorError::Backend(_) => BannerFailureKind::Backend,
+                IndicatorError::Rendering(_) => BannerFailureKind::Rendering,
             },
             message: error.to_string(),
         }
@@ -607,6 +618,11 @@ impl ControlBanner {
         if status.backend == "unavailable"
             || status.interrupted
             || (status.healthy && status.running)
+            || (status.running
+                && status
+                    .failure
+                    .as_ref()
+                    .is_some_and(|failure| !failure.kind.is_session_fatal()))
         {
             return None;
         }

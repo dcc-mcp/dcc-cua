@@ -43,6 +43,40 @@ pub(super) fn safe_pre_dispatch_refresh(message: &str) -> bool {
     observed.into_iter().all(|present| present)
 }
 
+pub(super) fn safe_pre_dispatch_refresh_error(message: &str, response: &Value) -> bool {
+    let Some(details) = response.get("details") else {
+        return safe_pre_dispatch_refresh(message);
+    };
+    let Some(details) = details.as_object() else {
+        return false;
+    };
+    details.get("phase").and_then(Value::as_str) == Some("pre_dispatch")
+        && details.get("action_attempted").and_then(Value::as_bool) == Some(false)
+        && details.get("input_sent").and_then(Value::as_str) == Some("not_sent")
+        && details.get("completion").and_then(Value::as_str) == Some("known")
+        && details
+            .get("effect_unknown")
+            .is_none_or(|value| value.as_bool() == Some(false))
+        && details
+            .get("local_session_invalidated")
+            .and_then(Value::as_bool)
+            == Some(false)
+        && details
+            .get("session_remains_active")
+            .and_then(Value::as_bool)
+            == Some(true)
+        && details.get("automatic_input").and_then(Value::as_bool) == Some(false)
+        && details.get("blind_retry").and_then(Value::as_bool) == Some(false)
+        && details
+            .get("fresh_observation_required")
+            .and_then(Value::as_bool)
+            == Some(true)
+        && details
+            .get("exact_target_revalidation_required")
+            .and_then(Value::as_bool)
+            == Some(true)
+}
+
 fn valid_snapshot_bound_request_fields(
     method: &str,
     request_fields: &serde_json::Map<String, Value>,
@@ -145,7 +179,7 @@ async fn run_snapshot_bound_browser_mutation<T: BrowserRequestTransport>(
                 response,
             }) if attempt == 0
                 && code == "session_refresh_required"
-                && safe_pre_dispatch_refresh(&message) =>
+                && safe_pre_dispatch_refresh_error(&message, &response) =>
             {
                 eprintln!("Host requested a fresh browser snapshot before {method}: {response}");
             }
@@ -233,6 +267,42 @@ fn refresh_recovery_requires_proof_that_no_action_was_attempted() {
     assert!(!safe_pre_dispatch_refresh(&format!(
         "{safe}; refresh contract changed"
     )));
+}
+
+#[rstest]
+fn structured_refresh_recovery_uses_typed_completion_evidence() {
+    let message =
+        "SessionRefreshRequired: the upstream session requires a fresh exact-target refresh";
+    let safe = json!({
+        "details": {
+            "phase": "pre_dispatch",
+            "action_attempted": false,
+            "input_sent": "not_sent",
+            "completion": "known",
+            "local_session_invalidated": false,
+            "session_remains_active": true,
+            "automatic_input": false,
+            "blind_retry": false,
+            "fresh_observation_required": true,
+            "exact_target_revalidation_required": true
+        }
+    });
+    assert!(safe_pre_dispatch_refresh_error(message, &safe));
+    for (field, unsafe_value) in [
+        ("action_attempted", json!(true)),
+        ("input_sent", json!("unknown")),
+        ("completion", json!("unknown")),
+        ("local_session_invalidated", json!(true)),
+        ("session_remains_active", json!(false)),
+        ("automatic_input", json!(true)),
+        ("blind_retry", json!(true)),
+        ("fresh_observation_required", json!(false)),
+        ("exact_target_revalidation_required", json!(false)),
+    ] {
+        let mut unsafe_response = safe.clone();
+        unsafe_response["details"][field] = unsafe_value;
+        assert!(!safe_pre_dispatch_refresh_error(message, &unsafe_response));
+    }
 }
 
 #[rstest]

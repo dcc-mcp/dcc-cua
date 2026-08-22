@@ -13,7 +13,9 @@ use super::actions::{
     require_exact_window_target, visible_snapshot_dimensions, window_frame_request,
 };
 use super::authorization::{existing_profile_grant_requested, host_private_worker_options};
-use super::host_lifecycle::validate_host_version;
+use super::host_lifecycle::{
+    HostStartPollDecision, host_start_poll_decision, validate_host_version,
+};
 use super::*;
 
 #[rstest]
@@ -75,6 +77,22 @@ fn native_host_ack_matches_the_shared_protocol_fixture() {
             .as_array()
             .unwrap()
             .contains(&native_hello_ack())
+    );
+}
+
+#[rstest]
+fn host_ensure_keeps_probing_when_a_competing_spawn_wins() {
+    assert_eq!(
+        host_start_poll_decision(false, true, false),
+        HostStartPollDecision::Retry
+    );
+    assert_eq!(
+        host_start_poll_decision(true, true, false),
+        HostStartPollDecision::Ready
+    );
+    assert_eq!(
+        host_start_poll_decision(false, true, true),
+        HostStartPollDecision::Exhausted
     );
 }
 
@@ -1119,6 +1137,16 @@ fn host_jsonl_metrics_count_protocol_errors_without_claiming_task_failure() {
     assert_eq!(report.errors_total, 1);
     assert_eq!(report.error_codes["invalid_request"], 1);
     assert_eq!(report.schema, "dcc-cua.host-jsonl.metrics.v3");
+}
+
+#[rstest]
+fn host_client_timeout_has_a_typed_jsonl_error_contract() {
+    let value = host_error_value(&HostClientError::Timeout { timeout_ms: 250 });
+
+    assert_eq!(value["type"], "error");
+    assert_eq!(value["code"], "request_timeout");
+    assert!(value["message"].as_str().unwrap().contains("250 ms"));
+    assert!(value["message"].as_str().unwrap().contains("reconnect"));
 }
 
 #[rstest]

@@ -1,12 +1,12 @@
 #[cfg(any(not(windows), test))]
 use std::io::Cursor;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use dcc_cua_indicator::{interrupt_generation, interrupt_generation_changed};
 use serde_json::{Value, json};
-use tokio::sync::watch;
+use tokio::sync::{Notify, watch};
 use tokio::task::JoinHandle;
 
 #[cfg(windows)]
@@ -22,6 +22,62 @@ mod tests;
 const FIRST_FRAME_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 const PAUSE_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 static LIVE_OBSERVATION_STREAM_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+#[derive(Debug, Default)]
+struct LiveObservationShutdownState {
+    requested: AtomicBool,
+    async_waiter: Notify,
+    blocking_waiter: Condvar,
+    blocking_lock: Mutex<()>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct LiveObservationShutdown {
+    state: Arc<LiveObservationShutdownState>,
+}
+
+impl LiveObservationShutdown {
+    fn request(&self) {
+        let _guard = self
+            .state
+            .blocking_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !self.state.requested.swap(true, Ordering::AcqRel) {
+            self.state.async_waiter.notify_one();
+            self.state.blocking_waiter.notify_all();
+        }
+    }
+
+    fn is_requested(&self) -> bool {
+        self.state.requested.load(Ordering::Acquire)
+    }
+
+    #[cfg(any(not(windows), test))]
+    async fn cancelled(&self) {
+        if !self.is_requested() {
+            self.state.async_waiter.notified().await;
+        }
+    }
+
+    #[cfg(windows)]
+    fn wait_timeout(&self, timeout: Duration) -> bool {
+        if self.is_requested() {
+            return true;
+        }
+        let guard = self
+            .state
+            .blocking_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _ = self
+            .state
+            .blocking_waiter
+            .wait_timeout_while(guard, timeout, |_| !self.is_requested())
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.is_requested()
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct LiveObservationFence {
@@ -494,6 +550,7 @@ pub(crate) struct LiveObservation {
     fps: u32,
     max_dimension: u32,
     receiver: watch::Receiver<LiveObservationStatus>,
+    shutdown: LiveObservationShutdown,
     task: JoinHandle<()>,
 }
 
@@ -511,20 +568,25 @@ impl LiveObservation {
         {
             let fps = request.fps;
             let (sender, receiver) = watch::channel(LiveObservationStatus::default());
+            let shutdown = LiveObservationShutdown::default();
             let task = tokio::spawn(run_portable_capture_loop(
-                driver,
-                session_id,
-                process_id,
-                window_handle,
+                PortableCaptureTarget {
+                    driver,
+                    session_id,
+                    process_id,
+                    window_handle,
+                },
                 fps,
                 interrupt_generation(),
                 sender,
+                shutdown.clone(),
             ));
             let mut observation = Self {
                 stream_id,
                 fps,
                 max_dimension: request.max_dimension,
                 receiver,
+                shutdown,
                 task,
             };
             wait_for_latest_frame(&mut observation.receiver, None, FIRST_FRAME_TIMEOUT).await?;
@@ -549,18 +611,21 @@ impl LiveObservation {
             }
             let fps = request.fps;
             let (sender, receiver) = watch::channel(LiveObservationStatus::default());
+            let shutdown = LiveObservationShutdown::default();
             let task = tokio::spawn(run_capture_loop(
                 process_id,
                 window_handle,
                 fps,
                 interrupt_generation(),
                 sender,
+                shutdown.clone(),
             ));
             let mut observation = Self {
                 stream_id,
                 fps,
                 max_dimension: request.max_dimension,
                 receiver,
+                shutdown,
                 task,
             };
             wait_for_latest_frame(&mut observation.receiver, None, FIRST_FRAME_TIMEOUT).await?;
@@ -618,7 +683,7 @@ impl LiveObservation {
     }
 
     pub(crate) async fn stop(mut self) -> Value {
-        self.task.abort();
+        self.shutdown.request();
         let _ = (&mut self.task).await;
         self.receiver.borrow().as_json(false, self.fps)
     }
@@ -666,29 +731,41 @@ pub(crate) fn project_showcase_status(
 }
 
 #[cfg(not(windows))]
-async fn run_portable_capture_loop(
+struct PortableCaptureTarget {
     driver: ComputerUseDriver,
     session_id: String,
     process_id: u32,
     window_handle: u64,
+}
+
+#[cfg(not(windows))]
+async fn run_portable_capture_loop(
+    target: PortableCaptureTarget,
     fps: u32,
     started_interrupt_generation: u64,
     sender: watch::Sender<LiveObservationStatus>,
+    shutdown: LiveObservationShutdown,
 ) {
     let interval = std::time::Duration::from_secs_f64(1.0 / f64::from(fps));
     let mut sequence = 0_u64;
     loop {
-        if sender.is_closed()
+        if shutdown.is_requested()
+            || sender.is_closed()
             || interrupt_generation_changed(started_interrupt_generation, interrupt_generation())
         {
             return;
         }
         let capture_started = Instant::now();
-        match driver
-            .capture_exact_window_png(process_id, window_handle, &session_id)
-            .await
-            .and_then(|png| decode_png_to_bgra(&png))
-        {
+        let capture = target.driver.capture_exact_window_png(
+            target.process_id,
+            target.window_handle,
+            &target.session_id,
+        );
+        let capture = tokio::select! {
+            () = shutdown.cancelled() => return,
+            result = capture => result.and_then(|png| decode_png_to_bgra(&png)),
+        };
+        match capture {
             Ok((bgra, width, height)) => {
                 sequence = sequence.saturating_add(1);
                 sender.send_modify(|status| {
@@ -706,7 +783,10 @@ async fn run_portable_capture_loop(
                 }
                 CaptureFailureDisposition::Pause(error) => {
                     sender.send_modify(|status| status.record_paused_error(&error));
-                    tokio::time::sleep(PAUSE_RETRY_INTERVAL).await;
+                    tokio::select! {
+                        () = shutdown.cancelled() => return,
+                        () = tokio::time::sleep(PAUSE_RETRY_INTERVAL) => {}
+                    }
                     continue;
                 }
                 CaptureFailureDisposition::Retry(error) => {
@@ -714,7 +794,10 @@ async fn run_portable_capture_loop(
                 }
             },
         }
-        tokio::time::sleep(interval.saturating_sub(capture_started.elapsed())).await;
+        tokio::select! {
+            () = shutdown.cancelled() => return,
+            () = tokio::time::sleep(interval.saturating_sub(capture_started.elapsed())) => {}
+        }
     }
 }
 
@@ -804,6 +887,7 @@ fn capture_error(error: impl std::fmt::Display) -> ComputerUseError {
 
 impl Drop for LiveObservation {
     fn drop(&mut self) {
+        self.shutdown.request();
         self.task.abort();
     }
 }
@@ -815,6 +899,7 @@ async fn run_capture_loop(
     fps: u32,
     started_interrupt_generation: u64,
     sender: watch::Sender<LiveObservationStatus>,
+    shutdown: LiveObservationShutdown,
 ) {
     let join_error_sender = sender.clone();
     if let Err(error) = tokio::task::spawn_blocking(move || {
@@ -824,6 +909,7 @@ async fn run_capture_loop(
             fps,
             started_interrupt_generation,
             sender,
+            shutdown,
         );
     })
     .await
@@ -957,12 +1043,14 @@ fn run_windows_capture_loop(
     fps: u32,
     started_interrupt_generation: u64,
     sender: watch::Sender<LiveObservationStatus>,
+    shutdown: LiveObservationShutdown,
 ) {
     let interval = std::time::Duration::from_secs_f64(1.0 / f64::from(fps));
     let mut sequence = 0_u64;
     let mut capture = WindowsLiveCapture::new(process_id, window_handle);
     loop {
-        if sender.is_closed()
+        if shutdown.is_requested()
+            || sender.is_closed()
             || interrupt_generation_changed(started_interrupt_generation, interrupt_generation())
         {
             return;
@@ -975,10 +1063,12 @@ fn run_windows_capture_loop(
                 Ok(frame)
             }) {
             Ok(frame) => {
-                if interrupt_generation_changed(
-                    started_interrupt_generation,
-                    interrupt_generation(),
-                ) {
+                if shutdown.is_requested()
+                    || interrupt_generation_changed(
+                        started_interrupt_generation,
+                        interrupt_generation(),
+                    )
+                {
                     return;
                 }
                 sequence = sequence.saturating_add(1);
@@ -1016,7 +1106,9 @@ fn run_windows_capture_loop(
                     }
                     CaptureFailureDisposition::Pause(error) => {
                         sender.send_modify(|status| status.record_paused_error(&error));
-                        std::thread::sleep(PAUSE_RETRY_INTERVAL);
+                        if shutdown.wait_timeout(PAUSE_RETRY_INTERVAL) {
+                            return;
+                        }
                         continue;
                     }
                     CaptureFailureDisposition::Retry(error) => {
@@ -1025,7 +1117,9 @@ fn run_windows_capture_loop(
                 }
             }
         }
-        std::thread::sleep(interval.saturating_sub(capture_started.elapsed()));
+        if shutdown.wait_timeout(interval.saturating_sub(capture_started.elapsed())) {
+            return;
+        }
     }
 }
 

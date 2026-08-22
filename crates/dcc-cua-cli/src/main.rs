@@ -1317,6 +1317,13 @@ fn host_error_value(error: &HostClientError) -> serde_json::Value {
             "code": "protocol_error",
             "message": message,
         }),
+        HostClientError::Timeout { timeout_ms } => json!({
+            "type": "error",
+            "code": "request_timeout",
+            "message": format!(
+                "Host request timed out after {timeout_ms} ms; reconnect before sending another request"
+            ),
+        }),
         HostClientError::Remote {
             code,
             message,

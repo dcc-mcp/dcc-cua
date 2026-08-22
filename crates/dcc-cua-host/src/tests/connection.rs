@@ -17,6 +17,40 @@ async fn write_json_request(
 }
 
 #[rstest]
+fn session_event_poll_uses_the_interruptible_connection_lane() {
+    let poll: Request = serde_json::from_value(json!({
+        "method": "poll_session_events",
+        "params": {
+            "session_id": "session-1",
+            "task_grant_id": "grant-1",
+            "window_capability": "cap-1",
+            "after_sequence": 0,
+            "timeout_ms": 30_000
+        }
+    }))
+    .unwrap();
+    let ping: Request = serde_json::from_value(json!({"method": "ping", "params": {}})).unwrap();
+
+    assert!(is_interruptible_connection_request(&poll));
+    assert!(!is_interruptible_connection_request(&ping));
+}
+
+#[rstest]
+#[case(0, 0)]
+#[case(1, 1)]
+#[case(50, 50)]
+#[case(5_000, 50)]
+fn long_delays_poll_the_interrupt_boundary_at_least_every_fifty_ms(
+    #[case] remaining_ms: u64,
+    #[case] expected_ms: u64,
+) {
+    assert_eq!(
+        interrupt_poll_slice(std::time::Duration::from_millis(remaining_ms)),
+        std::time::Duration::from_millis(expected_ms),
+    );
+}
+
+#[rstest]
 #[tokio::test]
 async fn process_connection_requires_hello_pings_and_rejects_duplicate_hello() {
     let (mut client, server_stream): (DuplexStream, DuplexStream) = tokio::io::duplex(16 * 1024);

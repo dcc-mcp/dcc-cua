@@ -43,9 +43,13 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use windows::core::{BOOL, HRESULT, PCWSTR, w};
 
 mod escape_hub_lifecycle;
+mod rendering;
 pub(super) use escape_hub_lifecycle::{
     EscapeHubAcquireAction, EscapeHubReleaseAction, acquire_action as escape_hub_acquire_action,
     release_action as escape_hub_release_action,
+};
+use rendering::{
+    record_rendering_result, record_rendering_results, set_activity_property, set_overlay_alpha,
 };
 
 use super::{
@@ -280,6 +284,7 @@ impl PlatformBanner {
                     &runtime,
                     motion,
                     &ready_tx,
+                    &thread_backend_failure,
                 );
                 if let Err(error) = result {
                     if let Ok(mut stored) = thread_backend_failure.lock() {
@@ -818,6 +823,7 @@ fn run_banner(
     runtime: &BannerRuntime,
     motion: IndicatorMotionStatus,
     ready: &std::sync::mpsc::SyncSender<Result<(), IndicatorError>>,
+    rendering_failure: &Mutex<Option<BannerFailure>>,
 ) -> Result<(), IndicatorError> {
     let dpi_awareness = ThreadDpiAwareness::enter()?;
     let target_window = HWND(target.window_handle as *mut core::ffi::c_void);
@@ -894,20 +900,32 @@ fn run_banner(
             || indicators.recording != displayed_recording
             || indicators.live_observation != displayed_live_observation
         {
-            set_activity_property(overlay.0, next_activity)?;
-            set_recording_property(overlay.0, indicators.recording)?;
-            set_live_observation_property(overlay.0, indicators.live_observation)?;
-            let _ = unsafe { InvalidateRect(Some(overlay.0), None, false) };
-            displayed_activity = next_activity;
-            displayed_recording = indicators.recording;
-            displayed_live_observation = indicators.live_observation;
+            let rendered = record_rendering_results(
+                rendering_failure,
+                [
+                    set_activity_property(overlay.0, next_activity),
+                    set_recording_property(overlay.0, indicators.recording),
+                    set_live_observation_property(overlay.0, indicators.live_observation),
+                ],
+            );
+            if rendered {
+                let _ = unsafe { InvalidateRect(Some(overlay.0), None, false) };
+                displayed_activity = next_activity;
+                displayed_recording = indicators.recording;
+                displayed_live_observation = indicators.live_observation;
+            }
         }
         let next_frame_alpha = indicator_frame_alpha(motion, pulse_started.elapsed());
         if next_frame_alpha != frame_alpha {
-            for (band, frame) in frames.iter().enumerate() {
-                set_overlay_alpha(frame.0, target_frame_band_alpha(next_frame_alpha, band))?;
+            let rendered = record_rendering_results(
+                rendering_failure,
+                frames.iter().enumerate().map(|(band, frame)| {
+                    set_overlay_alpha(frame.0, target_frame_band_alpha(next_frame_alpha, band))
+                }),
+            );
+            if rendered {
+                frame_alpha = next_frame_alpha;
             }
-            frame_alpha = next_frame_alpha;
         }
         validate_target(target_window, target.process_id)?;
         let presentation = current_target_presentation(target_window);
@@ -933,36 +951,51 @@ fn run_banner(
                 );
             }
             let next_geometry = banner_geometry(next_target, read_monitor_geometry(target_window)?);
-            if next_geometry != geometry {
-                position_banner(
-                    overlay.0,
-                    target_window,
-                    next_geometry,
-                    next_geometry.width != geometry.width
-                        || next_geometry.height != geometry.height,
-                )?;
+            if next_geometry != geometry
+                && record_rendering_result(
+                    rendering_failure,
+                    position_banner(
+                        overlay.0,
+                        target_window,
+                        next_geometry,
+                        next_geometry.width != geometry.width
+                            || next_geometry.height != geometry.height,
+                    ),
+                )
+            {
                 geometry = next_geometry;
                 inside_target.store(geometry.inside_target, Ordering::Release);
             }
             let next_frame_geometry = target_frame_geometry(next_target);
             if next_frame_geometry != frame_geometry {
-                for (band, frame) in frames.iter().enumerate() {
-                    position_target_frame(
-                        frame.0,
-                        target_window,
-                        next_frame_geometry,
-                        band,
-                        next_frame_geometry.width != frame_geometry.width
-                            || next_frame_geometry.height != frame_geometry.height
-                            || next_frame_geometry.thickness != frame_geometry.thickness,
-                    )?;
+                let rendered = record_rendering_results(
+                    rendering_failure,
+                    frames.iter().enumerate().map(|(band, frame)| {
+                        position_target_frame(
+                            frame.0,
+                            target_window,
+                            next_frame_geometry,
+                            band,
+                            next_frame_geometry.width != frame_geometry.width
+                                || next_frame_geometry.height != frame_geometry.height
+                                || next_frame_geometry.thickness != frame_geometry.thickness,
+                        )
+                    }),
+                );
+                if rendered {
+                    frame_geometry = next_frame_geometry;
                 }
-                frame_geometry = next_frame_geometry;
             }
             if reassert_z_order {
-                position_banner(overlay.0, target_window, geometry, false)?;
+                record_rendering_result(
+                    rendering_failure,
+                    position_banner(overlay.0, target_window, geometry, false),
+                );
                 for (band, frame) in frames.iter().enumerate() {
-                    position_target_frame(frame.0, target_window, frame_geometry, band, false)?;
+                    record_rendering_result(
+                        rendering_failure,
+                        position_target_frame(frame.0, target_window, frame_geometry, band, false),
+                    );
                 }
             } else if !compact_hidden && !visible.load(Ordering::Acquire) {
                 let _ = unsafe { ShowWindow(overlay.0, SW_SHOWNOACTIVATE) };
@@ -1124,19 +1157,6 @@ fn create_window(
     Ok(window)
 }
 
-fn set_activity_property(window: HWND, activity: BannerActivity) -> Result<(), IndicatorError> {
-    unsafe {
-        SetPropW(
-            window,
-            OVERLAY_ACTIVITY_PROP,
-            Some(HANDLE(
-                (usize::from(activity as u8) + 1) as *mut core::ffi::c_void,
-            )),
-        )
-    }
-    .map_err(|error| IndicatorError::Backend(format!("set banner activity: {error}")))
-}
-
 fn set_recording_property(window: HWND, recording: bool) -> Result<(), IndicatorError> {
     if recording {
         unsafe {
@@ -1148,7 +1168,7 @@ fn set_recording_property(window: HWND, recording: bool) -> Result<(), Indicator
                 )),
             )
         }
-        .map_err(|error| IndicatorError::Backend(format!("set banner recording state: {error}")))
+        .map_err(|error| IndicatorError::Rendering(format!("set banner recording state: {error}")))
     } else {
         let _ = unsafe { RemovePropW(window, OVERLAY_RECORDING_PROP) };
         Ok(())
@@ -1170,7 +1190,7 @@ fn set_live_observation_property(
             )
         }
         .map_err(|error| {
-            IndicatorError::Backend(format!("set banner live-observation state: {error}"))
+            IndicatorError::Rendering(format!("set banner live-observation state: {error}"))
         })
     } else {
         let _ = unsafe { RemovePropW(window, OVERLAY_LIVE_PROP) };
@@ -1515,13 +1535,13 @@ fn position_banner(
             )
         };
         if region.0.is_null() {
-            return Err(IndicatorError::Backend(
+            return Err(IndicatorError::Rendering(
                 "Windows could not create the rounded banner shape".into(),
             ));
         }
         if unsafe { SetWindowRgn(window, Some(region), true) } == 0 {
             let _ = unsafe { DeleteObject(HGDIOBJ(region.0)) };
-            return Err(IndicatorError::Backend(
+            return Err(IndicatorError::Rendering(
                 "Windows rejected the rounded banner shape".into(),
             ));
         }
@@ -1535,9 +1555,9 @@ fn position_banner(
         geometry.height,
         true,
     )
-    .map_err(|error| IndicatorError::Backend(format!("position banner: {error}")))?;
+    .map_err(|error| IndicatorError::Rendering(format!("position banner: {error}")))?;
     if !unsafe { IsWindowVisible(window).as_bool() } {
-        return Err(IndicatorError::Backend(
+        return Err(IndicatorError::Rendering(
             "Windows did not make the control banner visible".into(),
         ));
     }
@@ -1580,7 +1600,7 @@ fn position_target_frame(
         if outer.0.is_null() || inner.0.is_null() {
             let _ = unsafe { DeleteObject(HGDIOBJ(outer.0)) };
             let _ = unsafe { DeleteObject(HGDIOBJ(inner.0)) };
-            return Err(IndicatorError::Backend(
+            return Err(IndicatorError::Rendering(
                 "Windows could not create the target frame shape".into(),
             ));
         }
@@ -1588,7 +1608,7 @@ fn position_target_frame(
         let _ = unsafe { DeleteObject(HGDIOBJ(inner.0)) };
         if combined == RGN_ERROR || unsafe { SetWindowRgn(window, Some(outer), true) } == 0 {
             let _ = unsafe { DeleteObject(HGDIOBJ(outer.0)) };
-            return Err(IndicatorError::Backend(
+            return Err(IndicatorError::Rendering(
                 "Windows rejected the target frame shape".into(),
             ));
         }
@@ -1602,13 +1622,8 @@ fn position_target_frame(
         geometry.height,
         true,
     )
-    .map_err(|error| IndicatorError::Backend(format!("position target frame: {error}")))?;
+    .map_err(|error| IndicatorError::Rendering(format!("position target frame: {error}")))?;
     Ok(())
-}
-
-fn set_overlay_alpha(window: HWND, alpha: u8) -> Result<(), IndicatorError> {
-    unsafe { SetLayeredWindowAttributes(window, COLORREF(0), alpha, LWA_ALPHA) }
-        .map_err(|error| IndicatorError::Backend(format!("set indicator opacity: {error}")))
 }
 
 unsafe extern "system" fn frame_window_proc(
