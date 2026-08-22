@@ -87,3 +87,22 @@ pub(super) fn local_activation_attempt_failure(error: ComputerUseError) -> Compu
         ..Default::default()
     })
 }
+
+#[cfg(any(windows, test))]
+pub(super) fn local_activation_validation_failure(
+    code: ComputerUseErrorCode,
+    message: impl Into<String>,
+) -> ComputerUseError {
+    ComputerUseError::new(code, message).with_details(ComputerUseErrorDetails {
+        phase: Some(ComputerUseErrorPhase::ActivationDispatch),
+        focus_mutation_attempted: Some(true),
+        action_attempted: Some(false),
+        input_sent: Some(ComputerUseInputState::NotSent),
+        completion: Some(ComputerUseCompletionState::Known),
+        effect_unknown: Some(false),
+        automatic_input: Some(false),
+        blind_retry: Some(false),
+        fresh_observation_required: Some(true),
+        ..Default::default()
+    })
+}

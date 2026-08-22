@@ -1478,42 +1478,27 @@ pub(crate) fn uses_windows_local_foreground_path(action: &ComputerUseAction) -> 
         || (action.delivery_mode.as_deref() == Some("foreground") && action.action == "move")
 }
 
+/// Convert any failure returned after entering the upstream click dispatcher
+/// into a conservative typed result. The upstream API does not distinguish a
+/// pre-injection refusal from a post-injection verification failure, so prose
+/// must never be parsed to guess whether input was sent.
 #[cfg(any(windows, test))]
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct WindowsPostInputFocusLoss {
-    pub actual_foreground_window: Option<String>,
-    pub input_sent: bool,
-    pub delivery_confirmed: bool,
-    pub retry_safe: bool,
-    pub verification_required: bool,
-    pub effect: &'static str,
-}
-
-/// Classify the one Windows driver error that is raised only after every click
-/// input was inserted. It must not be treated as a retryable delivery failure:
-/// a competing window may have taken focus while the target was processing the
-/// mouse-up, so the only safe next step is a fresh observation.
-#[must_use]
-#[cfg(any(windows, test))]
-pub(crate) fn windows_post_input_focus_loss(message: &str) -> Option<WindowsPostInputFocusLoss> {
-    const POST_CLICK_MARKER: &str = "was not foreground after the click";
-    const ACTUAL_WINDOW_MARKER: &str = "(actual foreground HWND ";
-
-    if !message.contains("foreground_unavailable:") || !message.contains(POST_CLICK_MARKER) {
-        return None;
-    }
-    let actual_foreground_window = message
-        .split_once(ACTUAL_WINDOW_MARKER)
-        .and_then(|(_, tail)| tail.trim().strip_suffix(')'))
-        .map(str::to_owned);
-    Some(WindowsPostInputFocusLoss {
-        actual_foreground_window,
-        input_sent: true,
-        delivery_confirmed: false,
-        retry_safe: false,
-        verification_required: true,
-        effect: "unverifiable",
-    })
+pub(crate) fn windows_input_dispatch_unknown(error: ComputerUseError) -> ComputerUseError {
+    ComputerUseError::new(ComputerUseErrorCode::CompletionUnknown, error.message).with_details(
+        ComputerUseErrorDetails {
+            phase: Some(ComputerUseErrorPhase::LocalMutationDispatch),
+            action_attempted: Some(true),
+            input_sent: Some(ComputerUseInputState::Unknown),
+            completion: Some(ComputerUseCompletionState::Unknown),
+            effect_unknown: Some(true),
+            local_session_invalidated: Some(false),
+            session_remains_active: Some(true),
+            automatic_input: Some(false),
+            blind_retry: Some(false),
+            fresh_observation_required: Some(true),
+            ..Default::default()
+        },
+    )
 }
 
 #[cfg(windows)]
@@ -1559,7 +1544,6 @@ pub(crate) async fn perform_windows_foreground_fast_action(
             ),
         )
     };
-    let mut post_input_focus_loss = None;
     let mut raw_drag_outcome = None;
 
     let text = if matches!(action.action.as_str(), "keypress" | "keyboard_shortcut") {
@@ -1895,15 +1879,7 @@ pub(crate) async fn perform_windows_foreground_fast_action(
                 if error.code != ComputerUseErrorCode::InputFailed {
                     return Err(error);
                 }
-                let message = error.message;
-                let Some(outcome) = windows_post_input_focus_loss(&message) else {
-                    return Err(ComputerUseError::new(error.code, message));
-                };
-                post_input_focus_loss = Some(outcome);
-                format!(
-                    "Sent scoped Windows click at ({x}, {y}), but another window took focus \
-                     before post-input verification. Do not retry; inspect the fresh observation."
-                )
+                return Err(windows_input_dispatch_unknown(error));
             }
         }
     };
@@ -1911,21 +1887,7 @@ pub(crate) async fn perform_windows_foreground_fast_action(
     let _finishing_activity =
         control_banner.map(|banner| banner.begin_activity(BannerActivity::Operating));
 
-    let (delivery, effect, degraded) = if let Some(outcome) = post_input_focus_loss {
-        (
-            json!({
-                "mode": "foreground",
-                "confirmed": outcome.delivery_confirmed,
-                "actual_foreground_window": outcome.actual_foreground_window,
-                "input_sent": outcome.input_sent,
-                "retry_safe": outcome.retry_safe,
-                "verification_required": outcome.verification_required,
-                "failure_phase": "post_input_focus_lost",
-            }),
-            outcome.effect,
-            true,
-        )
-    } else if let Some(outcome) = raw_drag_outcome.as_ref() {
+    let (delivery, effect, degraded) = if let Some(outcome) = raw_drag_outcome.as_ref() {
         (
             windows_raw_drag_delivery(outcome, target),
             "unverifiable",
