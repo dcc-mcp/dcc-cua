@@ -1,5 +1,34 @@
 # Changelog
 
+## [1.4.0](https://github.com/dcc-mcp/dcc-cua/compare/v1.3.3...v1.4.0) (2026-08-22)
+
+
+### Features
+
+* add persistent browser provider sessions ([2cd9919](https://github.com/dcc-mcp/dcc-cua/commit/2cd991993e8e278d4220589c6a33cb4d510188f3))
+* extract reusable profile services ([#151](https://github.com/dcc-mcp/dcc-cua/issues/151)) ([cbf22e3](https://github.com/dcc-mcp/dcc-cua/commit/cbf22e3c578e8252dc4bfa052d7c38f9241b8037))
+
+
+### Bug Fixes
+
+* add typed computer use error contracts ([a5e0867](https://github.com/dcc-mcp/dcc-cua/commit/a5e0867dde9205b51ad5532a7cacb835455d30c6))
+* align browser extension protocol contracts ([5b02594](https://github.com/dcc-mcp/dcc-cua/commit/5b02594ca1292ee795dca8837db9cdd43afe89b5))
+* bind exact captures to process identity ([d8b998a](https://github.com/dcc-mcp/dcc-cua/commit/d8b998ae2e77b2e2f41c1a9f6d4036fb912476c2))
+* centralize sensitive application policy ([26f0c0b](https://github.com/dcc-mcp/dcc-cua/commit/26f0c0bbf666dac607638d2eef7416f6cd4f3229))
+* consume equals-form cli flags consistently ([2b12709](https://github.com/dcc-mcp/dcc-cua/commit/2b1270917c31793c2eef4b90d0da81997d2edde6))
+* eliminate error message control flow ([899d17f](https://github.com/dcc-mcp/dcc-cua/commit/899d17fb1d8b916064c500242bde3daeef3f1459))
+* enforce desktop observation fencing in core ([5c9ccf5](https://github.com/dcc-mcp/dcc-cua/commit/5c9ccf5eba78060247565cae2c3d990772568cd0))
+* enforce unscoped native tool policy ([f0d7c37](https://github.com/dcc-mcp/dcc-cua/commit/f0d7c371c699a9d64333f8cffa934995e709dd38))
+* fail closed on invalid semantic profiles ([e6dadb3](https://github.com/dcc-mcp/dcc-cua/commit/e6dadb36fe1e621e40b2e077e67520838e661244))
+* harden Windows named pipe identity ([09445d0](https://github.com/dcc-mcp/dcc-cua/commit/09445d0c720cec44f669b6388294a2f89cc32674))
+* harden Windows UIA worker protocol ([c7dcd5e](https://github.com/dcc-mcp/dcc-cua/commit/c7dcd5e7b057f1fcd92699b691886ca2866963e5))
+* honor hotkey modifiers across input routes ([92911c4](https://github.com/dcc-mcp/dcc-cua/commit/92911c432258cffdb4609139d20484d054a40dc1))
+* make Escape hook lifecycle restartable ([4e922ea](https://github.com/dcc-mcp/dcc-cua/commit/4e922ea12c53f30c7971ce724fbc1e0ae7b472a6))
+* preserve shared image handoffs ([4be1c83](https://github.com/dcc-mcp/dcc-cua/commit/4be1c839bfbac9c799a15e55ebc47e7e22522ea6))
+* **release:** accept generated extension version ([7d774e3](https://github.com/dcc-mcp/dcc-cua/commit/7d774e33cf3b465ff805b4ff0d3c5968e6dcac22))
+* satisfy cross-platform clippy ([69e75de](https://github.com/dcc-mcp/dcc-cua/commit/69e75de260606633292a2c06b4258bf4a9834f83))
+* unpin browser extension releases ([22f0833](https://github.com/dcc-mcp/dcc-cua/commit/22f083367bff3fcc4ad8d09f72d0cf28d5bf2224))
+
 ## [1.3.3](https://github.com/dcc-mcp/dcc-cua/compare/v1.3.2...v1.3.3) (2026-08-21)
 
 
