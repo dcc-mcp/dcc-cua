@@ -14,6 +14,7 @@ mod platform_process;
 mod policy;
 mod private_worker;
 mod runtime;
+mod sensitive_target_policy;
 mod session_health;
 mod showcase;
 mod window_target;

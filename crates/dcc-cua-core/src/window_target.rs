@@ -6,6 +6,7 @@ use serde_json::json;
 use crate::contracts::{
     ComputerUseError, ComputerUseErrorCode, ComputerUseResult, ComputerUseTargetScope,
 };
+use crate::sensitive_target_policy::validate_observed_application_identity;
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub(crate) struct WindowTarget {
@@ -56,28 +57,7 @@ impl ComputerUseTargetScope {
 }
 
 pub(crate) fn validate_target_policy(target: &WindowTarget) -> ComputerUseResult<()> {
-    let value = format!("{} {}", target.app_name, target.title).to_ascii_lowercase();
-    const DENIED: [&str; 12] = [
-        "password",
-        "credential",
-        "authentication",
-        "sign in",
-        "login",
-        "terminal",
-        "command prompt",
-        "cmd.exe",
-        "powershell",
-        "pwsh",
-        "security",
-        "consent",
-    ];
-    if DENIED.iter().any(|marker| value.contains(marker)) {
-        return Err(ComputerUseError::new(
-            ComputerUseErrorCode::InvalidTarget,
-            "system, terminal, authentication, and password targets are not allowed",
-        ));
-    }
-    Ok(())
+    validate_observed_application_identity(&target.app_name)
 }
 
 pub(crate) fn native_inventory(
@@ -153,7 +133,7 @@ fn process_name(pid: u32) -> String {
 
     let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
     if process.is_null() {
-        return "native-window".into();
+        return String::new();
     }
     let mut buffer = vec![0_u16; 32_768];
     let mut length = buffer.len() as u32;
@@ -161,14 +141,13 @@ fn process_name(pid: u32) -> String {
         unsafe { QueryFullProcessImageNameW(process, 0, buffer.as_mut_ptr(), &mut length) != 0 };
     unsafe { CloseHandle(process) };
     if !resolved {
-        return "native-window".into();
+        return String::new();
     }
     buffer.truncate(length as usize);
     let path = String::from_utf16_lossy(&buffer);
-    std::path::Path::new(&path).file_name().map_or_else(
-        || "native-window".into(),
-        |name| name.to_string_lossy().into_owned(),
-    )
+    std::path::Path::new(&path)
+        .file_name()
+        .map_or_else(String::new, |name| name.to_string_lossy().into_owned())
 }
 
 #[cfg(windows)]
