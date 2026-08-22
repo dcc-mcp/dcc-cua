@@ -229,6 +229,8 @@ pub enum ProfileError {
     UnsupportedSchema(String, u32),
     #[error("profile id is required")]
     MissingId,
+    #[error("profile {0:?} contains non-canonical identifier {1:?}: {2:?}")]
+    InvalidIdentifier(String, String, String),
     #[error("profile {0:?} has invalid profile_version {1:?}")]
     InvalidProfileVersion(String, String),
     #[error("profile {0:?} has invalid application compatibility")]
@@ -274,6 +276,7 @@ impl SemanticProfile {
         if self.id.trim().is_empty() {
             return Err(ProfileError::MissingId);
         }
+        validate_identifier(&self.id, &self.id, "id")?;
         if Version::parse(&self.profile_version).is_err() {
             return Err(ProfileError::InvalidProfileVersion(
                 self.id.clone(),
@@ -323,7 +326,8 @@ impl SemanticProfile {
 
         let mut state_source_ids = HashSet::new();
         for source in &self.state_sources {
-            if source.id.trim().is_empty() || !state_source_ids.insert(source.id.as_str()) {
+            validate_identifier(&self.id, &source.id, "state_sources[].id")?;
+            if !state_source_ids.insert(source.id.as_str()) {
                 return Err(ProfileError::DuplicateStateSource(
                     self.id.clone(),
                     source.id.clone(),
@@ -334,6 +338,7 @@ impl SemanticProfile {
 
         let mut surface_ids = HashSet::new();
         for surface in &self.surfaces {
+            validate_identifier(&self.id, &surface.id, "surfaces[].id")?;
             if !surface_ids.insert(surface.id.as_str()) {
                 return Err(ProfileError::DuplicateSurface(
                     self.id.clone(),
@@ -342,6 +347,7 @@ impl SemanticProfile {
             }
             let mut target_ids = HashSet::new();
             for target in &surface.targets {
+                validate_identifier(&self.id, &target.id, "surfaces[].targets[].id")?;
                 if !target_ids.insert(target.id.as_str()) {
                     return Err(ProfileError::DuplicateTarget(
                         self.id.clone(),
@@ -349,13 +355,17 @@ impl SemanticProfile {
                         target.id.clone(),
                     ));
                 }
-                if target.fallback.as_ref().is_some_and(|fallback| {
-                    fallback.profile_id.trim().is_empty() || fallback.surface_id.trim().is_empty()
-                }) {
-                    return Err(ProfileError::InvalidFallback(
-                        self.id.clone(),
-                        target.id.clone(),
-                    ));
+                if let Some(fallback) = &target.fallback {
+                    validate_identifier(
+                        &self.id,
+                        &fallback.profile_id,
+                        "surfaces[].targets[].fallback.profile_id",
+                    )?;
+                    validate_identifier(
+                        &self.id,
+                        &fallback.surface_id,
+                        "surfaces[].targets[].fallback.surface_id",
+                    )?;
                 }
                 for (action, keys) in &target.key_bindings {
                     if !target.supports_action(action)
@@ -494,6 +504,22 @@ impl SemanticProfile {
         }
         locales.into_iter().collect()
     }
+}
+
+fn validate_identifier(profile_id: &str, value: &str, field: &str) -> Result<(), ProfileError> {
+    if value.is_empty()
+        || value.len() > 80
+        || !value.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'-' | b'_' | b'.')
+        })
+    {
+        return Err(ProfileError::InvalidIdentifier(
+            profile_id.to_owned(),
+            field.to_owned(),
+            value.to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 impl StateSource {

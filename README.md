@@ -78,6 +78,8 @@ the Hakari dependency-unification support crate:
 - `dcc-cua-shm`: cross-platform shared-memory image handoff;
 - `dcc-cua-semantic-profiles`: validated application selectors, surfaces,
   targets, route hints, and fallback edges;
+- `dcc-cua-profiles`: reusable package-store, inheritance, matching, and
+  identity-fenced context services for CLI and embedded consumers;
 - `dcc-cua-cli`: the thin CLI process that composes the workspace crates.
 
 Inside `dcc-cua-core`, source files follow domain responsibility rather
@@ -99,13 +101,13 @@ require a trusted-confirmation task grant.
 
 ### Independent semantic profiles
 
-The `dcc-cua-semantic-profiles` crate is the application-specific extension
-point for deeper semantics. It ships validated profiles for `ue`, `maya`,
-`maya-2024`, and `fab` without adding application branches to the generic Core or Host. Each
-profile describes window/URL selectors, semantic surfaces and targets, the
-preferred route, and dialog policy. The built-ins are the official defaults;
-users and studios can supply a compatible JSON profile through the same CLI
-execution path.
+The `dcc-cua-semantic-profiles` crate owns the declarative profile model and
+built-in profiles. The `dcc-cua-profiles` crate owns the reusable package store,
+store-aware inheritance, deterministic matching, and identity-fenced context
+selection. It exposes the same typed services used by the CLI, so an embedded
+application does not need to spawn a process or parse CLI output. The built-ins
+are the official defaults; installed user or studio packages can override them
+through an explicitly refreshed `ProfileStore` snapshot.
 
 Profiles are declarative routing and vocabulary contracts. They do not launch
 an application, switch control routes, perform a fallback, or prove application
@@ -118,7 +120,9 @@ one `semantic_profile`, and declares the minimum compatible CLI through
 `requires.dcc_cua`. Skills, documentation, fixtures, context documents, and
 companion source are optional artifact types. A package is installed only after
 every declared artifact, version requirement, identity, path, and size limit is
-validated.
+validated. Install, replace, and dependency-aware uninstall are staged and
+rolled back if the resulting store is not valid. Cross-profile fallback and
+inheritance edges must resolve entirely within the ready snapshot.
 
 Application startup knowledge uses generic identity-fenced documents, so the
 same contract can represent an Excel workbook/template, PowerPoint deck/theme,

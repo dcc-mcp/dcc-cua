@@ -410,23 +410,16 @@ fn target_binding_requires_the_profile_selector_to_match() {
 
 #[rstest]
 fn profile_matching_prefers_a_unique_host_version_variant() {
-    let catalog = ["maya", "maya-2024"]
-        .into_iter()
-        .map(|id| {
-            (
-                "builtin".to_owned(),
-                dcc_cua_semantic_profiles::builtin_profile(id)
-                    .expect("built-in Profile")
-                    .clone(),
-            )
-        })
-        .collect();
-    let result = profile_match_result(catalog, "maya.exe", "Autodesk Maya 2024: scene.ma");
+    let store_root = tempfile::tempdir().expect("empty Profile store");
+    let store = dcc_cua_profiles::ProfileStore::open(store_root.path()).expect("Profile store");
+    let result = store
+        .catalog()
+        .match_window("maya.exe", "Autodesk Maya 2024: scene.ma");
 
-    assert_eq!(result["selected"], "maya-2024");
-    assert_eq!(result["ambiguous"], false);
-    assert_eq!(result["candidates"][0]["id"], "maya-2024");
-    assert_eq!(result["candidates"][1]["id"], "maya");
+    assert_eq!(result.selected.as_deref(), Some("maya-2024"));
+    assert!(!result.ambiguous);
+    assert_eq!(result.candidates[0].id, "maya-2024");
+    assert_eq!(result.candidates[1].id, "maya");
 }
 
 #[rstest]

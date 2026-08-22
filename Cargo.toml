@@ -8,6 +8,7 @@ members = [
     "crates/dcc-cua-indicator",
     "crates/dcc-cua-platform-windows",
     "crates/dcc-cua-protocol",
+    "crates/dcc-cua-profiles",
     "crates/dcc-cua-shm",
     "crates/dcc-cua-semantic-profiles",
     "crates/dcc-cua-cli",

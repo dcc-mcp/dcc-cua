@@ -431,3 +431,21 @@ fn omitted_destructive_confirmation_defaults_to_fail_closed() {
 
     assert!(profile.settings.destructive_confirmation_required);
 }
+
+#[rstest]
+fn profile_and_vocabulary_ids_must_be_canonical_lowercase() {
+    for pointer in [
+        "/id",
+        "/surfaces/0/id",
+        "/surfaces/0/targets/0/id",
+        "/surfaces/0/targets/0/fallback/profile_id",
+        "/surfaces/0/targets/0/fallback/surface_id",
+    ] {
+        let mut profile = minimal_profile_value();
+        *profile.pointer_mut(pointer).expect("identifier") = json!("Ambiguous-ID");
+        assert!(
+            parse_profile(&profile.to_string()).is_err(),
+            "{pointer} accepted a non-canonical identifier"
+        );
+    }
+}

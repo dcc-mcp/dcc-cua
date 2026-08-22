@@ -275,7 +275,8 @@ fn list_semantic_profiles() -> Result<(), Box<dyn std::error::Error>> {
             })
         })
         .collect::<Vec<_>>();
-    profiles.extend(profile_package::installed_profile_summaries(None)?);
+    let store = profile_package::open_store(None)?;
+    profiles.extend(profile_package::installed_profile_summaries(&store));
     profiles.sort_by(|left, right| {
         left.get("id")
             .and_then(serde_json::Value::as_str)
@@ -302,98 +303,25 @@ fn match_semantic_profile(flags: &[String]) -> Result<(), Box<dyn std::error::Er
         flag_value(flags, "--app").ok_or("profile match requires --app APPLICATION_NAME")?;
     let window_title = flag_value(flags, "--title").unwrap_or_default();
 
-    let mut catalog = builtin_profiles()
-        .iter()
-        .cloned()
-        .map(|profile| (profile.id.clone(), ("builtin", profile)))
-        .collect::<BTreeMap<_, _>>();
-    for profile in profile_package::installed_ready_profiles(None)? {
-        // This mirrors explicit loading: an installed Profile with the same ID
-        // is the user's intentional override of a built-in.
-        catalog.insert(profile.id.clone(), ("user", profile));
-    }
-
-    let candidates = catalog
-        .into_values()
-        .map(|(source, profile)| (source.to_owned(), profile))
-        .collect::<Vec<_>>();
-    let result = profile_match_result(candidates, &application_name, &window_title);
+    let store = profile_package::open_store(None)?;
+    let result = store
+        .catalog()
+        .match_window(&application_name, &window_title);
     println!("{}", serde_json::to_string_pretty(&result)?);
     Ok(())
 }
 
-fn profile_match_result(
-    catalog: Vec<(String, SemanticProfile)>,
-    application_name: &str,
-    window_title: &str,
-) -> serde_json::Value {
-    let mut candidates = catalog
-        .into_iter()
-        .filter(|(_, profile)| profile.matches_window(application_name, window_title))
-        .map(|(source, profile)| {
-            let version_specific = !profile.application.versions.is_empty();
-            (source, profile, version_specific)
-        })
-        .collect::<Vec<_>>();
-    candidates.sort_by(|left, right| {
-        right
-            .2
-            .cmp(&left.2)
-            .then_with(|| {
-                left.1
-                    .application
-                    .versions
-                    .len()
-                    .cmp(&right.1.application.versions.len())
-            })
-            .then_with(|| right.0.cmp(&left.0))
-            .then_with(|| left.1.id.cmp(&right.1.id))
-    });
-
-    let top_specificity = candidates
-        .first()
-        .map(|(_, profile, specific)| (*specific, profile.application.versions.len()));
-    let top_count = top_specificity.map_or(0, |specificity| {
-        candidates
-            .iter()
-            .take_while(|(_, profile, specific)| {
-                (*specific, profile.application.versions.len()) == specificity
-            })
-            .count()
-    });
-    let selected = (top_count == 1).then(|| candidates[0].1.id.clone());
-    let candidates = candidates
-        .into_iter()
-        .map(|(source, profile, version_specific)| {
-            json!({
-                "id": profile.id,
-                "profile_version": profile.profile_version,
-                "application": profile.application,
-                "extends": profile.extends,
-                "source": source,
-                "version_specific": version_specific,
-            })
-        })
-        .collect::<Vec<_>>();
-    json!({
-        "application_name": application_name,
-        "window_title": window_title,
-        "selected": selected,
-        "ambiguous": top_count > 1,
-        "candidates": candidates,
-    })
-}
-
 fn load_semantic_profile(flags: &[String]) -> Result<SemanticProfile, Box<dyn std::error::Error>> {
+    let store = profile_package::open_store(None)?;
     if let Some(path) = flag_value(flags, "--profile-file") {
         let input = fs::read_to_string(&path)?;
         let profile = parse_profile(&input)?;
-        return Ok(profile_package::resolve_profile_with_store(profile, None)?);
+        return Ok(store.resolve(profile)?);
     }
     let id =
         flag_value(flags, "--id").ok_or("profile requires --id PROFILE or --profile-file PATH")?;
-    if let Some(profile) = profile_package::load_installed_profile(&id, None)? {
-        return Ok(profile);
+    if let Some(profile) = store.profile(&id)? {
+        return Ok(profile.clone());
     }
     builtin_profile(&id)
         .cloned()
