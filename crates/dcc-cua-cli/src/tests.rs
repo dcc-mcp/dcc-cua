@@ -1,7 +1,8 @@
 use rstest::rstest;
 
 use crate::browser_extension::{
-    invocation_origin, read_native_message, validate_extension_id, write_native_message,
+    invocation_origin, native_hello_ack, read_native_message, validate_extension_id,
+    write_native_message,
 };
 use serde_json::json;
 use sha2::Digest;
@@ -60,6 +61,21 @@ async fn native_message_framing_is_little_endian_and_round_trips() {
     });
     assert_eq!(read_native_message(&mut reader).await.unwrap(), expected);
     write.await.unwrap();
+}
+
+#[rstest]
+fn native_host_ack_matches_the_shared_protocol_fixture() {
+    let fixtures: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../browser-extension/chrome/protocol-v1.fixtures.json"
+    ))
+    .unwrap();
+
+    assert!(
+        fixtures["valid"]
+            .as_array()
+            .unwrap()
+            .contains(&native_hello_ack())
+    );
 }
 
 #[rstest]

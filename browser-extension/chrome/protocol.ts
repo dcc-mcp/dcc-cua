@@ -7,6 +7,13 @@ export const MAX_SNAPSHOT_NODES = 300;
 
 export type NativeMethod = "ping" | "snapshot" | "click" | "type" | "unpair";
 
+export type NativeHelloAck = {
+  schema: typeof PROTOCOL_SCHEMA;
+  type: "hello_ack";
+  protocol: typeof PROTOCOL_MAX;
+  capabilities: string[];
+};
+
 type PairedRequestBase = {
   schema: typeof PROTOCOL_SCHEMA;
   request_id: string;
@@ -71,6 +78,42 @@ function nativeMethod(value: unknown): NativeMethod {
   return method;
 }
 
+function capabilities(value: unknown): string[] {
+  if (!Array.isArray(value) || value.length < 1 || value.length > 32) {
+    throw new Error("capabilities must contain between 1 and 32 entries");
+  }
+  const entries = value.map((entry) => boundedString(entry, "capability", 128));
+  if (new Set(entries).size !== entries.length) {
+    throw new Error("capabilities must not contain duplicates");
+  }
+  return entries;
+}
+
+export function validateNativeHelloAck(message: unknown): NativeHelloAck {
+  if (!isObject(message)) {
+    throw new Error("native hello acknowledgment must be an object");
+  }
+  const allowed = new Set(["schema", "type", "protocol", "capabilities"]);
+  for (const key of Object.keys(message)) {
+    if (!allowed.has(key)) {
+      throw new Error(`unexpected native hello acknowledgment field: ${key}`);
+    }
+  }
+  if (
+    message.schema !== PROTOCOL_SCHEMA ||
+    message.type !== "hello_ack" ||
+    message.protocol !== PROTOCOL_MAX
+  ) {
+    throw new Error("native host did not negotiate browser extension protocol v1");
+  }
+  return {
+    schema: PROTOCOL_SCHEMA,
+    type: "hello_ack",
+    protocol: PROTOCOL_MAX,
+    capabilities: capabilities(message.capabilities),
+  };
+}
+
 export function validateNativeRequest(message: unknown): NativeRequest {
   if (!isObject(message)) {
     throw new Error("native request must be an object");
@@ -123,7 +166,7 @@ export function validateNativeRequest(message: unknown): NativeRequest {
   return { ...base, method, ...evidence, text: message.text, replace: true };
 }
 
-export function buildHello(pairing: Pairing | null, extension: { id: string; version: string }) {
+export function buildHello(pairing: Pairing, extension: { id: string; version: string }) {
   return {
     schema: PROTOCOL_SCHEMA,
     type: "hello",

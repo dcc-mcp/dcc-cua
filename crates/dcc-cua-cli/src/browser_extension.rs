@@ -14,6 +14,15 @@ const MAX_NATIVE_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
 const EXTENSION_RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
 const NATIVE_HOST_NAME: &str = "com.dcc_mcp.dcc_cua";
 
+pub(super) fn native_hello_ack() -> Value {
+    json!({
+        "schema": "dcc-cua.browser-extension.v1",
+        "type": "hello_ack",
+        "protocol": 1,
+        "capabilities": ["native_host_bridge_v1"],
+    })
+}
+
 #[derive(Clone, Copy)]
 enum BrowserFamily {
     Chrome,
@@ -344,6 +353,7 @@ pub(crate) async fn run_native_host(
     let poll_timeout_ms = registration.value["poll_timeout_ms"]
         .as_u64()
         .unwrap_or(5_000);
+    write_native_message(&mut output, &native_hello_ack()).await?;
 
     let result = async {
         loop {

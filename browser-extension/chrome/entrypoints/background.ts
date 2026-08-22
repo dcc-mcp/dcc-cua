@@ -3,6 +3,7 @@ import {
   buildHello,
   errorResponse,
   successResponse,
+  validateNativeHelloAck,
   validateNativeRequest,
   type NativeRequest,
   type Pairing,
@@ -66,6 +67,7 @@ function tabResponse(value: unknown): TabResponse {
 
 export default defineBackground(() => {
   let nativePort: Browser.runtime.Port | null = null;
+  let nativeHandshakeComplete = false;
   let requestQueue: Promise<void> = Promise.resolve();
 
   async function setBadge(text: string, color: string): Promise<void> {
@@ -146,20 +148,30 @@ export default defineBackground(() => {
     };
     await savePairing(pairing);
     connectNative(pairing);
-    await setBadge("ON", "#1f883d");
   }
 
   function connectNative(pairing: Pairing): void {
     nativePort?.disconnect();
     nativePort = browser.runtime.connectNative(NATIVE_HOST);
+    nativeHandshakeComplete = false;
+    requestQueue = Promise.resolve();
     nativePort.onMessage.addListener((message: unknown) => {
       requestQueue = requestQueue
-        .then(() => handleNativeMessage(message))
+        .then(async () => {
+          if (!nativeHandshakeComplete) {
+            validateNativeHelloAck(message);
+            nativeHandshakeComplete = true;
+            await setBadge("ON", "#1f883d");
+            return;
+          }
+          await handleNativeMessage(message);
+        })
         .catch(() => setBadge("!", "#cf222e"));
     });
     nativePort.onDisconnect.addListener(() => {
       void browser.runtime.lastError;
       nativePort = null;
+      nativeHandshakeComplete = false;
       void setBadge("!", "#cf222e");
     });
     const manifest = browser.runtime.getManifest();
@@ -232,7 +244,6 @@ export default defineBackground(() => {
   void loadPairing().then((pairing) => {
     if (pairing !== null) {
       connectNative(pairing);
-      void setBadge("ON", "#1f883d");
     }
   });
 });
