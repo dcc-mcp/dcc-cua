@@ -166,11 +166,13 @@ impl ComputerUseSession {
                 "CUA returned a non-PNG or truncated screenshot",
             )
         })?;
-        let mut accessibility = result
+        let accessibility = result
             .structured_json
             .as_deref()
             .and_then(|json| serde_json::from_str(json).ok())
             .unwrap_or_else(|| json!({}));
+        #[cfg(windows)]
+        let mut accessibility = accessibility;
         #[cfg(windows)]
         if !crate::windows_uia_fallback::accessibility_has_closed_policy_tiers(&accessibility) {
             match self
