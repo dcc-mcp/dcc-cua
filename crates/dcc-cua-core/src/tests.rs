@@ -17,9 +17,10 @@ use crate::contracts::{
 use crate::driver_factory::{
     BUNDLED_CURSOR_THEME, UPSTREAM_CURSOR_RENDERER_ENABLED, driver_host_options,
 };
+#[cfg(not(windows))]
+use crate::interactive_desktop::{platform_managed_diagnostic, require_input_available_from};
 use crate::interactive_desktop::{
-    platform_managed_diagnostic, require_desktop_observation_from,
-    require_exact_window_observation_from, require_input_available_from,
+    require_desktop_observation_from, require_exact_window_observation_from,
     require_window_activation_from, windows_diagnostic_base,
     windows_diagnostic_with_thread_fallback,
 };
@@ -48,6 +49,17 @@ fn core_runtime_does_not_own_platform_input_or_media_codecs() {
         assert!(!source.contains("SendInput("));
     }
 }
+
+#[cfg(windows)]
+#[rstest]
+fn windows_test_build_uses_the_production_interactive_desktop_probe() {
+    let diagnostic = crate::interactive_desktop::diagnostic();
+
+    assert_ne!(
+        diagnostic["code"], "interactive_desktop_platform_managed",
+        "Windows tests must exercise the same desktop probe wiring as production"
+    );
+}
 #[cfg(windows)]
 use crate::runtime::RawDragSequenceOutcome;
 use crate::runtime::{
@@ -56,8 +68,8 @@ use crate::runtime::{
     SingleInputInjection, WindowWaitProbeOutcome, aggregate_recording_state, attach_banner_status,
     attach_indicator_motion_to_activation, banner_activity_for_action_phase,
     banner_activity_for_bound_tool, diagnostic_tool_check, ensure_target_available_for_action,
-    gated_cursor_operation, gated_desktop_observation, gated_exact_window_observation,
-    gated_exact_window_publication, held_coordinate_click_as_drag, input_backend_rejection_result,
+    gated_cursor_operation, gated_exact_window_observation, gated_exact_window_publication,
+    held_coordinate_click_as_drag, input_backend_rejection_result,
     live_observation_start_disposition, map_indicator_error, preflight_live_observation_start,
     run_windows_combined_down_drag_sequence, run_windows_fenced_absolute_path,
     run_windows_fenced_absolute_path_with_trace, run_windows_separated_raw_drag_sequence,
@@ -461,6 +473,7 @@ fn diagnostic_health_routes_distinguish_visual_capture_from_uia() {
     assert!(!diagnostic_health_check_passes(&health, "missing"));
 }
 
+#[cfg(not(windows))]
 #[rstest]
 fn platform_managed_desktop_preserves_the_portable_input_contract() {
     let diagnostic = platform_managed_diagnostic();
@@ -930,15 +943,19 @@ fn zoom_is_fenced_to_the_latest_observation_and_bounds() {
 #[tokio::test]
 async fn denied_desktop_fallback_never_reaches_the_capture_backend() {
     let capture_called = Cell::new(false);
-    let denied = Err(ComputerUseError::new(
-        ComputerUseErrorCode::InteractiveDesktopUnavailable,
-        "Windows input desktop could not be read",
-    ));
 
-    let error = gated_desktop_observation(denied, || {
-        capture_called.set(true);
-        async { Ok::<_, ComputerUseError>(()) }
-    })
+    let error = gated_exact_window_observation(
+        || {
+            Err(ComputerUseError::new(
+                ComputerUseErrorCode::InteractiveDesktopUnavailable,
+                "Windows input desktop could not be read",
+            ))
+        },
+        || {
+            capture_called.set(true);
+            async { Ok::<_, ComputerUseError>(()) }
+        },
+    )
     .await
     .expect_err("desktop fallback must stop at its desktop-observation gate");
 

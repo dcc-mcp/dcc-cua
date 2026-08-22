@@ -1,17 +1,5 @@
 use super::*;
 
-pub(crate) async fn gated_desktop_observation<T, Operation, Capture>(
-    availability: ComputerUseResult<()>,
-    capture: Operation,
-) -> ComputerUseResult<T>
-where
-    Operation: FnOnce() -> Capture,
-    Capture: Future<Output = ComputerUseResult<T>>,
-{
-    availability?;
-    capture().await
-}
-
 pub(crate) async fn gated_upstream_session_refresh<T, Operation, Refresh>(
     input_availability: ComputerUseResult<()>,
     refresh: Operation,
@@ -24,7 +12,6 @@ where
     refresh().await
 }
 
-#[allow(dead_code)]
 pub(crate) async fn gated_exact_window_observation<T, Check, Operation, Capture>(
     mut check: Check,
     operation: Operation,
@@ -40,7 +27,6 @@ where
     Ok(result)
 }
 
-#[allow(dead_code)]
 pub(crate) async fn gated_exact_window_publication<
     Captured,
     Finalized,
@@ -183,7 +169,6 @@ pub(crate) fn run_gated_preinvalidated_window_mutation<T, E>(
     run_preinvalidated_window_mutation(invalidate, mutation)
 }
 
-#[allow(dead_code)]
 pub(crate) async fn preflight_live_observation_start<T, Revalidate, Output>(
     existing_state: Option<&Value>,
     observation_availability: ComputerUseResult<()>,

@@ -13,7 +13,7 @@ const WINDOWS_SESSION_ACTIVE: i32 = 0;
 const WINDOWS_SESSION_DISCONNECTED: i32 = 4;
 
 pub(crate) fn diagnostic() -> Value {
-    #[cfg(all(windows, not(test)))]
+    #[cfg(windows)]
     {
         let desktop = dcc_cua_platform_windows::desktop_state();
         let input_desktop = desktop
@@ -33,11 +33,11 @@ pub(crate) fn diagnostic() -> Value {
             desktop.has_foreground_window,
         )
     }
-    #[cfg(any(not(windows), test))]
+    #[cfg(not(windows))]
     platform_managed_diagnostic()
 }
 
-#[cfg(any(not(windows), test))]
+#[cfg(not(windows))]
 pub(crate) fn platform_managed_diagnostic() -> Value {
     json!({
         "success": true,
@@ -110,7 +110,7 @@ pub(crate) fn require_input_available_from(report: &Value) -> ComputerUseResult<
     ))
 }
 
-#[cfg(all(windows, not(test)))]
+#[cfg(windows)]
 fn windows_input_surface() -> Result<(), String> {
     use windows_sys::Win32::{
         Foundation::POINT,
@@ -136,7 +136,7 @@ fn windows_input_surface() -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(all(windows, not(test)))]
+#[cfg(windows)]
 fn thread_desktop_name() -> Result<Option<String>, String> {
     use std::{mem, ptr};
     use windows_sys::Win32::System::{
@@ -186,7 +186,7 @@ fn thread_desktop_name() -> Result<Option<String>, String> {
         .map_err(|error| format!("thread desktop name is not valid UTF-16: {error}"))
 }
 
-#[cfg(all(windows, not(test)))]
+#[cfg(windows)]
 fn windows_session_state() -> Result<i32, String> {
     use std::{mem, ptr};
     use windows_sys::Win32::System::RemoteDesktop::{

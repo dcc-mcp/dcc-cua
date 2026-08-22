@@ -36,7 +36,11 @@ provides:
   macOS re-enters the same `dcc-cua` executable
   as a private SDK worker so AppKit remains on that worker's main thread.
   Headless macOS sessions still return CUA's structured readiness refusal. All
-  supported indicators are click-through and excluded from agent captures.
+  supported indicators are click-through. Capture exclusion is backend-specific:
+  exact-window capture backends exclude their indicator surfaces, while the
+  Windows verified-visible desktop `BitBlt` fallback can include the safety
+  banner or frame. Indicators are safety UI, not target content, and must not
+  be used as action evidence.
   Windows physical Escape and the cross-platform `interrupt_all` Host request
   advance the same Host-process stop generation for every active connection.
   The Windows Escape boundary uses a non-exclusive low-level hook only while a

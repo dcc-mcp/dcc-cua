@@ -5,9 +5,8 @@ use gates::run_gated_preinvalidated_window_mutation;
 use gates::{BrowserToolDisposition, browser_tool_requires_input, browser_tool_route};
 pub(crate) use gates::{
     ensure_target_available_for_action, ensure_target_available_for_bootstrap_activation,
-    gated_cursor_operation, gated_desktop_observation, gated_exact_window_observation,
-    gated_exact_window_publication, gated_upstream_session_refresh,
-    preflight_live_observation_start,
+    gated_cursor_operation, gated_exact_window_observation, gated_exact_window_publication,
+    gated_upstream_session_refresh, preflight_live_observation_start,
 };
 mod browser;
 mod error_contracts;

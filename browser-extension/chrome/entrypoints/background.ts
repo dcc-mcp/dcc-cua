@@ -8,6 +8,7 @@ import {
   type NativeRequest,
   type Pairing,
 } from "../protocol";
+import { PairingLifecycle } from "../pairing";
 import { browser, type Browser } from "wxt/browser";
 import { defineBackground } from "wxt/utils/define-background";
 
@@ -26,17 +27,6 @@ type TabResponse =
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
-function isPairing(value: unknown): value is Pairing {
-  return (
-    isObject(value) &&
-    typeof value.session_nonce === "string" &&
-    Number.isSafeInteger(value.tab_id) &&
-    Number.isSafeInteger(value.window_id) &&
-    typeof value.origin === "string" &&
-    typeof value.document_id === "string"
-  );
 }
 
 function errorCode(error: unknown, fallback: string): string {
@@ -69,32 +59,24 @@ export default defineBackground(() => {
   let nativePort: Browser.runtime.Port | null = null;
   let nativeHandshakeComplete = false;
   let requestQueue: Promise<void> = Promise.resolve();
+  const pairings = new PairingLifecycle({
+    async read(): Promise<unknown> {
+      const stored = await browser.storage.session.get(PAIRING_STORAGE_KEY);
+      return stored[PAIRING_STORAGE_KEY];
+    },
+    async write(pairing: Pairing | null): Promise<void> {
+      if (pairing === null) {
+        await browser.storage.session.remove(PAIRING_STORAGE_KEY);
+      } else {
+        await browser.storage.session.set({ [PAIRING_STORAGE_KEY]: pairing });
+      }
+    },
+  });
 
   async function setBadge(text: string, color: string): Promise<void> {
     await browser.action.setBadgeText({ text });
     if (text) {
       await browser.action.setBadgeBackgroundColor({ color });
-    }
-  }
-
-  async function loadPairing(): Promise<Pairing | null> {
-    const stored = await browser.storage.session.get(PAIRING_STORAGE_KEY);
-    const value = stored[PAIRING_STORAGE_KEY];
-    if (value == null) {
-      return null;
-    }
-    if (!isPairing(value)) {
-      await browser.storage.session.remove(PAIRING_STORAGE_KEY);
-      throw new Error("stored browser pairing is malformed");
-    }
-    return value;
-  }
-
-  async function savePairing(pairing: Pairing | null): Promise<void> {
-    if (pairing === null) {
-      await browser.storage.session.remove(PAIRING_STORAGE_KEY);
-    } else {
-      await browser.storage.session.set({ [PAIRING_STORAGE_KEY]: pairing });
     }
   }
 
@@ -146,7 +128,7 @@ export default defineBackground(() => {
       origin,
       document_id: id,
     };
-    await savePairing(pairing);
+    await pairings.save(pairing);
     connectNative(pairing);
   }
 
@@ -189,18 +171,9 @@ export default defineBackground(() => {
         nativePort?.postMessage(successResponse(request.request_id, { pong: true }));
         return;
       }
-      const pairing = await loadPairing();
-      if (
-        pairing === null ||
-        pairing.session_nonce !== request.session_nonce ||
-        pairing.tab_id !== request.tab_id
-      ) {
-        throw Object.assign(new Error("request does not match the explicitly paired tab"), {
-          code: "pairing_mismatch",
-        });
-      }
+      const pairing = await pairings.requireMatch(request);
       if (request.method === "unpair") {
-        await savePairing(null);
+        await pairings.clear();
         await setBadge("", "#000000");
         nativePort?.postMessage(successResponse(request.request_id, { unpaired: true }));
         return;
@@ -224,26 +197,25 @@ export default defineBackground(() => {
 
   browser.tabs.onUpdated.addListener((tabId, changeInfo) => {
     if (changeInfo.status !== "loading") return;
-    void loadPairing().then(async (pairing) => {
-      if (pairing?.tab_id === tabId) {
-        await savePairing(null);
+    void pairings.clearIfTab(tabId).then(async (cleared) => {
+      if (cleared) {
         await setBadge("", "#000000");
       }
     });
   });
 
   browser.tabs.onRemoved.addListener((tabId) => {
-    void loadPairing().then(async (pairing) => {
-      if (pairing?.tab_id === tabId) {
-        await savePairing(null);
+    void pairings.clearIfTab(tabId).then(async (cleared) => {
+      if (cleared) {
         await setBadge("", "#000000");
       }
     });
   });
 
-  void loadPairing().then((pairing) => {
-    if (pairing !== null) {
-      connectNative(pairing);
-    }
-  });
+  void pairings
+    .load()
+    .then((pairing) => {
+      if (pairing !== null) connectNative(pairing);
+    })
+    .catch(() => setBadge("!", "#cf222e"));
 });

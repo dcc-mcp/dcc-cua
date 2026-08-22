@@ -98,23 +98,27 @@ impl ComputerUseSession {
                 .capture_window_visually(&target, max_elements, max_depth)
                 .await;
         }
-        self.require_observed_exact_window_observation_available()?;
-        let result = call_driver_tool(
-            &self.driver.driver,
-            "get_window_state",
-            json!({
-                "window_id": target.window_id,
-                "pid": target.pid,
-                "include_screenshot": true,
-                "max_elements": bounded_snapshot_elements(max_elements),
-                "max_depth": bounded_snapshot_depth(max_depth),
-                "session": self.session_id,
-            })
-            .to_string(),
-            "capture CUA window state",
+        let result = gated_exact_window_observation(
+            interactive_desktop::require_exact_window_observation_available,
+            || {
+                call_driver_tool(
+                    &self.driver.driver,
+                    "get_window_state",
+                    json!({
+                        "window_id": target.window_id,
+                        "pid": target.pid,
+                        "include_screenshot": true,
+                        "max_elements": bounded_snapshot_elements(max_elements),
+                        "max_depth": bounded_snapshot_depth(max_depth),
+                        "session": self.session_id,
+                    })
+                    .to_string(),
+                    "capture CUA window state",
+                )
+            },
         )
         .await;
-        self.require_observed_exact_window_observation_available()?;
+        let result = self.finish_observation_sensitive_attempt(result);
         let target = self.require_observed_target_available().await?;
         let result = match result {
             Ok(result) if result.is_error && is_uia_snapshot_failure(&result) => {
@@ -231,35 +235,48 @@ impl ComputerUseSession {
             .as_ref()
             .expect("live observation was checked")
             .max_dimension();
-        let frame = self
-            .live_observation
-            .as_mut()
-            .expect("live observation was checked")
-            .latest_after(after_sequence)
-            .await?;
-        self.require_observed_exact_window_observation_available()?;
+        let publication = gated_exact_window_publication(
+            interactive_desktop::require_exact_window_observation_available,
+            || {
+                self.live_observation
+                    .as_mut()
+                    .expect("live observation was checked")
+                    .latest_after(after_sequence)
+            },
+            |frame| async move {
+                let (source_width, source_height) = frame.dimensions();
+                let (width, height) = fit_dimensions_with_bounds(
+                    source_width,
+                    source_height,
+                    max_dimension,
+                    max_dimension,
+                );
+                let encoded_frame = Arc::clone(&frame);
+                let data = tokio::task::spawn_blocking(move || {
+                    let bgra = resize_bgra(
+                        encoded_frame.bgra(),
+                        source_width,
+                        source_height,
+                        width,
+                        height,
+                    );
+                    encode_bgra_to_png(&bgra, width, height)
+                })
+                .await
+                .map_err(|error| {
+                    ComputerUseError::new(
+                        ComputerUseErrorCode::CaptureFailed,
+                        format!("live frame PNG encoding task failed: {error}"),
+                    )
+                })??;
+                Ok((frame, data, source_width, source_height, width, height))
+            },
+            |publication| publication,
+        )
+        .await;
+        let (frame, data, source_width, source_height, width, height) =
+            self.finish_observation_sensitive_attempt(publication)?;
         let target = self.require_observed_target_available().await?;
-        let (source_width, source_height) = frame.dimensions();
-        let (width, height) =
-            fit_dimensions_with_bounds(source_width, source_height, max_dimension, max_dimension);
-        let encoded_frame = Arc::clone(&frame);
-        let data = tokio::task::spawn_blocking(move || {
-            let bgra = resize_bgra(
-                encoded_frame.bgra(),
-                source_width,
-                source_height,
-                width,
-                height,
-            );
-            encode_bgra_to_png(&bgra, width, height)
-        })
-        .await
-        .map_err(|error| {
-            ComputerUseError::new(
-                ComputerUseErrorCode::CaptureFailed,
-                format!("live frame PNG encoding task failed: {error}"),
-            )
-        })??;
         let target = self
             .revalidate_observed_exact_publication_target(&target)
             .await?;
@@ -340,9 +357,13 @@ impl ComputerUseSession {
             interactive_desktop::require_exact_window_observation_available();
         #[cfg(not(windows))]
         let observation_availability = Ok(());
-        self.finish_observed_input_gate(observation_availability)?;
-        let target = self.require_observed_target_available().await?;
-        let disposition = live_observation_start_disposition(existing_state.as_ref());
+        let preflight = preflight_live_observation_start(
+            existing_state.as_ref(),
+            observation_availability,
+            || self.require_observed_target_available(),
+        )
+        .await;
+        let (disposition, target) = self.finish_observation_sensitive_attempt(preflight)?;
         if disposition == LiveObservationStartDisposition::ReuseExisting {
             self.set_banner_live_observation(true);
             return Ok(LiveObservationStartOutcome {
@@ -455,13 +476,12 @@ impl ComputerUseSession {
                 "UIA window snapshot timed out and the target is minimized",
             ));
         }
-        self.finish_observed_input_gate(
-            interactive_desktop::require_exact_window_observation_available(),
-        )?;
-        let exact_capture = capture_exact_window(target.pid, target.window_id).await;
-        self.finish_observed_input_gate(
-            interactive_desktop::require_exact_window_observation_available(),
-        )?;
+        let exact_capture = gated_exact_window_observation(
+            interactive_desktop::require_exact_window_observation_available,
+            || capture_exact_window(target.pid, target.window_id),
+        )
+        .await;
+        let exact_capture = self.finish_observation_sensitive_attempt(exact_capture);
         let (data, capture_backend, fallback, mut capture_provenance) = match exact_capture {
             Ok(capture) => (
                 capture.data,
@@ -490,21 +510,19 @@ impl ComputerUseSession {
                         ),
                     ));
                 }
-                let observation_availability = self.finish_observed_input_gate(
-                    interactive_desktop::require_desktop_observation_available(),
-                );
-                let result = gated_desktop_observation(observation_availability, || {
-                    call_driver_tool(
-                        &self.driver.driver,
-                        "get_desktop_state",
-                        json!({"session": self.session_id}).to_string(),
-                        "capture CUA desktop fallback",
-                    )
-                })
-                .await?;
-                self.finish_observed_input_gate(
-                    interactive_desktop::require_desktop_observation_available(),
-                )?;
+                let result = gated_exact_window_observation(
+                    interactive_desktop::require_desktop_observation_available,
+                    || {
+                        call_driver_tool(
+                            &self.driver.driver,
+                            "get_desktop_state",
+                            json!({"session": self.session_id}).to_string(),
+                            "capture CUA desktop fallback",
+                        )
+                    },
+                )
+                .await;
+                let result = self.finish_observation_sensitive_attempt(result)?;
                 let result =
                     self.finish_observed_tool_attempt("capture CUA desktop fallback", Ok(result))?;
                 let image = result.images.first().ok_or_else(|| {

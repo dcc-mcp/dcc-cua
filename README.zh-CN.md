@@ -25,8 +25,10 @@ Computer Use Automation 运行时和命令行工具，支持 Windows、Linux 和
 - 文本、按键、拖拽和坐标输入都有边界限制；目标应用身份缺失或不可读取时会拒绝控制，
   并通过一套共享的纵深防御策略拒绝已知终端、命令解释器、认证、密码与安全应用身份。
 - Windows 物理 `Escape` 和跨平台 `interrupt_all` 会停止 Host 中的活动连接。
-- Windows、Linux 和打包后的 macOS Host 都提供可见控制指示；指示层不会出现在
-  Agent 截图中，也不会截获点击。
+- Windows、Linux 和打包后的 macOS Host 都提供可见且不截获点击的控制指示。
+  是否排除在截图之外取决于捕获后端：精确窗口捕获会排除指示层，Windows 的
+  verified-visible 桌面 `BitBlt` 回退可能包含安全横幅或边框。指示层仅用于安全提示，
+  不能作为目标内容或操作证据。
 - Cloudflare 等真人验证、安全确认、账号、购买和下载边界需要可信人工确认授权；
   Profile 只声明路由，不能绕过网站或操作系统的安全策略。
 

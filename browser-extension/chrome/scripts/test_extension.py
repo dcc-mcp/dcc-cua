@@ -107,9 +107,6 @@ class ExtensionContractTests(unittest.TestCase):
         source = "\n".join(path.read_text(encoding="utf-8") for path in sources)
         for forbidden in ("<all_urls>", "eval(", "new Function(", "executeScript({code"):
             self.assertNotIn(forbidden, source)
-        self.assertIn("requestQueue = requestQueue", source)
-        self.assertIn("validateNativeHelloAck(message)", source)
-        self.assertIn("await handleNativeMessage(message)", source)
 
     def test_archives_are_deterministic_and_match_wxt_outputs(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

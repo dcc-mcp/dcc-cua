@@ -43,9 +43,8 @@ mod session;
 mod session_status;
 #[allow(unused_imports)]
 pub(crate) use session::{
-    ensure_target_available_for_action, gated_cursor_operation, gated_desktop_observation,
-    gated_exact_window_observation, gated_exact_window_publication,
-    preflight_live_observation_start, resolved_application_name,
+    ensure_target_available_for_action, gated_cursor_operation, gated_exact_window_observation,
+    gated_exact_window_publication, preflight_live_observation_start, resolved_application_name,
 };
 #[cfg(windows)]
 pub(crate) mod windows_held_key;
