@@ -15,7 +15,7 @@ path = "src/lib.rs"
 
 [dependencies]
 dcc-cua-semantic-profiles = { path = "../dcc-cua-semantic-profiles" }
-dcc-cua-workspace-hack = { path = "../dcc-cua-workspace-hack" }
+dcc-cua-workspace-hack = { version = "1", path = "../dcc-cua-workspace-hack" }
 semver = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

@@ -19,7 +19,7 @@ ipckit = "0.1.12"
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"
 uuid = { version = "1", features = ["v4"] }
-dcc-cua-workspace-hack = { path = "../dcc-cua-workspace-hack" }
+dcc-cua-workspace-hack = { version = "1", path = "../dcc-cua-workspace-hack" }
 
 [dev-dependencies]
 rstest.workspace = true

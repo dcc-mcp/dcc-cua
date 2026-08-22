@@ -19,7 +19,7 @@ path = "src/lib.rs"
 dcc-cua-interrupt = { path = "../dcc-cua-interrupt" }
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"
-dcc-cua-workspace-hack = { path = "../dcc-cua-workspace-hack" }
+dcc-cua-workspace-hack = { version = "1", path = "../dcc-cua-workspace-hack" }
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.61.3", features = [

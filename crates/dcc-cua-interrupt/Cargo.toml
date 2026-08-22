@@ -14,7 +14,7 @@ name = "dcc_cua_interrupt"
 path = "src/lib.rs"
 
 [dependencies]
-dcc-cua-workspace-hack = { path = "../dcc-cua-workspace-hack" }
+dcc-cua-workspace-hack = { version = "1", path = "../dcc-cua-workspace-hack" }
 
 [dev-dependencies]
 rstest.workspace = true

@@ -19,7 +19,7 @@ dcc-cua-core = { path = "../dcc-cua-core" }
 dcc-cua-protocol = { path = "../dcc-cua-protocol" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-dcc-cua-workspace-hack = { path = "../dcc-cua-workspace-hack" }
+dcc-cua-workspace-hack = { version = "1", path = "../dcc-cua-workspace-hack" }
 
 [dev-dependencies]
 rstest.workspace = true
