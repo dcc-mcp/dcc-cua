@@ -79,4 +79,10 @@ pub enum UiaError {
     InvalidAction(String),
     #[error("Windows UI Automation backend failed: {0}")]
     BackendUnavailable(String),
+    #[error("Windows refused exact-window foreground activation: {reason}")]
+    ForegroundActivationRefused {
+        reason: String,
+        background_delivery_viable: bool,
+        suggested_delivery_mode: Option<String>,
+    },
 }

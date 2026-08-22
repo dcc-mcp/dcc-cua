@@ -343,7 +343,16 @@ fn error_detail(error: &UiaError) -> &str {
         | UiaError::PermissionDenied(message)
         | UiaError::InvalidAction(message)
         | UiaError::BackendUnavailable(message) => message,
+        UiaError::ForegroundActivationRefused { reason, .. } => reason,
         UiaError::Unsupported => "Windows UI Automation fallback is unavailable on this platform",
+    }
+}
+
+fn foreground_activation_refused(reason: impl Into<String>) -> UiaError {
+    UiaError::ForegroundActivationRefused {
+        reason: reason.into(),
+        background_delivery_viable: true,
+        suggested_delivery_mode: Some("background".into()),
     }
 }
 
@@ -411,8 +420,8 @@ pub fn activate_window(
     }
     synchronize_activated_input_queue(expected)?;
     if unsafe { GetForegroundWindow() } != expected {
-        return Err(UiaError::BackendUnavailable(
-            "the exact target was no longer foreground at activation final validation".into(),
+        return Err(foreground_activation_refused(
+            "the exact target was no longer foreground at activation final validation",
         ));
     }
     Ok(())
@@ -511,8 +520,8 @@ fn synchronize_activated_input_queue(
         ));
     }
     if unsafe { GetForegroundWindow() } != expected {
-        return Err(UiaError::BackendUnavailable(
-            "the exact target lost foreground while synchronizing activation input".into(),
+        return Err(foreground_activation_refused(
+            "the exact target lost foreground while synchronizing activation input",
         ));
     }
     Ok(())
@@ -587,8 +596,8 @@ fn activate_window_after_gate(target: UiaTarget) -> Result<(), UiaError> {
     if activated {
         Ok(())
     } else {
-        Err(UiaError::BackendUnavailable(
-            "Windows could not make the exact target window foreground".into(),
+        Err(foreground_activation_refused(
+            "Windows could not make the exact target window foreground",
         ))
     }
 }

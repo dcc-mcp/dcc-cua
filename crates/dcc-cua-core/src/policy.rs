@@ -1183,7 +1183,7 @@ pub(crate) fn ensure_tool_ok(
         } else {
             result.text.clone()
         };
-        let mapped = classify_driver_failure(code, &message, ComputerUseErrorCode::InputFailed);
+        let mapped = classify_driver_failure(code, ComputerUseErrorCode::InputFailed);
         return Err(ComputerUseError::new(
             mapped,
             format!("{context}: {message}"),
@@ -1192,45 +1192,67 @@ pub(crate) fn ensure_tool_ok(
     Ok(())
 }
 
-pub(crate) fn map_driver_error(context: &str, error: impl std::fmt::Display) -> ComputerUseError {
+pub(crate) fn map_driver_error(
+    context: &str,
+    error: cua_driver_sdk::DriverError,
+) -> ComputerUseError {
     let message = error.to_string();
-    let code = classify_driver_failure("", &message, ComputerUseErrorCode::BackendUnavailable);
+    let code = match &error {
+        cua_driver_sdk::DriverError::Configuration { .. }
+        | cua_driver_sdk::DriverError::InvalidArguments { .. } => {
+            ComputerUseErrorCode::InvalidAction
+        }
+        cua_driver_sdk::DriverError::Tool { error_code, .. } => {
+            classify_driver_failure(error_code, ComputerUseErrorCode::InputFailed)
+        }
+        cua_driver_sdk::DriverError::ActionInterrupted { completion, .. } => match completion {
+            cua_driver_sdk::worker::ActionCompletion::Unknown => {
+                ComputerUseErrorCode::CompletionUnknown
+            }
+            cua_driver_sdk::worker::ActionCompletion::NotStarted
+            | cua_driver_sdk::worker::ActionCompletion::Completed => {
+                ComputerUseErrorCode::InputFailed
+            }
+        },
+        cua_driver_sdk::DriverError::Transport { .. }
+        | cua_driver_sdk::DriverError::Protocol { .. }
+        | cua_driver_sdk::DriverError::Shutdown
+        | cua_driver_sdk::DriverError::RuntimeAlreadyExists
+        | cua_driver_sdk::DriverError::Worker { .. }
+        | cua_driver_sdk::DriverError::Remote { .. } => ComputerUseErrorCode::BackendUnavailable,
+    };
     ComputerUseError::new(code, format!("{context}: {message}"))
 }
 
-fn classify_driver_failure(
-    code: &str,
-    message: &str,
-    fallback: ComputerUseErrorCode,
-) -> ComputerUseErrorCode {
-    let lower = format!("{code} {message}").to_ascii_lowercase();
-    if lower.contains("interrupt") || lower.contains("user_interrupted") {
-        ComputerUseErrorCode::UserInterrupted
-    } else if lower.contains("interactive_desktop_unavailable")
-        || lower.contains("input_gate_stage=")
-    {
-        ComputerUseErrorCode::InteractiveDesktopUnavailable
-    } else if lower.contains("target_minimized") {
-        ComputerUseErrorCode::TargetMinimized
-    } else if lower.contains("target_unavailable") || lower.contains("missing_window") {
-        ComputerUseErrorCode::TargetUnavailable
-    } else if lower.contains("browser_") || lower.contains("browser") {
-        ComputerUseErrorCode::BrowserRefused
-    } else if lower.contains("clipboard") {
-        ComputerUseErrorCode::ClipboardRefused
-    } else if lower.contains("recording") || lower.contains("record_") {
-        ComputerUseErrorCode::RecordingRefused
-    } else if lower.contains("uia")
-        || lower.contains("provider")
-        || lower.contains("timed out")
-        || lower.contains("timeout")
-        || lower.contains("invalid handle")
-    {
-        ComputerUseErrorCode::BackendUnavailable
-    } else if lower.contains("window") || lower.contains("target") {
-        ComputerUseErrorCode::InvalidTarget
-    } else {
-        fallback
+fn classify_driver_failure(code: &str, fallback: ComputerUseErrorCode) -> ComputerUseErrorCode {
+    match code.trim().to_ascii_lowercase().as_str() {
+        "user_interrupted" | "interrupted" | "cancelled" => ComputerUseErrorCode::UserInterrupted,
+        "interactive_desktop_unavailable"
+        | "interactive_input_surface_unavailable"
+        | "input_gate_stage=foreground_dispatch"
+        | "activation_gate_stage=foreground_dispatch" => {
+            ComputerUseErrorCode::InteractiveDesktopUnavailable
+        }
+        "target_minimized" => ComputerUseErrorCode::TargetMinimized,
+        "target_unavailable" | "missing_window" => ComputerUseErrorCode::TargetUnavailable,
+        "invalid_target" => ComputerUseErrorCode::InvalidTarget,
+        "browser_refused"
+        | "browser_scope_unavailable"
+        | "browser_wrong_target_refused"
+        | "browser_requires_setup" => ComputerUseErrorCode::BrowserRefused,
+        "clipboard_refused" | "clipboard_read_refused" | "clipboard_write_refused" => {
+            ComputerUseErrorCode::ClipboardRefused
+        }
+        "recording_refused" | "recording_not_granted" => ComputerUseErrorCode::RecordingRefused,
+        "backend_unavailable" | "uia_timeout" | "timeout" => {
+            ComputerUseErrorCode::BackendUnavailable
+        }
+        "capture_failed" => ComputerUseErrorCode::CaptureFailed,
+        "stale_observation" => ComputerUseErrorCode::StaleObservation,
+        "completion_unknown" => ComputerUseErrorCode::CompletionUnknown,
+        "invalid_action" | "invalid_arguments" => ComputerUseErrorCode::InvalidAction,
+        "input_failed" | "" => fallback,
+        _ => fallback,
     }
 }
 
@@ -1245,21 +1267,16 @@ pub(crate) fn png_dimensions(data: &[u8]) -> Option<(u32, u32)> {
 }
 
 pub(crate) fn is_uia_snapshot_failure(result: &cua_driver_sdk::ToolResult) -> bool {
-    let message = format!(
-        "{} {} {}",
-        result.error_code.as_deref().unwrap_or_default(),
-        result.text,
-        result.raw_json
-    );
-    is_uia_snapshot_message(&message)
-}
-
-pub(crate) fn is_uia_snapshot_message(message: &str) -> bool {
-    let lower = message.to_ascii_lowercase();
-    lower.contains("uia provider unresponsive")
-        || lower.contains("get_window_state timed out")
-        || (lower.contains("get_window_state") && lower.contains("desktop scope"))
-        || (lower.contains("no window with window_id") && lower.contains("exists"))
+    matches!(
+        result.error_code.as_deref(),
+        Some(
+            "backend_unavailable"
+                | "input_failed"
+                | "uia_timeout"
+                | "target_unavailable"
+                | "missing_window"
+        )
+    )
 }
 
 #[cfg(any(windows, test))]

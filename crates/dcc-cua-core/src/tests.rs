@@ -1,7 +1,6 @@
 use std::cell::{Cell, RefCell};
 #[cfg(windows)]
 use std::collections::VecDeque;
-use std::future::pending;
 use std::io::Cursor;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -51,9 +50,8 @@ use crate::runtime::RawDragSequenceOutcome;
 use crate::runtime::{
     ActionBannerPhase, CombinedDownDragAfterDown, CombinedDownDragCleanup, CombinedDownDragPrelude,
     CombinedDownInjection, LiveObservationStartDisposition, RecordingHealth, RecordingKeepalive,
-    SingleInputInjection, WindowWaitProbeOutcome, action_dispatch_completion_unknown,
-    activation_completion_unknown, aggregate_recording_state, attach_banner_status,
-    attach_indicator_motion_to_activation, await_input_call, banner_activity_for_action_phase,
+    SingleInputInjection, WindowWaitProbeOutcome, aggregate_recording_state, attach_banner_status,
+    attach_indicator_motion_to_activation, banner_activity_for_action_phase,
     banner_activity_for_bound_tool, diagnostic_tool_check, ensure_target_available_for_action,
     gated_cursor_operation, gated_desktop_observation, gated_exact_window_observation,
     gated_exact_window_publication, held_coordinate_click_as_drag, input_backend_rejection_result,
@@ -99,26 +97,12 @@ macro_rules! run_combined_down_drag_sequence {
 
 mod drag;
 mod drag_windows;
+mod error_contracts;
 mod interactive_desktop_fallback;
 mod issues_58_60;
 mod launch;
 mod live_observation;
 mod recording_session;
-
-#[rstest]
-#[tokio::test]
-async fn input_calls_have_a_hard_timeout() {
-    let error = await_input_call(
-        pending::<()>(),
-        Duration::from_millis(1),
-        "window activation",
-    )
-    .await
-    .unwrap_err();
-    assert_eq!(error.code, ComputerUseErrorCode::InputFailed);
-    assert!(error.message.contains("window activation timed out"));
-    assert!(!error.message.contains("session was invalidated"));
-}
 
 #[rstest]
 #[tokio::test(start_paused = true)]
@@ -132,35 +116,6 @@ async fn window_wait_probe_obeys_the_absolute_request_deadline() {
     .await;
 
     assert!(matches!(outcome, WindowWaitProbeOutcome::TimedOut));
-}
-
-#[rstest]
-fn activation_timeout_is_typed_completion_unknown_without_blind_retry() {
-    let error = activation_completion_unknown(ComputerUseError::new(
-        ComputerUseErrorCode::InputFailed,
-        "window activation timed out",
-    ));
-
-    assert_eq!(error.code, ComputerUseErrorCode::CompletionUnknown);
-    assert!(error.message.contains("completion_unknown=true"));
-    assert!(error.message.contains("automatic_input=false"));
-    assert!(error.message.contains("blind_retry=false"));
-    assert!(!error.message.contains("session was invalidated"));
-}
-
-#[rstest]
-fn action_dispatch_timeout_reports_attempted_input_and_real_session_invalidation() {
-    let error = action_dispatch_completion_unknown(ComputerUseError::new(
-        ComputerUseErrorCode::InputFailed,
-        "CUA action timed out after 15000 ms",
-    ));
-
-    assert_eq!(error.code, ComputerUseErrorCode::CompletionUnknown);
-    assert!(error.message.contains("action_attempted=true"));
-    assert!(error.message.contains("input_sent=unknown"));
-    assert!(error.message.contains("completion_unknown=true"));
-    assert!(error.message.contains("local_session_invalidated=true"));
-    assert!(error.message.contains("blind_retry=false"));
 }
 
 #[rstest]
@@ -926,79 +881,6 @@ fn zoom_is_fenced_to_the_latest_observation_and_bounds() {
 }
 
 #[rstest]
-fn native_provider_timeout_is_backend_unavailable() {
-    let error = map_driver_error(
-        "capture CUA window state",
-        "InputFailed: get_window_state timed out (UIA provider unresponsive)",
-    );
-    assert_eq!(error.code, ComputerUseErrorCode::BackendUnavailable);
-}
-
-#[rstest]
-fn tool_provider_timeout_is_backend_unavailable() {
-    let result = cua_driver_sdk::ToolResult {
-        is_error: true,
-        error_code: Some("input_failed".into()),
-        raw_json: "{}".into(),
-        text: "get_window_state timed out: UIA provider unresponsive".into(),
-        structured_json: None,
-        images: Vec::new(),
-        degraded: false,
-        action: None,
-        verification: None,
-    };
-    assert_eq!(
-        ensure_tool_ok("capture CUA window", &result)
-            .unwrap_err()
-            .code,
-        ComputerUseErrorCode::BackendUnavailable
-    );
-}
-
-#[rstest]
-#[case("target_minimized", ComputerUseErrorCode::TargetMinimized)]
-#[case("target_unavailable", ComputerUseErrorCode::TargetUnavailable)]
-#[case("missing_window", ComputerUseErrorCode::TargetUnavailable)]
-#[case(
-    "interactive_desktop_unavailable",
-    ComputerUseErrorCode::InteractiveDesktopUnavailable
-)]
-#[case(
-    "input_gate_stage=foreground_dispatch",
-    ComputerUseErrorCode::InteractiveDesktopUnavailable
-)]
-fn exact_status_driver_markers_override_browser_and_uia_classification(
-    #[case] marker: &str,
-    #[case] expected: ComputerUseErrorCode,
-) {
-    let result = cua_driver_sdk::ToolResult {
-        is_error: true,
-        error_code: Some(marker.into()),
-        raw_json: "{}".into(),
-        text: "browser UIA operation rejected the exact target".into(),
-        structured_json: None,
-        images: Vec::new(),
-        degraded: false,
-        action: None,
-        verification: None,
-    };
-    assert_eq!(
-        ensure_tool_ok("perform browser operation", &result)
-            .unwrap_err()
-            .code,
-        expected
-    );
-    assert_eq!(
-        map_driver_error(
-            "perform browser operation",
-            format!("browser UIA failure: {marker}")
-        )
-        .code,
-        expected
-    );
-}
-
-#[rstest]
 #[tokio::test]
 async fn denied_desktop_fallback_never_reaches_the_capture_backend() {
     let capture_called = Cell::new(false);
@@ -1450,9 +1332,17 @@ fn semantic_only_observations_reject_unscoped_pixel_actions() {
 
 #[rstest]
 fn upstream_window_inventory_miss_routes_to_the_exact_native_capture() {
-    assert!(is_uia_snapshot_message(
-        "No window with window_id 65916 exists. Call list_windows for candidates."
-    ));
+    assert!(is_uia_snapshot_failure(&cua_driver_sdk::ToolResult {
+        is_error: true,
+        error_code: Some("missing_window".into()),
+        raw_json: "{}".into(),
+        text: "inventory miss".into(),
+        structured_json: None,
+        images: Vec::new(),
+        degraded: false,
+        action: None,
+        verification: None,
+    }));
 }
 
 #[rstest]

@@ -1859,14 +1859,16 @@ fn app_launch_grant_defaults_to_denied() {
     assert!(!grant.allow_session_escalation);
     assert!(!grant.allow_trusted_confirmation);
     assert_eq!(
-        error_code(&HostError::Protocol(
-            "browser download is not granted".into()
+        error_code(&HostError::coded_protocol(
+            HostProtocolErrorCode::BrowserDownloadNotGranted,
+            "browser download is not granted",
         )),
         "browser_download_not_granted"
     );
     assert_eq!(
-        error_code(&HostError::Protocol(
-            "native menu invocation is not granted".into()
+        error_code(&HostError::coded_protocol(
+            HostProtocolErrorCode::MenuInvokeNotGranted,
+            "native menu invocation is not granted",
         )),
         "menu_invoke_not_granted"
     );
@@ -1890,6 +1892,23 @@ fn app_launch_grant_defaults_to_denied() {
             "refresh before taking a new observation",
         ))),
         "session_refresh_required"
+    );
+}
+
+#[rstest]
+fn protocol_wire_codes_are_explicit_and_never_inferred_from_prose() {
+    assert_eq!(
+        error_code(&HostError::Protocol(
+            "recording path contains an invalid character".into()
+        )),
+        "invalid_request"
+    );
+    assert_eq!(
+        error_code(&HostError::coded_protocol(
+            HostProtocolErrorCode::RecordingNotGranted,
+            "recording is not granted",
+        )),
+        "recording_not_granted"
     );
 }
 

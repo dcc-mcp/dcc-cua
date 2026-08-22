@@ -10,9 +10,11 @@ pub(crate) use gates::{
     preflight_live_observation_start,
 };
 mod browser;
+mod error_contracts;
 mod observation;
 #[cfg(test)]
 mod tests;
+use error_contracts::*;
 
 impl std::fmt::Debug for ComputerUseSession {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -24,65 +26,6 @@ impl std::fmt::Debug for ComputerUseSession {
             .field("escalated", &self.escalated)
             .finish_non_exhaustive()
     }
-}
-
-fn parse_bound_tool_value(
-    name: &str,
-    result: &cua_driver_sdk::ToolResult,
-) -> ComputerUseResult<Value> {
-    serde_json::from_str(&result.raw_json).map_err(|error| {
-        ComputerUseError::new(
-            ComputerUseErrorCode::BackendUnavailable,
-            format!("CUA {name} returned invalid JSON: {error}"),
-        )
-    })
-}
-
-fn mutation_pre_dispatch_failure(
-    context: &str,
-    error: cua_driver_sdk::DriverError,
-) -> ComputerUseError {
-    let error = map_driver_error(context, error);
-    ComputerUseError::new(
-        error.code,
-        format!(
-            "{}; phase=pre_dispatch; action_attempted=false; input_sent=false; completion_unknown=false; local_session_invalidated=false; session_remains_active=true; automatic_input=false; blind_retry=false; fresh_observation_required=false",
-            error.message
-        ),
-    )
-}
-
-fn mutation_known_failure(context: &str, error: cua_driver_sdk::DriverError) -> ComputerUseError {
-    let error = map_driver_error(context, error);
-    ComputerUseError::new(
-        error.code,
-        format!(
-            "{}; phase=action_dispatch; action_attempted=true; input_sent=unknown; completion_unknown=false; local_session_invalidated=false; session_remains_active=true; automatic_input=false; blind_retry=false; fresh_observation_required=true",
-            error.message
-        ),
-    )
-}
-
-#[cfg(any(windows, test))]
-fn local_mutation_attempt_failure(error: ComputerUseError) -> ComputerUseError {
-    ComputerUseError::new(
-        error.code,
-        format!(
-            "{}; phase=local_mutation_dispatch; action_attempted=true; input_sent=unknown; effect_unknown=true; local_session_invalidated=false; session_remains_active=true; automatic_input=false; blind_retry=false; fresh_observation_required=true",
-            error.message
-        ),
-    )
-}
-
-#[cfg(any(windows, test))]
-fn local_activation_attempt_failure(error: ComputerUseError) -> ComputerUseError {
-    ComputerUseError::new(
-        error.code,
-        format!(
-            "{}; phase=activation_dispatch; focus_mutation_attempted=true; action_attempted=false; input_sent=false; effect_unknown=false; local_session_invalidated=false; session_remains_active=true; automatic_input=false; blind_retry=false; fresh_observation_required=true",
-            error.message
-        ),
-    )
 }
 
 #[cfg(windows)]
@@ -293,7 +236,11 @@ impl ComputerUseSession {
             )
             .await
             .map_err(|error| {
-                if error.message.contains("timed out") {
+                if error
+                    .details
+                    .as_ref()
+                    .is_some_and(|details| details.timed_out == Some(true))
+                {
                     activation_completion_unknown(error)
                 } else {
                     error
@@ -402,8 +349,21 @@ impl ComputerUseSession {
         self.invalidate_action_observations();
         Err(ComputerUseError::new(
             ComputerUseErrorCode::SessionRefreshRequired,
-            "session_refresh_required: action_attempted=false; input_sent=false; action_completion_unknown=false; local_session_invalidated=false; session_remains_active=true; automatic_input=false; blind_retry=false; fresh_observation_required=true; exact_target_revalidation_required=true",
-        ))
+            "the upstream session requires a fresh exact-target refresh",
+        )
+        .with_details(ComputerUseErrorDetails {
+            phase: Some(ComputerUseErrorPhase::PreDispatch),
+            action_attempted: Some(false),
+            input_sent: Some(ComputerUseInputState::NotSent),
+            completion: Some(ComputerUseCompletionState::Known),
+            local_session_invalidated: Some(false),
+            session_remains_active: Some(true),
+            automatic_input: Some(false),
+            blind_retry: Some(false),
+            fresh_observation_required: Some(true),
+            exact_target_revalidation_required: Some(true),
+            ..Default::default()
+        }))
     }
 
     fn finish_upstream_refresh_attempt<T>(
@@ -415,19 +375,30 @@ impl ComputerUseSession {
             Err(error) => {
                 self.invalidate_action_observations();
                 if error.code != ComputerUseErrorCode::InputFailed
-                    || !error.message.contains("timed out")
+                    || !error
+                        .details
+                        .as_ref()
+                        .is_some_and(|details| details.timed_out == Some(true))
                 {
                     return Err(error);
                 }
-                let detail = error
-                    .message
-                    .replace("; the window session was invalidated", "");
-                Err(ComputerUseError::new(
-                    ComputerUseErrorCode::CompletionUnknown,
-                    format!(
-                        "{detail}; phase=upstream_session_refresh; action_attempted=false; input_sent=false; upstream_refresh_completion_unknown=true; local_session_invalidated=false; session_remains_active=true; automatic_input=false; blind_retry=false; fresh_observation_required=true; exact_target_revalidation_required=true"
-                    ),
-                ))
+                Err(
+                    ComputerUseError::new(ComputerUseErrorCode::CompletionUnknown, error.message)
+                        .with_details(ComputerUseErrorDetails {
+                            timed_out: Some(true),
+                            phase: Some(ComputerUseErrorPhase::UpstreamSessionRefresh),
+                            action_attempted: Some(false),
+                            input_sent: Some(ComputerUseInputState::NotSent),
+                            completion: Some(ComputerUseCompletionState::Unknown),
+                            local_session_invalidated: Some(false),
+                            session_remains_active: Some(true),
+                            automatic_input: Some(false),
+                            blind_retry: Some(false),
+                            fresh_observation_required: Some(true),
+                            exact_target_revalidation_required: Some(true),
+                            ..Default::default()
+                        }),
+                )
             }
         }
     }
@@ -1101,12 +1072,10 @@ impl ComputerUseSession {
             Ok(Err(cua_driver_sdk::DriverError::ActionInterrupted {
                 completion: cua_driver_sdk::worker::ActionCompletion::NotStarted,
                 reason,
-            })) => Err(ComputerUseError::new(
+            })) => Err(pre_dispatch_failure(ComputerUseError::new(
                 ComputerUseErrorCode::InputFailed,
-                format!(
-                    "{context}: {reason}; phase=pre_dispatch; action_attempted=false; input_sent=false; completion_unknown=false; local_session_invalidated=false; session_remains_active=true; automatic_input=false; blind_retry=false; fresh_observation_required=false"
-                ),
-            )),
+                format!("{context}: {reason}"),
+            ))),
             Ok(Err(cua_driver_sdk::DriverError::ActionInterrupted {
                 completion: cua_driver_sdk::worker::ActionCompletion::Completed,
                 reason,
@@ -1114,10 +1083,20 @@ impl ComputerUseSession {
                 self.invalidate_action_observations();
                 Err(ComputerUseError::new(
                     ComputerUseErrorCode::InputFailed,
-                    format!(
-                        "{context}: {reason}; phase=action_dispatch; action_attempted=true; completion_unknown=false; local_session_invalidated=false; session_remains_active=true; automatic_input=false; blind_retry=false; fresh_observation_required=true"
-                    ),
-                ))
+                    format!("{context}: {reason}"),
+                )
+                .with_details(ComputerUseErrorDetails {
+                    phase: Some(ComputerUseErrorPhase::ActionDispatch),
+                    action_attempted: Some(true),
+                    input_sent: Some(ComputerUseInputState::Unknown),
+                    completion: Some(ComputerUseCompletionState::Known),
+                    local_session_invalidated: Some(false),
+                    session_remains_active: Some(true),
+                    automatic_input: Some(false),
+                    blind_retry: Some(false),
+                    fresh_observation_required: Some(true),
+                    ..Default::default()
+                }))
             }
             Ok(Err(error @ cua_driver_sdk::DriverError::Tool { .. })) => {
                 self.invalidate_action_observations();
@@ -1759,9 +1738,22 @@ impl ComputerUseSession {
             }
             if !target.is_foreground {
                 return Err(ComputerUseError::new(
-                    ComputerUseErrorCode::InputFailed,
-                    "the exact Windows target is not foreground after activation; automatic_input=false; blind_retry=false",
-                ));
+                    ComputerUseErrorCode::ForegroundActivationRefused,
+                    "the exact Windows target is not foreground after activation",
+                )
+                .with_details(ComputerUseErrorDetails {
+                    phase: Some(ComputerUseErrorPhase::ActivationDispatch),
+                    focus_mutation_attempted: Some(true),
+                    action_attempted: Some(false),
+                    input_sent: Some(ComputerUseInputState::NotSent),
+                    completion: Some(ComputerUseCompletionState::Known),
+                    automatic_input: Some(false),
+                    blind_retry: Some(false),
+                    fresh_observation_required: Some(true),
+                    background_delivery_viable: Some(true),
+                    suggested_delivery_mode: Some("background".into()),
+                    ..Default::default()
+                }));
             }
             self.target = Some(target.clone());
             self.set_banner_activity(BannerActivity::Ready);
@@ -1852,9 +1844,10 @@ impl ComputerUseSession {
                         "restore and activate the exact Windows target",
                         error,
                     );
-                    error.message.push_str(
-                        "; automatic_input=false; blind_retry=false; fresh_observation_required=true",
-                    );
+                    let details = error.details.get_or_insert_default();
+                    details.automatic_input = Some(false);
+                    details.blind_retry = Some(false);
+                    details.fresh_observation_required = Some(true);
                     error
                 })
             },

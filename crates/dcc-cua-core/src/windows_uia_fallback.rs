@@ -166,9 +166,9 @@ fn map_error(error: UiaError) -> ComputerUseError {
         UiaError::PermissionDenied(_) | UiaError::InvalidAction(_) => {
             ComputerUseErrorCode::InvalidAction
         }
-        UiaError::Unsupported | UiaError::BackendUnavailable(_) => {
-            ComputerUseErrorCode::BackendUnavailable
-        }
+        UiaError::Unsupported
+        | UiaError::BackendUnavailable(_)
+        | UiaError::ForegroundActivationRefused { .. } => ComputerUseErrorCode::BackendUnavailable,
     };
     ComputerUseError::new(code, error.to_string())
 }

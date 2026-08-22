@@ -8,7 +8,15 @@ use rstest::rstest;
 fn upstream_start_timeout_is_the_only_failure_allowed_to_enter_visual_only_mode() {
     let timeout = ComputerUseError::new(
         ComputerUseErrorCode::InputFailed,
-        "CUA start CUA session timed out after 15000 ms",
+        "CUA session start failed",
+    )
+    .with_details(ComputerUseErrorDetails {
+        timed_out: Some(true),
+        ..Default::default()
+    });
+    let prose_only_timeout = ComputerUseError::new(
+        ComputerUseErrorCode::InputFailed,
+        "a window title happened to contain timed out",
     );
     let backend_failure = ComputerUseError::new(
         ComputerUseErrorCode::BackendUnavailable,
@@ -16,6 +24,7 @@ fn upstream_start_timeout_is_the_only_failure_allowed_to_enter_visual_only_mode(
     );
 
     assert!(visual_only_start_degradation(&timeout).is_some());
+    assert!(visual_only_start_degradation(&prose_only_timeout).is_none());
     assert!(visual_only_start_degradation(&backend_failure).is_none());
 }
 

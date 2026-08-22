@@ -544,6 +544,73 @@ pub enum ComputerUseErrorCode {
     SessionRefreshRequired,
     CompletionUnknown,
     CaptureFailed,
+    ForegroundActivationRefused,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ComputerUseErrorDetails {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timed_out: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<ComputerUseErrorPhase>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action_attempted: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub focus_mutation_attempted: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_sent: Option<ComputerUseInputState>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completion: Option<ComputerUseCompletionState>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effect_unknown: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_session_invalidated: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_remains_active: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub automatic_input: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blind_retry: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fresh_observation_required: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exact_target_revalidation_required: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub automatic_rebind: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub explicit_rebind_required: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suggested_target: Option<ComputerUseTargetScope>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub background_delivery_viable: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suggested_delivery_mode: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ComputerUseErrorPhase {
+    PreDispatch,
+    ActionDispatch,
+    LocalMutationDispatch,
+    ActivationDispatch,
+    UpstreamSessionRefresh,
+    EvidenceDispatch,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ComputerUseInputState {
+    NotSent,
+    Sent,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ComputerUseCompletionState {
+    Known,
+    Unknown,
 }
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
@@ -551,6 +618,7 @@ pub enum ComputerUseErrorCode {
 pub struct ComputerUseError {
     pub code: ComputerUseErrorCode,
     pub message: String,
+    pub details: Option<ComputerUseErrorDetails>,
 }
 
 impl ComputerUseError {
@@ -558,7 +626,14 @@ impl ComputerUseError {
         Self {
             code,
             message: message.into(),
+            details: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_details(mut self, details: ComputerUseErrorDetails) -> Self {
+        self.details = Some(details);
+        self
     }
 }
 

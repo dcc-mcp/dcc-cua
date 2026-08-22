@@ -40,11 +40,21 @@ impl ComputerUseSession {
             self.control_banner = None;
             return Err(ComputerUseError::new(
                 ComputerUseErrorCode::TargetModalChanged,
-                format!(
-                    "a same-process owned window has taken over input; action_attempted=false; input_sent=false; automatic_rebind=false; explicit_rebind_required=true; suggested_target={}",
-                    serde_json::to_string(&modal).unwrap_or_else(|_| "{}".into())
-                ),
-            ));
+                "a same-process owned window has taken over input",
+            )
+            .with_details(ComputerUseErrorDetails {
+                phase: Some(ComputerUseErrorPhase::PreDispatch),
+                action_attempted: Some(false),
+                input_sent: Some(ComputerUseInputState::NotSent),
+                automatic_rebind: Some(false),
+                explicit_rebind_required: Some(true),
+                suggested_target: Some(ComputerUseTargetScope {
+                    process_id: Some(modal.pid),
+                    window_handle: Some(modal.window_id),
+                    window_title: Some(modal.title),
+                }),
+                ..Default::default()
+            }));
         }
         #[cfg(not(windows))]
         let _ = target;
@@ -116,8 +126,14 @@ impl ComputerUseSession {
             }
             Ok(result) => self.finish_observed_tool_attempt("capture CUA window", Ok(result))?,
             Err(error)
-                if is_uia_snapshot_message(&error.message)
-                    || error.message.contains("capture CUA window state timed out") =>
+                if matches!(
+                    error.code,
+                    ComputerUseErrorCode::BackendUnavailable
+                        | ComputerUseErrorCode::TargetUnavailable
+                ) || error
+                    .details
+                    .as_ref()
+                    .is_some_and(|details| details.timed_out == Some(true)) =>
             {
                 #[cfg(windows)]
                 self.activate_windows_uia_fallback(&target);
