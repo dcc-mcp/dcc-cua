@@ -16,10 +16,14 @@ use crate::interactive_desktop;
 use crate::live_observation::{LiveObservation, LiveObservationFence, observation_sequence_fence};
 use crate::observation::semantic_observation;
 use crate::policy::*;
-use crate::showcase::{ShowcaseRecorder, fit_dimensions_with_bounds, resize_bgra};
 use crate::window_target::{WindowTarget, validate_target_policy};
 #[cfg(windows)]
 use crate::windows_uia_fallback::WindowsUiaFallback;
+use dcc_cua_showcase::{ShowcaseRecorder, fit_dimensions_with_bounds, resize_bgra};
+
+fn map_showcase_error(error: dcc_cua_showcase::ShowcaseError) -> ComputerUseError {
+    ComputerUseError::new(ComputerUseErrorCode::CaptureFailed, error.message)
+}
 
 mod action_result;
 #[cfg(any(windows, test))]

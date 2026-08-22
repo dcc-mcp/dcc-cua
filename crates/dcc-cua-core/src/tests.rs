@@ -30,20 +30,23 @@ use crate::live_observation::{
 };
 use crate::policy::*;
 
-#[cfg(windows)]
 #[rstest]
-fn held_key_wait_stops_when_the_control_banner_is_interrupted() {
-    let started = dcc_cua_indicator::interrupt_generation().wrapping_add(1);
+fn core_runtime_does_not_own_platform_input_or_media_codecs() {
+    let manifest = include_str!("../Cargo.toml");
+    let windows_input = include_str!("runtime/windows_input.rs");
+    let held_key = include_str!("runtime/windows_held_key.rs");
 
-    assert!(crate::runtime::windows_held_key::wait_for_held_key_duration(1_000, started));
-}
-
-#[cfg(windows)]
-#[rstest]
-fn held_key_wait_completes_without_an_interrupt() {
-    let started = dcc_cua_indicator::interrupt_generation();
-
-    assert!(!crate::runtime::windows_held_key::wait_for_held_key_duration(0, started));
+    for dependency in ["\nplatform-windows =", "\nopenh264 =", "\nmp4 ="] {
+        assert!(
+            !manifest.contains(dependency),
+            "dcc-cua-core must not depend directly on {dependency}"
+        );
+    }
+    for source in [windows_input, held_key] {
+        assert!(!source.contains("windows_sys::"));
+        assert!(!source.contains("use platform_windows::"));
+        assert!(!source.contains("SendInput("));
+    }
 }
 #[cfg(windows)]
 use crate::runtime::RawDragSequenceOutcome;
@@ -63,12 +66,11 @@ use crate::runtime::{
 #[cfg(windows)]
 use crate::runtime::{
     RELATIVE_DRAG_MAX_ATTEMPTS_PER_WAYPOINT, RelativeMoveInjection, WindowsForegroundDragBackend,
-    WindowsPostButtonUpSnapshot, WindowsRawDragInputTrace,
-    inject_windows_combined_input_batch_with, map_windows_window_mutation_error,
+    WindowsPostButtonUpSnapshot, WindowsRawDragInputTrace, map_windows_window_mutation_error,
     run_windows_calibrated_relative_path, select_windows_foreground_drag_backend,
     uses_windows_foreground_fast_path, uses_windows_local_foreground_path,
-    windows_combined_raw_drag_outcome, windows_combined_source_move_and_left_down_inputs,
-    windows_raw_drag_delivery, windows_synthetic_touch_attempt, windows_synthetic_touch_result,
+    windows_combined_raw_drag_outcome, windows_raw_drag_delivery, windows_synthetic_touch_attempt,
+    windows_synthetic_touch_result,
 };
 use crate::window_target::{WindowTarget, validate_target_policy};
 

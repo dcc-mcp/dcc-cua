@@ -53,7 +53,7 @@ impl LiveObservationFence {
 #[derive(Debug)]
 pub(crate) struct LiveObservationFrame {
     sequence: u64,
-    bgra: Vec<u8>,
+    bgra: Arc<[u8]>,
     width: u32,
     height: u32,
     captured_at_ms: u128,
@@ -70,7 +70,7 @@ impl LiveObservationFrame {
     ) -> Self {
         Self {
             sequence,
-            bgra,
+            bgra: bgra.into(),
             width,
             height,
             captured_at_ms: SystemTime::now()
@@ -86,6 +86,10 @@ impl LiveObservationFrame {
 
     pub(crate) fn bgra(&self) -> &[u8] {
         &self.bgra
+    }
+
+    pub(crate) fn shared_bgra(&self) -> Arc<[u8]> {
+        Arc::clone(&self.bgra)
     }
 
     pub(crate) fn dimensions(&self) -> (u32, u32) {
@@ -599,6 +603,12 @@ impl LiveObservation {
         self.receiver.clone()
     }
 
+    pub(crate) fn subscribe_showcase(
+        &self,
+    ) -> watch::Receiver<dcc_cua_showcase::LiveObservationStatus> {
+        showcase_subscription(self.subscribe())
+    }
+
     pub(crate) const fn fps(&self) -> u32 {
         self.fps
     }
@@ -612,6 +622,47 @@ impl LiveObservation {
         let _ = (&mut self.task).await;
         self.receiver.borrow().as_json(false, self.fps)
     }
+}
+
+pub(crate) fn showcase_subscription(
+    mut source: watch::Receiver<LiveObservationStatus>,
+) -> watch::Receiver<dcc_cua_showcase::LiveObservationStatus> {
+    let (sender, receiver) = watch::channel(project_showcase_status(&source.borrow()));
+    tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                () = sender.closed() => break,
+                changed = source.changed() => {
+                    if changed.is_err() {
+                        break;
+                    }
+                    sender.send_replace(project_showcase_status(&source.borrow_and_update()));
+                }
+            }
+        }
+    });
+    receiver
+}
+
+pub(crate) fn project_showcase_status(
+    status: &LiveObservationStatus,
+) -> dcc_cua_showcase::LiveObservationStatus {
+    let latest = status.latest().map(|frame| {
+        let (width, height) = frame.dimensions();
+        Arc::new(dcc_cua_showcase::LiveObservationFrame::from_parts(
+            frame.sequence(),
+            frame.shared_bgra(),
+            width,
+            height,
+            frame.captured_at_ms(),
+            frame.captured_at(),
+        ))
+    });
+    dcc_cua_showcase::LiveObservationStatus::projected(
+        latest,
+        status.pause_reason(),
+        status.terminal_reason(),
+    )
 }
 
 #[cfg(not(windows))]

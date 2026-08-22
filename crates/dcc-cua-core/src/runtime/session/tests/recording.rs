@@ -21,9 +21,13 @@ async fn attach_test_showcase(
         "test_capture",
     );
     let (status_sender, receiver) = tokio::sync::watch::channel(status);
-    let recorder = ShowcaseRecorder::start(receiver, output_dir.to_str().unwrap(), 10)
-        .await
-        .expect("start test showcase recorder");
+    let recorder = ShowcaseRecorder::start(
+        crate::live_observation::showcase_subscription(receiver),
+        output_dir.to_str().unwrap(),
+        10,
+    )
+    .await
+    .expect("start test showcase recorder");
     session.showcase = Some(ActiveShowcase {
         recorder,
         owns_live_observation: false,

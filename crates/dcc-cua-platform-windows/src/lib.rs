@@ -7,6 +7,8 @@
 #[cfg(windows)]
 mod capture_identity;
 mod contracts;
+#[cfg(windows)]
+mod input;
 #[cfg(any(windows, test))]
 mod snapshot;
 
@@ -26,6 +28,36 @@ pub use contracts::{
 pub use capture_identity::{
     ExactWindowCaptureIdentityError, ExactWindowCaptureRoute, exact_window_capture_route,
 };
+#[cfg(windows)]
+pub use input::{
+    RelativeMoveInjection, WindowsHeldKeyError, WindowsInputCount, WindowsOverlayCommand,
+    WindowsPostButtonUpSnapshot, animate_cursor_to, cursor_position, inject_absolute_mouse_move,
+    inject_combined_source_move_and_left_down, inject_consumable_mouse_move, inject_drag_screen,
+    inject_mouse_button, inject_relative_mouse_move, move_cursor_desktop,
+    post_message_blocked_by_uipi, send_click_synthesized_active_mods,
+    send_held_keys_exact_foreground, send_key_synthesized, send_overlay_command,
+    snapshot_left_button_after_up,
+};
+
+#[cfg(windows)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WindowsDesktopState {
+    pub input_desktop_name: Option<String>,
+    pub input_desktop_error: Option<String>,
+    pub has_foreground_window: bool,
+}
+
+#[cfg(windows)]
+#[must_use]
+pub fn desktop_state() -> WindowsDesktopState {
+    let state = platform_windows::diagnostics::desktop_state();
+    let has_foreground_window = state.has_foreground_window();
+    WindowsDesktopState {
+        input_desktop_name: state.input_desktop_name,
+        input_desktop_error: state.input_desktop_error,
+        has_foreground_window,
+    }
+}
 #[cfg(windows)]
 pub use visible_capture::{VisibleWindowCapture, capture_visible_window};
 #[cfg(windows)]

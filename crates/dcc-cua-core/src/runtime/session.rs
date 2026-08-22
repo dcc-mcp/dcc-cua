@@ -569,7 +569,7 @@ impl ComputerUseSession {
             .as_ref()
             .expect("live observation was started");
         match ShowcaseRecorder::start(
-            observation.subscribe(),
+            observation.subscribe_showcase(),
             &request.output_dir,
             observation.fps(),
         )
@@ -595,7 +595,7 @@ impl ComputerUseSession {
                 }
                 self.set_banner_recording(false);
                 self.set_banner_activity(BannerActivity::Ready);
-                Err(error)
+                Err(map_showcase_error(error))
             }
         }
     }
@@ -614,7 +614,12 @@ impl ComputerUseSession {
         let video = match self.showcase.take() {
             Some(showcase) => {
                 let owns_live_observation = showcase.owns_live_observation;
-                let result = showcase.recorder.stop().await.map(Some);
+                let result = showcase
+                    .recorder
+                    .stop()
+                    .await
+                    .map_err(map_showcase_error)
+                    .map(Some);
                 if owns_live_observation {
                     self.stop_live_observation().await;
                 }
@@ -906,13 +911,12 @@ impl ComputerUseSession {
                     action,
                     ActionBannerPhase::Injecting,
                 ));
-                let result =
-                    platform_windows::input::mouse::move_cursor_desktop(x, y).map_err(|error| {
-                        ComputerUseError::new(
-                            ComputerUseErrorCode::BackendUnavailable,
-                            format!("move foreground cursor: {error}"),
-                        )
-                    });
+                let result = dcc_cua_platform_windows::move_cursor_desktop(x, y).map_err(|error| {
+                    ComputerUseError::new(
+                        ComputerUseErrorCode::BackendUnavailable,
+                        format!("move foreground cursor: {error}"),
+                    )
+                });
                 self.finish_local_mutation_attempt(result)?;
             }
             self.set_banner_activity(BannerActivity::Operating);

@@ -54,7 +54,7 @@ into the target with `python -B scripts/indicator-acceptance-probe.py
 unless the exact 45-DIP frame, 20-band fade, motion policy, monitor migration,
 window styles, and target-scoped z-order contract are all observed.
 
-The repository is a Cargo workspace with eleven product responsibilities plus
+The repository is a Cargo workspace with thirteen product responsibilities plus
 the Hakari dependency-unification support crate:
 
 - `dcc-cua-core`: scoped Computer Use domain, safety policy, and
@@ -70,9 +70,9 @@ the Hakari dependency-unification support crate:
 - `dcc-cua-indicator`: Host-process stop generation plus the Windows control
   banner/frame and physical Escape boundary; cursor/badge rendering stays in
   the CUA SDK, while the packaged macOS Host uses its self-hosted private-worker overlay;
-- `dcc-cua-platform-windows`: exact PID/HWND Windows UI Automation worker
-  for background semantic fallback when CUA's combined window-state path is
-  unavailable;
+- `dcc-cua-platform-windows`: the single Windows execution adapter for exact
+  PID/HWND UI Automation fallback, input injection, foreground fencing, and
+  upstream Windows platform integration;
 - `dcc-cua-protocol`: shared Host wire limits and per-user local endpoint
   identity used by both the Host and reusable Client;
 - `dcc-cua-shm`: cross-platform shared-memory image handoff;
@@ -80,6 +80,8 @@ the Hakari dependency-unification support crate:
   targets, route hints, and fallback edges;
 - `dcc-cua-profiles`: reusable package-store, inheritance, matching, and
   identity-fenced context services for CLI and embedded consumers;
+- `dcc-cua-showcase`: bounded frame-channel recording, OpenH264 encoding,
+  segmented MP4 publication, and terminal recording evidence;
 - `dcc-cua-cli`: the thin CLI process that composes the workspace crates.
 
 Inside `dcc-cua-core`, source files follow domain responsibility rather

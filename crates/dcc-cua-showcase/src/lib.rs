@@ -13,8 +13,182 @@ use serde_json::{Value, json};
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 
-use crate::live_observation::{LiveObservationFrame, LiveObservationStatus};
-use crate::{ComputerUseError, ComputerUseErrorCode, ComputerUseResult};
+#[derive(Debug)]
+pub struct LiveObservationFrame {
+    sequence: u64,
+    bgra: Arc<[u8]>,
+    width: u32,
+    height: u32,
+    captured_at_ms: u128,
+    captured_at: std::time::Instant,
+}
+
+impl LiveObservationFrame {
+    #[must_use]
+    pub fn new(
+        sequence: u64,
+        bgra: Vec<u8>,
+        width: u32,
+        height: u32,
+        captured_at: std::time::Instant,
+    ) -> Self {
+        Self::from_parts(
+            sequence,
+            bgra.into(),
+            width,
+            height,
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |duration| duration.as_millis()),
+            captured_at,
+        )
+    }
+
+    #[must_use]
+    pub const fn from_parts(
+        sequence: u64,
+        bgra: Arc<[u8]>,
+        width: u32,
+        height: u32,
+        captured_at_ms: u128,
+        captured_at: std::time::Instant,
+    ) -> Self {
+        Self {
+            sequence,
+            bgra,
+            width,
+            height,
+            captured_at_ms,
+            captured_at,
+        }
+    }
+
+    #[must_use]
+    pub const fn sequence(&self) -> u64 {
+        self.sequence
+    }
+
+    #[must_use]
+    pub fn bgra(&self) -> &[u8] {
+        &self.bgra
+    }
+
+    #[must_use]
+    pub fn shared_bgra(&self) -> Arc<[u8]> {
+        Arc::clone(&self.bgra)
+    }
+
+    #[must_use]
+    pub const fn dimensions(&self) -> (u32, u32) {
+        (self.width, self.height)
+    }
+
+    #[must_use]
+    pub const fn captured_at_ms(&self) -> u128 {
+        self.captured_at_ms
+    }
+
+    #[must_use]
+    pub const fn captured_at(&self) -> std::time::Instant {
+        self.captured_at
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct LiveObservationStatus {
+    latest: Option<Arc<LiveObservationFrame>>,
+    pause_reason: Option<Value>,
+    terminal_reason: Option<Value>,
+}
+
+impl LiveObservationStatus {
+    #[must_use]
+    pub fn projected(
+        latest: Option<Arc<LiveObservationFrame>>,
+        pause_reason: Option<Value>,
+        terminal_reason: Option<Value>,
+    ) -> Self {
+        Self {
+            latest,
+            pause_reason,
+            terminal_reason,
+        }
+    }
+
+    pub fn publish_frame(
+        &mut self,
+        frame: LiveObservationFrame,
+        _capture_duration: std::time::Duration,
+        _capture_mode: &'static str,
+    ) {
+        self.latest = Some(Arc::new(frame));
+        self.pause_reason = None;
+    }
+
+    pub fn record_paused_error(&mut self, error: &ShowcaseError) {
+        if self.terminal_reason.is_none() {
+            self.pause_reason = Some(error.as_reason(self.latest.as_ref()));
+        }
+    }
+
+    pub fn record_terminal_error(&mut self, error: &ShowcaseError) {
+        self.pause_reason = None;
+        self.terminal_reason = Some(error.as_reason(self.latest.as_ref()));
+    }
+
+    #[must_use]
+    pub fn latest(&self) -> Option<Arc<LiveObservationFrame>> {
+        self.latest.clone()
+    }
+
+    #[must_use]
+    pub fn pause_reason(&self) -> Option<Value> {
+        self.pause_reason.clone()
+    }
+
+    #[must_use]
+    pub fn terminal_reason(&self) -> Option<Value> {
+        self.terminal_reason.clone()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ShowcaseErrorCode {
+    CaptureFailed,
+    InteractiveDesktopUnavailable,
+    MissingWindow,
+}
+
+#[derive(Debug, Clone, thiserror::Error)]
+#[error("{message}")]
+pub struct ShowcaseError {
+    pub code: ShowcaseErrorCode,
+    pub message: String,
+}
+
+impl ShowcaseError {
+    #[must_use]
+    pub fn new(code: ShowcaseErrorCode, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+        }
+    }
+
+    fn as_reason(&self, latest: Option<&Arc<LiveObservationFrame>>) -> Value {
+        json!({
+            "code": self.code,
+            "message": self.message,
+            "timestamp_ms": std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |duration| duration.as_millis()),
+            "last_sequence": latest.map(|frame| frame.sequence()),
+        })
+    }
+}
+
+pub type ShowcaseResult<T> = Result<T, ShowcaseError>;
 
 const MAX_WIDTH: u32 = 1600;
 const MAX_HEIGHT: u32 = 900;
@@ -28,7 +202,7 @@ struct PendingSample {
 
 struct FirstShowcaseFrame {
     frame: Arc<LiveObservationFrame>,
-    resumed_acknowledgement: Option<oneshot::Sender<ComputerUseResult<()>>>,
+    resumed_acknowledgement: Option<oneshot::Sender<ShowcaseResult<()>>>,
 }
 
 enum ShowcaseProducerEvent {
@@ -37,11 +211,11 @@ enum ShowcaseProducerEvent {
     /// forced-IDR segment and its partial file are ready.
     ResumedFrame(
         Arc<LiveObservationFrame>,
-        oneshot::Sender<ComputerUseResult<()>>,
+        oneshot::Sender<ShowcaseResult<()>>,
     ),
     /// A producer-observed pause boundary. The acknowledgement keeps the
     /// public paused state behind durable segment finalization.
-    Paused(oneshot::Sender<ComputerUseResult<()>>),
+    Paused(oneshot::Sender<ShowcaseResult<()>>),
 }
 
 struct ShowcaseProducerStop {
@@ -221,11 +395,11 @@ struct ShowcaseProgress {
     current_partial: Option<PathBuf>,
 }
 
-pub(crate) struct ShowcaseRecorder {
+pub struct ShowcaseRecorder {
     path: PathBuf,
     stop_producer: Option<oneshot::Sender<ShowcaseProducerStop>>,
     producer: JoinHandle<()>,
-    encoder: JoinHandle<ComputerUseResult<Value>>,
+    encoder: JoinHandle<ShowcaseResult<Value>>,
     pause_reason: Arc<Mutex<Option<Value>>>,
     terminal_reason: Arc<Mutex<Option<Value>>>,
     outcome: Arc<Mutex<Option<Value>>>,
@@ -233,11 +407,11 @@ pub(crate) struct ShowcaseRecorder {
 }
 
 impl ShowcaseRecorder {
-    pub(crate) async fn start(
+    pub async fn start(
         frames: watch::Receiver<LiveObservationStatus>,
         output_dir: &str,
         fps: u32,
-    ) -> ComputerUseResult<Self> {
+    ) -> ShowcaseResult<Self> {
         {
             let initial_status = frames.borrow();
             if initial_status.latest().is_none() && initial_status.pause_reason().is_some() {
@@ -318,15 +492,15 @@ impl ShowcaseRecorder {
             }
             Err(_) => {
                 producer.abort();
-                Err(ComputerUseError::new(
-                    ComputerUseErrorCode::CaptureFailed,
+                Err(ShowcaseError::new(
+                    ShowcaseErrorCode::CaptureFailed,
                     "showcase encoder stopped before its first frame",
                 ))
             }
         }
     }
 
-    pub(crate) fn state(&self) -> Value {
+    pub fn state(&self) -> Value {
         if let Some(outcome) = lock_unpoisoned(&self.outcome).clone() {
             return outcome;
         }
@@ -362,7 +536,7 @@ impl ShowcaseRecorder {
         })
     }
 
-    pub(crate) async fn stop(mut self) -> ComputerUseResult<Value> {
+    pub async fn stop(mut self) -> ShowcaseResult<Value> {
         let producer_acknowledgement = self.stop_producer.take().and_then(|stop_producer| {
             let (acknowledged, acknowledgement) = oneshot::channel();
             stop_producer
@@ -377,14 +551,14 @@ impl ShowcaseRecorder {
             let _ = acknowledgement.await;
         }
         let producer_result = (&mut self.producer).await.map_err(|error| {
-            ComputerUseError::new(
-                ComputerUseErrorCode::CaptureFailed,
+            ShowcaseError::new(
+                ShowcaseErrorCode::CaptureFailed,
                 format!("showcase producer task failed: {error}"),
             )
         });
         let encoder_result = (&mut self.encoder).await.map_err(|error| {
-            ComputerUseError::new(
-                ComputerUseErrorCode::CaptureFailed,
+            ShowcaseError::new(
+                ShowcaseErrorCode::CaptureFailed,
                 format!("showcase encoder task failed: {error}"),
             )
         });
@@ -516,9 +690,9 @@ fn encode_frames_with_progress(
     mut frames: mpsc::Receiver<ShowcaseProducerEvent>,
     path: &Path,
     fps: u32,
-    ready: oneshot::Sender<ComputerUseResult<()>>,
+    ready: oneshot::Sender<ShowcaseResult<()>>,
     progress: &Mutex<ShowcaseProgress>,
-) -> ComputerUseResult<Value> {
+) -> ShowcaseResult<Value> {
     let FirstShowcaseFrame {
         frame: first,
         resumed_acknowledgement: first_frame_acknowledgement,
@@ -740,7 +914,7 @@ fn encode_frames_with_progress(
 
 fn receive_first_frame(
     frames: &mut mpsc::Receiver<ShowcaseProducerEvent>,
-) -> ComputerUseResult<FirstShowcaseFrame> {
+) -> ShowcaseResult<FirstShowcaseFrame> {
     while let Some(event) = frames.blocking_recv() {
         match event {
             ShowcaseProducerEvent::Frame(frame) => {
@@ -768,7 +942,7 @@ fn encode_bgra<'encoder>(
     bgra: &[u8],
     width: u32,
     height: u32,
-) -> ComputerUseResult<openh264::encoder::EncodedBitStream<'encoder>> {
+) -> ShowcaseResult<openh264::encoder::EncodedBitStream<'encoder>> {
     encoder
         .encode(&YUVBuffer::from_rgb_source(BgraSliceU8::new(
             bgra,
@@ -785,7 +959,7 @@ fn begin_segment(
     format: VideoFormat,
     nominal_duration: u32,
     progress: &mut ShowcaseProgress,
-) -> ComputerUseResult<ActiveSegment> {
+) -> ShowcaseResult<ActiveSegment> {
     let segment_path = segment_output_path(path, index);
     let partial_path = partial_segment_path(&segment_path);
     let (sps, pps) = parameter_sets(stream)?;
@@ -811,7 +985,7 @@ fn begin_resumed_segment(
     frame: &LiveObservationFrame,
     start: SegmentStart<'_>,
     progress: &Mutex<ShowcaseProgress>,
-) -> ComputerUseResult<ActiveSegment> {
+) -> ShowcaseResult<ActiveSegment> {
     let (source_width, source_height) = frame.dimensions();
     let bgra = resize_bgra(
         frame.bgra(),
@@ -839,7 +1013,7 @@ fn finalize_active_segment(
     tail_duration: u32,
     format: VideoFormat,
     progress: &mut ShowcaseProgress,
-) -> ComputerUseResult<u64> {
+) -> ShowcaseResult<u64> {
     let segment_duration_ms = segment
         .pending
         .start_time
@@ -874,7 +1048,7 @@ fn start_segment_writer(
     height: u32,
     sps: Vec<u8>,
     pps: Vec<u8>,
-) -> ComputerUseResult<Mp4Writer<File>> {
+) -> ShowcaseResult<Mp4Writer<File>> {
     create_partial_file(path, |file| {
         let mut writer = Mp4Writer::write_start(
             file,
@@ -903,8 +1077,8 @@ fn start_segment_writer(
 
 fn create_partial_file<T>(
     path: &Path,
-    initialize: impl FnOnce(File) -> ComputerUseResult<T>,
-) -> ComputerUseResult<T> {
+    initialize: impl FnOnce(File) -> ShowcaseResult<T>,
+) -> ShowcaseResult<T> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(capture_error)?;
     }
@@ -933,7 +1107,7 @@ fn finalize_segment(
     mut writer: Mp4Writer<File>,
     partial_path: &Path,
     final_path: &Path,
-) -> ComputerUseResult<()> {
+) -> ShowcaseResult<()> {
     writer.write_end().map_err(capture_error)?;
     let file = writer.into_writer();
     file.sync_all().map_err(capture_error)?;
@@ -941,7 +1115,7 @@ fn finalize_segment(
     publish_without_overwrite(partial_path, final_path)
 }
 
-fn publish_without_overwrite(partial_path: &Path, final_path: &Path) -> ComputerUseResult<()> {
+fn publish_without_overwrite(partial_path: &Path, final_path: &Path) -> ShowcaseResult<()> {
     // Both paths live in the same output directory. Linking the fully synced
     // partial into its final name is an atomic create-if-absent operation on
     // supported filesystems, unlike rename which replaces an existing target
@@ -961,7 +1135,7 @@ fn publish_without_overwrite(partial_path: &Path, final_path: &Path) -> Computer
     })
 }
 
-fn ensure_final_path_available(path: &Path) -> ComputerUseResult<()> {
+fn ensure_final_path_available(path: &Path) -> ShowcaseResult<()> {
     if path.exists() {
         return Err(capture_error(format!(
             "showcase segment already exists: {}",
@@ -998,7 +1172,7 @@ fn manifest_output_path(path: &Path) -> PathBuf {
     path.with_file_name(format!("{stem}.manifest.json"))
 }
 
-fn write_manifest(path: &Path, manifest: &Value) -> ComputerUseResult<()> {
+fn write_manifest(path: &Path, manifest: &Value) -> ShowcaseResult<()> {
     ensure_final_path_available(path)?;
     let stem = path
         .file_stem()
@@ -1041,7 +1215,7 @@ fn segment_state(
 fn pending_sample(
     stream: &openh264::encoder::EncodedBitStream<'_>,
     start_time: u64,
-) -> ComputerUseResult<Option<PendingSample>> {
+) -> ShowcaseResult<Option<PendingSample>> {
     let bytes = avcc_sample(stream)?;
     Ok((!bytes.is_empty()).then(|| PendingSample {
         start_time,
@@ -1054,7 +1228,7 @@ fn write_sample(
     writer: &mut Mp4Writer<File>,
     sample: PendingSample,
     duration: u32,
-) -> ComputerUseResult<()> {
+) -> ShowcaseResult<()> {
     writer
         .write_sample(
             1,
@@ -1071,7 +1245,7 @@ fn write_sample(
 
 fn parameter_sets(
     stream: &openh264::encoder::EncodedBitStream<'_>,
-) -> ComputerUseResult<(Vec<u8>, Vec<u8>)> {
+) -> ShowcaseResult<(Vec<u8>, Vec<u8>)> {
     let mut sps = None;
     let mut pps = None;
     visit_nals(stream, |nal| match nal.first().map(|byte| byte & 0x1f) {
@@ -1085,7 +1259,7 @@ fn parameter_sets(
     ))
 }
 
-fn avcc_sample(stream: &openh264::encoder::EncodedBitStream<'_>) -> ComputerUseResult<Vec<u8>> {
+fn avcc_sample(stream: &openh264::encoder::EncodedBitStream<'_>) -> ShowcaseResult<Vec<u8>> {
     let mut sample = Vec::new();
     let mut overflow = false;
     visit_nals(stream, |nal| {
@@ -1131,7 +1305,7 @@ fn fit_dimensions(width: u32, height: u32) -> (u32, u32) {
     fit_dimensions_with_bounds(width, height, MAX_WIDTH, MAX_HEIGHT)
 }
 
-pub(crate) fn fit_dimensions_with_bounds(
+pub fn fit_dimensions_with_bounds(
     width: u32,
     height: u32,
     max_width: u32,
@@ -1145,7 +1319,7 @@ pub(crate) fn fit_dimensions_with_bounds(
     (width, height)
 }
 
-pub(crate) fn resize_bgra(
+pub fn resize_bgra(
     source: &[u8],
     source_width: u32,
     source_height: u32,
@@ -1169,12 +1343,12 @@ pub(crate) fn resize_bgra(
     output
 }
 
-fn fourcc(value: &str) -> ComputerUseResult<FourCC> {
+fn fourcc(value: &str) -> ShowcaseResult<FourCC> {
     value.parse().map_err(capture_error)
 }
 
-fn capture_error(error: impl std::fmt::Display) -> ComputerUseError {
-    ComputerUseError::new(ComputerUseErrorCode::CaptureFailed, error.to_string())
+fn capture_error(error: impl std::fmt::Display) -> ShowcaseError {
+    ShowcaseError::new(ShowcaseErrorCode::CaptureFailed, error.to_string())
 }
 
 #[cfg(test)]

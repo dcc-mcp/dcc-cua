@@ -9,8 +9,8 @@ fn encode_frames(
     frames: mpsc::Receiver<ShowcaseProducerEvent>,
     path: &Path,
     fps: u32,
-    ready: oneshot::Sender<ComputerUseResult<()>>,
-) -> ComputerUseResult<Value> {
+    ready: oneshot::Sender<ShowcaseResult<()>>,
+) -> ShowcaseResult<Value> {
     encode_frames_with_progress(
         frames,
         path,
@@ -421,7 +421,7 @@ async fn showcase_error_state_preserves_segments_finalized_before_the_tail_faile
         .stop()
         .await
         .expect_err("failed tail should remain an error");
-    assert_eq!(error.code, ComputerUseErrorCode::CaptureFailed);
+    assert_eq!(error.code, ShowcaseErrorCode::CaptureFailed);
     drop(sender);
     std::fs::remove_dir_all(directory).unwrap();
 }
@@ -431,7 +431,7 @@ fn failed_segment_initialization_removes_its_partial_file() {
     let directory = std::env::temp_dir().join(format!("dcc-cua-showcase-{}", uuid::Uuid::new_v4()));
     let partial_path = directory.join("showcase.partial.mp4");
 
-    let result: ComputerUseResult<()> = create_partial_file(&partial_path, |mut file| {
+    let result: ShowcaseResult<()> = create_partial_file(&partial_path, |mut file| {
         file.write_all(b"incomplete mp4").map_err(capture_error)?;
         Err(capture_error("forced segment setup failure"))
     });
@@ -462,14 +462,14 @@ async fn showcase_survives_a_live_pause_and_encodes_only_newer_sequences() {
         .expect("showcase recorder");
 
     sender.send_modify(|status| {
-        status.record_paused_error(&ComputerUseError::new(
-            ComputerUseErrorCode::InteractiveDesktopUnavailable,
+        status.record_paused_error(&ShowcaseError::new(
+            ShowcaseErrorCode::InteractiveDesktopUnavailable,
             "Windows interactive session disconnected",
         ));
     });
     sender.send_modify(|status| {
-        status.record_paused_error(&ComputerUseError::new(
-            ComputerUseErrorCode::InteractiveDesktopUnavailable,
+        status.record_paused_error(&ShowcaseError::new(
+            ShowcaseErrorCode::InteractiveDesktopUnavailable,
             "Windows interactive session disconnected",
         ));
     });
@@ -569,8 +569,8 @@ async fn showcase_pause_excludes_wall_clock_gap_and_resumes_in_a_new_idr_segment
         );
     });
     sender.send_modify(|status| {
-        status.record_paused_error(&ComputerUseError::new(
-            ComputerUseErrorCode::InteractiveDesktopUnavailable,
+        status.record_paused_error(&ShowcaseError::new(
+            ShowcaseErrorCode::InteractiveDesktopUnavailable,
             "Windows interactive session disconnected",
         ));
     });
@@ -657,8 +657,8 @@ async fn showcase_stays_paused_until_a_strictly_newer_sequence_arrives() {
         .await
         .expect("showcase recorder");
     sender.send_modify(|status| {
-        status.record_paused_error(&ComputerUseError::new(
-            ComputerUseErrorCode::InteractiveDesktopUnavailable,
+        status.record_paused_error(&ShowcaseError::new(
+            ShowcaseErrorCode::InteractiveDesktopUnavailable,
             "Windows interactive session disconnected",
         ));
     });
@@ -738,8 +738,8 @@ async fn showcase_resume_stays_paused_until_the_new_idr_segment_is_ready() {
         .await
         .expect("showcase recorder");
     sender.send_modify(|status| {
-        status.record_paused_error(&ComputerUseError::new(
-            ComputerUseErrorCode::InteractiveDesktopUnavailable,
+        status.record_paused_error(&ShowcaseError::new(
+            ShowcaseErrorCode::InteractiveDesktopUnavailable,
             "Windows interactive session disconnected",
         ));
     });
@@ -821,8 +821,8 @@ async fn showcase_pause_projection_uses_the_acknowledged_status_snapshot() {
     assert_eq!(initial.sequence(), 7);
 
     status_sender.send_modify(|status| {
-        status.record_paused_error(&ComputerUseError::new(
-            ComputerUseErrorCode::InteractiveDesktopUnavailable,
+        status.record_paused_error(&ShowcaseError::new(
+            ShowcaseErrorCode::InteractiveDesktopUnavailable,
             "Windows interactive session disconnected",
         ));
     });
@@ -881,8 +881,8 @@ async fn showcase_pause_projection_uses_the_acknowledged_status_snapshot() {
 async fn showcase_start_returns_a_typed_error_for_an_initial_pause_without_a_frame() {
     let directory = std::env::temp_dir().join(format!("dcc-cua-showcase-{}", uuid::Uuid::new_v4()));
     let mut status = LiveObservationStatus::default();
-    status.record_paused_error(&ComputerUseError::new(
-        ComputerUseErrorCode::InteractiveDesktopUnavailable,
+    status.record_paused_error(&ShowcaseError::new(
+        ShowcaseErrorCode::InteractiveDesktopUnavailable,
         "Windows interactive session disconnected before the first frame",
     ));
     let (_sender, receiver) = watch::channel(status);
@@ -898,7 +898,7 @@ async fn showcase_start_returns_a_typed_error_for_an_initial_pause_without_a_fra
         Err(error) => error,
     };
 
-    assert_eq!(error.code, ComputerUseErrorCode::CaptureFailed);
+    assert_eq!(error.code, ShowcaseErrorCode::CaptureFailed);
     assert!(error.message.contains("paused before its first frame"));
     assert!(!directory.exists());
 
@@ -910,8 +910,8 @@ async fn showcase_start_returns_a_typed_error_for_an_initial_pause_without_a_fra
         tokio::spawn(async move { ShowcaseRecorder::start(receiver, &output_dir, 10).await });
     tokio::task::yield_now().await;
     status_sender.send_modify(|status| {
-        status.record_paused_error(&ComputerUseError::new(
-            ComputerUseErrorCode::InteractiveDesktopUnavailable,
+        status.record_paused_error(&ShowcaseError::new(
+            ShowcaseErrorCode::InteractiveDesktopUnavailable,
             "Windows interactive session disconnected before the first frame",
         ));
     });
@@ -924,7 +924,7 @@ async fn showcase_start_returns_a_typed_error_for_an_initial_pause_without_a_fra
         Ok(_) => panic!("a source paused before its first frame must not start a recorder"),
         Err(error) => error,
     };
-    assert_eq!(error.code, ComputerUseErrorCode::CaptureFailed);
+    assert_eq!(error.code, ShowcaseErrorCode::CaptureFailed);
     assert!(!transition_directory.exists());
 }
 
@@ -938,8 +938,8 @@ async fn showcase_source_close_flushes_the_retained_latest_frame_after_backpress
         std::time::Duration::ZERO,
         "test_capture",
     );
-    status.record_terminal_error(&ComputerUseError::new(
-        ComputerUseErrorCode::MissingWindow,
+    status.record_terminal_error(&ShowcaseError::new(
+        ShowcaseErrorCode::MissingWindow,
         "exact target window closed",
     ));
     let (status_sender, status_receiver) = watch::channel(status);
@@ -1002,8 +1002,8 @@ async fn showcase_stop_while_paused_finalizes_once_without_frames_or_partial_gro
         .expect("showcase recorder");
 
     sender.send_modify(|status| {
-        status.record_paused_error(&ComputerUseError::new(
-            ComputerUseErrorCode::InteractiveDesktopUnavailable,
+        status.record_paused_error(&ShowcaseError::new(
+            ShowcaseErrorCode::InteractiveDesktopUnavailable,
             "Windows interactive session disconnected",
         ));
     });
@@ -1024,8 +1024,8 @@ async fn showcase_stop_while_paused_finalizes_once_without_frames_or_partial_gro
 
     for _ in 0..3 {
         sender.send_modify(|status| {
-            status.record_paused_error(&ComputerUseError::new(
-                ComputerUseErrorCode::InteractiveDesktopUnavailable,
+            status.record_paused_error(&ShowcaseError::new(
+                ShowcaseErrorCode::InteractiveDesktopUnavailable,
                 "Windows interactive session remains disconnected",
             ));
         });
@@ -1081,8 +1081,8 @@ async fn showcase_pause_tail_never_pushes_a_segment_past_five_minutes() {
         );
     });
     sender.send_modify(|status| {
-        status.record_paused_error(&ComputerUseError::new(
-            ComputerUseErrorCode::InteractiveDesktopUnavailable,
+        status.record_paused_error(&ShowcaseError::new(
+            ShowcaseErrorCode::InteractiveDesktopUnavailable,
             "Windows interactive session disconnected",
         ));
     });
@@ -1150,8 +1150,8 @@ async fn showcase_immediate_pause_then_stop_applies_the_pause_boundary() {
     .expect("the near-boundary frame should reach the active encoder");
 
     sender.send_modify(|status| {
-        status.record_paused_error(&ComputerUseError::new(
-            ComputerUseErrorCode::InteractiveDesktopUnavailable,
+        status.record_paused_error(&ShowcaseError::new(
+            ShowcaseErrorCode::InteractiveDesktopUnavailable,
             "Windows interactive session disconnected",
         ));
     });
@@ -1278,8 +1278,8 @@ async fn showcase_preserves_live_observation_terminal_reason() {
         .expect("showcase recorder");
 
     sender.send_modify(|status| {
-        status.record_terminal_error(&ComputerUseError::new(
-            ComputerUseErrorCode::MissingWindow,
+        status.record_terminal_error(&ShowcaseError::new(
+            ShowcaseErrorCode::MissingWindow,
             "exact target window closed",
         ));
     });
@@ -1352,7 +1352,7 @@ async fn showcase_refuses_to_overwrite_an_existing_mp4() {
         Err(error) => error,
     };
 
-    assert_eq!(error.code, ComputerUseErrorCode::CaptureFailed);
+    assert_eq!(error.code, ShowcaseErrorCode::CaptureFailed);
     assert_eq!(std::fs::read(&path).unwrap(), b"existing-showcase");
     std::fs::remove_dir_all(directory).unwrap();
 }
@@ -1381,7 +1381,7 @@ async fn showcase_finalize_does_not_overwrite_a_concurrently_created_mp4() {
         .await
         .expect_err("finalization must not replace a concurrently created showcase");
 
-    assert_eq!(error.code, ComputerUseErrorCode::CaptureFailed);
+    assert_eq!(error.code, ShowcaseErrorCode::CaptureFailed);
     assert_eq!(std::fs::read(&final_path).unwrap(), b"concurrent-showcase");
     std::fs::remove_dir_all(directory).unwrap();
 }

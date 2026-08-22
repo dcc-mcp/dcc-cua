@@ -216,3 +216,19 @@ async fn source_effective_fps_is_a_compatible_published_frame_cadence_alias() {
         "published_source_frame_cadence_not_requested_fps"
     );
 }
+
+#[rstest]
+fn showcase_projection_shares_the_live_frame_buffer() {
+    let mut status = LiveObservationStatus::default();
+    status.publish_frame(
+        LiveObservationFrame::new(9, vec![7; 16], 2, 2, std::time::Instant::now()),
+        Duration::ZERO,
+        "test_capture",
+    );
+    let source = status.latest().expect("source frame").shared_bgra();
+
+    let projected = project_showcase_status(&status);
+    let projected = projected.latest().expect("projected frame").shared_bgra();
+
+    assert!(Arc::ptr_eq(&source, &projected));
+}
