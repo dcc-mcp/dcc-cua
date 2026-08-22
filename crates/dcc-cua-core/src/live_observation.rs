@@ -110,6 +110,7 @@ impl LiveObservationFence {
 pub(crate) struct LiveObservationFrame {
     sequence: u64,
     bgra: Arc<[u8]>,
+    encoded_png: Option<Arc<[u8]>>,
     width: u32,
     height: u32,
     captured_at_ms: u128,
@@ -127,6 +128,7 @@ impl LiveObservationFrame {
         Self {
             sequence,
             bgra: bgra.into(),
+            encoded_png: None,
             width,
             height,
             captured_at_ms: SystemTime::now()
@@ -136,12 +138,28 @@ impl LiveObservationFrame {
         }
     }
 
+    #[cfg(any(not(windows), test))]
+    pub(crate) fn from_png(
+        sequence: u64,
+        png: Vec<u8>,
+        captured_at: Instant,
+    ) -> ComputerUseResult<Self> {
+        let (bgra, width, height) = decode_png_to_bgra(&png)?;
+        let mut frame = Self::new(sequence, bgra, width, height, captured_at);
+        frame.encoded_png = Some(png.into());
+        Ok(frame)
+    }
+
     pub(crate) fn sequence(&self) -> u64 {
         self.sequence
     }
 
     pub(crate) fn bgra(&self) -> &[u8] {
         &self.bgra
+    }
+
+    pub(crate) fn encoded_png(&self) -> Option<&[u8]> {
+        self.encoded_png.as_deref()
     }
 
     pub(crate) fn shared_bgra(&self) -> Arc<[u8]> {
@@ -763,16 +781,22 @@ async fn run_portable_capture_loop(
         );
         let capture = tokio::select! {
             () = shutdown.cancelled() => return,
-            result = capture => result.and_then(|png| decode_png_to_bgra(&png)),
+            result = capture => result.and_then(|png| {
+                LiveObservationFrame::from_png(
+                    sequence.saturating_add(1),
+                    png,
+                    Instant::now(),
+                )
+            }),
         };
         match capture {
-            Ok((bgra, width, height)) => {
-                sequence = sequence.saturating_add(1);
+            Ok(frame) => {
+                sequence = frame.sequence();
                 sender.send_modify(|status| {
                     status.publish_frame(
-                        LiveObservationFrame::new(sequence, bgra, width, height, Instant::now()),
+                        frame,
                         capture_started.elapsed(),
-                        "driver_png_decode",
+                        "driver_png_decode_preserved",
                     );
                 });
             }

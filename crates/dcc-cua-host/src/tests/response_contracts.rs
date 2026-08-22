@@ -101,6 +101,30 @@ fn native_tool_response_concatenates_all_image_attachments() {
 }
 
 #[rstest]
+fn combined_binary_images_are_bounded_before_attachment_allocation() {
+    let mut shared = None;
+    let error = prepare_image_transport_with_limit(
+        vec![
+            ComputerUseImage {
+                data: vec![1, 2, 3],
+                mime_type: "image/png".into(),
+            },
+            ComputerUseImage {
+                data: vec![4, 5],
+                mime_type: "image/jpeg".into(),
+            },
+        ],
+        SnapshotTransport::BinaryFrame,
+        &mut shared,
+        4,
+    )
+    .expect_err("the combined binary frame must be checked before allocation");
+
+    assert!(error.to_string().contains("combined image payload"));
+    assert!(shared.is_none());
+}
+
+#[rstest]
 fn action_response_preserves_tool_metadata_and_images() {
     let mut shared = None;
     let (response, attachment) = action_completed_response(

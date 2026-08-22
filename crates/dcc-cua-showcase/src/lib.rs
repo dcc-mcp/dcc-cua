@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::fs::File;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -1341,6 +1342,26 @@ pub fn resize_bgra(
         }
     }
     output
+}
+
+pub fn resize_bgra_if_needed<'a>(
+    source: &'a [u8],
+    source_width: u32,
+    source_height: u32,
+    width: u32,
+    height: u32,
+) -> Cow<'a, [u8]> {
+    if (source_width, source_height) == (width, height) {
+        Cow::Borrowed(source)
+    } else {
+        Cow::Owned(resize_bgra(
+            source,
+            source_width,
+            source_height,
+            width,
+            height,
+        ))
+    }
 }
 
 fn fourcc(value: &str) -> ShowcaseResult<FourCC> {

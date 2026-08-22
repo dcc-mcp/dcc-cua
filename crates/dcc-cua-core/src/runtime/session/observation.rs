@@ -253,7 +253,12 @@ impl ComputerUseSession {
                 );
                 let encoded_frame = Arc::clone(&frame);
                 let data = tokio::task::spawn_blocking(move || {
-                    let bgra = resize_bgra(
+                    if (source_width, source_height) == (width, height)
+                        && let Some(encoded_png) = encoded_frame.encoded_png()
+                    {
+                        return Ok(encoded_png.to_vec());
+                    }
+                    let bgra = resize_bgra_if_needed(
                         encoded_frame.bgra(),
                         source_width,
                         source_height,

@@ -1,33 +1,105 @@
 use super::*;
 
-pub(super) fn native_tool_response_with_transport(
-    session_id: Option<&str>,
-    tool: &str,
-    result: ComputerUseToolResult,
+pub(super) trait TransportImage {
+    fn into_transport_parts(self) -> (Vec<u8>, String);
+}
+
+impl TransportImage for ComputerUseImage {
+    fn into_transport_parts(self) -> (Vec<u8>, String) {
+        (self.data, self.mime_type)
+    }
+}
+
+impl TransportImage for dcc_cua_browser::BrowserImage {
+    fn into_transport_parts(self) -> (Vec<u8>, String) {
+        (self.data, self.mime_type)
+    }
+}
+
+#[derive(Debug)]
+pub(super) struct PreparedImageTransport {
+    pub(super) primary: Option<Value>,
+    pub(super) attachments: Vec<Value>,
+    pub(super) attachment: Option<Vec<u8>>,
+    pub(super) use_shared_memory: bool,
+}
+
+impl PreparedImageTransport {
+    pub(super) fn annotate_content(&self, value: &mut Value) {
+        let Some(content) = value.get_mut("content").and_then(Value::as_array_mut) else {
+            return;
+        };
+        for (index, item) in content
+            .iter_mut()
+            .filter(|item| item["type"] == "image")
+            .enumerate()
+        {
+            let Some(descriptor) = self.attachments.get(index) else {
+                break;
+            };
+            item["data"] = Value::Null;
+            item["encoding"] = descriptor["encoding"].clone();
+            item["attachment_index"] = json!(index);
+            item["offset"] = descriptor["offset"].clone();
+            item["length"] = descriptor["length"].clone();
+        }
+    }
+}
+
+pub(super) fn prepare_image_transport<T: TransportImage>(
+    images: Vec<T>,
     mode: SnapshotTransport,
     shared_image: &mut Option<SharedImage>,
-) -> Result<(Value, Option<Vec<u8>>), HostError> {
-    let mut value = result.value;
-    let images = result.images;
+) -> Result<PreparedImageTransport, HostError> {
+    prepare_image_transport_with_limit(images, mode, shared_image, MAX_BINARY_FRAME_BYTES)
+}
+
+pub(super) fn prepare_image_transport_with_limit<T: TransportImage>(
+    images: Vec<T>,
+    mode: SnapshotTransport,
+    shared_image: &mut Option<SharedImage>,
+    binary_frame_limit: usize,
+) -> Result<PreparedImageTransport, HostError> {
+    let mut images = images
+        .into_iter()
+        .map(TransportImage::into_transport_parts)
+        .collect::<Vec<_>>();
     let use_shared_memory = mode == SnapshotTransport::SharedMemory && images.len() == 1;
-    let mut attachment_bytes = Vec::new();
-    let mut attachments = Vec::with_capacity(images.len());
-    for (index, image) in images.iter().enumerate() {
-        let offset = attachment_bytes.len();
-        if !use_shared_memory {
-            attachment_bytes.extend_from_slice(&image.data);
-        }
-        attachments.push(json!({
-            "index": index,
-            "offset": offset,
-            "length": image.data.len(),
-            "mime_type": image.mime_type,
-            "encoding": if use_shared_memory { "shared_memory" } else { "binary_frame" },
-        }));
+    let combined_length = if use_shared_memory {
+        0
+    } else {
+        images.iter().try_fold(0_usize, |total, (data, _)| {
+            total.checked_add(data.len()).ok_or_else(|| {
+                HostError::Protocol("combined image payload length overflowed".into())
+            })
+        })?
+    };
+    if combined_length > binary_frame_limit {
+        return Err(HostError::Protocol(format!(
+            "combined image payload exceeds the {binary_frame_limit}-byte binary frame limit"
+        )));
     }
-    let image_descriptor = if use_shared_memory {
-        let image = &images[0];
-        let shared = SharedImage::from_bytes(&image.data, &image.mime_type)
+
+    let mut offset = 0_usize;
+    let attachments = images
+        .iter()
+        .enumerate()
+        .map(|(index, (data, mime_type))| {
+            let descriptor = json!({
+                "index": index,
+                "offset": offset,
+                "length": data.len(),
+                "mime_type": mime_type,
+                "encoding": if use_shared_memory { "shared_memory" } else { "binary_frame" },
+            });
+            offset += data.len();
+            descriptor
+        })
+        .collect::<Vec<_>>();
+
+    let primary = if use_shared_memory {
+        let (data, mime_type) = &images[0];
+        let shared = SharedImage::from_bytes(data, mime_type)
             .map_err(|error| HostError::Protocol(error.to_string()))?;
         let mut descriptor = serde_json::to_value(shared.descriptor())
             .map_err(|error| HostError::Protocol(error.to_string()))?;
@@ -37,31 +109,37 @@ pub(super) fn native_tool_response_with_transport(
     } else {
         attachments.first().cloned()
     };
-    if !images.is_empty()
-        && let Some(content) = value.get_mut("content").and_then(Value::as_array_mut)
-    {
-        for (index, item) in content
-            .iter_mut()
-            .filter(|item| item["type"] == "image")
-            .enumerate()
-        {
-            let Some(image) = images.get(index) else {
-                break;
-            };
-            item["data"] = Value::Null;
-            item["encoding"] = Value::String(
-                if use_shared_memory {
-                    "shared_memory"
-                } else {
-                    "binary_frame"
-                }
-                .into(),
-            );
-            item["attachment_index"] = json!(index);
-            item["offset"] = json!(attachments[index]["offset"]);
-            item["length"] = json!(image.data.len());
+
+    let attachment = if use_shared_memory || images.is_empty() {
+        None
+    } else if images.len() == 1 {
+        Some(images.pop().expect("one image was checked").0)
+    } else {
+        let mut combined = Vec::with_capacity(combined_length);
+        for (data, _) in images {
+            combined.extend_from_slice(&data);
         }
-    }
+        Some(combined)
+    };
+
+    Ok(PreparedImageTransport {
+        primary,
+        attachments,
+        attachment,
+        use_shared_memory,
+    })
+}
+
+pub(super) fn native_tool_response_with_transport(
+    session_id: Option<&str>,
+    tool: &str,
+    result: ComputerUseToolResult,
+    mode: SnapshotTransport,
+    shared_image: &mut Option<SharedImage>,
+) -> Result<(Value, Option<Vec<u8>>), HostError> {
+    let mut value = result.value;
+    let prepared = prepare_image_transport(result.images, mode, shared_image)?;
+    prepared.annotate_content(&mut value);
     let mut response = json!({
         "type": "tool_result",
         "session_id": session_id,
@@ -73,14 +151,13 @@ pub(super) fn native_tool_response_with_transport(
     if let Some(session_id) = session_id {
         response["session_id"] = Value::String(session_id.to_owned());
     }
-    if let Some(image) = image_descriptor {
+    if let Some(image) = prepared.primary {
         response["image"] = image;
-        if !use_shared_memory {
-            response["attachments"] = Value::Array(attachments);
+        if !prepared.use_shared_memory {
+            response["attachments"] = Value::Array(prepared.attachments);
         }
     }
-    let attachment = (!attachment_bytes.is_empty()).then_some(attachment_bytes);
-    Ok((response, attachment))
+    Ok((response, prepared.attachment))
 }
 
 pub(super) fn action_completed_response(
