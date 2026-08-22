@@ -31,9 +31,10 @@ if ($updated -ne $content) {
     Set-Content -LiteralPath $rootManifest -Value $updated -NoNewline -Encoding utf8
 }
 
-# Cargo owns member inheritance and lockfile representation. Running metadata
-# refreshes local package versions without rewriting every member manifest.
-$metadata = (& cargo metadata --format-version 1 --no-deps | ConvertFrom-Json)
+# Cargo owns member inheritance and lockfile representation. Full metadata
+# resolution refreshes the lockfile's local package versions without rewriting
+# every member manifest; --no-deps leaves those lock entries stale.
+$metadata = (& cargo metadata --format-version 1 | ConvertFrom-Json)
 if ($LASTEXITCODE -ne 0) {
     throw "cargo metadata failed with code $LASTEXITCODE"
 }
