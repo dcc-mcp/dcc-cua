@@ -20,6 +20,10 @@ but did not use that evidence for authorization.
   accessibility state and use its closed `policy_tier` value.
 - Fail closed as `hard_deny` when semantic evidence, element identity, or the
   published tier is absent or unknown.
+- On Windows, when a combined upstream snapshot lacks closed policy tiers, pair
+  its exact-window pixels with a fresh exact-PID/HWND Windows UIA semantic
+  snapshot before publishing action evidence. If that adapter cannot publish a
+  closed tier, keep semantic actions fail-closed; never infer a tier from labels.
 - Derive raw-input policy from the actual action. Pointer movement and scrolling
   stay within the task grant; clicks, drags, text, and keyboard mutations require
   trusted action-time confirmation because raw coordinates contain no semantic

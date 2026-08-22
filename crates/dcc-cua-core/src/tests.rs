@@ -117,6 +117,7 @@ mod issues_58_60;
 mod launch;
 mod live_observation;
 mod recording_session;
+mod safety_evidence;
 
 #[rstest]
 #[tokio::test(start_paused = true)]

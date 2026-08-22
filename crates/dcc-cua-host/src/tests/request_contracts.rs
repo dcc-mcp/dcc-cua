@@ -58,6 +58,12 @@ fn semantic_action_safety_comes_from_the_fresh_accessibility_element(
     }]});
 
     assert_eq!(action.safety_tier(Some(&root)), expected);
+    let upstream_root = json!({"elements": [{
+        "index": 7,
+        "element_token": "fresh-token",
+        "policy_tier": published,
+    }]});
+    assert_eq!(action.safety_tier(Some(&upstream_root)), expected);
     assert_eq!(action.safety_tier(None), HostActionSafetyTier::HardDeny);
     assert_eq!(
         action.safety_tier(Some(&json!({"elements": []}))),

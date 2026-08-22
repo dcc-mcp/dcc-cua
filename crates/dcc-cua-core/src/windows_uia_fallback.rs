@@ -16,6 +16,20 @@ use crate::{
 #[cfg(windows)]
 use crate::{ComputerUseError, ComputerUseResult};
 
+#[cfg(any(windows, test))]
+pub(crate) fn accessibility_has_closed_policy_tiers(accessibility: &Value) -> bool {
+    let Some(elements) = accessibility["elements"].as_array() else {
+        return false;
+    };
+    !elements.is_empty()
+        && elements.iter().all(|element| {
+            matches!(
+                element["policy_tier"].as_str(),
+                Some("hard_deny" | "action_confirmation" | "pre_approval" | "task_grant")
+            )
+        })
+}
+
 #[cfg(windows)]
 #[derive(Clone)]
 pub(crate) struct WindowsUiaFallback {

@@ -166,11 +166,28 @@ impl ComputerUseSession {
                 "CUA returned a non-PNG or truncated screenshot",
             )
         })?;
-        let accessibility = result
+        let mut accessibility = result
             .structured_json
             .as_deref()
             .and_then(|json| serde_json::from_str(json).ok())
             .unwrap_or_else(|| json!({}));
+        #[cfg(windows)]
+        if !crate::windows_uia_fallback::accessibility_has_closed_policy_tiers(&accessibility) {
+            match self
+                .windows_accessibility_snapshot(&target, max_elements, max_depth)
+                .await
+            {
+                Ok(windows_accessibility) => accessibility = windows_accessibility,
+                Err(_) => self.windows_uia = None,
+            }
+        }
+        let target = self
+            .revalidate_observed_exact_publication_target(&target)
+            .await?;
+        let accessibility_backend = accessibility["backend"]
+            .as_str()
+            .unwrap_or("cua-driver-sdk");
+        let accessibility_available = accessibility["elements"].as_array().is_some();
         let observation = ComputerUseObservation {
             observation_id: format!(
                 "{}-{}",
@@ -188,6 +205,8 @@ impl ComputerUseSession {
                 "backend": "cua-driver-sdk",
                 "pixels_captured": true,
                 "scope": "window",
+                "accessibility_available": accessibility_available,
+                "accessibility_backend": accessibility_backend,
                 "process_id": target.pid,
                 "window_handle": target.window_id,
             }),

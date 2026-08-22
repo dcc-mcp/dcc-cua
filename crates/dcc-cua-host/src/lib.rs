@@ -762,7 +762,10 @@ impl HostAction {
         }
         root["elements"].as_array()?.iter().find(|element| {
             self.element_index.is_none_or(|expected| {
-                element["element_index"].as_u64() == Some(u64::from(expected))
+                element["element_index"]
+                    .as_u64()
+                    .or_else(|| element["index"].as_u64())
+                    == Some(u64::from(expected))
             }) && self
                 .element_token
                 .as_deref()
