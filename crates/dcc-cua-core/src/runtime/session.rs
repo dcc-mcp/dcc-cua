@@ -375,10 +375,10 @@ impl ComputerUseSession {
             Err(error) => {
                 self.invalidate_action_observations();
                 if error.code != ComputerUseErrorCode::InputFailed
-                    || !error
+                    || error
                         .details
                         .as_ref()
-                        .is_some_and(|details| details.timed_out == Some(true))
+                        .is_none_or(|details| details.timed_out != Some(true))
                 {
                     return Err(error);
                 }

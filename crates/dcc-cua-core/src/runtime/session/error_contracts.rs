@@ -88,7 +88,7 @@ pub(super) fn local_activation_attempt_failure(error: ComputerUseError) -> Compu
     })
 }
 
-#[cfg(any(windows, test))]
+#[cfg(windows)]
 pub(super) fn local_activation_validation_failure(
     code: ComputerUseErrorCode,
     message: impl Into<String>,
