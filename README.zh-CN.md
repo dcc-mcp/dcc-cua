@@ -182,6 +182,9 @@ Windows 全局 UIA 枚举超时时，如果 UIA 权限仍有效，`semantic` 会
 Windows 后台 UIA 动作可能已经成功，但系统拒绝恢复原前台窗口，或原窗口在动作中
 消失。此时结果仍为成功并带有 `action_executed: true`，恢复失败单独记录在
 `foreground_restore.success: false`。调用方不得重试输入，应重新观察并验证应用状态。
+UIA worker 脚本通过私有 stdin 管道直接加载，不再写入同用户可修改的临时文件，也不再
+使用 `ExecutionPolicy Bypass`。readiness、请求和响应都携带并校验协议版本；PowerShell
+中的策略分级、敏感目标和 stale fence 判定由夹具驱动的行为测试覆盖。
 
 单次窗口操作会尝试生成新的操作后截图。如果输入已执行但截图失败，结果会返回
 `action_was_executed: true`，调用方不得盲目重试。完整命令和参数见

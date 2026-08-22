@@ -878,7 +878,11 @@ session; CUA remains the cross-platform, browser, and visual backend. An
 `dcc-wuia:` tokens; click, toggle, set-text, and set-value can consume those
 tokens without a screenshot, raw-input grant, or explicit window activation.
 The target application may still choose to activate itself when it opens a
-visible menu or dialog.
+visible menu or dialog. The UIA worker script is loaded over its private stdin
+pipe instead of being written to a same-user-writable temporary file or using
+`ExecutionPolicy Bypass`. Readiness, requests, and responses carry a checked
+protocol version, and the PowerShell policy-tier, sensitive-target, and stale
+fence decisions have fixture-driven behavioral tests.
 If the upstream Windows session start itself times out, Host reports
 `upstream_session.state: "visual_only"` and never re-enters that unresponsive
 driver session. Exact local WGC/UIA observation remains available only after

@@ -172,6 +172,7 @@ fn map_error(error: UiaError) -> ComputerUseError {
         }
         UiaError::Unsupported
         | UiaError::BackendUnavailable(_)
+        | UiaError::ProtocolMismatch { .. }
         | UiaError::ForegroundActivationRefused { .. } => ComputerUseErrorCode::BackendUnavailable,
     };
     ComputerUseError::new(code, error.to_string())
