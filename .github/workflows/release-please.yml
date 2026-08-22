@@ -38,7 +38,7 @@ jobs:
           if ($config.packages.'.'.component -ne 'dcc-cua') { throw 'unexpected release component' }
           if ($config.packages.'browser-extension/chrome'.component -ne 'dcc-cua-browser-extension') { throw 'unexpected browser extension component' }
           if ($config.packages.'browser-extension/chrome'.'include-component-in-tag' -ne $true) { throw 'browser extension tags must include the component' }
-          if ($config.packages.'browser-extension/chrome'.'release-as' -ne '0.1.0') { throw 'initial browser extension release must be 0.1.0' }
+          if ($config.packages.'browser-extension/chrome'.PSObject.Properties.Name -contains 'release-as') { throw 'one-shot release-as overrides must be removed after the initial release' }
           if ($manifest.'.' -notmatch '^\d+\.\d+\.\d+$') { throw 'manifest version must be valid semver' }
           if ($manifest.'browser-extension/chrome' -notmatch '^\d+\.\d+\.\d+$') { throw 'browser extension manifest version must be valid semver' }
           $version = (Get-Content version.txt -Raw).Trim()
