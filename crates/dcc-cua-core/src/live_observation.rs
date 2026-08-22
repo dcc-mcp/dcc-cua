@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use dcc_cua_indicator::{interrupt_generation, interrupt_generation_changed};
+use dcc_cua_interrupt::{interrupt_generation, interrupt_generation_changed};
 use serde_json::{Value, json};
 use tokio::sync::{Notify, watch};
 use tokio::task::JoinHandle;

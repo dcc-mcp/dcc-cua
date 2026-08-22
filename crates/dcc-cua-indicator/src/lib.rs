@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
+use dcc_cua_interrupt::{interrupt_generation, interrupt_generation_changed};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -35,7 +36,6 @@ pub const TARGET_FRAME_ALPHA_MAX: u8 = theme_tokens::FRAME_ALPHA_MAX;
 pub const SHARED_CURSOR_THEME_ID: &str = theme_tokens::CURSOR_THEME_ID;
 /// Reduced-motion policy selected by the shared DCC CUA product-theme contract.
 pub const SHARED_REDUCED_MOTION_POLICY: &str = theme_tokens::REDUCED_MOTION;
-static INTERRUPT_GENERATION: AtomicU64 = AtomicU64::new(0);
 
 /// Per-session target-frame motion preference.
 ///
@@ -183,24 +183,6 @@ pub(crate) fn visible_target_frame_band(thickness: i32, band: usize) -> Option<(
 pub(crate) fn target_frame_has_visible_band(thickness: i32) -> bool {
     (0..TARGET_FRAME_GRADIENT_STEPS)
         .any(|band| visible_target_frame_band(thickness, band).is_some())
-}
-
-/// Broadcast a cooperative stop to every control session in this Host process.
-pub fn broadcast_interrupt() -> u64 {
-    INTERRUPT_GENERATION
-        .fetch_add(1, Ordering::AcqRel)
-        .wrapping_add(1)
-}
-
-/// Return the current Host-process stop generation.
-#[must_use]
-pub fn interrupt_generation() -> u64 {
-    INTERRUPT_GENERATION.load(Ordering::Acquire)
-}
-
-#[must_use]
-pub fn interrupt_generation_changed(started: u64, current: u64) -> bool {
-    started != current
 }
 
 #[derive(Debug, Clone)]

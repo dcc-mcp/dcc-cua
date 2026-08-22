@@ -74,7 +74,7 @@ use dcc_cua_core::{
     ComputerUseWindowQuery, ComputerUseWindowWaitRequest, ComputerUseZoomRequest,
     IndicatorMotionPolicy,
 };
-use dcc_cua_indicator::{broadcast_interrupt, interrupt_generation, interrupt_generation_changed};
+use dcc_cua_interrupt::{broadcast_interrupt, interrupt_generation, interrupt_generation_changed};
 use dcc_cua_shm::SharedImage;
 
 // ponytail: one OS input stream is process-global; shard only if platforms gain isolated seats.

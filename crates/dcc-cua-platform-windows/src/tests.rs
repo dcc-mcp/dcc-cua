@@ -351,7 +351,8 @@ fn snapshot_normalization_emits_flat_agent_friendly_elements() {
             .unwrap()
             .starts_with(TOKEN_PREFIX)
     );
-    assert_eq!(resolve_index(&state, Some(1), None).unwrap(), 1);
+    let index_only = resolve_index(&state, Some(1), None).unwrap_err();
+    assert!(matches!(index_only, super::UiaError::InvalidAction(_)));
     assert_eq!(
         resolve_index(&state, None, elements[1]["element_token"].as_str()).unwrap(),
         1

@@ -117,7 +117,7 @@ fn flatten(
 
 pub(crate) fn resolve_index(
     state: &SnapshotState,
-    element_index: Option<u32>,
+    _element_index: Option<u32>,
     element_token: Option<&str>,
 ) -> Result<usize, UiaError> {
     if let Some(token) = element_token {
@@ -134,10 +134,9 @@ pub(crate) fn resolve_index(
             .filter(|index| *index < state.fences.len())
             .ok_or_else(|| UiaError::StaleSnapshot("element token index is invalid".into()));
     }
-    element_index
-        .map(|value| value as usize)
-        .filter(|index| *index < state.fences.len())
-        .ok_or_else(|| UiaError::InvalidAction("a current element locator is required".into()))
+    Err(UiaError::InvalidAction(
+        "a current element token is required for mutation".into(),
+    ))
 }
 
 fn role(node: &Value) -> String {

@@ -18,6 +18,7 @@ async-trait.workspace = true
 dcc-cua-browser = { path = "../dcc-cua-browser" }
 dcc-cua-core = { path = "../dcc-cua-core" }
 dcc-cua-indicator = { path = "../dcc-cua-indicator" }
+dcc-cua-interrupt = { path = "../dcc-cua-interrupt" }
 dcc-cua-protocol = { path = "../dcc-cua-protocol" }
 dcc-cua-shm = { path = "../dcc-cua-shm" }
 serde = { version = "1", features = ["derive"] }

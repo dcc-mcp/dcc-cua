@@ -7,11 +7,11 @@ pub(super) fn send_windows_key_holds(
     keys: &[String],
     duration_ms: u64,
 ) -> ComputerUseResult<()> {
-    let started_interrupt_generation = dcc_cua_indicator::interrupt_generation();
+    let started_interrupt_generation = dcc_cua_interrupt::interrupt_generation();
     dcc_cua_platform_windows::send_held_keys_exact_foreground(window_id, keys, duration_ms, || {
-        dcc_cua_indicator::interrupt_generation_changed(
+        dcc_cua_interrupt::interrupt_generation_changed(
             started_interrupt_generation,
-            dcc_cua_indicator::interrupt_generation(),
+            dcc_cua_interrupt::interrupt_generation(),
         )
     })
     .map_err(|error| {
