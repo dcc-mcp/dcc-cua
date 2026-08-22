@@ -24,6 +24,34 @@ fn input_state_read_is_pipeline_safe_but_event_long_poll_is_not() {
     assert!(!is_pipeline_safe_method("poll_session_events"));
 }
 
+#[cfg(windows)]
+#[rstest]
+#[tokio::test]
+async fn named_pipe_client_accepts_a_server_owned_by_the_current_user() {
+    use tokio::net::windows::named_pipe::{ClientOptions, ServerOptions};
+
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let endpoint = format!(
+        r"\\.\pipe\dcc-cua-client-owner-test-{}-{unique}",
+        std::process::id()
+    );
+    let server = ServerOptions::new()
+        .first_pipe_instance(true)
+        .create(&endpoint)
+        .expect("create same-user named-pipe server");
+    let connected = tokio::spawn(async move { server.connect().await });
+    let client = ClientOptions::new()
+        .open(&endpoint)
+        .expect("connect same-user named-pipe client");
+
+    verify_named_pipe_server_identity(&client)
+        .expect("same-user named-pipe server must be trusted");
+    connected.await.unwrap().unwrap();
+}
+
 async fn write_frame<W: AsyncWrite + Unpin>(
     writer: &mut W,
     body: &[u8],

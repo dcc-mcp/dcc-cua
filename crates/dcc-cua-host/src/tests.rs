@@ -1895,6 +1895,27 @@ fn app_launch_grant_defaults_to_denied() {
     );
 }
 
+#[cfg(windows)]
+#[rstest]
+#[tokio::test]
+async fn first_named_pipe_instance_rejects_a_precreated_endpoint() {
+    let endpoint_name = format!(
+        r"\\.\pipe\dcc-cua-first-instance-test-{}",
+        uuid::Uuid::new_v4()
+    );
+    let _first = endpoint::create_secure_named_pipe(&endpoint_name, true)
+        .expect("create the first protected pipe instance");
+
+    let error = match endpoint::create_secure_named_pipe(&endpoint_name, true) {
+        Ok(_) => panic!("a second first instance must fail closed"),
+        Err(error) => error,
+    };
+    assert!(matches!(error, HostError::EndpointHijacked { .. }));
+
+    endpoint::create_secure_named_pipe(&endpoint_name, false)
+        .expect("the accept loop may add a non-first instance");
+}
+
 #[rstest]
 fn protocol_wire_codes_are_explicit_and_never_inferred_from_prose() {
     assert_eq!(
