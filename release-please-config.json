@@ -19,7 +19,6 @@
       "component": "dcc-cua-browser-extension",
       "package-name": "@dcc-mcp/dcc-cua-browser-extension",
       "include-component-in-tag": true,
-      "release-as": "0.1.0",
       "changelog-path": "CHANGELOG.md",
       "extra-files": [
         {
