@@ -47,7 +47,14 @@ use tokio::io::{AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader, BufWriter
 
 const PARALLEL_DISCOVERY_WINDOW_MS: u64 = 5;
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() {
+    if let Err(error) = run_main() {
+        eprintln!("{}", fatal_error_line(error.as_ref()));
+        std::process::exit(1);
+    }
+}
+
+fn run_main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(target_os = "macos")]
     {
         let arguments = env::args().skip(1).collect::<Vec<_>>();
@@ -58,6 +65,41 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     async_main()
+}
+
+fn fatal_error_line(error: &(dyn std::error::Error + 'static)) -> String {
+    serde_json::to_string(&fatal_error_value(error)).unwrap_or_else(|_| {
+        r#"{"success":false,"error":{"code":"command_failed","message":"failed to serialize command error"}}"#.into()
+    })
+}
+
+fn fatal_error_value(error: &(dyn std::error::Error + 'static)) -> serde_json::Value {
+    if let Some(error) = error.downcast_ref::<ComputerUseError>() {
+        return json!({
+            "success": false,
+            "error": {
+                "code": error.code,
+                "message": error.message,
+                "details": error.details,
+            }
+        });
+    }
+    if let Some(error) = error.downcast_ref::<HostClientError>() {
+        let (code, message) = match error {
+            HostClientError::Io(_) => ("host_transport_failed", error.to_string()),
+            HostClientError::Protocol(_) => ("host_protocol_failed", error.to_string()),
+            HostClientError::Timeout { .. } => ("host_timeout", error.to_string()),
+            HostClientError::Remote { code, message, .. } => (code.as_str(), message.clone()),
+        };
+        return json!({
+            "success": false,
+            "error": {"code": code, "message": message},
+        });
+    }
+    json!({
+        "success": false,
+        "error": {"code": "command_failed", "message": error.to_string()},
+    })
 }
 
 #[tokio::main]
