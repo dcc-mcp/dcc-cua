@@ -508,8 +508,16 @@ pub struct ComputerUseImage {
 /// Result of an open-ended CUA SDK tool call. The raw MCP result stays
 /// available for extension tools; image pixels are decoded separately so a
 /// Host can forward them as binary frames instead of base64 JSON.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ComputerUseToolStatus {
+    Succeeded,
+    Rejected,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ComputerUseToolResult {
+    pub status: ComputerUseToolStatus,
     pub value: Value,
     pub text: String,
     pub images: Vec<ComputerUseImage>,

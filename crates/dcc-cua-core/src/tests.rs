@@ -437,6 +437,7 @@ fn snapshot_bounds_use_agent_defaults_and_cap_context() {
 #[rstest]
 fn diagnostics_prefer_upstream_structured_content() {
     let check = diagnostic_tool_check(Ok(ComputerUseToolResult {
+        status: ComputerUseToolStatus::Succeeded,
         value: json!({"structuredContent":{"overall":"ok"}}),
         text: "healthy".into(),
         images: Vec::new(),
@@ -1536,6 +1537,7 @@ fn unsupported_input_backend_is_a_structured_non_fallback_result() {
         "unsupported input backend",
         &test_window_target(),
     );
+    assert_eq!(result.status, ComputerUseToolStatus::Rejected);
     assert_eq!(result.value["success"], false);
     assert_eq!(result.value["route"], "input_backend_selection");
     assert_eq!(

@@ -41,6 +41,7 @@ fn native_tool_response_moves_image_pixels_to_binary_attachment() {
         Some("session-1"),
         "debug_window_info",
         ComputerUseToolResult {
+            status: ComputerUseToolStatus::Succeeded,
             value: json!({
                 "content": [{"type": "image", "mimeType": "image/png", "data": "base64"}]
             }),
@@ -68,6 +69,7 @@ fn native_tool_response_concatenates_all_image_attachments() {
         None,
         "page",
         ComputerUseToolResult {
+            status: ComputerUseToolStatus::Succeeded,
             value: json!({
                 "content": [
                     {"type": "image", "data": "first"},
@@ -132,6 +134,7 @@ fn action_response_preserves_tool_metadata_and_images() {
         "action-1".into(),
         "CUA action completed",
         ComputerUseToolResult {
+            status: ComputerUseToolStatus::Succeeded,
             value: json!({
                 "success": true,
                 "cua": {"accepted": true},
@@ -149,6 +152,8 @@ fn action_response_preserves_tool_metadata_and_images() {
     )
     .unwrap();
     assert_eq!(response["type"], "action_completed");
+    assert_eq!(response["status"], "succeeded");
+    assert_eq!(response["success"], true);
     assert_eq!(response["action_id"], "action-1");
     assert_eq!(response["result"]["cua"]["accepted"], true);
     assert_eq!(response["result"]["banner"]["activity"], "observing");
@@ -202,6 +207,7 @@ fn action_response_preserves_structured_rejected_input_outcome() {
         "action-1".into(),
         "CUA action stopped after its delivery probe",
         ComputerUseToolResult {
+            status: ComputerUseToolStatus::Rejected,
             value: json!({
                 "success": false,
                 "cua": {
@@ -228,6 +234,8 @@ fn action_response_preserves_structured_rejected_input_outcome() {
     .unwrap();
 
     assert_eq!(response["success"], false);
+    assert_eq!(response["status"], "rejected");
+    assert_eq!(response["result"]["success"], false);
     assert_eq!(response["degraded"], true);
     assert_eq!(
         response["result"]["cua"]["delivery"]["backend_id"],
@@ -250,6 +258,7 @@ fn action_response_uses_shared_memory_for_one_image() {
         "action-1".into(),
         "CUA action completed",
         ComputerUseToolResult {
+            status: ComputerUseToolStatus::Succeeded,
             value: json!({
                 "content": [{"type": "image", "data": "base64"}]
             }),
@@ -281,6 +290,7 @@ fn action_post_snapshot_reuses_the_single_attachment_frame() {
         "session-1",
         "action-1".into(),
         ComputerUseToolResult {
+            status: ComputerUseToolStatus::Succeeded,
             value: json!({"accepted": true}),
             text: "clicked".into(),
             images: vec![ComputerUseImage {
@@ -323,6 +333,7 @@ fn post_input_focus_loss_keeps_the_fresh_observation_and_no_retry_contract() {
         "session-1",
         "action-focus-lost".into(),
         ComputerUseToolResult {
+            status: ComputerUseToolStatus::Succeeded,
             value: json!({
                 "success": true,
                 "cua": {
@@ -387,6 +398,7 @@ fn desktop_action_post_snapshot_reuses_the_single_attachment_frame() {
         "desktop-1",
         "action-1".into(),
         ComputerUseToolResult {
+            status: ComputerUseToolStatus::Succeeded,
             value: json!({"accepted": true}),
             text: "clicked".into(),
             images: vec![ComputerUseImage {

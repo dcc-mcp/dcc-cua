@@ -1923,6 +1923,7 @@ fn host_ensure_requires_the_cli_host_version() {
 #[rstest]
 fn cli_preserves_completed_action_restore_diagnostics() {
     let value = action_result_value(ComputerUseToolResult {
+        status: dcc_cua_core::ComputerUseToolStatus::Succeeded,
         value: json!({
             "success": true,
             "action_executed": true,

@@ -443,6 +443,7 @@ pub(crate) fn native_tool_result(
         )
     })?;
     Ok(ComputerUseToolResult {
+        status: ComputerUseToolStatus::Succeeded,
         value,
         text: result.text,
         images,

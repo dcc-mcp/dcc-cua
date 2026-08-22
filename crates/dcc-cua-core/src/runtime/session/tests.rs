@@ -819,6 +819,7 @@ async fn successful_fast_mutation_invalidates_old_evidence_and_fences_capture_af
     session.live_observation = Some(live_observation);
 
     let result = session.complete_mutating_action(ComputerUseToolResult {
+        status: ComputerUseToolStatus::Succeeded,
         value: json!({"success": true, "route": "windows_fast_test"}),
         text: "simulated successful Windows mutation".into(),
         images: Vec::new(),
@@ -922,6 +923,7 @@ async fn attempted_fast_failure_consumes_evidence_for_partial_drag_and_synthetic
         true,
     ));
     results.push(ComputerUseToolResult {
+        status: ComputerUseToolStatus::Rejected,
         value: json!({
             "success": false,
             "route": "windows_scoped_fast_input",
@@ -1092,6 +1094,7 @@ async fn non_mutating_action_completion_preserves_previous_evidence() {
     let (mut session, calls) = counting_session();
 
     let result = session.complete_action(ComputerUseToolResult {
+        status: ComputerUseToolStatus::Rejected,
         value: json!({"success": false, "effect": "not_attempted"}),
         text: "simulated pre-dispatch rejection".into(),
         images: Vec::new(),

@@ -70,9 +70,9 @@ use dcc_cua_core::{
     ComputerUseRecordingHealth, ComputerUseRecordingStartRequest, ComputerUseResult,
     ComputerUseScreenshot, ComputerUseSessionHealth, ComputerUseSessionHealthEvaluation,
     ComputerUseSessionHealthPolicy, ComputerUseSessionStartRequest, ComputerUseSessionStopResult,
-    ComputerUseTargetScope, ComputerUseToolResult, ComputerUseWindowFrameRequest,
-    ComputerUseWindowQuery, ComputerUseWindowWaitRequest, ComputerUseZoomRequest,
-    IndicatorMotionPolicy,
+    ComputerUseTargetScope, ComputerUseToolResult, ComputerUseToolStatus,
+    ComputerUseWindowFrameRequest, ComputerUseWindowQuery, ComputerUseWindowWaitRequest,
+    ComputerUseZoomRequest, IndicatorMotionPolicy,
 };
 use dcc_cua_interrupt::{broadcast_interrupt, interrupt_generation, interrupt_generation_changed};
 use dcc_cua_shm::SharedImage;

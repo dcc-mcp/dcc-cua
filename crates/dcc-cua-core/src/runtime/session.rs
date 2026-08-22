@@ -212,6 +212,7 @@ impl ComputerUseSession {
             });
             self.finish_observation_sensitive_attempt(activation)?;
             ComputerUseToolResult {
+                status: ComputerUseToolStatus::Succeeded,
                 value: json!({
                     "success": true,
                     "path": "windows_exact_foreground",
@@ -853,7 +854,7 @@ impl ComputerUseSession {
             let fast_result = self.finish_local_mutation_attempt(fast_result);
             if let Some(mut result) = self.finish_observation_sensitive_attempt(fast_result)? {
                 self.set_banner_activity(BannerActivity::Operating);
-                let success = result.value["success"].as_bool().unwrap_or(true);
+                let success = result.status == ComputerUseToolStatus::Succeeded;
                 result.value = json!({
                     "success": success,
                     "action": action,
@@ -920,6 +921,7 @@ impl ComputerUseSession {
             }
             self.set_banner_activity(BannerActivity::Operating);
             return Ok(self.complete_mutating_action(ComputerUseToolResult {
+                status: ComputerUseToolStatus::Succeeded,
                 value: json!({
                     "success": true,
                     "action": action,

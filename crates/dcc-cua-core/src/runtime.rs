@@ -232,6 +232,7 @@ pub(crate) fn input_backend_rejection_result(
     target: &WindowTarget,
 ) -> ComputerUseToolResult {
     ComputerUseToolResult {
+        status: ComputerUseToolStatus::Rejected,
         value: json!({
             "success": false,
             "route": "input_backend_selection",
@@ -869,7 +870,8 @@ impl ComputerUseDriver {
 pub(crate) fn diagnostic_tool_check(result: ComputerUseResult<ComputerUseToolResult>) -> Value {
     match result {
         Ok(result) => json!({
-            "success": true,
+            "success": result.status == ComputerUseToolStatus::Succeeded,
+            "status": result.status,
             "degraded": result.degraded,
             "summary": result.text,
             "result": result.value.get("structuredContent").unwrap_or(&result.value),

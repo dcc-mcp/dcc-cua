@@ -691,6 +691,8 @@ pub(super) async fn desktop_act(
 
 pub(super) fn action_result_value(result: ComputerUseToolResult) -> serde_json::Value {
     let mut value = result.value;
+    value["success"] = json!(result.status == dcc_cua_core::ComputerUseToolStatus::Succeeded);
+    value["status"] = json!(result.status);
     value["text"] = json!(result.text);
     value["degraded"] = json!(result.degraded);
     value["image_count"] = json!(result.images.len());

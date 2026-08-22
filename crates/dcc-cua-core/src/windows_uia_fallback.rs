@@ -10,7 +10,9 @@ use crate::policy::{bounded_snapshot_depth, bounded_snapshot_elements};
 use crate::runtime::ComputerUseSession;
 use crate::window_target::WindowTarget;
 #[cfg(windows)]
-use crate::{ComputerUseAction, ComputerUseErrorCode, ComputerUseToolResult};
+use crate::{
+    ComputerUseAction, ComputerUseErrorCode, ComputerUseToolResult, ComputerUseToolStatus,
+};
 #[cfg(windows)]
 use crate::{ComputerUseError, ComputerUseResult};
 
@@ -78,6 +80,7 @@ impl WindowsUiaFallback {
         .await
         .map_err(|error| backend_error(format!("Windows UIA task failed: {error}")))??;
         Ok(ComputerUseToolResult {
+            status: ComputerUseToolStatus::Succeeded,
             value,
             text: "Windows UIA semantic action completed".into(),
             images: Vec::new(),
