@@ -17,6 +17,7 @@ use url::Url;
 pub const PROFILE_SCHEMA_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SemanticProfile {
     pub schema_version: u32,
     pub id: String,
@@ -86,6 +87,7 @@ pub enum StateSourceMode {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProfileSelector {
     #[serde(default)]
     pub application_names: Vec<String>,
@@ -98,6 +100,7 @@ pub struct ProfileSelector {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SemanticSurface {
     pub id: String,
     pub label: String,
@@ -108,6 +111,7 @@ pub struct SemanticSurface {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SemanticTarget {
     pub id: String,
     pub label: String,
@@ -127,6 +131,7 @@ pub struct SemanticTarget {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SemanticFallback {
     pub profile_id: String,
     pub surface_id: String,
@@ -194,13 +199,18 @@ pub enum SemanticRoute {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProfileSettings {
     pub dialog_style: DialogStyle,
     pub preferred_route: SemanticRoute,
     #[serde(default)]
     pub default_locale: Option<String>,
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub destructive_confirmation_required: bool,
+}
+
+const fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
