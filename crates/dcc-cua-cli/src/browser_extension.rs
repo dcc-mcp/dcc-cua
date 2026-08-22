@@ -8,6 +8,8 @@ use dcc_cua_client::HostClient;
 use serde_json::{Value, json};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
+use crate::cli_args::flag_value;
+
 const MAX_NATIVE_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
 const EXTENSION_RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
 const NATIVE_HOST_NAME: &str = "com.dcc_mcp.dcc_cua";
@@ -43,10 +45,10 @@ pub(crate) fn execute_management(flags: &[String]) -> Result<(), Box<dyn std::er
         .first()
         .map(String::as_str)
         .ok_or("browser-extension requires plan, status, or install-native-host")?;
-    let browser = argument_value(flags, "--browser")
+    let browser = flag_value(flags, "--browser")
         .ok_or("browser-extension requires --browser chrome|edge|firefox")?;
     let browser = BrowserFamily::parse(&browser)?;
-    let extension_id = argument_value(flags, "--extension-id")
+    let extension_id = flag_value(flags, "--extension-id")
         .ok_or("browser-extension requires --extension-id PUBLISHED_ID")?;
     validate_extension_id(&extension_id)?;
     match subcommand {
@@ -71,8 +73,7 @@ pub(crate) fn execute_management(flags: &[String]) -> Result<(), Box<dyn std::er
             );
         }
         "plan" => {
-            let cdp_state =
-                argument_value(flags, "--cdp-state").unwrap_or_else(|| "available".into());
+            let cdp_state = flag_value(flags, "--cdp-state").unwrap_or_else(|| "available".into());
             if !matches!(cdp_state.as_str(), "available" | "unavailable") {
                 return Err("--cdp-state must be available or unavailable".into());
             }
@@ -113,14 +114,6 @@ pub(crate) fn execute_management(flags: &[String]) -> Result<(), Box<dyn std::er
         _ => return Err("browser-extension requires plan, status, or install-native-host".into()),
     }
     Ok(())
-}
-
-fn argument_value(arguments: &[String], name: &str) -> Option<String> {
-    arguments
-        .iter()
-        .position(|argument| argument == name)
-        .and_then(|index| arguments.get(index + 1))
-        .cloned()
 }
 
 pub(super) fn validate_extension_id(extension_id: &str) -> Result<(), String> {

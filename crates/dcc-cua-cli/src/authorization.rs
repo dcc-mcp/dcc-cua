@@ -3,6 +3,7 @@ use std::path::Path;
 #[cfg(not(target_os = "macos"))]
 use std::sync::Arc;
 
+use crate::cli_args::{flag_values, has_flag};
 #[cfg(not(target_os = "macos"))]
 use async_trait::async_trait;
 #[cfg(any(target_os = "macos", test))]
@@ -91,31 +92,18 @@ pub(crate) fn host_private_worker_options(
 }
 
 pub(crate) fn existing_profile_grant_requested(flags: &[String]) -> Result<bool, String> {
-    let mut requested = false;
-    let mut index = 0;
-    while index < flags.len() {
-        let value = if flags[index] == "--grant" {
-            index += 1;
-            Some(
-                flags
-                    .get(index)
-                    .ok_or_else(|| "--grant requires a value".to_owned())?
-                    .as_str(),
-            )
-        } else {
-            flags[index].strip_prefix("--grant=")
-        };
-        if let Some(value) = value {
-            if !matches!(value, "existing-profile" | "existing_profile") {
-                return Err(format!(
-                    "unsupported Host grant {value:?}; supported: {EXISTING_PROFILE_GRANT}"
-                ));
-            }
-            requested = true;
-        }
-        index += 1;
+    let values = flag_values(flags, "--grant");
+    if has_flag(flags, "--grant") && values.is_empty() {
+        return Err("--grant requires a value".to_owned());
     }
-    Ok(requested)
+    for value in &values {
+        if !matches!(value.as_str(), "existing-profile" | "existing_profile") {
+            return Err(format!(
+                "unsupported Host grant {value:?}; supported: {EXISTING_PROFILE_GRANT}"
+            ));
+        }
+    }
+    Ok(!values.is_empty())
 }
 
 #[cfg(not(target_os = "macos"))]

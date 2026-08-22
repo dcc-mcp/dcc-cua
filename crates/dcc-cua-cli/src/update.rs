@@ -8,6 +8,8 @@ use std::time::Duration;
 use self_update::update::{Release, ReleaseAsset};
 use sha2::{Digest, Sha256};
 
+use crate::cli_args::has_flag;
+
 const OWNER: &str = "dcc-mcp";
 const REPOSITORY: &str = "dcc-cua";
 const BINARY: &str = "dcc-cua";
@@ -328,8 +330,4 @@ fn confirm_update(current: &str, latest: &str) -> UpdateResult<()> {
     } else {
         Err("update aborted".into())
     }
-}
-
-fn has_flag(flags: &[String], name: &str) -> bool {
-    flags.iter().any(|flag| flag == name)
 }
