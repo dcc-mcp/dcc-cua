@@ -27,19 +27,4 @@ pub const fn interrupt_generation_changed(started: u64, current: u64) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn generation_change_only_interrupts_existing_sessions() {
-        assert!(!interrupt_generation_changed(7, 7));
-        assert!(interrupt_generation_changed(7, 8));
-    }
-
-    #[test]
-    fn broadcast_advances_the_process_generation() {
-        let started = interrupt_generation();
-        let current = broadcast_interrupt();
-        assert!(interrupt_generation_changed(started, current));
-    }
-}
+mod tests;

@@ -15,3 +15,6 @@ path = "src/lib.rs"
 
 [dependencies]
 dcc-cua-workspace-hack = { path = "../dcc-cua-workspace-hack" }
+
+[dev-dependencies]
+rstest.workspace = true

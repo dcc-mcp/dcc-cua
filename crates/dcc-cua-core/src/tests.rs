@@ -69,11 +69,11 @@ use crate::runtime::{
     attach_indicator_motion_to_activation, banner_activity_for_action_phase,
     banner_activity_for_bound_tool, diagnostic_tool_check, ensure_target_available_for_action,
     gated_cursor_operation, gated_exact_window_observation, gated_exact_window_publication,
-    held_coordinate_click_as_drag, input_backend_rejection_result,
-    live_observation_start_disposition, map_indicator_error, preflight_live_observation_start,
-    run_windows_combined_down_drag_sequence, run_windows_fenced_absolute_path,
-    run_windows_fenced_absolute_path_with_trace, run_windows_separated_raw_drag_sequence,
-    tool_schema_from_inventory, wait_for_window_probe_until, windows_input_dispatch_unknown,
+    held_coordinate_click_as_drag, live_observation_start_disposition, map_indicator_error,
+    preflight_live_observation_start, run_windows_combined_down_drag_sequence,
+    run_windows_fenced_absolute_path, run_windows_fenced_absolute_path_with_trace,
+    run_windows_separated_raw_drag_sequence, tool_schema_from_inventory,
+    wait_for_window_probe_until, windows_input_dispatch_unknown,
 };
 #[cfg(windows)]
 use crate::runtime::{
@@ -1528,41 +1528,6 @@ fn action_rejects_unknown_delivery_mode_and_unbounded_token() {
         })
         .is_err()
     );
-}
-
-#[rstest]
-fn unsupported_input_backend_is_a_structured_non_fallback_result() {
-    let result = input_backend_rejection_result(
-        "windows.unknown.v1",
-        "unsupported input backend",
-        &test_window_target(),
-    );
-    assert_eq!(result.status, ComputerUseToolStatus::Rejected);
-    assert_eq!(result.value["success"], false);
-    assert_eq!(result.value["route"], "input_backend_selection");
-    assert_eq!(
-        result.value["delivery"],
-        json!({
-            "mode": "foreground",
-            "backend_id": "windows.unknown.v1",
-            "api_accepted": false,
-            "consumer_effect_confirmed": false,
-            "completion_known": false,
-            "verification_required": true,
-            "retry_safe": false,
-            "fallback_attempted": false,
-            "rejection_reason": "unsupported input backend",
-            "target_fence": {
-                "process_id": 42,
-                "window_handle": 7,
-                "exact_window": true,
-                "foreground_required": true,
-                "foreground_verified": true
-            }
-        })
-    );
-    assert_eq!(result.value["effect"], "not_attempted");
-    assert!(result.degraded);
 }
 
 #[rstest]

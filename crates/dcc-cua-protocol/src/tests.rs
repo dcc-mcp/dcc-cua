@@ -56,6 +56,7 @@ fn method_traits_are_one_closed_cross_component_taxonomy() {
     assert_eq!(host_method_traits("unknown"), HostMethodTraits::default());
 }
 
+#[rstest]
 #[tokio::test]
 async fn shared_frame_codec_round_trips_and_enforces_one_limit() {
     let (mut client, mut server) = tokio::io::duplex(64);

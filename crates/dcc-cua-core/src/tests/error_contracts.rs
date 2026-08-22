@@ -2,15 +2,19 @@ use std::future::pending;
 use std::time::Duration;
 
 use rstest::rstest;
+use serde_json::json;
 
+use super::test_window_target;
 use crate::policy::{ensure_tool_ok, map_driver_error};
 #[cfg(windows)]
 use crate::runtime::map_windows_window_mutation_error;
 use crate::runtime::{
     action_dispatch_completion_unknown, activation_completion_unknown, await_input_call,
+    input_backend_rejection_result,
 };
 use crate::{
     ComputerUseCompletionState, ComputerUseError, ComputerUseErrorCode, ComputerUseInputState,
+    ComputerUseToolStatus,
 };
 
 #[rstest]
@@ -146,6 +150,41 @@ fn driver_failure_classification_uses_only_the_typed_error_code() {
         ensure_tool_ok("perform input", &result).unwrap_err().code,
         ComputerUseErrorCode::InputFailed
     );
+}
+
+#[rstest]
+fn unsupported_input_backend_is_a_structured_non_fallback_result() {
+    let result = input_backend_rejection_result(
+        "windows.unknown.v1",
+        "unsupported input backend",
+        &test_window_target(),
+    );
+    assert_eq!(result.status, ComputerUseToolStatus::Rejected);
+    assert_eq!(result.value["success"], false);
+    assert_eq!(result.value["route"], "input_backend_selection");
+    assert_eq!(
+        result.value["delivery"],
+        json!({
+            "mode": "foreground",
+            "backend_id": "windows.unknown.v1",
+            "api_accepted": false,
+            "consumer_effect_confirmed": false,
+            "completion_known": false,
+            "verification_required": true,
+            "retry_safe": false,
+            "fallback_attempted": false,
+            "rejection_reason": "unsupported input backend",
+            "target_fence": {
+                "process_id": 42,
+                "window_handle": 7,
+                "exact_window": true,
+                "foreground_required": true,
+                "foreground_verified": true
+            }
+        })
+    );
+    assert_eq!(result.value["effect"], "not_attempted");
+    assert!(result.degraded);
 }
 
 #[rstest]
