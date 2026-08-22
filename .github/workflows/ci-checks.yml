@@ -54,6 +54,7 @@ jobs:
       - run: pwsh -NoProfile -File scripts/check-rust-layout.ps1
       - run: pwsh -NoProfile -File scripts/check-agent-skills.ps1
       - run: python -B scripts/test_write_install_manifest.py
+      - run: python -B -m unittest scripts.test_release_workflow
       - run: |
           cargo hakari generate --diff
           cargo hakari manage-deps --dry-run

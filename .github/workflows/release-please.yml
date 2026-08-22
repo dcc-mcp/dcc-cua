@@ -51,6 +51,7 @@ jobs:
         with:
           toolchain: 1.95.0
       - run: cargo metadata --locked --no-deps --format-version 1
+      - run: python -B -m unittest scripts.test_release_workflow
 
   release-please:
     needs: validate
@@ -99,22 +100,33 @@ jobs:
           if ([string]::IsNullOrWhiteSpace($version)) {
               $version = ($releasePr.title -split ' ')[-1]
           }
-          git fetch origin "refs/heads/$($releasePr.headRefName):refs/remotes/origin/$($releasePr.headRefName)"
-          git checkout -B $releasePr.headRefName "origin/$($releasePr.headRefName)"
+          $releaseRef = "refs/remotes/origin/$($releasePr.headRefName)"
+          git fetch origin "+refs/heads/$($releasePr.headRefName):$releaseRef"
+          if ($LASTEXITCODE -ne 0) { throw "release branch fetch failed with code $LASTEXITCODE" }
+          $releaseHead = (git rev-parse $releaseRef).Trim()
+          if ($LASTEXITCODE -ne 0) { throw "release branch resolution failed with code $LASTEXITCODE" }
+
+          # release-please keeps its PR branch rooted at the main commit that
+          # originally created the pending release. Rebuild from current main
+          # so architecture-only manifest changes never become merge conflicts.
+          git checkout -B $releasePr.headRefName "origin/main"
+          if ($LASTEXITCODE -ne 0) { throw "release branch reset failed with code $LASTEXITCODE" }
+          git checkout $releaseRef -- .release-please-manifest.json CHANGELOG.md version.txt
+          if ($LASTEXITCODE -ne 0) { throw "release anchor restore failed with code $LASTEXITCODE" }
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git merge --no-edit origin/main
           $syncScript = Join-Path $env:RUNNER_TEMP 'sync-cargo-workspace-version.ps1'
           git show 'origin/main:scripts/sync-cargo-workspace-version.ps1' | Set-Content -LiteralPath $syncScript -Encoding utf8
           & pwsh -NoProfile -File $syncScript -Version $version
           if ($LASTEXITCODE -ne 0) { throw "workspace release version sync failed with code $LASTEXITCODE" }
-          git add Cargo.toml Cargo.lock crates/*/Cargo.toml
+          git add .release-please-manifest.json CHANGELOG.md version.txt Cargo.toml Cargo.lock
           if (git diff --cached --quiet) {
               Write-Host 'Workspace release version is already synchronized.'
           } else {
               git commit -m 'chore: synchronize workspace release version'
           }
-          git push origin "HEAD:$($releasePr.headRefName)"
+          git push --force-with-lease="refs/heads/$($releasePr.headRefName):$releaseHead" origin "HEAD:refs/heads/$($releasePr.headRefName)"
+          if ($LASTEXITCODE -ne 0) { throw "release branch update failed with code $LASTEXITCODE" }
           gh workflow run ci-checks.yml --repo $env:GITHUB_REPOSITORY --ref $releasePr.headRefName
           if ($LASTEXITCODE -ne 0) { throw "release PR CI dispatch failed with code $LASTEXITCODE" }
 
