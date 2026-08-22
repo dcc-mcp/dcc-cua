@@ -376,3 +376,58 @@ fn profile_rejects_undeclared_state_source_capabilities() {
         Err(ProfileError::InvalidJson(_))
     ));
 }
+
+fn minimal_profile_value() -> Value {
+    json!({
+        "schema_version": 3,
+        "id": "strict",
+        "profile_version": "1.0.0",
+        "application": {"family": "strict", "versions": []},
+        "display_name": "Strict",
+        "selectors": [{"application_names": ["strict.exe"]}],
+        "surfaces": [{
+            "id": "main",
+            "label": "Main",
+            "role": "window",
+            "route": "accessibility",
+            "targets": [{
+                "id": "open",
+                "label": "Open",
+                "role": "button",
+                "fallback": {"profile_id": "strict", "surface_id": "main"}
+            }]
+        }],
+        "settings": {
+            "dialog_style": "host_owned",
+            "preferred_route": "accessibility"
+        }
+    })
+}
+
+#[rstest]
+#[case("")]
+#[case("/selectors/0")]
+#[case("/surfaces/0")]
+#[case("/surfaces/0/targets/0")]
+#[case("/surfaces/0/targets/0/fallback")]
+#[case("/settings")]
+fn every_profile_object_rejects_unknown_fields(#[case] object_pointer: &str) {
+    let mut profile = minimal_profile_value();
+    profile
+        .pointer_mut(object_pointer)
+        .and_then(Value::as_object_mut)
+        .expect("test object")
+        .insert("future_or_misspelled_field".into(), json!(true));
+
+    assert!(matches!(
+        parse_profile(&profile.to_string()),
+        Err(ProfileError::InvalidJson(_))
+    ));
+}
+
+#[rstest]
+fn omitted_destructive_confirmation_defaults_to_fail_closed() {
+    let profile = parse_profile(&minimal_profile_value().to_string()).expect("strict profile");
+
+    assert!(profile.settings.destructive_confirmation_required);
+}
