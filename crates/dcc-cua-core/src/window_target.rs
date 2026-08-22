@@ -3,9 +3,9 @@ use serde_json::Value;
 #[cfg(windows)]
 use serde_json::json;
 
-use crate::contracts::{
-    ComputerUseError, ComputerUseErrorCode, ComputerUseResult, ComputerUseTargetScope,
-};
+#[cfg(windows)]
+use crate::contracts::{ComputerUseError, ComputerUseErrorCode};
+use crate::contracts::{ComputerUseResult, ComputerUseTargetScope};
 use crate::sensitive_target_policy::validate_observed_application_identity;
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
