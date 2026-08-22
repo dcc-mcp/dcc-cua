@@ -773,40 +773,47 @@ async fn controlled_electron_round_trip() {
         }),
     )
     .await;
-    assert_eq!(
-        completed.value["success"], true,
-        "action failed: {}",
-        completed.value
-    );
-    assert_png(
-        completed
-            .binary_attachment
-            .as_deref()
-            .expect("post-action PNG attachment"),
-    );
+    if cfg!(windows) {
+        assert_eq!(
+            completed.value["success"], true,
+            "action failed: {}",
+            completed.value
+        );
+        assert_png(
+            completed
+                .binary_attachment
+                .as_deref()
+                .expect("post-action PNG attachment"),
+        );
 
-    let verified = host_request(
-        &mut host,
-        "wait_for",
-        json!({
-            "session_id": SESSION_ID,
-            "task_grant_id": GRANT_ID,
-            "window_capability": capability,
-            "condition": {
-                "kind": "text_contains",
-                "text": format!("mirror={expected}"),
-                "timeout_ms": 30_000,
-                "interval_ms": 100
-            }
-        }),
-    )
-    .await;
-    assert_eq!(
-        verified.value["success"], true,
-        "semantic verification failed: {}",
-        verified.value
-    );
-    wait_for_journal(&journal, "lbl-input-mirror", &format!("mirror={expected}"));
+        let verified = host_request(
+            &mut host,
+            "wait_for",
+            json!({
+                "session_id": SESSION_ID,
+                "task_grant_id": GRANT_ID,
+                "window_capability": capability,
+                "condition": {
+                    "kind": "text_contains",
+                    "text": format!("mirror={expected}"),
+                    "timeout_ms": 30_000,
+                    "interval_ms": 100
+                }
+            }),
+        )
+        .await;
+        assert_eq!(
+            verified.value["success"], true,
+            "semantic verification failed: {}",
+            verified.value
+        );
+        wait_for_journal(&journal, "lbl-input-mirror", &format!("mirror={expected}"));
+    } else {
+        assert_eq!(completed.value["success"], false, "{}", completed.value);
+        assert_eq!(completed.value["error"], "hard_denied");
+        assert_eq!(completed.value["policy_tier"], "hard_deny");
+        assert!(completed.binary_attachment.is_none());
+    }
 
     let raw_snapshot = host_request(
         &mut host,
