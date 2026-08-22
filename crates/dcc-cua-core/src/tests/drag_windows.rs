@@ -240,58 +240,6 @@ fn combined_down_drag_route_is_left_foreground_and_two_point_only() {
 
 #[cfg(windows)]
 #[rstest]
-fn combined_down_drag_batch_keeps_move_and_button_records_separate_and_ordered() {
-    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-        INPUT_MOUSE, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_MOVE,
-        MOUSEEVENTF_MOVE_NOCOALESCE, MOUSEEVENTF_VIRTUALDESK,
-    };
-
-    let inputs =
-        windows_combined_source_move_and_left_down_inputs((960, 540), (0, 0, 1_920, 1_080));
-    let source_move = unsafe { inputs[0].Anonymous.mi };
-    let left_down = unsafe { inputs[1].Anonymous.mi };
-    let expected_source =
-        platform_windows::virtualdesk::to_virtualdesk_absolute(960, 540, 0, 0, 1_920, 1_080);
-
-    assert_eq!(inputs[0].r#type, INPUT_MOUSE);
-    assert_eq!(
-        source_move.dwFlags,
-        MOUSEEVENTF_MOVE
-            | MOUSEEVENTF_MOVE_NOCOALESCE
-            | MOUSEEVENTF_ABSOLUTE
-            | MOUSEEVENTF_VIRTUALDESK
-    );
-    assert_eq!(inputs[1].r#type, INPUT_MOUSE);
-    assert_eq!((source_move.dx, source_move.dy), expected_source);
-    assert_eq!(left_down.dwFlags, MOUSEEVENTF_LEFTDOWN);
-    assert_eq!((left_down.dx, left_down.dy), (0, 0));
-}
-
-#[cfg(windows)]
-#[rstest]
-fn combined_down_drag_submits_the_two_record_prelude_in_exactly_one_send_input_call() {
-    let calls = Cell::new(0_u32);
-    let requested = Cell::new(0_usize);
-
-    let injection = inject_windows_combined_input_batch_with(
-        (960, 540),
-        (0, 0, 1_920, 1_080),
-        |inputs| {
-            calls.set(calls.get() + 1);
-            requested.set(inputs.len());
-            2
-        },
-        || "unused OS error".to_owned(),
-    );
-
-    assert_eq!(calls.get(), 1);
-    assert_eq!(requested.get(), 2);
-    assert_eq!(injection.inserted(), 2);
-    assert!(injection.was_accepted());
-}
-
-#[cfg(windows)]
-#[rstest]
 fn relative_drag_calibrates_accelerated_cursor_motion_to_the_exact_waypoint() {
     let positions = RefCell::new(VecDeque::from([(100, 100), (120, 100), (110, 100)]));
     let requested_deltas = RefCell::new(Vec::new());

@@ -16,7 +16,6 @@ mod private_worker;
 mod runtime;
 mod sensitive_target_policy;
 mod session_health;
-mod showcase;
 mod window_target;
 mod windows_uia_fallback;
 

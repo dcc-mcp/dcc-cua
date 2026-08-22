@@ -9,29 +9,7 @@ struct WindowsSendInputCount {
 }
 
 #[cfg(windows)]
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-pub(crate) struct WindowsPostButtonUpSnapshot {
-    pub(crate) async_button_down: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    target_fence: Option<dcc_cua_platform_windows::WindowsRawInputSnapshot>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    target_fence_error: Option<String>,
-}
-
-#[cfg(windows)]
-impl WindowsPostButtonUpSnapshot {
-    pub(crate) fn new(
-        async_button_down: bool,
-        target_fence: Option<dcc_cua_platform_windows::WindowsRawInputSnapshot>,
-        target_fence_error: Option<String>,
-    ) -> Self {
-        Self {
-            async_button_down,
-            target_fence,
-            target_fence_error,
-        }
-    }
-}
+pub(crate) use dcc_cua_platform_windows::{RelativeMoveInjection, WindowsPostButtonUpSnapshot};
 
 #[cfg(windows)]
 #[derive(Debug, Clone, serde::Serialize)]
@@ -57,40 +35,6 @@ struct WindowsCombinedPathTrace {
     waypoints_completed: usize,
     total_waypoints: usize,
     complete: bool,
-}
-
-#[cfg(windows)]
-#[derive(Debug, Clone, serde::Serialize)]
-pub(crate) struct RelativeMoveInjection {
-    requested: u32,
-    inserted: u32,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    error: Option<String>,
-}
-
-#[cfg(windows)]
-impl RelativeMoveInjection {
-    #[allow(dead_code)]
-    pub(crate) fn accepted() -> Self {
-        Self {
-            requested: 1,
-            inserted: 1,
-            error: None,
-        }
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn incomplete(inserted: u32, error: impl Into<String>) -> Self {
-        Self {
-            requested: 1,
-            inserted,
-            error: Some(error.into()),
-        }
-    }
-
-    fn was_accepted(&self) -> bool {
-        self.requested == 1 && self.inserted == self.requested && self.error.is_none()
-    }
 }
 
 #[cfg(windows)]
@@ -669,15 +613,15 @@ pub(crate) fn run_windows_calibrated_relative_path(
                 damping_applied,
                 stagnation_escape_applied,
                 delta: [delta.0, delta.1],
-                requested: injection.requested,
-                inserted: injection.inserted,
+                requested: injection.requested(),
+                inserted: injection.inserted(),
                 after: None,
                 cursor_moved: None,
-                injection_error: injection.error.clone(),
+                injection_error: injection.error().map(str::to_owned),
             };
             if !injection.was_accepted() {
                 trace.failure = Some("send_input_incomplete");
-                trace.failure_detail = injection.error;
+                trace.failure_detail = injection.error().map(str::to_owned);
                 trace.moves.push(move_trace);
                 return json!(trace);
             }
@@ -910,158 +854,51 @@ where
 }
 
 #[cfg(windows)]
-pub(crate) fn windows_combined_source_move_and_left_down_inputs(
+fn inject_windows_combined_source_move_and_left_down(
     source: (i32, i32),
-    virtual_desktop: (i32, i32, i32, i32),
-) -> [windows_sys::Win32::UI::Input::KeyboardAndMouse::INPUT; 2] {
-    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-        INPUT, INPUT_0, INPUT_MOUSE, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_MOVE,
-        MOUSEEVENTF_MOVE_NOCOALESCE, MOUSEEVENTF_VIRTUALDESK, MOUSEINPUT,
-    };
-
-    let (virtual_x, virtual_y, virtual_width, virtual_height) = virtual_desktop;
-    let (normalized_x, normalized_y) = platform_windows::virtualdesk::to_virtualdesk_absolute(
-        source.0,
-        source.1,
-        virtual_x,
-        virtual_y,
-        virtual_width.max(1),
-        virtual_height.max(1),
-    );
-    [
-        INPUT {
-            r#type: INPUT_MOUSE,
-            Anonymous: INPUT_0 {
-                mi: MOUSEINPUT {
-                    dx: normalized_x,
-                    dy: normalized_y,
-                    mouseData: 0,
-                    dwFlags: MOUSEEVENTF_MOVE
-                        | MOUSEEVENTF_MOVE_NOCOALESCE
-                        | MOUSEEVENTF_ABSOLUTE
-                        | MOUSEEVENTF_VIRTUALDESK,
-                    time: 0,
-                    dwExtraInfo: 0,
-                },
-            },
-        },
-        INPUT {
-            r#type: INPUT_MOUSE,
-            Anonymous: INPUT_0 {
-                mi: MOUSEINPUT {
-                    dx: 0,
-                    dy: 0,
-                    mouseData: 0,
-                    dwFlags: MOUSEEVENTF_LEFTDOWN,
-                    time: 0,
-                    dwExtraInfo: 0,
-                },
-            },
-        },
-    ]
-}
-
-#[cfg(windows)]
-pub(crate) fn inject_windows_combined_input_batch_with(
-    source: (i32, i32),
-    virtual_desktop: (i32, i32, i32, i32),
-    send_input: impl FnOnce(&[windows_sys::Win32::UI::Input::KeyboardAndMouse::INPUT]) -> u32,
-    last_error: impl FnOnce() -> String,
 ) -> CombinedDownInjection<String> {
-    let inputs = windows_combined_source_move_and_left_down_inputs(source, virtual_desktop);
-    let inserted = send_input(&inputs);
+    let injection = dcc_cua_platform_windows::inject_combined_source_move_and_left_down(source);
     CombinedDownInjection {
-        inserted,
-        error: (inserted != inputs.len() as u32).then(|| {
+        inserted: injection.inserted(),
+        error: injection.error().map(|error| {
             format!(
-                "SendInput combined source MOVE + LEFTDOWN inserted {inserted}/{} events: {}",
-                inputs.len(),
-                last_error()
+                "Windows combined source MOVE + LEFTDOWN inserted {}/{} events: {error}",
+                injection.inserted(),
+                injection.requested()
             )
         }),
     }
 }
 
 #[cfg(windows)]
-fn windows_virtual_desktop() -> (i32, i32, i32, i32) {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{
-        GetSystemMetrics, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
-        SM_YVIRTUALSCREEN,
-    };
-
-    unsafe {
-        (
-            GetSystemMetrics(SM_XVIRTUALSCREEN),
-            GetSystemMetrics(SM_YVIRTUALSCREEN),
-            GetSystemMetrics(SM_CXVIRTUALSCREEN).max(1),
-            GetSystemMetrics(SM_CYVIRTUALSCREEN).max(1),
-        )
-    }
-}
-
-#[cfg(windows)]
-fn inject_windows_combined_source_move_and_left_down(
-    source: (i32, i32),
-) -> CombinedDownInjection<String> {
-    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{INPUT, SendInput};
-
-    inject_windows_combined_input_batch_with(
-        source,
-        windows_virtual_desktop(),
-        |inputs| unsafe {
-            SendInput(
-                inputs.len() as u32,
-                inputs.as_ptr(),
-                std::mem::size_of::<INPUT>() as i32,
-            )
-        },
-        || std::io::Error::last_os_error().to_string(),
-    )
-}
-
-#[cfg(windows)]
 fn inject_windows_direct_absolute_mouse_move(x: i32, y: i32) -> Result<(), String> {
-    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{INPUT, SendInput};
-
-    let inputs =
-        windows_combined_source_move_and_left_down_inputs((x, y), windows_virtual_desktop());
-    let inserted = unsafe { SendInput(1, inputs.as_ptr(), std::mem::size_of::<INPUT>() as i32) };
-    if inserted == 1 {
+    let injection = dcc_cua_platform_windows::inject_absolute_mouse_move(x, y);
+    if injection.was_accepted() {
         Ok(())
     } else {
         Err(format!(
-            "SendInput direct absolute drag waypoint ({x}, {y}) inserted {inserted}/1 events: {}",
-            std::io::Error::last_os_error()
+            "Windows direct absolute drag waypoint ({x}, {y}) inserted {}/{} events: {}",
+            injection.inserted(),
+            injection.requested(),
+            injection.error().unwrap_or("unknown Windows input error")
         ))
     }
 }
 
 #[cfg(windows)]
 fn inject_windows_best_effort_left_up() -> SingleInputInjection<String> {
-    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-        INPUT, INPUT_0, INPUT_MOUSE, MOUSEEVENTF_LEFTUP, MOUSEINPUT, SendInput,
-    };
-
-    let input = INPUT {
-        r#type: INPUT_MOUSE,
-        Anonymous: INPUT_0 {
-            mi: MOUSEINPUT {
-                dx: 0,
-                dy: 0,
-                mouseData: 0,
-                dwFlags: MOUSEEVENTF_LEFTUP,
-                time: 0,
-                dwExtraInfo: 0,
-            },
-        },
-    };
-    let inserted = unsafe { SendInput(1, &input, std::mem::size_of::<INPUT>() as i32) };
+    let injection = dcc_cua_platform_windows::inject_mouse_button(
+        dcc_cua_platform_windows::WindowsPointerButton::Left,
+        false,
+    );
     SingleInputInjection {
-        inserted,
-        error: (inserted != 1).then(|| {
+        inserted: injection.inserted(),
+        error: (!injection.was_accepted()).then(|| {
             format!(
-                "SendInput combined drag LEFTUP inserted {inserted}/1 events: {}",
-                std::io::Error::last_os_error()
+                "Windows combined drag LEFTUP inserted {}/{} events: {}",
+                injection.inserted(),
+                injection.requested(),
+                injection.error().unwrap_or("unknown Windows input error")
             )
         }),
     }
@@ -1071,83 +908,18 @@ fn inject_windows_best_effort_left_up() -> SingleInputInjection<String> {
 fn snapshot_windows_left_button_after_up(
     target: dcc_cua_platform_windows::UiaTarget,
 ) -> WindowsPostButtonUpSnapshot {
-    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON};
-
-    // Sample the button independently first. Even if the target HWND disappears after the path,
-    // cleanup evidence must still say whether our owned LEFTDOWN was released.
-    let async_button_down = unsafe { GetAsyncKeyState(i32::from(VK_LBUTTON)) } as u16 & 0x8000 != 0;
-    match dcc_cua_platform_windows::snapshot_raw_pointer_input_after_down(
-        target,
-        dcc_cua_platform_windows::WindowsPointerButton::Left,
-    ) {
-        Ok(target_fence) => {
-            WindowsPostButtonUpSnapshot::new(async_button_down, Some(target_fence), None)
-        }
-        Err(error) => WindowsPostButtonUpSnapshot::new(
-            async_button_down,
-            None,
-            Some(format!("sample exact target fence after LEFTUP: {error}")),
-        ),
-    }
+    dcc_cua_platform_windows::snapshot_left_button_after_up(target)
 }
 
 #[cfg(windows)]
 fn inject_consumable_windows_mouse_move(x: i32, y: i32) -> Result<(), String> {
-    use windows_sys::Win32::UI::{
-        Input::KeyboardAndMouse::{
-            INPUT, INPUT_0, INPUT_MOUSE, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_MOVE,
-            MOUSEEVENTF_MOVE_NOCOALESCE, MOUSEEVENTF_VIRTUALDESK, MOUSEINPUT, SendInput,
-        },
-        WindowsAndMessaging::{
-            GetSystemMetrics, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
-            SM_YVIRTUALSCREEN, SetCursorPos,
-        },
-    };
-
-    let (virtual_x, virtual_y, virtual_width, virtual_height) = unsafe {
-        (
-            GetSystemMetrics(SM_XVIRTUALSCREEN),
-            GetSystemMetrics(SM_YVIRTUALSCREEN),
-            GetSystemMetrics(SM_CXVIRTUALSCREEN).max(1),
-            GetSystemMetrics(SM_CYVIRTUALSCREEN).max(1),
-        )
-    };
-    let (normalized_x, normalized_y) = platform_windows::virtualdesk::to_virtualdesk_absolute(
-        x,
-        y,
-        virtual_x,
-        virtual_y,
-        virtual_width,
-        virtual_height,
-    );
-    let input = INPUT {
-        r#type: INPUT_MOUSE,
-        Anonymous: INPUT_0 {
-            mi: MOUSEINPUT {
-                dx: normalized_x,
-                dy: normalized_y,
-                mouseData: 0,
-                dwFlags: MOUSEEVENTF_MOVE
-                    | MOUSEEVENTF_MOVE_NOCOALESCE
-                    | MOUSEEVENTF_ABSOLUTE
-                    | MOUSEEVENTF_VIRTUALDESK,
-                time: 0,
-                dwExtraInfo: 0,
-            },
-        },
-    };
-
-    if unsafe { SetCursorPos(x, y) } == 0 {
+    let injection = dcc_cua_platform_windows::inject_consumable_mouse_move(x, y);
+    if !injection.was_accepted() {
         return Err(format!(
-            "SetCursorPos({x}, {y}) before raw drag failed: {}",
-            std::io::Error::last_os_error()
-        ));
-    }
-    let sent = unsafe { SendInput(1, &input, std::mem::size_of::<INPUT>() as i32) };
-    if sent != 1 {
-        return Err(format!(
-            "SendInput source move inserted {sent}/1 events before raw drag: {}",
-            std::io::Error::last_os_error()
+            "Windows source move inserted {}/{} events before raw drag: {}",
+            injection.inserted(),
+            injection.requested(),
+            injection.error().unwrap_or("unknown Windows input error")
         ));
     }
     Ok(())
@@ -1155,51 +927,13 @@ fn inject_consumable_windows_mouse_move(x: i32, y: i32) -> Result<(), String> {
 
 #[cfg(windows)]
 fn windows_cursor_position() -> Result<(i32, i32), String> {
-    use windows_sys::Win32::{Foundation::POINT, UI::WindowsAndMessaging::GetCursorPos};
-
-    let mut point = POINT { x: 0, y: 0 };
-    if unsafe { GetCursorPos(&raw mut point) } == 0 {
-        return Err(format!(
-            "GetCursorPos while calibrating relative drag failed: {}",
-            std::io::Error::last_os_error()
-        ));
-    }
-    Ok((point.x, point.y))
+    dcc_cua_platform_windows::cursor_position()
+        .map_err(|error| format!("read cursor position while calibrating relative drag: {error}"))
 }
 
 #[cfg(windows)]
 fn inject_windows_relative_mouse_move(dx: i32, dy: i32) -> RelativeMoveInjection {
-    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-        INPUT, INPUT_0, INPUT_MOUSE, MOUSEEVENTF_MOVE, MOUSEEVENTF_MOVE_NOCOALESCE, MOUSEINPUT,
-        SendInput,
-    };
-
-    let input = INPUT {
-        r#type: INPUT_MOUSE,
-        Anonymous: INPUT_0 {
-            mi: MOUSEINPUT {
-                dx,
-                dy,
-                mouseData: 0,
-                // Deliberately omit ABSOLUTE and VIRTUALDESK. This backend exists to test the
-                // relative packet shape some game consumers distinguish from absolute motion.
-                dwFlags: MOUSEEVENTF_MOVE | MOUSEEVENTF_MOVE_NOCOALESCE,
-                time: 0,
-                dwExtraInfo: 0,
-            },
-        },
-    };
-    let inserted = unsafe { SendInput(1, &input, std::mem::size_of::<INPUT>() as i32) };
-    RelativeMoveInjection {
-        requested: 1,
-        inserted,
-        error: (inserted != 1).then(|| {
-            format!(
-                "SendInput relative drag move ({dx}, {dy}) inserted {inserted}/1 events: {}",
-                std::io::Error::last_os_error()
-            )
-        }),
-    }
+    dcc_cua_platform_windows::inject_relative_mouse_move(dx, dy)
 }
 
 #[cfg(windows)]
@@ -1222,42 +956,22 @@ fn validate_windows_relative_drag_fence(
 
 #[cfg(windows)]
 fn inject_single_windows_mouse_button(button: &str, pressed: bool) -> Result<u32, String> {
-    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-        INPUT, INPUT_0, INPUT_MOUSE, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,
-        MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP,
-        MOUSEINPUT, SendInput,
+    let button = match button {
+        "right" => dcc_cua_platform_windows::WindowsPointerButton::Right,
+        "middle" => dcc_cua_platform_windows::WindowsPointerButton::Middle,
+        _ => dcc_cua_platform_windows::WindowsPointerButton::Left,
     };
-
-    let flags = match (button, pressed) {
-        ("right", true) => MOUSEEVENTF_RIGHTDOWN,
-        ("right", false) => MOUSEEVENTF_RIGHTUP,
-        ("middle", true) => MOUSEEVENTF_MIDDLEDOWN,
-        ("middle", false) => MOUSEEVENTF_MIDDLEUP,
-        (_, true) => MOUSEEVENTF_LEFTDOWN,
-        (_, false) => MOUSEEVENTF_LEFTUP,
-    };
-    let input = INPUT {
-        r#type: INPUT_MOUSE,
-        Anonymous: INPUT_0 {
-            mi: MOUSEINPUT {
-                dx: 0,
-                dy: 0,
-                mouseData: 0,
-                dwFlags: flags,
-                time: 0,
-                dwExtraInfo: 0,
-            },
-        },
-    };
-    let sent = unsafe { SendInput(1, &input, std::mem::size_of::<INPUT>() as i32) };
-    if sent != 1 {
+    let injection = dcc_cua_platform_windows::inject_mouse_button(button, pressed);
+    if !injection.was_accepted() {
         let phase = if pressed { "button-down" } else { "button-up" };
         return Err(format!(
-            "SendInput raw drag {phase} inserted {sent}/1 events: {}",
-            std::io::Error::last_os_error()
+            "Windows raw drag {phase} inserted {}/{} events: {}",
+            injection.inserted(),
+            injection.requested(),
+            injection.error().unwrap_or("unknown Windows input error")
         ));
     }
-    Ok(sent)
+    Ok(injection.inserted())
 }
 
 #[cfg(windows)]
@@ -1531,13 +1245,13 @@ pub(crate) async fn perform_windows_foreground_fast_action(
     let screen_point =
         |point: ComputerUsePoint| (left + point.x.round() as i32, top + point.y.round() as i32);
     let animate_to = |x: i32, y: i32| {
-        platform_windows::overlay::send_command(
+        dcc_cua_platform_windows::send_overlay_command(
             session_id.to_owned(),
-            cursor_overlay::OverlayCommand::PinAbove(target.window_id),
+            dcc_cua_platform_windows::WindowsOverlayCommand::PinAbove(target.window_id),
         );
         tokio::time::timeout(
             Duration::from_millis(CURSOR_GLIDE_MS + 70),
-            platform_windows::overlay::animate_cursor_to(
+            dcc_cua_platform_windows::animate_cursor_to(
                 session_id.to_owned(),
                 f64::from(x),
                 f64::from(y),
@@ -1584,15 +1298,13 @@ pub(crate) async fn perform_windows_foreground_fast_action(
                     super::windows_held_key::send_windows_key_holds(window_id, &keys, duration_ms)
                 } else {
                     let modifiers: Vec<&str> = modifiers.iter().map(String::as_str).collect();
-                    platform_windows::input::keyboard::send_key_synthesized(
-                        window_id, &key, &modifiers,
-                    )
-                    .map_err(|error| {
-                        ComputerUseError::new(
-                            ComputerUseErrorCode::InputFailed,
-                            format!("send Windows foreground keypress: {error}"),
-                        )
-                    })
+                    dcc_cua_platform_windows::send_key_synthesized(window_id, &key, &modifiers)
+                        .map_err(|error| {
+                            ComputerUseError::new(
+                                ComputerUseErrorCode::InputFailed,
+                                format!("send Windows foreground keypress: {error}"),
+                            )
+                        })
                 }
             })
             .await
@@ -1616,19 +1328,19 @@ pub(crate) async fn perform_windows_foreground_fast_action(
         let (from_x, from_y) = screen_point(first);
         let (to_x, to_y) = screen_point(last);
         let _ = animate_to(from_x, from_y).await;
-        platform_windows::overlay::send_command(
+        dcc_cua_platform_windows::send_overlay_command(
             session_id.to_owned(),
-            cursor_overlay::OverlayCommand::ClickPulse {
+            dcc_cua_platform_windows::WindowsOverlayCommand::ClickPulse {
                 x: f64::from(from_x),
                 y: f64::from(from_y),
             },
         );
-        platform_windows::overlay::send_command(
+        dcc_cua_platform_windows::send_overlay_command(
             session_id.to_owned(),
-            cursor_overlay::OverlayCommand::MoveTo {
+            dcc_cua_platform_windows::WindowsOverlayCommand::MoveTo {
                 x: f64::from(to_x),
                 y: f64::from(to_y),
-                end_heading_radians: std::f64::consts::FRAC_PI_4,
+                heading: std::f64::consts::FRAC_PI_4,
             },
         );
         let duration_ms = action.duration_ms.unwrap_or(500);
@@ -1678,12 +1390,10 @@ pub(crate) async fn perform_windows_foreground_fast_action(
                     windows_synthetic_touch_attempt(
                         input_gate,
                         || {
-                            platform_windows::input::inject::inject_drag_screen(
+                            dcc_cua_platform_windows::inject_drag_screen(
                                 window_id,
-                                from_x,
-                                from_y,
-                                to_x,
-                                to_y,
+                                (from_x, from_y),
+                                (to_x, to_y),
                                 steps as usize,
                                 "left",
                             )
@@ -1721,7 +1431,7 @@ pub(crate) async fn perform_windows_foreground_fast_action(
                     )
                 })?;
                 if let Some(message) =
-                    platform_windows::input::post_message_blocked_by_uipi(window_id)
+                    dcc_cua_platform_windows::post_message_blocked_by_uipi(window_id)
                 {
                     Err(ComputerUseError::new(
                         ComputerUseErrorCode::InputFailed,
@@ -1815,9 +1525,9 @@ pub(crate) async fn perform_windows_foreground_fast_action(
             y: action.y.unwrap_or_default(),
         });
         let _ = animate_to(x, y).await;
-        platform_windows::overlay::send_command(
+        dcc_cua_platform_windows::send_overlay_command(
             session_id.to_owned(),
-            cursor_overlay::OverlayCommand::ClickPulse {
+            dcc_cua_platform_windows::WindowsOverlayCommand::ClickPulse {
                 x: f64::from(x),
                 y: f64::from(y),
             },
@@ -1855,8 +1565,12 @@ pub(crate) async fn perform_windows_foreground_fast_action(
                     )
                 })?;
                 let modifiers: Vec<&str> = modifiers.iter().map(String::as_str).collect();
-                platform_windows::input::mouse::send_click_synthesized_active_mods(
-                    window_id, x, y, count, &button, &modifiers,
+                dcc_cua_platform_windows::send_click_synthesized_active_mods(
+                    window_id,
+                    (x, y),
+                    count,
+                    &button,
+                    &modifiers,
                 )
                 .map_err(|error| {
                     ComputerUseError::new(

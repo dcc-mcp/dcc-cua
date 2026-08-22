@@ -35,6 +35,74 @@ use windows_sys::Win32::{
 };
 
 #[cfg(windows)]
+use crate::input::{
+    WindowsInputCount, combined_source_move_and_left_down_inputs, release_all_keys, virtual_key,
+    wait_until_interrupted,
+};
+#[cfg(windows)]
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+    INPUT_MOUSE, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_MOVE,
+    MOUSEEVENTF_MOVE_NOCOALESCE, MOUSEEVENTF_VIRTUALDESK,
+};
+
+#[cfg(windows)]
+#[rstest]
+fn combined_batch_keeps_move_and_left_down_ordered() {
+    let inputs = combined_source_move_and_left_down_inputs((960, 540), (0, 0, 1_920, 1_080));
+    let source_move = unsafe { inputs[0].Anonymous.mi };
+    let left_down = unsafe { inputs[1].Anonymous.mi };
+    let expected =
+        platform_windows::virtualdesk::to_virtualdesk_absolute(960, 540, 0, 0, 1_920, 1_080);
+    assert_eq!(inputs[0].r#type, INPUT_MOUSE);
+    assert_eq!((source_move.dx, source_move.dy), expected);
+    assert_eq!(
+        source_move.dwFlags,
+        MOUSEEVENTF_MOVE
+            | MOUSEEVENTF_MOVE_NOCOALESCE
+            | MOUSEEVENTF_ABSOLUTE
+            | MOUSEEVENTF_VIRTUALDESK
+    );
+    assert_eq!(inputs[1].r#type, INPUT_MOUSE);
+    assert_eq!(left_down.dwFlags, MOUSEEVENTF_LEFTDOWN);
+    assert_eq!((left_down.dx, left_down.dy), (0, 0));
+}
+
+#[cfg(windows)]
+#[rstest]
+fn held_key_mapping_rejects_unknown_names() {
+    assert!(matches!(
+        virtual_key("not-a-key"),
+        Err(super::WindowsHeldKeyError::InvalidKey(_))
+    ));
+    assert_eq!(virtual_key("a").unwrap(), u16::from(b'A'));
+}
+
+#[cfg(windows)]
+#[rstest]
+fn held_key_cleanup_attempts_every_release_after_a_failure() {
+    let mut attempted = Vec::new();
+    let failures = release_all_keys(&[1, 2, 3], |key| {
+        attempted.push(key);
+        if key == 2 {
+            WindowsInputCount::incomplete(0, "injected release failure")
+        } else {
+            WindowsInputCount::accepted()
+        }
+    });
+
+    assert_eq!(attempted, [3, 2, 1]);
+    assert_eq!(failures.len(), 1);
+    assert!(failures[0].contains("injected release failure"));
+}
+
+#[cfg(windows)]
+#[rstest]
+fn held_key_wait_honors_interrupts_and_zero_duration() {
+    assert!(wait_until_interrupted(1_000, || true));
+    assert!(!wait_until_interrupted(0, || false));
+}
+
+#[cfg(windows)]
 fn evaluate_policy_fixture(
     fixture: serde_json::Value,
 ) -> Result<serde_json::Value, super::UiaError> {

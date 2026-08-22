@@ -15,7 +15,7 @@ const WINDOWS_SESSION_DISCONNECTED: i32 = 4;
 pub(crate) fn diagnostic() -> Value {
     #[cfg(all(windows, not(test)))]
     {
-        let desktop = platform_windows::diagnostics::desktop_state();
+        let desktop = dcc_cua_platform_windows::desktop_state();
         let input_desktop = desktop
             .input_desktop_error
             .as_deref()
@@ -30,7 +30,7 @@ pub(crate) fn diagnostic() -> Value {
                 .map(|name| name.as_deref())
                 .map_err(String::as_str),
             input_surface.as_ref().map(|_| ()).map_err(String::as_str),
-            desktop.has_foreground_window(),
+            desktop.has_foreground_window,
         )
     }
     #[cfg(any(not(windows), test))]
