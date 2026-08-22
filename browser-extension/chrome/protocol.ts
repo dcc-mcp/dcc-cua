@@ -52,18 +52,18 @@ const METHOD_KEYS: Record<NativeMethod, ReadonlySet<string>> = {
   unpair: new Set(),
 };
 
-function isObject(value: unknown): value is Record<string, unknown> {
+export function isObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-function boundedString(value: unknown, name: string, maximum: number): string {
+export function boundedString(value: unknown, name: string, maximum: number): string {
   if (typeof value !== "string" || value.length === 0 || value.length > maximum) {
     throw new Error(`${name} must be a non-empty string of at most ${maximum} characters`);
   }
   return value;
 }
 
-function positiveInteger(value: unknown, name: string): number {
+export function positiveInteger(value: unknown, name: string): number {
   if (!Number.isSafeInteger(value) || (value as number) <= 0) {
     throw new Error(`${name} must be a positive safe integer`);
   }

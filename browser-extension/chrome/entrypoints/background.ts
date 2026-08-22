@@ -8,6 +8,11 @@ import {
   type NativeRequest,
   type Pairing,
 } from "../protocol";
+import {
+  buildPairCommand,
+  contentCommandFromNative,
+  type ContentCommand,
+} from "../content-protocol";
 import { PairingLifecycle } from "../pairing";
 import { browser, type Browser } from "wxt/browser";
 import { defineBackground } from "wxt/utils/define-background";
@@ -15,12 +20,6 @@ import { defineBackground } from "wxt/utils/define-background";
 const NATIVE_HOST = "com.dcc_mcp.dcc_cua";
 const PAIRING_STORAGE_KEY = "dcc_cua_pairing_v1";
 
-type PairCommand = {
-  schema: typeof PROTOCOL_SCHEMA;
-  method: "pair";
-  session_nonce: string;
-};
-type TabCommand = PairCommand | Exclude<NativeRequest, { method: "ping" | "unpair" }>;
 type TabResponse =
   | { ok: true; result: unknown }
   | { ok: false; error: { code: string; message: string } };
@@ -87,7 +86,7 @@ export default defineBackground(() => {
     });
   }
 
-  async function sendTabCommand(tabId: number, command: TabCommand): Promise<unknown> {
+  async function sendTabCommand(tabId: number, command: ContentCommand): Promise<unknown> {
     await ensureContentScript(tabId);
     const response = tabResponse(
       await browser.tabs.sendMessage(tabId, { type: "dcc_cua_command", command }),
@@ -109,11 +108,7 @@ export default defineBackground(() => {
       throw new Error("only http and https tabs can be paired");
     }
     const sessionNonce = crypto.randomUUID();
-    const result = await sendTabCommand(tabId, {
-      schema: PROTOCOL_SCHEMA,
-      method: "pair",
-      session_nonce: sessionNonce,
-    });
+    const result = await sendTabCommand(tabId, buildPairCommand(sessionNonce));
     if (!isObject(result) || !isObject(result.document)) {
       throw new Error("paired tab did not return a document identity");
     }
@@ -178,7 +173,7 @@ export default defineBackground(() => {
         nativePort?.postMessage(successResponse(request.request_id, { unpaired: true }));
         return;
       }
-      const result = await sendTabCommand(pairing.tab_id, request);
+      const result = await sendTabCommand(pairing.tab_id, contentCommandFromNative(request));
       nativePort?.postMessage(successResponse(request.request_id, result));
     } catch (error) {
       nativePort?.postMessage(
