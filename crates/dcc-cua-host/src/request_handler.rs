@@ -451,19 +451,20 @@ async fn handle_request_inner(
                     "raw input",
                 ));
             }
-            if let Some((code, message)) = action.reject_policy() {
+            let safety_tier = action.safety_tier(None);
+            if let Some((policy_tier, code, message)) = safety_tier.rejection() {
                 return Ok((
                     json!({
                         "type":"action_completed",
                         "success":false,
-                        "policy_tier":code,
+                        "policy_tier":policy_tier,
                         "message":message,
                         "error":code,
                     }),
                     None,
                 ));
             }
-            if action.requires_approval() {
+            if safety_tier.requires_confirmation() {
                 let request = TrustedActionConfirmationRequest::for_desktop_action(
                     &session_id,
                     &task_grant_id,
@@ -1643,18 +1644,6 @@ async fn handle_request_inner(
                     "raw input",
                 ));
             }
-            if let Some((code, message)) = action.reject_policy() {
-                return Ok((
-                    json!({
-                        "type":"action_completed",
-                        "success":false,
-                        "policy_tier":code,
-                        "message":message,
-                        "error":code,
-                    }),
-                    None,
-                ));
-            }
             if host.latest_observation_id.as_deref() != Some(observation_id.as_str()) {
                 return Err(HostError::ComputerUse(ComputerUseError::new(
                     ComputerUseErrorCode::StaleObservation,
@@ -1670,7 +1659,20 @@ async fn handle_request_inner(
                     "semantic action requires the latest accessibility_state_id",
                 )));
             }
-            if action.requires_approval() {
+            let safety_tier = action.safety_tier(host.latest_accessibility_root.as_ref());
+            if let Some((policy_tier, code, message)) = safety_tier.rejection() {
+                return Ok((
+                    json!({
+                        "type":"action_completed",
+                        "success":false,
+                        "policy_tier":policy_tier,
+                        "message":message,
+                        "error":code,
+                    }),
+                    None,
+                ));
+            }
+            if safety_tier.requires_confirmation() {
                 let request = TrustedActionConfirmationRequest::for_window_action(
                     &session_id,
                     &task_grant_id,
