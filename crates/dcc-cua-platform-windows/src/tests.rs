@@ -361,9 +361,9 @@ fn snapshot_normalization_emits_flat_agent_friendly_elements() {
     assert_eq!(fence.control_id, "uia:menu");
     assert_eq!(fence.identity, "menu");
     assert!(!fence.is_password);
-    assert_eq!(fence.name, "dcc mcp");
+    assert_eq!(fence.name, "DCC MCP");
     assert_eq!(fence.automation_id, "");
-    assert_eq!(fence.class_name, "qaction");
+    assert_eq!(fence.class_name, "QAction");
     assert_eq!(fence.policy_tier, "task_grant");
 }
 
@@ -456,9 +456,9 @@ fn powershell_fence_and_sensitive_target_policies_are_behaviorally_fixture_teste
     let expected = json!({
         "identity": "42.7",
         "is_password": false,
-        "name": "save",
-        "automation_id": "savebutton",
-        "class_name": "button",
+        "name": "Save",
+        "automation_id": "SaveButton",
+        "class_name": "Button",
         "policy_tier": "action_confirmation",
     });
     let facts = json!({
@@ -476,6 +476,21 @@ fn powershell_fence_and_sensitive_target_policies_are_behaviorally_fixture_teste
     }))
     .expect("matching fence fixture");
     assert_eq!(matching["result"], true);
+
+    let changed_case = evaluate_policy_fixture(json!({
+        "operation": "matches_expected_fence",
+        "facts": facts.clone(),
+        "expected": {
+            "identity": "42.7",
+            "is_password": false,
+            "name": "save",
+            "automation_id": "SaveButton",
+            "class_name": "Button",
+            "policy_tier": "action_confirmation",
+        },
+    }))
+    .expect("case-changed fence fixture");
+    assert_eq!(changed_case["result"], false);
 
     let stale = evaluate_policy_fixture(json!({
         "operation": "matches_expected_fence",

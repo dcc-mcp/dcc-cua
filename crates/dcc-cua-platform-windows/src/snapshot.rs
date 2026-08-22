@@ -73,9 +73,9 @@ fn flatten(
         control_id,
         identity,
         is_password: node["is_password"].as_bool().unwrap_or(false),
-        name: name.to_lowercase(),
-        automation_id: automation_id.to_lowercase(),
-        class_name: class_name.to_lowercase(),
+        name: name.clone(),
+        automation_id: automation_id.clone(),
+        class_name: class_name.clone(),
         policy_tier: policy_tier.clone(),
     });
 
