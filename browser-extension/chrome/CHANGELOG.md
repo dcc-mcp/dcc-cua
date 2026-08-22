@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.1](https://github.com/dcc-mcp/dcc-cua/compare/dcc-cua-browser-extension-v0.1.0...dcc-cua-browser-extension-v0.1.1) (2026-08-22)
+
+
+### Bug Fixes
+
+* align browser extension protocol contracts ([5b02594](https://github.com/dcc-mcp/dcc-cua/commit/5b02594ca1292ee795dca8837db9cdd43afe89b5))
+* unpin browser extension releases ([22f0833](https://github.com/dcc-mcp/dcc-cua/commit/22f083367bff3fcc4ad8d09f72d0cf28d5bf2224))
+
 ## 0.1.0 (2026-08-21)
 
 
