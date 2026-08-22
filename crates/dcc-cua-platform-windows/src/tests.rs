@@ -20,7 +20,10 @@ use super::{
 #[cfg(windows)]
 use crate::visible_capture::obscured_from_covered_samples;
 #[cfg(windows)]
-use crate::windows::retry_read_only_after_backend_failure;
+use crate::windows::{
+    UIA_WORKER_PROTOCOL_VERSION, UiaWorker, retry_read_only_after_backend_failure,
+    validate_worker_protocol_message,
+};
 #[cfg(windows)]
 use windows_sys::Win32::{
     Foundation::{HINSTANCE, HWND},
@@ -30,6 +33,18 @@ use windows_sys::Win32::{
         SendMessageW, SetWindowPos, WM_PAINT, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
     },
 };
+
+#[cfg(windows)]
+fn evaluate_policy_fixture(
+    fixture: serde_json::Value,
+) -> Result<serde_json::Value, super::UiaError> {
+    let mut worker = UiaWorker::start()?;
+    let mut payload = fixture.as_object().cloned().ok_or_else(|| {
+        super::UiaError::InvalidAction("policy fixture must be a JSON object".into())
+    })?;
+    payload.insert("mode".into(), json!("policy_fixture"));
+    worker.request(&serde_json::Value::Object(payload))
+}
 
 #[cfg(windows)]
 #[rstest]
@@ -317,6 +332,106 @@ fn windows_uia_click_has_a_scoped_legacy_default_action_fallback() {
 
     assert!(backend.contains("LegacyIAccessiblePattern"));
     assert!(backend.contains("DoDefaultAction()"));
+}
+
+#[cfg(windows)]
+#[rstest]
+fn worker_protocol_rejects_missing_or_mismatched_versions() {
+    assert!(
+        validate_worker_protocol_message(&json!({
+            "protocol_version": UIA_WORKER_PROTOCOL_VERSION
+        }))
+        .is_ok()
+    );
+    for message in [json!({}), json!({"protocol_version": 999})] {
+        assert!(matches!(
+            validate_worker_protocol_message(&message),
+            Err(super::UiaError::ProtocolMismatch { .. })
+        ));
+    }
+}
+
+#[cfg(windows)]
+#[rstest]
+fn powershell_policy_tiers_are_behaviorally_fixture_tested() {
+    for (facts, expected) in [
+        (
+            json!({"is_password": true, "name": "", "automation_id": "", "class_name": "", "secret_marker": false}),
+            "hard_deny",
+        ),
+        (
+            json!({"is_password": false, "name": "Save", "automation_id": "", "class_name": "Button", "secret_marker": false}),
+            "action_confirmation",
+        ),
+        (
+            json!({"is_password": false, "name": "Log in", "automation_id": "", "class_name": "Button", "secret_marker": false}),
+            "pre_approval",
+        ),
+        (
+            json!({"is_password": false, "name": "Open", "automation_id": "", "class_name": "Button", "secret_marker": false}),
+            "task_grant",
+        ),
+    ] {
+        let response = evaluate_policy_fixture(json!({
+            "operation": "control_policy_tier",
+            "facts": facts,
+        }))
+        .expect("policy fixture response");
+        assert_eq!(response["result"], expected);
+    }
+}
+
+#[cfg(windows)]
+#[rstest]
+fn powershell_fence_and_sensitive_target_policies_are_behaviorally_fixture_tested() {
+    let expected = json!({
+        "identity": "42.7",
+        "is_password": false,
+        "name": "save",
+        "automation_id": "savebutton",
+        "class_name": "button",
+        "policy_tier": "action_confirmation",
+    });
+    let facts = json!({
+        "identity": "42.7",
+        "is_password": false,
+        "name": "Save",
+        "automation_id": "SaveButton",
+        "class_name": "Button",
+        "policy_tier": "action_confirmation",
+    });
+    let matching = evaluate_policy_fixture(json!({
+        "operation": "matches_expected_fence",
+        "facts": facts,
+        "expected": expected,
+    }))
+    .expect("matching fence fixture");
+    assert_eq!(matching["result"], true);
+
+    let stale = evaluate_policy_fixture(json!({
+        "operation": "matches_expected_fence",
+        "facts": {"identity": "changed", "is_password": false, "name": "Save", "automation_id": "SaveButton", "class_name": "Button", "policy_tier": "action_confirmation"},
+        "expected": expected,
+    }))
+    .expect("stale fence fixture");
+    assert_eq!(stale["result"], false);
+
+    for facts in [
+        json!({"identity_verified": false, "process_name": "", "class_name": ""}),
+        json!({"identity_verified": true, "process_name": "pwsh", "class_name": ""}),
+        json!({"identity_verified": true, "process_name": "explorer", "class_name": "#32770"}),
+    ] {
+        let denied = evaluate_policy_fixture(json!({
+            "operation": "denied_target_reason",
+            "facts": facts,
+        }))
+        .expect("sensitive target fixture");
+        assert!(
+            denied["result"]
+                .as_str()
+                .is_some_and(|value| !value.is_empty())
+        );
+    }
 }
 
 #[rstest]

@@ -1,14 +1,13 @@
 use std::{
     io::{BufRead, BufReader, Read, Write},
-    path::PathBuf,
     process::{Child, ChildStdin, Command, Stdio},
     sync::mpsc::{self, Receiver, RecvTimeoutError},
     thread::{self, JoinHandle},
     time::Duration,
 };
 
+use base64::Engine as _;
 use serde_json::{Value, json};
-use uuid::Uuid;
 use windows_sys::Win32::{
     Foundation::RECT,
     System::Threading::{AttachThreadInput, GetCurrentThreadId},
@@ -32,6 +31,10 @@ use crate::{
 
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(15);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
+pub(crate) const UIA_WORKER_PROTOCOL_VERSION: u32 = 1;
+const POWERSHELL_STDIN_BOOTSTRAP: &str = "$encoded = [Console]::In.ReadLine(); \
+    $script = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($encoded)); \
+    Invoke-Expression $script";
 const ACTIVATION_INPUT_SYNC_TIMEOUT_MS: u32 = 250;
 const STDERR_LIMIT: u64 = 64 * 1024;
 const BACKEND: &str = include_str!("../assets/windows_uia_backend.ps1");
@@ -346,6 +349,7 @@ fn error_detail(error: &UiaError) -> &str {
         | UiaError::BackendUnavailable(message) => message,
         UiaError::InteractiveDesktopUnavailable { reason, .. } => reason,
         UiaError::ForegroundActivationRefused { reason, .. } => reason,
+        UiaError::ProtocolMismatch { .. } => "UIA worker protocol mismatch",
         UiaError::Unsupported => "Windows UI Automation fallback is unavailable on this platform",
     }
 }
@@ -839,37 +843,29 @@ fn ensure_ok(value: &Value) -> Result<(), UiaError> {
     }
 }
 
-struct UiaWorker {
+pub(crate) struct UiaWorker {
     child: Option<Child>,
     stdin: Option<ChildStdin>,
     responses: Receiver<Vec<u8>>,
     stdout_reader: Option<JoinHandle<()>>,
     stderr_reader: Option<JoinHandle<Vec<u8>>>,
     stderr: Vec<u8>,
-    script_path: PathBuf,
 }
 
 impl UiaWorker {
-    fn start() -> Result<Self, UiaError> {
+    pub(crate) fn start() -> Result<Self, UiaError> {
         use std::os::windows::process::CommandExt;
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
-        let script_path =
-            std::env::temp_dir().join(format!("dcc-cua-uia-{}.ps1", Uuid::new_v4().simple()));
         let script = BACKEND.replace("# DCC_CUA_UIA_HELPERS", HELPERS);
-        std::fs::write(&script_path, script).map_err(|error| {
-            UiaError::BackendUnavailable(format!("materialize UIA worker: {error}"))
-        })?;
         let child = Command::new("powershell.exe")
             .args([
                 "-NoLogo",
                 "-NoProfile",
                 "-NonInteractive",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-File",
+                "-Command",
+                POWERSHELL_STDIN_BOOTSTRAP,
             ])
-            .arg(&script_path)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -878,13 +874,20 @@ impl UiaWorker {
         let mut child = match child {
             Ok(child) => child,
             Err(error) => {
-                let _ = std::fs::remove_file(&script_path);
                 return Err(UiaError::BackendUnavailable(format!(
                     "start UIA worker: {error}"
                 )));
             }
         };
-        let stdin = child.stdin.take().expect("piped UIA stdin");
+        let mut stdin = child.stdin.take().expect("piped UIA stdin");
+        let encoded_script = base64::engine::general_purpose::STANDARD.encode(script.as_bytes());
+        if let Err(error) = writeln!(stdin, "{encoded_script}").and_then(|()| stdin.flush()) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(UiaError::BackendUnavailable(format!(
+                "load in-memory UIA worker: {error}"
+            )));
+        }
         let stdout = child.stdout.take().expect("piped UIA stdout");
         let stderr = child.stderr.take().expect("piped UIA stderr");
         let (sender, responses) = mpsc::channel();
@@ -916,7 +919,6 @@ impl UiaWorker {
             stdout_reader: Some(stdout_reader),
             stderr_reader: Some(stderr_reader),
             stderr: Vec::new(),
-            script_path,
         };
         worker.wait_until_ready()?;
         Ok(worker)
@@ -937,10 +939,11 @@ impl UiaWorker {
         if response["type"] != "ready" {
             return Err(self.fail("UIA worker returned an invalid readiness message"));
         }
+        validate_worker_protocol_message(&response)?;
         Ok(())
     }
 
-    fn request(&mut self, payload: &Value) -> Result<Value, UiaError> {
+    pub(crate) fn request(&mut self, payload: &Value) -> Result<Value, UiaError> {
         if let Some(status) = self
             .child
             .as_mut()
@@ -950,6 +953,15 @@ impl UiaWorker {
         {
             return Err(self.fail(format!("UIA worker exited with status {status}")));
         }
+        let mut payload = payload.clone();
+        let payload = payload.as_object_mut().ok_or_else(|| {
+            UiaError::InvalidAction("UIA worker request must be a JSON object".into())
+        })?;
+        payload.insert(
+            "protocol_version".into(),
+            json!(UIA_WORKER_PROTOCOL_VERSION),
+        );
+        let payload = Value::Object(payload.clone());
         let stdin = self.stdin.as_mut().expect("active UIA stdin");
         if let Err(error) = writeln!(stdin, "{payload}").and_then(|()| stdin.flush()) {
             return Err(self.fail(format!("send UIA request: {error}")));
@@ -963,8 +975,10 @@ impl UiaWorker {
                 return Err(self.fail("UIA worker closed without a response"));
             }
         };
-        serde_json::from_slice(&response)
-            .map_err(|error| self.fail(format!("decode UIA response: {error}")))
+        let response: Value = serde_json::from_slice(&response)
+            .map_err(|error| self.fail(format!("decode UIA response: {error}")))?;
+        validate_worker_protocol_message(&response)?;
+        Ok(response)
     }
 
     fn fail(&mut self, message: impl Into<String>) -> UiaError {
@@ -990,8 +1004,18 @@ impl UiaWorker {
         if let Some(reader) = self.stderr_reader.take() {
             self.stderr = reader.join().unwrap_or_default();
         }
-        let _ = std::fs::remove_file(&self.script_path);
     }
+}
+
+pub(crate) fn validate_worker_protocol_message(value: &Value) -> Result<(), UiaError> {
+    let actual = value.get("protocol_version").and_then(Value::as_u64);
+    if actual == Some(u64::from(UIA_WORKER_PROTOCOL_VERSION)) {
+        return Ok(());
+    }
+    Err(UiaError::ProtocolMismatch {
+        expected: UIA_WORKER_PROTOCOL_VERSION,
+        actual,
+    })
 }
 
 impl Drop for UiaWorker {

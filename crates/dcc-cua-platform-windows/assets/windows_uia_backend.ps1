@@ -2,6 +2,7 @@ $ErrorActionPreference = "Stop"
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
 # DCC_CUA_UIA_HELPERS
+$ProtocolVersion = 1
 
 $ChildScope = [System.Windows.Automation.TreeScope]::Children
 $TrueCondition = [System.Windows.Automation.Condition]::TrueCondition
@@ -136,29 +137,49 @@ function Has-Authentication-Secret-Marker([System.Windows.Automation.AutomationE
   return $false
 }
 
+function Control-Policy-Tier-From-Facts($facts) {
+  if ([bool]$facts.is_password -or [bool]$facts.secret_marker) { return "hard_deny" }
+  $text = (([string]$facts.name) + " " + ([string]$facts.automation_id) + " " + ([string]$facts.class_name)).ToLowerInvariant()
+  foreach ($needle in @("password", "credential", "authentication code", "security settings", "privacy settings", "windows run", "command prompt", "powershell", "terminal")) {
+    if ($text.Contains($needle)) { return "hard_deny" }
+  }
+  if ((Is-Common-Save-Label ([string]$facts.name)) -or
+      (Is-Common-Save-Label ([string]$facts.automation_id)) -or
+      (Is-Common-Save-Label ([string]$facts.class_name))) {
+    return "action_confirmation"
+  }
+  foreach ($needle in @("delete", "remove permanently", "overwrite", "install", "purchase", "buy now", "pay", "send", "publish", "submit", "share", "grant access", "revoke access", "remote control", "remote connection", "allow remote")) {
+    if ($text.Contains($needle)) { return "action_confirmation" }
+  }
+  foreach ($needle in @("sign in", "log in", "login", "permission", "upload", "move", "rename", "connect account")) {
+    if ($text.Contains($needle)) { return "pre_approval" }
+  }
+  return "task_grant"
+}
+
 function Control-Policy-Tier([System.Windows.Automation.AutomationElement]$element) {
   try {
     $current = $element.Current
-    if ([bool]$current.IsPassword -or (Has-Authentication-Secret-Marker $element)) { return "hard_deny" }
-    $text = (([string]$current.Name) + " " + ([string]$current.AutomationId) + " " + ([string]$current.ClassName)).ToLowerInvariant()
-    foreach ($needle in @("password", "credential", "authentication code", "security settings", "privacy settings", "windows run", "command prompt", "powershell", "terminal")) {
-      if ($text.Contains($needle)) { return "hard_deny" }
+    return Control-Policy-Tier-From-Facts @{
+      is_password = [bool]$current.IsPassword
+      secret_marker = Has-Authentication-Secret-Marker $element
+      name = [string]$current.Name
+      automation_id = [string]$current.AutomationId
+      class_name = [string]$current.ClassName
     }
-    if ((Is-Common-Save-Label ([string]$current.Name)) -or
-        (Is-Common-Save-Label ([string]$current.AutomationId)) -or
-        (Is-Common-Save-Label ([string]$current.ClassName))) {
-      return "action_confirmation"
-    }
-    foreach ($needle in @("delete", "remove permanently", "overwrite", "install", "purchase", "buy now", "pay", "send", "publish", "submit", "share", "grant access", "revoke access", "remote control", "remote connection", "allow remote")) {
-      if ($text.Contains($needle)) { return "action_confirmation" }
-    }
-    foreach ($needle in @("sign in", "log in", "login", "permission", "upload", "move", "rename", "connect account")) {
-      if ($text.Contains($needle)) { return "pre_approval" }
-    }
-  } catch {
-    return "hard_deny"
-  }
-  return "task_grant"
+  } catch { return "hard_deny" }
+}
+
+function Matches-Expected-Fence-From-Facts($facts, $expected) {
+  if ($null -eq $expected) { return $false }
+  try {
+    return ([string]$facts.identity) -ceq ([string]$expected.identity) -and
+      ([bool]$facts.is_password) -eq ([bool]$expected.is_password) -and
+      ([string]$facts.name).ToLowerInvariant() -ceq ([string]$expected.name) -and
+      ([string]$facts.automation_id).ToLowerInvariant() -ceq ([string]$expected.automation_id) -and
+      ([string]$facts.class_name).ToLowerInvariant() -ceq ([string]$expected.class_name) -and
+      ([string]$facts.policy_tier) -ceq ([string]$expected.policy_tier)
+  } catch { return $false }
 }
 
 function Matches-Expected-Fence([System.Windows.Automation.AutomationElement]$element, $expected) {
@@ -173,12 +194,14 @@ function Matches-Expected-Fence([System.Windows.Automation.AutomationElement]$el
     } else {
       $identity = $runtimeId
     }
-    return $identity -ceq ([string]$expected.identity) -and
-      ([bool]$current.IsPassword) -eq ([bool]$expected.is_password) -and
-      ([string]$current.Name).ToLowerInvariant() -ceq ([string]$expected.name) -and
-      ([string]$current.AutomationId).ToLowerInvariant() -ceq ([string]$expected.automation_id) -and
-      ([string]$current.ClassName).ToLowerInvariant() -ceq ([string]$expected.class_name) -and
-      (Control-Policy-Tier $element) -ceq ([string]$expected.policy_tier)
+    return Matches-Expected-Fence-From-Facts @{
+      identity = $identity
+      is_password = [bool]$current.IsPassword
+      name = [string]$current.Name
+      automation_id = [string]$current.AutomationId
+      class_name = [string]$current.ClassName
+      policy_tier = Control-Policy-Tier $element
+    } $expected
   } catch {
     return $false
   }
@@ -281,14 +304,12 @@ function Find-Scoped-Root() {
   return $null
 }
 
-function Denied-Target-Reason([System.Windows.Automation.AutomationElement]$element) {
-  try {
-    $processName = [string](Get-Process -Id ([int]$element.Current.ProcessId) -ErrorAction Stop).ProcessName
-  } catch {
+function Denied-Target-Reason-From-Facts($facts) {
+  if (-not [bool]$facts.identity_verified) {
     return "The scoped target process identity could not be verified."
   }
-  $processName = $processName.Trim().ToLowerInvariant()
-  $className = ([string]$element.Current.ClassName).Trim().ToLowerInvariant()
+  $processName = ([string]$facts.process_name).Trim().ToLowerInvariant()
+  $className = ([string]$facts.class_name).Trim().ToLowerInvariant()
   $deniedProcesses = @(
     "1password", "authhost", "bitwarden", "cmd", "conhost", "consent",
     "credentialuibroker", "dashlane", "enpass", "keeperpasswordmanager",
@@ -310,6 +331,19 @@ function Denied-Target-Reason([System.Windows.Automation.AutomationElement]$elem
     return "The Windows Run dialog is not an allowed ui_control target."
   }
   return $null
+}
+
+function Denied-Target-Reason([System.Windows.Automation.AutomationElement]$element) {
+  try {
+    $processName = [string](Get-Process -Id ([int]$element.Current.ProcessId) -ErrorAction Stop).ProcessName
+    return Denied-Target-Reason-From-Facts @{
+      identity_verified = $true
+      process_name = $processName
+      class_name = [string]$element.Current.ClassName
+    }
+  } catch {
+    return Denied-Target-Reason-From-Facts @{identity_verified = $false}
+  }
 }
 
 function Denied-Action-Target-Reason(
@@ -446,6 +480,25 @@ function Invoke-Action($element) {
 function Invoke-UiaRequest($requestPayload) {
   $script:payload = $requestPayload
   try {
+    if ([int]$requestPayload.protocol_version -ne $ProtocolVersion) {
+      return @{ok = $false; error = "protocol_mismatch"; message = "UIA worker protocol version mismatch."}
+    }
+    if ([string]$requestPayload.mode -eq "policy_fixture") {
+      switch ([string]$requestPayload.operation) {
+        "control_policy_tier" {
+          return @{ok = $true; result = Control-Policy-Tier-From-Facts $requestPayload.facts}
+        }
+        "matches_expected_fence" {
+          return @{ok = $true; result = Matches-Expected-Fence-From-Facts $requestPayload.facts $requestPayload.expected}
+        }
+        "denied_target_reason" {
+          return @{ok = $true; result = Denied-Target-Reason-From-Facts $requestPayload.facts}
+        }
+        default {
+          return @{ok = $false; error = "unsupported_action"; message = "Unknown policy fixture operation."}
+        }
+      }
+    }
     $script:scopeError = $null
     $root = Find-Scoped-Root
     if ($null -eq $root) {
@@ -513,7 +566,7 @@ function Invoke-UiaRequest($requestPayload) {
   }
 }
 
-[Console]::Out.WriteLine('{"type":"ready"}')
+[Console]::Out.WriteLine('{"type":"ready","protocol_version":1}')
 [Console]::Out.Flush()
 while ($true) {
   $rawInput = [Console]::In.ReadLine()
@@ -528,6 +581,7 @@ while ($true) {
   } catch {
     $response = @{ok = $false; error = "backend_error"; message = $_.Exception.Message}
   }
+  $response.protocol_version = $ProtocolVersion
   [Console]::Out.WriteLine(($response | ConvertTo-Json -Depth 64 -Compress))
   [Console]::Out.Flush()
 }

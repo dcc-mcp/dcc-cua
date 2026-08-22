@@ -83,6 +83,10 @@ pub enum UiaError {
     InvalidAction(String),
     #[error("Windows UI Automation backend failed: {0}")]
     BackendUnavailable(String),
+    #[error(
+        "Windows UI Automation worker protocol mismatch: expected {expected}, received {actual:?}"
+    )]
+    ProtocolMismatch { expected: u32, actual: Option<u64> },
     #[error("Windows refused exact-window foreground activation: {reason}")]
     ForegroundActivationRefused {
         reason: String,
