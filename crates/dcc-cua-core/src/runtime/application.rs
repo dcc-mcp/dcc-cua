@@ -5,6 +5,7 @@ use crate::contracts::{
     ComputerUseError, ComputerUseErrorCode, ComputerUseLaunchRequest, ComputerUseResult,
     MAX_LAUNCH_ARGUMENTS, MAX_LAUNCH_URLS,
 };
+use crate::sensitive_target_policy::validate_launch_application_identity;
 
 impl ComputerUseDriver {
     /// Launch one explicitly selected application through CUA's platform backend.
@@ -94,27 +95,9 @@ pub(crate) fn validate_launch_request(request: &ComputerUseLaunchRequest) -> Com
         .into_iter()
         .flatten()
         .find(|value| !value.trim().is_empty())
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    const DENIED: [&str; 12] = [
-        "password",
-        "credential",
-        "authentication",
-        "sign in",
-        "login",
-        "terminal",
-        "command prompt",
-        "cmd.exe",
-        "powershell",
-        "pwsh",
-        "bash",
-        "security",
-    ];
-    if DENIED.iter().any(|marker| selected.contains(marker)) {
-        return Err(ComputerUseError::new(
-            ComputerUseErrorCode::InvalidTarget,
-            "system, terminal, authentication, password, and security applications are not allowed",
-        ));
+        .unwrap_or_default();
+    if !selected.is_empty() {
+        validate_launch_application_identity(selected)?;
     }
     if request.urls.len() > MAX_LAUNCH_URLS
         || request.additional_arguments.len() > MAX_LAUNCH_ARGUMENTS

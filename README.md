@@ -24,7 +24,9 @@ provides:
 - exact PID/window/title scope; agent requests cannot widen the target;
 - a fresh observation ID is required for every mutation;
 - bounded text, key, drag, and coordinate input;
-- fail-closed sensitive-window policy;
+- fail-closed rejection when target application identity is missing or unreadable,
+  plus a shared defense-in-depth policy for known terminal, command-interpreter,
+  authentication, password, and security application identities;
 - explicit stop/resume lifecycle and structured errors;
 - a visible, vector-rendered CUA mouse-pointer cursor on Windows, Linux, and
   the packaged macOS Host,

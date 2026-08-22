@@ -766,6 +766,44 @@ fn native_target_policy_denies_terminal_processes() {
 }
 
 #[rstest]
+#[case("")]
+#[case("   ")]
+#[case("native-window")]
+fn native_target_policy_requires_verified_application_identity(#[case] app_name: &str) {
+    let mut target = test_window_target();
+    target.app_name = app_name.into();
+    assert_eq!(
+        validate_target_policy(&target).unwrap_err().code,
+        ComputerUseErrorCode::InvalidTarget
+    );
+}
+
+#[rstest]
+#[case("bash.exe")]
+#[case("wt.exe")]
+#[case("wsl.exe")]
+#[case("conhost.exe")]
+#[case("consent.exe")]
+#[case("CredentialUIBroker.exe")]
+#[case("LogonUI.exe")]
+fn native_target_policy_denies_shared_sensitive_identities(#[case] app_name: &str) {
+    let mut target = test_window_target();
+    target.app_name = app_name.into();
+    assert_eq!(
+        validate_target_policy(&target).unwrap_err().code,
+        ComputerUseErrorCode::InvalidTarget
+    );
+}
+
+#[rstest]
+fn native_target_policy_does_not_treat_document_titles_as_process_identity() {
+    let mut target = test_window_target();
+    target.app_name = "notepad.exe".into();
+    target.title = "password migration notes.txt - Notepad".into();
+    assert!(validate_target_policy(&target).is_ok());
+}
+
+#[rstest]
 fn generic_application_labels_resolve_from_the_exact_window() {
     let target = WindowTarget {
         pid: 42,

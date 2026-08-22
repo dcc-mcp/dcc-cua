@@ -71,3 +71,36 @@ fn launch_requires_one_safe_application_selector() {
     .expect("session-scoped launch arguments");
     assert_eq!(scoped["session"], "private-runtime-session");
 }
+
+#[rstest]
+#[case("consent.exe")]
+#[case("wt.exe")]
+#[case("wsl.exe")]
+#[case("conhost.exe")]
+fn launch_denies_sensitive_executable_identities(#[case] executable: &str) {
+    let error = validate_launch_request(&ComputerUseLaunchRequest {
+        launch_path: Some(executable.into()),
+        ..Default::default()
+    })
+    .expect_err("sensitive executable identities must be denied");
+
+    assert_eq!(
+        error.code,
+        crate::contracts::ComputerUseErrorCode::InvalidTarget
+    );
+}
+
+#[rstest]
+fn launch_denies_command_interpreters_with_arguments() {
+    let error = validate_launch_request(&ComputerUseLaunchRequest {
+        launch_path: Some("C:\\Python313\\python.exe".into()),
+        additional_arguments: vec!["-c".into(), "print('unsafe')".into()],
+        ..Default::default()
+    })
+    .expect_err("command interpreters must not be launched through arbitrary arguments");
+
+    assert_eq!(
+        error.code,
+        crate::contracts::ComputerUseErrorCode::InvalidTarget
+    );
+}
