@@ -346,7 +346,6 @@ async fn handle_request_inner(
                     interrupt_generation: session_generation,
                     interrupted: false,
                     session,
-                    latest_observation_id: None,
                     latest_shared_image: None,
                 },
             );
@@ -395,7 +394,6 @@ async fn handle_request_inner(
                     Some(snapshot.data),
                 ),
             };
-            host.latest_observation_id = Some(snapshot.observation_id.clone());
             Ok((
                 json!({
                     "type":"desktop_snapshot",
@@ -442,12 +440,6 @@ async fn handle_request_inner(
                     None,
                 ));
             }
-            if host.latest_observation_id.as_deref() != Some(observation_id.as_str()) {
-                return Err(HostError::ComputerUse(ComputerUseError::new(
-                    ComputerUseErrorCode::StaleObservation,
-                    "desktop action observation_id does not match the latest host snapshot",
-                )));
-            }
             if action.requires_approval() {
                 let request = TrustedActionConfirmationRequest::for_desktop_action(
                     &session_id,
@@ -468,7 +460,6 @@ async fn handle_request_inner(
             }
             let action = action.into_computer_use(observation_id)?;
             let input_turn = acquire_raw_input_turn(true).await;
-            host.latest_observation_id = None;
             let result = host.session.perform_action(&action).await?;
             let action_id = format!("cua-desktop-action-{}", Uuid::new_v4());
             if capture_after {
@@ -476,17 +467,14 @@ async fn handle_request_inner(
                 let snapshot = host.session.screenshot().await;
                 drop(input_turn);
                 return match snapshot {
-                    Ok(snapshot) => {
-                        host.latest_observation_id = Some(snapshot.observation_id.clone());
-                        desktop_action_completed_with_snapshot_response(
-                            &session_id,
-                            action_id,
-                            result,
-                            snapshot,
-                            mode,
-                            &mut host.latest_shared_image,
-                        )
-                    }
+                    Ok(snapshot) => desktop_action_completed_with_snapshot_response(
+                        &session_id,
+                        action_id,
+                        result,
+                        snapshot,
+                        mode,
+                        &mut host.latest_shared_image,
+                    ),
                     Err(error) => {
                         let code = error_code(&HostError::ComputerUse(error.clone()));
                         let (mut response, attachment) = action_completed_response(
