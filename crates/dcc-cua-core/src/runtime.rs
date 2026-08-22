@@ -1200,17 +1200,12 @@ impl ComputerUseDesktopSession {
             ));
         }
         interactive_desktop::require_input_available()?;
-        let arguments = desktop_action_arguments(action, &self.session_id);
-        let tool = arguments["_tool"].as_str().unwrap_or_default().to_owned();
-        let mut arguments = arguments;
-        arguments
-            .as_object_mut()
-            .expect("desktop action arguments are an object")
-            .remove("_tool");
+        let command = desktop_action_arguments(action, &self.session_id)?;
+        let tool = command.tool;
         let result = call_driver_tool(
             &self.driver.driver,
-            tool.clone(),
-            arguments.to_string(),
+            tool,
+            command.arguments.to_string(),
             &format!("execute desktop CUA {tool}"),
         )
         .await?;

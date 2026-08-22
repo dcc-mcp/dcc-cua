@@ -785,148 +785,8 @@ pub(crate) fn action_arguments(
     action: &ComputerUseAction,
     session: &str,
     target: &WindowTarget,
-) -> Value {
-    let scope = json!({
-        "_tool": match action.action.as_str() {
-            "click" | "double_click" | "right_click" | "toggle" => "click",
-            "drag" => "drag",
-            "scroll" => "scroll",
-            "type" => "type_text",
-            "type_chars" => "type_text",
-            "set_text" | "set_value" => "set_value",
-            "keypress" => "press_key",
-            "keyboard_shortcut" => "hotkey",
-            "move" => "move_cursor",
-            _ => "wait",
-        },
-        "pid": target.pid,
-        "window_id": target.window_id,
-        "session": session,
-    });
-    let mut args = scope;
-    let object = args
-        .as_object_mut()
-        .expect("action arguments are an object");
-    object.insert(
-        "delivery_mode".into(),
-        json!(action.delivery_mode.as_deref().unwrap_or("background")),
-    );
-    match action.action.as_str() {
-        "move" => {
-            object.insert("x".into(), json!(action.x));
-            object.insert("y".into(), json!(action.y));
-        }
-        "click" | "double_click" | "right_click" | "toggle" => {
-            object.insert("x".into(), json!(action.x));
-            object.insert("y".into(), json!(action.y));
-            object.insert(
-                "count".into(),
-                json!(if action.action == "double_click" {
-                    2
-                } else {
-                    1
-                }),
-            );
-            object.insert(
-                "button".into(),
-                json!(
-                    action
-                        .button
-                        .as_deref()
-                        .unwrap_or(if action.action == "right_click" {
-                            "right"
-                        } else {
-                            "left"
-                        })
-                ),
-            );
-        }
-        "drag" => {
-            let first = action.path.first().copied().unwrap_or(ComputerUsePoint {
-                x: action.x.unwrap_or_default(),
-                y: action.y.unwrap_or_default(),
-            });
-            let last = action.path.last().copied().unwrap_or(first);
-            object.insert("from_x".into(), json!(first.x));
-            object.insert("from_y".into(), json!(first.y));
-            object.insert("to_x".into(), json!(last.x));
-            object.insert("to_y".into(), json!(last.y));
-            if let Some(button) = action.button.as_deref() {
-                object.insert("button".into(), json!(button));
-            }
-            if !action.modifiers.is_empty() {
-                object.insert("modifier".into(), json!(action.modifiers));
-            }
-            if let Some(duration_ms) = action.duration_ms {
-                object.insert("duration_ms".into(), json!(duration_ms));
-            }
-            if let Some(steps) = action.steps {
-                object.insert("steps".into(), json!(steps));
-            }
-        }
-        "scroll" => {
-            object.insert("x".into(), json!(action.x));
-            object.insert("y".into(), json!(action.y));
-            insert_scroll_arguments(object, action);
-        }
-        "type" => {
-            object.insert(
-                "text".into(),
-                json!(action.text.as_deref().unwrap_or_default()),
-            );
-            if let (Some(x), Some(y)) = (action.x, action.y) {
-                object.insert("x".into(), json!(x));
-                object.insert("y".into(), json!(y));
-            }
-        }
-        "type_chars" => {
-            object.insert(
-                "text".into(),
-                json!(action.text.as_deref().unwrap_or_default()),
-            );
-            if let Some(delay_ms) = action.delay_ms {
-                object.insert("delay_ms".into(), json!(delay_ms));
-            }
-        }
-        "set_text" | "set_value" => {
-            object.insert(
-                "value".into(),
-                json!(action.text.as_deref().unwrap_or_default()),
-            );
-        }
-        "keypress" => {
-            object.insert(
-                "key".into(),
-                json!(action.keys.first().cloned().unwrap_or_default()),
-            );
-            if let (Some(x), Some(y)) = (action.x, action.y) {
-                object.insert("x".into(), json!(x));
-                object.insert("y".into(), json!(y));
-            }
-            if !action.modifiers.is_empty() {
-                object.insert("modifiers".into(), json!(action.modifiers));
-            }
-        }
-        "keyboard_shortcut" => {
-            object.insert("keys".into(), json!(keyboard_shortcut_keys(action)));
-            if let (Some(x), Some(y)) = (action.x, action.y) {
-                object.insert("x".into(), json!(x));
-                object.insert("y".into(), json!(y));
-            }
-        }
-        _ => {}
-    }
-    if let Some(element_token) = action.element_token.as_deref() {
-        object.insert("element_token".into(), json!(element_token));
-        object.remove("element_index");
-        object.remove("x");
-        object.remove("y");
-    } else if let Some(element_index) = action.element_index {
-        object.insert("element_index".into(), json!(element_index));
-        object.remove("x");
-        object.remove("y");
-    }
-    args
+) -> ComputerUseResult<DriverActionCommand> {
+    driver_action_command(action, session, DriverActionScope::Window(target))
 }
 
 #[cfg(any(windows, test))]
@@ -976,24 +836,66 @@ pub(crate) fn validate_action_observation(
     Ok(())
 }
 
-pub(crate) fn desktop_action_arguments(action: &ComputerUseAction, session: &str) -> Value {
-    let mut args = json!({
-        "_tool": match action.action.as_str() {
-            "click" | "double_click" | "right_click" | "toggle" => "click",
-            "drag" => "drag",
-            "scroll" => "scroll",
-            "type" | "type_chars" => "type_text",
-            "keypress" => "press_key",
-            "keyboard_shortcut" => "hotkey",
-            "move" => "move_cursor",
-            _ => "wait",
-        },
-        "session": session,
-        "scope": "desktop",
-    });
-    let object = args
-        .as_object_mut()
-        .expect("desktop action arguments are an object");
+pub(crate) fn desktop_action_arguments(
+    action: &ComputerUseAction,
+    session: &str,
+) -> ComputerUseResult<DriverActionCommand> {
+    driver_action_command(action, session, DriverActionScope::Desktop)
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct DriverActionCommand {
+    pub tool: &'static str,
+    pub arguments: Value,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum DriverActionScope<'a> {
+    Window(&'a WindowTarget),
+    Desktop,
+}
+
+fn driver_action_command(
+    action: &ComputerUseAction,
+    session: &str,
+    scope: DriverActionScope<'_>,
+) -> ComputerUseResult<DriverActionCommand> {
+    if action.action == "drag" && action.path.len() > 2 {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::InvalidAction,
+            "the configured CUA driver accepts only drag endpoints; use at most two path points",
+        ));
+    }
+    let tool = match action.action.as_str() {
+        "click" | "double_click" | "right_click" | "toggle" => "click",
+        "drag" => "drag",
+        "scroll" => "scroll",
+        "type" | "type_chars" => "type_text",
+        "set_text" | "set_value" if matches!(scope, DriverActionScope::Window(_)) => "set_value",
+        "keypress" => "press_key",
+        "keyboard_shortcut" => "hotkey",
+        "move" => "move_cursor",
+        _ => {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::InvalidAction,
+                "action cannot be represented by the configured CUA driver",
+            ));
+        }
+    };
+    let mut object = serde_json::Map::from_iter([("session".into(), json!(session))]);
+    match scope {
+        DriverActionScope::Window(target) => {
+            object.insert("pid".into(), json!(target.pid));
+            object.insert("window_id".into(), json!(target.window_id));
+            object.insert(
+                "delivery_mode".into(),
+                json!(action.delivery_mode.as_deref().unwrap_or("background")),
+            );
+        }
+        DriverActionScope::Desktop => {
+            object.insert("scope".into(), json!("desktop"));
+        }
+    }
     match action.action.as_str() {
         "move" => {
             object.insert("x".into(), json!(action.x));
@@ -1050,16 +952,31 @@ pub(crate) fn desktop_action_arguments(action: &ComputerUseAction, session: &str
         "scroll" => {
             object.insert("x".into(), json!(action.x));
             object.insert("y".into(), json!(action.y));
-            insert_scroll_arguments(object, action);
+            insert_scroll_arguments(&mut object, action);
         }
         "type" | "type_chars" => {
             object.insert(
                 "text".into(),
                 json!(action.text.as_deref().unwrap_or_default()),
             );
-            if let Some(delay_ms) = action.delay_ms {
+            if action.action == "type_chars"
+                && let Some(delay_ms) = action.delay_ms
+            {
                 object.insert("delay_ms".into(), json!(delay_ms));
             }
+            if matches!(scope, DriverActionScope::Window(_))
+                && action.action == "type"
+                && let (Some(x), Some(y)) = (action.x, action.y)
+            {
+                object.insert("x".into(), json!(x));
+                object.insert("y".into(), json!(y));
+            }
+        }
+        "set_text" | "set_value" => {
+            object.insert(
+                "value".into(),
+                json!(action.text.as_deref().unwrap_or_default()),
+            );
         }
         "keypress" => {
             object.insert(
@@ -1069,13 +986,40 @@ pub(crate) fn desktop_action_arguments(action: &ComputerUseAction, session: &str
             if !action.modifiers.is_empty() {
                 object.insert("modifiers".into(), json!(action.modifiers));
             }
+            if matches!(scope, DriverActionScope::Window(_))
+                && let (Some(x), Some(y)) = (action.x, action.y)
+            {
+                object.insert("x".into(), json!(x));
+                object.insert("y".into(), json!(y));
+            }
         }
         "keyboard_shortcut" => {
             object.insert("keys".into(), json!(keyboard_shortcut_keys(action)));
+            if matches!(scope, DriverActionScope::Window(_))
+                && let (Some(x), Some(y)) = (action.x, action.y)
+            {
+                object.insert("x".into(), json!(x));
+                object.insert("y".into(), json!(y));
+            }
         }
         _ => {}
     }
-    args
+    if matches!(scope, DriverActionScope::Window(_)) {
+        if let Some(element_token) = action.element_token.as_deref() {
+            object.insert("element_token".into(), json!(element_token));
+            object.remove("element_index");
+            object.remove("x");
+            object.remove("y");
+        } else if let Some(element_index) = action.element_index {
+            object.insert("element_index".into(), json!(element_index));
+            object.remove("x");
+            object.remove("y");
+        }
+    }
+    Ok(DriverActionCommand {
+        tool,
+        arguments: Value::Object(object),
+    })
 }
 
 fn validate_scroll(action: &ComputerUseAction) -> ComputerUseResult<()> {

@@ -934,14 +934,12 @@ impl ComputerUseSession {
             }));
         }
         self.require_current_upstream_session_for_evidence()?;
-        let args = action_arguments(effective_action, &self.session_id, &target);
-        let name = args["_tool"].as_str().unwrap_or_default().to_string();
-        let mut args = args;
-        args.as_object_mut()
-            .expect("action arguments are an object")
-            .remove("_tool");
+        let command = action_arguments(effective_action, &self.session_id, &target)?;
+        let name = command.tool;
         let result = await_input_call(
-            self.driver.driver.call_tool(name.clone(), args.to_string()),
+            self.driver
+                .driver
+                .call_tool(name.to_owned(), command.arguments.to_string()),
             INPUT_CALL_TIMEOUT,
             "action",
         )

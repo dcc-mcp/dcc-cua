@@ -1258,7 +1258,9 @@ fn semantic_element_actions_replace_pixel_coordinates() {
             z_index: Some(1),
             is_foreground: true,
         },
-    );
+    )
+    .unwrap()
+    .arguments;
     assert_eq!(args["element_index"], 7);
     assert!(args.get("x").is_none());
     assert!(args.get("y").is_none());
@@ -1289,7 +1291,9 @@ fn semantic_tokens_and_background_delivery_reach_cua() {
             z_index: Some(1),
             is_foreground: true,
         },
-    );
+    )
+    .unwrap()
+    .arguments;
     assert_eq!(args["element_token"], "element-token");
     assert!(args.get("element_index").is_none());
     assert_eq!(args["delivery_mode"], "background");
@@ -1567,7 +1571,7 @@ fn semantic_value_actions_require_and_encode_element_values() {
         text: Some("Hero".into()),
         ..Default::default()
     };
-    let args = action_arguments(
+    let command = action_arguments(
         &action,
         "session",
         &WindowTarget {
@@ -1581,8 +1585,10 @@ fn semantic_value_actions_require_and_encode_element_values() {
             z_index: Some(1),
             is_foreground: true,
         },
-    );
-    assert_eq!(args["_tool"], "set_value");
+    )
+    .unwrap();
+    assert_eq!(command.tool, "set_value");
+    let args = command.arguments;
     assert_eq!(args["element_index"], 11);
     assert_eq!(args["value"], "Hero");
     assert_eq!(
@@ -1607,8 +1613,9 @@ fn coordinate_text_and_key_actions_forward_cua_focus_arguments() {
         ..Default::default()
     };
     assert!(validate_action(&type_action).is_ok());
-    let type_args = action_arguments(&type_action, "session", &test_window_target());
-    assert_eq!(type_args["_tool"], "type_text");
+    let type_command = action_arguments(&type_action, "session", &test_window_target()).unwrap();
+    assert_eq!(type_command.tool, "type_text");
+    let type_args = type_command.arguments;
     assert_eq!(type_args["x"], 20.0);
     assert_eq!(type_args["y"], 30.0);
 
@@ -1620,7 +1627,9 @@ fn coordinate_text_and_key_actions_forward_cua_focus_arguments() {
         modifiers: vec!["CTRL".into(), "SHIFT".into()],
         ..Default::default()
     };
-    let press_args = action_arguments(&press_action, "session", &test_window_target());
+    let press_args = action_arguments(&press_action, "session", &test_window_target())
+        .unwrap()
+        .arguments;
     assert_eq!(press_args["x"], 20.0);
     assert_eq!(press_args["modifiers"], json!(["CTRL", "SHIFT"]));
 
@@ -1636,11 +1645,54 @@ fn coordinate_text_and_key_actions_forward_cua_focus_arguments() {
         steps: Some(32),
         ..Default::default()
     };
-    let drag_args = action_arguments(&drag_action, "session", &test_window_target());
+    let drag_args = action_arguments(&drag_action, "session", &test_window_target())
+        .unwrap()
+        .arguments;
     assert_eq!(drag_args["button"], "middle");
     assert_eq!(drag_args["modifier"], json!(["ALT"]));
     assert_eq!(drag_args["duration_ms"], 750);
     assert_eq!(drag_args["steps"], 32);
+}
+
+#[rstest]
+fn driver_action_commands_keep_tool_identity_out_of_json_arguments() {
+    let action = ComputerUseAction {
+        action: "click".into(),
+        x: Some(20.0),
+        y: Some(30.0),
+        ..Default::default()
+    };
+
+    for command in [
+        action_arguments(&action, "session", &test_window_target()).unwrap(),
+        desktop_action_arguments(&action, "session").unwrap(),
+    ] {
+        assert_eq!(command.tool, "click");
+        assert!(command.arguments.get("_tool").is_none());
+    }
+}
+
+#[rstest]
+fn driver_routes_reject_drag_waypoints_the_upstream_schema_cannot_represent() {
+    let action = ComputerUseAction {
+        action: "drag".into(),
+        path: vec![
+            ComputerUsePoint { x: 1.0, y: 2.0 },
+            ComputerUsePoint { x: 3.0, y: 4.0 },
+            ComputerUsePoint { x: 5.0, y: 6.0 },
+        ],
+        ..Default::default()
+    };
+    validate_action(&action).unwrap();
+
+    for result in [
+        action_arguments(&action, "session", &test_window_target()),
+        desktop_action_arguments(&action, "session"),
+    ] {
+        let error = result.unwrap_err();
+        assert_eq!(error.code, ComputerUseErrorCode::InvalidAction);
+        assert!(error.message.contains("only drag endpoints"));
+    }
 }
 
 #[rstest]
@@ -1653,11 +1705,11 @@ fn keyboard_shortcuts_merge_explicit_modifiers_for_every_input_route() {
     };
 
     for arguments in [
-        action_arguments(&action, "session", &test_window_target()),
-        desktop_action_arguments(&action, "session"),
+        action_arguments(&action, "session", &test_window_target()).unwrap(),
+        desktop_action_arguments(&action, "session").unwrap(),
     ] {
-        assert_eq!(arguments["_tool"], "hotkey");
-        assert_eq!(arguments["keys"], json!(["CTRL", "T"]));
+        assert_eq!(arguments.tool, "hotkey");
+        assert_eq!(arguments.arguments["keys"], json!(["CTRL", "T"]));
     }
 }
 
@@ -1681,8 +1733,12 @@ fn scroll_axes_reach_window_and_desktop_cua(
     };
     validate_action(&action).unwrap();
     for arguments in [
-        action_arguments(&action, "session", &test_window_target()),
-        desktop_action_arguments(&action, "session"),
+        action_arguments(&action, "session", &test_window_target())
+            .unwrap()
+            .arguments,
+        desktop_action_arguments(&action, "session")
+            .unwrap()
+            .arguments,
     ] {
         assert_eq!(arguments["direction"], direction);
         assert_eq!(arguments["amount"], amount);
@@ -1724,7 +1780,9 @@ fn scroll_rejects_diagonal_unbounded_and_unscoped_requests() {
         ..Default::default()
     };
     validate_action(&element_scroll).unwrap();
-    let arguments = action_arguments(&element_scroll, "session", &test_window_target());
+    let arguments = action_arguments(&element_scroll, "session", &test_window_target())
+        .unwrap()
+        .arguments;
     assert_eq!(arguments["direction"], "down");
     assert!(arguments.get("amount").is_none());
 }
@@ -1737,8 +1795,9 @@ fn semantic_type_uses_cua_canonical_type_text() {
         text: Some("hello".into()),
         ..Default::default()
     };
-    let arguments = action_arguments(&action, "session", &test_window_target());
-    assert_eq!(arguments["_tool"], "type_text");
+    let command = action_arguments(&action, "session", &test_window_target()).unwrap();
+    assert_eq!(command.tool, "type_text");
+    let arguments = command.arguments;
     assert_eq!(arguments["element_index"], 8);
     assert_eq!(arguments["text"], "hello");
 }
@@ -1789,7 +1848,7 @@ fn type_chars_forwards_delivery_mode_to_cua_character_input() {
         ..Default::default()
     };
     assert!(validate_action(&action).is_ok());
-    let args = action_arguments(
+    let command = action_arguments(
         &action,
         "session",
         &WindowTarget {
@@ -1803,8 +1862,10 @@ fn type_chars_forwards_delivery_mode_to_cua_character_input() {
             z_index: Some(1),
             is_foreground: true,
         },
-    );
-    assert_eq!(args["_tool"], "type_text");
+    )
+    .unwrap();
+    assert_eq!(command.tool, "type_text");
+    let args = command.arguments;
     assert_eq!(args["text"], "Fab");
     assert_eq!(args["delay_ms"], 20);
     assert_eq!(args["element_index"], 4);
@@ -1836,8 +1897,9 @@ fn desktop_actions_are_screen_scoped_and_observation_bound() {
         y: Some(200.0),
         ..Default::default()
     };
-    let args = desktop_action_arguments(&action, "desktop-session");
-    assert_eq!(args["_tool"], "click");
+    let command = desktop_action_arguments(&action, "desktop-session").unwrap();
+    assert_eq!(command.tool, "click");
+    let args = command.arguments;
     assert_eq!(args["scope"], "desktop");
     assert_eq!(args["session"], "desktop-session");
     assert_eq!(args["x"], 100.0);
@@ -1849,8 +1911,9 @@ fn desktop_actions_are_screen_scoped_and_observation_bound() {
         y: Some(200.0),
         ..Default::default()
     };
-    let toggle_args = desktop_action_arguments(&toggle, "desktop-session");
-    assert_eq!(toggle_args["_tool"], "click");
+    let toggle_command = desktop_action_arguments(&toggle, "desktop-session").unwrap();
+    assert_eq!(toggle_command.tool, "click");
+    let toggle_args = toggle_command.arguments;
     assert_eq!(toggle_args["count"], 1);
 
     let type_chars = ComputerUseAction {
@@ -1860,8 +1923,9 @@ fn desktop_actions_are_screen_scoped_and_observation_bound() {
         type_chars_only: true,
         ..Default::default()
     };
-    let type_args = desktop_action_arguments(&type_chars, "desktop-session");
-    assert_eq!(type_args["_tool"], "type_text");
+    let type_command = desktop_action_arguments(&type_chars, "desktop-session").unwrap();
+    assert_eq!(type_command.tool, "type_text");
+    let type_args = type_command.arguments;
     assert_eq!(type_args["delay_ms"], 20);
     assert!(type_args.get("type_chars_only").is_none());
 }
@@ -1892,7 +1956,9 @@ fn window_visual_fallback_maps_capture_pixels_to_the_exact_target() {
     )
     .unwrap();
     assert_eq!((validated.x, validated.y), (Some(1560.0), Some(240.0)));
-    let args = action_arguments(&validated, "session", &target);
+    let args = action_arguments(&validated, "session", &target)
+        .unwrap()
+        .arguments;
     assert_eq!(args["pid"], 42);
     assert_eq!(args["window_id"], 7);
     assert!(args.get("scope").is_none());
