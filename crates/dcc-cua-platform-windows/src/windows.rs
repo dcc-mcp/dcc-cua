@@ -339,10 +339,12 @@ pub(crate) fn completed_action_result(
 fn error_detail(error: &UiaError) -> &str {
     match error {
         UiaError::InvalidTarget(message)
+        | UiaError::TargetMinimized(message)
         | UiaError::StaleSnapshot(message)
         | UiaError::PermissionDenied(message)
         | UiaError::InvalidAction(message)
         | UiaError::BackendUnavailable(message) => message,
+        UiaError::InteractiveDesktopUnavailable { reason, .. } => reason,
         UiaError::ForegroundActivationRefused { reason, .. } => reason,
         UiaError::Unsupported => "Windows UI Automation fallback is unavailable on this platform",
     }
@@ -663,14 +665,12 @@ fn require_available_window_handle(
         target.process_id,
         actual_process_id,
     ) {
-        let state = if minimized {
-            "target_minimized"
+        let message = format!("the exact {operation} target must be visible and not minimized");
+        return Err(if minimized {
+            UiaError::TargetMinimized(message)
         } else {
-            "target_unavailable"
-        };
-        return Err(UiaError::InvalidTarget(format!(
-            "{state}: the exact {operation} target must be visible and not minimized"
-        )));
+            UiaError::InvalidTarget(message)
+        });
     }
     Ok(expected)
 }

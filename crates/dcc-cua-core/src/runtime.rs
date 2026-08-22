@@ -76,9 +76,10 @@ fn windows_platform_input_gate(
     stage: &'static str,
 ) -> Result<(), dcc_cua_platform_windows::UiaError> {
     interactive_desktop::require_input_available().map_err(|error| {
-        dcc_cua_platform_windows::UiaError::PermissionDenied(format!(
-            "input_gate_stage={stage}: {error}"
-        ))
+        dcc_cua_platform_windows::UiaError::InteractiveDesktopUnavailable {
+            stage: stage.into(),
+            reason: error.to_string(),
+        }
     })
 }
 
@@ -87,9 +88,10 @@ fn windows_platform_window_activation_gate(
     stage: &'static str,
 ) -> Result<(), dcc_cua_platform_windows::UiaError> {
     interactive_desktop::require_window_activation_available().map_err(|error| {
-        dcc_cua_platform_windows::UiaError::PermissionDenied(format!(
-            "activation_gate_stage={stage}: {error}"
-        ))
+        dcc_cua_platform_windows::UiaError::InteractiveDesktopUnavailable {
+            stage: stage.into(),
+            reason: error.to_string(),
+        }
     })
 }
 
@@ -148,15 +150,10 @@ pub(crate) fn map_windows_window_mutation_error(
         dcc_cua_platform_windows::UiaError::ForegroundActivationRefused { .. } => {
             ComputerUseErrorCode::ForegroundActivationRefused
         }
-        dcc_cua_platform_windows::UiaError::PermissionDenied(message)
-            if message.contains("input_gate_stage=")
-                || message.contains("activation_gate_stage=") =>
-        {
+        dcc_cua_platform_windows::UiaError::InteractiveDesktopUnavailable { .. } => {
             ComputerUseErrorCode::InteractiveDesktopUnavailable
         }
-        dcc_cua_platform_windows::UiaError::InvalidTarget(message)
-            if message.contains("target_minimized:") =>
-        {
+        dcc_cua_platform_windows::UiaError::TargetMinimized(_) => {
             ComputerUseErrorCode::TargetMinimized
         }
         dcc_cua_platform_windows::UiaError::InvalidTarget(_) => {

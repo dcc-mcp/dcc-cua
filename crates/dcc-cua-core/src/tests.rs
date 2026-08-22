@@ -58,7 +58,7 @@ use crate::runtime::{
     live_observation_start_disposition, map_indicator_error, preflight_live_observation_start,
     run_windows_combined_down_drag_sequence, run_windows_fenced_absolute_path,
     run_windows_fenced_absolute_path_with_trace, run_windows_separated_raw_drag_sequence,
-    tool_schema_from_inventory, wait_for_window_probe_until,
+    tool_schema_from_inventory, wait_for_window_probe_until, windows_input_dispatch_unknown,
 };
 #[cfg(windows)]
 use crate::runtime::{
@@ -295,53 +295,55 @@ fn windows_local_route_includes_foreground_cursor_move() {
 }
 
 #[rstest]
-fn post_click_focus_loss_is_sent_but_never_retry_safe() {
-    let outcome = windows_post_input_focus_loss(
-        "foreground_unavailable: exact target HWND 0x3b61b48 or a verified same-process \
-         post-action window was not foreground after the click \
-         (actual foreground HWND 0x2792020)",
-    )
-    .expect("post-input focus loss must be classified");
+fn windows_click_dispatch_failure_is_typed_without_parsing_upstream_prose() {
+    let error = windows_input_dispatch_unknown(ComputerUseError::new(
+        ComputerUseErrorCode::InputFailed,
+        "upstream wording may change without changing this contract",
+    ));
+    let details = error.details.clone().expect("typed dispatch details");
 
+    assert_eq!(error.code, ComputerUseErrorCode::CompletionUnknown);
     assert_eq!(
-        outcome.actual_foreground_window.as_deref(),
-        Some("0x2792020")
+        details.phase,
+        Some(ComputerUseErrorPhase::LocalMutationDispatch)
     );
-    assert!(outcome.input_sent);
-    assert!(!outcome.delivery_confirmed);
-    assert!(!outcome.retry_safe);
-    assert!(outcome.verification_required);
-    assert_eq!(outcome.effect, "unverifiable");
-}
-
-#[rstest]
-fn pre_input_activation_failure_remains_a_hard_error() {
-    assert!(
-        windows_post_input_focus_loss(
-            "foreground_unavailable: Windows did not activate exact target HWND 0x3b61b48"
-        )
-        .is_none()
+    assert_eq!(details.action_attempted, Some(true));
+    assert_eq!(details.input_sent, Some(ComputerUseInputState::Unknown));
+    assert_eq!(
+        details.completion,
+        Some(ComputerUseCompletionState::Unknown)
     );
+    assert_eq!(details.effect_unknown, Some(true));
+    assert_eq!(details.blind_retry, Some(false));
+    assert_eq!(details.fresh_observation_required, Some(true));
 }
 
 #[cfg(windows)]
 #[rstest]
 #[case(
-    "target_minimized: exact activation target must be visible",
+    dcc_cua_platform_windows::UiaError::TargetMinimized("exact activation target must be visible".into()),
     ComputerUseErrorCode::TargetMinimized
 )]
 #[case(
-    "the exact activation target no longer exists or belongs to the granted process",
+    dcc_cua_platform_windows::UiaError::InvalidTarget("target_minimized: spoofed prose".into()),
     ComputerUseErrorCode::TargetUnavailable
 )]
+#[case(
+    dcc_cua_platform_windows::UiaError::InteractiveDesktopUnavailable {
+        stage: "foreground_dispatch".into(),
+        reason: "secure desktop".into(),
+    },
+    ComputerUseErrorCode::InteractiveDesktopUnavailable
+)]
+#[case(
+    dcc_cua_platform_windows::UiaError::PermissionDenied("input_gate_stage=spoofed prose".into()),
+    ComputerUseErrorCode::InputFailed
+)]
 fn window_mutation_identity_fences_keep_typed_target_failures(
-    #[case] message: &str,
+    #[case] source: dcc_cua_platform_windows::UiaError,
     #[case] expected: ComputerUseErrorCode,
 ) {
-    let error = map_windows_window_mutation_error(
-        "activate exact target",
-        dcc_cua_platform_windows::UiaError::InvalidTarget(message.into()),
-    );
+    let error = map_windows_window_mutation_error("activate exact target", source);
 
     assert_eq!(error.code, expected);
 }
@@ -1742,9 +1744,15 @@ fn minimized_exact_target_pauses_every_action_before_any_input_path() {
     let error = ensure_target_available_for_action(&target).unwrap_err();
 
     assert_eq!(error.code, ComputerUseErrorCode::TargetMinimized);
-    assert!(error.message.contains("target_minimized"));
-    assert!(error.message.contains("automatic_input=false"));
     assert!(error.message.contains("restore_activate"));
+    assert!(!error.message.contains("automatic_input="));
+    let details = error.details.expect("typed minimized-target details");
+    assert_eq!(details.phase, Some(ComputerUseErrorPhase::PreDispatch));
+    assert_eq!(details.action_attempted, Some(false));
+    assert_eq!(details.input_sent, Some(ComputerUseInputState::NotSent));
+    assert_eq!(details.automatic_input, Some(false));
+    assert_eq!(details.blind_retry, Some(false));
+    assert_eq!(details.fresh_observation_required, Some(true));
 }
 
 #[rstest]

@@ -162,7 +162,11 @@ impl ComputerUseSession {
 fn map_error(error: UiaError) -> ComputerUseError {
     let code = match error {
         UiaError::InvalidTarget(_) => ComputerUseErrorCode::InvalidTarget,
+        UiaError::TargetMinimized(_) => ComputerUseErrorCode::TargetMinimized,
         UiaError::StaleSnapshot(_) => ComputerUseErrorCode::StaleObservation,
+        UiaError::InteractiveDesktopUnavailable { .. } => {
+            ComputerUseErrorCode::InteractiveDesktopUnavailable
+        }
         UiaError::PermissionDenied(_) | UiaError::InvalidAction(_) => {
             ComputerUseErrorCode::InvalidAction
         }

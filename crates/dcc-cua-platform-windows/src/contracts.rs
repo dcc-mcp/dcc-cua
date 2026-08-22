@@ -71,10 +71,14 @@ pub enum UiaError {
     Unsupported,
     #[error("Windows UI Automation target is invalid: {0}")]
     InvalidTarget(String),
+    #[error("Windows UI Automation target is minimized: {0}")]
+    TargetMinimized(String),
     #[error("Windows UI Automation snapshot is stale: {0}")]
     StaleSnapshot(String),
     #[error("Windows UI Automation denied the request: {0}")]
     PermissionDenied(String),
+    #[error("Windows interactive desktop is unavailable during {stage}: {reason}")]
+    InteractiveDesktopUnavailable { stage: String, reason: String },
     #[error("Windows UI Automation action is invalid: {0}")]
     InvalidAction(String),
     #[error("Windows UI Automation backend failed: {0}")]

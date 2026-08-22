@@ -1077,6 +1077,19 @@ fn find_cache_read_rejects_a_newly_minimized_target_and_invalidates_old_uia_evid
     .unwrap_err();
 
     assert_eq!(error.code, ComputerUseErrorCode::TargetMinimized);
+    assert!(!error.message.contains("automatic_input="));
+    let details = error.details.expect("typed cached-target details");
+    assert_eq!(
+        details.phase,
+        Some(dcc_cua_core::ComputerUseErrorPhase::PreDispatch)
+    );
+    assert_eq!(details.action_attempted, Some(false));
+    assert_eq!(
+        details.input_sent,
+        Some(dcc_cua_core::ComputerUseInputState::NotSent)
+    );
+    assert_eq!(details.automatic_input, Some(false));
+    assert_eq!(details.fresh_observation_required, Some(true));
     assert!(host.latest_observation_id.is_none());
     assert!(host.latest_accessibility_state_id.is_none());
     assert!(host.latest_accessibility_root.is_none());

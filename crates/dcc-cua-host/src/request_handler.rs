@@ -72,7 +72,7 @@ pub(super) fn finish_target_sensitive_cached_read(
     let status = availability.status;
     host.observe_target_availability(availability);
     if host.input_events.current().status == dcc_cua_core::ComputerUseInputStatus::Suspended {
-        return Err(ComputerUseError::new(
+        return Err(cached_target_pre_dispatch_refusal(
             ComputerUseErrorCode::InteractiveDesktopUnavailable,
             host.input_events
                 .current()
@@ -83,15 +83,38 @@ pub(super) fn finish_target_sensitive_cached_read(
     }
     match status {
         dcc_cua_core::ComputerUseTargetStatus::Available => Ok(()),
-        dcc_cua_core::ComputerUseTargetStatus::Minimized => Err(ComputerUseError::new(
-            ComputerUseErrorCode::TargetMinimized,
-            "target_minimized: cached accessibility evidence is stale; automatic_input=false",
-        )),
-        dcc_cua_core::ComputerUseTargetStatus::Unavailable => Err(ComputerUseError::new(
-            ComputerUseErrorCode::TargetUnavailable,
-            "target_unavailable: cached accessibility evidence is stale; automatic_input=false",
-        )),
+        dcc_cua_core::ComputerUseTargetStatus::Minimized => {
+            Err(cached_target_pre_dispatch_refusal(
+                ComputerUseErrorCode::TargetMinimized,
+                "the exact target is minimized and cached accessibility evidence is stale",
+            ))
+        }
+        dcc_cua_core::ComputerUseTargetStatus::Unavailable => {
+            Err(cached_target_pre_dispatch_refusal(
+                ComputerUseErrorCode::TargetUnavailable,
+                "the exact target is unavailable and cached accessibility evidence is stale",
+            ))
+        }
     }
+}
+
+fn cached_target_pre_dispatch_refusal(
+    code: ComputerUseErrorCode,
+    message: impl Into<String>,
+) -> ComputerUseError {
+    ComputerUseError::new(code, message).with_details(dcc_cua_core::ComputerUseErrorDetails {
+        phase: Some(dcc_cua_core::ComputerUseErrorPhase::PreDispatch),
+        action_attempted: Some(false),
+        input_sent: Some(dcc_cua_core::ComputerUseInputState::NotSent),
+        completion: Some(dcc_cua_core::ComputerUseCompletionState::Known),
+        effect_unknown: Some(false),
+        local_session_invalidated: Some(false),
+        session_remains_active: Some(true),
+        automatic_input: Some(false),
+        blind_retry: Some(false),
+        fresh_observation_required: Some(true),
+        ..Default::default()
+    })
 }
 
 pub(super) fn bind_launched_process(

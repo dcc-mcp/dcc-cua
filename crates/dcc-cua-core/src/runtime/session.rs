@@ -1863,15 +1863,15 @@ impl ComputerUseSession {
             let target = self.require_observed_target_available().await?;
             self.require_observed_input_available()?;
             if target.pid != expected.pid || target.window_id != expected.window_id {
-                return Err(ComputerUseError::new(
+                return Err(local_activation_validation_failure(
                     ComputerUseErrorCode::TargetUnavailable,
                     "the exact target identity changed during restore_activate",
                 ));
             }
             if !target.is_foreground {
-                return Err(ComputerUseError::new(
+                return Err(local_activation_validation_failure(
                     ComputerUseErrorCode::InputFailed,
-                    "restore_activate did not leave the exact target restored, visible, and foreground; automatic_input=false",
+                    "restore_activate did not leave the exact target restored, visible, and foreground",
                 ));
             }
             self.set_banner_activity(BannerActivity::Ready);

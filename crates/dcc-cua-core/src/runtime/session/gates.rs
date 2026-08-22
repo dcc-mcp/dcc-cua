@@ -91,18 +91,37 @@ where
 
 pub(crate) fn ensure_target_available_for_action(target: &WindowTarget) -> ComputerUseResult<()> {
     if target.is_minimized {
-        return Err(ComputerUseError::new(
+        return Err(target_pre_dispatch_refusal(
             ComputerUseErrorCode::TargetMinimized,
-            "target_minimized: automatic_input=false; issue the explicit restore_activate window operation, then take a fresh observation before retrying",
+            "the exact target is minimized; issue the explicit restore_activate window operation, then take a fresh observation before retrying",
         ));
     }
     if !target.is_on_screen {
-        return Err(ComputerUseError::new(
+        return Err(target_pre_dispatch_refusal(
             ComputerUseErrorCode::TargetUnavailable,
-            "target_unavailable: automatic_input=false; wait for a typed target_available event and take a fresh observation before retrying",
+            "the exact target is unavailable; wait for a typed target_available event and take a fresh observation before retrying",
         ));
     }
     Ok(())
+}
+
+fn target_pre_dispatch_refusal(
+    code: ComputerUseErrorCode,
+    message: &'static str,
+) -> ComputerUseError {
+    ComputerUseError::new(code, message).with_details(ComputerUseErrorDetails {
+        phase: Some(ComputerUseErrorPhase::PreDispatch),
+        action_attempted: Some(false),
+        input_sent: Some(ComputerUseInputState::NotSent),
+        completion: Some(ComputerUseCompletionState::Known),
+        effect_unknown: Some(false),
+        local_session_invalidated: Some(false),
+        session_remains_active: Some(true),
+        automatic_input: Some(false),
+        blind_retry: Some(false),
+        fresh_observation_required: Some(true),
+        ..Default::default()
+    })
 }
 
 pub(crate) fn ensure_target_available_for_bootstrap_activation(
