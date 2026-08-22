@@ -3,9 +3,9 @@
 use std::sync::Arc;
 
 use dcc_cua_core::ComputerUseErrorCode;
-use dcc_cua_protocol::{RequestEnvelope, validate_request_id};
+use dcc_cua_protocol::{FrameError, RequestEnvelope, validate_request_id};
 use serde_json::{Value, json};
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::sync::Mutex as AsyncMutex;
 
 use super::{HostError, MAX_BINARY_FRAME_BYTES, MAX_JSON_FRAME_BYTES, Request};
@@ -104,21 +104,9 @@ pub(super) async fn read_frame<R: AsyncRead + Unpin>(
     reader: &mut R,
     max: usize,
 ) -> Result<Option<Vec<u8>>, HostError> {
-    let mut prefix = [0_u8; 4];
-    match reader.read_exact(&mut prefix).await {
-        Ok(_) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
-        Err(error) => return Err(error.into()),
-    }
-    let length = u32::from_be_bytes(prefix) as usize;
-    if length == 0 || length > max {
-        return Err(HostError::Protocol(format!(
-            "frame length {length} exceeds the host limit"
-        )));
-    }
-    let mut body = vec![0_u8; length];
-    reader.read_exact(&mut body).await?;
-    Ok(Some(body))
+    dcc_cua_protocol::read_frame(reader, max)
+        .await
+        .map_err(frame_error)
 }
 
 pub(super) async fn write_json_locked<W: AsyncWrite + Unpin>(
@@ -167,9 +155,9 @@ pub(super) async fn write_frame<W: AsyncWrite + Unpin>(
     body: &[u8],
     max: usize,
 ) -> Result<(), HostError> {
-    write_frame_unflushed(writer, body, max).await?;
-    writer.flush().await?;
-    Ok(())
+    dcc_cua_protocol::write_frame(writer, body, max)
+        .await
+        .map_err(frame_error)
 }
 
 pub(super) async fn write_frame_unflushed<W: AsyncWrite + Unpin>(
@@ -177,12 +165,14 @@ pub(super) async fn write_frame_unflushed<W: AsyncWrite + Unpin>(
     body: &[u8],
     max: usize,
 ) -> Result<(), HostError> {
-    if body.is_empty() || body.len() > max || body.len() > u32::MAX as usize {
-        return Err(HostError::Protocol(
-            "frame payload is outside the host limit".into(),
-        ));
+    dcc_cua_protocol::write_frame_unflushed(writer, body, max)
+        .await
+        .map_err(frame_error)
+}
+
+fn frame_error(error: FrameError) -> HostError {
+    match error {
+        FrameError::Io(error) => HostError::Io(error),
+        FrameError::Protocol(message) => HostError::Protocol(message),
     }
-    writer.write_all(&(body.len() as u32).to_be_bytes()).await?;
-    writer.write_all(body).await?;
-    Ok(())
 }

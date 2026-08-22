@@ -151,6 +151,66 @@ pub fn host_method_traits(method: &str) -> HostMethodTraits {
     }
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum FrameError {
+    #[error("frame transport failed: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("frame protocol failed: {0}")]
+    Protocol(String),
+}
+
+pub async fn read_frame<R: tokio::io::AsyncRead + Unpin>(
+    reader: &mut R,
+    max: usize,
+) -> Result<Option<Vec<u8>>, FrameError> {
+    use tokio::io::AsyncReadExt;
+
+    let mut prefix = [0_u8; 4];
+    match reader.read_exact(&mut prefix).await {
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
+        Err(error) => return Err(error.into()),
+    }
+    let length = u32::from_be_bytes(prefix) as usize;
+    if length == 0 || length > max {
+        return Err(FrameError::Protocol(format!(
+            "frame length {length} exceeds the configured limit"
+        )));
+    }
+    let mut body = vec![0_u8; length];
+    reader.read_exact(&mut body).await?;
+    Ok(Some(body))
+}
+
+pub async fn write_frame<W: tokio::io::AsyncWrite + Unpin>(
+    writer: &mut W,
+    body: &[u8],
+    max: usize,
+) -> Result<(), FrameError> {
+    use tokio::io::AsyncWriteExt;
+
+    write_frame_unflushed(writer, body, max).await?;
+    writer.flush().await?;
+    Ok(())
+}
+
+pub async fn write_frame_unflushed<W: tokio::io::AsyncWrite + Unpin>(
+    writer: &mut W,
+    body: &[u8],
+    max: usize,
+) -> Result<(), FrameError> {
+    use tokio::io::AsyncWriteExt;
+
+    if body.is_empty() || body.len() > max || body.len() > u32::MAX as usize {
+        return Err(FrameError::Protocol(
+            "frame payload is outside the configured limit".into(),
+        ));
+    }
+    writer.write_all(&(body.len() as u32).to_be_bytes()).await?;
+    writer.write_all(body).await?;
+    Ok(())
+}
+
 #[cfg(unix)]
 const UNIX_SOCKET_NAME: &str = "dcc-cua-v1.sock";
 

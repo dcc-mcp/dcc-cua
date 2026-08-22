@@ -56,6 +56,18 @@ fn method_traits_are_one_closed_cross_component_taxonomy() {
     assert_eq!(host_method_traits("unknown"), HostMethodTraits::default());
 }
 
+#[tokio::test]
+async fn shared_frame_codec_round_trips_and_enforces_one_limit() {
+    let (mut client, mut server) = tokio::io::duplex(64);
+    let writer = tokio::spawn(async move { write_frame(&mut client, b"frame", 16).await });
+    let body = read_frame(&mut server, 16).await.unwrap().unwrap();
+    writer.await.unwrap().unwrap();
+    assert_eq!(body, b"frame");
+
+    let (mut client, _server) = tokio::io::duplex(64);
+    assert!(write_frame(&mut client, b"too long", 4).await.is_err());
+}
+
 #[cfg(windows)]
 #[rstest]
 fn windows_endpoint_is_local_and_session_scoped() {

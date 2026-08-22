@@ -1337,6 +1337,7 @@ dependencies = [
  "rstest",
  "serde_json",
  "thiserror 2.0.19",
+ "tokio",
  "windows-sys 0.61.2",
 ]
 
