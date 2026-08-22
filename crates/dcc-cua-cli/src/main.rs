@@ -477,7 +477,7 @@ async fn call_tool(
         stop_result?;
         result
     } else {
-        driver.call_tool(&name, arguments).await?
+        driver.call_global_tool(&name, arguments).await?
     };
     if let (Some(path), Some(image)) = (output.as_deref(), result.images.first()) {
         fs::write(path, &image.data)?;

@@ -319,6 +319,16 @@ pub(crate) fn native_tool_allowed_globally(name: &str) -> bool {
     )
 }
 
+pub(crate) fn validate_unscoped_native_tool_route(name: &str) -> ComputerUseResult<()> {
+    if native_tool_allowed_globally(name) {
+        return Ok(());
+    }
+    Err(ComputerUseError::new(
+        ComputerUseErrorCode::InvalidAction,
+        format!("CUA tool {name:?} must use its dedicated or window-bound route"),
+    ))
+}
+
 pub(crate) fn native_tool_allowed_in_window_session(name: &str) -> bool {
     const DEDICATED_TOOLS: &[&str] = &[
         "list_windows",
