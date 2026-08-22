@@ -24,7 +24,7 @@ mod browser_refresh;
 mod windows_activation;
 #[cfg(feature = "gui-e2e")]
 use browser_refresh::{
-    browser_mutation_with_pre_dispatch_refresh_recovery, safe_pre_dispatch_refresh,
+    browser_mutation_with_pre_dispatch_refresh_recovery, safe_pre_dispatch_refresh_error,
 };
 
 #[cfg(feature = "gui-e2e")]
@@ -373,7 +373,10 @@ async fn host_request_with_pre_dispatch_refresh_recovery(
             message,
             response,
         }) if code == "session_refresh_required" => {
-            assert!(safe_pre_dispatch_refresh(&message), "{response}");
+            assert!(
+                safe_pre_dispatch_refresh_error(&message, &response),
+                "{response}"
+            );
             let refreshed = host_request(
                 host,
                 "accessibility_snapshot",
