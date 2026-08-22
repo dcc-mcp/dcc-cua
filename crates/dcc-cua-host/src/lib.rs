@@ -1330,7 +1330,6 @@ async fn stop_connection_control_sessions(sessions: &mut ConnectionSessions) {
         }
         session.interrupted = true;
         let _ = session.session.stop().await;
-        session.latest_shared_image = None;
     }
 }
 

@@ -24,6 +24,63 @@ fn input_state_read_is_pipeline_safe_but_event_long_poll_is_not() {
     assert!(!is_pipeline_safe_method("poll_session_events"));
 }
 
+#[rstest]
+fn shared_memory_batch_rejects_two_image_publishers_for_one_window_session() {
+    let requests = vec![
+        (
+            "request-1".to_owned(),
+            "snapshot".to_owned(),
+            json!({"session_id": "session-1"}),
+        ),
+        (
+            "request-2".to_owned(),
+            "browser_snapshot".to_owned(),
+            json!({"session_id": "session-1"}),
+        ),
+    ];
+
+    assert!(matches!(
+        validate_shared_memory_batch_handoffs(SnapshotTransport::SharedMemory, &requests),
+        Err(HostClientError::Protocol(message)) if message.contains("shared-memory image")
+    ));
+    assert!(
+        validate_shared_memory_batch_handoffs(SnapshotTransport::BinaryFrame, &requests).is_ok()
+    );
+
+    let distinct_sessions = vec![
+        requests[0].clone(),
+        (
+            "request-2".to_owned(),
+            "browser_snapshot".to_owned(),
+            json!({"session_id": "session-2"}),
+        ),
+    ];
+    assert!(
+        validate_shared_memory_batch_handoffs(SnapshotTransport::SharedMemory, &distinct_sessions,)
+            .is_ok()
+    );
+}
+
+#[rstest]
+fn shared_memory_batch_rejects_two_global_desktop_publishers() {
+    let requests = vec![
+        (
+            "request-1".to_owned(),
+            "desktop_snapshot".to_owned(),
+            json!({}),
+        ),
+        (
+            "request-2".to_owned(),
+            "desktop_snapshot".to_owned(),
+            json!({}),
+        ),
+    ];
+
+    assert!(
+        validate_shared_memory_batch_handoffs(SnapshotTransport::SharedMemory, &requests,).is_err()
+    );
+}
+
 #[cfg(windows)]
 #[rstest]
 #[tokio::test]

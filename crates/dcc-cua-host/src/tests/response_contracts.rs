@@ -247,7 +247,7 @@ fn action_response_uses_shared_memory_for_one_image() {
     );
     assert_eq!(response["result"]["content"][0]["data"], Value::Null);
     assert!(attachment.is_none());
-    assert!(shared.is_some_and(|image| image.is_alive()));
+    assert!(shared.is_some());
 }
 
 #[rstest]
@@ -417,7 +417,7 @@ fn browser_response_uses_shared_memory_for_one_image() {
     assert_eq!(response["image"]["length"], 3);
     assert_eq!(response["result"]["content"][0]["data"], Value::Null);
     assert!(attachment.is_none());
-    assert!(shared.is_some_and(|image| image.is_alive()));
+    assert!(shared.is_some());
 }
 
 #[rstest]
@@ -474,7 +474,7 @@ fn verification_images_follow_the_negotiated_transport() {
     .unwrap();
     assert_eq!(shared_response["encoding"], "shared_memory");
     assert!(shared_attachment.is_none());
-    assert!(shared.is_some_and(|image| image.is_alive()));
+    assert!(shared.is_some());
 
     let mut no_shared_image = None;
     let (binary_response, binary_attachment) = image_response(

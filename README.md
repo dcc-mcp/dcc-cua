@@ -691,7 +691,11 @@ For large or frequent images, use `connect_default_with_transport(...,
 SnapshotTransport::SharedMemory)` and open the returned descriptor with
 `dcc_cua_shm::SharedImageReader`; window/desktop snapshots, verification
 screenshots, and browser responses containing one image keep pixels out of the
-control pipe. Native extension results and browser responses containing multiple images use one
+control pipe. Published regions remain owned independently of observation-cache
+invalidation until their response handoff is replaced or the session ends.
+Shared-memory client batches reject more than one image publisher for the same
+window or desktop session, preventing an unread descriptor from being replaced.
+Native extension results and browser responses containing multiple images use one
 bounded binary attachment frame with offset descriptors.
 
 On Windows, the default endpoint is the per-session named pipe
