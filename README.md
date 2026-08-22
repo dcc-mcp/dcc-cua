@@ -694,7 +694,10 @@ bounded binary attachment frame with offset descriptors.
 
 On Windows, the default endpoint is the per-session named pipe
 `\\.\pipe\dcc-cua-v1-session-<WindowsSessionId>` with a protected DACL
-that grants access only to LocalSystem and the current Windows logon SID. On Unix, the default
+that grants access only to LocalSystem and the current Windows logon SID. The
+Host reserves the pipe name with a first-instance-only create and fails closed
+if it was pre-created; the Rust client also verifies the connected server
+process belongs to the current Windows user before sending `hello`. On Unix, the default
 endpoint is `$XDG_RUNTIME_DIR/dcc-cua-v1.sock` when that directory is
 owned by the current user with mode `0700`; otherwise it falls back to
 `$TMPDIR/dcc-cua-<uid>/dcc-cua-v1.sock`. The Host creates a missing

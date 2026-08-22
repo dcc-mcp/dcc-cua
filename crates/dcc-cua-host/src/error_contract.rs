@@ -19,6 +19,14 @@ impl HostTransport {
 pub enum HostError {
     #[error("host transport failed: {0}")]
     Io(#[from] std::io::Error),
+    #[error(
+        "host endpoint security failed: {endpoint} was pre-created before the first Host instance"
+    )]
+    EndpointHijacked {
+        endpoint: String,
+        #[source]
+        source: std::io::Error,
+    },
     #[error("host protocol failed: {0}")]
     Protocol(String),
     #[error("host protocol failed: {message}")]

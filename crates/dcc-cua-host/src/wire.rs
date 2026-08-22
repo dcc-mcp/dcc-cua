@@ -43,7 +43,7 @@ pub(super) fn error_code(error: &HostError) -> &'static str {
             ComputerUseErrorCode::BackendUnavailable => "backend_unavailable",
             ComputerUseErrorCode::ForegroundActivationRefused => "foreground_activation_refused",
         },
-        HostError::Io(_) => "backend_unavailable",
+        HostError::Io(_) | HostError::EndpointHijacked { .. } => "backend_unavailable",
         HostError::CodedProtocol { code, .. } => code.as_wire_code(),
         HostError::Protocol(_) => "invalid_request",
     }

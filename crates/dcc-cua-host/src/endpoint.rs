@@ -46,13 +46,15 @@ async fn serve_named_pipe(
 ) -> Result<(), HostError> {
     let _singleton = acquire_endpoint_singleton(&endpoint)?;
     let limiter = connection_limiter();
+    let mut first_instance = true;
     loop {
         let permit = limiter
             .clone()
             .acquire_owned()
             .await
             .map_err(|_| HostError::Protocol("Host connection limiter closed".into()))?;
-        let server = create_secure_named_pipe(&endpoint)?;
+        let server = create_secure_named_pipe(&endpoint, first_instance)?;
+        first_instance = false;
         server.connect().await?;
         let next_driver = driver.clone();
         let next_confirmation_host = confirmation_host.clone();
@@ -103,18 +105,33 @@ pub(crate) fn endpoint_singleton_name(endpoint: &str) -> String {
 }
 
 #[cfg(windows)]
-fn create_secure_named_pipe(
+pub(crate) fn create_secure_named_pipe(
     endpoint: &str,
+    first_instance: bool,
 ) -> Result<tokio::net::windows::named_pipe::NamedPipeServer, HostError> {
     use tokio::net::windows::named_pipe::ServerOptions;
+    use windows_sys::Win32::Foundation::ERROR_ACCESS_DENIED;
 
     let mut security = WindowsPipeSecurity::for_current_logon()?;
     // SAFETY: attributes points to a valid SECURITY_ATTRIBUTES and descriptor
     // for the duration of CreateNamedPipeW; Tokio does not retain either pointer.
-    Ok(unsafe {
+    let created = unsafe {
         ServerOptions::new()
-            .create_with_security_attributes_raw(endpoint, security.as_raw_attributes())?
-    })
+            .first_pipe_instance(first_instance)
+            .create_with_security_attributes_raw(endpoint, security.as_raw_attributes())
+    };
+    match created {
+        Err(source)
+            if first_instance && source.raw_os_error() == Some(ERROR_ACCESS_DENIED as i32) =>
+        {
+            Err(HostError::EndpointHijacked {
+                endpoint: endpoint.to_owned(),
+                source,
+            })
+        }
+        Ok(server) => Ok(server),
+        Err(error) => Err(error.into()),
+    }
 }
 
 #[cfg(windows)]

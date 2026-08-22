@@ -992,6 +992,7 @@ async fn connect_endpoint(endpoint: &str) -> HostClientResult<BoxedHostStream> {
     #[cfg(windows)]
     {
         let stream = tokio::net::windows::named_pipe::ClientOptions::new().open(endpoint)?;
+        verify_named_pipe_server_identity(&stream)?;
         Ok(Box::new(stream))
     }
     #[cfg(unix)]
@@ -1005,6 +1006,105 @@ async fn connect_endpoint(endpoint: &str) -> HostClientResult<BoxedHostStream> {
             "local endpoint transport is unsupported on this platform".into(),
         ))
     }
+}
+
+#[cfg(windows)]
+fn verify_named_pipe_server_identity(
+    stream: &tokio::net::windows::named_pipe::NamedPipeClient,
+) -> HostClientResult<()> {
+    use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+    use windows_sys::Win32::{
+        Foundation::HANDLE,
+        Security::{EqualSid, TOKEN_USER},
+        System::{
+            Pipes::GetNamedPipeServerProcessId,
+            Threading::{GetCurrentProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION},
+        },
+    };
+
+    let mut server_process_id = 0_u32;
+    if unsafe {
+        GetNamedPipeServerProcessId(stream.as_raw_handle() as HANDLE, &mut server_process_id)
+    } == 0
+        || server_process_id == 0
+    {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    let raw_server_process =
+        unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, server_process_id) };
+    if raw_server_process.is_null() {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    let server_process = unsafe { OwnedHandle::from_raw_handle(raw_server_process) };
+    let server_user = process_user_token_buffer(server_process.as_raw_handle() as HANDLE)?;
+    let current_user = process_user_token_buffer(unsafe { GetCurrentProcess() })?;
+    let server_sid = unsafe { &*server_user.as_ptr().cast::<TOKEN_USER>() }
+        .User
+        .Sid;
+    let current_sid = unsafe { &*current_user.as_ptr().cast::<TOKEN_USER>() }
+        .User
+        .Sid;
+    if unsafe { EqualSid(server_sid, current_sid) } == 0 {
+        return Err(HostClientError::Protocol(
+            "named-pipe server owner does not match the current user".into(),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn process_user_token_buffer(
+    process: windows_sys::Win32::Foundation::HANDLE,
+) -> std::io::Result<Vec<usize>> {
+    use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+    use windows_sys::Win32::{
+        Security::{GetTokenInformation, IsValidSid, TOKEN_QUERY, TOKEN_USER, TokenUser},
+        System::Threading::OpenProcessToken,
+    };
+
+    let mut raw_token = std::ptr::null_mut();
+    if unsafe { OpenProcessToken(process, TOKEN_QUERY, &mut raw_token) } == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let token = unsafe { OwnedHandle::from_raw_handle(raw_token) };
+    let mut required_bytes = 0_u32;
+    unsafe {
+        GetTokenInformation(
+            token.as_raw_handle(),
+            TokenUser,
+            std::ptr::null_mut(),
+            0,
+            &mut required_bytes,
+        )
+    };
+    if (required_bytes as usize) < std::mem::size_of::<TOKEN_USER>() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "process token returned no user SID",
+        ));
+    }
+    let words = (required_bytes as usize).div_ceil(std::mem::size_of::<usize>());
+    let mut buffer = vec![0_usize; words];
+    if unsafe {
+        GetTokenInformation(
+            token.as_raw_handle(),
+            TokenUser,
+            buffer.as_mut_ptr().cast(),
+            required_bytes,
+            &mut required_bytes,
+        )
+    } == 0
+    {
+        return Err(std::io::Error::last_os_error());
+    }
+    let sid = unsafe { &*buffer.as_ptr().cast::<TOKEN_USER>() }.User.Sid;
+    if sid.is_null() || unsafe { IsValidSid(sid) } == 0 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "process token returned an invalid user SID",
+        ));
+    }
+    Ok(buffer)
 }
 
 struct ChildStdio {
