@@ -369,6 +369,18 @@ fn backend_indicator_failures_remain_distinct_from_target_loss() {
 }
 
 #[rstest]
+fn cosmetic_rendering_failures_are_typed_and_non_fatal() {
+    let failure = BannerFailure::from(&IndicatorError::Rendering("paint failed".into()));
+
+    assert_eq!(failure.kind, BannerFailureKind::Rendering);
+    assert!(!failure.kind.is_session_fatal());
+    assert_eq!(
+        failure.message,
+        "control banner rendering degraded: paint failed"
+    );
+}
+
+#[rstest]
 fn shared_theme_contract_drives_cursor_indicator_and_motion_tokens() {
     let contract: serde_json::Value =
         serde_json::from_str(include_str!("../theme/dcc-cua-theme.json"))

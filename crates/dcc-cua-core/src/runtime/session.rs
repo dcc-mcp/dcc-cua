@@ -1540,6 +1540,7 @@ impl ComputerUseSession {
         let code = match failure.kind {
             BannerFailureKind::TargetLost => ComputerUseErrorCode::InvalidTarget,
             BannerFailureKind::Backend => ComputerUseErrorCode::BackendUnavailable,
+            BannerFailureKind::Rendering => return None,
         };
         Some(ComputerUseError::new(code, failure.message))
     }
