@@ -14,6 +14,48 @@ fn protocol_limits_are_ordered_and_bounded() {
     }
 }
 
+#[rstest]
+fn request_envelope_owns_shared_id_method_and_params_validation() {
+    let envelope = RequestEnvelope::from_value(&serde_json::json!({
+        "request_id": "request-1",
+        "method": "list_apps",
+    }))
+    .unwrap();
+    assert_eq!(envelope.request_id.as_deref(), Some("request-1"));
+    assert_eq!(envelope.method, "list_apps");
+    assert_eq!(envelope.params, serde_json::json!({}));
+
+    for invalid in [
+        serde_json::json!([]),
+        serde_json::json!({"request_id": "", "method": "list_apps"}),
+        serde_json::json!({"method": ""}),
+        serde_json::json!({"method": "list_apps", "params": []}),
+    ] {
+        assert!(RequestEnvelope::from_value(&invalid).is_err());
+    }
+}
+
+#[rstest]
+fn method_traits_are_one_closed_cross_component_taxonomy() {
+    let action = host_method_traits("execute_action");
+    assert!(action.action);
+    assert!(!action.pipeline_safe);
+
+    let snapshot = host_method_traits("snapshot");
+    assert!(snapshot.standalone_snapshot);
+    assert!(snapshot.pipeline_safe);
+
+    let discovery = host_method_traits("list_apps");
+    assert!(discovery.parallel_discovery);
+    assert!(discovery.pipeline_safe);
+
+    let semantic = host_method_traits("session_health");
+    assert!(semantic.semantic_observation);
+    assert!(semantic.pipeline_safe);
+
+    assert_eq!(host_method_traits("unknown"), HostMethodTraits::default());
+}
+
 #[cfg(windows)]
 #[rstest]
 fn windows_endpoint_is_local_and_session_scoped() {

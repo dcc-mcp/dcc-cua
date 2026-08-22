@@ -28,6 +28,7 @@ pub use dcc_cua_protocol::{
     MAX_JSON_FRAME_BYTES, MAX_PARALLEL_DISCOVERY_REQUESTS, MAX_REQUEST_ID_CHARS,
     MAX_SESSION_IDLE_TIMEOUT_MS, MIN_SESSION_IDLE_TIMEOUT_MS,
 };
+use dcc_cua_protocol::{host_method_traits, validate_request_id as validate_protocol_request_id};
 
 trait HostStream: AsyncRead + AsyncWrite + Unpin + Send {}
 impl<T> HostStream for T where T: AsyncRead + AsyncWrite + Unpin + Send {}
@@ -1077,29 +1078,7 @@ fn bind_task_credentials(
 }
 
 fn is_pipeline_safe_method(method: &str) -> bool {
-    matches!(
-        method,
-        "ping"
-            | "list_apps"
-            | "list_tools"
-            | "list_windows"
-            | "desktop_snapshot"
-            | "screen_size"
-            | "cursor_position"
-            | "get_window_state"
-            | "snapshot"
-            | "accessibility_snapshot"
-            | "verify_state"
-            | "get_session_state"
-            | "get_input_state"
-            | "session_health"
-            | "find"
-            | "browser_snapshot"
-            | "recording_state"
-            | "live_observation_state"
-            | "clipboard_read"
-            | "desktop_session_snapshot"
-    )
+    host_method_traits(method).pipeline_safe
 }
 
 fn validate_shared_memory_batch_handoffs(
@@ -1156,19 +1135,12 @@ fn response_capabilities(response: &Value) -> HostClientResult<Vec<String>> {
 /// use the Host's parallel dispatch path.
 #[must_use]
 pub fn is_parallel_discovery_method(method: &str) -> bool {
-    matches!(
-        method,
-        "ping" | "list_apps" | "list_tools" | "list_windows" | "screen_size" | "cursor_position"
-    )
+    host_method_traits(method).parallel_discovery
 }
 
 fn validate_request_id(request_id: &str) -> HostClientResult<()> {
-    if request_id.is_empty() || request_id.chars().count() > MAX_REQUEST_ID_CHARS {
-        return Err(HostClientError::Protocol(format!(
-            "request id must contain 1..{MAX_REQUEST_ID_CHARS} characters"
-        )));
-    }
-    Ok(())
+    validate_protocol_request_id(request_id)
+        .map_err(|error| HostClientError::Protocol(error.to_string()))
 }
 
 fn binary_attachment_length(response: &Value) -> Option<usize> {

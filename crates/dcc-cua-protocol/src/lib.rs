@@ -18,6 +18,139 @@ pub const DEFAULT_SESSION_IDLE_TIMEOUT_MS: u64 = 15 * 60 * 1_000;
 pub const MIN_SESSION_IDLE_TIMEOUT_MS: u64 = 1_000;
 pub const MAX_SESSION_IDLE_TIMEOUT_MS: u64 = 24 * 60 * 60 * 1_000;
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct RequestEnvelope {
+    pub request_id: Option<String>,
+    pub method: String,
+    pub params: serde_json::Value,
+}
+
+#[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
+pub enum RequestEnvelopeError {
+    #[error("request envelope must be an object")]
+    NotObject,
+    #[error("request_id must be a string")]
+    RequestIdNotString,
+    #[error("request_id must contain 1..{MAX_REQUEST_ID_CHARS} characters")]
+    InvalidRequestId,
+    #[error("request envelope requires a non-empty method")]
+    MissingMethod,
+    #[error("request params must be an object")]
+    ParamsNotObject,
+}
+
+impl RequestEnvelope {
+    pub fn from_value(value: &serde_json::Value) -> Result<Self, RequestEnvelopeError> {
+        let object = value.as_object().ok_or(RequestEnvelopeError::NotObject)?;
+        let request_id = object
+            .get("request_id")
+            .map(|value| {
+                value
+                    .as_str()
+                    .ok_or(RequestEnvelopeError::RequestIdNotString)
+                    .and_then(|request_id| {
+                        validate_request_id(request_id)?;
+                        Ok(request_id.to_owned())
+                    })
+            })
+            .transpose()?;
+        let method = object
+            .get("method")
+            .and_then(serde_json::Value::as_str)
+            .filter(|method| !method.is_empty())
+            .ok_or(RequestEnvelopeError::MissingMethod)?
+            .to_owned();
+        let params = object
+            .get("params")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!({}));
+        if !params.is_object() {
+            return Err(RequestEnvelopeError::ParamsNotObject);
+        }
+        Ok(Self {
+            request_id,
+            method,
+            params,
+        })
+    }
+}
+
+pub fn validate_request_id(request_id: &str) -> Result<(), RequestEnvelopeError> {
+    if request_id.is_empty() || request_id.chars().count() > MAX_REQUEST_ID_CHARS {
+        return Err(RequestEnvelopeError::InvalidRequestId);
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct HostMethodTraits {
+    pub action: bool,
+    pub standalone_snapshot: bool,
+    pub semantic_observation: bool,
+    pub pipeline_safe: bool,
+    pub parallel_discovery: bool,
+}
+
+#[must_use]
+pub fn host_method_traits(method: &str) -> HostMethodTraits {
+    let action = matches!(
+        method,
+        "execute_action"
+            | "execute_desktop_action"
+            | "browser_click"
+            | "browser_type"
+            | "browser_pointer"
+            | "browser_navigate"
+            | "browser_set_input_files"
+            | "browser_dialog"
+    );
+    let standalone_snapshot = matches!(
+        method,
+        "snapshot" | "desktop_snapshot" | "desktop_session_snapshot" | "browser_snapshot"
+    );
+    let semantic_observation = matches!(
+        method,
+        "accessibility_snapshot"
+            | "find"
+            | "get_session_state"
+            | "get_input_state"
+            | "session_health"
+            | "poll_session_events"
+            | "get_window_state"
+            | "verify_state"
+            | "wait_for"
+    );
+    let parallel_discovery = matches!(
+        method,
+        "ping" | "list_apps" | "list_tools" | "list_windows" | "screen_size" | "cursor_position"
+    );
+    let pipeline_safe = parallel_discovery
+        || matches!(
+            method,
+            "desktop_snapshot"
+                | "get_window_state"
+                | "snapshot"
+                | "accessibility_snapshot"
+                | "verify_state"
+                | "get_session_state"
+                | "get_input_state"
+                | "session_health"
+                | "find"
+                | "browser_snapshot"
+                | "recording_state"
+                | "live_observation_state"
+                | "clipboard_read"
+                | "desktop_session_snapshot"
+        );
+    HostMethodTraits {
+        action,
+        standalone_snapshot,
+        semantic_observation,
+        pipeline_safe,
+        parallel_discovery,
+    }
+}
+
 #[cfg(unix)]
 const UNIX_SOCKET_NAME: &str = "dcc-cua-v1.sock";
 

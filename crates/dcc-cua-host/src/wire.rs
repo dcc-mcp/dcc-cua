@@ -3,13 +3,12 @@
 use std::sync::Arc;
 
 use dcc_cua_core::ComputerUseErrorCode;
+use dcc_cua_protocol::{RequestEnvelope, validate_request_id};
 use serde_json::{Value, json};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::Mutex as AsyncMutex;
 
-use super::{
-    HostError, MAX_BINARY_FRAME_BYTES, MAX_JSON_FRAME_BYTES, MAX_REQUEST_ID_CHARS, Request,
-};
+use super::{HostError, MAX_BINARY_FRAME_BYTES, MAX_JSON_FRAME_BYTES, Request};
 
 pub(super) fn target_wire(target: &Value) -> Value {
     json!({
@@ -75,6 +74,9 @@ pub(super) fn parse_request_frame(
         Ok(request_id) => request_id,
         Err(error) => return Err((None, error)),
     };
+    if let Err(error) = RequestEnvelope::from_value(&envelope) {
+        return Err((request_id, error.to_string()));
+    }
     serde_json::from_value(envelope)
         .map(|request| (request_id.clone(), request))
         .map_err(|error| (request_id, error.to_string()))
@@ -87,11 +89,7 @@ pub(super) fn request_id_from(value: &Value) -> Result<Option<String>, String> {
     let request_id = request_id
         .as_str()
         .ok_or_else(|| "request_id must be a string".to_owned())?;
-    if request_id.is_empty() || request_id.chars().count() > MAX_REQUEST_ID_CHARS {
-        return Err(format!(
-            "request_id must contain 1..{MAX_REQUEST_ID_CHARS} characters"
-        ));
-    }
+    validate_request_id(request_id).map_err(|error| error.to_string())?;
     Ok(Some(request_id.to_owned()))
 }
 

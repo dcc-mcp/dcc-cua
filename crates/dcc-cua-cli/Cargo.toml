@@ -19,6 +19,7 @@ base64 = "0.22"
 dcc-cua-client = { path = "../dcc-cua-client" }
 dcc-cua-core = { path = "../dcc-cua-core" }
 dcc-cua-host = { path = "../dcc-cua-host" }
+dcc-cua-protocol = { path = "../dcc-cua-protocol" }
 dcc-cua-profiles = { path = "../dcc-cua-profiles" }
 dcc-cua-semantic-profiles = { path = "../dcc-cua-semantic-profiles" }
 dcc-cua-shm = { path = "../dcc-cua-shm" }
