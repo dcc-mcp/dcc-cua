@@ -232,6 +232,7 @@ pub(crate) fn input_backend_rejection_result(
     target: &WindowTarget,
 ) -> ComputerUseToolResult {
     ComputerUseToolResult {
+        status: ComputerUseToolStatus::Rejected,
         value: json!({
             "success": false,
             "route": "input_backend_selection",
@@ -869,7 +870,8 @@ impl ComputerUseDriver {
 pub(crate) fn diagnostic_tool_check(result: ComputerUseResult<ComputerUseToolResult>) -> Value {
     match result {
         Ok(result) => json!({
-            "success": true,
+            "success": result.status == ComputerUseToolStatus::Succeeded,
+            "status": result.status,
             "degraded": result.degraded,
             "summary": result.text,
             "result": result.value.get("structuredContent").unwrap_or(&result.value),
@@ -1200,17 +1202,12 @@ impl ComputerUseDesktopSession {
             ));
         }
         interactive_desktop::require_input_available()?;
-        let arguments = desktop_action_arguments(action, &self.session_id);
-        let tool = arguments["_tool"].as_str().unwrap_or_default().to_owned();
-        let mut arguments = arguments;
-        arguments
-            .as_object_mut()
-            .expect("desktop action arguments are an object")
-            .remove("_tool");
+        let command = desktop_action_arguments(action, &self.session_id)?;
+        let tool = command.tool;
         let result = call_driver_tool(
             &self.driver.driver,
-            tool.clone(),
-            arguments.to_string(),
+            tool,
+            command.arguments.to_string(),
             &format!("execute desktop CUA {tool}"),
         )
         .await?;

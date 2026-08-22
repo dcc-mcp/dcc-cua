@@ -19,6 +19,59 @@ fn target_error_codes_keep_wire_contract(
 }
 
 #[rstest]
+#[case("hard_deny", HostActionSafetyTier::HardDeny)]
+#[case("action_confirmation", HostActionSafetyTier::ActionConfirmation)]
+#[case("pre_approval", HostActionSafetyTier::PreApproval)]
+#[case("task_grant", HostActionSafetyTier::TaskGrant)]
+fn semantic_action_safety_comes_from_the_fresh_accessibility_element(
+    #[case] published: &str,
+    #[case] expected: HostActionSafetyTier,
+) {
+    let action = HostAction {
+        action: "click".into(),
+        element_index: Some(7),
+        element_token: Some("fresh-token".into()),
+        delivery_mode: None,
+        input_backend_id: None,
+        input_kind: "semantic".into(),
+        intent: "ordinary_edit".into(),
+        x: None,
+        y: None,
+        button: None,
+        scroll_x: None,
+        scroll_y: None,
+        scroll_by: None,
+        path: Vec::new(),
+        text: None,
+        delay_ms: None,
+        type_chars_only: false,
+        checked: None,
+        keys: Vec::new(),
+        modifiers: Vec::new(),
+        duration_ms: None,
+        steps: None,
+    };
+    let root = json!({"elements": [{
+        "element_index": 7,
+        "element_token": "fresh-token",
+        "policy_tier": published,
+    }]});
+
+    assert_eq!(action.safety_tier(Some(&root)), expected);
+    let upstream_root = json!({"elements": [{
+        "index": 7,
+        "element_token": "fresh-token",
+        "policy_tier": published,
+    }]});
+    assert_eq!(action.safety_tier(Some(&upstream_root)), expected);
+    assert_eq!(action.safety_tier(None), HostActionSafetyTier::HardDeny);
+    assert_eq!(
+        action.safety_tier(Some(&json!({"elements": []}))),
+        HostActionSafetyTier::HardDeny
+    );
+}
+
+#[rstest]
 fn post_snapshot_delay_is_bounded_and_requires_capture() {
     assert_eq!(post_snapshot_delay(true, 1_500).unwrap().as_millis(), 1_500);
     assert!(post_snapshot_delay(true, MAX_POST_SNAPSHOT_DELAY_MS + 1).is_err());

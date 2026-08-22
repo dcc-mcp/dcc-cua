@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use dcc_cua_interrupt::{broadcast_interrupt, interrupt_generation, interrupt_generation_changed};
 use windows::Win32::Foundation::{
     COLORREF, ERROR_CLASS_ALREADY_EXISTS, HANDLE, HWND, LPARAM, LRESULT, RECT, WPARAM,
 };
@@ -56,8 +57,7 @@ use super::{
     BannerActivity, BannerActivitySignal, BannerFailure, BannerIndicators, BannerStatus,
     BannerTarget, IndicatorError, IndicatorMotionPolicy, IndicatorMotionStatus,
     TARGET_FRAME_ALPHA_MAX, TARGET_FRAME_GRADIENT_STEPS, TARGET_FRAME_THICKNESS_DIP,
-    broadcast_interrupt, indicator_frame_alpha, interrupt_generation, interrupt_generation_changed,
-    target_frame_band_alpha, target_frame_has_visible_band, theme_tokens,
+    indicator_frame_alpha, target_frame_band_alpha, target_frame_has_visible_band, theme_tokens,
     visible_target_frame_band,
 };
 

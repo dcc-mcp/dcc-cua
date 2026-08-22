@@ -1481,7 +1481,7 @@ fn failed_window_mutation_still_invalidates_host_observation_cache() {
 }
 
 #[rstest]
-fn hard_denied_intents_do_not_reach_cua() {
+fn client_declared_intent_cannot_select_the_host_safety_tier() {
     let action = HostAction {
         action: "keypress".into(),
         element_index: None,
@@ -1506,8 +1506,10 @@ fn hard_denied_intents_do_not_reach_cua() {
         duration_ms: None,
         steps: None,
     };
-    assert!(action.reject_policy().is_some());
-    assert!(action.requires_approval());
+    assert_eq!(
+        action.safety_tier(None),
+        HostActionSafetyTier::ActionConfirmation
+    );
 }
 
 #[rstest]
@@ -1538,8 +1540,9 @@ fn trusted_confirmation_intents_require_the_explicit_grant(#[case] intent: &str)
         duration_ms: None,
         steps: None,
     };
-    assert!(action.reject_policy().is_none());
-    assert!(action.requires_approval());
+    let tier = action.safety_tier(None);
+    assert!(tier.rejection().is_none());
+    assert!(tier.requires_confirmation());
 }
 
 struct EchoingConfirmationHost;

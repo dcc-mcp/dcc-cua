@@ -25,7 +25,7 @@ pub(crate) struct SnapshotState {
 pub(crate) fn normalize(raw: &Value) -> Result<(Value, SnapshotState), UiaError> {
     let root = raw
         .get("root")
-        .ok_or_else(|| UiaError::BackendUnavailable("snapshot returned no scoped root".into()))?;
+        .ok_or_else(|| UiaError::OperationFailed("snapshot returned no scoped root".into()))?;
     let snapshot_id = Uuid::new_v4().simple().to_string();
     let mut elements = Vec::new();
     let mut fences = Vec::new();
@@ -73,9 +73,9 @@ fn flatten(
         control_id,
         identity,
         is_password: node["is_password"].as_bool().unwrap_or(false),
-        name: name.to_lowercase(),
-        automation_id: automation_id.to_lowercase(),
-        class_name: class_name.to_lowercase(),
+        name: name.clone(),
+        automation_id: automation_id.clone(),
+        class_name: class_name.clone(),
         policy_tier: policy_tier.clone(),
     });
 
@@ -117,7 +117,7 @@ fn flatten(
 
 pub(crate) fn resolve_index(
     state: &SnapshotState,
-    element_index: Option<u32>,
+    _element_index: Option<u32>,
     element_token: Option<&str>,
 ) -> Result<usize, UiaError> {
     if let Some(token) = element_token {
@@ -134,10 +134,9 @@ pub(crate) fn resolve_index(
             .filter(|index| *index < state.fences.len())
             .ok_or_else(|| UiaError::StaleSnapshot("element token index is invalid".into()));
     }
-    element_index
-        .map(|value| value as usize)
-        .filter(|index| *index < state.fences.len())
-        .ok_or_else(|| UiaError::InvalidAction("a current element locator is required".into()))
+    Err(UiaError::InvalidAction(
+        "a current element token is required for mutation".into(),
+    ))
 }
 
 fn role(node: &Value) -> String {

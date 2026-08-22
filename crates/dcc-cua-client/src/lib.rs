@@ -20,13 +20,16 @@ use std::{
 };
 
 use serde_json::{Value, json};
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf, ReadHalf, WriteHalf};
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, ReadBuf, ReadHalf, WriteHalf};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 
 pub use dcc_cua_protocol::{
     DEFAULT_SESSION_IDLE_TIMEOUT_MS, HOST_PROTOCOL_VERSION, MAX_BINARY_FRAME_BYTES,
     MAX_JSON_FRAME_BYTES, MAX_PARALLEL_DISCOVERY_REQUESTS, MAX_REQUEST_ID_CHARS,
     MAX_SESSION_IDLE_TIMEOUT_MS, MIN_SESSION_IDLE_TIMEOUT_MS,
+};
+use dcc_cua_protocol::{
+    FrameError, host_method_traits, validate_request_id as validate_protocol_request_id,
 };
 
 trait HostStream: AsyncRead + AsyncWrite + Unpin + Send {}
@@ -1077,29 +1080,7 @@ fn bind_task_credentials(
 }
 
 fn is_pipeline_safe_method(method: &str) -> bool {
-    matches!(
-        method,
-        "ping"
-            | "list_apps"
-            | "list_tools"
-            | "list_windows"
-            | "desktop_snapshot"
-            | "screen_size"
-            | "cursor_position"
-            | "get_window_state"
-            | "snapshot"
-            | "accessibility_snapshot"
-            | "verify_state"
-            | "get_session_state"
-            | "get_input_state"
-            | "session_health"
-            | "find"
-            | "browser_snapshot"
-            | "recording_state"
-            | "live_observation_state"
-            | "clipboard_read"
-            | "desktop_session_snapshot"
-    )
+    host_method_traits(method).pipeline_safe
 }
 
 fn validate_shared_memory_batch_handoffs(
@@ -1156,19 +1137,12 @@ fn response_capabilities(response: &Value) -> HostClientResult<Vec<String>> {
 /// use the Host's parallel dispatch path.
 #[must_use]
 pub fn is_parallel_discovery_method(method: &str) -> bool {
-    matches!(
-        method,
-        "ping" | "list_apps" | "list_tools" | "list_windows" | "screen_size" | "cursor_position"
-    )
+    host_method_traits(method).parallel_discovery
 }
 
 fn validate_request_id(request_id: &str) -> HostClientResult<()> {
-    if request_id.is_empty() || request_id.chars().count() > MAX_REQUEST_ID_CHARS {
-        return Err(HostClientError::Protocol(format!(
-            "request id must contain 1..{MAX_REQUEST_ID_CHARS} characters"
-        )));
-    }
-    Ok(())
+    validate_protocol_request_id(request_id)
+        .map_err(|error| HostClientError::Protocol(error.to_string()))
 }
 
 fn binary_attachment_length(response: &Value) -> Option<usize> {
@@ -1197,21 +1171,9 @@ async fn read_frame<R: AsyncRead + Unpin>(
     reader: &mut R,
     max: usize,
 ) -> HostClientResult<Option<Vec<u8>>> {
-    let mut prefix = [0_u8; 4];
-    match reader.read_exact(&mut prefix).await {
-        Ok(_) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
-        Err(error) => return Err(error.into()),
-    }
-    let length = u32::from_be_bytes(prefix) as usize;
-    if length == 0 || length > max {
-        return Err(HostClientError::Protocol(format!(
-            "frame length {length} exceeds the host limit"
-        )));
-    }
-    let mut body = vec![0_u8; length];
-    reader.read_exact(&mut body).await?;
-    Ok(Some(body))
+    dcc_cua_protocol::read_frame(reader, max)
+        .await
+        .map_err(frame_error)
 }
 
 async fn write_frame_unflushed<W: AsyncWrite + Unpin>(
@@ -1219,14 +1181,16 @@ async fn write_frame_unflushed<W: AsyncWrite + Unpin>(
     body: &[u8],
     max: usize,
 ) -> HostClientResult<()> {
-    if body.is_empty() || body.len() > max || body.len() > u32::MAX as usize {
-        return Err(HostClientError::Protocol(
-            "frame payload is outside the host limit".into(),
-        ));
+    dcc_cua_protocol::write_frame_unflushed(writer, body, max)
+        .await
+        .map_err(frame_error)
+}
+
+fn frame_error(error: FrameError) -> HostClientError {
+    match error {
+        FrameError::Io(error) => HostClientError::Io(error),
+        FrameError::Protocol(message) => HostClientError::Protocol(message),
     }
-    writer.write_all(&(body.len() as u32).to_be_bytes()).await?;
-    writer.write_all(body).await?;
-    Ok(())
 }
 
 async fn connect_endpoint(endpoint: &str) -> HostClientResult<BoxedHostStream> {

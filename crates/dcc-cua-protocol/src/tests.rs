@@ -14,6 +14,77 @@ fn protocol_limits_are_ordered_and_bounded() {
     }
 }
 
+#[rstest]
+fn request_envelope_owns_shared_id_method_and_params_validation() {
+    let envelope = RequestEnvelope::from_value(&serde_json::json!({
+        "request_id": "request-1",
+        "method": "list_apps",
+    }))
+    .unwrap();
+    assert_eq!(envelope.request_id.as_deref(), Some("request-1"));
+    assert_eq!(envelope.method, "list_apps");
+    assert_eq!(envelope.params, serde_json::json!({}));
+
+    for invalid in [
+        serde_json::json!([]),
+        serde_json::json!({"request_id": "", "method": "list_apps"}),
+        serde_json::json!({"method": ""}),
+        serde_json::json!({"method": "list_apps", "params": []}),
+    ] {
+        assert!(RequestEnvelope::from_value(&invalid).is_err());
+    }
+}
+
+#[rstest]
+fn method_traits_are_one_closed_cross_component_taxonomy() {
+    let action = host_method_traits("execute_action");
+    assert!(action.action);
+    assert!(!action.pipeline_safe);
+
+    let snapshot = host_method_traits("snapshot");
+    assert!(snapshot.standalone_snapshot);
+    assert!(snapshot.pipeline_safe);
+
+    let discovery = host_method_traits("list_apps");
+    assert!(discovery.parallel_discovery);
+    assert!(discovery.pipeline_safe);
+
+    let semantic = host_method_traits("session_health");
+    assert!(semantic.semantic_observation);
+    assert!(semantic.pipeline_safe);
+
+    assert_eq!(host_method_traits("unknown"), HostMethodTraits::default());
+}
+
+#[rstest]
+#[tokio::test]
+async fn shared_frame_codec_round_trips_and_enforces_one_limit() {
+    let (mut client, mut server) = tokio::io::duplex(64);
+    let writer = tokio::spawn(async move { write_frame(&mut client, b"frame", 16).await });
+    let body = read_frame(&mut server, 16).await.unwrap().unwrap();
+    writer.await.unwrap().unwrap();
+    assert_eq!(body, b"frame");
+
+    let (mut client, _server) = tokio::io::duplex(64);
+    assert!(write_frame(&mut client, b"too long", 4).await.is_err());
+}
+
+#[rstest]
+fn shared_local_path_shape_is_absolute_bounded_and_nul_free() {
+    #[cfg(windows)]
+    let absolute = r"C:\temp\artifact.bin";
+    #[cfg(unix)]
+    let absolute = "/tmp/artifact.bin";
+
+    assert_eq!(
+        validate_absolute_local_path(absolute).unwrap(),
+        std::path::Path::new(absolute)
+    );
+    assert!(validate_absolute_local_path("relative.bin").is_err());
+    assert!(validate_absolute_local_path("bad\0path").is_err());
+    assert!(validate_absolute_local_path(&"x".repeat(MAX_LOCAL_PATH_CHARS + 1)).is_err());
+}
+
 #[cfg(windows)]
 #[rstest]
 fn windows_endpoint_is_local_and_session_scoped() {

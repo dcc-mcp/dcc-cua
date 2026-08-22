@@ -103,10 +103,19 @@ fn held_key_wait_honors_interrupts_and_zero_duration() {
 }
 
 #[cfg(windows)]
+fn policy_fixture_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    static GUARD: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+    GUARD
+        .get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+#[cfg(windows)]
 fn evaluate_policy_fixture(
+    worker: &mut UiaWorker,
     fixture: serde_json::Value,
 ) -> Result<serde_json::Value, super::UiaError> {
-    let mut worker = UiaWorker::start()?;
     let mut payload = fixture.as_object().cloned().ok_or_else(|| {
         super::UiaError::InvalidAction("policy fixture must be a JSON object".into())
     })?;
@@ -351,7 +360,8 @@ fn snapshot_normalization_emits_flat_agent_friendly_elements() {
             .unwrap()
             .starts_with(TOKEN_PREFIX)
     );
-    assert_eq!(resolve_index(&state, Some(1), None).unwrap(), 1);
+    let index_only = resolve_index(&state, Some(1), None).unwrap_err();
+    assert!(matches!(index_only, super::UiaError::InvalidAction(_)));
     assert_eq!(
         resolve_index(&state, None, elements[1]["element_token"].as_str()).unwrap(),
         1
@@ -360,9 +370,9 @@ fn snapshot_normalization_emits_flat_agent_friendly_elements() {
     assert_eq!(fence.control_id, "uia:menu");
     assert_eq!(fence.identity, "menu");
     assert!(!fence.is_password);
-    assert_eq!(fence.name, "dcc mcp");
+    assert_eq!(fence.name, "DCC MCP");
     assert_eq!(fence.automation_id, "");
-    assert_eq!(fence.class_name, "qaction");
+    assert_eq!(fence.class_name, "QAction");
     assert_eq!(fence.policy_tier, "task_grant");
 }
 
@@ -422,6 +432,8 @@ fn worker_protocol_rejects_missing_or_mismatched_versions() {
 #[cfg(windows)]
 #[rstest]
 fn powershell_policy_tiers_are_behaviorally_fixture_tested() {
+    let _guard = policy_fixture_test_guard();
+    let mut worker = UiaWorker::start().expect("start policy fixture worker");
     for (facts, expected) in [
         (
             json!({"is_password": true, "name": "", "automation_id": "", "class_name": "", "secret_marker": false}),
@@ -440,10 +452,13 @@ fn powershell_policy_tiers_are_behaviorally_fixture_tested() {
             "task_grant",
         ),
     ] {
-        let response = evaluate_policy_fixture(json!({
-            "operation": "control_policy_tier",
-            "facts": facts,
-        }))
+        let response = evaluate_policy_fixture(
+            &mut worker,
+            json!({
+                "operation": "control_policy_tier",
+                "facts": facts,
+            }),
+        )
         .expect("policy fixture response");
         assert_eq!(response["result"], expected);
     }
@@ -452,12 +467,14 @@ fn powershell_policy_tiers_are_behaviorally_fixture_tested() {
 #[cfg(windows)]
 #[rstest]
 fn powershell_fence_and_sensitive_target_policies_are_behaviorally_fixture_tested() {
+    let _guard = policy_fixture_test_guard();
+    let mut worker = UiaWorker::start().expect("start policy fixture worker");
     let expected = json!({
         "identity": "42.7",
         "is_password": false,
-        "name": "save",
-        "automation_id": "savebutton",
-        "class_name": "button",
+        "name": "Save",
+        "automation_id": "SaveButton",
+        "class_name": "Button",
         "policy_tier": "action_confirmation",
     });
     let facts = json!({
@@ -468,15 +485,36 @@ fn powershell_fence_and_sensitive_target_policies_are_behaviorally_fixture_teste
         "class_name": "Button",
         "policy_tier": "action_confirmation",
     });
-    let matching = evaluate_policy_fixture(json!({
-        "operation": "matches_expected_fence",
-        "facts": facts,
-        "expected": expected,
-    }))
+    let matching = evaluate_policy_fixture(
+        &mut worker,
+        json!({
+            "operation": "matches_expected_fence",
+            "facts": facts,
+            "expected": expected,
+        }),
+    )
     .expect("matching fence fixture");
     assert_eq!(matching["result"], true);
 
-    let stale = evaluate_policy_fixture(json!({
+    let changed_case = evaluate_policy_fixture(
+        &mut worker,
+        json!({
+            "operation": "matches_expected_fence",
+            "facts": facts.clone(),
+            "expected": {
+                "identity": "42.7",
+                "is_password": false,
+                "name": "save",
+                "automation_id": "SaveButton",
+                "class_name": "Button",
+                "policy_tier": "action_confirmation",
+            },
+        }),
+    )
+    .expect("case-changed fence fixture");
+    assert_eq!(changed_case["result"], false);
+
+    let stale = evaluate_policy_fixture(&mut worker, json!({
         "operation": "matches_expected_fence",
         "facts": {"identity": "changed", "is_password": false, "name": "Save", "automation_id": "SaveButton", "class_name": "Button", "policy_tier": "action_confirmation"},
         "expected": expected,
@@ -489,10 +527,13 @@ fn powershell_fence_and_sensitive_target_policies_are_behaviorally_fixture_teste
         json!({"identity_verified": true, "process_name": "pwsh", "class_name": ""}),
         json!({"identity_verified": true, "process_name": "explorer", "class_name": "#32770"}),
     ] {
-        let denied = evaluate_policy_fixture(json!({
-            "operation": "denied_target_reason",
-            "facts": facts,
-        }))
+        let denied = evaluate_policy_fixture(
+            &mut worker,
+            json!({
+                "operation": "denied_target_reason",
+                "facts": facts,
+            }),
+        )
         .expect("sensitive target fixture");
         assert!(
             denied["result"]
@@ -760,7 +801,7 @@ fn restore_activate_sequence_stops_at_each_failed_input_gate() {
 fn completed_background_action_reports_restore_failure_without_becoming_retryable() {
     let result = completed_action_result(
         &json!({"ok": true, "message": "clicked", "control": {"name": "OK"}}),
-        Some(Err(super::UiaError::BackendUnavailable(
+        Some(Err(super::UiaError::OperationFailed(
             "foreground changed".into(),
         ))),
     )
@@ -809,6 +850,18 @@ fn read_only_uia_retry_is_single_and_backend_failure_only() {
         },
     );
     assert!(matches!(invalid, Err(super::UiaError::InvalidTarget(_))));
+    assert_eq!(retries.get(), 1);
+
+    let terminal = retry_read_only_after_backend_failure(
+        Err::<u32, _>(super::UiaError::OperationFailed(
+            "provider rejected request".into(),
+        )),
+        || {
+            retries.set(retries.get() + 1);
+            Ok(7)
+        },
+    );
+    assert!(matches!(terminal, Err(super::UiaError::OperationFailed(_))));
     assert_eq!(retries.get(), 1);
 }
 

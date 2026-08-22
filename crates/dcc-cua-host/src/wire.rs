@@ -3,13 +3,12 @@
 use std::sync::Arc;
 
 use dcc_cua_core::ComputerUseErrorCode;
+use dcc_cua_protocol::{FrameError, RequestEnvelope, validate_request_id};
 use serde_json::{Value, json};
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::sync::Mutex as AsyncMutex;
 
-use super::{
-    HostError, MAX_BINARY_FRAME_BYTES, MAX_JSON_FRAME_BYTES, MAX_REQUEST_ID_CHARS, Request,
-};
+use super::{HostError, MAX_BINARY_FRAME_BYTES, MAX_JSON_FRAME_BYTES, Request};
 
 pub(super) fn target_wire(target: &Value) -> Value {
     json!({
@@ -75,6 +74,9 @@ pub(super) fn parse_request_frame(
         Ok(request_id) => request_id,
         Err(error) => return Err((None, error)),
     };
+    if let Err(error) = RequestEnvelope::from_value(&envelope) {
+        return Err((request_id, error.to_string()));
+    }
     serde_json::from_value(envelope)
         .map(|request| (request_id.clone(), request))
         .map_err(|error| (request_id, error.to_string()))
@@ -87,11 +89,7 @@ pub(super) fn request_id_from(value: &Value) -> Result<Option<String>, String> {
     let request_id = request_id
         .as_str()
         .ok_or_else(|| "request_id must be a string".to_owned())?;
-    if request_id.is_empty() || request_id.chars().count() > MAX_REQUEST_ID_CHARS {
-        return Err(format!(
-            "request_id must contain 1..{MAX_REQUEST_ID_CHARS} characters"
-        ));
-    }
+    validate_request_id(request_id).map_err(|error| error.to_string())?;
     Ok(Some(request_id.to_owned()))
 }
 
@@ -106,21 +104,9 @@ pub(super) async fn read_frame<R: AsyncRead + Unpin>(
     reader: &mut R,
     max: usize,
 ) -> Result<Option<Vec<u8>>, HostError> {
-    let mut prefix = [0_u8; 4];
-    match reader.read_exact(&mut prefix).await {
-        Ok(_) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
-        Err(error) => return Err(error.into()),
-    }
-    let length = u32::from_be_bytes(prefix) as usize;
-    if length == 0 || length > max {
-        return Err(HostError::Protocol(format!(
-            "frame length {length} exceeds the host limit"
-        )));
-    }
-    let mut body = vec![0_u8; length];
-    reader.read_exact(&mut body).await?;
-    Ok(Some(body))
+    dcc_cua_protocol::read_frame(reader, max)
+        .await
+        .map_err(frame_error)
 }
 
 pub(super) async fn write_json_locked<W: AsyncWrite + Unpin>(
@@ -169,9 +155,9 @@ pub(super) async fn write_frame<W: AsyncWrite + Unpin>(
     body: &[u8],
     max: usize,
 ) -> Result<(), HostError> {
-    write_frame_unflushed(writer, body, max).await?;
-    writer.flush().await?;
-    Ok(())
+    dcc_cua_protocol::write_frame(writer, body, max)
+        .await
+        .map_err(frame_error)
 }
 
 pub(super) async fn write_frame_unflushed<W: AsyncWrite + Unpin>(
@@ -179,12 +165,14 @@ pub(super) async fn write_frame_unflushed<W: AsyncWrite + Unpin>(
     body: &[u8],
     max: usize,
 ) -> Result<(), HostError> {
-    if body.is_empty() || body.len() > max || body.len() > u32::MAX as usize {
-        return Err(HostError::Protocol(
-            "frame payload is outside the host limit".into(),
-        ));
+    dcc_cua_protocol::write_frame_unflushed(writer, body, max)
+        .await
+        .map_err(frame_error)
+}
+
+fn frame_error(error: FrameError) -> HostError {
+    match error {
+        FrameError::Io(error) => HostError::Io(error),
+        FrameError::Protocol(message) => HostError::Protocol(message),
     }
-    writer.write_all(&(body.len() as u32).to_be_bytes()).await?;
-    writer.write_all(body).await?;
-    Ok(())
 }

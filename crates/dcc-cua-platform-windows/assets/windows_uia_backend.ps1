@@ -175,9 +175,9 @@ function Matches-Expected-Fence-From-Facts($facts, $expected) {
   try {
     return ([string]$facts.identity) -ceq ([string]$expected.identity) -and
       ([bool]$facts.is_password) -eq ([bool]$expected.is_password) -and
-      ([string]$facts.name).ToLowerInvariant() -ceq ([string]$expected.name) -and
-      ([string]$facts.automation_id).ToLowerInvariant() -ceq ([string]$expected.automation_id) -and
-      ([string]$facts.class_name).ToLowerInvariant() -ceq ([string]$expected.class_name) -and
+      ([string]$facts.name) -ceq ([string]$expected.name) -and
+      ([string]$facts.automation_id) -ceq ([string]$expected.automation_id) -and
+      ([string]$facts.class_name) -ceq ([string]$expected.class_name) -and
       ([string]$facts.policy_tier) -ceq ([string]$expected.policy_tier)
   } catch { return $false }
 }

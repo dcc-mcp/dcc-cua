@@ -6,6 +6,7 @@ members = [
     "crates/dcc-cua-e2e",
     "crates/dcc-cua-host",
     "crates/dcc-cua-indicator",
+    "crates/dcc-cua-interrupt",
     "crates/dcc-cua-platform-windows",
     "crates/dcc-cua-protocol",
     "crates/dcc-cua-profiles",

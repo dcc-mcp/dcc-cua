@@ -1169,6 +1169,7 @@ version = "1.3.3"
 dependencies = [
  "base64 0.22.1",
  "dcc-cua-core",
+ "dcc-cua-protocol",
  "dcc-cua-workspace-hack",
  "rstest",
  "serde",
@@ -1185,6 +1186,7 @@ dependencies = [
  "dcc-cua-core",
  "dcc-cua-host",
  "dcc-cua-profiles",
+ "dcc-cua-protocol",
  "dcc-cua-semantic-profiles",
  "dcc-cua-shm",
  "dcc-cua-workspace-hack",
@@ -1223,7 +1225,9 @@ dependencies = [
  "cua-driver-sdk",
  "cursor-overlay",
  "dcc-cua-indicator",
+ "dcc-cua-interrupt",
  "dcc-cua-platform-windows",
+ "dcc-cua-protocol",
  "dcc-cua-showcase",
  "dcc-cua-workspace-hack",
  "platform-macos",
@@ -1260,6 +1264,7 @@ dependencies = [
  "dcc-cua-browser",
  "dcc-cua-core",
  "dcc-cua-indicator",
+ "dcc-cua-interrupt",
  "dcc-cua-protocol",
  "dcc-cua-shm",
  "dcc-cua-workspace-hack",
@@ -1277,12 +1282,21 @@ dependencies = [
 name = "dcc-cua-indicator"
 version = "1.3.3"
 dependencies = [
+ "dcc-cua-interrupt",
  "dcc-cua-workspace-hack",
  "rstest",
  "serde",
  "serde_json",
  "thiserror 2.0.19",
  "windows 0.61.3",
+]
+
+[[package]]
+name = "dcc-cua-interrupt"
+version = "1.3.3"
+dependencies = [
+ "dcc-cua-workspace-hack",
+ "rstest",
 ]
 
 [[package]]
@@ -1324,6 +1338,9 @@ dependencies = [
  "dcc-cua-workspace-hack",
  "libc",
  "rstest",
+ "serde_json",
+ "thiserror 2.0.19",
+ "tokio",
  "windows-sys 0.61.2",
 ]
 
@@ -1344,6 +1361,7 @@ dependencies = [
 name = "dcc-cua-shm"
 version = "1.3.3"
 dependencies = [
+ "dcc-cua-protocol",
  "dcc-cua-workspace-hack",
  "ipckit",
  "rstest",

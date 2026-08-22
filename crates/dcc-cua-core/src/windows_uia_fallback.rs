@@ -10,9 +10,25 @@ use crate::policy::{bounded_snapshot_depth, bounded_snapshot_elements};
 use crate::runtime::ComputerUseSession;
 use crate::window_target::WindowTarget;
 #[cfg(windows)]
-use crate::{ComputerUseAction, ComputerUseErrorCode, ComputerUseToolResult};
+use crate::{
+    ComputerUseAction, ComputerUseErrorCode, ComputerUseToolResult, ComputerUseToolStatus,
+};
 #[cfg(windows)]
 use crate::{ComputerUseError, ComputerUseResult};
+
+#[cfg(any(windows, test))]
+pub(crate) fn accessibility_has_closed_policy_tiers(accessibility: &Value) -> bool {
+    let Some(elements) = accessibility["elements"].as_array() else {
+        return false;
+    };
+    !elements.is_empty()
+        && elements.iter().all(|element| {
+            matches!(
+                element["policy_tier"].as_str(),
+                Some("hard_deny" | "action_confirmation" | "pre_approval" | "task_grant")
+            )
+        })
+}
 
 #[cfg(windows)]
 #[derive(Clone)]
@@ -78,6 +94,7 @@ impl WindowsUiaFallback {
         .await
         .map_err(|error| backend_error(format!("Windows UIA task failed: {error}")))??;
         Ok(ComputerUseToolResult {
+            status: ComputerUseToolStatus::Succeeded,
             value,
             text: "Windows UIA semantic action completed".into(),
             images: Vec::new(),
@@ -172,6 +189,7 @@ fn map_error(error: UiaError) -> ComputerUseError {
         }
         UiaError::Unsupported
         | UiaError::BackendUnavailable(_)
+        | UiaError::OperationFailed(_)
         | UiaError::ProtocolMismatch { .. }
         | UiaError::ForegroundActivationRefused { .. } => ComputerUseErrorCode::BackendUnavailable,
     };

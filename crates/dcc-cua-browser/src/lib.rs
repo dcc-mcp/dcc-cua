@@ -6,14 +6,13 @@
 
 use base64::Engine;
 use dcc_cua_core::{ComputerUseError, ComputerUseErrorCode, ComputerUseResult, ComputerUseSession};
+use dcc_cua_protocol::{MAX_BINARY_FRAME_BYTES, validate_absolute_local_path};
 use serde::{Deserialize, Deserializer};
 use serde_json::{Value, json};
 use std::path::Path;
 
 const MAX_URL_CHARS: usize = 4_096;
 const MAX_TEXT_CHARS: usize = 4_096;
-const MAX_BROWSER_IMAGE_BYTES: usize = 64 * 1024 * 1024;
-const MAX_LOCAL_PATH_CHARS: usize = 4_096;
 const MAX_UPLOAD_FILES: usize = 32;
 
 #[derive(Debug)]
@@ -680,7 +679,7 @@ impl BrowserResult {
                             format!("CUA browser image is not valid base64: {error}"),
                         )
                     })?;
-                if data.len() > MAX_BROWSER_IMAGE_BYTES {
+                if data.len() > MAX_BINARY_FRAME_BYTES {
                     return Err(ComputerUseError::new(
                         ComputerUseErrorCode::CaptureFailed,
                         "CUA browser image exceeds the 64 MiB frame limit",
@@ -1078,14 +1077,11 @@ fn validate_dialog_request(request: &BrowserDialogRequest) -> ComputerUseResult<
 }
 
 fn validate_local_path(raw: &str, field: &str) -> ComputerUseResult<()> {
-    if raw.is_empty() || raw.chars().count() > MAX_LOCAL_PATH_CHARS || raw.contains('\0') {
-        return Err(invalid(format!(
+    validate_absolute_local_path(raw).map_err(|_| {
+        invalid(format!(
             "{field} must be a bounded absolute path without NUL bytes"
-        )));
-    }
-    if !Path::new(raw).is_absolute() {
-        return Err(invalid(format!("{field} must be absolute")));
-    }
+        ))
+    })?;
     Ok(())
 }
 

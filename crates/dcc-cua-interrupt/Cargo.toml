@@ -1,6 +1,6 @@
 [package]
-name = "dcc-cua-browser"
-description = "Exact-window typed browser adapter for dcc-cua"
+name = "dcc-cua-interrupt"
+description = "Process-local cooperative interrupt generation for dcc-cua runtimes"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,15 +10,10 @@ license.workspace = true
 repository.workspace = true
 
 [lib]
-name = "dcc_cua_browser"
+name = "dcc_cua_interrupt"
 path = "src/lib.rs"
 
 [dependencies]
-base64 = "0.22"
-dcc-cua-core = { path = "../dcc-cua-core" }
-dcc-cua-protocol = { path = "../dcc-cua-protocol" }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
 dcc-cua-workspace-hack = { version = "1", path = "../dcc-cua-workspace-hack" }
 
 [dev-dependencies]

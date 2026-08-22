@@ -773,40 +773,47 @@ async fn controlled_electron_round_trip() {
         }),
     )
     .await;
-    assert_eq!(
-        completed.value["success"], true,
-        "action failed: {}",
-        completed.value
-    );
-    assert_png(
-        completed
-            .binary_attachment
-            .as_deref()
-            .expect("post-action PNG attachment"),
-    );
+    if cfg!(windows) {
+        assert_eq!(
+            completed.value["success"], true,
+            "action failed: {}",
+            completed.value
+        );
+        assert_png(
+            completed
+                .binary_attachment
+                .as_deref()
+                .expect("post-action PNG attachment"),
+        );
 
-    let verified = host_request(
-        &mut host,
-        "wait_for",
-        json!({
-            "session_id": SESSION_ID,
-            "task_grant_id": GRANT_ID,
-            "window_capability": capability,
-            "condition": {
-                "kind": "text_contains",
-                "text": format!("mirror={expected}"),
-                "timeout_ms": 30_000,
-                "interval_ms": 100
-            }
-        }),
-    )
-    .await;
-    assert_eq!(
-        verified.value["success"], true,
-        "semantic verification failed: {}",
-        verified.value
-    );
-    wait_for_journal(&journal, "lbl-input-mirror", &format!("mirror={expected}"));
+        let verified = host_request(
+            &mut host,
+            "wait_for",
+            json!({
+                "session_id": SESSION_ID,
+                "task_grant_id": GRANT_ID,
+                "window_capability": capability,
+                "condition": {
+                    "kind": "text_contains",
+                    "text": format!("mirror={expected}"),
+                    "timeout_ms": 30_000,
+                    "interval_ms": 100
+                }
+            }),
+        )
+        .await;
+        assert_eq!(
+            verified.value["success"], true,
+            "semantic verification failed: {}",
+            verified.value
+        );
+        wait_for_journal(&journal, "lbl-input-mirror", &format!("mirror={expected}"));
+    } else {
+        assert_eq!(completed.value["success"], false, "{}", completed.value);
+        assert_eq!(completed.value["error"], "hard_denied");
+        assert_eq!(completed.value["policy_tier"], "hard_deny");
+        assert!(completed.binary_attachment.is_none());
+    }
 
     let raw_snapshot = host_request(
         &mut host,
@@ -836,7 +843,7 @@ async fn controlled_electron_round_trip() {
         .and_then(|matches| matches.first())
         .expect("raw-input click target");
     let (x, y) = screenshot_point(&raw_snapshot.value, raw_target);
-    let raw_clicked = host_request(
+    let raw_moved = host_request(
         &mut host,
         "execute_action",
         json!({
@@ -846,7 +853,7 @@ async fn controlled_electron_round_trip() {
             "observation_id": raw_snapshot.value["observation_id"],
             "accessibility_state_id": raw_snapshot.value["accessibility_state_id"],
             "action": {
-                "action": "click",
+                "action": "move",
                 "input_kind": "raw_input",
                 "intent": "navigate",
                 "delivery_mode": "foreground",
@@ -860,11 +867,11 @@ async fn controlled_electron_round_trip() {
     )
     .await;
     assert_eq!(
-        raw_clicked.value["success"], true,
-        "raw-input click failed: {}",
-        raw_clicked.value
+        raw_moved.value["success"], true,
+        "raw-input move failed: {}",
+        raw_moved.value
     );
-    wait_for_journal(&journal, "lbl-counter", "counter=1");
+    wait_for_journal(&journal, "lbl-counter", "counter=0");
 
     let browser_prepare_params = json!({
         "session_id": SESSION_ID,
@@ -922,7 +929,7 @@ async fn controlled_electron_round_trip() {
         json!({}),
     )
     .await;
-    wait_for_journal(&journal, "lbl-counter", "counter=2");
+    wait_for_journal(&journal, "lbl-counter", "counter=1");
 
     let browser_expected = "browser-host-ipc-e2e";
     browser_mutation_with_pre_dispatch_refresh_recovery(
@@ -1236,7 +1243,7 @@ async fn independent_endpoint_clients_serialize_scoped_raw_input() {
         let target = found.value["matches"]
             .as_array()
             .and_then(|matches| matches.first())
-            .expect("parallel raw-input click target");
+            .expect("parallel raw-input target");
         let (x, y) = screenshot_point(&snapshot.value, target);
         raw_input_requests.push(json!({
             "session_id": session_id,
@@ -1245,7 +1252,7 @@ async fn independent_endpoint_clients_serialize_scoped_raw_input() {
             "observation_id": observation_id,
             "accessibility_state_id": accessibility_state_id,
             "action": {
-                "action": "click",
+                "action": "move",
                 "input_kind": "raw_input",
                 "intent": "navigate",
                 "delivery_mode": "foreground",
@@ -1272,7 +1279,7 @@ async fn independent_endpoint_clients_serialize_scoped_raw_input() {
     assert_eq!(first.value["success"], true, "{}", first.value);
     assert_eq!(second.value["success"], true, "{}", second.value);
     for journal in &journals {
-        wait_for_journal(journal, "lbl-counter", "counter=1");
+        wait_for_journal(journal, "lbl-counter", "counter=0");
     }
     let stopped = client_request(
         &mut clients[0],
@@ -1462,7 +1469,7 @@ async fn controlled_native_menu_round_trip() {
 #[cfg(all(feature = "gui-e2e", windows))]
 #[rstest]
 #[tokio::test]
-async fn windows_endpoint_sessions_keep_background_uia_and_distinguish_injected_escape() {
+async fn windows_endpoint_sessions_keep_background_uia_and_require_raw_input_confirmation() {
     let binary = std::env::var_os("DCC_CUA_E2E_BINARY")
         .map(PathBuf::from)
         .expect("DCC_CUA_E2E_BINARY must point to dcc-cua");
@@ -1734,7 +1741,7 @@ async fn windows_endpoint_sessions_keep_background_uia_and_distinguish_injected_
         competing_activation.value
     );
 
-    windows_activation::assert_first_key_reaches_retained_focus(
+    windows_activation::assert_raw_click_requires_confirmation(
         &mut clients[active_client],
         first_session_id,
         first_grant_id,
@@ -1745,7 +1752,7 @@ async fn windows_endpoint_sessions_keep_background_uia_and_distinguish_injected_
 
     let escape_snapshot = client_request(
         &mut clients[active_client],
-        "snapshot",
+        "accessibility_snapshot",
         json!({
             "session_id": first_session_id,
             "task_grant_id": first_grant_id,
@@ -1776,7 +1783,9 @@ async fn windows_endpoint_sessions_keep_background_uia_and_distinguish_injected_
         }),
     )
     .await;
-    assert_eq!(pressed.value["success"], true, "{}", pressed.value);
+    assert_eq!(pressed.value["success"], false, "{}", pressed.value);
+    assert_eq!(pressed.value["error"], "approval_required");
+    assert_eq!(pressed.value["policy_tier"], "action_confirmation");
     tokio::time::sleep(Duration::from_millis(100)).await;
     for (client_index, session_id, grant_id, capability, _) in &sessions {
         let alive = client_request(
@@ -1792,7 +1801,7 @@ async fn windows_endpoint_sessions_keep_background_uia_and_distinguish_injected_
         assert_eq!(
             alive.value["state"]["structuredContent"]["session"],
             session_id.as_str(),
-            "agent-injected Escape must not interrupt Host sessions: {}",
+            "a rejected raw Escape must not interrupt Host sessions: {}",
             alive.value
         );
     }

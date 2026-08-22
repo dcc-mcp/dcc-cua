@@ -70,11 +70,11 @@ use dcc_cua_core::{
     ComputerUseRecordingHealth, ComputerUseRecordingStartRequest, ComputerUseResult,
     ComputerUseScreenshot, ComputerUseSessionHealth, ComputerUseSessionHealthEvaluation,
     ComputerUseSessionHealthPolicy, ComputerUseSessionStartRequest, ComputerUseSessionStopResult,
-    ComputerUseTargetScope, ComputerUseToolResult, ComputerUseWindowFrameRequest,
-    ComputerUseWindowQuery, ComputerUseWindowWaitRequest, ComputerUseZoomRequest,
-    IndicatorMotionPolicy,
+    ComputerUseTargetScope, ComputerUseToolResult, ComputerUseToolStatus,
+    ComputerUseWindowFrameRequest, ComputerUseWindowQuery, ComputerUseWindowWaitRequest,
+    ComputerUseZoomRequest, IndicatorMotionPolicy,
 };
-use dcc_cua_indicator::{broadcast_interrupt, interrupt_generation, interrupt_generation_changed};
+use dcc_cua_interrupt::{broadcast_interrupt, interrupt_generation, interrupt_generation_changed};
 use dcc_cua_shm::SharedImage;
 
 // ponytail: one OS input stream is process-global; shard only if platforms gain isolated seats.
@@ -732,30 +732,45 @@ impl WaitCondition {
 }
 
 impl HostAction {
-    fn reject_policy(&self) -> Option<(&'static str, &'static str)> {
-        const HARD_DENY: [&str; 5] = [
-            "terminal_or_run_dialog",
-            "credential_or_authentication",
-            "safety_bypass",
-            "password_change",
-            "escape_scope",
-        ];
-        HARD_DENY
-            .iter()
-            .find(|intent| intent == &&self.intent)
-            .map(|_| {
-                (
-                    "hard_denied",
-                    "the host policy denies this Computer Use intent",
-                )
-            })
+    fn safety_tier(&self, accessibility_root: Option<&Value>) -> HostActionSafetyTier {
+        if self.input_kind == "semantic" {
+            return accessibility_root
+                .and_then(|root| self.semantic_element(root))
+                .and_then(|element| element["policy_tier"].as_str())
+                .map_or(
+                    HostActionSafetyTier::HardDeny,
+                    HostActionSafetyTier::from_wire,
+                );
+        }
+        if self.input_kind != "raw_input" {
+            return HostActionSafetyTier::HardDeny;
+        }
+        match self.action.as_str() {
+            "move" | "scroll" => HostActionSafetyTier::TaskGrant,
+            "click" | "double_click" | "right_click" | "toggle" | "drag" | "type"
+            | "type_chars" | "set_text" | "set_value" | "set_checked" | "keypress" | "press"
+            | "press_key" | "keyboard_shortcut" | "hotkey" => {
+                HostActionSafetyTier::ActionConfirmation
+            }
+            _ => HostActionSafetyTier::HardDeny,
+        }
     }
 
-    fn requires_approval(&self) -> bool {
-        !matches!(
-            self.intent.as_str(),
-            "observe" | "activate" | "navigate" | "ordinary_edit"
-        )
+    fn semantic_element<'a>(&self, root: &'a Value) -> Option<&'a Value> {
+        if self.element_index.is_none() && self.element_token.is_none() {
+            return None;
+        }
+        root["elements"].as_array()?.iter().find(|element| {
+            self.element_index.is_none_or(|expected| {
+                element["element_index"]
+                    .as_u64()
+                    .or_else(|| element["index"].as_u64())
+                    == Some(u64::from(expected))
+            }) && self
+                .element_token
+                .as_deref()
+                .is_none_or(|expected| element["element_token"].as_str() == Some(expected))
+        })
     }
 
     fn into_computer_use(self, observation_id: String) -> ComputerUseResult<ComputerUseAction> {
@@ -807,6 +822,41 @@ impl HostAction {
             keys: self.keys,
             modifiers: self.modifiers,
         })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HostActionSafetyTier {
+    HardDeny,
+    ActionConfirmation,
+    PreApproval,
+    TaskGrant,
+}
+
+impl HostActionSafetyTier {
+    fn from_wire(value: &str) -> Self {
+        match value {
+            "hard_deny" => Self::HardDeny,
+            "action_confirmation" => Self::ActionConfirmation,
+            "pre_approval" => Self::PreApproval,
+            "task_grant" => Self::TaskGrant,
+            _ => Self::HardDeny,
+        }
+    }
+
+    const fn requires_confirmation(self) -> bool {
+        matches!(self, Self::ActionConfirmation | Self::PreApproval)
+    }
+
+    const fn rejection(self) -> Option<(&'static str, &'static str, &'static str)> {
+        match self {
+            Self::HardDeny => Some((
+                "hard_deny",
+                "hard_denied",
+                "the host policy denies this Computer Use action",
+            )),
+            _ => None,
+        }
     }
 }
 

@@ -83,6 +83,8 @@ pub enum UiaError {
     InvalidAction(String),
     #[error("Windows UI Automation backend failed: {0}")]
     BackendUnavailable(String),
+    #[error("Windows UI Automation operation failed: {0}")]
+    OperationFailed(String),
     #[error(
         "Windows UI Automation worker protocol mismatch: expected {expected}, received {actual:?}"
     )]

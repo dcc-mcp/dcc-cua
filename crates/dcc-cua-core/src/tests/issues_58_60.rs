@@ -44,7 +44,9 @@ fn desktop_actions_accept_signed_virtual_desktop_coordinates() {
     };
 
     validate_action(&action).unwrap();
-    let args = desktop_action_arguments(&action, "desktop-session");
+    let args = desktop_action_arguments(&action, "desktop-session")
+        .unwrap()
+        .arguments;
     assert_eq!(args["scope"], "desktop");
     assert_eq!(args["x"], -2_400.0);
     assert_eq!(args["y"], 80.0);

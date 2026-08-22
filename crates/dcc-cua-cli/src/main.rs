@@ -28,8 +28,8 @@ use mcp_output::{
 };
 
 use dcc_cua_client::{
-    HostClient, HostClientError, HostProcess, HostResponse, MAX_REQUEST_ID_CHARS,
-    SnapshotTransport, is_parallel_discovery_method,
+    HostClient, HostClientError, HostProcess, HostResponse, SnapshotTransport,
+    is_parallel_discovery_method,
 };
 use dcc_cua_core::{
     ComputerUseAction, ComputerUseClipboardWriteRequest, ComputerUseDriver, ComputerUseError,
@@ -38,6 +38,7 @@ use dcc_cua_core::{
     ComputerUseWindowQuery, ComputerUseWindowWaitRequest, ComputerUseZoomRequest,
 };
 use dcc_cua_host::{HostTransport, MAX_PARALLEL_DISCOVERY_REQUESTS, run as run_host};
+use dcc_cua_protocol::{RequestEnvelope, host_method_traits};
 use dcc_cua_semantic_profiles::{
     SemanticProfile, builtin_profile, builtin_profiles, parse_profile,
 };
@@ -47,7 +48,14 @@ use tokio::io::{AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader, BufWriter
 
 const PARALLEL_DISCOVERY_WINDOW_MS: u64 = 5;
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() {
+    if let Err(error) = run_main() {
+        eprintln!("{}", fatal_error_line(error.as_ref()));
+        std::process::exit(1);
+    }
+}
+
+fn run_main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(target_os = "macos")]
     {
         let arguments = env::args().skip(1).collect::<Vec<_>>();
@@ -58,6 +66,41 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     async_main()
+}
+
+fn fatal_error_line(error: &(dyn std::error::Error + 'static)) -> String {
+    serde_json::to_string(&fatal_error_value(error)).unwrap_or_else(|_| {
+        r#"{"success":false,"error":{"code":"command_failed","message":"failed to serialize command error"}}"#.into()
+    })
+}
+
+fn fatal_error_value(error: &(dyn std::error::Error + 'static)) -> serde_json::Value {
+    if let Some(error) = error.downcast_ref::<ComputerUseError>() {
+        return json!({
+            "success": false,
+            "error": {
+                "code": error.code,
+                "message": error.message,
+                "details": error.details,
+            }
+        });
+    }
+    if let Some(error) = error.downcast_ref::<HostClientError>() {
+        let (code, message) = match error {
+            HostClientError::Io(_) => ("host_transport_failed", error.to_string()),
+            HostClientError::Protocol(_) => ("host_protocol_failed", error.to_string()),
+            HostClientError::Timeout { .. } => ("host_timeout", error.to_string()),
+            HostClientError::Remote { code, message, .. } => (code.as_str(), message.clone()),
+        };
+        return json!({
+            "success": false,
+            "error": {"code": code, "message": message},
+        });
+    }
+    json!({
+        "success": false,
+        "error": {"code": "command_failed", "message": error.to_string()},
+    })
 }
 
 #[tokio::main]
@@ -777,11 +820,7 @@ async fn host_jsonl_inner(
     Ok(())
 }
 
-struct JsonlRequest {
-    request_id: Option<String>,
-    method: String,
-    params: serde_json::Value,
-}
+type JsonlRequest = RequestEnvelope;
 
 #[derive(Debug, Default)]
 struct HostJsonlMetrics {
@@ -1053,17 +1092,7 @@ impl HostJsonlMetrics {
 }
 
 fn is_action_request(method: &str) -> bool {
-    matches!(
-        method,
-        "execute_action"
-            | "execute_desktop_action"
-            | "browser_click"
-            | "browser_type"
-            | "browser_pointer"
-            | "browser_navigate"
-            | "browser_set_input_files"
-            | "browser_dialog"
-    )
+    host_method_traits(method).action
 }
 
 fn is_rejected_action_response(value: &serde_json::Value) -> bool {
@@ -1072,10 +1101,7 @@ fn is_rejected_action_response(value: &serde_json::Value) -> bool {
 }
 
 fn is_standalone_snapshot_request(method: &str) -> bool {
-    matches!(
-        method,
-        "snapshot" | "desktop_snapshot" | "desktop_session_snapshot" | "browser_snapshot"
-    )
+    host_method_traits(method).standalone_snapshot
 }
 
 fn is_visual_observation_request(request: &JsonlRequest) -> bool {
@@ -1090,18 +1116,7 @@ fn is_visual_observation_request(request: &JsonlRequest) -> bool {
 }
 
 fn is_semantic_observation_request(method: &str) -> bool {
-    matches!(
-        method,
-        "accessibility_snapshot"
-            | "find"
-            | "get_session_state"
-            | "get_input_state"
-            | "session_health"
-            | "poll_session_events"
-            | "get_window_state"
-            | "verify_state"
-            | "wait_for"
-    )
+    host_method_traits(method).semantic_observation
 }
 
 fn write_host_jsonl_metrics(
@@ -1204,40 +1219,7 @@ fn parse_jsonl_request(line: &str) -> Result<JsonlRequest, String> {
     let line = line.strip_prefix('\u{feff}').unwrap_or(line);
     let value: serde_json::Value = serde_json::from_str(line)
         .map_err(|error| format!("JSONL request is invalid JSON: {error}"))?;
-    let object = value
-        .as_object()
-        .ok_or_else(|| "JSONL request must be an object".to_owned())?;
-    let request_id = match object.get("request_id") {
-        Some(value) => Some(
-            value
-                .as_str()
-                .ok_or_else(|| "JSONL request_id must be a string".to_owned())?
-                .to_owned(),
-        ),
-        None => None,
-    };
-    if request_id
-        .as_deref()
-        .is_some_and(|id| id.is_empty() || id.chars().count() > MAX_REQUEST_ID_CHARS)
-    {
-        return Err(format!(
-            "JSONL request_id must contain 1..{MAX_REQUEST_ID_CHARS} characters"
-        ));
-    }
-    let method = object
-        .get("method")
-        .and_then(serde_json::Value::as_str)
-        .filter(|method| !method.is_empty())
-        .ok_or_else(|| "JSONL request requires a non-empty method".to_owned())?;
-    let params = object.get("params").cloned().unwrap_or_else(|| json!({}));
-    if !params.is_object() {
-        return Err("JSONL request params must be an object".to_owned());
-    }
-    Ok(JsonlRequest {
-        request_id,
-        method: method.to_owned(),
-        params,
-    })
+    RequestEnvelope::from_value(&value).map_err(|error| format!("JSONL {error}"))
 }
 
 fn measured_jsonl_response_value(
@@ -1365,51 +1347,13 @@ fn parse_host_batch(
         .iter()
         .enumerate()
         .map(|(index, request)| {
-            let object = request
-                .as_object()
-                .ok_or_else(|| format!("host-batch request {index} must be an object"))?;
-            let request_id = match object.get("request_id") {
-                Some(value) => Some(
-                    value
-                        .as_str()
-                        .ok_or_else(|| {
-                            format!("host-batch request {index} request_id must be a string")
-                        })?
-                        .to_owned(),
-                ),
-                None => None,
-            };
-            if request_id.as_deref().is_some_and(|id| {
-                id.is_empty() || id.chars().count() > MAX_REQUEST_ID_CHARS
-            }) {
-                return Err(format!(
-                    "host-batch request {index} request_id must contain 1..{MAX_REQUEST_ID_CHARS} characters"
-                )
-                .into());
-            }
-            let method = object
-                .get("method")
-                .and_then(serde_json::Value::as_str)
-                .filter(|method| !method.is_empty())
-                .ok_or_else(|| format!("host-batch request {index} requires method"))?;
-            let params = object.get("params").cloned().unwrap_or_else(|| json!({}));
-            if !params.is_object() {
-                return Err(format!("host-batch request {index} params must be an object").into());
-            }
-            Ok(HostBatchRequest {
-                request_id,
-                method: method.to_owned(),
-                params,
-            })
+            RequestEnvelope::from_value(request)
+                .map_err(|error| format!("host-batch request {index}: {error}").into())
         })
         .collect()
 }
 
-struct HostBatchRequest {
-    request_id: Option<String>,
-    method: String,
-    params: serde_json::Value,
-}
+type HostBatchRequest = RequestEnvelope;
 
 fn snapshot_transport(flags: &[String]) -> Result<SnapshotTransport, Box<dyn std::error::Error>> {
     match flag_value(flags, "--snapshot-transport").as_deref() {

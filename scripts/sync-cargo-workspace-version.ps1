@@ -11,124 +11,46 @@ $ErrorActionPreference = 'Stop'
 $rootPath = [System.IO.Path]::GetFullPath($Root)
 Set-Location $rootPath
 
-function Update-TomlSectionVersion {
-    param(
-        [Parameter(Mandatory = $true)][string]$Path,
-        [Parameter(Mandatory = $true)][string]$Section
-    )
-
-    $content = Get-Content -LiteralPath $Path -Raw
-    $escapedSection = [regex]::Escape($Section)
-    $pattern = '(?ms)(^\[' + $escapedSection + '\]\r?\n(?:(?!^\[).)*?^version\s*=\s*)"[^"]+"'
-    $matches = [regex]::Matches($content, $pattern)
-    if ($matches.Count -ne 1) {
-        throw "expected exactly one version in [$Section] of $Path, found $($matches.Count)"
-    }
-
-    $updated = [regex]::Replace(
-        $content,
-        $pattern,
-        [System.Text.RegularExpressions.MatchEvaluator]{
-            param($match)
-            return $match.Groups[1].Value + '"' + $Version + '"'
-        },
-        1
-    )
-    Set-Content -LiteralPath $Path -Value $updated -NoNewline -Encoding utf8
+$rootManifest = Join-Path $rootPath 'Cargo.toml'
+$content = Get-Content -LiteralPath $rootManifest -Raw
+$pattern = '(?ms)(^\[workspace\.package\]\r?\n(?:(?!^\[).)*?^version\s*=\s*)"[^"]+"'
+$matches = [regex]::Matches($content, $pattern)
+if ($matches.Count -ne 1) {
+    throw "expected exactly one inherited workspace version in $rootManifest, found $($matches.Count)"
+}
+$updated = [regex]::Replace(
+    $content,
+    $pattern,
+    [System.Text.RegularExpressions.MatchEvaluator]{
+        param($match)
+        return $match.Groups[1].Value + '"' + $Version + '"'
+    },
+    1
+)
+if ($updated -ne $content) {
+    Set-Content -LiteralPath $rootManifest -Value $updated -NoNewline -Encoding utf8
 }
 
-$rootManifest = Join-Path $rootPath 'Cargo.toml'
-Update-TomlSectionVersion -Path $rootManifest -Section 'workspace.package'
-
+# Cargo owns member inheritance and lockfile representation. Running metadata
+# refreshes local package versions without rewriting every member manifest.
 $metadata = (& cargo metadata --format-version 1 --no-deps | ConvertFrom-Json)
 if ($LASTEXITCODE -ne 0) {
     throw "cargo metadata failed with code $LASTEXITCODE"
 }
-
 $workspaceMembers = @($metadata.workspace_members)
-$workspaceMemberNames = @(
-    $metadata.packages |
-        Where-Object { $workspaceMembers -contains $_.id } |
-        Select-Object -ExpandProperty name
+$workspacePackages = @(
+    $metadata.packages | Where-Object { $workspaceMembers -contains $_.id }
 )
-
-function Update-WorkspaceDependencyVersions {
-    param(
-        [Parameter(Mandatory = $true)][string]$Path,
-        [Parameter(Mandatory = $true)][string[]]$PackageNames
-    )
-
-    $content = Get-Content -LiteralPath $Path -Raw
-    $updated = $content
-    foreach ($packageName in $PackageNames) {
-        $escapedName = [regex]::Escape($packageName)
-        $pattern = '(?m)^(\s*' + $escapedName + '\s*=\s*\{[^\r\n]*\bversion\s*=\s*)"[^"]+"'
-        $updated = [regex]::Replace(
-            $updated,
-            $pattern,
-            [System.Text.RegularExpressions.MatchEvaluator]{
-                param($match)
-                return $match.Groups[1].Value + '"' + $Version + '"'
-            }
-        )
-    }
-    if ($updated -ne $content) {
-        Set-Content -LiteralPath $Path -Value $updated -NoNewline -Encoding utf8
-    }
-}
-
-foreach ($package in $metadata.packages) {
-    if ($workspaceMemberNames -notcontains $package.name) {
-        continue
-    }
-    $manifestPath = [System.IO.Path]::GetFullPath([string]$package.manifest_path)
-    Update-TomlSectionVersion -Path $manifestPath -Section 'package'
-    Update-WorkspaceDependencyVersions -Path $manifestPath -PackageNames $workspaceMemberNames
-}
-
-function Update-CargoLockVersions {
-    param(
-        [Parameter(Mandatory = $true)][string]$Path,
-        [Parameter(Mandatory = $true)][string[]]$PackageNames
-    )
-
-    $content = Get-Content -LiteralPath $Path -Raw
-    $updated = $content
-    foreach ($packageName in $PackageNames) {
-        $escapedName = [regex]::Escape($packageName)
-        $pattern = '(?ms)(^\[\[package\]\]\r?\nname = "' + $escapedName + '"\r?\nversion = )"[^"]+"'
-        $matches = [regex]::Matches($updated, $pattern)
-        if ($matches.Count -ne 1) {
-            throw "expected exactly one Cargo.lock entry for $packageName, found $($matches.Count)"
-        }
-        $updated = [regex]::Replace(
-            $updated,
-            $pattern,
-            [System.Text.RegularExpressions.MatchEvaluator]{
-                param($match)
-                return $match.Groups[1].Value + '"' + $Version + '"'
-            },
-            1
-        )
-    }
-    if ($updated -ne $content) {
-        Set-Content -LiteralPath $Path -Value $updated -NoNewline -Encoding utf8
-    }
-}
-
-Update-CargoLockVersions -Path (Join-Path $rootPath 'Cargo.lock') -PackageNames $workspaceMemberNames
-
-$updatedMetadata = (& cargo metadata --locked --format-version 1 --no-deps | ConvertFrom-Json)
-if ($LASTEXITCODE -ne 0) {
-    throw "cargo metadata failed after version synchronization with code $LASTEXITCODE"
-}
 $versions = @(
-    $updatedMetadata.packages |
-        Where-Object { $workspaceMemberNames -contains $_.name } |
-        Select-Object -ExpandProperty version -Unique
+    $workspacePackages | Select-Object -ExpandProperty version -Unique
 )
 if ($versions.Count -ne 1 -or $versions[0] -ne $Version) {
-    throw "workspace versions are not synchronized to ${Version}: $($versions -join ', ')"
+    throw "workspace versions are not inherited as ${Version}: $($versions -join ', ')"
 }
 
-Write-Output "synchronized $($workspaceMembers.Count) workspace packages to $Version"
+& cargo metadata --locked --format-version 1 --no-deps | Out-Null
+if ($LASTEXITCODE -ne 0) {
+    throw "Cargo.lock is not synchronized to the inherited workspace version"
+}
+
+Write-Output "synchronized $($workspacePackages.Count) inherited workspace packages to $Version"

@@ -1,21 +1,18 @@
 import { browser } from "wxt/browser";
 import { defineUnlistedScript } from "wxt/utils/define-unlisted-script";
+import {
+  validateContentCommand,
+  type Action,
+  type ClickCommand,
+  type ContentCommand,
+  type TypeCommand,
+} from "../content-protocol";
+import { isObject } from "../protocol";
 
 declare global {
   var __dccCuaContentBridgeV1: boolean | undefined;
 }
 
-type Action = "click" | "type";
-type PairCommand = { method: "pair"; session_nonce: string };
-type SnapshotCommand = { method: "snapshot"; session_nonce: string; max_nodes: number };
-type EvidenceCommand = {
-  session_nonce: string;
-  snapshot_id: string;
-  ref: string;
-};
-type ClickCommand = EvidenceCommand & { method: "click" };
-type TypeCommand = EvidenceCommand & { method: "type"; text: string; replace: true };
-type ContentCommand = PairCommand | SnapshotCommand | ClickCommand | TypeCommand;
 type RefEntry = { element: HTMLElement; actions: Action[] };
 
 type BridgeState = {
@@ -26,49 +23,6 @@ type BridgeState = {
   snapshotId: string | null;
   refs: Map<string, RefEntry>;
 };
-
-function isObject(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
-function commandFrom(value: unknown): ContentCommand {
-  if (!isObject(value) || typeof value.method !== "string" || typeof value.session_nonce !== "string") {
-    throw Object.assign(new Error("content command is malformed"), { code: "invalid_request" });
-  }
-  if (value.method === "pair") {
-    return { method: "pair", session_nonce: value.session_nonce };
-  }
-  if (value.method === "snapshot" && Number.isSafeInteger(value.max_nodes)) {
-    return { method: "snapshot", session_nonce: value.session_nonce, max_nodes: value.max_nodes as number };
-  }
-  if (
-    (value.method === "click" || value.method === "type") &&
-    typeof value.snapshot_id === "string" &&
-    typeof value.ref === "string"
-  ) {
-    if (value.method === "click") {
-      return {
-        method: "click",
-        session_nonce: value.session_nonce,
-        snapshot_id: value.snapshot_id,
-        ref: value.ref,
-      };
-    }
-    if (typeof value.text === "string" && value.replace === true) {
-      return {
-        method: "type",
-        session_nonce: value.session_nonce,
-        snapshot_id: value.snapshot_id,
-        ref: value.ref,
-        text: value.text,
-        replace: true,
-      };
-    }
-  }
-  throw Object.assign(new Error("content command is unsupported or malformed"), {
-    code: "invalid_request",
-  });
-}
 
 function errorCode(error: unknown): string {
   return isObject(error) && typeof error.code === "string" ? error.code : "content_command_failed";
@@ -309,7 +263,7 @@ export default defineUnlistedScript(() => {
   browser.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) => {
     if (!isObject(message) || message.type !== "dcc_cua_command") return false;
     try {
-      sendResponse({ ok: true, result: handle(commandFrom(message.command)) });
+      sendResponse({ ok: true, result: handle(validateContentCommand(message.command)) });
     } catch (error) {
       sendResponse({
         ok: false,

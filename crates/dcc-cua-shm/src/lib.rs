@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
 
-pub const MAX_IMAGE_BYTES: usize = 64 * 1024 * 1024;
+pub use dcc_cua_protocol::MAX_BINARY_FRAME_BYTES as MAX_IMAGE_BYTES;
 const HEADER_SIZE: usize = 48;
 const HEADER_MAGIC: u64 = 0x4355_4100_5348_4D01;
 const SEGMENT_PREFIX: &str = "cua_";

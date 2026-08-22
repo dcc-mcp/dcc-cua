@@ -821,6 +821,11 @@ pub(crate) fn windows_synthetic_touch_result(
         delivery["backend_error"] = json!(error);
     }
     ComputerUseToolResult {
+        status: if api_accepted {
+            ComputerUseToolStatus::Succeeded
+        } else {
+            ComputerUseToolStatus::Rejected
+        },
         value: json!({
             "success": api_accepted,
             "route": "windows_scoped_fast_input",
@@ -1625,6 +1630,11 @@ pub(crate) async fn perform_windows_foreground_fast_action(
         .as_ref()
         .is_none_or(|outcome| outcome.path_sent && outcome.release_error.is_none());
     Ok(Some(ComputerUseToolResult {
+        status: if success {
+            ComputerUseToolStatus::Succeeded
+        } else {
+            ComputerUseToolStatus::Rejected
+        },
         value: json!({
             "success": success,
             "route": "windows_scoped_fast_input",

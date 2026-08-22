@@ -137,13 +137,16 @@ pub(super) fn native_tool_response_with_transport(
     mode: SnapshotTransport,
     shared_image: &mut Option<SharedImage>,
 ) -> Result<(Value, Option<Vec<u8>>), HostError> {
+    let success = result.status == ComputerUseToolStatus::Succeeded;
     let mut value = result.value;
+    value["success"] = Value::Bool(success);
     let prepared = prepare_image_transport(result.images, mode, shared_image)?;
     prepared.annotate_content(&mut value);
     let mut response = json!({
         "type": "tool_result",
         "session_id": session_id,
         "tool": tool,
+        "status": result.status,
         "result": value,
         "text": result.text,
         "degraded": result.degraded,
@@ -168,6 +171,7 @@ pub(super) fn action_completed_response(
     mode: SnapshotTransport,
     shared_image: &mut Option<SharedImage>,
 ) -> Result<(Value, Option<Vec<u8>>), HostError> {
+    let success = result.status == ComputerUseToolStatus::Succeeded;
     let (tool_response, attachment) = native_tool_response_with_transport(
         Some(session_id),
         "action",
@@ -175,10 +179,10 @@ pub(super) fn action_completed_response(
         mode,
         shared_image,
     )?;
-    let success = tool_response["result"]["success"].as_bool().unwrap_or(true);
     let mut response = json!({
         "type": "action_completed",
         "success": success,
+        "status": tool_response["status"].clone(),
         "action_id": action_id,
         "target_closed": false,
         "policy_tier": "task_grant",

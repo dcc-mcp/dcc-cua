@@ -491,24 +491,6 @@ fn indicator_motion_evidence_has_a_stable_public_wire_shape() {
 }
 
 #[rstest]
-#[case(7, 7, false)]
-#[case(7, 8, true)]
-fn interrupt_generation_broadcasts_only_to_existing_sessions(
-    #[case] started: u64,
-    #[case] current: u64,
-    #[case] interrupted: bool,
-) {
-    assert_eq!(interrupt_generation_changed(started, current), interrupted);
-}
-
-#[rstest]
-fn programmatic_interrupt_advances_the_shared_generation() {
-    let started = interrupt_generation();
-    let current = broadcast_interrupt();
-    assert!(interrupt_generation_changed(started, current));
-}
-
-#[rstest]
 #[case("en-US", "agent is controlling Blender")]
 #[case("zh-CN", "agent 正在操作 Blender")]
 #[case("ja-JP", "agent が Blender を操作中")]
