@@ -15,23 +15,7 @@ const WINDOWS_SESSION_DISCONNECTED: i32 = 4;
 pub(crate) fn diagnostic() -> Value {
     #[cfg(windows)]
     {
-        let desktop = dcc_cua_platform_windows::desktop_state();
-        let input_desktop = desktop
-            .input_desktop_error
-            .as_deref()
-            .map_or_else(|| Ok(desktop.input_desktop_name.as_deref()), Err);
-        let input_surface = windows_input_surface();
-        let thread_desktop = thread_desktop_name();
-        windows_diagnostic_with_thread_fallback(
-            windows_session_state(),
-            input_desktop,
-            thread_desktop
-                .as_ref()
-                .map(|name| name.as_deref())
-                .map_err(String::as_str),
-            input_surface.as_ref().map(|_| ()).map_err(String::as_str),
-            desktop.has_foreground_window,
-        )
+        WindowsDesktopProbe::read(true).diagnostic()
     }
     #[cfg(not(windows))]
     platform_managed_diagnostic()
@@ -50,18 +34,54 @@ pub(crate) fn platform_managed_diagnostic() -> Value {
 }
 
 pub(crate) fn require_desktop_observation_available() -> ComputerUseResult<()> {
-    let report = diagnostic();
-    require_desktop_observation_from(&report)
+    #[cfg(windows)]
+    {
+        let probe = WindowsDesktopProbe::read(false);
+        if probe.desktop_ready() {
+            Ok(())
+        } else {
+            require_desktop_observation_from(&probe.diagnostic())
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let report = diagnostic();
+        require_desktop_observation_from(&report)
+    }
 }
 
 pub(crate) fn require_exact_window_observation_available() -> ComputerUseResult<()> {
-    let report = diagnostic();
-    require_exact_window_observation_from(&report)
+    #[cfg(windows)]
+    {
+        let probe = WindowsDesktopProbe::read(false);
+        if probe.observation_ready() {
+            Ok(())
+        } else {
+            require_exact_window_observation_from(&probe.diagnostic())
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let report = diagnostic();
+        require_exact_window_observation_from(&report)
+    }
 }
 
 pub(crate) fn require_window_activation_available() -> ComputerUseResult<()> {
-    let report = diagnostic();
-    require_window_activation_from(&report)
+    #[cfg(windows)]
+    {
+        let probe = WindowsDesktopProbe::read(false);
+        if probe.observation_ready() {
+            Ok(())
+        } else {
+            require_window_activation_from(&probe.diagnostic())
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let report = diagnostic();
+        require_window_activation_from(&report)
+    }
 }
 
 pub(crate) fn require_desktop_observation_from(report: &Value) -> ComputerUseResult<()> {
@@ -93,8 +113,100 @@ pub(crate) fn require_window_activation_from(report: &Value) -> ComputerUseResul
 }
 
 pub(crate) fn require_input_available() -> ComputerUseResult<()> {
-    let report = diagnostic();
-    require_input_available_from(&report)
+    #[cfg(windows)]
+    {
+        let probe = WindowsDesktopProbe::read(true);
+        if probe.input_ready() {
+            Ok(())
+        } else {
+            require_input_available_from(&probe.diagnostic())
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let report = diagnostic();
+        require_input_available_from(&report)
+    }
+}
+
+#[cfg(windows)]
+struct WindowsDesktopProbe {
+    state: Result<i32, String>,
+    input_desktop: Result<Option<String>, String>,
+    thread_desktop: Result<Option<String>, String>,
+    input_surface: Result<(), String>,
+    foreground: bool,
+}
+
+#[cfg(windows)]
+impl WindowsDesktopProbe {
+    fn read(probe_input_surface: bool) -> Self {
+        let desktop = dcc_cua_platform_windows::desktop_state();
+        Self {
+            state: windows_session_state(),
+            input_desktop: desktop
+                .input_desktop_error
+                .map_or_else(|| Ok(desktop.input_desktop_name), Err),
+            thread_desktop: thread_desktop_name(),
+            input_surface: if probe_input_surface {
+                windows_input_surface()
+            } else {
+                Ok(())
+            },
+            foreground: desktop.has_foreground_window,
+        }
+    }
+
+    fn session_active(&self) -> bool {
+        matches!(self.state, Ok(WINDOWS_SESSION_ACTIVE))
+    }
+
+    fn default_desktop_or_verified_fallback(&self) -> bool {
+        match &self.input_desktop {
+            Ok(Some(name)) => name.eq_ignore_ascii_case("Default"),
+            Err(_) => {
+                self.foreground
+                    && matches!(
+                        &self.thread_desktop,
+                        Ok(Some(name)) if name.eq_ignore_ascii_case("Default")
+                    )
+            }
+            Ok(None) => false,
+        }
+    }
+
+    fn desktop_ready(&self) -> bool {
+        self.session_active() && self.default_desktop_or_verified_fallback()
+    }
+
+    fn observation_ready(&self) -> bool {
+        self.session_active()
+            && match &self.input_desktop {
+                Ok(Some(name)) => name.eq_ignore_ascii_case("Default"),
+                Err(_) => true,
+                Ok(None) => false,
+            }
+    }
+
+    fn input_ready(&self) -> bool {
+        self.desktop_ready() && self.input_surface.is_ok()
+    }
+
+    fn diagnostic(&self) -> Value {
+        windows_diagnostic_with_thread_fallback(
+            self.state.clone(),
+            self.input_desktop
+                .as_ref()
+                .map(|name| name.as_deref())
+                .map_err(String::as_str),
+            self.thread_desktop
+                .as_ref()
+                .map(|name| name.as_deref())
+                .map_err(String::as_str),
+            self.input_surface.as_ref().copied().map_err(String::as_str),
+            self.foreground,
+        )
+    }
 }
 
 pub(crate) fn require_input_available_from(report: &Value) -> ComputerUseResult<()> {

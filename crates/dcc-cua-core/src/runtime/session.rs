@@ -1208,7 +1208,6 @@ impl ComputerUseSession {
     ) -> ComputerUseResult<WindowTarget> {
         self.require_current_upstream_session_for_evidence()?;
         self.require_observed_input_available()?;
-        self.require_observed_target_available().await?;
         let target = self.require_observed_target_available().await?;
         self.require_observed_input_available()?;
         Ok(target)

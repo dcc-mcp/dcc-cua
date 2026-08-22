@@ -19,7 +19,7 @@ use crate::policy::*;
 use crate::window_target::{WindowTarget, validate_target_policy};
 #[cfg(windows)]
 use crate::windows_uia_fallback::WindowsUiaFallback;
-use dcc_cua_showcase::{ShowcaseRecorder, fit_dimensions_with_bounds, resize_bgra};
+use dcc_cua_showcase::{ShowcaseRecorder, fit_dimensions_with_bounds, resize_bgra_if_needed};
 
 fn map_showcase_error(error: dcc_cua_showcase::ShowcaseError) -> ComputerUseError {
     ComputerUseError::new(ComputerUseErrorCode::CaptureFailed, error.message)

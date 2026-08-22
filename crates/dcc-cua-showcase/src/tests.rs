@@ -67,6 +67,16 @@ fn showcase_dimensions_are_even_and_bounded() {
 }
 
 #[rstest]
+fn resize_reuses_the_source_when_dimensions_are_unchanged() {
+    let source = vec![1, 2, 3, 4, 5, 6, 7, 8];
+
+    let resized = resize_bgra_if_needed(&source, 2, 1, 2, 1);
+
+    assert!(matches!(resized, std::borrow::Cow::Borrowed(_)));
+    assert_eq!(resized.as_ref(), source);
+}
+
+#[rstest]
 fn annex_b_start_codes_are_removed() {
     assert_eq!(strip_start_code(&[0, 0, 0, 1, 0x67]), Some(&[0x67][..]));
     assert_eq!(strip_start_code(&[0, 0, 1, 0x68]), Some(&[0x68][..]));

@@ -1,5 +1,5 @@
 // Trust-boundary validation, action translation, and SDK result normalization.
-use std::io::Cursor;
+use std::io::{Cursor, Write};
 
 use base64::Engine;
 use serde_json::{Value, json};
@@ -28,10 +28,6 @@ pub(crate) fn encode_bgra_to_png(
             "live observation returned an invalid BGRA frame",
         ));
     }
-    let mut rgba = bgra.to_vec();
-    for pixel in rgba.chunks_exact_mut(4) {
-        pixel.swap(0, 2);
-    }
     let mut output = Vec::new();
     let mut encoder = png::Encoder::new(&mut output, width, height);
     encoder.set_color(png::ColorType::Rgba);
@@ -40,10 +36,36 @@ pub(crate) fn encode_bgra_to_png(
     let mut writer = encoder.write_header().map_err(|error| {
         ComputerUseError::new(ComputerUseErrorCode::CaptureFailed, error.to_string())
     })?;
-    writer.write_image_data(&rgba).map_err(|error| {
+    let row_bytes = usize::try_from(width)
+        .ok()
+        .and_then(|width| width.checked_mul(4))
+        .filter(|row_bytes| *row_bytes != 0 && height != 0)
+        .ok_or_else(|| {
+            ComputerUseError::new(
+                ComputerUseErrorCode::CaptureFailed,
+                "live observation row dimensions are empty or overflowed",
+            )
+        })?;
+    let mut rgba_row = vec![0_u8; row_bytes];
+    {
+        let mut stream = writer.stream_writer().map_err(|error| {
+            ComputerUseError::new(ComputerUseErrorCode::CaptureFailed, error.to_string())
+        })?;
+        for source_row in bgra.chunks_exact(row_bytes) {
+            for (source, target) in source_row.chunks_exact(4).zip(rgba_row.chunks_exact_mut(4)) {
+                target.copy_from_slice(&[source[2], source[1], source[0], source[3]]);
+            }
+            stream.write_all(&rgba_row).map_err(|error| {
+                ComputerUseError::new(ComputerUseErrorCode::CaptureFailed, error.to_string())
+            })?;
+        }
+        stream.finish().map_err(|error| {
+            ComputerUseError::new(ComputerUseErrorCode::CaptureFailed, error.to_string())
+        })?;
+    }
+    writer.finish().map_err(|error| {
         ComputerUseError::new(ComputerUseErrorCode::CaptureFailed, error.to_string())
     })?;
-    drop(writer);
     Ok(output)
 }
 

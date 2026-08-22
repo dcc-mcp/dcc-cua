@@ -260,12 +260,26 @@ async fn live_observation_pause_keeps_the_stream_but_never_returns_the_cached_fr
 
 #[rstest]
 fn live_observation_png_converts_bgra_to_rgba() {
-    let png = encode_bgra_to_png(&[3, 2, 1, 4], 1, 1).unwrap();
+    let png = encode_bgra_to_png(&[3, 2, 1, 4, 7, 6, 5, 8], 1, 2).unwrap();
     let mut reader = png::Decoder::new(Cursor::new(&png)).read_info().unwrap();
     let mut bytes = vec![0; reader.output_buffer_size()];
     let info = reader.next_frame(&mut bytes).unwrap();
-    assert_eq!(&bytes[..info.buffer_size()], &[1, 2, 3, 4]);
-    assert_eq!(decode_png_to_bgra(&png).unwrap(), (vec![3, 2, 1, 4], 1, 1));
+    assert_eq!(&bytes[..info.buffer_size()], &[1, 2, 3, 4, 5, 6, 7, 8]);
+    assert_eq!(
+        decode_png_to_bgra(&png).unwrap(),
+        (vec![3, 2, 1, 4, 7, 6, 5, 8], 1, 2)
+    );
+}
+
+#[rstest]
+fn portable_live_frame_preserves_the_validated_source_png() {
+    let png = encode_bgra_to_png(&[3, 2, 1, 4], 1, 1).unwrap();
+
+    let frame = LiveObservationFrame::from_png(1, png.clone(), Instant::now()).unwrap();
+
+    assert_eq!(frame.dimensions(), (1, 1));
+    assert_eq!(frame.encoded_png(), Some(png.as_slice()));
+    assert_eq!(frame.bgra(), &[3, 2, 1, 4]);
 }
 
 #[rstest]

@@ -1560,27 +1560,15 @@ fn image_response(
     mode: SnapshotTransport,
     shared_image: &mut Option<SharedImage>,
 ) -> Result<(Value, Option<Vec<u8>>), HostError> {
-    match mode {
-        SnapshotTransport::SharedMemory => {
-            let shared = SharedImage::from_bytes(&image.data, &image.mime_type)
-                .map_err(|error| HostError::Protocol(error.to_string()))?;
-            let mut descriptor = serde_json::to_value(shared.descriptor())
-                .map_err(|error| HostError::Protocol(error.to_string()))?;
-            descriptor["encoding"] = Value::String("shared_memory".into());
-            *shared_image = Some(shared);
-            Ok((descriptor, None))
-        }
-        SnapshotTransport::BinaryFrame => Ok((
-            json!({
-                "name": "",
-                "id": "",
-                "length": image.data.len(),
-                "mime_type": image.mime_type,
-                "encoding": "binary_frame",
-            }),
-            Some(image.data),
-        )),
+    let prepared = prepare_image_transport(vec![image], mode, shared_image)?;
+    let mut descriptor = prepared
+        .primary
+        .expect("one verification image must have a descriptor");
+    if descriptor["encoding"] == "binary_frame" {
+        descriptor["name"] = Value::String(String::new());
+        descriptor["id"] = Value::String(String::new());
     }
+    Ok((descriptor, prepared.attachment))
 }
 
 fn browser_response(
@@ -1590,81 +1578,22 @@ fn browser_response(
     mode: SnapshotTransport,
     shared_image: &mut Option<SharedImage>,
 ) -> Result<(Value, Option<Vec<u8>>), HostError> {
-    let images = result.images;
     let mut response_result = result.value;
-    let mut attachment_bytes = Vec::new();
-    let mut attachments = Vec::with_capacity(images.len());
-    let use_shared_memory = mode == SnapshotTransport::SharedMemory && images.len() == 1;
-
-    for (index, image) in images.iter().enumerate() {
-        let offset = attachment_bytes.len();
-        if !use_shared_memory {
-            attachment_bytes.extend_from_slice(&image.data);
-        }
-        attachments.push(json!({
-            "index": index,
-            "offset": offset,
-            "length": image.data.len(),
-            "mime_type": image.mime_type,
-            "encoding": if use_shared_memory { "shared_memory" } else { "binary_frame" },
-        }));
-    }
-
-    let image_descriptor = if use_shared_memory {
-        let image = &images[0];
-        let shared = SharedImage::from_bytes(&image.data, &image.mime_type)
-            .map_err(|error| HostError::Protocol(error.to_string()))?;
-        let mut descriptor = serde_json::to_value(shared.descriptor())
-            .map_err(|error| HostError::Protocol(error.to_string()))?;
-        descriptor["encoding"] = Value::String("shared_memory".into());
-        *shared_image = Some(shared);
-        Some(descriptor)
-    } else {
-        attachments.first().cloned()
-    };
-
-    if let Some(content) = response_result
-        .get_mut("content")
-        .and_then(Value::as_array_mut)
-    {
-        for (index, item) in content
-            .iter_mut()
-            .filter(|item| item["type"] == "image")
-            .enumerate()
-        {
-            let Some(image) = images.get(index) else {
-                break;
-            };
-            item["data"] = Value::Null;
-            item["encoding"] = Value::String(
-                if use_shared_memory {
-                    "shared_memory"
-                } else {
-                    "binary_frame"
-                }
-                .into(),
-            );
-            item["attachment_index"] = json!(index);
-            item["offset"] = json!(attachments[index]["offset"]);
-            item["length"] = json!(image.data.len());
-        }
-    }
+    let prepared = prepare_image_transport(result.images, mode, shared_image)?;
+    prepared.annotate_content(&mut response_result);
 
     let mut response = json!({
         "type": response_type,
         "session_id": session_id,
         "result": response_result,
     });
-    if let Some(image) = image_descriptor {
+    if let Some(image) = prepared.primary {
         response["image"] = image;
     }
-    if attachments.len() > 1 {
-        response["attachments"] = Value::Array(attachments);
+    if prepared.attachments.len() > 1 {
+        response["attachments"] = Value::Array(prepared.attachments);
     }
-    Ok((
-        response,
-        (!attachment_bytes.is_empty()).then_some(attachment_bytes),
-    ))
+    Ok((response, prepared.attachment))
 }
 
 fn find_elements(root: &Value, query: &FindQuery, max_results: usize) -> Vec<Value> {
