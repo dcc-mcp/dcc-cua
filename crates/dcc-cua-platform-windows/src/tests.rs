@@ -103,10 +103,19 @@ fn held_key_wait_honors_interrupts_and_zero_duration() {
 }
 
 #[cfg(windows)]
+fn policy_fixture_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    static GUARD: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+    GUARD
+        .get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+#[cfg(windows)]
 fn evaluate_policy_fixture(
+    worker: &mut UiaWorker,
     fixture: serde_json::Value,
 ) -> Result<serde_json::Value, super::UiaError> {
-    let mut worker = UiaWorker::start()?;
     let mut payload = fixture.as_object().cloned().ok_or_else(|| {
         super::UiaError::InvalidAction("policy fixture must be a JSON object".into())
     })?;
@@ -423,6 +432,8 @@ fn worker_protocol_rejects_missing_or_mismatched_versions() {
 #[cfg(windows)]
 #[rstest]
 fn powershell_policy_tiers_are_behaviorally_fixture_tested() {
+    let _guard = policy_fixture_test_guard();
+    let mut worker = UiaWorker::start().expect("start policy fixture worker");
     for (facts, expected) in [
         (
             json!({"is_password": true, "name": "", "automation_id": "", "class_name": "", "secret_marker": false}),
@@ -441,10 +452,13 @@ fn powershell_policy_tiers_are_behaviorally_fixture_tested() {
             "task_grant",
         ),
     ] {
-        let response = evaluate_policy_fixture(json!({
-            "operation": "control_policy_tier",
-            "facts": facts,
-        }))
+        let response = evaluate_policy_fixture(
+            &mut worker,
+            json!({
+                "operation": "control_policy_tier",
+                "facts": facts,
+            }),
+        )
         .expect("policy fixture response");
         assert_eq!(response["result"], expected);
     }
@@ -453,6 +467,8 @@ fn powershell_policy_tiers_are_behaviorally_fixture_tested() {
 #[cfg(windows)]
 #[rstest]
 fn powershell_fence_and_sensitive_target_policies_are_behaviorally_fixture_tested() {
+    let _guard = policy_fixture_test_guard();
+    let mut worker = UiaWorker::start().expect("start policy fixture worker");
     let expected = json!({
         "identity": "42.7",
         "is_password": false,
@@ -469,30 +485,36 @@ fn powershell_fence_and_sensitive_target_policies_are_behaviorally_fixture_teste
         "class_name": "Button",
         "policy_tier": "action_confirmation",
     });
-    let matching = evaluate_policy_fixture(json!({
-        "operation": "matches_expected_fence",
-        "facts": facts,
-        "expected": expected,
-    }))
+    let matching = evaluate_policy_fixture(
+        &mut worker,
+        json!({
+            "operation": "matches_expected_fence",
+            "facts": facts,
+            "expected": expected,
+        }),
+    )
     .expect("matching fence fixture");
     assert_eq!(matching["result"], true);
 
-    let changed_case = evaluate_policy_fixture(json!({
-        "operation": "matches_expected_fence",
-        "facts": facts.clone(),
-        "expected": {
-            "identity": "42.7",
-            "is_password": false,
-            "name": "save",
-            "automation_id": "SaveButton",
-            "class_name": "Button",
-            "policy_tier": "action_confirmation",
-        },
-    }))
+    let changed_case = evaluate_policy_fixture(
+        &mut worker,
+        json!({
+            "operation": "matches_expected_fence",
+            "facts": facts.clone(),
+            "expected": {
+                "identity": "42.7",
+                "is_password": false,
+                "name": "save",
+                "automation_id": "SaveButton",
+                "class_name": "Button",
+                "policy_tier": "action_confirmation",
+            },
+        }),
+    )
     .expect("case-changed fence fixture");
     assert_eq!(changed_case["result"], false);
 
-    let stale = evaluate_policy_fixture(json!({
+    let stale = evaluate_policy_fixture(&mut worker, json!({
         "operation": "matches_expected_fence",
         "facts": {"identity": "changed", "is_password": false, "name": "Save", "automation_id": "SaveButton", "class_name": "Button", "policy_tier": "action_confirmation"},
         "expected": expected,
@@ -505,10 +527,13 @@ fn powershell_fence_and_sensitive_target_policies_are_behaviorally_fixture_teste
         json!({"identity_verified": true, "process_name": "pwsh", "class_name": ""}),
         json!({"identity_verified": true, "process_name": "explorer", "class_name": "#32770"}),
     ] {
-        let denied = evaluate_policy_fixture(json!({
-            "operation": "denied_target_reason",
-            "facts": facts,
-        }))
+        let denied = evaluate_policy_fixture(
+            &mut worker,
+            json!({
+                "operation": "denied_target_reason",
+                "facts": facts,
+            }),
+        )
         .expect("sensitive target fixture");
         assert!(
             denied["result"]

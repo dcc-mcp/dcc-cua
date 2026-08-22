@@ -836,7 +836,7 @@ async fn controlled_electron_round_trip() {
         .and_then(|matches| matches.first())
         .expect("raw-input click target");
     let (x, y) = screenshot_point(&raw_snapshot.value, raw_target);
-    let raw_clicked = host_request(
+    let raw_moved = host_request(
         &mut host,
         "execute_action",
         json!({
@@ -846,7 +846,7 @@ async fn controlled_electron_round_trip() {
             "observation_id": raw_snapshot.value["observation_id"],
             "accessibility_state_id": raw_snapshot.value["accessibility_state_id"],
             "action": {
-                "action": "click",
+                "action": "move",
                 "input_kind": "raw_input",
                 "intent": "navigate",
                 "delivery_mode": "foreground",
@@ -860,11 +860,11 @@ async fn controlled_electron_round_trip() {
     )
     .await;
     assert_eq!(
-        raw_clicked.value["success"], true,
-        "raw-input click failed: {}",
-        raw_clicked.value
+        raw_moved.value["success"], true,
+        "raw-input move failed: {}",
+        raw_moved.value
     );
-    wait_for_journal(&journal, "lbl-counter", "counter=1");
+    wait_for_journal(&journal, "lbl-counter", "counter=0");
 
     let browser_prepare_params = json!({
         "session_id": SESSION_ID,
@@ -922,7 +922,7 @@ async fn controlled_electron_round_trip() {
         json!({}),
     )
     .await;
-    wait_for_journal(&journal, "lbl-counter", "counter=2");
+    wait_for_journal(&journal, "lbl-counter", "counter=1");
 
     let browser_expected = "browser-host-ipc-e2e";
     browser_mutation_with_pre_dispatch_refresh_recovery(
@@ -1462,7 +1462,7 @@ async fn controlled_native_menu_round_trip() {
 #[cfg(all(feature = "gui-e2e", windows))]
 #[rstest]
 #[tokio::test]
-async fn windows_endpoint_sessions_keep_background_uia_and_distinguish_injected_escape() {
+async fn windows_endpoint_sessions_keep_background_uia_and_require_raw_input_confirmation() {
     let binary = std::env::var_os("DCC_CUA_E2E_BINARY")
         .map(PathBuf::from)
         .expect("DCC_CUA_E2E_BINARY must point to dcc-cua");
@@ -1734,7 +1734,7 @@ async fn windows_endpoint_sessions_keep_background_uia_and_distinguish_injected_
         competing_activation.value
     );
 
-    windows_activation::assert_first_key_reaches_retained_focus(
+    windows_activation::assert_raw_click_requires_confirmation(
         &mut clients[active_client],
         first_session_id,
         first_grant_id,
@@ -1745,7 +1745,7 @@ async fn windows_endpoint_sessions_keep_background_uia_and_distinguish_injected_
 
     let escape_snapshot = client_request(
         &mut clients[active_client],
-        "snapshot",
+        "accessibility_snapshot",
         json!({
             "session_id": first_session_id,
             "task_grant_id": first_grant_id,
@@ -1776,7 +1776,9 @@ async fn windows_endpoint_sessions_keep_background_uia_and_distinguish_injected_
         }),
     )
     .await;
-    assert_eq!(pressed.value["success"], true, "{}", pressed.value);
+    assert_eq!(pressed.value["success"], false, "{}", pressed.value);
+    assert_eq!(pressed.value["error"], "approval_required");
+    assert_eq!(pressed.value["policy_tier"], "action_confirmation");
     tokio::time::sleep(Duration::from_millis(100)).await;
     for (client_index, session_id, grant_id, capability, _) in &sessions {
         let alive = client_request(
@@ -1792,7 +1794,7 @@ async fn windows_endpoint_sessions_keep_background_uia_and_distinguish_injected_
         assert_eq!(
             alive.value["state"]["structuredContent"]["session"],
             session_id.as_str(),
-            "agent-injected Escape must not interrupt Host sessions: {}",
+            "a rejected raw Escape must not interrupt Host sessions: {}",
             alive.value
         );
     }
