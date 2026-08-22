@@ -253,7 +253,6 @@ impl HostSession {
         self.latest_observation_id = None;
         self.latest_accessibility_state_id = None;
         self.latest_accessibility_root = None;
-        self.latest_shared_image = None;
     }
 
     pub(super) fn discard_browser_evidence(&mut self) {

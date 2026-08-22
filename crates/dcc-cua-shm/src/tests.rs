@@ -9,8 +9,6 @@ fn descriptor_uses_cua_shared_memory_shape() {
     assert!(descriptor.name.starts_with("cua_"));
     assert_eq!(descriptor.length, 3);
     assert_eq!(descriptor.mime_type, "image/png");
-    assert!(image.is_alive());
-
     let opened = ipckit::SharedMemory::open(&descriptor.name).unwrap();
     let header = opened.read(0, HEADER_SIZE).unwrap();
     assert_eq!(

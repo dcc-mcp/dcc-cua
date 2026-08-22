@@ -618,6 +618,7 @@ impl HostClient {
                 "request_batch accepts read-only Host methods only".into(),
             ));
         }
+        validate_shared_memory_batch_handoffs(self.snapshot_transport, &requests)?;
         for (request_id, _, _) in &requests {
             validate_request_id(request_id)?;
         }
@@ -892,6 +893,39 @@ fn is_pipeline_safe_method(method: &str) -> bool {
             | "clipboard_read"
             | "desktop_session_snapshot"
     )
+}
+
+fn validate_shared_memory_batch_handoffs(
+    snapshot_transport: SnapshotTransport,
+    requests: &[(String, String, Value)],
+) -> HostClientResult<()> {
+    if snapshot_transport != SnapshotTransport::SharedMemory {
+        return Ok(());
+    }
+    let mut publishers = HashSet::new();
+    for (_, method, params) in requests {
+        let Some(slot) = shared_memory_handoff_slot(method, params) else {
+            continue;
+        };
+        if !publishers.insert(slot) {
+            return Err(HostClientError::Protocol(
+                "request_batch allows at most one shared-memory image publisher per session".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn shared_memory_handoff_slot(method: &str, params: &Value) -> Option<String> {
+    let namespace = match method {
+        "desktop_snapshot" => return Some("desktop:global".into()),
+        "desktop_session_snapshot" => "desktop",
+        "snapshot" | "verify_state" | "browser_snapshot" => "window",
+        _ => return None,
+    };
+    params["session_id"]
+        .as_str()
+        .map(|session_id| format!("{namespace}:{session_id}"))
 }
 
 fn response_capabilities(response: &Value) -> HostClientResult<Vec<String>> {

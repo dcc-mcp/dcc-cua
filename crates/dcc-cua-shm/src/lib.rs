@@ -38,9 +38,9 @@ pub struct SharedImageDescriptor {
     pub mime_type: String,
 }
 
-/// Owns the named region until the consumer has opened it or the session ends.
+/// Owns the named region until its response handoff is replaced or the session ends.
 pub struct SharedImage {
-    memory: SharedMemory,
+    _memory: SharedMemory,
     descriptor: SharedImageDescriptor,
 }
 
@@ -82,7 +82,7 @@ impl SharedImage {
             .map_err(|error| SharedImageError::Ipc(error.to_string()))?;
 
         Ok(Self {
-            memory,
+            _memory: memory,
             descriptor: SharedImageDescriptor {
                 name,
                 id,
@@ -95,11 +95,6 @@ impl SharedImage {
     #[must_use]
     pub fn descriptor(&self) -> &SharedImageDescriptor {
         &self.descriptor
-    }
-
-    #[must_use]
-    pub fn is_alive(&self) -> bool {
-        self.memory.size() >= HEADER_SIZE + self.descriptor.length
     }
 }
 

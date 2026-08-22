@@ -10,6 +10,7 @@ use crate::request_handler::bind_launched_process;
 use crate::request_handler::finish_window_mutation_attempt;
 use crate::request_handler::session_stopped_response;
 use crate::session_events::SessionInputEventQueue;
+use dcc_cua_shm::SharedImageReader;
 use rstest::rstest;
 use serde_json::Value;
 
@@ -433,7 +434,7 @@ async fn material_target_transition_invalidates_old_raw_and_accessibility_refere
     assert!(host.observe_target_availability(target_availability(
         dcc_cua_core::ComputerUseTargetStatus::Available
     )));
-    assert!(host.latest_shared_image.is_none());
+    assert!(host.latest_shared_image.is_some());
     assert_cached_action_references_are_stale(&driver, &mut sessions, "observation-after-restore")
         .await;
 }
@@ -477,7 +478,7 @@ async fn get_window_state_material_transition_invalidates_old_raw_and_accessibil
         }),
     );
     assert_eq!(restored["state"]["minimized"], false);
-    assert!(host.latest_shared_image.is_none());
+    assert!(host.latest_shared_image.is_some());
 
     assert_cached_action_references_are_stale(
         &driver,
@@ -623,7 +624,7 @@ fn invalid_target_rejection_invalidates_evidence_without_synthesizing_target_una
     assert_eq!(rejection.code, ComputerUseErrorCode::InvalidTarget);
     assert!(host.latest_observation_id.is_none());
     assert!(host.latest_accessibility_state_id.is_none());
-    assert!(host.latest_shared_image.is_none());
+    assert!(host.latest_shared_image.is_some());
     assert_eq!(
         host.input_events.target_state().status,
         dcc_cua_core::ComputerUseTargetStatus::Available
@@ -648,7 +649,7 @@ fn session_refresh_required_invalidates_evidence_without_synthesizing_availabili
     assert!(host.latest_observation_id.is_none());
     assert!(host.latest_accessibility_state_id.is_none());
     assert!(host.latest_accessibility_root.is_none());
-    assert!(host.latest_shared_image.is_none());
+    assert!(host.latest_shared_image.is_some());
     assert_eq!(
         host.input_events.current().status,
         dcc_cua_core::ComputerUseInputStatus::Ready
@@ -674,7 +675,7 @@ fn successful_core_refresh_epoch_reconciles_all_host_observation_caches() {
     assert!(host.latest_observation_id.is_none());
     assert!(host.latest_accessibility_state_id.is_none());
     assert!(host.latest_accessibility_root.is_none());
-    assert!(host.latest_shared_image.is_none());
+    assert!(host.latest_shared_image.is_some());
 }
 
 #[rstest]
@@ -708,7 +709,7 @@ fn successful_get_session_state_route_reconciles_epoch_at_the_public_request_bou
     assert!(host.latest_observation_id.is_none());
     assert!(host.latest_accessibility_state_id.is_none());
     assert!(host.latest_accessibility_root.is_none());
-    assert!(host.latest_shared_image.is_none());
+    assert!(host.latest_shared_image.is_some());
 }
 
 #[rstest]
@@ -747,7 +748,7 @@ fn successful_live_observation_start_reconciles_cross_domain_evidence_at_the_pub
     assert!(host.latest_observation_id.is_none());
     assert!(host.latest_accessibility_state_id.is_none());
     assert!(host.latest_accessibility_root.is_none());
-    assert!(host.latest_shared_image.is_none());
+    assert!(host.latest_shared_image.is_some());
     assert!(host.browser_evidence_epoch.is_none());
 }
 
@@ -779,7 +780,7 @@ async fn successful_session_state_refresh_rejects_previous_raw_uia_and_browser_e
     )
     .unwrap();
 
-    assert!(sessions.windows["session-1"].latest_shared_image.is_none());
+    assert!(sessions.windows["session-1"].latest_shared_image.is_some());
     assert_cached_action_references_are_stale(
         &driver,
         &mut sessions,
@@ -845,7 +846,7 @@ fn successful_browser_snapshot_mint_binds_the_new_epoch_without_reusing_native_e
     assert!(host.latest_observation_id.is_none());
     assert!(host.latest_accessibility_state_id.is_none());
     assert!(host.latest_accessibility_root.is_none());
-    assert!(host.latest_shared_image.is_none());
+    assert!(host.latest_shared_image.is_some());
 }
 
 #[rstest]
@@ -1024,7 +1025,7 @@ fn post_preflight_action_failure_reconciles_epoch_before_error_return() {
     assert!(host.latest_observation_id.is_none());
     assert!(host.latest_accessibility_state_id.is_none());
     assert!(host.latest_accessibility_root.is_none());
-    assert!(host.latest_shared_image.is_none());
+    assert!(host.latest_shared_image.is_some());
     assert!(host.browser_evidence_epoch.is_none());
 }
 
@@ -1079,7 +1080,7 @@ fn find_cache_read_rejects_a_newly_minimized_target_and_invalidates_old_uia_evid
     assert!(host.latest_observation_id.is_none());
     assert!(host.latest_accessibility_state_id.is_none());
     assert!(host.latest_accessibility_root.is_none());
-    assert!(host.latest_shared_image.is_none());
+    assert!(host.latest_shared_image.is_some());
     assert_eq!(
         host.input_events.target_state().status,
         dcc_cua_core::ComputerUseTargetStatus::Minimized
@@ -1112,7 +1113,7 @@ async fn input_suspend_resume_invalidates_old_raw_and_accessibility_references()
         },
         300,
     ));
-    assert!(host.latest_shared_image.is_none());
+    assert!(host.latest_shared_image.is_some());
     assert_cached_action_references_are_stale(&driver, &mut sessions, "observation-after-unlock")
         .await;
 }
@@ -1893,6 +1894,24 @@ fn app_launch_grant_defaults_to_denied() {
         ))),
         "session_refresh_required"
     );
+}
+
+#[rstest]
+fn observation_invalidation_keeps_the_published_shared_image_handoff_alive() {
+    let driver = ComputerUseDriver::create().unwrap();
+    let mut host = cached_host_session(&driver);
+    let descriptor = host
+        .latest_shared_image
+        .as_ref()
+        .unwrap()
+        .descriptor()
+        .clone();
+
+    host.invalidate_observations();
+
+    let reader = SharedImageReader::open(descriptor)
+        .expect("observation invalidation must not revoke a published descriptor");
+    assert_eq!(reader.read().unwrap(), b"old");
 }
 
 #[cfg(windows)]
