@@ -40,7 +40,9 @@ provides:
   The Windows Escape boundary uses a non-exclusive low-level hook only while a
   control banner is active, so another application's global hotkey cannot
   silently disable the stop control; the key is consumed instead of also being
-  delivered to the controlled application. Agent-injected Escape is not an
+  delivered to the controlled application. A blocking message pump refreshes
+  the hook every second and fails active banners closed if refresh stops.
+  Agent-injected Escape is not an
   operator stop signal: it passes through to the granted target window and
   does not advance the shared stop generation.
 

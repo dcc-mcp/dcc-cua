@@ -577,10 +577,13 @@ impl ControlBanner {
         motion: IndicatorMotionPolicy,
     ) -> Result<Self, IndicatorError> {
         target.validate()?;
+        let generation = interrupt_generation();
+        let label = target.identity();
+        let platform = platform::PlatformBanner::start(target, motion, generation)?;
         Ok(Self {
-            generation: interrupt_generation(),
-            label: target.identity(),
-            platform: platform::PlatformBanner::start(target, motion)?,
+            generation,
+            label,
+            platform,
         })
     }
 
@@ -659,6 +662,7 @@ mod platform {
         pub(super) fn start(
             _target: BannerTarget,
             motion: IndicatorMotionPolicy,
+            _generation: u64,
         ) -> Result<Self, IndicatorError> {
             Ok(Self {
                 activity: Arc::new(BannerActivitySignal::new(BannerActivity::Ready)),

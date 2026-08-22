@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -17,6 +17,7 @@ use windows::Win32::Graphics::Gdi::{
     RGN_DIFF, RGN_ERROR, SelectObject, SetBkMode, SetTextColor, SetWindowRgn, TRANSPARENT,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::HiDpi::{
     DPI_AWARENESS_CONTEXT, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForWindow,
     SetThreadDpiAwarenessContext,
@@ -25,20 +26,27 @@ use windows::Win32::UI::Input::KeyboardAndMouse::VK_ESCAPE;
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, CreateWindowExW, DI_NORMAL, DefWindowProcW, DestroyWindow, DispatchMessageW,
     DrawIconEx, GA_ROOTOWNER, GCLP_HICON, GCLP_HICONSM, GW_HWNDPREV, GetAncestor, GetClassLongPtrW,
-    GetClientRect, GetForegroundWindow, GetPropW, GetWindow, GetWindowRect, GetWindowTextLengthW,
-    GetWindowTextW, GetWindowThreadProcessId, HC_ACTION, HHOOK, HICON, HTTRANSPARENT,
-    HWND_NOTOPMOST, HWND_TOP, HWND_TOPMOST, ICON_SMALL2, IsIconic, IsWindow, IsWindowVisible,
-    KBDLLHOOKSTRUCT, LLKHF_INJECTED, LWA_ALPHA, MA_NOACTIVATE, MSG, PM_REMOVE, PeekMessageW,
-    RegisterClassW, RemovePropW, SEND_MESSAGE_TIMEOUT_FLAGS, SET_WINDOW_POS_FLAGS,
-    SMTO_ABORTIFHUNG, SPI_GETCLIENTAREAANIMATION, SW_HIDE, SW_SHOWNOACTIVATE, SWP_NOACTIVATE,
-    SWP_NOMOVE, SWP_NOOWNERZORDER, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW,
-    SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SendMessageTimeoutW, SetLayeredWindowAttributes, SetPropW,
-    SetWindowPos, SetWindowsHookExW, ShowWindow, SystemParametersInfoW, TranslateMessage,
-    UnhookWindowsHookEx, WH_KEYBOARD_LL, WINDOW_EX_STYLE, WINDOW_STYLE, WM_GETICON, WM_KEYDOWN,
-    WM_KEYUP, WM_MOUSEACTIVATE, WM_NCHITTEST, WM_PAINT, WM_SYSKEYDOWN, WM_SYSKEYUP, WNDCLASSW,
-    WNDPROC, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT, WS_POPUP,
+    GetClientRect, GetForegroundWindow, GetMessageW, GetPropW, GetWindow, GetWindowRect,
+    GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, HC_ACTION, HHOOK, HICON,
+    HTTRANSPARENT, HWND_NOTOPMOST, HWND_TOP, HWND_TOPMOST, ICON_SMALL2, IsIconic, IsWindow,
+    IsWindowVisible, KBDLLHOOKSTRUCT, KillTimer, LLKHF_INJECTED, LWA_ALPHA, MA_NOACTIVATE, MSG,
+    PM_NOREMOVE, PM_REMOVE, PeekMessageW, PostThreadMessageW, RegisterClassW, RemovePropW,
+    SEND_MESSAGE_TIMEOUT_FLAGS, SET_WINDOW_POS_FLAGS, SMTO_ABORTIFHUNG, SPI_GETCLIENTAREAANIMATION,
+    SW_HIDE, SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOOWNERZORDER, SWP_NOSIZE,
+    SWP_NOZORDER, SWP_SHOWWINDOW, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SendMessageTimeoutW,
+    SetLayeredWindowAttributes, SetPropW, SetTimer, SetWindowPos, SetWindowsHookExW, ShowWindow,
+    SystemParametersInfoW, TranslateMessage, UnhookWindowsHookEx, WH_KEYBOARD_LL, WINDOW_EX_STYLE,
+    WINDOW_STYLE, WM_GETICON, WM_KEYDOWN, WM_KEYUP, WM_MOUSEACTIVATE, WM_NCHITTEST, WM_PAINT,
+    WM_QUIT, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER, WNDCLASSW, WNDPROC, WS_EX_LAYERED,
+    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT, WS_POPUP,
 };
 use windows::core::{BOOL, HRESULT, PCWSTR, w};
+
+mod escape_hub_lifecycle;
+pub(super) use escape_hub_lifecycle::{
+    EscapeHubAcquireAction, EscapeHubReleaseAction, acquire_action as escape_hub_acquire_action,
+    release_action as escape_hub_release_action,
+};
 
 use super::{
     BannerActivity, BannerActivitySignal, BannerFailure, BannerIndicators, BannerStatus,
@@ -58,6 +66,7 @@ const OVERLAY_ICON_PROP: PCWSTR = w!("DccCuaBannerIcon");
 const OVERLAY_THEME_PROP: PCWSTR = w!("DccCuaBannerTheme");
 const BANNER_ALPHA: u8 = 248;
 const FRAME_INTERVAL: Duration = Duration::from_millis(33);
+const ESCAPE_HOOK_WATCHDOG_INTERVAL_MS: u32 = 1_000;
 // Starting the Win32 overlay can be delayed by a saturated interactive
 // desktop (for example while a DCC is cooking and UIA providers are hung).
 // Keep the wait bounded, but give the dedicated banner thread enough time to
@@ -101,7 +110,7 @@ const LINE_VARIANTS: [COLORREF; 4] = [
     rgb(167, 91, 220),
     rgb(67, 183, 135),
 ];
-static ESCAPE_HUB: OnceLock<Result<EscapeHub, String>> = OnceLock::new();
+static ESCAPE_HUB_STATE: OnceLock<Mutex<EscapeHubState>> = OnceLock::new();
 static ESCAPE_DOWN: AtomicBool = AtomicBool::new(false);
 static ACTIVE_BANNERS: AtomicUsize = AtomicUsize::new(0);
 
@@ -223,8 +232,9 @@ impl PlatformBanner {
     pub(super) fn start(
         target: BannerTarget,
         requested_motion: IndicatorMotionPolicy,
+        generation: u64,
     ) -> Result<Self, IndicatorError> {
-        let escape_hub = escape_hub()?;
+        let escape_hub = EscapeHubLease::acquire()?;
         let motion = IndicatorMotionStatus::resolve_from_system(
             requested_motion,
             system_animation_preference(),
@@ -241,7 +251,7 @@ impl PlatformBanner {
         let backend_failure = Arc::new(Mutex::new(None));
         let runtime = BannerRuntime {
             hub_active: Arc::clone(&escape_hub.active),
-            generation: interrupt_generation(),
+            generation,
             activity: Arc::clone(&activity),
             recording: Arc::clone(&recording),
             live_observation: Arc::clone(&live_observation),
@@ -254,9 +264,11 @@ impl PlatformBanner {
         let thread_frame_visible = Arc::clone(&frame_visible);
         let thread_inside_target = Arc::clone(&inside_target);
         let thread_backend_failure = Arc::clone(&backend_failure);
+        let thread_escape_hub = escape_hub;
         let thread = thread::Builder::new()
             .name("dcc-cua-control-banner".into())
             .spawn(move || {
+                let _escape_hub = thread_escape_hub;
                 let result = run_banner(
                     target,
                     &thread_stop,
@@ -457,30 +469,55 @@ impl Drop for DpiProbeWindow {
 
 struct RegisteredKeyboardHook(HHOOK);
 
+impl RegisteredKeyboardHook {
+    fn install() -> Result<Self, String> {
+        unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, Some(low_level_keyboard_hook), None, 0) }
+            .map(Self)
+            .map_err(|error| format!("install Escape stop hook: {error}"))
+    }
+}
+
 impl Drop for RegisteredKeyboardHook {
     fn drop(&mut self) {
         let _ = unsafe { UnhookWindowsHookEx(self.0) };
     }
 }
 
-struct ActiveBannerRegistration;
+struct RegisteredThreadTimer(usize);
 
-impl ActiveBannerRegistration {
-    fn acquire() -> Self {
-        ACTIVE_BANNERS.fetch_add(1, Ordering::AcqRel);
-        Self
+impl RegisteredThreadTimer {
+    fn install() -> Result<Self, String> {
+        let timer = unsafe { SetTimer(None, 0, ESCAPE_HOOK_WATCHDOG_INTERVAL_MS, None) };
+        if timer == 0 {
+            return Err(format!(
+                "install Escape hook watchdog timer: {}",
+                windows::core::Error::from_win32()
+            ));
+        }
+        Ok(Self(timer))
     }
 }
 
-impl Drop for ActiveBannerRegistration {
+impl Drop for RegisteredThreadTimer {
     fn drop(&mut self) {
-        if ACTIVE_BANNERS.fetch_sub(1, Ordering::AcqRel) == 1 {
-            ESCAPE_DOWN.store(false, Ordering::Release);
-        }
+        let _ = unsafe { KillTimer(None, self.0) };
     }
 }
 
 struct EscapeHub {
+    active: Arc<AtomicBool>,
+    stop_requested: Arc<AtomicBool>,
+    thread_id: Arc<AtomicU32>,
+    thread: Option<JoinHandle<()>>,
+}
+
+#[derive(Default)]
+struct EscapeHubState {
+    hub: Option<EscapeHub>,
+    leases: usize,
+}
+
+struct EscapeHubLease {
     active: Arc<AtomicBool>,
 }
 
@@ -495,12 +532,21 @@ struct BannerRuntime {
 impl EscapeHub {
     fn start() -> Result<Self, String> {
         let active = Arc::new(AtomicBool::new(false));
+        let stop_requested = Arc::new(AtomicBool::new(false));
+        let thread_id = Arc::new(AtomicU32::new(0));
         let thread_active = Arc::clone(&active);
+        let worker_stop_requested = Arc::clone(&stop_requested);
+        let worker_thread_id = Arc::clone(&thread_id);
         let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
-        thread::Builder::new()
+        let thread = thread::Builder::new()
             .name("dcc-cua-escape-hub".into())
             .spawn(move || {
-                let result = run_escape_hub(&thread_active, &ready_tx);
+                let result = run_escape_hub(
+                    &thread_active,
+                    &worker_stop_requested,
+                    &worker_thread_id,
+                    &ready_tx,
+                );
                 if let Err(error) = result {
                     let _ = ready_tx.try_send(Err(error));
                 }
@@ -508,42 +554,155 @@ impl EscapeHub {
             })
             .map_err(|error| format!("failed to start Escape hub: {error}"))?;
         match ready_rx.recv_timeout(Duration::from_secs(2)) {
-            Ok(Ok(())) => Ok(Self { active }),
-            Ok(Err(error)) => Err(error),
-            Err(error) => Err(format!("timed out while starting Escape hub: {error}")),
+            Ok(Ok(())) => Ok(Self {
+                active,
+                stop_requested,
+                thread_id,
+                thread: Some(thread),
+            }),
+            Ok(Err(error)) => {
+                let _ = thread.join();
+                Err(error)
+            }
+            Err(error) => {
+                stop_requested.store(true, Ordering::Release);
+                request_escape_hub_stop(thread_id.load(Ordering::Acquire));
+                let _ = thread.join();
+                Err(format!("timed out while starting Escape hub: {error}"))
+            }
+        }
+    }
+
+    fn stop(&mut self) {
+        self.stop_requested.store(true, Ordering::Release);
+        let thread_id = self.thread_id.swap(0, Ordering::AcqRel);
+        let thread_is_running = self
+            .thread
+            .as_ref()
+            .is_some_and(|thread| !thread.is_finished());
+        if thread_is_running {
+            request_escape_hub_stop(thread_id);
+        }
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+        self.active.store(false, Ordering::Release);
+    }
+}
+
+impl Drop for EscapeHub {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
+impl EscapeHubLease {
+    fn acquire() -> Result<Self, IndicatorError> {
+        let state = ESCAPE_HUB_STATE.get_or_init(|| Mutex::new(EscapeHubState::default()));
+        let mut state = state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let active = state
+            .hub
+            .as_ref()
+            .is_some_and(|hub| hub.active.load(Ordering::Acquire));
+        match escape_hub_acquire_action(state.hub.is_some(), active) {
+            EscapeHubAcquireAction::Reuse => {}
+            EscapeHubAcquireAction::Start | EscapeHubAcquireAction::Restart => {
+                drop(state.hub.take());
+                state.hub = Some(EscapeHub::start().map_err(IndicatorError::Backend)?);
+            }
+        }
+        let active = Arc::clone(
+            &state
+                .hub
+                .as_ref()
+                .expect("Escape hub is initialized before leasing")
+                .active,
+        );
+        state.leases = state.leases.checked_add(1).ok_or_else(|| {
+            IndicatorError::Backend("Escape hub banner lease limit was exhausted".into())
+        })?;
+        ACTIVE_BANNERS.fetch_add(1, Ordering::AcqRel);
+        Ok(Self { active })
+    }
+}
+
+impl Drop for EscapeHubLease {
+    fn drop(&mut self) {
+        let state = ESCAPE_HUB_STATE.get_or_init(|| Mutex::new(EscapeHubState::default()));
+        let mut state = state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        debug_assert!(state.leases > 0, "Escape hub lease underflow");
+        if state.leases == 0 {
+            return;
+        }
+        let release = escape_hub_release_action(state.leases);
+        state.leases -= 1;
+        if ACTIVE_BANNERS.fetch_sub(1, Ordering::AcqRel) == 1 {
+            ESCAPE_DOWN.store(false, Ordering::Release);
+        }
+        if release == EscapeHubReleaseAction::Stop
+            && let Some(hub) = state.hub.take()
+        {
+            drop(hub);
         }
     }
 }
 
-fn escape_hub() -> Result<&'static EscapeHub, IndicatorError> {
-    match ESCAPE_HUB.get_or_init(EscapeHub::start) {
-        Ok(hub) if hub.active.load(Ordering::Acquire) => Ok(hub),
-        Ok(_) => Err(IndicatorError::Backend("Escape hub stopped".into())),
-        Err(error) => Err(IndicatorError::Backend(error.clone())),
+fn request_escape_hub_stop(thread_id: u32) {
+    if thread_id != 0 {
+        let _ = unsafe { PostThreadMessageW(thread_id, WM_QUIT, WPARAM(0), LPARAM(0)) };
     }
 }
 
 fn run_escape_hub(
     active: &AtomicBool,
+    stop_requested: &AtomicBool,
+    thread_id: &AtomicU32,
     ready: &std::sync::mpsc::SyncSender<Result<(), String>>,
 ) -> Result<(), String> {
-    let hook = unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, Some(low_level_keyboard_hook), None, 0) }
-        .map_err(|error| format!("install Escape stop hook: {error}"))?;
-    let _hook = RegisteredKeyboardHook(hook);
+    let mut message = MSG::default();
+    let _ = unsafe { PeekMessageW(&mut message, None, 0, 0, PM_NOREMOVE) };
+    thread_id.store(unsafe { GetCurrentThreadId() }, Ordering::Release);
+    if stop_requested.load(Ordering::Acquire) {
+        return Ok(());
+    }
+    let mut hook = RegisteredKeyboardHook::install()?;
+    let watchdog = RegisteredThreadTimer::install()?;
+    if stop_requested.load(Ordering::Acquire) {
+        return Ok(());
+    }
     active.store(true, Ordering::Release);
     ready
         .try_send(Ok(()))
         .map_err(|error| format!("signal Escape hub readiness: {error}"))?;
-    let mut message = MSG::default();
     loop {
-        while unsafe { PeekMessageW(&mut message, None, 0, 0, PM_REMOVE) }.as_bool() {
-            unsafe {
-                let _ = TranslateMessage(&message);
-                DispatchMessageW(&message);
-            }
+        let result = unsafe { GetMessageW(&mut message, None, 0, 0) };
+        if result.0 == -1 {
+            return Err(format!(
+                "read Escape hub message: {}",
+                windows::core::Error::from_win32()
+            ));
         }
-        thread::sleep(FRAME_INTERVAL);
+        if result.0 == 0 {
+            break;
+        }
+        if stop_requested.load(Ordering::Acquire) {
+            break;
+        }
+        if message.message == WM_TIMER && message.wParam.0 == watchdog.0 {
+            hook = RegisteredKeyboardHook::install()?;
+            continue;
+        }
+        unsafe {
+            let _ = TranslateMessage(&message);
+            DispatchMessageW(&message);
+        }
     }
+    drop(hook);
+    Ok(())
 }
 
 unsafe extern "system" fn low_level_keyboard_hook(
@@ -695,7 +854,6 @@ fn run_banner(
             let _ = unsafe { ShowWindow(frame.0, SW_HIDE) };
         }
     }
-    let _active_banner = ActiveBannerRegistration::acquire();
     let mut displayed_activity = BannerActivity::Connecting;
     let mut displayed_recording = false;
     let mut displayed_live_observation = false;

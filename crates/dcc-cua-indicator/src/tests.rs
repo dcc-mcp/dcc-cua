@@ -1006,3 +1006,30 @@ fn escape_hook_is_a_complete_passthrough_without_active_banners() {
         Some(true),
     );
 }
+
+#[cfg(windows)]
+#[rstest]
+fn escape_hub_lifecycle_restarts_dead_hooks_and_stops_after_the_last_banner() {
+    use platform::{EscapeHubAcquireAction, EscapeHubReleaseAction};
+
+    assert_eq!(
+        platform::escape_hub_acquire_action(false, false),
+        EscapeHubAcquireAction::Start
+    );
+    assert_eq!(
+        platform::escape_hub_acquire_action(true, true),
+        EscapeHubAcquireAction::Reuse
+    );
+    assert_eq!(
+        platform::escape_hub_acquire_action(true, false),
+        EscapeHubAcquireAction::Restart
+    );
+    assert_eq!(
+        platform::escape_hub_release_action(2),
+        EscapeHubReleaseAction::KeepRunning
+    );
+    assert_eq!(
+        platform::escape_hub_release_action(1),
+        EscapeHubReleaseAction::Stop
+    );
+}
