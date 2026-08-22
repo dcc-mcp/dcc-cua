@@ -6,7 +6,7 @@ use serde::Serialize;
 use serde_json::Value;
 use thiserror::Error;
 
-use super::{flag_value, load_semantic_profile};
+use super::{flag_value, has_flag, load_semantic_profile};
 
 #[derive(Debug, Serialize)]
 pub(crate) struct StateObservation {
@@ -181,7 +181,7 @@ pub(crate) async fn execute(flags: &[String]) -> Result<(), Box<dyn std::error::
         )
         .into());
     };
-    if flags.iter().any(|flag| flag == "--watch") {
+    if has_flag(flags, "--watch") {
         return watch_source(&profile.id, source, flags).await;
     }
     match observe_source(source, flag_value(flags, "--etag").as_deref()).await {

@@ -123,11 +123,13 @@ pub(super) fn reject_unknown_flags(flags: &[String]) -> Result<(), String> {
 }
 
 pub(super) fn flag_value(flags: &[String], name: &str) -> Option<String> {
-    flags
-        .iter()
-        .position(|flag| flag == name)
-        .and_then(|index| flags.get(index + 1))
-        .cloned()
+    flags.iter().enumerate().find_map(|(index, flag)| {
+        if flag == name {
+            flags.get(index + 1).cloned()
+        } else {
+            inline_flag_value(flag, name).map(str::to_owned)
+        }
+    })
 }
 
 pub(super) fn application_label(flags: &[String]) -> String {
@@ -138,10 +140,22 @@ pub(super) fn application_label(flags: &[String]) -> String {
 
 pub(super) fn flag_values(flags: &[String], name: &str) -> Vec<String> {
     flags
-        .windows(2)
-        .filter(|pair| pair[0] == name)
-        .map(|pair| pair[1].clone())
+        .iter()
+        .enumerate()
+        .filter_map(|(index, flag)| {
+            if flag == name {
+                flags.get(index + 1).cloned()
+            } else {
+                inline_flag_value(flag, name).map(str::to_owned)
+            }
+        })
         .collect()
+}
+
+fn inline_flag_value<'a>(argument: &'a str, name: &str) -> Option<&'a str> {
+    argument
+        .split_once('=')
+        .and_then(|(candidate, value)| (candidate == name).then_some(value))
 }
 
 pub(super) fn bounded_u32(
@@ -161,7 +175,9 @@ pub(super) fn bounded_u32(
 }
 
 pub(super) fn has_flag(flags: &[String], name: &str) -> bool {
-    flags.iter().any(|flag| flag == name)
+    flags
+        .iter()
+        .any(|flag| flag == name || inline_flag_value(flag, name).is_some())
 }
 
 pub(super) fn is_help_request(command: &str, flags: &[String]) -> bool {

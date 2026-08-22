@@ -95,11 +95,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
         host_interrupt_all(&flags).await?;
         return Ok(());
     }
-    if command == "doctor"
-        && flags
-            .iter()
-            .any(|flag| flag == "--spawn" || flag == "--endpoint")
-    {
+    if command == "doctor" && (has_flag(&flags, "--spawn") || has_flag(&flags, "--endpoint")) {
         host_doctor(&flags).await?;
         return Ok(());
     }
@@ -215,11 +211,6 @@ fn private_worker_generation_from(arguments: &[String]) -> Result<Option<String>
     }
     let flags = &arguments[1..];
     flag_value(flags, "--generation")
-        .or_else(|| {
-            flags
-                .iter()
-                .find_map(|flag| flag.strip_prefix("--generation=").map(str::to_owned))
-        })
         .ok_or_else(|| "private worker requires --generation".to_owned())
         .map(Some)
 }

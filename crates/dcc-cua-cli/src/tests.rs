@@ -253,6 +253,28 @@ fn known_cli_flags_and_private_worker_equals_form_are_accepted() {
 }
 
 #[rstest]
+fn accepted_equals_form_flags_are_consumed_by_every_parser() {
+    let flags = strings([
+        "--json={\"x\":1}",
+        "--modifier=CTRL",
+        "--modifier",
+        "SHIFT",
+        "--activate=true",
+        "--observation-width=800",
+        "--observation-height=600",
+    ]);
+
+    reject_unknown_flags(&flags).unwrap();
+    assert_eq!(flag_value(&flags, "--json").as_deref(), Some("{\"x\":1}"));
+    assert_eq!(flag_values(&flags, "--modifier"), ["CTRL", "SHIFT"]);
+    assert!(has_flag(&flags, "--activate"));
+    assert_eq!(
+        visible_snapshot_dimensions(&flags).unwrap(),
+        Some((800, 600))
+    );
+}
+
+#[rstest]
 fn unknown_flag_cannot_be_hidden_as_a_missing_option_value() {
     let error = reject_unknown_flags(&["--pid".into(), "--hwnd".into()]).unwrap_err();
     assert!(error.contains("--hwnd"));
