@@ -24,6 +24,8 @@ use crate::windows_uia_fallback::WindowsUiaFallback;
 mod action_result;
 #[cfg(any(windows, test))]
 mod drag_sequences;
+#[cfg(test)]
+mod tests;
 #[cfg(any(windows, test))]
 pub(crate) use drag_sequences::*;
 pub(crate) mod application;
@@ -1189,7 +1191,12 @@ impl ComputerUseDesktopSession {
                 "desktop actions support only screen-coordinate input",
             ));
         }
-        if self.latest_observation_id.as_deref() != action.observation_id.as_deref() {
+        let observation_matches = self
+            .latest_observation_id
+            .as_deref()
+            .zip(action.observation_id.as_deref())
+            .is_some_and(|(latest, requested)| latest == requested);
+        if !observation_matches {
             return Err(ComputerUseError::new(
                 ComputerUseErrorCode::StaleObservation,
                 "take a fresh desktop snapshot before acting",
