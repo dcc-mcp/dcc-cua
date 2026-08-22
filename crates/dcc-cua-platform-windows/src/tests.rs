@@ -134,7 +134,7 @@ fn visible_crop_requires_multiple_covered_target_samples(
 use super::PersistentWgcCapture;
 #[cfg(windows)]
 use super::windows::{
-    ActivationZOrder, activation_topmost_bounce, completed_action_result,
+    ActivationRaiseMode, activation_raise_mode, completed_action_result,
     exact_window_available_for_activation, exact_window_ownership_matches,
     foreground_restore_required, input_gated_window_mutation,
     run_restore_activate_mutation_sequence, window_frame_matches,
@@ -592,15 +592,8 @@ fn restore_activation_requires_the_exact_live_pid_hwnd_ownership_fence() {
 
 #[cfg(windows)]
 #[rstest]
-fn activation_topmost_fallback_always_releases_topmost_state() {
-    let mut steps = Vec::new();
-
-    activation_topmost_bounce(|step| steps.push(step));
-
-    assert_eq!(
-        steps,
-        vec![ActivationZOrder::TopMost, ActivationZOrder::NotTopMost]
-    );
+fn activation_fallback_never_enters_topmost_state() {
+    assert_eq!(activation_raise_mode(), ActivationRaiseMode::NonTopMost);
 }
 
 #[cfg(windows)]

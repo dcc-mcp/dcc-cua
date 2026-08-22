@@ -15,10 +15,10 @@ use windows_sys::Win32::{
         Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON, VK_MBUTTON, VK_RBUTTON},
         WindowsAndMessaging::{
             BringWindowToTop, GUITHREADINFO, GetForegroundWindow, GetGUIThreadInfo, GetWindowRect,
-            GetWindowThreadProcessId, HWND_NOTOPMOST, HWND_TOP, HWND_TOPMOST, IsIconic, IsWindow,
-            IsWindowVisible, PostMessageW, SMTO_ABORTIFHUNG, SW_RESTORE, SWP_ASYNCWINDOWPOS,
-            SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW, SendMessageTimeoutW,
-            SetForegroundWindow, SetWindowPos, ShowWindowAsync, WM_CLOSE, WM_NULL,
+            GetWindowThreadProcessId, HWND_TOP, IsIconic, IsWindow, IsWindowVisible, PostMessageW,
+            SMTO_ABORTIFHUNG, SW_RESTORE, SWP_ASYNCWINDOWPOS, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
+            SWP_SHOWWINDOW, SendMessageTimeoutW, SetForegroundWindow, SetWindowPos,
+            ShowWindowAsync, WM_CLOSE, WM_NULL,
         },
     },
 };
@@ -41,14 +41,12 @@ const BACKEND: &str = include_str!("../assets/windows_uia_backend.ps1");
 const HELPERS: &str = include_str!("../assets/windows_uia_helpers.ps1");
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum ActivationZOrder {
-    TopMost,
-    NotTopMost,
+pub(super) enum ActivationRaiseMode {
+    NonTopMost,
 }
 
-pub(super) fn activation_topmost_bounce(mut apply: impl FnMut(ActivationZOrder)) {
-    apply(ActivationZOrder::TopMost);
-    apply(ActivationZOrder::NotTopMost);
+pub(super) const fn activation_raise_mode() -> ActivationRaiseMode {
+    ActivationRaiseMode::NonTopMost
 }
 
 pub(super) fn window_frame_matches(actual: [i32; 4], requested: [i32; 4]) -> bool {
@@ -545,10 +543,13 @@ fn activate_window_after_gate(target: UiaTarget) -> Result<(), UiaError> {
     }
 
     let expected = require_available_window_handle(target, "fallback activation")?;
+    let insert_after = match activation_raise_mode() {
+        ActivationRaiseMode::NonTopMost => HWND_TOP,
+    };
     unsafe {
         SetWindowPos(
             expected,
-            HWND_TOP,
+            insert_after,
             0,
             0,
             0,
@@ -556,38 +557,6 @@ fn activate_window_after_gate(target: UiaTarget) -> Result<(), UiaError> {
             SWP_ASYNCWINDOWPOS | SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
         );
         SetForegroundWindow(expected);
-    }
-    if unsafe { GetForegroundWindow() } != expected {
-        let mut topmost_applied = false;
-        let mut topmost_released = false;
-        activation_topmost_bounce(|step| {
-            let insert_after = match step {
-                ActivationZOrder::TopMost => HWND_TOPMOST,
-                ActivationZOrder::NotTopMost => HWND_NOTOPMOST,
-            };
-            let succeeded = unsafe {
-                SetWindowPos(
-                    expected,
-                    insert_after,
-                    0,
-                    0,
-                    0,
-                    0,
-                    SWP_ASYNCWINDOWPOS | SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
-                )
-            } != 0;
-            match step {
-                ActivationZOrder::TopMost => topmost_applied = succeeded,
-                ActivationZOrder::NotTopMost => topmost_released = succeeded,
-            }
-        });
-        if topmost_applied && !topmost_released {
-            return Err(UiaError::BackendUnavailable(
-                "Windows raised the exact target but could not release temporary topmost state"
-                    .into(),
-            ));
-        }
-        unsafe { SetForegroundWindow(expected) };
     }
     if unsafe { GetForegroundWindow() } != expected {
         activate_with_attached_input(expected);
