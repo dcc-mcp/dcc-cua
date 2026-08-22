@@ -2,40 +2,179 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://dcc-mcp.dev/schemas/dcc-cua-browser-extension-v1.json",
   "title": "DCC-CUA browser extension protocol v1",
-  "type": "object",
   "oneOf": [
-    {
+    { "$ref": "#/$defs/hello" },
+    { "$ref": "#/$defs/hello_ack" },
+    { "$ref": "#/$defs/ping" },
+    { "$ref": "#/$defs/snapshot" },
+    { "$ref": "#/$defs/click" },
+    { "$ref": "#/$defs/type" },
+    { "$ref": "#/$defs/unpair" },
+    { "$ref": "#/$defs/success_response" },
+    { "$ref": "#/$defs/error_response" }
+  ],
+  "$defs": {
+    "schema": { "const": "dcc-cua.browser-extension.v1" },
+    "request_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "session_nonce": { "type": "string", "minLength": 1, "maxLength": 64 },
+    "tab_id": { "type": "integer", "minimum": 1 },
+    "evidence_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "capabilities": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 32,
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1, "maxLength": 128 }
+    },
+    "extension": {
+      "type": "object",
+      "additionalProperties": false,
       "properties": {
-        "schema": { "const": "dcc-cua.browser-extension.v1" },
+        "id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "version": { "type": "string", "minLength": 1, "maxLength": 64 }
+      },
+      "required": ["id", "version"]
+    },
+    "pairing": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "session_nonce": { "$ref": "#/$defs/session_nonce" },
+        "tab_id": { "$ref": "#/$defs/tab_id" },
+        "window_id": { "type": "integer", "minimum": 1 },
+        "origin": { "type": "string", "minLength": 1, "maxLength": 2048 },
+        "document_id": { "type": "string", "minLength": 1, "maxLength": 128 }
+      },
+      "required": ["session_nonce", "tab_id", "window_id", "origin", "document_id"]
+    },
+    "hello": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schema": { "$ref": "#/$defs/schema" },
         "type": { "const": "hello" },
         "protocol": {
           "type": "object",
+          "additionalProperties": false,
           "properties": {
             "min": { "const": 1 },
             "max": { "const": 1 }
           },
-          "required": ["min", "max"],
-          "additionalProperties": false
-        }
+          "required": ["min", "max"]
+        },
+        "extension": { "$ref": "#/$defs/extension" },
+        "capabilities": { "$ref": "#/$defs/capabilities" },
+        "pairing": { "$ref": "#/$defs/pairing" }
       },
-      "required": ["schema", "type", "protocol"]
+      "required": ["schema", "type", "protocol", "extension", "capabilities", "pairing"]
     },
-    {
+    "hello_ack": {
+      "type": "object",
+      "additionalProperties": false,
       "properties": {
-        "schema": { "const": "dcc-cua.browser-extension.v1" },
-        "request_id": { "type": "string", "minLength": 1, "maxLength": 128 },
-        "method": { "enum": ["ping", "snapshot", "click", "type", "unpair"] }
+        "schema": { "$ref": "#/$defs/schema" },
+        "type": { "const": "hello_ack" },
+        "protocol": { "const": 1 },
+        "capabilities": { "$ref": "#/$defs/capabilities" }
+      },
+      "required": ["schema", "type", "protocol", "capabilities"]
+    },
+    "ping": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schema": { "$ref": "#/$defs/schema" },
+        "request_id": { "$ref": "#/$defs/request_id" },
+        "method": { "const": "ping" }
       },
       "required": ["schema", "request_id", "method"]
     },
-    {
+    "snapshot": {
+      "type": "object",
+      "additionalProperties": false,
       "properties": {
-        "schema": { "const": "dcc-cua.browser-extension.v1" },
-        "type": { "const": "response" },
-        "request_id": { "type": "string", "minLength": 1, "maxLength": 128 },
-        "ok": { "type": "boolean" }
+        "schema": { "$ref": "#/$defs/schema" },
+        "request_id": { "$ref": "#/$defs/request_id" },
+        "method": { "const": "snapshot" },
+        "session_nonce": { "$ref": "#/$defs/session_nonce" },
+        "tab_id": { "$ref": "#/$defs/tab_id" },
+        "max_nodes": { "type": "integer", "minimum": 1, "maximum": 300 }
       },
-      "required": ["schema", "type", "request_id", "ok"]
+      "required": ["schema", "request_id", "method", "session_nonce", "tab_id"]
+    },
+    "click": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schema": { "$ref": "#/$defs/schema" },
+        "request_id": { "$ref": "#/$defs/request_id" },
+        "method": { "const": "click" },
+        "session_nonce": { "$ref": "#/$defs/session_nonce" },
+        "tab_id": { "$ref": "#/$defs/tab_id" },
+        "snapshot_id": { "$ref": "#/$defs/evidence_id" },
+        "ref": { "$ref": "#/$defs/evidence_id" }
+      },
+      "required": ["schema", "request_id", "method", "session_nonce", "tab_id", "snapshot_id", "ref"]
+    },
+    "type": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schema": { "$ref": "#/$defs/schema" },
+        "request_id": { "$ref": "#/$defs/request_id" },
+        "method": { "const": "type" },
+        "session_nonce": { "$ref": "#/$defs/session_nonce" },
+        "tab_id": { "$ref": "#/$defs/tab_id" },
+        "snapshot_id": { "$ref": "#/$defs/evidence_id" },
+        "ref": { "$ref": "#/$defs/evidence_id" },
+        "text": { "type": "string", "maxLength": 4096 },
+        "replace": { "const": true }
+      },
+      "required": ["schema", "request_id", "method", "session_nonce", "tab_id", "snapshot_id", "ref", "text", "replace"]
+    },
+    "unpair": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schema": { "$ref": "#/$defs/schema" },
+        "request_id": { "$ref": "#/$defs/request_id" },
+        "method": { "const": "unpair" },
+        "session_nonce": { "$ref": "#/$defs/session_nonce" },
+        "tab_id": { "$ref": "#/$defs/tab_id" }
+      },
+      "required": ["schema", "request_id", "method", "session_nonce", "tab_id"]
+    },
+    "success_response": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schema": { "$ref": "#/$defs/schema" },
+        "type": { "const": "response" },
+        "request_id": { "$ref": "#/$defs/request_id" },
+        "ok": { "const": true },
+        "result": {}
+      },
+      "required": ["schema", "type", "request_id", "ok", "result"]
+    },
+    "error_response": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schema": { "$ref": "#/$defs/schema" },
+        "type": { "const": "response" },
+        "request_id": { "$ref": "#/$defs/request_id" },
+        "ok": { "const": false },
+        "error": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "code": { "type": "string", "minLength": 1, "maxLength": 64 },
+            "message": { "type": "string", "minLength": 1, "maxLength": 256 }
+          },
+          "required": ["code", "message"]
+        }
+      },
+      "required": ["schema", "type", "request_id", "ok", "error"]
     }
-  ]
+  }
 }

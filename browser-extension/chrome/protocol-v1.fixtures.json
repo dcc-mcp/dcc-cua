@@ -1,0 +1,159 @@
+{
+  "valid": [
+    {
+      "schema": "dcc-cua.browser-extension.v1",
+      "type": "hello",
+      "protocol": { "min": 1, "max": 1 },
+      "extension": { "id": "abcdefghijklmnop", "version": "0.1.0" },
+      "capabilities": [
+        "explicit_tab_pairing_v1",
+        "semantic_snapshot_v1",
+        "dom_click_v1",
+        "dom_replace_text_v1"
+      ],
+      "pairing": {
+        "session_nonce": "nonce-1",
+        "tab_id": 42,
+        "window_id": 7,
+        "origin": "https://example.test",
+        "document_id": "document-1"
+      }
+    },
+    {
+      "schema": "dcc-cua.browser-extension.v1",
+      "type": "hello_ack",
+      "protocol": 1,
+      "capabilities": ["native_host_bridge_v1"]
+    },
+    {
+      "schema": "dcc-cua.browser-extension.v1",
+      "request_id": "ping-1",
+      "method": "ping"
+    },
+    {
+      "schema": "dcc-cua.browser-extension.v1",
+      "request_id": "snapshot-1",
+      "method": "snapshot",
+      "session_nonce": "nonce-1",
+      "tab_id": 42,
+      "max_nodes": 300
+    },
+    {
+      "schema": "dcc-cua.browser-extension.v1",
+      "request_id": "click-1",
+      "method": "click",
+      "session_nonce": "nonce-1",
+      "tab_id": 42,
+      "snapshot_id": "snapshot-1",
+      "ref": "p1:1"
+    },
+    {
+      "schema": "dcc-cua.browser-extension.v1",
+      "request_id": "type-1",
+      "method": "type",
+      "session_nonce": "nonce-1",
+      "tab_id": 42,
+      "snapshot_id": "snapshot-1",
+      "ref": "p1:2",
+      "text": "dcc-cua",
+      "replace": true
+    },
+    {
+      "schema": "dcc-cua.browser-extension.v1",
+      "request_id": "unpair-1",
+      "method": "unpair",
+      "session_nonce": "nonce-1",
+      "tab_id": 42
+    },
+    {
+      "schema": "dcc-cua.browser-extension.v1",
+      "type": "response",
+      "request_id": "ping-1",
+      "ok": true,
+      "result": { "pong": true }
+    },
+    {
+      "schema": "dcc-cua.browser-extension.v1",
+      "type": "response",
+      "request_id": "click-1",
+      "ok": false,
+      "error": { "code": "pairing_mismatch", "message": "pairing changed" }
+    }
+  ],
+  "invalid": [
+    {
+      "schema": "dcc-cua.browser-extension.v1",
+      "type": "hello",
+      "protocol": { "min": 1, "max": 1 }
+    },
+    {
+      "schema": "dcc-cua.browser-extension.v1",
+      "type": "hello",
+      "protocol": { "min": 1, "max": 1 },
+      "extension": { "id": "abcdefghijklmnop", "version": "0.1.0" },
+      "capabilities": ["explicit_tab_pairing_v1"],
+      "pairing": {
+        "session_nonce": "nonce-1",
+        "tab_id": 42,
+        "window_id": 7,
+        "origin": "https://example.test",
+        "document_id": "document-1"
+      },
+      "ignored": true
+    },
+    {
+      "schema": "dcc-cua.browser-extension.v1",
+      "type": "hello_ack",
+      "protocol": 2,
+      "capabilities": ["native_host_bridge_v1"]
+    },
+    {
+      "schema": "dcc-cua.browser-extension.v1",
+      "request_id": "snapshot-1",
+      "method": "snapshot",
+      "max_nodes": 300
+    },
+    {
+      "schema": "dcc-cua.browser-extension.v1",
+      "request_id": "snapshot-1",
+      "method": "snapshot",
+      "session_nonce": "nonce-1",
+      "tab_id": 42,
+      "max_nodes": 301
+    },
+    {
+      "schema": "dcc-cua.browser-extension.v1",
+      "request_id": "click-1",
+      "method": "click",
+      "session_nonce": "nonce-1",
+      "tab_id": 42,
+      "snapshot_id": "snapshot-1",
+      "ref": "p1:1",
+      "execute_script": "alert(1)"
+    },
+    {
+      "schema": "dcc-cua.browser-extension.v1",
+      "request_id": "type-1",
+      "method": "type",
+      "session_nonce": "nonce-1",
+      "tab_id": 42,
+      "snapshot_id": "snapshot-1",
+      "ref": "p1:2",
+      "text": "dcc-cua",
+      "replace": false
+    },
+    {
+      "schema": "dcc-cua.browser-extension.v1",
+      "type": "response",
+      "request_id": "ping-1",
+      "ok": true
+    },
+    {
+      "schema": "dcc-cua.browser-extension.v1",
+      "type": "response",
+      "request_id": "click-1",
+      "ok": false,
+      "error": { "code": "pairing_mismatch", "message": "pairing changed", "ignored": true }
+    }
+  ]
+}

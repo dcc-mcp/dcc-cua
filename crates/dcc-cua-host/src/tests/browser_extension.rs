@@ -1,7 +1,7 @@
 use rstest::rstest;
 use serde_json::{Value, json};
 
-use crate::browser_extension::BrowserExtensionRegistry;
+use crate::browser_extension::{BrowserExtensionRegistry, validate_extension_response};
 
 fn hello() -> Value {
     json!({
@@ -18,6 +18,74 @@ fn hello() -> Value {
             "document_id": "document-1"
         }
     })
+}
+
+#[rstest]
+#[tokio::test]
+async fn rust_host_accepts_the_shared_extension_hello_fixture() {
+    let fixtures: Value = serde_json::from_str(include_str!(
+        "../../../../browser-extension/chrome/protocol-v1.fixtures.json"
+    ))
+    .unwrap();
+    let hello = fixtures["valid"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|fixture| fixture["type"] == "hello")
+        .expect("shared hello fixture");
+
+    BrowserExtensionRegistry::new()
+        .register(hello, "chrome-extension://abcdefghijklmnop/", 42)
+        .await
+        .unwrap();
+}
+
+#[rstest]
+#[tokio::test]
+async fn rust_host_rejects_every_invalid_shared_hello_fixture() {
+    let fixtures: Value = serde_json::from_str(include_str!(
+        "../../../../browser-extension/chrome/protocol-v1.fixtures.json"
+    ))
+    .unwrap();
+
+    for hello in fixtures["invalid"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|fixture| fixture["type"] == "hello")
+    {
+        assert!(
+            BrowserExtensionRegistry::new()
+                .register(hello, "chrome-extension://abcdefghijklmnop/", 42)
+                .await
+                .is_err(),
+            "invalid hello was accepted: {hello}"
+        );
+    }
+}
+
+#[rstest]
+fn rust_host_validates_shared_extension_response_fixtures() {
+    let fixtures: Value = serde_json::from_str(include_str!(
+        "../../../../browser-extension/chrome/protocol-v1.fixtures.json"
+    ))
+    .unwrap();
+    for response in fixtures["valid"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|fixture| fixture["type"] == "response")
+    {
+        validate_extension_response(response).unwrap();
+    }
+    for response in fixtures["invalid"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|fixture| fixture["type"] == "response")
+    {
+        assert!(validate_extension_response(response).is_err());
+    }
 }
 
 #[rstest]

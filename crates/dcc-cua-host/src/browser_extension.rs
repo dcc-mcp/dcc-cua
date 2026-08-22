@@ -269,6 +269,7 @@ impl BrowserExtensionRegistry {
             .authorized_provider(provider_id, provider_secret)
             .await?;
         *provider.last_seen.lock().await = Instant::now();
+        validate_extension_response(&response)?;
         let request_id = bounded_string(&response, "request_id", MAX_REQUEST_ID_CHARS)?.to_owned();
         let sender = provider
             .pending
@@ -482,11 +483,24 @@ fn parse_extension_hello(
     hello: &Value,
     invocation_origin: &str,
 ) -> Result<(String, String, Vec<String>, ExtensionPairing), HostError> {
+    ensure_exact_fields(
+        hello,
+        &[
+            "schema",
+            "type",
+            "protocol",
+            "extension",
+            "capabilities",
+            "pairing",
+        ],
+        "hello",
+    )?;
     if hello["schema"] != EXTENSION_SCHEMA || hello["type"] != "hello" {
         return Err(HostError::Protocol(
             "browser extension hello schema is unsupported".into(),
         ));
     }
+    ensure_exact_fields(&hello["protocol"], &["min", "max"], "protocol")?;
     let minimum = hello["protocol"]["min"].as_u64().unwrap_or(0);
     let maximum = hello["protocol"]["max"].as_u64().unwrap_or(0);
     if minimum > EXTENSION_PROTOCOL_VERSION || maximum < EXTENSION_PROTOCOL_VERSION {
@@ -494,6 +508,7 @@ fn parse_extension_hello(
             "browser extension protocol ranges do not overlap".into(),
         ));
     }
+    ensure_exact_fields(&hello["extension"], &["id", "version"], "extension")?;
     let extension_id = bounded_string(&hello["extension"], "id", 128)?.to_owned();
     let extension_version = bounded_string(&hello["extension"], "version", 64)?.to_owned();
     if !invocation_matches_extension(invocation_origin, &extension_id) {
@@ -502,14 +517,26 @@ fn parse_extension_hello(
         ));
     }
     let pairing = &hello["pairing"];
-    if !pairing.is_object() {
-        return Err(HostError::Protocol(
-            "browser extension requires an explicitly paired tab".into(),
-        ));
-    }
-    let capabilities = hello["capabilities"]
+    ensure_exact_fields(
+        pairing,
+        &[
+            "session_nonce",
+            "tab_id",
+            "window_id",
+            "origin",
+            "document_id",
+        ],
+        "pairing",
+    )?;
+    let capability_values = hello["capabilities"]
         .as_array()
-        .ok_or_else(|| HostError::Protocol("browser extension capabilities are missing".into()))?
+        .filter(|values| !values.is_empty() && values.len() <= 32)
+        .ok_or_else(|| {
+            HostError::Protocol(
+                "browser extension capabilities must contain between 1 and 32 entries".into(),
+            )
+        })?;
+    let capabilities = capability_values
         .iter()
         .map(|value| {
             value
@@ -521,6 +548,16 @@ fn parse_extension_hello(
                 })
         })
         .collect::<Result<Vec<_>, _>>()?;
+    if capabilities
+        .iter()
+        .collect::<std::collections::HashSet<_>>()
+        .len()
+        != capabilities.len()
+    {
+        return Err(HostError::Protocol(
+            "browser extension capabilities must not contain duplicates".into(),
+        ));
+    }
     Ok((
         extension_id,
         extension_version,
@@ -533,6 +570,56 @@ fn parse_extension_hello(
             document_id: bounded_string(pairing, "document_id", 128)?.to_owned(),
         },
     ))
+}
+
+pub(super) fn validate_extension_response(response: &Value) -> Result<(), HostError> {
+    if response["schema"] != EXTENSION_SCHEMA || response["type"] != "response" {
+        return Err(HostError::Protocol(
+            "browser extension returned an invalid response envelope".into(),
+        ));
+    }
+    bounded_string(response, "request_id", MAX_REQUEST_ID_CHARS)?;
+    match response["ok"].as_bool() {
+        Some(true) => {
+            ensure_exact_fields(
+                response,
+                &["schema", "type", "request_id", "ok", "result"],
+                "success response",
+            )?;
+        }
+        Some(false) => {
+            ensure_exact_fields(
+                response,
+                &["schema", "type", "request_id", "ok", "error"],
+                "error response",
+            )?;
+            ensure_exact_fields(&response["error"], &["code", "message"], "response error")?;
+            bounded_string(&response["error"], "code", 64)?;
+            bounded_string(&response["error"], "message", 256)?;
+        }
+        None => {
+            return Err(HostError::Protocol(
+                "browser extension response ok field must be boolean".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn ensure_exact_fields(
+    value: &Value,
+    expected: &[&str],
+    object_name: &str,
+) -> Result<(), HostError> {
+    let object = value.as_object().ok_or_else(|| {
+        HostError::Protocol(format!("browser extension {object_name} must be an object"))
+    })?;
+    if object.len() != expected.len() || !expected.iter().all(|field| object.contains_key(*field)) {
+        return Err(HostError::Protocol(format!(
+            "browser extension {object_name} fields do not match protocol v1"
+        )));
+    }
+    Ok(())
 }
 
 fn bounded_string<'a>(value: &'a Value, field: &str, maximum: usize) -> Result<&'a str, HostError> {

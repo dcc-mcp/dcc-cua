@@ -5,6 +5,7 @@ import {
   PROTOCOL_SCHEMA,
   errorResponse,
   successResponse,
+  validateNativeHelloAck,
   validateNativeRequest,
 } from "../protocol.ts";
 
@@ -95,4 +96,38 @@ test("response envelopes preserve correlation and bounded errors", () => {
   assert.equal(error.request_id, "request-2");
   assert.equal(error.ok, false);
   assert.equal(error.error.code, "pairing_mismatch");
+});
+
+test("native host acknowledgment makes protocol negotiation two-way", () => {
+  assert.deepEqual(
+    validateNativeHelloAck({
+      schema: PROTOCOL_SCHEMA,
+      type: "hello_ack",
+      protocol: 1,
+      capabilities: ["native_host_bridge_v1"],
+    }),
+    {
+      schema: PROTOCOL_SCHEMA,
+      type: "hello_ack",
+      protocol: 1,
+      capabilities: ["native_host_bridge_v1"],
+    },
+  );
+  assert.throws(() =>
+    validateNativeHelloAck({
+      schema: PROTOCOL_SCHEMA,
+      type: "hello_ack",
+      protocol: 2,
+      capabilities: ["native_host_bridge_v1"],
+    }),
+  );
+  assert.throws(() =>
+    validateNativeHelloAck({
+      schema: PROTOCOL_SCHEMA,
+      type: "hello_ack",
+      protocol: 1,
+      capabilities: ["native_host_bridge_v1"],
+      ignored: true,
+    }),
+  );
 });
