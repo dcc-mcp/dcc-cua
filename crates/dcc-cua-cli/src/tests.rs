@@ -1140,6 +1140,16 @@ fn host_jsonl_metrics_count_protocol_errors_without_claiming_task_failure() {
 }
 
 #[rstest]
+fn host_client_timeout_has_a_typed_jsonl_error_contract() {
+    let value = host_error_value(&HostClientError::Timeout { timeout_ms: 250 });
+
+    assert_eq!(value["type"], "error");
+    assert_eq!(value["code"], "request_timeout");
+    assert!(value["message"].as_str().unwrap().contains("250 ms"));
+    assert!(value["message"].as_str().unwrap().contains("reconnect"));
+}
+
+#[rstest]
 fn host_jsonl_metrics_break_down_action_kinds() {
     let mut metrics = HostJsonlMetrics::default();
     for request in [
