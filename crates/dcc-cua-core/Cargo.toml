@@ -22,6 +22,7 @@ cua-driver-sdk = { git = "https://github.com/loonghao/cua.git", rev = "05676a31f
 cursor-overlay = { git = "https://github.com/loonghao/cua.git", rev = "05676a31f173812e04772536478be4495ea22285", package = "cursor-overlay" }
 dcc-cua-indicator = { path = "../dcc-cua-indicator" }
 dcc-cua-interrupt = { path = "../dcc-cua-interrupt" }
+dcc-cua-protocol = { path = "../dcc-cua-protocol" }
 dcc-cua-showcase = { path = "../dcc-cua-showcase" }
 png = "0.17"
 serde = { version = "1", features = ["derive"] }

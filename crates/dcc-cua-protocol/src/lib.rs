@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 pub const HOST_PROTOCOL_VERSION: u32 = 1;
 pub const MAX_JSON_FRAME_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_BINARY_FRAME_BYTES: usize = 64 * 1024 * 1024;
+pub const MAX_LOCAL_PATH_CHARS: usize = 4_096;
 pub const MAX_REQUEST_ID_CHARS: usize = 128;
 pub const MAX_HOST_CONNECTIONS: usize = 32;
 pub const MAX_SESSIONS_PER_CONNECTION: usize = 16;
@@ -17,6 +18,35 @@ pub const MAX_PARALLEL_DISCOVERY_REQUESTS: usize = 32;
 pub const DEFAULT_SESSION_IDLE_TIMEOUT_MS: u64 = 15 * 60 * 1_000;
 pub const MIN_SESSION_IDLE_TIMEOUT_MS: u64 = 1_000;
 pub const MAX_SESSION_IDLE_TIMEOUT_MS: u64 = 24 * 60 * 60 * 1_000;
+
+#[derive(Debug, thiserror::Error, Clone, Copy, PartialEq, Eq)]
+pub enum LocalPathError {
+    #[error("local path must not be empty")]
+    Empty,
+    #[error("local path exceeds {MAX_LOCAL_PATH_CHARS} characters")]
+    TooLong,
+    #[error("local path contains a NUL byte")]
+    ContainsNul,
+    #[error("local path must be absolute")]
+    NotAbsolute,
+}
+
+pub fn validate_absolute_local_path(path: &str) -> Result<&std::path::Path, LocalPathError> {
+    if path.is_empty() {
+        return Err(LocalPathError::Empty);
+    }
+    if path.chars().count() > MAX_LOCAL_PATH_CHARS {
+        return Err(LocalPathError::TooLong);
+    }
+    if path.contains('\0') {
+        return Err(LocalPathError::ContainsNul);
+    }
+    let candidate = std::path::Path::new(path);
+    if !candidate.is_absolute() {
+        return Err(LocalPathError::NotAbsolute);
+    }
+    Ok(candidate)
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct RequestEnvelope {

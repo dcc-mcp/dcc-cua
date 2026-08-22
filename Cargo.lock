@@ -1169,6 +1169,7 @@ version = "1.3.3"
 dependencies = [
  "base64 0.22.1",
  "dcc-cua-core",
+ "dcc-cua-protocol",
  "dcc-cua-workspace-hack",
  "rstest",
  "serde",
@@ -1226,6 +1227,7 @@ dependencies = [
  "dcc-cua-indicator",
  "dcc-cua-interrupt",
  "dcc-cua-platform-windows",
+ "dcc-cua-protocol",
  "dcc-cua-showcase",
  "dcc-cua-workspace-hack",
  "platform-macos",
@@ -1358,6 +1360,7 @@ dependencies = [
 name = "dcc-cua-shm"
 version = "1.3.3"
 dependencies = [
+ "dcc-cua-protocol",
  "dcc-cua-workspace-hack",
  "ipckit",
  "rstest",

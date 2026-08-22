@@ -16,6 +16,7 @@ path = "src/lib.rs"
 [dependencies]
 base64 = "0.22"
 dcc-cua-core = { path = "../dcc-cua-core" }
+dcc-cua-protocol = { path = "../dcc-cua-protocol" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 dcc-cua-workspace-hack = { path = "../dcc-cua-workspace-hack" }

@@ -119,17 +119,12 @@ pub(crate) fn validate_clipboard_write_request(
 }
 
 fn validate_local_file_path(path: &str) -> ComputerUseResult<()> {
-    let candidate = std::path::Path::new(path);
-    if path.is_empty()
-        || path.chars().count() > MAX_LOCAL_PATH_CHARS
-        || path.contains('\0')
-        || !candidate.is_absolute()
-    {
-        return Err(ComputerUseError::new(
+    let candidate = dcc_cua_protocol::validate_absolute_local_path(path).map_err(|_| {
+        ComputerUseError::new(
             ComputerUseErrorCode::InvalidAction,
             "clipboard file paths must be absolute and bounded",
-        ));
-    }
+        )
+    })?;
     let metadata = std::fs::symlink_metadata(candidate).map_err(|error| {
         ComputerUseError::new(
             ComputerUseErrorCode::InvalidAction,

@@ -68,6 +68,22 @@ async fn shared_frame_codec_round_trips_and_enforces_one_limit() {
     assert!(write_frame(&mut client, b"too long", 4).await.is_err());
 }
 
+#[rstest]
+fn shared_local_path_shape_is_absolute_bounded_and_nul_free() {
+    #[cfg(windows)]
+    let absolute = r"C:\temp\artifact.bin";
+    #[cfg(unix)]
+    let absolute = "/tmp/artifact.bin";
+
+    assert_eq!(
+        validate_absolute_local_path(absolute).unwrap(),
+        std::path::Path::new(absolute)
+    );
+    assert!(validate_absolute_local_path("relative.bin").is_err());
+    assert!(validate_absolute_local_path("bad\0path").is_err());
+    assert!(validate_absolute_local_path(&"x".repeat(MAX_LOCAL_PATH_CHARS + 1)).is_err());
+}
+
 #[cfg(windows)]
 #[rstest]
 fn windows_endpoint_is_local_and_session_scoped() {

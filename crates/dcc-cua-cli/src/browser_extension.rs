@@ -5,12 +5,12 @@ use std::process::Command;
 use std::time::Duration;
 
 use dcc_cua_client::HostClient;
+use dcc_cua_protocol::MAX_JSON_FRAME_BYTES;
 use serde_json::{Value, json};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::cli_args::flag_value;
 
-const MAX_NATIVE_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
 const EXTENSION_RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
 const NATIVE_HOST_NAME: &str = "com.dcc_mcp.dcc_cua";
 
@@ -418,10 +418,10 @@ where
     let mut prefix = [0_u8; 4];
     reader.read_exact(&mut prefix).await?;
     let length = u32::from_le_bytes(prefix) as usize;
-    if length == 0 || length > MAX_NATIVE_MESSAGE_BYTES {
+    if length == 0 || length > MAX_JSON_FRAME_BYTES {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            format!("native message length must be between 1 and {MAX_NATIVE_MESSAGE_BYTES}"),
+            format!("native message length must be between 1 and {MAX_JSON_FRAME_BYTES}"),
         )
         .into());
     }
@@ -438,7 +438,7 @@ where
     W: AsyncWrite + Unpin,
 {
     let body = serde_json::to_vec(value)?;
-    if body.is_empty() || body.len() > MAX_NATIVE_MESSAGE_BYTES {
+    if body.is_empty() || body.len() > MAX_JSON_FRAME_BYTES {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "native response exceeds the bounded message size",
