@@ -1104,6 +1104,22 @@ fn native_tool_boundary_rejects_reserved_and_dedicated_routes() {
 }
 
 #[rstest]
+#[tokio::test]
+async fn every_unscoped_native_route_rejects_dedicated_tools() {
+    let driver = ComputerUseDriver::create().unwrap();
+    for tool in ["launch_app", "kill_app", "start_session", "end_session"] {
+        for result in [
+            driver.call_tool(tool, json!({})).await,
+            driver.call_global_tool(tool, json!({})).await,
+        ] {
+            let error = result.expect_err("dedicated tools must not reach an unscoped SDK call");
+            assert_eq!(error.code, ComputerUseErrorCode::InvalidAction);
+            assert!(error.message.contains("dedicated or window-bound route"));
+        }
+    }
+}
+
+#[rstest]
 fn tool_schema_lookup_uses_exact_inventory_names() {
     let inventory = json!({
         "tools": [{

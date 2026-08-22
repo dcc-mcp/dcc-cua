@@ -717,8 +717,8 @@ impl ComputerUseDriver {
         })
     }
 
-    /// Call a non-window-bound CUA tool from the local CLI surface.
-    /// Window-bound tools must use an exact `ComputerUseSession` instead.
+    /// Call an allowlisted non-window-bound CUA tool from the local CLI surface.
+    /// Dedicated and window-bound tools must use their typed routes instead.
     pub async fn call_tool(
         &self,
         name: &str,
@@ -739,12 +739,6 @@ impl ComputerUseDriver {
         arguments: Value,
     ) -> ComputerUseResult<ComputerUseToolResult> {
         validate_native_tool_request(name, &arguments)?;
-        if !native_tool_allowed_globally(name) {
-            return Err(ComputerUseError::new(
-                ComputerUseErrorCode::InvalidAction,
-                format!("CUA tool {name:?} must use its dedicated or window-bound route"),
-            ));
-        }
         self.call_unscoped_tool(name, arguments).await
     }
 
@@ -753,6 +747,7 @@ impl ComputerUseDriver {
         name: &str,
         arguments: Value,
     ) -> ComputerUseResult<ComputerUseToolResult> {
+        validate_unscoped_native_tool_route(name)?;
         let schema = self.tool_schema(name).await?;
         if schema["properties"].get("pid").is_some()
             || schema["properties"].get("window_id").is_some()
