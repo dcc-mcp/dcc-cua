@@ -40,7 +40,8 @@ Profile schema version 2 adds `state_sources`. The first supported source is
   launch commands, and action endpoints are not part of the manifest;
 - response time and bytes are bounded;
 - the payload exposes an expected schema version through a JSON Pointer;
-- the payload exposes a monotonic semantic tick through a JSON Pointer;
+- the payload exposes a monotonic unsigned-integer semantic tick through a JSON
+  Pointer;
 - ETag is optional and used with the tick to avoid reprocessing unchanged state.
 
 The CLI command is:
@@ -122,6 +123,9 @@ fresh semantic/visual fences, and explicit postconditions.
   profile from reaching remote services.
 - **Repeated unchanged work:** ETag and semantic tick let the caller skip graph
   reconstruction.
+- **Stale changed response:** a watcher reuses one configured HTTP client and
+  rejects any HTTP 200 response whose semantic tick is less than or equal to
+  the last accepted tick. It does not advance the cached ETag on rejection.
 - **State/action race:** future typed actions must carry the semantic tick and
   still satisfy the Host observation and target fences.
 

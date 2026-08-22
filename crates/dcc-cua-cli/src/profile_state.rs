@@ -28,13 +28,23 @@ pub(crate) enum StateRead {
 }
 
 pub(crate) struct StateWatcher<'a> {
+    client: reqwest::Client,
     source: &'a StateSource,
     etag: Option<String>,
+    last_tick: Option<u64>,
 }
 
 impl<'a> StateWatcher<'a> {
-    pub(crate) fn new(source: &'a StateSource, etag: Option<String>) -> Self {
-        Self { source, etag }
+    pub(crate) fn new(
+        source: &'a StateSource,
+        etag: Option<String>,
+    ) -> Result<Self, ProfileStateError> {
+        Ok(Self {
+            client: state_client(source)?,
+            source,
+            etag,
+            last_tick: None,
+        })
     }
 
     pub(crate) fn etag(&self) -> Option<&str> {
@@ -42,9 +52,19 @@ impl<'a> StateWatcher<'a> {
     }
 
     pub(crate) async fn poll(&mut self) -> Result<StateRead, ProfileStateError> {
-        let read = observe_source(self.source, self.etag()).await?;
+        let read = observe_source_with_client(&self.client, self.source, self.etag()).await?;
         match &read {
             StateRead::Changed(observation) => {
+                let actual = observation
+                    .tick
+                    .as_u64()
+                    .ok_or_else(|| ProfileStateError::InvalidTick(observation.tick.clone()))?;
+                if let Some(previous) = self.last_tick
+                    && actual <= previous
+                {
+                    return Err(ProfileStateError::NonMonotonicTick { previous, actual });
+                }
+                self.last_tick = Some(actual);
                 if observation.etag.is_some() {
                     self.etag.clone_from(&observation.etag);
                 }
@@ -73,6 +93,10 @@ pub(crate) enum ProfileStateError {
     InvalidJson(#[from] serde_json::Error),
     #[error("state source is missing {0}")]
     MissingContractField(&'static str),
+    #[error("state source tick must be an unsigned integer, got {0}")]
+    InvalidTick(Value),
+    #[error("state source tick did not advance: previous {previous}, actual {actual}")]
+    NonMonotonicTick { previous: u64, actual: u64 },
     #[error("state source schema version {actual:?} does not match expected {expected:?}")]
     SchemaMismatch { expected: String, actual: String },
     #[error("state source ETag is not a valid HTTP header: {0}")]
@@ -83,10 +107,22 @@ pub(crate) async fn observe_source(
     source: &StateSource,
     previous_etag: Option<&str>,
 ) -> Result<StateRead, ProfileStateError> {
-    let client = reqwest::Client::builder()
+    let client = state_client(source)?;
+    observe_source_with_client(&client, source, previous_etag).await
+}
+
+fn state_client(source: &StateSource) -> Result<reqwest::Client, ProfileStateError> {
+    Ok(reqwest::Client::builder()
         .timeout(Duration::from_millis(source.timeout_ms))
         .redirect(reqwest::redirect::Policy::none())
-        .build()?;
+        .build()?)
+}
+
+async fn observe_source_with_client(
+    client: &reqwest::Client,
+    source: &StateSource,
+    previous_etag: Option<&str>,
+) -> Result<StateRead, ProfileStateError> {
     let mut request = client.get(&source.url).header(ACCEPT, "application/json");
     if source.use_etag
         && let Some(etag) = previous_etag
@@ -233,7 +269,7 @@ async fn watch_source(
         return Err("--max-updates must be greater than zero".into());
     }
 
-    let mut watcher = StateWatcher::new(source, flag_value(flags, "--etag"));
+    let mut watcher = StateWatcher::new(source, flag_value(flags, "--etag"))?;
     let mut emitted = 0_u64;
     let mut last_degraded_error = None::<String>;
     loop {
