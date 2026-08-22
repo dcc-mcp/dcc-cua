@@ -48,22 +48,7 @@ pub fn exact_window_capture_route(
     process_id: u32,
     window_handle: u64,
 ) -> Result<ExactWindowCaptureRoute, ExactWindowCaptureIdentityError> {
-    let hwnd = window_handle as usize as HWND;
-    if hwnd.is_null() || unsafe { IsWindow(hwnd) } == 0 {
-        return Err(identity_error("the exact HWND no longer exists"));
-    }
-    let mut actual_process_id = 0_u32;
-    unsafe { GetWindowThreadProcessId(hwnd, &mut actual_process_id) };
-    if actual_process_id == 0 || actual_process_id != process_id {
-        return Err(identity_error(
-            "the exact HWND no longer belongs to the granted process",
-        ));
-    }
-    if unsafe { GetAncestor(hwnd, GA_ROOT) } != hwnd {
-        return Err(identity_error(
-            "the exact HWND is not a top-level root window",
-        ));
-    }
+    validate_exact_window_owner(process_id, window_handle)?;
 
     let target_image = process_image_identity(process_id)?;
     let mut enumeration = RootEnumeration {
@@ -87,9 +72,35 @@ pub fn exact_window_capture_route(
             "the exact HWND disappeared during capture identity proof",
         ));
     }
+    validate_exact_window_owner(process_id, window_handle)?;
     Ok(route_for_same_executable_root_count(
         enumeration.same_executable_root_count,
     ))
+}
+
+pub(crate) fn validate_exact_window_owner(
+    process_id: u32,
+    window_handle: u64,
+) -> Result<(), ExactWindowCaptureIdentityError> {
+    let raw_handle = usize::try_from(window_handle)
+        .map_err(|error| identity_error(format!("convert exact window handle: {error}")))?;
+    let hwnd = raw_handle as HWND;
+    if hwnd.is_null() || unsafe { IsWindow(hwnd) } == 0 {
+        return Err(identity_error("the exact HWND no longer exists"));
+    }
+    let mut actual_process_id = 0_u32;
+    unsafe { GetWindowThreadProcessId(hwnd, &mut actual_process_id) };
+    if actual_process_id == 0 || actual_process_id != process_id {
+        return Err(identity_error(
+            "the exact HWND no longer belongs to the granted process",
+        ));
+    }
+    if unsafe { GetAncestor(hwnd, GA_ROOT) } != hwnd {
+        return Err(identity_error(
+            "the exact HWND is not a top-level root window",
+        ));
+    }
+    Ok(())
 }
 
 unsafe extern "system" fn count_same_executable_root(hwnd: HWND, lparam: LPARAM) -> i32 {

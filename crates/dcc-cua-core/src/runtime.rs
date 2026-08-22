@@ -1297,8 +1297,8 @@ async fn capture_exact_window(
                 ComputerUseError::new(ComputerUseErrorCode::InvalidTarget, error.to_string())
             })?;
         if route == dcc_cua_platform_windows::ExactWindowCaptureRoute::VerifiedVisible {
-            let visible = dcc_cua_platform_windows::capture_visible_window(window_id).map_err(
-                |error| {
+            let visible = dcc_cua_platform_windows::capture_visible_window(process_id, window_id)
+                .map_err(|error| {
                     ComputerUseError::new(
                         ComputerUseErrorCode::InvalidTarget,
                         format!(
@@ -1318,7 +1318,8 @@ async fn capture_exact_window(
                 fallback: "same_executable_multi_window_exact_visible_proof",
             });
         }
-        let wgc_error = match dcc_cua_platform_windows::PersistentWgcCapture::new(window_id) {
+        let wgc_error =
+            match dcc_cua_platform_windows::PersistentWgcCapture::new(process_id, window_id) {
             Ok(mut capture) => match capture.next_frame(Duration::from_secs(5)) {
                 Ok((bgra, width, height)) => {
                     if dcc_cua_platform_windows::exact_window_capture_route(
@@ -1347,8 +1348,8 @@ async fn capture_exact_window(
             },
             Err(error) => error.to_string(),
         };
-        let visible =
-            dcc_cua_platform_windows::capture_visible_window(window_id).map_err(|error| {
+        let visible = dcc_cua_platform_windows::capture_visible_window(process_id, window_id)
+            .map_err(|error| {
                 ComputerUseError::new(
                     ComputerUseErrorCode::CaptureFailed,
                     format!("exact WGC capture failed ({wgc_error}); {error}"),

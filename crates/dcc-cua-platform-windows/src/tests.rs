@@ -26,8 +26,8 @@ use windows_sys::Win32::{
     Foundation::{HINSTANCE, HWND},
     System::Threading::GetCurrentProcessId,
     UI::WindowsAndMessaging::{
-        CreateWindowExW, DestroyWindow, HWND_TOPMOST, SWP_SHOWWINDOW, SendMessageW, SetWindowPos,
-        WM_PAINT, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
+        CreateWindowExW, DestroyWindow, GetWindowThreadProcessId, HWND_TOPMOST, SWP_SHOWWINDOW,
+        SendMessageW, SetWindowPos, WM_PAINT, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
     },
 };
 
@@ -88,8 +88,31 @@ fn same_executable_windows_capture_pixels_from_their_exact_hwnds() {
         ExactWindowCaptureRoute::VerifiedVisible
     );
 
-    assert_exact_capture_luma_or_fail_closed(&black, 0..=31);
-    assert_exact_capture_luma_or_fail_closed(&white, 224..=255);
+    assert_exact_capture_luma_or_fail_closed(process_id, &black, 0..=31);
+    assert_exact_capture_luma_or_fail_closed(process_id, &white, 224..=255);
+}
+
+#[cfg(windows)]
+#[rstest]
+fn exact_capture_primitives_reject_a_pid_that_does_not_own_the_hwnd() {
+    let window = ExactCaptureTestWindow::new("dcc-cua-owner-check", 0x0000_0006, 40, 40);
+    let wrong_process_id = unsafe { GetCurrentProcessId() }.wrapping_add(1);
+
+    let visible_error = capture_visible_window(wrong_process_id, window.raw())
+        .expect_err("visible capture must reject an unrelated process grant");
+    assert!(
+        visible_error.to_string().contains("granted process"),
+        "unexpected visible capture error: {visible_error}"
+    );
+
+    let wgc_error = match PersistentWgcCapture::new(wrong_process_id, window.raw()) {
+        Ok(_) => panic!("WGC construction must reject an unrelated process grant"),
+        Err(error) => error,
+    };
+    assert!(
+        wgc_error.to_string().contains("granted process"),
+        "unexpected WGC capture error: {wgc_error}"
+    );
 }
 
 #[cfg(windows)]
@@ -169,11 +192,12 @@ fn center_luma(bgra: &[u8], width: u32, height: u32) -> u8 {
 
 #[cfg(windows)]
 fn assert_exact_capture_luma_or_fail_closed(
+    process_id: u32,
     window: &ExactCaptureTestWindow,
     expected: std::ops::RangeInclusive<u8>,
 ) {
     window.raise();
-    match capture_visible_window(window.raw()) {
+    match capture_visible_window(process_id, window.raw()) {
         Ok(capture) => {
             let luma = center_luma(&capture.bgra, capture.width, capture.height);
             assert!(
@@ -620,7 +644,11 @@ fn persistent_wgc_captures_consecutive_real_frames() {
         .expect("DCC_CUA_TEST_WINDOW_HANDLE")
         .parse::<u64>()
         .expect("numeric HWND");
-    let mut capture = PersistentWgcCapture::new(window_handle).expect("persistent WGC session");
+    let mut process_id = 0_u32;
+    unsafe { GetWindowThreadProcessId(window_handle as usize as HWND, &mut process_id) };
+    assert_ne!(process_id, 0, "resolve DCC_CUA_TEST_WINDOW_HANDLE owner");
+    let mut capture =
+        PersistentWgcCapture::new(process_id, window_handle).expect("persistent WGC session");
     let started = std::time::Instant::now();
     let (_, first_width, first_height) = capture
         .next_frame(std::time::Duration::from_secs(3))
