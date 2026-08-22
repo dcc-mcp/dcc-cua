@@ -1,3 +1,4 @@
+use crate::capture_identity::validate_exact_window_owner;
 use thiserror::Error;
 use windows::Win32::{
     Foundation::{HWND, POINT, RECT},
@@ -82,8 +83,11 @@ unsafe fn target_is_obscured(target: HWND, rect: RECT) -> bool {
 /// when z-order sampling proves that another root window does not cover the
 /// target, preventing a desktop crop from being mislabeled as target pixels.
 pub fn capture_visible_window(
+    process_id: u32,
     window_handle: u64,
 ) -> Result<VisibleWindowCapture, VisibleWindowCaptureError> {
+    validate_exact_window_owner(process_id, window_handle)
+        .map_err(|error| capture_error(error.to_string()))?;
     let raw = usize::try_from(window_handle)
         .map_err(|error| capture_error(format!("convert window handle: {error}")))?;
     let hwnd = HWND(raw as *mut _);
@@ -161,6 +165,8 @@ pub fn capture_visible_window(
         if rows == 0 {
             return Err(capture_error("read visible window bitmap"));
         }
+        validate_exact_window_owner(process_id, window_handle)
+            .map_err(|error| capture_error(error.to_string()))?;
         Ok(VisibleWindowCapture {
             bgra,
             width: width as u32,

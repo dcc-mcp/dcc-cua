@@ -203,6 +203,8 @@ fn invalid_target(message: impl Into<String>) -> WgcCaptureError {
 /// thread. Reusing its D3D11 device and frame pool avoids the per-frame setup
 /// paid by the upstream one-shot screenshot API.
 pub struct PersistentWgcCapture {
+    process_id: u32,
+    window_handle: u64,
     hwnd: HWND,
     d3d_device: ID3D11Device,
     d3d_context: ID3D11DeviceContext,
@@ -215,7 +217,9 @@ pub struct PersistentWgcCapture {
 }
 
 impl PersistentWgcCapture {
-    pub fn new(window_handle: u64) -> Result<Self, WgcCaptureError> {
+    pub fn new(process_id: u32, window_handle: u64) -> Result<Self, WgcCaptureError> {
+        crate::capture_identity::validate_exact_window_owner(process_id, window_handle)
+            .map_err(|error| capture_error("validate exact window owner", error))?;
         let raw_handle = usize::try_from(window_handle)
             .map_err(|error| capture_error("convert exact window handle", error))?;
         let hwnd = HWND(raw_handle as *mut _);
@@ -278,6 +282,8 @@ impl PersistentWgcCapture {
             .map_err(|error| capture_error("start WGC capture session", error))?;
 
         Ok(Self {
+            process_id,
+            window_handle,
             hwnd,
             d3d_device,
             d3d_context,
@@ -304,6 +310,7 @@ impl PersistentWgcCapture {
         &mut self,
         timeout: Duration,
     ) -> Result<PersistentWgcFrame, WgcCaptureError> {
+        self.validate_owner()?;
         if unsafe { IsIconic(self.hwnd) }.as_bool() {
             return Err(invalid_target(
                 "WGC target became minimized; restore the exact target first",
@@ -314,7 +321,9 @@ impl PersistentWgcCapture {
         let source_wait_started = Instant::now();
         loop {
             if let Some(frame) = self.take_latest_available_frame() {
-                return self.read_frame(&frame, source_wait_started.elapsed());
+                let frame = self.read_frame(&frame, source_wait_started.elapsed())?;
+                self.validate_owner()?;
+                return Ok(frame);
             }
             if Instant::now() >= deadline {
                 return Err(invalid_target(format!(
@@ -324,6 +333,11 @@ impl PersistentWgcCapture {
             }
             std::thread::sleep(Duration::from_millis(2));
         }
+    }
+
+    fn validate_owner(&self) -> Result<(), WgcCaptureError> {
+        crate::capture_identity::validate_exact_window_owner(self.process_id, self.window_handle)
+            .map_err(|error| capture_error("validate exact window owner", error))
     }
 
     fn validate_size(size: SizeInt32) -> Result<(), WgcCaptureError> {

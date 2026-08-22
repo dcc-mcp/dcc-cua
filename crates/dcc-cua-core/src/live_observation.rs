@@ -790,7 +790,7 @@ async fn run_capture_loop(
 #[cfg(windows)]
 enum WindowsLiveCapture {
     Persistent(dcc_cua_platform_windows::PersistentWgcCapture),
-    OneShot,
+    Uninitialized,
 }
 
 #[cfg(windows)]
@@ -829,51 +829,72 @@ impl From<dcc_cua_platform_windows::WgcPublishedFrameMeasurement> for FrameCaptu
 
 #[cfg(windows)]
 impl WindowsLiveCapture {
-    fn new(window_handle: u64) -> Self {
-        dcc_cua_platform_windows::PersistentWgcCapture::new(window_handle)
-            .map_or(Self::OneShot, Self::Persistent)
+    fn new(process_id: u32, window_handle: u64) -> Self {
+        dcc_cua_platform_windows::PersistentWgcCapture::new(process_id, window_handle)
+            .map_or(Self::Uninitialized, Self::Persistent)
     }
 
-    fn next_frame(&mut self, window_handle: u64) -> ComputerUseResult<WindowsCapturedFrame> {
+    fn next_frame(
+        &mut self,
+        process_id: u32,
+        window_handle: u64,
+    ) -> ComputerUseResult<WindowsCapturedFrame> {
         match self {
             Self::Persistent(capture) => match capture.next_measured_frame(FIRST_FRAME_TIMEOUT) {
-                Ok(frame) => Ok(WindowsCapturedFrame {
-                    bgra: frame.bgra,
-                    width: frame.width,
-                    height: frame.height,
-                    capture_mode: "persistent_wgc",
-                    measurement: Some(frame.measurement),
-                }),
-                Err(persistent_error) => platform_windows::wgc::screenshot_window_via_wgc(
+                Ok(frame) => Ok(Self::publishable_frame(frame, "persistent_wgc")),
+                Err(persistent_error) => self.reinitialize(
+                    process_id,
                     window_handle,
-                )
-                .map(|(bgra, width, height)| WindowsCapturedFrame {
-                    bgra,
-                    width,
-                    height,
-                    capture_mode: "one_shot_wgc_recovery",
-                    measurement: None,
-                })
-                .map_err(|fallback_error| {
+                    "reinitialized_wgc_recovery",
+                    Some(&persistent_error),
+                ),
+            },
+            Self::Uninitialized => self.reinitialize(
+                process_id,
+                window_handle,
+                "reinitialized_wgc_fallback",
+                None,
+            ),
+        }
+    }
+
+    fn reinitialize(
+        &mut self,
+        process_id: u32,
+        window_handle: u64,
+        capture_mode: &'static str,
+        prior_error: Option<&dyn std::fmt::Display>,
+    ) -> ComputerUseResult<WindowsCapturedFrame> {
+        let mut capture =
+            dcc_cua_platform_windows::PersistentWgcCapture::new(process_id, window_handle)
+                .map_err(|error| {
                     ComputerUseError::new(
                         ComputerUseErrorCode::CaptureFailed,
-                        format!(
-                            "{persistent_error}; one-shot WGC recovery failed: {fallback_error}"
+                        prior_error.map_or_else(
+                            || error.to_string(),
+                            |prior| format!("{prior}; WGC reinitialization failed: {error}"),
                         ),
                     )
-                }),
-            },
-            Self::OneShot => platform_windows::wgc::screenshot_window_via_wgc(window_handle)
-                .map(|(bgra, width, height)| WindowsCapturedFrame {
-                    bgra,
-                    width,
-                    height,
-                    capture_mode: "one_shot_wgc_fallback",
-                    measurement: None,
-                })
-                .map_err(|error| {
-                    ComputerUseError::new(ComputerUseErrorCode::CaptureFailed, error.to_string())
-                }),
+                })?;
+        let frame = capture
+            .next_measured_frame(FIRST_FRAME_TIMEOUT)
+            .map_err(|error| {
+                ComputerUseError::new(ComputerUseErrorCode::CaptureFailed, error.to_string())
+            })?;
+        *self = Self::Persistent(capture);
+        Ok(Self::publishable_frame(frame, capture_mode))
+    }
+
+    fn publishable_frame(
+        frame: dcc_cua_platform_windows::PersistentWgcFrame,
+        capture_mode: &'static str,
+    ) -> WindowsCapturedFrame {
+        WindowsCapturedFrame {
+            bgra: frame.bgra,
+            width: frame.width,
+            height: frame.height,
+            capture_mode,
+            measurement: Some(frame.measurement),
         }
     }
 }
@@ -888,7 +909,7 @@ fn run_windows_capture_loop(
 ) {
     let interval = std::time::Duration::from_secs_f64(1.0 / f64::from(fps));
     let mut sequence = 0_u64;
-    let mut capture = WindowsLiveCapture::new(window_handle);
+    let mut capture = WindowsLiveCapture::new(process_id, window_handle);
     loop {
         if sender.is_closed()
             || interrupt_generation_changed(started_interrupt_generation, interrupt_generation())
@@ -897,7 +918,7 @@ fn run_windows_capture_loop(
         }
         let capture_started = Instant::now();
         match ensure_window_owner(process_id, window_handle)
-            .and_then(|()| capture.next_frame(window_handle))
+            .and_then(|()| capture.next_frame(process_id, window_handle))
             .and_then(|frame| {
                 ensure_window_owner(process_id, window_handle)?;
                 Ok(frame)
