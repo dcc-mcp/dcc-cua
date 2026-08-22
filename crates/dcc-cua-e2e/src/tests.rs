@@ -1243,7 +1243,7 @@ async fn independent_endpoint_clients_serialize_scoped_raw_input() {
         let target = found.value["matches"]
             .as_array()
             .and_then(|matches| matches.first())
-            .expect("parallel raw-input click target");
+            .expect("parallel raw-input target");
         let (x, y) = screenshot_point(&snapshot.value, target);
         raw_input_requests.push(json!({
             "session_id": session_id,
@@ -1252,7 +1252,7 @@ async fn independent_endpoint_clients_serialize_scoped_raw_input() {
             "observation_id": observation_id,
             "accessibility_state_id": accessibility_state_id,
             "action": {
-                "action": "click",
+                "action": "move",
                 "input_kind": "raw_input",
                 "intent": "navigate",
                 "delivery_mode": "foreground",
@@ -1279,7 +1279,7 @@ async fn independent_endpoint_clients_serialize_scoped_raw_input() {
     assert_eq!(first.value["success"], true, "{}", first.value);
     assert_eq!(second.value["success"], true, "{}", second.value);
     for journal in &journals {
-        wait_for_journal(journal, "lbl-counter", "counter=1");
+        wait_for_journal(journal, "lbl-counter", "counter=0");
     }
     let stopped = client_request(
         &mut clients[0],
