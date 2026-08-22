@@ -6,6 +6,7 @@
 //! bounded and the transport does not base64-encode pixels.
 
 mod action_confirmation;
+mod action_response;
 mod browser_extension;
 mod endpoint;
 mod error_contract;
@@ -23,6 +24,7 @@ pub use action_confirmation::{
     TrustedActionConfirmationDecision, TrustedActionConfirmationHost,
     TrustedActionConfirmationHostError, TrustedActionConfirmationRequest,
 };
+use action_response::*;
 pub use dcc_cua_protocol::{
     DEFAULT_SESSION_IDLE_TIMEOUT_MS, HOST_PROTOCOL_VERSION, MAX_BINARY_FRAME_BYTES,
     MAX_HOST_CONNECTIONS, MAX_JSON_FRAME_BYTES, MAX_PARALLEL_DISCOVERY_REQUESTS,
@@ -1098,10 +1100,7 @@ where
             None
         };
 
-        if matches!(
-            &request,
-            Request::WaitFor { .. } | Request::WaitForWindow(_)
-        ) {
+        if is_interruptible_connection_request(&request) {
             let mut operation = Box::pin(handle_request_with_confirmation_host(
                 &driver,
                 confirmation_host.as_deref(),
@@ -1111,6 +1110,9 @@ where
                 &cancellation_registry,
                 request,
             ));
+            let mut interrupt_poll =
+                tokio::time::interval(std::time::Duration::from_millis(50));
+            interrupt_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
                 tokio::select! {
                     result = &mut operation => {
@@ -1127,6 +1129,26 @@ where
                         ).await?;
                         break;
                     }
+                    _ = interrupt_poll.tick() => {
+                        let current = interrupt_generation();
+                        if interrupt_generation_changed(observed_interrupt_generation, current) {
+                            drop(operation);
+                            stop_connection_control_sessions(&mut sessions).await;
+                            observed_interrupt_generation = current;
+                            write_json_locked(
+                                &writer,
+                                with_request_id(
+                                    host_error_response(&HostError::ComputerUse(ComputerUseError::new(
+                                        ComputerUseErrorCode::UserInterrupted,
+                                        "Escape or a shared Host stop interrupted the in-flight request",
+                                    ))),
+                                    request_id.as_deref(),
+                                ),
+                            )
+                            .await?;
+                            break;
+                        }
+                    }
                     frame = read_frame(&mut reader, MAX_JSON_FRAME_BYTES) => {
                         let Some(frame) = frame? else {
                             drop(operation);
@@ -1142,7 +1164,44 @@ where
                                 continue;
                             }
                         };
-                        if let Request::CancelWindowWait { wait_id } = next_request {
+                        if matches!(&next_request, Request::InterruptAll {}) {
+                            drop(operation);
+                            let (mut response, attachment) =
+                                match handle_request_with_confirmation_host(
+                                    &driver,
+                                    confirmation_host.as_deref(),
+                                    &mut sessions,
+                                    &mut snapshot_transport,
+                                    &mut desktop_shared_image,
+                                    &cancellation_registry,
+                                    Request::InterruptAll {},
+                                )
+                                .await
+                                {
+                                    Ok(result) => result,
+                                    Err(error) => (host_error_response(&error), None),
+                                };
+                            observed_interrupt_generation = interrupt_generation();
+                            rewrite_runtime_session_ids(&mut response, &sessions);
+                            write_response_locked(
+                                &writer,
+                                with_request_id(response, cancel_id.as_deref()),
+                                attachment.as_deref(),
+                            )
+                            .await?;
+                            write_json_locked(
+                                &writer,
+                                with_request_id(
+                                    host_error_response(&HostError::ComputerUse(ComputerUseError::new(
+                                        ComputerUseErrorCode::UserInterrupted,
+                                        "the shared Host stop interrupted the in-flight request",
+                                    ))),
+                                    request_id.as_deref(),
+                                ),
+                            )
+                            .await?;
+                            break;
+                        } else if let Request::CancelWindowWait { wait_id } = next_request {
                             let response = match cancel_window_wait(&cancellation_registry, &wait_id) {
                                 Ok(response) => response,
                                 Err(error) => host_error_response(&error),
@@ -1181,7 +1240,7 @@ where
                             write_json_locked(
                                 &writer,
                                 with_request_id(
-                                    error_response("request_in_progress", "wait_for is still running; cancel it before sending another request"),
+                                    error_response("request_in_progress", "an interruptible wait or event poll is still running; cancel or interrupt it before sending another request"),
                                     cancel_id.as_deref(),
                                 ),
                             ).await?;
@@ -1414,6 +1473,17 @@ fn is_parallel_request(request: &Request) -> bool {
             | Request::ScreenSize {}
             | Request::CursorPosition {}
     )
+}
+
+fn is_interruptible_connection_request(request: &Request) -> bool {
+    matches!(
+        request,
+        Request::WaitFor { .. } | Request::WaitForWindow(_) | Request::PollSessionEvents { .. }
+    )
+}
+
+fn interrupt_poll_slice(remaining: Duration) -> Duration {
+    remaining.min(Duration::from_millis(50))
 }
 
 async fn handle_parallel_request(
@@ -1740,6 +1810,21 @@ async fn ensure_session_not_interrupted(session: &mut HostSession) -> Result<(),
     Ok(())
 }
 
+async fn wait_for_window_post_snapshot_delay(
+    session: &mut HostSession,
+    delay: Duration,
+) -> Result<(), HostError> {
+    let deadline = tokio::time::Instant::now() + delay;
+    loop {
+        ensure_session_not_interrupted(session).await?;
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return Ok(());
+        }
+        tokio::time::sleep(interrupt_poll_slice(remaining)).await;
+    }
+}
+
 fn stopped_banner_failure(failure: ComputerUseError, cleanup_note: &str) -> ComputerUseError {
     ComputerUseError::new(
         failure.code,
@@ -1764,6 +1849,13 @@ async fn authorized_desktop_session<'a>(
             "desktop session grant or capability mismatch".into(),
         ));
     }
+    ensure_desktop_session_not_interrupted(session).await?;
+    Ok(session)
+}
+
+async fn ensure_desktop_session_not_interrupted(
+    session: &mut HostDesktopSession,
+) -> Result<(), HostError> {
     if session.interrupted {
         return Err(ComputerUseError::new(
             ComputerUseErrorCode::UserInterrupted,
@@ -1786,208 +1878,23 @@ async fn authorized_desktop_session<'a>(
         )
         .into());
     }
-    Ok(session)
+    Ok(())
 }
 
-fn native_tool_response_with_transport(
-    session_id: Option<&str>,
-    tool: &str,
-    result: ComputerUseToolResult,
-    mode: SnapshotTransport,
-    shared_image: &mut Option<SharedImage>,
-) -> Result<(Value, Option<Vec<u8>>), HostError> {
-    let mut value = result.value;
-    let images = result.images;
-    let use_shared_memory = mode == SnapshotTransport::SharedMemory && images.len() == 1;
-    let mut attachment_bytes = Vec::new();
-    let mut attachments = Vec::with_capacity(images.len());
-    for (index, image) in images.iter().enumerate() {
-        let offset = attachment_bytes.len();
-        if !use_shared_memory {
-            attachment_bytes.extend_from_slice(&image.data);
+async fn wait_for_desktop_post_snapshot_delay(
+    session: &mut HostDesktopSession,
+    delay: Duration,
+) -> Result<(), HostError> {
+    let deadline = tokio::time::Instant::now() + delay;
+    loop {
+        ensure_desktop_session_not_interrupted(session).await?;
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return Ok(());
         }
-        attachments.push(json!({
-            "index": index,
-            "offset": offset,
-            "length": image.data.len(),
-            "mime_type": image.mime_type,
-            "encoding": if use_shared_memory { "shared_memory" } else { "binary_frame" },
-        }));
+        tokio::time::sleep(interrupt_poll_slice(remaining)).await;
     }
-    let image_descriptor = if use_shared_memory {
-        let image = &images[0];
-        let shared = SharedImage::from_bytes(&image.data, &image.mime_type)
-            .map_err(|error| HostError::Protocol(error.to_string()))?;
-        let mut descriptor = serde_json::to_value(shared.descriptor())
-            .map_err(|error| HostError::Protocol(error.to_string()))?;
-        descriptor["encoding"] = Value::String("shared_memory".into());
-        *shared_image = Some(shared);
-        Some(descriptor)
-    } else {
-        attachments.first().cloned()
-    };
-    if !images.is_empty()
-        && let Some(content) = value.get_mut("content").and_then(Value::as_array_mut)
-    {
-        for (index, item) in content
-            .iter_mut()
-            .filter(|item| item["type"] == "image")
-            .enumerate()
-        {
-            let Some(image) = images.get(index) else {
-                break;
-            };
-            item["data"] = Value::Null;
-            item["encoding"] = Value::String(
-                if use_shared_memory {
-                    "shared_memory"
-                } else {
-                    "binary_frame"
-                }
-                .into(),
-            );
-            item["attachment_index"] = json!(index);
-            item["offset"] = json!(attachments[index]["offset"]);
-            item["length"] = json!(image.data.len());
-        }
-    }
-    let mut response = json!({
-        "type": "tool_result",
-        "session_id": session_id,
-        "tool": tool,
-        "result": value,
-        "text": result.text,
-        "degraded": result.degraded,
-    });
-    if let Some(session_id) = session_id {
-        response["session_id"] = Value::String(session_id.to_owned());
-    }
-    if let Some(image) = image_descriptor {
-        response["image"] = image;
-        if !use_shared_memory {
-            response["attachments"] = Value::Array(attachments);
-        }
-    }
-    let attachment = (!attachment_bytes.is_empty()).then_some(attachment_bytes);
-    Ok((response, attachment))
 }
 
-fn action_completed_response(
-    session_id: &str,
-    action_id: String,
-    message: &str,
-    result: ComputerUseToolResult,
-    mode: SnapshotTransport,
-    shared_image: &mut Option<SharedImage>,
-) -> Result<(Value, Option<Vec<u8>>), HostError> {
-    let (tool_response, attachment) = native_tool_response_with_transport(
-        Some(session_id),
-        "action",
-        result,
-        mode,
-        shared_image,
-    )?;
-    let success = tool_response["result"]["success"].as_bool().unwrap_or(true);
-    let mut response = json!({
-        "type": "action_completed",
-        "success": success,
-        "action_id": action_id,
-        "target_closed": false,
-        "policy_tier": "task_grant",
-        "message": message,
-        "result": tool_response["result"].clone(),
-        "text": tool_response["text"].clone(),
-        "degraded": tool_response["degraded"].clone(),
-    });
-    for field in ["image", "attachments"] {
-        if !tool_response[field].is_null() {
-            response[field] = tool_response[field].clone();
-        }
-    }
-    Ok((response, attachment))
-}
-
-fn response_image_descriptor(response: &Value, image_index: usize) -> Option<Value> {
-    response["attachments"]
-        .as_array()
-        .and_then(|attachments| attachments.get(image_index))
-        .cloned()
-        .or_else(|| {
-            (image_index == 0 && !response["image"].is_null()).then(|| response["image"].clone())
-        })
-}
-
-fn action_completed_with_snapshot_response(
-    session_id: &str,
-    action_id: String,
-    mut result: ComputerUseToolResult,
-    screenshot: ComputerUseScreenshot,
-    mode: SnapshotTransport,
-    shared_image: &mut Option<SharedImage>,
-) -> Result<(Value, Option<Vec<u8>>), HostError> {
-    let image_index = result.images.len();
-    let node_count = screenshot.accessibility["elements"]
-        .as_array()
-        .map_or(0, Vec::len);
-    let observation_id = screenshot.observation.observation_id.clone();
-    let mut post_snapshot = json!({
-        "success": true,
-        "observation_id": observation_id,
-        "accessibility_state_id": observation_id,
-        "observation": screenshot.observation,
-        "root": screenshot.accessibility,
-        "node_count": node_count,
-    });
-    result.images.push(ComputerUseImage {
-        data: screenshot.data,
-        mime_type: "image/png".into(),
-    });
-    let (mut response, attachment) = action_completed_response(
-        session_id,
-        action_id,
-        "CUA action completed with a fresh post-action snapshot",
-        result,
-        mode,
-        shared_image,
-    )?;
-    if let Some(descriptor) = response_image_descriptor(&response, image_index) {
-        post_snapshot["image"] = descriptor;
-    }
-    response["post_snapshot"] = post_snapshot;
-    Ok((response, attachment))
-}
-
-fn desktop_action_completed_with_snapshot_response(
-    session_id: &str,
-    action_id: String,
-    mut result: ComputerUseToolResult,
-    snapshot: ComputerUseDesktopSnapshot,
-    mode: SnapshotTransport,
-    shared_image: &mut Option<SharedImage>,
-) -> Result<(Value, Option<Vec<u8>>), HostError> {
-    let image_index = result.images.len();
-    let mut post_snapshot = json!({
-        "success": true,
-        "observation_id": snapshot.observation_id,
-        "state": snapshot.state,
-    });
-    result.images.push(ComputerUseImage {
-        data: snapshot.data,
-        mime_type: "image/png".into(),
-    });
-    let (mut response, attachment) = action_completed_response(
-        session_id,
-        action_id,
-        "desktop CUA action completed with a fresh post-action snapshot",
-        result,
-        mode,
-        shared_image,
-    )?;
-    if let Some(descriptor) = response_image_descriptor(&response, image_index) {
-        post_snapshot["image"] = descriptor;
-    }
-    response["post_snapshot"] = post_snapshot;
-    Ok((response, attachment))
-}
 #[cfg(test)]
 mod tests;
