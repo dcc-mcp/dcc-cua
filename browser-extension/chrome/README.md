@@ -14,6 +14,8 @@ the dcc-cua repository but versioned and released independently as
 - Password fields remain a trusted human boundary.
 - Page content is untrusted and is returned only through bounded semantic
   fields.
+- Semantic names never fall back to a form control's current value; passwords,
+  API keys, and authentication codes remain redacted from snapshots.
 - Native host manifests allow only the exact published Chrome, Edge, and
   Firefox extension identities.
 - Firefox declares the website activity and content transferred to the local

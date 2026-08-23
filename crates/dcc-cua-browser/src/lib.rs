@@ -6,8 +6,10 @@
 
 use base64::Engine;
 use dcc_cua_core::{ComputerUseError, ComputerUseErrorCode, ComputerUseResult, ComputerUseSession};
-use dcc_cua_protocol::{MAX_BINARY_FRAME_BYTES, validate_absolute_local_path};
-use serde::{Deserialize, Deserializer};
+use dcc_cua_protocol::{
+    MAX_BINARY_FRAME_BYTES, validate_absolute_local_path, validate_secret_handle,
+};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Value, json};
 use std::path::Path;
 
@@ -121,18 +123,124 @@ pub struct BrowserClickRequest {
     pub input_route: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct BrowserTypeRequest {
     pub target_id: String,
     pub tab_id: String,
     pub snapshot_id: String,
     #[serde(rename = "ref")]
     pub element_ref: String,
-    pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret_handle: Option<String>,
     #[serde(default)]
     pub mode: Option<String>,
     #[serde(default)]
     pub replace: bool,
+}
+
+pub struct ResolvedBrowserTypeRequest {
+    target_id: String,
+    tab_id: String,
+    snapshot_id: String,
+    element_ref: String,
+    text: String,
+    mode: Option<String>,
+    replace: bool,
+}
+
+impl std::fmt::Debug for ResolvedBrowserTypeRequest {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ResolvedBrowserTypeRequest")
+            .field("target_id", &self.target_id)
+            .field("tab_id", &self.tab_id)
+            .field("snapshot_id", &self.snapshot_id)
+            .field("element_ref", &self.element_ref)
+            .field("text", &"[REDACTED]")
+            .field("mode", &self.mode)
+            .field("replace", &self.replace)
+            .finish()
+    }
+}
+
+impl BrowserTypeRequest {
+    pub fn validate_source(&self) -> ComputerUseResult<()> {
+        match (&self.text, &self.secret_handle) {
+            (Some(text), None) => {
+                if text.chars().count() > MAX_TEXT_CHARS {
+                    return Err(invalid(
+                        "browser_type text exceeds the 4096-character limit",
+                    ));
+                }
+            }
+            (None, Some(handle)) => {
+                validate_secret_handle(handle)
+                    .map_err(|_| invalid("browser_type secret_handle is invalid"))?;
+            }
+            (Some(_), Some(_)) => {
+                return Err(invalid(
+                    "browser_type text and secret_handle are mutually exclusive",
+                ));
+            }
+            (None, None) => {
+                return Err(invalid(
+                    "browser_type requires exactly one of text or secret_handle",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn secret_handle(&self) -> Option<&str> {
+        self.secret_handle.as_deref()
+    }
+
+    #[must_use]
+    pub fn snapshot_id(&self) -> &str {
+        &self.snapshot_id
+    }
+
+    #[must_use]
+    pub fn tab_id(&self) -> &str {
+        &self.tab_id
+    }
+
+    pub fn resolve(
+        self,
+        resolved_secret: Option<&str>,
+    ) -> ComputerUseResult<ResolvedBrowserTypeRequest> {
+        self.validate_source()?;
+        let text = match (self.text, self.secret_handle, resolved_secret) {
+            (Some(text), None, None) => text,
+            (None, Some(handle), Some(secret)) => {
+                debug_assert!(validate_secret_handle(&handle).is_ok());
+                secret.to_owned()
+            }
+            (Some(_), Some(_), _) | (None, None, _) => unreachable!("source was validated"),
+            (Some(_), None, Some(_)) | (None, Some(_), None) => {
+                return Err(invalid(
+                    "browser_type secret resolution does not match its input",
+                ));
+            }
+        };
+        if text.chars().count() > MAX_TEXT_CHARS {
+            return Err(invalid(
+                "browser_type text exceeds the 4096-character limit",
+            ));
+        }
+        Ok(ResolvedBrowserTypeRequest {
+            target_id: self.target_id,
+            tab_id: self.tab_id,
+            snapshot_id: self.snapshot_id,
+            element_ref: self.element_ref,
+            text,
+            mode: self.mode,
+            replace: self.replace,
+        })
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -358,16 +466,11 @@ impl BrowserSession {
     pub async fn type_text(
         &mut self,
         native: &mut ComputerUseSession,
-        request: BrowserTypeRequest,
+        request: ResolvedBrowserTypeRequest,
     ) -> ComputerUseResult<BrowserResult> {
         self.require_mutation_target(&request.target_id, &request.tab_id, &request.snapshot_id)?;
         if request.element_ref.trim().is_empty() {
             return Err(invalid("browser_type ref must not be empty"));
-        }
-        if request.text.chars().count() > MAX_TEXT_CHARS {
-            return Err(invalid(
-                "browser_type text exceeds the 4096-character limit",
-            ));
         }
         let mode = request.mode.as_deref().unwrap_or("insert_text");
         if mode != "insert_text" && mode != "keystrokes" {
@@ -392,6 +495,21 @@ impl BrowserSession {
                 .await?,
         )?;
         Ok(result)
+    }
+
+    pub fn validate_type_request(&self, request: &BrowserTypeRequest) -> ComputerUseResult<()> {
+        request.validate_source()?;
+        self.require_mutation_target(&request.target_id, &request.tab_id, &request.snapshot_id)?;
+        if request.element_ref.trim().is_empty() {
+            return Err(invalid("browser_type ref must not be empty"));
+        }
+        let mode = request.mode.as_deref().unwrap_or("insert_text");
+        if mode != "insert_text" && mode != "keystrokes" {
+            return Err(invalid(
+                "browser_type mode must be insert_text or keystrokes",
+            ));
+        }
+        Ok(())
     }
 
     pub async fn pointer(

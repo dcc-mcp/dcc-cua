@@ -12,12 +12,34 @@ pub const MAX_JSON_FRAME_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_BINARY_FRAME_BYTES: usize = 64 * 1024 * 1024;
 pub const MAX_LOCAL_PATH_CHARS: usize = 4_096;
 pub const MAX_REQUEST_ID_CHARS: usize = 128;
+pub const MAX_SECRET_HANDLE_CHARS: usize = 128;
 pub const MAX_HOST_CONNECTIONS: usize = 32;
 pub const MAX_SESSIONS_PER_CONNECTION: usize = 16;
 pub const MAX_PARALLEL_DISCOVERY_REQUESTS: usize = 32;
 pub const DEFAULT_SESSION_IDLE_TIMEOUT_MS: u64 = 15 * 60 * 1_000;
 pub const MIN_SESSION_IDLE_TIMEOUT_MS: u64 = 1_000;
 pub const MAX_SESSION_IDLE_TIMEOUT_MS: u64 = 24 * 60 * 60 * 1_000;
+
+#[derive(Debug, thiserror::Error, Clone, Copy, PartialEq, Eq)]
+pub enum SecretHandleError {
+    #[error(
+        "secret handle must start with an ASCII letter or digit and contain at most {MAX_SECRET_HANDLE_CHARS} ASCII letters, digits, dots, underscores, dashes, or colons"
+    )]
+    Invalid,
+}
+
+pub fn validate_secret_handle(handle: &str) -> Result<(), SecretHandleError> {
+    if handle.is_empty()
+        || handle.chars().count() > MAX_SECRET_HANDLE_CHARS
+        || !handle.starts_with(|character: char| character.is_ascii_alphanumeric())
+        || !handle.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '-' | ':')
+        })
+    {
+        return Err(SecretHandleError::Invalid);
+    }
+    Ok(())
+}
 
 #[derive(Debug, thiserror::Error, Clone, Copy, PartialEq, Eq)]
 pub enum LocalPathError {
@@ -133,6 +155,7 @@ pub fn host_method_traits(method: &str) -> HostMethodTraits {
             | "browser_navigate"
             | "browser_set_input_files"
             | "browser_dialog"
+            | "clipboard_capture_secret"
     );
     let standalone_snapshot = matches!(
         method,

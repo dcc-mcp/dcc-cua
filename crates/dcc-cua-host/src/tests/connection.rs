@@ -54,10 +54,10 @@ fn long_delays_poll_the_interrupt_boundary_at_least_every_fifty_ms(
 #[tokio::test]
 async fn process_connection_requires_hello_pings_and_rejects_duplicate_hello() {
     let (mut client, server_stream): (DuplexStream, DuplexStream) = tokio::io::duplex(16 * 1024);
-    let server = tokio::spawn(process_connection_with_confirmation_host(
+    let server = tokio::spawn(process_connection_with_security_services(
         ComputerUseDriver::create().unwrap(),
         server_stream,
-        None,
+        HostSecurityServices::default(),
     ));
 
     write_json_request(
@@ -166,12 +166,12 @@ async fn process_connection_requires_hello_pings_and_rejects_duplicate_hello() {
 async fn connection_closes_when_hello_misses_its_absolute_deadline() {
     let (mut client, server_stream): (DuplexStream, DuplexStream) = tokio::io::duplex(4096);
     let (reader, writer) = tokio::io::split(server_stream);
-    let server = tokio::spawn(process_connection_parts_with_confirmation_host(
+    let server = tokio::spawn(process_connection_parts_with_security_services(
         ComputerUseDriver::create().unwrap(),
         reader,
         writer,
         std::time::Duration::from_millis(25),
-        None,
+        HostSecurityServices::default(),
     ));
     write_json_request(
         &mut client,

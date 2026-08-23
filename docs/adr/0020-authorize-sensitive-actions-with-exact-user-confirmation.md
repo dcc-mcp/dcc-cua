@@ -78,3 +78,4 @@ constructor-owned.
 ## References
 
 - [ADR 0017: Derive action safety from Host evidence](0017-derive-action-safety-from-host-evidence.md)
+- [ADR 0022: Keep credentials outside model-visible Host IPC](0022-keep-credentials-outside-model-visible-host-ipc.md)

@@ -54,6 +54,16 @@ fn method_traits_are_one_closed_cross_component_taxonomy() {
     assert!(semantic.pipeline_safe);
 
     assert_eq!(host_method_traits("unknown"), HostMethodTraits::default());
+    assert!(host_method_traits("clipboard_capture_secret").action);
+}
+
+#[rstest]
+fn secret_handles_are_shared_bounded_opaque_identifiers() {
+    assert!(validate_secret_handle("edge.api-key").is_ok());
+    for invalid in ["", " leading", "contains/slash", "contains space"] {
+        assert!(validate_secret_handle(invalid).is_err());
+    }
+    assert!(validate_secret_handle(&"x".repeat(MAX_SECRET_HANDLE_CHARS + 1)).is_err());
 }
 
 #[rstest]

@@ -1441,6 +1441,19 @@ fn manifest_is_a_machine_readable_core_launch_contract() {
         false
     );
     assert_eq!(
+        manifest["host"]["secret_vault"]["backend"],
+        "platform_keyring"
+    );
+    assert_eq!(manifest["host"]["secret_vault"]["handle_max_chars"], 128);
+    assert_eq!(
+        manifest["host"]["secret_vault"]["plaintext_accepted_over_host_ipc"],
+        false
+    );
+    assert_eq!(
+        manifest["host"]["secret_vault"]["clipboard_capture_method"],
+        "clipboard_capture_secret"
+    );
+    assert_eq!(
         MAX_PARALLEL_DISCOVERY_REQUESTS,
         dcc_cua_client::MAX_PARALLEL_DISCOVERY_REQUESTS
     );
@@ -1492,6 +1505,16 @@ fn manifest_is_a_machine_readable_core_launch_contract() {
             .is_some_and(|values| values
                 .iter()
                 .any(|value| value == "trusted_confirmation_grants"))
+    );
+    assert!(
+        manifest["host"]["capabilities"]
+            .as_array()
+            .is_some_and(|values| values.iter().any(|value| value == "secure_secret_handles"))
+    );
+    assert!(
+        manifest["host"]["capabilities"]
+            .as_array()
+            .is_some_and(|values| values.iter().any(|value| value == "clipboard_secret_sink"))
     );
     assert!(
         manifest["host"]["capabilities"]

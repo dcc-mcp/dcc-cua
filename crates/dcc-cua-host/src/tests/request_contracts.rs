@@ -43,6 +43,7 @@ fn semantic_action_safety_comes_from_the_fresh_accessibility_element(
         scroll_by: None,
         path: Vec::new(),
         text: None,
+        secret_handle: None,
         delay_ms: None,
         type_chars_only: false,
         checked: None,

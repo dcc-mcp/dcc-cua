@@ -502,3 +502,62 @@ fn browser_result_publishes_only_a_successful_snapshot() {
     .unwrap();
     assert!(!refusal.publishes_snapshot_evidence());
 }
+
+#[rstest]
+fn browser_type_requires_exactly_one_text_source() {
+    let both = serde_json::from_value::<BrowserTypeRequest>(json!({
+        "target_id": "target-1",
+        "tab_id": "tab-1",
+        "snapshot_id": "p1",
+        "ref": "p1:2",
+        "text": "plaintext",
+        "secret_handle": "firefox.amo-secret"
+    }))
+    .unwrap();
+    assert!(both.resolve(None).is_err());
+
+    let neither = serde_json::from_value::<BrowserTypeRequest>(json!({
+        "target_id": "target-1",
+        "tab_id": "tab-1",
+        "snapshot_id": "p1",
+        "ref": "p1:2"
+    }))
+    .unwrap();
+    assert!(neither.resolve(None).is_err());
+}
+
+#[rstest]
+fn browser_type_secret_handle_is_resolved_outside_the_browser_contract() {
+    let request = serde_json::from_value::<BrowserTypeRequest>(json!({
+        "target_id": "target-1",
+        "tab_id": "tab-1",
+        "snapshot_id": "p1",
+        "ref": "p1:2",
+        "secret_handle": "firefox.amo-secret",
+        "replace": true
+    }))
+    .unwrap();
+    assert_eq!(request.secret_handle(), Some("firefox.amo-secret"));
+    assert!(request.clone().resolve(None).is_err());
+
+    let resolved = request.resolve(Some("resolved-only-at-dispatch")).unwrap();
+    assert_eq!(resolved.text, "resolved-only-at-dispatch");
+    assert!(!format!("{resolved:?}").contains("resolved-only-at-dispatch"));
+}
+
+#[rstest]
+fn browser_type_validation_rejects_unbound_evidence_before_secret_resolution() {
+    let request = serde_json::from_value::<BrowserTypeRequest>(json!({
+        "target_id": "target-1",
+        "tab_id": "tab-1",
+        "snapshot_id": "p1",
+        "ref": "p1:2",
+        "secret_handle": "firefox.amo-secret"
+    }))
+    .unwrap();
+    assert!(
+        BrowserSession::default()
+            .validate_type_request(&request)
+            .is_err()
+    );
+}

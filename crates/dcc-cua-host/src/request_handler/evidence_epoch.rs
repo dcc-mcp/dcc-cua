@@ -18,6 +18,7 @@ pub(crate) fn window_evidence_epoch_route(request: &Request) -> Option<WindowEvi
         }),
         Request::TerminateApp { session_id, .. }
         | Request::ClipboardRead { session_id, .. }
+        | Request::ClipboardCaptureSecret { session_id, .. }
         | Request::ClipboardWrite { session_id, .. }
         | Request::RecordingStart { session_id, .. }
         | Request::RecordingStop { session_id, .. }

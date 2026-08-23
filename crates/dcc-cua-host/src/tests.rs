@@ -22,9 +22,9 @@ async fn handle_request(
     cancellation_registry: &CancellationRegistry,
     request: Request,
 ) -> Result<(Value, Option<Vec<u8>>), HostError> {
-    request_handler::handle_request_with_confirmation_host(
+    request_handler::handle_request_with_security_services(
         driver,
-        None,
+        &HostSecurityServices::default(),
         sessions,
         snapshot_transport,
         desktop_shared_image,
@@ -57,6 +57,8 @@ fn capabilities_follow_the_selected_cursor_runtime() {
     assert!(capabilities.contains(&"multi_agent_sessions"));
     assert!(capabilities.contains(&"indicator_motion_policy"));
     assert!(capabilities.contains(&"nearest_ancestor_role_v1"));
+    assert!(capabilities.contains(&"secure_secret_handles"));
+    assert!(capabilities.contains(&"clipboard_secret_sink"));
     assert_eq!(capabilities.contains(&"cursor_controls"), cursor_available);
     assert_eq!(
         capabilities.contains(&"cua_cursor_marker"),
@@ -1498,6 +1500,7 @@ fn client_declared_intent_cannot_select_the_host_safety_tier() {
         scroll_by: None,
         path: Vec::new(),
         text: None,
+        secret_handle: None,
         delay_ms: None,
         type_chars_only: false,
         checked: None,
@@ -1530,6 +1533,7 @@ fn semantic_actions_require_element_locator() {
         scroll_by: None,
         path: Vec::new(),
         text: None,
+        secret_handle: None,
         delay_ms: None,
         type_chars_only: false,
         checked: Some(true),
@@ -1560,6 +1564,7 @@ fn semantic_actions_forward_element_tokens_and_delivery_mode() {
         scroll_by: None,
         path: Vec::new(),
         text: None,
+        secret_handle: None,
         delay_ms: None,
         type_chars_only: false,
         checked: None,
@@ -1775,5 +1780,6 @@ mod connection;
 mod request_contracts;
 mod request_parsing;
 mod response_contracts;
+mod secret_vault;
 mod session_concurrency;
 mod session_health;

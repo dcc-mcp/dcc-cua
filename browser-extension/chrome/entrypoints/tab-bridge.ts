@@ -8,6 +8,7 @@ import {
   type TypeCommand,
 } from "../content-protocol";
 import { isObject } from "../protocol";
+import { snapshotElementName } from "../snapshot-name";
 
 declare global {
   var __dccCuaContentBridgeV1: boolean | undefined;
@@ -66,20 +67,13 @@ export default defineUnlistedScript(() => {
   }
 
   function elementName(element: HTMLElement): string {
-    const controlValue =
-      element instanceof HTMLInputElement ||
-      element instanceof HTMLTextAreaElement ||
-      element instanceof HTMLSelectElement
-        ? element.value
-        : "";
-    return boundedText(
-      element.getAttribute("aria-label") ||
-        element.getAttribute("alt") ||
-        element.getAttribute("title") ||
-        element.getAttribute("placeholder") ||
-        element.innerText ||
-        controlValue,
-    );
+    return snapshotElementName({
+      ariaLabel: element.getAttribute("aria-label"),
+      alt: element.getAttribute("alt"),
+      title: element.getAttribute("title"),
+      placeholder: element.getAttribute("placeholder"),
+      innerText: element.innerText,
+    });
   }
 
   function visibility(element: HTMLElement): "in_viewport" | "offscreen" | null {

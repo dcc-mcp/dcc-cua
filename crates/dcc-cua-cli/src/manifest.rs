@@ -2,9 +2,10 @@ use dcc_cua_core::{COMPUTER_USE_ESCALATION_REASONS, MAX_ESCALATION_DETAIL_CHARS}
 use dcc_cua_host::{
     DEFAULT_SESSION_IDLE_TIMEOUT_MS, HOST_HELLO_TIMEOUT_MS, HOST_PROTOCOL_VERSION, HostTransport,
     MAX_APPLICATION_LABEL_CHARS, MAX_BINARY_FRAME_BYTES, MAX_HOST_CONNECTIONS,
-    MAX_JSON_FRAME_BYTES, MAX_PARALLEL_DISCOVERY_REQUESTS, MAX_SESSION_EVENT_POLL_TIMEOUT_MS,
-    MAX_SESSION_IDLE_TIMEOUT_MS, MAX_SESSION_INPUT_EVENTS, MAX_SESSIONS_PER_CONNECTION,
-    MAX_TASK_GRANT_ID_CHARS, MIN_SESSION_IDLE_TIMEOUT_MS, host_capabilities,
+    MAX_JSON_FRAME_BYTES, MAX_PARALLEL_DISCOVERY_REQUESTS, MAX_SECRET_HANDLE_CHARS,
+    MAX_SESSION_EVENT_POLL_TIMEOUT_MS, MAX_SESSION_IDLE_TIMEOUT_MS, MAX_SESSION_INPUT_EVENTS,
+    MAX_SESSIONS_PER_CONNECTION, MAX_TASK_GRANT_ID_CHARS, MIN_SESSION_IDLE_TIMEOUT_MS,
+    host_capabilities,
 };
 use serde_json::{Value, json};
 
@@ -159,6 +160,15 @@ pub(crate) fn document() -> Value {
                 "exact_window_identity": true,
                 "default_decision": "deny",
                 "input_text_echoed": false,
+            },
+            "secret_vault": {
+                "backend": "platform_keyring",
+                "service": "dcc-cua",
+                "handle_max_chars": MAX_SECRET_HANDLE_CHARS,
+                "plaintext_accepted_over_host_ipc": false,
+                "resolve_after_exact_confirmation": true,
+                "clipboard_capture_method": "clipboard_capture_secret",
+                "clipboard_cleared_after_store": true,
             },
             "session_events": session_events,
             "session_health": session_health,
