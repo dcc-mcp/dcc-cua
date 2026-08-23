@@ -32,43 +32,43 @@ pub struct TrustedTaskActionScope {
 }
 
 impl TrustedTaskActionScope {
+    /// Final window-input action names accepted by trusted task authorization.
+    ///
+    /// These are action identities, not Host method names such as `browser_click`.
+    pub const NATIVE_ACTIONS: &'static [&'static str] = &[
+        "click",
+        "double_click",
+        "right_click",
+        "toggle",
+        "drag",
+        "type",
+        "type_chars",
+        "set_text",
+        "set_value",
+        "set_checked",
+        "keypress",
+        "press",
+        "press_key",
+        "keyboard_shortcut",
+        "hotkey",
+    ];
+    /// Authorization categories accepted for raw exact-window input.
+    pub const RAW_INPUT_CATEGORIES: &'static [&'static str] = &["raw_input", "credential"];
+    /// Authorization categories accepted for semantic exact-window input.
+    pub const SEMANTIC_CATEGORIES: &'static [&'static str] = &[
+        "account_access",
+        "account_security",
+        "content_change",
+        "credential",
+        "destructive",
+        "destructive_write",
+        "external_effect",
+        "payment",
+        "publishing",
+    ];
+
     pub(crate) fn validate(&self) -> bool {
-        let fields_are_closed = matches!(
-            self.action.as_str(),
-            "click"
-                | "double_click"
-                | "right_click"
-                | "toggle"
-                | "drag"
-                | "type"
-                | "type_chars"
-                | "set_text"
-                | "set_value"
-                | "set_checked"
-                | "keypress"
-                | "press"
-                | "press_key"
-                | "keyboard_shortcut"
-                | "hotkey"
-                | "browser_type"
-                | "clipboard_capture_secret"
-        ) && matches!(
-            self.input_kind.as_str(),
-            "raw_input" | "semantic" | "browser" | "clipboard"
-        ) && matches!(
-            self.authorization_category.as_str(),
-            "account_access"
-                | "account_security"
-                | "content_change"
-                | "credential"
-                | "destructive"
-                | "destructive_write"
-                | "external_effect"
-                | "payment"
-                | "publishing"
-                | "raw_input"
-        );
-        let binding_is_coherent = match self.input_kind.as_str() {
+        match self.input_kind.as_str() {
             "browser" => {
                 self.action == "browser_type"
                     && self.secret_input
@@ -85,17 +85,17 @@ impl TrustedTaskActionScope {
                     && self.browser_origin.is_none()
             }
             "raw_input" => {
-                matches!(
-                    self.authorization_category.as_str(),
-                    "raw_input" | "credential"
-                ) && self.browser_origin.is_none()
+                Self::NATIVE_ACTIONS.contains(&self.action.as_str())
+                    && Self::RAW_INPUT_CATEGORIES.contains(&self.authorization_category.as_str())
+                    && self.browser_origin.is_none()
             }
             "semantic" => {
-                self.authorization_category != "raw_input" && self.browser_origin.is_none()
+                Self::NATIVE_ACTIONS.contains(&self.action.as_str())
+                    && Self::SEMANTIC_CATEGORIES.contains(&self.authorization_category.as_str())
+                    && self.browser_origin.is_none()
             }
             _ => false,
-        };
-        fields_are_closed && binding_is_coherent
+        }
     }
 
     fn from_confirmation(request: &TrustedActionConfirmationRequest) -> Option<Self> {
