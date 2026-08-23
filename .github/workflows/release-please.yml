@@ -74,61 +74,13 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - name: Synchronize Cargo workspace release version
+      - name: Refresh independent release PRs from current main
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_VERSION: ${{ steps.release.outputs.version }}
-        run: |
-          $releasePr = $null
-          for ($attempt = 0; $attempt -lt 6 -and -not $releasePr; $attempt++) {
-              $releasePr = gh pr list --repo $env:GITHUB_REPOSITORY --state open --json number,headRefName,title --limit 10 |
-                ConvertFrom-Json |
-                Where-Object {
-                  $_.title -like 'chore(main): release *' -and
-                  $_.headRefName -eq 'release-please--branches--main--components--dcc-cua'
-                } |
-                Select-Object -First 1
-              if (-not $releasePr) { Start-Sleep -Seconds 5 }
-          }
-          if (-not $releasePr) {
-              Write-Host 'No pending release PR; workspace version synchronization is not needed.'
-              exit 0
-          }
-
-          $version = $env:RELEASE_VERSION
-          if ([string]::IsNullOrWhiteSpace($version)) {
-              $version = ($releasePr.title -split ' ')[-1]
-          }
-          $releaseRef = "refs/remotes/origin/$($releasePr.headRefName)"
-          git fetch origin "+refs/heads/$($releasePr.headRefName):$releaseRef"
-          if ($LASTEXITCODE -ne 0) { throw "release branch fetch failed with code $LASTEXITCODE" }
-          $releaseHead = (git rev-parse $releaseRef).Trim()
-          if ($LASTEXITCODE -ne 0) { throw "release branch resolution failed with code $LASTEXITCODE" }
-
-          # release-please keeps its PR branch rooted at the main commit that
-          # originally created the pending release. Rebuild from current main
-          # so architecture-only manifest changes never become merge conflicts.
-          git checkout -B $releasePr.headRefName "origin/main"
-          if ($LASTEXITCODE -ne 0) { throw "release branch reset failed with code $LASTEXITCODE" }
-          git checkout $releaseRef -- .release-please-manifest.json CHANGELOG.md version.txt
-          if ($LASTEXITCODE -ne 0) { throw "release anchor restore failed with code $LASTEXITCODE" }
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          $syncScript = Join-Path $env:RUNNER_TEMP 'sync-cargo-workspace-version.ps1'
-          git show 'origin/main:scripts/sync-cargo-workspace-version.ps1' | Set-Content -LiteralPath $syncScript -Encoding utf8
-          & pwsh -NoProfile -File $syncScript -Version $version
-          if ($LASTEXITCODE -ne 0) { throw "workspace release version sync failed with code $LASTEXITCODE" }
-          git add .release-please-manifest.json CHANGELOG.md version.txt Cargo.toml Cargo.lock
-          if (git diff --cached --quiet) {
-              Write-Host 'Workspace release version is already synchronized.'
-          } else {
-              git commit -m 'chore: synchronize workspace release version'
-          }
-          git push --force-with-lease="refs/heads/$($releasePr.headRefName):$releaseHead" origin "HEAD:refs/heads/$($releasePr.headRefName)"
-          if ($LASTEXITCODE -ne 0) { throw "release branch update failed with code $LASTEXITCODE" }
-          gh workflow run ci-checks.yml --repo $env:GITHUB_REPOSITORY --ref $releasePr.headRefName
-          if ($LASTEXITCODE -ne 0) { throw "release PR CI dispatch failed with code $LASTEXITCODE" }
+        run: >-
+          ./scripts/refresh-release-please-prs.ps1
+          -Repository $env:GITHUB_REPOSITORY
 
   build:
     needs: release-please
@@ -249,6 +201,12 @@ jobs:
               --output "dist/dcc-cua-browser-extension-${EXTENSION_VERSION}-${browser}.zip" \
               --version "${EXTENSION_VERSION}"
           done
+          (
+            cd browser-extension/chrome
+            npx --no-install wxt zip -b firefox --mv3 --sources
+            cp .output/*-sources.zip \
+              "../../dist/dcc-cua-browser-extension-${EXTENSION_VERSION}-firefox-sources.zip"
+          )
       - uses: actions/upload-artifact@v4
         with:
           name: dcc-cua-browser-extension
@@ -270,3 +228,99 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG_NAME: ${{ needs.release-please.outputs.extension_tag_name }}
         run: gh release upload "$TAG_NAME" dist/* --repo "$GITHUB_REPOSITORY" --clobber
+
+  publish-chrome-web-store:
+    needs: [release-please, package-browser-extension]
+    if: needs.release-please.outputs.extension_release_created == 'true' && vars.DCC_CUA_BROWSER_STORE_PUBLISH_READY == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: browser-stores
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.release-please.outputs.extension_tag_name }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: dcc-cua-browser-extension
+          path: dist
+      - uses: google-github-actions/auth@v3
+        id: google-auth
+        with:
+          token_format: access_token
+          workload_identity_provider: ${{ vars.CHROME_WEBSTORE_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.CHROME_WEBSTORE_SERVICE_ACCOUNT }}
+          access_token_scopes: https://www.googleapis.com/auth/chromewebstore
+      - name: Submit Chrome Web Store release
+        env:
+          CHROME_WEBSTORE_ACCESS_TOKEN: ${{ steps.google-auth.outputs.access_token }}
+          CHROME_WEBSTORE_PUBLISHER_ID: ${{ vars.CHROME_WEBSTORE_PUBLISHER_ID }}
+          CHROME_WEBSTORE_EXTENSION_ID: ${{ vars.CHROME_WEBSTORE_EXTENSION_ID }}
+          EXTENSION_VERSION: ${{ needs.release-please.outputs.extension_version }}
+        run: >-
+          python -B scripts/publish_browser_extension.py
+          --store chrome
+          --artifact "dist/dcc-cua-browser-extension-${EXTENSION_VERSION}-chrome.zip"
+          --expected-version "${EXTENSION_VERSION}"
+
+  publish-edge-addons:
+    needs: [release-please, package-browser-extension]
+    if: needs.release-please.outputs.extension_release_created == 'true' && vars.DCC_CUA_BROWSER_STORE_PUBLISH_READY == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: browser-stores
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.release-please.outputs.extension_tag_name }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: dcc-cua-browser-extension
+          path: dist
+      - name: Submit Edge Add-ons release
+        env:
+          EDGE_ADDONS_API_KEY: ${{ secrets.EDGE_ADDONS_API_KEY }}
+          EDGE_ADDONS_CLIENT_ID: ${{ vars.EDGE_ADDONS_CLIENT_ID }}
+          EDGE_ADDONS_PRODUCT_ID: ${{ vars.EDGE_ADDONS_PRODUCT_ID }}
+          EXTENSION_VERSION: ${{ needs.release-please.outputs.extension_version }}
+        run: >-
+          python -B scripts/publish_browser_extension.py
+          --store edge
+          --artifact "dist/dcc-cua-browser-extension-${EXTENSION_VERSION}-edge.zip"
+          --expected-version "${EXTENSION_VERSION}"
+
+  publish-firefox-addons:
+    needs: [release-please, package-browser-extension]
+    if: needs.release-please.outputs.extension_release_created == 'true' && vars.DCC_CUA_BROWSER_STORE_PUBLISH_READY == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: browser-stores
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.release-please.outputs.extension_tag_name }}
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: browser-extension/chrome/package-lock.json
+      - run: npm --prefix browser-extension/chrome ci
+      - uses: actions/download-artifact@v4
+        with:
+          name: dcc-cua-browser-extension
+          path: dist
+      - name: Submit Firefox Add-ons release
+        working-directory: browser-extension/chrome
+        env:
+          FIREFOX_JWT_ISSUER: ${{ secrets.FIREFOX_AMO_API_KEY }}
+          FIREFOX_JWT_SECRET: ${{ secrets.FIREFOX_AMO_API_SECRET }}
+          FIREFOX_CHANNEL: listed
+          FIREFOX_ZIP: ${{ github.workspace }}/dist/dcc-cua-browser-extension-${{ needs.release-please.outputs.extension_version }}-firefox.zip
+          FIREFOX_SOURCES_ZIP: ${{ github.workspace }}/dist/dcc-cua-browser-extension-${{ needs.release-please.outputs.extension_version }}-firefox-sources.zip
+        run: npx --no-install wxt submit

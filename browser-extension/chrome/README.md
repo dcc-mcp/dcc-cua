@@ -35,3 +35,32 @@ python -B scripts/package_extension.py --browser firefox --output dist/dcc-cua-b
 Load the matching `.output/<browser>-mv3` directory as an unpacked extension
 only for local development. Production users install the signed package from
 Chrome Web Store, Edge Add-ons, or Firefox Add-ons.
+
+## Store publishing
+
+Tagged extension releases publish through the `browser-stores` protected
+GitHub Environment only when the repository variable
+`DCC_CUA_BROWSER_STORE_PUBLISH_READY` is `true`. Configure required reviewers
+on that Environment so a release cannot mutate a store without explicit user
+authorization.
+
+Environment variables:
+
+- `CHROME_WEBSTORE_WORKLOAD_IDENTITY_PROVIDER`
+- `CHROME_WEBSTORE_SERVICE_ACCOUNT`
+- `CHROME_WEBSTORE_PUBLISHER_ID`
+- `CHROME_WEBSTORE_EXTENSION_ID`
+- `EDGE_ADDONS_CLIENT_ID`
+- `EDGE_ADDONS_PRODUCT_ID`
+
+Environment secrets:
+
+- `EDGE_ADDONS_API_KEY`
+- `FIREFOX_AMO_API_KEY`
+- `FIREFOX_AMO_API_SECRET`
+
+Create and verify each owned store listing once before enabling the ready
+variable. Chrome uses GitHub OIDC and Workload Identity Federation rather than
+a stored service-account private key. Edge and Firefox secrets are exposed only
+to their approved jobs and are never passed as command arguments. Safari
+distribution remains a separate App Store Connect workflow.
