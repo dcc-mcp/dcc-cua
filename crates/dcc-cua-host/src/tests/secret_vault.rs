@@ -74,17 +74,20 @@ fn secret_handles_never_widen_missing_or_hard_denied_semantic_evidence() {
 fn trusted_confirmation_binds_only_the_secret_handle() {
     let action = secret_action(None, Some("edge.api-key"));
     action.validate_secret_source().unwrap();
-    let request = TrustedActionConfirmationRequest::for_window_action(
-        "session-1",
-        "grant-1",
-        "capability-1",
-        ConfirmationWindowIdentity {
-            process_id: 4242,
-            window_handle: 0x1234,
-        },
-        "observation-1",
-        "accessibility-1",
-        &action,
+    let request = TrustedActionConfirmationRequest::for_bound_window_action_value(
+        ConfirmationBinding::window(
+            "session-1",
+            "grant-1",
+            "capability-1",
+            ConfirmationWindowIdentity {
+                process_id: 4242,
+                window_handle: 0x1234,
+            },
+            "observation-1",
+            Some("accessibility-1"),
+        ),
+        &action.intent,
+        serde_json::to_value(&action).unwrap(),
     )
     .unwrap();
 
