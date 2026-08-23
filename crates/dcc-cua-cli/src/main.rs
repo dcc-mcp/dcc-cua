@@ -15,6 +15,7 @@ mod profile_context;
 mod profile_package;
 mod profile_state;
 mod semantic_profile;
+mod trusted_confirmation;
 mod update;
 mod update_check;
 
@@ -38,7 +39,9 @@ use dcc_cua_core::{
     ComputerUseTargetScope, ComputerUseToolResult, ComputerUseWindowFrameRequest,
     ComputerUseWindowQuery, ComputerUseWindowWaitRequest, ComputerUseZoomRequest,
 };
-use dcc_cua_host::{HostTransport, MAX_PARALLEL_DISCOVERY_REQUESTS, run as run_host};
+use dcc_cua_host::{
+    HostTransport, MAX_PARALLEL_DISCOVERY_REQUESTS, run as run_host, run_with_confirmation_host,
+};
 use dcc_cua_protocol::{RequestEnvelope, host_method_traits};
 use dcc_cua_semantic_profiles::{
     SemanticProfile, builtin_profile, builtin_profiles, parse_profile,
@@ -242,7 +245,11 @@ async fn dispatch(arguments: Vec<String>) -> Result<(), Box<dyn std::error::Erro
                         .unwrap_or_else(HostTransport::default_endpoint),
                 )
             };
-            run_host(driver, transport).await?;
+            if let Some(confirmation_host) = trusted_confirmation::native_confirmation_host() {
+                run_with_confirmation_host(driver, transport, confirmation_host).await?;
+            } else {
+                run_host(driver, transport).await?;
+            }
         }
         "snapshot" => snapshot(&driver, &flags).await?,
         "accessibility" => accessibility_snapshot(&driver, &flags).await?,

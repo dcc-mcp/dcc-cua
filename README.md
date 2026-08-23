@@ -880,15 +880,26 @@ only permits the Host to ask for confirmation; it never authorizes an action
 by itself. Embeddings that support confirmation must start the library Host
 with `dcc_cua_host::run_with_confirmation_host` and a constructor-owned
 `TrustedActionConfirmationHost`. The callback is not reachable through Host
-IPC. Each request binds the session, task grant, exact capability, current
+IPC. On Windows, the packaged CLI Host installs a native user prompt at this
+constructor boundary by default. Each request binds the session, task grant,
+exact capability, PID/HWND when window-scoped, current
 observation/accessibility state, intent, and complete action into a SHA-256
-digest. The Host accepts only an inline decision echoing that exact digest, so
-a decision cannot be replayed after the evidence or action changes. Missing,
-failed, or mismatched callbacks remain `approval_required`; explicit denial or
-cancellation has its own typed error. Terminal/run-dialog, credential,
-password-change, scope-escape, and safety-bypass intents remain hard-denied and
-never reach the callback. The task-grant gate defaults to false and does not
-follow from raw-input, browser-profile, or session-escalation access.
+digest. The prompt serializes concurrent requests, identifies the exact target
+and action type, defaults to denial, and never echoes action text or secrets.
+The Host accepts only an inline decision echoing that exact digest, so a
+decision cannot be replayed after the evidence, target, or action changes.
+Missing, failed, or mismatched callbacks remain `approval_required`; explicit
+denial or cancellation has its own typed error.
+
+Password, credential, authentication-code, security-setting, privacy-setting,
+purchase, payment, publishing, and account controls inside an otherwise
+eligible application are classified as `action_confirmation`: they can proceed
+only after the exact task grant and an explicit user decision. This does not
+make task grants blanket approval. Terminal/run-dialog controls, unverifiable
+targets, protected operating-system authentication/password-manager surfaces,
+scope escape, safety bypass, and automated human-verification circumvention
+remain hard-denied. The task-grant gate defaults to false and does not follow
+from raw-input, browser-profile, or session-escalation access.
 
 On Windows, non-pixel semantic access reuses one exact PID/HWND UIA worker per
 session; CUA remains the cross-platform, browser, and visual backend. An

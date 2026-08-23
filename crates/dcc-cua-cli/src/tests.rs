@@ -1424,6 +1424,22 @@ fn manifest_is_a_machine_readable_core_launch_contract() {
     assert_eq!(manifest["host"]["hello_timeout_ms"], 10_000);
     assert_eq!(manifest["host"]["max_parallel_discovery_requests"], 32);
     assert_eq!(
+        manifest["host"]["trusted_confirmation"]["request_schema"],
+        "dcc-cua-trusted-action-confirmation-request-v2"
+    );
+    assert_eq!(
+        manifest["host"]["trusted_confirmation"]["action_scoped"],
+        true
+    );
+    assert_eq!(
+        manifest["host"]["trusted_confirmation"]["exact_window_identity"],
+        true
+    );
+    assert_eq!(
+        manifest["host"]["trusted_confirmation"]["input_text_echoed"],
+        false
+    );
+    assert_eq!(
         MAX_PARALLEL_DISCOVERY_REQUESTS,
         dcc_cua_client::MAX_PARALLEL_DISCOVERY_REQUESTS
     );

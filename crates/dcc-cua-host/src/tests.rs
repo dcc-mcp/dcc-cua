@@ -1617,6 +1617,26 @@ fn confirmation_action() -> HostAction {
 }
 
 #[rstest]
+fn trusted_confirmation_request_exposes_the_exact_window_identity() {
+    let request = TrustedActionConfirmationRequest::for_window_action(
+        "session-1",
+        "grant-1",
+        "capability-1",
+        ConfirmationWindowIdentity {
+            process_id: 4242,
+            window_handle: 0x1234,
+        },
+        "observation-1",
+        "accessibility-1",
+        &confirmation_action(),
+    )
+    .unwrap();
+
+    assert_eq!(request.target_process_id, Some(4242));
+    assert_eq!(request.target_window_handle, Some(0x1234));
+}
+
+#[rstest]
 #[tokio::test]
 async fn trusted_confirmation_requires_a_constructor_owned_host() {
     let outcome = authorize_action_confirmation(
@@ -1626,6 +1646,10 @@ async fn trusted_confirmation_requires_a_constructor_owned_host() {
             "session-1",
             "grant-1",
             "capability-1",
+            ConfirmationWindowIdentity {
+                process_id: 42,
+                window_handle: 7,
+            },
             "observation-1",
             "accessibility-1",
             &confirmation_action(),
@@ -1648,6 +1672,10 @@ async fn trusted_confirmation_task_grant_gate_cannot_be_bypassed_by_the_host() {
             "session-1",
             "grant-1",
             "capability-1",
+            ConfirmationWindowIdentity {
+                process_id: 42,
+                window_handle: 7,
+            },
             "observation-1",
             "accessibility-1",
             &confirmation_action(),
@@ -1670,6 +1698,10 @@ async fn trusted_confirmation_accepts_an_exact_action_bound_decision() {
             "session-1",
             "grant-1",
             "capability-1",
+            ConfirmationWindowIdentity {
+                process_id: 42,
+                window_handle: 7,
+            },
             "observation-1",
             "accessibility-1",
             &confirmation_action(),
@@ -1688,6 +1720,10 @@ async fn trusted_confirmation_rejects_a_replayed_decision_for_new_evidence() {
         "session-1",
         "grant-1",
         "capability-1",
+        ConfirmationWindowIdentity {
+            process_id: 42,
+            window_handle: 7,
+        },
         "observation-1",
         "accessibility-1",
         &confirmation_action(),
@@ -1700,6 +1736,10 @@ async fn trusted_confirmation_rejects_a_replayed_decision_for_new_evidence() {
         "session-1",
         "grant-1",
         "capability-1",
+        ConfirmationWindowIdentity {
+            process_id: 42,
+            window_handle: 7,
+        },
         "observation-2",
         "accessibility-2",
         &confirmation_action(),

@@ -437,6 +437,18 @@ fn powershell_policy_tiers_are_behaviorally_fixture_tested() {
     for (facts, expected) in [
         (
             json!({"is_password": true, "name": "", "automation_id": "", "class_name": "", "secret_marker": false}),
+            "action_confirmation",
+        ),
+        (
+            json!({"is_password": false, "name": "API credential", "automation_id": "", "class_name": "Button", "secret_marker": true}),
+            "action_confirmation",
+        ),
+        (
+            json!({"is_password": false, "name": "Authentication code", "automation_id": "", "class_name": "Edit", "secret_marker": false}),
+            "action_confirmation",
+        ),
+        (
+            json!({"is_password": false, "name": "PowerShell", "automation_id": "", "class_name": "Button", "secret_marker": false}),
             "hard_deny",
         ),
         (
