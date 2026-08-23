@@ -744,30 +744,17 @@ async fn host_jsonl_inner(
             {
                 let response = match host_result {
                     Ok(response) => {
-                        let response_request_id = response.value.get("request_id").cloned();
-                        match measured_jsonl_response_value(
+                        write_measured_jsonl_response(
+                            &mut output,
                             response,
                             output_dir.as_deref(),
                             request_index,
                             metrics,
                             &request_method,
                             response_format,
-                        ) {
-                            Ok(value) => value,
-                            Err(error) => {
-                                let value = mcp_output::output_error_value(
-                                    error.to_string(),
-                                    response_request_id.as_ref(),
-                                );
-                                write_jsonl_response(
-                                    &mut output,
-                                    mcp_output::format_value(value, response_format)?,
-                                    metrics,
-                                )
-                                .await?;
-                                return Err(error);
-                            }
-                        }
+                        )
+                        .await?;
+                        continue;
                     }
                     Err(error @ HostClientError::Remote { .. }) => {
                         let value = host_error_value(&error);
@@ -804,30 +791,17 @@ async fn host_jsonl_inner(
         };
         let response = match host_result {
             Ok(response) => {
-                let response_request_id = response.value.get("request_id").cloned();
-                match measured_jsonl_response_value(
+                write_measured_jsonl_response(
+                    &mut output,
                     response,
                     output_dir.as_deref(),
                     line_index,
                     metrics,
                     &request_method,
                     response_format,
-                ) {
-                    Ok(value) => value,
-                    Err(error) => {
-                        let value = mcp_output::output_error_value(
-                            error.to_string(),
-                            response_request_id.as_ref(),
-                        );
-                        write_jsonl_response(
-                            &mut output,
-                            mcp_output::format_value(value, response_format)?,
-                            metrics,
-                        )
-                        .await?;
-                        return Err(error);
-                    }
-                }
+                )
+                .await?;
+                continue;
             }
             Err(error @ HostClientError::Remote { .. }) => {
                 let value = host_error_value(&error);
@@ -1346,6 +1320,34 @@ fn host_error_value(error: &HostClientError) -> serde_json::Value {
             value
         }
     }
+}
+
+async fn write_measured_jsonl_response<W: AsyncWrite + Unpin>(
+    output: &mut W,
+    response: HostResponse,
+    output_dir: Option<&str>,
+    index: usize,
+    metrics: &mut HostJsonlMetrics,
+    request_method: &str,
+    response_format: HostJsonlResponseFormat,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let response_request_id = response.value.get("request_id").cloned();
+    let value = match measured_jsonl_response_value(
+        response,
+        output_dir,
+        index,
+        metrics,
+        request_method,
+        response_format,
+    ) {
+        Ok(value) => value,
+        Err(error) => mcp_output::format_value(
+            mcp_output::output_error_value(error.to_string(), response_request_id.as_ref()),
+            response_format,
+        )?,
+    };
+    write_jsonl_response(output, value, metrics).await?;
+    Ok(())
 }
 
 async fn write_jsonl_response<W: AsyncWrite + Unpin>(
