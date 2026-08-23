@@ -1,19 +1,20 @@
 {
   "name": "dcc-cua",
-  "owner": {
-    "name": "DCC-MCP",
-    "url": "https://github.com/dcc-mcp"
+  "interface": {
+    "displayName": "DCC-CUA"
   },
-  "description": "Exact-window DCC-CUA automation plugins.",
   "plugins": [
     {
       "name": "dcc-cua-computer-use",
-      "source": ".",
-      "description": "Exact-window automation with one bounded inline task authorization.",
-      "version": "0.6.0",
-      "author": {
-        "name": "loonghao"
-      }
+      "source": {
+        "source": "local",
+        "path": "./plugins/dcc-cua-computer-use"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
     }
   ]
 }

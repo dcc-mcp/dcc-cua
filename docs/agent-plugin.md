@@ -6,6 +6,13 @@ repository `skills/` directory plus the local `dcc-cua mcp-server` bridge.
 The bridge renders an inline task-start authorization card and keeps the
 move-only issuer in the same process as the Host validator.
 
+The repository marketplace installs the bounded
+`plugins/dcc-cua-computer-use` package. It contains only the MCP bridge
+manifest and configuration; Rust sources, build output, and the repository
+`target/` directory are never copied into the Codex plugin cache. The root
+manifest remains available for development checkouts that also need the
+repository Skills.
+
 ## Codex
 
 Install the checkout as a local plugin using the Codex plugin installation flow,

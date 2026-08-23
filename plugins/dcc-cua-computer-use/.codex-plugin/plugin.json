@@ -1,0 +1,36 @@
+{
+  "name": "dcc-cua-computer-use",
+  "version": "0.6.0",
+  "description": "Exact-window task authorization bridge for the installed dcc-cua runtime.",
+  "author": {
+    "name": "loonghao",
+    "email": "hal.long@outlook.com",
+    "url": "https://github.com/dcc-mcp"
+  },
+  "homepage": "https://github.com/dcc-mcp/dcc-cua",
+  "repository": "https://github.com/dcc-mcp/dcc-cua",
+  "license": "MIT",
+  "keywords": [
+    "dcc-cua",
+    "computer-use",
+    "exact-window",
+    "task-authorization"
+  ],
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "dcc-cua",
+    "shortDescription": "Authorize exact-window CUA tasks",
+    "longDescription": "Use the installed dcc-cua runtime through one exact PID/HWND task authorization entered in chat, with no per-action native popups inside the approved scope.",
+    "developerName": "loonghao",
+    "category": "Productivity",
+    "capabilities": ["Read", "Write"],
+    "websiteURL": "https://github.com/dcc-mcp/dcc-cua",
+    "defaultPrompt": [
+      "Authorize and control this exact application window with dcc-cua.",
+      "Run an exact-bound browser task without per-action popups.",
+      "Create a credential through a bounded dcc-cua task."
+    ],
+    "screenshots": [],
+    "brandColor": "#00A8C6"
+  }
+}

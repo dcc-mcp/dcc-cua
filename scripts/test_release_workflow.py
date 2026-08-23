@@ -1,3 +1,4 @@
+import json
 import unittest
 from pathlib import Path
 
@@ -7,6 +8,10 @@ WORKFLOW = (
 )
 SYNC_SCRIPT = Path(__file__).with_name("sync-cargo-workspace-version.ps1")
 REFRESH_SCRIPT = Path(__file__).with_name("refresh-release-please-prs.ps1")
+ROOT = Path(__file__).parent.parent
+MARKETPLACE = ROOT / ".claude-plugin" / "marketplace.json"
+ROOT_PLUGIN = ROOT / ".codex-plugin" / "plugin.json"
+MARKETPLACE_PLUGIN = ROOT / "plugins" / "dcc-cua-computer-use"
 
 
 class ReleaseWorkflowTests(unittest.TestCase):
@@ -16,8 +21,45 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertIn("cp -R .claude-plugin target/release/.claude-plugin", workflow)
         self.assertIn("cp -R .codex-plugin target/release/.codex-plugin", workflow)
         self.assertIn("cp .mcp.json target/release/.mcp.json", workflow)
+        self.assertIn("cp -R plugins target/release/plugins", workflow)
         self.assertIn(
-            "assets skills .claude-plugin .codex-plugin .mcp.json", workflow
+            "assets skills plugins .claude-plugin .codex-plugin .mcp.json", workflow
+        )
+
+    def test_marketplace_uses_a_bounded_installable_plugin_directory(self):
+        marketplace = json.loads(MARKETPLACE.read_text(encoding="utf-8"))
+        self.assertEqual(marketplace["name"], "dcc-cua")
+        self.assertEqual(marketplace["interface"]["displayName"], "DCC-CUA")
+        self.assertEqual(len(marketplace["plugins"]), 1)
+        entry = marketplace["plugins"][0]
+        self.assertEqual(entry["name"], "dcc-cua-computer-use")
+        self.assertEqual(
+            entry["source"],
+            {
+                "source": "local",
+                "path": "./plugins/dcc-cua-computer-use",
+            },
+        )
+        self.assertEqual(entry["policy"]["installation"], "AVAILABLE")
+        self.assertEqual(entry["policy"]["authentication"], "ON_INSTALL")
+        self.assertEqual(entry["category"], "Productivity")
+        self.assertNotEqual(entry["source"], ".")
+
+    def test_marketplace_plugin_is_slim_and_matches_the_root_bridge(self):
+        manifest_path = MARKETPLACE_PLUGIN / ".codex-plugin" / "plugin.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        root_manifest = json.loads(ROOT_PLUGIN.read_text(encoding="utf-8"))
+        self.assertEqual(MARKETPLACE_PLUGIN.name, manifest["name"])
+        self.assertEqual(manifest["version"], root_manifest["version"])
+        self.assertEqual(manifest["mcpServers"], "./.mcp.json")
+        self.assertNotIn("skills", manifest)
+        self.assertEqual(
+            json.loads((MARKETPLACE_PLUGIN / ".mcp.json").read_text(encoding="utf-8")),
+            json.loads((ROOT / ".mcp.json").read_text(encoding="utf-8")),
+        )
+        self.assertEqual(
+            {path.name for path in MARKETPLACE_PLUGIN.iterdir()},
+            {".codex-plugin", ".mcp.json"},
         )
 
     def test_browser_store_jobs_require_the_protected_user_authorization_environment(self):
