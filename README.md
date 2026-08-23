@@ -891,6 +891,23 @@ decision cannot be replayed after the evidence, target, or action changes.
 Missing, failed, or mismatched callbacks remain `approval_required`; explicit
 denial or cancellation has its own typed error.
 
+For long-running automation, an embedding may instead collect explicit user
+input before the task and install a constructor-owned
+`TrustedTaskAuthorizationHost` through `HostSecurityServices`. The task grant
+references only an authorization ID; Host IPC cannot mint or widen it. At exact
+window-session open, the trusted host returns a short-lived in-memory lease
+bound to the task grant, application label, PID/HWND, action kind, input kind,
+risk category, secret/non-secret mode, and browser origin where applicable.
+Host revalidates expiry and revocation before every otherwise-confirmed action.
+An active exact lease runs without modal prompts. Once a session references a
+task authorization, target changes, origin changes, category changes, expiry,
+revocation, or validation failure return a typed `task_authorization_*` refusal
+and never fall back to a popup. An explicit task-start denial returns
+`task_authorization_denied`. Existing sessions without a task authorization
+retain per-action confirmation. The packaged CLI does not trust flags or
+redirected stdin as user presence, so it keeps per-action confirmation until a
+trusted non-modal input broker is installed by its embedding.
+
 Secret-bearing input uses an opaque `secret_handle` instead of putting the
 secret in Host IPC. The packaged Host resolves that handle from the current
 platform keyring only after the exact action confirmation succeeds. `text` and

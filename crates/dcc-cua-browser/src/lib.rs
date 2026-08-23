@@ -35,6 +35,7 @@ pub struct BrowserSession {
     mutation_allowed: bool,
     latest_snapshot_id: Option<String>,
     latest_tab_id: Option<String>,
+    latest_origin: Option<String>,
     pending_ancestor_continuation: Option<PendingAncestorContinuation>,
 }
 
@@ -392,6 +393,7 @@ impl BrowserSession {
                     .map(|scope| scope.snapshot_id.clone())
                     .or_else(|| browser_snapshot_id(&result.value));
                 self.latest_tab_id = Some(tab_id.clone());
+                self.latest_origin = browser_snapshot_origin(&result.value, &tab_id);
                 self.pending_ancestor_continuation = validated.and_then(|scope| {
                     scope.continuation.map(|token| PendingAncestorContinuation {
                         token,
@@ -701,7 +703,13 @@ impl BrowserSession {
     fn clear_snapshot(&mut self) {
         self.latest_snapshot_id = None;
         self.latest_tab_id = None;
+        self.latest_origin = None;
         self.pending_ancestor_continuation = None;
+    }
+
+    #[must_use]
+    pub fn latest_origin(&self) -> Option<&str> {
+        self.latest_origin.as_deref()
     }
 
     fn ancestor_scope_expectation(
@@ -837,6 +845,36 @@ fn browser_snapshot_id(value: &Value) -> Option<String> {
         .as_str()
         .or_else(|| value["structuredContent"]["snapshot"]["id"].as_str())
         .map(ToOwned::to_owned)
+}
+
+fn browser_snapshot_origin(value: &Value, tab_id: &str) -> Option<String> {
+    let structured = &value["structuredContent"];
+    let explicit = structured["origin"].as_str();
+    if let Some(origin) = explicit.filter(|origin| valid_origin(origin)) {
+        return Some(origin.to_owned());
+    }
+    let url = structured["url"]
+        .as_str()
+        .or_else(|| structured["snapshot"]["url"].as_str())
+        .or_else(|| {
+            structured["tabs"].as_array().and_then(|tabs| {
+                tabs.iter()
+                    .find(|tab| tab["tab_id"].as_str() == Some(tab_id))
+                    .and_then(|tab| tab["url"].as_str())
+            })
+        })?;
+    let parsed = url::Url::parse(url).ok()?;
+    matches!(parsed.scheme(), "http" | "https").then(|| parsed.origin().ascii_serialization())
+}
+
+fn valid_origin(value: &str) -> bool {
+    url::Url::parse(value).is_ok_and(|url| {
+        matches!(url.scheme(), "http" | "https")
+            && url.origin().ascii_serialization() == value
+            && url.path() == "/"
+            && url.query().is_none()
+            && url.fragment().is_none()
+    })
 }
 
 fn deserialize_optional_nonnull_string<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>

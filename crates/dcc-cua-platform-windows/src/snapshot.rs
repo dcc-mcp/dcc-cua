@@ -14,6 +14,7 @@ pub(crate) struct ElementFence {
     pub automation_id: String,
     pub class_name: String,
     pub policy_tier: String,
+    pub policy_category: String,
 }
 
 #[derive(Debug)]
@@ -69,6 +70,7 @@ fn flatten(
     let automation_id = string(node, "automation_id");
     let class_name = string(node, "class_name");
     let policy_tier = string(node, "policy_tier");
+    let policy_category = string(node, "policy_category");
     fences.push(ElementFence {
         control_id,
         identity,
@@ -77,6 +79,7 @@ fn flatten(
         automation_id: automation_id.clone(),
         class_name: class_name.clone(),
         policy_tier: policy_tier.clone(),
+        policy_category: policy_category.clone(),
     });
 
     let mut element = Map::new();
@@ -99,6 +102,7 @@ fn flatten(
     element.insert("offscreen".into(), node["offscreen"].clone());
     element.insert("focused".into(), node["focused"].clone());
     element.insert("policy_tier".into(), json!(policy_tier));
+    element.insert("policy_category".into(), json!(policy_category));
     element.insert("backend".into(), json!("windows_uia"));
     elements.push(Value::Object(element));
 
