@@ -18,6 +18,7 @@ use super::host_lifecycle::{
 };
 use super::*;
 
+mod host_jsonl;
 mod trusted_confirmation;
 mod update_check_tests;
 mod update_tests;
