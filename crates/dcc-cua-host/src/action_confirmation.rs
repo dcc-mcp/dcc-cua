@@ -8,7 +8,7 @@ use uuid::Uuid;
 use crate::{HostAction, HostError};
 
 pub const TRUSTED_ACTION_CONFIRMATION_SCHEMA: &str =
-    "dcc-cua-trusted-action-confirmation-request-v1";
+    "dcc-cua-trusted-action-confirmation-request-v2";
 
 /// Exact, content-bounded request delivered only to a trusted embedding host.
 ///
@@ -21,6 +21,10 @@ pub struct TrustedActionConfirmationRequest {
     pub session_id: String,
     pub task_grant_id: String,
     pub window_capability: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_process_id: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_window_handle: Option<u64>,
     pub observation_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub accessibility_state_id: Option<String>,
@@ -36,10 +40,18 @@ struct UnsignedConfirmationRequest<'a> {
     session_id: &'a str,
     task_grant_id: &'a str,
     window_capability: &'a str,
+    target_process_id: Option<u32>,
+    target_window_handle: Option<u64>,
     observation_id: &'a str,
     accessibility_state_id: Option<&'a str>,
     intent: &'a str,
     action: &'a Value,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ConfirmationWindowIdentity {
+    pub process_id: u32,
+    pub window_handle: u64,
 }
 
 impl TrustedActionConfirmationRequest {
@@ -47,6 +59,7 @@ impl TrustedActionConfirmationRequest {
         session_id: &str,
         task_grant_id: &str,
         window_capability: &str,
+        target: ConfirmationWindowIdentity,
         observation_id: &str,
         accessibility_state_id: &str,
         action: &HostAction,
@@ -55,6 +68,7 @@ impl TrustedActionConfirmationRequest {
             session_id,
             task_grant_id,
             window_capability,
+            Some(target),
             observation_id,
             Some(accessibility_state_id),
             action,
@@ -72,6 +86,7 @@ impl TrustedActionConfirmationRequest {
             session_id,
             task_grant_id,
             desktop_capability,
+            None,
             observation_id,
             None,
             action,
@@ -82,11 +97,14 @@ impl TrustedActionConfirmationRequest {
         session_id: &str,
         task_grant_id: &str,
         window_capability: &str,
+        target: Option<ConfirmationWindowIdentity>,
         observation_id: &str,
         accessibility_state_id: Option<&str>,
         action: &HostAction,
     ) -> Result<Self, HostError> {
         let request_id = Uuid::new_v4().to_string();
+        let target_process_id = target.map(|identity| identity.process_id);
+        let target_window_handle = target.map(|identity| identity.window_handle);
         let action_value = serde_json::to_value(action).map_err(|error| {
             HostError::Protocol(format!("could not bind action confirmation: {error}"))
         })?;
@@ -96,6 +114,8 @@ impl TrustedActionConfirmationRequest {
             session_id,
             task_grant_id,
             window_capability,
+            target_process_id,
+            target_window_handle,
             observation_id,
             accessibility_state_id,
             intent: &action.intent,
@@ -111,6 +131,8 @@ impl TrustedActionConfirmationRequest {
             session_id: session_id.to_owned(),
             task_grant_id: task_grant_id.to_owned(),
             window_capability: window_capability.to_owned(),
+            target_process_id,
+            target_window_handle,
             observation_id: observation_id.to_owned(),
             accessibility_state_id: accessibility_state_id.map(str::to_owned),
             intent: action.intent.clone(),

@@ -138,10 +138,13 @@ function Has-Authentication-Secret-Marker([System.Windows.Automation.AutomationE
 }
 
 function Control-Policy-Tier-From-Facts($facts) {
-  if ([bool]$facts.is_password -or [bool]$facts.secret_marker) { return "hard_deny" }
+  if ([bool]$facts.is_password -or [bool]$facts.secret_marker) { return "action_confirmation" }
   $text = (([string]$facts.name) + " " + ([string]$facts.automation_id) + " " + ([string]$facts.class_name)).ToLowerInvariant()
-  foreach ($needle in @("password", "credential", "authentication code", "security settings", "privacy settings", "windows run", "command prompt", "powershell", "terminal")) {
+  foreach ($needle in @("windows run", "command prompt", "powershell", "terminal")) {
     if ($text.Contains($needle)) { return "hard_deny" }
+  }
+  foreach ($needle in @("password", "credential", "authentication code", "security settings", "privacy settings")) {
+    if ($text.Contains($needle)) { return "action_confirmation" }
   }
   if ((Is-Common-Save-Label ([string]$facts.name)) -or
       (Is-Common-Save-Label ([string]$facts.automation_id)) -or

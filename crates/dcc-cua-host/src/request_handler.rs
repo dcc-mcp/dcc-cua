@@ -1677,6 +1677,10 @@ async fn handle_request_inner(
                     &session_id,
                     &task_grant_id,
                     &window_capability,
+                    ConfirmationWindowIdentity {
+                        process_id: host.target_process_id,
+                        window_handle: host.target_window_handle,
+                    },
                     &observation_id,
                     &accessibility_state_id,
                     &action,

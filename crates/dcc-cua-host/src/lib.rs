@@ -18,7 +18,9 @@ mod session_state;
 mod task_grant;
 mod wait;
 mod wire;
-use action_confirmation::{ActionConfirmationOutcome, authorize_action_confirmation};
+use action_confirmation::{
+    ActionConfirmationOutcome, ConfirmationWindowIdentity, authorize_action_confirmation,
+};
 pub use action_confirmation::{
     TRUSTED_ACTION_CONFIRMATION_SCHEMA, TrustedActionConfirmationAction,
     TrustedActionConfirmationDecision, TrustedActionConfirmationHost,
