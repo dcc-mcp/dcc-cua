@@ -1,5 +1,56 @@
 use super::*;
 
+pub(crate) fn exact_http_origin(value: &str) -> Result<String, HostError> {
+    let url = url::Url::parse(value)
+        .map_err(|_| HostError::Protocol("browser URL must be absolute".into()))?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err(HostError::Protocol(
+            "authorized browser navigation requires an HTTP(S) URL".into(),
+        ));
+    }
+    Ok(url.origin().ascii_serialization())
+}
+
+pub(crate) async fn start_granted_window_session(
+    driver: &ComputerUseDriver,
+    grant: &TaskGrant,
+    launched: Option<&HostLaunchSession>,
+    agent_name: &str,
+    runtime_session_id: &str,
+    start_request: &ComputerUseSessionStartRequest,
+) -> Result<(dcc_cua_core::ComputerUseSession, Value), HostError> {
+    if let Some(launch) = grant.owned_browser_launch {
+        if launched.is_some() {
+            return Err(HostError::Protocol(
+                "owned browser tasks cannot reuse an application launch session".into(),
+            ));
+        }
+        return driver
+            .owned_browser_session_with_agent(
+                launch,
+                grant.application_label.clone(),
+                agent_name,
+                runtime_session_id,
+                start_request,
+            )
+            .await
+            .map_err(HostError::from);
+    }
+    let scope = ComputerUseTargetScope {
+        process_id: grant.process_id,
+        window_handle: grant.window_handle,
+        window_title: grant.window_title.clone(),
+    };
+    let mut session = driver.session_with_agent(
+        scope,
+        grant.application_label.clone(),
+        agent_name,
+        runtime_session_id,
+    )?;
+    let started = session.start_with_request(start_request).await?;
+    Ok((session, started))
+}
+
 pub(crate) async fn acquire_raw_input_turn(
     enabled: bool,
 ) -> Option<tokio::sync::MutexGuard<'static, ()>> {

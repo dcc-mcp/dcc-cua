@@ -55,6 +55,7 @@ impl TrustedTaskAuthorizationHost for TaskAuthorizationHost {
                 authorization_category: "raw_input".into(),
                 browser_origin: None,
             }],
+            allowed_browser_origins: Vec::new(),
             issued_at_unix_ms: now,
             expires_at_unix_ms: now + 60_000,
             request_digest: request.request_digest,
@@ -190,8 +191,10 @@ fn browser_credential_registration(
     TrustedTaskAuthorizationRegistration {
         task_grant_id: "grant-1".into(),
         application_label: "Chrome Web Store upload".into(),
-        target_process_id: 42,
-        target_window_handle: 7,
+        target: TrustedTaskAuthorizationTarget::ExactWindow {
+            process_id: 42,
+            window_handle: 7,
+        },
         allowed_actions: vec![TrustedTaskActionScope {
             action: "browser_type".into(),
             input_kind: "browser".into(),
@@ -199,6 +202,7 @@ fn browser_credential_registration(
             authorization_category: "credential".into(),
             browser_origin: Some("https://chromewebstore.google.com".into()),
         }],
+        allowed_browser_origins: vec!["https://chromewebstore.google.com".into()],
         expires_at_unix_ms,
     }
 }
@@ -284,6 +288,51 @@ async fn broker_registration_is_single_use_and_cannot_be_replayed_into_a_second_
             ..
         }
     ));
+}
+
+#[rstest]
+#[tokio::test]
+async fn broker_binds_a_task_owned_browser_to_the_host_derived_target_once() {
+    let (issuer, host) = trusted_task_authorization_broker();
+    let receipt = issuer
+        .register(TrustedTaskAuthorizationRegistration {
+            task_grant_id: "grant-owned".into(),
+            application_label: "Firefox add-on upload".into(),
+            target: TrustedTaskAuthorizationTarget::OwnedBrowser(
+                dcc_cua_core::ComputerUseOwnedBrowserLaunchSpec {
+                    browser: dcc_cua_core::ComputerUseOwnedBrowserFamily::Chromium,
+                    profile: dcc_cua_core::ComputerUseOwnedBrowserProfile::IsolatedNew,
+                },
+            ),
+            allowed_actions: vec![TrustedTaskActionScope {
+                action: "browser_type".into(),
+                input_kind: "browser".into(),
+                secret_input: true,
+                authorization_category: "credential".into(),
+                browser_origin: Some("https://addons.mozilla.org".into()),
+            }],
+            allowed_browser_origins: vec!["https://addons.mozilla.org".into()],
+            expires_at_unix_ms: unix_time_millis() + 60_000,
+        })
+        .unwrap();
+    let binding = TaskAuthorizationBinding::window(
+        &receipt.authorization_id,
+        "session-owned",
+        "grant-owned",
+        "Firefox add-on upload",
+        &receipt.window_capability,
+        ConfirmationWindowIdentity {
+            process_id: 9081,
+            window_handle: 771,
+        },
+    );
+
+    let lease = issue_task_authorization(Some(host.as_ref()), binding)
+        .await
+        .unwrap();
+
+    assert_eq!(lease.target_process_id, 9081);
+    assert_eq!(lease.target_window_handle, 771);
 }
 
 #[rstest]

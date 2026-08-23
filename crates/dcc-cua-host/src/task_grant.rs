@@ -1,5 +1,7 @@
 use serde::Deserialize;
 
+use dcc_cua_core::ComputerUseOwnedBrowserLaunchSpec;
+
 use super::HostError;
 
 pub const MAX_APPLICATION_LABEL_CHARS: usize = 80;
@@ -16,6 +18,10 @@ pub(super) struct TaskGrant {
     pub(super) window_handle: Option<u64>,
     #[serde(default)]
     pub(super) window_title: Option<String>,
+    #[serde(default)]
+    pub(super) owned_browser_launch: Option<ComputerUseOwnedBrowserLaunchSpec>,
+    #[serde(default)]
+    pub(super) allowed_browser_origins: Vec<String>,
     #[serde(default)]
     pub(super) allow_raw_input: bool,
     #[serde(default)]
@@ -85,6 +91,40 @@ impl TaskGrant {
                 ));
             }
             (None, None) => {}
+        }
+        if self.owned_browser_launch.is_some() {
+            if self.process_id.is_some()
+                || self.window_handle.is_some()
+                || self.window_title.is_some()
+                || self.allow_app_launch
+                || self.allow_browser_prepare
+            {
+                return Err(HostError::Protocol(
+                    "owned_browser_launch cannot nominate a target, launch an app, or grant browser_prepare".into(),
+                ));
+            }
+            if self.task_authorization_id.is_none() {
+                return Err(HostError::Protocol(
+                    "owned_browser_launch requires trusted task authorization".into(),
+                ));
+            }
+        }
+        if self.allowed_browser_origins.len() > 32
+            || self
+                .allowed_browser_origins
+                .iter()
+                .any(|origin| !crate::task_authorization::valid_browser_origin(origin))
+            || self
+                .allowed_browser_origins
+                .iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len()
+                != self.allowed_browser_origins.len()
+        {
+            return Err(HostError::Protocol(
+                "allowed_browser_origins must contain at most 32 unique exact HTTP(S) origins"
+                    .into(),
+            ));
         }
         Ok(())
     }

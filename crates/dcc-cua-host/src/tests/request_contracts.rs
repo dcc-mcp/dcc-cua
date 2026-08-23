@@ -225,6 +225,56 @@ fn grant_identity_rejects_oversized_and_legacy_fields() {
 }
 
 #[rstest]
+fn owned_browser_grant_is_closed_and_requires_trusted_authorization() {
+    let valid: TaskGrant = serde_json::from_value(json!({
+        "task_grant_id": "task-1",
+        "application_label": "Firefox add-on upload",
+        "owned_browser_launch": {
+            "browser": "chromium",
+            "profile": "isolated_new"
+        },
+        "allowed_browser_origins": ["https://addons.mozilla.org"],
+        "allow_browser_input": true,
+        "task_authorization_id": "task-auth-00000000-0000-4000-8000-000000000001",
+        "task_authorization_window_capability": "cua-window-owned"
+    }))
+    .unwrap();
+    valid.validate_identity().unwrap();
+
+    for invalid in [
+        json!({
+            "task_grant_id": "task-1",
+            "application_label": "Firefox add-on upload",
+            "process_id": 42,
+            "owned_browser_launch": {"browser": "chromium", "profile": "isolated_new"},
+            "task_authorization_id": "task-auth-00000000-0000-4000-8000-000000000001",
+            "task_authorization_window_capability": "cua-window-owned"
+        }),
+        json!({
+            "task_grant_id": "task-1",
+            "application_label": "Firefox add-on upload",
+            "owned_browser_launch": {"browser": "chromium", "profile": "isolated_new"},
+            "allow_browser_prepare": true,
+            "task_authorization_id": "task-auth-00000000-0000-4000-8000-000000000001",
+            "task_authorization_window_capability": "cua-window-owned"
+        }),
+        json!({
+            "task_grant_id": "task-1",
+            "application_label": "Firefox add-on upload",
+            "owned_browser_launch": {"browser": "chromium", "profile": "isolated_new"}
+        }),
+        json!({
+            "task_grant_id": "task-1",
+            "application_label": "Firefox add-on upload",
+            "allowed_browser_origins": ["https://addons.mozilla.org/path"]
+        }),
+    ] {
+        let grant: TaskGrant = serde_json::from_value(invalid).unwrap();
+        assert!(grant.validate_identity().is_err());
+    }
+}
+
+#[rstest]
 fn launch_ownership_requires_the_same_grant_and_process() {
     let launched = HostLaunchSession {
         runtime_session_id: "private-launch-session".into(),

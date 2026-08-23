@@ -55,12 +55,15 @@
         if (!next?.proposal_id) return;
         proposal = next;
         const target = next.target ?? {};
+        const ownedBrowser = target.kind === "owned_browser";
         const rows = [
           ["Provider", `${text(next.provider)} ${text(next.runtime_version)}`],
-          ["PID", text(target.process_id)],
-          ["HWND", `0x${Number(target.window_handle || 0).toString(16)}`],
+          ["目标", ownedBrowser ? `${text(target.browser)} / ${text(target.profile)}（授权后由 DCC-CUA 派生）` : "exact_window"],
+          ["PID", ownedBrowser ? "授权后派生" : text(target.process_id)],
+          ["HWND", ownedBrowser ? "授权后派生" : `0x${Number(target.window_handle || 0).toString(16)}`],
           ["应用", text(next.application_label)],
           ["Surface", text(next.surface)],
+          ["浏览器 Origins", (next.allowed_browser_origins ?? []).join(", ") || "无"],
           ["到期", new Date(Number(next.expires_at_unix_ms)).toLocaleString()],
         ];
         byId("scope").replaceChildren(...rows.flatMap(([key, value]) => {
@@ -97,11 +100,17 @@
         try {
           const result = await call("authorize_task", { proposal_id: proposal.proposal_id, acknowledgement });
           if (!result?.ok) throw new Error(result?.error || "授权失败");
-          setStatus("已授权。任务范围内不会再出现原生动作弹框。", "ok");
-          byId("ack").disabled = true;
           byId("revoke").disabled = false;
+          setStatus("已授权，正在启动并派生精确目标…");
+          const started = await call("start_authorized_task", { proposal_id: proposal.proposal_id });
+          if (!started?.ok) throw new Error(started?.error || "任务启动失败");
+          const pid = Number(started.target?.process_id || 0);
+          const hwnd = Number(started.target?.window_handle || 0);
+          if (!pid || !hwnd) throw new Error("任务启动未返回精确 PID/HWND");
+          setStatus(`已启动：PID ${pid} / HWND 0x${hwnd.toString(16)}。任务范围内不会再出现原生动作弹框。`, "ok");
+          byId("ack").disabled = true;
           await window.openai?.sendFollowUpMessage?.({
-            prompt: `我已授权 DCC-CUA 任务 ${proposal.proposal_id}，请在该精确范围内继续。`,
+            prompt: `我已授权并启动 DCC-CUA 任务 ${proposal.proposal_id}。provider=${started.provider} runtime=${started.runtime_version} pid=${pid} hwnd=0x${hwnd.toString(16)}，请在该精确范围内继续。`,
             scrollToBottom: true,
           });
         } catch (error) {

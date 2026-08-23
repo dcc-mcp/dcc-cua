@@ -223,6 +223,7 @@ fn cached_host_session(driver: &ComputerUseDriver) -> HostSession {
         allow_live_observation: false,
         allow_browser_input: false,
         allow_browser_prepare: false,
+        allowed_browser_origins: Vec::new(),
         allow_browser_download: false,
         allow_native_tool: false,
         allow_menu_invoke: false,
