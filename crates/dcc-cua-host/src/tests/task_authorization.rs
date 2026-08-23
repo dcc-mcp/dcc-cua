@@ -1,6 +1,8 @@
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use rstest::rstest;
+
 use super::*;
 use crate::action_confirmation::ConfirmationBinding;
 use crate::task_authorization::{
@@ -179,6 +181,7 @@ fn browser_secret_confirmation(origin: &str) -> TrustedActionConfirmationRequest
     .unwrap()
 }
 
+#[rstest]
 #[tokio::test]
 async fn active_task_authorization_allows_the_exact_scoped_action_without_a_popup() {
     let host: Arc<dyn TrustedTaskAuthorizationHost> =
@@ -197,6 +200,7 @@ async fn active_task_authorization_allows_the_exact_scoped_action_without_a_popu
     assert_eq!(outcome, TaskAuthorizationOutcome::Allowed);
 }
 
+#[rstest]
 #[tokio::test]
 async fn explicit_task_start_denial_is_typed_and_never_opens_a_session() {
     let host: Arc<dyn TrustedTaskAuthorizationHost> = Arc::new(DenyingTaskAuthorizationHost);
@@ -213,6 +217,7 @@ async fn explicit_task_start_denial_is_typed_and_never_opens_a_session() {
     ));
 }
 
+#[rstest]
 #[tokio::test]
 async fn task_authorization_does_not_widen_from_plaintext_to_secret_input() {
     let host: Arc<dyn TrustedTaskAuthorizationHost> =
@@ -231,6 +236,7 @@ async fn task_authorization_does_not_widen_from_plaintext_to_secret_input() {
     assert_eq!(outcome, TaskAuthorizationOutcome::OutOfScope);
 }
 
+#[rstest]
 #[tokio::test]
 async fn revoked_task_authorization_fails_closed_without_falling_back_to_a_popup() {
     let issuing: Arc<dyn TrustedTaskAuthorizationHost> =
@@ -251,6 +257,7 @@ async fn revoked_task_authorization_fails_closed_without_falling_back_to_a_popup
     assert_eq!(outcome, TaskAuthorizationOutcome::Revoked);
 }
 
+#[rstest]
 #[tokio::test]
 async fn expired_task_authorization_fails_before_constructor_host_validation() {
     let host: Arc<dyn TrustedTaskAuthorizationHost> =
@@ -270,6 +277,7 @@ async fn expired_task_authorization_fails_before_constructor_host_validation() {
     assert_eq!(outcome, TaskAuthorizationOutcome::Expired);
 }
 
+#[rstest]
 #[tokio::test]
 async fn target_change_requires_a_new_task_authorization() {
     let host: Arc<dyn TrustedTaskAuthorizationHost> =
@@ -288,6 +296,7 @@ async fn target_change_requires_a_new_task_authorization() {
     assert_eq!(outcome, TaskAuthorizationOutcome::OutOfScope);
 }
 
+#[rstest]
 #[tokio::test]
 async fn risk_category_cannot_widen_from_raw_input_to_payment() {
     let host: Arc<dyn TrustedTaskAuthorizationHost> =
@@ -306,6 +315,7 @@ async fn risk_category_cannot_widen_from_raw_input_to_payment() {
     assert_eq!(outcome, TaskAuthorizationOutcome::OutOfScope);
 }
 
+#[rstest]
 #[tokio::test]
 async fn browser_credential_scope_requires_the_exact_observed_origin() {
     let host: Arc<dyn TrustedTaskAuthorizationHost> =
@@ -338,7 +348,7 @@ async fn browser_credential_scope_requires_the_exact_observed_origin() {
     assert_eq!(refused, TaskAuthorizationOutcome::OutOfScope);
 }
 
-#[test]
+#[rstest]
 fn a_bare_boolean_cannot_enable_task_authorization() {
     let grant = serde_json::from_value::<TaskGrant>(json!({
         "task_grant_id": "grant-1",
@@ -348,7 +358,7 @@ fn a_bare_boolean_cannot_enable_task_authorization() {
     assert!(grant.is_err());
 }
 
-#[test]
+#[rstest]
 fn task_authorization_failures_are_machine_readable_and_non_modal() {
     for (outcome, expected) in [
         (
