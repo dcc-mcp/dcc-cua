@@ -16,11 +16,13 @@ mod secret_vault;
 mod session_events;
 mod session_identity;
 mod session_state;
+mod task_authorization;
 mod task_grant;
 mod wait;
 mod wire;
 use action_confirmation::{
-    ActionConfirmationOutcome, ConfirmationWindowIdentity, authorize_action_confirmation,
+    ActionConfirmationOutcome, ConfirmationBinding, ConfirmationWindowIdentity,
+    authorize_action_confirmation,
 };
 pub use action_confirmation::{
     TRUSTED_ACTION_CONFIRMATION_SCHEMA, TrustedActionConfirmationAction,
@@ -44,6 +46,15 @@ pub use secret_vault::{HostSecretVault, HostSecretVaultError, HostSecurityServic
 use session_identity::{new_runtime_session_id, rewrite_session_aliases};
 use session_state::{
     ConnectionSessions, HostDesktopSession, HostEvidencePublication, HostLaunchSession, HostSession,
+};
+pub use task_authorization::{
+    TRUSTED_TASK_AUTHORIZATION_SCHEMA, TrustedTaskActionScope, TrustedTaskAuthorizationHost,
+    TrustedTaskAuthorizationHostError, TrustedTaskAuthorizationLease,
+    TrustedTaskAuthorizationRequest, TrustedTaskAuthorizationStatus,
+    TrustedTaskAuthorizationValidationDecision, TrustedTaskAuthorizationValidationRequest,
+};
+use task_authorization::{
+    TaskAuthorizationBinding, authorize_window_confirmation, issue_task_authorization,
 };
 use task_grant::TaskGrant;
 pub use task_grant::{MAX_APPLICATION_LABEL_CHARS, MAX_TASK_GRANT_ID_CHARS};
@@ -152,6 +163,7 @@ pub const HOST_CAPABILITIES: &[&str] = &[
     "scoped_desktop_sessions",
     "scoped_desktop_raw_input",
     "trusted_confirmation_grants",
+    "task_scoped_authorization_v1",
     "application_launch",
     "application_terminate",
     "session_scoped_application_lifecycle",
@@ -808,6 +820,34 @@ impl HostAction {
         }
     }
 
+    fn authorization_category(&self, accessibility_root: Option<&Value>) -> String {
+        if self.secret_handle.is_some() {
+            return "credential".into();
+        }
+        if self.input_kind == "raw_input" {
+            return "raw_input".into();
+        }
+        accessibility_root
+            .and_then(|root| self.semantic_element(root))
+            .and_then(|element| element["policy_category"].as_str())
+            .filter(|category| {
+                matches!(
+                    *category,
+                    "account_access"
+                        | "account_security"
+                        | "content_change"
+                        | "credential"
+                        | "destructive"
+                        | "destructive_write"
+                        | "external_effect"
+                        | "payment"
+                        | "publishing"
+                )
+            })
+            .unwrap_or("unclassified_sensitive")
+            .to_owned()
+    }
+
     fn semantic_element<'a>(&self, root: &'a Value) -> Option<&'a Value> {
         if self.element_index.is_none() && self.element_token.is_none() {
             return None;
@@ -1094,8 +1134,8 @@ pub async fn run_with_confirmation_host(
     .await
 }
 
-/// Run a Host with constructor-owned confirmation and secret-vault services.
-/// Neither service can be supplied or replaced through Host IPC.
+/// Run a Host with constructor-owned confirmation, task authorization, and
+/// secret-vault services. None can be supplied or replaced through Host IPC.
 pub async fn run_with_security_services(
     driver: ComputerUseDriver,
     transport: HostTransport,

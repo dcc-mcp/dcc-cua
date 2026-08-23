@@ -1441,6 +1441,23 @@ fn manifest_is_a_machine_readable_core_launch_contract() {
         false
     );
     assert_eq!(
+        manifest["host"]["task_authorization"]["request_schema"],
+        "dcc-cua-trusted-task-authorization-v1"
+    );
+    assert_eq!(manifest["host"]["task_authorization"]["modal"], false);
+    assert_eq!(
+        manifest["host"]["task_authorization"]["exact_window_identity"],
+        true
+    );
+    assert_eq!(
+        manifest["host"]["task_authorization"]["browser_origin_bound"],
+        true
+    );
+    assert_eq!(
+        manifest["host"]["task_authorization"]["ipc_can_mint_or_widen"],
+        false
+    );
+    assert_eq!(
         manifest["host"]["secret_vault"]["backend"],
         "platform_keyring"
     );
@@ -1505,6 +1522,13 @@ fn manifest_is_a_machine_readable_core_launch_contract() {
             .is_some_and(|values| values
                 .iter()
                 .any(|value| value == "trusted_confirmation_grants"))
+    );
+    assert!(
+        manifest["host"]["capabilities"]
+            .as_array()
+            .is_some_and(|values| values
+                .iter()
+                .any(|value| value == "task_scoped_authorization_v1"))
     );
     assert!(
         manifest["host"]["capabilities"]

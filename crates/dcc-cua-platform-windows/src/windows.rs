@@ -788,6 +788,7 @@ fn fence_value(fence: &ElementFence) -> Value {
         "automation_id": fence.automation_id,
         "class_name": fence.class_name,
         "policy_tier": fence.policy_tier,
+        "policy_category": fence.policy_category,
     })
 }
 

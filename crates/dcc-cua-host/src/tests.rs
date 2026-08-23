@@ -228,6 +228,7 @@ fn cached_host_session(driver: &ComputerUseDriver) -> HostSession {
         allow_menu_invoke: false,
         allow_session_escalation: false,
         allow_trusted_confirmation: false,
+        task_authorization: None,
         allow_restore_activate: cfg!(windows),
         capability: "capability-1".into(),
         interrupted: false,
@@ -1783,3 +1784,4 @@ mod response_contracts;
 mod secret_vault;
 mod session_concurrency;
 mod session_health;
+mod task_authorization;

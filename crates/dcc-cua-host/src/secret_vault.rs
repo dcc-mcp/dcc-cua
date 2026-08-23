@@ -11,9 +11,10 @@ use zeroize::Zeroizing;
 
 use crate::action_confirmation::{
     ActionConfirmationOutcome, ConfirmationBinding, ConfirmationWindowIdentity,
-    TrustedActionConfirmationRequest, authorize_action_confirmation,
+    TrustedActionConfirmationRequest,
 };
 use crate::request_contract::action_confirmation_refusal;
+use crate::task_authorization::authorize_window_confirmation;
 use crate::{HostError, HostProtocolErrorCode, HostSession, TrustedActionConfirmationHost};
 
 const MAX_SECRET_VALUE_CHARS: usize = 4096;
@@ -73,6 +74,7 @@ pub trait HostSecretVault: Send + Sync {
 #[derive(Clone, Default)]
 pub struct HostSecurityServices {
     pub(crate) confirmation_host: Option<Arc<dyn TrustedActionConfirmationHost>>,
+    pub(crate) task_authorization_host: Option<Arc<dyn crate::TrustedTaskAuthorizationHost>>,
     pub(crate) secret_vault: Option<Arc<dyn HostSecretVault>>,
 }
 
@@ -80,6 +82,15 @@ impl HostSecurityServices {
     #[must_use]
     pub fn with_confirmation_host(mut self, host: Arc<dyn TrustedActionConfirmationHost>) -> Self {
         self.confirmation_host = Some(host);
+        self
+    }
+
+    #[must_use]
+    pub fn with_task_authorization_host(
+        mut self,
+        host: Arc<dyn crate::TrustedTaskAuthorizationHost>,
+    ) -> Self {
+        self.task_authorization_host = Some(host);
         self
     }
 
@@ -146,18 +157,14 @@ pub(crate) async fn resolve_browser_type_request(
         let action = json!({
             "method": "browser_type",
             "request": &request,
+            "browser_origin": host.browser.latest_origin(),
         });
         let confirmation = TrustedActionConfirmationRequest::for_bound_window_action_value(
             binding.confirmation_binding(host, request.snapshot_id(), Some(request.tab_id())),
             "credential_input",
             action,
         )?;
-        let outcome = authorize_action_confirmation(
-            security_services.confirmation_host.as_deref(),
-            host.allow_trusted_confirmation,
-            confirmation,
-        )
-        .await;
+        let outcome = authorize_window_confirmation(security_services, host, confirmation).await;
         if outcome != ActionConfirmationOutcome::Allowed {
             return Ok(BrowserTypeResolution::Refused(
                 action_confirmation_refusal(outcome).0,
@@ -216,12 +223,7 @@ pub(crate) async fn capture_clipboard_secret(
         "credential_capture",
         action,
     )?;
-    let outcome = authorize_action_confirmation(
-        security_services.confirmation_host.as_deref(),
-        host.allow_trusted_confirmation,
-        confirmation,
-    )
-    .await;
+    let outcome = authorize_window_confirmation(security_services, host, confirmation).await;
     if outcome != ActionConfirmationOutcome::Allowed {
         return Ok(action_confirmation_refusal(outcome).0);
     }

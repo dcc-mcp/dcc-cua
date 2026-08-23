@@ -1,8 +1,8 @@
-# ADR 0022: Authorize bounded tasks without action popups
+# ADR 0023: Authorize bounded tasks without action popups
 
 ## Status
 
-Proposed
+Accepted
 
 ## Context
 
@@ -25,7 +25,8 @@ that authorization.
   authorization ID, but it cannot mint or widen the authorization.
 - At session open, the trusted host returns an in-memory lease bound to the
   authorization ID, task grant, application label, exact PID/HWND when
-  window-scoped, allowed action kinds, issuance time, and expiry.
+  window-scoped, allowed action and input kinds, Host-evidenced risk categories,
+  browser origins where applicable, issuance time, and expiry.
 - Revalidate the lease with the constructor-owned host before every action that
   would otherwise require confirmation. This makes revocation effective during
   a running task.
@@ -33,9 +34,10 @@ that authorization.
   action kind remain inside its scope. Hard-denied controls, missing evidence,
   completion-unknown behavior, browser origin fences, and no-retry rules remain
   unchanged.
-- Expired, revoked, mismatched, or out-of-scope leases fall back to the existing
-  per-action confirmation path when that path is granted; otherwise they return
-  `approval_required`.
+- When no task authorization is configured, existing clients retain the current
+  per-action confirmation path. Once a session references a task authorization,
+  an expired, revoked, mismatched, unverifiable, or out-of-scope lease stops the
+  action with a typed task-authorization error and never falls back to a popup.
 - Never include input text, secret values, clipboard contents, or form values in
   a task-authorization request, lease, receipt, or diagnostic.
 
@@ -64,8 +66,9 @@ that authorization.
 
 - Existing callers and grants remain compatible and keep the current action-time
   prompt behavior.
-- Action categories can be added later; the initial contract uses closed action
-  kinds and exact session targets rather than client-provided intent text.
+- The initial contract uses closed Host-evidenced risk categories, action kinds,
+  browser origins, and exact session targets rather than client-provided intent
+  text.
 
 ## Alternatives Considered
 

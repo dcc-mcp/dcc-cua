@@ -29,6 +29,34 @@ fn browser_snapshot_id_supports_both_cua_formats() {
 }
 
 #[rstest]
+fn browser_snapshot_origin_is_exact_and_tab_bound() {
+    let snapshot = json!({
+        "structuredContent": {
+            "tabs": [
+                {"tab_id": "tab-1", "url": "https://chromewebstore.google.com/detail/item?draft=1"},
+                {"tab_id": "tab-2", "url": "https://example.test/other"}
+            ]
+        }
+    });
+    assert_eq!(
+        browser_snapshot_origin(&snapshot, "tab-1").as_deref(),
+        Some("https://chromewebstore.google.com")
+    );
+    assert_eq!(
+        browser_snapshot_origin(&snapshot, "tab-2").as_deref(),
+        Some("https://example.test")
+    );
+    assert!(browser_snapshot_origin(&snapshot, "missing").is_none());
+    assert!(
+        browser_snapshot_origin(
+            &json!({"structuredContent": {"origin": "https://example.test/path"}}),
+            "tab-1"
+        )
+        .is_none()
+    );
+}
+
+#[rstest]
 fn ancestor_scope_request_requires_the_strict_semantic_contract() {
     let valid: BrowserSnapshotRequest = serde_json::from_value(json!({
         "target_id": "target-1",
@@ -377,6 +405,7 @@ fn geometry_changes_invalidate_only_the_browser_snapshot() {
         mutation_allowed: true,
         latest_snapshot_id: Some("snapshot-1".into()),
         latest_tab_id: Some("tab-1".into()),
+        latest_origin: Some("https://example.test".into()),
         pending_ancestor_continuation: Some(PendingAncestorContinuation {
             token: "bc-1".into(),
             target_id: "target-1".into(),
@@ -390,6 +419,7 @@ fn geometry_changes_invalidate_only_the_browser_snapshot() {
     assert!(session.mutation_allowed);
     assert!(session.latest_snapshot_id.is_none());
     assert!(session.latest_tab_id.is_none());
+    assert!(session.latest_origin.is_none());
     assert!(session.pending_ancestor_continuation.is_none());
 }
 
@@ -417,6 +447,7 @@ fn native_attempt_preclear_preserves_binding_and_fences_snapshot() {
         mutation_allowed: true,
         latest_snapshot_id: Some("snapshot-1".into()),
         latest_tab_id: Some("tab-1".into()),
+        latest_origin: Some("https://example.test".into()),
         pending_ancestor_continuation: None,
     };
 
@@ -426,6 +457,7 @@ fn native_attempt_preclear_preserves_binding_and_fences_snapshot() {
     assert!(session.mutation_allowed);
     assert!(session.latest_snapshot_id.is_none());
     assert!(session.latest_tab_id.is_none());
+    assert!(session.latest_origin.is_none());
 }
 
 #[rstest]
@@ -435,6 +467,7 @@ fn dialog_inspection_preclear_rejects_the_old_snapshot_for_an_immediate_click() 
         mutation_allowed: true,
         latest_snapshot_id: Some("p1".into()),
         latest_tab_id: Some("tab-1".into()),
+        latest_origin: Some("https://example.test".into()),
         pending_ancestor_continuation: None,
     };
 

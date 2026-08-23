@@ -195,6 +195,12 @@ async fn handle_request_inner(
                 sessions.len() + desktop_sessions.len() + launch_sessions.len(),
             )?;
             grant.validate_identity()?;
+            if grant.task_authorization_id.is_some() {
+                return Err(HostError::coded_protocol(
+                    HostProtocolErrorCode::TaskAuthorizationRequired,
+                    "task-scoped authorization currently requires an exact-window session",
+                ));
+            }
             let session_generation = interrupt_generation();
             let runtime_session_id = new_runtime_session_id("desktop");
             let mut session = driver
@@ -788,6 +794,33 @@ async fn handle_request_inner(
             };
             let target_process_id = input_target.process_id;
             let target_window_handle = input_target.window_handle;
+            let task_authorization =
+                if let Some(authorization_id) = grant.task_authorization_id.as_deref() {
+                    match issue_task_authorization(
+                        security_services.task_authorization_host.as_deref(),
+                        TaskAuthorizationBinding::window(
+                            authorization_id,
+                            &session_id,
+                            &grant.task_grant_id,
+                            &grant.application_label,
+                            &capability,
+                            ConfirmationWindowIdentity {
+                                process_id: target_process_id,
+                                window_handle: target_window_handle,
+                            },
+                        ),
+                    )
+                    .await
+                    {
+                        Ok(lease) => Some(lease),
+                        Err(error) => {
+                            let _ = session.stop().await;
+                            return Err(error);
+                        }
+                    }
+                } else {
+                    None
+                };
             let (input_readiness, observed_at) = crate::session_events::input_readiness_sample();
             let input_events =
                 crate::session_events::SessionInputEventQueue::new_with_restore_capability(
@@ -821,6 +854,7 @@ async fn handle_request_inner(
                     allow_menu_invoke: grant.allow_menu_invoke,
                     allow_session_escalation: grant.allow_session_escalation,
                     allow_trusted_confirmation: grant.allow_trusted_confirmation,
+                    task_authorization: task_authorization.clone(),
                     allow_restore_activate,
                     capability: capability.clone(),
                     interrupted: false,
@@ -852,6 +886,14 @@ async fn handle_request_inner(
                 "latest_sequence": initial_sequence,
                 "idle_timeout_ms": idle_timeout_ms,
             });
+            if let Some(authorization) = task_authorization {
+                response["task_authorization"] = json!({
+                    "status": "active",
+                    "authorization_id": authorization.authorization_id,
+                    "expires_at_unix_ms": authorization.expires_at_unix_ms,
+                    "allowed_actions": authorization.allowed_actions,
+                });
+            }
             if let Some(activation) = started.get("activation") {
                 response["activation"] = activation.clone();
             }
@@ -1546,6 +1588,8 @@ async fn handle_request_inner(
                 )));
             }
             let safety_tier = action.safety_tier(host.latest_accessibility_root.as_ref());
+            let authorization_category =
+                action.authorization_category(host.latest_accessibility_root.as_ref());
             if let Some((policy_tier, code, message)) = safety_tier.rejection() {
                 return Ok((
                     json!({
@@ -1559,24 +1603,26 @@ async fn handle_request_inner(
                 ));
             }
             if safety_tier.requires_confirmation() {
-                let request = TrustedActionConfirmationRequest::for_window_action(
-                    &session_id,
-                    &task_grant_id,
-                    &window_capability,
-                    ConfirmationWindowIdentity {
-                        process_id: host.target_process_id,
-                        window_handle: host.target_window_handle,
-                    },
-                    &observation_id,
-                    &accessibility_state_id,
-                    &action,
+                let mut action_value = serde_json::to_value(&action).map_err(|error| {
+                    HostError::Protocol(format!("could not bind task authorization: {error}"))
+                })?;
+                action_value["authorization_category"] = Value::String(authorization_category);
+                let request = TrustedActionConfirmationRequest::for_bound_window_action_value(
+                    ConfirmationBinding::window(
+                        &session_id,
+                        &task_grant_id,
+                        &window_capability,
+                        ConfirmationWindowIdentity {
+                            process_id: host.target_process_id,
+                            window_handle: host.target_window_handle,
+                        },
+                        &observation_id,
+                        Some(&accessibility_state_id),
+                    ),
+                    &action.intent,
+                    action_value,
                 )?;
-                let outcome = authorize_action_confirmation(
-                    confirmation_host,
-                    host.allow_trusted_confirmation,
-                    request,
-                )
-                .await;
+                let outcome = authorize_window_confirmation(security_services, host, request).await;
                 if outcome != ActionConfirmationOutcome::Allowed {
                     return Ok(action_confirmation_refusal(outcome));
                 }
