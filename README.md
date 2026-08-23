@@ -908,6 +908,19 @@ retain per-action confirmation. The packaged CLI does not trust flags or
 redirected stdin as user presence, so it keeps per-action confirmation until a
 trusted non-modal input broker is installed by its embedding.
 
+Embeddings can construct that broker with
+`dcc_cua_host::trusted_task_authorization_broker`. It returns two separate
+capabilities: a move-only `TrustedTaskAuthorizationIssuer` retained by the
+authenticated user-input surface, and a `TrustedTaskAuthorizationHost` trait
+object installed in `HostSecurityServices`. After one explicit user input, the
+issuer registers an exact PID/HWND, task grant, application label, capability,
+closed action/risk scopes, browser origins, and expiry. It returns only a random
+authorization ID for the task grant. Registrations are single-use for session
+open, bounded to 24 hours, revalidated before every action, and revocable. The
+issuer is not serializable or available through CLI arguments, environment
+variables, stdin, or Host IPC, so those routes cannot mint or widen a task
+authorization.
+
 Secret-bearing input uses an opaque `secret_handle` instead of putting the
 secret in Host IPC. The packaged Host resolves that handle from the current
 platform keyring only after the exact action confirmation succeeds. `text` and

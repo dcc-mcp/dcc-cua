@@ -14,11 +14,11 @@ use crate::{
 };
 
 pub const TRUSTED_TASK_AUTHORIZATION_SCHEMA: &str = "dcc-cua-trusted-task-authorization-v1";
-const TRUSTED_TASK_AUTHORIZATION_VALIDATION_SCHEMA: &str =
+pub(crate) const TRUSTED_TASK_AUTHORIZATION_VALIDATION_SCHEMA: &str =
     "dcc-cua-trusted-task-authorization-validation-v1";
 const MAX_TASK_AUTHORIZATION_ID_CHARS: usize = 128;
-const MAX_TASK_AUTHORIZATION_ACTIONS: usize = 32;
-const MAX_TASK_AUTHORIZATION_TTL_MS: u64 = 24 * 60 * 60 * 1_000;
+pub(crate) const MAX_TASK_AUTHORIZATION_ACTIONS: usize = 32;
+pub(crate) const MAX_TASK_AUTHORIZATION_TTL_MS: u64 = 24 * 60 * 60 * 1_000;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, PartialOrd, Ord)]
 #[serde(deny_unknown_fields)]
@@ -32,7 +32,7 @@ pub struct TrustedTaskActionScope {
 }
 
 impl TrustedTaskActionScope {
-    fn validate(&self) -> bool {
+    pub(crate) fn validate(&self) -> bool {
         let fields_are_closed = matches!(
             self.action.as_str(),
             "click"
@@ -527,7 +527,7 @@ fn task_authorization_required(message: &str) -> HostError {
     HostError::coded_protocol(HostProtocolErrorCode::TaskAuthorizationRequired, message)
 }
 
-fn unix_time_millis() -> u64 {
+pub(crate) fn unix_time_millis() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
