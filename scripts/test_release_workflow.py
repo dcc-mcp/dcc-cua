@@ -5,11 +5,31 @@ from pathlib import Path
 WORKFLOW = (
     Path(__file__).parent.parent / ".github" / "workflows" / "release-please.yml"
 )
+PREFLIGHT_WORKFLOW = (
+    Path(__file__).parent.parent
+    / ".github"
+    / "workflows"
+    / "browser-store-preflight.yml"
+)
 SYNC_SCRIPT = Path(__file__).with_name("sync-cargo-workspace-version.ps1")
 REFRESH_SCRIPT = Path(__file__).with_name("refresh-release-please-prs.ps1")
 
 
 class ReleaseWorkflowTests(unittest.TestCase):
+    def test_browser_store_preflight_is_short_lived_and_non_mutating(self):
+        workflow = PREFLIGHT_WORKFLOW.read_text(encoding="utf-8")
+
+        self.assertIn("workflow_dispatch:", workflow)
+        self.assertNotIn("push:", workflow)
+        self.assertIn("environment: browser-stores", workflow)
+        self.assertIn("id-token: write", workflow)
+        self.assertIn("token_format: access_token", workflow)
+        self.assertIn("access_token_lifetime: 300s", workflow)
+        self.assertIn("create_credentials_file: false", workflow)
+        self.assertNotIn("publish_browser_extension.py", workflow)
+        self.assertNotIn(":upload", workflow)
+        self.assertNotIn(":publish", workflow)
+
     def test_browser_store_jobs_require_the_protected_user_authorization_environment(self):
         workflow = WORKFLOW.read_text(encoding="utf-8")
 

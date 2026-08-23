@@ -66,3 +66,8 @@ variable. Chrome uses GitHub OIDC and Workload Identity Federation rather than
 a stored service-account private key. Edge and Firefox secrets are exposed only
 to their approved jobs and are never passed as command arguments. Safari
 distribution remains a separate App Store Connect workflow.
+
+After configuring the Chrome Workload Identity variables, run the
+`Browser store credential preflight` workflow manually. The preflight only
+exchanges GitHub OIDC for a five-minute Chrome Web Store access token and
+verifies that a token was generated. It does not upload or publish an item.
