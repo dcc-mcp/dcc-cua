@@ -7,8 +7,8 @@ use std::sync::Arc;
 use tokio::sync::Semaphore;
 
 use super::{
-    ComputerUseDriver, HostError, MAX_HOST_CONNECTIONS, TrustedActionConfirmationHost,
-    process_connection_with_confirmation_host,
+    ComputerUseDriver, HostError, HostSecurityServices, MAX_HOST_CONNECTIONS,
+    process_connection_with_security_services,
 };
 
 pub(crate) fn connection_limiter() -> Arc<Semaphore> {
@@ -18,15 +18,15 @@ pub(crate) fn connection_limiter() -> Arc<Semaphore> {
 pub(crate) async fn serve(
     driver: ComputerUseDriver,
     endpoint: String,
-    confirmation_host: Option<Arc<dyn TrustedActionConfirmationHost>>,
+    security_services: HostSecurityServices,
 ) -> Result<(), HostError> {
     #[cfg(windows)]
     {
-        serve_named_pipe(driver, endpoint, confirmation_host).await
+        serve_named_pipe(driver, endpoint, security_services).await
     }
     #[cfg(unix)]
     {
-        serve_unix_socket(driver, endpoint, confirmation_host).await
+        serve_unix_socket(driver, endpoint, security_services).await
     }
     #[cfg(not(any(windows, unix)))]
     {
@@ -42,7 +42,7 @@ pub(crate) async fn serve(
 async fn serve_named_pipe(
     driver: ComputerUseDriver,
     endpoint: String,
-    confirmation_host: Option<Arc<dyn TrustedActionConfirmationHost>>,
+    security_services: HostSecurityServices,
 ) -> Result<(), HostError> {
     let _singleton = acquire_endpoint_singleton(&endpoint)?;
     let limiter = connection_limiter();
@@ -57,13 +57,13 @@ async fn serve_named_pipe(
         first_instance = false;
         server.connect().await?;
         let next_driver = driver.clone();
-        let next_confirmation_host = confirmation_host.clone();
+        let next_security_services = security_services.clone();
         tokio::spawn(async move {
             let _permit = permit;
-            let _ = process_connection_with_confirmation_host(
+            let _ = process_connection_with_security_services(
                 next_driver,
                 server,
-                next_confirmation_host,
+                next_security_services,
             )
             .await;
         });
@@ -270,7 +270,7 @@ pub(crate) fn current_logon_sid_string() -> Result<String, HostError> {
 async fn serve_unix_socket(
     driver: ComputerUseDriver,
     endpoint: String,
-    confirmation_host: Option<Arc<dyn TrustedActionConfirmationHost>>,
+    security_services: HostSecurityServices,
 ) -> Result<(), HostError> {
     use tokio::net::{UnixListener, UnixStream};
 
@@ -304,13 +304,13 @@ async fn serve_unix_socket(
             .map_err(|_| HostError::Protocol("Host connection limiter closed".into()))?;
         let (stream, _) = listener.accept().await?;
         let next_driver = driver.clone();
-        let next_confirmation_host = confirmation_host.clone();
+        let next_security_services = security_services.clone();
         tokio::spawn(async move {
             let _permit = permit;
-            let _ = process_connection_with_confirmation_host(
+            let _ = process_connection_with_security_services(
                 next_driver,
                 stream,
-                next_confirmation_host,
+                next_security_services,
             )
             .await;
         });

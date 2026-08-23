@@ -14,6 +14,7 @@ mod mcp_output;
 mod profile_context;
 mod profile_package;
 mod profile_state;
+mod secret_vault;
 mod semantic_profile;
 mod trusted_confirmation;
 mod update;
@@ -40,7 +41,8 @@ use dcc_cua_core::{
     ComputerUseWindowQuery, ComputerUseWindowWaitRequest, ComputerUseZoomRequest,
 };
 use dcc_cua_host::{
-    HostTransport, MAX_PARALLEL_DISCOVERY_REQUESTS, run as run_host, run_with_confirmation_host,
+    HostSecurityServices, HostTransport, MAX_PARALLEL_DISCOVERY_REQUESTS,
+    run_with_security_services,
 };
 use dcc_cua_protocol::{RequestEnvelope, host_method_traits};
 use dcc_cua_semantic_profiles::{
@@ -245,11 +247,12 @@ async fn dispatch(arguments: Vec<String>) -> Result<(), Box<dyn std::error::Erro
                         .unwrap_or_else(HostTransport::default_endpoint),
                 )
             };
+            let mut security_services = HostSecurityServices::default()
+                .with_secret_vault(secret_vault::native_secret_vault());
             if let Some(confirmation_host) = trusted_confirmation::native_confirmation_host() {
-                run_with_confirmation_host(driver, transport, confirmation_host).await?;
-            } else {
-                run_host(driver, transport).await?;
+                security_services = security_services.with_confirmation_host(confirmation_host);
             }
+            run_with_security_services(driver, transport, security_services).await?;
         }
         "snapshot" => snapshot(&driver, &flags).await?,
         "accessibility" => accessibility_snapshot(&driver, &flags).await?,

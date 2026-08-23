@@ -469,6 +469,19 @@ fn app_requests_parse_with_host_params_frames() {
     ));
     assert!(matches!(
         serde_json::from_value::<Request>(json!({
+            "method": "clipboard_capture_secret",
+            "params": {
+                "session_id": "session-1",
+                "task_grant_id": "task-1",
+                "window_capability": "cap-1",
+                "observation_id": "observation-1",
+                "secret_handle": "edge.api-key"
+            }
+        })),
+        Ok(Request::ClipboardCaptureSecret { .. })
+    ));
+    assert!(matches!(
+        serde_json::from_value::<Request>(json!({
             "method": "recording_start",
             "params": {
                 "session_id": "session-1",

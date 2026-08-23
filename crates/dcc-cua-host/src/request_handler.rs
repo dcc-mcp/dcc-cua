@@ -1,172 +1,14 @@
 use super::*;
 use crate::request_contract::*;
+use zeroize::Zeroize;
 mod evidence_epoch;
+mod session_helpers;
 pub(super) use evidence_epoch::*;
+pub(crate) use session_helpers::*;
 
-pub(super) async fn acquire_raw_input_turn(
-    enabled: bool,
-) -> Option<tokio::sync::MutexGuard<'static, ()>> {
-    if enabled {
-        Some(RAW_INPUT_QUEUE.lock().await)
-    } else {
-        None
-    }
-}
-
-pub(super) fn ensure_connection_session_capacity(
-    active_session_count: usize,
-) -> Result<(), HostError> {
-    if active_session_count < MAX_SESSIONS_PER_CONNECTION {
-        return Ok(());
-    }
-    Err(HostError::coded_protocol(
-        HostProtocolErrorCode::SessionLimitReached,
-        format!(
-            "connection session limit reached (maximum {})",
-            MAX_SESSIONS_PER_CONNECTION
-        ),
-    ))
-}
-
-fn denied(code: HostProtocolErrorCode, capability: &'static str) -> HostError {
-    HostError::coded_protocol(code, format!("{capability} is not granted"))
-}
-
-pub(super) fn finish_window_mutation_attempt<T, E>(
-    result: Result<T, E>,
-    invalidate: impl FnOnce(),
-) -> Result<T, E> {
-    invalidate();
-    result
-}
-
-pub(super) fn session_stopped_response(
-    session_id: &str,
-    result: ComputerUseSessionStopResult,
-) -> Value {
-    json!({
-        "type": "session_stopped",
-        "session_id": session_id,
-        "success": result.success,
-        "active": result.active,
-        "cleanup_pending": result.cleanup_pending,
-        "cleanup_issues": result.cleanup_issues,
-        "marker": result.marker,
-    })
-}
-
-pub(super) fn observed_window_state_response(
-    host: &mut HostSession,
-    session_id: &str,
-    state: Value,
-) -> Value {
-    host.observe_target_state(&state);
-    json!({"type":"window_state", "session_id":session_id, "state":state})
-}
-
-pub(super) fn finish_target_sensitive_cached_read(
-    host: &mut HostSession,
-    availability: ComputerUseResult<dcc_cua_core::ComputerUseTargetAvailability>,
-) -> ComputerUseResult<()> {
-    let availability = host.finish_observation_sensitive_attempt(availability)?;
-    let status = availability.status;
-    host.observe_target_availability(availability);
-    if host.input_events.current().status == dcc_cua_core::ComputerUseInputStatus::Suspended {
-        return Err(cached_target_pre_dispatch_refusal(
-            ComputerUseErrorCode::InteractiveDesktopUnavailable,
-            host.input_events
-                .current()
-                .reason
-                .clone()
-                .unwrap_or_else(|| "interactive desktop is unavailable".into()),
-        ));
-    }
-    match status {
-        dcc_cua_core::ComputerUseTargetStatus::Available => Ok(()),
-        dcc_cua_core::ComputerUseTargetStatus::Minimized => {
-            Err(cached_target_pre_dispatch_refusal(
-                ComputerUseErrorCode::TargetMinimized,
-                "the exact target is minimized and cached accessibility evidence is stale",
-            ))
-        }
-        dcc_cua_core::ComputerUseTargetStatus::Unavailable => {
-            Err(cached_target_pre_dispatch_refusal(
-                ComputerUseErrorCode::TargetUnavailable,
-                "the exact target is unavailable and cached accessibility evidence is stale",
-            ))
-        }
-    }
-}
-
-fn cached_target_pre_dispatch_refusal(
-    code: ComputerUseErrorCode,
-    message: impl Into<String>,
-) -> ComputerUseError {
-    ComputerUseError::new(code, message).with_details(dcc_cua_core::ComputerUseErrorDetails {
-        phase: Some(dcc_cua_core::ComputerUseErrorPhase::PreDispatch),
-        action_attempted: Some(false),
-        input_sent: Some(dcc_cua_core::ComputerUseInputState::NotSent),
-        completion: Some(dcc_cua_core::ComputerUseCompletionState::Known),
-        effect_unknown: Some(false),
-        local_session_invalidated: Some(false),
-        session_remains_active: Some(true),
-        automatic_input: Some(false),
-        blind_retry: Some(false),
-        fresh_observation_required: Some(true),
-        ..Default::default()
-    })
-}
-
-pub(super) fn bind_launched_process(
-    launched: &HostLaunchSession,
-    grant: &mut TaskGrant,
-) -> Result<(), HostError> {
-    if grant.task_grant_id != launched.task_grant_id
-        || grant.application_label != launched.application_label
-    {
-        return Err(HostError::Protocol(
-            "launch and window session grants do not match".into(),
-        ));
-    }
-    if grant
-        .process_id
-        .is_some_and(|process_id| process_id != launched.process_id)
-    {
-        return Err(HostError::Protocol(
-            "window session does not target the launched process".into(),
-        ));
-    }
-    grant.process_id = Some(launched.process_id);
-    Ok(())
-}
-
-pub(super) fn restore_activate_available(grant: &TaskGrant) -> bool {
-    cfg!(windows) && grant.process_id.is_some() && grant.window_handle.is_some()
-}
-
-pub(super) fn session_health_state_changed(
-    evidence_epoch_before: dcc_cua_core::ActionEvidenceEpoch,
-    transition_sequence_before: u64,
-    action_evidence_epoch: dcc_cua_core::ActionEvidenceEpoch,
-    transition_sequence: u64,
-) -> bool {
-    evidence_epoch_before != action_evidence_epoch
-        || transition_sequence_before != transition_sequence
-}
-
-async fn refresh_session_health_input_and_target(host: &mut HostSession) -> bool {
-    host.refresh_input_readiness();
-    let availability = host.session.target_availability().await;
-    let target_probe_failed = availability.is_err();
-    if let Ok(availability) = host.finish_observation_sensitive_attempt(availability) {
-        host.observe_target_availability(availability);
-    }
-    target_probe_failed
-}
-
-pub(super) async fn handle_request_with_confirmation_host(
+pub(super) async fn handle_request_with_security_services(
     driver: &ComputerUseDriver,
-    confirmation_host: Option<&dyn TrustedActionConfirmationHost>,
+    security_services: &HostSecurityServices,
     sessions: &mut ConnectionSessions,
     snapshot_transport: &mut Option<SnapshotTransport>,
     desktop_shared_image: &mut Option<SharedImage>,
@@ -177,7 +19,7 @@ pub(super) async fn handle_request_with_confirmation_host(
     prepare_window_evidence_request(sessions, evidence_route.as_ref());
     let result = handle_request_inner(
         driver,
-        confirmation_host,
+        security_services,
         sessions,
         snapshot_transport,
         desktop_shared_image,
@@ -190,13 +32,14 @@ pub(super) async fn handle_request_with_confirmation_host(
 
 async fn handle_request_inner(
     driver: &ComputerUseDriver,
-    confirmation_host: Option<&dyn TrustedActionConfirmationHost>,
+    security_services: &HostSecurityServices,
     sessions: &mut ConnectionSessions,
     snapshot_transport: &mut Option<SnapshotTransport>,
     desktop_shared_image: &mut Option<SharedImage>,
     cancellation_registry: &CancellationRegistry,
     request: Request,
 ) -> Result<(Value, Option<Vec<u8>>), HostError> {
+    let confirmation_host = security_services.confirmation_host.as_deref();
     if let Request::Hello(params) = &request {
         if snapshot_transport.is_some() {
             return Err(HostError::Protocol(
@@ -433,7 +276,7 @@ async fn handle_request_inner(
             task_grant_id,
             desktop_capability,
             observation_id,
-            action,
+            mut action,
             capture_after,
             post_snapshot_delay_ms,
         } => {
@@ -451,6 +294,7 @@ async fn handle_request_inner(
                     "raw input",
                 ));
             }
+            action.validate_secret_source()?;
             let safety_tier = action.safety_tier(None);
             if let Some((policy_tier, code, message)) = safety_tier.rejection() {
                 return Ok((
@@ -482,9 +326,19 @@ async fn handle_request_inner(
                     return Ok(action_confirmation_refusal(outcome));
                 }
             }
-            let action = action.into_computer_use(observation_id)?;
+            if let Some(handle) = action.secret_handle.clone() {
+                let secret = require_secret_vault(security_services)?
+                    .resolve(&handle)
+                    .await
+                    .map_err(secret_vault_error)?;
+                action.text = Some(secret.expose().to_owned());
+                action.secret_handle = None;
+            }
+            let mut action = action.into_computer_use(observation_id)?;
             let input_turn = acquire_raw_input_turn(true).await;
-            let result = host.session.perform_action(&action).await?;
+            let result = host.session.perform_action(&action).await;
+            action.text.zeroize();
+            let result = result?;
             let action_id = format!("cua-desktop-action-{}", Uuid::new_v4());
             if capture_after {
                 if let Err(error) =
@@ -666,6 +520,26 @@ async fn handle_request_inner(
                 json!({"type":"clipboard_read", "session_id":session_id, "result":result}),
                 None,
             ))
+        }
+        Request::ClipboardCaptureSecret {
+            session_id,
+            task_grant_id,
+            window_capability,
+            observation_id,
+            secret_handle,
+        } => {
+            let host =
+                authorized_session(sessions, &session_id, &task_grant_id, &window_capability)
+                    .await?;
+            let response = capture_clipboard_secret(
+                host,
+                security_services,
+                BoundSecretRequest::new(&session_id, &task_grant_id, &window_capability),
+                &observation_id,
+                &secret_handle,
+            )
+            .await;
+            Ok((response?, None))
         }
         Request::ClipboardWrite {
             session_id,
@@ -1439,6 +1313,17 @@ async fn handle_request_inner(
                 ));
             }
             host.require_current_browser_evidence_epoch()?;
+            let request = match resolve_browser_type_request(
+                host,
+                security_services,
+                BoundSecretRequest::new(&session_id, &task_grant_id, &window_capability),
+                request,
+            )
+            .await?
+            {
+                BrowserTypeResolution::Resolved(request) => request,
+                BrowserTypeResolution::Refused(response) => return Ok((response, None)),
+            };
             let result = host.browser.type_text(&mut host.session, request).await;
             let result = host.finish_observation_sensitive_attempt(result)?;
             browser_response(
@@ -1628,7 +1513,7 @@ async fn handle_request_inner(
             window_capability,
             observation_id,
             accessibility_state_id,
-            action,
+            mut action,
             capture_after,
             post_snapshot_delay_ms,
             post_snapshot_max_depth,
@@ -1644,6 +1529,7 @@ async fn handle_request_inner(
                     "raw input",
                 ));
             }
+            action.validate_secret_source()?;
             if host.latest_observation_id.as_deref() != Some(observation_id.as_str()) {
                 return Err(HostError::ComputerUse(ComputerUseError::new(
                     ComputerUseErrorCode::StaleObservation,
@@ -1695,10 +1581,19 @@ async fn handle_request_inner(
                     return Ok(action_confirmation_refusal(outcome));
                 }
             }
+            if let Some(handle) = action.secret_handle.clone() {
+                let secret = require_secret_vault(security_services)?
+                    .resolve(&handle)
+                    .await
+                    .map_err(secret_vault_error)?;
+                action.text = Some(secret.expose().to_owned());
+                action.secret_handle = None;
+            }
             let raw_input = action.input_kind == "raw_input";
-            let action = action.into_computer_use(observation_id)?;
+            let mut action = action.into_computer_use(observation_id)?;
             let input_turn = acquire_raw_input_turn(raw_input).await;
             let result = host.session.perform_action(&action).await;
+            action.text.zeroize();
             let result = host.finish_observation_sensitive_attempt(result)?;
             let action_id = format!("cua-action-{}", Uuid::new_v4());
             if capture_after {

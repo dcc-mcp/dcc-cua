@@ -12,6 +12,7 @@ mod endpoint;
 mod error_contract;
 mod request_contract;
 mod request_handler;
+mod secret_vault;
 mod session_events;
 mod session_identity;
 mod session_state;
@@ -30,11 +31,16 @@ use action_response::*;
 pub use dcc_cua_protocol::{
     DEFAULT_SESSION_IDLE_TIMEOUT_MS, HOST_PROTOCOL_VERSION, MAX_BINARY_FRAME_BYTES,
     MAX_HOST_CONNECTIONS, MAX_JSON_FRAME_BYTES, MAX_PARALLEL_DISCOVERY_REQUESTS,
-    MAX_REQUEST_ID_CHARS, MAX_SESSION_IDLE_TIMEOUT_MS, MAX_SESSIONS_PER_CONNECTION,
-    MIN_SESSION_IDLE_TIMEOUT_MS,
+    MAX_REQUEST_ID_CHARS, MAX_SECRET_HANDLE_CHARS, MAX_SESSION_IDLE_TIMEOUT_MS,
+    MAX_SESSIONS_PER_CONNECTION, MIN_SESSION_IDLE_TIMEOUT_MS,
 };
 pub use error_contract::{HostError, HostProtocolErrorCode, HostTransport};
-use request_handler::handle_request_with_confirmation_host;
+use request_handler::handle_request_with_security_services;
+use secret_vault::{
+    BoundSecretRequest, BrowserTypeResolution, capture_clipboard_secret, require_secret_vault,
+    resolve_browser_type_request, secret_vault_error, validate_secret_handle,
+};
+pub use secret_vault::{HostSecretVault, HostSecretVaultError, HostSecurityServices, SecretValue};
 use session_identity::{new_runtime_session_id, rewrite_session_aliases};
 use session_state::{
     ConnectionSessions, HostDesktopSession, HostEvidencePublication, HostLaunchSession, HostSession,
@@ -151,6 +157,8 @@ pub const HOST_CAPABILITIES: &[&str] = &[
     "session_scoped_application_lifecycle",
     "clipboard_read",
     "clipboard_write",
+    "clipboard_secret_sink",
+    "secure_secret_handles",
     "trajectory_recording",
     "live_observation_latest_frame",
     "browser_exact_binding",
@@ -306,6 +314,13 @@ enum Request {
         window_capability: String,
         #[serde(default)]
         include_text: bool,
+    },
+    ClipboardCaptureSecret {
+        session_id: String,
+        task_grant_id: String,
+        window_capability: String,
+        observation_id: String,
+        secret_handle: String,
     },
     ClipboardWrite {
         session_id: String,
@@ -646,7 +661,10 @@ struct HostAction {
     #[serde(default)]
     path: Vec<ComputerUsePoint>,
     #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    secret_handle: Option<String>,
     #[serde(default)]
     delay_ms: Option<u64>,
     #[serde(default)]
@@ -734,27 +752,59 @@ impl WaitCondition {
 }
 
 impl HostAction {
+    fn validate_secret_source(&self) -> ComputerUseResult<()> {
+        if self.text.is_some() && self.secret_handle.is_some() {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::InvalidAction,
+                "text and secret_handle are mutually exclusive",
+            ));
+        }
+        if let Some(handle) = self.secret_handle.as_deref() {
+            validate_secret_handle(handle).map_err(|_| {
+                ComputerUseError::new(
+                    ComputerUseErrorCode::InvalidAction,
+                    "secret_handle is invalid",
+                )
+            })?;
+            if !matches!(
+                self.action.as_str(),
+                "type" | "type_chars" | "set_text" | "set_value"
+            ) {
+                return Err(ComputerUseError::new(
+                    ComputerUseErrorCode::InvalidAction,
+                    "secret_handle is supported only for text input actions",
+                ));
+            }
+        }
+        Ok(())
+    }
+
     fn safety_tier(&self, accessibility_root: Option<&Value>) -> HostActionSafetyTier {
-        if self.input_kind == "semantic" {
-            return accessibility_root
+        let base_tier = if self.input_kind == "semantic" {
+            accessibility_root
                 .and_then(|root| self.semantic_element(root))
                 .and_then(|element| element["policy_tier"].as_str())
                 .map_or(
                     HostActionSafetyTier::HardDeny,
                     HostActionSafetyTier::from_wire,
-                );
-        }
-        if self.input_kind != "raw_input" {
-            return HostActionSafetyTier::HardDeny;
-        }
-        match self.action.as_str() {
-            "move" | "scroll" => HostActionSafetyTier::TaskGrant,
-            "click" | "double_click" | "right_click" | "toggle" | "drag" | "type"
-            | "type_chars" | "set_text" | "set_value" | "set_checked" | "keypress" | "press"
-            | "press_key" | "keyboard_shortcut" | "hotkey" => {
-                HostActionSafetyTier::ActionConfirmation
+                )
+        } else if self.input_kind == "raw_input" {
+            match self.action.as_str() {
+                "move" | "scroll" => HostActionSafetyTier::TaskGrant,
+                "click" | "double_click" | "right_click" | "toggle" | "drag" | "type"
+                | "type_chars" | "set_text" | "set_value" | "set_checked" | "keypress"
+                | "press" | "press_key" | "keyboard_shortcut" | "hotkey" => {
+                    HostActionSafetyTier::ActionConfirmation
+                }
+                _ => HostActionSafetyTier::HardDeny,
             }
-            _ => HostActionSafetyTier::HardDeny,
+        } else {
+            HostActionSafetyTier::HardDeny
+        };
+        if self.secret_handle.is_some() && base_tier != HostActionSafetyTier::HardDeny {
+            HostActionSafetyTier::ActionConfirmation
+        } else {
+            base_tier
         }
     }
 
@@ -776,6 +826,13 @@ impl HostAction {
     }
 
     fn into_computer_use(self, observation_id: String) -> ComputerUseResult<ComputerUseAction> {
+        self.validate_secret_source()?;
+        if self.secret_handle.is_some() {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::InvalidAction,
+                "secret_handle must be resolved by the constructor-owned Host vault",
+            ));
+        }
         if !matches!(self.input_kind.as_str(), "raw_input" | "semantic") {
             return Err(ComputerUseError::new(
                 ComputerUseErrorCode::InvalidAction,
@@ -1016,7 +1073,7 @@ fn cancel_wait(
 
 /// Run one long-lived host connection over stdio or the platform local endpoint.
 pub async fn run(driver: ComputerUseDriver, transport: HostTransport) -> Result<(), HostError> {
-    run_internal(driver, transport, None).await
+    run_internal(driver, transport, HostSecurityServices::default()).await
 }
 
 /// Run a Host with a constructor-owned action-time confirmation callback.
@@ -1029,56 +1086,71 @@ pub async fn run_with_confirmation_host(
     transport: HostTransport,
     confirmation_host: Arc<dyn TrustedActionConfirmationHost>,
 ) -> Result<(), HostError> {
-    run_internal(driver, transport, Some(confirmation_host)).await
+    run_internal(
+        driver,
+        transport,
+        HostSecurityServices::default().with_confirmation_host(confirmation_host),
+    )
+    .await
+}
+
+/// Run a Host with constructor-owned confirmation and secret-vault services.
+/// Neither service can be supplied or replaced through Host IPC.
+pub async fn run_with_security_services(
+    driver: ComputerUseDriver,
+    transport: HostTransport,
+    security_services: HostSecurityServices,
+) -> Result<(), HostError> {
+    run_internal(driver, transport, security_services).await
 }
 
 async fn run_internal(
     driver: ComputerUseDriver,
     transport: HostTransport,
-    confirmation_host: Option<Arc<dyn TrustedActionConfirmationHost>>,
+    security_services: HostSecurityServices,
 ) -> Result<(), HostError> {
     match transport {
         HostTransport::Stdio => {
-            process_connection_parts_with_confirmation_host(
+            process_connection_parts_with_security_services(
                 driver,
                 tokio::io::stdin(),
                 tokio::io::stdout(),
                 Duration::from_millis(HOST_HELLO_TIMEOUT_MS),
-                confirmation_host,
+                security_services,
             )
             .await
         }
         HostTransport::Endpoint(endpoint) => {
-            endpoint::serve(driver, endpoint, confirmation_host).await
+            endpoint::serve(driver, endpoint, security_services).await
         }
     }
 }
 
-async fn process_connection_with_confirmation_host<S>(
+async fn process_connection_with_security_services<S>(
     driver: ComputerUseDriver,
     stream: S,
-    confirmation_host: Option<Arc<dyn TrustedActionConfirmationHost>>,
+    security_services: HostSecurityServices,
 ) -> Result<(), HostError>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     let (reader, writer) = tokio::io::split(stream);
-    process_connection_parts_with_confirmation_host(
+    process_connection_parts_with_security_services(
         driver,
         reader,
         writer,
         Duration::from_millis(HOST_HELLO_TIMEOUT_MS),
-        confirmation_host,
+        security_services,
     )
     .await
 }
 
-async fn process_connection_parts_with_confirmation_host<R, W>(
+async fn process_connection_parts_with_security_services<R, W>(
     driver: ComputerUseDriver,
     reader: R,
     writer: W,
     hello_timeout: Duration,
-    confirmation_host: Option<Arc<dyn TrustedActionConfirmationHost>>,
+    security_services: HostSecurityServices,
 ) -> Result<(), HostError>
 where
     R: AsyncRead + Unpin,
@@ -1153,9 +1225,9 @@ where
         };
 
         if is_interruptible_connection_request(&request) {
-            let mut operation = Box::pin(handle_request_with_confirmation_host(
+            let mut operation = Box::pin(handle_request_with_security_services(
                 &driver,
-                confirmation_host.as_deref(),
+                &security_services,
                 &mut sessions,
                 &mut snapshot_transport,
                 &mut desktop_shared_image,
@@ -1219,9 +1291,9 @@ where
                         if matches!(&next_request, Request::InterruptAll {}) {
                             drop(operation);
                             let (mut response, attachment) =
-                                match handle_request_with_confirmation_host(
+                                match handle_request_with_security_services(
                                     &driver,
-                                    confirmation_host.as_deref(),
+                                    &security_services,
                                     &mut sessions,
                                     &mut snapshot_transport,
                                     &mut desktop_shared_image,
@@ -1319,9 +1391,9 @@ where
                 .await
             });
         } else {
-            let (mut response, attachment) = match Box::pin(handle_request_with_confirmation_host(
+            let (mut response, attachment) = match Box::pin(handle_request_with_security_services(
                 &driver,
-                confirmation_host.as_deref(),
+                &security_services,
                 &mut sessions,
                 &mut snapshot_transport,
                 &mut desktop_shared_image,

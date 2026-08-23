@@ -54,7 +54,61 @@ pub(crate) struct ConfirmationWindowIdentity {
     pub window_handle: u64,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ConfirmationBinding<'a> {
+    session_id: &'a str,
+    task_grant_id: &'a str,
+    window_capability: &'a str,
+    target: Option<ConfirmationWindowIdentity>,
+    observation_id: &'a str,
+    accessibility_state_id: Option<&'a str>,
+}
+
+impl<'a> ConfirmationBinding<'a> {
+    pub(crate) fn window(
+        session_id: &'a str,
+        task_grant_id: &'a str,
+        window_capability: &'a str,
+        target: ConfirmationWindowIdentity,
+        observation_id: &'a str,
+        accessibility_state_id: Option<&'a str>,
+    ) -> Self {
+        Self {
+            session_id,
+            task_grant_id,
+            window_capability,
+            target: Some(target),
+            observation_id,
+            accessibility_state_id,
+        }
+    }
+
+    fn desktop(
+        session_id: &'a str,
+        task_grant_id: &'a str,
+        desktop_capability: &'a str,
+        observation_id: &'a str,
+    ) -> Self {
+        Self {
+            session_id,
+            task_grant_id,
+            window_capability: desktop_capability,
+            target: None,
+            observation_id,
+            accessibility_state_id: None,
+        }
+    }
+}
+
 impl TrustedActionConfirmationRequest {
+    pub(crate) fn for_bound_window_action_value(
+        binding: ConfirmationBinding<'_>,
+        intent: &str,
+        action: Value,
+    ) -> Result<Self, HostError> {
+        Self::new_value(binding, intent, action)
+    }
+
     pub(crate) fn for_window_action(
         session_id: &str,
         task_grant_id: &str,
@@ -65,12 +119,14 @@ impl TrustedActionConfirmationRequest {
         action: &HostAction,
     ) -> Result<Self, HostError> {
         Self::new(
-            session_id,
-            task_grant_id,
-            window_capability,
-            Some(target),
-            observation_id,
-            Some(accessibility_state_id),
+            ConfirmationBinding::window(
+                session_id,
+                task_grant_id,
+                window_capability,
+                target,
+                observation_id,
+                Some(accessibility_state_id),
+            ),
             action,
         )
     }
@@ -83,31 +139,39 @@ impl TrustedActionConfirmationRequest {
         action: &HostAction,
     ) -> Result<Self, HostError> {
         Self::new(
-            session_id,
-            task_grant_id,
-            desktop_capability,
-            None,
-            observation_id,
-            None,
+            ConfirmationBinding::desktop(
+                session_id,
+                task_grant_id,
+                desktop_capability,
+                observation_id,
+            ),
             action,
         )
     }
 
-    fn new(
-        session_id: &str,
-        task_grant_id: &str,
-        window_capability: &str,
-        target: Option<ConfirmationWindowIdentity>,
-        observation_id: &str,
-        accessibility_state_id: Option<&str>,
-        action: &HostAction,
-    ) -> Result<Self, HostError> {
-        let request_id = Uuid::new_v4().to_string();
-        let target_process_id = target.map(|identity| identity.process_id);
-        let target_window_handle = target.map(|identity| identity.window_handle);
+    fn new(binding: ConfirmationBinding<'_>, action: &HostAction) -> Result<Self, HostError> {
         let action_value = serde_json::to_value(action).map_err(|error| {
             HostError::Protocol(format!("could not bind action confirmation: {error}"))
         })?;
+        Self::new_value(binding, &action.intent, action_value)
+    }
+
+    fn new_value(
+        binding: ConfirmationBinding<'_>,
+        intent: &str,
+        action_value: Value,
+    ) -> Result<Self, HostError> {
+        let ConfirmationBinding {
+            session_id,
+            task_grant_id,
+            window_capability,
+            target,
+            observation_id,
+            accessibility_state_id,
+        } = binding;
+        let request_id = Uuid::new_v4().to_string();
+        let target_process_id = target.map(|identity| identity.process_id);
+        let target_window_handle = target.map(|identity| identity.window_handle);
         let unsigned = UnsignedConfirmationRequest {
             schema: TRUSTED_ACTION_CONFIRMATION_SCHEMA,
             request_id: &request_id,
@@ -118,7 +182,7 @@ impl TrustedActionConfirmationRequest {
             target_window_handle,
             observation_id,
             accessibility_state_id,
-            intent: &action.intent,
+            intent,
             action: &action_value,
         };
         let encoded = serde_json::to_vec(&unsigned).map_err(|error| {
@@ -135,7 +199,7 @@ impl TrustedActionConfirmationRequest {
             target_window_handle,
             observation_id: observation_id.to_owned(),
             accessibility_state_id: accessibility_state_id.map(str::to_owned),
-            intent: action.intent.clone(),
+            intent: intent.to_owned(),
             action: action_value,
             request_digest,
         })
