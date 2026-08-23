@@ -1172,7 +1172,8 @@ async fn run_internal(
     }
 }
 
-async fn process_connection_with_security_services<S>(
+/// Serve one connected stream with constructor-owned security services.
+pub async fn process_connection_with_security_services<S>(
     driver: ComputerUseDriver,
     stream: S,
     security_services: HostSecurityServices,

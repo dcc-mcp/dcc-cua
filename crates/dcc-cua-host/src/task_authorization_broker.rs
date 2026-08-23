@@ -14,7 +14,6 @@ use crate::task_authorization::{
 };
 use crate::{MAX_APPLICATION_LABEL_CHARS, MAX_TASK_GRANT_ID_CHARS};
 
-const MAX_WINDOW_CAPABILITY_CHARS: usize = 512;
 const MAX_BROKER_AUTHORIZATIONS: usize = 256;
 
 /// Exact scope registered only by an authenticated embedding after explicit
@@ -23,7 +22,6 @@ const MAX_BROKER_AUTHORIZATIONS: usize = 256;
 pub struct TrustedTaskAuthorizationRegistration {
     pub task_grant_id: String,
     pub application_label: String,
-    pub window_capability: String,
     pub target_process_id: u32,
     pub target_window_handle: u64,
     pub allowed_actions: Vec<TrustedTaskActionScope>,
@@ -35,7 +33,15 @@ pub struct TrustedTaskAuthorizationRegistration {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrustedTaskAuthorizationReceipt {
     pub authorization_id: String,
+    pub window_capability: String,
     pub expires_at_unix_ms: u64,
+}
+
+impl TrustedTaskAuthorizationRegistration {
+    /// Validate a proposed exact task scope before presenting it to a user.
+    pub fn validate(&self) -> Result<(), TrustedTaskAuthorizationBrokerError> {
+        validate_registration(self)
+    }
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -60,7 +66,7 @@ impl TrustedTaskAuthorizationIssuer {
         &self,
         registration: TrustedTaskAuthorizationRegistration,
     ) -> Result<TrustedTaskAuthorizationReceipt, TrustedTaskAuthorizationBrokerError> {
-        validate_registration(&registration)?;
+        registration.validate()?;
         let now = crate::task_authorization::unix_time_millis();
         let mut state = self
             .state
@@ -79,16 +85,19 @@ impl TrustedTaskAuthorizationIssuer {
             }
         };
         let expires_at_unix_ms = registration.expires_at_unix_ms;
+        let window_capability = format!("cua-window-{}", Uuid::new_v4());
         state.authorizations.insert(
             authorization_id.clone(),
             BrokerRecord {
                 registration,
+                window_capability: window_capability.clone(),
                 binding: None,
                 revoked: false,
             },
         );
         Ok(TrustedTaskAuthorizationReceipt {
             authorization_id,
+            window_capability,
             expires_at_unix_ms,
         })
     }
@@ -134,6 +143,7 @@ struct BrokerState {
 
 struct BrokerRecord {
     registration: TrustedTaskAuthorizationRegistration,
+    window_capability: String,
     binding: Option<BrokerBinding>,
     revoked: bool,
 }
@@ -165,7 +175,7 @@ impl TrustedTaskAuthorizationHost for BrokerHost {
         let registration = &record.registration;
         let exact_match = request.task_grant_id == registration.task_grant_id
             && request.application_label == registration.application_label
-            && request.window_capability == registration.window_capability
+            && request.window_capability == record.window_capability
             && request.target_process_id == registration.target_process_id
             && request.target_window_handle == registration.target_window_handle;
         if record.revoked
@@ -212,7 +222,7 @@ impl TrustedTaskAuthorizationHost for BrokerHost {
             && request.lease_request_digest == binding.lease_request_digest
             && request.task_grant_id == registration.task_grant_id
             && request.application_label == registration.application_label
-            && request.window_capability == registration.window_capability
+            && request.window_capability == record.window_capability
             && request.target_process_id == registration.target_process_id
             && request.target_window_handle == registration.target_window_handle
             && registration.allowed_actions.contains(&request.action_scope);
@@ -242,11 +252,6 @@ fn validate_registration(
         &registration.application_label,
         MAX_APPLICATION_LABEL_CHARS,
         "application_label",
-    )?;
-    validate_identity(
-        &registration.window_capability,
-        MAX_WINDOW_CAPABILITY_CHARS,
-        "window_capability",
     )?;
     if registration.target_process_id == 0 || registration.target_window_handle == 0 {
         return invalid("the exact target PID and window handle must be non-zero");

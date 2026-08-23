@@ -1,7 +1,7 @@
 {
   "name": "dcc-cua-computer-use",
-  "version": "0.5.0",
-  "description": "Exact-window Computer Use skills for dcc-cua, including persistent control banners and packaged game acceptance.",
+  "version": "0.6.0",
+  "description": "Exact-window Computer Use skills and one-time inline task authorization for dcc-cua.",
   "author": {
     "name": "loonghao",
     "email": "hal.long@outlook.com",
@@ -18,10 +18,11 @@
     "WASD"
   ],
   "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
   "interface": {
     "displayName": "dcc-cua",
     "shortDescription": "Operate exact-window CUA sessions",
-    "longDescription": "Use dcc-cua for scoped snapshots, verified input, persistent control banners, and packaged game acceptance.",
+    "longDescription": "Use dcc-cua for scoped snapshots, verified input, persistent control banners, packaged game acceptance, and one explicit in-chat task authorization without per-action native popups.",
     "developerName": "loonghao",
     "category": "Productivity",
     "capabilities": ["Read", "Write"],

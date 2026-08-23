@@ -127,6 +127,8 @@ jobs:
           mkdir -p dist
           cp -R skills target/release/skills
           cp -R assets target/release/assets
+          cp -R .codex-plugin target/release/.codex-plugin
+          cp .mcp.json target/release/.mcp.json
           cp LICENSE target/release/LICENSE
           cp THIRD_PARTY_LICENSES.md target/release/THIRD_PARTY_LICENSES.md
           cp README.md target/release/README.md
@@ -135,11 +137,11 @@ jobs:
             archive="dist/dcc-cua-${version}-${host}.zip"
             (
               cd target/release
-              7z a "../../$archive" dcc-cua.exe LICENSE THIRD_PARTY_LICENSES.md README.md README.zh-CN.md assets skills
+              7z a "../../$archive" dcc-cua.exe LICENSE THIRD_PARTY_LICENSES.md README.md README.zh-CN.md assets skills .codex-plugin .mcp.json
             )
           else
             archive="dist/dcc-cua-${version}-${host}.tar.gz"
-            tar -czf "$archive" -C target/release dcc-cua LICENSE THIRD_PARTY_LICENSES.md README.md README.zh-CN.md assets skills
+            tar -czf "$archive" -C target/release dcc-cua LICENSE THIRD_PARTY_LICENSES.md README.md README.zh-CN.md assets skills .codex-plugin .mcp.json
           fi
           asset_name="$(basename "$archive")"
           asset_url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG_NAME}/${asset_name}"

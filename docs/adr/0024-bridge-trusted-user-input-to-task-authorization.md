@@ -26,11 +26,12 @@ revocation, and the existing no-retry rules.
 - Give the Host only an `Arc<dyn TrustedTaskAuthorizationHost>` validator and
   install it through `HostSecurityServices`.
 - After explicit user input, register one exact PID/HWND, task grant,
-  application label, window capability, closed action/risk scopes, browser
+  application label, closed action/risk scopes, browser
   origins, and an expiry no more than 24 hours away.
-- Generate a random authorization ID inside the broker. The embedding may put
-  that ID in a task grant, but possession of the ID cannot register, widen, or
-  revoke scope.
+- Generate both a random authorization ID and the one-time window capability
+  inside the broker. The embedding places both opaque values in the task grant
+  so the Host can consume the pre-task registration while opening the session;
+  possession of either value cannot register, widen, or revoke scope.
 - Consume a registration exactly once at session open and bind its in-memory
   lease to the Host-generated session and request digest. A second session
   cannot replay it.

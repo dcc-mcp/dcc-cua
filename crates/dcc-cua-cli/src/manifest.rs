@@ -165,6 +165,7 @@ pub(crate) fn document() -> Value {
                 "request_schema": dcc_cua_host::TRUSTED_TASK_AUTHORIZATION_SCHEMA,
                 "mode": "split_constructor_capability_broker",
                 "issuer_owner": "authenticated_embedding_user_input",
+                "embedding": "mcp_apps_inline_card",
                 "task_scoped": true,
                 "modal": false,
                 "registration_single_use": true,

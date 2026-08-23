@@ -786,7 +786,10 @@ async fn handle_request_inner(
                 ),
                 "motion_backend": "cua-driver-sdk",
             });
-            let capability = format!("cua-window-{}", Uuid::new_v4());
+            let capability = grant
+                .task_authorization_window_capability
+                .clone()
+                .unwrap_or_else(|| format!("cua-window-{}", Uuid::new_v4()));
             let input_target = match input_target_from_cua(&session_id, &target) {
                 Ok(target) => target,
                 Err(error) => {

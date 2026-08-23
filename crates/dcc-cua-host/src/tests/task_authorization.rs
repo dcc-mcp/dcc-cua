@@ -152,12 +152,15 @@ fn type_chars_confirmation_for_target(
     .unwrap()
 }
 
-fn browser_secret_confirmation(origin: &str) -> TrustedActionConfirmationRequest {
+fn browser_secret_confirmation(
+    origin: &str,
+    window_capability: &str,
+) -> TrustedActionConfirmationRequest {
     TrustedActionConfirmationRequest::for_bound_window_action_value(
         ConfirmationBinding::window(
             "session-1",
             "grant-1",
-            "capability-1",
+            window_capability,
             ConfirmationWindowIdentity {
                 process_id: 42,
                 window_handle: 7,
@@ -187,7 +190,6 @@ fn browser_credential_registration(
     TrustedTaskAuthorizationRegistration {
         task_grant_id: "grant-1".into(),
         application_label: "Chrome Web Store upload".into(),
-        window_capability: "capability-1".into(),
         target_process_id: 42,
         target_window_handle: 7,
         allowed_actions: vec![TrustedTaskActionScope {
@@ -208,12 +210,13 @@ async fn broker_turns_one_trusted_embedding_registration_into_an_exact_no_popup_
     let receipt = issuer
         .register(browser_credential_registration(unix_time_millis() + 60_000))
         .unwrap();
+    assert!(receipt.window_capability.starts_with("cua-window-"));
     let binding = TaskAuthorizationBinding::window(
         &receipt.authorization_id,
         "session-1",
         "grant-1",
         "Chrome Web Store upload",
-        "capability-1",
+        &receipt.window_capability,
         ConfirmationWindowIdentity {
             process_id: 42,
             window_handle: 7,
@@ -226,7 +229,10 @@ async fn broker_turns_one_trusted_embedding_registration_into_an_exact_no_popup_
     let outcome = authorize_task_scoped_action(
         Some(host.as_ref()),
         Some(&lease),
-        &browser_secret_confirmation("https://chromewebstore.google.com"),
+        &browser_secret_confirmation(
+            "https://chromewebstore.google.com",
+            &receipt.window_capability,
+        ),
     )
     .await;
 
@@ -246,7 +252,7 @@ async fn broker_registration_is_single_use_and_cannot_be_replayed_into_a_second_
         "session-1",
         "grant-1",
         "Chrome Web Store upload",
-        "capability-1",
+        &receipt.window_capability,
         ConfirmationWindowIdentity {
             process_id: 42,
             window_handle: 7,
@@ -260,7 +266,7 @@ async fn broker_registration_is_single_use_and_cannot_be_replayed_into_a_second_
         "session-2",
         "grant-1",
         "Chrome Web Store upload",
-        "capability-1",
+        &receipt.window_capability,
         ConfirmationWindowIdentity {
             process_id: 42,
             window_handle: 7,
@@ -292,7 +298,7 @@ async fn broker_rejects_a_different_exact_target_before_opening_the_session() {
         "session-1",
         "grant-1",
         "Chrome Web Store upload",
-        "capability-1",
+        &receipt.window_capability,
         ConfirmationWindowIdentity {
             process_id: 42,
             window_handle: 8,
@@ -324,7 +330,7 @@ async fn broker_revocation_stops_an_active_task_without_falling_back_to_a_popup(
         "session-1",
         "grant-1",
         "Chrome Web Store upload",
-        "capability-1",
+        &receipt.window_capability,
         ConfirmationWindowIdentity {
             process_id: 42,
             window_handle: 7,
@@ -338,7 +344,10 @@ async fn broker_revocation_stops_an_active_task_without_falling_back_to_a_popup(
     let outcome = authorize_task_scoped_action(
         Some(host.as_ref()),
         Some(&lease),
-        &browser_secret_confirmation("https://chromewebstore.google.com"),
+        &browser_secret_confirmation(
+            "https://chromewebstore.google.com",
+            &receipt.window_capability,
+        ),
     )
     .await;
 
@@ -519,13 +528,13 @@ async fn browser_credential_scope_requires_the_exact_observed_origin() {
     let allowed = authorize_task_scoped_action(
         Some(host.as_ref()),
         Some(&lease),
-        &browser_secret_confirmation("https://chromewebstore.google.com"),
+        &browser_secret_confirmation("https://chromewebstore.google.com", "capability-1"),
     )
     .await;
     let refused = authorize_task_scoped_action(
         Some(host.as_ref()),
         Some(&lease),
-        &browser_secret_confirmation("https://payments.google.com"),
+        &browser_secret_confirmation("https://payments.google.com", "capability-1"),
     )
     .await;
 

@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "dccCuaTaskAuthorization": {
+      "title": "DCC-CUA task authorization",
+      "description": "Exact-window DCC-CUA tasks with one explicit inline user authorization and no per-action native popups.",
+      "cwd": ".",
+      "command": "dcc-cua",
+      "args": ["mcp-server"],
+      "startup_timeout_sec": 10,
+      "tool_timeout_sec": 3600
+    }
+  }
+}

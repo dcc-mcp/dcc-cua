@@ -48,6 +48,8 @@ pub(super) struct TaskGrant {
     pub(super) allow_trusted_confirmation: bool,
     #[serde(default)]
     pub(super) task_authorization_id: Option<String>,
+    #[serde(default)]
+    pub(super) task_authorization_window_capability: Option<String>,
 }
 
 impl TaskGrant {
@@ -64,6 +66,25 @@ impl TaskGrant {
         )?;
         if let Some(authorization_id) = self.task_authorization_id.as_deref() {
             crate::task_authorization::validate_authorization_id(authorization_id)?;
+        }
+        match (
+            self.task_authorization_id.as_deref(),
+            self.task_authorization_window_capability.as_deref(),
+        ) {
+            (Some(_), Some(capability)) => {
+                validate_identity_field(capability, 512, "task_authorization_window_capability")?;
+            }
+            (Some(_), None) => {
+                return Err(HostError::Protocol(
+                    "task_authorization_id requires task_authorization_window_capability".into(),
+                ));
+            }
+            (None, Some(_)) => {
+                return Err(HostError::Protocol(
+                    "task_authorization_window_capability requires task_authorization_id".into(),
+                ));
+            }
+            (None, None) => {}
         }
         Ok(())
     }

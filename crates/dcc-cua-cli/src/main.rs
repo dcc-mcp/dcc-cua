@@ -11,12 +11,14 @@ mod cli_args;
 mod host_lifecycle;
 mod manifest;
 mod mcp_output;
+mod mcp_server;
 mod profile_context;
 mod profile_package;
 mod profile_state;
 mod secret_vault;
 mod semantic_profile;
 mod trusted_confirmation;
+mod trusted_embedding;
 mod update;
 mod update_check;
 
@@ -171,6 +173,10 @@ async fn dispatch(arguments: Vec<String>) -> Result<(), Box<dyn std::error::Erro
     }
     if command == "host-jsonl" {
         host_jsonl(&flags).await?;
+        return Ok(());
+    }
+    if command == "mcp-server" {
+        mcp_server::run().await?;
         return Ok(());
     }
     if command == "host-ensure" {
