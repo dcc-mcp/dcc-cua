@@ -1777,6 +1777,7 @@ fn protocol_wire_codes_are_explicit_and_never_inferred_from_prose() {
 
 mod action_confirmation;
 mod browser_extension;
+mod confirmation_latency;
 mod connection;
 mod request_contracts;
 mod request_parsing;

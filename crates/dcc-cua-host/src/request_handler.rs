@@ -1,8 +1,10 @@
 use super::*;
 use crate::request_contract::*;
 use zeroize::Zeroize;
+mod confirmation_evidence;
 mod evidence_epoch;
 mod session_helpers;
+pub(crate) use confirmation_evidence::*;
 pub(super) use evidence_epoch::*;
 pub(crate) use session_helpers::*;
 
@@ -1553,7 +1555,7 @@ async fn handle_request_inner(
             session_id,
             task_grant_id,
             window_capability,
-            observation_id,
+            mut observation_id,
             accessibility_state_id,
             mut action,
             capture_after,
@@ -1603,10 +1605,18 @@ async fn handle_request_inner(
                 ));
             }
             if safety_tier.requires_confirmation() {
+                let confirmation_observation =
+                    host.session.latest_observation().cloned().ok_or_else(|| {
+                        HostError::ComputerUse(ComputerUseError::new(
+                            ComputerUseErrorCode::StaleObservation,
+                            "take a fresh exact-target observation before requesting confirmation",
+                        ))
+                    })?;
                 let mut action_value = serde_json::to_value(&action).map_err(|error| {
                     HostError::Protocol(format!("could not bind task authorization: {error}"))
                 })?;
                 action_value["authorization_category"] = Value::String(authorization_category);
+                let confirmed_action_value = action_value.clone();
                 let request = TrustedActionConfirmationRequest::for_bound_window_action_value(
                     ConfirmationBinding::window(
                         &session_id,
@@ -1625,6 +1635,46 @@ async fn handle_request_inner(
                 let outcome = authorize_window_confirmation(security_services, host, request).await;
                 if outcome != ActionConfirmationOutcome::Allowed {
                     return Ok(action_confirmation_refusal(outcome));
+                }
+                if confirmed_action_evidence_refresh(
+                    &action,
+                    host.session.confirmed_action_evidence_refresh_due(),
+                ) == ConfirmedActionEvidenceRefresh::AccessibilityObservation
+                {
+                    let refreshed_root = host
+                        .session
+                        .accessibility_snapshot(post_snapshot_max_nodes, post_snapshot_max_depth)
+                        .await;
+                    let refreshed_root =
+                        host.finish_observation_sensitive_attempt(refreshed_root)?;
+                    let refreshed_observation =
+                        host.session.latest_observation().cloned().ok_or_else(|| {
+                            HostError::Protocol(
+                                "confirmed action evidence refresh returned no observation".into(),
+                            )
+                        })?;
+                    let rebound = rebind_confirmed_action_evidence(
+                        &action,
+                        &confirmed_action_value,
+                        ConfirmationWindowIdentity {
+                            process_id: host.target_process_id,
+                            window_handle: host.target_window_handle,
+                        },
+                        &confirmation_observation,
+                        &refreshed_observation,
+                        &refreshed_root,
+                    );
+                    let rebound = match rebound {
+                        Ok(observation_id) => observation_id,
+                        Err(error) => {
+                            host.invalidate_observations();
+                            return Err(HostError::ComputerUse(error));
+                        }
+                    };
+                    observation_id = rebound.clone();
+                    host.latest_observation_id = Some(rebound.clone());
+                    host.latest_accessibility_state_id = Some(rebound);
+                    host.latest_accessibility_root = Some(refreshed_root);
                 }
             }
             if let Some(handle) = action.secret_handle.clone() {

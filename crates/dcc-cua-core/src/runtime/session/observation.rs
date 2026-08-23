@@ -1,6 +1,16 @@
 use super::*;
 
 impl ComputerUseSession {
+    /// Report whether a user-confirmed action must renew its exact-target
+    /// evidence before dispatch. The renewal itself remains read-only; callers
+    /// must still preserve the original action and authorization binding.
+    #[must_use]
+    pub fn confirmed_action_evidence_refresh_due(&self) -> bool {
+        self.active
+            && matches!(self.upstream_session_state, UpstreamSessionState::Active)
+            && self.upstream_session_refresh_due()
+    }
+
     pub(crate) fn finish_observation_sensitive_attempt<T>(
         &mut self,
         result: ComputerUseResult<T>,
