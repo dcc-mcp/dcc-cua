@@ -17,6 +17,7 @@ mod session_events;
 mod session_identity;
 mod session_state;
 mod task_authorization;
+mod task_authorization_broker;
 mod task_grant;
 mod wait;
 mod wire;
@@ -55,6 +56,11 @@ pub use task_authorization::{
 };
 use task_authorization::{
     TaskAuthorizationBinding, authorize_window_confirmation, issue_task_authorization,
+};
+pub use task_authorization_broker::{
+    TrustedTaskAuthorizationBrokerError, TrustedTaskAuthorizationIssuer,
+    TrustedTaskAuthorizationReceipt, TrustedTaskAuthorizationRegistration,
+    trusted_task_authorization_broker,
 };
 use task_grant::TaskGrant;
 pub use task_grant::{MAX_APPLICATION_LABEL_CHARS, MAX_TASK_GRANT_ID_CHARS};

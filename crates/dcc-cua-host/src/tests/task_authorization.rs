@@ -181,6 +181,191 @@ fn browser_secret_confirmation(origin: &str) -> TrustedActionConfirmationRequest
     .unwrap()
 }
 
+fn browser_credential_registration(
+    expires_at_unix_ms: u64,
+) -> TrustedTaskAuthorizationRegistration {
+    TrustedTaskAuthorizationRegistration {
+        task_grant_id: "grant-1".into(),
+        application_label: "Chrome Web Store upload".into(),
+        window_capability: "capability-1".into(),
+        target_process_id: 42,
+        target_window_handle: 7,
+        allowed_actions: vec![TrustedTaskActionScope {
+            action: "browser_type".into(),
+            input_kind: "browser".into(),
+            secret_input: true,
+            authorization_category: "credential".into(),
+            browser_origin: Some("https://chromewebstore.google.com".into()),
+        }],
+        expires_at_unix_ms,
+    }
+}
+
+#[rstest]
+#[tokio::test]
+async fn broker_turns_one_trusted_embedding_registration_into_an_exact_no_popup_lease() {
+    let (issuer, host) = trusted_task_authorization_broker();
+    let receipt = issuer
+        .register(browser_credential_registration(unix_time_millis() + 60_000))
+        .unwrap();
+    let binding = TaskAuthorizationBinding::window(
+        &receipt.authorization_id,
+        "session-1",
+        "grant-1",
+        "Chrome Web Store upload",
+        "capability-1",
+        ConfirmationWindowIdentity {
+            process_id: 42,
+            window_handle: 7,
+        },
+    );
+
+    let lease = issue_task_authorization(Some(host.as_ref()), binding)
+        .await
+        .unwrap();
+    let outcome = authorize_task_scoped_action(
+        Some(host.as_ref()),
+        Some(&lease),
+        &browser_secret_confirmation("https://chromewebstore.google.com"),
+    )
+    .await;
+
+    assert_eq!(outcome, TaskAuthorizationOutcome::Allowed);
+    assert_eq!(lease.allowed_actions.len(), 1);
+}
+
+#[rstest]
+#[tokio::test]
+async fn broker_registration_is_single_use_and_cannot_be_replayed_into_a_second_session() {
+    let (issuer, host) = trusted_task_authorization_broker();
+    let receipt = issuer
+        .register(browser_credential_registration(unix_time_millis() + 60_000))
+        .unwrap();
+    let first = TaskAuthorizationBinding::window(
+        &receipt.authorization_id,
+        "session-1",
+        "grant-1",
+        "Chrome Web Store upload",
+        "capability-1",
+        ConfirmationWindowIdentity {
+            process_id: 42,
+            window_handle: 7,
+        },
+    );
+    issue_task_authorization(Some(host.as_ref()), first)
+        .await
+        .unwrap();
+    let replay = TaskAuthorizationBinding::window(
+        &receipt.authorization_id,
+        "session-2",
+        "grant-1",
+        "Chrome Web Store upload",
+        "capability-1",
+        ConfirmationWindowIdentity {
+            process_id: 42,
+            window_handle: 7,
+        },
+    );
+
+    let error = issue_task_authorization(Some(host.as_ref()), replay)
+        .await
+        .unwrap_err();
+
+    assert!(matches!(
+        error,
+        HostError::CodedProtocol {
+            code: HostProtocolErrorCode::TaskAuthorizationDenied,
+            ..
+        }
+    ));
+}
+
+#[rstest]
+#[tokio::test]
+async fn broker_rejects_a_different_exact_target_before_opening_the_session() {
+    let (issuer, host) = trusted_task_authorization_broker();
+    let receipt = issuer
+        .register(browser_credential_registration(unix_time_millis() + 60_000))
+        .unwrap();
+    let changed_target = TaskAuthorizationBinding::window(
+        &receipt.authorization_id,
+        "session-1",
+        "grant-1",
+        "Chrome Web Store upload",
+        "capability-1",
+        ConfirmationWindowIdentity {
+            process_id: 42,
+            window_handle: 8,
+        },
+    );
+
+    let error = issue_task_authorization(Some(host.as_ref()), changed_target)
+        .await
+        .unwrap_err();
+
+    assert!(matches!(
+        error,
+        HostError::CodedProtocol {
+            code: HostProtocolErrorCode::TaskAuthorizationDenied,
+            ..
+        }
+    ));
+}
+
+#[rstest]
+#[tokio::test]
+async fn broker_revocation_stops_an_active_task_without_falling_back_to_a_popup() {
+    let (issuer, host) = trusted_task_authorization_broker();
+    let receipt = issuer
+        .register(browser_credential_registration(unix_time_millis() + 60_000))
+        .unwrap();
+    let binding = TaskAuthorizationBinding::window(
+        &receipt.authorization_id,
+        "session-1",
+        "grant-1",
+        "Chrome Web Store upload",
+        "capability-1",
+        ConfirmationWindowIdentity {
+            process_id: 42,
+            window_handle: 7,
+        },
+    );
+    let lease = issue_task_authorization(Some(host.as_ref()), binding)
+        .await
+        .unwrap();
+    issuer.revoke(&receipt.authorization_id).unwrap();
+
+    let outcome = authorize_task_scoped_action(
+        Some(host.as_ref()),
+        Some(&lease),
+        &browser_secret_confirmation("https://chromewebstore.google.com"),
+    )
+    .await;
+
+    assert_eq!(outcome, TaskAuthorizationOutcome::Revoked);
+}
+
+#[rstest]
+fn broker_rejects_expired_or_ambiguous_scope_before_issuing_an_authorization_id() {
+    let (issuer, _host) = trusted_task_authorization_broker();
+    let expired = issuer.register(browser_credential_registration(
+        unix_time_millis().saturating_sub(1),
+    ));
+    assert!(matches!(
+        expired,
+        Err(TrustedTaskAuthorizationBrokerError::InvalidRegistration { .. })
+    ));
+
+    let mut duplicate = browser_credential_registration(unix_time_millis() + 60_000);
+    duplicate
+        .allowed_actions
+        .push(duplicate.allowed_actions[0].clone());
+    assert!(matches!(
+        issuer.register(duplicate),
+        Err(TrustedTaskAuthorizationBrokerError::InvalidRegistration { .. })
+    ));
+}
+
 #[rstest]
 #[tokio::test]
 async fn active_task_authorization_allows_the_exact_scoped_action_without_a_popup() {
