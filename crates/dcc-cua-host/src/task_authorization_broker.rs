@@ -5,6 +5,8 @@ use async_trait::async_trait;
 use thiserror::Error;
 use uuid::Uuid;
 
+use dcc_cua_core::ComputerUseOwnedBrowserLaunchSpec;
+
 use crate::task_authorization::{
     MAX_TASK_AUTHORIZATION_ACTIONS, MAX_TASK_AUTHORIZATION_TTL_MS,
     TRUSTED_TASK_AUTHORIZATION_SCHEMA, TRUSTED_TASK_AUTHORIZATION_VALIDATION_SCHEMA,
@@ -22,10 +24,21 @@ const MAX_BROKER_AUTHORIZATIONS: usize = 256;
 pub struct TrustedTaskAuthorizationRegistration {
     pub task_grant_id: String,
     pub application_label: String,
-    pub target_process_id: u32,
-    pub target_window_handle: u64,
+    pub target: TrustedTaskAuthorizationTarget,
     pub allowed_actions: Vec<TrustedTaskActionScope>,
+    pub allowed_browser_origins: Vec<String>,
     pub expires_at_unix_ms: u64,
+}
+
+/// User-visible target scope registered before a task starts.
+///
+/// Exact windows preserve the existing attach contract. Owned browsers expose
+/// only a closed launch specification; their PID and HWND are accepted from
+/// the trusted Host exactly once after DCC-CUA launches and observes them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrustedTaskAuthorizationTarget {
+    ExactWindow { process_id: u32, window_handle: u64 },
+    OwnedBrowser(ComputerUseOwnedBrowserLaunchSpec),
 }
 
 /// Opaque reference that an embedding may place in a task grant. It carries no
@@ -151,6 +164,8 @@ struct BrokerRecord {
 struct BrokerBinding {
     session_id: String,
     lease_request_digest: String,
+    target_process_id: u32,
+    target_window_handle: u64,
 }
 
 struct BrokerHost {
@@ -173,11 +188,22 @@ impl TrustedTaskAuthorizationHost for BrokerHost {
             .get_mut(&request.authorization_id)
             .ok_or(TrustedTaskAuthorizationHostError::Denied)?;
         let registration = &record.registration;
+        let target_matches = match registration.target {
+            TrustedTaskAuthorizationTarget::ExactWindow {
+                process_id,
+                window_handle,
+            } => {
+                request.target_process_id == process_id
+                    && request.target_window_handle == window_handle
+            }
+            TrustedTaskAuthorizationTarget::OwnedBrowser(_) => {
+                request.target_process_id != 0 && request.target_window_handle != 0
+            }
+        };
         let exact_match = request.task_grant_id == registration.task_grant_id
             && request.application_label == registration.application_label
             && request.window_capability == record.window_capability
-            && request.target_process_id == registration.target_process_id
-            && request.target_window_handle == registration.target_window_handle;
+            && target_matches;
         if record.revoked
             || record.binding.is_some()
             || registration.expires_at_unix_ms <= now
@@ -188,6 +214,8 @@ impl TrustedTaskAuthorizationHost for BrokerHost {
         record.binding = Some(BrokerBinding {
             session_id: request.session_id.clone(),
             lease_request_digest: request.request_digest.clone(),
+            target_process_id: request.target_process_id,
+            target_window_handle: request.target_window_handle,
         });
         Ok(TrustedTaskAuthorizationLease {
             authorization_id: request.authorization_id,
@@ -198,6 +226,7 @@ impl TrustedTaskAuthorizationHost for BrokerHost {
             target_process_id: request.target_process_id,
             target_window_handle: request.target_window_handle,
             allowed_actions: registration.allowed_actions.clone(),
+            allowed_browser_origins: registration.allowed_browser_origins.clone(),
             issued_at_unix_ms: now,
             expires_at_unix_ms: registration.expires_at_unix_ms,
             request_digest: request.request_digest,
@@ -223,8 +252,8 @@ impl TrustedTaskAuthorizationHost for BrokerHost {
             && request.task_grant_id == registration.task_grant_id
             && request.application_label == registration.application_label
             && request.window_capability == record.window_capability
-            && request.target_process_id == registration.target_process_id
-            && request.target_window_handle == registration.target_window_handle
+            && request.target_process_id == binding.target_process_id
+            && request.target_window_handle == binding.target_window_handle
             && registration.allowed_actions.contains(&request.action_scope);
         if !exact_match {
             return Err(unavailable());
@@ -253,7 +282,14 @@ fn validate_registration(
         MAX_APPLICATION_LABEL_CHARS,
         "application_label",
     )?;
-    if registration.target_process_id == 0 || registration.target_window_handle == 0 {
+    if matches!(
+        registration.target,
+        TrustedTaskAuthorizationTarget::ExactWindow { process_id: 0, .. }
+            | TrustedTaskAuthorizationTarget::ExactWindow {
+                window_handle: 0,
+                ..
+            }
+    ) {
         return invalid("the exact target PID and window handle must be non-zero");
     }
     let now = crate::task_authorization::unix_time_millis();
@@ -273,6 +309,18 @@ fn validate_registration(
         || !actions.iter().all(TrustedTaskActionScope::validate)
     {
         return invalid("allowed actions must be unique, closed, and non-empty");
+    }
+    let origins = registration
+        .allowed_browser_origins
+        .iter()
+        .collect::<BTreeSet<_>>();
+    if origins.len() != registration.allowed_browser_origins.len()
+        || origins.len() > MAX_TASK_AUTHORIZATION_ACTIONS
+        || origins
+            .iter()
+            .any(|origin| !crate::task_authorization::valid_browser_origin(origin))
+    {
+        return invalid("allowed browser origins must be unique exact HTTP(S) origins");
     }
     Ok(())
 }

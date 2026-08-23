@@ -182,6 +182,8 @@ async fn logical_task_reuses_one_connection_and_injects_exact_credentials() {
     assert_eq!(task.session_id(), "task-7");
     assert_eq!(task.task_grant_id(), "grant-7");
     assert_eq!(task.idle_timeout_ms(), 60_000);
+    assert_eq!(task.target()["process_id"], 42);
+    assert_eq!(task.target()["window_handle"], 99);
     let snapshot = task
         .request("snapshot", json!({"max_depth": 4}))
         .await
@@ -876,6 +878,7 @@ async fn fake_logical_task_server(mut stream: DuplexStream) -> HostClientResult<
             "type":"session_opened",
             "session_id":"task-7",
             "window_capability":"cap-7",
+            "target":{"process_id":42,"window_handle":99,"window_title":"Task"},
         }),
     )
     .await?;

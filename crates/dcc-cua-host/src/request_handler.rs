@@ -724,27 +724,23 @@ async fn handle_request_inner(
                 bind_launched_process(launched, &mut grant)?;
             }
             let allow_restore_activate = restore_activate_available(&grant);
-            let scope = ComputerUseTargetScope {
-                process_id: grant.process_id,
-                window_handle: grant.window_handle,
-                window_title: grant.window_title,
-            };
             let runtime_session_id = launched
                 .as_ref()
                 .map(|session| session.runtime_session_id.clone())
                 .unwrap_or_else(|| new_runtime_session_id("window"));
-            let mut session = driver.session_with_agent(
-                scope,
-                grant.application_label.clone(),
-                agent_name.clone(),
-                runtime_session_id.clone(),
-            )?;
-            let started = session
-                .start_with_request(&ComputerUseSessionStartRequest {
-                    activate_before,
-                    indicator_motion,
-                })
-                .await?;
+            let start_request = ComputerUseSessionStartRequest {
+                activate_before,
+                indicator_motion,
+            };
+            let (mut session, started) = start_granted_window_session(
+                driver,
+                &grant,
+                launched.as_ref(),
+                &agent_name,
+                &runtime_session_id,
+                &start_request,
+            )
+            .await?;
             let showcase = if let Some(output_dir) = grant.showcase_output_dir.as_deref() {
                 if !grant.allow_recording {
                     let _ = session.stop().await;
@@ -826,6 +822,23 @@ async fn handle_request_inner(
                 } else {
                     None
                 };
+            if let Some(authorization) = task_authorization.as_ref() {
+                let granted = grant
+                    .allowed_browser_origins
+                    .iter()
+                    .collect::<std::collections::BTreeSet<_>>();
+                let authorized = authorization
+                    .allowed_browser_origins
+                    .iter()
+                    .collect::<std::collections::BTreeSet<_>>();
+                if granted != authorized {
+                    let _ = session.stop().await;
+                    return Err(HostError::coded_protocol(
+                        HostProtocolErrorCode::TaskAuthorizationDenied,
+                        "task grant browser origins do not match the trusted authorization",
+                    ));
+                }
+            }
             let (input_readiness, observed_at) = crate::session_events::input_readiness_sample();
             let input_events =
                 crate::session_events::SessionInputEventQueue::new_with_restore_capability(
@@ -854,6 +867,7 @@ async fn handle_request_inner(
                     allow_live_observation: grant.allow_live_observation,
                     allow_browser_input: grant.allow_browser_input,
                     allow_browser_prepare: grant.allow_browser_prepare,
+                    allowed_browser_origins: grant.allowed_browser_origins,
                     allow_browser_download: grant.allow_browser_download,
                     allow_native_tool: grant.allow_native_tool,
                     allow_menu_invoke: grant.allow_menu_invoke,
@@ -891,6 +905,9 @@ async fn handle_request_inner(
                 "latest_sequence": initial_sequence,
                 "idle_timeout_ms": idle_timeout_ms,
             });
+            if let Some(owned_browser) = started.get("owned_browser") {
+                response["owned_browser"] = owned_browser.clone();
+            }
             if let Some(authorization) = task_authorization {
                 response["task_authorization"] = json!({
                     "status": "active",
@@ -1308,6 +1325,8 @@ async fn handle_request_inner(
                     "browser input",
                 ));
             }
+            let origin = exact_http_origin(&request.url)?;
+            host.require_allowed_browser_origin(&origin)?;
             let result = host.browser.navigate(&mut host.session, request).await;
             let result = host.finish_observation_sensitive_attempt(result)?;
             browser_response(
@@ -1334,6 +1353,7 @@ async fn handle_request_inner(
                 ));
             }
             host.require_current_browser_evidence_epoch()?;
+            host.require_current_allowed_browser_origin()?;
             let result = host.browser.click(&mut host.session, request).await;
             let result = host.finish_observation_sensitive_attempt(result)?;
             browser_response(
@@ -1360,6 +1380,7 @@ async fn handle_request_inner(
                 ));
             }
             host.require_current_browser_evidence_epoch()?;
+            host.require_current_allowed_browser_origin()?;
             let request = match resolve_browser_type_request(
                 host,
                 security_services,
@@ -1397,6 +1418,7 @@ async fn handle_request_inner(
                 ));
             }
             host.require_current_browser_evidence_epoch()?;
+            host.require_current_allowed_browser_origin()?;
             let result = host.browser.pointer(&mut host.session, request).await;
             let result = host.finish_observation_sensitive_attempt(result)?;
             browser_response(
@@ -1423,6 +1445,7 @@ async fn handle_request_inner(
                 ));
             }
             host.require_current_browser_evidence_epoch()?;
+            host.require_current_allowed_browser_origin()?;
             let result = host
                 .browser
                 .set_input_files(&mut host.session, request)
@@ -1452,6 +1475,7 @@ async fn handle_request_inner(
                 ));
             }
             host.require_current_browser_evidence_epoch()?;
+            host.require_current_allowed_browser_origin()?;
             let result = host.browser.download(&mut host.session, request).await;
             let result = host.finish_observation_sensitive_attempt(result)?;
             browser_response(
@@ -1477,6 +1501,7 @@ async fn handle_request_inner(
                     "browser input",
                 ));
             }
+            host.require_current_allowed_browser_origin()?;
             let result = host.browser.dialog(&mut host.session, request).await;
             let result = host.finish_observation_sensitive_attempt(result)?;
             browser_response(

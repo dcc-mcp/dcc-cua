@@ -60,7 +60,7 @@ use task_authorization::{
 pub use task_authorization_broker::{
     TrustedTaskAuthorizationBrokerError, TrustedTaskAuthorizationIssuer,
     TrustedTaskAuthorizationReceipt, TrustedTaskAuthorizationRegistration,
-    trusted_task_authorization_broker,
+    TrustedTaskAuthorizationTarget, trusted_task_authorization_broker,
 };
 use task_grant::TaskGrant;
 pub use task_grant::{MAX_APPLICATION_LABEL_CHARS, MAX_TASK_GRANT_ID_CHARS};
@@ -104,7 +104,6 @@ use dcc_cua_shm::SharedImage;
 
 // ponytail: one OS input stream is process-global; shard only if platforms gain isolated seats.
 static RAW_INPUT_QUEUE: AsyncMutex<()> = AsyncMutex::const_new(());
-
 /// Capabilities this implementation actually provides.
 pub const HOST_CAPABILITIES: &[&str] = &[
     "exact_window_capabilities",
@@ -170,6 +169,7 @@ pub const HOST_CAPABILITIES: &[&str] = &[
     "scoped_desktop_raw_input",
     "trusted_confirmation_grants",
     "task_scoped_authorization_v1",
+    "task_owned_browser_launch_v1",
     "application_launch",
     "application_terminate",
     "session_scoped_application_lifecycle",

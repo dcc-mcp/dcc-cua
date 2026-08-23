@@ -3,12 +3,12 @@ use std::error::Error;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use dcc_cua_client::{HostClient, LogicalTaskSession, SnapshotTransport};
-use dcc_cua_core::ComputerUseDriver;
+use dcc_cua_core::{ComputerUseDriver, ComputerUseOwnedBrowserLaunchSpec};
 use dcc_cua_host::{
     HostSecurityServices, TrustedTaskActionScope, TrustedTaskAuthorizationHost,
     TrustedTaskAuthorizationIssuer, TrustedTaskAuthorizationReceipt,
-    TrustedTaskAuthorizationRegistration, process_connection_with_security_services,
-    trusted_task_authorization_broker,
+    TrustedTaskAuthorizationRegistration, TrustedTaskAuthorizationTarget,
+    process_connection_with_security_services, trusted_task_authorization_broker,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -31,16 +31,22 @@ const AUTHORIZATION_CARD_HTML: &str = include_str!("task_authorization_card.html
 #[serde(deny_unknown_fields)]
 struct PrepareTaskInput {
     application_label: String,
-    target_process_id: u32,
-    target_window_handle: u64,
+    #[serde(default)]
+    target_process_id: Option<u32>,
+    #[serde(default)]
+    target_window_handle: Option<u64>,
+    #[serde(default)]
+    owned_browser_launch: Option<ComputerUseOwnedBrowserLaunchSpec>,
     surface: TaskSurface,
     allowed_methods: Vec<String>,
     allowed_actions: Vec<TrustedTaskActionScope>,
+    #[serde(default)]
+    allowed_browser_origins: Vec<String>,
     #[serde(default = "default_ttl_minutes")]
     ttl_minutes: u64,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum TaskSurface {
     Window,
@@ -108,9 +114,9 @@ impl TaskAuthorizationServer {
                     "name": SERVER_NAME,
                     "title": "DCC-CUA task authorization",
                     "version": env!("CARGO_PKG_VERSION"),
-                    "description": "One explicit in-chat user authorization for a bounded exact-window DCC-CUA task."
+                    "description": "One explicit in-chat user authorization for a bounded exact-window or DCC-CUA-owned browser task."
                 },
-                "instructions": "Render the task authorization card before the first mutating task call. The user must type authorization once in the card. Never place credentials or secret values in task proposals or task_call params; use DCC-CUA secret handles."
+                "instructions": "Render the task authorization card before the task starts. The user types authorization once; the card then starts the task and reports provider/runtime/PID/HWND before any observation or input. Never place credentials or secret values in task proposals or task_call params; use DCC-CUA secret handles."
             })),
             "ping" => Ok(json!({})),
             "tools/list" => Ok(json!({"tools": tool_definitions()})),
@@ -152,6 +158,7 @@ impl TaskAuthorizationServer {
         let result = match name {
             "prepare_task_authorization" => self.prepare_task(arguments),
             "authorize_task" => self.authorize_task(arguments),
+            "start_authorized_task" => self.start_task(arguments).await,
             "revoke_task_authorization" => self.revoke_task(arguments),
             "task_authorization_status" => self.task_status(arguments),
             _ => Err(format!("unknown DCC-CUA MCP tool: {name}")),
@@ -171,6 +178,56 @@ impl TaskAuthorizationServer {
             ));
         }
         validate_allowed_methods(input.surface, &input.allowed_methods)?;
+        let allowed_browser_origins = input
+            .allowed_browser_origins
+            .iter()
+            .cloned()
+            .chain(
+                input
+                    .allowed_actions
+                    .iter()
+                    .filter_map(|action| action.browser_origin.clone()),
+            )
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let target = match (
+            input.target_process_id,
+            input.target_window_handle,
+            input.owned_browser_launch,
+        ) {
+            (Some(process_id), Some(window_handle), None) => {
+                TrustedTaskAuthorizationTarget::ExactWindow {
+                    process_id,
+                    window_handle,
+                }
+            }
+            (None, None, Some(launch)) if input.surface == TaskSurface::Browser => {
+                if input
+                    .allowed_methods
+                    .iter()
+                    .any(|method| method == "browser_prepare")
+                {
+                    return Err(
+                        "owned browser tasks derive their target internally and cannot grant browser_prepare"
+                            .into(),
+                    );
+                }
+                if allowed_browser_origins.is_empty() {
+                    return Err(
+                        "owned browser tasks require at least one exact authorized browser origin"
+                            .into(),
+                    );
+                }
+                TrustedTaskAuthorizationTarget::OwnedBrowser(launch)
+            }
+            _ => {
+                return Err(
+                    "provide either an exact target_process_id/target_window_handle pair or owned_browser_launch"
+                        .into(),
+                );
+            }
+        };
         let now = unix_time_millis();
         self.proposals.retain(|_, proposal| {
             proposal.session.is_some() || proposal.registration.expires_at_unix_ms > now
@@ -182,9 +239,9 @@ impl TaskAuthorizationServer {
         let registration = TrustedTaskAuthorizationRegistration {
             task_grant_id: format!("task-grant-{}", Uuid::new_v4()),
             application_label: input.application_label,
-            target_process_id: input.target_process_id,
-            target_window_handle: input.target_window_handle,
+            target,
             allowed_actions: input.allowed_actions,
+            allowed_browser_origins,
             expires_at_unix_ms: now.saturating_add(input.ttl_minutes * 60_000),
         };
         registration.validate().map_err(|error| error.to_string())?;
@@ -247,6 +304,44 @@ impl TaskAuthorizationServer {
         Ok(proposal_payload(proposal_id, proposal, "revoked"))
     }
 
+    async fn start_task(&mut self, arguments: Value) -> Result<Value, String> {
+        let proposal_id = required_string(&arguments, "proposal_id")?.to_owned();
+        let proposal = self
+            .proposals
+            .get_mut(&proposal_id)
+            .ok_or_else(|| "task authorization proposal was not found".to_owned())?;
+        if proposal.revoked {
+            return Err("task authorization was revoked".into());
+        }
+        if proposal.registration.expires_at_unix_ms <= unix_time_millis() {
+            return Err("task authorization expired".into());
+        }
+        if proposal.receipt.is_none() {
+            return Err("task requires explicit user input in the authorization card".into());
+        }
+        if proposal.session.is_none() {
+            proposal.session = Some(
+                open_task_session(&proposal_id, proposal, self.authorization_host.clone()).await?,
+            );
+        }
+        let target = proposal
+            .session
+            .as_ref()
+            .expect("task session was initialized")
+            .target()
+            .clone();
+        Ok(json!({
+            "ok": true,
+            "provider": "dcc-cua",
+            "runtime_version": env!("CARGO_PKG_VERSION"),
+            "proposal_id": proposal_id,
+            "status": "started",
+            "target": target,
+            "report_before_first_observation_or_input": true,
+            "native_action_popups": false,
+        }))
+    }
+
     fn task_status(&self, arguments: Value) -> Result<Value, String> {
         let proposal_id = required_string(&arguments, "proposal_id")?;
         let proposal = self
@@ -257,6 +352,8 @@ impl TaskAuthorizationServer {
             "revoked"
         } else if proposal.registration.expires_at_unix_ms <= unix_time_millis() {
             "expired"
+        } else if proposal.session.is_some() {
+            "started"
         } else if proposal.receipt.is_some() {
             "authorized"
         } else {
@@ -296,8 +393,9 @@ impl TaskAuthorizationServer {
             ));
         }
         if proposal.session.is_none() {
-            proposal.session = Some(
-                open_task_session(&proposal_id, proposal, self.authorization_host.clone()).await?,
+            return Err(
+                "call start_authorized_task and report provider/runtime/PID/HWND before the first observation or input"
+                    .into(),
             );
         }
         let response = proposal
@@ -312,6 +410,7 @@ impl TaskAuthorizationServer {
             "provider": "dcc-cua",
             "runtime_version": env!("CARGO_PKG_VERSION"),
             "proposal_id": proposal_id,
+            "target": proposal.session.as_ref().map(LogicalTaskSession::target),
             "native_action_popups": false,
         });
         super::mcp_output::call_tool_result(host, response.binary_attachment.as_deref())
@@ -368,17 +467,27 @@ fn task_session_grant(proposal: &TaskProposal, receipt: &TrustedTaskAuthorizatio
         .allowed_actions
         .iter()
         .any(|scope| scope.input_kind == "clipboard");
+    let allowed_browser_origins = &proposal.registration.allowed_browser_origins;
+    let (process_id, window_handle, owned_browser_launch) = match proposal.registration.target {
+        TrustedTaskAuthorizationTarget::ExactWindow {
+            process_id,
+            window_handle,
+        } => (Some(process_id), Some(window_handle), None),
+        TrustedTaskAuthorizationTarget::OwnedBrowser(launch) => (None, None, Some(launch)),
+    };
     json!({
         "task_grant_id": proposal.registration.task_grant_id,
         "application_label": proposal.registration.application_label,
-        "process_id": proposal.registration.target_process_id,
-        "window_handle": proposal.registration.target_window_handle,
+        "process_id": process_id,
+        "window_handle": window_handle,
+        "owned_browser_launch": owned_browser_launch,
+        "allowed_browser_origins": allowed_browser_origins,
         "allow_raw_input": allow_raw_input,
         "allow_clipboard_read": allow_clipboard,
         "allow_clipboard_write": allow_clipboard,
         "allow_live_observation": true,
         "allow_browser_input": browser,
-        "allow_browser_prepare": browser,
+        "allow_browser_prepare": browser && owned_browser_launch.is_none(),
         "allow_trusted_confirmation": true,
         "task_authorization_id": receipt.authorization_id,
         "task_authorization_window_capability": receipt.window_capability,
@@ -386,6 +495,24 @@ fn task_session_grant(proposal: &TaskProposal, receipt: &TrustedTaskAuthorizatio
 }
 
 fn proposal_payload(proposal_id: &str, proposal: &TaskProposal, status: &str) -> Value {
+    let target = match proposal.registration.target {
+        TrustedTaskAuthorizationTarget::ExactWindow {
+            process_id,
+            window_handle,
+        } => json!({
+            "kind": "exact_window",
+            "process_id": process_id,
+            "window_handle": window_handle,
+        }),
+        TrustedTaskAuthorizationTarget::OwnedBrowser(launch) => json!({
+            "kind": "owned_browser",
+            "browser": launch.browser,
+            "profile": launch.profile,
+            "process_id": Value::Null,
+            "window_handle": Value::Null,
+            "derived_after_authorization": true,
+        }),
+    };
     json!({
         "ok": true,
         "provider": "dcc-cua",
@@ -395,12 +522,10 @@ fn proposal_payload(proposal_id: &str, proposal: &TaskProposal, status: &str) ->
         "status": status,
         "application_label": proposal.registration.application_label,
         "surface": proposal.surface.as_str(),
-        "target": {
-            "process_id": proposal.registration.target_process_id,
-            "window_handle": proposal.registration.target_window_handle,
-        },
+        "target": target,
         "allowed_methods": proposal.allowed_methods,
         "allowed_actions": proposal.registration.allowed_actions,
+        "allowed_browser_origins": proposal.registration.allowed_browser_origins,
         "expires_at_unix_ms": proposal.registration.expires_at_unix_ms,
         "requires_user_text_input": true,
         "authorization_text": "授权 / AUTHORIZE",
@@ -543,15 +668,37 @@ fn tool_definitions() -> Vec<Value> {
         json!({
             "name": "prepare_task_authorization",
             "title": "Prepare DCC-CUA task authorization",
-            "description": "Render one inline authorization card for a bounded exact PID/HWND task. This does not authorize the task; the user must type in the card. Never include credentials or secret values.",
+            "description": "Render one inline authorization card for either a bounded exact PID/HWND task or a DCC-CUA-owned isolated browser. This does not authorize the task; the user must type in the card. Never include credentials or secret values.",
             "inputSchema": {
                 "type": "object",
                 "additionalProperties": false,
-                "required": ["application_label", "target_process_id", "target_window_handle", "surface", "allowed_methods", "allowed_actions"],
+                "required": ["application_label", "surface", "allowed_methods", "allowed_actions"],
+                "oneOf": [
+                    {
+                        "required": ["target_process_id", "target_window_handle"],
+                        "not": {"required": ["owned_browser_launch"]}
+                    },
+                    {
+                        "required": ["owned_browser_launch"],
+                        "not": {"anyOf": [
+                            {"required": ["target_process_id"]},
+                            {"required": ["target_window_handle"]}
+                        ]}
+                    }
+                ],
                 "properties": {
                     "application_label": {"type": "string", "minLength": 1, "maxLength": 80},
                     "target_process_id": {"type": "integer", "minimum": 1},
                     "target_window_handle": {"type": "integer", "minimum": 1},
+                    "owned_browser_launch": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": ["browser", "profile"],
+                        "properties": {
+                            "browser": {"type": "string", "enum": ["chromium"]},
+                            "profile": {"type": "string", "enum": ["isolated_new"]}
+                        }
+                    },
                     "surface": {"type": "string", "enum": ["window", "browser"]},
                     "allowed_methods": {
                         "type": "array",
@@ -568,6 +715,12 @@ fn tool_definitions() -> Vec<Value> {
                         ]}
                     },
                     "allowed_actions": {"type": "array", "minItems": 1, "maxItems": 32, "items": action_scope},
+                    "allowed_browser_origins": {
+                        "type": "array",
+                        "maxItems": 32,
+                        "uniqueItems": true,
+                        "items": {"type": "string", "format": "uri"}
+                    },
                     "ttl_minutes": {"type": "integer", "minimum": 1, "maximum": MAX_TTL_MINUTES, "default": DEFAULT_TTL_MINUTES}
                 }
             },
@@ -608,9 +761,16 @@ fn tool_definitions() -> Vec<Value> {
             "annotations": {"readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false}
         }),
         json!({
+            "name": "start_authorized_task",
+            "title": "Start authorized DCC-CUA task",
+            "description": "After the user authorizes, open the exact task session and return provider, runtime version, PID, and HWND. Report that binding before the first observation or input.",
+            "inputSchema": proposal_id_schema(),
+            "annotations": {"readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false}
+        }),
+        json!({
             "name": "dcc_cua_task_call",
             "title": "Run authorized DCC-CUA task call",
-            "description": "Call one closed Host method inside an exact task that the user already authorized in the inline card. Out-of-scope, expired, revoked, or changed targets fail without falling back to a popup. Never pass credential values; use secret handles.",
+            "description": "Call one closed Host method after start_authorized_task returned and its provider/runtime/PID/HWND binding was reported. Out-of-scope, expired, revoked, or changed targets fail without falling back to a popup. Never pass credential values; use secret handles.",
             "inputSchema": {
                 "type": "object",
                 "additionalProperties": false,

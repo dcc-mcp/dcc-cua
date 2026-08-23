@@ -40,5 +40,6 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_
 platform-macos = { git = "https://github.com/loonghao/cua.git", rev = "593234c061758a85d347b6b80d1d1125cccfb670", package = "platform-macos" }
 
 [dev-dependencies]
+async-trait.workspace = true
 rstest.workspace = true
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "test-util", "time"] }

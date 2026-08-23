@@ -84,6 +84,30 @@ pub struct ComputerUseTargetScope {
     pub window_title: Option<String>,
 }
 
+/// Closed launch specification for a browser process owned by one DCC-CUA task.
+///
+/// Callers select only the browser family and ephemeral profile behavior. The
+/// runtime resolves the executable and derives the resulting PID, native
+/// window, and CDP target; none of those identities are caller-nominated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ComputerUseOwnedBrowserLaunchSpec {
+    pub browser: ComputerUseOwnedBrowserFamily,
+    pub profile: ComputerUseOwnedBrowserProfile,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ComputerUseOwnedBrowserFamily {
+    Chromium,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ComputerUseOwnedBrowserProfile {
+    IsolatedNew,
+}
+
 impl ComputerUseTargetScope {
     pub fn validate(&self) -> ComputerUseResult<()> {
         if self.process_id.is_none() && self.window_handle.is_none() && self.window_title.is_none()

@@ -180,6 +180,7 @@ pub struct TrustedTaskAuthorizationLease {
     pub target_process_id: u32,
     pub target_window_handle: u64,
     pub allowed_actions: Vec<TrustedTaskActionScope>,
+    pub allowed_browser_origins: Vec<String>,
     pub issued_at_unix_ms: u64,
     pub expires_at_unix_ms: u64,
     pub request_digest: String,
@@ -488,7 +489,14 @@ fn validate_lease(
         && actions.len() == lease.allowed_actions.len()
         && actions.len() <= MAX_TASK_AUTHORIZATION_ACTIONS
         && actions.iter().all(TrustedTaskActionScope::validate);
-    if !fields_match || !valid_time || !valid_actions {
+    let origins = lease
+        .allowed_browser_origins
+        .iter()
+        .collect::<BTreeSet<_>>();
+    let valid_origins = origins.len() == lease.allowed_browser_origins.len()
+        && origins.len() <= MAX_TASK_AUTHORIZATION_ACTIONS
+        && origins.iter().all(|origin| valid_browser_origin(origin));
+    if !fields_match || !valid_time || !valid_actions || !valid_origins {
         return Err(task_authorization_required(
             "the trusted task authorization lease is invalid or out of scope",
         ));
@@ -509,7 +517,7 @@ pub(crate) fn validate_authorization_id(value: &str) -> Result<(), HostError> {
     Ok(())
 }
 
-fn valid_browser_origin(value: &str) -> bool {
+pub(crate) fn valid_browser_origin(value: &str) -> bool {
     let authority = value
         .strip_prefix("https://")
         .or_else(|| value.strip_prefix("http://"));

@@ -30,6 +30,26 @@ fn browser_task() -> Value {
     })
 }
 
+fn owned_browser_task() -> Value {
+    json!({
+        "application_label": "Firefox add-on upload",
+        "owned_browser_launch": {
+            "browser": "chromium",
+            "profile": "isolated_new"
+        },
+        "surface": "browser",
+        "allowed_methods": ["browser_snapshot", "browser_navigate", "browser_set_input_files"],
+        "allowed_actions": [{
+            "action": "click",
+            "input_kind": "semantic",
+            "secret_input": false,
+            "authorization_category": "publishing"
+        }],
+        "allowed_browser_origins": ["https://addons.mozilla.org"],
+        "ttl_minutes": 15
+    })
+}
+
 #[rstest]
 fn issuer_tools_are_app_only_and_task_calls_cannot_mint_authority() {
     let tools = tool_definitions();
@@ -52,6 +72,78 @@ fn issuer_tools_are_app_only_and_task_calls_cannot_mint_authority() {
             .get("window_capability")
             .is_none()
     );
+}
+
+#[rstest]
+fn owned_browser_proposal_exposes_only_a_closed_launch_spec_until_start() {
+    let mut server = test_server();
+    let prepared = server.prepare_task(owned_browser_task()).unwrap();
+
+    assert_eq!(prepared["target"]["kind"], "owned_browser");
+    assert_eq!(prepared["target"]["browser"], "chromium");
+    assert_eq!(prepared["target"]["profile"], "isolated_new");
+    assert!(prepared["target"]["process_id"].is_null());
+    assert!(prepared["target"]["window_handle"].is_null());
+
+    let proposal_id = prepared["proposal_id"].as_str().unwrap();
+    server
+        .authorize_task(json!({
+            "proposal_id": proposal_id,
+            "acknowledgement": "授权"
+        }))
+        .unwrap();
+    let proposal = server.proposals.get(proposal_id).unwrap();
+    let grant = task_session_grant(proposal, proposal.receipt.as_ref().unwrap());
+    assert!(grant["process_id"].is_null());
+    assert!(grant["window_handle"].is_null());
+    assert_eq!(grant["allow_browser_prepare"], false);
+    assert_eq!(
+        grant["allowed_browser_origins"],
+        json!(["https://addons.mozilla.org"])
+    );
+}
+
+#[rstest]
+fn owned_browser_proposal_rejects_target_substitution_and_prepare_reentry() {
+    let mut server = test_server();
+    let mut substituted = owned_browser_task();
+    substituted["target_process_id"] = json!(42);
+    substituted["target_window_handle"] = json!(7);
+    assert!(server.prepare_task(substituted).is_err());
+
+    let mut reentry = owned_browser_task();
+    reentry["allowed_methods"] = json!(["browser_prepare"]);
+    assert!(
+        server
+            .prepare_task(reentry)
+            .unwrap_err()
+            .contains("cannot grant browser_prepare")
+    );
+}
+
+#[rstest]
+#[tokio::test]
+async fn authorized_task_call_requires_start_attestation_before_observation() {
+    let mut server = test_server();
+    let prepared = server.prepare_task(browser_task()).unwrap();
+    let proposal_id = prepared["proposal_id"].as_str().unwrap();
+    server
+        .authorize_task(json!({
+            "proposal_id": proposal_id,
+            "acknowledgement": "授权"
+        }))
+        .unwrap();
+
+    let error = server
+        .task_call(json!({
+            "proposal_id": proposal_id,
+            "method": "browser_snapshot",
+            "params": {}
+        }))
+        .await
+        .unwrap_err();
+
+    assert!(error.contains("provider/runtime/PID/HWND"));
 }
 
 #[rstest]

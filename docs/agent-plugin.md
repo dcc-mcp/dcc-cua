@@ -33,11 +33,15 @@ closed before the MCP server reads a request. Additional host platforms need
 their own native embedding attestor; model-visible arguments and environment
 variables are never accepted as an authorization bypass.
 
-Before a mutating workflow, the model renders one exact PID/HWND proposal. The
-card shows the closed Host-method list plus sensitive action, risk, and browser
-origin scopes. The user types `授权` or `AUTHORIZE` in the inline card. The
-app-only tool registers the server-held proposal; it accepts no scopes,
-credentials, or secret values.
+Before a workflow, the model renders either an exact PID/HWND proposal or the
+closed `chromium` / `isolated_new` owned-browser launch spec. The card shows the
+closed Host-method list plus sensitive action, risk, and exact browser-origin
+scopes. The user types `授权` or `AUTHORIZE` in the inline card. The app-only tool
+registers the server-held proposal; it accepts no scopes, credentials, or
+secret values. The card then starts the task and reports
+`provider=dcc-cua`, runtime version, PID, and HWND before any observation or
+input. Owned-browser PID/HWND/CDP identities are derived by DCC-CUA and cannot
+be nominated or replaced by the model.
 Authorized actions execute through the same process-local broker without native
 action popups. Expiry, revocation, target changes, or scope mismatches fail
 closed and never fall back to a modal prompt.

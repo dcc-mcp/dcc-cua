@@ -506,6 +506,84 @@ impl ComputerUseDriver {
         )
     }
 
+    /// Launch a new isolated Chromium profile and promote its derived native
+    /// identity into one exact-window session.
+    ///
+    /// The caller cannot supply a PID, window handle, executable, profile path,
+    /// or CDP endpoint. The same upstream session owns the browser lifecycle and
+    /// the returned exact-window session, so stopping the task reaps the browser.
+    pub async fn owned_browser_session_with_agent(
+        &self,
+        launch: ComputerUseOwnedBrowserLaunchSpec,
+        app_name: impl Into<String>,
+        agent_name: impl Into<String>,
+        session_id: impl Into<String>,
+        start_request: &ComputerUseSessionStartRequest,
+    ) -> ComputerUseResult<(ComputerUseSession, Value)> {
+        if start_request.activate_before {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::InvalidTarget,
+                "owned-browser bootstrap derives its exact target and cannot activate a caller-nominated window",
+            ));
+        }
+        let session_id = session_id.into();
+        if session_id.trim().is_empty() {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::InvalidAction,
+                "owned-browser session_id must not be empty",
+            ));
+        }
+        let app_name = app_name.into();
+        let agent_name = agent_name.into();
+        let label = localized_control_label(&agent_name, &app_name);
+        let binding = match launch_owned_browser_target(self, launch, &session_id, &label).await {
+            Ok(binding) => binding,
+            Err(error) => {
+                cleanup_started_session(self, &session_id).await;
+                return Err(error);
+            }
+        };
+        let scope = ComputerUseTargetScope {
+            process_id: Some(binding.process_id),
+            window_handle: Some(binding.window_handle),
+            window_title: None,
+        };
+        let mut session = match ComputerUseSession::new(
+            self.clone(),
+            scope,
+            app_name,
+            agent_name,
+            session_id.clone(),
+        ) {
+            Ok(session) => session,
+            Err(error) => {
+                cleanup_started_session(self, &session_id).await;
+                return Err(error);
+            }
+        };
+        let target = match session.resolve_target().await {
+            Ok(target) => target,
+            Err(error) => {
+                cleanup_started_session(self, &session_id).await;
+                return Err(error);
+            }
+        };
+        session.upstream_session_state = UpstreamSessionState::Active;
+        session.last_upstream_session_refresh = Some(Instant::now());
+        enable_session_marker(self, &session_id, "start owned-browser CUA session").await?;
+        let mut started = session
+            .finish_started_session(target, start_request, None)
+            .await?;
+        started["owned_browser"] = json!({
+            "browser": launch.browser,
+            "profile": launch.profile,
+            "ownership": "task",
+            "target_id": binding.target_id,
+            "derived": true,
+        });
+        Ok((session, started))
+    }
+
     pub fn desktop_session(
         &self,
         session_id: impl Into<String>,
@@ -867,6 +945,179 @@ impl ComputerUseDriver {
     }
 }
 
+struct OwnedBrowserBinding {
+    process_id: u32,
+    window_handle: u64,
+    target_id: String,
+}
+
+async fn launch_owned_browser_target(
+    driver: &ComputerUseDriver,
+    launch: ComputerUseOwnedBrowserLaunchSpec,
+    session_id: &str,
+    label: &str,
+) -> ComputerUseResult<OwnedBrowserBinding> {
+    let started = call_driver_tool_with_timeout(
+        &driver.driver,
+        "start_session",
+        json!({
+            "session": session_id,
+            "capture_scope": "window",
+            "cursor_theme": {"theme_id": MOUSE_CURSOR_THEME, "reduced_motion": "auto"},
+            "_public_session_label": label,
+        })
+        .to_string(),
+        "start owned-browser bootstrap session",
+        Duration::from_secs(60),
+    )
+    .await?;
+    ensure_tool_ok("start owned-browser bootstrap session", &started)?;
+
+    let profile_mode = match launch.profile {
+        ComputerUseOwnedBrowserProfile::IsolatedNew => "isolated_new",
+    };
+    let browser = match launch.browser {
+        ComputerUseOwnedBrowserFamily::Chromium => "chromium",
+    };
+    let prepared = call_driver_tool_with_timeout(
+        &driver.driver,
+        "browser_prepare",
+        json!({
+            "session": session_id,
+            "allow_launch": true,
+            "profile": {"mode": profile_mode},
+        })
+        .to_string(),
+        "launch task-owned isolated browser",
+        Duration::from_secs(60),
+    )
+    .await?;
+    ensure_tool_ok("launch task-owned isolated browser", &prepared)?;
+    let prepared = tool_structured_content(&prepared, "browser_prepare")?;
+    if prepared["status"] != "ok"
+        || prepared["action"] != "launched_isolated_browser"
+        || prepared["side_effects"]["launched_browser"] != true
+        || prepared["side_effects"]["created_profile"] != true
+    {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::BrowserRefused,
+            "CUA did not create the authorized isolated browser profile",
+        ));
+    }
+    let process_id = prepared["prepared_pid"]
+        .as_u64()
+        .and_then(|value| u32::try_from(value).ok())
+        .filter(|value| *value > 0)
+        .ok_or_else(|| {
+            ComputerUseError::new(
+                ComputerUseErrorCode::BackendUnavailable,
+                "CUA browser_prepare omitted the derived browser PID",
+            )
+        })?;
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        let windows = call_driver_tool_with_timeout(
+            &driver.driver,
+            "list_windows",
+            json!({"pid": process_id, "on_screen_only": true}).to_string(),
+            "list task-owned browser windows",
+            Duration::from_secs(10),
+        )
+        .await?;
+        ensure_tool_ok("list task-owned browser windows", &windows)?;
+        let windows = tool_structured_content(&windows, "list_windows")?["windows"]
+            .as_array()
+            .cloned()
+            .ok_or_else(|| {
+                ComputerUseError::new(
+                    ComputerUseErrorCode::BackendUnavailable,
+                    "CUA list_windows omitted task-owned browser windows",
+                )
+            })?;
+        for window in windows {
+            let Some(target) = WindowTarget::from_value(&window) else {
+                continue;
+            };
+            if target.pid != process_id || target.window_id == 0 {
+                continue;
+            }
+            let state = call_driver_tool_with_timeout(
+                &driver.driver,
+                "get_browser_state",
+                json!({
+                    "pid": process_id,
+                    "window_id": target.window_id,
+                    "session": session_id,
+                })
+                .to_string(),
+                "derive task-owned browser target",
+                Duration::from_secs(10),
+            )
+            .await;
+            let Ok(state) = state else {
+                continue;
+            };
+            if ensure_tool_ok("derive task-owned browser target", &state).is_err() {
+                continue;
+            }
+            let Ok(state) = tool_structured_content(&state, "get_browser_state") else {
+                continue;
+            };
+            let active_tabs = state["tabs"].as_array().map_or(0, |tabs| {
+                tabs.iter().filter(|tab| tab["active"] == true).count()
+            });
+            let Some(target_id) = state["target_id"]
+                .as_str()
+                .filter(|value| !value.trim().is_empty())
+            else {
+                continue;
+            };
+            if state["binding_quality"] == "exact"
+                && state["mutation_allowed"] == true
+                && active_tabs == 1
+            {
+                return Ok(OwnedBrowserBinding {
+                    process_id,
+                    window_handle: target.window_id,
+                    target_id: target_id.to_owned(),
+                });
+            }
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::BackendUnavailable,
+                format!(
+                    "the task-owned {browser} browser did not expose one exact PID/window/CDP binding within 20 seconds"
+                ),
+            ));
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+fn tool_structured_content(
+    result: &cua_driver_sdk::ToolResult,
+    tool: &str,
+) -> ComputerUseResult<Value> {
+    let value: Value = serde_json::from_str(&result.raw_json).map_err(|error| {
+        ComputerUseError::new(
+            ComputerUseErrorCode::BackendUnavailable,
+            format!("CUA {tool} returned invalid JSON: {error}"),
+        )
+    })?;
+    value["structuredContent"]
+        .as_object()
+        .cloned()
+        .map(Value::Object)
+        .ok_or_else(|| {
+            ComputerUseError::new(
+                ComputerUseErrorCode::BackendUnavailable,
+                format!("CUA {tool} omitted structuredContent"),
+            )
+        })
+}
+
 pub(crate) fn diagnostic_tool_check(result: ComputerUseResult<ComputerUseToolResult>) -> Value {
     match result {
         Ok(result) => json!({
@@ -1073,6 +1324,59 @@ pub struct ComputerUseSession {
     active: bool,
     escalated: bool,
     pub(crate) uia_timeout_escalated: bool,
+}
+
+impl ComputerUseSession {
+    async fn finish_started_session(
+        &mut self,
+        target: WindowTarget,
+        request: &ComputerUseSessionStartRequest,
+        activation: Option<Value>,
+    ) -> ComputerUseResult<Value> {
+        self.app_name = resolved_application_name(&self.app_name, &target);
+        self.marker.label = localized_control_label(&self.agent_name, &self.app_name);
+        let control_banner = match ControlBanner::start_with_motion(
+            BannerTarget {
+                process_id: target.pid,
+                window_handle: target.window_id,
+                agent_name: self.agent_name.clone(),
+                application_name: self.app_name.clone(),
+            },
+            request.indicator_motion,
+        ) {
+            Ok(banner) => banner,
+            Err(error) => {
+                cleanup_started_session(&self.driver, &self.session_id).await;
+                return Err(map_indicator_error("start visible control banner", error));
+            }
+        };
+        self.target = Some(target.clone());
+        self.control_banner = Some(control_banner);
+        self.set_banner_activity(BannerActivity::Ready);
+        #[cfg(windows)]
+        {
+            self.windows_uia = None;
+        }
+        self.active = true;
+        self.escalated = false;
+        self.uia_timeout_escalated = false;
+        self.marker.visible = true;
+        let banner = self.banner_status();
+        let mut started = json!({
+            "success": true,
+            "target": target,
+            "marker": self.marker,
+            "banner": banner,
+            "cursor_theme": MOUSE_CURSOR_THEME,
+            "backend": "cua-driver-sdk",
+            "upstream_session": self.upstream_session_status(),
+        });
+        if let Some(activation) = activation {
+            started["activation"] =
+                attach_indicator_motion_to_activation(activation, &started["banner"]);
+        }
+        Ok(started)
+    }
 }
 
 /// A bounded desktop-scope session for screen-absolute discovery and input.
