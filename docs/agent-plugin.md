@@ -14,6 +14,11 @@ matching `dcc-cua` binary on `PATH`, then start a new Codex task so the MCP
 server is discovered. The skill files can also be copied into an agent's skills
 directory when local plugin installation is unavailable.
 
+```powershell
+codex plugin marketplace add .
+codex plugin add dcc-cua-computer-use@dcc-cua
+```
+
 The authorization issuer is created only when Windows verifies that the MCP
 server's immediate parent is the signed, packaged Codex desktop runtime. A
 shell, redirected stdin client, unpackaged host, or unsupported platform fails

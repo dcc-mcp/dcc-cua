@@ -13,9 +13,12 @@ class ReleaseWorkflowTests(unittest.TestCase):
     def test_release_archive_includes_the_plugin_and_mcp_bridge(self):
         workflow = WORKFLOW.read_text(encoding="utf-8")
 
+        self.assertIn("cp -R .claude-plugin target/release/.claude-plugin", workflow)
         self.assertIn("cp -R .codex-plugin target/release/.codex-plugin", workflow)
         self.assertIn("cp .mcp.json target/release/.mcp.json", workflow)
-        self.assertIn("assets skills .codex-plugin .mcp.json", workflow)
+        self.assertIn(
+            "assets skills .claude-plugin .codex-plugin .mcp.json", workflow
+        )
 
     def test_browser_store_jobs_require_the_protected_user_authorization_environment(self):
         workflow = WORKFLOW.read_text(encoding="utf-8")
