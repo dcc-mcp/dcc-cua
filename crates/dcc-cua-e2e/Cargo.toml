@@ -14,7 +14,7 @@ gui-e2e = []
 
 [dev-dependencies]
 # Keep E2E on the exact fork candidate used by the runtime crates.
-cua-driver-testkit = { git = "https://github.com/loonghao/cua.git", rev = "ed3dbc6dc26e71886dc7096751621d3ba8a06b96", package = "cua-driver-testkit" }
+cua-driver-testkit = { git = "https://github.com/loonghao/cua.git", rev = "593234c061758a85d347b6b80d1d1125cccfb670", package = "cua-driver-testkit" }
 dcc-cua-client = { path = "../dcc-cua-client" }
 rstest.workspace = true
 serde_json = "1"

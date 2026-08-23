@@ -40,7 +40,8 @@ const BROWSER_COMPLETENESS_HTML: &str = r#"<!doctype html>
 <html><head><meta charset="utf-8"><title>CUA browser completeness</title></head>
 <body>
   <p data-cua-id="page-marker">BROWSER_COMPLETENESS_MARKER_v1</p>
-  <input data-cua-id="upload" id="upload" aria-label="standalone-upload" type="file">
+  <label data-cua-id="upload-chooser" for="upload" aria-label="standalone-upload">Choose upload</label>
+  <input data-cua-id="upload" id="upload" type="file" hidden>
   <span data-cua-id="upload-state" id="upload-state">upload=0</span>
   <a data-cua-id="download" aria-label="standalone-download" href="/download" download>Download fixture</a>
   <script>
