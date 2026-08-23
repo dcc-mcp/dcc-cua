@@ -46,6 +46,8 @@ pub(super) struct TaskGrant {
     pub(super) allow_session_escalation: bool,
     #[serde(default)]
     pub(super) allow_trusted_confirmation: bool,
+    #[serde(default)]
+    pub(super) task_authorization_id: Option<String>,
 }
 
 impl TaskGrant {
@@ -59,7 +61,11 @@ impl TaskGrant {
             &self.application_label,
             MAX_APPLICATION_LABEL_CHARS,
             "application_label",
-        )
+        )?;
+        if let Some(authorization_id) = self.task_authorization_id.as_deref() {
+            crate::task_authorization::validate_authorization_id(authorization_id)?;
+        }
+        Ok(())
     }
 }
 

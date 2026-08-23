@@ -107,6 +107,22 @@ pub(super) fn action_confirmation_refusal(
             "approval_required",
             "trusted action-time confirmation is required",
         ),
+        ActionConfirmationOutcome::TaskAuthorizationRequired => (
+            "task_authorization_required",
+            "trusted task authorization could not be validated",
+        ),
+        ActionConfirmationOutcome::TaskAuthorizationOutOfScope => (
+            "task_authorization_out_of_scope",
+            "the action or exact target is outside the trusted task authorization",
+        ),
+        ActionConfirmationOutcome::TaskAuthorizationExpired => (
+            "task_authorization_expired",
+            "the trusted task authorization has expired",
+        ),
+        ActionConfirmationOutcome::TaskAuthorizationRevoked => (
+            "task_authorization_revoked",
+            "the trusted task authorization has been revoked",
+        ),
         ActionConfirmationOutcome::Allowed => {
             unreachable!("allowed confirmations are not refusals")
         }

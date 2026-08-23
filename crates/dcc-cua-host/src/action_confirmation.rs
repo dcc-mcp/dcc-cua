@@ -109,6 +109,7 @@ impl TrustedActionConfirmationRequest {
         Self::new_value(binding, intent, action)
     }
 
+    #[cfg(test)]
     pub(crate) fn for_window_action(
         session_id: &str,
         task_grant_id: &str,
@@ -242,6 +243,10 @@ pub(crate) enum ActionConfirmationOutcome {
     Required,
     Denied,
     Cancelled,
+    TaskAuthorizationRequired,
+    TaskAuthorizationOutOfScope,
+    TaskAuthorizationExpired,
+    TaskAuthorizationRevoked,
 }
 
 pub(crate) async fn authorize_action_confirmation(

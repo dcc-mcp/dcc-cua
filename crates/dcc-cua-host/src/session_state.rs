@@ -58,6 +58,7 @@ pub(super) struct HostSession {
     pub(super) allow_menu_invoke: bool,
     pub(super) allow_session_escalation: bool,
     pub(super) allow_trusted_confirmation: bool,
+    pub(super) task_authorization: Option<crate::TrustedTaskAuthorizationLease>,
     pub(super) allow_restore_activate: bool,
     pub(super) capability: String,
     pub(super) interrupted: bool,
