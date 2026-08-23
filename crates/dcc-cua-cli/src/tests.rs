@@ -18,6 +18,9 @@ use super::host_lifecycle::{
 };
 use super::*;
 
+mod update_check_tests;
+mod update_tests;
+
 #[rstest]
 fn one_shot_failures_have_a_single_json_error_envelope() {
     let error = ComputerUseError::new(

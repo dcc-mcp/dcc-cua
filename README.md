@@ -336,6 +336,7 @@ cargo run -p dcc-cua-cli -- hotkey --app chrome.exe --key CTRL --key L
 cargo run -p dcc-cua-cli -- scroll --app UE5Editor.exe --scroll-x 4 --by page --x 600 --y 900
 cargo run -p dcc-cua-cli -- act --app chrome.exe --action-json '{"action":"click","x":100,"y":100}'
 cargo run -p dcc-cua-cli -- verify --app chrome.exe --expect-json '[{"window":{"exists":true}}]'
+cargo run -p dcc-cua-cli -- --version
 cargo run -p dcc-cua-cli -- update --check
 ```
 
@@ -345,6 +346,13 @@ same versioned executable. Release discovery uses the GitHub REST API first and
 falls back to the public `releases/latest` redirect when the API is rate limited
 (HTTP 403); set `GITHUB_TOKEN` or `GH_TOKEN` to raise the unauthenticated API
 quota of 60 requests per hour per IP address.
+
+In an interactive terminal, successful commands also perform a best-effort
+update check in parallel. Only releases with both the exact platform archive
+and its SHA-256 sidecar qualify for a reminder. The result is cached for 24
+hours under `~/.dcc-cua/cache`, failures are silent and retried after one hour,
+and protocol/CI commands are never interrupted. Set
+`DCC_CUA_NO_UPDATE_CHECK=1` to disable these reminders.
 
 `manifest` is the stable machine-readable discovery entry for Core and other
 independent callers. It reports the current platform, Host protocol, frame

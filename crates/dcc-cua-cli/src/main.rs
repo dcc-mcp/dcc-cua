@@ -16,6 +16,7 @@ mod profile_package;
 mod profile_state;
 mod semantic_profile;
 mod update;
+mod update_check;
 
 use actions::{
     act, action_result_value, activate_window, desktop_act, friendly_action, invoke_menu,
@@ -106,6 +107,19 @@ fn fatal_error_value(error: &(dyn std::error::Error + 'static)) -> serde_json::V
 #[tokio::main]
 async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
     let arguments = env::args().skip(1).collect::<Vec<_>>();
+    let update_check = update_check::start(&arguments);
+    let result = dispatch(arguments).await;
+    if let Some(handle) = update_check {
+        if result.is_ok() {
+            update_check::finish(handle).await;
+        } else {
+            handle.abort();
+        }
+    }
+    result
+}
+
+async fn dispatch(arguments: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
     if let Some(invocation_origin) = browser_extension::invocation_origin(&arguments) {
         browser_extension::run_native_host(invocation_origin).await?;
         return Ok(());
@@ -113,6 +127,10 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = arguments.into_iter();
     let command = args.next().unwrap_or_else(|| "help".into());
     let flags = args.collect::<Vec<_>>();
+    if matches!(command.as_str(), "--version" | "-V" | "version") {
+        println!("dcc-cua {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
     reject_unknown_flags(&flags)?;
     if is_help_request(&command, &flags) {
         print_help();

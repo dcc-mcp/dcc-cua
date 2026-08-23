@@ -190,6 +190,7 @@ pub(super) fn print_help() {
     println!(
         r#"dcc-cua
 
+  version | --version | -V
   list [--app APP] [--pid PID] [--window-id ID] [--title TITLE] [--on-screen]
   wait-window --app APP|--pid PID|--window-id ID|--title TITLE [--on-screen] [--timeout-ms N] [--poll-ms N]
   apps

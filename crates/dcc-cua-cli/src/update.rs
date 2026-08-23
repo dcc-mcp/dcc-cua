@@ -43,7 +43,7 @@ pub fn run(flags: &[String]) -> UpdateResult<()> {
     }
 
     confirm_update(current, &release.version)?;
-    install_release(&std::env::current_exe()?, asset, checksum)?;
+    install_release(&std::env::current_exe()?, &asset, &checksum)?;
     println!("dcc-cua updated to v{}", release.version);
     Ok(())
 }
@@ -81,7 +81,7 @@ fn fetch_releases() -> UpdateResult<Vec<Release>> {
     }
 }
 
-fn github_token() -> Option<String> {
+pub(crate) fn github_token() -> Option<String> {
     env::var("GITHUB_TOKEN")
         .or_else(|_| env::var("GH_TOKEN"))
         .ok()
@@ -198,20 +198,81 @@ pub(crate) fn release_archive_name(version: &str, target: &str) -> String {
 pub(crate) fn latest_release_assets<'a>(
     releases: &'a [Release],
     target: &str,
-) -> Option<(&'a Release, &'a ReleaseAsset, &'a ReleaseAsset)> {
+) -> Option<(&'a Release, ReleaseAsset, ReleaseAsset)> {
     releases.iter().find_map(|release| {
         let expected = release_archive_name(&release.version, target);
-        let archive = release.assets.iter().find(|asset| {
-            asset.name == expected
-                && asset.download_url == official_asset_url(&release.version, &expected)
+        release.assets.iter().find(|asset| {
+            asset.name == expected && is_official_asset_reference(asset, &release.version)
         })?;
+        let archive = ReleaseAsset {
+            name: expected.clone(),
+            download_url: official_asset_url(&release.version, &expected),
+        };
         let checksum_name = format!("{expected}.sha256");
-        let checksum = release.assets.iter().find(|asset| {
-            asset.name == checksum_name
-                && asset.download_url == official_asset_url(&release.version, &checksum_name)
+        release.assets.iter().find(|asset| {
+            asset.name == checksum_name && is_official_asset_reference(asset, &release.version)
         })?;
+        let checksum = ReleaseAsset {
+            name: checksum_name.clone(),
+            download_url: official_asset_url(&release.version, &checksum_name),
+        };
         Some((release, archive, checksum))
     })
+}
+
+pub(crate) fn parse_github_releases(body: &str) -> UpdateResult<Vec<Release>> {
+    let document: serde_json::Value = serde_json::from_str(body)?;
+    let entries = document
+        .as_array()
+        .ok_or("GitHub releases response is not an array")?;
+    let releases = entries
+        .iter()
+        .filter(|entry| {
+            !entry["draft"].as_bool().unwrap_or(true)
+                && !entry["prerelease"].as_bool().unwrap_or(true)
+        })
+        .filter_map(|entry| {
+            let tag = entry["tag_name"].as_str()?;
+            let version = tag.strip_prefix('v')?;
+            if !is_plausible_version(version) {
+                return None;
+            }
+            let assets = entry["assets"]
+                .as_array()?
+                .iter()
+                .filter_map(|asset| {
+                    Some(ReleaseAsset {
+                        name: asset["name"].as_str()?.to_owned(),
+                        download_url: asset["browser_download_url"].as_str()?.to_owned(),
+                    })
+                })
+                .collect();
+            Some(Release {
+                name: tag.to_owned(),
+                version: version.to_owned(),
+                date: entry["published_at"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned(),
+                body: None,
+                assets,
+            })
+        })
+        .collect();
+    Ok(releases)
+}
+
+fn is_official_asset_reference(asset: &ReleaseAsset, version: &str) -> bool {
+    if asset.download_url == official_asset_url(version, &asset.name) {
+        return true;
+    }
+    let prefix = format!("https://api.github.com/repos/{OWNER}/{REPOSITORY}/releases/assets/");
+    asset
+        .download_url
+        .strip_prefix(&prefix)
+        .is_some_and(|asset_id| {
+            !asset_id.is_empty() && asset_id.chars().all(|character| character.is_ascii_digit())
+        })
 }
 
 fn official_asset_url(version: &str, name: &str) -> String {
