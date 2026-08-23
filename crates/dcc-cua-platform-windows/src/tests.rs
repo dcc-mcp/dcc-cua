@@ -326,6 +326,7 @@ fn snapshot_normalization_emits_flat_agent_friendly_elements() {
             "value": null,
             "checked": null,
             "policy_tier": "task_grant",
+            "policy_category": "ordinary",
             "children": [{
                 "runtime_id": "menu",
                 "fallback_path": "0.0",
@@ -341,6 +342,7 @@ fn snapshot_normalization_emits_flat_agent_friendly_elements() {
                 "value": null,
                 "checked": null,
                 "policy_tier": "task_grant",
+                "policy_category": "publishing",
                 "children": []
             }]
         }
@@ -354,6 +356,7 @@ fn snapshot_normalization_emits_flat_agent_friendly_elements() {
     assert_eq!(elements.len(), 2);
     assert_eq!(elements[1]["role"], "MenuItem");
     assert_eq!(elements[1]["name"], "DCC MCP");
+    assert_eq!(elements[1]["policy_category"], "publishing");
     assert!(
         elements[1]["element_token"]
             .as_str()
@@ -374,6 +377,7 @@ fn snapshot_normalization_emits_flat_agent_friendly_elements() {
     assert_eq!(fence.automation_id, "");
     assert_eq!(fence.class_name, "QAction");
     assert_eq!(fence.policy_tier, "task_grant");
+    assert_eq!(fence.policy_category, "publishing");
 }
 
 #[rstest]
