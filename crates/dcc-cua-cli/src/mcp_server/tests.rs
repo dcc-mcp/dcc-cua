@@ -86,6 +86,34 @@ fn explicit_card_text_authorizes_once_without_exposing_broker_receipts() {
 }
 
 #[rstest]
+fn clipboard_capture_grants_read_and_clear_as_one_authorized_capability() {
+    let mut server = test_server();
+    let mut task = browser_task();
+    task["allowed_methods"] = json!(["clipboard_capture_secret"]);
+    task["allowed_actions"] = json!([{
+        "action": "clipboard_capture_secret",
+        "input_kind": "clipboard",
+        "secret_input": true,
+        "authorization_category": "credential"
+    }]);
+    let prepared = server.prepare_task(task).unwrap();
+    let proposal_id = prepared["proposal_id"].as_str().unwrap();
+    server
+        .authorize_task(json!({
+            "proposal_id": proposal_id,
+            "acknowledgement": "授权"
+        }))
+        .unwrap();
+    let proposal = server.proposals.get(proposal_id).unwrap();
+    let receipt = proposal.receipt.as_ref().unwrap();
+
+    let grant = task_session_grant(proposal, receipt);
+
+    assert_eq!(grant["allow_clipboard_read"], true);
+    assert_eq!(grant["allow_clipboard_write"], true);
+}
+
+#[rstest]
 #[tokio::test]
 async fn task_call_fails_closed_before_user_input_and_never_requests_a_popup() {
     let mut server = test_server();

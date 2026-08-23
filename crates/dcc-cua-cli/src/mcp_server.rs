@@ -342,31 +342,7 @@ async fn open_task_session(
         .hello(SERVER_NAME)
         .await
         .map_err(|error| error.to_string())?;
-    let browser = matches!(proposal.surface, TaskSurface::Browser);
-    let allow_raw_input = proposal
-        .registration
-        .allowed_actions
-        .iter()
-        .any(|scope| scope.input_kind == "raw_input");
-    let allow_clipboard_read = proposal
-        .registration
-        .allowed_actions
-        .iter()
-        .any(|scope| scope.input_kind == "clipboard");
-    let grant = json!({
-        "task_grant_id": proposal.registration.task_grant_id,
-        "application_label": proposal.registration.application_label,
-        "process_id": proposal.registration.target_process_id,
-        "window_handle": proposal.registration.target_window_handle,
-        "allow_raw_input": allow_raw_input,
-        "allow_clipboard_read": allow_clipboard_read,
-        "allow_live_observation": true,
-        "allow_browser_input": browser,
-        "allow_browser_prepare": browser,
-        "allow_trusted_confirmation": true,
-        "task_authorization_id": receipt.authorization_id,
-        "task_authorization_window_capability": receipt.window_capability,
-    });
+    let grant = task_session_grant(proposal, receipt);
     client
         .open_logical_task_session(
             format!(
@@ -378,6 +354,35 @@ async fn open_task_session(
         )
         .await
         .map_err(|error| error.to_string())
+}
+
+fn task_session_grant(proposal: &TaskProposal, receipt: &TrustedTaskAuthorizationReceipt) -> Value {
+    let browser = matches!(proposal.surface, TaskSurface::Browser);
+    let allow_raw_input = proposal
+        .registration
+        .allowed_actions
+        .iter()
+        .any(|scope| scope.input_kind == "raw_input");
+    let allow_clipboard = proposal
+        .registration
+        .allowed_actions
+        .iter()
+        .any(|scope| scope.input_kind == "clipboard");
+    json!({
+        "task_grant_id": proposal.registration.task_grant_id,
+        "application_label": proposal.registration.application_label,
+        "process_id": proposal.registration.target_process_id,
+        "window_handle": proposal.registration.target_window_handle,
+        "allow_raw_input": allow_raw_input,
+        "allow_clipboard_read": allow_clipboard,
+        "allow_clipboard_write": allow_clipboard,
+        "allow_live_observation": true,
+        "allow_browser_input": browser,
+        "allow_browser_prepare": browser,
+        "allow_trusted_confirmation": true,
+        "task_authorization_id": receipt.authorization_id,
+        "task_authorization_window_capability": receipt.window_capability,
+    })
 }
 
 fn proposal_payload(proposal_id: &str, proposal: &TaskProposal, status: &str) -> Value {
