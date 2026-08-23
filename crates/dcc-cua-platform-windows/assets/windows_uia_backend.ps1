@@ -413,6 +413,33 @@ function Invoke-LegacyDefaultAction($element) {
   }
 }
 
+function Expand-Collapse-Click-Operation-From-State([string]$state) {
+  switch ($state) {
+    "Collapsed" { return "expand" }
+    "Expanded" { return "collapse" }
+    "PartiallyExpanded" { return "collapse" }
+    default { return "unsupported" }
+  }
+}
+
+function Invoke-ExpandCollapseClick($element) {
+  $pattern = $null
+  if (-not $element.TryGetCurrentPattern(
+    [System.Windows.Automation.ExpandCollapsePattern]::Pattern,
+    [ref]$pattern
+  )) { return $null }
+  $operation = Expand-Collapse-Click-Operation-From-State ([string]$pattern.Current.ExpandCollapseState)
+  if ($operation -eq "expand") {
+    $pattern.Expand()
+    return @{ok = $true; message = "expanded control"}
+  }
+  if ($operation -eq "collapse") {
+    $pattern.Collapse()
+    return @{ok = $true; message = "collapsed control"}
+  }
+  return $null
+}
+
 function Invoke-Action($element) {
   $action = [string]$payload.action.action
   if ($action -eq "focus") {
@@ -465,6 +492,8 @@ function Invoke-Action($element) {
       $pattern.Toggle()
       return @{ok = $true; message = "toggled control"}
     }
+    $expandCollapseResult = Invoke-ExpandCollapseClick $element
+    if ($null -ne $expandCollapseResult) { return $expandCollapseResult }
     if (Invoke-LegacyDefaultAction $element) {
       return @{ok = $true; message = "invoked legacy accessible default action"}
     }
@@ -474,7 +503,7 @@ function Invoke-Action($element) {
     return @{
       ok = $false
       error = "unsupported_action"
-      message = "click requires InvokePattern, TogglePattern, LegacyIAccessiblePattern, or a native button handle"
+      message = "click requires InvokePattern, TogglePattern, ExpandCollapsePattern, LegacyIAccessiblePattern, or a native button handle"
     }
   }
   return @{ok = $false; error = "unsupported_action"; message = "unsupported Windows UIA action"}
@@ -496,6 +525,9 @@ function Invoke-UiaRequest($requestPayload) {
         }
         "denied_target_reason" {
           return @{ok = $true; result = Denied-Target-Reason-From-Facts $requestPayload.facts}
+        }
+        "expand_collapse_click_operation" {
+          return @{ok = $true; result = Expand-Collapse-Click-Operation-From-State ([string]$requestPayload.state)}
         }
         default {
           return @{ok = $false; error = "unsupported_action"; message = "Unknown policy fixture operation."}

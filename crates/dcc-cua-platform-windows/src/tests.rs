@@ -412,6 +412,16 @@ fn windows_uia_click_has_a_scoped_legacy_default_action_fallback() {
     assert!(backend.contains("DoDefaultAction()"));
 }
 
+#[rstest]
+fn windows_uia_click_supports_expandable_controls_without_raw_input() {
+    let backend = include_str!("../assets/windows_uia_backend.ps1");
+
+    assert!(backend.contains("ExpandCollapsePattern"));
+    assert!(backend.contains("Expand-Collapse-Click-Operation-From-State"));
+    assert!(backend.contains("$pattern.Expand()"));
+    assert!(backend.contains("$pattern.Collapse()"));
+}
+
 #[cfg(windows)]
 #[rstest]
 fn worker_protocol_rejects_missing_or_mismatched_versions() {
@@ -472,6 +482,30 @@ fn powershell_policy_tiers_are_behaviorally_fixture_tested() {
             }),
         )
         .expect("policy fixture response");
+        assert_eq!(response["result"], expected);
+    }
+}
+
+#[cfg(windows)]
+#[rstest]
+fn powershell_expand_collapse_click_decisions_are_behaviorally_fixture_tested() {
+    let _guard = policy_fixture_test_guard();
+    let mut worker = UiaWorker::start().expect("start expand-collapse fixture worker");
+    for (state, expected) in [
+        ("Collapsed", "expand"),
+        ("Expanded", "collapse"),
+        ("PartiallyExpanded", "collapse"),
+        ("LeafNode", "unsupported"),
+        ("Unknown", "unsupported"),
+    ] {
+        let response = evaluate_policy_fixture(
+            &mut worker,
+            json!({
+                "operation": "expand_collapse_click_operation",
+                "state": state,
+            }),
+        )
+        .expect("expand-collapse fixture response");
         assert_eq!(response["result"], expected);
     }
 }
