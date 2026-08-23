@@ -7,7 +7,9 @@
 
 use thiserror::Error;
 
+#[cfg(any(windows, test))]
 const TRUSTED_CODEX_PACKAGE_FAMILY: &str = "OpenAI.Codex_2p2nqsd0c76g0";
+#[cfg(any(windows, test))]
 const TRUSTED_CODEX_EXECUTABLE: &str = "codex.exe";
 
 #[derive(Clone, Copy, Debug)]
@@ -35,6 +37,7 @@ impl TrustedEmbeddingError {
     }
 }
 
+#[cfg(any(windows, test))]
 pub(super) fn validate_codex_identity(
     executable_name: &str,
     package_family: &str,
