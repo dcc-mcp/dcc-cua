@@ -109,29 +109,6 @@ impl TrustedActionConfirmationRequest {
         Self::new_value(binding, intent, action)
     }
 
-    #[cfg(test)]
-    pub(crate) fn for_window_action(
-        session_id: &str,
-        task_grant_id: &str,
-        window_capability: &str,
-        target: ConfirmationWindowIdentity,
-        observation_id: &str,
-        accessibility_state_id: &str,
-        action: &HostAction,
-    ) -> Result<Self, HostError> {
-        Self::new(
-            ConfirmationBinding::window(
-                session_id,
-                task_grant_id,
-                window_capability,
-                target,
-                observation_id,
-                Some(accessibility_state_id),
-            ),
-            action,
-        )
-    }
-
     pub(crate) fn for_desktop_action(
         session_id: &str,
         task_grant_id: &str,

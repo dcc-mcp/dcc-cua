@@ -1,6 +1,7 @@
 use rstest::rstest;
 
 use super::*;
+use crate::action_confirmation::ConfirmationBinding;
 
 #[rstest]
 #[case("windows_security_or_privacy")]
@@ -108,9 +109,33 @@ fn confirmation_action() -> HostAction {
     }
 }
 
+fn window_confirmation(
+    session_id: &str,
+    task_grant_id: &str,
+    window_capability: &str,
+    target: ConfirmationWindowIdentity,
+    observation_id: &str,
+    accessibility_state_id: &str,
+    action: &HostAction,
+) -> TrustedActionConfirmationRequest {
+    TrustedActionConfirmationRequest::for_bound_window_action_value(
+        ConfirmationBinding::window(
+            session_id,
+            task_grant_id,
+            window_capability,
+            target,
+            observation_id,
+            Some(accessibility_state_id),
+        ),
+        &action.intent,
+        serde_json::to_value(action).unwrap(),
+    )
+    .unwrap()
+}
+
 #[rstest]
 fn trusted_confirmation_request_exposes_the_exact_window_identity() {
-    let request = TrustedActionConfirmationRequest::for_window_action(
+    let request = window_confirmation(
         "session-1",
         "grant-1",
         "capability-1",
@@ -121,8 +146,7 @@ fn trusted_confirmation_request_exposes_the_exact_window_identity() {
         "observation-1",
         "accessibility-1",
         &confirmation_action(),
-    )
-    .unwrap();
+    );
 
     assert_eq!(request.target_process_id, Some(4242));
     assert_eq!(request.target_window_handle, Some(0x1234));
@@ -134,7 +158,7 @@ async fn trusted_confirmation_requires_a_constructor_owned_host() {
     let outcome = authorize_action_confirmation(
         None,
         true,
-        TrustedActionConfirmationRequest::for_window_action(
+        window_confirmation(
             "session-1",
             "grant-1",
             "capability-1",
@@ -145,8 +169,7 @@ async fn trusted_confirmation_requires_a_constructor_owned_host() {
             "observation-1",
             "accessibility-1",
             &confirmation_action(),
-        )
-        .unwrap(),
+        ),
     )
     .await;
 
@@ -160,7 +183,7 @@ async fn trusted_confirmation_task_grant_gate_cannot_be_bypassed_by_the_host() {
     let outcome = authorize_action_confirmation(
         Some(host.as_ref()),
         false,
-        TrustedActionConfirmationRequest::for_window_action(
+        window_confirmation(
             "session-1",
             "grant-1",
             "capability-1",
@@ -171,8 +194,7 @@ async fn trusted_confirmation_task_grant_gate_cannot_be_bypassed_by_the_host() {
             "observation-1",
             "accessibility-1",
             &confirmation_action(),
-        )
-        .unwrap(),
+        ),
     )
     .await;
 
@@ -186,7 +208,7 @@ async fn trusted_confirmation_accepts_an_exact_action_bound_decision() {
     let outcome = authorize_action_confirmation(
         Some(host.as_ref()),
         true,
-        TrustedActionConfirmationRequest::for_window_action(
+        window_confirmation(
             "session-1",
             "grant-1",
             "capability-1",
@@ -197,8 +219,7 @@ async fn trusted_confirmation_accepts_an_exact_action_bound_decision() {
             "observation-1",
             "accessibility-1",
             &confirmation_action(),
-        )
-        .unwrap(),
+        ),
     )
     .await;
 
@@ -208,7 +229,7 @@ async fn trusted_confirmation_accepts_an_exact_action_bound_decision() {
 #[rstest]
 #[tokio::test]
 async fn trusted_confirmation_rejects_a_replayed_decision_for_new_evidence() {
-    let first = TrustedActionConfirmationRequest::for_window_action(
+    let first = window_confirmation(
         "session-1",
         "grant-1",
         "capability-1",
@@ -219,12 +240,11 @@ async fn trusted_confirmation_rejects_a_replayed_decision_for_new_evidence() {
         "observation-1",
         "accessibility-1",
         &confirmation_action(),
-    )
-    .unwrap();
+    );
     let host: Arc<dyn TrustedActionConfirmationHost> = Arc::new(ReplayingConfirmationHost {
         request_digest: first.request_digest,
     });
-    let second = TrustedActionConfirmationRequest::for_window_action(
+    let second = window_confirmation(
         "session-1",
         "grant-1",
         "capability-1",
@@ -235,8 +255,7 @@ async fn trusted_confirmation_rejects_a_replayed_decision_for_new_evidence() {
         "observation-2",
         "accessibility-2",
         &confirmation_action(),
-    )
-    .unwrap();
+    );
 
     let outcome = authorize_action_confirmation(Some(host.as_ref()), true, second).await;
 
