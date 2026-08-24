@@ -29,8 +29,8 @@ use crate::{
     snapshot::{ElementFence, SnapshotState, normalize, resolve_index},
 };
 
-const STARTUP_TIMEOUT: Duration = Duration::from_secs(15);
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
+pub(crate) const STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
+pub(crate) const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 pub(crate) const UIA_WORKER_PROTOCOL_VERSION: u32 = 1;
 const POWERSHELL_STDIN_BOOTSTRAP: &str = "$encoded = [Console]::In.ReadLine(); \
     $script = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($encoded)); \
@@ -899,7 +899,10 @@ impl UiaWorker {
         let response = match self.responses.recv_timeout(STARTUP_TIMEOUT) {
             Ok(response) => response,
             Err(RecvTimeoutError::Timeout) => {
-                return Err(self.fail("UIA worker startup timed out after 15 seconds"));
+                return Err(self.fail(format!(
+                    "UIA worker startup timed out after {} seconds",
+                    STARTUP_TIMEOUT.as_secs()
+                )));
             }
             Err(RecvTimeoutError::Disconnected) => {
                 return Err(self.fail("UIA worker closed during startup"));

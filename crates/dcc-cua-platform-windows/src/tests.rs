@@ -21,8 +21,8 @@ use super::{
 use crate::visible_capture::obscured_from_covered_samples;
 #[cfg(windows)]
 use crate::windows::{
-    UIA_WORKER_PROTOCOL_VERSION, UiaWorker, retry_read_only_after_backend_failure,
-    validate_worker_protocol_message,
+    REQUEST_TIMEOUT, STARTUP_TIMEOUT, UIA_WORKER_PROTOCOL_VERSION, UiaWorker,
+    retry_read_only_after_backend_failure, validate_worker_protocol_message,
 };
 #[cfg(windows)]
 use windows_sys::Win32::{
@@ -441,6 +441,13 @@ fn worker_protocol_rejects_missing_or_mismatched_versions() {
             Err(super::UiaError::ProtocolMismatch { .. })
         ));
     }
+}
+
+#[cfg(windows)]
+#[rstest]
+fn uia_worker_cold_start_has_a_separate_bounded_budget() {
+    assert_eq!(REQUEST_TIMEOUT, std::time::Duration::from_secs(15));
+    assert_eq!(STARTUP_TIMEOUT, std::time::Duration::from_secs(30));
 }
 
 #[cfg(windows)]
