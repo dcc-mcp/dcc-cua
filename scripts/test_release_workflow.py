@@ -119,6 +119,48 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertIn("--force-with-lease", script)
         self.assertNotIn("git merge", script)
 
+    def test_extension_release_cannot_replace_native_latest(self):
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+
+        self.assertIn("group: release-${{ github.repository }}", workflow)
+        self.assertNotIn("group: release-${{ github.ref }}", workflow)
+        self.assertIn("Keep the native runtime release Latest", workflow)
+        self.assertIn(
+            "steps.release.outputs['browser-extension/chrome--release_created'] == 'true'",
+            workflow,
+        )
+        self.assertIn(
+            'gh release edit "$env:EXTENSION_TAG" --repo "$env:GITHUB_REPOSITORY" --latest=false',
+            workflow,
+        )
+        self.assertIn(
+            'gh release edit $nativeTag --repo "$env:GITHUB_REPOSITORY" --latest',
+            workflow,
+        )
+        self.assertIn("repository Latest release is not the native runtime", workflow)
+
+        release_action = workflow.index("googleapis/release-please-action@v5")
+        checkout = workflow.index("- uses: actions/checkout@v7", release_action)
+        protection = workflow.index("Keep the native runtime release Latest")
+        checkout_section = workflow[checkout:protection]
+        self.assertIn("ref: ${{ github.event.repository.default_branch }}", checkout_section)
+
+        native_exists = workflow.index("gh release view $nativeTag", protection)
+        native_latest = workflow.index("gh release edit $nativeTag", native_exists)
+        extension_excluded = workflow.index(
+            'gh release edit "$env:EXTENSION_TAG"', native_latest
+        )
+        final_readback = workflow.index("$latestJson = gh release view", extension_excluded)
+        final_assertion = workflow.index("$latest.tagName -ne $nativeTag", final_readback)
+        self.assertLess(release_action, checkout)
+        self.assertLess(checkout, protection)
+        self.assertLess(native_exists, native_latest)
+        self.assertLess(native_latest, extension_excluded)
+        self.assertLess(extension_excluded, final_readback)
+        self.assertLess(final_readback, final_assertion)
+        protection_section = workflow[protection:final_assertion]
+        self.assertEqual(protection_section.count("$LASTEXITCODE -ne 0"), 4)
+
     def test_release_pr_is_rebuilt_from_main_without_manifest_merge_conflicts(self):
         script = REFRESH_SCRIPT.read_text(encoding="utf-8")
 

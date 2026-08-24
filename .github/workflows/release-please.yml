@@ -17,7 +17,7 @@ permissions:
   pull-requests: write
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ github.repository }}
   cancel-in-progress: false
 
 jobs:
@@ -73,7 +73,32 @@ jobs:
           manifest-file: .release-please-manifest.json
       - uses: actions/checkout@v7
         with:
+          ref: ${{ github.event.repository.default_branch }}
           fetch-depth: 0
+      - name: Keep the native runtime release Latest
+        if: steps.release.outputs['browser-extension/chrome--release_created'] == 'true'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EXTENSION_TAG: ${{ steps.release.outputs['browser-extension/chrome--tag_name'] }}
+        run: |
+          $nativeVersion = (Get-Content version.txt -Raw).Trim()
+          if ($nativeVersion -notmatch '^\d+\.\d+\.\d+$') {
+            throw 'native runtime version is not valid semver'
+          }
+          $nativeTag = "v$nativeVersion"
+          gh release view $nativeTag --repo "$env:GITHUB_REPOSITORY" --json tagName | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "native runtime release $nativeTag does not exist" }
+          gh release edit $nativeTag --repo "$env:GITHUB_REPOSITORY" --latest
+          if ($LASTEXITCODE -ne 0) { throw "cannot mark native runtime release $nativeTag Latest" }
+          gh release edit "$env:EXTENSION_TAG" --repo "$env:GITHUB_REPOSITORY" --latest=false
+          if ($LASTEXITCODE -ne 0) { throw 'cannot exclude extension release from Latest' }
+          $latestJson = gh release view --repo "$env:GITHUB_REPOSITORY" --json tagName
+          if ($LASTEXITCODE -ne 0) { throw 'cannot read repository Latest release' }
+          $latest = $latestJson | ConvertFrom-Json
+          if ($latest.tagName -ne $nativeTag) {
+            throw 'repository Latest release is not the native runtime'
+          }
       - name: Refresh independent release PRs from current main
         shell: pwsh
         env:
