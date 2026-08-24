@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.5.4](https://github.com/dcc-mcp/dcc-cua/compare/v1.5.3...v1.5.4) (2026-08-24)
+
+
+### Bug Fixes
+
+* extend bounded UIA worker startup ([#204](https://github.com/dcc-mcp/dcc-cua/issues/204)) ([4d46c5b](https://github.com/dcc-mcp/dcc-cua/commit/4d46c5b50bbda73cced1315d288ab270a43a52a9))
+* serialize Windows UIA fixtures ([#202](https://github.com/dcc-mcp/dcc-cua/issues/202)) ([ec74a4c](https://github.com/dcc-mcp/dcc-cua/commit/ec74a4c399ceaf6ed4ae497da03e7198bf1fa2e1))
+
 ## [1.5.3](https://github.com/dcc-mcp/dcc-cua/compare/v1.5.2...v1.5.3) (2026-08-24)
 
 
