@@ -891,6 +891,49 @@ decision cannot be replayed after the evidence, target, or action changes.
 Missing, failed, or mismatched callbacks remain `approval_required`; explicit
 denial or cancellation has its own typed error.
 
+For long-running automation, an embedding may instead collect explicit user
+input before the task and install a constructor-owned
+`TrustedTaskAuthorizationHost` through `HostSecurityServices`. The task grant
+references only an authorization ID; Host IPC cannot mint or widen it. At
+session open, the trusted host returns a short-lived in-memory lease
+bound to the task grant, application label, PID/HWND, action kind, input kind,
+risk category, secret/non-secret mode, and browser origin where applicable.
+Host revalidates expiry and revocation before every otherwise-confirmed action.
+An active exact-target lease runs without modal prompts. Once a session references a
+task authorization, target changes, origin changes, category changes, expiry,
+revocation, or validation failure return a typed `task_authorization_*` refusal
+and never fall back to a popup. An explicit task-start denial returns
+`task_authorization_denied`. Existing sessions without a task authorization
+retain per-action confirmation. The packaged CLI does not trust flags or
+redirected stdin as user presence, so it keeps per-action confirmation until a
+trusted non-modal input broker is installed by its embedding.
+
+Embeddings can construct that broker with
+`dcc_cua_host::trusted_task_authorization_broker`. It returns two separate
+capabilities: a move-only `TrustedTaskAuthorizationIssuer` retained by the
+authenticated user-input surface, and a `TrustedTaskAuthorizationHost` trait
+object installed in `HostSecurityServices`. After one explicit user input, the
+issuer registers a task grant, application label, capability, either an exact
+PID/HWND or the closed owned-browser spec, action/risk scopes, browser origins,
+and expiry. It returns only a random
+authorization ID for the task grant. Registrations are single-use for session
+open, bounded to 24 hours, revalidated before every action, and revocable. The
+issuer is not serializable or available through CLI arguments, environment
+variables, stdin, or Host IPC, so those routes cannot mint or widen a task
+authorization.
+
+Browser tasks may instead register the closed owned-browser target
+`browser=chromium, profile=isolated_new`. After the same single user input,
+DCC-CUA starts an isolated profile in one upstream session and derives its PID,
+native HWND, and exact CDP binding. Clients cannot provide or replace those
+identities, an executable, a profile path, or a CDP endpoint. The authorization
+card starts the session and reports `provider`, runtime version, PID, and HWND
+before the first observation or input. Authorized HTTP(S) origins are copied
+into the Host lease and checked for navigation and browser mutations. Repeating
+`browser_prepare` is denied, and hidden upload controls use only
+`browser_set_input_files`, never a native file chooser. Existing-browser
+attachment still requires a separately authorized exact target.
+
 Secret-bearing input uses an opaque `secret_handle` instead of putting the
 secret in Host IPC. The packaged Host resolves that handle from the current
 platform keyring only after the exact action confirmation succeeds. `text` and

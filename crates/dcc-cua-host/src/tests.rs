@@ -223,11 +223,13 @@ fn cached_host_session(driver: &ComputerUseDriver) -> HostSession {
         allow_live_observation: false,
         allow_browser_input: false,
         allow_browser_prepare: false,
+        allowed_browser_origins: Vec::new(),
         allow_browser_download: false,
         allow_native_tool: false,
         allow_menu_invoke: false,
         allow_session_escalation: false,
         allow_trusted_confirmation: false,
+        task_authorization: None,
         allow_restore_activate: cfg!(windows),
         capability: "capability-1".into(),
         interrupted: false,
@@ -1776,6 +1778,7 @@ fn protocol_wire_codes_are_explicit_and_never_inferred_from_prose() {
 
 mod action_confirmation;
 mod browser_extension;
+mod confirmation_latency;
 mod connection;
 mod request_contracts;
 mod request_parsing;
@@ -1783,3 +1786,4 @@ mod response_contracts;
 mod secret_vault;
 mod session_concurrency;
 mod session_health;
+mod task_authorization;

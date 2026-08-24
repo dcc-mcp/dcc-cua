@@ -109,6 +109,7 @@ function Element-Raw([System.Windows.Automation.AutomationElement]$element, [int
     text_pattern_available = $textPatternAvailable
     checked = Pattern-Checked $element
     policy_tier = Control-Policy-Tier $element
+    policy_category = Control-Policy-Category $element
     children = $children
   }
 }
@@ -137,33 +138,72 @@ function Has-Authentication-Secret-Marker([System.Windows.Automation.AutomationE
   return $false
 }
 
-function Control-Policy-Tier-From-Facts($facts) {
-  if ([bool]$facts.is_password -or [bool]$facts.secret_marker) { return "action_confirmation" }
+function Control-Policy-Category-From-Facts($facts) {
+  if ([bool]$facts.is_password -or [bool]$facts.secret_marker) { return "credential" }
   $text = (([string]$facts.name) + " " + ([string]$facts.automation_id) + " " + ([string]$facts.class_name)).ToLowerInvariant()
   foreach ($needle in @("windows run", "command prompt", "powershell", "terminal")) {
     if ($text.Contains($needle)) { return "hard_deny" }
   }
   foreach ($needle in @("password", "credential", "authentication code", "security settings", "privacy settings")) {
-    if ($text.Contains($needle)) { return "action_confirmation" }
+    if ($text.Contains($needle)) {
+      if ($needle -in @("security settings", "privacy settings")) { return "account_security" }
+      return "credential"
+    }
   }
   if ((Is-Common-Save-Label ([string]$facts.name)) -or
       (Is-Common-Save-Label ([string]$facts.automation_id)) -or
       (Is-Common-Save-Label ([string]$facts.class_name))) {
-    return "action_confirmation"
+    return "destructive_write"
   }
-  foreach ($needle in @("delete", "remove permanently", "overwrite", "install", "purchase", "buy now", "pay", "send", "publish", "submit", "share", "grant access", "revoke access", "remote control", "remote connection", "allow remote")) {
-    if ($text.Contains($needle)) { return "action_confirmation" }
+  foreach ($needle in @("purchase", "buy now", "pay")) {
+    if ($text.Contains($needle)) { return "payment" }
   }
-  foreach ($needle in @("sign in", "log in", "login", "permission", "upload", "move", "rename", "connect account")) {
-    if ($text.Contains($needle)) { return "pre_approval" }
+  foreach ($needle in @("publish")) {
+    if ($text.Contains($needle)) { return "publishing" }
   }
-  return "task_grant"
+  foreach ($needle in @("delete", "remove permanently", "overwrite", "install")) {
+    if ($text.Contains($needle)) { return "destructive" }
+  }
+  foreach ($needle in @("grant access", "revoke access", "remote control", "remote connection", "allow remote")) {
+    if ($text.Contains($needle)) { return "account_security" }
+  }
+  foreach ($needle in @("send", "submit", "share")) {
+    if ($text.Contains($needle)) { return "external_effect" }
+  }
+  foreach ($needle in @("sign in", "log in", "login", "connect account")) {
+    if ($text.Contains($needle)) { return "account_access" }
+  }
+  foreach ($needle in @("permission", "upload", "move", "rename")) {
+    if ($text.Contains($needle)) { return "content_change" }
+  }
+  return "ordinary"
+}
+
+function Control-Policy-Tier-From-Facts($facts) {
+  $category = Control-Policy-Category-From-Facts $facts
+  if ($category -eq "hard_deny") { return "hard_deny" }
+  if ($category -in @("account_access", "content_change")) { return "pre_approval" }
+  if ($category -eq "ordinary") { return "task_grant" }
+  return "action_confirmation"
 }
 
 function Control-Policy-Tier([System.Windows.Automation.AutomationElement]$element) {
   try {
     $current = $element.Current
     return Control-Policy-Tier-From-Facts @{
+      is_password = [bool]$current.IsPassword
+      secret_marker = Has-Authentication-Secret-Marker $element
+      name = [string]$current.Name
+      automation_id = [string]$current.AutomationId
+      class_name = [string]$current.ClassName
+    }
+  } catch { return "hard_deny" }
+}
+
+function Control-Policy-Category([System.Windows.Automation.AutomationElement]$element) {
+  try {
+    $current = $element.Current
+    return Control-Policy-Category-From-Facts @{
       is_password = [bool]$current.IsPassword
       secret_marker = Has-Authentication-Secret-Marker $element
       name = [string]$current.Name
@@ -181,7 +221,8 @@ function Matches-Expected-Fence-From-Facts($facts, $expected) {
       ([string]$facts.name) -ceq ([string]$expected.name) -and
       ([string]$facts.automation_id) -ceq ([string]$expected.automation_id) -and
       ([string]$facts.class_name) -ceq ([string]$expected.class_name) -and
-      ([string]$facts.policy_tier) -ceq ([string]$expected.policy_tier)
+      ([string]$facts.policy_tier) -ceq ([string]$expected.policy_tier) -and
+      ([string]$facts.policy_category) -ceq ([string]$expected.policy_category)
   } catch { return $false }
 }
 
@@ -204,6 +245,7 @@ function Matches-Expected-Fence([System.Windows.Automation.AutomationElement]$el
       automation_id = [string]$current.AutomationId
       class_name = [string]$current.ClassName
       policy_tier = Control-Policy-Tier $element
+      policy_category = Control-Policy-Category $element
     } $expected
   } catch {
     return $false
@@ -519,6 +561,9 @@ function Invoke-UiaRequest($requestPayload) {
       switch ([string]$requestPayload.operation) {
         "control_policy_tier" {
           return @{ok = $true; result = Control-Policy-Tier-From-Facts $requestPayload.facts}
+        }
+        "control_policy_category" {
+          return @{ok = $true; result = Control-Policy-Category-From-Facts $requestPayload.facts}
         }
         "matches_expected_fence" {
           return @{ok = $true; result = Matches-Expected-Fence-From-Facts $requestPayload.facts $requestPayload.expected}

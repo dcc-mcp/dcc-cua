@@ -129,8 +129,6 @@ impl ComputerUseSession {
         } else {
             (target, None)
         };
-        self.app_name = resolved_application_name(&self.app_name, &target);
-        self.marker.label = localized_control_label(&self.agent_name, &self.app_name);
         self.upstream_session_state = match self.start_upstream_session("start CUA session").await {
             Ok(()) => {
                 self.last_upstream_session_refresh = Some(Instant::now());
@@ -148,47 +146,8 @@ impl ComputerUseSession {
                 return Err(error);
             }
         };
-        let control_banner = match ControlBanner::start_with_motion(
-            BannerTarget {
-                process_id: target.pid,
-                window_handle: target.window_id,
-                agent_name: self.agent_name.clone(),
-                application_name: self.app_name.clone(),
-            },
-            request.indicator_motion,
-        ) {
-            Ok(banner) => banner,
-            Err(error) => {
-                cleanup_started_session(&self.driver, &self.session_id).await;
-                return Err(map_indicator_error("start visible control banner", error));
-            }
-        };
-        self.target = Some(target.clone());
-        self.control_banner = Some(control_banner);
-        self.set_banner_activity(BannerActivity::Ready);
-        #[cfg(windows)]
-        {
-            self.windows_uia = None;
-        }
-        self.active = true;
-        self.escalated = false;
-        self.uia_timeout_escalated = false;
-        self.marker.visible = true;
-        let banner = self.banner_status();
-        let mut started = json!({
-            "success": true,
-            "target": target,
-            "marker": self.marker,
-            "banner": banner,
-            "cursor_theme": MOUSE_CURSOR_THEME,
-            "backend": "cua-driver-sdk",
-            "upstream_session": self.upstream_session_status(),
-        });
-        if let Some(activation) = activation {
-            started["activation"] =
-                attach_indicator_motion_to_activation(activation, &started["banner"]);
-        }
-        Ok(started)
+        self.finish_started_session(target, request, activation)
+            .await
     }
 
     async fn bootstrap_activate(
@@ -1907,7 +1866,7 @@ impl ComputerUseSession {
         }))
     }
 
-    async fn resolve_target(&self) -> ComputerUseResult<WindowTarget> {
+    pub(super) async fn resolve_target(&self) -> ComputerUseResult<WindowTarget> {
         #[cfg(windows)]
         if self.scope.window_handle.is_some() {
             let target = crate::window_target::resolve_exact(&self.scope)?.ok_or_else(|| {

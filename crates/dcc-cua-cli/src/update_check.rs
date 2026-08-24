@@ -59,6 +59,7 @@ pub(crate) fn command_allows_check<T: AsRef<str>>(arguments: &[T]) -> bool {
             | "host-call"
             | "host-batch"
             | "host-jsonl"
+            | "mcp-server"
             | "host-ensure"
     )
 }

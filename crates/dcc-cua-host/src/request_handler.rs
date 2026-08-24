@@ -1,8 +1,10 @@
 use super::*;
 use crate::request_contract::*;
 use zeroize::Zeroize;
+mod confirmation_evidence;
 mod evidence_epoch;
 mod session_helpers;
+pub(crate) use confirmation_evidence::*;
 pub(super) use evidence_epoch::*;
 pub(crate) use session_helpers::*;
 
@@ -195,6 +197,12 @@ async fn handle_request_inner(
                 sessions.len() + desktop_sessions.len() + launch_sessions.len(),
             )?;
             grant.validate_identity()?;
+            if grant.task_authorization_id.is_some() {
+                return Err(HostError::coded_protocol(
+                    HostProtocolErrorCode::TaskAuthorizationRequired,
+                    "task-scoped authorization currently requires an exact-window session",
+                ));
+            }
             let session_generation = interrupt_generation();
             let runtime_session_id = new_runtime_session_id("desktop");
             let mut session = driver
@@ -716,27 +724,23 @@ async fn handle_request_inner(
                 bind_launched_process(launched, &mut grant)?;
             }
             let allow_restore_activate = restore_activate_available(&grant);
-            let scope = ComputerUseTargetScope {
-                process_id: grant.process_id,
-                window_handle: grant.window_handle,
-                window_title: grant.window_title,
-            };
             let runtime_session_id = launched
                 .as_ref()
                 .map(|session| session.runtime_session_id.clone())
                 .unwrap_or_else(|| new_runtime_session_id("window"));
-            let mut session = driver.session_with_agent(
-                scope,
-                grant.application_label.clone(),
-                agent_name.clone(),
-                runtime_session_id.clone(),
-            )?;
-            let started = session
-                .start_with_request(&ComputerUseSessionStartRequest {
-                    activate_before,
-                    indicator_motion,
-                })
-                .await?;
+            let start_request = ComputerUseSessionStartRequest {
+                activate_before,
+                indicator_motion,
+            };
+            let (mut session, started) = start_granted_window_session(
+                driver,
+                &grant,
+                launched.as_ref(),
+                &agent_name,
+                &runtime_session_id,
+                &start_request,
+            )
+            .await?;
             let showcase = if let Some(output_dir) = grant.showcase_output_dir.as_deref() {
                 if !grant.allow_recording {
                     let _ = session.stop().await;
@@ -778,7 +782,10 @@ async fn handle_request_inner(
                 ),
                 "motion_backend": "cua-driver-sdk",
             });
-            let capability = format!("cua-window-{}", Uuid::new_v4());
+            let capability = grant
+                .task_authorization_window_capability
+                .clone()
+                .unwrap_or_else(|| format!("cua-window-{}", Uuid::new_v4()));
             let input_target = match input_target_from_cua(&session_id, &target) {
                 Ok(target) => target,
                 Err(error) => {
@@ -788,6 +795,50 @@ async fn handle_request_inner(
             };
             let target_process_id = input_target.process_id;
             let target_window_handle = input_target.window_handle;
+            let task_authorization =
+                if let Some(authorization_id) = grant.task_authorization_id.as_deref() {
+                    match issue_task_authorization(
+                        security_services.task_authorization_host.as_deref(),
+                        TaskAuthorizationBinding::window(
+                            authorization_id,
+                            &session_id,
+                            &grant.task_grant_id,
+                            &grant.application_label,
+                            &capability,
+                            ConfirmationWindowIdentity {
+                                process_id: target_process_id,
+                                window_handle: target_window_handle,
+                            },
+                        ),
+                    )
+                    .await
+                    {
+                        Ok(lease) => Some(lease),
+                        Err(error) => {
+                            let _ = session.stop().await;
+                            return Err(error);
+                        }
+                    }
+                } else {
+                    None
+                };
+            if let Some(authorization) = task_authorization.as_ref() {
+                let granted = grant
+                    .allowed_browser_origins
+                    .iter()
+                    .collect::<std::collections::BTreeSet<_>>();
+                let authorized = authorization
+                    .allowed_browser_origins
+                    .iter()
+                    .collect::<std::collections::BTreeSet<_>>();
+                if granted != authorized {
+                    let _ = session.stop().await;
+                    return Err(HostError::coded_protocol(
+                        HostProtocolErrorCode::TaskAuthorizationDenied,
+                        "task grant browser origins do not match the trusted authorization",
+                    ));
+                }
+            }
             let (input_readiness, observed_at) = crate::session_events::input_readiness_sample();
             let input_events =
                 crate::session_events::SessionInputEventQueue::new_with_restore_capability(
@@ -816,11 +867,13 @@ async fn handle_request_inner(
                     allow_live_observation: grant.allow_live_observation,
                     allow_browser_input: grant.allow_browser_input,
                     allow_browser_prepare: grant.allow_browser_prepare,
+                    allowed_browser_origins: grant.allowed_browser_origins,
                     allow_browser_download: grant.allow_browser_download,
                     allow_native_tool: grant.allow_native_tool,
                     allow_menu_invoke: grant.allow_menu_invoke,
                     allow_session_escalation: grant.allow_session_escalation,
                     allow_trusted_confirmation: grant.allow_trusted_confirmation,
+                    task_authorization: task_authorization.clone(),
                     allow_restore_activate,
                     capability: capability.clone(),
                     interrupted: false,
@@ -852,6 +905,17 @@ async fn handle_request_inner(
                 "latest_sequence": initial_sequence,
                 "idle_timeout_ms": idle_timeout_ms,
             });
+            if let Some(owned_browser) = started.get("owned_browser") {
+                response["owned_browser"] = owned_browser.clone();
+            }
+            if let Some(authorization) = task_authorization {
+                response["task_authorization"] = json!({
+                    "status": "active",
+                    "authorization_id": authorization.authorization_id,
+                    "expires_at_unix_ms": authorization.expires_at_unix_ms,
+                    "allowed_actions": authorization.allowed_actions,
+                });
+            }
             if let Some(activation) = started.get("activation") {
                 response["activation"] = activation.clone();
             }
@@ -1261,6 +1325,8 @@ async fn handle_request_inner(
                     "browser input",
                 ));
             }
+            let origin = exact_http_origin(&request.url)?;
+            host.require_allowed_browser_origin(&origin)?;
             let result = host.browser.navigate(&mut host.session, request).await;
             let result = host.finish_observation_sensitive_attempt(result)?;
             browser_response(
@@ -1287,6 +1353,7 @@ async fn handle_request_inner(
                 ));
             }
             host.require_current_browser_evidence_epoch()?;
+            host.require_current_allowed_browser_origin()?;
             let result = host.browser.click(&mut host.session, request).await;
             let result = host.finish_observation_sensitive_attempt(result)?;
             browser_response(
@@ -1313,6 +1380,7 @@ async fn handle_request_inner(
                 ));
             }
             host.require_current_browser_evidence_epoch()?;
+            host.require_current_allowed_browser_origin()?;
             let request = match resolve_browser_type_request(
                 host,
                 security_services,
@@ -1350,6 +1418,7 @@ async fn handle_request_inner(
                 ));
             }
             host.require_current_browser_evidence_epoch()?;
+            host.require_current_allowed_browser_origin()?;
             let result = host.browser.pointer(&mut host.session, request).await;
             let result = host.finish_observation_sensitive_attempt(result)?;
             browser_response(
@@ -1376,6 +1445,7 @@ async fn handle_request_inner(
                 ));
             }
             host.require_current_browser_evidence_epoch()?;
+            host.require_current_allowed_browser_origin()?;
             let result = host
                 .browser
                 .set_input_files(&mut host.session, request)
@@ -1405,6 +1475,7 @@ async fn handle_request_inner(
                 ));
             }
             host.require_current_browser_evidence_epoch()?;
+            host.require_current_allowed_browser_origin()?;
             let result = host.browser.download(&mut host.session, request).await;
             let result = host.finish_observation_sensitive_attempt(result)?;
             browser_response(
@@ -1430,6 +1501,7 @@ async fn handle_request_inner(
                     "browser input",
                 ));
             }
+            host.require_current_allowed_browser_origin()?;
             let result = host.browser.dialog(&mut host.session, request).await;
             let result = host.finish_observation_sensitive_attempt(result)?;
             browser_response(
@@ -1511,7 +1583,7 @@ async fn handle_request_inner(
             session_id,
             task_grant_id,
             window_capability,
-            observation_id,
+            mut observation_id,
             accessibility_state_id,
             mut action,
             capture_after,
@@ -1546,6 +1618,8 @@ async fn handle_request_inner(
                 )));
             }
             let safety_tier = action.safety_tier(host.latest_accessibility_root.as_ref());
+            let authorization_category =
+                action.authorization_category(host.latest_accessibility_root.as_ref());
             if let Some((policy_tier, code, message)) = safety_tier.rejection() {
                 return Ok((
                     json!({
@@ -1559,26 +1633,76 @@ async fn handle_request_inner(
                 ));
             }
             if safety_tier.requires_confirmation() {
-                let request = TrustedActionConfirmationRequest::for_window_action(
-                    &session_id,
-                    &task_grant_id,
-                    &window_capability,
-                    ConfirmationWindowIdentity {
-                        process_id: host.target_process_id,
-                        window_handle: host.target_window_handle,
-                    },
-                    &observation_id,
-                    &accessibility_state_id,
-                    &action,
+                let confirmation_observation =
+                    host.session.latest_observation().cloned().ok_or_else(|| {
+                        HostError::ComputerUse(ComputerUseError::new(
+                            ComputerUseErrorCode::StaleObservation,
+                            "take a fresh exact-target observation before requesting confirmation",
+                        ))
+                    })?;
+                let mut action_value = serde_json::to_value(&action).map_err(|error| {
+                    HostError::Protocol(format!("could not bind task authorization: {error}"))
+                })?;
+                action_value["authorization_category"] = Value::String(authorization_category);
+                let confirmed_action_value = action_value.clone();
+                let request = TrustedActionConfirmationRequest::for_bound_window_action_value(
+                    ConfirmationBinding::window(
+                        &session_id,
+                        &task_grant_id,
+                        &window_capability,
+                        ConfirmationWindowIdentity {
+                            process_id: host.target_process_id,
+                            window_handle: host.target_window_handle,
+                        },
+                        &observation_id,
+                        Some(&accessibility_state_id),
+                    ),
+                    &action.intent,
+                    action_value,
                 )?;
-                let outcome = authorize_action_confirmation(
-                    confirmation_host,
-                    host.allow_trusted_confirmation,
-                    request,
-                )
-                .await;
+                let outcome = authorize_window_confirmation(security_services, host, request).await;
                 if outcome != ActionConfirmationOutcome::Allowed {
                     return Ok(action_confirmation_refusal(outcome));
+                }
+                if confirmed_action_evidence_refresh(
+                    &action,
+                    host.session.confirmed_action_evidence_refresh_due(),
+                ) == ConfirmedActionEvidenceRefresh::AccessibilityObservation
+                {
+                    let refreshed_root = host
+                        .session
+                        .accessibility_snapshot(post_snapshot_max_nodes, post_snapshot_max_depth)
+                        .await;
+                    let refreshed_root =
+                        host.finish_observation_sensitive_attempt(refreshed_root)?;
+                    let refreshed_observation =
+                        host.session.latest_observation().cloned().ok_or_else(|| {
+                            HostError::Protocol(
+                                "confirmed action evidence refresh returned no observation".into(),
+                            )
+                        })?;
+                    let rebound = rebind_confirmed_action_evidence(
+                        &action,
+                        &confirmed_action_value,
+                        ConfirmationWindowIdentity {
+                            process_id: host.target_process_id,
+                            window_handle: host.target_window_handle,
+                        },
+                        &confirmation_observation,
+                        &refreshed_observation,
+                        &refreshed_root,
+                    );
+                    let rebound = match rebound {
+                        Ok(observation_id) => observation_id,
+                        Err(error) => {
+                            host.invalidate_observations();
+                            return Err(HostError::ComputerUse(error));
+                        }
+                    };
+                    observation_id = rebound.clone();
+                    host.latest_observation_id = Some(rebound.clone());
+                    host.latest_accessibility_state_id = Some(rebound);
+                    host.latest_accessibility_root = Some(refreshed_root);
                 }
             }
             if let Some(handle) = action.secret_handle.clone() {

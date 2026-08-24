@@ -19,6 +19,7 @@ use super::host_lifecycle::{
 use super::*;
 
 mod host_jsonl;
+mod task_authorization_manifest;
 mod trusted_confirmation;
 mod update_check_tests;
 mod update_tests;
@@ -1429,18 +1430,21 @@ fn manifest_is_a_machine_readable_core_launch_contract() {
         manifest["host"]["trusted_confirmation"]["request_schema"],
         "dcc-cua-trusted-action-confirmation-request-v2"
     );
+    let confirmation = &manifest["host"]["trusted_confirmation"];
+    for (field, expected) in [
+        ("action_scoped", true),
+        ("exact_window_identity", true),
+        ("input_text_echoed", false),
+    ] {
+        assert_eq!(confirmation[field], expected);
+    }
+    let task_authorization = &manifest["host"]["task_authorization"];
     assert_eq!(
-        manifest["host"]["trusted_confirmation"]["action_scoped"],
-        true
+        task_authorization["request_schema"],
+        "dcc-cua-trusted-task-authorization-v1"
     );
-    assert_eq!(
-        manifest["host"]["trusted_confirmation"]["exact_window_identity"],
-        true
-    );
-    assert_eq!(
-        manifest["host"]["trusted_confirmation"]["input_text_echoed"],
-        false
-    );
+    assert_eq!(task_authorization["modal"], false);
+    assert_eq!(task_authorization["ipc_can_mint_or_widen"], false);
     assert_eq!(
         manifest["host"]["secret_vault"]["backend"],
         "platform_keyring"

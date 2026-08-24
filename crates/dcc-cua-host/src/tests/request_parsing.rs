@@ -383,6 +383,53 @@ fn app_requests_parse_with_host_params_frames() {
         panic!("expected open_session request");
     };
     assert_eq!(grant.window_title.as_deref(), Some("PCG Fab"));
+    for grant in [
+        json!({
+            "task_grant_id": "task-1",
+            "application_label": "Unreal Editor",
+            "process_id": 42,
+            "window_handle": 7,
+            "task_authorization_id": "task-auth-1"
+        }),
+        json!({
+            "task_grant_id": "task-1",
+            "application_label": "Unreal Editor",
+            "process_id": 42,
+            "window_handle": 7,
+            "task_authorization_window_capability": "cua-window-1"
+        }),
+    ] {
+        let Request::OpenSession { grant, .. } = serde_json::from_value(json!({
+            "method": "open_session",
+            "params": {"session_id": "session-auth", "grant": grant}
+        }))
+        .unwrap() else {
+            panic!("expected open_session request");
+        };
+        assert!(grant.validate_identity().is_err());
+    }
+    let Request::OpenSession { grant, .. } = serde_json::from_value(json!({
+        "method": "open_session",
+        "params": {
+            "session_id": "session-auth",
+            "grant": {
+                "task_grant_id": "task-1",
+                "application_label": "Unreal Editor",
+                "process_id": 42,
+                "window_handle": 7,
+                "task_authorization_id": "task-auth-1",
+                "task_authorization_window_capability": "cua-window-1"
+            }
+        }
+    }))
+    .unwrap() else {
+        panic!("expected open_session request");
+    };
+    grant.validate_identity().unwrap();
+    assert_eq!(
+        grant.task_authorization_window_capability.as_deref(),
+        Some("cua-window-1")
+    );
     assert!(matches!(
         serde_json::from_value::<Request>(json!({
             "method": "terminate_app",

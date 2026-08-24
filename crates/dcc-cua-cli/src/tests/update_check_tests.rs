@@ -17,6 +17,7 @@ fn reminder_is_actionable_only_for_a_newer_version() {
 #[case(&["--version"], false)]
 #[case(&["host"], false)]
 #[case(&["host-jsonl"], false)]
+#[case(&["mcp-server"], false)]
 #[case(&["browser-extension", "status"], false)]
 #[case(&["__private-worker"], false)]
 fn machine_protocols_and_update_commands_skip_reminders(

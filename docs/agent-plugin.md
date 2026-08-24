@@ -2,15 +2,61 @@
 
 This checkout is also a standalone Codex-compatible agent plugin. The manifest
 is [.codex-plugin/plugin.json](../.codex-plugin/plugin.json), and it exposes the
-repository `skills/` directory, including `cua-cli`, `cua-profile-authoring`,
-and `game-cua-acceptance`.
+repository `skills/` directory plus the local `dcc-cua mcp-server` bridge.
+The bridge renders an inline task-start authorization card and keeps the
+move-only issuer in the same process as the Host validator.
 
-## Codex
+The repository marketplace installs the bounded
+`plugins/dcc-cua-computer-use` package. It contains only the MCP bridge
+manifest and configuration; Rust sources, build output, and the repository
+`target/` directory are never copied into the Codex plugin cache. The root
+manifest remains available for development checkouts that also need the
+repository Skills.
+
+## Supported desktop embeddings
 
 Install the checkout as a local plugin using the Codex plugin installation flow,
-or point a development Codex session at the repository checkout. The skill
-files can also be copied into an agent's skills directory when local plugin
-installation is unavailable.
+or point a development Codex session at the repository checkout. Install the
+matching `dcc-cua` binary on `PATH`, then start a new Codex task so the MCP
+server is discovered. The skill files can also be copied into an agent's skills
+directory when local plugin installation is unavailable.
+
+```powershell
+codex plugin marketplace add .
+codex plugin add dcc-cua-computer-use@dcc-cua
+```
+
+The checkout also includes `.claude-plugin/marketplace.json` and a portable
+`.mcp.json`. Claude, CodeBuddy, and WorkBuddy should import the bridge through
+their native plugin or MCP configuration and launch `dcc-cua mcp-server`
+directly; wrapping it in a shell intentionally breaks the attestation.
+
+The authorization issuer is created only when Windows verifies the MCP server's
+immediate parent as one of these desktop embeddings:
+
+- Codex or Claude: exact executable name plus exact Windows package family.
+- CodeBuddy CN or WorkBuddy: a valid Authenticode trust chain, the exact
+  publisher, the exact signed product name, and the exact executable name.
+
+A shell, redirected stdin client, Node/Python child, renamed signed binary,
+untrusted package, invalid signature, or unsupported platform fails closed
+before the MCP server reads a request. Additional host platforms need their own
+native embedding attestor; model-visible arguments, environment variables, and
+user-writable install paths are never accepted as authorization evidence. See
+[ADR 0026](adr/0026-attest-trusted-desktop-embeddings.md).
+
+Before a workflow, the model renders either an exact PID/HWND proposal or the
+closed `chromium` / `isolated_new` owned-browser launch spec. The card shows the
+closed Host-method list plus sensitive action, risk, and exact browser-origin
+scopes. The user types `授权` or `AUTHORIZE` in the inline card. The app-only tool
+registers the server-held proposal; it accepts no scopes, credentials, or
+secret values. The card then starts the task and reports
+`provider=dcc-cua`, runtime version, PID, and HWND before any observation or
+input. Owned-browser PID/HWND/CDP identities are derived by DCC-CUA and cannot
+be nominated or replaced by the model.
+Authorized actions execute through the same process-local broker without native
+action popups. Expiry, revocation, target changes, or scope mismatches fail
+closed and never fall back to a modal prompt.
 
 ## Other agent hosts
 

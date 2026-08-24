@@ -38,3 +38,23 @@ fn version_aliases_match_the_long_flag() {
         );
     }
 }
+
+#[rstest]
+fn mcp_server_rejects_an_untrusted_process_parent_before_reading_stdin() {
+    let output = Command::new(env!("CARGO_BIN_EXE_dcc-cua"))
+        .arg("mcp-server")
+        .output()
+        .expect("dcc-cua should start");
+
+    assert!(!output.status.success());
+    assert!(
+        output.stdout.is_empty(),
+        "untrusted embedding unexpectedly exposed MCP output: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("trusted embedding unavailable"),
+        "unexpected rejection: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}

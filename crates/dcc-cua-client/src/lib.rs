@@ -153,6 +153,7 @@ pub struct LogicalTaskSession {
     session_id: String,
     task_grant_id: String,
     window_capability: String,
+    target: Value,
     idle_timeout_ms: u64,
 }
 
@@ -162,6 +163,7 @@ impl fmt::Debug for LogicalTaskSession {
             .debug_struct("LogicalTaskSession")
             .field("session_id", &self.session_id)
             .field("task_grant_id", &self.task_grant_id)
+            .field("target", &self.target)
             .field("idle_timeout_ms", &self.idle_timeout_ms)
             .field("client", &self.client)
             .finish_non_exhaustive()
@@ -182,6 +184,12 @@ impl LogicalTaskSession {
     #[must_use]
     pub fn idle_timeout_ms(&self) -> u64 {
         self.idle_timeout_ms
+    }
+
+    /// Exact target identity returned by Host after it opens the task.
+    #[must_use]
+    pub fn target(&self) -> &Value {
+        &self.target
     }
 
     /// Send a request through this task's existing Host session.
@@ -615,11 +623,35 @@ impl HostClient {
                 HostClientError::Protocol("open_session response omitted window_capability".into())
             })?
             .to_owned();
+        let target = response
+            .value
+            .get("target")
+            .filter(|value| value.is_object())
+            .cloned()
+            .ok_or_else(|| {
+                HostClientError::Protocol("open_session response omitted target identity".into())
+            })?;
+        if target
+            .get("process_id")
+            .and_then(Value::as_u64)
+            .filter(|value| *value > 0)
+            .is_none()
+            || target
+                .get("window_handle")
+                .and_then(Value::as_u64)
+                .filter(|value| *value > 0)
+                .is_none()
+        {
+            return Err(HostClientError::Protocol(
+                "open_session response target identity is not an exact PID/HWND".into(),
+            ));
+        }
         Ok(LogicalTaskSession {
             client: self,
             session_id,
             task_grant_id,
             window_capability,
+            target,
             idle_timeout_ms,
         })
     }

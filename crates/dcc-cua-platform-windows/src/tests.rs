@@ -326,6 +326,7 @@ fn snapshot_normalization_emits_flat_agent_friendly_elements() {
             "value": null,
             "checked": null,
             "policy_tier": "task_grant",
+            "policy_category": "ordinary",
             "children": [{
                 "runtime_id": "menu",
                 "fallback_path": "0.0",
@@ -341,6 +342,7 @@ fn snapshot_normalization_emits_flat_agent_friendly_elements() {
                 "value": null,
                 "checked": null,
                 "policy_tier": "task_grant",
+                "policy_category": "publishing",
                 "children": []
             }]
         }
@@ -354,6 +356,7 @@ fn snapshot_normalization_emits_flat_agent_friendly_elements() {
     assert_eq!(elements.len(), 2);
     assert_eq!(elements[1]["role"], "MenuItem");
     assert_eq!(elements[1]["name"], "DCC MCP");
+    assert_eq!(elements[1]["policy_category"], "publishing");
     assert!(
         elements[1]["element_token"]
             .as_str()
@@ -374,6 +377,7 @@ fn snapshot_normalization_emits_flat_agent_friendly_elements() {
     assert_eq!(fence.automation_id, "");
     assert_eq!(fence.class_name, "QAction");
     assert_eq!(fence.policy_tier, "task_grant");
+    assert_eq!(fence.policy_category, "publishing");
 }
 
 #[rstest]
@@ -444,45 +448,76 @@ fn worker_protocol_rejects_missing_or_mismatched_versions() {
 fn powershell_policy_tiers_are_behaviorally_fixture_tested() {
     let _guard = policy_fixture_test_guard();
     let mut worker = UiaWorker::start().expect("start policy fixture worker");
-    for (facts, expected) in [
+    for (facts, expected_tier, expected_category) in [
         (
             json!({"is_password": true, "name": "", "automation_id": "", "class_name": "", "secret_marker": false}),
             "action_confirmation",
+            "credential",
         ),
         (
             json!({"is_password": false, "name": "API credential", "automation_id": "", "class_name": "Button", "secret_marker": true}),
             "action_confirmation",
+            "credential",
         ),
         (
             json!({"is_password": false, "name": "Authentication code", "automation_id": "", "class_name": "Edit", "secret_marker": false}),
             "action_confirmation",
+            "credential",
         ),
         (
             json!({"is_password": false, "name": "PowerShell", "automation_id": "", "class_name": "Button", "secret_marker": false}),
+            "hard_deny",
             "hard_deny",
         ),
         (
             json!({"is_password": false, "name": "Save", "automation_id": "", "class_name": "Button", "secret_marker": false}),
             "action_confirmation",
+            "destructive_write",
+        ),
+        (
+            json!({"is_password": false, "name": "Pay now", "automation_id": "", "class_name": "Button", "secret_marker": false}),
+            "action_confirmation",
+            "payment",
+        ),
+        (
+            json!({"is_password": false, "name": "Publish item", "automation_id": "", "class_name": "Button", "secret_marker": false}),
+            "action_confirmation",
+            "publishing",
+        ),
+        (
+            json!({"is_password": false, "name": "Delete", "automation_id": "", "class_name": "Button", "secret_marker": false}),
+            "action_confirmation",
+            "destructive",
         ),
         (
             json!({"is_password": false, "name": "Log in", "automation_id": "", "class_name": "Button", "secret_marker": false}),
             "pre_approval",
+            "account_access",
         ),
         (
             json!({"is_password": false, "name": "Open", "automation_id": "", "class_name": "Button", "secret_marker": false}),
             "task_grant",
+            "ordinary",
         ),
     ] {
         let response = evaluate_policy_fixture(
             &mut worker,
             json!({
                 "operation": "control_policy_tier",
-                "facts": facts,
+                "facts": facts.clone(),
             }),
         )
         .expect("policy fixture response");
-        assert_eq!(response["result"], expected);
+        assert_eq!(response["result"], expected_tier);
+        let category = evaluate_policy_fixture(
+            &mut worker,
+            json!({
+                "operation": "control_policy_category",
+                "facts": facts,
+            }),
+        )
+        .expect("policy category fixture response");
+        assert_eq!(category["result"], expected_category);
     }
 }
 
@@ -522,6 +557,7 @@ fn powershell_fence_and_sensitive_target_policies_are_behaviorally_fixture_teste
         "automation_id": "SaveButton",
         "class_name": "Button",
         "policy_tier": "action_confirmation",
+        "policy_category": "destructive_write",
     });
     let facts = json!({
         "identity": "42.7",
@@ -530,6 +566,7 @@ fn powershell_fence_and_sensitive_target_policies_are_behaviorally_fixture_teste
         "automation_id": "SaveButton",
         "class_name": "Button",
         "policy_tier": "action_confirmation",
+        "policy_category": "destructive_write",
     });
     let matching = evaluate_policy_fixture(
         &mut worker,
@@ -554,6 +591,7 @@ fn powershell_fence_and_sensitive_target_policies_are_behaviorally_fixture_teste
                 "automation_id": "SaveButton",
                 "class_name": "Button",
                 "policy_tier": "action_confirmation",
+                "policy_category": "destructive_write",
             },
         }),
     )
@@ -562,7 +600,7 @@ fn powershell_fence_and_sensitive_target_policies_are_behaviorally_fixture_teste
 
     let stale = evaluate_policy_fixture(&mut worker, json!({
         "operation": "matches_expected_fence",
-        "facts": {"identity": "changed", "is_password": false, "name": "Save", "automation_id": "SaveButton", "class_name": "Button", "policy_tier": "action_confirmation"},
+        "facts": {"identity": "changed", "is_password": false, "name": "Save", "automation_id": "SaveButton", "class_name": "Button", "policy_tier": "action_confirmation", "policy_category": "destructive_write"},
         "expected": expected,
     }))
     .expect("stale fence fixture");

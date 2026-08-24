@@ -542,6 +542,18 @@ async fn an_action_never_crosses_a_due_upstream_session_refresh() {
 
 #[rstest]
 #[tokio::test]
+async fn confirmed_action_evidence_refresh_is_due_only_after_the_interval() {
+    let (mut session, _) = counting_session();
+
+    session.last_upstream_session_refresh = Some(Instant::now());
+    assert!(!session.confirmed_action_evidence_refresh_due());
+
+    session.last_upstream_session_refresh = Some(Instant::now() - SESSION_REFRESH_INTERVAL);
+    assert!(session.confirmed_action_evidence_refresh_due());
+}
+
+#[rstest]
+#[tokio::test]
 async fn successful_refresh_before_observation_requires_a_strictly_new_live_frame() {
     let driver = ComputerUseDriver::create().unwrap();
     let mut session = driver

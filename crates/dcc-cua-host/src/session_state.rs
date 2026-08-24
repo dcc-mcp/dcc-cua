@@ -53,11 +53,13 @@ pub(super) struct HostSession {
     pub(super) allow_live_observation: bool,
     pub(super) allow_browser_input: bool,
     pub(super) allow_browser_prepare: bool,
+    pub(super) allowed_browser_origins: Vec<String>,
     pub(super) allow_browser_download: bool,
     pub(super) allow_native_tool: bool,
     pub(super) allow_menu_invoke: bool,
     pub(super) allow_session_escalation: bool,
     pub(super) allow_trusted_confirmation: bool,
+    pub(super) task_authorization: Option<crate::TrustedTaskAuthorizationLease>,
     pub(super) allow_restore_activate: bool,
     pub(super) capability: String,
     pub(super) interrupted: bool,
@@ -75,6 +77,37 @@ pub(super) struct HostSession {
 }
 
 impl HostSession {
+    pub(super) fn require_allowed_browser_origin(
+        &self,
+        origin: &str,
+    ) -> Result<(), crate::HostError> {
+        if self.task_authorization.is_some()
+            && !self
+                .allowed_browser_origins
+                .iter()
+                .any(|allowed| allowed == origin)
+        {
+            return Err(crate::HostError::coded_protocol(
+                crate::HostProtocolErrorCode::TaskAuthorizationDenied,
+                "the browser origin is outside the task authorization",
+            ));
+        }
+        Ok(())
+    }
+
+    pub(super) fn require_current_allowed_browser_origin(&self) -> Result<(), crate::HostError> {
+        if self.task_authorization.is_none() {
+            return Ok(());
+        }
+        let origin = self.browser.latest_origin().ok_or_else(|| {
+            crate::HostError::coded_protocol(
+                crate::HostProtocolErrorCode::TaskAuthorizationRequired,
+                "take a fresh browser snapshot before mutating an authorized browser origin",
+            )
+        })?;
+        self.require_allowed_browser_origin(origin)
+    }
+
     pub(super) fn is_idle_expired(&self) -> bool {
         self.last_activity.elapsed() >= self.idle_timeout
     }

@@ -15,11 +15,11 @@ path = "src/lib.rs"
 
 [dependencies]
 base64 = "0.22"
-# Fork candidate combines the existing-profile consent retry fix with
-# nearest-ancestor semantic snapshot evidence for exact repeated-row actions.
-cua-driver-contract = { git = "https://github.com/loonghao/cua.git", rev = "ed3dbc6dc26e71886dc7096751621d3ba8a06b96", package = "cua-driver-contract" }
-cua-driver-sdk = { git = "https://github.com/loonghao/cua.git", rev = "ed3dbc6dc26e71886dc7096751621d3ba8a06b96", package = "cua-driver-sdk" }
-cursor-overlay = { git = "https://github.com/loonghao/cua.git", rev = "ed3dbc6dc26e71886dc7096751621d3ba8a06b96", package = "cursor-overlay" }
+# Fork candidate preserves existing-profile and nearest-ancestor proofs while
+# adding exact visible-chooser associations for hidden file inputs.
+cua-driver-contract = { git = "https://github.com/loonghao/cua.git", rev = "593234c061758a85d347b6b80d1d1125cccfb670", package = "cua-driver-contract" }
+cua-driver-sdk = { git = "https://github.com/loonghao/cua.git", rev = "593234c061758a85d347b6b80d1d1125cccfb670", package = "cua-driver-sdk" }
+cursor-overlay = { git = "https://github.com/loonghao/cua.git", rev = "593234c061758a85d347b6b80d1d1125cccfb670", package = "cursor-overlay" }
 dcc-cua-indicator = { path = "../dcc-cua-indicator" }
 dcc-cua-interrupt = { path = "../dcc-cua-interrupt" }
 dcc-cua-protocol = { path = "../dcc-cua-protocol" }
@@ -37,8 +37,9 @@ dcc-cua-platform-windows = { path = "../dcc-cua-platform-windows" }
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_RemoteDesktop", "Win32_System_StationsAndDesktops", "Win32_System_Threading", "Win32_UI_HiDpi", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-platform-macos = { git = "https://github.com/loonghao/cua.git", rev = "ed3dbc6dc26e71886dc7096751621d3ba8a06b96", package = "platform-macos" }
+platform-macos = { git = "https://github.com/loonghao/cua.git", rev = "593234c061758a85d347b6b80d1d1125cccfb670", package = "platform-macos" }
 
 [dev-dependencies]
+async-trait.workspace = true
 rstest.workspace = true
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "test-util", "time"] }
