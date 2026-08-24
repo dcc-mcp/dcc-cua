@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.3](https://github.com/dcc-mcp/dcc-cua/compare/v1.5.2...v1.5.3) (2026-08-24)
+
+
+### Bug Fixes
+
+* retain semantic browser page origin ([#199](https://github.com/dcc-mcp/dcc-cua/issues/199)) ([9899a2f](https://github.com/dcc-mcp/dcc-cua/commit/9899a2f6c6259ba6f722a8ed3b2b6389d34f00f6))
+
 ## [1.5.2](https://github.com/dcc-mcp/dcc-cua/compare/v1.5.1...v1.5.2) (2026-08-24)
 
 
