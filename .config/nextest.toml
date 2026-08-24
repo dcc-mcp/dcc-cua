@@ -1,0 +1,6 @@
+[test-groups]
+windows-uia-fixtures = { max-threads = 1 }
+
+[[profile.default.overrides]]
+filter = 'package(dcc-cua-platform-windows) & test(/powershell_.*_behaviorally_fixture_tested/)'
+test-group = 'windows-uia-fixtures'
