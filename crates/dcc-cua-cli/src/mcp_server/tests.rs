@@ -273,6 +273,21 @@ async fn authorized_browser_prepare_accepts_the_exact_logical_task_session() {
 
 #[rstest]
 #[tokio::test]
+async fn authorized_browser_prepare_accepts_the_exact_namespaced_logical_task_session() {
+    let host = TaskBrowserPrepareAuthorizationHost::new("mcp-task-exact");
+    let namespaced = "__cua_runtime_00112233445566778899aabbccddeeff:mcp-task-exact";
+
+    let decision = host
+        .authorize(driver_authorization_request(namespaced))
+        .await
+        .unwrap();
+
+    assert_eq!(decision.action, DriverAuthorizationAction::Allow);
+    assert_eq!(decision.request_digest, "digest-1");
+}
+
+#[rstest]
+#[tokio::test]
 async fn authorized_browser_prepare_rejects_a_different_logical_task_session() {
     let host = TaskBrowserPrepareAuthorizationHost::new("mcp-task-exact");
 
@@ -283,6 +298,27 @@ async fn authorized_browser_prepare_rejects_a_different_logical_task_session() {
 
     assert_eq!(decision.action, DriverAuthorizationAction::Deny);
     assert_eq!(decision.request_digest, "digest-1");
+}
+
+#[rstest]
+#[tokio::test]
+async fn authorized_browser_prepare_rejects_namespaced_session_lookalikes() {
+    let host = TaskBrowserPrepareAuthorizationHost::new("mcp-task-exact");
+    for observed_session in [
+        "__cua_runtime_00112233445566778899aabbccddee:mcp-task-exact",
+        "__cua_runtime_00112233445566778899AABBCCDDEEFF:mcp-task-exact",
+        "__cua_runtime_00112233445566778899aabbccddeeff:mcp-task-other",
+        "__cua_runtime_00112233445566778899aabbccddeeff:other:mcp-task-exact",
+        "prefix:mcp-task-exact",
+    ] {
+        let decision = host
+            .authorize(driver_authorization_request(observed_session))
+            .await
+            .unwrap();
+
+        assert_eq!(decision.action, DriverAuthorizationAction::Deny);
+        assert_eq!(decision.request_digest, "digest-1");
+    }
 }
 
 #[rstest]
