@@ -50,6 +50,26 @@ fn owned_browser_task() -> Value {
     })
 }
 
+fn driver_authorization_request(public_session: &str) -> DriverAuthorizationRequest {
+    DriverAuthorizationRequest {
+        schema: "cua-driver-authorization-request-v1".into(),
+        nonce: "nonce-1".into(),
+        generation: 1,
+        daemon_instance: "daemon-1".into(),
+        permission_mode: "standard".into(),
+        managed_policy_sha256: None,
+        user_policy_sha256: None,
+        adapter_id: "browser_prepare.existing_profile".into(),
+        risk_class: "r2".into(),
+        public_session: public_session.into(),
+        transport_session: "transport-1".into(),
+        resource_json: "{}".into(),
+        human_summary: "Attach to the authorized browser profile".into(),
+        expires_unix_ms: u64::MAX,
+        request_digest: "digest-1".into(),
+    }
+}
+
 #[rstest]
 fn issuer_tools_are_app_only_and_task_calls_cannot_mint_authority() {
     let tools = tool_definitions();
@@ -203,6 +223,113 @@ fn clipboard_capture_grants_read_and_clear_as_one_authorized_capability() {
 
     assert_eq!(grant["allow_clipboard_read"], true);
     assert_eq!(grant["allow_clipboard_write"], true);
+}
+
+#[rstest]
+fn browser_prepare_is_granted_only_when_the_authorization_card_includes_the_method() {
+    let mut server = test_server();
+    let prepared = server.prepare_task(browser_task()).unwrap();
+    let proposal_id = prepared["proposal_id"].as_str().unwrap();
+    server
+        .authorize_task(json!({
+            "proposal_id": proposal_id,
+            "acknowledgement": "授权"
+        }))
+        .unwrap();
+    let proposal = server.proposals.get(proposal_id).unwrap();
+    let receipt = proposal.receipt.as_ref().unwrap();
+
+    let grant = task_session_grant(proposal, receipt);
+
+    assert_eq!(grant["allow_browser_prepare"], false);
+}
+
+#[rstest]
+#[tokio::test]
+async fn authorized_browser_prepare_accepts_the_exact_logical_task_session() {
+    let mut server = test_server();
+    let mut task = browser_task();
+    task["allowed_methods"] = json!(["browser_snapshot", "browser_prepare"]);
+    let prepared = server.prepare_task(task).unwrap();
+    let proposal_id = prepared["proposal_id"].as_str().unwrap();
+    server
+        .authorize_task(json!({
+            "proposal_id": proposal_id,
+            "acknowledgement": "授权"
+        }))
+        .unwrap();
+    let proposal = server.proposals.get(proposal_id).unwrap();
+    let host = browser_prepare_authorization_host(proposal_id, proposal).unwrap();
+    let public_session = task_session_id(proposal_id);
+
+    let decision = host
+        .authorize(driver_authorization_request(&public_session))
+        .await
+        .unwrap();
+
+    assert_eq!(decision.action, DriverAuthorizationAction::Allow);
+    assert_eq!(decision.request_digest, "digest-1");
+}
+
+#[rstest]
+#[tokio::test]
+async fn authorized_browser_prepare_rejects_a_different_logical_task_session() {
+    let host = TaskBrowserPrepareAuthorizationHost::new("mcp-task-exact");
+
+    let decision = host
+        .authorize(driver_authorization_request("mcp-task-other"))
+        .await
+        .unwrap();
+
+    assert_eq!(decision.action, DriverAuthorizationAction::Deny);
+    assert_eq!(decision.request_digest, "digest-1");
+}
+
+#[rstest]
+#[tokio::test]
+async fn authorized_browser_prepare_rejects_every_non_exact_driver_request() {
+    let host = TaskBrowserPrepareAuthorizationHost::new("mcp-task-exact");
+    let mut requests = Vec::new();
+    let mut wrong_schema = driver_authorization_request("mcp-task-exact");
+    wrong_schema.schema = "cua-driver-authorization-request-v2".into();
+    requests.push(wrong_schema);
+    let mut wrong_mode = driver_authorization_request("mcp-task-exact");
+    wrong_mode.permission_mode = "unrestricted".into();
+    requests.push(wrong_mode);
+    let mut wrong_adapter = driver_authorization_request("mcp-task-exact");
+    wrong_adapter.adapter_id = "browser_prepare.isolated_profile".into();
+    requests.push(wrong_adapter);
+    let mut wrong_risk = driver_authorization_request("mcp-task-exact");
+    wrong_risk.risk_class = "r1".into();
+    requests.push(wrong_risk);
+
+    for request in requests {
+        let decision = host.authorize(request).await.unwrap();
+        assert_eq!(decision.action, DriverAuthorizationAction::Deny);
+        assert_eq!(decision.request_digest, "digest-1");
+    }
+}
+
+#[rstest]
+fn browser_prepare_driver_authorization_requires_the_card_method_and_user_receipt() {
+    let mut server = test_server();
+    let mut task = browser_task();
+    task["allowed_methods"] = json!(["browser_snapshot", "browser_prepare"]);
+    let prepared = server.prepare_task(task).unwrap();
+    let proposal_id = prepared["proposal_id"].as_str().unwrap();
+    let awaiting_input = server.proposals.get(proposal_id).unwrap();
+    assert!(browser_prepare_authorization_host(proposal_id, awaiting_input).is_none());
+
+    let prepared = server.prepare_task(browser_task()).unwrap();
+    let proposal_id = prepared["proposal_id"].as_str().unwrap();
+    server
+        .authorize_task(json!({
+            "proposal_id": proposal_id,
+            "acknowledgement": "授权"
+        }))
+        .unwrap();
+    let method_omitted = server.proposals.get(proposal_id).unwrap();
+    assert!(browser_prepare_authorization_host(proposal_id, method_omitted).is_none());
 }
 
 #[rstest]

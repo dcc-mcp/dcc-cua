@@ -57,6 +57,10 @@ be nominated or replaced by the model.
 Authorized actions execute through the same process-local broker without native
 action popups. Expiry, revocation, target changes, or scope mismatches fail
 closed and never fall back to a modal prompt.
+For exact existing-browser tasks, the card must explicitly list
+`browser_prepare`; that one authorization is then bound to the generated
+logical task session and covers only the existing-profile attachment needed by
+that session. Omitting the method leaves both attachment gates closed.
 
 ## Other agent hosts
 

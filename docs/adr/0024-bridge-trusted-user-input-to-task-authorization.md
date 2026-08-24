@@ -37,6 +37,11 @@ revocation, and the existing no-retry rules.
   cannot replay it.
 - Revalidate the exact lease and action scope through the broker before every
   otherwise-confirmed action. Revocation takes effect without a popup fallback.
+- For an exact-window browser proposal that explicitly includes
+  `browser_prepare`, construct a separate driver authorization host bound to
+  that proposal's generated logical session. It may approve only the standard
+  mode, R2 `browser_prepare.existing_profile` request for that exact session;
+  every field or session mismatch is denied.
 - Bound the broker to 256 live registrations and purge expired registrations
   when new user authorizations are registered.
 
@@ -44,7 +49,9 @@ revocation, and the existing no-retry rules.
 
 - **Security:** fail closed on missing state, poisoned locks, target changes,
   scope changes, replay, expiry, and revocation. Never store input text, secret
-  values, clipboard contents, or form values.
+  values, clipboard contents, or form values. Omission of `browser_prepare`
+  from the user-visible method scope must also omit both the Host grant and the
+  driver authorization host.
 - **Compatibility:** sessions without a task authorization keep the existing
   per-action confirmation behavior.
 - **Operations:** the broker is process-local and needs no daemon, database,

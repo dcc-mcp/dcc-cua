@@ -1,9 +1,16 @@
 use std::collections::BTreeMap;
 use std::error::Error;
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use async_trait::async_trait;
 use dcc_cua_client::{HostClient, LogicalTaskSession, SnapshotTransport};
-use dcc_cua_core::{ComputerUseDriver, ComputerUseOwnedBrowserLaunchSpec};
+use dcc_cua_core::{
+    ComputerUseDriver, ComputerUseOwnedBrowserLaunchSpec, ConfiguredDriverOptions,
+    DriverAuthorizationAction, DriverAuthorizationDecision, DriverAuthorizationHost,
+    DriverAuthorizationHostError, DriverAuthorizationRequest, RuntimeAuthorizationOptions,
+    SessionPermissionMode,
+};
 use dcc_cua_host::{
     HostSecurityServices, TrustedTaskActionScope, TrustedTaskAuthorizationHost,
     TrustedTaskAuthorizationIssuer, TrustedTaskAuthorizationReceipt,
@@ -26,6 +33,77 @@ const DEFAULT_TTL_MINUTES: u64 = 60;
 const DEFAULT_IDLE_TIMEOUT_MS: u64 = 15 * 60 * 1_000;
 const MAX_ALLOWED_METHODS: usize = 32;
 const AUTHORIZATION_CARD_HTML: &str = include_str!("task_authorization_card.html");
+
+struct TaskBrowserPrepareAuthorizationHost {
+    expected_public_session: String,
+}
+
+impl TaskBrowserPrepareAuthorizationHost {
+    fn new(expected_public_session: impl Into<String>) -> Self {
+        Self {
+            expected_public_session: expected_public_session.into(),
+        }
+    }
+}
+
+#[async_trait]
+impl DriverAuthorizationHost for TaskBrowserPrepareAuthorizationHost {
+    async fn authorize(
+        &self,
+        request: DriverAuthorizationRequest,
+    ) -> Result<DriverAuthorizationDecision, DriverAuthorizationHostError> {
+        let allowed = request.schema == "cua-driver-authorization-request-v1"
+            && request.permission_mode == "standard"
+            && request.adapter_id == "browser_prepare.existing_profile"
+            && request.risk_class == "r2"
+            && request.public_session == self.expected_public_session;
+        Ok(DriverAuthorizationDecision {
+            action: if allowed {
+                DriverAuthorizationAction::Allow
+            } else {
+                DriverAuthorizationAction::Deny
+            },
+            request_digest: request.request_digest,
+        })
+    }
+}
+
+fn task_session_id(proposal_id: &str) -> String {
+    format!(
+        "mcp-task-{}",
+        proposal_id.trim_start_matches("task-proposal-")
+    )
+}
+
+fn browser_prepare_authorization_host(
+    proposal_id: &str,
+    proposal: &TaskProposal,
+) -> Option<TaskBrowserPrepareAuthorizationHost> {
+    proposal
+        .authorizes_existing_profile_prepare()
+        .then(|| TaskBrowserPrepareAuthorizationHost::new(task_session_id(proposal_id)))
+}
+
+fn driver_with_browser_prepare_authorization(
+    authorization_host: TaskBrowserPrepareAuthorizationHost,
+) -> Result<ComputerUseDriver, String> {
+    ComputerUseDriver::create_with_authorization_host(
+        ConfiguredDriverOptions {
+            claude_code_compatibility: false,
+            authorization: RuntimeAuthorizationOptions {
+                allowed_modes: vec![SessionPermissionMode::Standard],
+                compatibility_mode: SessionPermissionMode::Standard,
+                compatibility_bounded_manifest_path: None,
+                compatibility_capability_manifest_path: None,
+                unrestricted_acknowledged: false,
+                max_session_ttl_seconds: 8 * 60 * 60,
+                max_idle_ttl_seconds: 30 * 60,
+            },
+        },
+        Arc::new(authorization_host),
+    )
+    .map_err(|error| error.to_string())
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -70,6 +148,21 @@ struct TaskProposal {
     receipt: Option<TrustedTaskAuthorizationReceipt>,
     session: Option<LogicalTaskSession>,
     revoked: bool,
+}
+
+impl TaskProposal {
+    fn authorizes_existing_profile_prepare(&self) -> bool {
+        self.receipt.is_some()
+            && self.surface == TaskSurface::Browser
+            && matches!(
+                self.registration.target,
+                TrustedTaskAuthorizationTarget::ExactWindow { .. }
+            )
+            && self
+                .allowed_methods
+                .iter()
+                .any(|method| method == "browser_prepare")
+    }
 }
 
 struct TaskAuthorizationServer {
@@ -427,7 +520,10 @@ async fn open_task_session(
         .as_ref()
         .ok_or_else(|| "task authorization has not been issued".to_owned())?;
     let (client_stream, host_stream) = tokio::io::duplex(256 * 1024);
-    let driver = ComputerUseDriver::create().map_err(|error| error.to_string())?;
+    let driver = match browser_prepare_authorization_host(proposal_id, proposal) {
+        Some(host) => driver_with_browser_prepare_authorization(host)?,
+        None => ComputerUseDriver::create().map_err(|error| error.to_string())?,
+    };
     let security_services = HostSecurityServices::default()
         .with_task_authorization_host(authorization_host)
         .with_secret_vault(super::secret_vault::native_secret_vault());
@@ -443,14 +539,7 @@ async fn open_task_session(
         .map_err(|error| error.to_string())?;
     let grant = task_session_grant(proposal, receipt);
     client
-        .open_logical_task_session(
-            format!(
-                "mcp-task-{}",
-                proposal_id.trim_start_matches("task-proposal-")
-            ),
-            grant,
-            DEFAULT_IDLE_TIMEOUT_MS,
-        )
+        .open_logical_task_session(task_session_id(proposal_id), grant, DEFAULT_IDLE_TIMEOUT_MS)
         .await
         .map_err(|error| error.to_string())
 }
@@ -487,7 +576,7 @@ fn task_session_grant(proposal: &TaskProposal, receipt: &TrustedTaskAuthorizatio
         "allow_clipboard_write": allow_clipboard,
         "allow_live_observation": true,
         "allow_browser_input": browser,
-        "allow_browser_prepare": browser && owned_browser_launch.is_none(),
+        "allow_browser_prepare": proposal.authorizes_existing_profile_prepare(),
         "allow_trusted_confirmation": true,
         "task_authorization_id": receipt.authorization_id,
         "task_authorization_window_capability": receipt.window_capability,
