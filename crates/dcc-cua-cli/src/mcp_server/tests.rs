@@ -288,6 +288,45 @@ async fn authorized_browser_prepare_accepts_the_exact_namespaced_logical_task_se
 
 #[rstest]
 #[tokio::test]
+async fn authorized_browser_prepare_accepts_and_binds_the_real_runtime_window_session() {
+    let host = TaskBrowserPrepareAuthorizationHost::new("mcp-task-exact");
+    let runtime_session = concat!(
+        "__cua_runtime_00112233445566778899aabbccddeeff:",
+        "dcc-cua-window-123e4567-e89b-42d3-a456-426614174000"
+    );
+    let mut first = driver_authorization_request(runtime_session);
+    first.transport_session = "transport-exact".into();
+
+    let decision = host.authorize(first).await.unwrap();
+
+    assert_eq!(decision.action, DriverAuthorizationAction::Allow);
+    let mut repeated = driver_authorization_request(runtime_session);
+    repeated.transport_session = "transport-exact".into();
+    assert_eq!(
+        host.authorize(repeated).await.unwrap().action,
+        DriverAuthorizationAction::Allow
+    );
+
+    let mut different_public = driver_authorization_request(concat!(
+        "__cua_runtime_00112233445566778899aabbccddeeff:",
+        "dcc-cua-window-223e4567-e89b-42d3-a456-426614174000"
+    ));
+    different_public.transport_session = "transport-exact".into();
+    assert_eq!(
+        host.authorize(different_public).await.unwrap().action,
+        DriverAuthorizationAction::Deny
+    );
+
+    let mut different_transport = driver_authorization_request(runtime_session);
+    different_transport.transport_session = "transport-other".into();
+    assert_eq!(
+        host.authorize(different_transport).await.unwrap().action,
+        DriverAuthorizationAction::Deny
+    );
+}
+
+#[rstest]
+#[tokio::test]
 async fn authorized_browser_prepare_rejects_a_different_logical_task_session() {
     let host = TaskBrowserPrepareAuthorizationHost::new("mcp-task-exact");
 
@@ -309,6 +348,9 @@ async fn authorized_browser_prepare_rejects_namespaced_session_lookalikes() {
         "__cua_runtime_00112233445566778899AABBCCDDEEFF:mcp-task-exact",
         "__cua_runtime_00112233445566778899aabbccddeeff:mcp-task-other",
         "__cua_runtime_00112233445566778899aabbccddeeff:other:mcp-task-exact",
+        "__cua_runtime_00112233445566778899aabbccddeeff:dcc-cua-window-not-a-uuid",
+        "__cua_runtime_00112233445566778899aabbccddeeff:dcc-cua-window-123e4567-e89b-12d3-a456-426614174000",
+        "dcc-cua-window-123e4567-e89b-42d3-a456-426614174000",
         "prefix:mcp-task-exact",
     ] {
         let decision = host
