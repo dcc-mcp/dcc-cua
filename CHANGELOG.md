@@ -1,5 +1,26 @@
 # Changelog
 
+## [1.5.0](https://github.com/dcc-mcp/dcc-cua/compare/v1.4.0...v1.5.0) (2026-08-24)
+
+
+### Features
+
+* add browser store credential preflight ([8fc6f9e](https://github.com/dcc-mcp/dcc-cua/commit/8fc6f9ed90dc98653990ee96dbd2832bf19e0492))
+* authorize sensitive actions with user confirmation ([74a5b39](https://github.com/dcc-mcp/dcc-cua/commit/74a5b393ede268e139b3de70d2be6883c0eb1f9d))
+* automate browser store publishing ([9c777e3](https://github.com/dcc-mcp/dcc-cua/commit/9c777e32540d8bdb47ac012f12776183de911b8c))
+* keep credentials outside host ipc ([84b6144](https://github.com/dcc-mcp/dcc-cua/commit/84b6144691e33f88bacc1c3ec27d4cacbd66726a))
+* land task-scoped user authorization ([7d1fbf2](https://github.com/dcc-mcp/dcc-cua/commit/7d1fbf216fab2c8a1a48079d99b16a8abbba231e))
+
+
+### Bug Fixes
+
+* bind browser prepare to task authorization ([ac417b3](https://github.com/dcc-mcp/dcc-cua/commit/ac417b35156d7918346f95b7c7d00e01ed7de2b3))
+* close task authorization action schema ([245d41b](https://github.com/dcc-mcp/dcc-cua/commit/245d41b80af2063e46023c73f7451fb69e104816))
+* disambiguate repeated browser consent ([08c47ac](https://github.com/dcc-mcp/dcc-cua/commit/08c47ac45aba08bc562691074c3fc1275c3c7bd6))
+* improve CLI version and update checks ([f0bd6cb](https://github.com/dcc-mcp/dcc-cua/commit/f0bd6cbdb8979f308537a1d6fb49f31071f164cc))
+* keep host-jsonl alive after output errors ([c035e07](https://github.com/dcc-mcp/dcc-cua/commit/c035e075ec4794f566bc29201706472b420f651c))
+* support UIA expandable controls ([55e968b](https://github.com/dcc-mcp/dcc-cua/commit/55e968b09816f246391a7bf9cedfc00916df32e6))
+
 ## [1.4.0](https://github.com/dcc-mcp/dcc-cua/compare/v1.3.3...v1.4.0) (2026-08-22)
 
 
