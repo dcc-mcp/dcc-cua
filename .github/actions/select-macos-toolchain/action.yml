@@ -1,0 +1,42 @@
+name: Select supported macOS toolchain
+description: Fail closed unless the pinned Xcode, SDK, and runner architecture match.
+
+inputs:
+  expected-arch:
+    description: Expected uname machine architecture.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Select and validate Xcode 26.6
+      shell: bash
+      env:
+        EXPECTED_ARCH: ${{ inputs.expected-arch }}
+        PINNED_DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      run: |
+        set -euo pipefail
+        if [ ! -d "$PINNED_DEVELOPER_DIR" ]; then
+          echo "pinned Xcode is not installed: $PINNED_DEVELOPER_DIR" >&2
+          exit 1
+        fi
+        export DEVELOPER_DIR="$PINNED_DEVELOPER_DIR"
+        echo "DEVELOPER_DIR=$DEVELOPER_DIR" >> "$GITHUB_ENV"
+
+        actual_arch="$(uname -m)"
+        if [ "$actual_arch" != "$EXPECTED_ARCH" ]; then
+          echo "runner architecture $actual_arch does not match $EXPECTED_ARCH" >&2
+          exit 1
+        fi
+
+        xcode_version="$(xcodebuild -version | sed -n 's/^Xcode //p')"
+        if [ "$xcode_version" != "26.6" ]; then
+          echo "Xcode $xcode_version does not match pinned version 26.6" >&2
+          exit 1
+        fi
+
+        sdk_version="$(xcrun --sdk macosx --show-sdk-version)"
+        if [[ "$sdk_version" != 26.* ]]; then
+          echo "macOS SDK $sdk_version cannot compile the required Metal bridge" >&2
+          exit 1
+        fi

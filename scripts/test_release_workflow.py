@@ -2,9 +2,14 @@ import json
 import unittest
 from pathlib import Path
 
-
-WORKFLOW = (
-    Path(__file__).parent.parent / ".github" / "workflows" / "release-please.yml"
+WORKFLOW = Path(__file__).parent.parent / ".github" / "workflows" / "release-please.yml"
+CI_WORKFLOW = Path(__file__).parent.parent / ".github" / "workflows" / "ci-checks.yml"
+MACOS_TOOLCHAIN_ACTION = (
+    Path(__file__).parent.parent
+    / ".github"
+    / "actions"
+    / "select-macos-toolchain"
+    / "action.yml"
 )
 PREFLIGHT_WORKFLOW = (
     Path(__file__).parent.parent
@@ -14,13 +19,141 @@ PREFLIGHT_WORKFLOW = (
 )
 SYNC_SCRIPT = Path(__file__).with_name("sync-cargo-workspace-version.ps1")
 REFRESH_SCRIPT = Path(__file__).with_name("refresh-release-please-prs.ps1")
+GUI_E2E_SCRIPT = Path(__file__).with_name("run-gui-e2e.ps1")
 ROOT = Path(__file__).parent.parent
 MARKETPLACE = ROOT / ".claude-plugin" / "marketplace.json"
 ROOT_PLUGIN = ROOT / ".codex-plugin" / "plugin.json"
 MARKETPLACE_PLUGIN = ROOT / "plugins" / "dcc-cua-computer-use"
+README = ROOT / "README.md"
+README_ZH = ROOT / "README.zh-CN.md"
 
 
 class ReleaseWorkflowTests(unittest.TestCase):
+    def test_release_matrix_builds_every_supported_native_target(self):
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+
+        expected_jobs = (
+            ("windows-latest", "windows-x86_64", "x86_64-pc-windows-msvc"),
+            ("ubuntu-latest", "linux-x86_64", "x86_64-unknown-linux-gnu"),
+            ("macos-26", "macos-aarch64", "aarch64-apple-darwin"),
+            ("macos-26-intel", "macos-x86_64", "x86_64-apple-darwin"),
+        )
+        build_matrix = workflow[
+            workflow.index("  build:") : workflow.index("  attach-assets:")
+        ]
+        for runner, artifact, target in expected_jobs:
+            self.assertIn(
+                f"- os: {runner}\n            platform: {artifact}\n"
+                f"            target: {target}\n",
+                build_matrix,
+            )
+        self.assertIn('if [ "$host" != "$EXPECTED_TARGET" ]; then', build_matrix)
+        self.assertIn("EXPECTED_TARGET: ${{ matrix.target }}", build_matrix)
+
+    def test_release_upload_fails_closed_until_all_target_assets_exist(self):
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        attach_assets = workflow[
+            workflow.index("  attach-assets:") : workflow.index(
+                "  package-browser-extension:"
+            )
+        ]
+
+        checkout = attach_assets.index("actions/checkout@v7")
+        download = attach_assets.index("actions/download-artifact@v4")
+        verify = attach_assets.index("scripts/verify_release_assets.py")
+        upload = attach_assets.index("gh release upload")
+        self.assertLess(checkout, download)
+        self.assertLess(download, verify)
+        self.assertLess(verify, upload)
+        self.assertIn(
+            "ref: ${{ needs.release-please.outputs.tag_name }}", attach_assets
+        )
+
+    def test_native_release_download_excludes_browser_extension_artifacts(self):
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        build_matrix = workflow[
+            workflow.index("  build:") : workflow.index("  attach-assets:")
+        ]
+        attach_assets = workflow[
+            workflow.index("  attach-assets:") : workflow.index(
+                "  package-browser-extension:"
+            )
+        ]
+
+        self.assertIn("name: dcc-cua-native-${{ matrix.platform }}", build_matrix)
+        self.assertIn("pattern: dcc-cua-native-*", attach_assets)
+        self.assertNotIn("pattern: dcc-cua-*", attach_assets)
+
+    def test_intel_macos_release_target_runs_the_native_ci_contract(self):
+        workflow = CI_WORKFLOW.read_text(encoding="utf-8")
+
+        self.assertEqual(workflow.count("macos-26-intel"), 2)
+        self.assertGreaterEqual(
+            workflow.count("if: startsWith(matrix.os, 'macos-')"), 3
+        )
+        self.assertNotIn("if: matrix.os == 'macos-latest'", workflow)
+
+    def test_macos_gui_fixture_is_rebuilt_for_the_exact_runner_architecture(self):
+        script = GUI_E2E_SCRIPT.read_text(encoding="utf-8")
+
+        self.assertIn("$macArchitecture = (& uname -m).Trim()", script)
+        self.assertIn('$macTarget = "$macArchitecture-apple-macos13.0"', script)
+        self.assertIn("& xcrun swiftc", script)
+        self.assertIn("-target $macTarget", script)
+        self.assertIn("& file $appKitExecutable", script)
+        self.assertIn("does not match runner architecture", script)
+
+    def test_macos_builds_share_a_pinned_supported_xcode_and_sdk_contract(self):
+        release = WORKFLOW.read_text(encoding="utf-8")
+        ci = CI_WORKFLOW.read_text(encoding="utf-8")
+        action = MACOS_TOOLCHAIN_ACTION.read_text(encoding="utf-8")
+
+        for workflow in (release, ci):
+            self.assertIn("macos-26-intel", workflow)
+            self.assertNotIn("macos-15-intel", workflow)
+            self.assertIn("./.github/actions/select-macos-toolchain", workflow)
+        self.assertEqual(release.count("./.github/actions/select-macos-toolchain"), 1)
+        self.assertEqual(ci.count("./.github/actions/select-macos-toolchain"), 2)
+        release_build = release[
+            release.index("  build:") : release.index("  attach-assets:")
+        ]
+        self.assertLess(
+            release_build.index("actions/checkout@v7"),
+            release_build.index("./.github/actions/select-macos-toolchain"),
+        )
+        self.assertLess(
+            release_build.index("./.github/actions/select-macos-toolchain"),
+            release_build.index("cargo build --release --locked"),
+        )
+        self.assertIn("/Applications/Xcode_26.6.app/Contents/Developer", action)
+        self.assertIn('actual_arch="$(uname -m)"', action)
+        self.assertIn('if [ "$actual_arch" != "$EXPECTED_ARCH" ]; then', action)
+        self.assertIn('xcode_version="$(xcodebuild -version', action)
+        self.assertIn('if [ "$xcode_version" != "26.6" ]; then', action)
+        self.assertIn('sdk_version="$(xcrun --sdk macosx --show-sdk-version)"', action)
+        self.assertIn('if [[ "$sdk_version" != 26.* ]]; then', action)
+
+    def test_policy_ci_runs_the_release_asset_verifier_regressions(self):
+        workflow = CI_WORKFLOW.read_text(encoding="utf-8")
+
+        self.assertIn(
+            "python -B -m unittest scripts.test_verify_release_assets", workflow
+        )
+
+    def test_public_docs_list_every_native_release_target(self):
+        english = README.read_text(encoding="utf-8")
+        chinese = README_ZH.read_text(encoding="utf-8")
+        for target in (
+            "x86_64-pc-windows-msvc",
+            "x86_64-unknown-linux-gnu",
+            "aarch64-apple-darwin",
+            "x86_64-apple-darwin",
+        ):
+            self.assertIn(target, english)
+            self.assertIn(target, chinese)
+        self.assertIn("macos-26-intel", english)
+        self.assertIn("macos-26-intel", chinese)
+
     def test_release_archive_includes_the_plugin_and_mcp_bridge(self):
         workflow = WORKFLOW.read_text(encoding="utf-8")
 
@@ -82,7 +215,9 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertNotIn(":upload", workflow)
         self.assertNotIn(":publish", workflow)
 
-    def test_browser_store_jobs_require_the_protected_user_authorization_environment(self):
+    def test_browser_store_jobs_require_the_protected_user_authorization_environment(
+        self,
+    ):
         workflow = WORKFLOW.read_text(encoding="utf-8")
 
         for job in (
@@ -96,8 +231,12 @@ class ReleaseWorkflowTests(unittest.TestCase):
             self.assertIn("DCC_CUA_BROWSER_STORE_PUBLISH_READY == 'true'", section)
         self.assertIn("id-token: write", workflow)
         self.assertIn("google-github-actions/auth@v3", workflow)
-        self.assertIn("FIREFOX_JWT_ISSUER: ${{ secrets.FIREFOX_AMO_API_KEY }}", workflow)
-        self.assertIn("FIREFOX_JWT_SECRET: ${{ secrets.FIREFOX_AMO_API_SECRET }}", workflow)
+        self.assertIn(
+            "FIREFOX_JWT_ISSUER: ${{ secrets.FIREFOX_AMO_API_KEY }}", workflow
+        )
+        self.assertIn(
+            "FIREFOX_JWT_SECRET: ${{ secrets.FIREFOX_AMO_API_SECRET }}", workflow
+        )
         self.assertIn("FIREFOX_SOURCES_ZIP:", workflow)
         self.assertNotIn("--api-key ${{ secrets.", workflow)
         self.assertNotIn("--api-secret ${{ secrets.", workflow)
@@ -143,15 +282,21 @@ class ReleaseWorkflowTests(unittest.TestCase):
         checkout = workflow.index("- uses: actions/checkout@v7", release_action)
         protection = workflow.index("Keep the native runtime release Latest")
         checkout_section = workflow[checkout:protection]
-        self.assertIn("ref: ${{ github.event.repository.default_branch }}", checkout_section)
+        self.assertIn(
+            "ref: ${{ github.event.repository.default_branch }}", checkout_section
+        )
 
         native_exists = workflow.index("gh release view $nativeTag", protection)
         native_latest = workflow.index("gh release edit $nativeTag", native_exists)
         extension_excluded = workflow.index(
             'gh release edit "$env:EXTENSION_TAG"', native_latest
         )
-        final_readback = workflow.index("$latestJson = gh release view", extension_excluded)
-        final_assertion = workflow.index("$latest.tagName -ne $nativeTag", final_readback)
+        final_readback = workflow.index(
+            "$latestJson = gh release view", extension_excluded
+        )
+        final_assertion = workflow.index(
+            "$latest.tagName -ne $nativeTag", final_readback
+        )
         self.assertLess(release_action, checkout)
         self.assertLess(checkout, protection)
         self.assertLess(native_exists, native_latest)
@@ -179,7 +324,9 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertLess(restore, synchronize)
         self.assertLess(synchronize, guarded_push)
 
-    def test_release_sync_stages_only_release_anchors_and_generated_workspace_files(self):
+    def test_release_sync_stages_only_release_anchors_and_generated_workspace_files(
+        self,
+    ):
         script = REFRESH_SCRIPT.read_text(encoding="utf-8")
 
         self.assertIn("$stageFiles += @('Cargo.toml', 'Cargo.lock')", script)

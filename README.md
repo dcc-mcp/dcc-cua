@@ -1152,6 +1152,23 @@ both MIT license notices, then attaches the platform archives to the GitHub
 release. CI exercises that self-contained SDK runtime and Host IPC on every
 platform before GUI testing.
 
+The native release contract contains one archive, SHA-256 sidecar, and install
+manifest for each supported Rust target:
+
+| Platform | Release target | GitHub runner |
+| --- | --- | --- |
+| Windows x64 | `x86_64-pc-windows-msvc` | `windows-latest` |
+| Linux x64 | `x86_64-unknown-linux-gnu` | `ubuntu-latest` |
+| macOS Apple silicon | `aarch64-apple-darwin` | `macos-26` |
+| macOS Intel | `x86_64-apple-darwin` | `macos-26-intel` |
+
+The upload job fails closed unless all four target triples have matching
+archives, checksums, and manifests. Intel macOS remains a public support target
+while the official `macos-26-intel` runner is available. Both macOS release
+targets select Xcode 26.6 and fail closed unless the runner architecture and
+macOS 26 SDK match; the runner and release contract must change together if
+that hosted image or pinned toolchain is retired.
+
 The release gate is intentionally closed while the product is still being
 completed. Do not set the repository variable `DCC_CUA_RELEASE_READY=true`
 until the full computer-control goal is accepted. The initial manifest starts
