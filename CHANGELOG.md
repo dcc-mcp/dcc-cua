@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.5.1](https://github.com/dcc-mcp/dcc-cua/compare/v1.5.0...v1.5.1) (2026-08-24)
+
+
+### Bug Fixes
+
+* accept namespaced browser task sessions ([#194](https://github.com/dcc-mcp/dcc-cua/issues/194)) ([9407b36](https://github.com/dcc-mcp/dcc-cua/commit/9407b36e22573b513504985d90e286fd50bc9966))
+* preserve native latest release ([#189](https://github.com/dcc-mcp/dcc-cua/issues/189)) ([ae26331](https://github.com/dcc-mcp/dcc-cua/commit/ae26331840a9e0c27d2bc67f4f2c169e1126a417))
+* publish Intel macOS release assets ([#192](https://github.com/dcc-mcp/dcc-cua/issues/192)) ([f81be0a](https://github.com/dcc-mcp/dcc-cua/commit/f81be0addfb5482ef05c47db9eae4bec40a5a447))
+
 ## [1.5.0](https://github.com/dcc-mcp/dcc-cua/compare/v1.4.0...v1.5.0) (2026-08-24)
 
 
