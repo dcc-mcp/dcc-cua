@@ -251,6 +251,20 @@ CI 在 Windows、Linux 和 macOS 上检查代码布局、格式、工作区测�
 构建和真实发布二进制 E2E。发布归档包含单个 `dcc-cua` 可执行文件、assets、Skills、
 英文/简体中文 README 以及项目和上游许可证。
 
+原生发布契约为每个支持的 Rust target 提供一份归档、SHA-256 sidecar 和安装 manifest：
+
+| 平台 | 发布 target | GitHub runner |
+| --- | --- | --- |
+| Windows x64 | `x86_64-pc-windows-msvc` | `windows-latest` |
+| Linux x64 | `x86_64-unknown-linux-gnu` | `ubuntu-latest` |
+| macOS Apple silicon | `aarch64-apple-darwin` | `macos-26` |
+| macOS Intel | `x86_64-apple-darwin` | `macos-26-intel` |
+
+只有四个 target 的归档、checksum 和 manifest 全部匹配时，上传 job 才会继续。
+官方 `macos-26-intel` runner 可用期间，Intel macOS 仍是公开支持目标。两个 macOS
+发布目标统一选择 Xcode 26.6，并在 runner 架构或 macOS 26 SDK 不匹配时 fail closed；
+若该托管镜像或固定工具链退役，必须同时调整 runner 和发布契约。
+
 发布门槛在产品验收前保持关闭；不要提前设置
 `DCC_CUA_RELEASE_READY=true`。Release Please 负责版本和变更日志，不发布 crates。
 

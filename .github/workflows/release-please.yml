@@ -115,26 +115,39 @@ jobs:
       matrix:
         include:
           - os: windows-latest
-            platform: windows
+            platform: windows-x86_64
+            target: x86_64-pc-windows-msvc
             archive: zip
           - os: ubuntu-latest
-            platform: linux
+            platform: linux-x86_64
+            target: x86_64-unknown-linux-gnu
             archive: tar.gz
-          - os: macos-latest
-            platform: macos
+          - os: macos-26
+            platform: macos-aarch64
+            target: aarch64-apple-darwin
             archive: tar.gz
+            arch: arm64
+          - os: macos-26-intel
+            platform: macos-x86_64
+            target: x86_64-apple-darwin
+            archive: tar.gz
+            arch: x86_64
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
         with:
           ref: ${{ needs.release-please.outputs.tag_name }}
+      - if: contains(matrix.target, 'apple-darwin')
+        uses: ./.github/actions/select-macos-toolchain
+        with:
+          expected-arch: ${{ matrix.arch }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.95.0
       - if: matrix.os == 'ubuntu-latest'
         run: sudo apt-get update && sudo apt-get install --no-install-recommends -y libx11-dev libxi-dev libxtst-dev
-      - if: matrix.os == 'macos-latest'
+      - if: contains(matrix.target, 'apple-darwin')
         shell: bash
         run: |
           swiftc_path="$(xcrun --find swiftc)"
@@ -145,9 +158,14 @@ jobs:
         shell: bash
         env:
           TAG_NAME: ${{ needs.release-please.outputs.tag_name }}
+          EXPECTED_TARGET: ${{ matrix.target }}
         run: |
           set -euo pipefail
           host="$(rustc -vV | sed -n 's/^host: //p')"
+          if [ "$host" != "$EXPECTED_TARGET" ]; then
+            echo "runner target $host does not match declared release target $EXPECTED_TARGET" >&2
+            exit 1
+          fi
           version="${TAG_NAME#v}"
           mkdir -p dist
           cp -R skills target/release/skills
@@ -176,7 +194,7 @@ jobs:
           python scripts/write-install-manifest.py --archive "$archive" --version "$version" --target "$host" --url "$asset_url" --output "$manifest" --checksum-output "${archive}.sha256"
       - uses: actions/upload-artifact@v4
         with:
-          name: dcc-cua-${{ matrix.platform }}
+          name: dcc-cua-native-${{ matrix.platform }}
           path: dist/*
           if-no-files-found: error
 
@@ -186,11 +204,22 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.release-please.outputs.tag_name }}
       - uses: actions/download-artifact@v4
         with:
           path: dist
-          pattern: dcc-cua-*
+          pattern: dcc-cua-native-*
           merge-multiple: true
+      - name: Verify native release asset completeness
+        shell: bash
+        env:
+          TAG_NAME: ${{ needs.release-please.outputs.tag_name }}
+        run: >-
+          python -B scripts/verify_release_assets.py
+          --directory dist
+          --version "${TAG_NAME#v}"
       - name: Attach release archives
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

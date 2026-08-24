@@ -27,6 +27,30 @@ if ($isWindowsHost) {
     if ($LASTEXITCODE -eq 0) {
         & bash (Join-Path $cuaDriverDir "tests/fixtures/build/macos.sh") --only appkit
     }
+    if ($LASTEXITCODE -eq 0) {
+        $macArchitecture = (& uname -m).Trim()
+        if ($LASTEXITCODE -ne 0 -or $macArchitecture -notin @("arm64", "x86_64")) {
+            throw "unsupported macOS runner architecture: $macArchitecture"
+        }
+        $macTarget = "$macArchitecture-apple-macos13.0"
+        $appKitSourceDirectory = Join-Path $cuaDriverDir "tests/fixtures/apps/macos/appkit"
+        $appKitSources = @(
+            Get-ChildItem -LiteralPath $appKitSourceDirectory -Filter "*.swift" -File |
+                Sort-Object -Property Name |
+                Select-Object -ExpandProperty FullName
+        )
+        if ($appKitSources.Count -eq 0) {
+            throw "official CUA AppKit fixture has no Swift sources"
+        }
+        $appKitExecutable = Join-Path $rustDir "test-apps/harness-appkit/CuaTestHarness.AppKit.app/Contents/MacOS/CuaTestHarness.AppKit"
+        & xcrun swiftc -O -target $macTarget -parse-as-library -o $appKitExecutable @appKitSources
+        if ($LASTEXITCODE -eq 0) {
+            $fixtureArchitecture = (& file $appKitExecutable | Out-String).Trim()
+            if ($LASTEXITCODE -ne 0 -or $fixtureArchitecture -notmatch [regex]::Escape($macArchitecture)) {
+                throw "official CUA AppKit fixture does not match runner architecture ${macArchitecture}: $fixtureArchitecture"
+            }
+        }
+    }
 } else {
     & bash (Join-Path $cuaDriverDir "tests/fixtures/build/linux.sh") --only "electron,gtk3"
 }

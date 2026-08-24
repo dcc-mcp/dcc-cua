@@ -1280,6 +1280,7 @@ fn updater_requires_the_exact_archive_and_checksum_sidecar() {
 #[case("x86_64-pc-windows-msvc", "zip")]
 #[case("x86_64-unknown-linux-gnu", "tar.gz")]
 #[case("aarch64-apple-darwin", "tar.gz")]
+#[case("x86_64-apple-darwin", "tar.gz")]
 fn updater_derives_archive_extension_from_selected_target(
     #[case] target: &str,
     #[case] extension: &str,
