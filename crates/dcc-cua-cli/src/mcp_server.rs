@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::error::Error;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
@@ -37,31 +37,71 @@ const CUA_RUNTIME_SESSION_PREFIX: &str = "__cua_runtime_";
 
 struct TaskBrowserPrepareAuthorizationHost {
     expected_public_session: String,
+    bound_driver_session: Mutex<Option<BoundDriverSession>>,
+}
+
+struct BoundDriverSession {
+    public_session: String,
+    transport_session: String,
 }
 
 impl TaskBrowserPrepareAuthorizationHost {
     fn new(expected_public_session: impl Into<String>) -> Self {
         Self {
             expected_public_session: expected_public_session.into(),
+            bound_driver_session: Mutex::new(None),
+        }
+    }
+
+    fn binds_driver_session(&self, request: &DriverAuthorizationRequest) -> bool {
+        // Each authorized task owns a fresh driver and an in-memory Host
+        // connection that is not exposed to MCP callers. The Host replaces the
+        // logical task id with an opaque runtime window id before CUA sees it,
+        // so bind the first structurally valid driver request and require that
+        // exact public/transport pair for the rest of this task.
+        let Ok(mut binding) = self.bound_driver_session.lock() else {
+            return false;
+        };
+        match binding.as_ref() {
+            Some(binding) => {
+                binding.public_session == request.public_session
+                    && binding.transport_session == request.transport_session
+            }
+            None => {
+                *binding = Some(BoundDriverSession {
+                    public_session: request.public_session.clone(),
+                    transport_session: request.transport_session.clone(),
+                });
+                true
+            }
         }
     }
 }
 
-fn matches_task_session(observed: &str, expected: &str) -> bool {
-    if observed == expected {
-        return true;
-    }
-    let Some(namespaced) = observed.strip_prefix(CUA_RUNTIME_SESSION_PREFIX) else {
-        return false;
-    };
-    let Some((runtime_scope, public_session)) = namespaced.split_once(':') else {
-        return false;
-    };
-    runtime_scope.len() == 32
+fn split_runtime_session(observed: &str) -> Option<(&str, &str)> {
+    let namespaced = observed.strip_prefix(CUA_RUNTIME_SESSION_PREFIX)?;
+    let (runtime_scope, public_session) = namespaced.split_once(':')?;
+    (runtime_scope.len() == 32
         && runtime_scope
             .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-        && public_session == expected
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)))
+    .then_some((runtime_scope, public_session))
+}
+
+fn matches_task_session(observed: &str, expected: &str) -> bool {
+    observed == expected
+        || split_runtime_session(observed)
+            .is_some_and(|(_, public_session)| public_session == expected)
+}
+
+fn is_runtime_window_session(observed: &str) -> bool {
+    let Some((_, public_session)) = split_runtime_session(observed) else {
+        return false;
+    };
+    public_session
+        .strip_prefix("dcc-cua-window-")
+        .and_then(|value| Uuid::parse_str(value).ok())
+        .is_some_and(|id| id.get_version_num() == 4)
 }
 
 #[async_trait]
@@ -74,7 +114,10 @@ impl DriverAuthorizationHost for TaskBrowserPrepareAuthorizationHost {
             && request.permission_mode == "standard"
             && request.adapter_id == "browser_prepare.existing_profile"
             && request.risk_class == "r2"
-            && matches_task_session(&request.public_session, &self.expected_public_session);
+            && !request.transport_session.is_empty()
+            && (matches_task_session(&request.public_session, &self.expected_public_session)
+                || is_runtime_window_session(&request.public_session))
+            && self.binds_driver_session(&request);
         Ok(DriverAuthorizationDecision {
             action: if allowed {
                 DriverAuthorizationAction::Allow
