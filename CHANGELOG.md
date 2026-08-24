@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.2](https://github.com/dcc-mcp/dcc-cua/compare/v1.5.1...v1.5.2) (2026-08-24)
+
+
+### Bug Fixes
+
+* bind browser task runtime sessions ([#196](https://github.com/dcc-mcp/dcc-cua/issues/196)) ([c520ad4](https://github.com/dcc-mcp/dcc-cua/commit/c520ad47469558c68aa184e32aa6bfb073ef9985))
+
 ## [1.5.1](https://github.com/dcc-mcp/dcc-cua/compare/v1.5.0...v1.5.1) (2026-08-24)
 
 
