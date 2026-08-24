@@ -33,6 +33,7 @@ const DEFAULT_TTL_MINUTES: u64 = 60;
 const DEFAULT_IDLE_TIMEOUT_MS: u64 = 15 * 60 * 1_000;
 const MAX_ALLOWED_METHODS: usize = 32;
 const AUTHORIZATION_CARD_HTML: &str = include_str!("task_authorization_card.html");
+const CUA_RUNTIME_SESSION_PREFIX: &str = "__cua_runtime_";
 
 struct TaskBrowserPrepareAuthorizationHost {
     expected_public_session: String,
@@ -46,6 +47,23 @@ impl TaskBrowserPrepareAuthorizationHost {
     }
 }
 
+fn matches_task_session(observed: &str, expected: &str) -> bool {
+    if observed == expected {
+        return true;
+    }
+    let Some(namespaced) = observed.strip_prefix(CUA_RUNTIME_SESSION_PREFIX) else {
+        return false;
+    };
+    let Some((runtime_scope, public_session)) = namespaced.split_once(':') else {
+        return false;
+    };
+    runtime_scope.len() == 32
+        && runtime_scope
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        && public_session == expected
+}
+
 #[async_trait]
 impl DriverAuthorizationHost for TaskBrowserPrepareAuthorizationHost {
     async fn authorize(
@@ -56,7 +74,7 @@ impl DriverAuthorizationHost for TaskBrowserPrepareAuthorizationHost {
             && request.permission_mode == "standard"
             && request.adapter_id == "browser_prepare.existing_profile"
             && request.risk_class == "r2"
-            && request.public_session == self.expected_public_session;
+            && matches_task_session(&request.public_session, &self.expected_public_session);
         Ok(DriverAuthorizationDecision {
             action: if allowed {
                 DriverAuthorizationAction::Allow
