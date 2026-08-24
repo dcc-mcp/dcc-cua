@@ -13,7 +13,7 @@ manifest and configuration; Rust sources, build output, and the repository
 manifest remains available for development checkouts that also need the
 repository Skills.
 
-## Codex
+## Supported desktop embeddings
 
 Install the checkout as a local plugin using the Codex plugin installation flow,
 or point a development Codex session at the repository checkout. Install the
@@ -26,12 +26,24 @@ codex plugin marketplace add .
 codex plugin add dcc-cua-computer-use@dcc-cua
 ```
 
-The authorization issuer is created only when Windows verifies that the MCP
-server's immediate parent is the signed, packaged Codex desktop runtime. A
-shell, redirected stdin client, unpackaged host, or unsupported platform fails
-closed before the MCP server reads a request. Additional host platforms need
-their own native embedding attestor; model-visible arguments and environment
-variables are never accepted as an authorization bypass.
+The checkout also includes `.claude-plugin/marketplace.json` and a portable
+`.mcp.json`. Claude, CodeBuddy, and WorkBuddy should import the bridge through
+their native plugin or MCP configuration and launch `dcc-cua mcp-server`
+directly; wrapping it in a shell intentionally breaks the attestation.
+
+The authorization issuer is created only when Windows verifies the MCP server's
+immediate parent as one of these desktop embeddings:
+
+- Codex or Claude: exact executable name plus exact Windows package family.
+- CodeBuddy CN or WorkBuddy: a valid Authenticode trust chain, the exact
+  publisher, the exact signed product name, and the exact executable name.
+
+A shell, redirected stdin client, Node/Python child, renamed signed binary,
+untrusted package, invalid signature, or unsupported platform fails closed
+before the MCP server reads a request. Additional host platforms need their own
+native embedding attestor; model-visible arguments, environment variables, and
+user-writable install paths are never accepted as authorization evidence. See
+[ADR 0026](adr/0026-attest-trusted-desktop-embeddings.md).
 
 Before a workflow, the model renders either an exact PID/HWND proposal or the
 closed `chromium` / `isolated_new` owned-browser launch spec. The card shows the

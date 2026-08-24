@@ -109,4 +109,5 @@ attack and operational surface.
 ## References
 
 - [ADR 0023: Authorize bounded tasks without action popups](0023-authorize-bounded-tasks-without-action-popups.md)
+- [ADR 0026: Attest trusted desktop embeddings](0026-attest-trusted-desktop-embeddings.md)
 - [Issue #170](https://github.com/dcc-mcp/dcc-cua/issues/170)
