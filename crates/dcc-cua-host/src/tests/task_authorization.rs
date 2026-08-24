@@ -84,6 +84,22 @@ fn unix_time_millis() -> u64 {
         .as_millis() as u64
 }
 
+#[rstest]
+fn task_action_scope_rejects_method_names_and_incoherent_special_actions() {
+    let scope = |action: &str, input_kind: &str, secret_input: bool| TrustedTaskActionScope {
+        action: action.into(),
+        input_kind: input_kind.into(),
+        secret_input,
+        authorization_category: "credential".into(),
+        browser_origin: None,
+    };
+
+    assert!(!scope("browser_click", "semantic", false).validate());
+    assert!(!scope("browser_type", "semantic", true).validate());
+    assert!(!scope("clipboard_capture_secret", "semantic", true).validate());
+    assert!(scope("type", "semantic", true).validate());
+}
+
 fn task_binding<'a>() -> TaskAuthorizationBinding<'a> {
     TaskAuthorizationBinding::window(
         "authorization-1",

@@ -240,6 +240,77 @@ fn authorization_card_accepts_no_secret_fields() {
 }
 
 #[rstest]
+fn task_action_schema_matches_the_closed_runtime_contract() {
+    let schema = task_action_scope_schema();
+    let variants = schema["oneOf"].as_array().unwrap();
+    assert_eq!(variants.len(), 4);
+
+    let variant = |input_kind: &str| {
+        variants
+            .iter()
+            .find(|variant| {
+                variant["properties"]["input_kind"]["const"].as_str() == Some(input_kind)
+            })
+            .unwrap()
+    };
+    let semantic = variant("semantic");
+    assert_eq!(
+        semantic["properties"]["action"]["enum"],
+        json!(TrustedTaskActionScope::NATIVE_ACTIONS)
+    );
+    assert_eq!(
+        semantic["properties"]["authorization_category"]["enum"],
+        json!(TrustedTaskActionScope::SEMANTIC_CATEGORIES)
+    );
+    assert!(
+        !semantic["properties"]["action"]["enum"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("browser_click"))
+    );
+
+    let browser = variant("browser");
+    assert_eq!(browser["properties"]["action"]["const"], "browser_type");
+    assert_eq!(browser["properties"]["secret_input"]["const"], true);
+    assert_eq!(
+        browser["properties"]["authorization_category"]["const"],
+        "credential"
+    );
+    assert!(
+        browser["required"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("browser_origin"))
+    );
+
+    let clipboard = variant("clipboard");
+    assert_eq!(
+        clipboard["properties"]["action"]["const"],
+        "clipboard_capture_secret"
+    );
+    assert_eq!(clipboard["properties"]["secret_input"]["const"], true);
+
+    let prepare = tool_definitions()
+        .into_iter()
+        .find(|tool| tool["name"] == "prepare_task_authorization")
+        .unwrap();
+    assert_eq!(
+        prepare["inputSchema"]["properties"]["allowed_actions"]["uniqueItems"],
+        true
+    );
+}
+
+#[rstest]
+fn method_style_action_name_is_rejected_before_a_proposal_is_created() {
+    let mut server = test_server();
+    let mut task = browser_task();
+    task["allowed_actions"][0]["action"] = json!("browser_click");
+
+    assert!(server.prepare_task(task).is_err());
+    assert!(server.proposals.is_empty());
+}
+
+#[rstest]
 #[tokio::test]
 async fn task_call_scope_rejects_methods_not_shown_to_the_user() {
     let mut server = test_server();

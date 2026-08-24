@@ -651,19 +651,82 @@ fn read_resource(params: &Value) -> Result<Value, String> {
     }))
 }
 
+fn task_action_scope_schema() -> Value {
+    let required = [
+        "action",
+        "input_kind",
+        "secret_input",
+        "authorization_category",
+    ];
+    json!({
+        "oneOf": [
+            {
+                "title": "Semantic exact-window input",
+                "type": "object",
+                "additionalProperties": false,
+                "required": required,
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": TrustedTaskActionScope::NATIVE_ACTIONS,
+                        "description": "Final input action, not a Host method name. For example, browser_click resolves to click."
+                    },
+                    "input_kind": {"const": "semantic"},
+                    "secret_input": {"type": "boolean"},
+                    "authorization_category": {"type": "string", "enum": TrustedTaskActionScope::SEMANTIC_CATEGORIES},
+                    "browser_origin": {"type": "null"}
+                }
+            },
+            {
+                "title": "Raw exact-window input",
+                "type": "object",
+                "additionalProperties": false,
+                "required": required,
+                "properties": {
+                    "action": {"type": "string", "enum": TrustedTaskActionScope::NATIVE_ACTIONS},
+                    "input_kind": {"const": "raw_input"},
+                    "secret_input": {"type": "boolean"},
+                    "authorization_category": {"type": "string", "enum": TrustedTaskActionScope::RAW_INPUT_CATEGORIES},
+                    "browser_origin": {"type": "null"}
+                }
+            },
+            {
+                "title": "Browser credential input",
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["action", "input_kind", "secret_input", "authorization_category", "browser_origin"],
+                "properties": {
+                    "action": {"const": "browser_type"},
+                    "input_kind": {"const": "browser"},
+                    "secret_input": {"const": true},
+                    "authorization_category": {"const": "credential"},
+                    "browser_origin": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 2048,
+                        "pattern": "^https?://[^/?#@]+$"
+                    }
+                }
+            },
+            {
+                "title": "Clipboard credential capture",
+                "type": "object",
+                "additionalProperties": false,
+                "required": required,
+                "properties": {
+                    "action": {"const": "clipboard_capture_secret"},
+                    "input_kind": {"const": "clipboard"},
+                    "secret_input": {"const": true},
+                    "authorization_category": {"const": "credential"},
+                    "browser_origin": {"type": "null"}
+                }
+            }
+        ]
+    })
+}
+
 fn tool_definitions() -> Vec<Value> {
-    let action_scope = json!({
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["action", "input_kind", "secret_input", "authorization_category"],
-        "properties": {
-            "action": {"type": "string"},
-            "input_kind": {"type": "string", "enum": ["raw_input", "semantic", "browser", "clipboard"]},
-            "secret_input": {"type": "boolean"},
-            "authorization_category": {"type": "string"},
-            "browser_origin": {"type": ["string", "null"]}
-        }
-    });
+    let action_scope = task_action_scope_schema();
     vec![
         json!({
             "name": "prepare_task_authorization",
@@ -714,7 +777,14 @@ fn tool_definitions() -> Vec<Value> {
                             "browser_set_input_files", "browser_dialog"
                         ]}
                     },
-                    "allowed_actions": {"type": "array", "minItems": 1, "maxItems": 32, "items": action_scope},
+                    "allowed_actions": {
+                        "type": "array",
+                        "description": "Closed final input scopes. Use click/type action names for browser_click/browser input methods; only secret-handle browser typing uses browser_type.",
+                        "minItems": 1,
+                        "maxItems": 32,
+                        "uniqueItems": true,
+                        "items": action_scope
+                    },
                     "allowed_browser_origins": {
                         "type": "array",
                         "maxItems": 32,
