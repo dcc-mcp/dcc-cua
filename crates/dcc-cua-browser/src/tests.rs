@@ -57,6 +57,34 @@ fn browser_snapshot_origin_is_exact_and_tab_bound() {
 }
 
 #[rstest]
+fn browser_snapshot_origin_supports_semantic_page_url() {
+    let snapshot = json!({
+        "structuredContent": {
+            "target_id": "target-1",
+            "tab_id": "tab-1",
+            "page": {
+                "url": "https://addons.mozilla.org/en-US/developers/"
+            },
+            "snapshot": {
+                "id": "p1",
+                "format": "semantic_v2"
+            }
+        }
+    });
+
+    assert_eq!(
+        browser_snapshot_origin(&snapshot, "tab-1").as_deref(),
+        Some("https://addons.mozilla.org")
+    );
+    assert!(browser_snapshot_origin(&snapshot, "tab-2").is_none());
+    for invalid_url in ["file:///private/data", "not a URL"] {
+        let mut invalid = snapshot.clone();
+        invalid["structuredContent"]["page"]["url"] = json!(invalid_url);
+        assert!(browser_snapshot_origin(&invalid, "tab-1").is_none());
+    }
+}
+
+#[rstest]
 fn ancestor_scope_request_requires_the_strict_semantic_contract() {
     let valid: BrowserSnapshotRequest = serde_json::from_value(json!({
         "target_id": "target-1",

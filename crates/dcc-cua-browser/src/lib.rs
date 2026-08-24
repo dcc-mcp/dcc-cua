@@ -857,6 +857,11 @@ fn browser_snapshot_origin(value: &Value, tab_id: &str) -> Option<String> {
         .as_str()
         .or_else(|| structured["snapshot"]["url"].as_str())
         .or_else(|| {
+            (structured["tab_id"].as_str() == Some(tab_id))
+                .then(|| structured["page"]["url"].as_str())
+                .flatten()
+        })
+        .or_else(|| {
             structured["tabs"].as_array().and_then(|tabs| {
                 tabs.iter()
                     .find(|tab| tab["tab_id"].as_str() == Some(tab_id))
