@@ -493,12 +493,22 @@ jobs:
               --output "dist/dcc-cua-browser-extension-${EXTENSION_VERSION}-${browser}.zip" \
               --version "${EXTENSION_VERSION}"
           done
+          rm -- dist/*.sha256
           (
             cd browser-extension/chrome
             npx --no-install wxt zip -b firefox --mv3 --sources
             cp .output/*-sources.zip \
               "../../dist/dcc-cua-browser-extension-${EXTENSION_VERSION}-firefox-sources.zip"
           )
+      - name: Verify browser extension asset set
+        env:
+          EXTENSION_VERSION: ${{ needs.release-please.outputs.extension_version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -B scripts/release_integrity.py verify-extension-assets \
+            --directory dist \
+            --version "$EXTENSION_VERSION"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         id: upload-extension
         with:
@@ -558,6 +568,15 @@ jobs:
             --archive "$archive" \
             --expected-digest "$EXPECTED_ARTIFACT_DIGEST" \
             --output dist
+      - name: Verify browser extension asset set
+        env:
+          EXTENSION_VERSION: ${{ needs.release-please.outputs.extension_version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -B scripts/release_integrity.py verify-extension-assets \
+            --directory dist \
+            --version "$EXTENSION_VERSION"
       - name: Refuse existing browser extension release assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -603,7 +622,7 @@ jobs:
             --actual-latest-tag "$latest_tag"
 
   publish-chrome-web-store:
-    needs: [release-please, package-browser-extension]
+    needs: [release-please, package-browser-extension, attach-browser-extension-assets]
     if: needs.release-please.outputs.extension_release_created == 'true' && vars.DCC_CUA_BROWSER_STORE_PUBLISH_READY == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -655,6 +674,15 @@ jobs:
             --archive "$archive" \
             --expected-digest "$EXPECTED_ARTIFACT_DIGEST" \
             --output dist
+      - name: Verify browser extension asset set
+        env:
+          EXTENSION_VERSION: ${{ needs.release-please.outputs.extension_version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -B scripts/release_integrity.py verify-extension-assets \
+            --directory dist \
+            --version "$EXTENSION_VERSION"
       - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
         id: google-auth
         with:
@@ -675,7 +703,7 @@ jobs:
           --expected-version "${EXTENSION_VERSION}"
 
   publish-edge-addons:
-    needs: [release-please, package-browser-extension]
+    needs: [release-please, package-browser-extension, attach-browser-extension-assets]
     if: needs.release-please.outputs.extension_release_created == 'true' && vars.DCC_CUA_BROWSER_STORE_PUBLISH_READY == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -726,6 +754,15 @@ jobs:
             --archive "$archive" \
             --expected-digest "$EXPECTED_ARTIFACT_DIGEST" \
             --output dist
+      - name: Verify browser extension asset set
+        env:
+          EXTENSION_VERSION: ${{ needs.release-please.outputs.extension_version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -B scripts/release_integrity.py verify-extension-assets \
+            --directory dist \
+            --version "$EXTENSION_VERSION"
       - name: Submit Edge Add-ons release
         env:
           EDGE_ADDONS_API_KEY: ${{ secrets.EDGE_ADDONS_API_KEY }}
@@ -739,7 +776,7 @@ jobs:
           --expected-version "${EXTENSION_VERSION}"
 
   publish-firefox-addons:
-    needs: [release-please, package-browser-extension]
+    needs: [release-please, package-browser-extension, attach-browser-extension-assets]
     if: needs.release-please.outputs.extension_release_created == 'true' && vars.DCC_CUA_BROWSER_STORE_PUBLISH_READY == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -796,6 +833,15 @@ jobs:
             --archive "$archive" \
             --expected-digest "$EXPECTED_ARTIFACT_DIGEST" \
             --output dist
+      - name: Verify browser extension asset set
+        env:
+          EXTENSION_VERSION: ${{ needs.release-please.outputs.extension_version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -B scripts/release_integrity.py verify-extension-assets \
+            --directory dist \
+            --version "$EXTENSION_VERSION"
       - name: Submit Firefox Add-ons release
         working-directory: browser-extension/chrome
         env:

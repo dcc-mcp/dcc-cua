@@ -225,28 +225,7 @@ def verify_and_extract_artifact(
 
     try:
         with zipfile.ZipFile(archive) as bundle:
-            members = bundle.infolist()
-            if not any(not member.is_dir() for member in members):
-                raise ValueError(
-                    "artifact archive must contain at least one regular file"
-                )
-            seen = set()
-            for member in members:
-                raw_name = member.filename.replace("\\", "/")
-                relative = PurePosixPath(raw_name)
-                if (
-                    not raw_name
-                    or relative.is_absolute()
-                    or any(part in ("", ".", "..") for part in relative.parts)
-                ):
-                    raise ValueError("artifact archive contains an unsafe path")
-                identity = relative.as_posix().casefold()
-                if identity in seen:
-                    raise ValueError("artifact archive contains duplicate paths")
-                seen.add(identity)
-                unix_mode = member.external_attr >> 16
-                if stat.S_IFMT(unix_mode) == stat.S_IFLNK:
-                    raise ValueError("artifact archive contains a symbolic link")
+            members = _validated_zip_members(bundle, "artifact archive")
 
             output_directory.parent.mkdir(parents=True, exist_ok=True)
             with tempfile.TemporaryDirectory(
@@ -294,6 +273,32 @@ def verify_and_extract_artifact(
         raise ValueError("invalid artifact transport archive") from exc
 
 
+def _validated_zip_members(
+    archive: zipfile.ZipFile, description: str
+) -> list[zipfile.ZipInfo]:
+    members = archive.infolist()
+    if not any(not member.is_dir() for member in members):
+        raise ValueError(f"{description} must contain at least one regular file")
+    seen = set()
+    for member in members:
+        raw_name = member.filename.replace("\\", "/")
+        relative = PurePosixPath(raw_name)
+        if (
+            not raw_name
+            or relative.is_absolute()
+            or any(part in ("", ".", "..") for part in relative.parts)
+        ):
+            raise ValueError(f"{description} contains an unsafe path")
+        identity = relative.as_posix().casefold()
+        if identity in seen:
+            raise ValueError(f"{description} contains duplicate paths")
+        seen.add(identity)
+        unix_mode = member.external_attr >> 16
+        if stat.S_IFMT(unix_mode) == stat.S_IFLNK:
+            raise ValueError(f"{description} contains a symbolic link")
+    return members
+
+
 def extension_asset_names(version: str) -> tuple[str, ...]:
     if _VERSION_PATTERN.fullmatch(version) is None:
         raise ValueError("browser extension version must use stable semver")
@@ -303,6 +308,40 @@ def extension_asset_names(version: str) -> tuple[str, ...]:
         f"dcc-cua-browser-extension-{version}-firefox.zip",
         f"dcc-cua-browser-extension-{version}-firefox-sources.zip",
     )
+
+
+def _is_regular_unlinked_file(path: Path) -> bool:
+    status = path.lstat()
+    file_attributes = getattr(status, "st_file_attributes", 0)
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    return stat.S_ISREG(status.st_mode) and not (file_attributes & reparse_flag)
+
+
+def verify_extension_asset_set(directory: Path, version: str) -> None:
+    """Validate the exact browser asset set and inner ZIP bytes without writes."""
+    expected_names = extension_asset_names(version)
+    try:
+        entries = list(directory.iterdir())
+        if {path.name for path in entries} != set(expected_names) or any(
+            not _is_regular_unlinked_file(path) for path in entries
+        ):
+            raise ValueError("browser extension asset set has missing or extra entries")
+        for name in expected_names:
+            path = directory / name
+            with zipfile.ZipFile(path) as archive:
+                members = _validated_zip_members(
+                    archive, f"browser extension asset {name}"
+                )
+                for member in members:
+                    if member.is_dir():
+                        continue
+                    with archive.open(member) as source:
+                        while source.read(1024 * 1024):
+                            pass
+    except ValueError:
+        raise
+    except (OSError, RuntimeError, zipfile.BadZipFile) as exc:
+        raise ValueError("browser extension asset set contains an invalid ZIP") from exc
 
 
 def _verify_published_assets(
@@ -389,6 +428,7 @@ def verify_published_extension_release(
     expected_latest_tag: str,
     actual_latest_tag: str,
 ) -> None:
+    verify_extension_asset_set(directory, version)
     _verify_published_assets(
         metadata,
         directory,
@@ -540,6 +580,10 @@ def main() -> None:
     extract.add_argument("--expected-digest", required=True)
     extract.add_argument("--output", type=Path, required=True)
 
+    extension_assets = subparsers.add_parser("verify-extension-assets")
+    extension_assets.add_argument("--directory", type=Path, required=True)
+    extension_assets.add_argument("--version", required=True)
+
     native_plan = subparsers.add_parser("write-native-plan")
     native_plan.add_argument("--metadata", type=Path, required=True)
     native_plan.add_argument("--expected-run-id", type=int, required=True)
@@ -605,6 +649,8 @@ def main() -> None:
         )
     elif args.command == "verify-extract":
         verify_and_extract_artifact(args.archive, args.expected_digest, args.output)
+    elif args.command == "verify-extension-assets":
+        verify_extension_asset_set(args.directory, args.version)
     elif args.command == "write-native-plan":
         facts = native_build_artifact_facts(
             _load_json(args.metadata),
