@@ -1485,7 +1485,7 @@ fn failed_window_mutation_still_invalidates_host_observation_cache() {
 }
 
 #[rstest]
-fn client_declared_intent_cannot_select_the_host_safety_tier() {
+fn sensitive_client_declared_intent_keeps_raw_keypress_on_confirmation_tier() {
     let action = HostAction {
         action: "keypress".into(),
         element_index: None,

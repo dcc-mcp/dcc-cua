@@ -6,6 +6,7 @@
 //! bounded and the transport does not base64-encode pixels.
 
 mod action_confirmation;
+mod action_policy;
 mod action_response;
 mod browser_extension;
 mod endpoint;
@@ -30,6 +31,7 @@ pub use action_confirmation::{
     TrustedActionConfirmationDecision, TrustedActionConfirmationHost,
     TrustedActionConfirmationHostError, TrustedActionConfirmationRequest,
 };
+use action_policy::HostActionSafetyTier;
 use action_response::*;
 pub use dcc_cua_protocol::{
     DEFAULT_SESSION_IDLE_TIMEOUT_MS, HOST_PROTOCOL_VERSION, MAX_BINARY_FRAME_BYTES,
@@ -797,35 +799,6 @@ impl HostAction {
         Ok(())
     }
 
-    fn safety_tier(&self, accessibility_root: Option<&Value>) -> HostActionSafetyTier {
-        let base_tier = if self.input_kind == "semantic" {
-            accessibility_root
-                .and_then(|root| self.semantic_element(root))
-                .and_then(|element| element["policy_tier"].as_str())
-                .map_or(
-                    HostActionSafetyTier::HardDeny,
-                    HostActionSafetyTier::from_wire,
-                )
-        } else if self.input_kind == "raw_input" {
-            match self.action.as_str() {
-                "move" | "scroll" => HostActionSafetyTier::TaskGrant,
-                "click" | "double_click" | "right_click" | "toggle" | "drag" | "type"
-                | "type_chars" | "set_text" | "set_value" | "set_checked" | "keypress"
-                | "press" | "press_key" | "keyboard_shortcut" | "hotkey" => {
-                    HostActionSafetyTier::ActionConfirmation
-                }
-                _ => HostActionSafetyTier::HardDeny,
-            }
-        } else {
-            HostActionSafetyTier::HardDeny
-        };
-        if self.secret_handle.is_some() && base_tier != HostActionSafetyTier::HardDeny {
-            HostActionSafetyTier::ActionConfirmation
-        } else {
-            base_tier
-        }
-    }
-
     fn authorization_category(&self, accessibility_root: Option<&Value>) -> String {
         if self.secret_handle.is_some() {
             return "credential".into();
@@ -927,41 +900,6 @@ impl HostAction {
             keys: self.keys,
             modifiers: self.modifiers,
         })
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum HostActionSafetyTier {
-    HardDeny,
-    ActionConfirmation,
-    PreApproval,
-    TaskGrant,
-}
-
-impl HostActionSafetyTier {
-    fn from_wire(value: &str) -> Self {
-        match value {
-            "hard_deny" => Self::HardDeny,
-            "action_confirmation" => Self::ActionConfirmation,
-            "pre_approval" => Self::PreApproval,
-            "task_grant" => Self::TaskGrant,
-            _ => Self::HardDeny,
-        }
-    }
-
-    const fn requires_confirmation(self) -> bool {
-        matches!(self, Self::ActionConfirmation | Self::PreApproval)
-    }
-
-    const fn rejection(self) -> Option<(&'static str, &'static str, &'static str)> {
-        match self {
-            Self::HardDeny => Some((
-                "hard_deny",
-                "hard_denied",
-                "the host policy denies this Computer Use action",
-            )),
-            _ => None,
-        }
     }
 }
 

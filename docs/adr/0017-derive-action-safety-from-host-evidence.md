@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Accepted with a bounded navigation exception
 
 ## Context
 
@@ -14,8 +14,9 @@ but did not use that evidence for authorization.
 
 ## Decision
 
-- Treat `intent` as descriptive audit context only. It never selects an
-  authorization tier.
+- Treat `intent` as descriptive audit context for semantic and sensitive
+  actions. The only raw-input exception is the closed `navigate` value combined
+  with a foreground, bounded pointer action.
 - For semantic actions, resolve the exact index/token pair inside the latest
   accessibility state and use its closed `policy_tier` value.
 - Fail closed as `hard_deny` when semantic evidence, element identity, or the
@@ -24,17 +25,20 @@ but did not use that evidence for authorization.
   its exact-window pixels with a fresh exact-PID/HWND Windows UIA semantic
   snapshot before publishing action evidence. If that adapter cannot publish a
   closed tier, keep semantic actions fail-closed; never infer a tier from labels.
-- Derive raw-input policy from the actual action. Pointer movement and scrolling
-  stay within the task grant; clicks, drags, text, and keyboard mutations require
-  trusted action-time confirmation because raw coordinates contain no semantic
-  target evidence.
+- Derive raw-input policy primarily from the actual action. Pointer movement,
+  scrolling, and the constrained pointer-navigation exception stay within the
+  exact task grant. Text, secrets, keyboard input, and all other click or drag
+  mutations require trusted action-time confirmation
+  because raw coordinates contain no semantic target evidence.
 - Treat both `action_confirmation` and `pre_approval` evidence as requiring the
   existing trusted confirmation boundary. The Host does not invent approval
   from an unverified client assertion.
 
 ## Consequences
 
-- Changing `intent` cannot weaken or strengthen the same concrete action.
+- Changing `intent` cannot weaken semantic, text, secret, keyboard, or otherwise
+  sensitive actions. It selects the task-granted path only for the
+  constrained exact-window navigation shapes above.
 - Semantic destructive and sensitive controls retain their backend-published
   policy after crossing the Host boundary.
 - Ambiguous raw mutations fail closed unless the task explicitly grants and a
