@@ -2,7 +2,7 @@ use super::*;
 #[allow(unused_imports)]
 use rstest::rstest;
 
-pub(super) async fn assert_raw_click_requires_confirmation(
+pub(super) async fn assert_ordinary_raw_click_uses_task_grant(
     client: &mut HostClient,
     session_id: &str,
     grant_id: &str,
@@ -46,7 +46,6 @@ pub(super) async fn assert_raw_click_requires_confirmation(
         }),
     )
     .await;
-    assert_eq!(focused.value["success"], false, "{}", focused.value);
-    assert_eq!(focused.value["error"], "approval_required");
-    assert_eq!(focused.value["policy_tier"], "action_confirmation");
+    assert_eq!(focused.value["success"], true, "{}", focused.value);
+    assert_eq!(focused.value["policy_tier"], "task_grant");
 }

@@ -47,6 +47,51 @@ fn exact_window_navigation_pointer_actions_use_the_existing_task_grant(#[case] a
 }
 
 #[rstest]
+#[case("click")]
+#[case("double_click")]
+#[case("right_click")]
+#[case("toggle")]
+#[case("drag")]
+fn exact_window_ordinary_pointer_actions_use_the_existing_task_grant(#[case] action: &str) {
+    let action = raw_input_action(action, "ordinary_edit");
+
+    assert_eq!(action.safety_tier(None), HostActionSafetyTier::TaskGrant);
+}
+
+#[rstest]
+fn background_ordinary_pointer_input_still_requires_action_confirmation() {
+    let mut action = raw_input_action("drag", "ordinary_edit");
+    action.delivery_mode = Some("background".into());
+
+    assert_eq!(
+        action.safety_tier(None),
+        HostActionSafetyTier::ActionConfirmation
+    );
+}
+
+#[rstest]
+fn modified_ordinary_pointer_input_still_requires_action_confirmation() {
+    let mut action = raw_input_action("click", "ordinary_edit");
+    action.modifiers = vec!["SHIFT".into()];
+
+    assert_eq!(
+        action.safety_tier(None),
+        HostActionSafetyTier::ActionConfirmation
+    );
+}
+
+#[rstest]
+fn ordinary_pointer_input_with_a_secret_still_requires_action_confirmation() {
+    let mut action = raw_input_action("click", "ordinary_edit");
+    action.secret_handle = Some("secret-1".into());
+
+    assert_eq!(
+        action.safety_tier(None),
+        HostActionSafetyTier::ActionConfirmation
+    );
+}
+
+#[rstest]
 fn background_navigation_input_still_requires_action_confirmation() {
     let mut action = raw_input_action("drag", "navigate");
     action.delivery_mode = Some("background".into());

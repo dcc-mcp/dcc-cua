@@ -25,9 +25,9 @@ scope escape, or circumvention of third-party human verification.
 - Keep terminal/run-dialog controls, unverifiable targets, protected operating
   system authentication and password-manager surfaces, scope escape, safety
   bypass, and automated human-verification circumvention hard-denied.
-- Treat bounded exact-window foreground navigation pointer actions as
-  task-granted raw input. Keyboard input, text, secrets, and sensitive intents
-  stay on the confirmation or hard-deny path.
+- Treat bounded exact-window foreground navigation and ordinary-edit pointer
+  actions as task-granted raw input. Keyboard input, text, secrets, modified
+  pointer actions, and sensitive intents stay on the confirmation or hard-deny path.
 - Extend the trusted confirmation request to schema v2. Window requests carry
   the exact PID and HWND, and those fields participate in the request digest
   with the session, grant, capability, observation, accessibility state,
