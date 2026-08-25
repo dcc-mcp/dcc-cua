@@ -20,6 +20,11 @@ impl HostAction {
                 {
                     HostActionSafetyTier::TaskGrant
                 }
+                "keypress" | "press" | "press_key" | "keyboard_shortcut" | "hotkey"
+                    if self.is_task_granted_keyboard_input() =>
+                {
+                    HostActionSafetyTier::TaskGrant
+                }
                 "click" | "double_click" | "right_click" | "toggle" | "drag" | "type"
                 | "type_chars" | "set_text" | "set_value" | "set_checked" | "keypress"
                 | "press" | "press_key" | "keyboard_shortcut" | "hotkey" => {
@@ -53,6 +58,24 @@ impl HostAction {
             "drag" => self.path.len() >= 2 && self.keys.is_empty(),
             _ => false,
         }
+    }
+
+    fn is_task_granted_keyboard_input(&self) -> bool {
+        if !matches!(self.intent.as_str(), "navigate" | "ordinary_edit")
+            || self.delivery_mode.as_deref() != Some("foreground")
+            || self.text.is_some()
+            || self.secret_handle.is_some()
+            || self.element_index.is_some()
+            || self.element_token.is_some()
+            || self.x.is_some()
+            || self.y.is_some()
+            || self.button.is_some()
+            || !self.path.is_empty()
+            || self.keys.is_empty()
+        {
+            return false;
+        }
+        true
     }
 }
 

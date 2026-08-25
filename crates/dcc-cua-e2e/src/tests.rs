@@ -1470,7 +1470,7 @@ async fn controlled_native_menu_round_trip() {
 #[cfg(all(feature = "gui-e2e", windows))]
 #[rstest]
 #[tokio::test]
-async fn windows_endpoint_sessions_keep_background_uia_and_require_raw_input_confirmation() {
+async fn windows_endpoint_sessions_keep_background_uia_and_use_task_granted_raw_input() {
     let binary = std::env::var_os("DCC_CUA_E2E_BINARY")
         .map(PathBuf::from)
         .expect("DCC_CUA_E2E_BINARY must point to dcc-cua");
@@ -1753,7 +1753,7 @@ async fn windows_endpoint_sessions_keep_background_uia_and_require_raw_input_con
 
     let escape_snapshot = client_request(
         &mut clients[active_client],
-        "accessibility_snapshot",
+        "snapshot",
         json!({
             "session_id": first_session_id,
             "task_grant_id": first_grant_id,
@@ -1784,9 +1784,8 @@ async fn windows_endpoint_sessions_keep_background_uia_and_require_raw_input_con
         }),
     )
     .await;
-    assert_eq!(pressed.value["success"], false, "{}", pressed.value);
-    assert_eq!(pressed.value["error"], "approval_required");
-    assert_eq!(pressed.value["policy_tier"], "action_confirmation");
+    assert_eq!(pressed.value["success"], true, "{}", pressed.value);
+    assert_eq!(pressed.value["policy_tier"], "task_grant");
     tokio::time::sleep(Duration::from_millis(100)).await;
     for (client_index, session_id, grant_id, capability, _) in &sessions {
         let alive = client_request(
@@ -1802,7 +1801,7 @@ async fn windows_endpoint_sessions_keep_background_uia_and_require_raw_input_con
         assert_eq!(
             alive.value["state"]["structuredContent"]["session"],
             session_id.as_str(),
-            "a rejected raw Escape must not interrupt Host sessions: {}",
+            "an accepted raw Escape must not interrupt Host sessions: {}",
             alive.value
         );
     }
