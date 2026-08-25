@@ -263,6 +263,10 @@ CI 在 Windows、Linux 和 macOS 上检查代码布局、格式、工作区测�
 新建 tag、该 tag 解析到的 commit、构建 HEAD 和 GitHub Release target 必须绑定同一
 commit。每个 target 只构建一次，完整资产集合随后绑定到一个 workflow artifact ID
 和内容 digest；已有 tag、release 或 asset 不能作为重建或覆盖目标。
+每个消费 job 都先校验 exact raw workflow artifact ZIP 的真实 SHA-256，再解包使用；
+action 自身的下载只进入隔离目录，不作为发布源。create-only 上传完成后会执行发布后回读，
+严格核对 release target、asset 名称、大小、digest、无额外文件，并确认原生 release 的
+Latest 身份没有被扩展 release 污染。
 
 只有四个 target 的归档、checksum、manifest 和聚合 provenance 全部匹配时，上传 job
 才会继续。当前原生可执行文件没有平台代码签名；公开验证契约仅证明 SHA-256 checksum，

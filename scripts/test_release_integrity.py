@@ -3,6 +3,7 @@ import importlib.util
 import json
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 
 SCRIPT = Path(__file__).with_name("release_integrity.py")
@@ -58,6 +59,22 @@ def _build_artifacts() -> dict:
         for index, name in enumerate(MODULE.EXPECTED_BUILD_ARTIFACTS, start=1)
     ]
     return {"total_count": len(artifacts), "artifacts": artifacts}
+
+
+def _published_release(directory: Path, tag: str = TAG) -> dict:
+    return {
+        "tagName": tag,
+        "targetCommitish": SOURCE_SHA,
+        "assets": [
+            {
+                "name": path.name,
+                "size": path.stat().st_size,
+                "digest": "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest(),
+                "state": "uploaded",
+            }
+            for path in sorted(directory.iterdir())
+        ],
+    }
 
 
 class ReleaseIntegrityTests(unittest.TestCase):
@@ -147,6 +164,81 @@ class ReleaseIntegrityTests(unittest.TestCase):
                     expected_head_sha=SOURCE_SHA,
                 )
 
+    def test_native_build_artifact_set_rejects_extra_identity_and_source_mutations(
+        self,
+    ):
+        metadata = _build_artifacts()
+        metadata["artifacts"].append(
+            _artifact_metadata("dcc-cua-browser-extension", 99)
+        )
+        metadata["total_count"] += 1
+        facts = MODULE.native_build_artifact_facts(
+            metadata, workflow_run_id=RUN_ID, source_sha=SOURCE_SHA
+        )
+        self.assertEqual(
+            [fact["name"] for fact in facts], list(MODULE.EXPECTED_BUILD_ARTIFACTS)
+        )
+
+        unexpected = json.loads(json.dumps(metadata))
+        unexpected["artifacts"].append(_artifact_metadata("dcc-cua-native-decoy", 100))
+        unexpected["total_count"] += 1
+        with self.assertRaisesRegex(ValueError, "native build artifact set"):
+            MODULE.native_build_artifact_facts(
+                unexpected, workflow_run_id=RUN_ID, source_sha=SOURCE_SHA
+            )
+
+        for field, value in (
+            ("id", 0),
+            ("digest", "sha256:not-a-digest"),
+            ("workflow_run", {"id": RUN_ID + 1, "head_sha": "2" * 40}),
+        ):
+            changed = json.loads(json.dumps(metadata))
+            changed["artifacts"][0][field] = value
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                MODULE.native_build_artifact_facts(
+                    changed, workflow_run_id=RUN_ID, source_sha=SOURCE_SHA
+                )
+
+    def test_artifact_transport_digest_is_verified_before_any_extraction(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            archive = root / "artifact.zip"
+            with zipfile.ZipFile(archive, "w") as bundle:
+                bundle.writestr("payload/file.txt", b"reviewed bytes")
+            digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+            output = root / "output"
+            MODULE.verify_and_extract_artifact(archive, digest, output)
+            self.assertEqual(
+                (output / "payload" / "file.txt").read_bytes(), b"reviewed bytes"
+            )
+
+            sentinel = output / "sentinel.txt"
+            sentinel.write_text("unchanged", encoding="utf-8")
+            corrupt = root / "corrupt.zip"
+            corrupt.write_bytes(archive.read_bytes() + b"corruption")
+            before = {
+                path.relative_to(output).as_posix(): path.read_bytes()
+                for path in output.rglob("*")
+                if path.is_file()
+            }
+            with self.assertRaisesRegex(ValueError, "transport digest"):
+                MODULE.verify_and_extract_artifact(corrupt, digest, output)
+            after = {
+                path.relative_to(output).as_posix(): path.read_bytes()
+                for path in output.rglob("*")
+                if path.is_file()
+            }
+            self.assertEqual(after, before)
+
+            empty = root / "empty.zip"
+            with zipfile.ZipFile(empty, "w"):
+                pass
+            empty_digest = hashlib.sha256(empty.read_bytes()).hexdigest()
+            empty_output = root / "empty-output"
+            with self.assertRaisesRegex(ValueError, "regular file"):
+                MODULE.verify_and_extract_artifact(empty, empty_digest, empty_output)
+            self.assertFalse(empty_output.exists())
+
     def test_provenance_records_every_asset_checksum_and_unsigned_fact(self):
         with tempfile.TemporaryDirectory() as directory:
             release_dir = Path(directory)
@@ -215,6 +307,124 @@ class ReleaseIntegrityTests(unittest.TestCase):
                 [entry["name"] for entry in provenance["build_artifacts"]],
                 list(MODULE.EXPECTED_BUILD_ARTIFACTS),
             )
+
+    def test_published_native_release_matches_local_provenance_and_latest(self):
+        with tempfile.TemporaryDirectory() as directory:
+            release_dir = Path(directory)
+            _write_complete_release(release_dir)
+            provenance = MODULE.build_release_provenance(
+                release_dir,
+                version=VERSION,
+                tag=TAG,
+                source_sha=SOURCE_SHA,
+                release_target_sha=SOURCE_SHA,
+                workflow_run_id=RUN_ID,
+                workflow_artifacts=_build_artifacts(),
+            )
+            provenance_path = release_dir / MODULE.PROVENANCE_NAME
+            MODULE.write_release_provenance(provenance_path, provenance)
+            metadata = _published_release(release_dir)
+
+            MODULE.verify_published_native_release(
+                metadata,
+                release_dir,
+                version=VERSION,
+                tag=TAG,
+                source_sha=SOURCE_SHA,
+                actual_latest_tag=TAG,
+            )
+            mutations = {
+                "target": {**metadata, "targetCommitish": "2" * 40},
+                "extra": {
+                    **metadata,
+                    "assets": [
+                        *metadata["assets"],
+                        {
+                            "name": "decoy",
+                            "size": 1,
+                            "digest": "sha256:" + "0" * 64,
+                            "state": "uploaded",
+                        },
+                    ],
+                },
+                "size": {
+                    **metadata,
+                    "assets": [
+                        {**metadata["assets"][0], "size": 0},
+                        *metadata["assets"][1:],
+                    ],
+                },
+                "digest": {
+                    **metadata,
+                    "assets": [
+                        {
+                            **metadata["assets"][0],
+                            "digest": "sha256:" + "0" * 64,
+                        },
+                        *metadata["assets"][1:],
+                    ],
+                },
+            }
+            for name, changed in mutations.items():
+                with self.subTest(name=name), self.assertRaises(ValueError):
+                    MODULE.verify_published_native_release(
+                        changed,
+                        release_dir,
+                        version=VERSION,
+                        tag=TAG,
+                        source_sha=SOURCE_SHA,
+                        actual_latest_tag=TAG,
+                    )
+            with self.assertRaisesRegex(ValueError, "Latest"):
+                MODULE.verify_published_native_release(
+                    metadata,
+                    release_dir,
+                    version=VERSION,
+                    tag=TAG,
+                    source_sha=SOURCE_SHA,
+                    actual_latest_tag="v9.9.9",
+                )
+
+    def test_published_extension_release_is_exact_and_does_not_replace_latest(self):
+        with tempfile.TemporaryDirectory() as directory:
+            release_dir = Path(directory)
+            extension_version = "0.3.0"
+            extension_tag = f"dcc-cua-browser-extension-v{extension_version}"
+            for name in MODULE.extension_asset_names(extension_version):
+                (release_dir / name).write_bytes(name.encode("utf-8"))
+            metadata = _published_release(release_dir, extension_tag)
+            MODULE.verify_published_extension_release(
+                metadata,
+                release_dir,
+                version=extension_version,
+                tag=extension_tag,
+                source_sha=SOURCE_SHA,
+                expected_latest_tag=TAG,
+                actual_latest_tag=TAG,
+            )
+            extra = release_dir / "decoy.zip"
+            extra.write_bytes(b"decoy")
+            with self.assertRaisesRegex(ValueError, "local asset set"):
+                MODULE.verify_published_extension_release(
+                    metadata,
+                    release_dir,
+                    version=extension_version,
+                    tag=extension_tag,
+                    source_sha=SOURCE_SHA,
+                    expected_latest_tag=TAG,
+                    actual_latest_tag=TAG,
+                )
+            extra.unlink()
+            with self.assertRaisesRegex(ValueError, "Latest"):
+                MODULE.verify_published_extension_release(
+                    metadata,
+                    release_dir,
+                    version=extension_version,
+                    tag=extension_tag,
+                    source_sha=SOURCE_SHA,
+                    expected_latest_tag=TAG,
+                    actual_latest_tag=extension_tag,
+                )
 
 
 if __name__ == "__main__":

@@ -1169,6 +1169,11 @@ HEAD, and the GitHub Release target must resolve to the same commit. Each native
 target is built once; a single workflow artifact then binds the complete asset
 set to one artifact ID and content digest before create-only GitHub Release
 attachment. Existing tags, releases, or assets are never rebuild targets.
+Every consumer verifies the SHA-256 of the exact raw workflow artifact ZIP
+before extracting it; the action-managed download is quarantined and is not the
+published source. After create-only upload, the workflow reads the release back
+and requires the exact target commit, asset names, sizes, digests, no extras,
+and an unchanged native Latest release.
 
 The native release contract contains one archive, SHA-256 sidecar, and install
 manifest for each supported Rust target:

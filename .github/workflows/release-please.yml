@@ -272,19 +272,42 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ needs.release-please.outputs.source_sha }}
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          path: dist
-          pattern: dcc-cua-native-*
-          merge-multiple: true
       - name: Verify native build artifact set
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RUN_ID: ${{ github.run_id }}
-        run: >-
-          gh api
-          "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/artifacts?per_page=100"
-          > "$RUNNER_TEMP/native-build-artifacts.json"
+          SOURCE_SHA: ${{ needs.release-please.outputs.source_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api \
+            "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/artifacts?per_page=100" \
+            > "$RUNNER_TEMP/native-build-artifacts.json"
+          python -B scripts/release_integrity.py write-native-plan \
+            --metadata "$RUNNER_TEMP/native-build-artifacts.json" \
+            --expected-run-id "$RUN_ID" \
+            --expected-head-sha "$SOURCE_SHA" \
+            --output "$RUNNER_TEMP/native-build-plan.json"
+      - name: Download and verify native build artifacts
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/native-build-transports"
+          while IFS=$'\t' read -r artifact_id artifact_digest; do
+            archive="$RUNNER_TEMP/native-build-transports/${artifact_id}.zip"
+            gh api \
+              "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id/zip" \
+              > "$archive"
+            python -B scripts/release_integrity.py verify-extract \
+              --archive "$archive" \
+              --expected-digest "$artifact_digest" \
+              --output dist
+          done < <(
+            jq -r '.[] | [.id, .sha256] | @tsv' \
+              "$RUNNER_TEMP/native-build-plan.json"
+          )
       - name: Write immutable native release provenance
         env:
           SOURCE_SHA: ${{ needs.release-please.outputs.source_sha }}
@@ -322,11 +345,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ needs.release-please.outputs.source_sha }}
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          path: dist
-          artifact-ids: ${{ needs.consolidate-native.outputs.artifact_id }}
-      - name: Verify immutable workflow artifact
+      - name: Verify immutable native artifact identity
         env:
           ARTIFACT_ID: ${{ needs.consolidate-native.outputs.artifact_id }}
           EXPECTED_ARTIFACT_DIGEST: ${{ needs.consolidate-native.outputs.artifact_digest }}
@@ -343,6 +362,28 @@ jobs:
             --expected-name dcc-cua-native-release \
             --expected-run-id "$GITHUB_RUN_ID" \
             --expected-head-sha "$EXPECTED_HEAD_SHA"
+      - name: Audit immutable native artifact download
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          artifact-ids: ${{ needs.consolidate-native.outputs.artifact_id }}
+          merge-multiple: true
+          path: ${{ runner.temp }}/native-action-download-audit
+      - name: Download and extract verified native artifact
+        env:
+          ARTIFACT_ID: ${{ needs.consolidate-native.outputs.artifact_id }}
+          EXPECTED_ARTIFACT_DIGEST: ${{ needs.consolidate-native.outputs.artifact_digest }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/native-release-artifact.zip"
+          gh api \
+            "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID/zip" \
+            > "$archive"
+          python -B scripts/release_integrity.py verify-extract \
+            --archive "$archive" \
+            --expected-digest "$EXPECTED_ARTIFACT_DIGEST" \
+            --output dist
       - name: Verify native release asset completeness and provenance
         env:
           SOURCE_SHA: ${{ needs.release-please.outputs.source_sha }}
@@ -374,6 +415,29 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG_NAME: ${{ needs.release-please.outputs.tag_name }}
         run: gh release upload "$TAG_NAME" dist/* --repo "$GITHUB_REPOSITORY"
+      - name: Verify published native release immutability
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SOURCE_SHA: ${{ needs.release-please.outputs.source_sha }}
+          TAG_NAME: ${{ needs.release-please.outputs.tag_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release view "$TAG_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --json tagName,targetCommitish,assets \
+            > "$RUNNER_TEMP/published-native-release.json"
+          latest_tag="$(
+            gh release view --repo "$GITHUB_REPOSITORY" \
+              --json tagName --jq .tagName
+          )"
+          python -B scripts/release_integrity.py verify-published-native \
+            --metadata "$RUNNER_TEMP/published-native-release.json" \
+            --directory dist \
+            --version "${TAG_NAME#v}" \
+            --tag "$TAG_NAME" \
+            --source-sha "$SOURCE_SHA" \
+            --actual-latest-tag "$latest_tag"
 
   package-browser-extension:
     needs: release-please
@@ -455,11 +519,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ needs.release-please.outputs.extension_source_sha }}
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          artifact-ids: ${{ needs.package-browser-extension.outputs.artifact_id }}
-          path: dist
-      - name: Verify immutable workflow artifact
+      - name: Verify immutable browser extension artifact identity
         env:
           ARTIFACT_ID: ${{ needs.package-browser-extension.outputs.artifact_id }}
           EXPECTED_ARTIFACT_DIGEST: ${{ needs.package-browser-extension.outputs.artifact_digest }}
@@ -476,6 +536,28 @@ jobs:
             --expected-name dcc-cua-browser-extension \
             --expected-run-id "$GITHUB_RUN_ID" \
             --expected-head-sha "$EXPECTED_HEAD_SHA"
+      - name: Audit immutable browser extension artifact download
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          artifact-ids: ${{ needs.package-browser-extension.outputs.artifact_id }}
+          merge-multiple: true
+          path: ${{ runner.temp }}/extension-action-download-audit
+      - name: Download and extract verified browser extension artifact
+        env:
+          ARTIFACT_ID: ${{ needs.package-browser-extension.outputs.artifact_id }}
+          EXPECTED_ARTIFACT_DIGEST: ${{ needs.package-browser-extension.outputs.artifact_digest }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/browser-extension-artifact.zip"
+          gh api \
+            "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID/zip" \
+            > "$archive"
+          python -B scripts/release_integrity.py verify-extract \
+            --archive "$archive" \
+            --expected-digest "$EXPECTED_ARTIFACT_DIGEST" \
+            --output dist
       - name: Refuse existing browser extension release assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -493,6 +575,32 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG_NAME: ${{ needs.release-please.outputs.extension_tag_name }}
         run: gh release upload "$TAG_NAME" dist/* --repo "$GITHUB_REPOSITORY"
+      - name: Verify published browser extension release immutability
+        env:
+          EXTENSION_VERSION: ${{ needs.release-please.outputs.extension_version }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SOURCE_SHA: ${{ needs.release-please.outputs.extension_source_sha }}
+          TAG_NAME: ${{ needs.release-please.outputs.extension_tag_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release view "$TAG_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --json tagName,targetCommitish,assets \
+            > "$RUNNER_TEMP/published-extension-release.json"
+          latest_tag="$(
+            gh release view --repo "$GITHUB_REPOSITORY" \
+              --json tagName --jq .tagName
+          )"
+          native_tag="v$(tr -d '\r\n' < version.txt)"
+          python -B scripts/release_integrity.py verify-published-extension \
+            --metadata "$RUNNER_TEMP/published-extension-release.json" \
+            --directory dist \
+            --version "$EXTENSION_VERSION" \
+            --tag "$TAG_NAME" \
+            --source-sha "$SOURCE_SHA" \
+            --expected-latest-tag "$native_tag" \
+            --actual-latest-tag "$latest_tag"
 
   publish-chrome-web-store:
     needs: [release-please, package-browser-extension]
@@ -508,11 +616,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ needs.release-please.outputs.extension_source_sha }}
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          artifact-ids: ${{ needs.package-browser-extension.outputs.artifact_id }}
-          path: dist
-      - name: Verify immutable workflow artifact
+      - name: Verify immutable browser extension artifact identity
         env:
           ARTIFACT_ID: ${{ needs.package-browser-extension.outputs.artifact_id }}
           EXPECTED_ARTIFACT_DIGEST: ${{ needs.package-browser-extension.outputs.artifact_digest }}
@@ -520,8 +624,37 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |
+          set -euo pipefail
           gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID" > "$RUNNER_TEMP/artifact.json"
-          python -B scripts/release_integrity.py verify-artifact --metadata "$RUNNER_TEMP/artifact.json" --expected-id "$ARTIFACT_ID" --expected-digest "$EXPECTED_ARTIFACT_DIGEST" --expected-name dcc-cua-browser-extension --expected-run-id "$GITHUB_RUN_ID" --expected-head-sha "$EXPECTED_HEAD_SHA"
+          python -B scripts/release_integrity.py verify-artifact \
+            --metadata "$RUNNER_TEMP/artifact.json" \
+            --expected-id "$ARTIFACT_ID" \
+            --expected-digest "$EXPECTED_ARTIFACT_DIGEST" \
+            --expected-name dcc-cua-browser-extension \
+            --expected-run-id "$GITHUB_RUN_ID" \
+            --expected-head-sha "$EXPECTED_HEAD_SHA"
+      - name: Audit immutable browser extension artifact download
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          artifact-ids: ${{ needs.package-browser-extension.outputs.artifact_id }}
+          merge-multiple: true
+          path: ${{ runner.temp }}/extension-action-download-audit
+      - name: Download and extract verified browser extension artifact
+        env:
+          ARTIFACT_ID: ${{ needs.package-browser-extension.outputs.artifact_id }}
+          EXPECTED_ARTIFACT_DIGEST: ${{ needs.package-browser-extension.outputs.artifact_digest }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/browser-extension-artifact.zip"
+          gh api \
+            "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID/zip" \
+            > "$archive"
+          python -B scripts/release_integrity.py verify-extract \
+            --archive "$archive" \
+            --expected-digest "$EXPECTED_ARTIFACT_DIGEST" \
+            --output dist
       - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
         id: google-auth
         with:
@@ -554,11 +687,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ needs.release-please.outputs.extension_source_sha }}
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          artifact-ids: ${{ needs.package-browser-extension.outputs.artifact_id }}
-          path: dist
-      - name: Verify immutable workflow artifact
+      - name: Verify immutable browser extension artifact identity
         env:
           ARTIFACT_ID: ${{ needs.package-browser-extension.outputs.artifact_id }}
           EXPECTED_ARTIFACT_DIGEST: ${{ needs.package-browser-extension.outputs.artifact_digest }}
@@ -566,8 +695,37 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |
+          set -euo pipefail
           gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID" > "$RUNNER_TEMP/artifact.json"
-          python -B scripts/release_integrity.py verify-artifact --metadata "$RUNNER_TEMP/artifact.json" --expected-id "$ARTIFACT_ID" --expected-digest "$EXPECTED_ARTIFACT_DIGEST" --expected-name dcc-cua-browser-extension --expected-run-id "$GITHUB_RUN_ID" --expected-head-sha "$EXPECTED_HEAD_SHA"
+          python -B scripts/release_integrity.py verify-artifact \
+            --metadata "$RUNNER_TEMP/artifact.json" \
+            --expected-id "$ARTIFACT_ID" \
+            --expected-digest "$EXPECTED_ARTIFACT_DIGEST" \
+            --expected-name dcc-cua-browser-extension \
+            --expected-run-id "$GITHUB_RUN_ID" \
+            --expected-head-sha "$EXPECTED_HEAD_SHA"
+      - name: Audit immutable browser extension artifact download
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          artifact-ids: ${{ needs.package-browser-extension.outputs.artifact_id }}
+          merge-multiple: true
+          path: ${{ runner.temp }}/extension-action-download-audit
+      - name: Download and extract verified browser extension artifact
+        env:
+          ARTIFACT_ID: ${{ needs.package-browser-extension.outputs.artifact_id }}
+          EXPECTED_ARTIFACT_DIGEST: ${{ needs.package-browser-extension.outputs.artifact_digest }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/browser-extension-artifact.zip"
+          gh api \
+            "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID/zip" \
+            > "$archive"
+          python -B scripts/release_integrity.py verify-extract \
+            --archive "$archive" \
+            --expected-digest "$EXPECTED_ARTIFACT_DIGEST" \
+            --output dist
       - name: Submit Edge Add-ons release
         env:
           EDGE_ADDONS_API_KEY: ${{ secrets.EDGE_ADDONS_API_KEY }}
@@ -599,11 +757,7 @@ jobs:
           cache: npm
           cache-dependency-path: browser-extension/chrome/package-lock.json
       - run: npm --prefix browser-extension/chrome ci
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          artifact-ids: ${{ needs.package-browser-extension.outputs.artifact_id }}
-          path: dist
-      - name: Verify immutable workflow artifact
+      - name: Verify immutable browser extension artifact identity
         env:
           ARTIFACT_ID: ${{ needs.package-browser-extension.outputs.artifact_id }}
           EXPECTED_ARTIFACT_DIGEST: ${{ needs.package-browser-extension.outputs.artifact_digest }}
@@ -611,8 +765,37 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |
+          set -euo pipefail
           gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID" > "$RUNNER_TEMP/artifact.json"
-          python -B scripts/release_integrity.py verify-artifact --metadata "$RUNNER_TEMP/artifact.json" --expected-id "$ARTIFACT_ID" --expected-digest "$EXPECTED_ARTIFACT_DIGEST" --expected-name dcc-cua-browser-extension --expected-run-id "$GITHUB_RUN_ID" --expected-head-sha "$EXPECTED_HEAD_SHA"
+          python -B scripts/release_integrity.py verify-artifact \
+            --metadata "$RUNNER_TEMP/artifact.json" \
+            --expected-id "$ARTIFACT_ID" \
+            --expected-digest "$EXPECTED_ARTIFACT_DIGEST" \
+            --expected-name dcc-cua-browser-extension \
+            --expected-run-id "$GITHUB_RUN_ID" \
+            --expected-head-sha "$EXPECTED_HEAD_SHA"
+      - name: Audit immutable browser extension artifact download
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          artifact-ids: ${{ needs.package-browser-extension.outputs.artifact_id }}
+          merge-multiple: true
+          path: ${{ runner.temp }}/extension-action-download-audit
+      - name: Download and extract verified browser extension artifact
+        env:
+          ARTIFACT_ID: ${{ needs.package-browser-extension.outputs.artifact_id }}
+          EXPECTED_ARTIFACT_DIGEST: ${{ needs.package-browser-extension.outputs.artifact_digest }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/browser-extension-artifact.zip"
+          gh api \
+            "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID/zip" \
+            > "$archive"
+          python -B scripts/release_integrity.py verify-extract \
+            --archive "$archive" \
+            --expected-digest "$EXPECTED_ARTIFACT_DIGEST" \
+            --output dist
       - name: Submit Firefox Add-ons release
         working-directory: browser-extension/chrome
         env:
