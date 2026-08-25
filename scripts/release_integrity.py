@@ -7,12 +7,24 @@ import argparse
 import hashlib
 import json
 import re
-from pathlib import Path
+import shutil
+import stat
+import tempfile
+import zipfile
+from pathlib import Path, PurePosixPath
 
 try:
-    from scripts.verify_release_assets import RELEASE_TARGETS, verify_release_assets
+    from scripts.verify_release_assets import (
+        RELEASE_TARGETS,
+        expected_asset_names,
+        verify_release_assets,
+    )
 except ModuleNotFoundError:  # Direct execution from the scripts directory.
-    from verify_release_assets import RELEASE_TARGETS, verify_release_assets
+    from verify_release_assets import (
+        RELEASE_TARGETS,
+        expected_asset_names,
+        verify_release_assets,
+    )
 
 PROVENANCE_NAME = "dcc-cua-release-provenance-v1.json"
 EXPECTED_BUILD_ARTIFACTS = (
@@ -153,7 +165,7 @@ def _asset_facts(directory: Path, version: str) -> list[dict]:
     return facts
 
 
-def _build_artifact_facts(
+def native_build_artifact_facts(
     metadata: object, *, workflow_run_id: int, source_sha: str
 ) -> list[dict]:
     if not isinstance(metadata, dict) or not isinstance(
@@ -170,10 +182,9 @@ def _build_artifact_facts(
         if artifact["name"] in by_name:
             raise ValueError("workflow artifact names must be unique")
         by_name[artifact["name"]] = artifact
-    if not set(EXPECTED_BUILD_ARTIFACTS).issubset(by_name):
-        raise ValueError(
-            "workflow artifact listing does not contain the native build matrix"
-        )
+    native_names = {name for name in by_name if name.startswith("dcc-cua-native-")}
+    if native_names != set(EXPECTED_BUILD_ARTIFACTS):
+        raise ValueError("native build artifact set does not match the release matrix")
 
     facts = []
     for name in EXPECTED_BUILD_ARTIFACTS:
@@ -200,6 +211,193 @@ def _build_artifact_facts(
             }
         )
     return facts
+
+
+def verify_and_extract_artifact(
+    archive: Path, expected_digest: str, output_directory: Path
+) -> None:
+    """Verify exact artifact ZIP transport bytes before extracting any content."""
+    normalized_digest = _normalize_digest(expected_digest)
+    if _sha256(archive) != normalized_digest:
+        raise ValueError(
+            "artifact transport digest does not match the reviewed identity"
+        )
+
+    try:
+        with zipfile.ZipFile(archive) as bundle:
+            members = bundle.infolist()
+            if not any(not member.is_dir() for member in members):
+                raise ValueError(
+                    "artifact archive must contain at least one regular file"
+                )
+            seen = set()
+            for member in members:
+                raw_name = member.filename.replace("\\", "/")
+                relative = PurePosixPath(raw_name)
+                if (
+                    not raw_name
+                    or relative.is_absolute()
+                    or any(part in ("", ".", "..") for part in relative.parts)
+                ):
+                    raise ValueError("artifact archive contains an unsafe path")
+                identity = relative.as_posix().casefold()
+                if identity in seen:
+                    raise ValueError("artifact archive contains duplicate paths")
+                seen.add(identity)
+                unix_mode = member.external_attr >> 16
+                if stat.S_IFMT(unix_mode) == stat.S_IFLNK:
+                    raise ValueError("artifact archive contains a symbolic link")
+
+            output_directory.parent.mkdir(parents=True, exist_ok=True)
+            with tempfile.TemporaryDirectory(
+                prefix="dcc-cua-artifact-", dir=output_directory.parent
+            ) as temporary:
+                staged = Path(temporary)
+                for member in members:
+                    relative = PurePosixPath(member.filename.replace("\\", "/"))
+                    destination = staged.joinpath(*relative.parts)
+                    if member.is_dir():
+                        destination.mkdir(parents=True, exist_ok=True)
+                        continue
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    with (
+                        bundle.open(member) as source,
+                        destination.open("wb") as target,
+                    ):
+                        shutil.copyfileobj(source, target)
+
+                staged_paths = sorted(
+                    staged.rglob("*"),
+                    key=lambda path: (not path.is_dir(), len(path.parts), str(path)),
+                )
+                for staged_path in staged_paths:
+                    relative = staged_path.relative_to(staged)
+                    destination = output_directory / relative
+                    if staged_path.is_dir():
+                        if destination.exists() and not destination.is_dir():
+                            raise ValueError("artifact extraction would replace a file")
+                    elif destination.exists():
+                        raise ValueError(
+                            "artifact extraction would replace existing content"
+                        )
+
+                output_directory.mkdir(parents=True, exist_ok=True)
+                for staged_path in staged_paths:
+                    relative = staged_path.relative_to(staged)
+                    destination = output_directory / relative
+                    if staged_path.is_dir():
+                        destination.mkdir(parents=True, exist_ok=True)
+                    else:
+                        destination.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.move(str(staged_path), destination)
+    except (OSError, zipfile.BadZipFile) as exc:
+        raise ValueError("invalid artifact transport archive") from exc
+
+
+def extension_asset_names(version: str) -> tuple[str, ...]:
+    if _VERSION_PATTERN.fullmatch(version) is None:
+        raise ValueError("browser extension version must use stable semver")
+    return (
+        f"dcc-cua-browser-extension-{version}-chrome.zip",
+        f"dcc-cua-browser-extension-{version}-edge.zip",
+        f"dcc-cua-browser-extension-{version}-firefox.zip",
+        f"dcc-cua-browser-extension-{version}-firefox-sources.zip",
+    )
+
+
+def _verify_published_assets(
+    metadata: object,
+    directory: Path,
+    *,
+    expected_names: tuple[str, ...],
+    expected_tag: str,
+    expected_target_sha: str,
+) -> None:
+    _require_sha(expected_target_sha, "expected published release target")
+    local_entries = list(directory.iterdir())
+    local_names = {path.name for path in local_entries if path.is_file()}
+    if local_names != set(expected_names) or any(
+        not path.is_file() for path in local_entries
+    ):
+        raise ValueError("published release local asset set has missing or extra files")
+    if not isinstance(metadata, dict):
+        raise TypeError("published release metadata must be an object")
+    if metadata.get("tagName") != expected_tag:
+        raise ValueError("published release tag does not match")
+    if metadata.get("targetCommitish") != expected_target_sha:
+        raise ValueError("published release target does not match the source commit")
+    assets = metadata.get("assets")
+    if not isinstance(assets, list):
+        raise TypeError("published release assets must be a list")
+    by_name = {}
+    for asset in assets:
+        if not isinstance(asset, dict) or not isinstance(asset.get("name"), str):
+            raise TypeError("published release asset metadata is malformed")
+        if asset["name"] in by_name:
+            raise ValueError("published release asset names must be unique")
+        by_name[asset["name"]] = asset
+    if set(by_name) != set(expected_names):
+        raise ValueError("published release asset set has missing or extra files")
+    for name in expected_names:
+        path = directory / name
+        if not path.is_file():
+            raise ValueError("published release local asset set is incomplete")
+        asset = by_name[name]
+        if asset.get("state") != "uploaded":
+            raise ValueError("published release asset is not terminally uploaded")
+        if asset.get("size") != path.stat().st_size:
+            raise ValueError("published release asset size does not match")
+        if _normalize_digest(asset.get("digest")) != _sha256(path):
+            raise ValueError("published release asset digest does not match")
+
+
+def verify_published_native_release(
+    metadata: object,
+    directory: Path,
+    *,
+    version: str,
+    tag: str,
+    source_sha: str,
+    actual_latest_tag: str,
+) -> None:
+    verify_release_provenance(
+        directory,
+        version=version,
+        tag=tag,
+        source_sha=source_sha,
+        release_target_sha=source_sha,
+        provenance_path=directory / PROVENANCE_NAME,
+    )
+    _verify_published_assets(
+        metadata,
+        directory,
+        expected_names=(*expected_asset_names(version), PROVENANCE_NAME),
+        expected_tag=tag,
+        expected_target_sha=source_sha,
+    )
+    if actual_latest_tag != tag:
+        raise ValueError("native GitHub Release must remain Latest")
+
+
+def verify_published_extension_release(
+    metadata: object,
+    directory: Path,
+    *,
+    version: str,
+    tag: str,
+    source_sha: str,
+    expected_latest_tag: str,
+    actual_latest_tag: str,
+) -> None:
+    _verify_published_assets(
+        metadata,
+        directory,
+        expected_names=extension_asset_names(version),
+        expected_tag=tag,
+        expected_target_sha=source_sha,
+    )
+    if actual_latest_tag != expected_latest_tag or actual_latest_tag == tag:
+        raise ValueError("browser extension release must not replace native Latest")
 
 
 def build_release_provenance(
@@ -233,7 +431,7 @@ def build_release_provenance(
         "workflow_run_id": workflow_run_id,
         "signing": dict(_SIGNING_FACT),
         "assets": _asset_facts(directory, version),
-        "build_artifacts": _build_artifact_facts(
+        "build_artifacts": native_build_artifact_facts(
             workflow_artifacts,
             workflow_run_id=workflow_run_id,
             source_sha=source_sha,
@@ -337,6 +535,17 @@ def main() -> None:
     artifact.add_argument("--expected-run-id", type=int, required=True)
     artifact.add_argument("--expected-head-sha", required=True)
 
+    extract = subparsers.add_parser("verify-extract")
+    extract.add_argument("--archive", type=Path, required=True)
+    extract.add_argument("--expected-digest", required=True)
+    extract.add_argument("--output", type=Path, required=True)
+
+    native_plan = subparsers.add_parser("write-native-plan")
+    native_plan.add_argument("--metadata", type=Path, required=True)
+    native_plan.add_argument("--expected-run-id", type=int, required=True)
+    native_plan.add_argument("--expected-head-sha", required=True)
+    native_plan.add_argument("--output", type=Path, required=True)
+
     provenance = subparsers.add_parser("write-provenance")
     provenance.add_argument("--directory", type=Path, required=True)
     provenance.add_argument("--version", required=True)
@@ -354,6 +563,23 @@ def main() -> None:
     verify.add_argument("--source-sha", required=True)
     verify.add_argument("--release-target-sha", required=True)
     verify.add_argument("--provenance", type=Path, required=True)
+
+    published_native = subparsers.add_parser("verify-published-native")
+    published_native.add_argument("--metadata", type=Path, required=True)
+    published_native.add_argument("--directory", type=Path, required=True)
+    published_native.add_argument("--version", required=True)
+    published_native.add_argument("--tag", required=True)
+    published_native.add_argument("--source-sha", required=True)
+    published_native.add_argument("--actual-latest-tag", required=True)
+
+    published_extension = subparsers.add_parser("verify-published-extension")
+    published_extension.add_argument("--metadata", type=Path, required=True)
+    published_extension.add_argument("--directory", type=Path, required=True)
+    published_extension.add_argument("--version", required=True)
+    published_extension.add_argument("--tag", required=True)
+    published_extension.add_argument("--source-sha", required=True)
+    published_extension.add_argument("--expected-latest-tag", required=True)
+    published_extension.add_argument("--actual-latest-tag", required=True)
 
     args = parser.parse_args()
     if args.command == "changed-tags":
@@ -377,6 +603,17 @@ def main() -> None:
             expected_run_id=args.expected_run_id,
             expected_head_sha=args.expected_head_sha,
         )
+    elif args.command == "verify-extract":
+        verify_and_extract_artifact(args.archive, args.expected_digest, args.output)
+    elif args.command == "write-native-plan":
+        facts = native_build_artifact_facts(
+            _load_json(args.metadata),
+            workflow_run_id=args.expected_run_id,
+            source_sha=args.expected_head_sha,
+        )
+        args.output.write_text(
+            json.dumps(facts, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
     elif args.command == "write-provenance":
         document = build_release_provenance(
             args.directory,
@@ -388,7 +625,7 @@ def main() -> None:
             workflow_artifacts=_load_json(args.workflow_artifacts),
         )
         write_release_provenance(args.output, document)
-    else:
+    elif args.command == "verify-provenance":
         verify_release_provenance(
             args.directory,
             version=args.version,
@@ -396,6 +633,25 @@ def main() -> None:
             source_sha=args.source_sha,
             release_target_sha=args.release_target_sha,
             provenance_path=args.provenance,
+        )
+    elif args.command == "verify-published-native":
+        verify_published_native_release(
+            _load_json(args.metadata),
+            args.directory,
+            version=args.version,
+            tag=args.tag,
+            source_sha=args.source_sha,
+            actual_latest_tag=args.actual_latest_tag,
+        )
+    else:
+        verify_published_extension_release(
+            _load_json(args.metadata),
+            args.directory,
+            version=args.version,
+            tag=args.tag,
+            source_sha=args.source_sha,
+            expected_latest_tag=args.expected_latest_tag,
+            actual_latest_tag=args.actual_latest_tag,
         )
 
 

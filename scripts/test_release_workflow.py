@@ -74,7 +74,7 @@ class ReleaseWorkflowTests(unittest.TestCase):
             "ref: ${{ needs.release-please.outputs.source_sha }}", attach_assets
         )
 
-    def test_native_release_download_excludes_browser_extension_artifacts(self):
+    def test_native_release_download_uses_the_exact_verified_matrix_plan(self):
         workflow = WORKFLOW.read_text(encoding="utf-8")
         build_matrix = workflow[
             workflow.index("  build:") : workflow.index("  attach-assets:")
@@ -84,8 +84,12 @@ class ReleaseWorkflowTests(unittest.TestCase):
         ]
 
         self.assertIn("name: dcc-cua-native-${{ matrix.platform }}", build_matrix)
-        self.assertIn("pattern: dcc-cua-native-*", consolidate_native)
-        self.assertNotIn("pattern: dcc-cua-*", consolidate_native)
+        self.assertIn(
+            "scripts/release_integrity.py write-native-plan", consolidate_native
+        )
+        self.assertIn("actions/artifacts/$artifact_id/zip", consolidate_native)
+        self.assertIn("scripts/release_integrity.py verify-extract", consolidate_native)
+        self.assertNotIn("pattern: dcc-cua-native-*", consolidate_native)
 
     def test_intel_macos_release_target_runs_the_native_ci_contract(self):
         workflow = CI_WORKFLOW.read_text(encoding="utf-8")
@@ -160,6 +164,8 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertNotIn("current signed `dcc-cua` binary", english)
         self.assertIn("not currently platform-signed", english)
         self.assertIn("当前原生可执行文件没有平台代码签名", chinese)
+        self.assertIn("raw workflow artifact ZIP", english)
+        self.assertIn("发布后回读", chinese)
         self.assertIn("real-user raw-input", english)
         self.assertIn("raw-input", chinese)
 
