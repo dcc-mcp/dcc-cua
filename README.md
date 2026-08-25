@@ -892,13 +892,17 @@ Missing, failed, or mismatched callbacks remain `approval_required`; explicit
 denial or cancellation has its own typed error.
 
 Exact-window foreground raw input declared as `navigate` or `ordinary_edit`
-does not open an action-time prompt for bounded pointer or keyboard actions,
-including function keys and modified shortcuts. Those actions
-already require `allow_raw_input: true`, the exact session/task/window
-capabilities, the latest Host observation, and a closed input shape. Function,
-Text and secret-value injection, sensitive intents, semantic controls classified
-above the task-grant tier, window or process scope changes, and non-foreground
-raw input keep their existing confirmation or refusal behavior.
+does not open an action-time prompt for bounded pointer actions or the closed
+safe-key envelope. That keyboard envelope permits one unmodified alphanumeric
+or reviewed navigation key; a held keypress permits only one or two unique
+WASD/arrow keys for 1–10,000 ms. Modified shortcuts, function keys, Delete,
+Backspace, multi-key taps, and unknown or malformed key tokens require
+action-time confirmation regardless of the caller-provided intent. These
+actions still require `allow_raw_input: true`, the exact session/task/window
+capabilities, and the latest Host observation. Text and secret-value injection,
+sensitive intents, semantic controls classified above the task-grant tier,
+window or process scope changes, and non-foreground raw input keep their
+existing confirmation or refusal behavior.
 
 For long-running automation, an embedding may instead collect explicit user
 input before the task and install a constructor-owned

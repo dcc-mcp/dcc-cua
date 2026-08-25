@@ -34,6 +34,22 @@ fn raw_input_action(action: &str, intent: &str) -> HostAction {
     }
 }
 
+fn keyboard_action(action: &str, intent: &str, keys: &[&str], modifiers: &[&str]) -> HostAction {
+    let mut action = raw_input_action(action, intent);
+    action.x = None;
+    action.y = None;
+    action.button = None;
+    action.path.clear();
+    action.duration_ms = None;
+    action.steps = None;
+    action.keys = keys.iter().map(|key| (*key).to_owned()).collect();
+    action.modifiers = modifiers
+        .iter()
+        .map(|modifier| (*modifier).to_owned())
+        .collect();
+    action
+}
+
 #[rstest]
 #[case("click")]
 #[case("double_click")]
@@ -59,32 +75,123 @@ fn exact_window_ordinary_pointer_actions_use_the_existing_task_grant(#[case] act
 }
 
 #[rstest]
-fn exact_window_ordinary_keyboard_actions_use_the_existing_task_grant() {
-    for (action_name, keys, modifiers) in [
-        ("keypress", vec!["F"], vec![]),
-        ("press", vec!["ENTER"], vec![]),
-        ("press", vec!["DELETE"], vec![]),
-        ("press", vec!["F4"], vec![]),
-        ("press", vec!["SPACE"], vec![]),
-        ("press_key", vec!["LEFT"], vec![]),
-        ("keyboard_shortcut", vec!["S"], vec!["CONTROL"]),
-        ("hotkey", vec!["F4"], vec!["ALT"]),
+fn exact_window_safe_keyboard_actions_use_the_existing_task_grant() {
+    for (action_name, key) in [
+        ("keypress", "F"),
+        ("press", "ENTER"),
+        ("press", "SPACE"),
+        ("press", "TAB"),
+        ("press", "ESC"),
+        ("press_key", "LEFT"),
+        ("press_key", "PAGEUP"),
+        ("keyboard_shortcut", "S"),
+        ("hotkey", "W"),
     ] {
-        let mut action = raw_input_action(action_name, "ordinary_edit");
-        action.x = None;
-        action.y = None;
-        action.button = None;
-        action.path.clear();
-        action.keys = keys.into_iter().map(str::to_owned).collect();
-        action.modifiers = modifiers.into_iter().map(str::to_owned).collect();
-
+        let action = keyboard_action(action_name, "ordinary_edit", &[key], &[]);
         assert_eq!(
             action.safety_tier(None),
             HostActionSafetyTier::TaskGrant,
-            "{action_name} with {:?} must use the exact task grant",
+            "{action_name} with {:?} must stay inside the closed safe-key envelope",
             action.keys
         );
     }
+}
+
+#[rstest]
+#[case("keypress", &["DELETE"], &[], "navigate")]
+#[case("press", &["BACKSPACE"], &[], "ordinary_edit")]
+#[case("press_key", &["F4"], &[], "navigate")]
+#[case("keypress", &["F12"], &[], "ordinary_edit")]
+#[case("keyboard_shortcut", &["W"], &["CONTROL"], "navigate")]
+#[case("hotkey", &["F4"], &["ALT"], "ordinary_edit")]
+#[case("hotkey", &["W"], &["CTRL"], "ordinary_edit")]
+#[case("hotkey", &["Q"], &["COMMAND"], "navigate")]
+#[case("hotkey", &["Q"], &["META"], "ordinary_edit")]
+#[case("hotkey", &["CTRL", "W"], &[], "navigate")]
+#[case("hotkey", &["CMD", "Q"], &[], "ordinary_edit")]
+fn dangerous_keyboard_chords_ignore_hostile_intent_relabeling(
+    #[case] action_name: &str,
+    #[case] keys: &[&str],
+    #[case] modifiers: &[&str],
+    #[case] intent: &str,
+) {
+    let action = keyboard_action(action_name, intent, keys, modifiers);
+
+    assert_eq!(
+        action.safety_tier(None),
+        HostActionSafetyTier::ActionConfirmation,
+        "{action_name} with keys={keys:?}, modifiers={modifiers:?}, intent={intent} must require confirmation"
+    );
+}
+
+#[rstest]
+#[case(&[])]
+#[case(&["W", "Q"])]
+#[case(&["LAUNCH_MAIL"])]
+#[case(&["PRINTSCREEN"])]
+#[case(&["F24"])]
+#[case(&[" "])]
+fn unknown_or_malformed_keyboard_input_fails_closed(#[case] keys: &[&str]) {
+    for intent in ["navigate", "ordinary_edit"] {
+        let action = keyboard_action("keypress", intent, keys, &[]);
+        assert_eq!(
+            action.safety_tier(None),
+            HostActionSafetyTier::ActionConfirmation,
+            "keys={keys:?}, intent={intent} must not escape the confirmation boundary"
+        );
+    }
+}
+
+#[rstest]
+fn bounded_unmodified_movement_keypress_stays_inside_the_task_grant() {
+    let mut action = keyboard_action("keypress", "navigate", &["W", "D"], &[]);
+    action.duration_ms = Some(1_000);
+
+    assert_eq!(action.safety_tier(None), HostActionSafetyTier::TaskGrant);
+}
+
+#[rstest]
+#[case(&["W"], 0)]
+#[case(&["W"], 10_001)]
+#[case(&["W", " w "], 1_000)]
+#[case(&["W", "Q"], 1_000)]
+fn malformed_held_keyboard_input_fails_closed(#[case] keys: &[&str], #[case] duration_ms: u64) {
+    let mut action = keyboard_action("keypress", "navigate", keys, &[]);
+    action.duration_ms = Some(duration_ms);
+
+    assert_eq!(
+        action.safety_tier(None),
+        HostActionSafetyTier::ActionConfirmation
+    );
+}
+
+#[rstest]
+#[tokio::test]
+async fn hostile_hotkey_relabel_reaches_the_real_confirmation_boundary() {
+    let action = keyboard_action("hotkey", "ordinary_edit", &["F4"], &["ALT"]);
+    let tier = action.safety_tier(None);
+    assert_eq!(tier, HostActionSafetyTier::ActionConfirmation);
+    assert!(tier.requires_confirmation());
+
+    let request = window_confirmation(
+        "session-1",
+        "grant-1",
+        "capability-1",
+        ConfirmationWindowIdentity {
+            process_id: 42,
+            window_handle: 7,
+        },
+        "observation-1",
+        "accessibility-1",
+        &action,
+    );
+    let outcome = authorize_action_confirmation(None, true, request).await;
+    assert_eq!(outcome, ActionConfirmationOutcome::Required);
+
+    let response = crate::request_contract::action_confirmation_refusal(outcome).0;
+    assert_eq!(response["success"], false);
+    assert_eq!(response["policy_tier"], "action_confirmation");
+    assert_eq!(response["error"], "approval_required");
 }
 
 #[rstest]
@@ -204,12 +311,7 @@ fn navigation_pointer_input_with_a_secret_still_requires_action_confirmation() {
 #[case("keyboard_shortcut")]
 #[case("hotkey")]
 fn exact_window_navigation_keyboard_input_uses_the_existing_task_grant(#[case] action: &str) {
-    let mut action = raw_input_action(action, "navigate");
-    action.x = None;
-    action.y = None;
-    action.button = None;
-    action.path.clear();
-    action.keys = vec!["W".into()];
+    let action = keyboard_action(action, "navigate", &["W"], &[]);
 
     assert_eq!(action.safety_tier(None), HostActionSafetyTier::TaskGrant);
 }
