@@ -26,6 +26,11 @@ ROOT_PLUGIN = ROOT / ".codex-plugin" / "plugin.json"
 MARKETPLACE_PLUGIN = ROOT / "plugins" / "dcc-cua-computer-use"
 README = ROOT / "README.md"
 README_ZH = ROOT / "README.zh-CN.md"
+CHECKOUT_ACTION = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"
+DOWNLOAD_ACTION = "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093"
+RELEASE_PLEASE_ACTION = (
+    "googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7"
+)
 
 
 class ReleaseWorkflowTests(unittest.TestCase):
@@ -58,15 +63,15 @@ class ReleaseWorkflowTests(unittest.TestCase):
             )
         ]
 
-        checkout = attach_assets.index("actions/checkout@v7")
-        download = attach_assets.index("actions/download-artifact@v4")
-        verify = attach_assets.index("scripts/verify_release_assets.py")
+        checkout = attach_assets.index(CHECKOUT_ACTION)
+        download = attach_assets.index(DOWNLOAD_ACTION)
+        verify = attach_assets.index("scripts/release_integrity.py verify-provenance")
         upload = attach_assets.index("gh release upload")
         self.assertLess(checkout, download)
         self.assertLess(download, verify)
         self.assertLess(verify, upload)
         self.assertIn(
-            "ref: ${{ needs.release-please.outputs.tag_name }}", attach_assets
+            "ref: ${{ needs.release-please.outputs.source_sha }}", attach_assets
         )
 
     def test_native_release_download_excludes_browser_extension_artifacts(self):
@@ -74,15 +79,13 @@ class ReleaseWorkflowTests(unittest.TestCase):
         build_matrix = workflow[
             workflow.index("  build:") : workflow.index("  attach-assets:")
         ]
-        attach_assets = workflow[
-            workflow.index("  attach-assets:") : workflow.index(
-                "  package-browser-extension:"
-            )
+        consolidate_native = workflow[
+            workflow.index("  consolidate-native:") : workflow.index("  attach-assets:")
         ]
 
         self.assertIn("name: dcc-cua-native-${{ matrix.platform }}", build_matrix)
-        self.assertIn("pattern: dcc-cua-native-*", attach_assets)
-        self.assertNotIn("pattern: dcc-cua-*", attach_assets)
+        self.assertIn("pattern: dcc-cua-native-*", consolidate_native)
+        self.assertNotIn("pattern: dcc-cua-*", consolidate_native)
 
     def test_intel_macos_release_target_runs_the_native_ci_contract(self):
         workflow = CI_WORKFLOW.read_text(encoding="utf-8")
@@ -118,7 +121,7 @@ class ReleaseWorkflowTests(unittest.TestCase):
             release.index("  build:") : release.index("  attach-assets:")
         ]
         self.assertLess(
-            release_build.index("actions/checkout@v7"),
+            release_build.index(CHECKOUT_ACTION),
             release_build.index("./.github/actions/select-macos-toolchain"),
         )
         self.assertLess(
@@ -139,6 +142,7 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertIn(
             "python -B -m unittest scripts.test_verify_release_assets", workflow
         )
+        self.assertIn("python -B -m unittest scripts.test_release_integrity", workflow)
 
     def test_public_docs_list_every_native_release_target(self):
         english = README.read_text(encoding="utf-8")
@@ -153,6 +157,11 @@ class ReleaseWorkflowTests(unittest.TestCase):
             self.assertIn(target, chinese)
         self.assertIn("macos-26-intel", english)
         self.assertIn("macos-26-intel", chinese)
+        self.assertNotIn("current signed `dcc-cua` binary", english)
+        self.assertIn("not currently platform-signed", english)
+        self.assertIn("当前原生可执行文件没有平台代码签名", chinese)
+        self.assertIn("real-user raw-input", english)
+        self.assertIn("raw-input", chinese)
 
     def test_release_archive_includes_the_plugin_and_mcp_bridge(self):
         workflow = WORKFLOW.read_text(encoding="utf-8")
@@ -230,7 +239,10 @@ class ReleaseWorkflowTests(unittest.TestCase):
             self.assertIn("environment: browser-stores", section)
             self.assertIn("DCC_CUA_BROWSER_STORE_PUBLISH_READY == 'true'", section)
         self.assertIn("id-token: write", workflow)
-        self.assertIn("google-github-actions/auth@v3", workflow)
+        self.assertIn(
+            "google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093",
+            workflow,
+        )
         self.assertIn(
             "FIREFOX_JWT_ISSUER: ${{ secrets.FIREFOX_AMO_API_KEY }}", workflow
         )
@@ -278,13 +290,15 @@ class ReleaseWorkflowTests(unittest.TestCase):
         )
         self.assertIn("repository Latest release is not the native runtime", workflow)
 
-        release_action = workflow.index("googleapis/release-please-action@v5")
-        checkout = workflow.index("- uses: actions/checkout@v7", release_action)
+        release_job = workflow.index("  release-please:")
+        checkout = workflow.index(f"- uses: {CHECKOUT_ACTION}", release_job)
+        preexisting_guard = workflow.index(
+            "Refuse pre-existing release identities", checkout
+        )
+        release_action = workflow.index(RELEASE_PLEASE_ACTION, preexisting_guard)
         protection = workflow.index("Keep the native runtime release Latest")
         checkout_section = workflow[checkout:protection]
-        self.assertIn(
-            "ref: ${{ github.event.repository.default_branch }}", checkout_section
-        )
+        self.assertIn("ref: ${{ github.sha }}", checkout_section)
 
         native_exists = workflow.index("gh release view $nativeTag", protection)
         native_latest = workflow.index("gh release edit $nativeTag", native_exists)
@@ -297,8 +311,9 @@ class ReleaseWorkflowTests(unittest.TestCase):
         final_assertion = workflow.index(
             "$latest.tagName -ne $nativeTag", final_readback
         )
-        self.assertLess(release_action, checkout)
-        self.assertLess(checkout, protection)
+        self.assertLess(checkout, preexisting_guard)
+        self.assertLess(preexisting_guard, release_action)
+        self.assertLess(release_action, protection)
         self.assertLess(native_exists, native_latest)
         self.assertLess(native_latest, extension_excluded)
         self.assertLess(extension_excluded, final_readback)

@@ -260,7 +260,13 @@ CI 在 Windows、Linux 和 macOS 上检查代码布局、格式、工作区测�
 | macOS Apple silicon | `aarch64-apple-darwin` | `macos-26` |
 | macOS Intel | `x86_64-apple-darwin` | `macos-26-intel` |
 
-只有四个 target 的归档、checksum 和 manifest 全部匹配时，上传 job 才会继续。
+新建 tag、该 tag 解析到的 commit、构建 HEAD 和 GitHub Release target 必须绑定同一
+commit。每个 target 只构建一次，完整资产集合随后绑定到一个 workflow artifact ID
+和内容 digest；已有 tag、release 或 asset 不能作为重建或覆盖目标。
+
+只有四个 target 的归档、checksum、manifest 和聚合 provenance 全部匹配时，上传 job
+才会继续。当前原生可执行文件没有平台代码签名；公开验证契约仅证明 SHA-256 checksum，
+并在 provenance 中明确记录 signing `not_performed`，不会声称二进制已签名。
 官方 `macos-26-intel` runner 可用期间，Intel macOS 仍是公开支持目标。两个 macOS
 发布目标统一选择 Xcode 26.6，并在 runner 架构或 macOS 26 SDK 不匹配时 fail closed；
 若该托管镜像或固定工具链退役，必须同时调整 runner 和发布契约。
@@ -268,5 +274,6 @@ CI 在 Windows、Linux 和 macOS 上检查代码布局、格式、工作区测�
 发布门槛在产品验收前保持关闭；不要提前设置
 `DCC_CUA_RELEASE_READY=true`。Release Please 负责版本和变更日志，不发布 crates。
 
-CUA SDK revision 固定在 `Cargo.toml` 和 `Cargo.lock`。真实截图和输入仍要求当前操作系统
-具有原生桌面权限和交互式会话。
+CUA SDK revision 固定在 `Cargo.toml` 和 `Cargo.lock`。发布完整性检查不会操作用户桌面，
+也不能证明真实用户环境中的 raw-input 行为。真实截图和输入仍要求当前操作系统具有原生
+桌面权限、交互式会话和独立的运行时验收。

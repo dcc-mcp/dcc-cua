@@ -34,8 +34,11 @@ def expected_asset_names(version: str) -> tuple[str, ...]:
     return tuple(names)
 
 
-def verify_release_assets(directory: Path, version: str) -> None:
+def verify_release_assets(
+    directory: Path, version: str, allowed_extras: tuple[str, ...] = ()
+) -> None:
     expected_names = expected_asset_names(version)
+    allowed_names = set(expected_names) | set(allowed_extras)
     missing: list[str] = []
     for name in expected_names:
         if not (directory / name).is_file():
@@ -43,7 +46,7 @@ def verify_release_assets(directory: Path, version: str) -> None:
     if missing:
         raise ValueError("missing release assets: {}".format(", ".join(missing)))
     unexpected = sorted(
-        path.name for path in directory.iterdir() if path.name not in expected_names
+        path.name for path in directory.iterdir() if path.name not in allowed_names
     )
     if unexpected:
         raise ValueError("unexpected release assets: {}".format(", ".join(unexpected)))
