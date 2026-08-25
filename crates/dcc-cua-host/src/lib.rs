@@ -803,7 +803,7 @@ impl HostAction {
         if self.secret_handle.is_some() {
             return "credential".into();
         }
-        if self.input_kind == "raw_input" {
+        if self.input_kind == "raw_input" || self.uses_physical_keyboard() {
             return "raw_input".into();
         }
         accessibility_root

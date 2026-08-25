@@ -1265,6 +1265,7 @@ name = "dcc-cua-host"
 version = "1.5.6"
 dependencies = [
  "async-trait",
+ "cua-driver-sdk",
  "dcc-cua-browser",
  "dcc-cua-core",
  "dcc-cua-indicator",

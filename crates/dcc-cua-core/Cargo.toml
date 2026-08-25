@@ -13,6 +13,9 @@ repository.workspace = true
 name = "dcc_cua_core"
 path = "src/lib.rs"
 
+[features]
+test-support = []
+
 [dependencies]
 base64 = "0.22"
 # Fork candidate preserves existing-profile and nearest-ancestor proofs while

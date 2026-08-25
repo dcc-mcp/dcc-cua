@@ -897,10 +897,13 @@ safe-key envelope. That keyboard envelope permits one unmodified alphanumeric
 or reviewed navigation key; a held keypress permits only one or two unique
 WASD/arrow keys for 1–10,000 ms. Modified shortcuts, function keys, Delete,
 Backspace, multi-key taps, and unknown or malformed key tokens require
-action-time confirmation regardless of the caller-provided intent. These
-actions still require `allow_raw_input: true`, the exact session/task/window
-capabilities, and the latest Host observation. Text and secret-value injection,
-sensitive intents, semantic controls classified above the task-grant tier,
+action-time confirmation regardless of the caller-provided intent. Keyboard
+aliases, key lists, and modifier lists are classified before `input_kind`, so
+they cannot borrow a task-granted semantic element policy. A backend selector
+or any other non-keyboard routing field also excludes the closed safe-key
+envelope. These actions still require `allow_raw_input: true`, the exact
+session/task/window capabilities, and the latest Host observation. Text and
+secret-value injection, sensitive intents, semantic controls classified above the task-grant tier,
 window or process scope changes, and non-foreground raw input keep their
 existing confirmation or refusal behavior.
 
