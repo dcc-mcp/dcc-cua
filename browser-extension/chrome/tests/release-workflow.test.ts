@@ -97,6 +97,7 @@ const STEP_ALLOWLIST: Record<string, string[]> = {
     "run:npm --prefix browser-extension/chrome run build",
     "run:python -B browser-extension/chrome/scripts/test_extension.py",
     "name:Package browser extensions",
+    "name:Verify browser extension asset set",
     "uses:actions/upload-artifact",
   ],
   "attach-browser-extension-assets": [
@@ -104,6 +105,7 @@ const STEP_ALLOWLIST: Record<string, string[]> = {
     "name:Verify immutable browser extension artifact identity",
     "name:Audit immutable browser extension artifact download",
     "name:Download and extract verified browser extension artifact",
+    "name:Verify browser extension asset set",
     "name:Refuse existing browser extension release assets",
     "name:Attach browser extension review artifacts",
     "name:Verify published browser extension release immutability",
@@ -113,6 +115,7 @@ const STEP_ALLOWLIST: Record<string, string[]> = {
     "name:Verify immutable browser extension artifact identity",
     "name:Audit immutable browser extension artifact download",
     "name:Download and extract verified browser extension artifact",
+    "name:Verify browser extension asset set",
     "uses:google-github-actions/auth",
     "name:Submit Chrome Web Store release",
   ],
@@ -121,6 +124,7 @@ const STEP_ALLOWLIST: Record<string, string[]> = {
     "name:Verify immutable browser extension artifact identity",
     "name:Audit immutable browser extension artifact download",
     "name:Download and extract verified browser extension artifact",
+    "name:Verify browser extension asset set",
     "name:Submit Edge Add-ons release",
   ],
   "publish-firefox-addons": [
@@ -130,6 +134,7 @@ const STEP_ALLOWLIST: Record<string, string[]> = {
     "name:Verify immutable browser extension artifact identity",
     "name:Audit immutable browser extension artifact download",
     "name:Download and extract verified browser extension artifact",
+    "name:Verify browser extension asset set",
     "name:Submit Firefox Add-ons release",
   ],
 };
@@ -192,6 +197,13 @@ const EXTENSION_ARTIFACT_EXTRACTION_STATEMENTS = [
   '--archive "$archive" \\',
   '--expected-digest "$EXPECTED_ARTIFACT_DIGEST" \\',
   "--output dist",
+];
+
+const EXTENSION_ASSET_SET_STATEMENTS = [
+  "set -euo pipefail",
+  "python -B scripts/release_integrity.py verify-extension-assets \\",
+  "--directory dist \\",
+  '--version "$EXTENSION_VERSION"',
 ];
 
 const NATIVE_PUBLISHED_READBACK_STATEMENTS = [
@@ -261,21 +273,26 @@ const RUN_STATEMENT_DIGESTS: Record<string, string> = {
   "package-browser-extension|#5": "ad3642d0e2d48d1a364750fae19b60f784cd61cba09d4307334190a6289097d6",
   "package-browser-extension|#6": "e15b990e0610e87d68ac5416283eeb310f1be29247f6ea1f707038c3454272a0",
   "package-browser-extension|#7": "fe87b566d1909517db3c2bac37c836fee08779f2e1b2b3d8fc73a9022c5e9347",
-  "package-browser-extension|Package browser extensions": "09aa64be5761fb932e0e7db04737bb93982f3e496ac9f637bb6772efe1cd02bd",
+  "package-browser-extension|Package browser extensions": "4f361fe03fad1e3554746753016c0808aa35289a6e6fd056defeb9f73d309d43",
+  "package-browser-extension|Verify browser extension asset set": "f75d416f0b832a307b0820123f4eb8a9318561734b4249f56e8d36be9d56246b",
   "attach-browser-extension-assets|Verify immutable browser extension artifact identity": "dcfc8adc9cfe1836b7290a3d2100001f84fa68af97c51b5969e176985eca33ca",
   "attach-browser-extension-assets|Download and extract verified browser extension artifact": "1dda8d720c3ad3fc6fdc88d28c6ebf0ae9e8cc8fa6be77d3b361b38a3c236cb8",
+  "attach-browser-extension-assets|Verify browser extension asset set": "f75d416f0b832a307b0820123f4eb8a9318561734b4249f56e8d36be9d56246b",
   "attach-browser-extension-assets|Refuse existing browser extension release assets": "d280fe513ea5a8ac23f38cfa3a5c37a753ed3f7c1332bff40fa911c7d8a3278f",
   "attach-browser-extension-assets|Attach browser extension review artifacts": "a12b9c4e3713e8000995688a2697f7cf9f7af2f4cf448f8f609f7455d30de5c2",
   "attach-browser-extension-assets|Verify published browser extension release immutability": "1d32d5ed6ba7784aa9abde41b26875b6c827e076395283662c18da77a85c09a6",
   "publish-chrome-web-store|Verify immutable browser extension artifact identity": "dcfc8adc9cfe1836b7290a3d2100001f84fa68af97c51b5969e176985eca33ca",
   "publish-chrome-web-store|Download and extract verified browser extension artifact": "1dda8d720c3ad3fc6fdc88d28c6ebf0ae9e8cc8fa6be77d3b361b38a3c236cb8",
+  "publish-chrome-web-store|Verify browser extension asset set": "f75d416f0b832a307b0820123f4eb8a9318561734b4249f56e8d36be9d56246b",
   "publish-chrome-web-store|Submit Chrome Web Store release": "5d7475ac62569c72517ea447a20b5601bf820af246f701619b612396d027758e",
   "publish-edge-addons|Verify immutable browser extension artifact identity": "dcfc8adc9cfe1836b7290a3d2100001f84fa68af97c51b5969e176985eca33ca",
   "publish-edge-addons|Download and extract verified browser extension artifact": "1dda8d720c3ad3fc6fdc88d28c6ebf0ae9e8cc8fa6be77d3b361b38a3c236cb8",
+  "publish-edge-addons|Verify browser extension asset set": "f75d416f0b832a307b0820123f4eb8a9318561734b4249f56e8d36be9d56246b",
   "publish-edge-addons|Submit Edge Add-ons release": "29c4e7e2ac484e37f6e3cfe06ade616ca4db2fae9238b9ccd15c3a85f3fe1a88",
   "publish-firefox-addons|#2": "ea914f3855acfa08dce0988d9e918c5aee81b877d891d789a7ea6f668aedfd1a",
   "publish-firefox-addons|Verify immutable browser extension artifact identity": "dcfc8adc9cfe1836b7290a3d2100001f84fa68af97c51b5969e176985eca33ca",
   "publish-firefox-addons|Download and extract verified browser extension artifact": "1dda8d720c3ad3fc6fdc88d28c6ebf0ae9e8cc8fa6be77d3b361b38a3c236cb8",
+  "publish-firefox-addons|Verify browser extension asset set": "f75d416f0b832a307b0820123f4eb8a9318561734b4249f56e8d36be9d56246b",
   "publish-firefox-addons|Submit Firefox Add-ons release": "7883a6e1f5db317d8f718fefe7dbc4b91cddb66ded2e184527ac2fc727f59a38",
 };
 
@@ -600,6 +617,7 @@ function validateReleaseWorkflow(source: string): void {
   );
 
   const extension = requiredJob(jobs, "package-browser-extension");
+  assertNeeds(extension, ["release-please"]);
   assert.equal(
     actionStep(extension, "actions/checkout").with?.ref,
     "${{ needs.release-please.outputs.extension_source_sha }}",
@@ -612,6 +630,10 @@ function validateReleaseWorkflow(source: string): void {
   assertExecutableStatements(
     namedStep(extension, "Verify browser extension release source binding"),
     SOURCE_BINDING_STATEMENTS,
+  );
+  assertExecutableStatements(
+    namedStep(extension, "Verify browser extension asset set"),
+    EXTENSION_ASSET_SET_STATEMENTS,
   );
   const extensionUpload = actionStep(extension, "actions/upload-artifact");
   assert.equal(extensionUpload.id, "upload-extension");
@@ -630,6 +652,17 @@ function validateReleaseWorkflow(source: string): void {
     "publish-edge-addons",
     "publish-firefox-addons",
   ];
+  assertNeeds(requiredJob(jobs, "attach-browser-extension-assets"), [
+    "release-please",
+    "package-browser-extension",
+  ]);
+  for (const jobName of extensionConsumers.slice(1)) {
+    assertNeeds(requiredJob(jobs, jobName), [
+      "release-please",
+      "package-browser-extension",
+      "attach-browser-extension-assets",
+    ]);
+  }
   for (const jobName of extensionConsumers) {
     const job = requiredJob(jobs, jobName);
     const download = actionStep(job, "actions/download-artifact");
@@ -675,6 +708,10 @@ function validateReleaseWorkflow(source: string): void {
         "Download and extract verified browser extension artifact",
       ),
       EXTENSION_ARTIFACT_EXTRACTION_STATEMENTS,
+    );
+    assertExecutableStatements(
+      namedStep(job, "Verify browser extension asset set"),
+      EXTENSION_ASSET_SET_STATEMENTS,
     );
   }
   const extensionAttach = requiredJob(jobs, "attach-browser-extension-assets");
@@ -766,6 +803,59 @@ test("parsed contract rejects duplicate, moved, and textual-decoy mutations", ()
     steps(requiredJob(jobs, "release-please")).push(movedStep!);
   });
   assert.throws(() => validateReleaseWorkflow(movedToWrongJob));
+
+  const missingExtensionVerifier = mutateWorkflow(source, (workflow) => {
+    const attachSteps = steps(
+      requiredJob(workflow.jobs ?? {}, "attach-browser-extension-assets"),
+    );
+    const index = attachSteps.findIndex(
+      (step) => step.name === "Verify browser extension asset set",
+    );
+    assert.notEqual(index, -1);
+    attachSteps.splice(index, 1);
+  });
+  assert.throws(() => validateReleaseWorkflow(missingExtensionVerifier));
+
+  const movedExtensionVerifier = mutateWorkflow(source, (workflow) => {
+    const jobs = workflow.jobs ?? {};
+    const attachSteps = steps(
+      requiredJob(jobs, "attach-browser-extension-assets"),
+    );
+    const index = attachSteps.findIndex(
+      (step) => step.name === "Verify browser extension asset set",
+    );
+    assert.notEqual(index, -1);
+    const [verifier] = attachSteps.splice(index, 1);
+    steps(requiredJob(jobs, "release-please")).push(verifier!);
+  });
+  assert.throws(() => validateReleaseWorkflow(movedExtensionVerifier));
+
+  const reorderedExtensionVerifier = mutateWorkflow(source, (workflow) => {
+    const attachSteps = steps(
+      requiredJob(workflow.jobs ?? {}, "attach-browser-extension-assets"),
+    );
+    const verifier = attachSteps.findIndex(
+      (step) => step.name === "Verify browser extension asset set",
+    );
+    const upload = attachSteps.findIndex(
+      (step) => step.name === "Attach browser extension review artifacts",
+    );
+    assert.notEqual(verifier, -1);
+    assert.notEqual(upload, -1);
+    [attachSteps[verifier], attachSteps[upload]] = [
+      attachSteps[upload]!,
+      attachSteps[verifier]!,
+    ];
+  });
+  assert.throws(() => validateReleaseWorkflow(reorderedExtensionVerifier));
+
+  const storeWithoutAttachReadback = mutateWorkflow(source, (workflow) => {
+    requiredJob(workflow.jobs ?? {}, "publish-chrome-web-store").needs = [
+      "release-please",
+      "package-browser-extension",
+    ];
+  });
+  assert.throws(() => validateReleaseWorkflow(storeWithoutAttachReadback));
 
   const splitClobber = mutateWorkflow(source, (workflow) => {
     const upload = namedStep(

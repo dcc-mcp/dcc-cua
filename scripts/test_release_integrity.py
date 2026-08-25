@@ -1,6 +1,7 @@
 import hashlib
 import importlib.util
 import json
+import stat
 import tempfile
 import unittest
 import zipfile
@@ -74,6 +75,34 @@ def _published_release(directory: Path, tag: str = TAG) -> dict:
             }
             for path in sorted(directory.iterdir())
         ],
+    }
+
+
+def _write_extension_archive(path: Path, members=None) -> None:
+    entries = (
+        (("manifest.json", b'{"manifest_version": 3}'),) if members is None else members
+    )
+    with zipfile.ZipFile(path, "w") as archive:
+        for name, content in entries:
+            if isinstance(name, zipfile.ZipInfo):
+                archive.writestr(name, content)
+            else:
+                archive.writestr(name, content)
+
+
+def _write_extension_assets(directory: Path, version: str) -> None:
+    for name in MODULE.extension_asset_names(version):
+        _write_extension_archive(directory / name)
+
+
+def _directory_snapshot(directory: Path) -> dict:
+    return {
+        path.relative_to(directory).as_posix(): (
+            "directory"
+            if path.is_dir()
+            else hashlib.sha256(path.read_bytes()).hexdigest()
+        )
+        for path in sorted(directory.rglob("*"))
     }
 
 
@@ -390,8 +419,7 @@ class ReleaseIntegrityTests(unittest.TestCase):
             release_dir = Path(directory)
             extension_version = "0.3.0"
             extension_tag = f"dcc-cua-browser-extension-v{extension_version}"
-            for name in MODULE.extension_asset_names(extension_version):
-                (release_dir / name).write_bytes(name.encode("utf-8"))
+            _write_extension_assets(release_dir, extension_version)
             metadata = _published_release(release_dir, extension_tag)
             MODULE.verify_published_extension_release(
                 metadata,
@@ -404,7 +432,7 @@ class ReleaseIntegrityTests(unittest.TestCase):
             )
             extra = release_dir / "decoy.zip"
             extra.write_bytes(b"decoy")
-            with self.assertRaisesRegex(ValueError, "local asset set"):
+            with self.assertRaisesRegex(ValueError, "asset set"):
                 MODULE.verify_published_extension_release(
                     metadata,
                     release_dir,
@@ -425,6 +453,88 @@ class ReleaseIntegrityTests(unittest.TestCase):
                     expected_latest_tag=TAG,
                     actual_latest_tag=extension_tag,
                 )
+
+    def test_extension_asset_set_is_exact_valid_and_read_only(self):
+        with tempfile.TemporaryDirectory() as directory:
+            release_dir = Path(directory)
+            extension_version = "0.3.0"
+            _write_extension_assets(release_dir, extension_version)
+            before = _directory_snapshot(release_dir)
+
+            MODULE.verify_extension_asset_set(release_dir, extension_version)
+
+            self.assertEqual(_directory_snapshot(release_dir), before)
+
+    def test_digest_valid_artifact_extra_is_rejected_before_publish_boundary(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source"
+            source.mkdir()
+            extension_version = "0.3.0"
+            _write_extension_assets(source, extension_version)
+            (source / "unexpected-review-note.txt").write_text(
+                "review note", encoding="utf-8"
+            )
+            transport = root / "extension-artifact.zip"
+            with zipfile.ZipFile(transport, "w") as archive:
+                for path in source.iterdir():
+                    archive.write(path, path.name)
+            digest = hashlib.sha256(transport.read_bytes()).hexdigest()
+            extracted = root / "extracted"
+
+            MODULE.verify_and_extract_artifact(transport, digest, extracted)
+            before = _directory_snapshot(extracted)
+            with self.assertRaisesRegex(ValueError, "missing or extra"):
+                MODULE.verify_extension_asset_set(extracted, extension_version)
+
+            self.assertEqual(_directory_snapshot(extracted), before)
+
+    def test_extension_asset_set_rejects_unsafe_content_without_mutation(self):
+        extension_version = "0.3.0"
+        cases = {
+            "extra": lambda directory, target: (
+                directory / "unexpected-review-note.txt"
+            ).write_text("review note", encoding="utf-8"),
+            "empty": lambda _directory, target: _write_extension_archive(
+                target, members=()
+            ),
+            "corrupt": lambda _directory, target: target.write_bytes(
+                b"not a zip archive"
+            ),
+            "zip-slip": lambda _directory, target: _write_extension_archive(
+                target, members=(("../escape.txt", b"escape"),)
+            ),
+            "case-duplicate": lambda _directory, target: _write_extension_archive(
+                target,
+                members=(("manifest.json", b"one"), ("MANIFEST.JSON", b"two")),
+            ),
+            "symlink": lambda _directory, target: _write_extension_archive(
+                target,
+                members=((self._symlink_zip_info(), b"manifest.json"),),
+            ),
+        }
+        for name, mutate in cases.items():
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
+                release_dir = Path(directory)
+                _write_extension_assets(release_dir, extension_version)
+                target = (
+                    release_dir / MODULE.extension_asset_names(extension_version)[0]
+                )
+                mutate(release_dir, target)
+                before = _directory_snapshot(release_dir)
+
+                with self.assertRaises(ValueError):
+                    MODULE.verify_extension_asset_set(release_dir, extension_version)
+
+                self.assertEqual(_directory_snapshot(release_dir), before)
+                self.assertFalse((release_dir.parent / "escape.txt").exists())
+
+    @staticmethod
+    def _symlink_zip_info() -> zipfile.ZipInfo:
+        info = zipfile.ZipInfo("linked-manifest.json")
+        info.create_system = 3
+        info.external_attr = (stat.S_IFLNK | 0o777) << 16
+        return info
 
 
 if __name__ == "__main__":
