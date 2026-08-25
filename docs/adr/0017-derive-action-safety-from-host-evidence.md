@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted with a bounded navigation exception
+Accepted with a bounded pointer exception
 
 ## Context
 
@@ -15,8 +15,8 @@ but did not use that evidence for authorization.
 ## Decision
 
 - Treat `intent` as descriptive audit context for semantic and sensitive
-  actions. The only raw-input exception is the closed `navigate` value combined
-  with a foreground, bounded pointer action.
+  actions. The raw-input exception is limited to the closed `navigate` and
+  `ordinary_edit` values combined with a foreground, bounded pointer action.
 - For semantic actions, resolve the exact index/token pair inside the latest
   accessibility state and use its closed `policy_tier` value.
 - Fail closed as `hard_deny` when semantic evidence, element identity, or the
@@ -26,9 +26,9 @@ but did not use that evidence for authorization.
   snapshot before publishing action evidence. If that adapter cannot publish a
   closed tier, keep semantic actions fail-closed; never infer a tier from labels.
 - Derive raw-input policy primarily from the actual action. Pointer movement,
-  scrolling, and the constrained pointer-navigation exception stay within the
-  exact task grant. Text, secrets, keyboard input, and all other click or drag
-  mutations require trusted action-time confirmation
+  scrolling, and constrained pointer-only navigation or ordinary edits stay
+  within the exact task grant. Text, secrets, keyboard input, modified pointer
+  actions, and all other click or drag mutations require trusted action-time confirmation
   because raw coordinates contain no semantic target evidence.
 - Treat both `action_confirmation` and `pre_approval` evidence as requiring the
   existing trusted confirmation boundary. The Host does not invent approval
@@ -37,14 +37,15 @@ but did not use that evidence for authorization.
 ## Consequences
 
 - Changing `intent` cannot weaken semantic, text, secret, keyboard, or otherwise
-  sensitive actions. It selects the task-granted path only for the
-  constrained exact-window navigation shapes above.
+  sensitive actions. It selects the task-granted path only for constrained
+  exact-window pointer shapes declared as navigation or ordinary edits.
 - Semantic destructive and sensitive controls retain their backend-published
   policy after crossing the Host boundary.
 - Ambiguous raw mutations fail closed unless the task explicitly grants and a
   trusted confirmation host approves the exact action/evidence digest.
-- Existing callers that relied on `ordinary_edit` to bypass confirmation must
-  use semantic task-grant evidence or the trusted confirmation contract.
+- `ordinary_edit` is not a blanket bypass: only the bounded pointer shape above
+  is task-granted; every text, keyboard, secret, modified, background, or
+  semantically sensitive action keeps its stronger boundary.
 
 ## Alternatives considered
 

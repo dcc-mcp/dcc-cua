@@ -1742,7 +1742,7 @@ async fn windows_endpoint_sessions_keep_background_uia_and_require_raw_input_con
         competing_activation.value
     );
 
-    windows_activation::assert_raw_click_requires_confirmation(
+    windows_activation::assert_ordinary_raw_click_uses_task_grant(
         &mut clients[active_client],
         first_session_id,
         first_grant_id,

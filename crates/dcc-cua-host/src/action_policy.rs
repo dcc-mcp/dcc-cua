@@ -16,7 +16,7 @@ impl HostAction {
             match self.action.as_str() {
                 "move" | "scroll" => HostActionSafetyTier::TaskGrant,
                 "click" | "double_click" | "right_click" | "toggle" | "drag"
-                    if self.is_task_granted_navigation_input() =>
+                    if self.is_task_granted_pointer_input() =>
                 {
                     HostActionSafetyTier::TaskGrant
                 }
@@ -37,8 +37,8 @@ impl HostAction {
         }
     }
 
-    fn is_task_granted_navigation_input(&self) -> bool {
-        if self.intent != "navigate"
+    fn is_task_granted_pointer_input(&self) -> bool {
+        if !matches!(self.intent.as_str(), "navigate" | "ordinary_edit")
             || self.delivery_mode.as_deref() != Some("foreground")
             || self.text.is_some()
             || self.secret_handle.is_some()
