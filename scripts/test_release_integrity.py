@@ -504,6 +504,26 @@ class ReleaseIntegrityTests(unittest.TestCase):
             "zip-slip": lambda _directory, target: _write_extension_archive(
                 target, members=(("../escape.txt", b"escape"),)
             ),
+            "windows-drive-absolute": lambda _directory, target: (
+                _write_extension_archive(
+                    target, members=(("C:/outside.txt", b"escape"),)
+                )
+            ),
+            "windows-drive-relative": lambda _directory, target: (
+                _write_extension_archive(
+                    target, members=(("c:outside.txt", b"escape"),)
+                )
+            ),
+            "windows-drive-dot-prefix": lambda _directory, target: (
+                _write_extension_archive(
+                    target, members=(("./D:/outside.txt", b"escape"),)
+                )
+            ),
+            "windows-drive-component": lambda _directory, target: (
+                _write_extension_archive(
+                    target, members=(("nested/E:outside.txt", b"escape"),)
+                )
+            ),
             "case-duplicate": lambda _directory, target: _write_extension_archive(
                 target,
                 members=(("manifest.json", b"one"), ("MANIFEST.JSON", b"two")),
