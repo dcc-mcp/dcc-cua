@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.5](https://github.com/dcc-mcp/dcc-cua/compare/v1.5.4...v1.5.5) (2026-08-25)
+
+
+### Bug Fixes
+
+* skip redundant navigation confirmations ([806dd0e](https://github.com/dcc-mcp/dcc-cua/commit/806dd0ef9b427d61193d13d111a42ad8139dfb57))
+
 ## [1.5.4](https://github.com/dcc-mcp/dcc-cua/compare/v1.5.3...v1.5.4) (2026-08-24)
 
 
