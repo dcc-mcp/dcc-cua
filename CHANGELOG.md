@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.6](https://github.com/dcc-mcp/dcc-cua/compare/v1.5.5...v1.5.6) (2026-08-25)
+
+
+### Bug Fixes
+
+* honor task grants for ordinary pointer input ([#207](https://github.com/dcc-mcp/dcc-cua/issues/207)) ([f00820f](https://github.com/dcc-mcp/dcc-cua/commit/f00820fe8cf569dda534fba33a03d08b2d957edf))
+
 ## [1.5.5](https://github.com/dcc-mcp/dcc-cua/compare/v1.5.4...v1.5.5) (2026-08-25)
 
 
