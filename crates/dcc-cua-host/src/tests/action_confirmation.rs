@@ -59,6 +59,68 @@ fn exact_window_ordinary_pointer_actions_use_the_existing_task_grant(#[case] act
 }
 
 #[rstest]
+fn exact_window_ordinary_keyboard_actions_use_the_existing_task_grant() {
+    for (action_name, keys, modifiers) in [
+        ("keypress", vec!["F"], vec![]),
+        ("press", vec!["ENTER"], vec![]),
+        ("press", vec!["DELETE"], vec![]),
+        ("press", vec!["F4"], vec![]),
+        ("press", vec!["SPACE"], vec![]),
+        ("press_key", vec!["LEFT"], vec![]),
+        ("keyboard_shortcut", vec!["S"], vec!["CONTROL"]),
+        ("hotkey", vec!["F4"], vec!["ALT"]),
+    ] {
+        let mut action = raw_input_action(action_name, "ordinary_edit");
+        action.x = None;
+        action.y = None;
+        action.button = None;
+        action.path.clear();
+        action.keys = keys.into_iter().map(str::to_owned).collect();
+        action.modifiers = modifiers.into_iter().map(str::to_owned).collect();
+
+        assert_eq!(
+            action.safety_tier(None),
+            HostActionSafetyTier::TaskGrant,
+            "{action_name} with {:?} must use the exact task grant",
+            action.keys
+        );
+    }
+}
+
+#[rstest]
+fn background_keyboard_input_still_requires_action_confirmation() {
+    let mut action = raw_input_action("hotkey", "ordinary_edit");
+    action.x = None;
+    action.y = None;
+    action.button = None;
+    action.path.clear();
+    action.keys = vec!["F4".into()];
+    action.modifiers = vec!["ALT".into()];
+    action.delivery_mode = Some("background".into());
+
+    assert_eq!(
+        action.safety_tier(None),
+        HostActionSafetyTier::ActionConfirmation
+    );
+}
+
+#[rstest]
+fn keyboard_input_with_secret_still_requires_action_confirmation() {
+    let mut action = raw_input_action("press", "ordinary_edit");
+    action.x = None;
+    action.y = None;
+    action.button = None;
+    action.path.clear();
+    action.keys = vec!["F".into()];
+    action.secret_handle = Some("secret-1".into());
+
+    assert_eq!(
+        action.safety_tier(None),
+        HostActionSafetyTier::ActionConfirmation
+    );
+}
+
+#[rstest]
 fn background_ordinary_pointer_input_still_requires_action_confirmation() {
     let mut action = raw_input_action("drag", "ordinary_edit");
     action.delivery_mode = Some("background".into());
@@ -141,14 +203,15 @@ fn navigation_pointer_input_with_a_secret_still_requires_action_confirmation() {
 #[case("press_key")]
 #[case("keyboard_shortcut")]
 #[case("hotkey")]
-fn navigation_keyboard_input_still_requires_action_confirmation(#[case] action: &str) {
+fn exact_window_navigation_keyboard_input_uses_the_existing_task_grant(#[case] action: &str) {
     let mut action = raw_input_action(action, "navigate");
+    action.x = None;
+    action.y = None;
+    action.button = None;
+    action.path.clear();
     action.keys = vec!["W".into()];
 
-    assert_eq!(
-        action.safety_tier(None),
-        HostActionSafetyTier::ActionConfirmation
-    );
+    assert_eq!(action.safety_tier(None), HostActionSafetyTier::TaskGrant);
 }
 
 #[rstest]
