@@ -37,6 +37,7 @@ EXPECTED_BUILD_ARTIFACTS = (
 _SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 _DIGEST_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _VERSION_PATTERN = re.compile(r"^\d+\.\d+\.\d+$")
+_WINDOWS_DRIVE_PATH_PATTERN = re.compile(r"^[A-Za-z]:")
 _SIGNING_FACT = {"status": "not_performed", "verification": "sha256_only"}
 _RELEASE_COMPONENTS = (
     (".", "v"),
@@ -285,6 +286,10 @@ def _validated_zip_members(
         relative = PurePosixPath(raw_name)
         if (
             not raw_name
+            or any(
+                _WINDOWS_DRIVE_PATH_PATTERN.match(part) is not None
+                for part in relative.parts
+            )
             or relative.is_absolute()
             or any(part in ("", ".", "..") for part in relative.parts)
         ):

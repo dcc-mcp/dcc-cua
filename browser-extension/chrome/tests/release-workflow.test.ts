@@ -346,6 +346,17 @@ function mutateWorkflow(
   return stringify(workflow, { lineWidth: 0 });
 }
 
+function replaceRequired(
+  source: string,
+  search: string | RegExp,
+  replacement: string,
+  description: string,
+): string {
+  const mutated = source.replace(search, replacement);
+  assert.notEqual(mutated, source, `${description} must change its fixture`);
+  return mutated;
+}
+
 function steps(job: Job): Step[] {
   assert.ok(Array.isArray(job.steps), "job must define a steps list");
   return job.steps;
@@ -745,38 +756,75 @@ test("release workflow is immutable, least-privilege, and source-bound", () => {
   validateReleaseWorkflow(readFileSync(WORKFLOW_URL, "utf8"));
 });
 
-test("parsed contract rejects duplicate, moved, and textual-decoy mutations", () => {
-  const source = readFileSync(WORKFLOW_URL, "utf8");
+function assertAdversarialMutations(source: string): void {
   validateReleaseWorkflow(source);
+  const lineEnding = source.includes("\r\n") ? "\r\n" : "\n";
 
-  const duplicate = source.replace(
-    "  attach-assets:\n",
-    "  attach-assets:\n  attach-assets:\n",
+  const duplicate = replaceRequired(
+    source,
+    `  attach-assets:${lineEnding}`,
+    `  attach-assets:${lineEnding}  attach-assets:${lineEnding}`,
+    "duplicate job",
   );
   assert.throws(() => validateReleaseWorkflow(duplicate));
 
-  const moved = source.replace(
-    "  consolidate-native:\n",
-    "  consolidate-native-decoy:\n",
+  const moved = replaceRequired(
+    source,
+    `  consolidate-native:${lineEnding}`,
+    `  consolidate-native-decoy:${lineEnding}`,
+    "moved job",
   );
   assert.throws(() => validateReleaseWorkflow(moved));
 
   const exactId =
     "artifact-ids: ${{ needs.consolidate-native.outputs.artifact_id }}";
-  const decoy = `${source.replace(exactId, "name: dcc-cua-native-release")}\n# ${exactId}\n`;
+  const decoy = `${replaceRequired(
+    source,
+    exactId,
+    "name: dcc-cua-native-release",
+    "artifact ID decoy",
+  )}${lineEnding}# ${exactId}${lineEnding}`;
   assert.throws(() => validateReleaseWorkflow(decoy));
 
-  const mergeLine = "          merge-multiple: true\n";
-  assert.throws(() => validateReleaseWorkflow(source.replace(mergeLine, "")));
+  const mergeLine = `          merge-multiple: true${lineEnding}`;
   assert.throws(() =>
-    validateReleaseWorkflow(source.replace(mergeLine, "          merge-multiple: false\n")),
+    validateReleaseWorkflow(
+      replaceRequired(source, mergeLine, "", "missing merge-multiple"),
+    ),
   );
   assert.throws(() =>
-    validateReleaseWorkflow(source.replace(mergeLine, '          merge-multiple: "true"\n')),
+    validateReleaseWorkflow(
+      replaceRequired(
+        source,
+        mergeLine,
+        `          merge-multiple: false${lineEnding}`,
+        "false merge-multiple",
+      ),
+    ),
   );
-  const wrongJob = source
-    .replace(mergeLine, "")
-    .replace("          fetch-tags: true\n", `          fetch-tags: true\n${mergeLine}`);
+  assert.throws(() =>
+    validateReleaseWorkflow(
+      replaceRequired(
+        source,
+        mergeLine,
+        `          merge-multiple: "true"${lineEnding}`,
+        "string merge-multiple",
+      ),
+    ),
+  );
+  const withoutMerge = replaceRequired(
+    source,
+    mergeLine,
+    "",
+    "wrong-job merge-multiple removal",
+  );
+  const checkoutFetchTags = `          fetch-tags: true${lineEnding}`;
+  const wrongJob = replaceRequired(
+    withoutMerge,
+    checkoutFetchTags,
+    `${checkoutFetchTags}${mergeLine}`,
+    "wrong-job merge-multiple insertion",
+  );
   assert.throws(() => validateReleaseWorkflow(wrongJob));
 
   const duplicateStep = mutateWorkflow(source, (workflow) => {
@@ -878,11 +926,21 @@ test("parsed contract rejects duplicate, moved, and textual-decoy mutations", ()
         requiredJob(workflow.jobs ?? {}, "build"),
         "Verify native release source binding",
       );
-      sourceStep.run = (sourceStep.run ?? "").replace(
+      sourceStep.run = replaceRequired(
+        sourceStep.run ?? "",
         "python -B scripts/release_integrity.py verify-source \\",
         replacement,
+        "source checker decoy",
       );
     });
     assert.throws(() => validateReleaseWorkflow(fakeSourceChecker));
+  }
+}
+
+test("parsed contract rejects adversarial mutations with LF and CRLF", () => {
+  const canonical = readFileSync(WORKFLOW_URL, "utf8");
+  for (const lineEnding of ["\n", "\r\n"]) {
+    const source = canonical.replace(/\r?\n/g, lineEnding);
+    assertAdversarialMutations(source);
   }
 });
