@@ -70,13 +70,63 @@ impl HostAction {
             || self.x.is_some()
             || self.y.is_some()
             || self.button.is_some()
+            || self.scroll_x.is_some()
+            || self.scroll_y.is_some()
+            || self.scroll_by.is_some()
             || !self.path.is_empty()
             || self.keys.is_empty()
+            || !self.modifiers.is_empty()
+            || self.delay_ms.is_some()
+            || self.type_chars_only
+            || self.checked.is_some()
+            || self.steps.is_some()
         {
             return false;
         }
-        true
+        if let Some(duration_ms) = self.duration_ms {
+            return (1..=10_000).contains(&duration_ms)
+                && matches!(self.action.as_str(), "keypress" | "press" | "press_key")
+                && self.keys.len() <= 2
+                && self.keys.iter().all(|key| is_safe_movement_key(key))
+                && self.keys.iter().enumerate().all(|(index, key)| {
+                    self.keys[..index]
+                        .iter()
+                        .all(|previous| !previous.trim().eq_ignore_ascii_case(key.trim()))
+                });
+        }
+        self.keys.len() == 1 && is_safe_unmodified_key(&self.keys[0])
     }
+}
+
+fn is_safe_unmodified_key(key: &str) -> bool {
+    let normalized = key.trim().to_ascii_uppercase();
+    (normalized.len() == 1 && normalized.as_bytes()[0].is_ascii_alphanumeric())
+        || matches!(
+            normalized.as_str(),
+            "ENTER"
+                | "RETURN"
+                | "TAB"
+                | "ESCAPE"
+                | "ESC"
+                | "SPACE"
+                | "UP"
+                | "DOWN"
+                | "LEFT"
+                | "RIGHT"
+                | "HOME"
+                | "END"
+                | "PAGEUP"
+                | "PGUP"
+                | "PAGEDOWN"
+                | "PGDN"
+        )
+}
+
+fn is_safe_movement_key(key: &str) -> bool {
+    matches!(
+        key.trim().to_ascii_uppercase().as_str(),
+        "W" | "A" | "S" | "D" | "UP" | "DOWN" | "LEFT" | "RIGHT"
+    )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
