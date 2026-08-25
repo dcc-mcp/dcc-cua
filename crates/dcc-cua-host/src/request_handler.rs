@@ -1705,6 +1705,7 @@ async fn handle_request_inner(
                     host.latest_accessibility_root = Some(refreshed_root);
                 }
             }
+            require_keyboard_raw_input_grant(&action, host.allow_raw_input)?;
             if let Some(handle) = action.secret_handle.clone() {
                 let secret = require_secret_vault(security_services)?
                     .resolve(&handle)
@@ -1713,7 +1714,7 @@ async fn handle_request_inner(
                 action.text = Some(secret.expose().to_owned());
                 action.secret_handle = None;
             }
-            let raw_input = action.input_kind == "raw_input";
+            let raw_input = action.input_kind == "raw_input" || action.uses_physical_keyboard();
             let mut action = action.into_computer_use(observation_id)?;
             let input_turn = acquire_raw_input_turn(raw_input).await;
             let result = host.session.perform_action(&action).await;

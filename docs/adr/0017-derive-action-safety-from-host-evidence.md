@@ -34,6 +34,11 @@ but did not use that evidence for authorization.
   secrets, modified pointer actions, and all other click or drag mutations
   require trusted action-time confirmation because raw input contains no
   semantic target evidence.
+- Classify any keyboard action alias, key list, or modifier list before
+  consulting caller-supplied `input_kind` or semantic element policy. Such a
+  shape cannot be downgraded by relabeling it as semantic, still requires the
+  raw-input grant before dispatch, and leaves the safe-key envelope when it
+  carries a backend selector or another non-keyboard routing field.
 - Treat both `action_confirmation` and `pre_approval` evidence as requiring the
   existing trusted confirmation boundary. The Host does not invent approval
   from an unverified client assertion.
@@ -46,7 +51,8 @@ but did not use that evidence for authorization.
   pointer shapes and the closed safe-key envelope declared as navigation or
   ordinary edits.
 - Semantic destructive and sensitive controls retain their backend-published
-  policy after crossing the Host boundary.
+  policy after crossing the Host boundary only when the action has no physical
+  keyboard shape.
 - Ambiguous raw mutations fail closed unless the task explicitly grants and a
   trusted confirmation host approves the exact action/evidence digest.
 - `ordinary_edit` is not a blanket bypass: only the bounded pointer and safe-key

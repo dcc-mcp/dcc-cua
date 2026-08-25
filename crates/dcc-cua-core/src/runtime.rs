@@ -468,6 +468,21 @@ impl ComputerUseDriver {
             .map_err(|error| map_driver_error("create authorized CUA runtime", error))
     }
 
+    /// Build a test-only driver over a synthetic authenticated transport.
+    ///
+    /// This constructor is feature-gated so downstream boundary tests can
+    /// prove that refused actions never reach the driver without touching a
+    /// real desktop, process, or window.
+    #[cfg(feature = "test-support")]
+    #[doc(hidden)]
+    pub fn from_test_remote_channel(
+        channel: Arc<dyn cua_driver_sdk::remote::DriverEnvelopeChannel>,
+    ) -> ComputerUseResult<Self> {
+        CuaDriver::connect_remote(channel)
+            .map(|driver| Self::from_driver((driver, false)))
+            .map_err(|error| map_driver_error("create synthetic CUA test runtime", error))
+    }
+
     fn from_driver((driver, upstream_cursor_renderer_enabled): (Arc<CuaDriver>, bool)) -> Self {
         Self {
             driver,
@@ -1327,6 +1342,15 @@ pub struct ComputerUseSession {
 }
 
 impl ComputerUseSession {
+    /// Seed immutable synthetic observation evidence for downstream boundary
+    /// tests. The session remains inactive, so a policy regression still
+    /// cannot send input to a real desktop.
+    #[cfg(feature = "test-support")]
+    #[doc(hidden)]
+    pub fn seed_test_observation(&mut self, observation: ComputerUseObservation) {
+        self.observation = Some(observation);
+    }
+
     async fn finish_started_session(
         &mut self,
         target: WindowTarget,

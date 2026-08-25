@@ -80,6 +80,19 @@ pub(crate) fn denied(code: HostProtocolErrorCode, capability: &'static str) -> H
     HostError::coded_protocol(code, format!("{capability} is not granted"))
 }
 
+pub(crate) fn require_keyboard_raw_input_grant(
+    action: &HostAction,
+    allow_raw_input: bool,
+) -> Result<(), HostError> {
+    if action.uses_physical_keyboard() && !allow_raw_input {
+        return Err(denied(
+            HostProtocolErrorCode::RawInputNotGranted,
+            "raw input",
+        ));
+    }
+    Ok(())
+}
+
 pub(crate) fn finish_window_mutation_attempt<T, E>(
     result: Result<T, E>,
     invalidate: impl FnOnce(),

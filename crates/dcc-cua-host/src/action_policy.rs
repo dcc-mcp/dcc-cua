@@ -4,7 +4,13 @@ use super::HostAction;
 
 impl HostAction {
     pub(super) fn safety_tier(&self, accessibility_root: Option<&Value>) -> HostActionSafetyTier {
-        let base_tier = if self.input_kind == "semantic" {
+        let base_tier = if self.uses_physical_keyboard() {
+            if self.input_kind == "raw_input" && self.is_task_granted_keyboard_input() {
+                HostActionSafetyTier::TaskGrant
+            } else {
+                HostActionSafetyTier::ActionConfirmation
+            }
+        } else if self.input_kind == "semantic" {
             accessibility_root
                 .and_then(|root| self.semantic_element(root))
                 .and_then(|element| element["policy_tier"].as_str())
@@ -20,14 +26,8 @@ impl HostAction {
                 {
                     HostActionSafetyTier::TaskGrant
                 }
-                "keypress" | "press" | "press_key" | "keyboard_shortcut" | "hotkey"
-                    if self.is_task_granted_keyboard_input() =>
-                {
-                    HostActionSafetyTier::TaskGrant
-                }
                 "click" | "double_click" | "right_click" | "toggle" | "drag" | "type"
-                | "type_chars" | "set_text" | "set_value" | "set_checked" | "keypress"
-                | "press" | "press_key" | "keyboard_shortcut" | "hotkey" => {
+                | "type_chars" | "set_text" | "set_value" | "set_checked" => {
                     HostActionSafetyTier::ActionConfirmation
                 }
                 _ => HostActionSafetyTier::HardDeny,
@@ -40,6 +40,14 @@ impl HostAction {
         } else {
             base_tier
         }
+    }
+
+    pub(super) fn uses_physical_keyboard(&self) -> bool {
+        matches!(
+            self.action.as_str(),
+            "keypress" | "press" | "press_key" | "keyboard_shortcut" | "hotkey"
+        ) || !self.keys.is_empty()
+            || !self.modifiers.is_empty()
     }
 
     fn is_task_granted_pointer_input(&self) -> bool {
@@ -65,6 +73,7 @@ impl HostAction {
             || self.delivery_mode.as_deref() != Some("foreground")
             || self.text.is_some()
             || self.secret_handle.is_some()
+            || self.input_backend_id.is_some()
             || self.element_index.is_some()
             || self.element_token.is_some()
             || self.x.is_some()
