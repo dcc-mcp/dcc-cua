@@ -686,7 +686,7 @@ dcc-cua browser-extension plan --browser chrome --extension-id PUBLISHED_ID --cd
 dcc-cua browser-extension install-native-host --browser chrome --extension-id PUBLISHED_ID
 ```
 
-`install-native-host` registers the current signed `dcc-cua` binary as
+`install-native-host` registers the current checksum-verified `dcc-cua` binary as
 `com.dcc_mcp.dcc_cua` for the exact published extension identity. It does not
 silently sideload an extension. Ordinary users install the signed store package
 with browser/user authorization, then click the extension action in the exact
@@ -1164,9 +1164,11 @@ fixture (Calculator as a fresh instance on macOS), promote the launch into the
 same private runtime session, record a real mutation to `action.json`, stop the
 recording, terminate only that proven PID, and verify its windows disappear.
 The release workflow packages one `dcc-cua` executable, assets, Skills, and
-both MIT license notices, then attaches the platform archives to the GitHub
-release. CI exercises that self-contained SDK runtime and Host IPC on every
-platform before GUI testing.
+both MIT license notices. A newly created tag, its peeled commit, the checked-out
+HEAD, and the GitHub Release target must resolve to the same commit. Each native
+target is built once; a single workflow artifact then binds the complete asset
+set to one artifact ID and content digest before create-only GitHub Release
+attachment. Existing tags, releases, or assets are never rebuild targets.
 
 The native release contract contains one archive, SHA-256 sidecar, and install
 manifest for each supported Rust target:
@@ -1179,7 +1181,10 @@ manifest for each supported Rust target:
 | macOS Intel | `x86_64-apple-darwin` | `macos-26-intel` |
 
 The upload job fails closed unless all four target triples have matching
-archives, checksums, and manifests. Intel macOS remains a public support target
+archives, checksums, manifests, and aggregate provenance. Native executables are
+not currently platform-signed: the published verification contract is SHA-256
+checksums and recorded `not_performed` signing facts, not a code-signing claim.
+Intel macOS remains a public support target
 while the official `macos-26-intel` runner is available. Both macOS release
 targets select Xcode 26.6 and fail closed unless the runner architecture and
 macOS 26 SDK match; the runner and release contract must change together if
@@ -1195,6 +1200,8 @@ The workflow uses the official `cargo-workspace` release-please plugin so all
 workspace crates and `Cargo.lock` stay aligned. It does not publish crates;
 `publish = false` remains intentional.
 
-The CUA SDK revision is pinned in `Cargo.toml` and `Cargo.lock`. Native desktop
-permissions and an interactive session are still required for real capture and
-input on Windows, macOS, and Linux.
+The CUA SDK revision is pinned in `Cargo.toml` and `Cargo.lock`. Release
+integrity checks do not operate a user's desktop or prove real-user raw-input
+behavior. Native desktop permissions, an interactive session, and separate
+runtime acceptance are still required for real capture and input on Windows,
+macOS, and Linux.
