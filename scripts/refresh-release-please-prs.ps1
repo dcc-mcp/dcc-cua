@@ -33,6 +33,14 @@ $pullRequests = gh pr list --repo $Repository --state open --json number,headRef
     ConvertFrom-Json
 if ($LASTEXITCODE -ne 0) { throw "release PR query failed with code $LASTEXITCODE" }
 
+$baseBranch = 'main'
+$baseRef = "refs/remotes/origin/$baseBranch"
+$expectedBaseCommit = (git rev-parse --verify 'HEAD^{commit}').Trim()
+if ($LASTEXITCODE -ne 0) { throw "current release refresh base resolution failed with code $LASTEXITCODE" }
+if ($env:GITHUB_SHA -and $env:GITHUB_SHA -ne $expectedBaseCommit) {
+    throw "checkout HEAD $expectedBaseCommit does not match workflow base $env:GITHUB_SHA"
+}
+
 git config user.name 'github-actions[bot]'
 git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
 
@@ -46,13 +54,21 @@ foreach ($component in $components) {
         continue
     }
 
+    git fetch --no-tags --depth=1 origin "+refs/heads/${baseBranch}:${baseRef}"
+    if ($LASTEXITCODE -ne 0) { throw "$baseBranch fetch failed with code $LASTEXITCODE" }
+    $baseCommit = (git rev-parse --verify "${baseRef}^{commit}").Trim()
+    if ($LASTEXITCODE -ne 0) { throw "$baseBranch resolution failed with code $LASTEXITCODE" }
+    if ($baseCommit -ne $expectedBaseCommit) {
+        throw "fetched $baseBranch commit $baseCommit does not match expected base $expectedBaseCommit"
+    }
+
     $releaseRef = "refs/remotes/origin/$branch"
     git fetch origin "+refs/heads/${branch}:${releaseRef}"
     if ($LASTEXITCODE -ne 0) { throw "$branch fetch failed with code $LASTEXITCODE" }
     $releaseHead = (git rev-parse $releaseRef).Trim()
     if ($LASTEXITCODE -ne 0) { throw "$branch resolution failed with code $LASTEXITCODE" }
 
-    git checkout -B $branch "origin/main"
+    git checkout -B $branch $baseCommit
     if ($LASTEXITCODE -ne 0) { throw "$branch reset failed with code $LASTEXITCODE" }
 
     $releaseManifestJson = (& git show "${releaseRef}:.release-please-manifest.json") -join "`n"

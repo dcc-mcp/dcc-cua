@@ -57,6 +57,7 @@ jobs:
       - run: python -B -m unittest scripts.test_verify_release_assets
       - run: python -B -m unittest scripts.test_release_integrity
       - run: python -B -m unittest scripts.test_release_workflow
+      - run: python -B -m unittest scripts.test_refresh_release_please_prs
       - run: |
           cargo hakari generate --diff
           cargo hakari manage-deps --dry-run
