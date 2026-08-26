@@ -16,10 +16,13 @@ EXTENSION_BRANCH = (
     "release-please--branches--main--components--dcc-cua-browser-extension"
 )
 ANSI_ESCAPE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+POWERSHELL_CONTINUATION_MARKER = re.compile(r"(?m)^[ \t]*\|(?=[ \t])")
 
 
 def _normalize_diagnostic(value: str) -> str:
-    return " ".join(ANSI_ESCAPE.sub("", value).split())
+    without_ansi = ANSI_ESCAPE.sub("", value)
+    without_continuation_markers = POWERSHELL_CONTINUATION_MARKER.sub("", without_ansi)
+    return " ".join(without_continuation_markers.split())
 
 
 def run(
@@ -55,6 +58,7 @@ class RefreshReleasePleasePrsTests(unittest.TestCase):
         self.fake_bin = self.root / "fake-bin"
         self.fake_bin.mkdir()
         self.gh_log = self.root / "gh.log"
+        self.git_trace = self.root / "git-trace2.json"
         self._write_fake_gh()
         self.base_commit, self.release_head = self._create_origin()
 
@@ -179,6 +183,7 @@ raise SystemExit(64)
         environment["FAKE_GH_LOG"] = str(self.gh_log)
         environment["FAKE_GH_PULL_REQUESTS"] = json.dumps(pull_requests)
         environment["GITHUB_SHA"] = self.base_commit
+        environment["GIT_TRACE2_EVENT"] = str(self.git_trace)
         return environment
 
     def _run_refresh(
@@ -207,6 +212,13 @@ raise SystemExit(64)
         return self._git(
             self.root, "--git-dir", str(self.origin), "rev-parse", EXTENSION_BRANCH
         ).stdout.strip()
+
+    def _traced_git_commands(self) -> list[list[str]]:
+        return [
+            event["argv"]
+            for line in self.git_trace.read_text(encoding="utf-8").splitlines()
+            if (event := json.loads(line)).get("event") == "start"
+        ]
 
     def test_shallow_existing_release_branch_fetches_and_binds_exact_main(self) -> None:
         self._shallow_detached_checkout(self.base_commit)
@@ -263,8 +275,8 @@ raise SystemExit(64)
         self,
     ) -> None:
         wrapped = (
-            f"fetched main commit {self.release_head} does not\r\n"
-            f"\x1b[31;1mmatch expected base {self.base_commit}\x1b[0m"
+            f"\x1b[31;1mfetched main commit {self.release_head}\x1b[0m does not\r\n"
+            f"\x1b[31;1m|\x1b[0m match expected base {self.base_commit}"
         )
 
         self.assertEqual(
@@ -274,6 +286,26 @@ raise SystemExit(64)
                 f"match expected base {self.base_commit}"
             ),
         )
+
+        interposed = (
+            f"fetched main commit {self.release_head} does not\r\n"
+            "unexpected diagnostic text\r\n"
+            f"| match expected base {self.base_commit}"
+        )
+        self.assertEqual(
+            _normalize_diagnostic(interposed),
+            (
+                f"fetched main commit {self.release_head} does not "
+                "unexpected diagnostic text "
+                f"match expected base {self.base_commit}"
+            ),
+        )
+
+        inline_pipe = (
+            f"fetched main commit {self.release_head} does not | "
+            f"match expected base {self.base_commit}"
+        )
+        self.assertEqual(_normalize_diagnostic(inline_pipe), inline_pipe)
 
     def test_mismatched_fetched_main_fails_closed_before_release_mutation(self) -> None:
         self._shallow_detached_checkout(self.base_commit)
@@ -287,6 +319,19 @@ raise SystemExit(64)
         self.assertIn(advanced_main, combined)
         self.assertIn("does not match expected base", combined)
         self.assertEqual(self._remote_release_head(), self.release_head)
+        commands = self._traced_git_commands()
+        release_fetches = [
+            command
+            for command in commands
+            if len(command) > 1
+            and command[1] == "fetch"
+            and any(EXTENSION_BRANCH in argument for argument in command[2:])
+        ]
+        pushes = [
+            command for command in commands if len(command) > 1 and command[1] == "push"
+        ]
+        self.assertEqual(release_fetches, [])
+        self.assertEqual(pushes, [])
 
     def test_missing_remote_main_fails_closed_before_release_mutation(self) -> None:
         self._shallow_detached_checkout(self.base_commit)
