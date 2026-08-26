@@ -251,6 +251,35 @@ raise SystemExit(64)
             refreshed_manifest,
             {".": "1.5.6", "browser-extension/chrome": "0.2.1"},
         )
+        self.assertEqual(
+            [
+                json.loads(line)
+                for line in self.gh_log.read_text(encoding="utf-8").splitlines()
+            ],
+            [
+                [
+                    "pr",
+                    "list",
+                    "--repo",
+                    "dcc-mcp/dcc-cua",
+                    "--state",
+                    "open",
+                    "--json",
+                    "number,headRefName",
+                    "--limit",
+                    "20",
+                ],
+                [
+                    "workflow",
+                    "run",
+                    "ci-checks.yml",
+                    "--repo",
+                    "dcc-mcp/dcc-cua",
+                    "--ref",
+                    EXTENSION_BRANCH,
+                ],
+            ],
+        )
 
     def test_no_release_pr_is_a_noop_without_fetch_or_push(self) -> None:
         self._shallow_detached_checkout(self.base_commit)

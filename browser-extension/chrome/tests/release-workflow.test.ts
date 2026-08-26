@@ -416,7 +416,11 @@ function validateReleaseWorkflow(source: string): void {
 
   const expectedPermissions: Record<string, Record<string, string>> = {
     validate: { contents: "read" },
-    "release-please": { contents: "write", "pull-requests": "write" },
+    "release-please": {
+      actions: "write",
+      contents: "write",
+      "pull-requests": "write",
+    },
     build: { contents: "read" },
     "consolidate-native": { actions: "read", contents: "read" },
     "attach-assets": { actions: "read", contents: "write" },
@@ -759,6 +763,37 @@ test("release workflow is immutable, least-privilege, and source-bound", () => {
 function assertAdversarialMutations(source: string): void {
   validateReleaseWorkflow(source);
   const lineEnding = source.includes("\r\n") ? "\r\n" : "\n";
+
+  const missingDispatchPermission = mutateWorkflow(source, (workflow) => {
+    delete requiredJob(workflow.jobs ?? {}, "release-please").permissions?.actions;
+  });
+  assert.throws(() => validateReleaseWorkflow(missingDispatchPermission));
+
+  const readOnlyDispatchPermission = mutateWorkflow(source, (workflow) => {
+    requiredJob(workflow.jobs ?? {}, "release-please").permissions!.actions = "read";
+  });
+  assert.throws(() => validateReleaseWorkflow(readOnlyDispatchPermission));
+
+  const downgradedReleasePermission = mutateWorkflow(source, (workflow) => {
+    requiredJob(workflow.jobs ?? {}, "release-please").permissions!["pull-requests"] =
+      "read";
+  });
+  assert.throws(() => validateReleaseWorkflow(downgradedReleasePermission));
+
+  const dispatchPermissionOnWrongJob = mutateWorkflow(source, (workflow) => {
+    const jobs = workflow.jobs ?? {};
+    delete requiredJob(jobs, "release-please").permissions?.actions;
+    requiredJob(jobs, "validate").permissions!.actions = "write";
+  });
+  assert.throws(() => validateReleaseWorkflow(dispatchPermissionOnWrongJob));
+
+  const dispatchPermissionCommentDecoy = replaceRequired(
+    source,
+    `      actions: write${lineEnding}`,
+    `      # actions: write${lineEnding}`,
+    "comment-only actions write decoy",
+  );
+  assert.throws(() => validateReleaseWorkflow(dispatchPermissionCommentDecoy));
 
   const duplicate = replaceRequired(
     source,
