@@ -148,6 +148,15 @@ class ReleaseWorkflowTests(unittest.TestCase):
         )
         self.assertIn("python -B -m unittest scripts.test_release_integrity", workflow)
 
+    def test_release_refresh_regressions_run_in_policy_and_release_validation(self):
+        ci = CI_WORKFLOW.read_text(encoding="utf-8")
+        release = WORKFLOW.read_text(encoding="utf-8")
+
+        self.assertIn(
+            "python -B -m unittest scripts.test_refresh_release_please_prs", ci
+        )
+        self.assertIn("scripts.test_refresh_release_please_prs", release)
+
     def test_public_docs_list_every_native_release_target(self):
         english = README.read_text(encoding="utf-8")
         chinese = README_ZH.read_text(encoding="utf-8")
@@ -269,7 +278,15 @@ class ReleaseWorkflowTests(unittest.TestCase):
             "release-please--branches--main--components--dcc-cua-browser-extension'",
             script,
         )
-        self.assertIn('git checkout -B $branch "origin/main"', script)
+        self.assertIn(
+            "$expectedBaseCommit = (git rev-parse --verify 'HEAD^{commit}')", script
+        )
+        self.assertIn(
+            'git fetch --no-tags --depth=1 origin "+refs/heads/${baseBranch}:${baseRef}"',
+            script,
+        )
+        self.assertIn("$baseCommit -ne $expectedBaseCommit", script)
+        self.assertIn("git checkout -B $branch $baseCommit", script)
         self.assertIn("ManifestKey = '.'", script)
         self.assertIn("ManifestKey = 'browser-extension/chrome'", script)
         self.assertIn("$baseProperty.Value = $componentVersion", script)
@@ -331,7 +348,11 @@ class ReleaseWorkflowTests(unittest.TestCase):
         script = REFRESH_SCRIPT.read_text(encoding="utf-8")
 
         self.assertNotIn("git merge --no-edit origin/main", script)
-        reset = script.index('git checkout -B $branch "origin/main"')
+        base_fetch = script.index(
+            'git fetch --no-tags --depth=1 origin "+refs/heads/${baseBranch}:${baseRef}"'
+        )
+        base_validation = script.index("$baseCommit -ne $expectedBaseCommit")
+        reset = script.index("git checkout -B $branch $baseCommit")
         merge_manifest = script.index("$baseProperty.Value = $componentVersion")
         restore = script.index("& git @restoreArguments")
         synchronize = script.index(
@@ -339,6 +360,8 @@ class ReleaseWorkflowTests(unittest.TestCase):
         )
         guarded_push = script.index('git push "--force-with-lease=$lease"')
 
+        self.assertLess(base_fetch, base_validation)
+        self.assertLess(base_validation, reset)
         self.assertLess(reset, restore)
         self.assertLess(reset, merge_manifest)
         self.assertLess(merge_manifest, restore)
