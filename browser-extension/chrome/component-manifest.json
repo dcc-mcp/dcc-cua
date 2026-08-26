@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "name": "dcc-cua-browser-extension",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "distribution": {
     "ordinary_users": [
       "chrome_web_store",
