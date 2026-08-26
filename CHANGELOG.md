@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.5.7](https://github.com/dcc-mcp/dcc-cua/compare/v1.5.6...v1.5.7) (2026-08-26)
+
+
+### Bug Fixes
+
+* bind release refresh to exact main ([e278aa0](https://github.com/dcc-mcp/dcc-cua/commit/e278aa0f12943334e41ad910bd544ddadb366cab))
+* confirm unsafe keyboard chords ([f8e69e4](https://github.com/dcc-mcp/dcc-cua/commit/f8e69e4663b372b1ed1b15748e472a00b1ccc50e))
+* enforce keyboard policy before semantic routing ([e3a4df0](https://github.com/dcc-mcp/dcc-cua/commit/e3a4df04c9a3fe548e7df1cf3a78c34e29aa2204))
+* grant release dispatch permission ([a53cb95](https://github.com/dcc-mcp/dcc-cua/commit/a53cb95dd4af307e3015de6345ee86bceeae48a6))
+* harden release refresh contracts ([63b7ec8](https://github.com/dcc-mcp/dcc-cua/commit/63b7ec802f8c90f3f06074e3f2726bdedad039de))
+* honor task grants for keyboard input ([#209](https://github.com/dcc-mcp/dcc-cua/issues/209)) ([d749c5c](https://github.com/dcc-mcp/dcc-cua/commit/d749c5c98617097dda796a9df33fdacbd5fd12e5))
+* normalize PowerShell release diagnostics ([f4ea5d3](https://github.com/dcc-mcp/dcc-cua/commit/f4ea5d3597ae78c121ced09a02a50e27c71cebb0))
+* reject unsafe release archive paths ([012b616](https://github.com/dcc-mcp/dcc-cua/commit/012b616434f90f0c7be13c41a512e13a520019c7))
+* validate extension assets before publish ([e302d69](https://github.com/dcc-mcp/dcc-cua/commit/e302d69267c53218686a19ccdab1a201339fa3a7))
+* verify immutable release transport ([ebc5d40](https://github.com/dcc-mcp/dcc-cua/commit/ebc5d40539a512d2d9f82767b3b82202698dd66b))
+
 ## [1.5.6](https://github.com/dcc-mcp/dcc-cua/compare/v1.5.5...v1.5.6) (2026-08-25)
 
 
