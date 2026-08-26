@@ -50,7 +50,7 @@ const STEP_ALLOWLIST: Record<string, string[]> = {
     "name:Validate release configuration",
     "uses:dtolnay/rust-toolchain",
     "run:cargo metadata --locked --no-deps --format-version 1",
-    "run:python -B -m unittest scripts.test_release_workflow scripts.test_release_integrity scripts.test_verify_release_assets",
+    "run:python -B -m unittest scripts.test_release_workflow scripts.test_release_integrity scripts.test_verify_release_assets scripts.test_refresh_release_please_prs",
   ],
   "release-please": [
     "uses:actions/checkout",
@@ -249,7 +249,7 @@ const EXTENSION_PUBLISHED_READBACK_STATEMENTS = [
 const RUN_STATEMENT_DIGESTS: Record<string, string> = {
   "validate|Validate release configuration": "8d3f02794bf7a97330d98fa4d70ce5cc7f62e474df31c860bc71c2a29d178cbd",
   "validate|#3": "007b41ff968a7d8b2e96752351831db1ab9ff3248cf5215b5fa2e6b19ed1234e",
-  "validate|#4": "fb14b56785075e6838de31dab4612824ae674ba0eac379a121de88784392065d",
+  "validate|#4": "542f1a9cac47e1095fae9432d01a518cf621da8cb8f8de1fdafa2e3524f91c2c",
   "release-please|Refuse pre-existing release identities": "0ce04695628ad6a72542b32d24e1b715f99c873707d5440660849620cba5b0fa",
   "release-please|Keep the native runtime release Latest": "3a51ac0c7bad4c6a9a83661752cb94a506d49a56350494c3a5a2c76faefecebb",
   "release-please|Refresh independent release PRs from current main": "2be98e30902d17319ab0347ce92c886e80573c2a50ce9d52f1aec56e213f8652",
@@ -775,6 +775,28 @@ function assertAdversarialMutations(source: string): void {
     "moved job",
   );
   assert.throws(() => validateReleaseWorkflow(moved));
+
+  const validateCommand =
+    "python -B -m unittest scripts.test_release_workflow scripts.test_release_integrity scripts.test_verify_release_assets scripts.test_refresh_release_please_prs";
+  const weakenedValidateCommand =
+    "python -B -m unittest scripts.test_release_workflow scripts.test_release_integrity scripts.test_verify_release_assets";
+  assert.throws(() =>
+    validateReleaseWorkflow(
+      replaceRequired(
+        source,
+        validateCommand,
+        weakenedValidateCommand,
+        "missing refresh release contract validation",
+      ),
+    ),
+  );
+  const validateDecoy = replaceRequired(
+    source,
+    validateCommand,
+    `${weakenedValidateCommand}${lineEnding}      # ${validateCommand}`,
+    "comment-only refresh release validation decoy",
+  );
+  assert.throws(() => validateReleaseWorkflow(validateDecoy));
 
   const exactId =
     "artifact-ids: ${{ needs.consolidate-native.outputs.artifact_id }}";
