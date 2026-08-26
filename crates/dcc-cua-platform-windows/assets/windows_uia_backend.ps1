@@ -646,7 +646,11 @@ function Invoke-UiaRequest($requestPayload) {
   }
 }
 
-[Console]::Out.WriteLine('{"type":"ready","protocol_version":1}')
+[Console]::Out.WriteLine((@{
+  type = 'ready'
+  protocol_version = $ProtocolVersion
+  process_id = $PID
+} | ConvertTo-Json -Compress))
 [Console]::Out.Flush()
 while ($true) {
   $rawInput = [Console]::In.ReadLine()
