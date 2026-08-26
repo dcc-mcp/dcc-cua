@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -14,6 +15,11 @@ NATIVE_BRANCH = "release-please--branches--main--components--dcc-cua"
 EXTENSION_BRANCH = (
     "release-please--branches--main--components--dcc-cua-browser-extension"
 )
+ANSI_ESCAPE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+
+
+def _normalize_diagnostic(value: str) -> str:
+    return " ".join(ANSI_ESCAPE.sub("", value).split())
 
 
 def run(
@@ -253,6 +259,22 @@ raise SystemExit(64)
             0,
         )
 
+    def test_mismatch_diagnostic_normalization_ignores_ansi_and_wrapping(
+        self,
+    ) -> None:
+        wrapped = (
+            f"fetched main commit {self.release_head} does not\r\n"
+            f"\x1b[31;1mmatch expected base {self.base_commit}\x1b[0m"
+        )
+
+        self.assertEqual(
+            _normalize_diagnostic(wrapped),
+            (
+                f"fetched main commit {self.release_head} does not "
+                f"match expected base {self.base_commit}"
+            ),
+        )
+
     def test_mismatched_fetched_main_fails_closed_before_release_mutation(self) -> None:
         self._shallow_detached_checkout(self.base_commit)
         advanced_main = self._advance_main()
@@ -260,7 +282,7 @@ raise SystemExit(64)
         result = self._run_refresh(self._release_pull_request())
 
         self.assertNotEqual(result.returncode, 0)
-        combined = result.stdout + result.stderr
+        combined = _normalize_diagnostic(result.stdout + result.stderr)
         self.assertIn(self.base_commit, combined)
         self.assertIn(advanced_main, combined)
         self.assertIn("does not match expected base", combined)
