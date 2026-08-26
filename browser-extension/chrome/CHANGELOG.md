@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.2.1](https://github.com/dcc-mcp/dcc-cua/compare/dcc-cua-browser-extension-v0.2.0...dcc-cua-browser-extension-v0.2.1) (2026-08-26)
+
+
+### Bug Fixes
+
+* grant release dispatch permission ([a53cb95](https://github.com/dcc-mcp/dcc-cua/commit/a53cb95dd4af307e3015de6345ee86bceeae48a6))
+* harden release refresh contracts ([63b7ec8](https://github.com/dcc-mcp/dcc-cua/commit/63b7ec802f8c90f3f06074e3f2726bdedad039de))
+* reject unsafe release archive paths ([012b616](https://github.com/dcc-mcp/dcc-cua/commit/012b616434f90f0c7be13c41a512e13a520019c7))
+* validate extension assets before publish ([e302d69](https://github.com/dcc-mcp/dcc-cua/commit/e302d69267c53218686a19ccdab1a201339fa3a7))
+* verify immutable release transport ([ebc5d40](https://github.com/dcc-mcp/dcc-cua/commit/ebc5d40539a512d2d9f82767b3b82202698dd66b))
+
 ## [0.2.0](https://github.com/dcc-mcp/dcc-cua/compare/dcc-cua-browser-extension-v0.1.0...dcc-cua-browser-extension-v0.2.0) (2026-08-24)
 
 
