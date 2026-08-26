@@ -23,6 +23,7 @@ use crate::visible_capture::obscured_from_covered_samples;
 use crate::windows::{
     REQUEST_TIMEOUT, STARTUP_TIMEOUT, UIA_WORKER_PROTOCOL_VERSION, UiaWorker,
     retry_read_only_after_backend_failure, validate_worker_protocol_message,
+    validate_worker_readiness_message,
 };
 #[cfg(windows)]
 use windows_sys::Win32::{
@@ -445,9 +446,58 @@ fn worker_protocol_rejects_missing_or_mismatched_versions() {
 
 #[cfg(windows)]
 #[rstest]
+fn worker_readiness_is_bound_to_the_spawned_process() {
+    let expected_pid = 42;
+    assert!(
+        validate_worker_readiness_message(
+            &json!({
+                "type": "ready",
+                "protocol_version": UIA_WORKER_PROTOCOL_VERSION,
+                "process_id": expected_pid,
+            }),
+            expected_pid,
+        )
+        .is_ok()
+    );
+    for message in [
+        json!({
+            "type": "ready",
+            "protocol_version": UIA_WORKER_PROTOCOL_VERSION,
+        }),
+        json!({
+            "type": "ready",
+            "protocol_version": UIA_WORKER_PROTOCOL_VERSION,
+            "process_id": expected_pid + 1,
+        }),
+    ] {
+        assert!(validate_worker_readiness_message(&message, expected_pid).is_err());
+    }
+}
+
+#[cfg(windows)]
+#[rstest]
 fn uia_worker_cold_start_has_a_separate_bounded_budget() {
     assert_eq!(REQUEST_TIMEOUT, std::time::Duration::from_secs(15));
     assert_eq!(STARTUP_TIMEOUT, std::time::Duration::from_secs(30));
+}
+
+#[cfg(windows)]
+#[rstest]
+fn powershell_worker_readiness_is_behaviorally_fixture_tested() {
+    let _guard = policy_fixture_test_guard();
+    for attempt in 0..5 {
+        let mut worker = UiaWorker::start()
+            .unwrap_or_else(|error| panic!("start isolated UIA worker attempt {attempt}: {error}"));
+        let response = evaluate_policy_fixture(
+            &mut worker,
+            json!({
+                "operation": "expand_collapse_click_operation",
+                "state": "Collapsed",
+            }),
+        )
+        .unwrap_or_else(|error| panic!("request UIA worker attempt {attempt}: {error}"));
+        assert_eq!(response["result"], "expand");
+    }
 }
 
 #[cfg(windows)]

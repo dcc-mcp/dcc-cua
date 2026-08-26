@@ -11,7 +11,7 @@ use openh264::encoder::{
 };
 use openh264::formats::{BgraSliceU8, YUVBuffer};
 use serde_json::{Value, json};
-use tokio::sync::{mpsc, oneshot, watch};
+use tokio::sync::{Notify, mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 
 #[derive(Debug)]
@@ -404,6 +404,7 @@ pub struct ShowcaseRecorder {
     pause_reason: Arc<Mutex<Option<Value>>>,
     terminal_reason: Arc<Mutex<Option<Value>>>,
     outcome: Arc<Mutex<Option<Value>>>,
+    finalization: Arc<Notify>,
     progress: Arc<Mutex<ShowcaseProgress>>,
 }
 
@@ -428,10 +429,12 @@ impl ShowcaseRecorder {
         let pause_reason = Arc::new(Mutex::new(None));
         let terminal_reason = Arc::new(Mutex::new(None));
         let outcome = Arc::new(Mutex::new(None));
+        let finalization = Arc::new(Notify::new());
         let progress = Arc::new(Mutex::new(ShowcaseProgress::default()));
         let encoder_path = path.clone();
         let encoder_terminal_reason = Arc::clone(&terminal_reason);
         let encoder_outcome = Arc::clone(&outcome);
+        let encoder_finalization = Arc::clone(&finalization);
         let encoder_progress = Arc::clone(&progress);
         let encoder = tokio::task::spawn_blocking(move || {
             let result = encode_frames_with_progress(
@@ -461,6 +464,7 @@ impl ShowcaseRecorder {
                 }),
             };
             *lock_unpoisoned(&encoder_outcome) = Some(state.clone());
+            encoder_finalization.notify_waiters();
             result.map(|_| state)
         });
         let producer_pause_reason = Arc::clone(&pause_reason);
@@ -485,6 +489,7 @@ impl ShowcaseRecorder {
                 pause_reason,
                 terminal_reason,
                 outcome,
+                finalization,
                 progress,
             }),
             Ok(Err(error)) => {
@@ -534,6 +539,34 @@ impl ShowcaseRecorder {
             "paused": paused,
             "pause_reason": pause_reason,
             "terminal_reason": Value::Null,
+        })
+    }
+
+    /// Waits for the encoder to publish its terminal state without consuming the recorder.
+    pub async fn wait_for_finalization(
+        &self,
+        timeout: std::time::Duration,
+    ) -> ShowcaseResult<Value> {
+        let notified = self.finalization.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+        if let Some(outcome) = lock_unpoisoned(&self.outcome).clone() {
+            return Ok(outcome);
+        }
+        tokio::time::timeout(timeout, notified).await.map_err(|_| {
+            ShowcaseError::new(
+                ShowcaseErrorCode::CaptureFailed,
+                format!(
+                    "showcase encoder did not finalize within {} milliseconds",
+                    timeout.as_millis()
+                ),
+            )
+        })?;
+        lock_unpoisoned(&self.outcome).clone().ok_or_else(|| {
+            ShowcaseError::new(
+                ShowcaseErrorCode::CaptureFailed,
+                "showcase encoder signaled finalization without an outcome",
+            )
         })
     }
 

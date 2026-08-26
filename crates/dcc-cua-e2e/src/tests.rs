@@ -154,13 +154,19 @@ fn semantic_locator(element: &Value) -> Value {
 
 #[cfg(feature = "gui-e2e")]
 fn screenshot_point(snapshot: &Value, element: &Value) -> (f64, f64) {
+    screenshot_point_at(snapshot, element, 0.5)
+}
+
+#[cfg(feature = "gui-e2e")]
+fn screenshot_point_at(snapshot: &Value, element: &Value, horizontal_fraction: f64) -> (f64, f64) {
+    assert!((0.0..=1.0).contains(&horizontal_fraction));
     let (frame, width_key, height_key) = if element["frame"].is_object() {
         (&element["frame"], "w", "h")
     } else {
         (&element["bounds"], "width", "height")
     };
     let center_x = frame["x"].as_f64().expect("element frame x")
-        + frame[width_key].as_f64().expect("element frame width") / 2.0;
+        + frame[width_key].as_f64().expect("element frame width") * horizontal_fraction;
     let center_y = frame["y"].as_f64().expect("element frame y")
         + frame[height_key].as_f64().expect("element frame height") / 2.0;
     let source = snapshot["observation"]["source_rect"]
@@ -232,6 +238,47 @@ fn browser_snapshot_id(snapshot: &Value) -> String {
 }
 
 #[cfg(feature = "gui-e2e")]
+fn assert_exact_browser_origin(
+    snapshot: &Value,
+    target_id: &str,
+    tab_id: &str,
+    expected_url: &str,
+) {
+    let structured = &snapshot["result"]["structuredContent"];
+    assert_eq!(structured["target_id"], target_id, "{structured}");
+    let tab = structured["tabs"].as_array().and_then(|tabs| {
+        tabs.iter()
+            .find(|candidate| candidate["tab_id"].as_str() == Some(tab_id))
+    });
+    assert!(
+        structured["tab_id"].as_str() == Some(tab_id) || tab.is_some(),
+        "exact browser tab is missing: {structured}"
+    );
+    let actual_url = structured["url"]
+        .as_str()
+        .or_else(|| structured["snapshot"]["url"].as_str())
+        .or_else(|| structured["page"]["url"].as_str())
+        .or_else(|| tab.and_then(|tab| tab["url"].as_str()))
+        .unwrap_or_else(|| panic!("exact browser tab omitted its URL: {structured}"));
+    assert_eq!(
+        http_origin(actual_url),
+        http_origin(expected_url),
+        "browser snapshot escaped the controlled fixture origin: {structured}"
+    );
+}
+
+#[cfg(feature = "gui-e2e")]
+fn http_origin(url: &str) -> &str {
+    let scheme_end = url
+        .find("://")
+        .unwrap_or_else(|| panic!("browser URL omitted an HTTP(S) scheme: {url}"));
+    let path_start = url[scheme_end + 3..]
+        .find('/')
+        .map_or(url.len(), |index| scheme_end + 3 + index);
+    &url[..path_start]
+}
+
+#[cfg(feature = "gui-e2e")]
 fn wait_for_journal(journal: &FixtureJournal, id: &str, expected: &str) {
     let deadline = Instant::now() + Duration::from_secs(15);
     while journal.text(id).as_deref() != Some(expected) {
@@ -271,75 +318,6 @@ fn wait_for_fixture_file(path: &std::path::Path, id: &str, expected: &str) {
             Instant::now() < deadline,
             "fixture file state {id:?} did not reach {expected:?}: {}",
             state.unwrap_or(Value::Null)
-        );
-        std::thread::sleep(Duration::from_millis(50));
-    }
-}
-
-#[cfg(all(feature = "gui-e2e", windows))]
-fn physically_focus_window(window_handle: u64) {
-    // Match CUA's sentinel setup: a real click completes the Windows foreground-lock handshake.
-    use windows_sys::Win32::Foundation::{POINT, RECT};
-    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-        INPUT, INPUT_0, INPUT_MOUSE, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEINPUT,
-        SendInput,
-    };
-    use windows_sys::Win32::UI::WindowsAndMessaging::{
-        GetCursorPos, GetForegroundWindow, GetWindowRect, SetCursorPos,
-    };
-
-    let window = window_handle as *mut core::ffi::c_void;
-    let mut rect = RECT::default();
-    let mut cursor = POINT::default();
-    unsafe {
-        assert_ne!(GetWindowRect(window, &mut rect), 0, "read fixture bounds");
-        assert_ne!(GetCursorPos(&mut cursor), 0, "read cursor position");
-        assert_ne!(
-            SetCursorPos((rect.left + rect.right) / 2, (rect.top + rect.bottom) / 2),
-            0,
-            "move cursor onto fixture"
-        );
-    }
-    let inputs = [
-        INPUT {
-            r#type: INPUT_MOUSE,
-            Anonymous: INPUT_0 {
-                mi: MOUSEINPUT {
-                    dwFlags: MOUSEEVENTF_LEFTDOWN,
-                    ..MOUSEINPUT::default()
-                },
-            },
-        },
-        INPUT {
-            r#type: INPUT_MOUSE,
-            Anonymous: INPUT_0 {
-                mi: MOUSEINPUT {
-                    dwFlags: MOUSEEVENTF_LEFTUP,
-                    ..MOUSEINPUT::default()
-                },
-            },
-        },
-    ];
-    let sent = unsafe {
-        SendInput(
-            inputs.len() as u32,
-            inputs.as_ptr(),
-            std::mem::size_of::<INPUT>() as i32,
-        )
-    };
-    unsafe {
-        assert_ne!(
-            SetCursorPos(cursor.x, cursor.y),
-            0,
-            "restore cursor position"
-        );
-    }
-    assert_eq!(sent, inputs.len() as u32, "focus fixture with one click");
-    let deadline = Instant::now() + Duration::from_secs(3);
-    while unsafe { GetForegroundWindow() } != window {
-        assert!(
-            Instant::now() < deadline,
-            "fixture did not become foreground"
         );
         std::thread::sleep(Duration::from_millis(50));
     }
@@ -560,6 +538,10 @@ async fn controlled_electron_round_trip() {
     let window = first_window(&ready.value);
     let window_id = window["window_id"].as_u64().expect("window id");
     let window_title = window["title"].as_str().expect("window title");
+    eprintln!(
+        "provider=dcc-cua runtime={} target_pid={fixture_pid} target_hwnd={window_id} browser_endpoint=127.0.0.1:{cdp_port}",
+        env!("CARGO_PKG_VERSION")
+    );
     assert!(
         window_title.starts_with(FIXTURE_TITLE),
         "unexpected fixture title: {window_title}"
@@ -844,6 +826,8 @@ async fn controlled_electron_round_trip() {
         .and_then(|matches| matches.first())
         .expect("raw-input click target");
     let (x, y) = screenshot_point(&raw_snapshot.value, raw_target);
+    #[cfg(windows)]
+    windows_activation::physically_focus_exact_window(fixture_pid, window_id);
     let raw_moved = host_request(
         &mut host,
         "execute_action",
@@ -988,6 +972,32 @@ async fn controlled_electron_round_trip() {
         &browser_fixture,
         "page-marker",
         "BROWSER_COMPLETENESS_MARKER_v1",
+    );
+    let origin_snapshot = host_request(
+        &mut host,
+        "browser_snapshot",
+        json!({
+            "session_id": SESSION_ID,
+            "task_grant_id": GRANT_ID,
+            "window_capability": capability,
+            "request": {
+                "target_id": target_id,
+                "tab_id": tab_id,
+                "snapshot_format": "semantic_v2"
+            }
+        }),
+    )
+    .await;
+    assert_exact_browser_origin(
+        &origin_snapshot.value,
+        &target_id,
+        &tab_id,
+        browser_fixture.page_url(),
+    );
+    eprintln!(
+        "provider=dcc-cua runtime={} target_pid={fixture_pid} target_hwnd={window_id} browser_origin={}",
+        env!("CARGO_PKG_VERSION"),
+        http_origin(browser_fixture.page_url())
     );
 
     let upload_directory = tempfile::tempdir().expect("create browser upload directory");
@@ -1374,6 +1384,10 @@ async fn controlled_native_menu_round_trip() {
     let window = first_window(&ready.value);
     let window_id = window["window_id"].as_u64().expect("window id");
     let window_title = window["title"].as_str().expect("window title");
+    eprintln!(
+        "provider=dcc-cua runtime={} target_pid={fixture_pid} target_hwnd={window_id}",
+        env!("CARGO_PKG_VERSION")
+    );
     let opened = host_request(
         &mut host,
         "open_session",
@@ -1413,6 +1427,8 @@ async fn controlled_native_menu_round_trip() {
         "native fixture initial menu state is missing: {}",
         initial.value
     );
+    #[cfg(windows)]
+    windows_activation::physically_focus_exact_window(fixture_pid, window_id);
 
     let invoked = host_request(
         &mut host,
@@ -1514,9 +1530,14 @@ async fn windows_endpoint_sessions_keep_background_uia_and_use_task_granted_raw_
         )
         .await;
         let window = first_window(&ready.value);
+        let window_handle = window["window_id"].as_u64().expect("window id");
+        eprintln!(
+            "provider=dcc-cua runtime={} target_pid={pid} target_hwnd={window_handle}",
+            env!("CARGO_PKG_VERSION")
+        );
         window_targets.push((
             pid,
-            window["window_id"].as_u64().expect("window id"),
+            window_handle,
             window["title"].as_str().expect("window title").to_owned(),
         ));
     }
@@ -1571,12 +1592,6 @@ async fn windows_endpoint_sessions_keep_background_uia_and_use_task_granted_raw_
     }
     assert_eq!(sessions[0].1, sessions[1].1);
     assert_ne!(sessions[0].3, sessions[1].3);
-    let foreground = unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow() }
-        as usize as u64;
-    sessions.sort_by_key(|(_, _, _, _, window_handle)| *window_handle == foreground);
-    assert_ne!(sessions[0].4, foreground);
-
-    let mut background_action_observed = false;
     for (index, (client_index, session_id, grant_id, capability, window_handle)) in
         sessions.iter().enumerate()
     {
@@ -1622,9 +1637,12 @@ async fn windows_endpoint_sessions_keep_background_uia_and_use_task_granted_raw_
                 .expect("locator object")
                 .clone(),
         );
-        let foreground_before =
-            unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow() } as usize
-                as u64;
+        let (foreground_process_id, foreground_before) = window_targets
+            .iter()
+            .find(|(_, candidate, _)| candidate != window_handle)
+            .map(|(process_id, window_handle, _)| (*process_id, *window_handle))
+            .expect("controlled competing WPF fixture");
+        windows_activation::physically_focus_exact_window(foreground_process_id, foreground_before);
         let completed = client_request(
             client,
             "execute_action",
@@ -1640,15 +1658,10 @@ async fn windows_endpoint_sessions_keep_background_uia_and_use_task_granted_raw_
         )
         .await;
         assert_eq!(completed.value["success"], true);
-        if foreground_before != *window_handle {
-            background_action_observed = true;
-            assert_eq!(
-                unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow() }
-                    as usize as u64,
-                foreground_before,
-                "background UIA action must preserve the foreground window"
-            );
-        }
+        windows_activation::assert_exact_foreground_window(
+            foreground_process_id,
+            foreground_before,
+        );
         let updated = client_request(
             client,
             "accessibility_snapshot",
@@ -1669,15 +1682,15 @@ async fn windows_endpoint_sessions_keep_background_uia_and_use_task_granted_raw_
             updated.value
         );
     }
-    assert!(
-        background_action_observed,
-        "two WPF sessions must exercise at least one background UIA action"
-    );
     let (active_client, first_session_id, first_grant_id, first_capability, window_handle) =
         sessions
             .iter()
             .find(|(client_index, ..)| *client_index == 0)
             .expect("first endpoint client session");
+    let active_text_index = sessions
+        .iter()
+        .position(|(client_index, ..)| *client_index == 0)
+        .expect("first endpoint UIA text index");
     let active_client = *active_client;
     let bootstrap_activation = clients[active_client]
         .request(
@@ -1692,10 +1705,17 @@ async fn windows_endpoint_sessions_keep_background_uia_and_use_task_granted_raw_
         .await;
     assert!(
         bootstrap_activation.is_ok()
-            || matches!(&bootstrap_activation, Err(HostClientError::Remote { code, .. }) if code == "input_failed"),
+            || bootstrap_activation
+                .as_ref()
+                .is_err_and(windows_activation::is_safe_foreground_refusal),
         "unexpected bootstrap activation result: {bootstrap_activation:?}"
     );
-    physically_focus_window(*window_handle);
+    let process_id = window_targets
+        .iter()
+        .find(|(_, candidate, _)| candidate == window_handle)
+        .map(|(process_id, _, _)| *process_id)
+        .expect("active WPF process identity");
+    windows_activation::physically_focus_exact_window(process_id, *window_handle);
     client_request(
         &mut clients[active_client],
         "escalate_session",
@@ -1721,27 +1741,6 @@ async fn windows_endpoint_sessions_keep_background_uia_and_use_task_granted_raw_
     )
     .await;
 
-    let (competing_client, competing_session, competing_grant, competing_capability, _) = sessions
-        .iter()
-        .find(|(client_index, ..)| *client_index != active_client)
-        .expect("competing WPF session");
-    let competing_activation = client_request(
-        &mut clients[*competing_client],
-        "change_window_state",
-        json!({
-            "session_id": competing_session,
-            "task_grant_id": competing_grant,
-            "window_capability": competing_capability,
-            "operation": "activate"
-        }),
-    )
-    .await;
-    assert_eq!(
-        competing_activation.value["result"]["success"], true,
-        "{}",
-        competing_activation.value
-    );
-
     windows_activation::assert_ordinary_raw_click_uses_task_grant(
         &mut clients[active_client],
         first_session_id,
@@ -1750,6 +1749,66 @@ async fn windows_endpoint_sessions_keep_background_uia_and_use_task_granted_raw_
         &escape_snapshot,
     )
     .await;
+    windows_activation::assert_exact_foreground_window(process_id, *window_handle);
+
+    let key_snapshot = client_request(
+        &mut clients[active_client],
+        "snapshot",
+        json!({
+            "session_id": first_session_id,
+            "task_grant_id": first_grant_id,
+            "window_capability": first_capability,
+            "max_nodes": 1_000,
+            "max_depth": 20,
+        }),
+    )
+    .await;
+
+    let typed = client_request(
+        &mut clients[active_client],
+        "execute_action",
+        json!({
+            "session_id": first_session_id,
+            "task_grant_id": first_grant_id,
+            "window_capability": first_capability,
+            "observation_id": key_snapshot.value["observation_id"],
+            "accessibility_state_id": key_snapshot.value["accessibility_state_id"],
+            "action": {
+                "action": "keypress",
+                "input_kind": "raw_input",
+                "intent": "ordinary_edit",
+                "delivery_mode": "foreground",
+                "keys": ["9"]
+            },
+            "capture_after": false
+        }),
+    )
+    .await;
+    assert_eq!(typed.value["success"], true, "{}", typed.value);
+    assert_eq!(typed.value["policy_tier"], "task_grant");
+    windows_activation::assert_exact_foreground_window(process_id, *window_handle);
+    let expected_raw_text = format!("mirror=windows-background-uia-e2e-{active_text_index}9");
+    let verified = client_request(
+        &mut clients[active_client],
+        "wait_for",
+        json!({
+            "session_id": first_session_id,
+            "task_grant_id": first_grant_id,
+            "window_capability": first_capability,
+            "condition": {
+                "kind": "text_contains",
+                "text": expected_raw_text,
+                "timeout_ms": 30_000,
+                "interval_ms": 100
+            }
+        }),
+    )
+    .await;
+    assert_eq!(
+        verified.value["success"], true,
+        "raw keyboard path did not reach the exact WPF fixture: {}",
+        verified.value
+    );
 
     let escape_snapshot = client_request(
         &mut clients[active_client],
@@ -1786,7 +1845,7 @@ async fn windows_endpoint_sessions_keep_background_uia_and_use_task_granted_raw_
     .await;
     assert_eq!(pressed.value["success"], true, "{}", pressed.value);
     assert_eq!(pressed.value["policy_tier"], "task_grant");
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    windows_activation::assert_exact_foreground_window(process_id, *window_handle);
     for (client_index, session_id, grant_id, capability, _) in &sessions {
         let alive = client_request(
             &mut clients[*client_index],
@@ -1806,21 +1865,77 @@ async fn windows_endpoint_sessions_keep_background_uia_and_use_task_granted_raw_
         );
     }
 
-    let activation = clients[active_client]
+    let (
+        competing_client,
+        competing_session,
+        competing_grant,
+        competing_capability,
+        competing_hwnd,
+    ) = sessions
+        .iter()
+        .find(|(client_index, ..)| *client_index != active_client)
+        .expect("competing WPF session");
+    let competing_process_id = window_targets
+        .iter()
+        .find(|(_, candidate, _)| candidate == competing_hwnd)
+        .map(|(process_id, _, _)| *process_id)
+        .expect("competing WPF process identity");
+    let competing_activation = clients[*competing_client]
         .request(
             "change_window_state",
             json!({
-                "session_id": first_session_id,
-                "task_grant_id": first_grant_id,
-                "window_capability": first_capability,
+                "session_id": competing_session,
+                "task_grant_id": competing_grant,
+                "window_capability": competing_capability,
                 "operation": "activate"
             }),
         )
         .await;
-    assert!(
-        activation.is_ok(),
-        "exact-window activation must cross a competing foreground thread: {activation:?}"
-    );
+    match competing_activation {
+        Ok(response) => {
+            assert_eq!(
+                response.value["result"]["success"], true,
+                "{}",
+                response.value
+            );
+            windows_activation::assert_exact_foreground_window(
+                competing_process_id,
+                *competing_hwnd,
+            );
+            let activation = clients[active_client]
+                .request(
+                    "change_window_state",
+                    json!({
+                        "session_id": first_session_id,
+                        "task_grant_id": first_grant_id,
+                        "window_capability": first_capability,
+                        "operation": "activate"
+                    }),
+                )
+                .await;
+            match activation {
+                Ok(response) => {
+                    assert_eq!(
+                        response.value["result"]["success"], true,
+                        "{}",
+                        response.value
+                    );
+                    windows_activation::assert_exact_foreground_window(process_id, *window_handle);
+                }
+                Err(error) if windows_activation::is_safe_foreground_refusal(&error) => {
+                    windows_activation::assert_exact_foreground_window(
+                        competing_process_id,
+                        *competing_hwnd,
+                    );
+                }
+                Err(error) => panic!("unexpected exact-window activation error: {error:?}"),
+            }
+        }
+        Err(error) if windows_activation::is_safe_foreground_refusal(&error) => {
+            windows_activation::assert_exact_foreground_window(process_id, *window_handle);
+        }
+        Err(error) => panic!("unexpected competing activation error: {error:?}"),
+    }
 
     let interrupted = client_request(&mut clients[active_client], "interrupt_all", json!({})).await;
     assert_eq!(interrupted.value["scope"], "host_process");

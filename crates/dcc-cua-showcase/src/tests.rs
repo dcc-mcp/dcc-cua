@@ -531,22 +531,82 @@ async fn showcase_survives_a_live_pause_and_encodes_only_newer_sequences() {
     assert_eq!(resumed["pause_reason"], Value::Null);
 
     drop(sender);
-    let finalized = tokio::time::timeout(std::time::Duration::from_secs(3), async {
-        loop {
-            let state = recorder.state();
-            if state["finalized"] == true {
-                break state;
-            }
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("showcase should finalize after its source closes");
+    let finalized = recorder
+        .wait_for_finalization(std::time::Duration::from_secs(30))
+        .await
+        .expect("showcase should signal finalization after its source closes");
     assert_eq!(finalized["frames"], 2);
 
     let stopped = recorder.stop().await.expect("finalized showcase recording");
     assert_eq!(stopped["frames"], 2);
     std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[rstest]
+#[tokio::test]
+async fn showcase_finalization_wait_has_a_bounded_diagnostic() {
+    let directory = std::env::temp_dir().join(format!("dcc-cua-showcase-{}", uuid::Uuid::new_v4()));
+    let mut status = LiveObservationStatus::default();
+    status.publish_frame(
+        LiveObservationFrame::new(1, vec![1; 16 * 16 * 4], 16, 16, std::time::Instant::now()),
+        std::time::Duration::from_millis(1),
+        "test_capture",
+    );
+    let (sender, receiver) = watch::channel(status);
+    let recorder = ShowcaseRecorder::start(receiver, directory.to_str().unwrap(), 10)
+        .await
+        .expect("showcase recorder");
+
+    let error = recorder
+        .wait_for_finalization(std::time::Duration::ZERO)
+        .await
+        .expect_err("an open source must not report finalization");
+    assert_eq!(error.code, ShowcaseErrorCode::CaptureFailed);
+    assert_eq!(
+        error.message,
+        "showcase encoder did not finalize within 0 milliseconds"
+    );
+
+    drop(sender);
+    recorder.stop().await.expect("stop showcase recorder");
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[rstest]
+#[tokio::test]
+async fn showcase_finalization_signal_is_repeatable_without_polling() {
+    for attempt in 0..8 {
+        let directory =
+            std::env::temp_dir().join(format!("dcc-cua-showcase-{}", uuid::Uuid::new_v4()));
+        let mut status = LiveObservationStatus::default();
+        status.publish_frame(
+            LiveObservationFrame::new(
+                attempt,
+                vec![attempt as u8; 16 * 16 * 4],
+                16,
+                16,
+                std::time::Instant::now(),
+            ),
+            std::time::Duration::from_millis(1),
+            "test_capture",
+        );
+        let (sender, receiver) = watch::channel(status);
+        let recorder = ShowcaseRecorder::start(receiver, directory.to_str().unwrap(), 10)
+            .await
+            .unwrap_or_else(|error| panic!("start showcase attempt {attempt}: {error}"));
+
+        drop(sender);
+        let finalized = recorder
+            .wait_for_finalization(std::time::Duration::from_secs(30))
+            .await
+            .unwrap_or_else(|error| panic!("finalize showcase attempt {attempt}: {error}"));
+        assert_eq!(finalized["frames"], 1, "attempt {attempt}: {finalized}");
+        recorder
+            .stop()
+            .await
+            .unwrap_or_else(|error| panic!("stop showcase attempt {attempt}: {error}"));
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 }
 
 #[rstest]

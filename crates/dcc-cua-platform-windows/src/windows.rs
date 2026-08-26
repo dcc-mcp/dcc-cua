@@ -815,6 +815,7 @@ fn ensure_ok(value: &Value) -> Result<(), UiaError> {
 }
 
 pub(crate) struct UiaWorker {
+    process_id: u32,
     child: Option<Child>,
     stdin: Option<ChildStdin>,
     responses: Receiver<Vec<u8>>,
@@ -850,6 +851,7 @@ impl UiaWorker {
                 )));
             }
         };
+        let process_id = child.id();
         let mut stdin = child.stdin.take().expect("piped UIA stdin");
         let encoded_script = base64::engine::general_purpose::STANDARD.encode(script.as_bytes());
         if let Err(error) = writeln!(stdin, "{encoded_script}").and_then(|()| stdin.flush()) {
@@ -884,6 +886,7 @@ impl UiaWorker {
         });
         let stderr_reader = thread::spawn(move || read_bounded(stderr, STDERR_LIMIT));
         let mut worker = Self {
+            process_id,
             child: Some(child),
             stdin: Some(stdin),
             responses,
@@ -910,10 +913,7 @@ impl UiaWorker {
         };
         let response: Value = serde_json::from_slice(&response)
             .map_err(|error| self.fail(format!("decode UIA worker readiness: {error}")))?;
-        if response["type"] != "ready" {
-            return Err(self.fail("UIA worker returned an invalid readiness message"));
-        }
-        validate_worker_protocol_message(&response)?;
+        validate_worker_readiness_message(&response, self.process_id)?;
         Ok(())
     }
 
@@ -990,6 +990,25 @@ pub(crate) fn validate_worker_protocol_message(value: &Value) -> Result<(), UiaE
         expected: UIA_WORKER_PROTOCOL_VERSION,
         actual,
     })
+}
+
+pub(crate) fn validate_worker_readiness_message(
+    value: &Value,
+    expected_process_id: u32,
+) -> Result<(), UiaError> {
+    if value.get("type").and_then(Value::as_str) != Some("ready") {
+        return Err(UiaError::BackendUnavailable(
+            "UIA worker returned an invalid readiness message".into(),
+        ));
+    }
+    validate_worker_protocol_message(value)?;
+    let actual_process_id = value.get("process_id").and_then(Value::as_u64);
+    if actual_process_id == Some(u64::from(expected_process_id)) {
+        return Ok(());
+    }
+    Err(UiaError::BackendUnavailable(format!(
+        "UIA worker readiness identity mismatch: expected process {expected_process_id}, received {actual_process_id:?}"
+    )))
 }
 
 impl Drop for UiaWorker {
