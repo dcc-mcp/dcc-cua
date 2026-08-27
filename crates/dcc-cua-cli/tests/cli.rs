@@ -152,6 +152,34 @@ fn ordinary_command_failures_emit_one_machine_envelope_on_stdout() {
 }
 
 #[rstest]
+#[case("REVIEW_PRIVATE_ARGUMENT_8e1ab4", &[])]
+#[case("snapshot", &["--REVIEW_PRIVATE_OPTION_351cc7"])]
+fn rejected_cli_syntax_does_not_echo_untrusted_arguments(
+    #[case] command: &str,
+    #[case] arguments: &[&str],
+) {
+    let output = Command::new(env!("CARGO_BIN_EXE_dcc-cua"))
+        .arg(command)
+        .args(arguments)
+        .output()
+        .expect("dcc-cua should start");
+
+    assert_eq!(output.status.code(), Some(1));
+    let envelope = parse_single_json_envelope(&output.stdout);
+    assert_eq!(envelope["error"]["code"], "command_failed");
+    assert_eq!(
+        envelope["error"]["message"],
+        "dcc-cua could not complete the command"
+    );
+    let stdout = std::str::from_utf8(&output.stdout).expect("stdout should be UTF-8");
+    assert!(
+        !stdout.contains("REVIEW_PRIVATE_"),
+        "untrusted CLI input leaked: {stdout:?}"
+    );
+    assert!(output.stderr.is_empty());
+}
+
+#[rstest]
 fn mcp_server_rejects_an_untrusted_process_parent_before_reading_stdin() {
     let output = Command::new(env!("CARGO_BIN_EXE_dcc-cua"))
         .arg("mcp-server")
@@ -162,11 +190,9 @@ fn mcp_server_rejects_an_untrusted_process_parent_before_reading_stdin() {
     let envelope = parse_single_json_envelope(&output.stdout);
     assert_eq!(envelope["success"], false);
     assert_eq!(envelope["error"]["code"], "command_failed");
-    assert!(
-        envelope["error"]["message"]
-            .as_str()
-            .is_some_and(|message| message.contains("trusted embedding unavailable")),
-        "unexpected rejection: {envelope}"
+    assert_eq!(
+        envelope["error"]["message"],
+        "dcc-cua could not complete the command"
     );
     assert!(output.stderr.is_empty());
 }

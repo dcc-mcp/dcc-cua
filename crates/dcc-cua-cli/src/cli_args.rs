@@ -114,9 +114,7 @@ pub(super) fn reject_unknown_flags(flags: &[String]) -> Result<(), String> {
             continue;
         };
         if !KNOWN_FLAG_NAMES.contains(&name) {
-            return Err(format!(
-                "unknown option {name:?}; use `help` to list supported options"
-            ));
+            return Err("unknown option; use `help` to list supported options".into());
         }
     }
     Ok(())

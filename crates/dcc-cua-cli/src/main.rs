@@ -59,6 +59,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader, BufWriter
 const PARALLEL_DISCOVERY_WINDOW_MS: u64 = 5;
 const INTERNAL_FAILURE_DIAGNOSTIC: &str = "dcc-cua: internal command failure";
 const STDOUT_FAILURE_DIAGNOSTIC: &str = "dcc-cua: command result could not be written to stdout";
+const PUBLIC_FAILURE_MESSAGE: &str = "dcc-cua could not complete the command";
 
 fn main() {
     std::panic::set_hook(Box::new(|_| {
@@ -100,7 +101,7 @@ fn run_main() -> Result<(), Box<dyn std::error::Error>> {
 
 fn fatal_error_line(error: &(dyn std::error::Error + 'static)) -> String {
     serde_json::to_string(&fatal_error_value(error)).unwrap_or_else(|_| {
-        r#"{"success":false,"error":{"code":"command_failed","message":"failed to serialize command error"}}"#.into()
+        r#"{"success":false,"error":{"code":"command_failed","message":"dcc-cua could not complete the command"}}"#.into()
     })
 }
 
@@ -120,26 +121,25 @@ fn fatal_error_value(error: &(dyn std::error::Error + 'static)) -> serde_json::V
             "success": false,
             "error": {
                 "code": error.code,
-                "message": error.message,
-                "details": error.details,
+                "message": PUBLIC_FAILURE_MESSAGE,
             }
         });
     }
     if let Some(error) = error.downcast_ref::<HostClientError>() {
-        let (code, message) = match error {
-            HostClientError::Io(_) => ("host_transport_failed", error.to_string()),
-            HostClientError::Protocol(_) => ("host_protocol_failed", error.to_string()),
-            HostClientError::Timeout { .. } => ("host_timeout", error.to_string()),
-            HostClientError::Remote { code, message, .. } => (code.as_str(), message.clone()),
+        let code = match error {
+            HostClientError::Io(_) => "host_transport_failed",
+            HostClientError::Protocol(_) => "host_protocol_failed",
+            HostClientError::Timeout { .. } => "host_timeout",
+            HostClientError::Remote { .. } => "host_remote_failed",
         };
         return json!({
             "success": false,
-            "error": {"code": code, "message": message},
+            "error": {"code": code, "message": PUBLIC_FAILURE_MESSAGE},
         });
     }
     json!({
         "success": false,
-        "error": {"code": "command_failed", "message": error.to_string()},
+        "error": {"code": "command_failed", "message": PUBLIC_FAILURE_MESSAGE},
     })
 }
 
@@ -308,7 +308,7 @@ async fn dispatch(arguments: Vec<String>) -> Result<(), Box<dyn std::error::Erro
         friendly if is_friendly_action(friendly) => {
             friendly_action(&driver, &flags, friendly).await?
         }
-        other => return Err(format!("unknown command: {other}; use `help`").into()),
+        _ => return Err("unknown command; use `help`".into()),
     }
     Ok(())
 }

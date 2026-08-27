@@ -4,18 +4,24 @@ use serde_json::json;
 use super::*;
 
 #[rstest]
-fn one_shot_failures_have_a_single_json_error_envelope() {
+fn typed_one_shot_failures_keep_only_allowlisted_identity() {
     let error = ComputerUseError::new(
         ComputerUseErrorCode::StaleObservation,
-        "take a fresh snapshot",
-    );
+        "REVIEW_PRIVATE_MESSAGE_41c9a0",
+    )
+    .with_details(dcc_cua_core::ComputerUseErrorDetails {
+        suggested_delivery_mode: Some("REVIEW_PRIVATE_DETAIL_7a321e".into()),
+        ..Default::default()
+    });
     let line = fatal_error_line(&error);
     let value: serde_json::Value = serde_json::from_str(&line).expect("valid JSON error line");
 
     assert!(!line.contains('\n'));
     assert_eq!(value["success"], false);
     assert_eq!(value["error"]["code"], "stale_observation");
-    assert_eq!(value["error"]["message"], "take a fresh snapshot");
+    assert_eq!(value["error"]["message"], PUBLIC_FAILURE_MESSAGE);
+    assert!(value["error"].get("details").is_none());
+    assert!(!line.contains("REVIEW_PRIVATE_"));
 }
 
 #[rstest]
@@ -27,6 +33,24 @@ fn panic_boundary_returns_a_fixed_safe_machine_envelope() {
     assert_eq!(value["success"], false);
     assert_eq!(value["error"]["code"], "internal_failure");
     assert!(!line.contains("private panic payload"));
+}
+
+#[rstest]
+fn generic_error_boundary_does_not_publish_private_error_text() {
+    let line =
+        run_command_boundary(|| Err(std::io::Error::other("REVIEW_PRIVATE_ERROR_74c291").into()))
+            .expect_err("ordinary error should fail closed");
+    let value: serde_json::Value = serde_json::from_str(&line).expect("valid JSON error line");
+
+    assert_eq!(value["error"]["code"], "command_failed");
+    assert_eq!(
+        value["error"]["message"],
+        "dcc-cua could not complete the command"
+    );
+    assert!(
+        !line.contains("REVIEW_PRIVATE_ERROR_74c291"),
+        "generic internal error text leaked into the machine envelope: {line}"
+    );
 }
 
 #[rstest]
@@ -52,15 +76,16 @@ fn broken_stdout_is_reported_without_panicking_or_retrying_the_envelope() {
 }
 
 #[rstest]
-fn remote_host_failure_preserves_its_machine_code_without_the_raw_response() {
+fn remote_host_failure_uses_a_local_allowlisted_identity() {
     let error = HostClientError::Remote {
-        code: "approval_required".into(),
-        message: "confirmation required".into(),
-        response: json!({"type": "error", "private": "not forwarded"}),
+        code: "REVIEW_PRIVATE_CODE_aa4904".into(),
+        message: "REVIEW_PRIVATE_MESSAGE_950b33".into(),
+        response: json!({"type": "error", "private": "REVIEW_PRIVATE_RESPONSE_b327ca"}),
     };
     let value = fatal_error_value(&error);
 
-    assert_eq!(value["error"]["code"], "approval_required");
-    assert_eq!(value["error"]["message"], "confirmation required");
+    assert_eq!(value["error"]["code"], "host_remote_failed");
+    assert_eq!(value["error"]["message"], PUBLIC_FAILURE_MESSAGE);
     assert!(value["error"].get("response").is_none());
+    assert!(!value.to_string().contains("REVIEW_PRIVATE_"));
 }

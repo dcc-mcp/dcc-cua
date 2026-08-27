@@ -257,6 +257,9 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertIn("RedirectStandardOutput", script)
         self.assertIn("RedirectStandardError", script)
         self.assertIn("definitely-not-a-command", script)
+        self.assertIn("RELEASE_PRIVATE_ARGUMENT_8e1ab4", script)
+        self.assertIn("RELEASE_PRIVATE_OPTION_351cc7", script)
+        self.assertIn("dcc-cua could not complete the command", script)
 
     def test_release_matrix_builds_every_supported_native_target(self):
         workflow = WORKFLOW.read_text(encoding="utf-8")

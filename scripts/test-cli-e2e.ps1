@@ -106,6 +106,29 @@ function Assert-CommandFailureStdoutContract {
         if ($envelope.success -ne $false -or $envelope.error.code -ne "command_failed") {
             throw "release CLI failure did not return the stable machine envelope"
         }
+        if ($envelope.error.message -ne "dcc-cua could not complete the command") {
+            throw "release CLI failure did not use the fixed public message"
+        }
+
+        $rejectedSyntaxCases = @(
+            [pscustomobject]@{ Arguments = @("RELEASE_PRIVATE_ARGUMENT_8e1ab4"); Marker = "RELEASE_PRIVATE_ARGUMENT_8e1ab4" },
+            [pscustomobject]@{ Arguments = @("snapshot", "--RELEASE_PRIVATE_OPTION_351cc7"); Marker = "RELEASE_PRIVATE_OPTION_351cc7" }
+        )
+        foreach ($case in $rejectedSyntaxCases) {
+            $rejected = Start-Process -FilePath $binaryPath -ArgumentList $case.Arguments -RedirectStandardOutput $failureOutput -RedirectStandardError $failureError -PassThru -Wait
+            $rejectedStdout = [System.IO.File]::ReadAllText($failureOutput, [System.Text.Encoding]::UTF8)
+            $rejectedStderr = [System.IO.File]::ReadAllText($failureError, [System.Text.Encoding]::UTF8)
+            $rejectedLines = @($rejectedStdout -split "`r?`n" | Where-Object { $_.Length -gt 0 })
+            if ($rejected.ExitCode -ne 1 -or $rejectedLines.Count -ne 1 -or $rejectedStderr.Length -ne 0) {
+                throw "release CLI rejected syntax did not preserve the failure stream contract"
+            }
+            $rejectedEnvelope = $rejectedLines[0] | ConvertFrom-Json
+            if ($rejectedEnvelope.error.code -ne "command_failed" -or
+                $rejectedEnvelope.error.message -ne "dcc-cua could not complete the command" -or
+                $rejectedStdout.Contains($case.Marker)) {
+                throw "release CLI published rejected command or option text"
+            }
+        }
 
         $captured = & $binaryPath definitely-not-a-command 2>$null | Out-String
         $capturedExit = $LASTEXITCODE

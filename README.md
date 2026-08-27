@@ -367,7 +367,10 @@ to stdout. A command error preserves a non-zero exit code and emits exactly one
 JSON envelope, so stdout pipelines, redirects, and command substitution can
 parse failures without merging stderr. Stderr is reserved for fixed, safe
 process diagnostics such as an internal panic or an unavailable stdout pipe;
-it never duplicates the command envelope. Long-lived `host-jsonl`, native
+it never duplicates the command envelope. Public error codes come only from
+bounded local categories and the message is fixed; raw command/option text,
+error strings, paths, arguments, tokens, and remote payloads are never copied
+into the one-shot envelope. Long-lived `host-jsonl`, native
 messaging, and MCP commands keep their protocol-specific stdout framing.
 
 `list`, `apps`, `tools`, `desktop-snapshot`, `screen-size`, `cursor-position`, and
