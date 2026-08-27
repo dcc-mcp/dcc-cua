@@ -2,20 +2,24 @@ use super::*;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum PixelObservationRoute {
+    #[cfg(any(windows, test))]
     ExplicitPixelsOnly,
     AccessibilityUnavailableDegraded,
     AccessibilityTimeoutDegraded,
 }
 
 impl PixelObservationRoute {
+    #[cfg(any(windows, test))]
     pub(super) const fn observation_mode(self) -> &'static str {
         match self {
+            #[cfg(any(windows, test))]
             Self::ExplicitPixelsOnly => "pixels_only",
             Self::AccessibilityUnavailableDegraded => "accessibility_unavailable_degraded",
             Self::AccessibilityTimeoutDegraded => "accessibility_timeout_degraded",
         }
     }
 
+    #[cfg(any(windows, test))]
     pub(super) const fn degraded(self) -> bool {
         !matches!(self, Self::ExplicitPixelsOnly)
     }
@@ -50,6 +54,7 @@ pub(super) fn pixel_route_for_uia_tool_failure(
     }
 }
 
+#[cfg(any(windows, test))]
 pub(super) fn validate_exact_window_pixel_target_state(
     target: &WindowTarget,
     unobscured: bool,
@@ -75,6 +80,7 @@ pub(super) fn validate_exact_window_pixel_target_state(
     Ok(())
 }
 
+#[cfg(any(windows, test))]
 pub(super) fn validate_exact_window_pixel_publication(
     before: &WindowTarget,
     after: &WindowTarget,
@@ -97,6 +103,7 @@ pub(super) fn validate_exact_window_pixel_publication(
     validate_exact_window_pixel_target_state(after, true)
 }
 
+#[cfg(any(windows, test))]
 pub(super) fn exact_window_pixel_provenance(
     route: PixelObservationRoute,
     target: &WindowTarget,

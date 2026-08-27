@@ -1,6 +1,8 @@
 use std::future::Future;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(windows)]
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use base64::Engine;
@@ -1628,11 +1630,15 @@ struct ExactWindowCapture {
     data: Vec<u8>,
     backend: &'static str,
     fallback: &'static str,
+    #[cfg(windows)]
     generation: u64,
+    #[cfg(windows)]
     dpi: u32,
+    #[cfg(windows)]
     bounds: [i32; 4],
 }
 
+#[cfg(windows)]
 static EXACT_WINDOW_CAPTURE_GENERATION: AtomicU64 = AtomicU64::new(1);
 
 pub(crate) const fn exact_capture_failure_allows_desktop_fallback(
