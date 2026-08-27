@@ -175,6 +175,57 @@ class BrowserStoreReadinessTests(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertNotIn("never-print-this", first)
 
+    def test_cli_redacts_every_untrusted_provider_string(self) -> None:
+        sentinel = "TOKEN_NEVER_PRINT_P_PRIVATE_CHECKOUT"
+        mutations = {
+            "source_sha": ("github", "source_sha"),
+            "tag": ("github", "tag"),
+            "tag_target_sha": ("github", "tag_target_sha"),
+            "release_target_sha": ("github", "release_target_sha"),
+            "artifact_name": ("github", "artifact", "name"),
+            "artifact_digest": ("github", "artifact", "digest"),
+            "artifact_expires_at": ("github", "artifact", "expires_at"),
+            "run_head_sha": ("github", "artifact", "workflow_run", "head_sha"),
+            "chrome_permission": ("stores", "chrome", "permission"),
+            "chrome_item": ("stores", "chrome", "item"),
+            "chrome_version": ("stores", "chrome", "version"),
+            "chrome_state": ("stores", "chrome", "state"),
+            "edge_permission": ("stores", "edge", "permission"),
+            "edge_item": ("stores", "edge", "item"),
+            "edge_version": ("stores", "edge", "version"),
+            "edge_state": ("stores", "edge", "state"),
+            "firefox_permission": ("stores", "firefox", "permission"),
+            "firefox_item": ("stores", "firefox", "item"),
+            "firefox_version": ("stores", "firefox", "version"),
+            "firefox_state": ("stores", "firefox", "state"),
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name, path in mutations.items():
+                with self.subTest(name=name):
+                    snapshot = ready_snapshot()
+                    target = snapshot
+                    for component in path[:-1]:
+                        target = target[component]
+                    target[path[-1]] = f"{sentinel}_{name}_P:\\private\\checkout"
+                    snapshot_path = root / f"{name}.json"
+                    output_path = root / f"{name}-receipt.json"
+                    snapshot_path.write_text(json.dumps(snapshot), encoding="utf-8")
+
+                    result = self.run_cli(
+                        "--snapshot", snapshot_path, "--output", output_path
+                    )
+
+                    self.assertEqual(1, result.returncode)
+                    self.assertEqual(1, result.stdout.count("\n"))
+                    self.assertEqual(
+                        result.stdout, output_path.read_text(encoding="utf-8")
+                    )
+                    combined = result.stdout + result.stderr
+                    self.assertNotIn(sentinel, combined)
+                    self.assertNotIn("private", combined.lower())
+                    self.assertNotIn("Traceback", combined)
+
     def test_cli_failure_emits_one_stable_redacted_terminal_receipt(self) -> None:
         sensitive = "token-never-print P:\\private\\checkout\\snapshot.json"
         with tempfile.TemporaryDirectory() as directory:
@@ -382,6 +433,24 @@ raise SystemExit(module.main())
             "scalar_decoy": workflow.replace(step, f"      - name: {command}", 1),
             "multiline_decoy": workflow.replace(
                 step, f"      - run: |\n          echo {command}", 1
+            ),
+            "bash_no_execute": workflow.replace(
+                step, step + "\n        shell: bash -n {0}", 1
+            ),
+            "echo_no_execute": workflow.replace(
+                step, step + "\n        shell: echo {0}", 1
+            ),
+            "step_env": workflow.replace(
+                step, step + "\n        env:\n          PYTHONPATH: scripts", 1
+            ),
+            "working_directory": workflow.replace(
+                step, step + "\n        working-directory: scripts", 1
+            ),
+            "step_timeout": workflow.replace(
+                step, step + "\n        timeout-minutes: 1", 1
+            ),
+            "preceding_run_overwrite": workflow.replace(
+                step, "      - run: echo skipped\n        run: " + command, 1
             ),
             "disabled_unused_job": workflow.replace(step + "\n", "", 1).replace(
                 "\n  verify:",
