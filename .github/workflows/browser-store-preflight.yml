@@ -1,4 +1,4 @@
-name: Browser store credential preflight
+name: Browser store readiness preflight
 
 on:
   workflow_dispatch:
@@ -6,32 +6,115 @@ on:
 permissions: {}
 
 jobs:
-  chrome-web-store:
+  inspect-github-readiness:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      eligible: ${{ steps.receipt.outputs.eligible }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Recapture immutable GitHub and environment identity
+        id: receipt
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          receipt="$RUNNER_TEMP/browser-store-github-readiness.json"
+          python -B scripts/browser_store_readiness.py \
+            --repository "$GITHUB_REPOSITORY" \
+            --output "$receipt" || true
+          cat "$receipt"
+          python - "$receipt" "$GITHUB_OUTPUT" <<'PY'
+          import json
+          import sys
+
+          receipt = json.load(open(sys.argv[1], encoding="utf-8"))
+          eligible = (
+              receipt["environment"]["valid"]
+              and receipt["github_identity"]["valid"]
+              and receipt["action_pins"]["valid"]
+          )
+          with open(sys.argv[2], "a", encoding="utf-8") as output:
+              output.write(f"eligible={str(eligible).lower()}\n")
+          PY
+          {
+            echo '### Browser store GitHub readiness receipt'
+            echo '```json'
+            cat "$receipt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Enforce environment eligibility
+        if: steps.receipt.outputs.eligible != 'true'
+        run: |
+          echo "browser-stores is not eligible for the default branch" >&2
+          exit 1
+
+  read-store-state:
+    needs: inspect-github-readiness
+    if: always() && needs.inspect-github-readiness.outputs.eligible == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     environment: browser-stores
     permissions:
+      actions: read
       contents: read
       id-token: write
     steps:
-      - uses: actions/checkout@v7
-      - uses: google-github-actions/auth@v3
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        if: vars.CHROME_WEBSTORE_WORKLOAD_IDENTITY_PROVIDER != '' && vars.CHROME_WEBSTORE_SERVICE_ACCOUNT != ''
         id: google-auth
         with:
           create_credentials_file: false
           export_environment_variables: false
           token_format: access_token
           access_token_lifetime: 300s
-          access_token_scopes: https://www.googleapis.com/auth/chromewebstore
+          access_token_scopes: https://www.googleapis.com/auth/chromewebstore.readonly
           workload_identity_provider: ${{ vars.CHROME_WEBSTORE_WORKLOAD_IDENTITY_PROVIDER }}
           service_account: ${{ vars.CHROME_WEBSTORE_SERVICE_ACCOUNT }}
-      - name: Verify short-lived Chrome Web Store token
-        shell: python
+      - name: Read all three store states and emit redacted receipts
+        id: stores
+        continue-on-error: true
         env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CHROME_WEBSTORE_ACCESS_TOKEN: ${{ steps.google-auth.outputs.access_token }}
+          CHROME_WEBSTORE_WORKLOAD_IDENTITY_PROVIDER: ${{ vars.CHROME_WEBSTORE_WORKLOAD_IDENTITY_PROVIDER }}
+          CHROME_WEBSTORE_SERVICE_ACCOUNT: ${{ vars.CHROME_WEBSTORE_SERVICE_ACCOUNT }}
+          CHROME_WEBSTORE_PUBLISHER_ID: ${{ vars.CHROME_WEBSTORE_PUBLISHER_ID }}
+          CHROME_WEBSTORE_EXTENSION_ID: ${{ vars.CHROME_WEBSTORE_EXTENSION_ID }}
+          EDGE_ADDONS_CLIENT_ID: ${{ vars.EDGE_ADDONS_CLIENT_ID }}
+          EDGE_ADDONS_PRODUCT_ID: ${{ vars.EDGE_ADDONS_PRODUCT_ID }}
+          EDGE_ADDONS_API_KEY: ${{ secrets.EDGE_ADDONS_API_KEY }}
+          FIREFOX_AMO_API_KEY: ${{ secrets.FIREFOX_AMO_API_KEY }}
+          FIREFOX_AMO_API_SECRET: ${{ secrets.FIREFOX_AMO_API_SECRET }}
+          DCC_CUA_BROWSER_STORE_PUBLISH_READY: ${{ vars.DCC_CUA_BROWSER_STORE_PUBLISH_READY }}
+        shell: bash
         run: |
-          import os
-
-          if not os.environ.get("CHROME_WEBSTORE_ACCESS_TOKEN", "").strip():
-              raise SystemExit("Chrome Web Store access token was not generated")
-          print("Chrome Web Store credential preflight succeeded")
+          set -o pipefail
+          receipt="$RUNNER_TEMP/browser-store-readiness.json"
+          python -B scripts/browser_store_readiness.py \
+            --repository "$GITHUB_REPOSITORY" \
+            --probe-stores \
+            --output "$receipt"
+      - name: Publish terminal redacted receipt
+        if: always()
+        shell: bash
+        run: |
+          receipt="$RUNNER_TEMP/browser-store-readiness.json"
+          test -f "$receipt"
+          cat "$receipt"
+          {
+            echo '### Browser store terminal readiness receipt'
+            echo '```json'
+            cat "$receipt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Enforce readiness without publishing
+        if: steps.stores.outcome != 'success'
+        run: |
+          echo "one or more read-only readiness checks did not pass" >&2
+          exit 1
