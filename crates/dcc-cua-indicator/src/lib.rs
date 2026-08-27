@@ -547,6 +547,16 @@ pub struct BannerActivityGuard {
     token: u64,
 }
 
+/// Keeps the user-visible banner out of a verified desktop crop.
+///
+/// The platform guard owns the suppression request and restores presentation
+/// on drop. Construction succeeds only after the platform confirms that every
+/// banner surface is hidden.
+#[must_use = "keep the guard alive until exact-window desktop capture is published"]
+pub struct BannerCaptureExclusionGuard {
+    _platform: platform::PlatformCaptureExclusionGuard,
+}
+
 impl BannerActivityGuard {
     fn begin(activity: Arc<BannerActivitySignal>, next: BannerActivity) -> Self {
         let token = activity.set(next);
@@ -626,6 +636,12 @@ impl ControlBanner {
         BannerActivityGuard::begin(self.platform.activity_handle(), activity)
     }
 
+    pub fn begin_capture_exclusion(&self) -> Result<BannerCaptureExclusionGuard, IndicatorError> {
+        Ok(BannerCaptureExclusionGuard {
+            _platform: self.platform.begin_capture_exclusion()?,
+        })
+    }
+
     pub fn set_recording(&self, recording: bool) {
         self.platform.set_recording(recording);
     }
@@ -655,6 +671,8 @@ mod platform {
         live_observation: AtomicBool,
         motion: IndicatorMotionStatus,
     }
+
+    pub(super) struct PlatformCaptureExclusionGuard;
 
     impl PlatformBanner {
         pub(super) fn start(
@@ -706,6 +724,12 @@ mod platform {
 
         pub(super) fn set_activity(&self, activity: BannerActivity) {
             self.activity.set(activity);
+        }
+
+        pub(super) fn begin_capture_exclusion(
+            &self,
+        ) -> Result<PlatformCaptureExclusionGuard, IndicatorError> {
+            Ok(PlatformCaptureExclusionGuard)
         }
 
         pub(super) fn activity_handle(&self) -> Arc<BannerActivitySignal> {

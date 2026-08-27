@@ -104,6 +104,59 @@ pub(super) fn validate_exact_window_pixel_publication(
 }
 
 #[cfg(any(windows, test))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct ExactWindowPixelGeometry {
+    pub bounds: [i32; 4],
+    pub dpi: u32,
+}
+
+#[cfg(any(windows, test))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ExactWindowPixelCaptureMode {
+    WindowContent,
+    VisibleDesktopCrop,
+}
+
+#[cfg(any(windows, test))]
+impl ExactWindowPixelCaptureMode {
+    const fn requires_unobscured_desktop(self) -> bool {
+        matches!(self, Self::VisibleDesktopCrop)
+    }
+}
+
+#[cfg(any(windows, test))]
+pub(super) fn validate_final_exact_window_pixel_publication(
+    captured_target: &WindowTarget,
+    final_inventory: &WindowTarget,
+    captured_native: ExactWindowPixelGeometry,
+    final_native: ExactWindowPixelGeometry,
+    capture_generation: u64,
+    capture_mode: ExactWindowPixelCaptureMode,
+    final_unobscured: bool,
+) -> ComputerUseResult<()> {
+    if captured_target.bounds != captured_native.bounds
+        || final_inventory.bounds != final_native.bounds
+    {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::StaleObservation,
+            "the final native bounds do not match the captured or inventoried exact window",
+        ));
+    }
+    validate_exact_window_pixel_publication(
+        captured_target,
+        final_inventory,
+        captured_native.dpi,
+        final_native.dpi,
+        capture_generation,
+        capture_generation,
+    )?;
+    validate_exact_window_pixel_target_state(
+        final_inventory,
+        !capture_mode.requires_unobscured_desktop() || final_unobscured,
+    )
+}
+
+#[cfg(any(windows, test))]
 pub(super) fn exact_window_pixel_provenance(
     route: PixelObservationRoute,
     target: &WindowTarget,
@@ -131,6 +184,7 @@ pub(super) fn exact_window_pixel_provenance(
 pub(super) fn validate_native_exact_window_pixel_evidence(
     before: &dcc_cua_platform_windows::ExactWindowPixelEvidence,
     after: &dcc_cua_platform_windows::ExactWindowPixelEvidence,
+    capture_mode: ExactWindowPixelCaptureMode,
 ) -> ComputerUseResult<()> {
     if before.process_id != after.process_id
         || before.window_handle != after.window_handle
@@ -154,7 +208,7 @@ pub(super) fn validate_native_exact_window_pixel_evidence(
             "the exact pixel target became hidden during capture",
         ));
     }
-    if !before.unobscured || !after.unobscured {
+    if capture_mode.requires_unobscured_desktop() && (!before.unobscured || !after.unobscured) {
         return Err(ComputerUseError::new(
             ComputerUseErrorCode::CaptureFailed,
             "the exact pixel target was occluded; pixels were discarded",

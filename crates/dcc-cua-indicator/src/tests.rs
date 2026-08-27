@@ -4,6 +4,26 @@ use super::*;
 
 #[cfg(windows)]
 #[rstest]
+fn exact_window_capture_excludes_every_dcc_cua_root_overlay_class() {
+    use platform::capture_exclusion::{DccCuaOverlayKind, dcc_cua_overlay_kind};
+
+    assert_eq!(
+        dcc_cua_overlay_kind("DccCuaControlBanner"),
+        Some(DccCuaOverlayKind::Presenter)
+    );
+    assert_eq!(
+        dcc_cua_overlay_kind("DccCuaControlFrame"),
+        Some(DccCuaOverlayKind::Presenter)
+    );
+    assert_eq!(
+        dcc_cua_overlay_kind("Cua.AgentCursorOverlay"),
+        Some(DccCuaOverlayKind::AgentCursor)
+    );
+    assert_eq!(dcc_cua_overlay_kind("ForeignOverlay"), None);
+}
+
+#[cfg(windows)]
+#[rstest]
 fn compact_targets_hide_banner_and_identity_selects_stable_hues() {
     assert!(platform::compact_target(platform::TargetGeometry {
         x: 0,

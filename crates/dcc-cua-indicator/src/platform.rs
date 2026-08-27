@@ -26,29 +26,37 @@ use windows::Win32::UI::HiDpi::{
 use windows::Win32::UI::Input::KeyboardAndMouse::VK_ESCAPE;
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, CreateWindowExW, DI_NORMAL, DefWindowProcW, DestroyWindow, DispatchMessageW,
-    DrawIconEx, GA_ROOTOWNER, GCLP_HICON, GCLP_HICONSM, GW_HWNDPREV, GetAncestor, GetClassLongPtrW,
-    GetClientRect, GetForegroundWindow, GetMessageW, GetPropW, GetWindow, GetWindowRect,
-    GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, HC_ACTION, HHOOK, HICON,
-    HTTRANSPARENT, HWND_NOTOPMOST, HWND_TOP, HWND_TOPMOST, ICON_SMALL2, IsIconic, IsWindow,
-    IsWindowVisible, KBDLLHOOKSTRUCT, KillTimer, LLKHF_INJECTED, LWA_ALPHA, MA_NOACTIVATE, MSG,
-    PM_NOREMOVE, PM_REMOVE, PeekMessageW, PostThreadMessageW, RegisterClassW, RemovePropW,
-    SEND_MESSAGE_TIMEOUT_FLAGS, SET_WINDOW_POS_FLAGS, SMTO_ABORTIFHUNG, SPI_GETCLIENTAREAANIMATION,
-    SW_HIDE, SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOOWNERZORDER, SWP_NOSIZE,
-    SWP_NOZORDER, SWP_SHOWWINDOW, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SendMessageTimeoutW,
-    SetLayeredWindowAttributes, SetPropW, SetTimer, SetWindowPos, SetWindowsHookExW, ShowWindow,
-    SystemParametersInfoW, TranslateMessage, UnhookWindowsHookEx, WH_KEYBOARD_LL, WINDOW_EX_STYLE,
-    WINDOW_STYLE, WM_GETICON, WM_KEYDOWN, WM_KEYUP, WM_MOUSEACTIVATE, WM_NCHITTEST, WM_PAINT,
-    WM_QUIT, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER, WNDCLASSW, WNDPROC, WS_EX_LAYERED,
-    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT, WS_POPUP,
+    DrawIconEx, GCLP_HICON, GCLP_HICONSM, GW_HWNDPREV, GetClassLongPtrW, GetClientRect,
+    GetMessageW, GetPropW, GetWindow, GetWindowRect, GetWindowTextLengthW, GetWindowTextW,
+    GetWindowThreadProcessId, HC_ACTION, HHOOK, HICON, HTTRANSPARENT, HWND_NOTOPMOST, HWND_TOP,
+    HWND_TOPMOST, ICON_SMALL2, IsWindow, IsWindowVisible, KBDLLHOOKSTRUCT, KillTimer,
+    LLKHF_INJECTED, LWA_ALPHA, MA_NOACTIVATE, MSG, PM_NOREMOVE, PM_REMOVE, PeekMessageW,
+    PostThreadMessageW, RegisterClassW, RemovePropW, SEND_MESSAGE_TIMEOUT_FLAGS,
+    SET_WINDOW_POS_FLAGS, SMTO_ABORTIFHUNG, SPI_GETCLIENTAREAANIMATION, SW_HIDE, SW_SHOWNOACTIVATE,
+    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOOWNERZORDER, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW,
+    SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SendMessageTimeoutW, SetLayeredWindowAttributes, SetPropW,
+    SetTimer, SetWindowPos, SetWindowsHookExW, ShowWindow, SystemParametersInfoW, TranslateMessage,
+    UnhookWindowsHookEx, WH_KEYBOARD_LL, WINDOW_EX_STYLE, WINDOW_STYLE, WM_GETICON, WM_KEYDOWN,
+    WM_KEYUP, WM_MOUSEACTIVATE, WM_NCHITTEST, WM_PAINT, WM_QUIT, WM_SYSKEYDOWN, WM_SYSKEYUP,
+    WM_TIMER, WNDCLASSW, WNDPROC, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+    WS_EX_TRANSPARENT, WS_POPUP,
 };
 use windows::core::{BOOL, HRESULT, PCWSTR, w};
 
+pub(crate) mod capture_exclusion;
 mod escape_hub_lifecycle;
+mod presentation;
 mod rendering;
+use capture_exclusion::CaptureExclusionState;
+pub(super) use capture_exclusion::Guard as PlatformCaptureExclusionGuard;
 pub(super) use escape_hub_lifecycle::{
     EscapeHubAcquireAction, EscapeHubReleaseAction, acquire_action as escape_hub_acquire_action,
     release_action as escape_hub_release_action,
 };
+pub(super) use presentation::TargetOverlaySyncState;
+use presentation::current_target_presentation;
+#[allow(unused_imports)]
+pub(super) use presentation::{TargetPresentationPolicy, target_presentation_policy};
 use rendering::{
     record_rendering_result, record_rendering_results, set_activity_property, set_overlay_alpha,
 };
@@ -122,92 +130,6 @@ const fn rgb(red: u8, green: u8, blue: u8) -> COLORREF {
     COLORREF((blue as u32) << 16 | (green as u32) << 8 | red as u32)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum TargetPresentationPolicy {
-    Hidden,
-    ExactTargetForeground,
-    OwnedModalForeground,
-    TargetScopedBehindUnrelatedForeground,
-}
-
-impl TargetPresentationPolicy {
-    pub(super) const fn is_visible(self) -> bool {
-        !matches!(self, Self::Hidden)
-    }
-}
-
-pub(super) struct TargetOverlaySyncState {
-    previous: TargetPresentationPolicy,
-}
-
-impl TargetOverlaySyncState {
-    pub(super) const fn new(previous: TargetPresentationPolicy) -> Self {
-        Self { previous }
-    }
-
-    /// Return true only when a presentation transition can put the exact target
-    /// above its unowned overlays. Stable polling ticks deliberately do no work.
-    pub(super) fn observe(&mut self, current: TargetPresentationPolicy) -> bool {
-        let previous = std::mem::replace(&mut self.previous, current);
-        let entered_target_foreground = current != previous
-            && matches!(
-                current,
-                TargetPresentationPolicy::ExactTargetForeground
-                    | TargetPresentationPolicy::OwnedModalForeground
-            );
-        current.is_visible()
-            && (matches!(previous, TargetPresentationPolicy::Hidden) || entered_target_foreground)
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(super) fn target_presentation_policy(
-    target_visible: bool,
-    target_minimized: bool,
-    target_window: u64,
-    target_root_owner: u64,
-    foreground_window: Option<u64>,
-    foreground_root_owner: Option<u64>,
-) -> TargetPresentationPolicy {
-    if !target_visible || target_minimized {
-        return TargetPresentationPolicy::Hidden;
-    }
-    if foreground_window == Some(target_window) {
-        TargetPresentationPolicy::ExactTargetForeground
-    } else if foreground_root_owner == Some(target_root_owner) {
-        TargetPresentationPolicy::OwnedModalForeground
-    } else {
-        TargetPresentationPolicy::TargetScopedBehindUnrelatedForeground
-    }
-}
-
-fn window_handle_value(window: HWND) -> u64 {
-    window.0 as usize as u64
-}
-
-fn root_owner_value(window: HWND) -> u64 {
-    let root_owner = unsafe { GetAncestor(window, GA_ROOTOWNER) };
-    if root_owner.0.is_null() {
-        window_handle_value(window)
-    } else {
-        window_handle_value(root_owner)
-    }
-}
-
-fn current_target_presentation(target_window: HWND) -> TargetPresentationPolicy {
-    let foreground = unsafe { GetForegroundWindow() };
-    let foreground_window = (!foreground.0.is_null()).then(|| window_handle_value(foreground));
-    let foreground_root_owner = (!foreground.0.is_null()).then(|| root_owner_value(foreground));
-    target_presentation_policy(
-        unsafe { IsWindowVisible(target_window).as_bool() },
-        unsafe { IsIconic(target_window).as_bool() },
-        window_handle_value(target_window),
-        root_owner_value(target_window),
-        foreground_window,
-        foreground_root_owner,
-    )
-}
-
 pub(super) fn system_language_tag() -> String {
     let mut locale = [0_u16; 85];
     let length = unsafe { GetUserDefaultLocaleName(&mut locale) };
@@ -253,6 +175,10 @@ impl PlatformBanner {
         let recording = Arc::new(AtomicBool::new(false));
         let live_observation = Arc::new(AtomicBool::new(false));
         let backend_failure = Arc::new(Mutex::new(None));
+        let capture_exclusion = capture_exclusion::state();
+        let cross_process_registration_gate = capture_exclusion::CrossProcessGate::acquire()?;
+        let registration_gate = capture_exclusion::RegistrationGate::acquire()?;
+        let capture_registration = capture_exclusion::Registration::begin(capture_exclusion);
         let runtime = BannerRuntime {
             hub_active: Arc::clone(&escape_hub.active),
             generation,
@@ -273,6 +199,7 @@ impl PlatformBanner {
             .name("dcc-cua-control-banner".into())
             .spawn(move || {
                 let _escape_hub = thread_escape_hub;
+                let _capture_registration = capture_registration;
                 let result = run_banner(
                     target,
                     &thread_stop,
@@ -285,6 +212,7 @@ impl PlatformBanner {
                     motion,
                     &ready_tx,
                     &thread_backend_failure,
+                    capture_exclusion,
                 );
                 if let Err(error) = result {
                     if let Ok(mut stored) = thread_backend_failure.lock() {
@@ -299,8 +227,11 @@ impl PlatformBanner {
             .map_err(|error| {
                 IndicatorError::Backend(format!("failed to start banner thread: {error}"))
             })?;
+        drop(registration_gate);
+        let ready = ready_rx.recv_timeout(BANNER_START_TIMEOUT);
+        drop(cross_process_registration_gate);
 
-        match ready_rx.recv_timeout(BANNER_START_TIMEOUT) {
+        match ready {
             Ok(Ok(())) => Ok(Self {
                 stop,
                 active,
@@ -380,6 +311,12 @@ impl PlatformBanner {
 
     pub(super) fn activity_handle(&self) -> Arc<BannerActivitySignal> {
         Arc::clone(&self.activity)
+    }
+
+    pub(super) fn begin_capture_exclusion(
+        &self,
+    ) -> Result<PlatformCaptureExclusionGuard, IndicatorError> {
+        capture_exclusion::begin(&self.active)
     }
 
     pub(super) fn set_recording(&self, recording: bool) {
@@ -824,6 +761,7 @@ fn run_banner(
     motion: IndicatorMotionStatus,
     ready: &std::sync::mpsc::SyncSender<Result<(), IndicatorError>>,
     rendering_failure: &Mutex<Option<BannerFailure>>,
+    capture_exclusion: &CaptureExclusionState,
 ) -> Result<(), IndicatorError> {
     let dpi_awareness = ThreadDpiAwareness::enter()?;
     let target_window = HWND(target.window_handle as *mut core::ffi::c_void);
@@ -876,6 +814,7 @@ fn run_banner(
         .map_err(|error| IndicatorError::Backend(format!("signal banner readiness: {error}")))?;
 
     let mut message = MSG::default();
+    let mut acknowledged_capture_request = 0_u64;
     while !stop.load(Ordering::Acquire) {
         if !runtime.hub_active.load(Ordering::Acquire) {
             return Err(IndicatorError::Backend("Escape hub stopped".into()));
@@ -884,6 +823,17 @@ fn run_banner(
             interrupted.store(true, Ordering::Release);
             stop.store(true, Ordering::Release);
             break;
+        }
+        if capture_exclusion::hide_and_acknowledge(
+            capture_exclusion,
+            overlay.0,
+            &frames,
+            visible,
+            frame_visible,
+            &mut acknowledged_capture_request,
+        ) {
+            thread::sleep(FRAME_INTERVAL);
+            continue;
         }
         while unsafe { PeekMessageW(&mut message, None, 0, 0, PM_REMOVE) }.as_bool() {
             unsafe {

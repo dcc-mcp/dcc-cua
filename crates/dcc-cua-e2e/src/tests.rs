@@ -24,6 +24,8 @@ mod browser_refresh;
 mod cli_exact_window;
 #[cfg(all(feature = "gui-e2e", windows))]
 mod windows_activation;
+#[cfg(all(feature = "gui-e2e", windows))]
+mod windows_fixture_layout;
 #[cfg(feature = "gui-e2e")]
 use browser_refresh::{
     browser_mutation_with_pre_dispatch_refresh_recovery, safe_pre_dispatch_refresh_error,
@@ -1610,6 +1612,7 @@ async fn windows_endpoint_sessions_keep_background_uia_and_use_task_granted_raw_
             }),
         )
         .await;
+        windows_fixture_layout::assert_banner_visible(&opened.value);
         sessions.push((
             index,
             session_id,
@@ -1623,6 +1626,12 @@ async fn windows_endpoint_sessions_keep_background_uia_and_use_task_granted_raw_
     }
     assert_eq!(sessions[0].1, sessions[1].1);
     assert_ne!(sessions[0].3, sessions[1].3);
+    windows_fixture_layout::arrange_and_assert_cross_host_pixels(
+        &mut clients,
+        &sessions,
+        &window_targets,
+    )
+    .await;
     for (index, (client_index, session_id, grant_id, capability, window_handle)) in
         sessions.iter().enumerate()
     {
@@ -1723,6 +1732,7 @@ async fn windows_endpoint_sessions_keep_background_uia_and_use_task_granted_raw_
         .position(|(client_index, ..)| *client_index == 0)
         .expect("first endpoint UIA text index");
     let active_client = *active_client;
+    let process_id = windows_fixture_layout::focus_exact_window(&window_targets, *window_handle);
     let bootstrap_activation = clients[active_client]
         .request(
             "change_window_state",
@@ -1741,11 +1751,6 @@ async fn windows_endpoint_sessions_keep_background_uia_and_use_task_granted_raw_
                 .is_err_and(windows_activation::is_safe_foreground_refusal),
         "unexpected bootstrap activation result: {bootstrap_activation:?}"
     );
-    let process_id = window_targets
-        .iter()
-        .find(|(_, candidate, _)| candidate == window_handle)
-        .map(|(process_id, _, _)| *process_id)
-        .expect("active WPF process identity");
     windows_activation::physically_focus_exact_window(process_id, *window_handle);
     client_request(
         &mut clients[active_client],
