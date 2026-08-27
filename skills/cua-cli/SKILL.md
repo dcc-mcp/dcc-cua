@@ -180,6 +180,16 @@ permission, origin, pairing, identity, or protocol failure. The Host manifest
 must advertise `browser_provider:extension.v1`; otherwise treat the extension
 as unavailable rather than partially active.
 
+## Machine-readable command failures
+
+Parse stdout for both success and failure from one-shot CLI commands. A normal
+command failure returns a non-zero exit code and exactly one JSON envelope such
+as `{"success":false,"error":{"code":"command_failed","message":"..."}}` on
+stdout. Do not merge stderr into stdout: stderr is reserved for fixed safe
+process diagnostics and never carries a duplicate envelope. Long-lived
+`host-jsonl`, Native Messaging, and MCP routes retain their own framed stdout
+protocols.
+
 For an accessibility surface, use the identity returned by discovery:
 
 ```powershell

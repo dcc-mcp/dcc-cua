@@ -1,6 +1,6 @@
 use std::env;
 use std::fs;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::{collections::BTreeMap, time::Instant};
 
@@ -57,11 +57,31 @@ use serde_json::json;
 use tokio::io::{AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader, BufWriter};
 
 const PARALLEL_DISCOVERY_WINDOW_MS: u64 = 5;
+const INTERNAL_FAILURE_DIAGNOSTIC: &str = "dcc-cua: internal command failure";
+const STDOUT_FAILURE_DIAGNOSTIC: &str = "dcc-cua: command result could not be written to stdout";
 
 fn main() {
-    if let Err(error) = run_main() {
-        eprintln!("{}", fatal_error_line(error.as_ref()));
-        std::process::exit(1);
+    std::panic::set_hook(Box::new(|_| {
+        let _ = writeln!(std::io::stderr().lock(), "{INTERNAL_FAILURE_DIAGNOSTIC}");
+    }));
+    let error_line = match run_command_boundary(run_main) {
+        Ok(()) => return,
+        Err(error_line) => error_line,
+    };
+    if write_error_line(&mut std::io::stdout().lock(), &error_line).is_err() {
+        let _ = writeln!(std::io::stderr().lock(), "{STDOUT_FAILURE_DIAGNOSTIC}");
+    }
+    std::process::exit(1);
+}
+
+fn run_command_boundary<F>(run: F) -> Result<(), String>
+where
+    F: FnOnce() -> Result<(), Box<dyn std::error::Error>>,
+{
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(run)) {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(error)) => Err(fatal_error_line(error.as_ref())),
+        Err(_) => Err(internal_failure_line()),
     }
 }
 
@@ -82,6 +102,16 @@ fn fatal_error_line(error: &(dyn std::error::Error + 'static)) -> String {
     serde_json::to_string(&fatal_error_value(error)).unwrap_or_else(|_| {
         r#"{"success":false,"error":{"code":"command_failed","message":"failed to serialize command error"}}"#.into()
     })
+}
+
+fn internal_failure_line() -> String {
+    r#"{"success":false,"error":{"code":"internal_failure","message":"dcc-cua could not complete the command"}}"#.into()
+}
+
+fn write_error_line(writer: &mut dyn Write, line: &str) -> std::io::Result<()> {
+    writer.write_all(line.as_bytes())?;
+    writer.write_all(b"\n")?;
+    writer.flush()
 }
 
 fn fatal_error_value(error: &(dyn std::error::Error + 'static)) -> serde_json::Value {
@@ -223,7 +253,7 @@ async fn dispatch(arguments: Vec<String>) -> Result<(), Box<dyn std::error::Erro
     if command == "update" {
         tokio::task::spawn_blocking(move || update::run(&flags))
             .await
-            .map_err(|error| std::io::Error::other(format!("update worker failed: {error}")))?
+            .map_err(|_| std::io::Error::other("update worker failed"))?
             .map_err(|error| -> Box<dyn std::error::Error> { error.to_string().into() })?;
         return Ok(());
     }
@@ -487,8 +517,8 @@ async fn host_call(flags: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     if let Some(path) = output {
         value["_dcc_cua_binary_output"] = json!(path);
     }
-    println!("{}", serde_json::to_string_pretty(&value)?);
     connection.shutdown().await?;
+    println!("{}", serde_json::to_string_pretty(&value)?);
     Ok(())
 }
 
@@ -496,8 +526,8 @@ async fn host_ping(flags: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let snapshot_transport = snapshot_transport(flags)?;
     let mut connection = connect_host(flags, snapshot_transport).await?;
     let response = connection.client_mut().ping().await?;
-    println!("{}", serde_json::to_string_pretty(&response.value)?);
     connection.shutdown().await?;
+    println!("{}", serde_json::to_string_pretty(&response.value)?);
     Ok(())
 }
 
@@ -507,20 +537,21 @@ async fn host_interrupt_all(flags: &[String]) -> Result<(), Box<dyn std::error::
     }
     let mut connection = connect_host(flags, SnapshotTransport::BinaryFrame).await?;
     let response = connection.client_mut().interrupt_all().await?;
+    connection.shutdown().await?;
     println!("{}", serde_json::to_string_pretty(&response.value)?);
-    connection.shutdown().await
+    Ok(())
 }
 
 async fn host_doctor(flags: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let snapshot_transport = snapshot_transport(flags)?;
     let mut connection = connect_host(flags, snapshot_transport).await?;
     let response = connection.client_mut().doctor().await?;
-    println!("{}", serde_json::to_string_pretty(&response.value)?);
     connection.shutdown().await?;
     let route = doctor_route(flags)?;
     if !diagnostic_route_ready(&response.value, route) {
         return Err(format!("CUA Host {route} diagnostics are not ready").into());
     }
+    println!("{}", serde_json::to_string_pretty(&response.value)?);
     Ok(())
 }
 
@@ -569,8 +600,8 @@ async fn host_batch(flags: &[String]) -> Result<(), Box<dyn std::error::Error>> 
         }
         values.push(value);
     }
-    println!("{}", serde_json::to_string_pretty(&values)?);
     connection.shutdown().await?;
+    println!("{}", serde_json::to_string_pretty(&values)?);
     Ok(())
 }
 
@@ -1733,11 +1764,11 @@ async fn doctor(
     flags: &[String],
 ) -> Result<(), Box<dyn std::error::Error>> {
     let report = driver.diagnostics().await;
-    println!("{}", serde_json::to_string_pretty(&report)?);
     let route = doctor_route(flags)?;
     if !diagnostic_route_ready(&report, route) {
         return Err(format!("CUA {route} diagnostics are not ready").into());
     }
+    println!("{}", serde_json::to_string_pretty(&report)?);
     Ok(())
 }
 

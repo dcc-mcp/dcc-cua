@@ -20,40 +20,12 @@ use super::*;
 
 mod host_jsonl;
 mod owned_process;
+mod process_output;
 mod task_authorization_manifest;
 mod trusted_confirmation;
 mod update_check_tests;
 mod update_tests;
 mod window_selectors;
-
-#[rstest]
-fn one_shot_failures_have_a_single_json_error_envelope() {
-    let error = ComputerUseError::new(
-        ComputerUseErrorCode::StaleObservation,
-        "take a fresh snapshot",
-    );
-    let line = fatal_error_line(&error);
-    let value: serde_json::Value = serde_json::from_str(&line).expect("valid JSON error line");
-
-    assert!(!line.contains('\n'));
-    assert_eq!(value["success"], false);
-    assert_eq!(value["error"]["code"], "stale_observation");
-    assert_eq!(value["error"]["message"], "take a fresh snapshot");
-}
-
-#[rstest]
-fn remote_host_failure_preserves_its_machine_code_without_the_raw_response() {
-    let error = HostClientError::Remote {
-        code: "approval_required".into(),
-        message: "confirmation required".into(),
-        response: json!({"type": "error", "private": "not forwarded"}),
-    };
-    let value = fatal_error_value(&error);
-
-    assert_eq!(value["error"]["code"], "approval_required");
-    assert_eq!(value["error"]["message"], "confirmation required");
-    assert!(value["error"].get("response").is_none());
-}
 
 #[rstest]
 fn detects_chromium_and_firefox_native_invocations() {

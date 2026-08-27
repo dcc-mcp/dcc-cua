@@ -362,6 +362,14 @@ independent callers. It reports the current platform, Host protocol, frame
 limits, snapshot transports, capabilities, endpoint, recommended stdio/JSONL
 launch arguments, and that no separate driver executable is required.
 
+One-shot CLI commands write their normal structured success or error envelope
+to stdout. A command error preserves a non-zero exit code and emits exactly one
+JSON envelope, so stdout pipelines, redirects, and command substitution can
+parse failures without merging stderr. Stderr is reserved for fixed, safe
+process diagnostics such as an internal panic or an unavailable stdout pipe;
+it never duplicates the command envelope. Long-lived `host-jsonl`, native
+messaging, and MCP commands keep their protocol-specific stdout framing.
+
 `list`, `apps`, `tools`, `desktop-snapshot`, `screen-size`, `cursor-position`, and
 `doctor` are read-only. `snapshot` and `act` require one exact
 target; if an application has multiple windows, pass `--pid` and
