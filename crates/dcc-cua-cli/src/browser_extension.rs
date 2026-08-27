@@ -1,7 +1,5 @@
 use std::io;
 use std::path::Path;
-#[cfg(windows)]
-use std::process::Command;
 use std::time::Duration;
 
 use dcc_cua_client::HostClient;
@@ -267,11 +265,14 @@ fn register_native_manifest(
             BrowserFamily::Firefox => "Mozilla",
         };
         let key = format!("HKCU\\Software\\{vendor}\\NativeMessagingHosts\\{NATIVE_HOST_NAME}");
-        let output = Command::new("reg.exe")
-            .args(["add", &key, "/ve", "/t", "REG_SZ", "/d"])
-            .arg(manifest_path)
-            .arg("/f")
-            .output()?;
+        let output = crate::owned_process::command(
+            crate::owned_process::OwnedConsoleChildRole::NativeMessagingRegistry,
+            "reg.exe",
+        )
+        .args(["add", &key, "/ve", "/t", "REG_SZ", "/d"])
+        .arg(manifest_path)
+        .arg("/f")
+        .output()?;
         if !output.status.success() {
             return Err(format!(
                 "failed to register native messaging manifest: {}",
@@ -297,10 +298,12 @@ fn native_manifest_registered(browser: BrowserFamily, manifest_path: &Path) -> b
             BrowserFamily::Firefox => "Mozilla",
         };
         let key = format!("HKCU\\Software\\{vendor}\\NativeMessagingHosts\\{NATIVE_HOST_NAME}");
-        let Ok(output) = Command::new("reg.exe")
-            .args(["query", &key, "/ve"])
-            .output()
-        else {
+        let Ok(output) = crate::owned_process::command(
+            crate::owned_process::OwnedConsoleChildRole::NativeMessagingRegistry,
+            "reg.exe",
+        )
+        .args(["query", &key, "/ve"])
+        .output() else {
             return false;
         };
         output.status.success()

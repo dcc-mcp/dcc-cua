@@ -69,6 +69,38 @@ fn foreground_navigation_readback_is_exact_and_visible() {
 }
 
 #[rstest]
+fn navigation_partial_failure_receipt_is_preserved_and_strictly_bound() {
+    let receipt = json!({
+        "structuredContent": {
+            "status": "error",
+            "target_id": "target-1",
+            "tab_id": "tab-1",
+            "url": "https://example.test/next",
+            "delivery_mode": "foreground",
+            "dispatched": true,
+            "activated": false,
+            "activation_state": "failed",
+            "readback_state": "not_started",
+            "refs_invalidated": true,
+            "error_code": "target_activation_failed",
+            "error": "foreground target activation failed"
+        }
+    });
+    assert!(!navigation_response_is_success(&receipt, "target-1", "tab-1", "foreground").unwrap());
+
+    for invalid in [
+        json!({"structuredContent": {"status": "error", "target_id": "target-drift", "tab_id": "tab-1", "url": "https://example.test/next", "delivery_mode": "foreground", "dispatched": true, "activation_state": "failed", "readback_state": "not_started", "error_code": "target_activation_failed", "error": "foreground target activation failed"}}),
+        json!({"structuredContent": {"status": "error", "target_id": "target-1", "tab_id": "tab-1", "url": "https://example.test/next", "delivery_mode": "foreground", "dispatched": true, "activation_state": "succeeded", "readback_state": "succeeded", "error_code": "", "error": ""}}),
+        json!({"structuredContent": {"status": "error", "target_id": "target-1", "tab_id": "tab-1", "url": "https://example.test/next", "delivery_mode": "foreground", "dispatched": false, "activated": true, "activation_state": "succeeded", "readback_state": "not_started", "refs_invalidated": false, "error_code": "navigation_dispatch_failed", "error": "browser navigation dispatch failed"}}),
+        json!({"structuredContent": {"status": "error", "target_id": "target-1", "tab_id": "tab-1", "url": "https://example.test/next", "delivery_mode": "foreground", "dispatched": true, "activated": false, "activation_state": "failed", "readback_state": "timeout", "refs_invalidated": true, "error_code": "target_activation_failed", "error": "foreground target activation failed"}}),
+    ] {
+        assert!(
+            navigation_response_is_success(&invalid, "target-1", "tab-1", "foreground").is_err()
+        );
+    }
+}
+
+#[rstest]
 fn browser_routes_keep_dom_event_explicit() {
     assert_eq!(validate_route(None).unwrap(), "trusted");
     assert_eq!(validate_route(Some("dom_event")).unwrap(), "dom_event");

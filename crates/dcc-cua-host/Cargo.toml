@@ -35,6 +35,6 @@ dcc-cua-workspace-hack = { version = "1", path = "../dcc-cua-workspace-hack" }
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Threading"] }
 
 [dev-dependencies]
-cua-driver-sdk = { git = "https://github.com/loonghao/cua.git", rev = "ba335691cc3d237a6171ce7c50977e208b728cf3", package = "cua-driver-sdk" }
+cua-driver-sdk = { git = "https://github.com/loonghao/cua.git", rev = "39f8a1a976f9e87d8d28affb74a1c87368893ca5", package = "cua-driver-sdk" }
 dcc-cua-core = { path = "../dcc-cua-core", features = ["test-support"] }
 rstest.workspace = true

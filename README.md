@@ -871,7 +871,11 @@ continuations.
 selected tab. Callers that require a visible switch must explicitly request
 `delivery_mode: "foreground"`; success then requires exact target/tab identity,
 activation, and settled live `current_url`, `title`, `heading`, `ready_state`, and `visibility_state`
-readback. Any identity or visibility drift fails closed. `browser_navigate`,
+readback bound to the committed frame and loader (including redirects). Any
+stale document, identity, or visibility drift fails closed. A post-dispatch
+failure remains a structured receipt with `dispatched`, activation/readback
+state, target/tab identity, and a stable error code, so callers can distinguish
+no delivery from a navigation that changed the page but failed verification. `browser_navigate`,
 `browser_set_input_files`, and `browser_download` invalidate the tab snapshot.
 Upload uses `allow_browser_input`; download is a separate
 destructive grant (`allow_browser_download`) and CUA's host approval evidence.
