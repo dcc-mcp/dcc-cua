@@ -867,8 +867,13 @@ ancestor distance. Scoped continuation tokens are connection-scoped and
 single-use; each continued page reports `snapshot.scope: "continuation"` and
 must preserve that exact anchor. A new observation invalidates prior refs and
 continuations.
-`browser_navigate`, `browser_set_input_files`, and `browser_download` invalidate
-the tab snapshot. Upload uses `allow_browser_input`; download is a separate
+`browser_navigate` defaults to `delivery_mode: "background"`, preserving the
+selected tab. Callers that require a visible switch must explicitly request
+`delivery_mode: "foreground"`; success then requires exact target/tab identity,
+activation, and settled live `current_url`, `title`, `heading`, `ready_state`, and `visibility_state`
+readback. Any identity or visibility drift fails closed. `browser_navigate`,
+`browser_set_input_files`, and `browser_download` invalidate the tab snapshot.
+Upload uses `allow_browser_input`; download is a separate
 destructive grant (`allow_browser_download`) and CUA's host approval evidence.
 `browser_dialog` only resolves page-owned JavaScript dialogs and requires the
 exact current `dialog_id` for accept/dismiss.

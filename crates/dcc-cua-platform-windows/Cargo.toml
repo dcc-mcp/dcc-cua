@@ -22,8 +22,8 @@ uuid = { version = "1", features = ["v4"] }
 dcc-cua-workspace-hack = { version = "1", path = "../dcc-cua-workspace-hack" }
 
 [target.'cfg(windows)'.dependencies]
-cursor-overlay = { git = "https://github.com/loonghao/cua.git", rev = "593234c061758a85d347b6b80d1d1125cccfb670", package = "cursor-overlay" }
-platform-windows = { git = "https://github.com/loonghao/cua.git", rev = "593234c061758a85d347b6b80d1d1125cccfb670", package = "platform-windows" }
+cursor-overlay = { git = "https://github.com/loonghao/cua.git", rev = "ba335691cc3d237a6171ce7c50977e208b728cf3", package = "cursor-overlay" }
+platform-windows = { git = "https://github.com/loonghao/cua.git", rev = "ba335691cc3d237a6171ce7c50977e208b728cf3", package = "platform-windows" }
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
 windows = { version = "0.58", features = [
     "Graphics_Capture",

@@ -10,6 +10,65 @@ fn browser_urls_are_scheme_and_length_bounded() {
 }
 
 #[rstest]
+fn browser_navigation_requires_an_explicit_bounded_delivery_mode() {
+    let foreground: BrowserNavigateRequest = serde_json::from_value(json!({
+        "target_id": "target-1",
+        "tab_id": "tab-1",
+        "url": "https://example.test/next",
+        "delivery_mode": "foreground"
+    }))
+    .unwrap();
+    assert_eq!(foreground.delivery_mode.as_deref(), Some("foreground"));
+    assert!(validate_navigate_request(&foreground).is_ok());
+
+    let background: BrowserNavigateRequest = serde_json::from_value(json!({
+        "target_id": "target-1",
+        "tab_id": "tab-1",
+        "url": "https://example.test/next",
+        "delivery_mode": "background"
+    }))
+    .unwrap();
+    assert!(validate_navigate_request(&background).is_ok());
+
+    let invalid: BrowserNavigateRequest = serde_json::from_value(json!({
+        "target_id": "target-1",
+        "tab_id": "tab-1",
+        "url": "https://example.test/next",
+        "delivery_mode": "auto"
+    }))
+    .unwrap();
+    assert!(validate_navigate_request(&invalid).is_err());
+}
+
+#[rstest]
+fn foreground_navigation_readback_is_exact_and_visible() {
+    let verified = json!({
+        "structuredContent": {
+            "status": "ok",
+            "target_id": "target-1",
+            "tab_id": "tab-1",
+            "delivery_mode": "foreground",
+            "activated": true,
+            "current_url": "https://example.test/current",
+            "title": "Current title",
+            "heading": "Current heading",
+            "visibility_state": "visible",
+            "ready_state": "complete"
+        }
+    });
+    assert!(validate_foreground_navigation_readback(&verified, "target-1", "tab-1").is_ok());
+
+    for invalid in [
+        json!({"structuredContent": {"status": "ok", "target_id": "target-drift", "tab_id": "tab-1", "delivery_mode": "foreground", "activated": true, "current_url": "https://example.test/current", "title": "Current title", "heading": "Current heading", "visibility_state": "visible", "ready_state": "complete"}}),
+        json!({"structuredContent": {"status": "ok", "target_id": "target-1", "tab_id": "tab-drift", "delivery_mode": "foreground", "activated": true, "current_url": "https://example.test/current", "title": "Current title", "heading": "Current heading", "visibility_state": "visible", "ready_state": "complete"}}),
+        json!({"structuredContent": {"status": "ok", "target_id": "target-1", "tab_id": "tab-1", "delivery_mode": "foreground", "activated": true, "current_url": "https://example.test/current", "title": "Current title", "heading": "Current heading", "visibility_state": "hidden", "ready_state": "complete"}}),
+        json!({"structuredContent": {"status": "ok", "target_id": "target-1", "tab_id": "tab-1", "delivery_mode": "foreground", "activated": true, "current_url": "https://example.test/current", "title": "Current title", "heading": "Current heading", "visibility_state": "visible", "ready_state": "loading"}}),
+    ] {
+        assert!(validate_foreground_navigation_readback(&invalid, "target-1", "tab-1").is_err());
+    }
+}
+
+#[rstest]
 fn browser_routes_keep_dom_event_explicit() {
     assert_eq!(validate_route(None).unwrap(), "trusted");
     assert_eq!(validate_route(Some("dom_event")).unwrap(), "dom_event");
