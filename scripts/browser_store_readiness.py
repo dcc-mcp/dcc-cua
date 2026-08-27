@@ -69,6 +69,8 @@ DIGEST_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 REMOTE_ACTION_PATTERN = re.compile(r"^\s*(?:-\s*)?uses:\s*([^\s#]+)", re.MULTILINE)
 PINNED_ACTION_PATTERN = re.compile(r"^[^@\s]+@[0-9a-f]{40}$")
 FIREFOX_ADDON_ID = "dcc-cua@dcc-mcp.org"
+REQUIRED_CI_JOB = "policy"
+REQUIRED_CI_COMMAND = "python -B -m unittest scripts.test_browser_store_readiness"
 
 
 class ReadinessError(RuntimeError):
@@ -311,6 +313,107 @@ def audit_action_pins(paths: Sequence[Path]) -> dict[str, object]:
             if PINNED_ACTION_PATTERN.fullmatch(action) is None:
                 unpinned.append(f"{path.name}:{action}")
     return {"valid": not unpinned, "unpinned": sorted(unpinned)}
+
+
+def audit_required_ci_contract(workflow: str) -> dict[str, object]:
+    """Validate one directly executable required CI step without a YAML dependency."""
+    lines = workflow.splitlines()
+    reasons: list[str] = []
+    if any("\t" in line for line in lines):
+        reasons.append("workflow_tabs_not_allowed")
+    jobs_headers = [
+        index
+        for index, line in enumerate(lines)
+        if line.split("#", 1)[0].rstrip() == "jobs:" and not line.startswith((" ", "\t"))
+    ]
+    if len(jobs_headers) != 1:
+        return {"valid": False, "reasons": ["jobs_mapping_invalid"]}
+    jobs_start = jobs_headers[0] + 1
+    jobs_end = next(
+        (
+            index
+            for index in range(jobs_start, len(lines))
+            if lines[index].strip()
+            and not lines[index].lstrip().startswith("#")
+            and not lines[index].startswith((" ", "\t"))
+        ),
+        len(lines),
+    )
+    job_headers: list[tuple[int, str]] = []
+    for index in range(jobs_start, jobs_end):
+        match = re.fullmatch(r"  ([A-Za-z0-9_-]+):(?:\s*#.*)?", lines[index])
+        if match:
+            job_headers.append((index, match.group(1)))
+    matches = [entry for entry in job_headers if entry[1] == REQUIRED_CI_JOB]
+    if len(matches) != 1:
+        return {"valid": False, "reasons": ["required_job_missing"]}
+    job_start = matches[0][0]
+    job_end = next(
+        (index for index, _ in job_headers if index > job_start),
+        jobs_end,
+    )
+    job_fields: dict[str, str] = {}
+    job_field_lines: dict[str, int] = {}
+    for index in range(job_start + 1, job_end):
+        line = lines[index]
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        match = re.fullmatch(r"    ([A-Za-z0-9_-]+):(?:\s*(.*))?", line)
+        if match:
+            key, value = match.group(1), (match.group(2) or "").strip()
+            if key in job_fields:
+                reasons.append("required_job_duplicate_field")
+            job_fields[key] = value
+            job_field_lines[key] = index
+        elif line.startswith("    ") and not line.startswith("      "):
+            reasons.append("required_job_structure_invalid")
+    allowed_job_fields = {"runs-on", "timeout-minutes", "steps"}
+    if set(job_fields) - allowed_job_fields:
+        reasons.append("required_job_fields_invalid")
+    if not job_fields.get("runs-on"):
+        reasons.append("required_job_runner_missing")
+    for key in ("if", "continue-on-error", "needs"):
+        if key in job_fields:
+            reasons.append(f"required_job_{key}_not_allowed")
+    if "steps" not in job_fields or job_fields["steps"] not in ("",):
+        reasons.append("required_job_steps_invalid")
+
+    steps: list[dict[str, str]] = []
+    current: dict[str, str] | None = None
+    steps_start = job_field_lines.get("steps", job_end)
+    for index in range(steps_start + 1, job_end):
+        line = lines[index]
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        start = re.fullmatch(r"      -(?:\s+([A-Za-z0-9_-]+):(?:\s*(.*))?)?", line)
+        if start:
+            current = {}
+            steps.append(current)
+            if start.group(1):
+                current[start.group(1)] = (start.group(2) or "").strip()
+            continue
+        field = re.fullmatch(r"        ([A-Za-z0-9_-]+):(?:\s*(.*))?", line)
+        if field and current is not None:
+            key, value = field.group(1), (field.group(2) or "").strip()
+            if key in current:
+                reasons.append("required_step_duplicate_field")
+            current[key] = value
+        else:
+            indentation = len(line) - len(line.lstrip(" "))
+            if indentation == 6:
+                reasons.append("required_steps_structure_invalid")
+            elif indentation == 8:
+                reasons.append("required_step_structure_invalid")
+    candidates = [step for step in steps if step.get("run") == REQUIRED_CI_COMMAND]
+    if len(candidates) != 1:
+        reasons.append("required_step_missing")
+    else:
+        candidate = candidates[0]
+        for key in ("if", "continue-on-error"):
+            if key in candidate:
+                reasons.append(f"required_step_{key}_not_allowed")
+    reasons = sorted(set(reasons))
+    return {"valid": not reasons, "reasons": reasons}
 
 
 def _request_json(
@@ -637,15 +740,57 @@ def _failure_receipt() -> dict[str, Any]:
     return receipt
 
 
-def _emit_receipt(receipt: Mapping[str, Any], output: Path | None) -> None:
+def _requested_output(arguments: Sequence[str]) -> Path | None:
+    output: Path | None = None
+    index = 0
+    while index < len(arguments):
+        argument = arguments[index]
+        if argument == "--":
+            break
+        if argument.startswith("--output="):
+            output = Path(argument.partition("=")[2])
+        elif (
+            argument == "--output"
+            and index + 1 < len(arguments)
+            and not arguments[index + 1].startswith("-")
+        ):
+            index += 1
+            output = Path(arguments[index])
+        index += 1
+    return output
+
+
+def _emit_receipt(receipt: Mapping[str, Any], output: Path | None) -> bool:
     serialized = serialize_receipt(receipt)
+    file_written = True
     if output:
-        output.write_text(serialized, encoding="utf-8", newline="\n")
-    print(serialized, end="")
+        try:
+            file_written = (
+                output.write_text(serialized, encoding="utf-8", newline="\n")
+                == len(serialized)
+            )
+        except (OSError, ValueError):
+            file_written = False
+    stdout_written = True
+    try:
+        stdout_written = sys.stdout.write(serialized) == len(serialized)
+        sys.stdout.flush()
+    except (OSError, ValueError):
+        stdout_written = False
+    return file_written and stdout_written
+
+
+def _write_safe_failure_message() -> None:
+    try:
+        sys.stderr.write("browser store readiness preflight failed\n")
+        sys.stderr.flush()
+    except (OSError, ValueError):
+        pass
 
 
 def main() -> int:
-    output: Path | None = None
+    output = _requested_output(sys.argv[1:])
+    failed = False
     try:
         parser = _ReceiptArgumentParser()
         parser.add_argument("--snapshot", type=Path)
@@ -686,16 +831,15 @@ def main() -> int:
                 "firefox": probe_firefox(environment),
             }
         receipt = build_receipt(snapshot)
-        _emit_receipt(receipt, output)
-        return 0 if receipt["ready"] else 1
+        exit_code = 0 if receipt["ready"] else 1
     except Exception:
-        failure = _failure_receipt()
-        try:
-            _emit_receipt(failure, output)
-        except OSError:
-            _emit_receipt(failure, None)
-        print("browser store readiness preflight failed", file=sys.stderr)
-        return 1
+        receipt = _failure_receipt()
+        exit_code = 1
+        failed = True
+    delivered = _emit_receipt(receipt, output)
+    if failed or not delivered:
+        _write_safe_failure_message()
+    return exit_code if delivered else 1
 
 
 if __name__ == "__main__":
