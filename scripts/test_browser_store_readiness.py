@@ -25,6 +25,7 @@ SCRIPT = ROOT / "scripts" / "browser_store_readiness.py"
 
 def ready_snapshot() -> dict[str, object]:
     configuration = {name: True for name in READINESS.EXPECTED_CONFIGURATION_NAMES}
+    configuration["DCC_CUA_BROWSER_STORE_PUBLISH_READY"] = "false"
     return {
         "configuration": configuration,
         "environment": {
@@ -54,6 +55,11 @@ def ready_snapshot() -> dict[str, object]:
                     "head_sha": "a" * 40,
                     "repository_id": 123,
                     "head_repository_id": 123,
+                    "status": "completed",
+                    "conclusion": "success",
+                    "event": "push",
+                    "path": ".github/workflows/release-please.yml",
+                    "head_branch": "main",
                 },
             },
         },
@@ -64,6 +70,11 @@ def ready_snapshot() -> dict[str, object]:
                 "item": "exists",
                 "version": "1.2.3",
                 "state": "published",
+                **(
+                    {"taken_down": False, "warned": False}
+                    if name == "chrome"
+                    else {}
+                ),
             }
             for name in ("chrome", "edge", "firefox")
         },
@@ -71,6 +82,95 @@ def ready_snapshot() -> dict[str, object]:
 
 
 class BrowserStoreReadinessTests(unittest.TestCase):
+    @staticmethod
+    def github_api_fixture(path: str) -> tuple[int, object]:
+        responses: dict[str, tuple[int, object]] = {
+            "": (
+                200,
+                {
+                    "id": 123,
+                    "full_name": "dcc-mcp/dcc-cua",
+                    "default_branch": "main",
+                },
+            ),
+            "releases?per_page=100": (
+                200,
+                [
+                    {
+                        "id": 456,
+                        "tag_name": "dcc-cua-browser-extension-v1.2.3",
+                        "target_commitish": "a" * 40,
+                        "draft": False,
+                        "prerelease": False,
+                        "published_at": "2098-01-01T00:00:00Z",
+                    }
+                ],
+            ),
+            "git/ref/tags/dcc-cua-browser-extension-v1.2.3": (
+                200,
+                {"object": {"sha": "a" * 40}},
+            ),
+            "actions/artifacts?name=dcc-cua-browser-extension&per_page=100": (
+                200,
+                {
+                    "artifacts": [
+                        {
+                            "id": 789,
+                            "name": "dcc-cua-browser-extension",
+                            "created_at": "2098-01-01T00:00:00Z",
+                            "workflow_run": {"id": 1011, "head_sha": "a" * 40},
+                        }
+                    ]
+                },
+            ),
+            "actions/artifacts/789": (
+                200,
+                {
+                    "id": 789,
+                    "name": "dcc-cua-browser-extension",
+                    "digest": "sha256:" + "b" * 64,
+                    "expired": False,
+                    "expires_at": "2099-01-01T00:00:00Z",
+                    "workflow_run": {"id": 1011},
+                },
+            ),
+            "actions/runs/1011": (
+                200,
+                {
+                    "id": 1011,
+                    "head_sha": "a" * 40,
+                    "repository": {"id": 123},
+                    "head_repository": {"id": 123},
+                    "status": "completed",
+                    "conclusion": "success",
+                    "event": "push",
+                    "path": ".github/workflows/release-please.yml",
+                    "head_branch": "main",
+                },
+            ),
+            "environments/browser-stores": (
+                200,
+                {
+                    "name": "browser-stores",
+                    "deployment_branch_policy": {
+                        "protected_branches": True,
+                        "custom_branch_policies": False,
+                    },
+                },
+            ),
+            "branches/main": (200, {"name": "main", "protected": True}),
+            "environments/browser-stores/variables?per_page=100": (
+                200,
+                {"variables": []},
+            ),
+            "environments/browser-stores/secrets?per_page=100": (
+                200,
+                {"secrets": []},
+            ),
+            "actions/variables?per_page=100": (200, {"variables": []}),
+        }
+        return responses[path]
+
     def assert_failure_receipt(self, serialized: str) -> dict[str, object]:
         self.assertEqual(1, serialized.count("\n"))
         receipt = json.loads(serialized)
@@ -160,12 +260,147 @@ class BrowserStoreReadinessTests(unittest.TestCase):
         self.assertFalse(receipt["github_identity"]["valid"])
         self.assertIn("source_head_drift", receipt["github_identity"]["reasons"])
 
+    def test_artifact_run_must_be_successful_release_push_on_main(self) -> None:
+        mutations = {
+            "status": "in_progress",
+            "conclusion": "failure",
+            "event": "pull_request",
+            "path": ".github/workflows/ci-checks.yml",
+            "head_branch": "feature/not-main",
+        }
+        for field, value in mutations.items():
+            with self.subTest(field=field):
+                snapshot = ready_snapshot()
+                snapshot["github"]["artifact"]["workflow_run"][field] = value
+                receipt = READINESS.build_receipt(snapshot)
+                self.assertFalse(receipt["github_identity"]["valid"])
+                self.assertIn(
+                    "artifact_producer_mismatch",
+                    receipt["github_identity"]["reasons"],
+                )
+
+    def test_github_snapshot_uses_contents_read_branch_endpoint(self) -> None:
+        paths: list[str] = []
+
+        def fake_get(repository: str, path: str, token: str, **kwargs: object):
+            self.assertEqual("dcc-mcp/dcc-cua", repository)
+            self.assertEqual("configured", token)
+            paths.append(path)
+            return self.github_api_fixture(path)
+
+        with mock.patch.object(READINESS, "_github_get", side_effect=fake_get):
+            snapshot = READINESS.collect_github_snapshot(
+                "dcc-mcp/dcc-cua", "configured"
+            )
+
+        self.assertIn("branches/main", paths)
+        self.assertNotIn("branches/main/protection", paths)
+        self.assertTrue(snapshot["environment"]["default_branch_protected"])
+        self.assertTrue(
+            READINESS.build_receipt(snapshot)["environment"]["valid"],
+            "a protected public main must remain eligible with Contents-read",
+        )
+
+    def test_collected_run_metadata_is_bound_into_receipt(self) -> None:
+        for field, value in {
+            "status": "queued",
+            "conclusion": "failure",
+            "event": "pull_request",
+            "path": ".github/workflows/other.yml",
+            "head_branch": "feature/not-main",
+        }.items():
+            with self.subTest(field=field):
+                def fake_get(
+                    repository: str, path: str, token: str, **kwargs: object
+                ):
+                    status, payload = self.github_api_fixture(path)
+                    payload = copy.deepcopy(payload)
+                    if path == "actions/runs/1011":
+                        payload[field] = value
+                    return status, payload
+
+                with mock.patch.object(READINESS, "_github_get", side_effect=fake_get):
+                    snapshot = READINESS.collect_github_snapshot(
+                        "dcc-mcp/dcc-cua", "configured"
+                    )
+                receipt = READINESS.build_receipt(snapshot)
+                self.assertFalse(receipt["github_identity"]["valid"])
+                self.assertIn(
+                    "artifact_producer_mismatch",
+                    receipt["github_identity"]["reasons"],
+                )
+
     def test_api_permission_denial_is_not_ready(self) -> None:
         snapshot = ready_snapshot()
         snapshot["stores"]["edge"]["permission"] = "denied"
         receipt = READINESS.build_receipt(snapshot)
         self.assertEqual("not_ready", receipt["platforms"]["edge"]["state"])
         self.assertEqual("read_permission_denied", receipt["platforms"]["edge"]["reason"])
+
+    def test_chrome_taken_down_or_warned_fails_closed(self) -> None:
+        for field, reason in (
+            ("taken_down", "item_taken_down"),
+            ("warned", "item_warned"),
+        ):
+            with self.subTest(field=field):
+                snapshot = ready_snapshot()
+                snapshot["stores"]["chrome"][field] = True
+                platform = READINESS.build_receipt(snapshot)["platforms"]["chrome"]
+                self.assertFalse(platform["ready"])
+                self.assertEqual(reason, platform["reason"])
+                self.assertTrue(platform[field])
+
+    def test_chrome_probe_normalizes_removal_contract(self) -> None:
+        base = {
+            "itemId": "extension-id",
+            "publishedItemRevisionStatus": {
+                "state": "PUBLISHED",
+                "distributionChannels": [{"crxVersion": "1.2.3"}],
+            },
+            "submittedItemRevisionStatus": {},
+            "takenDown": False,
+            "warned": False,
+        }
+        environment = {
+            "CHROME_WEBSTORE_ACCESS_TOKEN": "redacted",
+            "CHROME_WEBSTORE_PUBLISHER_ID": "publisher-id",
+            "CHROME_WEBSTORE_EXTENSION_ID": "extension-id",
+        }
+        for field in ("takenDown", "warned"):
+            with self.subTest(field=field):
+                response = copy.deepcopy(base)
+                response[field] = True
+                with mock.patch.object(
+                    READINESS, "_request_json", return_value=(200, response)
+                ):
+                    observation = READINESS.probe_chrome(environment, "1.2.3")
+                self.assertIs(observation[READINESS.CHROME_REMOVAL_FIELDS[field]], True)
+                snapshot = ready_snapshot()
+                snapshot["stores"]["chrome"] = observation
+                self.assertFalse(
+                    READINESS.build_receipt(snapshot)["platforms"]["chrome"]["ready"]
+                )
+
+    def test_publish_ready_value_is_observed_without_enabling_actions(self) -> None:
+        cases = {
+            "missing": (None, False, "missing"),
+            "false": ("false", False, "disabled"),
+            "true": ("true", True, "enabled"),
+        }
+        for name, (value, enabled, state) in cases.items():
+            with self.subTest(name=name):
+                snapshot = ready_snapshot()
+                if value is None:
+                    snapshot["configuration"].pop(
+                        "DCC_CUA_BROWSER_STORE_PUBLISH_READY"
+                    )
+                else:
+                    snapshot["configuration"][
+                        "DCC_CUA_BROWSER_STORE_PUBLISH_READY"
+                    ] = value
+                receipt = READINESS.build_receipt(snapshot)
+                self.assertIs(receipt["publishing_enabled"], enabled)
+                self.assertEqual(state, receipt["publishing_gate_state"])
 
     def test_receipt_is_stable_and_redacts_untrusted_provider_fields(self) -> None:
         snapshot = ready_snapshot()
@@ -186,10 +421,22 @@ class BrowserStoreReadinessTests(unittest.TestCase):
             "artifact_digest": ("github", "artifact", "digest"),
             "artifact_expires_at": ("github", "artifact", "expires_at"),
             "run_head_sha": ("github", "artifact", "workflow_run", "head_sha"),
+            "run_status": ("github", "artifact", "workflow_run", "status"),
+            "run_conclusion": ("github", "artifact", "workflow_run", "conclusion"),
+            "run_event": ("github", "artifact", "workflow_run", "event"),
+            "run_path": ("github", "artifact", "workflow_run", "path"),
+            "run_head_branch": (
+                "github",
+                "artifact",
+                "workflow_run",
+                "head_branch",
+            ),
             "chrome_permission": ("stores", "chrome", "permission"),
             "chrome_item": ("stores", "chrome", "item"),
             "chrome_version": ("stores", "chrome", "version"),
             "chrome_state": ("stores", "chrome", "state"),
+            "chrome_taken_down": ("stores", "chrome", "taken_down"),
+            "chrome_warned": ("stores", "chrome", "warned"),
             "edge_permission": ("stores", "edge", "permission"),
             "edge_item": ("stores", "edge", "item"),
             "edge_version": ("stores", "edge", "version"),

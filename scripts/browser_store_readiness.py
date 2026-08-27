@@ -78,6 +78,14 @@ CANONICAL_TIMESTAMP_PATTERN = re.compile(
     r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
 )
 KNOWN_READ_PERMISSIONS = {"granted", "denied", "not_checked", "unverifiable"}
+CHROME_REMOVAL_FIELDS = {"takenDown": "taken_down", "warned": "warned"}
+EXPECTED_ARTIFACT_RUN = {
+    "status": "completed",
+    "conclusion": "success",
+    "event": "push",
+    "path": ".github/workflows/release-please.yml",
+    "head_branch": "main",
+}
 FIREFOX_ADDON_ID = "dcc-cua@dcc-mcp.org"
 CI_POLICY_JOB = "policy"
 CI_RECEIPT_COMMAND = "python -B -m unittest scripts.test_browser_store_readiness"
@@ -144,6 +152,41 @@ def _canonical_expiry(value: object) -> tuple[str | None, datetime | None]:
     except ValueError:
         return None, None
     return parsed.strftime("%Y-%m-%dT%H:%M:%SZ"), parsed
+
+
+def _configuration_present(configuration: Mapping[str, Any], name: str) -> bool:
+    value = configuration.get(name)
+    if name != "DCC_CUA_BROWSER_STORE_PUBLISH_READY":
+        return _bool(value)
+    if isinstance(value, Mapping):
+        return _bool(value.get("present"))
+    if isinstance(value, str):
+        return value.lower() in {"true", "false"}
+    return _bool(value)
+
+
+def _publishing_gate(configuration: Mapping[str, Any]) -> tuple[bool, str]:
+    if "DCC_CUA_BROWSER_STORE_PUBLISH_READY" not in configuration:
+        return False, "missing"
+    value = configuration.get("DCC_CUA_BROWSER_STORE_PUBLISH_READY")
+    if isinstance(value, Mapping):
+        if not _bool(value.get("present")):
+            return False, "missing"
+        enabled = value.get("enabled")
+        return (
+            (enabled, "enabled" if enabled else "disabled")
+            if isinstance(enabled, bool)
+            else (False, "unknown")
+        )
+    if isinstance(value, str):
+        normalized = value.lower()
+        if normalized == "true":
+            return True, "enabled"
+        if normalized == "false":
+            return False, "disabled"
+    if isinstance(value, bool):
+        return value, "enabled" if value else "disabled"
+    return False, "unknown"
 
 
 def _environment_receipt(environment: Mapping[str, Any]) -> dict[str, object]:
@@ -214,6 +257,8 @@ def _github_identity_receipt(github: Mapping[str, Any]) -> dict[str, object]:
         reasons.append("invalid_repository_identity")
     if run.get("repository_id") != repository_id or run.get("head_repository_id") != repository_id:
         reasons.append("artifact_repository_mismatch")
+    if any(run.get(field) != expected for field, expected in EXPECTED_ARTIFACT_RUN.items()):
+        reasons.append("artifact_producer_mismatch")
     artifact_id = artifact.get("id")
     run_id = run.get("id")
     release_id = github.get("release_id")
@@ -275,6 +320,17 @@ def _platform_receipt(
         "version": None,
         "item_state": None,
     }
+    if platform == "chrome":
+        result["taken_down"] = (
+            observation.get("taken_down")
+            if isinstance(observation.get("taken_down"), bool)
+            else None
+        )
+        result["warned"] = (
+            observation.get("warned")
+            if isinstance(observation.get("warned"), bool)
+            else None
+        )
     item_name = ITEM_ID_CONFIGURATION.get(platform)
     if item_name in missing:
         result.update(state="human_action_required", reason="item_onboarding_required")
@@ -294,6 +350,16 @@ def _platform_receipt(
             reason="item_onboarding_required" if item == "missing" else "item_existence_unknown",
         )
         return result
+    if platform == "chrome":
+        if result["taken_down"] is True:
+            result["reason"] = "item_taken_down"
+            return result
+        if result["warned"] is True:
+            result["reason"] = "item_warned"
+            return result
+        if result["taken_down"] is not False or result["warned"] is not False:
+            result["reason"] = "removal_state_unknown"
+            return result
     raw_version = observation.get("version")
     version_matches = (
         isinstance(raw_version, str)
@@ -324,6 +390,7 @@ def build_receipt(snapshot: Mapping[str, Any]) -> dict[str, Any]:
     pins = {"valid": _bool(raw_pins.get("valid")), "unpinned_count": unpinned_count}
     _, expected_version = _release_identity(_mapping(snapshot.get("github")).get("tag"))
     observations = _mapping(snapshot.get("stores"))
+    publishing_enabled, publishing_gate_state = _publishing_gate(configuration)
     platforms = {
         platform: _platform_receipt(
             platform,
@@ -353,11 +420,14 @@ def build_receipt(snapshot: Mapping[str, Any]) -> dict[str, Any]:
         "schema": "dcc-cua.browser-store-readiness.v1",
         "ready": ready,
         "overall_state": overall_state,
-        "publishing_enabled": False,
+        "publishing_enabled": publishing_enabled,
+        "publishing_gate_state": publishing_gate_state,
         "configuration": {
             "expected_names": list(EXPECTED_CONFIGURATION_NAMES),
             "present_count": sum(
-                1 for name in EXPECTED_CONFIGURATION_NAMES if _bool(configuration.get(name))
+                1
+                for name in EXPECTED_CONFIGURATION_NAMES
+                if _configuration_present(configuration, name)
             ),
             "expected_count": len(EXPECTED_CONFIGURATION_NAMES),
             "values_redacted": True,
@@ -690,16 +760,26 @@ def collect_github_snapshot(repository: str, token: str) -> dict[str, Any]:
                         "head_sha": exact_run.get("head_sha"),
                         "repository_id": _mapping(exact_run.get("repository")).get("id"),
                         "head_repository_id": _mapping(exact_run.get("head_repository")).get("id"),
+                        "status": exact_run.get("status"),
+                        "conclusion": exact_run.get("conclusion"),
+                        "event": exact_run.get("event"),
+                        "path": exact_run.get("path"),
+                        "head_branch": exact_run.get("head_branch"),
                     }
     status, environment = _github_get(repository, "environments/browser-stores", token)
     environment = environment if status == 200 and isinstance(environment, Mapping) else {}
-    branch_status, _ = _github_get(
+    branch_status, branch = _github_get(
         repository,
-        f"branches/{urllib.parse.quote(default_branch, safe='')}/protection",
+        f"branches/{urllib.parse.quote(default_branch, safe='')}",
         token,
         expected=(200,),
     )
-    default_branch_protected = branch_status == 200
+    default_branch_protected = bool(
+        branch_status == 200
+        and isinstance(branch, Mapping)
+        and branch.get("name") == default_branch
+        and branch.get("protected") is True
+    )
     default_branch_eligible = False
     policy = _mapping(environment.get("deployment_branch_policy"))
     if _bool(policy.get("custom_branch_policies")):
@@ -725,7 +805,14 @@ def collect_github_snapshot(repository: str, token: str) -> dict[str, Any]:
         if names_status == 200:
             names.update(_configuration_names(payload, key))
     return {
-        "configuration": {name: name in names for name in EXPECTED_CONFIGURATION_NAMES},
+        "configuration": {
+            name: (
+                {"present": name in names, "enabled": None}
+                if name == "DCC_CUA_BROWSER_STORE_PUBLISH_READY"
+                else name in names
+            )
+            for name in EXPECTED_CONFIGURATION_NAMES
+        },
         "environment": {
             "name": environment.get("name"),
             "deployment_branch_policy": environment.get("deployment_branch_policy"),
@@ -757,7 +844,7 @@ def collect_github_snapshot(repository: str, token: str) -> dict[str, Any]:
     }
 
 
-def probe_chrome(environ: Mapping[str, str], expected_version: str) -> dict[str, str]:
+def probe_chrome(environ: Mapping[str, str], expected_version: str) -> dict[str, object]:
     token = environ.get("CHROME_WEBSTORE_ACCESS_TOKEN", "").strip()
     publisher = environ.get("CHROME_WEBSTORE_PUBLISHER_ID", "").strip()
     item = environ.get("CHROME_WEBSTORE_EXTENSION_ID", "").strip()
@@ -799,6 +886,12 @@ def probe_chrome(environ: Mapping[str, str], expected_version: str) -> dict[str,
         "item": "exists",
         "version": str(selected.get("version", "")),
         "state": str(selected.get("state", "")).lower(),
+        **{
+            receipt_name: data.get(provider_name)
+            if isinstance(data.get(provider_name), bool)
+            else None
+            for provider_name, receipt_name in CHROME_REMOVAL_FIELDS.items()
+        },
     }
 
 
@@ -954,7 +1047,26 @@ def main() -> int:
             name: bool(environment.get(name, "").strip())
             or _bool(existing_configuration.get(name))
             for name in EXPECTED_CONFIGURATION_NAMES
+            if name != "DCC_CUA_BROWSER_STORE_PUBLISH_READY"
         }
+        publish_name = "DCC_CUA_BROWSER_STORE_PUBLISH_READY"
+        publish_value = environment.get(publish_name, "").strip().lower()
+        if publish_value:
+            snapshot["configuration"][publish_name] = {
+                "present": True,
+                "enabled": (
+                    True
+                    if publish_value == "true"
+                    else False if publish_value == "false" else None
+                ),
+            }
+        else:
+            existing_publish = existing_configuration.get(publish_name)
+            snapshot["configuration"][publish_name] = (
+                dict(existing_publish)
+                if isinstance(existing_publish, Mapping)
+                else {"present": _bool(existing_publish), "enabled": None}
+            )
         if args.probe_stores:
             _, version = _release_identity(_mapping(snapshot.get("github")).get("tag"))
             snapshot["stores"] = {
