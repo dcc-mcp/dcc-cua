@@ -1,5 +1,6 @@
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use rstest::rstest;
 
@@ -235,14 +236,113 @@ fn mcp_server_rejects_an_untrusted_process_parent_before_reading_stdin() {
         .expect("dcc-cua should start");
 
     assert!(!output.status.success());
-    let envelope = parse_single_json_envelope(&output.stdout);
-    assert_eq!(envelope["success"], false);
-    assert_eq!(envelope["error"]["code"], "command_failed");
-    assert_eq!(
-        envelope["error"]["message"],
-        "dcc-cua could not complete the command"
+    assert!(
+        output.stdout.is_empty(),
+        "MCP terminal failures must remain on the protocol-native boundary: {:?}",
+        String::from_utf8_lossy(&output.stdout)
     );
     assert!(output.stderr.is_empty());
+}
+
+fn compile_failing_jsonl_host(output_directory: &Path) -> PathBuf {
+    let binary_name = if cfg!(windows) {
+        "failing-jsonl-host.exe"
+    } else {
+        "failing-jsonl-host"
+    };
+    let binary_path = output_directory.join(binary_name);
+    let source_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join("scripts/fixtures/failing_jsonl_host.rs");
+    let output = Command::new("rustc")
+        .arg("--edition=2024")
+        .arg("-o")
+        .arg(&binary_path)
+        .arg(source_path)
+        .output()
+        .expect("rustc should compile the failing Host fixture");
+    assert!(
+        output.status.success(),
+        "failing Host fixture compilation failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    binary_path
+}
+
+#[rstest]
+#[case(&["chrome-extension://abcdefghijklmnop/"])]
+#[case(&["native-host.json", "chrome-extension://abcdefghijklmnop/"])]
+fn truncated_native_messaging_frame_never_emits_unframed_json(#[case] arguments: &[&str]) {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_dcc-cua"))
+        .args(arguments)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("dcc-cua native host should start");
+    child
+        .stdin
+        .take()
+        .expect("native host stdin")
+        .write_all(&[1, 0])
+        .expect("write truncated native message prefix");
+    let output = child.wait_with_output().expect("native host should exit");
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        output.stdout.is_empty(),
+        "native terminal failure appended non-framed bytes: {:02X?}",
+        output.stdout
+    );
+    assert!(output.stderr.is_empty());
+}
+
+#[rstest]
+fn host_jsonl_argument_failure_never_emits_a_one_shot_envelope() {
+    let output = Command::new(env!("CARGO_BIN_EXE_dcc-cua"))
+        .args(["host-jsonl", "--REVIEW_PROTOCOL_PRIVATE_OPTION"])
+        .output()
+        .expect("dcc-cua should start");
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    assert!(output.stderr.is_empty());
+}
+
+#[rstest]
+fn midstream_host_jsonl_failure_has_no_one_shot_trailer() {
+    let fixture_directory = tempfile::tempdir().expect("create Host fixture directory");
+    let fixture = compile_failing_jsonl_host(fixture_directory.path());
+    let mut child = Command::new(env!("CARGO_BIN_EXE_dcc-cua"))
+        .args(["host-jsonl", "--spawn"])
+        .arg(fixture)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("dcc-cua host-jsonl should start");
+    child
+        .stdin
+        .take()
+        .expect("host-jsonl stdin")
+        .write_all(
+            b"{\"request_id\":\"first\",\"method\":\"ping\",\"params\":{}}\n{\"request_id\":\"second\",\"method\":\"ping\",\"params\":{}}\n",
+        )
+        .expect("write two host-jsonl requests");
+    let output = child.wait_with_output().expect("host-jsonl should exit");
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stderr.is_empty());
+    let lines = std::str::from_utf8(&output.stdout)
+        .expect("host-jsonl stdout should be UTF-8")
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("JSONL response"))
+        .collect::<Vec<_>>();
+    assert_eq!(lines.len(), 2, "unexpected protocol trailer: {lines:?}");
+    assert_eq!(lines[0]["type"], "pong");
+    assert_eq!(lines[0]["request_id"], "first");
+    assert_eq!(lines[1]["type"], "error");
+    assert!(lines[1].get("success").is_none());
 }
 
 #[rstest]

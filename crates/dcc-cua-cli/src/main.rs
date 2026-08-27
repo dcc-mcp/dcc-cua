@@ -1,4 +1,5 @@
 use std::env;
+use std::ffi::OsString;
 use std::fs;
 use std::io::{Read, Write};
 use std::path::PathBuf;
@@ -61,18 +62,52 @@ const INTERNAL_FAILURE_DIAGNOSTIC: &str = "dcc-cua: internal command failure";
 const STDOUT_FAILURE_DIAGNOSTIC: &str = "dcc-cua: command result could not be written to stdout";
 const PUBLIC_FAILURE_MESSAGE: &str = "dcc-cua could not complete the command";
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TerminalErrorOutput {
+    OneShotEnvelope,
+    ProtocolNative,
+}
+
 fn main() {
     std::panic::set_hook(Box::new(|_| {
         let _ = writeln!(std::io::stderr().lock(), "{INTERNAL_FAILURE_DIAGNOSTIC}");
     }));
+    let arguments = env::args_os().skip(1).collect::<Vec<_>>();
+    let terminal_error_output = terminal_error_output(&arguments);
     let error_line = match run_command_boundary(run_main) {
         Ok(()) => return,
         Err(error_line) => error_line,
     };
-    if write_error_line(&mut std::io::stdout().lock(), &error_line).is_err() {
+    if terminal_error_output == TerminalErrorOutput::OneShotEnvelope
+        && write_error_line(&mut std::io::stdout().lock(), &error_line).is_err()
+    {
         let _ = writeln!(std::io::stderr().lock(), "{STDOUT_FAILURE_DIAGNOSTIC}");
     }
     std::process::exit(1);
+}
+
+fn terminal_error_output(arguments: &[OsString]) -> TerminalErrorOutput {
+    let first = arguments.first();
+    let first_text = first.and_then(|argument| argument.to_str());
+    let native_messaging = first_text.is_some_and(|argument| {
+        argument.starts_with("chrome-extension://") || argument.starts_with("moz-extension://")
+    }) || (arguments.len() >= 2
+        && first
+            .and_then(|argument| std::path::Path::new(argument).extension())
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("json"))
+        && arguments[1]
+            .to_str()
+            .is_some_and(|argument| !argument.starts_with('-')));
+    if native_messaging
+        || matches!(
+            first_text,
+            Some("host" | "host-jsonl" | "mcp-server" | "__private-worker")
+        )
+    {
+        TerminalErrorOutput::ProtocolNative
+    } else {
+        TerminalErrorOutput::OneShotEnvelope
+    }
 }
 
 fn run_command_boundary<F>(run: F) -> Result<(), String>

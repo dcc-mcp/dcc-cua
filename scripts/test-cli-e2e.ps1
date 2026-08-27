@@ -96,11 +96,18 @@ function Assert-CommandFailureStdoutContract {
     $failureError = Join-Path ([System.IO.Path]::GetTempPath()) "dcc-cua-failure-$([guid]::NewGuid().ToString('N')).err"
     $fixtureExtension = if ($isWindowsHost) { ".exe" } else { "" }
     $hostileHost = Join-Path ([System.IO.Path]::GetTempPath()) "dcc-cua-hostile-host-$([guid]::NewGuid().ToString('N'))${fixtureExtension}"
+    $failingJsonlHost = Join-Path ([System.IO.Path]::GetTempPath()) "dcc-cua-failing-jsonl-host-$([guid]::NewGuid().ToString('N'))${fixtureExtension}"
     $hostileHostSource = Join-Path $PSScriptRoot "fixtures\hostile_host.rs"
+    $failingJsonlHostSource = Join-Path $PSScriptRoot "fixtures\failing_jsonl_host.rs"
+    $jsonlInput = Join-Path ([System.IO.Path]::GetTempPath()) "dcc-cua-jsonl-failure-$([guid]::NewGuid().ToString('N')).in"
     try {
         & rustc --edition=2024 -o $hostileHost $hostileHostSource
         if ($LASTEXITCODE -ne 0) {
             throw "failed to compile the hostile Host fixture"
+        }
+        & rustc --edition=2024 -o $failingJsonlHost $failingJsonlHostSource
+        if ($LASTEXITCODE -ne 0) {
+            throw "failed to compile the failing JSONL Host fixture"
         }
 
         $failure = Start-Process -FilePath $binaryPath -ArgumentList @("definitely-not-a-command") -RedirectStandardOutput $failureOutput -RedirectStandardError $failureError -PassThru -Wait
@@ -145,6 +152,42 @@ function Assert-CommandFailureStdoutContract {
             throw "command substitution did not receive the failed command envelope from stdout"
         }
 
+        $nativeStart = [System.Diagnostics.ProcessStartInfo]::new($binaryPath)
+        $nativeStart.ArgumentList.Add("chrome-extension://abcdefghijklmnop/")
+        $nativeStart.UseShellExecute = $false
+        $nativeStart.RedirectStandardInput = $true
+        $nativeStart.RedirectStandardOutput = $true
+        $nativeStart.RedirectStandardError = $true
+        $native = [System.Diagnostics.Process]::Start($nativeStart)
+        [byte[]]$truncatedPrefix = @(1, 0)
+        $native.StandardInput.BaseStream.Write($truncatedPrefix, 0, $truncatedPrefix.Length)
+        $native.StandardInput.Close()
+        $nativeStdout = $native.StandardOutput.ReadToEnd()
+        $nativeStderr = $native.StandardError.ReadToEnd()
+        $native.WaitForExit()
+        if ($native.ExitCode -ne 1 -or $nativeStdout.Length -ne 0 -or $nativeStderr.Length -ne 0) {
+            throw "release Native Messaging failure escaped its framed protocol boundary"
+        }
+
+        [System.IO.File]::WriteAllText(
+            $jsonlInput,
+            "{`"request_id`":`"first`",`"method`":`"ping`",`"params`":{}}`n{`"request_id`":`"second`",`"method`":`"ping`",`"params`":{}}`n",
+            [System.Text.UTF8Encoding]::new($false)
+        )
+        $jsonl = Start-Process -FilePath $binaryPath -ArgumentList @("host-jsonl", "--spawn", $failingJsonlHost) -RedirectStandardInput $jsonlInput -RedirectStandardOutput $failureOutput -RedirectStandardError $failureError -PassThru -Wait
+        $jsonlStdout = [System.IO.File]::ReadAllText($failureOutput, [System.Text.Encoding]::UTF8)
+        $jsonlStderr = [System.IO.File]::ReadAllText($failureError, [System.Text.Encoding]::UTF8)
+        $jsonlResponses = @($jsonlStdout -split "`r?`n" | Where-Object { $_.Length -gt 0 } | ForEach-Object { $_ | ConvertFrom-Json })
+        if ($jsonl.ExitCode -ne 1 -or
+            $jsonlStderr.Length -ne 0 -or
+            $jsonlResponses.Count -ne 2 -or
+            $jsonlResponses[0].type -ne "pong" -or
+            $jsonlResponses[0].request_id -ne "first" -or
+            $jsonlResponses[1].type -ne "error" -or
+            $null -ne $jsonlResponses[1].PSObject.Properties["success"]) {
+            throw "release host-jsonl mid-stream failure appended a one-shot envelope"
+        }
+
         $hostile = Start-Process -FilePath $binaryPath -ArgumentList @("host-call", "--spawn", $hostileHost, "--method", "ping") -RedirectStandardOutput $failureOutput -RedirectStandardError $failureError -PassThru -Wait
         $hostileStdout = [System.IO.File]::ReadAllText($failureOutput, [System.Text.Encoding]::UTF8)
         $hostileStderr = [System.IO.File]::ReadAllText($failureError, [System.Text.Encoding]::UTF8)
@@ -160,7 +203,7 @@ function Assert-CommandFailureStdoutContract {
         }
     }
     finally {
-        foreach ($path in @($failureOutput, $failureError, $hostileHost)) {
+        foreach ($path in @($failureOutput, $failureError, $hostileHost, $failingJsonlHost, $jsonlInput)) {
             if (Test-Path -LiteralPath $path) {
                 Remove-Item -LiteralPath $path -Force
             }
