@@ -1,3 +1,4 @@
+import contextlib
 import json
 import unittest
 from pathlib import Path
@@ -28,6 +29,7 @@ README = ROOT / "README.md"
 README_ZH = ROOT / "README.zh-CN.md"
 CHECKOUT_ACTION = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"
 DOWNLOAD_ACTION = "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093"
+UPLOAD_ACTION = "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02"
 RELEASE_PLEASE_ACTION = (
     "googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7"
 )
@@ -157,6 +159,192 @@ class ReleaseWorkflowTests(unittest.TestCase):
         )
         self.assertIn("scripts.test_refresh_release_please_prs", release)
 
+    def test_ci_source_sha_event_regressions_run_in_policy_and_release_validation(self):
+        ci = CI_WORKFLOW.read_text(encoding="utf-8")
+        release = WORKFLOW.read_text(encoding="utf-8")
+
+        self.assertIn("python -B -m unittest scripts.test_select_ci_source_sha", ci)
+        self.assertIn("scripts.test_select_ci_source_sha", release)
+
+    def assert_ci_source_checkout_contract(self, workflow, *, subtests=True):
+        jobs = (
+            ("  browser-extension:", "  policy:"),
+            ("  policy:", "  verify:"),
+            ("  verify:", "  e2e:"),
+            ("  e2e:", None),
+        )
+        checkout_marker = f"      - uses: {CHECKOUT_ACTION}"
+        select_marker = "      - name: Select immutable CI source SHA"
+        verify_marker = "      - name: Verify exact CI source checkout"
+        for start_marker, end_marker in jobs:
+            start = workflow.index(start_marker)
+            end = workflow.index(end_marker, start) if end_marker else len(workflow)
+            job = "\n".join(
+                line
+                for line in workflow[start:end].splitlines()
+                if not line.lstrip().startswith("#")
+            )
+            context = (
+                self.subTest(job=start_marker.strip())
+                if subtests
+                else contextlib.nullcontext()
+            )
+            with context:
+                self.assertEqual(job.count(select_marker), 1)
+                self.assertEqual(job.count(checkout_marker), 1)
+                self.assertEqual(job.count("actions/checkout@"), 1)
+                self.assertEqual(job.count(verify_marker), 1)
+                select = job.index(select_marker)
+                checkout = job.index(checkout_marker)
+                verify = job.index(verify_marker)
+                self.assertLess(select, checkout)
+                self.assertLess(checkout, verify)
+                next_step = job.index("\n      - ", checkout + 1) + 1
+                self.assertEqual(next_step, verify)
+
+                select_step = job[select:checkout]
+                for variable, expression in (
+                    ("CI_EVENT_NAME", "${{ github.event_name }}"),
+                    ("CI_EVENT_SHA", "${{ github.sha }}"),
+                    (
+                        "CI_PULL_REQUEST_HEAD_SHA",
+                        "${{ github.event.pull_request.head.sha }}",
+                    ),
+                ):
+                    self.assertIn(f"{variable}: {expression}", select_step)
+                self.assertIn(
+                    'pull_request) source_sha="$CI_PULL_REQUEST_HEAD_SHA"', select_step
+                )
+                self.assertIn(
+                    'push|workflow_dispatch) source_sha="$CI_EVENT_SHA"', select_step
+                )
+                self.assertIn("*[!0-9a-f]*|'')", select_step)
+                self.assertIn('[ "${#source_sha}" -ne 40 ]', select_step)
+                self.assertIn(
+                    'printf \'sha=%s\\n\' "$source_sha" >> "$GITHUB_OUTPUT"',
+                    select_step,
+                )
+
+                checkout_end = job.index("\n      - ", checkout + 1)
+                checkout_step = job[checkout:checkout_end]
+                self.assertIn("ref: ${{ steps.ci-source.outputs.sha }}", checkout_step)
+                self.assertIn("persist-credentials: false", checkout_step)
+                self.assertNotIn("repository:", checkout_step)
+                self.assertNotIn("path:", checkout_step)
+                self.assertNotIn("ref: ${{ github.sha }}", checkout_step)
+
+                verify_end = job.find("\n      - ", verify + 1)
+                verify_step = job[verify:] if verify_end < 0 else job[verify:verify_end]
+                self.assertIn(
+                    "EXPECTED_SOURCE_SHA: ${{ steps.ci-source.outputs.sha }}",
+                    verify_step,
+                )
+                self.assertIn(
+                    "actual_source_sha=\"$(git rev-parse --verify 'HEAD^{commit}')\"",
+                    verify_step,
+                )
+                self.assertIn(
+                    'if [ "$actual_source_sha" != "$EXPECTED_SOURCE_SHA" ]; then',
+                    verify_step,
+                )
+                trusted_integrity = (
+                    'git show "$EXPECTED_SOURCE_SHA:'
+                    'scripts/verify_ci_source_integrity.py" |\n'
+                    "            python -B - --repository . "
+                    '--expected "$EXPECTED_SOURCE_SHA"'
+                )
+                self.assertIn(trusted_integrity, verify_step)
+                source_consumers = job[verify_end:] if verify_end >= 0 else ""
+                self.assertGreaterEqual(job.count(trusted_integrity), 2)
+                untrusted_commands = source_consumers.replace(trusted_integrity, "")
+                self.assertNotIn("git ", untrusted_commands)
+
+    def test_ci_builds_only_the_event_selected_immutable_source_checkout(self):
+        self.assert_ci_source_checkout_contract(CI_WORKFLOW.read_text(encoding="utf-8"))
+
+    def test_ci_source_checkout_rejects_reviewer_merge_ref_counterexample(self):
+        ci = CI_WORKFLOW.read_text(encoding="utf-8")
+        mutated = ci.replace(
+            "ref: ${{ steps.ci-source.outputs.sha }}",
+            "ref: ${{ github.sha }}",
+            1,
+        )
+        with self.assertRaises(AssertionError):
+            self.assert_ci_source_checkout_contract(mutated, subtests=False)
+
+    def test_ci_source_checkout_rejects_missing_ref_and_commented_decoys(self):
+        ci = CI_WORKFLOW.read_text(encoding="utf-8")
+        for replacement in (
+            "# ref: ${{ steps.ci-source.outputs.sha }}",
+            "fetch-depth: 1",
+        ):
+            mutated = ci.replace(
+                "ref: ${{ steps.ci-source.outputs.sha }}", replacement, 1
+            )
+            with (
+                self.subTest(replacement=replacement),
+                self.assertRaises(AssertionError),
+            ):
+                self.assert_ci_source_checkout_contract(mutated, subtests=False)
+
+    def test_ci_source_checkout_rejects_later_checkout_and_secondary_repository(self):
+        ci = CI_WORKFLOW.read_text(encoding="utf-8")
+        mutations = (
+            ci.replace(
+                "      - run: npm --prefix browser-extension/chrome ci",
+                "      - uses: actions/checkout@v7\n"
+                "      - run: npm --prefix browser-extension/chrome ci",
+                1,
+            ),
+            ci.replace(
+                "ref: ${{ steps.ci-source.outputs.sha }}",
+                "repository: attacker/decoy\n          ref: ${{ steps.ci-source.outputs.sha }}",
+                1,
+            ),
+        )
+        for mutated in mutations:
+            with self.subTest(), self.assertRaises(AssertionError):
+                self.assert_ci_source_checkout_contract(mutated, subtests=False)
+
+    def test_ci_source_checkout_rejects_raw_post_verification_git_replacements(self):
+        ci = CI_WORKFLOW.read_text(encoding="utf-8")
+        insertion = "      - uses: dtolnay/rust-toolchain@stable"
+        for command in (
+            "git read-tree attacker-ref",
+            "git restore --source attacker-ref --worktree -- .",
+            "git archive attacker-ref | tar -x -f -",
+        ):
+            mutated = ci.replace(
+                insertion,
+                f"      - run: {command}\n{insertion}",
+                1,
+            )
+            with (
+                self.subTest(command=command),
+                self.assertRaises(AssertionError),
+            ):
+                self.assert_ci_source_checkout_contract(mutated, subtests=False)
+
+    def test_ci_source_integrity_rejects_mutable_or_commented_verifier_decoys(self):
+        ci = CI_WORKFLOW.read_text(encoding="utf-8")
+        trusted = (
+            'git show "$EXPECTED_SOURCE_SHA:scripts/verify_ci_source_integrity.py" |\n'
+            '            python -B - --repository . --expected "$EXPECTED_SOURCE_SHA"'
+        )
+        for replacement in (
+            (
+                "python -B scripts/verify_ci_source_integrity.py "
+                '--repository . --expected "$EXPECTED_SOURCE_SHA"'
+            ),
+            "# " + trusted,
+        ):
+            mutated = ci.replace(trusted, replacement, 1)
+            with (
+                self.subTest(replacement=replacement),
+                self.assertRaises(AssertionError),
+            ):
+                self.assert_ci_source_checkout_contract(mutated, subtests=False)
+
     def test_public_docs_list_every_native_release_target(self):
         english = README.read_text(encoding="utf-8")
         chinese = README_ZH.read_text(encoding="utf-8")
@@ -187,6 +375,217 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertIn("cp -R plugins target/release/plugins", workflow)
         self.assertIn(
             "assets skills plugins .claude-plugin .codex-plugin .mcp.json", workflow
+        )
+
+    def test_native_archives_are_smoked_only_after_uploaded_byte_readback(self):
+        self.test_release_native_archives_are_verified_from_exact_uploaded_bytes()
+
+    def assert_pr_ci_final_archive_contract(self, ci):
+        self.assert_ci_source_checkout_contract(ci)
+        self.assert_native_uploaded_readback_contract(
+            ci,
+            "  e2e:",
+            None,
+            "Package final native archive",
+            "upload-pr-native",
+            None,
+        )
+
+    def test_pr_ci_packages_and_smokes_every_final_native_archive(self):
+        self.assert_pr_ci_final_archive_contract(
+            CI_WORKFLOW.read_text(encoding="utf-8")
+        )
+
+    def test_pr_ci_final_archive_contract_rejects_a_commented_verifier(self):
+        ci = CI_WORKFLOW.read_text(encoding="utf-8")
+        mutated = ci.replace(
+            "          python -B scripts/verify_uploaded_artifact.py \\",
+            "          # python -B scripts/verify_uploaded_artifact.py \\",
+            1,
+        )
+        with self.assertRaises(AssertionError):
+            self.assert_pr_ci_final_archive_contract(mutated)
+
+    def test_pr_ci_final_archive_contract_rejects_local_rehash_decoy(self):
+        ci = CI_WORKFLOW.read_text(encoding="utf-8")
+        mutated = ci.replace(
+            "          python -B scripts/verify_uploaded_artifact.py \\",
+            "          sha256sum dist/*",
+            1,
+        )
+        with self.assertRaises(AssertionError):
+            self.assert_pr_ci_final_archive_contract(mutated)
+
+    def test_pr_ci_final_archive_contract_rejects_mutable_copy_decoy(self):
+        ci = CI_WORKFLOW.read_text(encoding="utf-8")
+        mutated = ci.replace(
+            '            --bundle "$ARTIFACT_BUNDLE" \\',
+            '            --bundle "dist/local-copy.zip" \\',
+            1,
+        )
+        with self.assertRaises(AssertionError):
+            self.assert_pr_ci_final_archive_contract(mutated)
+
+    def test_pr_ci_final_archive_contract_rejects_unrelated_artifact_id(self):
+        ci = CI_WORKFLOW.read_text(encoding="utf-8")
+        mutated = ci.replace(
+            "ARTIFACT_ID: ${{ steps.upload-pr-native.outputs.artifact-id }}",
+            "ARTIFACT_ID: 123",
+            1,
+        )
+        with self.assertRaises(AssertionError):
+            self.assert_pr_ci_final_archive_contract(mutated)
+
+    def test_pr_ci_final_archive_contract_rejects_merge_ref_head(self):
+        ci = CI_WORKFLOW.read_text(encoding="utf-8")
+        mutated = ci.replace(
+            "ref: ${{ steps.ci-source.outputs.sha }}",
+            "ref: ${{ github.sha }}",
+            1,
+        )
+        with self.assertRaises(AssertionError):
+            self.assert_ci_source_checkout_contract(mutated, subtests=False)
+
+    def test_pr_ci_final_archive_contract_rejects_name_lookup(self):
+        ci = CI_WORKFLOW.read_text(encoding="utf-8")
+        mutated = ci.replace(
+            'actions/artifacts/${ARTIFACT_ID}/zip"',
+            'actions/artifacts?name=dcc-cua-pr-native/zip"',
+            1,
+        )
+        with self.assertRaises(AssertionError):
+            self.assert_pr_ci_final_archive_contract(mutated)
+
+    def test_pr_ci_final_archive_contract_rejects_post_verifier_pre_upload_mutation(
+        self,
+    ):
+        ci = CI_WORKFLOW.read_text(encoding="utf-8")
+        upload_marker = f"      - uses: {UPLOAD_ACTION}"
+        upload_start = ci.index(upload_marker, ci.index("  e2e:"))
+        upload_end = ci.index("\n      - ", upload_start + 1) + 1
+        upload_block = ci[upload_start:upload_end]
+        without_upload = ci[:upload_start] + ci[upload_end:]
+        mutation = (
+            "\n      - name: Mutate after verifier before upload\n"
+            "        shell: bash\n"
+            "        run: printf mutation >> dist/unchecked-archive\n"
+        )
+        mutated = without_upload + mutation + upload_block
+        with self.assertRaises(AssertionError):
+            self.assert_pr_ci_final_archive_contract(mutated)
+
+    def assert_native_uploaded_readback_contract(
+        self,
+        workflow,
+        job_start,
+        job_end,
+        package_name,
+        upload_id,
+        expected_head_sha,
+    ):
+        start = workflow.index(job_start)
+        end = workflow.index(job_end, start) if job_end else len(workflow)
+        job = workflow[start:end]
+        executable = "\n".join(
+            line for line in job.splitlines() if not line.lstrip().startswith("#")
+        )
+
+        package_marker = f"      - name: {package_name}"
+        upload_marker = f"      - uses: {UPLOAD_ACTION}"
+        download_marker = "      - name: Download exact native artifact by ID"
+        verify_marker = "      - name: Verify downloaded immutable native artifact"
+        for marker in (package_marker, upload_marker, download_marker, verify_marker):
+            self.assertEqual(executable.count(marker), 1)
+        package = executable.index(package_marker)
+        upload = executable.index(upload_marker)
+        download = executable.index(download_marker)
+        verify = executable.index(verify_marker)
+        self.assertLess(package, upload)
+        self.assertLess(upload, download)
+        self.assertLess(download, verify)
+        self.assertNotIn("verify_final_archive.py", executable[package:upload])
+        self.assertIn(
+            "python scripts/write-install-manifest.py", executable[package:upload]
+        )
+        self.assertIn("--source-root target/release", executable[package:upload])
+
+        upload_step = executable[upload:download]
+        self.assertIn(f"id: {upload_id}", upload_step)
+        self.assertIn("path: dist/*", upload_step)
+        self.assertIn("if-no-files-found: error", upload_step)
+        self.assertIn("overwrite: false", upload_step)
+
+        artifact_id = f"${{{{ steps.{upload_id}.outputs.artifact-id }}}}"
+        artifact_digest = f"${{{{ steps.{upload_id}.outputs.artifact-digest }}}}"
+        download_step = executable[download:verify]
+        self.assertIn(f"ARTIFACT_ID: {artifact_id}", download_step)
+        self.assertIn(f"ARTIFACT_DIGEST: {artifact_digest}", download_step)
+        self.assertIn('case "$ARTIFACT_ID" in', download_step)
+        self.assertIn('mkdir "$artifact_download_root"', download_step)
+        self.assertNotIn('mkdir -p "$artifact_download_root"', download_step)
+        self.assertIn(
+            'artifact_bundle="$artifact_download_root/artifact.zip"', download_step
+        )
+        self.assertIn(
+            'gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${ARTIFACT_ID}"',
+            download_step,
+        )
+        self.assertIn(
+            'gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${ARTIFACT_ID}/zip"',
+            download_step,
+        )
+        self.assertNotIn("actions/download-artifact", download_step)
+        self.assertNotIn("?name=", download_step)
+
+        verify_step = executable[verify:]
+        self.assertIn(f"ARTIFACT_ID: {artifact_id}", verify_step)
+        self.assertIn(f"ARTIFACT_DIGEST: {artifact_digest}", verify_step)
+        if expected_head_sha:
+            self.assertIn(f"EXPECTED_HEAD_SHA: {expected_head_sha}", verify_step)
+        else:
+            self.assertIn(
+                "EXPECTED_SOURCE_SHA: ${{ steps.ci-source.outputs.sha }}",
+                verify_step,
+            )
+        self.assertIn("python -B scripts/verify_uploaded_artifact.py \\", verify_step)
+        for argument in (
+            '--metadata "$ARTIFACT_METADATA"',
+            '--bundle "$ARTIFACT_BUNDLE"',
+            '--artifact-id "$ARTIFACT_ID"',
+            '--artifact-digest "$ARTIFACT_DIGEST"',
+            '--run-id "$GITHUB_RUN_ID"',
+            '--head-sha "$EXPECTED_SOURCE_SHA"'
+            if expected_head_sha is None
+            else '--head-sha "$EXPECTED_HEAD_SHA"',
+            "--source-root target/release",
+            "--archive-name ",
+            "--manifest-name ",
+            '--target "$host"',
+            '--version "$version"',
+            "--extract-root ",
+            "--install-root ",
+        ):
+            self.assertIn(argument, verify_step)
+
+    def test_release_native_archives_are_verified_from_exact_uploaded_bytes(self):
+        self.assert_native_uploaded_readback_contract(
+            WORKFLOW.read_text(encoding="utf-8"),
+            "  build:",
+            "  consolidate-native:",
+            "Package dcc-cua",
+            "upload-native",
+            "${{ needs.release-please.outputs.source_sha }}",
+        )
+
+    def test_pr_ci_native_archives_are_verified_from_exact_uploaded_bytes(self):
+        ci = CI_WORKFLOW.read_text(encoding="utf-8")
+        self.assert_native_uploaded_readback_contract(
+            ci,
+            "  e2e:",
+            None,
+            "Package final native archive",
+            "upload-pr-native",
+            None,
         )
 
     def test_marketplace_uses_a_bounded_installable_plugin_directory(self):

@@ -41,7 +41,7 @@ jobs:
         with:
           toolchain: 1.95.0
       - run: cargo metadata --locked --no-deps --format-version 1
-      - run: python -B -m unittest scripts.test_release_workflow scripts.test_release_integrity scripts.test_verify_release_assets scripts.test_refresh_release_please_prs
+      - run: python -B -m unittest scripts.test_release_workflow scripts.test_release_integrity scripts.test_verify_release_assets scripts.test_verify_final_archive scripts.test_verify_uploaded_artifact scripts.test_select_ci_source_sha scripts.test_refresh_release_please_prs
 
   release-please:
     needs: validate
@@ -173,6 +173,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     permissions:
+      actions: read
       contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -249,7 +250,7 @@ jobs:
           asset_name="$(basename "$archive")"
           asset_url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG_NAME}/${asset_name}"
           manifest="dist/dcc-cua-install-manifest-${host}.json"
-          python scripts/write-install-manifest.py --archive "$archive" --version "$version" --target "$host" --url "$asset_url" --output "$manifest" --checksum-output "${archive}.sha256"
+          python scripts/write-install-manifest.py --archive "$archive" --version "$version" --target "$host" --url "$asset_url" --output "$manifest" --checksum-output "${archive}.sha256" --source-root target/release
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         id: upload-native
         with:
@@ -257,6 +258,68 @@ jobs:
           path: dist/*
           if-no-files-found: error
           retention-days: 7
+          overwrite: false
+      - name: Download exact native artifact by ID
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_ID: ${{ steps.upload-native.outputs.artifact-id }}
+          ARTIFACT_DIGEST: ${{ steps.upload-native.outputs.artifact-digest }}
+        run: |
+          set -euo pipefail
+          case "$ARTIFACT_ID" in
+            ''|*[!0-9]*) echo "upload did not return a numeric artifact ID" >&2; exit 1 ;;
+          esac
+          case "$ARTIFACT_DIGEST" in
+            *[!0-9a-f]*|'') echo "upload did not return a SHA-256 artifact digest" >&2; exit 1 ;;
+          esac
+          artifact_download_root="$RUNNER_TEMP/dcc-cua-release-artifact-${ARTIFACT_ID}-${GITHUB_RUN_ATTEMPT}"
+          mkdir "$artifact_download_root"
+          artifact_metadata="$artifact_download_root/metadata.json"
+          artifact_bundle="$artifact_download_root/artifact.zip"
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${ARTIFACT_ID}" > "$artifact_metadata"
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${ARTIFACT_ID}/zip" > "$artifact_bundle"
+          printf 'ARTIFACT_METADATA=%s\nARTIFACT_BUNDLE=%s\n' \
+            "$artifact_metadata" "$artifact_bundle" >> "$GITHUB_ENV"
+      - name: Verify downloaded immutable native artifact
+        shell: bash
+        env:
+          TAG_NAME: ${{ needs.release-please.outputs.tag_name }}
+          EXPECTED_TARGET: ${{ matrix.target }}
+          ARCHIVE_TYPE: ${{ matrix.archive }}
+          ARTIFACT_ID: ${{ steps.upload-native.outputs.artifact-id }}
+          ARTIFACT_DIGEST: ${{ steps.upload-native.outputs.artifact-digest }}
+          EXPECTED_HEAD_SHA: ${{ needs.release-please.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          version="${TAG_NAME#v}"
+          host="$(rustc -vV | sed -n 's/^host: //p')"
+          if [ "$host" != "$EXPECTED_TARGET" ]; then
+            echo "runner target $host does not match declared release target $EXPECTED_TARGET" >&2
+            exit 1
+          fi
+          if [ "$ARCHIVE_TYPE" = "zip" ]; then
+            archive_name="dcc-cua-${version}-${host}.zip"
+          else
+            archive_name="dcc-cua-${version}-${host}.tar.gz"
+          fi
+          manifest_name="dcc-cua-install-manifest-${host}.json"
+          python -B scripts/verify_uploaded_artifact.py \
+            --metadata "$ARTIFACT_METADATA" \
+            --bundle "$ARTIFACT_BUNDLE" \
+            --output-root "$RUNNER_TEMP/dcc-cua-release-readback-${ARTIFACT_ID}" \
+            --artifact-id "$ARTIFACT_ID" \
+            --artifact-name "dcc-cua-native-${{ matrix.platform }}" \
+            --artifact-digest "$ARTIFACT_DIGEST" \
+            --run-id "$GITHUB_RUN_ID" \
+            --head-sha "$EXPECTED_HEAD_SHA" \
+            --archive-name "$archive_name" \
+            --manifest-name "$manifest_name" \
+            --source-root target/release \
+            --target "$host" \
+            --version "$version" \
+            --extract-root "$RUNNER_TEMP/dcc-cua-final-extract-${host}-${GITHUB_RUN_ATTEMPT}" \
+            --install-root "$RUNNER_TEMP/dcc-cua-final-install-${host}-${GITHUB_RUN_ATTEMPT}"
 
   consolidate-native:
     needs: [release-please, build]

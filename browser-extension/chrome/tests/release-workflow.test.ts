@@ -50,7 +50,7 @@ const STEP_ALLOWLIST: Record<string, string[]> = {
     "name:Validate release configuration",
     "uses:dtolnay/rust-toolchain",
     "run:cargo metadata --locked --no-deps --format-version 1",
-    "run:python -B -m unittest scripts.test_release_workflow scripts.test_release_integrity scripts.test_verify_release_assets scripts.test_refresh_release_please_prs",
+    "run:python -B -m unittest scripts.test_release_workflow scripts.test_release_integrity scripts.test_verify_release_assets scripts.test_verify_final_archive scripts.test_verify_uploaded_artifact scripts.test_select_ci_source_sha scripts.test_refresh_release_please_prs",
   ],
   "release-please": [
     "uses:actions/checkout",
@@ -69,6 +69,8 @@ const STEP_ALLOWLIST: Record<string, string[]> = {
     "run:cargo build --release --locked -p dcc-cua-cli",
     "name:Package dcc-cua",
     "uses:actions/upload-artifact",
+    "name:Download exact native artifact by ID",
+    "name:Verify downloaded immutable native artifact",
   ],
   "consolidate-native": [
     "uses:actions/checkout",
@@ -249,7 +251,7 @@ const EXTENSION_PUBLISHED_READBACK_STATEMENTS = [
 const RUN_STATEMENT_DIGESTS: Record<string, string> = {
   "validate|Validate release configuration": "8d3f02794bf7a97330d98fa4d70ce5cc7f62e474df31c860bc71c2a29d178cbd",
   "validate|#3": "007b41ff968a7d8b2e96752351831db1ab9ff3248cf5215b5fa2e6b19ed1234e",
-  "validate|#4": "542f1a9cac47e1095fae9432d01a518cf621da8cb8f8de1fdafa2e3524f91c2c",
+  "validate|#4": "1eb46dc0e86486e716d122b102b6e6e6043c1977f78ab9123b79202fcaa05161",
   "release-please|Refuse pre-existing release identities": "0ce04695628ad6a72542b32d24e1b715f99c873707d5440660849620cba5b0fa",
   "release-please|Keep the native runtime release Latest": "3a51ac0c7bad4c6a9a83661752cb94a506d49a56350494c3a5a2c76faefecebb",
   "release-please|Refresh independent release PRs from current main": "2be98e30902d17319ab0347ce92c886e80573c2a50ce9d52f1aec56e213f8652",
@@ -257,7 +259,9 @@ const RUN_STATEMENT_DIGESTS: Record<string, string> = {
   "build|#4": "0c9fd2bfc5153caf2f158fa8161b842aa52a3183cbb65d62b11be4f52b137204",
   "build|#5": "4e76b39a502964fdbcae32ff23ab3ad042dda3cd73ac0a7852d44dda0605b231",
   "build|#6": "b90711ea4af19f26b51ca5d7ca11dcbf2c9597d75e26d06658253999a73567e8",
-  "build|Package dcc-cua": "6d805e9f9fb7e477a0402cb071542d6fafaea24fbde00cdc01d7dfa14fa7c4ce",
+  "build|Package dcc-cua": "340aa28f7bf0f03453a93bc5902600664dab7a01a27f693a71720bf9d1a25200",
+  "build|Download exact native artifact by ID": "919a36db4a8f070e696e0ebad08fa922bce85135a2092a5c0e16bc7a829f5d19",
+  "build|Verify downloaded immutable native artifact": "6a3c63ba7cf2a33e75de5f30954aaa87f71309a1e9dd03bacad37bb475d67505",
   "consolidate-native|Verify native build artifact set": "a22a2661b450fdd465e1cc5c05d91c7ea15069dab4d8d72f24d442280a3dd672",
   "consolidate-native|Download and verify native build artifacts": "a514a42fa4ee425b4e6f715caa2cfc449db4f7421d1ef50b291f04184454fc9a",
   "consolidate-native|Write immutable native release provenance": "fc8e085354a828c16431d7024a44127cb1c8890820e9b2ab61b98a40d249f1fc",
@@ -421,7 +425,7 @@ function validateReleaseWorkflow(source: string): void {
       contents: "write",
       "pull-requests": "write",
     },
-    build: { contents: "read" },
+    build: { actions: "read", contents: "read" },
     "consolidate-native": { actions: "read", contents: "read" },
     "attach-assets": { actions: "read", contents: "write" },
     "package-browser-extension": { contents: "read" },
@@ -557,6 +561,56 @@ function validateReleaseWorkflow(source: string): void {
   const nativeUpload = actionStep(build, "actions/upload-artifact");
   assert.equal(nativeUpload.id, "upload-native");
   assert.equal(nativeUpload.with?.name, "dcc-cua-native-${{ matrix.platform }}");
+  assert.equal(nativeUpload.with?.overwrite, false);
+  const nativeExactDownload = namedStep(
+    build,
+    "Download exact native artifact by ID",
+  );
+  assert.equal(
+    nativeExactDownload.env?.ARTIFACT_ID,
+    "${{ steps.upload-native.outputs.artifact-id }}",
+  );
+  assert.equal(
+    nativeExactDownload.env?.ARTIFACT_DIGEST,
+    "${{ steps.upload-native.outputs.artifact-digest }}",
+  );
+  assert.match(nativeExactDownload.run ?? "", /\*\[!0-9\]\*/);
+  assert.match(
+    nativeExactDownload.run ?? "",
+    /mkdir "\$artifact_download_root"/,
+  );
+  assert.doesNotMatch(
+    nativeExactDownload.run ?? "",
+    /mkdir -p "\$artifact_download_root"/,
+  );
+  assert.match(
+    nativeExactDownload.run ?? "",
+    /actions\/artifacts\/\$\{ARTIFACT_ID\}"/,
+  );
+  assert.match(
+    nativeExactDownload.run ?? "",
+    /actions\/artifacts\/\$\{ARTIFACT_ID\}\/zip"/,
+  );
+  const nativeExactVerify = namedStep(
+    build,
+    "Verify downloaded immutable native artifact",
+  );
+  assert.equal(
+    nativeExactVerify.env?.ARTIFACT_ID,
+    "${{ steps.upload-native.outputs.artifact-id }}",
+  );
+  assert.equal(
+    nativeExactVerify.env?.ARTIFACT_DIGEST,
+    "${{ steps.upload-native.outputs.artifact-digest }}",
+  );
+  assert.equal(
+    nativeExactVerify.env?.EXPECTED_HEAD_SHA,
+    "${{ needs.release-please.outputs.source_sha }}",
+  );
+  assertExecutableInvocation(
+    nativeExactVerify,
+    "python -B scripts/verify_uploaded_artifact.py \\",
+  );
 
   const consolidate = requiredJob(jobs, "consolidate-native");
   assertNeeds(consolidate, ["release-please", "build"]);
@@ -812,9 +866,9 @@ function assertAdversarialMutations(source: string): void {
   assert.throws(() => validateReleaseWorkflow(moved));
 
   const validateCommand =
-    "python -B -m unittest scripts.test_release_workflow scripts.test_release_integrity scripts.test_verify_release_assets scripts.test_refresh_release_please_prs";
+    "python -B -m unittest scripts.test_release_workflow scripts.test_release_integrity scripts.test_verify_release_assets scripts.test_verify_final_archive scripts.test_verify_uploaded_artifact scripts.test_select_ci_source_sha scripts.test_refresh_release_please_prs";
   const weakenedValidateCommand =
-    "python -B -m unittest scripts.test_release_workflow scripts.test_release_integrity scripts.test_verify_release_assets";
+    "python -B -m unittest scripts.test_release_workflow scripts.test_release_integrity scripts.test_verify_release_assets scripts.test_verify_final_archive";
   assert.throws(() =>
     validateReleaseWorkflow(
       replaceRequired(
