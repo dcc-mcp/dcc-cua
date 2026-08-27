@@ -432,12 +432,15 @@ impl BrowserSession {
                 )
                 .await?,
         )?;
-        let _ = navigation_response_is_success(
+        let succeeded = navigation_response_is_success(
             &result.value,
             &request.target_id,
             &request.tab_id,
             delivery_mode,
         )?;
+        if !succeeded {
+            return result.into_structured_failure_receipt();
+        }
         Ok(result)
     }
 
@@ -831,6 +834,17 @@ impl BrowserResult {
             }
         }
         Ok(Self { value, images })
+    }
+
+    fn into_structured_failure_receipt(self) -> ComputerUseResult<Self> {
+        let structured = structured_content(&self.value)?.clone();
+        Ok(Self {
+            value: json!({
+                "structuredContent": structured,
+                "isError": true,
+            }),
+            images: Vec::new(),
+        })
     }
 }
 
