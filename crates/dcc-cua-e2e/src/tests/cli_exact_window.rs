@@ -52,15 +52,26 @@ fn assert_selector_failure(binary: &Path, command: &str, arguments: &[String]) {
         !output.status.success(),
         "{command} accepted a wrong identity"
     );
-    assert!(
-        output.stdout.is_empty(),
-        "{command} exposed output before rejecting a wrong identity: {}",
-        String::from_utf8_lossy(&output.stdout)
+    let stdout = std::str::from_utf8(&output.stdout)
+        .unwrap_or_else(|error| panic!("{command} failure was not UTF-8: {error}"));
+    assert_eq!(
+        stdout.lines().count(),
+        1,
+        "{command} failure was not exactly one JSON envelope: {stdout:?}"
     );
-    let receipt: Value = serde_json::from_slice(&output.stderr)
+    let receipt: Value = serde_json::from_str(stdout.trim())
         .unwrap_or_else(|error| panic!("{command} failure was not one JSON receipt: {error}"));
     assert_eq!(receipt["success"], false, "{receipt}");
     assert_eq!(receipt["error"]["code"], "command_failed", "{receipt}");
+    assert_eq!(
+        receipt["error"]["message"], "dcc-cua could not complete the command",
+        "{receipt}"
+    );
+    assert!(
+        output.stderr.is_empty(),
+        "{command} leaked diagnostics while rejecting a wrong identity: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 fn fixture_text(path: &Path, id: &str) -> Option<String> {
