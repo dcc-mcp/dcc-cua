@@ -12,7 +12,7 @@ use std::{
     pin::Pin,
     process::{ExitStatus, Stdio},
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicU8, Ordering},
     },
     task::{Context, Poll},
@@ -20,8 +20,9 @@ use std::{
 };
 
 use serde_json::{Value, json};
-use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, ReadBuf, ReadHalf, WriteHalf};
-use tokio::process::{Child, ChildStdin, ChildStdout, Command};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf, ReadHalf, WriteHalf};
+use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
+use tokio::task::JoinHandle;
 
 pub use dcc_cua_protocol::{
     DEFAULT_SESSION_IDLE_TIMEOUT_MS, HOST_PROTOCOL_VERSION, MAX_BINARY_FRAME_BYTES,
@@ -270,14 +271,118 @@ impl LogicalTaskSession {
 pub struct HostProcess {
     client: Option<HostClient>,
     child: Option<Child>,
+    stderr_capture: Option<ChildStderrCapture>,
+}
+
+const MAX_CAPTURED_CHILD_STDERR_BYTES: usize = 16 * 1024;
+const CHILD_STDERR_DRAIN_TIMEOUT: Duration = Duration::from_secs(1);
+
+#[derive(Default)]
+struct ChildStderrState {
+    retained: Vec<u8>,
+    total_bytes: usize,
+    read_failed: bool,
+}
+
+impl ChildStderrState {
+    fn record(&mut self, bytes: &[u8]) {
+        self.total_bytes = self.total_bytes.saturating_add(bytes.len());
+        let remaining = MAX_CAPTURED_CHILD_STDERR_BYTES.saturating_sub(self.retained.len());
+        self.retained
+            .extend_from_slice(&bytes[..bytes.len().min(remaining)]);
+    }
+
+    fn summary(&self) -> ChildStderrSummary {
+        ChildStderrSummary {
+            retained_bytes: self.retained.len(),
+            total_bytes: self.total_bytes,
+            truncated: self.total_bytes > self.retained.len(),
+            read_failed: self.read_failed,
+        }
+    }
+}
+
+struct ChildStderrSummary {
+    retained_bytes: usize,
+    total_bytes: usize,
+    truncated: bool,
+    read_failed: bool,
+}
+
+impl fmt::Debug for ChildStderrSummary {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ChildStderrSummary")
+            .field("retained_bytes", &self.retained_bytes)
+            .field("total_bytes", &self.total_bytes)
+            .field("truncated", &self.truncated)
+            .field("read_failed", &self.read_failed)
+            .finish()
+    }
+}
+
+struct ChildStderrCapture {
+    state: Arc<Mutex<ChildStderrState>>,
+    task: JoinHandle<()>,
+}
+
+impl ChildStderrCapture {
+    fn start(mut stderr: ChildStderr) -> Self {
+        let state = Arc::new(Mutex::new(ChildStderrState::default()));
+        let task_state = Arc::clone(&state);
+        let task = tokio::spawn(async move {
+            let mut chunk = [0_u8; 4096];
+            loop {
+                let read = match stderr.read(&mut chunk).await {
+                    Ok(0) => break,
+                    Ok(read) => read,
+                    Err(_) => {
+                        task_state
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .read_failed = true;
+                        break;
+                    }
+                };
+                let mut state = task_state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                state.record(&chunk[..read]);
+            }
+        });
+        Self { state, task }
+    }
+
+    fn summary(&self) -> ChildStderrSummary {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .summary()
+    }
+
+    async fn finish(self) {
+        let mut task = self.task;
+        if tokio::time::timeout(CHILD_STDERR_DRAIN_TIMEOUT, &mut task)
+            .await
+            .is_err()
+        {
+            task.abort();
+            let _ = task.await;
+        }
+    }
 }
 
 impl fmt::Debug for HostProcess {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let stderr = self
+            .stderr_capture
+            .as_ref()
+            .map(ChildStderrCapture::summary);
         formatter
             .debug_struct("HostProcess")
             .field("pid", &self.child.as_ref().and_then(Child::id))
             .field("client", &self.client)
+            .field("stderr_capture", &stderr)
             .finish()
     }
 }
@@ -306,13 +411,18 @@ impl HostProcess {
             .args(host_args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::inherit());
+            .stderr(Stdio::piped());
         configure_host_process(&mut command);
         let mut child = command.spawn()?;
+        let stderr_capture = child.stderr.take().map(ChildStderrCapture::start);
         let stdin = match child.stdin.take() {
             Some(stdin) => stdin,
             None => {
                 let _ = child.start_kill();
+                let _ = child.wait().await;
+                if let Some(capture) = stderr_capture {
+                    capture.finish().await;
+                }
                 return Err(HostClientError::Protocol(
                     "spawned Host did not expose stdin".into(),
                 ));
@@ -322,6 +432,10 @@ impl HostProcess {
             Some(stdout) => stdout,
             None => {
                 let _ = child.start_kill();
+                let _ = child.wait().await;
+                if let Some(capture) = stderr_capture {
+                    capture.finish().await;
+                }
                 return Err(HostClientError::Protocol(
                     "spawned Host did not expose stdout".into(),
                 ));
@@ -337,11 +451,15 @@ impl HostProcess {
         if let Err(error) = client.hello(client_name).await {
             let _ = child.start_kill();
             let _ = child.wait().await;
+            if let Some(capture) = stderr_capture {
+                capture.finish().await;
+            }
             return Err(error);
         }
         Ok(Self {
             client: Some(client),
             child: Some(child),
+            stderr_capture,
         })
     }
 
@@ -386,13 +504,17 @@ impl HostProcess {
         let mut child = self.child.take().ok_or_else(|| {
             HostClientError::Protocol("Host process was already shut down".into())
         })?;
-        match tokio::time::timeout(Duration::from_secs(2), child.wait()).await {
-            Ok(status) => Ok(status?),
-            Err(_) => {
-                child.kill().await?;
-                Ok(child.wait().await?)
-            }
+        let status = match tokio::time::timeout(Duration::from_secs(2), child.wait()).await {
+            Ok(status) => status.map_err(HostClientError::from),
+            Err(_) => match child.kill().await {
+                Ok(()) => child.wait().await.map_err(HostClientError::from),
+                Err(error) => Err(HostClientError::from(error)),
+            },
+        };
+        if let Some(capture) = self.stderr_capture.take() {
+            capture.finish().await;
         }
+        status
     }
 }
 
@@ -410,6 +532,9 @@ impl Drop for HostProcess {
     fn drop(&mut self) {
         if let Some(child) = self.child.as_mut() {
             let _ = child.start_kill();
+        }
+        if let Some(capture) = self.stderr_capture.take() {
+            capture.task.abort();
         }
     }
 }

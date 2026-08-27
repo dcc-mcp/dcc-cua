@@ -277,8 +277,23 @@ fn stopped_host_process_reports_not_running() {
     let mut process = HostProcess {
         client: None,
         child: None,
+        stderr_capture: None,
     };
     assert!(!process.is_running().unwrap());
+}
+
+#[rstest]
+fn child_stderr_capture_is_bounded_and_reports_only_safe_metadata() {
+    let mut state = ChildStderrState::default();
+    state.record(&vec![b'x'; MAX_CAPTURED_CHILD_STDERR_BYTES + 4096]);
+
+    let summary = state.summary();
+    assert_eq!(state.retained.len(), MAX_CAPTURED_CHILD_STDERR_BYTES);
+    assert_eq!(summary.retained_bytes, MAX_CAPTURED_CHILD_STDERR_BYTES);
+    assert_eq!(summary.total_bytes, MAX_CAPTURED_CHILD_STDERR_BYTES + 4096);
+    assert!(summary.truncated);
+    assert!(!summary.read_failed);
+    assert!(!format!("{summary:?}").contains("private"));
 }
 
 #[rstest]
