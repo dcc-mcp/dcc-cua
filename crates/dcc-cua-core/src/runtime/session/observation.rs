@@ -80,16 +80,24 @@ impl ComputerUseSession {
 
     /// Capture pixels for the exact PID/HWND without consulting accessibility.
     pub async fn screenshot_pixels_only(&mut self) -> ComputerUseResult<ComputerUseScreenshot> {
-        self.ensure_active()?;
-        if self.pixel_observation_route != Some(PixelObservationRoute::ExplicitPixelsOnly) {
-            return Err(ComputerUseError::new(
-                ComputerUseErrorCode::InvalidAction,
-                "pixels-only capture requires start_pixels_only on the same exact-window session",
-            ));
+        #[cfg(not(windows))]
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::BackendUnavailable,
+            "pixels-only exact native window capture is unavailable on this platform",
+        ));
+        #[cfg(windows)]
+        {
+            self.ensure_active()?;
+            if self.pixel_observation_route != Some(PixelObservationRoute::ExplicitPixelsOnly) {
+                return Err(ComputerUseError::new(
+                    ComputerUseErrorCode::InvalidAction,
+                    "pixels-only capture requires start_pixels_only on the same exact-window session",
+                ));
+            }
+            let target = self.require_observed_target_available().await?;
+            self.capture_window_pixels(&target, PixelObservationRoute::ExplicitPixelsOnly)
+                .await
         }
-        let target = self.require_observed_target_available().await?;
-        self.capture_window_pixels(&target, PixelObservationRoute::ExplicitPixelsOnly)
-            .await
     }
 
     /// Capture a fresh observation with bounded semantic-tree context.
@@ -148,6 +156,7 @@ impl ComputerUseSession {
         let result = self.finish_observation_sensitive_attempt(result);
         let target = self.require_observed_target_available().await?;
         let result = match result {
+            #[cfg(windows)]
             Ok(result)
                 if result.is_error && pixel_route_for_uia_tool_failure(&result).is_some() =>
             {
@@ -160,6 +169,7 @@ impl ComputerUseSession {
                 }
             }
             Ok(result) => self.finish_observed_tool_attempt("capture CUA window", Ok(result))?,
+            #[cfg(windows)]
             Err(error) if pixel_route_for_accessibility_failure(&error).is_some() => {
                 #[cfg(windows)]
                 {
