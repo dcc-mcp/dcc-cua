@@ -12,6 +12,7 @@ mod host_lifecycle;
 mod manifest;
 mod mcp_output;
 mod mcp_server;
+mod owned_process;
 mod profile_context;
 mod profile_package;
 mod profile_state;

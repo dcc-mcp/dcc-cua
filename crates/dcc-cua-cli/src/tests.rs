@@ -19,6 +19,7 @@ use super::host_lifecycle::{
 use super::*;
 
 mod host_jsonl;
+mod owned_process;
 mod task_authorization_manifest;
 mod trusted_confirmation;
 mod update_check_tests;

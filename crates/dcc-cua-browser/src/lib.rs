@@ -432,13 +432,12 @@ impl BrowserSession {
                 )
                 .await?,
         )?;
-        if delivery_mode == "foreground" {
-            validate_foreground_navigation_readback(
-                &result.value,
-                &request.target_id,
-                &request.tab_id,
-            )?;
-        }
+        let _ = navigation_response_is_success(
+            &result.value,
+            &request.target_id,
+            &request.tab_id,
+            delivery_mode,
+        )?;
         Ok(result)
     }
 
@@ -1203,6 +1202,129 @@ fn validate_foreground_navigation_readback(
         ));
     }
     Ok(())
+}
+
+fn navigation_response_is_success(
+    value: &Value,
+    expected_target_id: &str,
+    expected_tab_id: &str,
+    expected_delivery_mode: &str,
+) -> ComputerUseResult<bool> {
+    let structured = structured_content(value)?;
+    let exact_identity = structured["target_id"].as_str() == Some(expected_target_id)
+        && structured["tab_id"].as_str() == Some(expected_tab_id)
+        && structured["delivery_mode"].as_str() == Some(expected_delivery_mode);
+    if !exact_identity {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::BackendUnavailable,
+            "browser navigation receipt returned inconsistent target, tab, or delivery mode",
+        ));
+    }
+    match structured["status"].as_str() {
+        Some("ok") => {
+            let foreground = expected_delivery_mode == "foreground";
+            if structured["dispatched"] != true
+                || structured["refs_invalidated"] != true
+                || structured["activated"] != foreground
+            {
+                return Err(ComputerUseError::new(
+                    ComputerUseErrorCode::BackendUnavailable,
+                    "successful browser navigation receipt omitted completion evidence",
+                ));
+            }
+            if foreground {
+                validate_foreground_navigation_readback(
+                    value,
+                    expected_target_id,
+                    expected_tab_id,
+                )?;
+                if structured["activation_state"] != "succeeded"
+                    || structured["readback_state"] != "succeeded"
+                {
+                    return Err(ComputerUseError::new(
+                        ComputerUseErrorCode::BackendUnavailable,
+                        "successful foreground navigation receipt omitted completion states",
+                    ));
+                }
+            } else if structured["activation_state"] != "not_requested"
+                || structured["readback_state"] != "not_requested"
+            {
+                return Err(ComputerUseError::new(
+                    ComputerUseErrorCode::BackendUnavailable,
+                    "successful background navigation receipt claimed foreground completion",
+                ));
+            }
+            Ok(true)
+        }
+        Some("error") => {
+            let dispatched = structured["dispatched"].as_bool().ok_or_else(|| {
+                ComputerUseError::new(
+                    ComputerUseErrorCode::BackendUnavailable,
+                    "failed browser navigation receipt omitted dispatch state",
+                )
+            })?;
+            let activation_state = structured["activation_state"]
+                .as_str()
+                .filter(|state| matches!(*state, "not_started" | "failed" | "succeeded"));
+            let readback_state = structured["readback_state"].as_str().filter(|state| {
+                matches!(
+                    *state,
+                    "not_started" | "failed" | "timeout" | "stale_document" | "succeeded"
+                )
+            });
+            let error_code = structured["error_code"]
+                .as_str()
+                .filter(|code| !code.is_empty() && code.len() <= 128 && code.is_ascii());
+            let stable_error = structured["error"]
+                .as_str()
+                .filter(|message| !message.is_empty() && message.len() <= 256);
+            let refs_match_dispatch = structured["refs_invalidated"].as_bool() == Some(dispatched);
+            let activated_matches_state = structured["activated"].as_bool()
+                == activation_state.map(|state| state == "succeeded");
+            let states_match_dispatch = if dispatched {
+                expected_delivery_mode != "background"
+                    || (activation_state == Some("not_started")
+                        && readback_state == Some("not_started"))
+            } else {
+                activation_state == Some("not_started")
+                    && readback_state == Some("not_started")
+                    && structured["activated"] == false
+            };
+            let state_order_is_valid = matches!(
+                (activation_state, readback_state),
+                (Some("not_started" | "failed"), Some("not_started"))
+                    | (
+                        Some("succeeded"),
+                        Some("failed" | "timeout" | "stale_document" | "succeeded"),
+                    )
+            );
+            let completion_is_not_false_success = !matches!(
+                (activation_state, readback_state, error_code),
+                (Some("succeeded"), Some("succeeded"), Some(code))
+                    if code != "target_drift_after_navigation"
+            );
+            if activation_state.is_none()
+                || readback_state.is_none()
+                || error_code.is_none()
+                || stable_error.is_none()
+                || !refs_match_dispatch
+                || !activated_matches_state
+                || !states_match_dispatch
+                || !state_order_is_valid
+                || !completion_is_not_false_success
+            {
+                return Err(ComputerUseError::new(
+                    ComputerUseErrorCode::BackendUnavailable,
+                    "browser navigation returned a malformed partial failure receipt",
+                ));
+            }
+            Ok(false)
+        }
+        _ => Err(ComputerUseError::new(
+            ComputerUseErrorCode::BackendUnavailable,
+            "browser navigation receipt omitted a deterministic status",
+        )),
+    }
 }
 
 fn validate_route(route: Option<&str>) -> ComputerUseResult<&str> {
