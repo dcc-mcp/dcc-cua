@@ -246,7 +246,7 @@ pub(super) fn print_help() -> std::io::Result<()> {
   cursor-position
   launch --name NAME|--bundle-id ID|--aumid ID|--path PATH|--launch-path PATH [--url URL] [--arg ARG] [--new-instance] [--start-minimized]
   terminate --app APP --confirm
-  snapshot --app APP|--pid PID|--window-id ID|--title TITLE [--activate] [--escalate --escalation-reason REASON] [--escalation-detail NOTE] [--output FILE]
+  snapshot --app APP|--pid PID|--window-id ID|--title TITLE [--pixels-only] [--activate] [--escalate --escalation-reason REASON] [--escalation-detail NOTE] [--output FILE]
   restore-activate --pid PID --window-id ID
   set-window-frame --app APP|--pid PID --window-id ID --x N --y N --width N --height N
   invoke-menu --app APP|--pid PID --window-id ID --menu TOP [--menu CHILD ...]
@@ -261,7 +261,7 @@ pub(super) fn print_help() -> std::io::Result<()> {
 Host uses versioned big-endian JSON frames. Hello version 1 negotiates binary-frame or shared-memory snapshots and supports request_id correlation."#
     );
     stdoutln!(
-        "Profiles are built-in, installed from ~/.dcc-cua/profiles, or loaded explicitly from JSON; package installation copies declarative content only and never launches bundled code. Window snapshots/actions accept --escalate --escalation-reason REASON when an explicit desktop visual fallback approval is required; --activate keeps custom-rendered foreground capture and actions in one session."
+        "Profiles are built-in, installed from ~/.dcc-cua/profiles, or loaded explicitly from JSON; package installation copies declarative content only and never launches bundled code. snapshot --pid PID --window-id ID --pixels-only skips accessibility and captures only that exact native window; it never falls back to a whole-desktop screenshot. Window snapshots/actions accept --escalate --escalation-reason REASON for legacy visual fallback routes; --activate keeps custom-rendered foreground capture and actions in one session."
     );
     stdoutln!("{}", escalation_reason_help());
     stdoutln!("Zoom: zoom --app APP --x1 N --y1 N --x2 N --y2 N [--output FILE].");

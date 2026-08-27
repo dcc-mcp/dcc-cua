@@ -11,6 +11,7 @@ pub(crate) use gates::{
 mod browser;
 mod error_contracts;
 mod observation;
+mod pixel_start;
 #[cfg(test)]
 mod tests;
 use error_contracts::*;
@@ -96,6 +97,7 @@ impl ComputerUseSession {
             active: false,
             escalated: false,
             uia_timeout_escalated: false,
+            pixel_observation_route: None,
             #[cfg(feature = "test-support")]
             synthetic_test_session: false,
         })
@@ -103,6 +105,7 @@ impl ComputerUseSession {
 
     /// Start CUA's bounded window session and show its color-coded marker.
     pub async fn start(&mut self) -> ComputerUseResult<Value> {
+        self.pixel_observation_route = None;
         self.start_with_request(&ComputerUseSessionStartRequest::default())
             .await
     }
@@ -123,6 +126,7 @@ impl ComputerUseSession {
                 "window session is already active",
             ));
         }
+        self.pixel_observation_route = None;
         request.validate_for_scope(&self.scope)?;
         let target = self.resolve_target().await?;
         let (target, activation) = if request.activate_before {
@@ -1322,6 +1326,7 @@ impl ComputerUseSession {
         self.control_banner.take();
         self.active = false;
         self.upstream_session_state = UpstreamSessionState::Inactive;
+        self.pixel_observation_route = None;
         self.last_upstream_session_refresh = None;
         self.marker.visible = false;
         self.target = None;

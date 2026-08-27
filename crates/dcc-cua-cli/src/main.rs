@@ -1737,12 +1737,16 @@ async fn snapshot(
     driver: &ComputerUseDriver,
     flags: &[String],
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let mode = snapshot_mode(flags)?;
     let scope = select_scope(driver, flags).await?;
     let app = application_label(flags);
     let session_id = flag_value(flags, "--session").unwrap_or_else(|| "dcc-cua-cli".into());
     let output = flag_value(flags, "--output").unwrap_or_else(|| "screenshot.png".into());
     let mut session = driver.session(scope, app, session_id)?;
-    session.start().await?;
+    match mode {
+        SnapshotMode::AccessibilityPreferred => session.start().await?,
+        SnapshotMode::PixelsOnly => session.start_pixels_only().await?,
+    };
     let result = async {
         maybe_escalate(&mut session, flags).await?;
         let activation = if has_flag(flags, "--activate") {
@@ -1750,7 +1754,11 @@ async fn snapshot(
         } else {
             None
         };
-        Ok::<_, dcc_cua_core::ComputerUseError>((activation, session.screenshot().await?))
+        let screenshot = match mode {
+            SnapshotMode::AccessibilityPreferred => session.screenshot().await?,
+            SnapshotMode::PixelsOnly => session.screenshot_pixels_only().await?,
+        };
+        Ok::<_, dcc_cua_core::ComputerUseError>((activation, screenshot))
     }
     .await;
     let stop_result = session.stop().await;
@@ -1759,6 +1767,10 @@ async fn snapshot(
     let node_count = screenshot.accessibility["elements"]
         .as_array()
         .map_or(0, Vec::len);
+    let observation_mode = screenshot.observation.capture_provenance["observation_mode"]
+        .as_str()
+        .unwrap_or("accessibility_preferred")
+        .to_owned();
     let accessibility = screenshot.accessibility;
     fs::write(&output, &screenshot.data)?;
     stdoutln!(
@@ -1768,12 +1780,37 @@ async fn snapshot(
             "observation": screenshot.observation,
             "accessibility": accessibility,
             "node_count": node_count,
+            "observation_mode": observation_mode,
             "output": output,
             "activation": activation,
             "backend": "cua-driver-sdk",
         }))?
     );
     Ok(())
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SnapshotMode {
+    AccessibilityPreferred,
+    PixelsOnly,
+}
+
+fn snapshot_mode(flags: &[String]) -> Result<SnapshotMode, Box<dyn std::error::Error>> {
+    if !has_flag(flags, "--pixels-only") {
+        return Ok(SnapshotMode::AccessibilityPreferred);
+    }
+    if flag_value(flags, "--pid").is_none() || flag_value(flags, "--window-id").is_none() {
+        return Err(
+            "snapshot --pixels-only requires an exact --pid PID --window-id ID pair".into(),
+        );
+    }
+    if has_flag(flags, "--activate") || has_flag(flags, "--escalate") {
+        return Err(
+            "snapshot --pixels-only is read-only and cannot be combined with --activate or --escalate"
+                .into(),
+        );
+    }
+    Ok(SnapshotMode::PixelsOnly)
 }
 
 async fn accessibility_snapshot(
