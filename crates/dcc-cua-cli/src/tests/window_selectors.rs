@@ -79,6 +79,77 @@ fn parser_rejects_zero_native_identity(#[case] selector: &str) {
     );
 }
 
+#[rstest]
+#[case(0, 77, "zero pid")]
+#[case(42, 0, "zero window id")]
+#[case(u64::from(u32::MAX) + 1, 77, "pid outside the public u32 contract")]
+fn inventory_resolution_rejects_invalid_native_identity(
+    #[case] pid: u64,
+    #[case] window_id: u64,
+    #[case] reason: &str,
+) {
+    let query = window_selector_query_from_flags(&strings(["--app", "fixture.exe"])).unwrap();
+    let rows = vec![json!({
+        "app_name": "fixture.exe",
+        "pid": pid,
+        "window_id": window_id,
+        "title": "Fixture A",
+        "is_on_screen": true
+    })];
+
+    let result = resolve_window_selector_from_inventory(&query, &rows);
+    assert!(result.is_err(), "{reason} was accepted as {result:?}");
+}
+
+#[rstest]
+fn parser_rejects_a_selector_without_a_value() {
+    let result = window_selector_query_from_flags(&strings(["--pid"]));
+
+    assert!(
+        result.is_err(),
+        "missing selector value widened to {result:?}"
+    );
+}
+
+#[rstest]
+#[case(&["--pid", "42", "--pid"])]
+#[case(&["--pid", "--window-id", "77"])]
+#[case(&["--pid="])]
+fn parser_rejects_every_malformed_selector_occurrence(#[case] arguments: &[&str]) {
+    let arguments = arguments
+        .iter()
+        .map(|argument| (*argument).to_owned())
+        .collect::<Vec<_>>();
+    let result = window_selector_query_from_flags(&arguments);
+
+    assert!(
+        result.is_err(),
+        "malformed selector was accepted as {result:?}"
+    );
+}
+
+#[rstest]
+#[case(json!({"pid": -1, "window_id": 77}), "negative pid")]
+#[case(json!({"pid": "42", "window_id": 77}), "wrong-type pid")]
+#[case(json!({"pid": 42, "window_id": -1}), "negative window id")]
+#[case(json!({"pid": 42, "window_id": "77"}), "wrong-type window id")]
+fn inventory_resolution_rejects_non_unsigned_identity(
+    #[case] identity: serde_json::Value,
+    #[case] reason: &str,
+) {
+    let query = window_selector_query_from_flags(&strings(["--app", "fixture.exe"])).unwrap();
+    let rows = vec![json!({
+        "app_name": "fixture.exe",
+        "pid": identity["pid"],
+        "window_id": identity["window_id"],
+        "title": "Fixture A",
+        "is_on_screen": true
+    })];
+
+    let result = resolve_window_selector_from_inventory(&query, &rows);
+    assert!(result.is_err(), "{reason} was accepted as {result:?}");
+}
+
 #[cfg(windows)]
 struct SelectorTestWindow(windows_sys::Win32::Foundation::HWND);
 

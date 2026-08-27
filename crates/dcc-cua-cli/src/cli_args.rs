@@ -152,6 +152,35 @@ pub(super) fn flag_values(flags: &[String], name: &str) -> Vec<String> {
         .collect()
 }
 
+pub(super) fn checked_flag_values(flags: &[String], name: &str) -> Result<Vec<String>, String> {
+    let mut values = Vec::new();
+    for (index, flag) in flags.iter().enumerate() {
+        let value = if flag == name {
+            let value = flags
+                .get(index + 1)
+                .ok_or_else(|| format!("{name} requires a value"))?;
+            if is_known_flag(value) {
+                return Err(format!("{name} requires a value"));
+            }
+            value.as_str()
+        } else if let Some(value) = inline_flag_value(flag, name) {
+            value
+        } else {
+            continue;
+        };
+        if value.is_empty() {
+            return Err(format!("{name} requires a value"));
+        }
+        values.push(value.to_owned());
+    }
+    Ok(values)
+}
+
+fn is_known_flag(argument: &str) -> bool {
+    let name = argument.split_once('=').map_or(argument, |(name, _)| name);
+    KNOWN_FLAG_NAMES.contains(&name)
+}
+
 fn inline_flag_value<'a>(argument: &'a str, name: &str) -> Option<&'a str> {
     argument
         .split_once('=')

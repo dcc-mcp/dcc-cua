@@ -21,6 +21,8 @@ use serde_json::{Value, json};
 #[cfg(feature = "gui-e2e")]
 mod browser_refresh;
 #[cfg(all(feature = "gui-e2e", windows))]
+mod cli_exact_window;
+#[cfg(all(feature = "gui-e2e", windows))]
 mod windows_activation;
 #[cfg(feature = "gui-e2e")]
 use browser_refresh::{

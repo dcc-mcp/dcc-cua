@@ -335,9 +335,10 @@ cargo run -p dcc-cua-cli -- type --app chrome.exe --text "hello" --focused
 cargo run -p dcc-cua-cli -- hotkey --app chrome.exe --key CTRL --key L
 cargo run -p dcc-cua-cli -- scroll --app UE5Editor.exe --scroll-x 4 --by page --x 600 --y 900
 cargo run -p dcc-cua-cli -- act --pid 4242 --window-id 123456 --action-json '{"action":"click","x":100,"y":100}'
+cargo run -p dcc-cua-cli -- snapshot --pid 4242 --window-id 123456 --output after.png
 cargo run -p dcc-cua-cli -- verify --pid 4242 --window-id 123456 --expect-json '[{"window":{"exists":true}}]'
-cargo run -p dcc-cua-cli -- clipboard-read --pid 4242 --window-id 123456
 cargo run -p dcc-cua-cli -- clipboard-write --pid 4242 --window-id 123456 --text "bounded text"
+cargo run -p dcc-cua-cli -- clipboard-read --pid 4242 --window-id 123456 --include-text
 cargo run -p dcc-cua-cli -- --version
 cargo run -p dcc-cua-cli -- update --check
 ```
@@ -468,6 +469,15 @@ selectors are conjunctive. Conflicting duplicate selectors, missing or zero
 native identities, no match, multiple matches, and PID/HWND/title drift fail
 closed before a mutation or clipboard readback. Prefer the PID/HWND pair
 returned by `list` and take a fresh snapshot before an action.
+
+An `act` success receipt proves bounded delivery, not application effect. Require
+its successful `post_snapshot` and verify a changed tree/value, changed pixels,
+or an application-specific state before accepting the mutation. A
+`window.exists=true` predicate proves liveness only. Likewise,
+`clipboard-write` is not its own postcondition: for a non-sensitive bounded
+test value, use an exact-bound `clipboard-read --include-text` comparison, or
+verify the application-specific pasted/changed value without exposing private
+clipboard content.
 
 Clipboard access is session-scoped and grant-gated: `clipboard_read` does not
 return text unless the caller asks for it, and `clipboard_write` accepts exactly

@@ -91,6 +91,42 @@ fn exact_window_commands_share_fail_closed_selector_validation(
 }
 
 #[rstest]
+#[case("list", &["--pid"])]
+#[case("list", &["--pid", "42", "--pid"])]
+#[case(
+    "act",
+    &["--pid", "--window-id", "77", "--action-json", r#"{"action":"click","x":1,"y":1}"#]
+)]
+#[case("verify", &["--pid", "--window-id", "77", "--expect-json", "[]"])]
+#[case("clipboard-read", &["--pid", "--window-id", "77"])]
+#[case(
+    "clipboard-write",
+    &["--pid", "--window-id", "77", "--text", "bounded text"]
+)]
+fn malformed_selectors_fail_before_inventory_or_scoped_access(
+    #[case] command: &str,
+    #[case] arguments: &[&str],
+) {
+    let output = Command::new(env!("CARGO_BIN_EXE_dcc-cua"))
+        .arg(command)
+        .args(arguments)
+        .output()
+        .expect("dcc-cua should start");
+
+    assert!(!output.status.success());
+    assert!(
+        output.stdout.is_empty(),
+        "malformed {command} exposed output: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let receipt: serde_json::Value =
+        serde_json::from_slice(&output.stderr).expect("failure should be one JSON receipt");
+    assert_eq!(receipt["success"], false);
+    assert_eq!(receipt["error"]["code"], "command_failed");
+    assert_eq!(receipt["error"]["message"], "--pid requires a value");
+}
+
+#[rstest]
 fn mcp_server_rejects_an_untrusted_process_parent_before_reading_stdin() {
     let output = Command::new(env!("CARGO_BIN_EXE_dcc-cua"))
         .arg("mcp-server")

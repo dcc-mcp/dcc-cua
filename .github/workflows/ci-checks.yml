@@ -152,6 +152,8 @@ jobs:
         if: matrix.os == 'windows-latest'
         timeout-minutes: 10
         shell: pwsh
+        env:
+          DCC_CUA_E2E_CLIPBOARD_WRITE: "1"
         run: ./scripts/run-gui-e2e.ps1 -Binary target/release/dcc-cua.exe
       - name: Run Linux controlled GUI Host IPC E2E
         if: matrix.os == 'ubuntu-latest'

@@ -158,9 +158,10 @@ dcc-cua snapshot --pid 4242 --window-id 123456 --output before.png
 dcc-cua accessibility --pid 4242 --window-id 123456
 dcc-cua click --pid 4242 --window-id 123456 --element-index 12
 dcc-cua type --pid 4242 --window-id 123456 --text "hello" --focused
+dcc-cua snapshot --pid 4242 --window-id 123456 --output after.png
 dcc-cua verify --pid 4242 --window-id 123456 --expect-json '[{"window":{"exists":true}}]'
-dcc-cua clipboard-read --pid 4242 --window-id 123456
 dcc-cua clipboard-write --pid 4242 --window-id 123456 --text "bounded text"
+dcc-cua clipboard-read --pid 4242 --window-id 123456 --include-text
 dcc-cua interrupt-all
 dcc-cua update --check
 ```
@@ -169,6 +170,12 @@ dcc-cua update --check
 `--app`、`--pid`、`--window-id`、`--title` 窗口选择器。多个选择器按 AND 同时校验；
 重复冲突、缺失或为零的原生身份、零匹配、多匹配，以及 PID/HWND/title 漂移都会在
 变更或剪贴板回读前 fail closed。优先复用 `list` 返回的 PID/HWND，并在动作前重新截图。
+
+`act` 成功回执只证明受限输入已送达，不证明应用状态已按预期改变。验收变更时必须要求
+`post_snapshot` 成功，并校验树/值、像素或应用自身状态确实变化；
+`window.exists=true` 只证明窗口仍存活。`clipboard-write` 的成功回执也不是后置条件：
+对于非敏感、受限的测试值，应使用同一精确绑定的 `clipboard-read --include-text` 做值比较，
+或验证应用中粘贴后的值/状态，且不得暴露私人剪贴板内容。
 
 `manifest` 是供 Core 和独立调用方使用的稳定机器入口，包含平台、协议、能力、端点、
 图像传输和推荐启动参数，并明确声明不需要单独 driver。若同一应用有多个窗口，操作时
