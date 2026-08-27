@@ -23,6 +23,7 @@ PREFLIGHT_WORKFLOW = (
 SYNC_SCRIPT = Path(__file__).with_name("sync-cargo-workspace-version.ps1")
 REFRESH_SCRIPT = Path(__file__).with_name("refresh-release-please-prs.ps1")
 GUI_E2E_SCRIPT = Path(__file__).with_name("run-gui-e2e.ps1")
+CLI_E2E_SCRIPT = Path(__file__).with_name("test-cli-e2e.ps1")
 ROOT = Path(__file__).parent.parent
 MARKETPLACE = ROOT / ".claude-plugin" / "marketplace.json"
 ROOT_PLUGIN = ROOT / ".codex-plugin" / "plugin.json"
@@ -245,6 +246,18 @@ def _ci_executable_surface(workflow: str) -> str:
 
 
 class ReleaseWorkflowTests(unittest.TestCase):
+    def test_release_cli_failure_stdout_contract_cannot_be_orphaned_from_ci(self):
+        workflow = CI_WORKFLOW.read_text(encoding="utf-8")
+        script = CLI_E2E_SCRIPT.read_text(encoding="utf-8")
+        e2e = workflow[workflow.index("  e2e:") :]
+
+        self.assertIn("cargo build --release --locked -p dcc-cua-cli", e2e)
+        self.assertIn("./scripts/test-cli-e2e.ps1 -Binary $binary", e2e)
+        self.assertIn("Assert-CommandFailureStdoutContract", script)
+        self.assertIn("RedirectStandardOutput", script)
+        self.assertIn("RedirectStandardError", script)
+        self.assertIn("definitely-not-a-command", script)
+
     def test_release_matrix_builds_every_supported_native_target(self):
         workflow = WORKFLOW.read_text(encoding="utf-8")
 

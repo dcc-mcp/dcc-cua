@@ -2,6 +2,16 @@ use std::process::Command;
 
 use rstest::rstest;
 
+fn parse_single_json_envelope(bytes: &[u8]) -> serde_json::Value {
+    let stdout = std::str::from_utf8(bytes).expect("stdout should be UTF-8");
+    assert_eq!(
+        stdout.lines().count(),
+        1,
+        "stdout should contain exactly one JSON envelope: {stdout:?}"
+    );
+    serde_json::from_str(stdout.trim()).expect("stdout should contain valid JSON")
+}
+
 #[rstest]
 fn version_flag_reports_cli_version() {
     let output = Command::new(env!("CARGO_BIN_EXE_dcc-cua"))
@@ -79,15 +89,14 @@ fn exact_window_commands_share_fail_closed_selector_validation(
         .expect("dcc-cua should start");
 
     assert!(!output.status.success());
-    assert!(output.stdout.is_empty());
-    let receipt: serde_json::Value =
-        serde_json::from_slice(&output.stderr).expect("failure should be one JSON receipt");
+    let receipt = parse_single_json_envelope(&output.stdout);
     assert_eq!(receipt["success"], false);
     assert_eq!(receipt["error"]["code"], "command_failed");
     assert_eq!(
         receipt["error"]["message"],
-        "--pid must be greater than zero"
+        "dcc-cua could not complete the command"
     );
+    assert!(output.stderr.is_empty());
 }
 
 #[rstest]
@@ -114,16 +123,32 @@ fn malformed_selectors_fail_before_inventory_or_scoped_access(
         .expect("dcc-cua should start");
 
     assert!(!output.status.success());
-    assert!(
-        output.stdout.is_empty(),
-        "malformed {command} exposed output: {}",
-        String::from_utf8_lossy(&output.stdout)
-    );
-    let receipt: serde_json::Value =
-        serde_json::from_slice(&output.stderr).expect("failure should be one JSON receipt");
+    let receipt = parse_single_json_envelope(&output.stdout);
     assert_eq!(receipt["success"], false);
     assert_eq!(receipt["error"]["code"], "command_failed");
-    assert_eq!(receipt["error"]["message"], "--pid requires a value");
+    assert_eq!(
+        receipt["error"]["message"],
+        "dcc-cua could not complete the command"
+    );
+    assert!(output.stderr.is_empty());
+}
+
+#[rstest]
+fn ordinary_command_failures_emit_one_machine_envelope_on_stdout() {
+    let output = Command::new(env!("CARGO_BIN_EXE_dcc-cua"))
+        .arg("definitely-not-a-command")
+        .output()
+        .expect("dcc-cua should start");
+
+    assert_eq!(output.status.code(), Some(1));
+    let envelope = parse_single_json_envelope(&output.stdout);
+    assert_eq!(envelope["success"], false);
+    assert_eq!(envelope["error"]["code"], "command_failed");
+    assert!(
+        output.stderr.is_empty(),
+        "structured command failure should not be duplicated on stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 #[rstest]
@@ -134,14 +159,14 @@ fn mcp_server_rejects_an_untrusted_process_parent_before_reading_stdin() {
         .expect("dcc-cua should start");
 
     assert!(!output.status.success());
+    let envelope = parse_single_json_envelope(&output.stdout);
+    assert_eq!(envelope["success"], false);
+    assert_eq!(envelope["error"]["code"], "command_failed");
     assert!(
-        output.stdout.is_empty(),
-        "untrusted embedding unexpectedly exposed MCP output: {}",
-        String::from_utf8_lossy(&output.stdout)
+        envelope["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("trusted embedding unavailable")),
+        "unexpected rejection: {envelope}"
     );
-    assert!(
-        String::from_utf8_lossy(&output.stderr).contains("trusted embedding unavailable"),
-        "unexpected rejection: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    assert!(output.stderr.is_empty());
 }

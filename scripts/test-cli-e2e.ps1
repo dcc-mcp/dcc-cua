@@ -91,6 +91,40 @@ if ($LASTEXITCODE -ne 0 -or $help -notmatch "host-batch") {
     throw "release CLI help smoke test failed"
 }
 
+function Assert-CommandFailureStdoutContract {
+    $failureOutput = Join-Path ([System.IO.Path]::GetTempPath()) "dcc-cua-failure-$([guid]::NewGuid().ToString('N')).out"
+    $failureError = Join-Path ([System.IO.Path]::GetTempPath()) "dcc-cua-failure-$([guid]::NewGuid().ToString('N')).err"
+    try {
+        $failure = Start-Process -FilePath $binaryPath -ArgumentList @("definitely-not-a-command") -RedirectStandardOutput $failureOutput -RedirectStandardError $failureError -PassThru -Wait
+        $stdout = [System.IO.File]::ReadAllText($failureOutput, [System.Text.Encoding]::UTF8)
+        $stderr = [System.IO.File]::ReadAllText($failureError, [System.Text.Encoding]::UTF8)
+        $lines = @($stdout -split "`r?`n" | Where-Object { $_.Length -gt 0 })
+        if ($failure.ExitCode -ne 1 -or $lines.Count -ne 1 -or $stderr.Length -ne 0) {
+            throw "release CLI failure stream contract was not exit=1/stdout=one-envelope/stderr=empty"
+        }
+        $envelope = $lines[0] | ConvertFrom-Json
+        if ($envelope.success -ne $false -or $envelope.error.code -ne "command_failed") {
+            throw "release CLI failure did not return the stable machine envelope"
+        }
+
+        $captured = & $binaryPath definitely-not-a-command 2>$null | Out-String
+        $capturedExit = $LASTEXITCODE
+        $capturedEnvelope = $captured | ConvertFrom-Json
+        if ($capturedExit -ne 1 -or $capturedEnvelope.success -ne $false) {
+            throw "command substitution did not receive the failed command envelope from stdout"
+        }
+    }
+    finally {
+        foreach ($path in @($failureOutput, $failureError)) {
+            if (Test-Path -LiteralPath $path) {
+                Remove-Item -LiteralPath $path -Force
+            }
+        }
+    }
+}
+
+Assert-CommandFailureStdoutContract
+
 $manifest = Invoke-BinaryJson -Arguments @("manifest")
 $expectedOs = if ($isWindowsHost) { "windows" } elseif ($isMacHost) { "macos" } else { "linux" }
 if ($manifest.name -ne "dcc-cua" -or $manifest.target.os -ne $expectedOs) {

@@ -55,8 +55,8 @@ impl TrustedActionConfirmationHost for NativeUserConfirmationHost {
         let request_digest = request.request_digest.clone();
         let action = tokio::task::spawn_blocking(move || show_native_prompt(&request))
             .await
-            .map_err(|error| TrustedActionConfirmationHostError {
-                reason: format!("native user confirmation worker failed: {error}"),
+            .map_err(|_| TrustedActionConfirmationHostError {
+                reason: "native user confirmation worker failed".into(),
             })?;
         Ok(TrustedActionConfirmationDecision {
             action,
