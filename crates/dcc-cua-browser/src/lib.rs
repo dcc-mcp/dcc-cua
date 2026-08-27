@@ -436,12 +436,10 @@ impl BrowserSession {
             &result.value,
             &request.target_id,
             &request.tab_id,
+            &request.url,
             delivery_mode,
         )?;
-        if !succeeded {
-            return result.into_structured_failure_receipt();
-        }
-        Ok(result)
+        result.into_public_navigation_receipt(succeeded)
     }
 
     pub async fn click(
@@ -836,12 +834,38 @@ impl BrowserResult {
         Ok(Self { value, images })
     }
 
-    fn into_structured_failure_receipt(self) -> ComputerUseResult<Self> {
-        let structured = structured_content(&self.value)?.clone();
+    fn into_public_navigation_receipt(self, succeeded: bool) -> ComputerUseResult<Self> {
+        let structured = structured_content(&self.value)?;
+        let mut public = json!({
+            "status": structured["status"],
+            "target_id": structured["target_id"],
+            "tab_id": structured["tab_id"],
+            "url": structured["url"],
+            "delivery_mode": structured["delivery_mode"],
+            "dispatched": structured["dispatched"],
+            "activated": structured["activated"],
+            "activation_state": structured["activation_state"],
+            "readback_state": structured["readback_state"],
+            "refs_invalidated": structured["refs_invalidated"],
+        });
+        if succeeded && structured["delivery_mode"] == "foreground" {
+            for key in [
+                "current_url",
+                "title",
+                "heading",
+                "visibility_state",
+                "ready_state",
+            ] {
+                public[key] = structured[key].clone();
+            }
+        } else if !succeeded {
+            public["error_code"] = structured["error_code"].clone();
+            public["error"] = structured["error"].clone();
+        }
         Ok(Self {
             value: json!({
-                "structuredContent": structured,
-                "isError": true,
+                "structuredContent": public,
+                "isError": !succeeded,
             }),
             images: Vec::new(),
         })
@@ -1222,16 +1246,18 @@ fn navigation_response_is_success(
     value: &Value,
     expected_target_id: &str,
     expected_tab_id: &str,
+    expected_url: &str,
     expected_delivery_mode: &str,
 ) -> ComputerUseResult<bool> {
     let structured = structured_content(value)?;
     let exact_identity = structured["target_id"].as_str() == Some(expected_target_id)
         && structured["tab_id"].as_str() == Some(expected_tab_id)
+        && structured["url"].as_str() == Some(expected_url)
         && structured["delivery_mode"].as_str() == Some(expected_delivery_mode);
     if !exact_identity {
         return Err(ComputerUseError::new(
             ComputerUseErrorCode::BackendUnavailable,
-            "browser navigation receipt returned inconsistent target, tab, or delivery mode",
+            "browser navigation receipt returned inconsistent target, tab, URL, or delivery mode",
         ));
     }
     match structured["status"].as_str() {
@@ -1277,56 +1303,81 @@ fn navigation_response_is_success(
                     "failed browser navigation receipt omitted dispatch state",
                 )
             })?;
-            let activation_state = structured["activation_state"]
-                .as_str()
-                .filter(|state| matches!(*state, "not_started" | "failed" | "succeeded"));
-            let readback_state = structured["readback_state"].as_str().filter(|state| {
-                matches!(
-                    *state,
-                    "not_started" | "failed" | "timeout" | "stale_document" | "succeeded"
-                )
-            });
-            let error_code = structured["error_code"]
-                .as_str()
-                .filter(|code| !code.is_empty() && code.len() <= 128 && code.is_ascii());
-            let stable_error = structured["error"]
-                .as_str()
-                .filter(|message| !message.is_empty() && message.len() <= 256);
+            let activation_state = structured["activation_state"].as_str();
+            let readback_state = structured["readback_state"].as_str();
+            let error_code = structured["error_code"].as_str();
+            let stable_error = structured["error"].as_str();
             let refs_match_dispatch = structured["refs_invalidated"].as_bool() == Some(dispatched);
             let activated_matches_state = structured["activated"].as_bool()
                 == activation_state.map(|state| state == "succeeded");
-            let states_match_dispatch = if dispatched {
-                expected_delivery_mode != "background"
-                    || (activation_state == Some("not_started")
-                        && readback_state == Some("not_started"))
-            } else {
-                activation_state == Some("not_started")
-                    && readback_state == Some("not_started")
-                    && structured["activated"] == false
-            };
-            let state_order_is_valid = matches!(
-                (activation_state, readback_state),
-                (Some("not_started" | "failed"), Some("not_started"))
-                    | (
-                        Some("succeeded"),
-                        Some("failed" | "timeout" | "stale_document" | "succeeded"),
-                    )
+            let stable_failure = matches!(
+                (
+                    expected_delivery_mode,
+                    dispatched,
+                    activation_state,
+                    readback_state,
+                    error_code,
+                    stable_error,
+                ),
+                (
+                    "foreground" | "background",
+                    false,
+                    Some("not_started"),
+                    Some("not_started"),
+                    Some("navigation_dispatch_failed"),
+                    Some("browser navigation dispatch failed"),
+                ) | (
+                    "foreground" | "background",
+                    true,
+                    Some("not_started"),
+                    Some("not_started"),
+                    Some("navigation_rejected"),
+                    Some("browser navigation was rejected"),
+                ) | (
+                    "foreground",
+                    true,
+                    Some("failed"),
+                    Some("not_started"),
+                    Some("target_activation_failed"),
+                    Some("foreground target activation failed"),
+                ) | (
+                    "foreground",
+                    true,
+                    Some("succeeded"),
+                    Some("failed"),
+                    Some("navigation_identity_missing"),
+                    Some("browser navigation did not return a frame identity"),
+                ) | (
+                    "foreground",
+                    true,
+                    Some("succeeded"),
+                    Some("stale_document"),
+                    Some("navigation_commit_not_observed"),
+                    Some("foreground readback did not reach the dispatched navigation"),
+                ) | (
+                    "foreground",
+                    true,
+                    Some("succeeded"),
+                    Some("failed"),
+                    Some("foreground_readback_failed"),
+                    Some("foreground browser readback failed"),
+                ) | (
+                    "foreground",
+                    true,
+                    Some("succeeded"),
+                    Some("timeout"),
+                    Some("foreground_readback_timeout"),
+                    Some("foreground browser readback timed out"),
+                ) | (
+                    "foreground",
+                    true,
+                    Some("succeeded"),
+                    Some("succeeded"),
+                    Some("target_drift_after_navigation"),
+                    Some("browser target identity changed after navigation"),
+                )
             );
-            let completion_is_not_false_success = !matches!(
-                (activation_state, readback_state, error_code),
-                (Some("succeeded"), Some("succeeded"), Some(code))
-                    if code != "target_drift_after_navigation"
-            );
-            if activation_state.is_none()
-                || readback_state.is_none()
-                || error_code.is_none()
-                || stable_error.is_none()
-                || !refs_match_dispatch
-                || !activated_matches_state
-                || !states_match_dispatch
-                || !state_order_is_valid
-                || !completion_is_not_false_success
-            {
+            if !refs_match_dispatch || !activated_matches_state || !stable_failure {
                 return Err(ComputerUseError::new(
                     ComputerUseErrorCode::BackendUnavailable,
                     "browser navigation returned a malformed partial failure receipt",

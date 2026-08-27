@@ -86,7 +86,16 @@ fn navigation_partial_failure_receipt_is_preserved_and_strictly_bound() {
             "error": "foreground target activation failed"
         }
     });
-    assert!(!navigation_response_is_success(&receipt, "target-1", "tab-1", "foreground").unwrap());
+    assert!(
+        !navigation_response_is_success(
+            &receipt,
+            "target-1",
+            "tab-1",
+            "https://example.test/next",
+            "foreground"
+        )
+        .unwrap()
+    );
 
     for invalid in [
         json!({"structuredContent": {"status": "error", "target_id": "target-drift", "tab_id": "tab-1", "url": "https://example.test/next", "delivery_mode": "foreground", "dispatched": true, "activation_state": "failed", "readback_state": "not_started", "error_code": "target_activation_failed", "error": "foreground target activation failed"}}),
@@ -95,7 +104,186 @@ fn navigation_partial_failure_receipt_is_preserved_and_strictly_bound() {
         json!({"structuredContent": {"status": "error", "target_id": "target-1", "tab_id": "tab-1", "url": "https://example.test/next", "delivery_mode": "foreground", "dispatched": true, "activated": false, "activation_state": "failed", "readback_state": "timeout", "refs_invalidated": true, "error_code": "target_activation_failed", "error": "foreground target activation failed"}}),
     ] {
         assert!(
-            navigation_response_is_success(&invalid, "target-1", "tab-1", "foreground").is_err()
+            navigation_response_is_success(
+                &invalid,
+                "target-1",
+                "tab-1",
+                "https://example.test/next",
+                "foreground"
+            )
+            .is_err()
+        );
+    }
+}
+
+#[rstest]
+fn navigation_receipt_requires_the_exact_requested_url_for_success_and_failure() {
+    for receipt in [
+        json!({"structuredContent": {
+            "status": "error", "target_id": "target-1", "tab_id": "tab-1",
+            "url": "https://example.test/other", "delivery_mode": "foreground",
+            "dispatched": true, "activated": false, "activation_state": "failed",
+            "readback_state": "not_started", "refs_invalidated": true,
+            "error_code": "target_activation_failed",
+            "error": "foreground target activation failed"
+        }}),
+        json!({"structuredContent": {
+            "status": "ok", "target_id": "target-1", "tab_id": "tab-1",
+            "url": "https://example.test/other", "delivery_mode": "foreground",
+            "dispatched": true, "activated": true, "activation_state": "succeeded",
+            "readback_state": "succeeded", "refs_invalidated": true,
+            "current_url": "https://example.test/redirected", "title": "Title",
+            "heading": "Heading", "visibility_state": "visible", "ready_state": "complete"
+        }}),
+    ] {
+        assert!(
+            navigation_response_is_success(
+                &receipt,
+                "target-1",
+                "tab-1",
+                "https://example.test/next",
+                "foreground"
+            )
+            .is_err()
+        );
+    }
+}
+
+#[rstest]
+fn navigation_failure_receipt_requires_the_sdk_owned_error_contract() {
+    for (error_code, error) in [
+        ("invented_error", "invented diagnostic"),
+        (
+            "target_activation_failed",
+            "C:\\sensitive\\fixture with token=opaque-test-value",
+        ),
+        (
+            "foreground_readback_failed",
+            "foreground target activation failed",
+        ),
+    ] {
+        let receipt = json!({"structuredContent": {
+            "status": "error", "target_id": "target-1", "tab_id": "tab-1",
+            "url": "https://example.test/next", "delivery_mode": "foreground",
+            "dispatched": true, "activated": false, "activation_state": "failed",
+            "readback_state": "not_started", "refs_invalidated": true,
+            "error_code": error_code, "error": error
+        }});
+        assert!(
+            navigation_response_is_success(
+                &receipt,
+                "target-1",
+                "tab-1",
+                "https://example.test/next",
+                "foreground"
+            )
+            .is_err(),
+            "{receipt}"
+        );
+    }
+}
+
+#[rstest]
+fn every_sdk_owned_navigation_failure_contract_is_accepted() {
+    for (
+        delivery_mode,
+        dispatched,
+        activated,
+        activation_state,
+        readback_state,
+        error_code,
+        error,
+    ) in [
+        (
+            "foreground",
+            false,
+            false,
+            "not_started",
+            "not_started",
+            "navigation_dispatch_failed",
+            "browser navigation dispatch failed",
+        ),
+        (
+            "background",
+            true,
+            false,
+            "not_started",
+            "not_started",
+            "navigation_rejected",
+            "browser navigation was rejected",
+        ),
+        (
+            "foreground",
+            true,
+            false,
+            "failed",
+            "not_started",
+            "target_activation_failed",
+            "foreground target activation failed",
+        ),
+        (
+            "foreground",
+            true,
+            true,
+            "succeeded",
+            "failed",
+            "navigation_identity_missing",
+            "browser navigation did not return a frame identity",
+        ),
+        (
+            "foreground",
+            true,
+            true,
+            "succeeded",
+            "stale_document",
+            "navigation_commit_not_observed",
+            "foreground readback did not reach the dispatched navigation",
+        ),
+        (
+            "foreground",
+            true,
+            true,
+            "succeeded",
+            "failed",
+            "foreground_readback_failed",
+            "foreground browser readback failed",
+        ),
+        (
+            "foreground",
+            true,
+            true,
+            "succeeded",
+            "timeout",
+            "foreground_readback_timeout",
+            "foreground browser readback timed out",
+        ),
+        (
+            "foreground",
+            true,
+            true,
+            "succeeded",
+            "succeeded",
+            "target_drift_after_navigation",
+            "browser target identity changed after navigation",
+        ),
+    ] {
+        let receipt = json!({"structuredContent": {
+            "status": "error", "target_id": "target-1", "tab_id": "tab-1",
+            "url": "https://example.test/next", "delivery_mode": delivery_mode,
+            "dispatched": dispatched, "activated": activated,
+            "activation_state": activation_state, "readback_state": readback_state,
+            "refs_invalidated": dispatched, "error_code": error_code, "error": error
+        }});
+        assert!(
+            !navigation_response_is_success(
+                &receipt,
+                "target-1",
+                "tab-1",
+                "https://example.test/next",
+                delivery_mode
+            )
+            .unwrap(),
+            "{receipt}"
         );
     }
 }
