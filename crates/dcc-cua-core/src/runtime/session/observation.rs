@@ -156,7 +156,6 @@ impl ComputerUseSession {
         let result = self.finish_observation_sensitive_attempt(result);
         let target = self.require_observed_target_available().await?;
         let result = match result {
-            #[cfg(windows)]
             Ok(result)
                 if result.is_error && pixel_route_for_uia_tool_failure(&result).is_some() =>
             {
@@ -167,9 +166,12 @@ impl ComputerUseSession {
                     self.pixel_observation_route = Some(route);
                     return self.capture_window_pixels(&target, route).await;
                 }
+                #[cfg(not(windows))]
+                return self
+                    .capture_window_visually(&target, max_elements, max_depth)
+                    .await;
             }
             Ok(result) => self.finish_observed_tool_attempt("capture CUA window", Ok(result))?,
-            #[cfg(windows)]
             Err(error) if pixel_route_for_accessibility_failure(&error).is_some() => {
                 #[cfg(windows)]
                 {
@@ -178,6 +180,10 @@ impl ComputerUseSession {
                     self.pixel_observation_route = Some(route);
                     return self.capture_window_pixels(&target, route).await;
                 }
+                #[cfg(not(windows))]
+                return self
+                    .capture_window_visually(&target, max_elements, max_depth)
+                    .await;
             }
             Err(error) => {
                 return self.finish_observation_sensitive_attempt(Err(error));
