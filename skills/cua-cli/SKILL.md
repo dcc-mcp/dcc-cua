@@ -46,9 +46,10 @@ typed route cannot cover.
    ```powershell
    dcc-cua snapshot --pid $pid --window-id $hwnd --activate --output before.png
    dcc-cua act --pid $pid --window-id $hwnd --action-json '{"action":"click","element_index":12,"delivery_mode":"foreground"}'
+   dcc-cua snapshot --pid $pid --window-id $hwnd --output after.png
    dcc-cua verify --pid $pid --window-id $hwnd --expect-json '[{"window":{"exists":true}}]'
-   dcc-cua clipboard-read --pid $pid --window-id $hwnd
    dcc-cua clipboard-write --pid $pid --window-id $hwnd --text "bounded text"
+   dcc-cua clipboard-read --pid $pid --window-id $hwnd --include-text
    ```
 
    Prefer an accessibility element index/token. Use coordinates only for a
@@ -64,7 +65,10 @@ typed route cannot cover.
 4. Verify state after every mutation. A successful input call proves that input
    was delivered, not that the application reached the requested state. Use a
    post-snapshot, changed title/tree/value, or an independent application state
-   check as the acceptance oracle. If a Windows background UIA result reports
+   check as the acceptance oracle. `window.exists=true` proves liveness only.
+   A successful `clipboard-write` also needs an exact-bound value readback for
+   non-sensitive test data or an application-specific pasted-value check; never
+   expose private clipboard content as evidence. If a Windows background UIA result reports
    `action_executed: true` with `foreground_restore.success: false`, do not
    retry the input; only the independent foreground restoration failed.
 

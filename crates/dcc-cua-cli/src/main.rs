@@ -1821,13 +1821,18 @@ fn resolve_window_selector_from_inventory(
         return Err(message.into());
     }
     let row = matches[0];
+    let process_id = row["pid"]
+        .as_u64()
+        .and_then(|value| u32::try_from(value).ok())
+        .filter(|value| *value > 0)
+        .ok_or("window pid must be a non-zero u32")?;
+    let window_handle = row["window_id"]
+        .as_u64()
+        .filter(|value| *value > 0)
+        .ok_or("window_id must be a non-zero u64")?;
     Ok(ComputerUseTargetScope {
-        process_id: Some(row["pid"].as_u64().ok_or("window is missing pid")? as u32),
-        window_handle: Some(
-            row["window_id"]
-                .as_u64()
-                .ok_or("window is missing window_id")?,
-        ),
+        process_id: Some(process_id),
+        window_handle: Some(window_handle),
         window_title: row["title"].as_str().map(str::to_owned),
     })
 }
@@ -1860,7 +1865,7 @@ fn positive_selector_u64(
 }
 
 fn selector_value(flags: &[String], name: &str) -> Result<Option<String>, String> {
-    let values = flag_values(flags, name);
+    let values = checked_flag_values(flags, name)?;
     let Some(first) = values.first() else {
         return Ok(None);
     };
