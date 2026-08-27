@@ -1,6 +1,6 @@
 use std::future::Future;
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use base64::Engine;
@@ -34,6 +34,8 @@ mod tests;
 pub(crate) use drag_sequences::*;
 pub(crate) mod application;
 mod menu_commands;
+mod pixel_observation;
+use pixel_observation::*;
 mod recording;
 pub(crate) use recording::{
     RecordingHealth, RecordingKeepalive, RecordingVideoTerminalEvidence, aggregate_recording_state,
@@ -1339,6 +1341,7 @@ pub struct ComputerUseSession {
     active: bool,
     escalated: bool,
     pub(crate) uia_timeout_escalated: bool,
+    pixel_observation_route: Option<PixelObservationRoute>,
     #[cfg(feature = "test-support")]
     synthetic_test_session: bool,
 }
@@ -1625,7 +1628,12 @@ struct ExactWindowCapture {
     data: Vec<u8>,
     backend: &'static str,
     fallback: &'static str,
+    generation: u64,
+    dpi: u32,
+    bounds: [i32; 4],
 }
+
+static EXACT_WINDOW_CAPTURE_GENERATION: AtomicU64 = AtomicU64::new(1);
 
 pub(crate) const fn exact_capture_failure_allows_desktop_fallback(
     code: ComputerUseErrorCode,
@@ -1639,6 +1647,15 @@ async fn capture_exact_window(
     window_id: u64,
 ) -> ComputerUseResult<ExactWindowCapture> {
     tokio::task::spawn_blocking(move || {
+        let generation = EXACT_WINDOW_CAPTURE_GENERATION.fetch_add(1, Ordering::Relaxed);
+        let before = dcc_cua_platform_windows::exact_window_pixel_evidence(
+            process_id,
+            window_id,
+        )
+        .map_err(|error| {
+            ComputerUseError::new(ComputerUseErrorCode::InvalidTarget, error.to_string())
+        })?;
+        validate_native_exact_window_pixel_evidence(&before, &before)?;
         let route = dcc_cua_platform_windows::exact_window_capture_route(process_id, window_id)
             .map_err(|error| {
                 ComputerUseError::new(ComputerUseErrorCode::InvalidTarget, error.to_string())
@@ -1659,10 +1676,21 @@ async fn capture_exact_window(
                     ComputerUseError::new(ComputerUseErrorCode::InvalidTarget, error.to_string())
                 },
             )?;
+            let after = dcc_cua_platform_windows::exact_window_pixel_evidence(
+                process_id,
+                window_id,
+            )
+            .map_err(|error| {
+                ComputerUseError::new(ComputerUseErrorCode::InvalidTarget, error.to_string())
+            })?;
+            validate_native_exact_window_pixel_evidence(&before, &after)?;
             return Ok(ExactWindowCapture {
                 data: encode_bgra_to_png(&visible.bgra, visible.width, visible.height)?,
                 backend: "dcc-cua-visible-exact-window",
                 fallback: "same_executable_multi_window_exact_visible_proof",
+                generation,
+                dpi: after.dpi,
+                bounds: after.bounds,
             });
         }
         let wgc_error =
@@ -1685,10 +1713,24 @@ async fn capture_exact_window(
                             "another window from the target executable appeared during WGC capture; pixels were discarded",
                         ));
                     }
+                    let after = dcc_cua_platform_windows::exact_window_pixel_evidence(
+                        process_id,
+                        window_id,
+                    )
+                    .map_err(|error| {
+                        ComputerUseError::new(
+                            ComputerUseErrorCode::InvalidTarget,
+                            error.to_string(),
+                        )
+                    })?;
+                    validate_native_exact_window_pixel_evidence(&before, &after)?;
                     return Ok(ExactWindowCapture {
                         data: encode_bgra_to_png(&bgra, width, height)?,
                         backend: "dcc-cua-wgc-exact-window",
                         fallback: "exact_window_wgc",
+                        generation,
+                        dpi: after.dpi,
+                        bounds: after.bounds,
                     });
                 }
                 Err(error) => error.to_string(),
@@ -1702,10 +1744,21 @@ async fn capture_exact_window(
                     format!("exact WGC capture failed ({wgc_error}); {error}"),
                 )
             })?;
+        let after = dcc_cua_platform_windows::exact_window_pixel_evidence(
+            process_id,
+            window_id,
+        )
+        .map_err(|error| {
+            ComputerUseError::new(ComputerUseErrorCode::InvalidTarget, error.to_string())
+        })?;
+        validate_native_exact_window_pixel_evidence(&before, &after)?;
         Ok(ExactWindowCapture {
             data: encode_bgra_to_png(&visible.bgra, visible.width, visible.height)?,
             backend: "dcc-cua-visible-exact-window",
             fallback: "verified_same_process_visible_window_crop",
+            generation,
+            dpi: after.dpi,
+            bounds: after.bounds,
         })
     })
     .await

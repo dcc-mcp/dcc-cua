@@ -216,6 +216,15 @@ pub(crate) fn document() -> Value {
         "runtime": {
             "backend": "cua-driver-sdk",
             "separate_driver_required": false,
+            "exact_window_pixels": {
+                "cli_flag": "--pixels-only",
+                "required_selectors": ["--pid", "--window-id"],
+                "accessibility_provider_started": false,
+                "whole_desktop_fallback": false,
+                "publication_fences": ["process_id", "window_handle", "bounds", "dpi", "capture_generation", "visibility", "occlusion"],
+                "degraded_mode": "accessibility_timeout_degraded",
+                "unavailable_mode": "accessibility_unavailable_degraded",
+            },
             "browser_prepare_existing_profile": {
                 "exact_window_required": true,
                 "control_discovery": "native_topology",

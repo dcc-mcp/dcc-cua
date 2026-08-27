@@ -10,7 +10,7 @@ use serde_json::json;
 #[cfg(windows)]
 use super::{
     ExactWindowCaptureRoute, capture_identity::route_for_same_executable_root_count,
-    capture_visible_window, exact_window_capture_route,
+    capture_visible_window, exact_window_capture_route, exact_window_pixel_evidence,
 };
 use super::{
     UiaAction, UiaTarget, WindowsForegroundRelation, WindowsRawInputSnapshot,
@@ -206,6 +206,49 @@ fn exact_capture_primitives_reject_a_pid_that_does_not_own_the_hwnd() {
         wgc_error.to_string().contains("granted process"),
         "unexpected WGC capture error: {wgc_error}"
     );
+}
+
+#[cfg(windows)]
+#[rstest]
+fn controlled_no_provider_window_exposes_exact_native_pixel_evidence() {
+    let window = ExactCaptureTestWindow::new("dcc-cua-no-provider", 0x0000_0006, 40, 40);
+    let process_id = unsafe { GetCurrentProcessId() };
+    eprintln!(
+        "provider=dcc-cua runtime={} pid={process_id} hwnd={}",
+        env!("CARGO_PKG_VERSION"),
+        window.raw()
+    );
+
+    let evidence = exact_window_pixel_evidence(process_id, window.raw())
+        .expect("read exact native evidence without UIA");
+
+    assert_eq!(evidence.process_id, process_id);
+    assert_eq!(evidence.window_handle, window.raw());
+    assert!(evidence.visible);
+    assert!(!evidence.minimized);
+    assert!(evidence.dpi > 0);
+    assert!(evidence.bounds[2] > 4 && evidence.bounds[3] > 4);
+}
+
+#[cfg(windows)]
+#[rstest]
+fn controlled_window_move_and_resize_changes_publication_evidence() {
+    let window = ExactCaptureTestWindow::new("dcc-cua-moving-providerless", 0x0000_0006, 40, 40);
+    let process_id = unsafe { GetCurrentProcessId() };
+    eprintln!(
+        "provider=dcc-cua runtime={} pid={process_id} hwnd={}",
+        env!("CARGO_PKG_VERSION"),
+        window.raw()
+    );
+    let before = exact_window_pixel_evidence(process_id, window.raw()).unwrap();
+    unsafe {
+        SetWindowPos(window.0, HWND_TOPMOST, 420, 180, 360, 260, SWP_SHOWWINDOW);
+    }
+    let after = exact_window_pixel_evidence(process_id, window.raw()).unwrap();
+
+    assert_ne!(before.bounds, after.bounds);
+    assert_eq!(before.process_id, after.process_id);
+    assert_eq!(before.window_handle, after.window_handle);
 }
 
 #[cfg(windows)]

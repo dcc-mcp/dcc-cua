@@ -321,6 +321,7 @@ cargo run -p dcc-cua-cli -- launch --name Calculator
 cargo run -p dcc-cua-cli -- doctor
 cargo run -p dcc-cua-cli -- doctor --spawn target/debug/dcc-cua
 cargo run -p dcc-cua-cli -- snapshot --app chrome.exe --output screenshot.png
+cargo run -p dcc-cua-cli -- snapshot --pid 4242 --window-id 123456 --pixels-only --output game.png
 cargo run -p dcc-cua-cli -- accessibility --app chrome.exe
 cargo run -p dcc-cua-cli -- window-state --app chrome.exe
 cargo run -p dcc-cua-cli -- activate --app chrome.exe
@@ -375,6 +376,19 @@ messaging, and MCP commands keep their protocol-specific stdout framing.
 `doctor` are read-only. `snapshot` and `act` require one exact
 target; if an application has multiple windows, pass `--pid` and
 `--window-id` instead of relying on an app name.
+
+For a live custom-rendered window whose accessibility provider is missing or
+unresponsive, use `snapshot --pid PID --window-id HWND --pixels-only`. This
+explicit mode does not start accessibility. It inventories the native window,
+captures only that PID/HWND, and recaptures identity, bounds, DPI, visibility,
+occlusion, and capture generation before publishing. Movement, resize, HWND or
+PID reuse, minimization, hiding, occlusion, or cross-window substitution fails
+closed. It never returns or crops a whole-desktop screenshot. A normal snapshot
+that reaches a typed bounded accessibility timeout may use the same exact-window
+capture route, but its provenance is separately labeled
+`accessibility_timeout_degraded`; explicit mode is labeled `pixels_only`.
+An absent provider is labeled `accessibility_unavailable_degraded` rather than
+being misreported as a timeout.
 
 `doctor` runs CUA's `check_permissions` and `health_report` concurrently with
 driver/window discovery. It reports the upstream structured checks for native
@@ -1113,8 +1127,10 @@ action). In that case the action result remains successful with
 `foreground_restore.success: false`. Do not retry the input; take a fresh
 observation and verify application state.
 
-`get_session_state` reads CUA's live capture policy. `escalate_session` grants
-pixel fallback only inside the existing exact-window scope and requires the
+`get_session_state` reads CUA's live capture policy. The explicit CLI
+`--pixels-only` route and typed bounded accessibility-timeout degradation are
+read-only exact-window observations and never widen to desktop capture.
+`escalate_session` grants legacy pixel fallback only inside the existing exact-window scope and requires the
 separate `allow_session_escalation: true` grant plus one of CUA's bounded
 escalation reasons; it does not widen the session to desktop control.
 The stable reasons are `ax_tree_pixel_mismatch`, `background_delivery_failed`,

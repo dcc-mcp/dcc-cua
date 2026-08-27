@@ -78,6 +78,20 @@ impl ComputerUseSession {
             .await
     }
 
+    /// Capture pixels for the exact PID/HWND without consulting accessibility.
+    pub async fn screenshot_pixels_only(&mut self) -> ComputerUseResult<ComputerUseScreenshot> {
+        self.ensure_active()?;
+        if self.pixel_observation_route != Some(PixelObservationRoute::ExplicitPixelsOnly) {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::InvalidAction,
+                "pixels-only capture requires start_pixels_only on the same exact-window session",
+            ));
+        }
+        let target = self.require_observed_target_available().await?;
+        self.capture_window_pixels(&target, PixelObservationRoute::ExplicitPixelsOnly)
+            .await
+    }
+
     /// Capture a fresh observation with bounded semantic-tree context.
     pub async fn screenshot_with_bounds(
         &mut self,
@@ -93,14 +107,17 @@ impl ComputerUseSession {
         }
         let target = self.require_observed_target_available().await?;
         #[cfg(windows)]
+        if let Some(route) = self.pixel_observation_route {
+            return self.capture_window_pixels(&target, route).await;
+        }
+        #[cfg(windows)]
         if matches!(
             self.upstream_session_state,
             UpstreamSessionState::VisualOnly { .. }
         ) {
-            self.activate_windows_uia_fallback(&target);
-            return self
-                .capture_window_visually(&target, max_elements, max_depth)
-                .await;
+            let route = PixelObservationRoute::AccessibilityTimeoutDegraded;
+            self.pixel_observation_route = Some(route);
+            return self.capture_window_pixels(&target, route).await;
         }
         #[cfg(windows)]
         if self.windows_uia.is_some() {
@@ -131,29 +148,26 @@ impl ComputerUseSession {
         let result = self.finish_observation_sensitive_attempt(result);
         let target = self.require_observed_target_available().await?;
         let result = match result {
-            Ok(result) if result.is_error && is_uia_snapshot_failure(&result) => {
-                #[cfg(windows)]
-                self.activate_windows_uia_fallback(&target);
-                return self
-                    .capture_window_visually(&target, max_elements, max_depth)
-                    .await;
-            }
-            Ok(result) => self.finish_observed_tool_attempt("capture CUA window", Ok(result))?,
-            Err(error)
-                if matches!(
-                    error.code,
-                    ComputerUseErrorCode::BackendUnavailable
-                        | ComputerUseErrorCode::TargetUnavailable
-                ) || error
-                    .details
-                    .as_ref()
-                    .is_some_and(|details| details.timed_out == Some(true)) =>
+            Ok(result)
+                if result.is_error && pixel_route_for_uia_tool_failure(&result).is_some() =>
             {
                 #[cfg(windows)]
-                self.activate_windows_uia_fallback(&target);
-                return self
-                    .capture_window_visually(&target, max_elements, max_depth)
-                    .await;
+                {
+                    let route = pixel_route_for_uia_tool_failure(&result)
+                        .expect("guard accepted UIA tool degradation");
+                    self.pixel_observation_route = Some(route);
+                    return self.capture_window_pixels(&target, route).await;
+                }
+            }
+            Ok(result) => self.finish_observed_tool_attempt("capture CUA window", Ok(result))?,
+            Err(error) if pixel_route_for_accessibility_failure(&error).is_some() => {
+                #[cfg(windows)]
+                {
+                    let route = pixel_route_for_accessibility_failure(&error)
+                        .expect("guard accepted accessibility degradation");
+                    self.pixel_observation_route = Some(route);
+                    return self.capture_window_pixels(&target, route).await;
+                }
             }
             Err(error) => {
                 return self.finish_observation_sensitive_attempt(Err(error));
@@ -190,6 +204,13 @@ impl ComputerUseSession {
                 .await
             {
                 Ok(windows_accessibility) => accessibility = windows_accessibility,
+                Err(error) if pixel_route_for_accessibility_failure(&error).is_some() => {
+                    let route = pixel_route_for_accessibility_failure(&error)
+                        .expect("guard accepted accessibility degradation");
+                    self.pixel_observation_route = Some(route);
+                    self.windows_uia = None;
+                    return self.capture_window_pixels(&target, route).await;
+                }
                 Err(_) => self.windows_uia = None,
             }
         }
@@ -640,6 +661,85 @@ impl ComputerUseSession {
         self.set_banner_activity(BannerActivity::Ready);
         Ok(ComputerUseScreenshot {
             data,
+            observation,
+            accessibility,
+        })
+    }
+
+    #[cfg(windows)]
+    async fn capture_window_pixels(
+        &mut self,
+        target: &WindowTarget,
+        route: PixelObservationRoute,
+    ) -> ComputerUseResult<ComputerUseScreenshot> {
+        validate_exact_window_pixel_target_state(target, true)?;
+        let capture = gated_exact_window_observation(
+            interactive_desktop::require_exact_window_observation_available,
+            || capture_exact_window(target.pid, target.window_id),
+        )
+        .await;
+        let capture = self.finish_observation_sensitive_attempt(capture)?;
+        let (width, height) = png_dimensions(&capture.data).ok_or_else(|| {
+            ComputerUseError::new(
+                ComputerUseErrorCode::CaptureFailed,
+                "exact-window pixel capture returned a non-PNG or truncated screenshot",
+            )
+        })?;
+        let after = self.require_observed_target_available().await?;
+        if target.bounds != capture.bounds || after.bounds != capture.bounds {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::StaleObservation,
+                "native inventory bounds and exact pixel capture bounds do not match",
+            ));
+        }
+        validate_exact_window_pixel_publication(
+            target,
+            &after,
+            capture.dpi,
+            capture.dpi,
+            capture.generation,
+            capture.generation,
+        )?;
+        let after = self
+            .revalidate_observed_exact_publication_target(target)
+            .await?;
+        let mut provenance = exact_window_pixel_provenance(
+            route,
+            &after,
+            capture.generation,
+            capture.dpi,
+            capture.backend,
+        );
+        provenance["fallback"] = json!(capture.fallback);
+        let accessibility = json!({
+            "accessibility_available": false,
+            "degraded": route.degraded(),
+            "observation_mode": route.observation_mode(),
+            "fallback": capture.fallback,
+            "pid": after.pid,
+            "window_id": after.window_id,
+        });
+        let observation = ComputerUseObservation {
+            observation_id: format!(
+                "{}-{}",
+                self.session_id,
+                OBSERVATION_COUNTER.fetch_add(1, Ordering::Relaxed)
+            ),
+            window_handle: after.window_id,
+            process_id: after.pid,
+            window_title: after.title.clone(),
+            width,
+            height,
+            source_rect: after.bounds,
+            capture_backend: capture.backend.into(),
+            capture_provenance: provenance,
+            session_id: self.session_id.clone(),
+        };
+        self.target = Some(after);
+        self.observation = Some(observation.clone());
+        self.set_banner_activity(BannerActivity::Ready);
+        Ok(ComputerUseScreenshot {
+            data: capture.data,
             observation,
             accessibility,
         })

@@ -11,7 +11,7 @@ metadata:
     dcc: computer-use
     layer: infrastructure
     compatibility: dcc-cua 0.2+ on Windows, macOS, or Linux.
-    version: "0.4.1"
+    version: "0.4.2"
     search-hint: "dcc-cua CLI exact window multilingual profile localized aliases snapshot act verify UIA visual control banner long task recovery"
     tags: "computer-use, ui-control, infrastructure, read-only"
 ---
@@ -61,6 +61,20 @@ typed route cannot cover.
    `--app`, `--pid`, `--window-id`, and `--title`. Treat multiple selectors as
    one conjunctive identity. Any conflict, missing or ambiguous match, or live
    PID/HWND/title drift must stop the command; never fall back to app-only scope.
+
+   If the exact live window has no responsive accessibility provider, use the
+   explicit provider-free route:
+
+   ```powershell
+   dcc-cua snapshot --pid $pid --window-id $hwnd --pixels-only --output frame.png
+   ```
+
+   This route requires both selectors, captures only that native window, and
+   never falls back to a whole-desktop screenshot or desktop crop. Treat
+   `pixels_only`, `accessibility_unavailable_degraded`, and
+   `accessibility_timeout_degraded` as distinct provenance.
+   Any identity, bounds, DPI, generation, visibility, or occlusion change
+   invalidates the frame; rediscover and take a fresh observation.
 
 4. Verify state after every mutation. A successful input call proves that input
    was delivered, not that the application reached the requested state. Use a

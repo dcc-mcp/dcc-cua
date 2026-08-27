@@ -7,8 +7,12 @@ use windows::Win32::{
         DIB_RGB_COLORS, DeleteDC, DeleteObject, GetDC, GetDIBits, RGBQUAD, ReleaseDC, SRCCOPY,
         SelectObject,
     },
-    UI::WindowsAndMessaging::{
-        GA_ROOT, GetAncestor, GetWindowRect, IsIconic, IsWindow, WindowFromPoint,
+    UI::{
+        HiDpi::GetDpiForWindow,
+        WindowsAndMessaging::{
+            GA_ROOT, GetAncestor, GetWindowRect, IsIconic, IsWindow, IsWindowVisible,
+            WindowFromPoint,
+        },
     },
 };
 
@@ -21,6 +25,17 @@ pub struct VisibleWindowCapture {
     pub bgra: Vec<u8>,
     pub width: u32,
     pub height: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ExactWindowPixelEvidence {
+    pub process_id: u32,
+    pub window_handle: u64,
+    pub bounds: [i32; 4],
+    pub dpi: u32,
+    pub visible: bool,
+    pub minimized: bool,
+    pub unobscured: bool,
 }
 
 fn capture_error(message: impl Into<String>) -> VisibleWindowCaptureError {
@@ -75,6 +90,46 @@ unsafe fn target_is_obscured(target: HWND, rect: RECT) -> bool {
         })
         .count();
     obscured_from_covered_samples(covered_samples)
+}
+
+/// Snapshot the native evidence used to fence one exact-window pixel frame.
+pub fn exact_window_pixel_evidence(
+    process_id: u32,
+    window_handle: u64,
+) -> Result<ExactWindowPixelEvidence, VisibleWindowCaptureError> {
+    validate_exact_window_owner(process_id, window_handle)
+        .map_err(|error| capture_error(error.to_string()))?;
+    let raw = usize::try_from(window_handle)
+        .map_err(|error| capture_error(format!("convert window handle: {error}")))?;
+    let hwnd = HWND(raw as *mut _);
+    if hwnd.0.is_null() || !unsafe { IsWindow(hwnd) }.as_bool() {
+        return Err(capture_error("the exact HWND no longer exists"));
+    }
+    let mut rect = RECT::default();
+    unsafe { GetWindowRect(hwnd, &mut rect) }
+        .map_err(|error| capture_error(format!("read exact window bounds: {error}")))?;
+    let width = rect.right - rect.left;
+    let height = rect.bottom - rect.top;
+    if width <= 4 || height <= 4 {
+        return Err(capture_error(format!(
+            "the exact HWND has invalid bounds {width}x{height}"
+        )));
+    }
+    validate_exact_window_owner(process_id, window_handle)
+        .map_err(|error| capture_error(error.to_string()))?;
+    let dpi = unsafe { GetDpiForWindow(hwnd) };
+    if dpi == 0 {
+        return Err(capture_error("the exact HWND DPI is unavailable"));
+    }
+    Ok(ExactWindowPixelEvidence {
+        process_id,
+        window_handle,
+        bounds: [rect.left, rect.top, width, height],
+        dpi,
+        visible: unsafe { IsWindowVisible(hwnd) }.as_bool(),
+        minimized: unsafe { IsIconic(hwnd) }.as_bool(),
+        unobscured: !unsafe { target_is_obscured(hwnd, rect) },
+    })
 }
 
 /// Capture only an exact HWND's currently visible screen rectangle.

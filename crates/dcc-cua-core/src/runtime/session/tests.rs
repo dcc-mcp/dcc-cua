@@ -25,6 +25,7 @@ mod browser_boundaries;
 mod continuity;
 mod degraded_shutdown;
 mod dispatch_errors;
+mod issue_228_window_pixels;
 mod modal_takeover;
 mod recording;
 mod visual_only;

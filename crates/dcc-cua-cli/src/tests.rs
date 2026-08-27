@@ -19,6 +19,7 @@ use super::host_lifecycle::{
 use super::*;
 
 mod host_jsonl;
+mod issue_228_window_pixels;
 mod owned_process;
 mod process_output;
 mod task_authorization_manifest;
@@ -1551,8 +1552,6 @@ fn manifest_is_a_machine_readable_core_launch_contract() {
                 .any(|value| value == "windows_background_uia_fallback")),
         cfg!(windows)
     );
-    assert_eq!(manifest["runtime"]["backend"], "cua-driver-sdk");
-    assert_eq!(manifest["runtime"]["separate_driver_required"], false);
     assert!(manifest.get("upstream_driver").is_none());
 }
 

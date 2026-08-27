@@ -59,7 +59,10 @@ pub fn desktop_state() -> WindowsDesktopState {
     }
 }
 #[cfg(windows)]
-pub use visible_capture::{VisibleWindowCapture, capture_visible_window};
+pub use visible_capture::{
+    ExactWindowPixelEvidence, VisibleWindowCapture, capture_visible_window,
+    exact_window_pixel_evidence,
+};
 #[cfg(windows)]
 pub use wgc::{
     PersistentWgcCapture, PersistentWgcFrame, WgcCaptureError, WgcCompositorTiming,
