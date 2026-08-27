@@ -68,6 +68,16 @@ SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 DIGEST_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 REMOTE_ACTION_PATTERN = re.compile(r"^\s*(?:-\s*)?uses:\s*([^\s#]+)", re.MULTILINE)
 PINNED_ACTION_PATTERN = re.compile(r"^[^@\s]+@[0-9a-f]{40}$")
+PUBLIC_VERSION_PATTERN = re.compile(
+    r"^(?:0|[1-9][0-9]*)(?:\.(?:0|[1-9][0-9]*)){2,3}$"
+)
+RELEASE_TAG_PATTERN = re.compile(
+    rf"^dcc-cua-browser-extension-v({PUBLIC_VERSION_PATTERN.pattern[1:-1]})$"
+)
+CANONICAL_TIMESTAMP_PATTERN = re.compile(
+    r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+)
+KNOWN_READ_PERMISSIONS = {"granted", "denied", "not_checked", "unverifiable"}
 FIREFOX_ADDON_ID = "dcc-cua@dcc-mcp.org"
 REQUIRED_CI_JOB = "policy"
 REQUIRED_CI_COMMAND = "python -B -m unittest scripts.test_browser_store_readiness"
@@ -83,6 +93,25 @@ def _bool(value: object) -> bool:
 
 def _mapping(value: object) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
+
+
+def _release_identity(value: object) -> tuple[str | None, str]:
+    if not isinstance(value, str):
+        return None, ""
+    match = RELEASE_TAG_PATTERN.fullmatch(value)
+    return (value, match.group(1)) if match else (None, "")
+
+
+def _canonical_expiry(value: object) -> tuple[str | None, datetime | None]:
+    if not isinstance(value, str) or CANONICAL_TIMESTAMP_PATTERN.fullmatch(value) is None:
+        return None, None
+    try:
+        parsed = datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(
+            tzinfo=timezone.utc
+        )
+    except ValueError:
+        return None, None
+    return parsed.strftime("%Y-%m-%dT%H:%M:%SZ"), parsed
 
 
 def _environment_receipt(environment: Mapping[str, Any]) -> dict[str, object]:
@@ -141,6 +170,9 @@ def _github_identity_receipt(github: Mapping[str, Any]) -> dict[str, object]:
     release_target = str(github.get("release_target_sha", "")).lower()
     run_head = str(run.get("head_sha", "")).lower()
     reasons: list[str] = []
+    release_tag, _ = _release_identity(github.get("tag"))
+    if release_tag is None:
+        reasons.append("invalid_release_tag")
     if not all(SHA_PATTERN.fullmatch(value) for value in (source, tag_target, release_target, run_head)):
         reasons.append("invalid_source_identity")
     elif len({source, tag_target, release_target, run_head}) != 1:
@@ -162,27 +194,25 @@ def _github_identity_receipt(github: Mapping[str, Any]) -> dict[str, object]:
         reasons.append("artifact_digest_mismatch")
     if _bool(artifact.get("expired")):
         reasons.append("artifact_expired")
-    expires_at = str(artifact.get("expires_at", ""))
-    try:
-        expires = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
-        if expires <= datetime.now(timezone.utc):
-            reasons.append("artifact_expired")
-    except ValueError:
+    expires_at, expires = _canonical_expiry(artifact.get("expires_at"))
+    if expires is None:
         reasons.append("invalid_artifact_expiry")
+    elif expires <= datetime.now(timezone.utc):
+        reasons.append("artifact_expired")
     reasons = sorted(set(reasons))
     return {
         "valid": not reasons,
         "reasons": reasons,
         "repository_id": repository_id if isinstance(repository_id, int) else None,
         "source_sha": source if SHA_PATTERN.fullmatch(source) else None,
-        "tag": str(github.get("tag", "")),
+        "tag": release_tag,
         "release_id": release_id if isinstance(release_id, int) else None,
         "artifact_id": artifact_id if isinstance(artifact_id, int) else None,
         "artifact_digest": digest if DIGEST_PATTERN.fullmatch(digest) else None,
         "run_id": run_id if isinstance(run_id, int) else None,
         "head_sha": run_head if SHA_PATTERN.fullmatch(run_head) else None,
         "expired": _bool(artifact.get("expired")),
-        "expires_at": expires_at or None,
+        "expires_at": expires_at,
     }
 
 
@@ -195,6 +225,12 @@ def _platform_receipt(
     missing = sorted(
         name for name in PLATFORM_CONFIGURATION[platform] if not _bool(configuration.get(name))
     )
+    raw_permission = observation.get("permission", "not_checked")
+    permission = (
+        raw_permission
+        if isinstance(raw_permission, str) and raw_permission in KNOWN_READ_PERMISSIONS
+        else "unknown"
+    )
     result: dict[str, object] = {
         "ready": False,
         "state": "not_ready",
@@ -202,7 +238,7 @@ def _platform_receipt(
         "missing_configuration": missing,
         "configuration_present": len(PLATFORM_CONFIGURATION[platform]) - len(missing),
         "configuration_expected": len(PLATFORM_CONFIGURATION[platform]),
-        "read_permission": str(observation.get("permission", "not_checked")),
+        "read_permission": permission,
         "item_exists": observation.get("item") == "exists",
         "version": None,
         "item_state": None,
@@ -213,7 +249,6 @@ def _platform_receipt(
         return result
     if missing:
         return result
-    permission = observation.get("permission")
     if permission == "denied":
         result["reason"] = "read_permission_denied"
         return result
@@ -227,14 +262,20 @@ def _platform_receipt(
             reason="item_onboarding_required" if item == "missing" else "item_existence_unknown",
         )
         return result
-    version = str(observation.get("version", ""))
-    state = str(observation.get("state", "")).lower()
-    result["version"] = version or None
+    raw_version = observation.get("version")
+    version_matches = (
+        isinstance(raw_version, str)
+        and PUBLIC_VERSION_PATTERN.fullmatch(raw_version) is not None
+        and raw_version == expected_version
+    )
+    raw_state = observation.get("state")
+    state = raw_state if isinstance(raw_state, str) and raw_state in KNOWN_ITEM_STATES else None
+    result["version"] = expected_version if version_matches else None
     result["item_state"] = state if state in KNOWN_ITEM_STATES else None
     if state not in KNOWN_ITEM_STATES:
         result["reason"] = "unknown_item_state"
         return result
-    if version != expected_version:
+    if not version_matches:
         result["reason"] = "version_mismatch"
         return result
     result.update(ready=True, state="ready", reason="readback_verified")
@@ -249,9 +290,7 @@ def build_receipt(snapshot: Mapping[str, Any]) -> dict[str, Any]:
     unpinned = raw_pins.get("unpinned", [])
     unpinned_count = len(unpinned) if isinstance(unpinned, Sequence) else 0
     pins = {"valid": _bool(raw_pins.get("valid")), "unpinned_count": unpinned_count}
-    tag = str(_mapping(snapshot.get("github")).get("tag", ""))
-    match = re.fullmatch(r"dcc-cua-browser-extension-v(.+)", tag)
-    expected_version = match.group(1) if match else ""
+    _, expected_version = _release_identity(_mapping(snapshot.get("github")).get("tag"))
     observations = _mapping(snapshot.get("stores"))
     platforms = {
         platform: _platform_receipt(
@@ -409,9 +448,8 @@ def audit_required_ci_contract(workflow: str) -> dict[str, object]:
         reasons.append("required_step_missing")
     else:
         candidate = candidates[0]
-        for key in ("if", "continue-on-error"):
-            if key in candidate:
-                reasons.append(f"required_step_{key}_not_allowed")
+        if set(candidate) != {"run"}:
+            reasons.append("required_step_mapping_not_closed")
     reasons = sorted(set(reasons))
     return {"valid": not reasons, "reasons": reasons}
 
@@ -508,7 +546,7 @@ def collect_github_snapshot(repository: str, token: str) -> dict[str, Any]:
         release
         for release in releases
         if isinstance(release, Mapping)
-        and str(release.get("tag_name", "")).startswith("dcc-cua-browser-extension-v")
+        and _release_identity(release.get("tag_name"))[0] is not None
         and release.get("draft") is False
         and release.get("prerelease") is False
     ]
@@ -822,9 +860,7 @@ def main() -> int:
             for name in EXPECTED_CONFIGURATION_NAMES
         }
         if args.probe_stores:
-            tag = str(_mapping(snapshot.get("github")).get("tag", ""))
-            match = re.fullmatch(r"dcc-cua-browser-extension-v(.+)", tag)
-            version = match.group(1) if match else ""
+            _, version = _release_identity(_mapping(snapshot.get("github")).get("tag"))
             snapshot["stores"] = {
                 "chrome": probe_chrome(environment, version),
                 "edge": probe_edge(environment),
