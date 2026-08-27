@@ -74,7 +74,10 @@ impl DriverEnvelopeChannel for NavigationReceiptChannel {
                     }),
                     false,
                 ),
-                "browser_navigate" => (self.failure.clone(), true),
+                "browser_navigate" => (
+                    self.failure.clone(),
+                    self.failure["status"].as_str() == Some("error"),
+                ),
                 other => panic!("unexpected SDK tool call: {other}"),
             };
             Ok(DriverResponseEnvelope {
@@ -282,8 +285,8 @@ async fn sdk_readback_failure_receipt_reaches_host_without_false_success() {
         "activation_state": "succeeded",
         "readback_state": "failed",
         "refs_invalidated": true,
-        "error_code": "navigation_readback_failed",
-        "error": "foreground navigation readback failed"
+        "error_code": "foreground_readback_failed",
+        "error": "foreground browser readback failed"
     });
 
     let response = navigate_through_host(receipt.clone())
@@ -296,6 +299,143 @@ async fn sdk_readback_failure_receipt_reaches_host_without_false_success() {
         response["result"]["structuredContent"]["readback_state"],
         "failed"
     );
+}
+
+#[rstest]
+#[tokio::test]
+async fn sdk_failure_receipt_for_another_requested_url_fails_closed_before_host_publication() {
+    let error = navigate_through_host(json!({
+        "status": "error",
+        "target_id": "target-1",
+        "tab_id": "tab-1",
+        "url": "https://example.test/a-different-navigation",
+        "delivery_mode": "foreground",
+        "dispatched": true,
+        "activated": false,
+        "activation_state": "failed",
+        "readback_state": "not_started",
+        "refs_invalidated": true,
+        "error_code": "target_activation_failed",
+        "error": "foreground target activation failed"
+    }))
+    .await
+    .expect_err("a receipt from another navigation must fail closed");
+
+    let HostError::ComputerUse(error) = error else {
+        panic!("expected typed Computer Use failure")
+    };
+    assert_eq!(error.code, ComputerUseErrorCode::BackendUnavailable);
+    assert_eq!(
+        error.message,
+        "browser navigation receipt returned inconsistent target, tab, URL, or delivery mode"
+    );
+}
+
+#[rstest]
+#[tokio::test]
+async fn sdk_success_receipt_for_another_requested_url_fails_closed_before_host_publication() {
+    let error = navigate_through_host(json!({
+        "status": "ok",
+        "target_id": "target-1",
+        "tab_id": "tab-1",
+        "url": "https://example.test/a-different-navigation",
+        "delivery_mode": "foreground",
+        "dispatched": true,
+        "activated": true,
+        "activation_state": "succeeded",
+        "readback_state": "succeeded",
+        "refs_invalidated": true,
+        "current_url": "https://example.test/redirected",
+        "title": "Redirected page",
+        "heading": "Redirected heading",
+        "visibility_state": "visible",
+        "ready_state": "complete"
+    }))
+    .await
+    .expect_err("a success receipt from another navigation must fail closed");
+
+    let HostError::ComputerUse(error) = error else {
+        panic!("expected typed Computer Use failure")
+    };
+    assert_eq!(error.code, ComputerUseErrorCode::BackendUnavailable);
+    assert_eq!(
+        error.message,
+        "browser navigation receipt returned inconsistent target, tab, URL, or delivery mode"
+    );
+}
+
+#[rstest]
+#[tokio::test]
+async fn sdk_navigation_receipt_is_allowlisted_before_host_publication() {
+    let receipt = json!({
+        "status": "error",
+        "target_id": "target-1",
+        "tab_id": "tab-1",
+        "url": "https://example.test/next",
+        "delivery_mode": "foreground",
+        "dispatched": true,
+        "activated": false,
+        "activation_state": "failed",
+        "readback_state": "not_started",
+        "refs_invalidated": true,
+        "error_code": "target_activation_failed",
+        "error": "foreground target activation failed",
+        "diagnostics": {"local_path": "C:\\sensitive\\fixture"},
+        "resume_token": "opaque-test-token",
+        "secret": "opaque-test-secret"
+    });
+
+    let response = navigate_through_host(receipt)
+        .await
+        .expect("a valid public receipt must reach Host");
+    let structured = &response["result"]["structuredContent"];
+    assert_eq!(structured.as_object().unwrap().len(), 12, "{structured}");
+    assert!(structured.get("diagnostics").is_none(), "{structured}");
+    assert!(structured.get("resume_token").is_none(), "{structured}");
+    assert!(structured.get("secret").is_none(), "{structured}");
+    let serialized = response.to_string();
+    for forbidden in ["sensitive", "opaque-test", "resume_token", "secret"] {
+        assert!(!serialized.contains(forbidden), "{serialized}");
+    }
+}
+
+#[rstest]
+#[tokio::test]
+async fn sdk_redirect_success_receipt_keeps_public_readback_and_drops_injected_fields() {
+    let response = navigate_through_host(json!({
+        "status": "ok",
+        "target_id": "target-1",
+        "tab_id": "tab-1",
+        "url": "https://example.test/next",
+        "delivery_mode": "foreground",
+        "dispatched": true,
+        "activated": true,
+        "activation_state": "succeeded",
+        "readback_state": "succeeded",
+        "refs_invalidated": true,
+        "current_url": "https://example.test/redirected",
+        "title": "Redirected page",
+        "heading": "Redirected heading",
+        "visibility_state": "visible",
+        "ready_state": "complete",
+        "diagnostics": {"local_path": "C:\\sensitive\\fixture"},
+        "resume_token": "opaque-test-token"
+    }))
+    .await
+    .expect("an exact requested URL may produce a verified redirect");
+
+    let result = &response["result"];
+    let structured = &result["structuredContent"];
+    assert_eq!(structured.as_object().unwrap().len(), 15, "{structured}");
+    assert_eq!(structured["url"], "https://example.test/next");
+    assert_eq!(structured["current_url"], "https://example.test/redirected");
+    assert_eq!(structured["heading"], "Redirected heading");
+    assert_eq!(result["isError"], false);
+    assert!(result["content"].is_null(), "{result}");
+    let serialized = response.to_string();
+    for forbidden in ["sensitive", "opaque-test", "resume_token"] {
+        assert!(!serialized.contains(forbidden), "{serialized}");
+    }
 }
 
 #[rstest]
@@ -323,6 +463,6 @@ async fn malformed_sdk_navigation_failure_still_fails_closed_before_host_publica
     assert_eq!(error.code, ComputerUseErrorCode::BackendUnavailable);
     assert_eq!(
         error.message,
-        "browser navigation receipt returned inconsistent target, tab, or delivery mode"
+        "browser navigation receipt returned inconsistent target, tab, URL, or delivery mode"
     );
 }
