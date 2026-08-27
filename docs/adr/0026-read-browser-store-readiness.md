@@ -24,12 +24,16 @@ Keep publication disabled and add a manual, two-phase, read-only readiness check
    extension release and tag source, workflow run/head, artifact numeric ID,
    server digest, repository ownership, and expiry. Check the environment branch
    policy and all remote Action SHA pins. Emit a redacted receipt even when the
-   default branch is ineligible.
+   default branch is ineligible. Every external database identity is valid only
+   in the positive signed 64-bit domain (`1` through `2^63 - 1`); JSON booleans,
+   zero, negative values, and overflow fail closed.
 2. Only after eligibility is proven, enter `browser-stores` and use GET-only
    provider readbacks. Chrome uses its read-only OAuth scope. Firefox uses a
-   short-lived JWT to read the fixed manifest GUID. The documented Edge Update
-   API has no non-mutating product/version lookup, so Edge remains
-   `human_action_required` rather than manufacturing an upload or publish call.
+   short-lived JWT to read the fixed manifest GUID. Its authenticated profile identity
+   must match the add-on author record, binding control to that same account. The
+   documented Edge Update API has no non-mutating product/version
+   lookup, so Edge remains `human_action_required` rather than manufacturing an
+   upload or publish call.
 
 Receipts expose configuration names and presence only. Provider messages,
 credentials, tokens, publisher/item identifiers, and account details are never

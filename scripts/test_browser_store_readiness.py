@@ -9,6 +9,8 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import urllib.error
+import urllib.parse
 from pathlib import Path
 from unittest import mock
 
@@ -82,6 +84,14 @@ def ready_snapshot() -> dict[str, object]:
 
 
 class BrowserStoreReadinessTests(unittest.TestCase):
+    def test_adr_documents_external_identity_and_firefox_owner_boundaries(self) -> None:
+        adr = (ROOT / "docs" / "adr" / "0026-read-browser-store-readiness.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("positive signed 64-bit", adr)
+        self.assertIn("authenticated profile identity", adr)
+        self.assertIn("same account", adr)
+
     @staticmethod
     def github_api_fixture(path: str) -> tuple[int, object]:
         responses: dict[str, tuple[int, object]] = {
@@ -253,6 +263,55 @@ class BrowserStoreReadinessTests(unittest.TestCase):
                 self.assertFalse(receipt["github_identity"]["valid"])
                 self.assertEqual("not_ready", receipt["overall_state"])
 
+    def test_numeric_identities_require_exact_positive_ints(self) -> None:
+        paths = (
+            ("repository", "id"),
+            ("release_id",),
+            ("artifact", "id"),
+            ("artifact", "workflow_run", "id"),
+            ("artifact", "workflow_run", "repository_id"),
+            ("artifact", "workflow_run", "head_repository_id"),
+        )
+        for path in paths:
+            for value in (True, False, 0, -1, 1 << 63, 1.0, "1", [], {}):
+                with self.subTest(path=path, value=value):
+                    snapshot = ready_snapshot()
+                    target = snapshot["github"]
+                    for component in path[:-1]:
+                        target = target[component]
+                    target[path[-1]] = value
+                    receipt = READINESS.build_receipt(snapshot)
+                    self.assertFalse(receipt["github_identity"]["valid"])
+                    self.assertEqual("not_ready", receipt["overall_state"])
+
+    def test_external_identity_domain_accepts_only_signed_64_bit_positive_ints(self) -> None:
+        self.assertEqual((1 << 63) - 1, READINESS.MAX_EXTERNAL_ID)
+        for value in (1, (1 << 63) - 1):
+            with self.subTest(valid=value):
+                self.assertTrue(READINESS._external_id(value))
+        for value in (True, False, 0, -1, 1 << 63, 1.0, "1", [], {}):
+            with self.subTest(invalid=value):
+                self.assertFalse(READINESS._external_id(value))
+
+    def test_artifact_expired_requires_exact_false(self) -> None:
+        values = (None, True, 0, 1, "false", [], {})
+        for value in values:
+            with self.subTest(value=value):
+                snapshot = ready_snapshot()
+                snapshot["github"]["artifact"]["expired"] = value
+                receipt = READINESS.build_receipt(snapshot)
+                self.assertFalse(receipt["github_identity"]["valid"])
+                self.assertIn(
+                    "invalid_artifact_expired",
+                    receipt["github_identity"]["reasons"],
+                )
+                self.assertIsNone(receipt["github_identity"]["expired"])
+        snapshot = ready_snapshot()
+        snapshot["github"]["artifact"].pop("expired")
+        receipt = READINESS.build_receipt(snapshot)
+        self.assertFalse(receipt["github_identity"]["valid"])
+        self.assertIn("invalid_artifact_expired", receipt["github_identity"]["reasons"])
+
     def test_source_tag_release_artifact_head_drift_fails_closed(self) -> None:
         snapshot = ready_snapshot()
         snapshot["github"]["artifact"]["workflow_run"]["head_sha"] = "c" * 40
@@ -336,6 +395,172 @@ class BrowserStoreReadinessTests(unittest.TestCase):
         receipt = READINESS.build_receipt(snapshot)
         self.assertEqual("not_ready", receipt["platforms"]["edge"]["state"])
         self.assertEqual("read_permission_denied", receipt["platforms"]["edge"]["reason"])
+
+    def test_provider_and_github_reads_reject_redirects_without_forwarding_credentials(self) -> None:
+        cases = (
+            (
+                "provider_cross_origin",
+                lambda: READINESS._request_json(
+                    "https://provider.example/read",
+                    headers={"Authorization": "Bearer provider-secret"},
+                ),
+                "https://attacker.example/collect",
+                "https://provider.example/read",
+            ),
+            (
+                "provider_downgrade",
+                lambda: READINESS._request_json(
+                    "https://provider.example/read",
+                    headers={"Authorization": "Bearer provider-secret"},
+                ),
+                "http://provider.example/collect",
+                "https://provider.example/read",
+            ),
+            (
+                "github_cross_origin",
+                lambda: READINESS._github_get("dcc-mcp/dcc-cua", "", "github-secret"),
+                "https://attacker.example/collect",
+                "https://api.github.com/repos/dcc-mcp/dcc-cua",
+            ),
+            (
+                "github_downgrade",
+                lambda: READINESS._github_get("dcc-mcp/dcc-cua", "", "github-secret"),
+                "http://api.github.com/collect",
+                "https://api.github.com/repos/dcc-mcp/dcc-cua",
+            ),
+        )
+        for name, invoke, redirect_target, expected_url in cases:
+            with self.subTest(name=name):
+                opened: list[object] = []
+                handlers: list[object] = []
+
+                class RedirectingOpener:
+                    def open(self, request: object, timeout: int):
+                        opened.append(request)
+                        raise urllib.error.HTTPError(
+                            request.full_url,
+                            302,
+                            "redirect refused",
+                            {"Location": redirect_target},
+                            io.BytesIO(b"{}"),
+                        )
+
+                def fake_build_opener(*values: object):
+                    handlers.extend(values)
+                    return RedirectingOpener()
+
+                with (
+                    mock.patch.object(
+                        READINESS.urllib.request,
+                        "build_opener",
+                        side_effect=fake_build_opener,
+                    ),
+                    mock.patch.object(
+                        READINESS.urllib.request,
+                        "urlopen",
+                        side_effect=AssertionError(
+                            "default redirect-capable transport used"
+                        ),
+                    ),
+                ):
+                    status, _ = invoke()
+
+                self.assertEqual(302, status)
+                self.assertEqual(1, len(opened))
+                self.assertEqual(expected_url, opened[0].full_url)
+                if "cross_origin" in name:
+                    self.assertNotEqual(
+                        urllib.parse.urlsplit(redirect_target).netloc,
+                        urllib.parse.urlsplit(opened[0].full_url).netloc,
+                    )
+                self.assertTrue(
+                    any(
+                        isinstance(handler, READINESS._RejectRedirects)
+                        for handler in handlers
+                    )
+                )
+
+    def test_firefox_requires_authenticated_author_read(self) -> None:
+        environment = {
+            "FIREFOX_AMO_API_KEY": "api-key",
+            "FIREFOX_AMO_API_SECRET": "api-secret",
+        }
+        detail = {
+            "guid": READINESS.FIREFOX_ADDON_ID,
+            "current_version": {"version": "1.2.3"},
+            "status": "public",
+        }
+        profile = {"id": 123}
+        authors = [{"user_id": 123, "role": "owner"}]
+        with (
+            mock.patch.object(
+                READINESS,
+                "_request_json",
+                side_effect=((200, profile), (200, detail), (200, authors)),
+            ) as request,
+            mock.patch.object(READINESS, "_amo_jwt", return_value="jwt") as jwt,
+        ):
+            observation = READINESS.probe_firefox(environment)
+        self.assertEqual("granted", observation["permission"])
+        self.assertEqual("exists", observation["item"])
+        self.assertEqual(3, request.call_count)
+        self.assertTrue(request.call_args_list[0].args[0].endswith("/accounts/profile/"))
+        self.assertTrue(request.call_args_list[2].args[0].endswith("/authors/"))
+        self.assertEqual(
+            [mock.call("api-key", "api-secret")] * 3,
+            jwt.call_args_list,
+        )
+
+    def test_firefox_unrelated_valid_account_is_not_ready(self) -> None:
+        environment = {
+            "FIREFOX_AMO_API_KEY": "unrelated-key",
+            "FIREFOX_AMO_API_SECRET": "unrelated-secret",
+        }
+        detail = {
+            "guid": READINESS.FIREFOX_ADDON_ID,
+            "current_version": {"version": "1.2.3"},
+            "status": "public",
+        }
+        profile = {"id": 999}
+        authors = [{"user_id": 123, "role": "owner"}]
+        with mock.patch.object(
+            READINESS,
+            "_request_json",
+            side_effect=((200, profile), (200, detail), (200, authors)),
+        ):
+            observation = READINESS.probe_firefox(environment)
+        self.assertEqual("unverifiable", observation["permission"])
+        self.assertEqual("unknown", observation["item"])
+        snapshot = ready_snapshot()
+        snapshot["stores"]["firefox"] = observation
+        platform = READINESS.build_receipt(snapshot)["platforms"]["firefox"]
+        self.assertFalse(platform["ready"])
+        self.assertEqual("read_permission_unverifiable", platform["reason"])
+
+    def test_firefox_rejects_unbounded_or_bool_caller_author_identities(self) -> None:
+        environment = {
+            "FIREFOX_AMO_API_KEY": "api-key",
+            "FIREFOX_AMO_API_SECRET": "api-secret",
+        }
+        detail = {
+            "guid": READINESS.FIREFOX_ADDON_ID,
+            "current_version": {"version": "1.2.3"},
+            "status": "public",
+        }
+        cases = (
+            ({"id": 1 << 63}, [{"user_id": 1 << 63, "role": "owner"}]),
+            ({"id": 1}, [{"user_id": True, "role": "owner"}]),
+        )
+        for profile, authors in cases:
+            with self.subTest(profile=profile, authors=authors):
+                with mock.patch.object(
+                    READINESS,
+                    "_request_json",
+                    side_effect=((200, profile), (200, detail), (200, authors)),
+                ):
+                    observation = READINESS.probe_firefox(environment)
+                self.assertEqual("unverifiable", observation["permission"])
+                self.assertEqual("unknown", observation["item"])
 
     def test_chrome_taken_down_or_warned_fails_closed(self) -> None:
         for field, reason in (

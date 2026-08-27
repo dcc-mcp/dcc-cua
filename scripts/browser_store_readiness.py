@@ -87,6 +87,9 @@ EXPECTED_ARTIFACT_RUN = {
     "head_branch": "main",
 }
 FIREFOX_ADDON_ID = "dcc-cua@dcc-mcp.org"
+# GitHub and AMO database identities are accepted only in the positive signed
+# 64-bit domain. This excludes JSON booleans and implementation-sized overflow.
+MAX_EXTERNAL_ID = (1 << 63) - 1
 CI_POLICY_JOB = "policy"
 CI_RECEIPT_COMMAND = "python -B -m unittest scripts.test_browser_store_readiness"
 EXPECTED_CI_TOP_LEVEL_KEYS = ("name", "on", "permissions", "concurrency", "jobs")
@@ -133,6 +136,10 @@ def _bool(value: object) -> bool:
 
 def _mapping(value: object) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
+
+
+def _external_id(value: object) -> bool:
+    return type(value) is int and 0 < value <= MAX_EXTERNAL_ID
 
 
 def _release_identity(value: object) -> tuple[str | None, str]:
@@ -253,24 +260,37 @@ def _github_identity_receipt(github: Mapping[str, Any]) -> dict[str, object]:
     elif len({source, tag_target, release_target, run_head}) != 1:
         reasons.append("source_head_drift")
     repository_id = repository.get("id")
-    if not isinstance(repository_id, int) or repository_id < 1:
+    if not _external_id(repository_id):
         reasons.append("invalid_repository_identity")
-    if run.get("repository_id") != repository_id or run.get("head_repository_id") != repository_id:
+    run_repository_id = run.get("repository_id")
+    head_repository_id = run.get("head_repository_id")
+    if run_repository_id != repository_id or head_repository_id != repository_id:
         reasons.append("artifact_repository_mismatch")
     if any(run.get(field) != expected for field, expected in EXPECTED_ARTIFACT_RUN.items()):
         reasons.append("artifact_producer_mismatch")
     artifact_id = artifact.get("id")
     run_id = run.get("id")
     release_id = github.get("release_id")
-    if not all(isinstance(value, int) and value > 0 for value in (artifact_id, run_id, release_id)):
+    if not all(
+        _external_id(value)
+        for value in (
+            repository_id,
+            release_id,
+            artifact_id,
+            run_id,
+            run_repository_id,
+            head_repository_id,
+        )
+    ):
         reasons.append("invalid_numeric_identity")
     if artifact.get("name") != "dcc-cua-browser-extension":
         reasons.append("artifact_name_mismatch")
     digest = str(artifact.get("digest", "")).lower()
     if DIGEST_PATTERN.fullmatch(digest) is None:
         reasons.append("artifact_digest_mismatch")
-    if _bool(artifact.get("expired")):
-        reasons.append("artifact_expired")
+    expired = artifact.get("expired")
+    if expired is not False:
+        reasons.append("invalid_artifact_expired")
     expires_at, expires = _canonical_expiry(artifact.get("expires_at"))
     if expires is None:
         reasons.append("invalid_artifact_expiry")
@@ -280,15 +300,15 @@ def _github_identity_receipt(github: Mapping[str, Any]) -> dict[str, object]:
     return {
         "valid": not reasons,
         "reasons": reasons,
-        "repository_id": repository_id if isinstance(repository_id, int) else None,
+        "repository_id": repository_id if _external_id(repository_id) else None,
         "source_sha": source if SHA_PATTERN.fullmatch(source) else None,
         "tag": release_tag,
-        "release_id": release_id if isinstance(release_id, int) else None,
-        "artifact_id": artifact_id if isinstance(artifact_id, int) else None,
+        "release_id": release_id if _external_id(release_id) else None,
+        "artifact_id": artifact_id if _external_id(artifact_id) else None,
         "artifact_digest": digest if DIGEST_PATTERN.fullmatch(digest) else None,
-        "run_id": run_id if isinstance(run_id, int) else None,
+        "run_id": run_id if _external_id(run_id) else None,
         "head_sha": run_head if SHA_PATTERN.fullmatch(run_head) else None,
-        "expired": _bool(artifact.get("expired")),
+        "expired": False if expired is False else None,
         "expires_at": expires_at,
     }
 
@@ -620,15 +640,33 @@ def audit_ci_contract(
     return result()
 
 
+class _RejectRedirects(urllib.request.HTTPRedirectHandler):
+    def redirect_request(
+        self,
+        request: urllib.request.Request,
+        file_pointer: object,
+        code: int,
+        message: str,
+        headers: object,
+        new_url: str,
+    ) -> None:
+        return None
+
+
+def _open_read_only(request: urllib.request.Request):
+    return urllib.request.build_opener(_RejectRedirects()).open(request, timeout=30)
+
+
 def _request_json(
     url: str,
     *,
     headers: Mapping[str, str],
     expected: Sequence[int] = (200,),
-) -> tuple[int, dict[str, Any]]:
+    require_mapping: bool = True,
+) -> tuple[int, Any]:
     request = urllib.request.Request(url, headers=dict(headers), method="GET")
     try:
-        with urllib.request.urlopen(request, timeout=30) as response:
+        with _open_read_only(request) as response:
             status = response.status
             body = response.read()
     except urllib.error.HTTPError as error:
@@ -642,7 +680,7 @@ def _request_json(
         value = json.loads(body)
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise ReadinessError("read-only provider returned invalid JSON") from error
-    if not isinstance(value, dict):
+    if require_mapping and not isinstance(value, dict):
         raise ReadinessError("read-only provider returned an invalid response shape")
     return status, value
 
@@ -668,7 +706,7 @@ def _github_get(
         method="GET",
     )
     try:
-        with urllib.request.urlopen(request, timeout=30) as response:
+        with _open_read_only(request) as response:
             status = response.status
             body = response.read()
     except urllib.error.HTTPError as error:
@@ -742,7 +780,7 @@ def collect_github_snapshot(repository: str, token: str) -> dict[str, Any]:
     ] if isinstance(artifact_values, list) else []
     artifact = max(matching, key=lambda item: str(item.get("created_at", ""))) if matching else {}
     artifact_id = artifact.get("id") if isinstance(artifact, Mapping) else None
-    if isinstance(artifact_id, int) and artifact_id > 0:
+    if _external_id(artifact_id):
         artifact_status, exact_artifact = _github_get(
             repository, f"actions/artifacts/{artifact_id}", token
         )
@@ -750,7 +788,7 @@ def collect_github_snapshot(repository: str, token: str) -> dict[str, Any]:
             artifact = dict(exact_artifact)
             listed_run = _mapping(exact_artifact.get("workflow_run"))
             run_id = listed_run.get("id")
-            if isinstance(run_id, int) and run_id > 0:
+            if _external_id(run_id):
                 run_status, exact_run = _github_get(
                     repository, f"actions/runs/{run_id}", token
                 )
@@ -927,11 +965,24 @@ def probe_firefox(environ: Mapping[str, str]) -> dict[str, str]:
     secret = environ.get("FIREFOX_AMO_API_SECRET", "").strip()
     if not key or not secret:
         return {"permission": "not_checked", "item": "unknown", "version": "", "state": ""}
-    status, data = _request_json(
+    profile_status, profile = _request_json(
+        "https://addons.mozilla.org/api/v5/accounts/profile/",
+        headers={"Authorization": f"JWT {_amo_jwt(key, secret)}"},
+        expected=(200,),
+    )
+    if profile_status in (401, 403):
+        return {"permission": "denied", "item": "unknown", "version": "", "state": ""}
+    caller_id = profile.get("id") if profile_status == 200 else None
+    if not _external_id(caller_id):
+        return {"permission": "unverifiable", "item": "unknown", "version": "", "state": ""}
+    addon_url = (
         "https://addons.mozilla.org/api/v5/addons/addon/"
         + urllib.parse.quote(FIREFOX_ADDON_ID, safe="")
-        + "/",
-        headers={"Authorization": f"JWT {_amo_jwt(key, secret)}", "Content-Type": "application/json"},
+        + "/"
+    )
+    status, data = _request_json(
+        addon_url,
+        headers={"Authorization": f"JWT {_amo_jwt(key, secret)}"},
         expected=(200,),
     )
     if status in (401, 403):
@@ -940,6 +991,24 @@ def probe_firefox(environ: Mapping[str, str]) -> dict[str, str]:
         return {"permission": "granted", "item": "missing", "version": "", "state": ""}
     if status != 200 or str(data.get("guid", "")) != FIREFOX_ADDON_ID:
         return {"permission": "granted", "item": "unknown", "version": "", "state": ""}
+    author_status, authors = _request_json(
+        addon_url + "authors/",
+        headers={"Authorization": f"JWT {_amo_jwt(key, secret)}"},
+        expected=(200,),
+        require_mapping=False,
+    )
+    if author_status in (401, 403):
+        return {"permission": "denied", "item": "unknown", "version": "", "state": ""}
+    if author_status != 200 or not isinstance(authors, list):
+        return {"permission": "unverifiable", "item": "unknown", "version": "", "state": ""}
+    if not any(
+        isinstance(author, Mapping)
+        and _external_id(author.get("user_id"))
+        and author.get("user_id") == caller_id
+        and author.get("role") in {"owner", "developer"}
+        for author in authors
+    ):
+        return {"permission": "unverifiable", "item": "unknown", "version": "", "state": ""}
     version = str(_mapping(data.get("current_version")).get("version", ""))
     return {
         "permission": "granted",
