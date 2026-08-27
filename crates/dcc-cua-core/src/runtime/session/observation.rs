@@ -549,18 +549,44 @@ impl ComputerUseSession {
                 "UIA window snapshot timed out and the target is minimized",
             ));
         }
+        // The visual fallback uses the same exact-window pixel route as an
+        // explicit pixels-only session. Retain one overlay exclusion lease
+        // across native evidence, capture, accessibility fallback, target
+        // revalidation, and publication so neither this Host nor another
+        // DCC-CUA Host can place presenter pixels above the exact HWND.
+        let _banner_capture_exclusion = self
+            .control_banner
+            .as_ref()
+            .map(ControlBanner::begin_capture_exclusion)
+            .transpose()
+            .map_err(|error| {
+                map_indicator_error(
+                    "exclude DCC-CUA overlays from exact-window visual fallback",
+                    error,
+                )
+            })?;
         let exact_capture = gated_exact_window_observation(
             interactive_desktop::require_exact_window_observation_available,
             || capture_exact_window(target.pid, target.window_id),
         )
         .await;
         let exact_capture = self.finish_observation_sensitive_attempt(exact_capture);
+        #[cfg(windows)]
+        let mut exact_publication_fence = None;
         let (data, capture_backend, fallback, mut capture_provenance) = match exact_capture {
-            Ok(capture) => (
-                capture.data,
-                capture.backend,
-                capture.fallback,
-                json!({
+            Ok(capture) => {
+                #[cfg(windows)]
+                {
+                    exact_publication_fence = Some((
+                        ExactWindowPixelGeometry {
+                            bounds: capture.bounds,
+                            dpi: capture.dpi,
+                        },
+                        capture.generation,
+                        capture.mode,
+                    ));
+                }
+                let provenance = json!({
                     "backend": capture.backend,
                     "pixels_captured": true,
                     "scope": "window",
@@ -569,8 +595,17 @@ impl ComputerUseSession {
                     "process_id": target.pid,
                     "window_handle": target.window_id,
                     "native_window_bounds": target.bounds,
-                }),
-            ),
+                });
+                #[cfg(windows)]
+                let provenance = {
+                    let mut provenance = provenance;
+                    provenance["native_window_bounds"] = json!(capture.bounds);
+                    provenance["capture_generation"] = json!(capture.generation);
+                    provenance["window_dpi"] = json!(capture.dpi);
+                    provenance
+                };
+                (capture.data, capture.backend, capture.fallback, provenance)
+            }
             Err(exact_error) => {
                 if !exact_capture_failure_allows_desktop_fallback(exact_error.code) {
                     return Err(exact_error);
@@ -648,7 +683,7 @@ impl ComputerUseSession {
         let accessibility = self
             .visual_fallback_accessibility(target, max_elements, max_depth, fallback)
             .await;
-        let target = self
+        let final_target = self
             .revalidate_observed_exact_publication_target(target)
             .await?;
         let accessibility_available = accessibility["accessibility_available"] == true;
@@ -656,23 +691,54 @@ impl ComputerUseSession {
         if accessibility_available {
             capture_provenance["accessibility_backend"] = json!("windows_uia");
         }
+        #[cfg(windows)]
+        if let Some((captured_native, capture_generation, capture_mode)) = exact_publication_fence {
+            let final_native = gated_exact_window_observation(
+                interactive_desktop::require_exact_window_observation_available,
+                || sample_exact_window_pixel_evidence(final_target.pid, final_target.window_id),
+            )
+            .await;
+            let final_native = self.finish_observation_sensitive_attempt(final_native)?;
+            validate_native_exact_window_pixel_evidence(
+                &final_native,
+                &final_native,
+                capture_mode,
+            )?;
+            validate_final_exact_window_pixel_publication(
+                target,
+                &final_target,
+                captured_native,
+                ExactWindowPixelGeometry {
+                    bounds: final_native.bounds,
+                    dpi: final_native.dpi,
+                },
+                capture_generation,
+                capture_mode,
+                final_native.unobscured,
+            )?;
+        }
+        #[cfg(windows)]
+        let source_rect =
+            exact_publication_fence.map_or(final_target.bounds, |(geometry, _, _)| geometry.bounds);
+        #[cfg(not(windows))]
+        let source_rect = final_target.bounds;
         let observation = ComputerUseObservation {
             observation_id: format!(
                 "{}-{}",
                 self.session_id,
                 OBSERVATION_COUNTER.fetch_add(1, Ordering::Relaxed)
             ),
-            window_handle: target.window_id,
-            process_id: target.pid,
-            window_title: target.title.clone(),
+            window_handle: final_target.window_id,
+            process_id: final_target.pid,
+            window_title: final_target.title.clone(),
             width,
             height,
-            source_rect: target.bounds,
+            source_rect,
             capture_backend: capture_backend.into(),
             capture_provenance,
             session_id: self.session_id.clone(),
         };
-        self.target = Some(target.clone());
+        self.target = Some(final_target);
         self.observation = Some(observation.clone());
         self.set_banner_activity(BannerActivity::Ready);
         Ok(ComputerUseScreenshot {
@@ -689,6 +755,17 @@ impl ComputerUseSession {
         route: PixelObservationRoute,
     ) -> ComputerUseResult<ComputerUseScreenshot> {
         validate_exact_window_pixel_target_state(target, true)?;
+        let _banner_capture_exclusion = self
+            .control_banner
+            .as_ref()
+            .map(ControlBanner::begin_capture_exclusion)
+            .transpose()
+            .map_err(|error| {
+                map_indicator_error(
+                    "exclude the control banner from exact-window capture",
+                    error,
+                )
+            })?;
         let capture = gated_exact_window_observation(
             interactive_desktop::require_exact_window_observation_available,
             || capture_exact_window(target.pid, target.window_id),
@@ -719,6 +796,28 @@ impl ComputerUseSession {
         let after = self
             .revalidate_observed_exact_publication_target(target)
             .await?;
+        let final_native = gated_exact_window_observation(
+            interactive_desktop::require_exact_window_observation_available,
+            || sample_exact_window_pixel_evidence(after.pid, after.window_id),
+        )
+        .await;
+        let final_native = self.finish_observation_sensitive_attempt(final_native)?;
+        validate_native_exact_window_pixel_evidence(&final_native, &final_native, capture.mode)?;
+        validate_final_exact_window_pixel_publication(
+            target,
+            &after,
+            ExactWindowPixelGeometry {
+                bounds: capture.bounds,
+                dpi: capture.dpi,
+            },
+            ExactWindowPixelGeometry {
+                bounds: final_native.bounds,
+                dpi: final_native.dpi,
+            },
+            capture.generation,
+            capture.mode,
+            final_native.unobscured,
+        )?;
         let mut provenance = exact_window_pixel_provenance(
             route,
             &after,
@@ -746,7 +845,7 @@ impl ComputerUseSession {
             window_title: after.title.clone(),
             width,
             height,
-            source_rect: after.bounds,
+            source_rect: capture.bounds,
             capture_backend: capture.backend.into(),
             capture_provenance: provenance,
             session_id: self.session_id.clone(),

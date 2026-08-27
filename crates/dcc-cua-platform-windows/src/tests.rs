@@ -18,12 +18,18 @@ use super::{
     snapshot::{TOKEN_PREFIX, normalize, resolve_index},
 };
 #[cfg(windows)]
-use crate::visible_capture::obscured_from_covered_samples;
+use crate::visible_capture::root_z_order_proves_unobscured;
 #[cfg(windows)]
 use crate::windows::{
     REQUEST_TIMEOUT, STARTUP_TIMEOUT, UIA_WORKER_PROTOCOL_VERSION, UiaWorker,
     retry_read_only_after_backend_failure, validate_worker_protocol_message,
     validate_worker_readiness_message,
+};
+#[cfg(windows)]
+use windows::Win32::{
+    Foundation::{HWND as WindowsHwnd, RECT as WindowsRect},
+    Graphics::Gdi::{BLACK_BRUSH, FillRect, GetDC, GetStockObject, HBRUSH, ReleaseDC, WHITE_BRUSH},
+    UI::WindowsAndMessaging::GetClientRect,
 };
 #[cfg(windows)]
 use windows_sys::Win32::{
@@ -126,18 +132,42 @@ fn evaluate_policy_fixture(
 
 #[cfg(windows)]
 #[rstest]
-#[case(0, false)]
-#[case(1, false)]
-#[case(2, true)]
-#[case(5, true)]
-fn visible_crop_requires_multiple_covered_target_samples(
-    #[case] covered_samples: usize,
-    #[case] expected_obscured: bool,
+#[case([1, 1, 8, 8], "unsampled corner overlap")]
+#[case([49, 49, 3, 3], "single center-sample overlap")]
+fn visible_crop_rejects_every_foreign_root_intersection(
+    #[case] covering_bounds: [i32; 4],
+    #[case] _label: &str,
 ) {
-    assert_eq!(
-        obscured_from_covered_samples(covered_samples),
-        expected_obscured
+    let target_bounds = [0, 0, 100, 100];
+    let roots = [
+        (91_u64, covering_bounds, true),
+        (77_u64, target_bounds, true),
+    ];
+
+    assert!(
+        !root_z_order_proves_unobscured(77, target_bounds, &roots),
+        "any visible root above the target that intersects its rectangle must fail closed"
     );
+}
+
+#[cfg(windows)]
+#[rstest]
+fn visible_crop_requires_complete_target_z_order_proof() {
+    let target_bounds = [0, 0, 100, 100];
+    assert!(root_z_order_proves_unobscured(
+        77,
+        target_bounds,
+        &[
+            (91, [10, 10, 20, 20], false),
+            (77, target_bounds, true),
+            (92, [10, 10, 20, 20], true),
+        ],
+    ));
+    assert!(!root_z_order_proves_unobscured(
+        77,
+        target_bounds,
+        &[(91, [200, 200, 20, 20], true)],
+    ));
 }
 
 #[cfg(windows)]
@@ -252,7 +282,7 @@ fn controlled_window_move_and_resize_changes_publication_evidence() {
 }
 
 #[cfg(windows)]
-struct ExactCaptureTestWindow(HWND);
+struct ExactCaptureTestWindow(HWND, bool);
 
 #[cfg(windows)]
 impl ExactCaptureTestWindow {
@@ -280,7 +310,9 @@ impl ExactCaptureTestWindow {
             SetWindowPos(hwnd, HWND_TOPMOST, x, y, 280, 220, SWP_SHOWWINDOW);
             SendMessageW(hwnd, WM_PAINT, 0, 0);
         }
-        Self(hwnd)
+        let window = Self(hwnd, static_style == 0x0000_0004);
+        window.paint_fixture_color();
+        window
     }
 
     fn raw(&self) -> u64 {
@@ -302,6 +334,25 @@ impl ExactCaptureTestWindow {
             );
             SendMessageW(self.0, WM_PAINT, 0, 0);
         }
+        self.paint_fixture_color();
+    }
+
+    fn paint_fixture_color(&self) {
+        let hwnd = WindowsHwnd(self.0.cast());
+        let mut rect = WindowsRect::default();
+        unsafe { GetClientRect(hwnd, &mut rect) }.expect("read exact-window fixture client bounds");
+        let dc = unsafe { GetDC(hwnd) };
+        assert!(
+            !dc.0.is_null(),
+            "acquire exact-window fixture device context"
+        );
+        let stock = unsafe { GetStockObject(if self.1 { BLACK_BRUSH } else { WHITE_BRUSH }) };
+        let painted = unsafe { FillRect(dc, &rect, HBRUSH(stock.0)) };
+        unsafe { ReleaseDC(hwnd, dc) };
+        assert_ne!(
+            painted, 0,
+            "paint deterministic exact-window fixture pixels"
+        );
     }
 }
 
@@ -344,7 +395,7 @@ fn assert_exact_capture_luma_or_fail_closed(
         Err(error) => assert!(
             error
                 .to_string()
-                .contains("another root window covers the exact HWND"),
+                .contains("complete root-window z-order could not be proven"),
             "ambiguous pixels must fail closed: {error}"
         ),
     }

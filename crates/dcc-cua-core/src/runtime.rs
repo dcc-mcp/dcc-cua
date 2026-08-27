@@ -1631,11 +1631,32 @@ struct ExactWindowCapture {
     backend: &'static str,
     fallback: &'static str,
     #[cfg(windows)]
+    mode: ExactWindowPixelCaptureMode,
+    #[cfg(windows)]
     generation: u64,
     #[cfg(windows)]
     dpi: u32,
     #[cfg(windows)]
     bounds: [i32; 4],
+}
+
+#[cfg(windows)]
+async fn sample_exact_window_pixel_evidence(
+    process_id: u32,
+    window_id: u64,
+) -> ComputerUseResult<dcc_cua_platform_windows::ExactWindowPixelEvidence> {
+    tokio::task::spawn_blocking(move || {
+        dcc_cua_platform_windows::exact_window_pixel_evidence(process_id, window_id).map_err(
+            |error| ComputerUseError::new(ComputerUseErrorCode::InvalidTarget, error.to_string()),
+        )
+    })
+    .await
+    .map_err(|error| {
+        ComputerUseError::new(
+            ComputerUseErrorCode::CaptureFailed,
+            format!("final exact-window evidence task failed: {error}"),
+        )
+    })?
 }
 
 #[cfg(windows)]
@@ -1661,7 +1682,11 @@ async fn capture_exact_window(
         .map_err(|error| {
             ComputerUseError::new(ComputerUseErrorCode::InvalidTarget, error.to_string())
         })?;
-        validate_native_exact_window_pixel_evidence(&before, &before)?;
+        validate_native_exact_window_pixel_evidence(
+            &before,
+            &before,
+            ExactWindowPixelCaptureMode::WindowContent,
+        )?;
         let route = dcc_cua_platform_windows::exact_window_capture_route(process_id, window_id)
             .map_err(|error| {
                 ComputerUseError::new(ComputerUseErrorCode::InvalidTarget, error.to_string())
@@ -1689,11 +1714,16 @@ async fn capture_exact_window(
             .map_err(|error| {
                 ComputerUseError::new(ComputerUseErrorCode::InvalidTarget, error.to_string())
             })?;
-            validate_native_exact_window_pixel_evidence(&before, &after)?;
+            validate_native_exact_window_pixel_evidence(
+                &before,
+                &after,
+                ExactWindowPixelCaptureMode::VisibleDesktopCrop,
+            )?;
             return Ok(ExactWindowCapture {
                 data: encode_bgra_to_png(&visible.bgra, visible.width, visible.height)?,
                 backend: "dcc-cua-visible-exact-window",
                 fallback: "same_executable_multi_window_exact_visible_proof",
+                mode: ExactWindowPixelCaptureMode::VisibleDesktopCrop,
                 generation,
                 dpi: after.dpi,
                 bounds: after.bounds,
@@ -1729,11 +1759,16 @@ async fn capture_exact_window(
                             error.to_string(),
                         )
                     })?;
-                    validate_native_exact_window_pixel_evidence(&before, &after)?;
+                    validate_native_exact_window_pixel_evidence(
+                        &before,
+                        &after,
+                        ExactWindowPixelCaptureMode::WindowContent,
+                    )?;
                     return Ok(ExactWindowCapture {
                         data: encode_bgra_to_png(&bgra, width, height)?,
                         backend: "dcc-cua-wgc-exact-window",
                         fallback: "exact_window_wgc",
+                        mode: ExactWindowPixelCaptureMode::WindowContent,
                         generation,
                         dpi: after.dpi,
                         bounds: after.bounds,
@@ -1757,11 +1792,16 @@ async fn capture_exact_window(
         .map_err(|error| {
             ComputerUseError::new(ComputerUseErrorCode::InvalidTarget, error.to_string())
         })?;
-        validate_native_exact_window_pixel_evidence(&before, &after)?;
+        validate_native_exact_window_pixel_evidence(
+            &before,
+            &after,
+            ExactWindowPixelCaptureMode::VisibleDesktopCrop,
+        )?;
         Ok(ExactWindowCapture {
             data: encode_bgra_to_png(&visible.bgra, visible.width, visible.height)?,
             backend: "dcc-cua-visible-exact-window",
             fallback: "verified_same_process_visible_window_crop",
+            mode: ExactWindowPixelCaptureMode::VisibleDesktopCrop,
             generation,
             dpi: after.dpi,
             bounds: after.bounds,
