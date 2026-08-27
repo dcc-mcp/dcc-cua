@@ -94,7 +94,15 @@ if ($LASTEXITCODE -ne 0 -or $help -notmatch "host-batch") {
 function Assert-CommandFailureStdoutContract {
     $failureOutput = Join-Path ([System.IO.Path]::GetTempPath()) "dcc-cua-failure-$([guid]::NewGuid().ToString('N')).out"
     $failureError = Join-Path ([System.IO.Path]::GetTempPath()) "dcc-cua-failure-$([guid]::NewGuid().ToString('N')).err"
+    $fixtureExtension = if ($isWindowsHost) { ".exe" } else { "" }
+    $hostileHost = Join-Path ([System.IO.Path]::GetTempPath()) "dcc-cua-hostile-host-$([guid]::NewGuid().ToString('N'))${fixtureExtension}"
+    $hostileHostSource = Join-Path $PSScriptRoot "fixtures\hostile_host.rs"
     try {
+        & rustc --edition=2024 -o $hostileHost $hostileHostSource
+        if ($LASTEXITCODE -ne 0) {
+            throw "failed to compile the hostile Host fixture"
+        }
+
         $failure = Start-Process -FilePath $binaryPath -ArgumentList @("definitely-not-a-command") -RedirectStandardOutput $failureOutput -RedirectStandardError $failureError -PassThru -Wait
         $stdout = [System.IO.File]::ReadAllText($failureOutput, [System.Text.Encoding]::UTF8)
         $stderr = [System.IO.File]::ReadAllText($failureError, [System.Text.Encoding]::UTF8)
@@ -136,9 +144,23 @@ function Assert-CommandFailureStdoutContract {
         if ($capturedExit -ne 1 -or $capturedEnvelope.success -ne $false) {
             throw "command substitution did not receive the failed command envelope from stdout"
         }
+
+        $hostile = Start-Process -FilePath $binaryPath -ArgumentList @("host-call", "--spawn", $hostileHost, "--method", "ping") -RedirectStandardOutput $failureOutput -RedirectStandardError $failureError -PassThru -Wait
+        $hostileStdout = [System.IO.File]::ReadAllText($failureOutput, [System.Text.Encoding]::UTF8)
+        $hostileStderr = [System.IO.File]::ReadAllText($failureError, [System.Text.Encoding]::UTF8)
+        $hostileLines = @($hostileStdout -split "`r?`n" | Where-Object { $_.Length -gt 0 })
+        $hostileEnvelope = $hostileLines[0] | ConvertFrom-Json
+        if ($hostile.ExitCode -ne 1 -or
+            $hostileLines.Count -ne 1 -or
+            $hostileStderr.Length -ne 0 -or
+            $hostileEnvelope.error.code -ne "host_protocol_failed" -or
+            $hostileEnvelope.error.message -ne "dcc-cua could not complete the command" -or
+            $hostileStdout.Contains("CHILD_PRIVATE_DIAGNOSTIC_7e87d1")) {
+            throw "spawned Host diagnostics escaped the release CLI structured-output boundary"
+        }
     }
     finally {
-        foreach ($path in @($failureOutput, $failureError)) {
+        foreach ($path in @($failureOutput, $failureError, $hostileHost)) {
             if (Test-Path -LiteralPath $path) {
                 Remove-Item -LiteralPath $path -Force
             }

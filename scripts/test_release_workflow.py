@@ -260,6 +260,9 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertIn("RELEASE_PRIVATE_ARGUMENT_8e1ab4", script)
         self.assertIn("RELEASE_PRIVATE_OPTION_351cc7", script)
         self.assertIn("dcc-cua could not complete the command", script)
+        self.assertIn("fixtures\\hostile_host.rs", script)
+        self.assertIn("CHILD_PRIVATE_DIAGNOSTIC_7e87d1", script)
+        self.assertIn('"host-call", "--spawn", $hostileHost', script)
 
     def test_release_matrix_builds_every_supported_native_target(self):
         workflow = WORKFLOW.read_text(encoding="utf-8")

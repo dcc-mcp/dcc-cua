@@ -1,3 +1,4 @@
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use rstest::rstest;
@@ -10,6 +11,34 @@ fn parse_single_json_envelope(bytes: &[u8]) -> serde_json::Value {
         "stdout should contain exactly one JSON envelope: {stdout:?}"
     );
     serde_json::from_str(stdout.trim()).expect("stdout should contain valid JSON")
+}
+
+fn compile_hostile_host(output_directory: &Path) -> PathBuf {
+    let binary_name = if cfg!(windows) {
+        "hostile-host.exe"
+    } else {
+        "hostile-host"
+    };
+    let binary_path = output_directory.join(binary_name);
+    let source_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("scripts")
+        .join("fixtures")
+        .join("hostile_host.rs");
+    let output = Command::new("rustc")
+        .arg("--edition=2024")
+        .arg("-o")
+        .arg(&binary_path)
+        .arg(source_path)
+        .output()
+        .expect("rustc should compile the hostile Host fixture");
+    assert!(
+        output.status.success(),
+        "hostile Host fixture compilation failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    binary_path
 }
 
 #[rstest]
@@ -28,6 +57,7 @@ fn version_flag_reports_cli_version() {
         String::from_utf8(output.stdout).expect("version output should be UTF-8"),
         format!("dcc-cua {}\n", env!("CARGO_PKG_VERSION"))
     );
+    assert!(output.stderr.is_empty());
 }
 
 #[rstest]
@@ -46,6 +76,24 @@ fn version_aliases_match_the_long_flag() {
             String::from_utf8(output.stdout).expect("version output should be UTF-8"),
             format!("dcc-cua {}\n", env!("CARGO_PKG_VERSION"))
         );
+        assert!(output.stderr.is_empty());
+    }
+}
+
+#[rstest]
+fn help_routes_remain_successful_and_do_not_write_diagnostics() {
+    for arguments in [&[][..], &["--help"][..], &["snapshot", "--help"][..]] {
+        let output = Command::new(env!("CARGO_BIN_EXE_dcc-cua"))
+            .args(arguments)
+            .output()
+            .expect("dcc-cua should start");
+        assert!(output.status.success());
+        assert!(
+            std::str::from_utf8(&output.stdout)
+                .expect("help output should be UTF-8")
+                .contains("host-batch")
+        );
+        assert!(output.stderr.is_empty());
     }
 }
 
@@ -195,4 +243,31 @@ fn mcp_server_rejects_an_untrusted_process_parent_before_reading_stdin() {
         "dcc-cua could not complete the command"
     );
     assert!(output.stderr.is_empty());
+}
+
+#[rstest]
+fn spawned_host_diagnostics_do_not_escape_the_structured_output_boundary() {
+    let fixture_directory = tempfile::tempdir().expect("create Host fixture directory");
+    let hostile_host = compile_hostile_host(fixture_directory.path());
+    let output = Command::new(env!("CARGO_BIN_EXE_dcc-cua"))
+        .env("DCC_CUA_NO_UPDATE_CHECK", "1")
+        .args(["host-call", "--spawn"])
+        .arg(hostile_host)
+        .args(["--method", "ping"])
+        .output()
+        .expect("dcc-cua should start");
+
+    assert_eq!(output.status.code(), Some(1));
+    let envelope = parse_single_json_envelope(&output.stdout);
+    assert_eq!(envelope["success"], false);
+    assert_eq!(envelope["error"]["code"], "host_protocol_failed");
+    assert_eq!(
+        envelope["error"]["message"],
+        "dcc-cua could not complete the command"
+    );
+    assert!(
+        output.stderr.is_empty(),
+        "spawned Host diagnostics escaped to public stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
