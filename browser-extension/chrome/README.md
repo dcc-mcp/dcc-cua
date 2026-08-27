@@ -67,7 +67,13 @@ a stored service-account private key. Edge and Firefox secrets are exposed only
 to their approved jobs and are never passed as command arguments. Safari
 distribution remains a separate App Store Connect workflow.
 
-After configuring the Chrome Workload Identity variables, run the
-`Browser store credential preflight` workflow manually. The preflight only
-exchanges GitHub OIDC for a five-minute Chrome Web Store access token and
-verifies that a token was generated. It does not upload or publish an item.
+Run the `Browser store readiness preflight` workflow manually. Its first phase
+recaptures the exact GitHub release, tag, workflow run/head, artifact numeric ID,
+server digest and expiry, then verifies that the default branch may enter the
+`browser-stores` environment. Its second phase runs only after that gate and
+performs GET-only store readbacks. Chrome uses a five-minute token with the
+`chromewebstore.readonly` scope; Firefox reads the fixed manifest GUID. The Edge
+Update API cannot prove a product/version without a prior mutation operation, so
+that platform remains `human_action_required` until an authoritative read-only
+source exists. The workflow emits only redacted name/presence receipts and never
+uploads, submits, publishes, edits a listing, or enables the ready variable.

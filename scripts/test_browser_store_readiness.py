@@ -1,0 +1,176 @@
+from __future__ import annotations
+
+import copy
+import importlib.util
+import json
+import unittest
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parent.parent
+SPEC = importlib.util.spec_from_file_location(
+    "browser_store_readiness", ROOT / "scripts" / "browser_store_readiness.py"
+)
+assert SPEC and SPEC.loader
+READINESS = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(READINESS)
+
+
+def ready_snapshot() -> dict[str, object]:
+    configuration = {name: True for name in READINESS.EXPECTED_CONFIGURATION_NAMES}
+    return {
+        "configuration": configuration,
+        "environment": {
+            "name": "browser-stores",
+            "deployment_branch_policy": {
+                "protected_branches": True,
+                "custom_branch_policies": False,
+            },
+            "default_branch": "main",
+            "default_branch_protected": True,
+        },
+        "github": {
+            "repository": {"id": 123, "full_name": "dcc-mcp/dcc-cua"},
+            "source_sha": "a" * 40,
+            "tag": "dcc-cua-browser-extension-v1.2.3",
+            "tag_target_sha": "a" * 40,
+            "release_id": 456,
+            "release_target_sha": "a" * 40,
+            "artifact": {
+                "id": 789,
+                "name": "dcc-cua-browser-extension",
+                "digest": "sha256:" + "b" * 64,
+                "expired": False,
+                "expires_at": "2099-01-01T00:00:00Z",
+                "workflow_run": {
+                    "id": 1011,
+                    "head_sha": "a" * 40,
+                    "repository_id": 123,
+                    "head_repository_id": 123,
+                },
+            },
+        },
+        "action_pins": {"valid": True, "unpinned": []},
+        "stores": {
+            name: {
+                "permission": "granted",
+                "item": "exists",
+                "version": "1.2.3",
+                "state": "published",
+            }
+            for name in ("chrome", "edge", "firefox")
+        },
+    }
+
+
+class BrowserStoreReadinessTests(unittest.TestCase):
+    def test_missing_names_are_stable_and_never_echo_values(self) -> None:
+        snapshot = ready_snapshot()
+        snapshot["configuration"]["EDGE_ADDONS_API_KEY"] = False
+        receipt = READINESS.build_receipt(snapshot)
+        self.assertFalse(receipt["ready"])
+        self.assertEqual("not_ready", receipt["overall_state"])
+        self.assertIn("EDGE_ADDONS_API_KEY", receipt["platforms"]["edge"]["missing_configuration"])
+        self.assertNotIn("configured-secret", json.dumps(receipt, sort_keys=True))
+
+    def test_protected_only_environment_rejects_unprotected_main(self) -> None:
+        snapshot = ready_snapshot()
+        snapshot["environment"]["default_branch_protected"] = False
+        receipt = READINESS.build_receipt(snapshot)
+        self.assertEqual("not_ready", receipt["overall_state"])
+        self.assertEqual("default_branch_not_eligible", receipt["environment"]["reason"])
+
+    def test_no_item_requires_human_action(self) -> None:
+        snapshot = ready_snapshot()
+        snapshot["stores"]["chrome"]["item"] = "missing"
+        receipt = READINESS.build_receipt(snapshot)
+        self.assertEqual("human_action_required", receipt["platforms"]["chrome"]["state"])
+
+    def test_unknown_store_state_fails_closed(self) -> None:
+        snapshot = ready_snapshot()
+        snapshot["stores"]["firefox"]["state"] = "provider-new-state"
+        receipt = READINESS.build_receipt(snapshot)
+        self.assertEqual("not_ready", receipt["platforms"]["firefox"]["state"])
+        self.assertEqual("unknown_item_state", receipt["platforms"]["firefox"]["reason"])
+
+    def test_expired_or_mismatched_artifact_is_not_ready(self) -> None:
+        for mutation in ("expired", "repository"):
+            with self.subTest(mutation=mutation):
+                snapshot = ready_snapshot()
+                if mutation == "expired":
+                    snapshot["github"]["artifact"]["expired"] = True
+                else:
+                    snapshot["github"]["artifact"]["workflow_run"]["repository_id"] = 999
+                receipt = READINESS.build_receipt(snapshot)
+                self.assertFalse(receipt["github_identity"]["valid"])
+                self.assertEqual("not_ready", receipt["overall_state"])
+
+    def test_source_tag_release_artifact_head_drift_fails_closed(self) -> None:
+        snapshot = ready_snapshot()
+        snapshot["github"]["artifact"]["workflow_run"]["head_sha"] = "c" * 40
+        receipt = READINESS.build_receipt(snapshot)
+        self.assertFalse(receipt["github_identity"]["valid"])
+        self.assertIn("source_head_drift", receipt["github_identity"]["reasons"])
+
+    def test_api_permission_denial_is_not_ready(self) -> None:
+        snapshot = ready_snapshot()
+        snapshot["stores"]["edge"]["permission"] = "denied"
+        receipt = READINESS.build_receipt(snapshot)
+        self.assertEqual("not_ready", receipt["platforms"]["edge"]["state"])
+        self.assertEqual("read_permission_denied", receipt["platforms"]["edge"]["reason"])
+
+    def test_receipt_is_stable_and_redacts_untrusted_provider_fields(self) -> None:
+        snapshot = ready_snapshot()
+        snapshot["stores"]["chrome"]["provider_message"] = "token=never-print-this"
+        first = READINESS.serialize_receipt(READINESS.build_receipt(snapshot))
+        second = READINESS.serialize_receipt(READINESS.build_receipt(copy.deepcopy(snapshot)))
+        self.assertEqual(first, second)
+        self.assertNotIn("never-print-this", first)
+
+    def test_action_pins_fail_closed(self) -> None:
+        snapshot = ready_snapshot()
+        snapshot["action_pins"] = {"valid": False, "unpinned": ["actions/checkout@v7"]}
+        receipt = READINESS.build_receipt(snapshot)
+        self.assertEqual("not_ready", receipt["overall_state"])
+        self.assertFalse(receipt["action_pins"]["valid"])
+        self.assertEqual(1, receipt["action_pins"]["unpinned_count"])
+
+    def test_all_three_ready_dry_readback_is_ready_but_publish_remains_disabled(self) -> None:
+        receipt = READINESS.build_receipt(ready_snapshot())
+        self.assertTrue(receipt["ready"])
+        self.assertEqual("ready", receipt["overall_state"])
+        self.assertFalse(receipt["publishing_enabled"])
+        self.assertTrue(all(item["ready"] for item in receipt["platforms"].values()))
+
+    def test_manual_workflow_is_get_only_sha_pinned_and_never_runs_on_push_or_pr(self) -> None:
+        workflow_path = ROOT / ".github" / "workflows" / "browser-store-preflight.yml"
+        workflow = workflow_path.read_text(encoding="utf-8")
+        self.assertIn("workflow_dispatch:", workflow)
+        self.assertNotIn("pull_request:", workflow)
+        self.assertNotIn("\n  push:", workflow)
+        self.assertIn("chromewebstore.readonly", workflow)
+        self.assertEqual(
+            {"valid": True, "unpinned": []},
+            READINESS.audit_action_pins([workflow_path]),
+        )
+        self.assertLess(
+            workflow.index("inspect-github-readiness:"),
+            workflow.index("environment: browser-stores"),
+        )
+        for name in READINESS.EXPECTED_CONFIGURATION_NAMES:
+            self.assertIn(name, workflow)
+
+    def test_edge_probe_never_mutates_to_test_access(self) -> None:
+        observation = READINESS.probe_edge(
+            {
+                "EDGE_ADDONS_API_KEY": "redacted",
+                "EDGE_ADDONS_CLIENT_ID": "configured",
+                "EDGE_ADDONS_PRODUCT_ID": "configured",
+            }
+        )
+        self.assertEqual("unverifiable", observation["permission"])
+        self.assertEqual("unknown", observation["item"])
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)
