@@ -37,17 +37,40 @@ Keep publication disabled and add a manual, two-phase, read-only readiness check
 
 Receipts expose configuration names and presence only. Provider messages,
 credentials, tokens, publisher/item identifiers, and account details are never
-serialized. Unknown states, permission denial, missing items, identity drift,
-and expired artifacts fail closed. Ordinary pull requests and pushes execute
-mock contract tests only and never call external store APIs.
+serialized. Store states are classified independently per provider: Chrome
+accepts only its `published` readback, Edge accepts only `in_store`, and AMO
+accepts only `public` or `unlisted`. Known transitional states are not ready,
+and a state from another provider's vocabulary is unknown and fails closed.
+Permission denial, missing items, identity drift, and expired artifacts also
+fail closed. Ordinary pull requests and pushes execute mock contract tests only
+and never call external store APIs.
+
+Action-pin evidence is read from the parsed YAML job and step mappings, never
+from text matching. Remote actions and reusable workflows require a full commit
+SHA, Docker actions require a SHA-256 digest, and repository-local actions remain
+source-bound to the checked-out commit. Local and remote repository paths reject
+empty, `.` and `..` segments, while valid local actions use the documented
+`./.github/actions/<action>` form. Each local action must exist with exactly one
+regular `action.yml` or `action.yaml`. The audit rejects symbolic links, Windows
+junctions or reparse points in every repository-local component, requires strict
+canonical containment in the checkout, and compares physical path identities
+before and after inspection so replacement drift fails closed. Duplicate
+mappings, aliases, anchors, dynamic expressions, missing parser support, and
+malformed workflow structures fail closed; comments and scalar decoys are not
+executable action evidence.
 
 The CI workflow contract freezes the pull-request trigger, top-level permissions
 and defaults surface, GitHub-hosted runner, policy-job execution surface, and
 ordered receipt-test command. This proves that the receipt suite is executable
-in that workflow; it does not claim GitHub branch enforcement. At the time of
-this decision the repository has no branch protection, ruleset, or required
-check for the default branch, so `branch_required` remains false unless a live
-GitHub policy observation explicitly proves otherwise.
+in that workflow. The policy job exact-compares every complete parsed step
+mapping, including normalized multiline command bodies, and binds the exact
+checkout, Rust toolchain, component, and installer inputs. Added, removed,
+reordered, decoyed, or modified steps, command bodies, execution modifiers, and
+action inputs fail the receipt contract. This does not claim GitHub branch
+enforcement. At the time of this decision the repository has no branch
+protection, ruleset, or required check for the default branch, so
+`branch_required` remains false unless a live GitHub policy observation
+explicitly proves otherwise.
 
 ## Consequences
 

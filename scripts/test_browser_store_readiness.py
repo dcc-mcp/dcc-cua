@@ -5,6 +5,7 @@ import contextlib
 import importlib.util
 import io
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -12,6 +13,7 @@ import unittest
 import urllib.error
 import urllib.parse
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 
@@ -71,7 +73,11 @@ def ready_snapshot() -> dict[str, object]:
                 "permission": "granted",
                 "item": "exists",
                 "version": "1.2.3",
-                "state": "published",
+                "state": {
+                    "chrome": "published",
+                    "edge": "in_store",
+                    "firefox": "public",
+                }[name],
                 **(
                     {"taken_down": False, "warned": False}
                     if name == "chrome"
@@ -84,6 +90,30 @@ def ready_snapshot() -> dict[str, object]:
 
 
 class BrowserStoreReadinessTests(unittest.TestCase):
+    def audit_workflow(self, workflow: str) -> dict[str, object]:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "repository"
+            path = root / ".github" / "workflows" / "workflow.yml"
+            path.parent.mkdir(parents=True)
+            path.write_text(workflow, encoding="utf-8")
+            action = root / ".github" / "actions" / "select-macos-toolchain"
+            action.mkdir(parents=True)
+            (action / "action.yml").write_text(
+                "name: local action\nruns:\n  using: composite\n  steps: []\n",
+                encoding="utf-8",
+            )
+            return READINESS.audit_action_pins([path])
+
+    @staticmethod
+    def local_action_workflow(reference: str) -> str:
+        return f"""
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: {reference}
+"""
+
     def test_adr_documents_external_identity_and_firefox_owner_boundaries(self) -> None:
         adr = (ROOT / "docs" / "adr" / "0026-read-browser-store-readiness.md").read_text(
             encoding="utf-8"
@@ -250,6 +280,24 @@ class BrowserStoreReadinessTests(unittest.TestCase):
         receipt = READINESS.build_receipt(snapshot)
         self.assertEqual("not_ready", receipt["platforms"]["firefox"]["state"])
         self.assertEqual("unknown_item_state", receipt["platforms"]["firefox"]["reason"])
+
+    def test_provider_specific_store_states_fail_closed(self) -> None:
+        cases = (
+            ("chrome", "public"),
+            ("chrome", "listed"),
+            ("firefox", "published"),
+            ("firefox", "published_to_testers"),
+        )
+        for platform, state in cases:
+            with self.subTest(platform=platform, state=state):
+                snapshot = ready_snapshot()
+                snapshot["stores"][platform]["state"] = state
+                platform_receipt = READINESS.build_receipt(snapshot)["platforms"][
+                    platform
+                ]
+                self.assertFalse(platform_receipt["ready"])
+                self.assertIsNone(platform_receipt["item_state"])
+                self.assertEqual("unknown_item_state", platform_receipt["reason"])
 
     def test_expired_or_mismatched_artifact_is_not_ready(self) -> None:
         for mutation in ("expired", "repository"):
@@ -852,6 +900,299 @@ raise SystemExit(module.main())
         self.assertFalse(receipt["action_pins"]["valid"])
         self.assertEqual(1, receipt["action_pins"]["unpinned_count"])
 
+    def test_action_pin_audit_reads_quoted_yaml_keys(self) -> None:
+        workflow = """
+name: quoted action key
+on: workflow_dispatch
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - "uses": actions/checkout@v7
+"""
+        self.assertEqual(
+            {"valid": False, "unpinned": ["workflow.yml:actions/checkout@v7"]},
+            self.audit_workflow(workflow),
+        )
+
+    def test_action_pin_audit_accepts_exact_structural_pin_classes(self) -> None:
+        sha = "a" * 40
+        digest = "b" * 64
+        workflow = f"""
+name: exact pins
+on: workflow_dispatch
+jobs:
+  reusable:
+    "uses": owner/repository/.github/workflows/reusable.yml@{sha}
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: ./.github/actions/select-macos-toolchain
+      - "uses": owner/repository/path/to/action@{sha}
+      - uses: docker://registry.example.invalid/image@sha256:{digest}
+"""
+        self.assertEqual(
+            {"valid": True, "unpinned": []},
+            self.audit_workflow(workflow),
+        )
+
+    def test_local_action_must_exist_within_the_repository(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "repository"
+            workflow = root / ".github" / "workflows" / "workflow.yml"
+            workflow.parent.mkdir(parents=True)
+            workflow.write_text(
+                self.local_action_workflow("./.github/actions/missing"),
+                encoding="utf-8",
+            )
+            audit = READINESS.audit_action_pins([workflow])
+        self.assertFalse(audit["valid"])
+        self.assertTrue(audit["unpinned"])
+
+    def test_local_action_symlink_or_junction_escape_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            temporary = Path(directory)
+            root = temporary / "repository"
+            workflow = root / ".github" / "workflows" / "workflow.yml"
+            workflow.parent.mkdir(parents=True)
+            workflow.write_text(
+                self.local_action_workflow("./.github/actions/escape"),
+                encoding="utf-8",
+            )
+            outside = temporary / "outside-action"
+            outside.mkdir()
+            (outside / "action.yml").write_text("name: outside\n", encoding="utf-8")
+            local = root / ".github" / "actions" / "escape"
+            local.parent.mkdir(parents=True)
+            if os.name == "nt":
+                result = subprocess.run(
+                    ["cmd", "/c", "mklink", "/J", str(local), str(outside)],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(0, result.returncode, result.stderr)
+            else:
+                os.symlink(outside, local, target_is_directory=True)
+            audit = READINESS.audit_action_pins([workflow])
+        self.assertFalse(audit["valid"])
+        self.assertTrue(audit["unpinned"])
+
+    def test_local_action_reparse_component_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "repository"
+            workflow = root / ".github" / "workflows" / "workflow.yml"
+            workflow.parent.mkdir(parents=True)
+            workflow.write_text(
+                self.local_action_workflow("./.github/actions/local"),
+                encoding="utf-8",
+            )
+            local = root / ".github" / "actions" / "local"
+            local.mkdir(parents=True)
+            (local / "action.yml").write_text("name: local\n", encoding="utf-8")
+            real_lstat = os.lstat
+
+            def reparse_lstat(path: object):
+                value = real_lstat(path)
+                if Path(path) == local:
+                    return SimpleNamespace(
+                        st_mode=value.st_mode,
+                        st_dev=value.st_dev,
+                        st_ino=value.st_ino,
+                        st_file_attributes=(
+                            getattr(value, "st_file_attributes", 0) | 0x400
+                        ),
+                    )
+                return value
+
+            with mock.patch.object(READINESS.os, "lstat", side_effect=reparse_lstat):
+                audit = READINESS.audit_action_pins([workflow])
+        self.assertFalse(audit["valid"])
+
+    def test_local_action_path_identity_replacement_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "repository"
+            workflow = root / ".github" / "workflows" / "workflow.yml"
+            workflow.parent.mkdir(parents=True)
+            workflow.write_text(
+                self.local_action_workflow("./.github/actions/local"),
+                encoding="utf-8",
+            )
+            local = root / ".github" / "actions" / "local"
+            local.mkdir(parents=True)
+            (local / "action.yml").write_text("name: local\n", encoding="utf-8")
+            real_lstat = os.lstat
+            local_reads = 0
+
+            def unstable_lstat(path: object):
+                nonlocal local_reads
+                value = real_lstat(path)
+                if Path(path) == local:
+                    local_reads += 1
+                    if local_reads > 1:
+                        return SimpleNamespace(
+                            st_mode=value.st_mode,
+                            st_dev=value.st_dev,
+                            st_ino=value.st_ino + 1,
+                            st_file_attributes=getattr(
+                                value, "st_file_attributes", 0
+                            ),
+                        )
+                return value
+
+            with mock.patch.object(READINESS.os, "lstat", side_effect=unstable_lstat):
+                audit = READINESS.audit_action_pins([workflow])
+        self.assertFalse(audit["valid"])
+        self.assertGreaterEqual(local_reads, 2)
+
+    def test_action_pin_audit_rejects_mutable_structural_pin_classes(self) -> None:
+        sha = "a" * 40
+        cases = {
+            "quoted_reusable_workflow": """
+jobs:
+  reusable:
+    "uses": owner/repository/.github/workflows/reusable.yml@main
+""",
+            "expression": """
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: ${{ matrix.action }}
+""",
+            "docker_tag": """
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: docker://alpine:3.20
+""",
+            "flow_collection": """
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps: [{"uses": "actions/checkout@v7"}]
+""",
+            "local_parent_escape": """
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: ./../outside/action
+""",
+            "remote_parent_escape": f"""
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: owner/repository/../../outside@{sha}
+""",
+        }
+        for name, workflow in cases.items():
+            with self.subTest(name=name):
+                audit = self.audit_workflow(workflow)
+                self.assertFalse(audit["valid"])
+                self.assertTrue(audit["unpinned"])
+
+    def test_action_pin_audit_rejects_ambiguous_yaml_structure(self) -> None:
+        cases = {
+            "duplicate_mapping": """
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: owner/repository/action@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+        "uses": actions/checkout@v7
+""",
+            "anchor_alias": """
+shared: &shared
+  uses: actions/checkout@v7
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - *shared
+""",
+        }
+        for name, workflow in cases.items():
+            with self.subTest(name=name):
+                self.assertEqual(
+                    {"valid": False, "unpinned": ["workflow.yml:invalid_workflow_yaml"]},
+                    self.audit_workflow(workflow),
+                )
+
+    def test_action_pin_audit_fails_closed_without_yaml_parser(self) -> None:
+        workflow = """
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: owner/repository/action@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+"""
+        with mock.patch.object(READINESS, "yaml", None):
+            self.assertEqual(
+                {"valid": False, "unpinned": ["workflow.yml:invalid_workflow_yaml"]},
+                self.audit_workflow(workflow),
+            )
+
+    def test_action_pin_audit_requires_unambiguous_executable_structure(self) -> None:
+        sha = "a" * 40
+        cases = {
+            "missing_jobs": "name: no jobs\n",
+            "empty_jobs": "jobs: {}\n",
+            "job_without_execution": """
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+""",
+            "job_with_uses_and_steps": f"""
+jobs:
+  inspect:
+    uses: owner/repository/.github/workflows/reusable.yml@{sha}
+    steps:
+      - run: echo decoy
+""",
+            "empty_steps": """
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps: []
+""",
+            "step_with_uses_and_run": f"""
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: owner/repository/action@{sha}
+        run: echo decoy
+""",
+        }
+        for name, workflow in cases.items():
+            with self.subTest(name=name):
+                self.assertEqual(
+                    {"valid": False, "unpinned": ["workflow.yml:invalid_workflow_yaml"]},
+                    self.audit_workflow(workflow),
+                )
+
+    def test_action_pin_audit_ignores_comments_and_scalar_decoys(self) -> None:
+        sha = "c" * 40
+        workflow = f"""
+name: "uses: actions/checkout@v7"
+on: workflow_dispatch
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      # uses: actions/checkout@v7
+      - name: "uses: docker://alpine:latest"
+        run: echo safe
+      - uses: owner/repository/action@{sha}
+"""
+        self.assertEqual(
+            {"valid": True, "unpinned": []},
+            self.audit_workflow(workflow),
+        )
+
     def test_all_three_ready_dry_readback_is_ready_but_publish_remains_disabled(self) -> None:
         receipt = READINESS.build_receipt(ready_snapshot())
         self.assertTrue(receipt["ready"])
@@ -866,6 +1207,13 @@ raise SystemExit(module.main())
         self.assertNotIn("pull_request:", workflow)
         self.assertNotIn("\n  push:", workflow)
         self.assertIn("chromewebstore.readonly", workflow)
+        self.assertEqual(2, workflow.count(READINESS.CI_YAML_INSTALL_COMMAND))
+        self.assertEqual(
+            "PyYAML==6.0.2\n",
+            (ROOT / "scripts" / "requirements-browser-store-readiness.txt").read_text(
+                encoding="utf-8"
+            ),
+        )
         self.assertEqual(
             {"valid": True, "unpinned": []},
             READINESS.audit_action_pins([workflow_path]),
@@ -992,6 +1340,80 @@ raise SystemExit(module.main())
             ),
             "preceding_run_overwrite": workflow.replace(
                 step, "      - run: echo skipped\n        run: " + command, 1
+            ),
+            "checkout_repository_input": workflow.replace(
+                "  policy:\n    runs-on: ubuntu-latest\n"
+                "    timeout-minutes: 10\n    steps:\n"
+                "      - uses: actions/checkout@v7\n",
+                "  policy:\n    runs-on: ubuntu-latest\n"
+                "    timeout-minutes: 10\n    steps:\n"
+                "      - uses: actions/checkout@v7\n"
+                "        with:\n"
+                "          repository: owner/other\n",
+                1,
+            ),
+            "checkout_ref_input": workflow.replace(
+                "  policy:\n    runs-on: ubuntu-latest\n"
+                "    timeout-minutes: 10\n    steps:\n"
+                "      - uses: actions/checkout@v7\n",
+                "  policy:\n    runs-on: ubuntu-latest\n"
+                "    timeout-minutes: 10\n    steps:\n"
+                "      - uses: actions/checkout@v7\n"
+                "        with:\n"
+                "          ref: refs/heads/other\n",
+                1,
+            ),
+            "toolchain_input_changed": workflow.replace(
+                "          toolchain: 1.95.0",
+                "          toolchain: stable",
+                1,
+            ),
+            "toolchain_component_changed": workflow.replace(
+                "          components: rustfmt",
+                "          components: clippy",
+                1,
+            ),
+            "install_tool_input_changed": workflow.replace(
+                "          tool: cargo-hakari",
+                "          tool: cargo-nextest",
+                1,
+            ),
+            "hakari_block_body_replaced": workflow.replace(
+                "      - run: |\n"
+                "          cargo hakari generate --diff\n"
+                "          cargo hakari manage-deps --dry-run",
+                "      - run: |\n"
+                "          echo arbitrary replacement\n"
+                "          exit 0",
+                1,
+            ),
+            "hakari_block_comment_decoy": workflow.replace(
+                "      - run: |\n"
+                "          cargo hakari generate --diff\n"
+                "          cargo hakari manage-deps --dry-run",
+                "      - run: |\n"
+                "          # cargo hakari generate --diff\n"
+                "          # cargo hakari manage-deps --dry-run\n"
+                "          echo skipped",
+                1,
+            ),
+            "hakari_equivalent_later_job_decoy": workflow.replace(
+                "      - run: |\n"
+                "          cargo hakari generate --diff\n"
+                "          cargo hakari manage-deps --dry-run",
+                "      - run: |\n"
+                "          echo arbitrary replacement\n",
+                1,
+            ).replace(
+                "\n  verify:",
+                "\n  hakari-decoy:\n"
+                "    runs-on: ubuntu-latest\n"
+                "    steps:\n"
+                "      - run: |\n"
+                "          cargo hakari generate --diff\n"
+                "          cargo hakari manage-deps --dry-run\n\n"
+                "  verify:",
+                1,
             ),
             "disabled_unused_job": workflow.replace(step + "\n", "", 1).replace(
                 "\n  verify:",
