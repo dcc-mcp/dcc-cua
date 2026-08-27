@@ -79,8 +79,40 @@ CANONICAL_TIMESTAMP_PATTERN = re.compile(
 )
 KNOWN_READ_PERMISSIONS = {"granted", "denied", "not_checked", "unverifiable"}
 FIREFOX_ADDON_ID = "dcc-cua@dcc-mcp.org"
-REQUIRED_CI_JOB = "policy"
-REQUIRED_CI_COMMAND = "python -B -m unittest scripts.test_browser_store_readiness"
+CI_POLICY_JOB = "policy"
+CI_RECEIPT_COMMAND = "python -B -m unittest scripts.test_browser_store_readiness"
+EXPECTED_CI_TOP_LEVEL_KEYS = ("name", "on", "permissions", "concurrency", "jobs")
+EXPECTED_CI_TRIGGER = (
+    "  push:",
+    "    branches: [main]",
+    "  pull_request:",
+    "  workflow_dispatch: {}",
+)
+EXPECTED_CI_PERMISSIONS = ("  contents: read",)
+EXPECTED_CI_CONCURRENCY = (
+    "  group: ci-${{ github.workflow }}-${{ github.ref }}",
+    "  cancel-in-progress: true",
+)
+EXPECTED_POLICY_JOB_FIELDS = {
+    "runs-on": "ubuntu-latest",
+    "timeout-minutes": "10",
+    "steps": "",
+}
+EXPECTED_POLICY_EXECUTION_SEQUENCE = (
+    ("uses", "actions/checkout@v7"),
+    ("uses", "dtolnay/rust-toolchain@stable"),
+    ("uses", "taiki-e/install-action@v2"),
+    ("run", "pwsh -NoProfile -File scripts/check-rust-layout.ps1"),
+    ("run", "pwsh -NoProfile -File scripts/check-agent-skills.ps1"),
+    ("run", "python -B scripts/test_write_install_manifest.py"),
+    ("run", "python -B -m unittest scripts.test_verify_release_assets"),
+    ("run", "python -B -m unittest scripts.test_release_integrity"),
+    ("run", "python -B -m unittest scripts.test_release_workflow"),
+    ("run", "python -B -m unittest scripts.test_refresh_release_please_prs"),
+    ("run", CI_RECEIPT_COMMAND),
+    ("run", "|"),
+    ("run", "cargo fmt --all -- --check"),
+)
 
 
 class ReadinessError(RuntimeError):
@@ -354,19 +386,74 @@ def audit_action_pins(paths: Sequence[Path]) -> dict[str, object]:
     return {"valid": not unpinned, "unpinned": sorted(unpinned)}
 
 
-def audit_required_ci_contract(workflow: str) -> dict[str, object]:
-    """Validate one directly executable required CI step without a YAML dependency."""
+def audit_ci_contract(
+    workflow: str, *, branch_required_observed: bool | None = None
+) -> dict[str, object]:
+    """Validate the PR CI receipt step without claiming branch enforcement."""
     lines = workflow.splitlines()
     reasons: list[str] = []
+
+    def result() -> dict[str, object]:
+        return {
+            "valid": not reasons,
+            "reasons": sorted(set(reasons)),
+            "branch_required": branch_required_observed is True,
+            "branch_required_evidence": (
+                "observed_required"
+                if branch_required_observed is True
+                else (
+                    "observed_not_required"
+                    if branch_required_observed is False
+                    else "not_observed"
+                )
+            ),
+        }
+
     if any("\t" in line for line in lines):
         reasons.append("workflow_tabs_not_allowed")
+    top_headers: list[tuple[int, str, str]] = []
+    for index, line in enumerate(lines):
+        if not line.strip() or line.lstrip().startswith("#") or line.startswith((" ", "\t")):
+            continue
+        match = re.fullmatch(r"([A-Za-z0-9_-]+):(?:\s*(.*))?", line)
+        if match:
+            top_headers.append((index, match.group(1), (match.group(2) or "").strip()))
+        else:
+            reasons.append("workflow_top_level_structure_invalid")
+    top_keys = tuple(key for _, key, _ in top_headers)
+    if top_keys != EXPECTED_CI_TOP_LEVEL_KEYS:
+        reasons.append("workflow_top_level_mapping_not_closed")
+    top_values = {key: value for _, key, value in top_headers}
+    if top_values.get("name") != "CI":
+        reasons.append("workflow_name_invalid")
+
+    def top_block(key: str) -> tuple[str, ...]:
+        matches = [position for position, (_, name, _) in enumerate(top_headers) if name == key]
+        if len(matches) != 1:
+            return ()
+        position = matches[0]
+        start = top_headers[position][0] + 1
+        end = top_headers[position + 1][0] if position + 1 < len(top_headers) else len(lines)
+        return tuple(
+            line.rstrip()
+            for line in lines[start:end]
+            if line.strip() and not line.lstrip().startswith("#")
+        )
+
+    if top_block("on") != EXPECTED_CI_TRIGGER:
+        reasons.append("workflow_trigger_invalid")
+    if top_block("permissions") != EXPECTED_CI_PERMISSIONS:
+        reasons.append("workflow_permissions_invalid")
+    if top_block("concurrency") != EXPECTED_CI_CONCURRENCY:
+        reasons.append("workflow_concurrency_invalid")
     jobs_headers = [
         index
         for index, line in enumerate(lines)
         if line.split("#", 1)[0].rstrip() == "jobs:" and not line.startswith((" ", "\t"))
     ]
     if len(jobs_headers) != 1:
-        return {"valid": False, "reasons": ["jobs_mapping_invalid"]}
+        reasons.append("jobs_mapping_invalid")
+        return result()
     jobs_start = jobs_headers[0] + 1
     jobs_end = next(
         (
@@ -383,9 +470,10 @@ def audit_required_ci_contract(workflow: str) -> dict[str, object]:
         match = re.fullmatch(r"  ([A-Za-z0-9_-]+):(?:\s*#.*)?", lines[index])
         if match:
             job_headers.append((index, match.group(1)))
-    matches = [entry for entry in job_headers if entry[1] == REQUIRED_CI_JOB]
+    matches = [entry for entry in job_headers if entry[1] == CI_POLICY_JOB]
     if len(matches) != 1:
-        return {"valid": False, "reasons": ["required_job_missing"]}
+        reasons.append("ci_policy_job_missing")
+        return result()
     job_start = matches[0][0]
     job_end = next(
         (index for index, _ in job_headers if index > job_start),
@@ -401,21 +489,17 @@ def audit_required_ci_contract(workflow: str) -> dict[str, object]:
         if match:
             key, value = match.group(1), (match.group(2) or "").strip()
             if key in job_fields:
-                reasons.append("required_job_duplicate_field")
+                reasons.append("ci_policy_job_duplicate_field")
             job_fields[key] = value
             job_field_lines[key] = index
         elif line.startswith("    ") and not line.startswith("      "):
-            reasons.append("required_job_structure_invalid")
-    allowed_job_fields = {"runs-on", "timeout-minutes", "steps"}
-    if set(job_fields) - allowed_job_fields:
-        reasons.append("required_job_fields_invalid")
-    if not job_fields.get("runs-on"):
-        reasons.append("required_job_runner_missing")
-    for key in ("if", "continue-on-error", "needs"):
-        if key in job_fields:
-            reasons.append(f"required_job_{key}_not_allowed")
-    if "steps" not in job_fields or job_fields["steps"] not in ("",):
-        reasons.append("required_job_steps_invalid")
+            reasons.append("ci_policy_job_structure_invalid")
+    if job_fields != EXPECTED_POLICY_JOB_FIELDS:
+        reasons.append("ci_policy_job_mapping_not_closed")
+    if job_fields.get("runs-on") != "ubuntu-latest":
+        reasons.append("ci_policy_job_runner_invalid")
+    if job_fields.get("timeout-minutes") != "10":
+        reasons.append("ci_policy_job_timeout_invalid")
 
     steps: list[dict[str, str]] = []
     current: dict[str, str] | None = None
@@ -435,23 +519,35 @@ def audit_required_ci_contract(workflow: str) -> dict[str, object]:
         if field and current is not None:
             key, value = field.group(1), (field.group(2) or "").strip()
             if key in current:
-                reasons.append("required_step_duplicate_field")
+                reasons.append("ci_step_duplicate_field")
             current[key] = value
         else:
             indentation = len(line) - len(line.lstrip(" "))
             if indentation == 6:
-                reasons.append("required_steps_structure_invalid")
+                reasons.append("ci_steps_structure_invalid")
             elif indentation == 8:
-                reasons.append("required_step_structure_invalid")
-    candidates = [step for step in steps if step.get("run") == REQUIRED_CI_COMMAND]
+                reasons.append("ci_step_structure_invalid")
+    candidates = [step for step in steps if step.get("run") == CI_RECEIPT_COMMAND]
     if len(candidates) != 1:
-        reasons.append("required_step_missing")
+        reasons.append("ci_receipt_step_missing")
     else:
         candidate = candidates[0]
         if set(candidate) != {"run"}:
-            reasons.append("required_step_mapping_not_closed")
-    reasons = sorted(set(reasons))
-    return {"valid": not reasons, "reasons": reasons}
+            reasons.append("ci_receipt_step_mapping_not_closed")
+    execution_sequence: list[tuple[str, str]] = []
+    for step in steps:
+        execution_keys = [key for key in ("uses", "run") if key in step]
+        if len(execution_keys) != 1:
+            reasons.append("ci_step_execution_ambiguous")
+            continue
+        key = execution_keys[0]
+        execution_sequence.append((key, step[key]))
+        allowed_fields = {"uses", "with"} if key == "uses" else {"run"}
+        if set(step) - allowed_fields:
+            reasons.append("ci_step_execution_modifier_not_allowed")
+    if tuple(execution_sequence) != EXPECTED_POLICY_EXECUTION_SEQUENCE:
+        reasons.append("ci_policy_step_order_invalid")
+    return result()
 
 
 def _request_json(

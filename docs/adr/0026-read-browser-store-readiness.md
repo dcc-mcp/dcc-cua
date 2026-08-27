@@ -37,6 +37,14 @@ serialized. Unknown states, permission denial, missing items, identity drift,
 and expired artifacts fail closed. Ordinary pull requests and pushes execute
 mock contract tests only and never call external store APIs.
 
+The CI workflow contract freezes the pull-request trigger, top-level permissions
+and defaults surface, GitHub-hosted runner, policy-job execution surface, and
+ordered receipt-test command. This proves that the receipt suite is executable
+in that workflow; it does not claim GitHub branch enforcement. At the time of
+this decision the repository has no branch protection, ruleset, or required
+check for the default branch, so `branch_required` remains false unless a live
+GitHub policy observation explicitly proves otherwise.
+
 ## Consequences
 
 An all-three-ready injected dry readback proves the receipt contract, but live

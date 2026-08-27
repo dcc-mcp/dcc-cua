@@ -405,23 +405,92 @@ raise SystemExit(module.main())
         for name in READINESS.EXPECTED_CONFIGURATION_NAMES:
             self.assertIn(name, workflow)
 
-    def test_required_ci_executes_the_exact_receipt_contract_module(self) -> None:
+    def test_ci_receipt_contract_is_executable_but_not_branch_required(self) -> None:
         workflow = (ROOT / ".github" / "workflows" / "ci-checks.yml").read_text(
             encoding="utf-8"
         )
         self.assertEqual(
-            {"valid": True, "reasons": []},
-            READINESS.audit_required_ci_contract(workflow),
+            {
+                "valid": True,
+                "reasons": [],
+                "branch_required": False,
+                "branch_required_evidence": "not_observed",
+            },
+            READINESS.audit_ci_contract(workflow),
         )
         self.assertTrue((ROOT / "scripts" / "test_browser_store_readiness.py").is_file())
 
-    def test_required_ci_contract_rejects_disabled_or_decoyed_steps(self) -> None:
+    def test_ci_receipt_contract_reports_branch_requirement_only_when_observed(self) -> None:
+        workflow = (ROOT / ".github" / "workflows" / "ci-checks.yml").read_text(
+            encoding="utf-8"
+        )
+        not_required = READINESS.audit_ci_contract(
+            workflow, branch_required_observed=False
+        )
+        required = READINESS.audit_ci_contract(
+            workflow, branch_required_observed=True
+        )
+        self.assertFalse(not_required["branch_required"])
+        self.assertEqual("observed_not_required", not_required["branch_required_evidence"])
+        self.assertTrue(required["branch_required"])
+        self.assertEqual("observed_required", required["branch_required_evidence"])
+
+    def test_ci_receipt_contract_rejects_disabled_or_decoyed_surfaces(self) -> None:
         workflow = (ROOT / ".github" / "workflows" / "ci-checks.yml").read_text(
             encoding="utf-8"
         )
         command = "python -B -m unittest scripts.test_browser_store_readiness"
         step = f"      - run: {command}"
         mutations = {
+            "missing_pull_request": workflow.replace("  pull_request:\n", "", 1),
+            "impossible_pull_request_branch": workflow.replace(
+                "  pull_request:\n",
+                "  pull_request:\n    branches: [branch-that-cannot-be-main]\n",
+                1,
+            ),
+            "top_level_shell_default": workflow.replace(
+                "\npermissions:\n",
+                "\ndefaults:\n  run:\n    shell: echo {0}\n\npermissions:\n",
+                1,
+            ),
+            "top_level_permissions_write": workflow.replace(
+                "  contents: read", "  contents: write", 1
+            ),
+            "self_hosted_runner": workflow.replace(
+                "  policy:\n    runs-on: ubuntu-latest",
+                "  policy:\n    runs-on: self-hosted",
+                1,
+            ),
+            "unavailable_hosted_runner": workflow.replace(
+                "  policy:\n    runs-on: ubuntu-latest",
+                "  policy:\n    runs-on: ubuntu-2099",
+                1,
+            ),
+            "job_dependency": workflow.replace(
+                "  policy:\n    runs-on: ubuntu-latest",
+                "  policy:\n    needs: browser-extension\n    runs-on: ubuntu-latest",
+                1,
+            ),
+            "job_permissions": workflow.replace(
+                "  policy:\n    runs-on: ubuntu-latest",
+                "  policy:\n    permissions:\n      contents: read\n    runs-on: ubuntu-latest",
+                1,
+            ),
+            "job_timeout_changed": workflow.replace(
+                "  policy:\n    runs-on: ubuntu-latest\n    timeout-minutes: 10",
+                "  policy:\n    runs-on: ubuntu-latest\n    timeout-minutes: 1",
+                1,
+            ),
+            "receipt_command_reordered": workflow.replace(
+                "      - run: python -B -m unittest scripts.test_refresh_release_please_prs\n"
+                + step,
+                step
+                + "\n      - run: python -B -m unittest scripts.test_refresh_release_please_prs",
+                1,
+            ),
+            "receipt_command_preceded_by_overwrite": workflow.replace(
+                step, "      - run: echo receipt skipped\n" + step, 1
+            ),
             "job_if_false": workflow.replace(
                 "  policy:\n", "  policy:\n    if: false\n", 1
             ),
@@ -465,7 +534,7 @@ raise SystemExit(module.main())
         }
         for name, mutation in mutations.items():
             with self.subTest(name=name):
-                audit = READINESS.audit_required_ci_contract(mutation)
+                audit = READINESS.audit_ci_contract(mutation)
                 self.assertFalse(audit["valid"])
                 self.assertTrue(audit["reasons"])
 
