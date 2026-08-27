@@ -280,7 +280,7 @@ fn unknown_cli_flags_fail_closed_before_dispatch() {
     let error = reject_unknown_flags(&["--hwnd".into(), "123".into()]).unwrap_err();
     assert_eq!(
         error,
-        "unknown option \"--hwnd\"; use `help` to list supported options"
+        "unknown option; use `help` to list supported options"
     );
 }
 
@@ -320,7 +320,10 @@ fn accepted_equals_form_flags_are_consumed_by_every_parser() {
 #[rstest]
 fn unknown_flag_cannot_be_hidden_as_a_missing_option_value() {
     let error = reject_unknown_flags(&["--pid".into(), "--hwnd".into()]).unwrap_err();
-    assert!(error.contains("--hwnd"));
+    assert_eq!(
+        error,
+        "unknown option; use `help` to list supported options"
+    );
     reject_unknown_flags(&["--x".into(), "-12".into()]).unwrap();
 }
 

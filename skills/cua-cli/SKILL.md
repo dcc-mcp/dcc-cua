@@ -184,11 +184,13 @@ as unavailable rather than partially active.
 
 Parse stdout for both success and failure from one-shot CLI commands. A normal
 command failure returns a non-zero exit code and exactly one JSON envelope such
-as `{"success":false,"error":{"code":"command_failed","message":"..."}}` on
+as `{"success":false,"error":{"code":"command_failed","message":"dcc-cua could not complete the command"}}` on
 stdout. Do not merge stderr into stdout: stderr is reserved for fixed safe
 process diagnostics and never carries a duplicate envelope. Long-lived
 `host-jsonl`, Native Messaging, and MCP routes retain their own framed stdout
-protocols.
+protocols. Treat the one-shot error identity as deliberately lossy: codes are
+bounded local categories and messages are fixed, so raw command/option text,
+error strings, paths, arguments, tokens, and remote payloads are never public.
 
 For an accessibility surface, use the identity returned by discovery:
 
