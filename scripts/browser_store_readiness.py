@@ -11,6 +11,7 @@ import json
 import os
 import re
 import secrets
+import sys
 import time
 import urllib.error
 import urllib.parse
@@ -83,7 +84,14 @@ def _mapping(value: object) -> Mapping[str, Any]:
 
 
 def _environment_receipt(environment: Mapping[str, Any]) -> dict[str, object]:
-    policy = _mapping(environment.get("deployment_branch_policy"))
+    raw_policy = environment.get("deployment_branch_policy")
+    policy_present = "deployment_branch_policy" in environment
+    policy_valid = (
+        isinstance(raw_policy, Mapping)
+        and isinstance(raw_policy.get("protected_branches"), bool)
+        and isinstance(raw_policy.get("custom_branch_policies"), bool)
+    )
+    policy = raw_policy if policy_valid else {}
     protected_only = _bool(policy.get("protected_branches"))
     custom = _bool(policy.get("custom_branch_policies"))
     default_protected = _bool(environment.get("default_branch_protected"))
@@ -91,12 +99,27 @@ def _environment_receipt(environment: Mapping[str, Any]) -> dict[str, object]:
     reason = "eligible"
     if not valid:
         reason = "environment_missing"
+    elif not policy_present:
+        valid = False
+        reason = "environment_policy_missing"
+    elif not policy_valid:
+        valid = False
+        reason = "environment_policy_invalid"
     elif protected_only and not custom and not default_protected:
         valid = False
         reason = "default_branch_not_eligible"
     elif custom:
-        valid = _bool(environment.get("default_branch_eligible"))
-        reason = "eligible" if valid else "default_branch_not_eligible"
+        eligibility = environment.get("default_branch_eligible")
+        valid = isinstance(eligibility, bool) and eligibility
+        reason = (
+            "eligible"
+            if valid
+            else (
+                "default_branch_not_eligible"
+                if eligibility is False
+                else "default_branch_eligibility_unknown"
+            )
+        )
     return {
         "name": "browser-stores",
         "valid": valid,
@@ -603,50 +626,76 @@ def _load_snapshot(path: Path) -> dict[str, Any]:
     return value
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--snapshot", type=Path)
-    parser.add_argument("--repository")
-    parser.add_argument("--output", type=Path)
-    parser.add_argument("--probe-stores", action="store_true")
-    args = parser.parse_args()
-    if args.snapshot:
-        snapshot = _load_snapshot(args.snapshot)
-    elif args.repository:
-        snapshot = collect_github_snapshot(
-            args.repository, os.environ.get("GITHUB_TOKEN", "").strip()
-        )
-    else:
-        parser.error("one of --snapshot or --repository is required")
-    root = Path(__file__).resolve().parent.parent
-    snapshot["action_pins"] = audit_action_pins(
-        (
-            root / ".github" / "workflows" / "browser-store-preflight.yml",
-            root / ".github" / "workflows" / "release-please.yml",
-        )
-    )
-    environment = dict(os.environ)
-    existing_configuration = _mapping(snapshot.get("configuration"))
-    snapshot["configuration"] = {
-        name: bool(environment.get(name, "").strip())
-        or _bool(existing_configuration.get(name))
-        for name in EXPECTED_CONFIGURATION_NAMES
-    }
-    if args.probe_stores:
-        tag = str(_mapping(snapshot.get("github")).get("tag", ""))
-        match = re.fullmatch(r"dcc-cua-browser-extension-v(.+)", tag)
-        version = match.group(1) if match else ""
-        snapshot["stores"] = {
-            "chrome": probe_chrome(environment, version),
-            "edge": probe_edge(environment),
-            "firefox": probe_firefox(environment),
-        }
-    receipt = build_receipt(snapshot)
+class _ReceiptArgumentParser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:
+        raise ReadinessError("invalid command line")
+
+
+def _failure_receipt() -> dict[str, Any]:
+    receipt = build_receipt({})
+    receipt["terminal_reason"] = "preflight_failed"
+    return receipt
+
+
+def _emit_receipt(receipt: Mapping[str, Any], output: Path | None) -> None:
     serialized = serialize_receipt(receipt)
-    if args.output:
-        args.output.write_text(serialized, encoding="utf-8", newline="\n")
+    if output:
+        output.write_text(serialized, encoding="utf-8", newline="\n")
     print(serialized, end="")
-    return 0 if receipt["ready"] else 1
+
+
+def main() -> int:
+    output: Path | None = None
+    try:
+        parser = _ReceiptArgumentParser()
+        parser.add_argument("--snapshot", type=Path)
+        parser.add_argument("--repository")
+        parser.add_argument("--output", type=Path)
+        parser.add_argument("--probe-stores", action="store_true")
+        args = parser.parse_args()
+        output = args.output
+        if args.snapshot:
+            snapshot = _load_snapshot(args.snapshot)
+        elif args.repository:
+            snapshot = collect_github_snapshot(
+                args.repository, os.environ.get("GITHUB_TOKEN", "").strip()
+            )
+        else:
+            raise ReadinessError("snapshot or repository is required")
+        root = Path(__file__).resolve().parent.parent
+        snapshot["action_pins"] = audit_action_pins(
+            (
+                root / ".github" / "workflows" / "browser-store-preflight.yml",
+                root / ".github" / "workflows" / "release-please.yml",
+            )
+        )
+        environment = dict(os.environ)
+        existing_configuration = _mapping(snapshot.get("configuration"))
+        snapshot["configuration"] = {
+            name: bool(environment.get(name, "").strip())
+            or _bool(existing_configuration.get(name))
+            for name in EXPECTED_CONFIGURATION_NAMES
+        }
+        if args.probe_stores:
+            tag = str(_mapping(snapshot.get("github")).get("tag", ""))
+            match = re.fullmatch(r"dcc-cua-browser-extension-v(.+)", tag)
+            version = match.group(1) if match else ""
+            snapshot["stores"] = {
+                "chrome": probe_chrome(environment, version),
+                "edge": probe_edge(environment),
+                "firefox": probe_firefox(environment),
+            }
+        receipt = build_receipt(snapshot)
+        _emit_receipt(receipt, output)
+        return 0 if receipt["ready"] else 1
+    except Exception:
+        failure = _failure_receipt()
+        try:
+            _emit_receipt(failure, output)
+        except OSError:
+            _emit_receipt(failure, None)
+        print("browser store readiness preflight failed", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

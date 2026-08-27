@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 import copy
+import contextlib
 import importlib.util
+import io
 import json
+import sys
+import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -80,6 +85,30 @@ class BrowserStoreReadinessTests(unittest.TestCase):
         self.assertEqual("not_ready", receipt["overall_state"])
         self.assertEqual("default_branch_not_eligible", receipt["environment"]["reason"])
 
+    def test_missing_or_malformed_environment_policy_fails_closed(self) -> None:
+        mutations = (
+            lambda environment: environment.pop("deployment_branch_policy"),
+            lambda environment: environment.__setitem__("deployment_branch_policy", "invalid"),
+            lambda environment: environment.__setitem__(
+                "deployment_branch_policy", {"protected_branches": False}
+            ),
+        )
+        expected_reasons = (
+            "environment_policy_missing",
+            "environment_policy_invalid",
+            "environment_policy_invalid",
+        )
+        for mutate, expected_reason in zip(mutations, expected_reasons, strict=True):
+            with self.subTest(expected_reason=expected_reason):
+                snapshot = ready_snapshot()
+                snapshot["environment"]["default_branch_protected"] = False
+                mutate(snapshot["environment"])
+                receipt = READINESS.build_receipt(snapshot)
+                self.assertFalse(receipt["ready"])
+                self.assertEqual("not_ready", receipt["overall_state"])
+                self.assertFalse(receipt["environment"]["valid"])
+                self.assertEqual(expected_reason, receipt["environment"]["reason"])
+
     def test_no_item_requires_human_action(self) -> None:
         snapshot = ready_snapshot()
         snapshot["stores"]["chrome"]["item"] = "missing"
@@ -127,6 +156,71 @@ class BrowserStoreReadinessTests(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertNotIn("never-print-this", first)
 
+    def test_cli_failure_emits_one_stable_redacted_terminal_receipt(self) -> None:
+        sensitive = "token-never-print P:\\private\\checkout\\snapshot.json"
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "receipt.json"
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            argv = [
+                "browser_store_readiness.py",
+                "--repository",
+                "dcc-mcp/dcc-cua",
+                "--output",
+                str(output),
+            ]
+            with (
+                mock.patch.object(sys, "argv", argv),
+                mock.patch.object(
+                    READINESS,
+                    "collect_github_snapshot",
+                    side_effect=READINESS.ReadinessError(sensitive),
+                ),
+                contextlib.redirect_stdout(stdout),
+                contextlib.redirect_stderr(stderr),
+            ):
+                exit_code = READINESS.main()
+
+            terminal = stdout.getvalue()
+            self.assertEqual(1, exit_code)
+            self.assertEqual(1, terminal.count("\n"))
+            self.assertEqual(terminal, output.read_text(encoding="utf-8"))
+            receipt = json.loads(terminal)
+            self.assertFalse(receipt["ready"])
+            self.assertEqual("not_ready", receipt["overall_state"])
+            self.assertEqual("preflight_failed", receipt["terminal_reason"])
+            combined = terminal + stderr.getvalue()
+            self.assertNotIn("token-never-print", combined)
+            self.assertNotIn("private", combined)
+            self.assertNotIn("Traceback", combined)
+            self.assertEqual("browser store readiness preflight failed\n", stderr.getvalue())
+
+    def test_malformed_snapshot_still_writes_terminal_receipt(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            snapshot = root / "malformed.json"
+            output = root / "receipt.json"
+            snapshot.write_text('{"secret": "do-not-print"', encoding="utf-8")
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            argv = [
+                "browser_store_readiness.py",
+                "--snapshot",
+                str(snapshot),
+                "--output",
+                str(output),
+            ]
+            with (
+                mock.patch.object(sys, "argv", argv),
+                contextlib.redirect_stdout(stdout),
+                contextlib.redirect_stderr(stderr),
+            ):
+                exit_code = READINESS.main()
+            self.assertEqual(1, exit_code)
+            self.assertEqual(stdout.getvalue(), output.read_text(encoding="utf-8"))
+            self.assertNotIn("do-not-print", stdout.getvalue() + stderr.getvalue())
+            self.assertNotIn(str(snapshot), stdout.getvalue() + stderr.getvalue())
+
     def test_action_pins_fail_closed(self) -> None:
         snapshot = ready_snapshot()
         snapshot["action_pins"] = {"valid": False, "unpinned": ["actions/checkout@v7"]}
@@ -159,6 +253,20 @@ class BrowserStoreReadinessTests(unittest.TestCase):
         )
         for name in READINESS.EXPECTED_CONFIGURATION_NAMES:
             self.assertIn(name, workflow)
+
+    def test_required_ci_executes_the_exact_receipt_contract_module(self) -> None:
+        workflow = (ROOT / ".github" / "workflows" / "ci-checks.yml").read_text(
+            encoding="utf-8"
+        )
+        policy_start = workflow.index("\n  policy:")
+        policy_end = workflow.index("\n  verify:", policy_start)
+        policy_job = workflow[policy_start:policy_end]
+        command = "python -B -m unittest scripts.test_browser_store_readiness"
+        expected_step = f"      - run: {command}"
+        matching_lines = [line for line in policy_job.splitlines() if command in line]
+        self.assertEqual([expected_step], matching_lines)
+        self.assertEqual(1, workflow.count(command))
+        self.assertTrue((ROOT / "scripts" / "test_browser_store_readiness.py").is_file())
 
     def test_edge_probe_never_mutates_to_test_access(self) -> None:
         observation = READINESS.probe_edge(

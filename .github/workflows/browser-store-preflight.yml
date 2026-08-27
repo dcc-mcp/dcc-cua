@@ -27,7 +27,6 @@ jobs:
           python -B scripts/browser_store_readiness.py \
             --repository "$GITHUB_REPOSITORY" \
             --output "$receipt" || true
-          cat "$receipt"
           python - "$receipt" "$GITHUB_OUTPUT" <<'PY'
           import json
           import sys
@@ -100,13 +99,12 @@ jobs:
             --repository "$GITHUB_REPOSITORY" \
             --probe-stores \
             --output "$receipt"
-      - name: Publish terminal redacted receipt
+      - name: Archive terminal redacted receipt
         if: always()
         shell: bash
         run: |
           receipt="$RUNNER_TEMP/browser-store-readiness.json"
           test -f "$receipt"
-          cat "$receipt"
           {
             echo '### Browser store terminal readiness receipt'
             echo '```json'
