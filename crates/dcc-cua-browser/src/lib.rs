@@ -107,6 +107,8 @@ pub struct BrowserNavigateRequest {
     pub target_id: String,
     pub tab_id: String,
     pub url: String,
+    #[serde(default)]
+    pub delivery_mode: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -414,7 +416,8 @@ impl BrowserSession {
         request: BrowserNavigateRequest,
     ) -> ComputerUseResult<BrowserResult> {
         self.require_exact_target(&request.target_id)?;
-        validate_url(&request.url)?;
+        validate_navigate_request(&request)?;
+        let delivery_mode = request.delivery_mode.as_deref().unwrap_or("background");
         self.begin_snapshot_sensitive_native_attempt();
         let result = BrowserResult::from_value(
             native
@@ -424,10 +427,18 @@ impl BrowserSession {
                         "target_id": request.target_id,
                         "tab_id": request.tab_id,
                         "url": request.url,
+                        "delivery_mode": delivery_mode,
                     }),
                 )
                 .await?,
         )?;
+        if delivery_mode == "foreground" {
+            validate_foreground_navigation_readback(
+                &result.value,
+                &request.target_id,
+                &request.tab_id,
+            )?;
+        }
         Ok(result)
     }
 
@@ -1144,6 +1155,51 @@ fn validate_url(url: &str) -> ComputerUseResult<()> {
     {
         return Err(invalid(
             "browser_navigate accepts only http, https, and about URLs",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_navigate_request(request: &BrowserNavigateRequest) -> ComputerUseResult<()> {
+    validate_url(&request.url)?;
+    if !matches!(
+        request.delivery_mode.as_deref(),
+        None | Some("background" | "foreground")
+    ) {
+        return Err(invalid(
+            "browser_navigate delivery_mode must be background or foreground",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_foreground_navigation_readback(
+    value: &Value,
+    expected_target_id: &str,
+    expected_tab_id: &str,
+) -> ComputerUseResult<()> {
+    let structured = structured_content(value)?;
+    let exact_identity = structured["status"] == "ok"
+        && structured["delivery_mode"] == "foreground"
+        && structured["activated"] == true
+        && structured["target_id"].as_str() == Some(expected_target_id)
+        && structured["tab_id"].as_str() == Some(expected_tab_id);
+    let exact_readback = structured["visibility_state"] == "visible"
+        && matches!(
+            structured["ready_state"].as_str(),
+            Some("interactive" | "complete")
+        )
+        && structured["current_url"].as_str().is_some_and(|value| {
+            value.starts_with("http://")
+                || value.starts_with("https://")
+                || value.starts_with("about:")
+        })
+        && structured["title"].as_str().is_some()
+        && structured["heading"].as_str().is_some();
+    if !exact_identity || !exact_readback {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::BackendUnavailable,
+            "foreground browser navigation omitted exact activated-tab readback",
         ));
     }
     Ok(())

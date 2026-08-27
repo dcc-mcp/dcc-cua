@@ -952,7 +952,7 @@ async fn controlled_electron_round_trip() {
     wait_for_journal(&journal, "lbl-last-action", "last_action=double_click");
 
     let browser_fixture = BrowserFixtureServer::start(BROWSER_COMPLETENESS_HTML);
-    host_request_with_pre_dispatch_refresh_recovery(
+    let foreground_navigation = host_request_with_pre_dispatch_refresh_recovery(
         &mut host,
         "browser_navigate",
         json!({
@@ -962,12 +962,41 @@ async fn controlled_electron_round_trip() {
             "request": {
                 "target_id": target_id,
                 "tab_id": tab_id,
-                "url": browser_fixture.page_url()
+                "url": browser_fixture.page_url(),
+                "delivery_mode": "foreground"
             }
         }),
         &capability,
     )
     .await;
+    let foreground_state = &foreground_navigation.value["result"]["structuredContent"];
+    assert_eq!(foreground_state["status"], "ok", "{foreground_state}");
+    assert_eq!(
+        foreground_state["target_id"], target_id,
+        "{foreground_state}"
+    );
+    assert_eq!(foreground_state["tab_id"], tab_id, "{foreground_state}");
+    assert_eq!(foreground_state["activated"], true, "{foreground_state}");
+    assert_eq!(
+        foreground_state["visibility_state"], "visible",
+        "{foreground_state}"
+    );
+    assert!(
+        matches!(
+            foreground_state["ready_state"].as_str(),
+            Some("interactive" | "complete")
+        ),
+        "{foreground_state}"
+    );
+    assert!(
+        foreground_state["current_url"].is_string(),
+        "{foreground_state}"
+    );
+    assert!(foreground_state["title"].is_string(), "{foreground_state}");
+    assert!(
+        foreground_state["heading"].is_string(),
+        "{foreground_state}"
+    );
     wait_for_browser_fixture(
         &browser_fixture,
         "page-marker",

@@ -3,6 +3,75 @@ use rstest::rstest;
 use super::*;
 use tokio::io::DuplexStream;
 
+#[cfg(windows)]
+#[rstest]
+fn embedded_host_uses_the_no_console_creation_contract() {
+    assert_eq!(HOST_CREATE_NO_WINDOW, 0x0800_0000);
+}
+
+#[cfg(windows)]
+#[rstest]
+#[tokio::test]
+async fn configured_host_child_owns_no_visible_window() {
+    use std::process::Stdio;
+    use std::thread;
+    use std::time::Duration;
+    use windows_sys::Win32::Foundation::{HWND, LPARAM};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        EnumWindows, GetWindowThreadProcessId, IsWindowVisible,
+    };
+
+    #[derive(Default)]
+    struct WindowCount {
+        pid: u32,
+        visible: usize,
+    }
+
+    unsafe extern "system" fn count_visible_windows(hwnd: HWND, state: LPARAM) -> i32 {
+        let state = unsafe { &mut *(state as *mut WindowCount) };
+        let mut owner_pid = 0;
+        unsafe { GetWindowThreadProcessId(hwnd, &mut owner_pid) };
+        if owner_pid == state.pid && unsafe { IsWindowVisible(hwnd) } != 0 {
+            state.visible += 1;
+        }
+        1
+    }
+
+    let mut command = Command::new("powershell.exe");
+    command
+        .args([
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "Start-Sleep -Milliseconds 750",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    configure_host_process(&mut command);
+    let mut child = command.spawn().expect("spawn bounded configured child");
+    let mut state = WindowCount {
+        pid: child.id().expect("configured child pid"),
+        visible: 0,
+    };
+    thread::sleep(Duration::from_millis(200));
+    unsafe {
+        EnumWindows(
+            Some(count_visible_windows),
+            &mut state as *mut WindowCount as LPARAM,
+        )
+    };
+    assert_eq!(state.visible, 0);
+    assert!(
+        child
+            .wait()
+            .await
+            .expect("wait for configured child")
+            .success()
+    );
+}
+
 #[rstest]
 fn default_endpoint_uses_the_shared_protocol_contract() {
     assert_eq!(

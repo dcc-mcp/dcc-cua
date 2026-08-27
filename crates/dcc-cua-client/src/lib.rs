@@ -299,14 +299,16 @@ impl HostProcess {
         snapshot_transport: SnapshotTransport,
         host_args: &[&str],
     ) -> HostClientResult<Self> {
-        let mut child = Command::new(binary_path.as_ref())
+        let mut command = Command::new(binary_path.as_ref());
+        command
             .arg("host")
             .arg("--stdio")
             .args(host_args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()?;
+            .stderr(Stdio::inherit());
+        configure_host_process(&mut command);
+        let mut child = command.spawn()?;
         let stdin = match child.stdin.take() {
             Some(stdin) => stdin,
             None => {
@@ -393,6 +395,16 @@ impl HostProcess {
         }
     }
 }
+
+fn configure_host_process(_command: &mut Command) {
+    #[cfg(windows)]
+    {
+        _command.creation_flags(HOST_CREATE_NO_WINDOW);
+    }
+}
+
+#[cfg(windows)]
+const HOST_CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 impl Drop for HostProcess {
     fn drop(&mut self) {
