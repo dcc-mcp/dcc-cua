@@ -360,14 +360,13 @@ impl ChildStderrCapture {
             .summary()
     }
 
-    async fn finish(self) {
-        let mut task = self.task;
-        if tokio::time::timeout(CHILD_STDERR_DRAIN_TIMEOUT, &mut task)
+    async fn finish(&mut self) {
+        if tokio::time::timeout(CHILD_STDERR_DRAIN_TIMEOUT, &mut self.task)
             .await
             .is_err()
         {
-            task.abort();
-            let _ = task.await;
+            self.task.abort();
+            let _ = (&mut self.task).await;
         }
     }
 }
@@ -411,36 +410,27 @@ impl HostProcess {
             .args(host_args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
         configure_host_process(&mut command);
-        let mut child = command.spawn()?;
-        let stderr_capture = child.stderr.take().map(ChildStderrCapture::start);
-        let stdin = match child.stdin.take() {
-            Some(stdin) => stdin,
-            None => {
-                let _ = child.start_kill();
-                let _ = child.wait().await;
-                if let Some(capture) = stderr_capture {
-                    capture.finish().await;
-                }
-                return Err(HostClientError::Protocol(
-                    "spawned Host did not expose stdin".into(),
-                ));
-            }
+        let child = command.spawn()?;
+        let mut process = Self {
+            client: None,
+            child: Some(child),
+            stderr_capture: None,
         };
-        let stdout = match child.stdout.take() {
-            Some(stdout) => stdout,
-            None => {
-                let _ = child.start_kill();
-                let _ = child.wait().await;
-                if let Some(capture) = stderr_capture {
-                    capture.finish().await;
-                }
-                return Err(HostClientError::Protocol(
-                    "spawned Host did not expose stdout".into(),
-                ));
-            }
-        };
+        let child = process
+            .child
+            .as_mut()
+            .expect("newly spawned Host remains owned");
+        process.stderr_capture = child.stderr.take().map(ChildStderrCapture::start);
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| HostClientError::Protocol("spawned Host did not expose stdin".into()))?;
+        let stdout = child.stdout.take().ok_or_else(|| {
+            HostClientError::Protocol("spawned Host did not expose stdout".into())
+        })?;
         let mut client = HostClient::from_stream_with_transport(
             ChildStdio {
                 reader: stdout,
@@ -448,19 +438,9 @@ impl HostProcess {
             },
             snapshot_transport,
         );
-        if let Err(error) = client.hello(client_name).await {
-            let _ = child.start_kill();
-            let _ = child.wait().await;
-            if let Some(capture) = stderr_capture {
-                capture.finish().await;
-            }
-            return Err(error);
-        }
-        Ok(Self {
-            client: Some(client),
-            child: Some(child),
-            stderr_capture,
-        })
+        client.hello(client_name).await?;
+        process.client = Some(client);
+        Ok(process)
     }
 
     /// Access the negotiated client for Host requests.
@@ -501,19 +481,42 @@ impl HostProcess {
     /// Close stdio gracefully, then force-stop a Host that does not exit.
     pub async fn shutdown(mut self) -> HostClientResult<ExitStatus> {
         drop(self.client.take());
-        let mut child = self.child.take().ok_or_else(|| {
-            HostClientError::Protocol("Host process was already shut down".into())
-        })?;
-        let status = match tokio::time::timeout(Duration::from_secs(2), child.wait()).await {
+        let status = match tokio::time::timeout(
+            Duration::from_secs(2),
+            self.child
+                .as_mut()
+                .ok_or_else(|| {
+                    HostClientError::Protocol("Host process was already shut down".into())
+                })?
+                .wait(),
+        )
+        .await
+        {
             Ok(status) => status.map_err(HostClientError::from),
-            Err(_) => match child.kill().await {
-                Ok(()) => child.wait().await.map_err(HostClientError::from),
+            Err(_) => match self
+                .child
+                .as_mut()
+                .expect("Host remains owned during shutdown")
+                .kill()
+                .await
+            {
+                Ok(()) => self
+                    .child
+                    .as_mut()
+                    .expect("killed Host remains owned until reaped")
+                    .wait()
+                    .await
+                    .map_err(HostClientError::from),
                 Err(error) => Err(HostClientError::from(error)),
             },
         };
-        if let Some(capture) = self.stderr_capture.take() {
+        if status.is_ok() {
+            self.child.take();
+        }
+        if let Some(capture) = self.stderr_capture.as_mut() {
             capture.finish().await;
         }
+        self.stderr_capture.take();
         status
     }
 }
