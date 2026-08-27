@@ -223,11 +223,11 @@ pub(super) fn print_help() {
   restore-activate --pid PID --window-id ID
   set-window-frame --app APP|--pid PID --window-id ID --x N --y N --width N --height N
   invoke-menu --app APP|--pid PID --window-id ID --menu TOP [--menu CHILD ...]
-  act --app APP --action-json JSON [--output FILE]
-  verify --app APP --expect-json JSON [--timeout-ms N] [--stable-samples N]
+  act --app APP|--pid PID|--window-id ID|--title TITLE --action-json JSON [--output FILE]
+  verify --app APP|--pid PID|--window-id ID|--title TITLE --expect-json JSON [--timeout-ms N] [--stable-samples N]
   desktop-act --action-json JSON [--session ID] [--output FILE]
-  clipboard-read --app APP [--include-text]
-  clipboard-write --app APP --text TEXT|--image-path FILE|--file-path FILE
+  clipboard-read --app APP|--pid PID|--window-id ID|--title TITLE [--include-text]
+  clipboard-write --app APP|--pid PID|--window-id ID|--title TITLE --text TEXT|--image-path FILE|--file-path FILE
   doctor [--route full|visual|semantic] [--endpoint PATH|--spawn BINARY]
   host [--stdio|--endpoint PATH] [--grant existing-profile]
 

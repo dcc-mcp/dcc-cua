@@ -310,21 +310,7 @@ async fn list_windows(
     driver: &ComputerUseDriver,
     flags: &[String],
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let pid = flag_value(flags, "--pid")
-        .map(|value| value.parse::<u32>())
-        .transpose()?;
-    let app = flag_value(flags, "--app");
-    let window_id = flag_value(flags, "--window-id")
-        .map(|value| value.parse::<u64>())
-        .transpose()?;
-    let title = flag_value(flags, "--title");
-    let query = ComputerUseWindowQuery {
-        app,
-        process_id: pid,
-        window_handle: window_id,
-        window_title: title,
-        on_screen_only: has_flag(flags, "--on-screen"),
-    };
+    let query = window_selector_query_from_flags(flags)?;
     query.validate_selectors()?;
     let mut windows = driver
         .list_windows_filtered(query.process_id, query.on_screen_only)
@@ -423,17 +409,7 @@ fn window_wait_request(
     flags: &[String],
 ) -> Result<ComputerUseWindowWaitRequest, Box<dyn std::error::Error>> {
     let request = ComputerUseWindowWaitRequest {
-        query: ComputerUseWindowQuery {
-            app: flag_value(flags, "--app"),
-            process_id: flag_value(flags, "--pid")
-                .map(|value| value.parse::<u32>())
-                .transpose()?,
-            window_handle: flag_value(flags, "--window-id")
-                .map(|value| value.parse::<u64>())
-                .transpose()?,
-            window_title: flag_value(flags, "--title"),
-            on_screen_only: has_flag(flags, "--on-screen"),
-        },
+        query: window_selector_query_from_flags(flags)?,
         timeout_ms: flag_value(flags, "--timeout-ms")
             .map(|value| value.parse::<u64>())
             .transpose()?,
@@ -1799,38 +1775,50 @@ async fn select_scope(
     driver: &ComputerUseDriver,
     flags: &[String],
 ) -> Result<ComputerUseTargetScope, Box<dyn std::error::Error>> {
-    let pid = flag_value(flags, "--pid")
-        .map(|value| value.parse::<u32>())
-        .transpose()?;
-    let window_handle = flag_value(flags, "--window-id")
-        .map(|value| value.parse::<u64>())
-        .transpose()?;
-    let title = flag_value(flags, "--title");
-    if pid.is_some() || window_handle.is_some() || title.is_some() {
+    let query = window_selector_query_from_flags(flags)?;
+    query.validate()?;
+    if query.app.is_none() {
         return Ok(ComputerUseTargetScope {
-            process_id: pid,
-            window_handle,
-            window_title: title,
+            process_id: query.process_id,
+            window_handle: query.window_handle,
+            window_title: query.window_title,
         });
     }
-    let app =
-        flag_value(flags, "--app").ok_or("a target requires --app or --pid/--window-id/--title")?;
-    let rows = driver.list_windows().await?;
+    let exact_selector =
+        query.process_id.is_some() || query.window_handle.is_some() || query.window_title.is_some();
+    let rows = driver
+        .list_windows_filtered(query.process_id, !exact_selector)
+        .await?;
+    resolve_window_selector_from_inventory(&query, &rows)
+}
+
+fn resolve_window_selector_from_inventory(
+    query: &ComputerUseWindowQuery,
+    rows: &[serde_json::Value],
+) -> Result<ComputerUseTargetScope, Box<dyn std::error::Error>> {
+    let app = query
+        .app
+        .as_deref()
+        .ok_or("window selector requires --app")?;
+    let exact_selector =
+        query.process_id.is_some() || query.window_handle.is_some() || query.window_title.is_some();
     let matches = rows
         .iter()
-        .filter(|row| {
-            row["app_name"]
-                .as_str()
-                .is_some_and(|name| name.eq_ignore_ascii_case(&app))
-                && row["is_on_screen"] == true
-        })
+        .filter(|row| query.matches_window(row) && (exact_selector || row["is_on_screen"] == true))
         .collect::<Vec<_>>();
     if matches.len() != 1 {
-        return Err(format!(
-            "expected one on-screen {app} window, found {}",
-            matches.len()
-        )
-        .into());
+        let message = if exact_selector {
+            format!(
+                "expected exactly one {app} window matching all selectors, found {}",
+                matches.len()
+            )
+        } else {
+            format!(
+                "expected one on-screen {app} window, found {}",
+                matches.len()
+            )
+        };
+        return Err(message.into());
     }
     let row = matches[0];
     Ok(ComputerUseTargetScope {
@@ -1842,6 +1830,44 @@ async fn select_scope(
         ),
         window_title: row["title"].as_str().map(str::to_owned),
     })
+}
+
+fn window_selector_query_from_flags(
+    flags: &[String],
+) -> Result<ComputerUseWindowQuery, Box<dyn std::error::Error>> {
+    Ok(ComputerUseWindowQuery {
+        app: selector_value(flags, "--app")?,
+        process_id: positive_selector_u64(flags, "--pid")?
+            .map(u32::try_from)
+            .transpose()?,
+        window_handle: positive_selector_u64(flags, "--window-id")?,
+        window_title: selector_value(flags, "--title")?,
+        on_screen_only: has_flag(flags, "--on-screen"),
+    })
+}
+
+fn positive_selector_u64(
+    flags: &[String],
+    name: &str,
+) -> Result<Option<u64>, Box<dyn std::error::Error>> {
+    let value = selector_value(flags, name)?
+        .map(|value| value.parse::<u64>())
+        .transpose()?;
+    if value == Some(0) {
+        return Err(format!("{name} must be greater than zero").into());
+    }
+    Ok(value)
+}
+
+fn selector_value(flags: &[String], name: &str) -> Result<Option<String>, String> {
+    let values = flag_values(flags, name);
+    let Some(first) = values.first() else {
+        return Ok(None);
+    };
+    if values.iter().any(|value| value != first) {
+        return Err(format!("conflicting values for {name}"));
+    }
+    Ok(Some(first.clone()))
 }
 
 #[cfg(test)]

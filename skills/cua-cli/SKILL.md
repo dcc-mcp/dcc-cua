@@ -46,13 +46,20 @@ typed route cannot cover.
    ```powershell
    dcc-cua snapshot --pid $pid --window-id $hwnd --activate --output before.png
    dcc-cua act --pid $pid --window-id $hwnd --action-json '{"action":"click","element_index":12,"delivery_mode":"foreground"}'
-   dcc-cua snapshot --pid $pid --window-id $hwnd --activate --output after.png
+   dcc-cua verify --pid $pid --window-id $hwnd --expect-json '[{"window":{"exists":true}}]'
+   dcc-cua clipboard-read --pid $pid --window-id $hwnd
+   dcc-cua clipboard-write --pid $pid --window-id $hwnd --text "bounded text"
    ```
 
    Prefer an accessibility element index/token. Use coordinates only for a
    custom-drawn surface after a fresh pixel snapshot. A semantic action gets a
    fresh accessibility observation; do not reuse stale element indexes or mix
    tokens from pixel snapshots, other backends, windows, or sessions.
+
+   `snapshot`, `act`, `verify`, `clipboard-read`, and `clipboard-write` share
+   `--app`, `--pid`, `--window-id`, and `--title`. Treat multiple selectors as
+   one conjunctive identity. Any conflict, missing or ambiguous match, or live
+   PID/HWND/title drift must stop the command; never fall back to app-only scope.
 
 4. Verify state after every mutation. A successful input call proves that input
    was delivered, not that the application reached the requested state. Use a
