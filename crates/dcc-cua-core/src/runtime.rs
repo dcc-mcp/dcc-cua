@@ -1339,6 +1339,8 @@ pub struct ComputerUseSession {
     active: bool,
     escalated: bool,
     pub(crate) uia_timeout_escalated: bool,
+    #[cfg(feature = "test-support")]
+    synthetic_test_session: bool,
 }
 
 impl ComputerUseSession {
@@ -1349,6 +1351,29 @@ impl ComputerUseSession {
     #[doc(hidden)]
     pub fn seed_test_observation(&mut self, observation: ComputerUseObservation) {
         self.observation = Some(observation);
+    }
+
+    /// Seed an active exact-window session for downstream transport-boundary
+    /// tests without starting a banner or touching a real desktop.
+    #[cfg(feature = "test-support")]
+    #[doc(hidden)]
+    pub fn seed_test_active_window(&mut self, observation: ComputerUseObservation) {
+        self.target = Some(WindowTarget {
+            pid: observation.process_id,
+            window_id: observation.window_handle,
+            title: observation.window_title.clone(),
+            app_name: "synthetic-test.exe".into(),
+            bounds: observation.source_rect,
+            is_foreground: true,
+            is_minimized: false,
+            is_on_screen: true,
+            z_index: None,
+        });
+        self.observation = Some(observation);
+        self.upstream_session_state = UpstreamSessionState::Active;
+        self.last_upstream_session_refresh = Some(Instant::now());
+        self.active = true;
+        self.synthetic_test_session = true;
     }
 
     async fn finish_started_session(

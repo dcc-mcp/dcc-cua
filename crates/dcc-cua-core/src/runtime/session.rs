@@ -96,6 +96,8 @@ impl ComputerUseSession {
             active: false,
             escalated: false,
             uia_timeout_escalated: false,
+            #[cfg(feature = "test-support")]
+            synthetic_test_session: false,
         })
     }
 
@@ -995,6 +997,10 @@ impl ComputerUseSession {
     }
 
     fn ensure_observed_target_available(&mut self, target: &WindowTarget) -> ComputerUseResult<()> {
+        #[cfg(feature = "test-support")]
+        if self.synthetic_test_session {
+            return Ok(());
+        }
         let result = ensure_target_available_for_action(target);
         self.finish_observation_sensitive_attempt(result)
     }
@@ -1122,6 +1128,10 @@ impl ComputerUseSession {
     }
 
     pub(super) fn require_observed_input_available(&mut self) -> ComputerUseResult<()> {
+        #[cfg(feature = "test-support")]
+        if self.synthetic_test_session {
+            return Ok(());
+        }
         let result = interactive_desktop::require_input_available();
         self.finish_observed_input_gate(result)
     }
@@ -1132,6 +1142,10 @@ impl ComputerUseSession {
     }
 
     fn require_observed_exact_window_observation_available(&mut self) -> ComputerUseResult<()> {
+        #[cfg(feature = "test-support")]
+        if self.synthetic_test_session {
+            return Ok(());
+        }
         let result = interactive_desktop::require_exact_window_observation_available();
         self.finish_observed_input_gate(result)
     }
@@ -1867,6 +1881,15 @@ impl ComputerUseSession {
     }
 
     pub(super) async fn resolve_target(&self) -> ComputerUseResult<WindowTarget> {
+        #[cfg(feature = "test-support")]
+        if self.synthetic_test_session {
+            return self.target.clone().ok_or_else(|| {
+                ComputerUseError::new(
+                    ComputerUseErrorCode::MissingWindow,
+                    "synthetic test session target is missing",
+                )
+            });
+        }
         #[cfg(windows)]
         if self.scope.window_handle.is_some() {
             let target = crate::window_target::resolve_exact(&self.scope)?.ok_or_else(|| {

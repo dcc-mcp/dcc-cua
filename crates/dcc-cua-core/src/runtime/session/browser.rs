@@ -113,7 +113,11 @@ impl ComputerUseSession {
                 self.finish_typed_dispatch_result(&context, result).await
             }
         };
-        self.finish_observed_tool_attempt(&context, result)
+        let result = self.finish_observation_sensitive_attempt(result)?;
+        if name == "browser_navigate" && result.is_error {
+            return Ok(result);
+        }
+        self.finish_observed_tool_attempt(&context, Ok(result))
     }
 
     pub(super) fn finish_read_only_evidence_dispatch_result<T>(
