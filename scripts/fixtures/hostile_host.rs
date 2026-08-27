@@ -1,6 +1,17 @@
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 
 fn main() {
+    let mut request_length = [0_u8; 4];
+    let mut stdin = io::stdin().lock();
+    stdin
+        .read_exact(&mut request_length)
+        .expect("read request frame prefix");
+    let request_length = u32::from_be_bytes(request_length) as usize;
+    let mut request = vec![0_u8; request_length];
+    stdin
+        .read_exact(&mut request)
+        .expect("read complete request frame");
+
     eprintln!("CHILD_PRIVATE_DIAGNOSTIC_7e87d1 C:\\private\\credential.txt");
     io::stderr()
         .write_all(&vec![b'x'; 64 * 1024])
