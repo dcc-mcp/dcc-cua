@@ -144,6 +144,7 @@ jobs:
           set -euo pipefail
           git show "$EXPECTED_SOURCE_SHA:scripts/verify_ci_source_integrity.py" |
             python -B - --repository . --expected "$EXPECTED_SOURCE_SHA"
+      - run: python -m pip install --disable-pip-version-check --no-deps -r scripts/requirements-browser-store-readiness.txt
       - run: pwsh -NoProfile -File scripts/check-rust-layout.ps1
       - run: pwsh -NoProfile -File scripts/check-agent-skills.ps1
       - run: python -B scripts/test_write_install_manifest.py

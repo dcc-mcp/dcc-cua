@@ -11,6 +11,7 @@ import json
 import os
 import re
 import secrets
+import stat
 import sys
 import time
 import urllib.error
@@ -20,6 +21,11 @@ from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+try:
+    import yaml
+except ImportError:  # Fail closed at audit time with a stable public reason.
+    yaml = None
 
 
 EXPECTED_CONFIGURATION_NAMES = (
@@ -52,22 +58,29 @@ ITEM_ID_CONFIGURATION = {
     "chrome": "CHROME_WEBSTORE_EXTENSION_ID",
     "edge": "EDGE_ADDONS_PRODUCT_ID",
 }
-KNOWN_ITEM_STATES = {
-    "published",
-    "pending_review",
-    "staged",
-    "published_to_testers",
-    "in_review",
-    "in_store",
-    "approved",
-    "public",
-    "unlisted",
-    "listed",
+PROVIDER_ITEM_STATE_CLASSIFICATIONS = {
+    "chrome": {
+        "published": True,
+        "pending_review": False,
+        "staged": False,
+    },
+    "edge": {
+        "in_store": True,
+        "in_review": False,
+        "approved": False,
+    },
+    "firefox": {
+        "public": True,
+        "unlisted": True,
+    },
 }
 SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 DIGEST_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
-REMOTE_ACTION_PATTERN = re.compile(r"^\s*(?:-\s*)?uses:\s*([^\s#]+)", re.MULTILINE)
-PINNED_ACTION_PATTERN = re.compile(r"^[^@\s]+@[0-9a-f]{40}$")
+ACTION_PATH_SEGMENT_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+$")
+PINNED_REMOTE_ACTION_PATTERN = re.compile(r"^([^@\s]+)@([0-9a-f]{40})$")
+PINNED_DOCKER_ACTION_PATTERN = re.compile(
+    r"^docker://[^@\s]+@sha256:[0-9a-f]{64}$"
+)
 PUBLIC_VERSION_PATTERN = re.compile(
     r"^(?:0|[1-9][0-9]*)(?:\.(?:0|[1-9][0-9]*)){2,3}$"
 )
@@ -92,6 +105,10 @@ FIREFOX_ADDON_ID = "dcc-cua@dcc-mcp.org"
 MAX_EXTERNAL_ID = (1 << 63) - 1
 CI_POLICY_JOB = "policy"
 CI_RECEIPT_COMMAND = "python -B -m unittest scripts.test_browser_store_readiness"
+CI_YAML_INSTALL_COMMAND = (
+    "python -m pip install --disable-pip-version-check --no-deps "
+    "-r scripts/requirements-browser-store-readiness.txt"
+)
 EXPECTED_CI_TOP_LEVEL_KEYS = ("name", "on", "permissions", "concurrency", "jobs")
 EXPECTED_CI_TRIGGER = (
     "  push:",
@@ -109,21 +126,37 @@ EXPECTED_POLICY_JOB_FIELDS = {
     "timeout-minutes": "10",
     "steps": "",
 }
-EXPECTED_POLICY_EXECUTION_SEQUENCE = (
-    ("uses", "actions/checkout@v7"),
-    ("uses", "dtolnay/rust-toolchain@stable"),
-    ("uses", "taiki-e/install-action@v2"),
-    ("run", "pwsh -NoProfile -File scripts/check-rust-layout.ps1"),
-    ("run", "pwsh -NoProfile -File scripts/check-agent-skills.ps1"),
-    ("run", "python -B scripts/test_write_install_manifest.py"),
-    ("run", "python -B -m unittest scripts.test_verify_release_assets"),
-    ("run", "python -B -m unittest scripts.test_release_integrity"),
-    ("run", "python -B -m unittest scripts.test_release_workflow"),
-    ("run", "python -B -m unittest scripts.test_refresh_release_please_prs"),
-    ("run", CI_RECEIPT_COMMAND),
-    ("run", "|"),
-    ("run", "cargo fmt --all -- --check"),
+EXPECTED_HAKARI_COMMAND = (
+    "cargo hakari generate --diff\n"
+    "cargo hakari manage-deps --dry-run\n"
 )
+EXPECTED_POLICY_STEPS = (
+    {"uses": "actions/checkout@v7"},
+    {
+        "uses": "dtolnay/rust-toolchain@stable",
+        "with": {"toolchain": "1.95.0", "components": "rustfmt"},
+    },
+    {"uses": "taiki-e/install-action@v2", "with": {"tool": "cargo-hakari"}},
+    {"run": CI_YAML_INSTALL_COMMAND},
+    {"run": "pwsh -NoProfile -File scripts/check-rust-layout.ps1"},
+    {"run": "pwsh -NoProfile -File scripts/check-agent-skills.ps1"},
+    {"run": "python -B scripts/test_write_install_manifest.py"},
+    {"run": "python -B -m unittest scripts.test_verify_release_assets"},
+    {"run": "python -B -m unittest scripts.test_release_integrity"},
+    {"run": "python -B -m unittest scripts.test_release_workflow"},
+    {"run": "python -B -m unittest scripts.test_refresh_release_please_prs"},
+    {"run": CI_RECEIPT_COMMAND},
+    {"run": EXPECTED_HAKARI_COMMAND},
+    {"run": "cargo fmt --all -- --check"},
+)
+EXPECTED_POLICY_ACTION_INPUTS = {
+    "actions/checkout@v7": {},
+    "dtolnay/rust-toolchain@stable": {
+        "toolchain": "1.95.0",
+        "components": "rustfmt",
+    },
+    "taiki-e/install-action@v2": {"tool": "cargo-hakari"},
+}
 
 
 class ReadinessError(RuntimeError):
@@ -386,12 +419,20 @@ def _platform_receipt(
         and PUBLIC_VERSION_PATTERN.fullmatch(raw_version) is not None
         and raw_version == expected_version
     )
+    classifications = PROVIDER_ITEM_STATE_CLASSIFICATIONS[platform]
     raw_state = observation.get("state")
-    state = raw_state if isinstance(raw_state, str) and raw_state in KNOWN_ITEM_STATES else None
+    state = (
+        raw_state
+        if isinstance(raw_state, str) and raw_state in classifications
+        else None
+    )
     result["version"] = expected_version if version_matches else None
-    result["item_state"] = state if state in KNOWN_ITEM_STATES else None
-    if state not in KNOWN_ITEM_STATES:
+    result["item_state"] = state
+    if state is None:
         result["reason"] = "unknown_item_state"
+        return result
+    if classifications[state] is not True:
+        result["reason"] = "item_state_not_ready"
         return result
     if not version_matches:
         result["reason"] = "version_mismatch"
@@ -466,14 +507,188 @@ def serialize_receipt(receipt: Mapping[str, Any]) -> str:
 def audit_action_pins(paths: Sequence[Path]) -> dict[str, object]:
     unpinned: list[str] = []
     for path in paths:
-        text = path.read_text(encoding="utf-8")
-        for match in REMOTE_ACTION_PATTERN.finditer(text):
-            action = match.group(1)
-            if action.startswith("./"):
-                continue
-            if PINNED_ACTION_PATTERN.fullmatch(action) is None:
+        try:
+            repository_root = _workflow_repository_root(path)
+            workflow = _load_workflow_yaml(path.read_text(encoding="utf-8"))
+            actions = _workflow_uses(workflow)
+        except (OSError, UnicodeError, ValueError):
+            unpinned.append(f"{path.name}:invalid_workflow_yaml")
+            continue
+        for action in actions:
+            if not _immutable_action_reference(
+                action, repository_root=repository_root
+            ):
                 unpinned.append(f"{path.name}:{action}")
     return {"valid": not unpinned, "unpinned": sorted(unpinned)}
+
+
+def _load_workflow_yaml(text: str) -> Mapping[str, Any]:
+    if yaml is None:
+        raise ValueError("YAML parser unavailable")
+
+    try:
+        for event in yaml.parse(text, Loader=yaml.BaseLoader):
+            if (
+                isinstance(event, yaml.events.AliasEvent)
+                or getattr(event, "anchor", None) is not None
+            ):
+                raise ValueError("YAML aliases and anchors are not allowed")
+
+        class UniqueKeyLoader(yaml.BaseLoader):
+            def construct_mapping(self, node: Any, deep: bool = False) -> dict[str, Any]:
+                if not isinstance(node, yaml.MappingNode):
+                    raise ValueError("mapping required")
+                mapping: dict[str, Any] = {}
+                for key_node, value_node in node.value:
+                    key = self.construct_object(key_node, deep=deep)
+                    if not isinstance(key, str) or key == "<<" or key in mapping:
+                        raise ValueError("unique string mapping keys required")
+                    mapping[key] = self.construct_object(value_node, deep=deep)
+                return mapping
+
+        value = yaml.load(text, Loader=UniqueKeyLoader)
+    except (yaml.YAMLError, ValueError) as error:
+        raise ValueError("invalid workflow YAML") from error
+    if not isinstance(value, Mapping):
+        raise ValueError("workflow root must be a mapping")
+    return value
+
+
+def _workflow_uses(workflow: Mapping[str, Any]) -> list[str]:
+    jobs = workflow.get("jobs")
+    if not isinstance(jobs, Mapping) or not jobs:
+        raise ValueError("workflow jobs must be a non-empty mapping")
+    actions: list[str] = []
+    for job in jobs.values():
+        if not isinstance(job, Mapping):
+            raise ValueError("workflow job must be a mapping")
+        has_uses = "uses" in job
+        has_steps = "steps" in job
+        if has_uses == has_steps:
+            raise ValueError("workflow job must have exactly one execution mode")
+        if has_uses:
+            action = job["uses"]
+            if not isinstance(action, str) or not action:
+                raise ValueError("job uses must be a non-empty scalar")
+            actions.append(action)
+            continue
+        steps = job["steps"]
+        if not isinstance(steps, list) or not steps:
+            raise ValueError("workflow steps must be a non-empty sequence")
+        for step in steps:
+            if not isinstance(step, Mapping):
+                raise ValueError("workflow step must be a mapping")
+            has_uses = "uses" in step
+            has_run = "run" in step
+            if has_uses == has_run:
+                raise ValueError("workflow step must have exactly one execution mode")
+            if not has_uses:
+                continue
+            action = step["uses"]
+            if not isinstance(action, str) or not action:
+                raise ValueError("step uses must be a non-empty scalar")
+            actions.append(action)
+    return actions
+
+
+def _workflow_repository_root(workflow_path: Path) -> Path:
+    path = Path(os.path.abspath(workflow_path))
+    if path.parent.name != "workflows" or path.parent.parent.name != ".github":
+        raise ValueError("workflow is outside the repository workflow directory")
+    return path.parent.parent.parent
+
+
+def _path_identity(path: Path) -> tuple[int, int, int, int]:
+    value = os.lstat(path)
+    attributes = int(getattr(value, "st_file_attributes", 0))
+    reparse_flag = int(getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
+    if stat.S_ISLNK(value.st_mode) or attributes & reparse_flag:
+        raise ValueError("linked or reparse paths are not repository-owned")
+    return (int(value.st_dev), int(value.st_ino), int(value.st_mode), attributes)
+
+
+def _optional_path_identity(path: Path) -> tuple[int, int, int, int] | None:
+    try:
+        return _path_identity(path)
+    except FileNotFoundError:
+        return None
+
+
+def _canonical_path_is_within(root: Path, candidate: Path) -> bool:
+    root_value = os.path.normcase(os.path.abspath(root))
+    candidate_value = os.path.normcase(os.path.abspath(candidate))
+    try:
+        return os.path.commonpath((root_value, candidate_value)) == root_value
+    except ValueError:
+        return False
+
+
+def _local_action_is_repository_owned(repository_root: Path, relative: str) -> bool:
+    if not _repository_action_path_is_bounded(relative, minimum_segments=1):
+        return False
+    components = [repository_root]
+    for segment in relative.split("/"):
+        components.append(components[-1] / segment)
+    metadata_candidates = (
+        components[-1] / "action.yml",
+        components[-1] / "action.yaml",
+    )
+    try:
+        before: dict[Path, tuple[int, int, int, int] | None] = {
+            path: _path_identity(path) for path in components
+        }
+        before.update(
+            {path: _optional_path_identity(path) for path in metadata_candidates}
+        )
+        existing_metadata = [
+            path for path in metadata_candidates if before[path] is not None
+        ]
+        if len(existing_metadata) != 1:
+            return False
+        metadata = existing_metadata[0]
+        action_identity = before[components[-1]]
+        metadata_identity = before[metadata]
+        if (
+            action_identity is None
+            or metadata_identity is None
+            or not stat.S_ISDIR(action_identity[2])
+            or not stat.S_ISREG(metadata_identity[2])
+        ):
+            return False
+        resolved_root = repository_root.resolve(strict=True)
+        if resolved_root != repository_root or not _canonical_path_is_within(
+            resolved_root, components[-1].resolve(strict=True)
+        ) or not _canonical_path_is_within(
+            resolved_root, metadata.resolve(strict=True)
+        ):
+            return False
+        after = {path: _optional_path_identity(path) for path in before}
+        if before != after:
+            return False
+    except (OSError, RuntimeError, ValueError):
+        return False
+    return True
+
+
+def _immutable_action_reference(action: str, *, repository_root: Path) -> bool:
+    if PINNED_DOCKER_ACTION_PATTERN.fullmatch(action) is not None:
+        return True
+    if action.startswith("./"):
+        return _local_action_is_repository_owned(repository_root, action[2:])
+    match = PINNED_REMOTE_ACTION_PATTERN.fullmatch(action)
+    return bool(
+        match
+        and _repository_action_path_is_bounded(match.group(1), minimum_segments=2)
+    )
+
+
+def _repository_action_path_is_bounded(path: str, *, minimum_segments: int) -> bool:
+    segments = path.split("/")
+    return len(segments) >= minimum_segments and all(
+        segment not in {"", ".", ".."}
+        and ACTION_PATH_SEGMENT_PATTERN.fullmatch(segment) is not None
+        for segment in segments
+    )
 
 
 def audit_ci_contract(
@@ -482,6 +697,18 @@ def audit_ci_contract(
     """Validate the PR CI receipt step without claiming branch enforcement."""
     lines = workflow.splitlines()
     reasons: list[str] = []
+    parsed_policy_steps: object = None
+    try:
+        parsed_workflow = _load_workflow_yaml(workflow)
+        parsed_jobs = parsed_workflow.get("jobs")
+        if isinstance(parsed_jobs, Mapping):
+            parsed_policy = parsed_jobs.get(CI_POLICY_JOB)
+            if isinstance(parsed_policy, Mapping):
+                parsed_policy_steps = parsed_policy.get("steps")
+    except ValueError:
+        reasons.append("workflow_yaml_invalid")
+    if parsed_policy_steps != list(EXPECTED_POLICY_STEPS):
+        reasons.append("ci_policy_steps_mapping_not_closed")
 
     def result() -> dict[str, object]:
         return {
@@ -591,8 +818,8 @@ def audit_ci_contract(
     if job_fields.get("timeout-minutes") != "10":
         reasons.append("ci_policy_job_timeout_invalid")
 
-    steps: list[dict[str, str]] = []
-    current: dict[str, str] | None = None
+    steps: list[dict[str, object]] = []
+    current: dict[str, object] | None = None
     steps_start = job_field_lines.get("steps", job_end)
     for index in range(steps_start + 1, job_end):
         line = lines[index]
@@ -606,17 +833,28 @@ def audit_ci_contract(
                 current[start.group(1)] = (start.group(2) or "").strip()
             continue
         field = re.fullmatch(r"        ([A-Za-z0-9_-]+):(?:\s*(.*))?", line)
+        nested = re.fullmatch(r"          ([A-Za-z0-9_-]+):(?:\s*(.*))?", line)
         if field and current is not None:
             key, value = field.group(1), (field.group(2) or "").strip()
             if key in current:
                 reasons.append("ci_step_duplicate_field")
-            current[key] = value
+            current[key] = {} if key == "with" and value == "" else value
+        elif nested and current is not None and isinstance(current.get("with"), dict):
+            key, value = nested.group(1), (nested.group(2) or "").strip()
+            action_inputs = current["with"]
+            if key in action_inputs:
+                reasons.append("ci_step_duplicate_input")
+            action_inputs[key] = value
         else:
             indentation = len(line) - len(line.lstrip(" "))
             if indentation == 6:
                 reasons.append("ci_steps_structure_invalid")
             elif indentation == 8:
                 reasons.append("ci_step_structure_invalid")
+            elif indentation >= 10 and not (
+                current is not None and current.get("run") == "|"
+            ):
+                reasons.append("ci_step_nested_structure_invalid")
     candidates = [step for step in steps if step.get("run") == CI_RECEIPT_COMMAND]
     if len(candidates) != 1:
         reasons.append("ci_receipt_step_missing")
@@ -624,19 +862,24 @@ def audit_ci_contract(
         candidate = candidates[0]
         if set(candidate) != {"run"}:
             reasons.append("ci_receipt_step_mapping_not_closed")
-    execution_sequence: list[tuple[str, str]] = []
     for step in steps:
         execution_keys = [key for key in ("uses", "run") if key in step]
         if len(execution_keys) != 1:
             reasons.append("ci_step_execution_ambiguous")
             continue
         key = execution_keys[0]
-        execution_sequence.append((key, step[key]))
+        value = step[key]
+        if not isinstance(value, str):
+            reasons.append("ci_step_execution_ambiguous")
+            continue
         allowed_fields = {"uses", "with"} if key == "uses" else {"run"}
         if set(step) - allowed_fields:
             reasons.append("ci_step_execution_modifier_not_allowed")
-    if tuple(execution_sequence) != EXPECTED_POLICY_EXECUTION_SEQUENCE:
-        reasons.append("ci_policy_step_order_invalid")
+        if key == "uses":
+            expected_inputs = EXPECTED_POLICY_ACTION_INPUTS.get(value)
+            actual_inputs = step.get("with", {})
+            if expected_inputs is None or actual_inputs != expected_inputs:
+                reasons.append("ci_action_inputs_invalid")
     return result()
 
 
