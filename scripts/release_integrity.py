@@ -9,6 +9,7 @@ import json
 import re
 import shutil
 import stat
+import tarfile
 import tempfile
 import zipfile
 from pathlib import Path, PurePosixPath
@@ -42,6 +43,11 @@ _SIGNING_FACT = {"status": "not_performed", "verification": "sha256_only"}
 _RELEASE_COMPONENTS = (
     (".", "v"),
     ("browser-extension/chrome", "dcc-cua-browser-extension-v"),
+)
+_NATIVE_DOCUMENTATION_MEMBERS = (
+    "README.md",
+    "README.zh-CN.md",
+    "skills/cua-cli/SKILL.md",
 )
 
 
@@ -349,6 +355,57 @@ def verify_extension_asset_set(directory: Path, version: str) -> None:
         raise ValueError("browser extension asset set contains an invalid ZIP") from exc
 
 
+def verify_native_archive_documentation(archive_path: Path, source: Path) -> None:
+    """Verify shipped native documentation members exactly match reviewed sources."""
+    expected = {
+        name: (source / Path(name)).read_bytes()
+        for name in _NATIVE_DOCUMENTATION_MEMBERS
+    }
+    actual: dict[str, bytes] = {}
+    try:
+        if archive_path.name.endswith(".zip"):
+            with zipfile.ZipFile(archive_path) as archive:
+                for member in _validated_zip_members(
+                    archive, f"native release archive {archive_path.name}"
+                ):
+                    name = PurePosixPath(member.filename).as_posix().removeprefix("./")
+                    if name not in expected:
+                        continue
+                    if member.is_dir() or name in actual:
+                        raise ValueError(
+                            "native release documentation members are invalid"
+                        )
+                    with archive.open(member) as stream:
+                        actual[name] = stream.read(len(expected[name]) + 1)
+        elif archive_path.name.endswith(".tar.gz"):
+            with tarfile.open(archive_path, "r:gz") as archive:
+                for member in archive.getmembers():
+                    name = PurePosixPath(member.name).as_posix().removeprefix("./")
+                    if name not in expected:
+                        continue
+                    if not member.isfile() or name in actual:
+                        raise ValueError(
+                            "native release documentation members are invalid"
+                        )
+                    stream = archive.extractfile(member)
+                    if stream is None:
+                        raise ValueError(
+                            "native release documentation members are invalid"
+                        )
+                    with stream:
+                        actual[name] = stream.read(len(expected[name]) + 1)
+        else:
+            raise ValueError("native release archive format is unsupported")
+    except ValueError:
+        raise
+    except (OSError, RuntimeError, tarfile.TarError, zipfile.BadZipFile) as exc:
+        raise ValueError("native release archive is invalid") from exc
+    if set(actual) != set(expected):
+        raise ValueError("native release documentation members are missing")
+    if actual != expected:
+        raise ValueError("native release documentation content does not match source")
+
+
 def _verify_published_assets(
     metadata: object,
     directory: Path,
@@ -589,6 +646,10 @@ def main() -> None:
     extension_assets.add_argument("--directory", type=Path, required=True)
     extension_assets.add_argument("--version", required=True)
 
+    native_docs = subparsers.add_parser("verify-native-docs")
+    native_docs.add_argument("--archive", type=Path, required=True)
+    native_docs.add_argument("--source", type=Path, required=True)
+
     native_plan = subparsers.add_parser("write-native-plan")
     native_plan.add_argument("--metadata", type=Path, required=True)
     native_plan.add_argument("--expected-run-id", type=int, required=True)
@@ -656,6 +717,8 @@ def main() -> None:
         verify_and_extract_artifact(args.archive, args.expected_digest, args.output)
     elif args.command == "verify-extension-assets":
         verify_extension_asset_set(args.directory, args.version)
+    elif args.command == "verify-native-docs":
+        verify_native_archive_documentation(args.archive, args.source)
     elif args.command == "write-native-plan":
         facts = native_build_artifact_facts(
             _load_json(args.metadata),

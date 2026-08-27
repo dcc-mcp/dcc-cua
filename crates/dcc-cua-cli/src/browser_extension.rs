@@ -61,7 +61,7 @@ pub(crate) fn execute_management(flags: &[String]) -> Result<(), Box<dyn std::er
     match subcommand {
         "install-native-host" => {
             let manifest_path = install_native_host(browser, &extension_id)?;
-            println!(
+            stdoutln!(
                 "{}",
                 serde_json::to_string_pretty(&json!({
                     "type": "browser_extension_native_host_installed",
@@ -74,7 +74,7 @@ pub(crate) fn execute_management(flags: &[String]) -> Result<(), Box<dyn std::er
             );
         }
         "status" => {
-            println!(
+            stdoutln!(
                 "{}",
                 serde_json::to_string_pretty(&native_host_status(browser, &extension_id)?)?
             );
@@ -106,7 +106,7 @@ pub(crate) fn execute_management(flags: &[String]) -> Result<(), Box<dyn std::er
                     "human_action_required": "ordinary users must install the signed browser-store extension; silent sideload is not permitted",
                 })
             };
-            println!(
+            stdoutln!(
                 "{}",
                 serde_json::to_string_pretty(&json!({
                     "type": "browser_provider_plan",

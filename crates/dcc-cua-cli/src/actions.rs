@@ -14,7 +14,7 @@ pub(super) async fn activate_window(
     let stop_result = session.stop().await;
     let activation = result?;
     stop_result?;
-    println!("{}", serde_json::to_string_pretty(&activation)?);
+    stdoutln!("{}", serde_json::to_string_pretty(&activation)?);
     Ok(())
 }
 
@@ -33,7 +33,7 @@ pub(super) async fn restore_activate_window(
     let stop_result = session.stop().await;
     let recovery = result?;
     stop_result?;
-    println!("{}", serde_json::to_string_pretty(&recovery)?);
+    stdoutln!("{}", serde_json::to_string_pretty(&recovery)?);
     Ok(())
 }
 
@@ -61,7 +61,7 @@ pub(super) async fn set_window_frame(
     let stop_result = session.stop().await;
     let result = result?;
     stop_result?;
-    println!("{}", serde_json::to_string_pretty(&result)?);
+    stdoutln!("{}", serde_json::to_string_pretty(&result)?);
     Ok(())
 }
 
@@ -97,7 +97,7 @@ pub(super) async fn invoke_menu(
     let stop_result = session.stop().await;
     let result = result?;
     stop_result?;
-    println!("{}", serde_json::to_string_pretty(&result)?);
+    stdoutln!("{}", serde_json::to_string_pretty(&result)?);
     Ok(())
 }
 
@@ -151,7 +151,7 @@ pub(super) async fn zoom(
         value["_dcc_cua_image_output"] = json!(path);
     }
     value["observation"] = serde_json::to_value(observation)?;
-    println!("{}", serde_json::to_string_pretty(&value)?);
+    stdoutln!("{}", serde_json::to_string_pretty(&value)?);
     Ok(())
 }
 
@@ -273,7 +273,7 @@ async fn execute_action(
     let stop_result = session.stop().await;
     let (activation, observation, action_result, post_snapshot) = result?;
     stop_result?;
-    println!(
+    stdoutln!(
         "{}",
         serde_json::to_string_pretty(&json!({
             "success": true,
@@ -649,7 +649,7 @@ pub(super) async fn verify_state(
     let stop_result = session.stop().await;
     let result = verification?.value;
     stop_result?;
-    println!("{}", serde_json::to_string_pretty(&result)?);
+    stdoutln!("{}", serde_json::to_string_pretty(&result)?);
     Ok(())
 }
 
@@ -675,7 +675,7 @@ pub(super) async fn desktop_act(
     let (snapshot, action_result, post_snapshot) = result?;
     stop_result?;
     let post_snapshot = desktop_post_snapshot_value(post_snapshot, flag_value(flags, "--output"));
-    println!(
+    stdoutln!(
         "{}",
         serde_json::to_string_pretty(&json!({
             "success": true,

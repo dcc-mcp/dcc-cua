@@ -26,8 +26,11 @@ fn typed_one_shot_failures_keep_only_allowlisted_identity() {
 
 #[rstest]
 fn panic_boundary_returns_a_fixed_safe_machine_envelope() {
-    let line = run_command_boundary(|| panic!("private panic payload"))
+    let failure = run_command_boundary(|| panic!("private panic payload"))
         .expect_err("panic should fail closed");
+    let CommandFailure::Panic(line) = failure else {
+        panic!("panic should retain its terminal failure category");
+    };
     let value: serde_json::Value = serde_json::from_str(&line).expect("valid JSON error line");
 
     assert_eq!(value["success"], false);
@@ -37,9 +40,12 @@ fn panic_boundary_returns_a_fixed_safe_machine_envelope() {
 
 #[rstest]
 fn generic_error_boundary_does_not_publish_private_error_text() {
-    let line =
+    let failure =
         run_command_boundary(|| Err(std::io::Error::other("REVIEW_PRIVATE_ERROR_74c291").into()))
             .expect_err("ordinary error should fail closed");
+    let CommandFailure::Command(line) = failure else {
+        panic!("ordinary errors should retain their terminal failure category");
+    };
     let value: serde_json::Value = serde_json::from_str(&line).expect("valid JSON error line");
 
     assert_eq!(value["error"]["code"], "command_failed");

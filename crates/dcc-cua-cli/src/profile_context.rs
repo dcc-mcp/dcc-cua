@@ -22,7 +22,7 @@ pub(crate) fn execute(flags: &[String]) -> Result<(), Box<dyn std::error::Error>
         selectors,
         knowledge_root: Some(knowledge_root),
     })?;
-    println!("{}", serde_json::to_string_pretty(&context)?);
+    stdoutln!("{}", serde_json::to_string_pretty(&context)?);
     Ok(())
 }
 

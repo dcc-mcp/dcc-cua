@@ -166,6 +166,9 @@ dcc-cua interrupt-all
 dcc-cua update --check
 ```
 
+所有命令都不会自动输出动态更新提示，确保机器可读结果在任意 TTY 与重定向组合下都不受
+stderr 状态文本污染。需要检查并安装完整发布包时，请显式执行 `dcc-cua update`。
+
 `snapshot`、`act`、`verify`、`clipboard-read` 和 `clipboard-write` 接受同一组
 `--app`、`--pid`、`--window-id`、`--title` 窗口选择器。多个选择器按 AND 同时校验；
 重复冲突、缺失或为零的原生身份、零匹配、多匹配，以及 PID/HWND/title 漂移都会在
@@ -183,6 +186,14 @@ dcc-cua update --check
 `element_index`，自绘界面才使用坐标。窗口像素动作使用最新精确窗口截图内的非负局部
 坐标；UIA 元素 `bounds` 标记为 `virtual_desktop`，桌面动作则使用可为负数的虚拟桌面
 绝对坐标，因此无需为了操作左侧或上方显示器而移动用户窗口。
+
+单次 CLI 命令会把正常的结构化成功或错误信封写入 stdout。命令错误保留非零退出码，
+并且只输出一个 JSON 信封，因此 stdout 管道、重定向和命令替换无需合并 stderr 即可
+解析失败。stderr 仅用于固定且安全的进程诊断，例如内部 panic 或 stdout 管道不可用；
+它不会重复输出命令信封。公开错误码只来自有界的本地类别，消息文本固定；原始命令或
+选项文本、错误字符串、路径、参数、token 和远端 payload 都不会复制到单次命令信封。
+长时间运行的 `host-jsonl`、Native Messaging 和 MCP 命令继续使用各自协议规定的 stdout
+帧格式。
 
 `doctor` 默认继续执行严格的完整健康检查。对于 Houdini、Unreal 等自绘 DCC 界面，
 可用 `doctor --route visual` 单独验收精确窗口枚举、WGC 截图和受限坐标输入；输出仍会

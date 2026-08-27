@@ -263,7 +263,7 @@ const RUN_STATEMENT_DIGESTS: Record<string, string> = {
   "build|Download exact native artifact by ID": "79dbc3bff6bd9bdc05cb84145af809f49373898cd92ac375504596c735b2d97b",
   "build|Verify downloaded immutable native artifact": "e9d378c66d4f3241118c5c5a2b4d6bbf49bd86befa724e65c4142291c8ce0805",
   "consolidate-native|Verify native build artifact set": "a22a2661b450fdd465e1cc5c05d91c7ea15069dab4d8d72f24d442280a3dd672",
-  "consolidate-native|Download and verify native build artifacts": "a514a42fa4ee425b4e6f715caa2cfc449db4f7421d1ef50b291f04184454fc9a",
+  "consolidate-native|Download and verify native build artifacts": "99f40f70e30563eb79ab259b162fab2716e5010be8d2eecfdeb77f292ccd38f1",
   "consolidate-native|Write immutable native release provenance": "fc8e085354a828c16431d7024a44127cb1c8890820e9b2ab61b98a40d249f1fc",
   "attach-assets|Verify immutable native artifact identity": "bc366f560c9a500468596b8d200ee5d2fd4fac7e957cb5aa2b29201a61099c6b",
   "attach-assets|Download and extract verified native artifact": "85f5327c24ec687979179e3c09b0b37070b07146ceea1c4fbc9f8fcbb5a118f4",

@@ -263,6 +263,22 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertIn("fixtures\\hostile_host.rs", script)
         self.assertIn("CHILD_PRIVATE_DIAGNOSTIC_7e87d1", script)
         self.assertIn('"host-call", "--spawn", $hostileHost', script)
+        self.assertIn("StandardOutput.BaseStream.Dispose()", script)
+        self.assertIn(
+            "closed stdout did not emit exactly one fixed safe diagnostic", script
+        )
+
+    def test_final_native_archives_execute_documentation_parity_gate(self):
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+
+        for document in ("README.md", "README.zh-CN.md"):
+            self.assertIn(f"cp {document} target/release/{document}", workflow)
+            self.assertIn(document, workflow)
+        self.assertGreaterEqual(
+            workflow.count("release_integrity.py verify-native-docs"), 2
+        )
+        self.assertIn('--archive "$archive" --source .', workflow)
+        self.assertIn('--archive "$native_archive" --source .', workflow)
 
     def test_release_matrix_builds_every_supported_native_target(self):
         workflow = WORKFLOW.read_text(encoding="utf-8")

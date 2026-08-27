@@ -222,7 +222,7 @@ pub(crate) async fn execute(flags: &[String]) -> Result<(), Box<dyn std::error::
     }
     match observe_source(source, flag_value(flags, "--etag").as_deref()).await {
         Ok(observation) => {
-            println!(
+            stdoutln!(
                 "{}",
                 serde_json::to_string_pretty(&serde_json::json!({
                     "success": true,
@@ -233,7 +233,7 @@ pub(crate) async fn execute(flags: &[String]) -> Result<(), Box<dyn std::error::
             Ok(())
         }
         Err(error) if source.optional => {
-            println!(
+            stdoutln!(
                 "{}",
                 serde_json::to_string_pretty(&serde_json::json!({
                     "success": false,
@@ -275,7 +275,7 @@ async fn watch_source(
     loop {
         match watcher.poll().await {
             Ok(StateRead::Changed(observation)) => {
-                println!(
+                stdoutln!(
                     "{}",
                     serde_json::to_string(&serde_json::json!({
                         "success": true,
@@ -293,7 +293,7 @@ async fn watch_source(
             Err(error) if source.optional => {
                 let error = error.to_string();
                 if last_degraded_error.as_deref() != Some(error.as_str()) {
-                    println!(
+                    stdoutln!(
                         "{}",
                         serde_json::to_string(&serde_json::json!({
                             "success": false,

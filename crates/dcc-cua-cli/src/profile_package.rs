@@ -29,14 +29,14 @@ pub(crate) fn execute(flags: &[String]) -> Result<(), Box<dyn std::error::Error>
         "validate" => {
             let mut package = validate_package(Path::new(target))?;
             package.profile = store.resolve(package.profile.clone())?;
-            println!(
+            stdoutln!(
                 "{}",
                 serde_json::to_string_pretty(&package_summary(&package, "validated"))?
             );
         }
         "install" => {
             let package = store.install(Path::new(target), has_flag(flags, "--replace"))?;
-            println!(
+            stdoutln!(
                 "{}",
                 serde_json::to_string_pretty(&package_summary(&package, "installed"))?
             );
@@ -46,7 +46,7 @@ pub(crate) fn execute(flags: &[String]) -> Result<(), Box<dyn std::error::Error>
                 return Err("profile uninstall requires --confirm".into());
             }
             let removed = store.uninstall(target)?;
-            println!(
+            stdoutln!(
                 "{}",
                 serde_json::to_string_pretty(&json!({
                     "id": target,
