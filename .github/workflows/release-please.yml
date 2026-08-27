@@ -247,6 +247,7 @@ jobs:
             archive="dist/dcc-cua-${version}-${host}.tar.gz"
             tar -czf "$archive" -C target/release dcc-cua LICENSE THIRD_PARTY_LICENSES.md README.md README.zh-CN.md assets skills plugins .claude-plugin .codex-plugin .mcp.json
           fi
+          python -B scripts/release_integrity.py verify-native-docs --archive "$archive" --source .
           asset_name="$(basename "$archive")"
           asset_url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG_NAME}/${asset_name}"
           manifest="dist/dcc-cua-install-manifest-${host}.json"
@@ -379,6 +380,10 @@ jobs:
             jq -r '.[] | [.id, .sha256] | @tsv' \
               "$RUNNER_TEMP/native-build-plan.json"
           )
+          for native_archive in dist/dcc-cua-*.zip dist/dcc-cua-*.tar.gz; do
+            [ -f "$native_archive" ] || continue
+            python -B scripts/release_integrity.py verify-native-docs --archive "$native_archive" --source .
+          done
       - name: Write immutable native release provenance
         env:
           SOURCE_SHA: ${{ needs.release-please.outputs.source_sha }}

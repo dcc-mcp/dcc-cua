@@ -27,7 +27,7 @@ pub fn run(flags: &[String]) -> UpdateResult<()> {
         .ok_or_else(|| format!("no complete {target} release bundle found"))?;
 
     if has_flag(flags, "--check") {
-        println!(
+        stdoutln!(
             "{}",
             serde_json::json!({
                 "current": current,
@@ -38,13 +38,13 @@ pub fn run(flags: &[String]) -> UpdateResult<()> {
         return Ok(());
     }
     if !self_update::version::bump_is_greater(current, &release.version)? {
-        println!("dcc-cua is already up to date at v{current}");
+        stdoutln!("dcc-cua is already up to date at v{current}");
         return Ok(());
     }
 
     confirm_update(current, &release.version)?;
     install_release(&std::env::current_exe()?, &asset, &checksum)?;
-    println!("dcc-cua updated to v{}", release.version);
+    stdoutln!("dcc-cua updated to v{}", release.version);
     Ok(())
 }
 
@@ -218,48 +218,6 @@ pub(crate) fn latest_release_assets<'a>(
         };
         Some((release, archive, checksum))
     })
-}
-
-pub(crate) fn parse_github_releases(body: &str) -> UpdateResult<Vec<Release>> {
-    let document: serde_json::Value = serde_json::from_str(body)?;
-    let entries = document
-        .as_array()
-        .ok_or("GitHub releases response is not an array")?;
-    let releases = entries
-        .iter()
-        .filter(|entry| {
-            !entry["draft"].as_bool().unwrap_or(true)
-                && !entry["prerelease"].as_bool().unwrap_or(true)
-        })
-        .filter_map(|entry| {
-            let tag = entry["tag_name"].as_str()?;
-            let version = tag.strip_prefix('v')?;
-            if !is_plausible_version(version) {
-                return None;
-            }
-            let assets = entry["assets"]
-                .as_array()?
-                .iter()
-                .filter_map(|asset| {
-                    Some(ReleaseAsset {
-                        name: asset["name"].as_str()?.to_owned(),
-                        download_url: asset["browser_download_url"].as_str()?.to_owned(),
-                    })
-                })
-                .collect();
-            Some(Release {
-                name: tag.to_owned(),
-                version: version.to_owned(),
-                date: entry["published_at"]
-                    .as_str()
-                    .unwrap_or_default()
-                    .to_owned(),
-                body: None,
-                assets,
-            })
-        })
-        .collect();
-    Ok(releases)
 }
 
 fn is_official_asset_reference(asset: &ReleaseAsset, version: &str) -> bool {

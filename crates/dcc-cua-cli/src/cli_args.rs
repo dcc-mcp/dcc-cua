@@ -213,8 +213,8 @@ pub(super) fn is_help_request(command: &str, flags: &[String]) -> bool {
         || has_flag(flags, "-h")
 }
 
-pub(super) fn print_help() {
-    println!(
+pub(super) fn print_help() -> std::io::Result<()> {
+    stdoutln!(
         r#"dcc-cua
 
   version | --version | -V
@@ -260,17 +260,18 @@ pub(super) fn print_help() {
 
 Host uses versioned big-endian JSON frames. Hello version 1 negotiates binary-frame or shared-memory snapshots and supports request_id correlation."#
     );
-    println!(
+    stdoutln!(
         "Profiles are built-in, installed from ~/.dcc-cua/profiles, or loaded explicitly from JSON; package installation copies declarative content only and never launches bundled code. Window snapshots/actions accept --escalate --escalation-reason REASON when an explicit desktop visual fallback approval is required; --activate keeps custom-rendered foreground capture and actions in one session."
     );
-    println!("{}", escalation_reason_help());
-    println!("Zoom: zoom --app APP --x1 N --y1 N --x2 N --y2 N [--output FILE].");
-    println!(
+    stdoutln!("{}", escalation_reason_help());
+    stdoutln!("Zoom: zoom --app APP --x1 N --y1 N --x2 N --y2 N [--output FILE].");
+    stdoutln!(
         "Friendly window actions accept --delivery-mode background|foreground. x/y and drag paths are non-negative coordinates in the latest exact-window screenshot (not UIA virtual-desktop bounds). When coordinates come from a previously returned resized PNG, pass --observation-width and --observation-height together so the fresh action observation preserves that visible coordinate space. Desktop actions use signed virtual-desktop coordinates. Actions: click [--x X --y Y|--element-index N|--element-token TOKEN] [--button left|middle|right --duration-ms N], double-click/right-click/toggle [--x X --y Y|--element-index N|--element-token TOKEN] [--button left|middle|right], drag --from-x X --from-y Y --to-x X --to-y Y [--button B --modifier M --duration-ms N --steps N], type [--text TEXT] [--focused|--x X --y Y|--element-index N], set-text/set-value, press [--key K] [--modifier M] [--x X --y Y|--element-index N], hotkey [--key K ...] [--x X --y Y], scroll [--scroll-x N|--scroll-y N] [--by line|page] [--x X --y Y|--element-index N], move."
     );
-    println!(
+    stdoutln!(
         "Semantic tree: accessibility --app APP [--max-elements N] [--max-depth N]. Window: window-state|activate|restore-activate|set-window-frame|invoke-menu. restore-activate requires an exact --pid/--window-id pair."
     );
+    Ok(())
 }
 
 pub(super) fn escalation_reason_help() -> String {

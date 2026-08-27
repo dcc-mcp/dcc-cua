@@ -350,12 +350,10 @@ falls back to the public `releases/latest` redirect when the API is rate limited
 (HTTP 403); set `GITHUB_TOKEN` or `GH_TOKEN` to raise the unauthenticated API
 quota of 60 requests per hour per IP address.
 
-In an interactive terminal, successful commands also perform a best-effort
-update check in parallel. Only releases with both the exact platform archive
-and its SHA-256 sidecar qualify for a reminder. The result is cached for 24
-hours under `~/.dcc-cua/cache`, failures are silent and retried after one hour,
-and protocol/CI commands are never interrupted. Set
-`DCC_CUA_NO_UPDATE_CHECK=1` to disable these reminders.
+Automatic update notices are not emitted by commands. This keeps successful
+machine-readable output free from dynamic stderr status text under every TTY
+and redirection combination. Use the explicit `dcc-cua update` command when
+you want to check for and install a complete release bundle.
 
 `manifest` is the stable machine-readable discovery entry for Core and other
 independent callers. It reports the current platform, Host protocol, frame

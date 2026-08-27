@@ -5,6 +5,12 @@ use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::{collections::BTreeMap, time::Instant};
 
+macro_rules! stdoutln {
+    ($($argument:tt)*) => {{
+        crate::write_stdout_line(format_args!($($argument)*))?
+    }};
+}
+
 mod actions;
 mod authorization;
 mod browser_extension;
@@ -23,7 +29,6 @@ mod semantic_profile;
 mod trusted_confirmation;
 mod trusted_embedding;
 mod update;
-mod update_check;
 
 use actions::{
     act, action_result_value, activate_window, desktop_act, friendly_action, invoke_menu,
@@ -68,20 +73,37 @@ enum TerminalErrorOutput {
     ProtocolNative,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum CommandFailure {
+    Command(String),
+    Panic(String),
+}
+
 fn main() {
     std::panic::set_hook(Box::new(|_| {
         let _ = writeln!(std::io::stderr().lock(), "{INTERNAL_FAILURE_DIAGNOSTIC}");
     }));
     let arguments = env::args_os().skip(1).collect::<Vec<_>>();
     let terminal_error_output = terminal_error_output(&arguments);
-    let error_line = match run_command_boundary(run_main) {
+    let failure = match run_command_boundary(run_main) {
         Ok(()) => return,
-        Err(error_line) => error_line,
+        Err(failure) => failure,
     };
-    if terminal_error_output == TerminalErrorOutput::OneShotEnvelope
-        && write_error_line(&mut std::io::stdout().lock(), &error_line).is_err()
-    {
-        let _ = writeln!(std::io::stderr().lock(), "{STDOUT_FAILURE_DIAGNOSTIC}");
+    match failure {
+        CommandFailure::Command(error_line) => {
+            if terminal_error_output == TerminalErrorOutput::OneShotEnvelope
+                && write_error_line(&mut std::io::stdout().lock(), &error_line).is_err()
+            {
+                let _ = writeln!(std::io::stderr().lock(), "{STDOUT_FAILURE_DIAGNOSTIC}");
+            }
+        }
+        CommandFailure::Panic(error_line) => {
+            if terminal_error_output == TerminalErrorOutput::OneShotEnvelope {
+                // The panic hook already owns the single fixed diagnostic. If stdout is
+                // unavailable too, do not emit a second diagnostic for the same failure.
+                let _ = write_error_line(&mut std::io::stdout().lock(), &error_line);
+            }
+        }
     }
     std::process::exit(1);
 }
@@ -110,14 +132,14 @@ fn terminal_error_output(arguments: &[OsString]) -> TerminalErrorOutput {
     }
 }
 
-fn run_command_boundary<F>(run: F) -> Result<(), String>
+fn run_command_boundary<F>(run: F) -> Result<(), CommandFailure>
 where
     F: FnOnce() -> Result<(), Box<dyn std::error::Error>>,
 {
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(run)) {
         Ok(Ok(())) => Ok(()),
-        Ok(Err(error)) => Err(fatal_error_line(error.as_ref())),
-        Err(_) => Err(internal_failure_line()),
+        Ok(Err(error)) => Err(CommandFailure::Command(fatal_error_line(error.as_ref()))),
+        Err(_) => Err(CommandFailure::Panic(internal_failure_line())),
     }
 }
 
@@ -148,6 +170,13 @@ fn write_error_line(writer: &mut dyn Write, line: &str) -> std::io::Result<()> {
     writer.write_all(line.as_bytes())?;
     writer.write_all(b"\n")?;
     writer.flush()
+}
+
+fn write_stdout_line(arguments: std::fmt::Arguments<'_>) -> std::io::Result<()> {
+    let mut stdout = std::io::stdout().lock();
+    stdout.write_fmt(arguments)?;
+    stdout.write_all(b"\n")?;
+    stdout.flush()
 }
 
 fn fatal_error_value(error: &(dyn std::error::Error + 'static)) -> serde_json::Value {
@@ -181,16 +210,7 @@ fn fatal_error_value(error: &(dyn std::error::Error + 'static)) -> serde_json::V
 #[tokio::main]
 async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
     let arguments = env::args().skip(1).collect::<Vec<_>>();
-    let update_check = update_check::start(&arguments);
-    let result = dispatch(arguments).await;
-    if let Some(handle) = update_check {
-        if result.is_ok() {
-            update_check::finish(handle).await;
-        } else {
-            handle.abort();
-        }
-    }
-    result
+    dispatch(arguments).await
 }
 
 async fn dispatch(arguments: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
@@ -202,12 +222,12 @@ async fn dispatch(arguments: Vec<String>) -> Result<(), Box<dyn std::error::Erro
     let command = args.next().unwrap_or_else(|| "help".into());
     let flags = args.collect::<Vec<_>>();
     if matches!(command.as_str(), "--version" | "-V" | "version") {
-        println!("dcc-cua {}", env!("CARGO_PKG_VERSION"));
+        stdoutln!("dcc-cua {}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
     reject_unknown_flags(&flags)?;
     if is_help_request(&command, &flags) {
-        print_help();
+        print_help()?;
         return Ok(());
     }
     if command == "__private-worker" {
@@ -250,7 +270,7 @@ async fn dispatch(arguments: Vec<String>) -> Result<(), Box<dyn std::error::Erro
         let endpoint =
             flag_value(&flags, "--endpoint").unwrap_or_else(HostTransport::default_endpoint);
         let response = host_lifecycle::ensure(endpoint, &flags).await?;
-        println!("{}", serde_json::to_string_pretty(&response)?);
+        stdoutln!("{}", serde_json::to_string_pretty(&response)?);
         return Ok(());
     }
     if command == "browser-extension" {
@@ -258,7 +278,7 @@ async fn dispatch(arguments: Vec<String>) -> Result<(), Box<dyn std::error::Erro
         return Ok(());
     }
     if command == "manifest" {
-        println!("{}", serde_json::to_string_pretty(&manifest::document())?);
+        stdoutln!("{}", serde_json::to_string_pretty(&manifest::document())?);
         return Ok(());
     }
     if command == "profiles" {
@@ -381,7 +401,7 @@ async fn list_windows(
         .list_windows_filtered(query.process_id, query.on_screen_only)
         .await?;
     windows.retain(|window| query.matches_window(window));
-    println!("{}", serde_json::to_string_pretty(&windows)?);
+    stdoutln!("{}", serde_json::to_string_pretty(&windows)?);
     Ok(())
 }
 
@@ -418,13 +438,13 @@ fn list_semantic_profiles() -> Result<(), Box<dyn std::error::Error>> {
                     .cmp(&left.get("source").and_then(serde_json::Value::as_str))
             })
     });
-    println!("{}", serde_json::to_string_pretty(&profiles)?);
+    stdoutln!("{}", serde_json::to_string_pretty(&profiles)?);
     Ok(())
 }
 
 fn inspect_semantic_profile(flags: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let profile = load_semantic_profile(flags)?;
-    println!("{}", serde_json::to_string_pretty(&profile)?);
+    stdoutln!("{}", serde_json::to_string_pretty(&profile)?);
     Ok(())
 }
 
@@ -437,7 +457,7 @@ fn match_semantic_profile(flags: &[String]) -> Result<(), Box<dyn std::error::Er
     let result = store
         .catalog()
         .match_window(&application_name, &window_title);
-    println!("{}", serde_json::to_string_pretty(&result)?);
+    stdoutln!("{}", serde_json::to_string_pretty(&result)?);
     Ok(())
 }
 
@@ -463,7 +483,7 @@ async fn wait_window(
     flags: &[String],
 ) -> Result<(), Box<dyn std::error::Error>> {
     let request = window_wait_request(flags)?;
-    println!(
+    stdoutln!(
         "{}",
         serde_json::to_string_pretty(&driver.wait_for_window(&request).await?)?
     );
@@ -487,7 +507,7 @@ fn window_wait_request(
 }
 
 async fn list_apps(driver: &ComputerUseDriver) -> Result<(), Box<dyn std::error::Error>> {
-    println!(
+    stdoutln!(
         "{}",
         serde_json::to_string_pretty(&driver.list_apps().await?)?
     );
@@ -495,7 +515,7 @@ async fn list_apps(driver: &ComputerUseDriver) -> Result<(), Box<dyn std::error:
 }
 
 async fn list_tools(driver: &ComputerUseDriver) -> Result<(), Box<dyn std::error::Error>> {
-    println!(
+    stdoutln!(
         "{}",
         serde_json::to_string_pretty(&driver.list_tools().await?)?
     );
@@ -534,7 +554,7 @@ async fn call_tool(
     if let Some(path) = output {
         value["_dcc_cua_image_output"] = json!(path);
     }
-    println!("{}", serde_json::to_string_pretty(&value)?);
+    stdoutln!("{}", serde_json::to_string_pretty(&value)?);
     Ok(())
 }
 
@@ -553,7 +573,7 @@ async fn host_call(flags: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         value["_dcc_cua_binary_output"] = json!(path);
     }
     connection.shutdown().await?;
-    println!("{}", serde_json::to_string_pretty(&value)?);
+    stdoutln!("{}", serde_json::to_string_pretty(&value)?);
     Ok(())
 }
 
@@ -562,7 +582,7 @@ async fn host_ping(flags: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let mut connection = connect_host(flags, snapshot_transport).await?;
     let response = connection.client_mut().ping().await?;
     connection.shutdown().await?;
-    println!("{}", serde_json::to_string_pretty(&response.value)?);
+    stdoutln!("{}", serde_json::to_string_pretty(&response.value)?);
     Ok(())
 }
 
@@ -573,7 +593,7 @@ async fn host_interrupt_all(flags: &[String]) -> Result<(), Box<dyn std::error::
     let mut connection = connect_host(flags, SnapshotTransport::BinaryFrame).await?;
     let response = connection.client_mut().interrupt_all().await?;
     connection.shutdown().await?;
-    println!("{}", serde_json::to_string_pretty(&response.value)?);
+    stdoutln!("{}", serde_json::to_string_pretty(&response.value)?);
     Ok(())
 }
 
@@ -586,7 +606,7 @@ async fn host_doctor(flags: &[String]) -> Result<(), Box<dyn std::error::Error>>
     if !diagnostic_route_ready(&response.value, route) {
         return Err(format!("CUA Host {route} diagnostics are not ready").into());
     }
-    println!("{}", serde_json::to_string_pretty(&response.value)?);
+    stdoutln!("{}", serde_json::to_string_pretty(&response.value)?);
     Ok(())
 }
 
@@ -636,7 +656,7 @@ async fn host_batch(flags: &[String]) -> Result<(), Box<dyn std::error::Error>> 
         values.push(value);
     }
     connection.shutdown().await?;
-    println!("{}", serde_json::to_string_pretty(&values)?);
+    stdoutln!("{}", serde_json::to_string_pretty(&values)?);
     Ok(())
 }
 
@@ -1586,7 +1606,7 @@ async fn desktop_snapshot(
     let output = flag_value(flags, "--output").unwrap_or_else(|| "desktop.png".into());
     let snapshot = driver.desktop_snapshot().await?;
     fs::write(&output, &snapshot.data)?;
-    println!(
+    stdoutln!(
         "{}",
         serde_json::to_string_pretty(&json!({
             "success": true,
@@ -1599,7 +1619,7 @@ async fn desktop_snapshot(
 }
 
 async fn screen_size(driver: &ComputerUseDriver) -> Result<(), Box<dyn std::error::Error>> {
-    println!(
+    stdoutln!(
         "{}",
         serde_json::to_string_pretty(&driver.screen_size().await?)?
     );
@@ -1607,7 +1627,7 @@ async fn screen_size(driver: &ComputerUseDriver) -> Result<(), Box<dyn std::erro
 }
 
 async fn cursor_position(driver: &ComputerUseDriver) -> Result<(), Box<dyn std::error::Error>> {
-    println!(
+    stdoutln!(
         "{}",
         serde_json::to_string_pretty(&driver.cursor_position().await?)?
     );
@@ -1619,7 +1639,7 @@ async fn launch_app(
     flags: &[String],
 ) -> Result<(), Box<dyn std::error::Error>> {
     let request = launch_request(flags);
-    println!(
+    stdoutln!(
         "{}",
         serde_json::to_string_pretty(&driver.launch_app(&request).await?)?
     );
@@ -1658,7 +1678,7 @@ async fn terminate_app(
     if result.is_err() {
         let _ = session.stop().await;
     }
-    println!("{}", serde_json::to_string_pretty(&result?)?);
+    stdoutln!("{}", serde_json::to_string_pretty(&result?)?);
     Ok(())
 }
 
@@ -1677,7 +1697,7 @@ async fn clipboard_read(
     let stop_result = session.stop().await;
     let result = result?;
     stop_result?;
-    println!("{}", serde_json::to_string_pretty(&result)?);
+    stdoutln!("{}", serde_json::to_string_pretty(&result)?);
     Ok(())
 }
 
@@ -1699,7 +1719,7 @@ async fn clipboard_write(
     let stop_result = session.stop().await;
     let result = result?;
     stop_result?;
-    println!("{}", serde_json::to_string_pretty(&result)?);
+    stdoutln!("{}", serde_json::to_string_pretty(&result)?);
     Ok(())
 }
 
@@ -1731,7 +1751,7 @@ async fn snapshot(
         .map_or(0, Vec::len);
     let accessibility = screenshot.accessibility;
     fs::write(&output, &screenshot.data)?;
-    println!(
+    stdoutln!(
         "{}",
         serde_json::to_string_pretty(&json!({
             "success": true,
@@ -1765,7 +1785,7 @@ async fn accessibility_snapshot(
     let root = result?;
     stop_result?;
     let node_count = root["elements"].as_array().map_or(0, Vec::len);
-    println!(
+    stdoutln!(
         "{}",
         serde_json::to_string_pretty(&json!({
             "accessibility": root,
@@ -1790,7 +1810,7 @@ async fn window_state(
     let stop_result = session.stop().await;
     let state = result?;
     stop_result?;
-    println!("{}", serde_json::to_string_pretty(&state)?);
+    stdoutln!("{}", serde_json::to_string_pretty(&state)?);
     Ok(())
 }
 
@@ -1803,7 +1823,7 @@ async fn doctor(
     if !diagnostic_route_ready(&report, route) {
         return Err(format!("CUA {route} diagnostics are not ready").into());
     }
-    println!("{}", serde_json::to_string_pretty(&report)?);
+    stdoutln!("{}", serde_json::to_string_pretty(&report)?);
     Ok(())
 }
 

@@ -23,7 +23,6 @@ mod owned_process;
 mod process_output;
 mod task_authorization_manifest;
 mod trusted_confirmation;
-mod update_check_tests;
 mod update_tests;
 mod window_selectors;
 

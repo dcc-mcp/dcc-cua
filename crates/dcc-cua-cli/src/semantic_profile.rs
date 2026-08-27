@@ -169,7 +169,7 @@ pub(crate) async fn execute(
     let (activation, root, observation, exact_target, matches, action_result, post_snapshot) =
         result?;
     stop_result?;
-    println!(
+    stdoutln!(
         "{}",
         serde_json::to_string_pretty(&json!({
             "success": true,

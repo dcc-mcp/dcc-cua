@@ -152,6 +152,23 @@ function Assert-CommandFailureStdoutContract {
             throw "command substitution did not receive the failed command envelope from stdout"
         }
 
+        $closedStdoutStart = [System.Diagnostics.ProcessStartInfo]::new($binaryPath)
+        $closedStdoutStart.UseShellExecute = $false
+        $closedStdoutStart.RedirectStandardOutput = $true
+        $closedStdoutStart.RedirectStandardError = $true
+        $closedStdoutStart.ArgumentList.Add("manifest")
+        $closedStdout = [System.Diagnostics.Process]::Start($closedStdoutStart)
+        $closedStdout.StandardOutput.BaseStream.Dispose()
+        $closedStdoutStderrTask = $closedStdout.StandardError.ReadToEndAsync()
+        $closedStdout.WaitForExit()
+        $closedStdoutStderr = $closedStdoutStderrTask.GetAwaiter().GetResult()
+        $closedStdoutDiagnostics = @($closedStdoutStderr -split "`r?`n" | Where-Object { $_.Length -gt 0 })
+        if ($closedStdout.ExitCode -ne 1 -or
+            $closedStdoutDiagnostics.Count -ne 1 -or
+            $closedStdoutDiagnostics[0] -ne "dcc-cua: command result could not be written to stdout") {
+            throw "release CLI closed stdout did not emit exactly one fixed safe diagnostic: $closedStdoutStderr"
+        }
+
         $nativeStart = [System.Diagnostics.ProcessStartInfo]::new($binaryPath)
         $nativeStart.ArgumentList.Add("chrome-extension://abcdefghijklmnop/")
         $nativeStart.UseShellExecute = $false
@@ -212,6 +229,72 @@ function Assert-CommandFailureStdoutContract {
 }
 
 Assert-CommandFailureStdoutContract
+
+function Assert-OneShotTtyStreamContract {
+    if ($isWindowsHost -or $isMacHost) {
+        return
+    }
+    if ($null -eq (Get-Command script -ErrorAction SilentlyContinue)) {
+        throw "the Linux release CLI TTY contract requires util-linux script"
+    }
+
+    $ttyRoot = Join-Path ([System.IO.Path]::GetTempPath()) "dcc-cua-tty-$([guid]::NewGuid().ToString('N'))"
+    $cacheDirectory = Join-Path $ttyRoot ".dcc-cua/cache"
+    [void][System.IO.Directory]::CreateDirectory($cacheDirectory)
+    [System.IO.File]::WriteAllText(
+        (Join-Path $cacheDirectory "update-check.json"),
+        "{`n  `"next_check_unix_secs`": 4102444800,`n  `"latest_version`": `"999.0.0`"`n}`n",
+        [System.Text.UTF8Encoding]::new($false)
+    )
+
+    function ConvertTo-ShellLiteral([string]$Value) {
+        return "'" + $Value.Replace("'", "'`"'`"'") + "'"
+    }
+
+    try {
+        $quotedBinary = ConvertTo-ShellLiteral $binaryPath
+        $quotedHome = ConvertTo-ShellLiteral $ttyRoot
+        $cases = @(
+            [pscustomobject]@{ Name = "stdout-file"; Redirect = "> {stdout}"; StdoutFile = $true; StderrFile = $false },
+            [pscustomobject]@{ Name = "stderr-file"; Redirect = "2> {stderr}"; StdoutFile = $false; StderrFile = $true },
+            [pscustomobject]@{ Name = "stdin-stdout-files"; Redirect = "< /dev/null > {stdout}"; StdoutFile = $true; StderrFile = $false },
+            [pscustomobject]@{ Name = "all-files"; Redirect = "< /dev/null > {stdout} 2> {stderr}"; StdoutFile = $true; StderrFile = $true }
+        )
+        foreach ($case in $cases) {
+            $stdoutPath = Join-Path $ttyRoot "$($case.Name).out"
+            $stderrPath = Join-Path $ttyRoot "$($case.Name).err"
+            $transcriptPath = Join-Path $ttyRoot "$($case.Name).tty"
+            $redirect = $case.Redirect.Replace("{stdout}", (ConvertTo-ShellLiteral $stdoutPath)).Replace("{stderr}", (ConvertTo-ShellLiteral $stderrPath))
+            $command = "HOME=$quotedHome USERPROFILE=$quotedHome CI= $quotedBinary manifest $redirect"
+            & script -q -e -c $command $transcriptPath *> $null
+            if ($LASTEXITCODE -ne 0) {
+                throw "release CLI TTY matrix case '$($case.Name)' failed with exit $LASTEXITCODE"
+            }
+            $ttyText = [System.IO.File]::ReadAllText($transcriptPath, [System.Text.Encoding]::UTF8)
+            $stderrText = if (Test-Path -LiteralPath $stderrPath) { [System.IO.File]::ReadAllText($stderrPath, [System.Text.Encoding]::UTF8) } else { "" }
+            if ($ttyText.Contains("999.0.0") -or $ttyText.Contains("A new version of dcc-cua") -or
+                $stderrText.Contains("999.0.0") -or $stderrText.Contains("A new version of dcc-cua")) {
+                throw "release CLI TTY matrix case '$($case.Name)' leaked a dynamic update notice"
+            }
+            if ($case.StderrFile -and $stderrText.Length -ne 0) {
+                throw "release CLI TTY matrix case '$($case.Name)' wrote non-diagnostic stderr"
+            }
+            if ($case.StdoutFile) {
+                $json = [System.IO.File]::ReadAllText($stdoutPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+                if ($json.name -ne "dcc-cua") {
+                    throw "release CLI TTY matrix case '$($case.Name)' did not preserve manifest stdout"
+                }
+            }
+        }
+    }
+    finally {
+        if (Test-Path -LiteralPath $ttyRoot) {
+            Remove-Item -LiteralPath $ttyRoot -Recurse -Force
+        }
+    }
+}
+
+Assert-OneShotTtyStreamContract
 
 $manifest = Invoke-BinaryJson -Arguments @("manifest")
 $expectedOs = if ($isWindowsHost) { "windows" } elseif ($isMacHost) { "macos" } else { "linux" }

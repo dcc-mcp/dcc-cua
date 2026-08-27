@@ -2,6 +2,7 @@ import hashlib
 import importlib.util
 import json
 import stat
+import tarfile
 import tempfile
 import unittest
 import zipfile
@@ -95,6 +96,18 @@ def _write_extension_assets(directory: Path, version: str) -> None:
         _write_extension_archive(directory / name)
 
 
+def _write_native_archive(path: Path, source: Path) -> None:
+    members = ("README.md", "README.zh-CN.md", "skills/cua-cli/SKILL.md")
+    if path.suffix == ".zip":
+        with zipfile.ZipFile(path, "w") as archive:
+            for member in members:
+                archive.write(source / member, member)
+        return
+    with tarfile.open(path, "w:gz") as archive:
+        for member in members:
+            archive.add(source / member, member)
+
+
 def _directory_snapshot(directory: Path) -> dict:
     return {
         path.relative_to(directory).as_posix(): (
@@ -107,6 +120,40 @@ def _directory_snapshot(directory: Path) -> dict:
 
 
 class ReleaseIntegrityTests(unittest.TestCase):
+    def test_final_native_zip_and_tar_ship_exact_documentation_bytes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source"
+            (source / "skills" / "cua-cli").mkdir(parents=True)
+            expected = {
+                "README.md": b"English fixed stderr contract\n",
+                "README.zh-CN.md": b"Chinese fixed stderr contract\n",
+                "skills/cua-cli/SKILL.md": b"Skill fixed stderr contract\n",
+            }
+            for member, content in expected.items():
+                (source / member).write_bytes(content)
+
+            for name in ("dcc-cua.zip", "dcc-cua.tar.gz"):
+                with self.subTest(name=name):
+                    archive = root / name
+                    _write_native_archive(archive, source)
+                    MODULE.verify_native_archive_documentation(archive, source)
+
+                    (source / "README.zh-CN.md").write_bytes(b"decoy\n")
+                    with self.assertRaisesRegex(ValueError, "documentation content"):
+                        MODULE.verify_native_archive_documentation(archive, source)
+                    (source / "README.zh-CN.md").write_bytes(
+                        expected["README.zh-CN.md"]
+                    )
+
+                    missing_archive = root / "missing.zip"
+                    with zipfile.ZipFile(missing_archive, "w") as bundle:
+                        bundle.writestr("README.md", expected["README.md"])
+                    with self.assertRaisesRegex(ValueError, "members are missing"):
+                        MODULE.verify_native_archive_documentation(
+                            missing_archive, source
+                        )
+
     def test_changed_release_versions_yield_only_their_new_immutable_tags(self):
         before = {
             ".": "1.5.6",
