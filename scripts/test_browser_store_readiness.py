@@ -5,6 +5,7 @@ import contextlib
 import importlib.util
 import io
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -19,6 +20,7 @@ SPEC = importlib.util.spec_from_file_location(
 assert SPEC and SPEC.loader
 READINESS = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(READINESS)
+SCRIPT = ROOT / "scripts" / "browser_store_readiness.py"
 
 
 def ready_snapshot() -> dict[str, object]:
@@ -69,6 +71,23 @@ def ready_snapshot() -> dict[str, object]:
 
 
 class BrowserStoreReadinessTests(unittest.TestCase):
+    def assert_failure_receipt(self, serialized: str) -> dict[str, object]:
+        self.assertEqual(1, serialized.count("\n"))
+        receipt = json.loads(serialized)
+        self.assertFalse(receipt["ready"])
+        self.assertEqual("not_ready", receipt["overall_state"])
+        self.assertEqual("preflight_failed", receipt["terminal_reason"])
+        return receipt
+
+    def run_cli(self, *arguments: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [sys.executable, "-B", str(SCRIPT), *(str(value) for value in arguments)],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
     def test_missing_names_are_stable_and_never_echo_values(self) -> None:
         snapshot = ready_snapshot()
         snapshot["configuration"]["EDGE_ADDONS_API_KEY"] = False
@@ -221,6 +240,87 @@ class BrowserStoreReadinessTests(unittest.TestCase):
             self.assertNotIn("do-not-print", stdout.getvalue() + stderr.getvalue())
             self.assertNotIn(str(snapshot), stdout.getvalue() + stderr.getvalue())
 
+    def test_subprocess_failures_keep_receipt_sinks_isolated_and_redacted(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            malformed = root / "malformed-secret-name.json"
+            malformed.write_text('{"token": "never-print"', encoding="utf-8")
+            unreadable = root / "snapshot-is-a-directory"
+            unreadable.mkdir()
+
+            cases = {
+                "invalid_cli": (
+                    ("--output", root / "invalid-cli.json", "--definitely-invalid"),
+                    root / "invalid-cli.json",
+                    True,
+                ),
+                "malformed_input": (
+                    ("--snapshot", malformed, "--output", root / "malformed.json"),
+                    root / "malformed.json",
+                    True,
+                ),
+                "read_failure": (
+                    ("--snapshot", unreadable, "--output", root / "read-failure.json"),
+                    root / "read-failure.json",
+                    True,
+                ),
+                "unwritable_output": (
+                    ("--snapshot", malformed, "--output", unreadable),
+                    unreadable,
+                    False,
+                ),
+            }
+            for name, (arguments, output, output_is_file) in cases.items():
+                with self.subTest(name=name):
+                    result = self.run_cli(*arguments)
+                    self.assertEqual(1, result.returncode)
+                    self.assert_failure_receipt(result.stdout)
+                    self.assertEqual(
+                        "browser store readiness preflight failed\n", result.stderr
+                    )
+                    combined = result.stdout + result.stderr
+                    self.assertNotIn("never-print", combined)
+                    self.assertNotIn(str(root), combined)
+                    self.assertNotIn("Traceback", combined)
+                    if output_is_file:
+                        self.assertEqual(result.stdout, output.read_text(encoding="utf-8"))
+
+    def test_broken_stdout_does_not_escape_or_remove_requested_receipt(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "broken-stdout.json"
+            bootstrap = f"""
+import importlib.util
+import pathlib
+import sys
+
+spec = importlib.util.spec_from_file_location("readiness", {str(SCRIPT)!r})
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+
+class BrokenStdout:
+    def write(self, value):
+        raise BrokenPipeError("sensitive broken sink")
+    def flush(self):
+        return None
+
+sys.stdout = BrokenStdout()
+sys.argv = ["browser_store_readiness.py", "--output", {str(output)!r}, "--definitely-invalid"]
+raise SystemExit(module.main())
+"""
+            result = subprocess.run(
+                [sys.executable, "-B", "-c", bootstrap],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(1, result.returncode)
+            self.assertEqual("", result.stdout)
+            self.assertEqual("browser store readiness preflight failed\n", result.stderr)
+            receipt_text = output.read_text(encoding="utf-8")
+            self.assert_failure_receipt(receipt_text)
+            self.assertNotIn("Traceback", result.stderr)
+
     def test_action_pins_fail_closed(self) -> None:
         snapshot = ready_snapshot()
         snapshot["action_pins"] = {"valid": False, "unpinned": ["actions/checkout@v7"]}
@@ -258,15 +358,47 @@ class BrowserStoreReadinessTests(unittest.TestCase):
         workflow = (ROOT / ".github" / "workflows" / "ci-checks.yml").read_text(
             encoding="utf-8"
         )
-        policy_start = workflow.index("\n  policy:")
-        policy_end = workflow.index("\n  verify:", policy_start)
-        policy_job = workflow[policy_start:policy_end]
-        command = "python -B -m unittest scripts.test_browser_store_readiness"
-        expected_step = f"      - run: {command}"
-        matching_lines = [line for line in policy_job.splitlines() if command in line]
-        self.assertEqual([expected_step], matching_lines)
-        self.assertEqual(1, workflow.count(command))
+        self.assertEqual(
+            {"valid": True, "reasons": []},
+            READINESS.audit_required_ci_contract(workflow),
+        )
         self.assertTrue((ROOT / "scripts" / "test_browser_store_readiness.py").is_file())
+
+    def test_required_ci_contract_rejects_disabled_or_decoyed_steps(self) -> None:
+        workflow = (ROOT / ".github" / "workflows" / "ci-checks.yml").read_text(
+            encoding="utf-8"
+        )
+        command = "python -B -m unittest scripts.test_browser_store_readiness"
+        step = f"      - run: {command}"
+        mutations = {
+            "job_if_false": workflow.replace(
+                "  policy:\n", "  policy:\n    if: false\n", 1
+            ),
+            "step_if_false": workflow.replace(step, step + "\n        if: false", 1),
+            "continue_on_error": workflow.replace(
+                step, step + "\n        continue-on-error: true", 1
+            ),
+            "comment_decoy": workflow.replace(step, "      # " + step.strip(), 1),
+            "scalar_decoy": workflow.replace(step, f"      - name: {command}", 1),
+            "multiline_decoy": workflow.replace(
+                step, f"      - run: |\n          echo {command}", 1
+            ),
+            "disabled_unused_job": workflow.replace(step + "\n", "", 1).replace(
+                "\n  verify:",
+                "\n  disabled-receipt-contract:\n"
+                "    if: false\n"
+                "    runs-on: ubuntu-latest\n"
+                "    steps:\n"
+                f"      - run: {command}\n\n"
+                "  verify:",
+                1,
+            ),
+        }
+        for name, mutation in mutations.items():
+            with self.subTest(name=name):
+                audit = READINESS.audit_required_ci_contract(mutation)
+                self.assertFalse(audit["valid"])
+                self.assertTrue(audit["reasons"])
 
     def test_edge_probe_never_mutates_to_test_access(self) -> None:
         observation = READINESS.probe_edge(
