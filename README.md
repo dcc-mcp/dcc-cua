@@ -316,7 +316,7 @@ cargo run -p dcc-cua-cli -- desktop-snapshot --output desktop.png
 cargo run -p dcc-cua-cli -- screen-size
 cargo run -p dcc-cua-cli -- cursor-position
 cargo run -p dcc-cua-cli -- desktop-act --action-json '{"action":"click","x":100,"y":100}'
-cargo run -p dcc-cua-cli -- act --app chrome.exe --action-json '{"action":"click","x":100,"y":100}' --output after.png
+cargo run -p dcc-cua-cli -- act --pid 4242 --window-id 123456 --action-json '{"action":"click","x":100,"y":100}' --output after.png
 cargo run -p dcc-cua-cli -- launch --name Calculator
 cargo run -p dcc-cua-cli -- doctor
 cargo run -p dcc-cua-cli -- doctor --spawn target/debug/dcc-cua
@@ -334,8 +334,10 @@ cargo run -p dcc-cua-cli -- drag --app chrome.exe --from-x 100 --from-y 100 --to
 cargo run -p dcc-cua-cli -- type --app chrome.exe --text "hello" --focused
 cargo run -p dcc-cua-cli -- hotkey --app chrome.exe --key CTRL --key L
 cargo run -p dcc-cua-cli -- scroll --app UE5Editor.exe --scroll-x 4 --by page --x 600 --y 900
-cargo run -p dcc-cua-cli -- act --app chrome.exe --action-json '{"action":"click","x":100,"y":100}'
-cargo run -p dcc-cua-cli -- verify --app chrome.exe --expect-json '[{"window":{"exists":true}}]'
+cargo run -p dcc-cua-cli -- act --pid 4242 --window-id 123456 --action-json '{"action":"click","x":100,"y":100}'
+cargo run -p dcc-cua-cli -- verify --pid 4242 --window-id 123456 --expect-json '[{"window":{"exists":true}}]'
+cargo run -p dcc-cua-cli -- clipboard-read --pid 4242 --window-id 123456
+cargo run -p dcc-cua-cli -- clipboard-write --pid 4242 --window-id 123456 --text "bounded text"
 cargo run -p dcc-cua-cli -- --version
 cargo run -p dcc-cua-cli -- update --check
 ```
@@ -459,6 +461,13 @@ explicit selector (`--name`, `--bundle-id`, `--aumid`, `--path`, or
 `--launch-path`) or at least one bounded `http`, `https`, or Epic Launcher URL,
 supports repeated `--url`/`--arg` values, and applies the same
 sensitive-application deny policy as the host.
+
+`snapshot`, `act`, `verify`, `clipboard-read`, and `clipboard-write` accept the
+same `--app`, `--pid`, `--window-id`, and `--title` window selectors. Multiple
+selectors are conjunctive. Conflicting duplicate selectors, missing or zero
+native identities, no match, multiple matches, and PID/HWND/title drift fail
+closed before a mutation or clipboard readback. Prefer the PID/HWND pair
+returned by `list` and take a fresh snapshot before an action.
 
 Clipboard access is session-scoped and grant-gated: `clipboard_read` does not
 return text unless the caller asks for it, and `clipboard_write` accepts exactly

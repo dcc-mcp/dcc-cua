@@ -159,9 +159,16 @@ dcc-cua accessibility --pid 4242 --window-id 123456
 dcc-cua click --pid 4242 --window-id 123456 --element-index 12
 dcc-cua type --pid 4242 --window-id 123456 --text "hello" --focused
 dcc-cua verify --pid 4242 --window-id 123456 --expect-json '[{"window":{"exists":true}}]'
+dcc-cua clipboard-read --pid 4242 --window-id 123456
+dcc-cua clipboard-write --pid 4242 --window-id 123456 --text "bounded text"
 dcc-cua interrupt-all
 dcc-cua update --check
 ```
+
+`snapshot`、`act`、`verify`、`clipboard-read` 和 `clipboard-write` 接受同一组
+`--app`、`--pid`、`--window-id`、`--title` 窗口选择器。多个选择器按 AND 同时校验；
+重复冲突、缺失或为零的原生身份、零匹配、多匹配，以及 PID/HWND/title 漂移都会在
+变更或剪贴板回读前 fail closed。优先复用 `list` 返回的 PID/HWND，并在动作前重新截图。
 
 `manifest` 是供 Core 和独立调用方使用的稳定机器入口，包含平台、协议、能力、端点、
 图像传输和推荐启动参数，并明确声明不需要单独 driver。若同一应用有多个窗口，操作时
