@@ -15,13 +15,14 @@ use dcc_cua_host::{
     HostSecurityServices, TrustedTaskActionScope, TrustedTaskAuthorizationHost,
     TrustedTaskAuthorizationIssuer, TrustedTaskAuthorizationReceipt,
     TrustedTaskAuthorizationRegistration, TrustedTaskAuthorizationTarget,
-    process_connection_with_security_services, trusted_task_authorization_broker,
+    process_connection_with_security_services,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader, BufWriter};
 use uuid::Uuid;
 
+use super::authorization_integration;
 use super::trusted_embedding::{TrustedEmbeddingAttestation, verify_trusted_embedding_parent};
 
 const SERVER_NAME: &str = "dcc-cua-task-authorization";
@@ -226,22 +227,31 @@ impl TaskProposal {
     }
 }
 
-struct TaskAuthorizationServer {
+struct TaskAuthorizationAuthority {
     embedding: TrustedEmbeddingAttestation,
     issuer: TrustedTaskAuthorizationIssuer,
     authorization_host: std::sync::Arc<dyn TrustedTaskAuthorizationHost>,
+}
+
+struct TaskAuthorizationServer {
+    authority: Option<TaskAuthorizationAuthority>,
+    parent_identity_available: bool,
     proposals: BTreeMap<String, TaskProposal>,
 }
 
 impl TaskAuthorizationServer {
-    fn new(embedding: TrustedEmbeddingAttestation) -> Self {
-        let (issuer, authorization_host) = trusted_task_authorization_broker();
+    fn diagnostic_only(parent_identity_available: bool) -> Self {
         Self {
-            embedding,
-            issuer,
-            authorization_host,
+            authority: None,
+            parent_identity_available,
             proposals: BTreeMap::new(),
         }
+    }
+
+    fn integration_status(&self) -> Value {
+        let mut status = authorization_integration::status();
+        status["parent_identity_available"] = json!(self.parent_identity_available);
+        status
     }
 
     async fn handle_rpc(&mut self, message: Value) -> Option<Value> {
@@ -268,23 +278,24 @@ impl TaskAuthorizationServer {
                     "name": SERVER_NAME,
                     "title": "DCC-CUA task authorization",
                     "version": env!("CARGO_PKG_VERSION"),
-                    "description": "One explicit in-chat user authorization for a bounded exact-window or DCC-CUA-owned browser task."
+                    "description": "DCC-CUA authorization integration status; task authority requires an independently trusted human confirmation transport."
                 },
-                "instructions": "Render the task authorization card before the task starts. The user types authorization once; the card then starts the task and reports provider/runtime/PID/HWND before any observation or input. Never place credentials or secret values in task proposals or task_call params; use DCC-CUA secret handles."
+                "instructions": "Check authorization_integration_status first. Without a trusted human confirmation transport, report integration_required. Do not claim an authorization card exists, invent grants, or change providers. Client names and process identity cannot authorize a task."
             })),
             "ping" => Ok(json!({})),
-            "tools/list" => Ok(json!({"tools": tool_definitions()})),
+            "tools/list" => Ok(json!({"tools": if self.authority.is_some() {
+                json!(tool_definitions())
+            } else { authorization_integration::tools() }})),
             "tools/call" => self.call_tool(params).await,
-            "resources/list" => Ok(json!({"resources": [authorization_card_resource()]})),
-            "resources/read" => read_resource(&params),
+            "resources/list" => Ok(json!({"resources": if self.authority.is_some() {
+                json!([authorization_card_resource()])
+            } else { json!([]) }})),
+            "resources/read" if self.authority.is_some() => read_resource(&params),
+            "resources/read" => Err(authorization_integration::REQUIRED.into()),
             "resources/templates/list" => Ok(json!({"resourceTemplates": []})),
             "prompts/list" => Ok(json!({"prompts": []})),
             _ => {
-                return Some(rpc_error(
-                    id,
-                    -32601,
-                    &format!("Method not found: {method}"),
-                ));
+                return Some(rpc_error(id, -32601, "Method not found"));
             }
         };
         Some(match result {
@@ -298,6 +309,16 @@ impl TaskAuthorizationServer {
             .get("name")
             .and_then(Value::as_str)
             .ok_or_else(|| "tools/call requires a tool name".to_owned())?;
+        if self.authority.is_none() {
+            let mut status = self.integration_status();
+            let unavailable = name != "authorization_integration_status";
+            if unavailable {
+                status["code"] = json!(authorization_integration::REQUIRED);
+            }
+            let mut result = tool_result(status, false);
+            result["isError"] = json!(unavailable);
+            return Ok(result);
+        }
         let arguments = params
             .get("arguments")
             .filter(|value| value.is_object())
@@ -324,6 +345,10 @@ impl TaskAuthorizationServer {
     }
 
     fn prepare_task(&mut self, arguments: Value) -> Result<Value, String> {
+        let authority = self
+            .authority
+            .as_ref()
+            .ok_or(authorization_integration::REQUIRED)?;
         let input: PrepareTaskInput = serde_json::from_value(arguments)
             .map_err(|error| format!("invalid task authorization proposal: {error}"))?;
         if !(1..=MAX_TTL_MINUTES).contains(&input.ttl_minutes) {
@@ -400,7 +425,7 @@ impl TaskAuthorizationServer {
         };
         registration.validate().map_err(|error| error.to_string())?;
         let proposal = TaskProposal {
-            embedding: self.embedding,
+            embedding: authority.embedding,
             surface: input.surface,
             allowed_methods: input.allowed_methods,
             registration,
@@ -414,6 +439,10 @@ impl TaskAuthorizationServer {
     }
 
     fn authorize_task(&mut self, arguments: Value) -> Result<Value, String> {
+        let authority = self
+            .authority
+            .as_ref()
+            .ok_or(authorization_integration::REQUIRED)?;
         let proposal_id = required_string(&arguments, "proposal_id")?;
         let acknowledgement = required_string(&arguments, "acknowledgement")?;
         if acknowledgement.trim() != "授权"
@@ -433,7 +462,8 @@ impl TaskAuthorizationServer {
         }
         if proposal.receipt.is_none() {
             proposal.receipt = Some(
-                self.issuer
+                authority
+                    .issuer
                     .register(proposal.registration.clone())
                     .map_err(|error| error.to_string())?,
             );
@@ -442,6 +472,10 @@ impl TaskAuthorizationServer {
     }
 
     fn revoke_task(&mut self, arguments: Value) -> Result<Value, String> {
+        let authority = self
+            .authority
+            .as_ref()
+            .ok_or(authorization_integration::REQUIRED)?;
         let proposal_id = required_string(&arguments, "proposal_id")?;
         let proposal = self
             .proposals
@@ -451,7 +485,8 @@ impl TaskAuthorizationServer {
             .receipt
             .as_ref()
             .ok_or_else(|| "task authorization has not been issued".to_owned())?;
-        self.issuer
+        authority
+            .issuer
             .revoke(&receipt.authorization_id)
             .map_err(|error| error.to_string())?;
         proposal.revoked = true;
@@ -459,6 +494,10 @@ impl TaskAuthorizationServer {
     }
 
     async fn start_task(&mut self, arguments: Value) -> Result<Value, String> {
+        let authority = self
+            .authority
+            .as_ref()
+            .ok_or(authorization_integration::REQUIRED)?;
         let proposal_id = required_string(&arguments, "proposal_id")?.to_owned();
         let proposal = self
             .proposals
@@ -475,7 +514,8 @@ impl TaskAuthorizationServer {
         }
         if proposal.session.is_none() {
             proposal.session = Some(
-                open_task_session(&proposal_id, proposal, self.authorization_host.clone()).await?,
+                open_task_session(&proposal_id, proposal, authority.authorization_host.clone())
+                    .await?,
             );
         }
         let target = proposal
@@ -1063,24 +1103,37 @@ fn rpc_error(id: Value, code: i64, message: &str) -> Value {
 }
 
 pub async fn run() -> Result<(), Box<dyn Error>> {
-    let embedding = verify_trusted_embedding_parent()?;
-    let mut server = TaskAuthorizationServer::new(embedding);
-    let mut lines = BufReader::new(tokio::io::stdin()).lines();
+    // Identity is a diagnostic only. In particular, unpackaged desktop sidecars
+    // must not disappear from discovery when version resources are unavailable.
+    let parent_identity_available = verify_trusted_embedding_parent().is_ok();
+    let mut server = TaskAuthorizationServer::diagnostic_only(parent_identity_available);
+    let mut input = BufReader::new(tokio::io::stdin());
     let mut output = BufWriter::new(tokio::io::stdout());
-    while let Some(line) = lines.next_line().await? {
-        if line.trim().is_empty() {
+    loop {
+        let mut line = Vec::new();
+        let count = (&mut input)
+            .take(dcc_cua_protocol::MAX_JSON_FRAME_BYTES as u64 + 1)
+            .read_until(b'\n', &mut line)
+            .await?;
+        if count == 0 {
+            break;
+        }
+        if count > dcc_cua_protocol::MAX_JSON_FRAME_BYTES {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "MCP request exceeds frame limit",
+            )
+            .into());
+        }
+        if line.iter().all(u8::is_ascii_whitespace) {
             continue;
         }
-        let decoded: Value = match serde_json::from_str(&line) {
+        let decoded: Value = match serde_json::from_slice(&line) {
             Ok(value) => value,
-            Err(error) => {
+            Err(_) => {
                 output
                     .write_all(
-                        format!(
-                            "{}\n",
-                            rpc_error(Value::Null, -32700, &format!("Parse error: {error}"))
-                        )
-                        .as_bytes(),
+                        format!("{}\n", rpc_error(Value::Null, -32700, "Parse error")).as_bytes(),
                     )
                     .await?;
                 output.flush().await?;

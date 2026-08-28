@@ -9,7 +9,59 @@ fn test_server() -> TaskAuthorizationServer {
         "OpenAI.Codex_2p2nqsd0c76g0",
     )
     .unwrap();
-    TaskAuthorizationServer::new(embedding)
+    // Only this separated test fixture can construct model-facing issuer
+    // authority. Production process attestation is diagnostic, never consent.
+    let (issuer, authorization_host) = dcc_cua_host::trusted_task_authorization_broker();
+    TaskAuthorizationServer {
+        authority: Some(TaskAuthorizationAuthority {
+            embedding,
+            issuer,
+            authorization_host,
+        }),
+        parent_identity_available: true,
+        proposals: BTreeMap::new(),
+    }
+}
+
+#[rstest]
+#[tokio::test]
+async fn process_attestation_never_constructs_human_authority() {
+    for parent_attested in [true, false] {
+        let mut server = TaskAuthorizationServer::diagnostic_only(parent_attested);
+        assert!(server.authority.is_none());
+        for method in [
+            "prepare_task_authorization",
+            "authorize_task",
+            "start_authorized_task",
+            "dcc_cua_task_call",
+        ] {
+            let result = server
+                .call_tool(json!({"name": method, "arguments": browser_task()}))
+                .await
+                .unwrap();
+            assert_eq!(result["structuredContent"]["code"], "integration_required");
+            assert_eq!(result["isError"], true);
+        }
+        assert_eq!(
+            server.prepare_task(browser_task()).unwrap_err(),
+            "integration_required"
+        );
+        assert_eq!(
+            server.authorize_task(json!({})).unwrap_err(),
+            "integration_required"
+        );
+        assert_eq!(
+            server.start_task(json!({})).await.unwrap_err(),
+            "integration_required"
+        );
+        assert!(server.proposals.is_empty());
+        let resource = server
+            .handle_rpc(json!({"jsonrpc":"2.0","id":1,"method":"resources/read",
+        "params":{"uri":AUTHORIZATION_CARD_URI}}))
+            .await
+            .unwrap();
+        assert_eq!(resource["error"]["message"], "integration_required");
+    }
 }
 
 fn browser_task() -> Value {

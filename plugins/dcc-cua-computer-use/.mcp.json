@@ -2,7 +2,7 @@
   "mcpServers": {
     "dccCuaTaskAuthorization": {
       "title": "DCC-CUA task authorization",
-      "description": "Exact-window DCC-CUA tasks with one explicit inline user authorization and no per-action native popups.",
+      "description": "Check DCC-CUA trusted human authorization integration before exact-window tasks; unavailable integrations fail closed.",
       "cwd": ".",
       "command": "dcc-cua",
       "args": ["mcp-server"],

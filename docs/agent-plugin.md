@@ -1,10 +1,45 @@
 # dcc-cua agent plugin
 
+## Current authorization status
+
+The packaged MCP server is **diagnostic only** until a trusted human
+confirmation transport is integrated. It advertises
+`authorization_integration_status`, which returns `integration_required`, the
+runtime version, and the next integration owner. It does not advertise an
+authorization card or issuer tools and cannot open a task or accept a signed
+receipt. Installation, a chat message saying “authorize,” and a successful MCP
+handshake do not constitute task authorization.
+
+The previous bridge created an issuer after checking the MCP parent's package
+or signed product identity. That check does not prove invocation from a human
+surface. It also rejected desktop clients whose MCP launcher is an unpackaged
+signed helper without executable version resources. Parent identity is now
+diagnostic only; either success or failure leaves authorization unavailable.
+No ancestor traversal, publisher-only allowlist, CLI flag, environment variable,
+stdin acknowledgement, or generic automation fallback enables it.
+
+This intentionally disables the previous process-identity-only inline card
+path, including on formerly recognized clients. The card and task-engine tests
+remain implementation fixtures, not a production user-input boundary.
+
+[ADR 0027](adr/0027-cross-client-task-authorization.md) proposes the common
+challenge/receipt protocol and separates repository work from host work for
+Codex desktop/cloud/CLI, Cursor, WorkBuddy, and CodeBuddy CLI. It is a design
+contract, **not an implemented signature verifier or certification of any
+client's confirmation surface**.
+
+Existing trusted **in-process** embeddings can still hold the move-only
+`TrustedTaskAuthorizationIssuer` on their authenticated user-input side and
+install only its validator in `HostSecurityServices`. This library boundary is
+unchanged. It does not turn a model-driven MCP process into a trusted embedding.
+
+## Plugin discovery
+
 This checkout is also a standalone Codex-compatible agent plugin. The manifest
 is [.codex-plugin/plugin.json](../.codex-plugin/plugin.json), and it exposes the
 repository `skills/` directory plus the local `dcc-cua mcp-server` bridge.
-The bridge renders an inline task-start authorization card and keeps the
-move-only issuer in the same process as the Host validator.
+The historical inline card implementation is retained for task-engine tests;
+it is not exposed by the packaged server without a trusted input transport.
 
 The repository marketplace installs the bounded
 `plugins/dcc-cua-computer-use` package. It contains only the MCP bridge
@@ -13,7 +48,7 @@ manifest and configuration; Rust sources, build output, and the repository
 manifest remains available for development checkouts that also need the
 repository Skills.
 
-## Supported desktop embeddings
+## Installation
 
 Install the checkout as a local plugin using the Codex plugin installation flow,
 or point a development Codex session at the repository checkout. Install the
@@ -29,38 +64,25 @@ codex plugin add dcc-cua-computer-use@dcc-cua
 The checkout also includes `.claude-plugin/marketplace.json` and a portable
 `.mcp.json`. Claude, CodeBuddy, and WorkBuddy should import the bridge through
 their native plugin or MCP configuration and launch `dcc-cua mcp-server`
-directly; wrapping it in a shell intentionally breaks the attestation.
+directly. A shell changes the diagnostic parent identity but cannot provide
+human authorization either way.
 
-The authorization issuer is created only when Windows verifies the MCP server's
-immediate parent as one of these desktop embeddings:
+Reconnect the MCP server after installing or upgrading it. Check
+`authorization_integration_status` before proposing browser work. A missing
+status tool is a plugin/startup/discovery problem; `integration_required` means
+discovery works but no trusted human confirmation transport exists. A new task
+or reinstall alone cannot supply that transport.
 
-- Codex or Claude: exact executable name plus exact Windows package family.
-- CodeBuddy CN or WorkBuddy: a valid Authenticode trust chain, the exact
-  publisher, the exact signed product name, and the exact executable name.
+`browser_prepare` and `browser_snapshot` are session-bound Host operations.
+`missing field task_grant_id` means the caller did not supply an existing
+authorized session's complete request, not that it should invent a grant.
+Use one persistent, exact-target session through the trusted embedding after
+integration. Never weaken PID/native-window/tab/origin or fresh-evidence checks.
 
-A shell, redirected stdin client, Node/Python child, renamed signed binary,
-untrusted package, invalid signature, or unsupported platform fails closed
-before the MCP server reads a request. Additional host platforms need their own
-native embedding attestor; model-visible arguments, environment variables, and
-user-writable install paths are never accepted as authorization evidence. See
-[ADR 0026](adr/0026-attest-trusted-desktop-embeddings.md).
-
-Before a workflow, the model renders either an exact PID/HWND proposal or the
-closed `chromium` / `isolated_new` owned-browser launch spec. The card shows the
-closed Host-method list plus sensitive action, risk, and exact browser-origin
-scopes. The user types `授权` or `AUTHORIZE` in the inline card. The app-only tool
-registers the server-held proposal; it accepts no scopes, credentials, or
-secret values. The card then starts the task and reports
-`provider=dcc-cua`, runtime version, PID, and HWND before any observation or
-input. Owned-browser PID/HWND/CDP identities are derived by DCC-CUA and cannot
-be nominated or replaced by the model.
-Authorized actions execute through the same process-local broker without native
-action popups. Expiry, revocation, target changes, or scope mismatches fail
-closed and never fall back to a modal prompt.
-For exact existing-browser tasks, the card must explicitly list
-`browser_prepare`; that one authorization is then bound to the generated
-logical task session and covers only the existing-profile attachment needed by
-that session. Omitting the method leaves both attachment gates closed.
+Real browser or store validation remains blocked until a human confirmation
+surface, verifier, exact-target binding, and revocation channel have all been
+implemented and tested together. Report that boundary instead of promising a
+card that the user cannot see.
 
 ## Other agent hosts
 

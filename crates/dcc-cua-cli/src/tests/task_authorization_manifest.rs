@@ -32,4 +32,15 @@ fn manifest_advertises_the_split_capability_task_authorization_broker() {
     ] {
         assert_eq!(authorization[field], false);
     }
+    let integration = &authorization["cli_integration"];
+    assert_eq!(integration["status"], "integration_required");
+    assert_eq!(integration["authorization_available"], false);
+    assert_eq!(integration["user_confirmation_available"], false);
+    assert_eq!(integration["card_available"], false);
+    assert_eq!(integration["process_identity_can_authorize"], false);
+    assert_eq!(integration["signed_receipt_protocol"]["status"], "proposed");
+    assert_eq!(
+        integration["signed_receipt_protocol"]["runtime_accepts_receipts"],
+        false
+    );
 }

@@ -229,19 +229,82 @@ fn rejected_cli_syntax_does_not_echo_untrusted_arguments(
 }
 
 #[rstest]
-fn mcp_server_rejects_an_untrusted_process_parent_before_reading_stdin() {
-    let output = Command::new(env!("CARGO_BIN_EXE_dcc-cua"))
+#[case("Codex Desktop")]
+#[case("Codex Cloud")]
+#[case("Codex CLI")]
+#[case("Cursor")]
+#[case("WorkBuddy")]
+#[case("CodeBuddy CLI")]
+fn mcp_server_reports_missing_human_integration_without_creating_authority(#[case] client: &str) {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_dcc-cua"))
         .arg("mcp-server")
-        .output()
+        .env("DCC_CUA_TRUSTED_EMBEDDING", client)
+        .env("DCC_CUA_AUTHORIZATION", "AUTHORIZE")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .expect("dcc-cua should start");
-
-    assert!(!output.status.success());
-    assert!(
-        output.stdout.is_empty(),
-        "MCP terminal failures must remain on the protocol-native boundary: {:?}",
-        String::from_utf8_lossy(&output.stdout)
-    );
+    let mut input = child.stdin.take().unwrap();
+    let requests = [
+        serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{
+            "protocolVersion":"2024-11-05","clientInfo":{"name":client,"version":"1"}}}),
+        serde_json::json!({"jsonrpc":"2.0","id":2,"method":"tools/list"}),
+        serde_json::json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{
+            "name":"authorization_integration_status","arguments":{}}}),
+        serde_json::json!({"jsonrpc":"2.0","id":4,"method":"resources/list"}),
+    ];
+    for request in requests {
+        writeln!(input, "{request}").unwrap();
+    }
+    for (index, name) in [
+        "prepare_task_authorization",
+        "authorize_task",
+        "start_authorized_task",
+        "dcc_cua_task_call",
+        "revoke_task_authorization",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let request = serde_json::json!({"jsonrpc":"2.0","id":index+5,"method":"tools/call","params":{
+            "name":name,"arguments":{"acknowledgement":"AUTHORIZE","proposal_id":"forged",
+                "signature":"forged","task_grant_id":"forged","trusted_embedding":client}}});
+        writeln!(input, "{request}").unwrap();
+    }
+    drop(input);
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success());
     assert!(output.stderr.is_empty());
+    let responses: Vec<serde_json::Value> = String::from_utf8(output.stdout)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(responses.len(), 9);
+    assert_eq!(
+        responses[0]["result"]["serverInfo"]["name"],
+        "dcc-cua-task-authorization"
+    );
+    let tools = responses[1]["result"]["tools"].as_array().unwrap();
+    assert_eq!(tools.len(), 1);
+    assert_eq!(tools[0]["name"], "authorization_integration_status");
+    assert!(tools[0].get("_meta").is_none());
+    let status = &responses[2]["result"]["structuredContent"];
+    assert_eq!(status["status"], "integration_required");
+    assert_eq!(status["authorization_available"], false);
+    assert_eq!(status["user_confirmation_available"], false);
+    assert_eq!(status["provider"], "dcc-cua");
+    assert_eq!(responses[3]["result"]["resources"], serde_json::json!([]));
+    for response in &responses[4..] {
+        assert_eq!(response["result"]["isError"], true);
+        assert_eq!(
+            response["result"]["structuredContent"]["code"],
+            "integration_required"
+        );
+        assert!(response["result"].get("_meta").is_none());
+        assert!(!response.to_string().contains("forged"));
+    }
 }
 
 #[rstest]
@@ -266,6 +329,26 @@ fn private_worker_failure_stays_on_its_protocol_native_boundary() {
         !stderr.contains("dynamic_marker_8e1ab4"),
         "private-worker stderr exposed the fixture marker: {stderr:?}"
     );
+}
+
+#[rstest]
+fn mcp_server_rejects_oversized_input_without_an_unframed_error() {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_dcc-cua"))
+        .arg("mcp-server")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut input = child.stdin.take().unwrap();
+    input
+        .write_all(&vec![b' '; dcc_cua_protocol::MAX_JSON_FRAME_BYTES + 1])
+        .unwrap();
+    drop(input);
+    let output = child.wait_with_output().unwrap();
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(output.stderr.is_empty());
 }
 
 fn compile_failing_jsonl_host(output_directory: &Path) -> PathBuf {

@@ -20,15 +20,15 @@
   "interface": {
     "displayName": "dcc-cua",
     "shortDescription": "Authorize exact-window CUA tasks",
-    "longDescription": "Use the installed dcc-cua runtime through one exact PID/HWND task authorization entered in chat, with no per-action native popups inside the approved scope.",
+    "longDescription": "Check trusted human authorization integration before scoped DCC-CUA tasks. The packaged MCP server provides diagnostics and fails closed until a trusted confirmation transport is integrated.",
     "developerName": "loonghao",
     "category": "Productivity",
     "capabilities": ["Read", "Write"],
     "websiteURL": "https://github.com/dcc-mcp/dcc-cua",
     "defaultPrompt": [
-      "Authorize and control this exact application window with dcc-cua.",
-      "Run an exact-bound browser task without per-action popups.",
-      "Create a credential through a bounded dcc-cua task."
+      "Check whether trusted human authorization is available for this DCC-CUA task.",
+      "Explain the missing integration before attempting an exact-bound browser task.",
+      "Report the DCC-CUA authorization status without creating a task grant."
     ],
     "screenshots": [],
     "brandColor": "#00A8C6"

@@ -961,6 +961,14 @@ retain per-action confirmation. The packaged CLI does not trust flags or
 redirected stdin as user presence, so it keeps per-action confirmation until a
 trusted non-modal input broker is installed by its embedding.
 
+The packaged `dcc-cua mcp-server` currently exposes only
+`authorization_integration_status`. It reports `integration_required` rather
+than disappearing when a desktop helper lacks package/version metadata. A
+recognized process identity no longer creates an issuer or exposes the old
+inline card. No signed-receipt verifier or protected client confirmation
+transport is integrated yet. See [plugin diagnosis](docs/agent-plugin.md) and
+the [proposed cross-client contract](docs/adr/0027-cross-client-task-authorization.md).
+
 Embeddings can construct that broker with
 `dcc_cua_host::trusted_task_authorization_broker`. It returns two separate
 capabilities: a move-only `TrustedTaskAuthorizationIssuer` retained by the
@@ -979,8 +987,8 @@ Browser tasks may instead register the closed owned-browser target
 `browser=chromium, profile=isolated_new`. After the same single user input,
 DCC-CUA starts an isolated profile in one upstream session and derives its PID,
 native HWND, and exact CDP binding. Clients cannot provide or replace those
-identities, an executable, a profile path, or a CDP endpoint. The authorization
-card starts the session and reports `provider`, runtime version, PID, and HWND
+identities, an executable, a profile path, or a CDP endpoint. The trusted
+embedding starts the session and reports `provider`, runtime version, PID, and HWND
 before the first observation or input. Authorized HTTP(S) origins are copied
 into the Host lease and checked for navigation and browser mutations. Repeating
 `browser_prepare` is denied, and hidden upload controls use only

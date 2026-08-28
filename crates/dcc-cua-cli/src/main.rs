@@ -13,6 +13,7 @@ macro_rules! stdoutln {
 
 mod actions;
 mod authorization;
+mod authorization_integration;
 mod browser_extension;
 mod cli_args;
 mod host_lifecycle;
