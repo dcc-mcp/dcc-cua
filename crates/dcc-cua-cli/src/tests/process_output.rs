@@ -11,6 +11,29 @@ fn doctor_failures_preserve_the_diagnostics_native_stdout_boundary() {
 }
 
 #[rstest]
+fn profile_state_watch_failures_preserve_the_streaming_stdout_boundary() {
+    assert!(
+        terminal_error_output(&[
+            OsString::from("profile-state"),
+            OsString::from("--profile-file"),
+            OsString::from("fixture.json"),
+            OsString::from("--watch"),
+        ]) == TerminalErrorOutput::ProtocolNative
+    );
+}
+
+#[rstest]
+fn profile_state_single_read_failures_keep_the_one_shot_envelope() {
+    assert!(
+        terminal_error_output(&[
+            OsString::from("profile-state"),
+            OsString::from("--profile-file"),
+            OsString::from("fixture.json"),
+        ]) == TerminalErrorOutput::OneShotEnvelope
+    );
+}
+
+#[rstest]
 fn typed_one_shot_failures_keep_only_allowlisted_identity() {
     let error = ComputerUseError::new(
         ComputerUseErrorCode::StaleObservation,

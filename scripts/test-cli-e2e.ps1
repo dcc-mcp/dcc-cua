@@ -281,6 +281,11 @@ finally:
             $hasOneShotSuccess) {
             throw "release Host doctor shutdown failure violated its diagnostics-native boundary"
         }
+
+        & python -B (Join-Path $PSScriptRoot "fixtures\profile_state_watch_failure.py") $binaryPath
+        if ($LASTEXITCODE -ne 0) {
+            throw "release profile-state watch failure escaped its streaming boundary"
+        }
     }
     finally {
         foreach ($path in @($failureOutput, $failureError, $hostileHost, $failingJsonlHost, $doctorShutdownFailureHost, $jsonlInput)) {

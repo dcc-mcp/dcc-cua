@@ -120,7 +120,13 @@ fn terminal_error_output(arguments: &[OsString]) -> TerminalErrorOutput {
         && arguments[1]
             .to_str()
             .is_some_and(|argument| !argument.starts_with('-')));
+    let profile_state_watch = first_text == Some("profile-state")
+        && arguments
+            .iter()
+            .skip(1)
+            .any(|argument| argument == "--watch");
     if native_messaging
+        || profile_state_watch
         || matches!(
             first_text,
             Some("doctor" | "host" | "host-jsonl" | "mcp-server" | "__private-worker")
