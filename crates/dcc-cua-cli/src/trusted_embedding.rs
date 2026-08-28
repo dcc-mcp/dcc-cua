@@ -1,9 +1,10 @@
-//! Fail-closed authentication for the process that embeds the MCP Apps bridge.
+//! Best-effort identity diagnostics for the process embedding the MCP bridge.
 //!
 //! MCP Apps visibility metadata controls which tools a host presents to the
 //! model, but it is not a cryptographic invocation-origin credential. The
-//! authorization issuer therefore exists only when the bridge was launched
-//! directly by the packaged Codex desktop process.
+//! identity result cannot construct an authorization issuer or prove a human
+//! decision. The packaged server exposes diagnostics only, regardless of this
+//! check's result, until a separate trusted human-input transport is integrated.
 
 use thiserror::Error;
 

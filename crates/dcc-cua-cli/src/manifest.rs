@@ -108,7 +108,7 @@ pub(crate) fn document() -> Value {
         "desktop_control_widened": false,
         "fresh_observation_required_after_escalation": true,
     });
-    json!({
+    let mut document = json!({
         "schema_version": 1,
         "name": "dcc-cua",
         "version": env!("CARGO_PKG_VERSION"),
@@ -165,7 +165,7 @@ pub(crate) fn document() -> Value {
                 "request_schema": dcc_cua_host::TRUSTED_TASK_AUTHORIZATION_SCHEMA,
                 "mode": "split_constructor_capability_broker",
                 "issuer_owner": "authenticated_embedding_user_input",
-                "embedding": "mcp_apps_inline_card",
+                "embedding": "constructor_owned_user_input",
                 "task_scoped": true,
                 "modal": false,
                 "registration_single_use": true,
@@ -238,5 +238,8 @@ pub(crate) fn document() -> Value {
                 },
             },
         },
-    })
+    });
+    document["host"]["task_authorization"]["cli_integration"] =
+        crate::authorization_integration::status();
+    document
 }

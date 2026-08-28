@@ -1,7 +1,7 @@
 {
   "name": "dcc-cua-computer-use",
   "version": "0.6.0",
-  "description": "Exact-window Computer Use skills and one-time inline task authorization for dcc-cua.",
+  "description": "Exact-window DCC-CUA skills and trusted authorization integration diagnostics.",
   "author": {
     "name": "loonghao",
     "email": "hal.long@outlook.com",
@@ -22,7 +22,7 @@
   "interface": {
     "displayName": "dcc-cua",
     "shortDescription": "Operate exact-window CUA sessions",
-    "longDescription": "Use dcc-cua for scoped snapshots, verified input, persistent control banners, packaged game acceptance, and one explicit in-chat task authorization without per-action native popups.",
+    "longDescription": "Check trusted human authorization integration before scoped DCC-CUA tasks. The packaged MCP server provides diagnostics and fails closed until a trusted confirmation transport is integrated.",
     "developerName": "loonghao",
     "category": "Productivity",
     "capabilities": ["Read", "Write"],

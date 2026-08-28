@@ -4,6 +4,11 @@
 
 Accepted
 
+The identity checks now provide diagnostics only. The packaged MCP server no
+longer creates an issuer from process identity. See
+[ADR 0027](0027-cross-client-task-authorization.md) for the implemented
+fail-closed discovery behavior and the proposed replacement trust contract.
+
 ## Context
 
 The inline task card can mint a bounded no-popup authorization only from an
