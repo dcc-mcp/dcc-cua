@@ -517,7 +517,10 @@ fn macos_host_worker_is_private_and_standard_by_default() {
             .is_none()
     );
     assert!(options.environment.is_empty());
-    assert!(options.inherit_stderr);
+    assert!(
+        !options.inherit_stderr,
+        "the Host must capture private-worker failures instead of exposing child stderr"
+    );
 }
 
 #[rstest]

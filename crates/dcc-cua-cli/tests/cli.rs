@@ -244,6 +244,30 @@ fn mcp_server_rejects_an_untrusted_process_parent_before_reading_stdin() {
     assert!(output.stderr.is_empty());
 }
 
+#[rstest]
+fn private_worker_failure_stays_on_its_protocol_native_boundary() {
+    let output = Command::new(env!("CARGO_BIN_EXE_dcc-cua"))
+        .args(["__private-worker", "--generation", "dynamic_marker_8e1ab4"])
+        .output()
+        .expect("dcc-cua private-worker fixture should start");
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        output.stdout.is_empty(),
+        "private-worker failure appended non-protocol stdout bytes: {:?}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be UTF-8");
+    assert!(
+        stderr.is_empty() || stderr == "dcc-cua: private worker failed\n",
+        "private-worker failure exposed dynamic stderr: {stderr:?}"
+    );
+    assert!(
+        !stderr.contains("dynamic_marker_8e1ab4"),
+        "private-worker stderr exposed the fixture marker: {stderr:?}"
+    );
+}
+
 fn compile_failing_jsonl_host(output_directory: &Path) -> PathBuf {
     let binary_name = if cfg!(windows) {
         "failing-jsonl-host.exe"

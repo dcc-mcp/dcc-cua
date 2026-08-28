@@ -87,7 +87,10 @@ pub(crate) fn host_private_worker_options(
             },
         },
         environment: Vec::new(),
-        inherit_stderr: true,
+        // The Host is a protocol process. Raw worker diagnostics can contain
+        // runtime, filesystem, or user-controlled details, so they must never
+        // escape through the Host's public stderr stream.
+        inherit_stderr: false,
     }
 }
 
