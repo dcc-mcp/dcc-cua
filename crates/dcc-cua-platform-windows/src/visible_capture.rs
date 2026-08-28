@@ -1,14 +1,17 @@
 use crate::capture_identity::validate_exact_window_owner;
 use thiserror::Error;
 use windows::Win32::{
-    Foundation::{BOOL, HWND, LPARAM, POINT, RECT},
-    Graphics::Gdi::{
-        BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC,
-        DIB_RGB_COLORS, DeleteDC, DeleteObject, GetDC, GetDIBits, RGBQUAD, ReleaseDC, SRCCOPY,
-        SelectObject,
+    Foundation::{BOOL, HWND, LPARAM, RECT},
+    Graphics::{
+        Dwm::{DWMWA_EXTENDED_FRAME_BOUNDS, DwmFlush, DwmGetWindowAttribute},
+        Gdi::{
+            BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BitBlt, CreateCompatibleBitmap,
+            CreateCompatibleDC, DIB_RGB_COLORS, DeleteDC, DeleteObject, GetDC, GetDIBits, RGBQUAD,
+            ReleaseDC, SRCCOPY, SelectObject,
+        },
     },
     UI::{
-        HiDpi::{GetDpiForWindow, LogicalToPhysicalPointForPerMonitorDPI},
+        HiDpi::GetDpiForWindow,
         WindowsAndMessaging::{
             EnumWindows, GA_ROOT, GetAncestor, GetWindowRect, IsIconic, IsWindow, IsWindowVisible,
         },
@@ -16,6 +19,35 @@ use windows::Win32::{
 };
 
 const MAX_ROOT_WINDOWS: usize = 4_096;
+
+struct ThreadDpiAwarenessGuard(windows_sys::Win32::UI::HiDpi::DPI_AWARENESS_CONTEXT);
+
+impl ThreadDpiAwarenessGuard {
+    fn per_monitor_v2() -> Result<Self, VisibleWindowCaptureError> {
+        use windows_sys::Win32::UI::HiDpi::{
+            DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetThreadDpiAwarenessContext,
+        };
+
+        let previous =
+            unsafe { SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) };
+        if previous.is_null() {
+            return Err(capture_error(
+                "enter a per-monitor-v2 physical desktop coordinate scope",
+            ));
+        }
+        Ok(Self(previous))
+    }
+}
+
+impl Drop for ThreadDpiAwarenessGuard {
+    fn drop(&mut self) {
+        use windows_sys::Win32::UI::HiDpi::SetThreadDpiAwarenessContext;
+
+        unsafe {
+            SetThreadDpiAwarenessContext(self.0);
+        }
+    }
+}
 
 #[derive(Debug, Error)]
 #[error("visible exact-window capture failed: {0}")]
@@ -26,6 +58,15 @@ pub struct VisibleWindowCapture {
     pub bgra: Vec<u8>,
     pub width: u32,
     pub height: u32,
+    pub bounds: [i32; 4],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ExactWindowPixelInstanceEvidence {
+    pub process_creation_time_100ns: u64,
+    pub window_thread_id: u32,
+    pub window_class_hash: u64,
+    pub owner_window_handle: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -33,14 +74,77 @@ pub struct ExactWindowPixelEvidence {
     pub process_id: u32,
     pub window_handle: u64,
     pub bounds: [i32; 4],
+    pub visible_bounds: [i32; 4],
     pub dpi: u32,
     pub visible: bool,
     pub minimized: bool,
     pub unobscured: bool,
+    pub instance: ExactWindowPixelInstanceEvidence,
 }
 
 fn capture_error(message: impl Into<String>) -> VisibleWindowCaptureError {
     VisibleWindowCaptureError(message.into())
+}
+
+fn exact_window_instance_evidence(
+    process_id: u32,
+    window_handle: u64,
+) -> Result<ExactWindowPixelInstanceEvidence, VisibleWindowCaptureError> {
+    use windows_sys::Win32::Foundation::{CloseHandle, FILETIME};
+    use windows_sys::Win32::System::Threading::{
+        GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GW_OWNER, GetClassNameW, GetWindow, GetWindowThreadProcessId,
+    };
+
+    let hwnd = window_handle as *mut core::ffi::c_void;
+    let mut observed_pid = 0_u32;
+    let window_thread_id = unsafe { GetWindowThreadProcessId(hwnd, &mut observed_pid) };
+    if window_thread_id == 0 || observed_pid != process_id {
+        return Err(capture_error(
+            "the exact HWND thread/process identity is unavailable",
+        ));
+    }
+    let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, process_id) };
+    if process.is_null() {
+        return Err(capture_error("the exact process instance cannot be opened"));
+    }
+    let mut creation = FILETIME::default();
+    let mut exit = FILETIME::default();
+    let mut kernel = FILETIME::default();
+    let mut user = FILETIME::default();
+    let times_ok =
+        unsafe { GetProcessTimes(process, &mut creation, &mut exit, &mut kernel, &mut user) != 0 };
+    unsafe { CloseHandle(process) };
+    if !times_ok {
+        return Err(capture_error(
+            "the exact process creation time is unavailable",
+        ));
+    }
+    let process_creation_time_100ns =
+        (u64::from(creation.dwHighDateTime) << 32) | u64::from(creation.dwLowDateTime);
+
+    let mut class_name = [0_u16; 256];
+    let class_len =
+        unsafe { GetClassNameW(hwnd, class_name.as_mut_ptr(), class_name.len() as i32) };
+    if class_len <= 0 {
+        return Err(capture_error(
+            "the exact HWND class identity is unavailable",
+        ));
+    }
+    let window_class_hash = class_name[..class_len as usize]
+        .iter()
+        .fold(0xcbf29ce484222325_u64, |hash, unit| {
+            (hash ^ u64::from(*unit)).wrapping_mul(0x100000001b3)
+        });
+    let owner_window_handle = unsafe { GetWindow(hwnd, GW_OWNER) } as usize as u64;
+    Ok(ExactWindowPixelInstanceEvidence {
+        process_creation_time_100ns,
+        window_thread_id,
+        window_class_hash,
+        owner_window_handle,
+    })
 }
 
 fn rectangles_intersect(left: [i32; 4], right: [i32; 4]) -> bool {
@@ -59,6 +163,20 @@ fn rectangles_intersect(left: [i32; 4], right: [i32; 4]) -> bool {
         && right_edge < left_right
         && left_top < right_bottom
         && right_top < left_bottom
+}
+
+fn physical_window_rect(window: HWND) -> Result<RECT, VisibleWindowCaptureError> {
+    let mut rect = RECT::default();
+    unsafe {
+        DwmGetWindowAttribute(
+            window,
+            DWMWA_EXTENDED_FRAME_BOUNDS,
+            (&raw mut rect).cast(),
+            std::mem::size_of::<RECT>() as u32,
+        )
+    }
+    .map_err(|error| capture_error(format!("read exact physical DWM frame bounds: {error}")))?;
+    physical_capture_rect(rect)
 }
 
 unsafe fn root_or_self(window: HWND) -> HWND {
@@ -96,27 +214,39 @@ unsafe extern "system" fn collect_root_z_order(window: HWND, context: LPARAM) ->
         return BOOL(0);
     }
     let visible = unsafe { IsWindowVisible(window) }.as_bool();
-    let mut rect = RECT::default();
-    if unsafe { GetWindowRect(window, &mut rect) }.is_err() {
-        enumeration.failed = true;
-        return BOOL(0);
-    }
     let window_handle = window.0 as usize as u64;
-    enumeration.roots.push((
-        window_handle,
-        [
+    let Some(entry) = root_z_order_entry(window_handle, visible, || {
+        let rect = physical_window_rect(window).ok()?;
+        Some([
             rect.left,
             rect.top,
             rect.right - rect.left,
             rect.bottom - rect.top,
-        ],
-        visible,
-    ));
+        ])
+    }) else {
+        enumeration.failed = true;
+        return BOOL(0);
+    };
+    enumeration.roots.push(entry);
     if window_handle == enumeration.target_window_handle {
         BOOL(0)
     } else {
         BOOL(1)
     }
+}
+
+pub(crate) fn root_z_order_entry<ReadBounds>(
+    window_handle: u64,
+    visible: bool,
+    read_visible_bounds: ReadBounds,
+) -> Option<(u64, [i32; 4], bool)>
+where
+    ReadBounds: FnOnce() -> Option<[i32; 4]>,
+{
+    if !visible {
+        return Some((window_handle, [0; 4], false));
+    }
+    read_visible_bounds().map(|bounds| (window_handle, bounds, true))
 }
 
 unsafe fn target_is_unobscured(target: HWND, rect: RECT) -> bool {
@@ -154,31 +284,7 @@ unsafe fn target_is_unobscured(target: HWND, rect: RECT) -> bool {
     )
 }
 
-unsafe fn physical_capture_rect(
-    target: HWND,
-    logical: RECT,
-) -> Result<RECT, VisibleWindowCaptureError> {
-    let mut top_left = POINT {
-        x: logical.left,
-        y: logical.top,
-    };
-    let mut bottom_right = POINT {
-        x: logical.right,
-        y: logical.bottom,
-    };
-    if !unsafe { LogicalToPhysicalPointForPerMonitorDPI(target, &mut top_left) }.as_bool()
-        || !unsafe { LogicalToPhysicalPointForPerMonitorDPI(target, &mut bottom_right) }.as_bool()
-    {
-        return Err(capture_error(
-            "convert the exact HWND rectangle to physical desktop pixels",
-        ));
-    }
-    let physical = RECT {
-        left: top_left.x,
-        top: top_left.y,
-        right: bottom_right.x,
-        bottom: bottom_right.y,
-    };
+pub(crate) fn physical_capture_rect(physical: RECT) -> Result<RECT, VisibleWindowCaptureError> {
     if physical.right - physical.left <= 4 || physical.bottom - physical.top <= 4 {
         return Err(capture_error(
             "the exact HWND physical desktop rectangle is invalid",
@@ -192,6 +298,7 @@ pub fn exact_window_pixel_evidence(
     process_id: u32,
     window_handle: u64,
 ) -> Result<ExactWindowPixelEvidence, VisibleWindowCaptureError> {
+    let _dpi_scope = ThreadDpiAwarenessGuard::per_monitor_v2()?;
     validate_exact_window_owner(process_id, window_handle)
         .map_err(|error| capture_error(error.to_string()))?;
     let raw = usize::try_from(window_handle)
@@ -202,7 +309,7 @@ pub fn exact_window_pixel_evidence(
     }
     let mut rect = RECT::default();
     unsafe { GetWindowRect(hwnd, &mut rect) }
-        .map_err(|error| capture_error(format!("read exact window bounds: {error}")))?;
+        .map_err(|error| capture_error(format!("read exact PMv2 window bounds: {error}")))?;
     let width = rect.right - rect.left;
     let height = rect.bottom - rect.top;
     if width <= 4 || height <= 4 {
@@ -216,14 +323,22 @@ pub fn exact_window_pixel_evidence(
     if dpi == 0 {
         return Err(capture_error("the exact HWND DPI is unavailable"));
     }
+    let visible_rect = physical_window_rect(hwnd)?;
     Ok(ExactWindowPixelEvidence {
         process_id,
         window_handle,
         bounds: [rect.left, rect.top, width, height],
+        visible_bounds: [
+            visible_rect.left,
+            visible_rect.top,
+            visible_rect.right - visible_rect.left,
+            visible_rect.bottom - visible_rect.top,
+        ],
         dpi,
         visible: unsafe { IsWindowVisible(hwnd) }.as_bool(),
         minimized: unsafe { IsIconic(hwnd) }.as_bool(),
-        unobscured: unsafe { target_is_unobscured(hwnd, rect) },
+        unobscured: unsafe { target_is_unobscured(hwnd, visible_rect) },
+        instance: exact_window_instance_evidence(process_id, window_handle)?,
     })
 }
 
@@ -236,6 +351,7 @@ pub fn capture_visible_window(
     process_id: u32,
     window_handle: u64,
 ) -> Result<VisibleWindowCapture, VisibleWindowCaptureError> {
+    let _dpi_scope = ThreadDpiAwarenessGuard::per_monitor_v2()?;
     validate_exact_window_owner(process_id, window_handle)
         .map_err(|error| capture_error(error.to_string()))?;
     let raw = usize::try_from(window_handle)
@@ -248,9 +364,7 @@ pub fn capture_visible_window(
         return Err(capture_error("the exact HWND is minimized"));
     }
 
-    let mut rect = RECT::default();
-    unsafe { GetWindowRect(hwnd, &mut rect) }
-        .map_err(|error| capture_error(format!("read exact window bounds: {error}")))?;
+    let rect = physical_window_rect(hwnd)?;
     let width = rect.right - rect.left;
     let height = rect.bottom - rect.top;
     if width <= 4 || height <= 4 {
@@ -264,11 +378,17 @@ pub fn capture_visible_window(
         ));
     }
 
-    let physical_rect = unsafe { physical_capture_rect(hwnd, rect) }?;
+    // DWM extended-frame bounds are physical desktop pixels and are not
+    // virtualized for the caller's or target's DPI-awareness context. The
+    // target and every z-order root above use this same coordinate source, so
+    // applying a target-relative conversion would double-scale the crop.
+    let physical_rect = physical_capture_rect(rect)?;
     let physical_width = physical_rect.right - physical_rect.left;
     let physical_height = physical_rect.bottom - physical_rect.top;
 
     unsafe {
+        DwmFlush()
+            .map_err(|error| capture_error(format!("synchronize desktop compositor: {error}")))?;
         let screen_dc = GetDC(HWND(std::ptr::null_mut()));
         if screen_dc.0.is_null() {
             return Err(capture_error("acquire desktop device context"));
@@ -333,6 +453,12 @@ pub fn capture_visible_window(
             bgra,
             width: physical_width as u32,
             height: physical_height as u32,
+            bounds: [
+                physical_rect.left,
+                physical_rect.top,
+                physical_width,
+                physical_height,
+            ],
         })
     }
 }

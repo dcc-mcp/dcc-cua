@@ -1607,25 +1607,6 @@ impl ComputerUseDesktopSession {
     }
 }
 
-#[cfg(windows)]
-fn desktop_crop_bounds(target: &WindowTarget) -> ComputerUseResult<([i32; 4], u32)> {
-    let window_handle = usize::try_from(target.window_id).map_err(|_| {
-        ComputerUseError::new(
-            ComputerUseErrorCode::InvalidTarget,
-            "window handle does not fit the current Windows target",
-        )
-    })?;
-    let dpi = unsafe {
-        windows_sys::Win32::UI::HiDpi::GetDpiForWindow(window_handle as *mut core::ffi::c_void)
-    };
-    Ok((scale_bounds_for_dpi(target.bounds, dpi)?, dpi))
-}
-
-#[cfg(not(windows))]
-fn desktop_crop_bounds(target: &WindowTarget) -> ComputerUseResult<([i32; 4], u32)> {
-    Ok((target.bounds, 96))
-}
-
 struct ExactWindowCapture {
     data: Vec<u8>,
     backend: &'static str,
@@ -1638,35 +1619,14 @@ struct ExactWindowCapture {
     dpi: u32,
     #[cfg(windows)]
     bounds: [i32; 4],
-}
-
-#[cfg(windows)]
-async fn sample_exact_window_pixel_evidence(
-    process_id: u32,
-    window_id: u64,
-) -> ComputerUseResult<dcc_cua_platform_windows::ExactWindowPixelEvidence> {
-    tokio::task::spawn_blocking(move || {
-        dcc_cua_platform_windows::exact_window_pixel_evidence(process_id, window_id).map_err(
-            |error| ComputerUseError::new(ComputerUseErrorCode::InvalidTarget, error.to_string()),
-        )
-    })
-    .await
-    .map_err(|error| {
-        ComputerUseError::new(
-            ComputerUseErrorCode::CaptureFailed,
-            format!("final exact-window evidence task failed: {error}"),
-        )
-    })?
+    #[cfg(windows)]
+    source_rect: [i32; 4],
+    #[cfg(windows)]
+    native_evidence: dcc_cua_platform_windows::ExactWindowPixelEvidence,
 }
 
 #[cfg(windows)]
 static EXACT_WINDOW_CAPTURE_GENERATION: AtomicU64 = AtomicU64::new(1);
-
-pub(crate) const fn exact_capture_failure_allows_desktop_fallback(
-    code: ComputerUseErrorCode,
-) -> bool {
-    !matches!(code, ComputerUseErrorCode::InvalidTarget)
-}
 
 #[cfg(windows)]
 async fn capture_exact_window(
@@ -1719,6 +1679,12 @@ async fn capture_exact_window(
                 &after,
                 ExactWindowPixelCaptureMode::VisibleDesktopCrop,
             )?;
+            if visible.bounds != after.visible_bounds {
+                return Err(ComputerUseError::new(
+                    ComputerUseErrorCode::StaleObservation,
+                    "the visible desktop crop bounds changed before native recapture",
+                ));
+            }
             return Ok(ExactWindowCapture {
                 data: encode_bgra_to_png(&visible.bgra, visible.width, visible.height)?,
                 backend: "dcc-cua-visible-exact-window",
@@ -1727,6 +1693,8 @@ async fn capture_exact_window(
                 generation,
                 dpi: after.dpi,
                 bounds: after.bounds,
+                source_rect: visible.bounds,
+                native_evidence: after,
             });
         }
         let wgc_error =
@@ -1772,6 +1740,8 @@ async fn capture_exact_window(
                         generation,
                         dpi: after.dpi,
                         bounds: after.bounds,
+                        source_rect: after.bounds,
+                        native_evidence: after,
                     });
                 }
                 Err(error) => error.to_string(),
@@ -1797,6 +1767,12 @@ async fn capture_exact_window(
             &after,
             ExactWindowPixelCaptureMode::VisibleDesktopCrop,
         )?;
+        if visible.bounds != after.visible_bounds {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::StaleObservation,
+                "the visible desktop crop bounds changed before native recapture",
+            ));
+        }
         Ok(ExactWindowCapture {
             data: encode_bgra_to_png(&visible.bgra, visible.width, visible.height)?,
             backend: "dcc-cua-visible-exact-window",
@@ -1805,6 +1781,8 @@ async fn capture_exact_window(
             generation,
             dpi: after.dpi,
             bounds: after.bounds,
+            source_rect: visible.bounds,
+            native_evidence: after,
         })
     })
     .await

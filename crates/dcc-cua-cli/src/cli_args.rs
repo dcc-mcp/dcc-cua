@@ -2,6 +2,30 @@
 
 use dcc_cua_core::{COMPUTER_USE_ESCALATION_REASONS, MAX_ESCALATION_DETAIL_CHARS};
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum SnapshotMode {
+    AccessibilityPreferred,
+    PixelsOnly,
+}
+
+pub(super) fn snapshot_mode(flags: &[String]) -> Result<SnapshotMode, Box<dyn std::error::Error>> {
+    if !has_flag(flags, "--pixels-only") {
+        return Ok(SnapshotMode::AccessibilityPreferred);
+    }
+    if flag_value(flags, "--pid").is_none() || flag_value(flags, "--window-id").is_none() {
+        return Err(
+            "snapshot --pixels-only requires an exact --pid PID --window-id ID pair".into(),
+        );
+    }
+    if has_flag(flags, "--activate") || has_flag(flags, "--escalate") {
+        return Err(
+            "snapshot --pixels-only is read-only and cannot be combined with --activate or --escalate"
+                .into(),
+        );
+    }
+    Ok(SnapshotMode::PixelsOnly)
+}
+
 const KNOWN_FLAG_NAMES: &[&str] = &[
     "--action",
     "--action-json",
@@ -63,6 +87,7 @@ const KNOWN_FLAG_NAMES: &[&str] = &[
     "--parallel-discovery",
     "--path",
     "--pid",
+    "--pixels-only",
     "--poll-ms",
     "--profile-file",
     "--profile-store",

@@ -10,6 +10,10 @@ use dcc_cua_host::{
 use serde_json::{Value, json};
 
 pub(crate) fn document() -> Value {
+    document_for_platform(cfg!(windows))
+}
+
+pub(crate) fn document_for_platform(exact_window_pixels_available: bool) -> Value {
     let session_events = json!({
         "state_method": "get_input_state",
         "poll_method": "poll_session_events",
@@ -217,6 +221,7 @@ pub(crate) fn document() -> Value {
             "backend": "cua-driver-sdk",
             "separate_driver_required": false,
             "exact_window_pixels": {
+                "availability": "windows",
                 "cli_flag": "--pixels-only",
                 "required_selectors": ["--pid", "--window-id"],
                 "accessibility_provider_started": false,
@@ -250,5 +255,11 @@ pub(crate) fn document() -> Value {
     });
     document["host"]["task_authorization"]["cli_integration"] =
         crate::authorization_integration::status();
+    if !exact_window_pixels_available {
+        document["runtime"]
+            .as_object_mut()
+            .expect("manifest runtime is an object")
+            .remove("exact_window_pixels");
+    }
     document
 }

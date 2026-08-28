@@ -377,7 +377,7 @@ messaging, and MCP commands keep their protocol-specific stdout framing.
 target; if an application has multiple windows, pass `--pid` and
 `--window-id` instead of relying on an app name.
 
-For a live custom-rendered window whose accessibility provider is missing or
+On Windows, for a live custom-rendered window whose accessibility provider is missing or
 unresponsive, use `snapshot --pid PID --window-id HWND --pixels-only`. This
 explicit mode does not start accessibility. It inventories the native window,
 captures only that PID/HWND, and recaptures identity, bounds, DPI, visibility,
@@ -387,6 +387,8 @@ closed. It never returns or crops a whole-desktop screenshot. A normal snapshot
 that reaches a typed bounded accessibility timeout may use the same exact-window
 capture route, but its provenance is separately labeled
 `accessibility_timeout_degraded`; explicit mode is labeled `pixels_only`.
+The manifest omits `runtime.exact_window_pixels` and the corresponding Host
+capability on macOS and Linux, where this route returns `BackendUnavailable`.
 An absent provider is labeled `accessibility_unavailable_degraded` rather than
 being misreported as a timeout.
 

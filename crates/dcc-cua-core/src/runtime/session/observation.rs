@@ -570,156 +570,85 @@ impl ComputerUseSession {
             || capture_exact_window(target.pid, target.window_id),
         )
         .await;
-        let exact_capture = self.finish_observation_sensitive_attempt(exact_capture);
-        #[cfg(windows)]
-        let mut exact_publication_fence = None;
-        let (data, capture_backend, fallback, mut capture_provenance) = match exact_capture {
-            Ok(capture) => {
-                #[cfg(windows)]
-                {
-                    exact_publication_fence = Some((
-                        ExactWindowPixelGeometry {
-                            bounds: capture.bounds,
-                            dpi: capture.dpi,
-                        },
-                        capture.generation,
-                        capture.mode,
-                    ));
-                }
-                let provenance = json!({
-                    "backend": capture.backend,
-                    "pixels_captured": true,
-                    "scope": "window",
-                    "fallback": capture.fallback,
-                    "accessibility_available": false,
-                    "process_id": target.pid,
-                    "window_handle": target.window_id,
-                    "native_window_bounds": target.bounds,
-                });
-                #[cfg(windows)]
-                let provenance = {
-                    let mut provenance = provenance;
-                    provenance["native_window_bounds"] = json!(capture.bounds);
-                    provenance["capture_generation"] = json!(capture.generation);
-                    provenance["window_dpi"] = json!(capture.dpi);
-                    provenance
-                };
-                (capture.data, capture.backend, capture.fallback, provenance)
-            }
-            Err(exact_error) => {
-                if !exact_capture_failure_allows_desktop_fallback(exact_error.code) {
-                    return Err(exact_error);
-                }
-                if !target.is_on_screen || !target.is_foreground {
-                    return Err(ComputerUseError::new(
-                        ComputerUseErrorCode::CaptureFailed,
-                        format!(
-                            "exact window capture failed ({exact_error}); desktop visual fallback requires the target to be on-screen and foreground"
-                        ),
-                    ));
-                }
-                let result = gated_exact_window_observation(
-                    interactive_desktop::require_desktop_observation_available,
-                    || {
-                        call_driver_tool(
-                            &self.driver.driver,
-                            "get_desktop_state",
-                            json!({"session": self.session_id}).to_string(),
-                            "capture CUA desktop fallback",
-                        )
-                    },
-                )
-                .await;
-                let result = self.finish_observation_sensitive_attempt(result)?;
-                let result =
-                    self.finish_observed_tool_attempt("capture CUA desktop fallback", Ok(result))?;
-                let image = result.images.first().ok_or_else(|| {
-                    ComputerUseError::new(
-                        ComputerUseErrorCode::CaptureFailed,
-                        "CUA desktop fallback returned no screenshot",
-                    )
-                })?;
-                let desktop = base64::engine::general_purpose::STANDARD
-                    .decode(&image.data_base64)
-                    .map_err(|error| {
-                        ComputerUseError::new(
-                            ComputerUseErrorCode::CaptureFailed,
-                            error.to_string(),
-                        )
-                    })?;
-                let (crop_bounds, window_dpi) = desktop_crop_bounds(target)?;
-                let data = crop_png_to_bounds(&desktop, crop_bounds)?;
-                let desktop_state = result
-                    .structured_json
-                    .as_deref()
-                    .and_then(|json| serde_json::from_str(json).ok())
-                    .unwrap_or_else(|| json!({}));
-                (
-                    data,
-                    "cua-driver-sdk-desktop-crop",
-                    "desktop_crop",
-                    json!({
-                        "backend": "cua-driver-sdk-desktop-crop",
-                        "pixels_captured": true,
-                        "scope": "window",
-                        "fallback": "desktop_crop",
-                        "accessibility_available": false,
-                        "process_id": target.pid,
-                        "window_handle": target.window_id,
-                        "native_window_bounds": target.bounds,
-                        "desktop_crop_bounds": crop_bounds,
-                        "window_dpi": window_dpi,
-                        "desktop_state": desktop_state,
-                    }),
-                )
-            }
-        };
-        let (width, height) = png_dimensions(&data).ok_or_else(|| {
-            ComputerUseError::new(
-                ComputerUseErrorCode::CaptureFailed,
-                "desktop fallback crop returned a non-PNG screenshot",
-            )
-        })?;
+        let captured = self.finish_observation_sensitive_attempt(exact_capture)?;
+        let fallback = captured.fallback;
         let accessibility = self
             .visual_fallback_accessibility(target, max_elements, max_depth, fallback)
             .await;
         let final_target = self
             .revalidate_observed_exact_publication_target(target)
             .await?;
-        let accessibility_available = accessibility["accessibility_available"] == true;
-        capture_provenance["accessibility_available"] = json!(accessibility_available);
-        if accessibility_available {
-            capture_provenance["accessibility_backend"] = json!("windows_uia");
-        }
+        let final_capture = gated_exact_window_observation(
+            interactive_desktop::require_exact_window_observation_available,
+            || capture_exact_window(final_target.pid, final_target.window_id),
+        )
+        .await;
+        let final_capture = self.finish_observation_sensitive_attempt(final_capture)?;
         #[cfg(windows)]
-        if let Some((captured_native, capture_generation, capture_mode)) = exact_publication_fence {
-            let final_native = gated_exact_window_observation(
-                interactive_desktop::require_exact_window_observation_available,
-                || sample_exact_window_pixel_evidence(final_target.pid, final_target.window_id),
-            )
-            .await;
-            let final_native = self.finish_observation_sensitive_attempt(final_native)?;
+        {
             validate_native_exact_window_pixel_evidence(
-                &final_native,
-                &final_native,
-                capture_mode,
+                &captured.native_evidence,
+                &final_capture.native_evidence,
+                captured.mode,
             )?;
             validate_final_exact_window_pixel_publication(
                 target,
                 &final_target,
-                captured_native,
-                ExactWindowPixelGeometry {
-                    bounds: final_native.bounds,
-                    dpi: final_native.dpi,
+                ExactWindowPixelPublicationFence {
+                    geometry: ExactWindowPixelGeometry {
+                        bounds: captured.bounds,
+                        dpi: captured.dpi,
+                    },
+                    source_rect: captured.source_rect,
+                    generation: captured.generation,
+                    mode: captured.mode,
+                    instance: captured.native_evidence.instance.into(),
                 },
-                capture_generation,
-                capture_mode,
-                final_native.unobscured,
+                ExactWindowPixelPublicationFence {
+                    geometry: ExactWindowPixelGeometry {
+                        bounds: final_capture.bounds,
+                        dpi: final_capture.dpi,
+                    },
+                    source_rect: final_capture.source_rect,
+                    generation: final_capture.generation,
+                    mode: final_capture.mode,
+                    instance: final_capture.native_evidence.instance.into(),
+                },
+                final_capture.native_evidence.unobscured,
             )?;
         }
+        let data = final_capture.data;
+        let (width, height) = png_dimensions(&data).ok_or_else(|| {
+            ComputerUseError::new(
+                ComputerUseErrorCode::CaptureFailed,
+                "final exact-window capture returned a non-PNG or truncated screenshot",
+            )
+        })?;
+        let capture_backend = final_capture.backend;
+        let mut capture_provenance = json!({
+            "backend": capture_backend,
+            "pixels_captured": true,
+            "scope": "window",
+            "whole_desktop_capture": false,
+            "fallback": final_capture.fallback,
+            "accessibility_available": accessibility["accessibility_available"] == true,
+            "process_id": final_target.pid,
+            "window_handle": final_target.window_id,
+            "native_window_bounds": final_target.bounds,
+        });
+        if accessibility["accessibility_available"] == true {
+            capture_provenance["accessibility_backend"] = json!("windows_uia");
+        }
         #[cfg(windows)]
-        let source_rect =
-            exact_publication_fence.map_or(final_target.bounds, |(geometry, _, _)| geometry.bounds);
+        {
+            capture_provenance["capture_generation"] = json!(final_capture.generation);
+            capture_provenance["window_dpi"] = json!(final_capture.dpi);
+            if final_capture.mode == ExactWindowPixelCaptureMode::VisibleDesktopCrop {
+                capture_provenance["desktop_crop_bounds"] = json!(final_capture.source_rect);
+            }
+        }
+        #[cfg(windows)]
+        let source_rect = final_capture.source_rect;
         #[cfg(not(windows))]
         let source_rect = final_target.bounds;
         let observation = ComputerUseObservation {
@@ -772,12 +701,6 @@ impl ComputerUseSession {
         )
         .await;
         let capture = self.finish_observation_sensitive_attempt(capture)?;
-        let (width, height) = png_dimensions(&capture.data).ok_or_else(|| {
-            ComputerUseError::new(
-                ComputerUseErrorCode::CaptureFailed,
-                "exact-window pixel capture returned a non-PNG or truncated screenshot",
-            )
-        })?;
         let after = self.require_observed_target_available().await?;
         if target.bounds != capture.bounds || after.bounds != capture.bounds {
             return Err(ComputerUseError::new(
@@ -785,52 +708,67 @@ impl ComputerUseSession {
                 "native inventory bounds and exact pixel capture bounds do not match",
             ));
         }
-        validate_exact_window_pixel_publication(
-            target,
-            &after,
-            capture.dpi,
-            capture.dpi,
-            capture.generation,
-            capture.generation,
-        )?;
         let after = self
             .revalidate_observed_exact_publication_target(target)
             .await?;
-        let final_native = gated_exact_window_observation(
+        let final_capture = gated_exact_window_observation(
             interactive_desktop::require_exact_window_observation_available,
-            || sample_exact_window_pixel_evidence(after.pid, after.window_id),
+            || capture_exact_window(after.pid, after.window_id),
         )
         .await;
-        let final_native = self.finish_observation_sensitive_attempt(final_native)?;
-        validate_native_exact_window_pixel_evidence(&final_native, &final_native, capture.mode)?;
+        let final_capture = self.finish_observation_sensitive_attempt(final_capture)?;
+        validate_native_exact_window_pixel_evidence(
+            &capture.native_evidence,
+            &final_capture.native_evidence,
+            capture.mode,
+        )?;
         validate_final_exact_window_pixel_publication(
             target,
             &after,
-            ExactWindowPixelGeometry {
-                bounds: capture.bounds,
-                dpi: capture.dpi,
+            ExactWindowPixelPublicationFence {
+                geometry: ExactWindowPixelGeometry {
+                    bounds: capture.bounds,
+                    dpi: capture.dpi,
+                },
+                source_rect: capture.source_rect,
+                generation: capture.generation,
+                mode: capture.mode,
+                instance: capture.native_evidence.instance.into(),
             },
-            ExactWindowPixelGeometry {
-                bounds: final_native.bounds,
-                dpi: final_native.dpi,
+            ExactWindowPixelPublicationFence {
+                geometry: ExactWindowPixelGeometry {
+                    bounds: final_capture.bounds,
+                    dpi: final_capture.dpi,
+                },
+                source_rect: final_capture.source_rect,
+                generation: final_capture.generation,
+                mode: final_capture.mode,
+                instance: final_capture.native_evidence.instance.into(),
             },
-            capture.generation,
-            capture.mode,
-            final_native.unobscured,
+            final_capture.native_evidence.unobscured,
         )?;
+        let (width, height) = png_dimensions(&final_capture.data).ok_or_else(|| {
+            ComputerUseError::new(
+                ComputerUseErrorCode::CaptureFailed,
+                "final exact-window pixel capture returned a non-PNG or truncated screenshot",
+            )
+        })?;
         let mut provenance = exact_window_pixel_provenance(
             route,
             &after,
-            capture.generation,
-            capture.dpi,
-            capture.backend,
+            final_capture.generation,
+            final_capture.dpi,
+            final_capture.backend,
         );
-        provenance["fallback"] = json!(capture.fallback);
+        provenance["fallback"] = json!(final_capture.fallback);
+        if final_capture.mode == ExactWindowPixelCaptureMode::VisibleDesktopCrop {
+            provenance["desktop_crop_bounds"] = json!(final_capture.source_rect);
+        }
         let accessibility = json!({
             "accessibility_available": false,
             "degraded": route.degraded(),
             "observation_mode": route.observation_mode(),
-            "fallback": capture.fallback,
+            "fallback": final_capture.fallback,
             "pid": after.pid,
             "window_id": after.window_id,
         });
@@ -845,8 +783,8 @@ impl ComputerUseSession {
             window_title: after.title.clone(),
             width,
             height,
-            source_rect: capture.bounds,
-            capture_backend: capture.backend.into(),
+            source_rect: final_capture.source_rect,
+            capture_backend: final_capture.backend.into(),
             capture_provenance: provenance,
             session_id: self.session_id.clone(),
         };
@@ -854,7 +792,7 @@ impl ComputerUseSession {
         self.observation = Some(observation.clone());
         self.set_banner_activity(BannerActivity::Ready);
         Ok(ComputerUseScreenshot {
-            data: capture.data,
+            data: final_capture.data,
             observation,
             accessibility,
         })

@@ -81,29 +81,6 @@ pub(super) fn validate_exact_window_pixel_target_state(
 }
 
 #[cfg(any(windows, test))]
-pub(super) fn validate_exact_window_pixel_publication(
-    before: &WindowTarget,
-    after: &WindowTarget,
-    before_dpi: u32,
-    after_dpi: u32,
-    before_generation: u64,
-    after_generation: u64,
-) -> ComputerUseResult<()> {
-    if before.pid != after.pid
-        || before.window_id != after.window_id
-        || before.bounds != after.bounds
-        || before_dpi != after_dpi
-        || before_generation != after_generation
-    {
-        return Err(ComputerUseError::new(
-            ComputerUseErrorCode::StaleObservation,
-            "the exact PID/HWND, bounds, DPI, or capture generation changed during pixel capture",
-        ));
-    }
-    validate_exact_window_pixel_target_state(after, true)
-}
-
-#[cfg(any(windows, test))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct ExactWindowPixelGeometry {
     pub bounds: [i32; 4],
@@ -118,6 +95,53 @@ pub(super) enum ExactWindowPixelCaptureMode {
 }
 
 #[cfg(any(windows, test))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct ExactWindowPixelInstanceIdentity {
+    pub(super) process_creation_time_100ns: u64,
+    pub(super) window_thread_id: u32,
+    pub(super) window_class_hash: u64,
+    pub(super) owner_window_handle: u64,
+}
+
+#[cfg(any(windows, test))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct ExactWindowPixelPublicationFence {
+    pub geometry: ExactWindowPixelGeometry,
+    pub source_rect: [i32; 4],
+    pub generation: u64,
+    pub mode: ExactWindowPixelCaptureMode,
+    pub instance: ExactWindowPixelInstanceIdentity,
+}
+
+#[cfg(windows)]
+impl From<dcc_cua_platform_windows::ExactWindowPixelInstanceEvidence>
+    for ExactWindowPixelInstanceIdentity
+{
+    fn from(value: dcc_cua_platform_windows::ExactWindowPixelInstanceEvidence) -> Self {
+        Self {
+            process_creation_time_100ns: value.process_creation_time_100ns,
+            window_thread_id: value.window_thread_id,
+            window_class_hash: value.window_class_hash,
+            owner_window_handle: value.owner_window_handle,
+        }
+    }
+}
+
+#[cfg(any(windows, test))]
+fn validate_final_exact_window_pixel_instance(
+    captured: ExactWindowPixelInstanceIdentity,
+    final_instance: ExactWindowPixelInstanceIdentity,
+) -> ComputerUseResult<()> {
+    if captured != final_instance {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::StaleObservation,
+            "the exact process or HWND instance changed during pixel capture",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(any(windows, test))]
 impl ExactWindowPixelCaptureMode {
     const fn requires_unobscured_desktop(self) -> bool {
         matches!(self, Self::VisibleDesktopCrop)
@@ -128,31 +152,48 @@ impl ExactWindowPixelCaptureMode {
 pub(super) fn validate_final_exact_window_pixel_publication(
     captured_target: &WindowTarget,
     final_inventory: &WindowTarget,
-    captured_native: ExactWindowPixelGeometry,
-    final_native: ExactWindowPixelGeometry,
-    capture_generation: u64,
-    capture_mode: ExactWindowPixelCaptureMode,
+    captured: ExactWindowPixelPublicationFence,
+    final_fence: ExactWindowPixelPublicationFence,
     final_unobscured: bool,
 ) -> ComputerUseResult<()> {
-    if captured_target.bounds != captured_native.bounds
-        || final_inventory.bounds != final_native.bounds
+    validate_final_exact_window_pixel_instance(captured.instance, final_fence.instance)?;
+    if captured_target.bounds != captured.geometry.bounds
+        || final_inventory.bounds != final_fence.geometry.bounds
     {
         return Err(ComputerUseError::new(
             ComputerUseErrorCode::StaleObservation,
             "the final native bounds do not match the captured or inventoried exact window",
         ));
     }
-    validate_exact_window_pixel_publication(
-        captured_target,
-        final_inventory,
-        captured_native.dpi,
-        final_native.dpi,
-        capture_generation,
-        capture_generation,
-    )?;
+    if final_fence.generation <= captured.generation || final_fence.mode != captured.mode {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::StaleObservation,
+            "the final exact-window capture generation or mode is stale",
+        ));
+    }
+    if captured.source_rect != final_fence.source_rect
+        || (captured.mode == ExactWindowPixelCaptureMode::WindowContent
+            && (captured.source_rect != captured.geometry.bounds
+                || final_fence.source_rect != final_fence.geometry.bounds))
+    {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::StaleObservation,
+            "the exact-window pixel source rectangle changed before final publication",
+        ));
+    }
+    if captured_target.pid != final_inventory.pid
+        || captured_target.window_id != final_inventory.window_id
+        || captured_target.bounds != final_inventory.bounds
+        || captured.geometry.dpi != final_fence.geometry.dpi
+    {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::StaleObservation,
+            "the exact PID/HWND, bounds, or DPI changed before final publication",
+        ));
+    }
     validate_exact_window_pixel_target_state(
         final_inventory,
-        !capture_mode.requires_unobscured_desktop() || final_unobscured,
+        !captured.mode.requires_unobscured_desktop() || final_unobscured,
     )
 }
 
@@ -188,7 +229,9 @@ pub(super) fn validate_native_exact_window_pixel_evidence(
 ) -> ComputerUseResult<()> {
     if before.process_id != after.process_id
         || before.window_handle != after.window_handle
+        || before.instance != after.instance
         || before.bounds != after.bounds
+        || before.visible_bounds != after.visible_bounds
         || before.dpi != after.dpi
     {
         return Err(ComputerUseError::new(
