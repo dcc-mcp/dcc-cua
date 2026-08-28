@@ -105,7 +105,6 @@ impl ComputerUseSession {
 
     /// Start CUA's bounded window session and show its color-coded marker.
     pub async fn start(&mut self) -> ComputerUseResult<Value> {
-        self.pixel_observation_route = None;
         self.start_with_request(&ComputerUseSessionStartRequest::default())
             .await
     }

@@ -1572,17 +1572,21 @@ async fn windows_endpoint_sessions_keep_background_uia_and_use_task_granted_raw_
             pid,
             window_handle,
             window["title"].as_str().expect("window title").to_owned(),
+            window["app_name"]
+                .as_str()
+                .expect("window application")
+                .to_owned(),
         ));
     }
 
     let foreground = unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow() }
         as usize as u64;
-    window_targets.sort_by_key(|(_, window_handle, _)| *window_handle == foreground);
+    window_targets.sort_by_key(|(_, window_handle, _, _)| *window_handle == foreground);
     assert_ne!(
         window_targets[0].1, foreground,
         "two WPF windows must include one non-foreground target"
     );
-    for (process_id, window_handle, _) in &window_targets {
+    for (process_id, window_handle, _, _) in &window_targets {
         assert_eq!(
             dcc_cua_platform_windows::exact_window_capture_route(*process_id, *window_handle)
                 .expect("classify exact-window capture identity"),
@@ -1592,7 +1596,7 @@ async fn windows_endpoint_sessions_keep_background_uia_and_use_task_granted_raw_
     }
 
     let mut sessions = Vec::new();
-    for (index, (pid, window_handle, window_title)) in window_targets.iter().enumerate() {
+    for (index, (pid, window_handle, window_title, _)) in window_targets.iter().enumerate() {
         let session_id = "shared-windows-public-session".to_owned();
         let grant_id = format!("windows-background-uia-grant-{index}");
         let opened = client_request(
@@ -1679,8 +1683,8 @@ async fn windows_endpoint_sessions_keep_background_uia_and_use_task_granted_raw_
         );
         let (foreground_process_id, foreground_before) = window_targets
             .iter()
-            .find(|(_, candidate, _)| candidate != window_handle)
-            .map(|(process_id, window_handle, _)| (*process_id, *window_handle))
+            .find(|(_, candidate, _, _)| candidate != window_handle)
+            .map(|(process_id, window_handle, _, _)| (*process_id, *window_handle))
             .expect("controlled competing WPF fixture");
         windows_activation::physically_focus_exact_window(foreground_process_id, foreground_before);
         let completed = client_request(
@@ -1751,7 +1755,7 @@ async fn windows_endpoint_sessions_keep_background_uia_and_use_task_granted_raw_
                 .is_err_and(windows_activation::is_safe_foreground_refusal),
         "unexpected bootstrap activation result: {bootstrap_activation:?}"
     );
-    windows_activation::physically_focus_exact_window(process_id, *window_handle);
+    windows_fixture_layout::focus_exact_window(&window_targets, *window_handle);
     client_request(
         &mut clients[active_client],
         "escalate_session",
@@ -1777,17 +1781,25 @@ async fn windows_endpoint_sessions_keep_background_uia_and_use_task_granted_raw_
     )
     .await;
 
-    windows_activation::assert_ordinary_raw_click_uses_task_grant(
+    let expected_raw_text = format!("mirror=windows-background-uia-e2e-{active_text_index}9");
+    windows_fixture_layout::assert_descendant_focus_survives_exact_focus_fence(
         &mut clients[active_client],
-        first_session_id,
-        first_grant_id,
-        first_capability,
-        &escape_snapshot,
+        &window_targets,
+        windows_fixture_layout::DescendantFocusCase {
+            process_id,
+            window_handle: *window_handle,
+            session_id: first_session_id,
+            grant_id: first_grant_id,
+            capability: first_capability,
+            initial_snapshot: &escape_snapshot,
+            automation_id: "txt-input",
+            key: "9",
+            expected_text: &expected_raw_text,
+        },
     )
     .await;
-    windows_activation::assert_exact_foreground_window(process_id, *window_handle);
 
-    let key_snapshot = client_request(
+    let second_focus_snapshot = client_request(
         &mut clients[active_client],
         "snapshot",
         json!({
@@ -1799,52 +1811,22 @@ async fn windows_endpoint_sessions_keep_background_uia_and_use_task_granted_raw_
         }),
     )
     .await;
-
-    let typed = client_request(
+    windows_fixture_layout::assert_descendant_focus_survives_exact_focus_fence(
         &mut clients[active_client],
-        "execute_action",
-        json!({
-            "session_id": first_session_id,
-            "task_grant_id": first_grant_id,
-            "window_capability": first_capability,
-            "observation_id": key_snapshot.value["observation_id"],
-            "accessibility_state_id": key_snapshot.value["accessibility_state_id"],
-            "action": {
-                "action": "keypress",
-                "input_kind": "raw_input",
-                "intent": "ordinary_edit",
-                "delivery_mode": "foreground",
-                "keys": ["9"]
-            },
-            "capture_after": false
-        }),
+        &window_targets,
+        windows_fixture_layout::DescendantFocusCase {
+            process_id,
+            window_handle: *window_handle,
+            session_id: first_session_id,
+            grant_id: first_grant_id,
+            capability: first_capability,
+            initial_snapshot: &second_focus_snapshot,
+            automation_id: "txt-deferred-input",
+            key: "8",
+            expected_text: "deferred_mirror=8",
+        },
     )
     .await;
-    assert_eq!(typed.value["success"], true, "{}", typed.value);
-    assert_eq!(typed.value["policy_tier"], "task_grant");
-    windows_activation::assert_exact_foreground_window(process_id, *window_handle);
-    let expected_raw_text = format!("mirror=windows-background-uia-e2e-{active_text_index}9");
-    let verified = client_request(
-        &mut clients[active_client],
-        "wait_for",
-        json!({
-            "session_id": first_session_id,
-            "task_grant_id": first_grant_id,
-            "window_capability": first_capability,
-            "condition": {
-                "kind": "text_contains",
-                "text": expected_raw_text,
-                "timeout_ms": 30_000,
-                "interval_ms": 100
-            }
-        }),
-    )
-    .await;
-    assert_eq!(
-        verified.value["success"], true,
-        "raw keyboard path did not reach the exact WPF fixture: {}",
-        verified.value
-    );
 
     let escape_snapshot = client_request(
         &mut clients[active_client],
@@ -1859,6 +1841,7 @@ async fn windows_endpoint_sessions_keep_background_uia_and_use_task_granted_raw_
     )
     .await;
 
+    windows_fixture_layout::focus_exact_window(&window_targets, *window_handle);
     let pressed = client_request(
         &mut clients[active_client],
         "execute_action",
@@ -1913,8 +1896,8 @@ async fn windows_endpoint_sessions_keep_background_uia_and_use_task_granted_raw_
         .expect("competing WPF session");
     let competing_process_id = window_targets
         .iter()
-        .find(|(_, candidate, _)| candidate == competing_hwnd)
-        .map(|(process_id, _, _)| *process_id)
+        .find(|(_, candidate, _, _)| candidate == competing_hwnd)
+        .map(|(process_id, _, _, _)| *process_id)
         .expect("competing WPF process identity");
     let competing_activation = clients[*competing_client]
         .request(

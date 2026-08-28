@@ -18,7 +18,9 @@ use super::{
     snapshot::{TOKEN_PREFIX, normalize, resolve_index},
 };
 #[cfg(windows)]
-use crate::visible_capture::root_z_order_proves_unobscured;
+use crate::visible_capture::{
+    physical_capture_rect, root_z_order_entry, root_z_order_proves_unobscured,
+};
 #[cfg(windows)]
 use crate::windows::{
     REQUEST_TIMEOUT, STARTUP_TIMEOUT, UIA_WORKER_PROTOCOL_VERSION, UiaWorker,
@@ -35,6 +37,10 @@ use windows::Win32::{
 use windows_sys::Win32::{
     Foundation::{HINSTANCE, HWND},
     System::Threading::GetCurrentProcessId,
+    UI::HiDpi::{
+        DPI_AWARENESS_CONTEXT, DPI_AWARENESS_CONTEXT_SYSTEM_AWARE, DPI_AWARENESS_CONTEXT_UNAWARE,
+        SetThreadDpiAwarenessContext,
+    },
     UI::WindowsAndMessaging::{
         CreateWindowExW, DestroyWindow, GetWindowThreadProcessId, HWND_TOPMOST, SWP_SHOWWINDOW,
         SendMessageW, SetWindowPos, WM_PAINT, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
@@ -171,6 +177,43 @@ fn visible_crop_requires_complete_target_z_order_proof() {
 }
 
 #[cfg(windows)]
+#[rstest]
+fn invisible_roots_do_not_require_compositor_bounds_for_z_order_proof() {
+    let entry = root_z_order_entry(91, false, || {
+        panic!("an invisible root cannot obscure pixels and must not query DWM bounds")
+    });
+    assert_eq!(entry, Some((91, [0; 4], false)));
+
+    assert!(root_z_order_entry(92, true, || None).is_none());
+}
+
+#[cfg(windows)]
+#[rstest]
+#[case(96, "dpi-unaware", [16, 16, 916, 666])]
+#[case(120, "system-aware", [1_920, 16, 2_820, 666])]
+#[case(144, "per-monitor-v1", [-1_600, 120, -700, 770])]
+#[case(192, "dpi-unaware", [3_840, -1_080, 4_740, -430])]
+fn dwm_capture_rect_is_already_physical_for_every_target_awareness_and_scale(
+    #[case] _target_dpi: u32,
+    #[case] _target_awareness: &str,
+    #[case] bounds: [i32; 4],
+) {
+    let physical = physical_capture_rect(WindowsRect {
+        left: bounds[0],
+        top: bounds[1],
+        right: bounds[2],
+        bottom: bounds[3],
+    })
+    .expect("DWM physical capture rectangle");
+
+    assert_eq!(
+        [physical.left, physical.top, physical.right, physical.bottom],
+        bounds,
+        "100/125/150/200% and negative-origin monitor coordinates must never be scaled twice"
+    );
+}
+
+#[cfg(windows)]
 use super::PersistentWgcCapture;
 #[cfg(windows)]
 use super::windows::{
@@ -217,6 +260,27 @@ fn same_executable_windows_capture_pixels_from_their_exact_hwnds() {
 
 #[cfg(windows)]
 #[rstest]
+#[case(DPI_AWARENESS_CONTEXT_UNAWARE, "dpi-unaware")]
+#[case(DPI_AWARENESS_CONTEXT_SYSTEM_AWARE, "system-aware")]
+fn pmv2_caller_captures_cross_awareness_target_without_coordinate_reconversion(
+    #[case] target_context: DPI_AWARENESS_CONTEXT,
+    #[case] label: &str,
+) {
+    const SS_WHITERECT: u32 = 0x0000_0006;
+    let window = ExactCaptureTestWindow::new_with_dpi_context(
+        &format!("dcc-cua-{label}"),
+        SS_WHITERECT,
+        40,
+        40,
+        target_context,
+    );
+    let process_id = unsafe { GetCurrentProcessId() };
+
+    assert_exact_capture_luma_or_fail_closed(process_id, &window, 224..=255);
+}
+
+#[cfg(windows)]
+#[rstest]
 fn exact_capture_primitives_reject_a_pid_that_does_not_own_the_hwnd() {
     let window = ExactCaptureTestWindow::new("dcc-cua-owner-check", 0x0000_0006, 40, 40);
     let wrong_process_id = unsafe { GetCurrentProcessId() }.wrapping_add(1);
@@ -258,6 +322,24 @@ fn controlled_no_provider_window_exposes_exact_native_pixel_evidence() {
     assert!(!evidence.minimized);
     assert!(evidence.dpi > 0);
     assert!(evidence.bounds[2] > 4 && evidence.bounds[3] > 4);
+    assert!(evidence.instance.process_creation_time_100ns > 0);
+    assert!(evidence.instance.window_thread_id > 0);
+    assert!(evidence.instance.window_class_hash > 0);
+}
+
+#[cfg(windows)]
+#[rstest]
+fn overlapped_window_separates_inventory_frame_from_physical_visible_crop() {
+    let window = ExactCaptureTestWindow::new("dcc-cua-frame-spaces", 0x0000_0006, 40, 40);
+    let process_id = unsafe { GetCurrentProcessId() };
+    let evidence = exact_window_pixel_evidence(process_id, window.raw())
+        .expect("read both exact native frame coordinate contracts");
+
+    assert_ne!(
+        evidence.bounds, evidence.visible_bounds,
+        "PMv2 GetWindowRect includes resize borders that DWM excludes"
+    );
+    assert!(evidence.visible_bounds[2] > 4 && evidence.visible_bounds[3] > 4);
 }
 
 #[cfg(windows)]
@@ -279,14 +361,40 @@ fn controlled_window_move_and_resize_changes_publication_evidence() {
     assert_ne!(before.bounds, after.bounds);
     assert_eq!(before.process_id, after.process_id);
     assert_eq!(before.window_handle, after.window_handle);
+    assert_eq!(before.instance, after.instance);
 }
 
 #[cfg(windows)]
-struct ExactCaptureTestWindow(HWND, bool);
+struct ExactCaptureTestWindow(HWND, bool, Option<DPI_AWARENESS_CONTEXT>);
 
 #[cfg(windows)]
 impl ExactCaptureTestWindow {
     fn new(title: &str, static_style: u32, x: i32, y: i32) -> Self {
+        Self::create(title, static_style, x, y, None)
+    }
+
+    fn new_with_dpi_context(
+        title: &str,
+        static_style: u32,
+        x: i32,
+        y: i32,
+        target_context: DPI_AWARENESS_CONTEXT,
+    ) -> Self {
+        let previous = unsafe { SetThreadDpiAwarenessContext(target_context) };
+        assert!(!previous.is_null(), "enter target DPI-awareness context");
+        let window = Self::create(title, static_style, x, y, Some(target_context));
+        let restored = unsafe { SetThreadDpiAwarenessContext(previous) };
+        assert!(!restored.is_null(), "restore caller DPI-awareness context");
+        window
+    }
+
+    fn create(
+        title: &str,
+        static_style: u32,
+        x: i32,
+        y: i32,
+        dpi_context: Option<DPI_AWARENESS_CONTEXT>,
+    ) -> Self {
         let class = wide("STATIC");
         let title = wide(title);
         let hwnd = unsafe {
@@ -310,7 +418,7 @@ impl ExactCaptureTestWindow {
             SetWindowPos(hwnd, HWND_TOPMOST, x, y, 280, 220, SWP_SHOWWINDOW);
             SendMessageW(hwnd, WM_PAINT, 0, 0);
         }
-        let window = Self(hwnd, static_style == 0x0000_0004);
+        let window = Self(hwnd, static_style == 0x0000_0004, dpi_context);
         window.paint_fixture_color();
         window
     }
@@ -338,6 +446,11 @@ impl ExactCaptureTestWindow {
     }
 
     fn paint_fixture_color(&self) {
+        let previous_context = self.2.map(|context| {
+            let previous = unsafe { SetThreadDpiAwarenessContext(context) };
+            assert!(!previous.is_null(), "enter fixture DPI-awareness context");
+            previous
+        });
         let hwnd = WindowsHwnd(self.0.cast());
         let mut rect = WindowsRect::default();
         unsafe { GetClientRect(hwnd, &mut rect) }.expect("read exact-window fixture client bounds");
@@ -353,6 +466,10 @@ impl ExactCaptureTestWindow {
             painted, 0,
             "paint deterministic exact-window fixture pixels"
         );
+        if let Some(previous) = previous_context {
+            let restored = unsafe { SetThreadDpiAwarenessContext(previous) };
+            assert!(!restored.is_null(), "restore caller DPI-awareness context");
+        }
     }
 }
 
@@ -384,8 +501,14 @@ fn assert_exact_capture_luma_or_fail_closed(
     expected: std::ops::RangeInclusive<u8>,
 ) {
     window.raise();
+    let evidence = exact_window_pixel_evidence(process_id, window.raw())
+        .expect("read exact native frame contracts before visible capture");
     match capture_visible_window(process_id, window.raw()) {
         Ok(capture) => {
+            assert_eq!(
+                capture.bounds, evidence.visible_bounds,
+                "BitBlt must use the fresh physical DWM source rectangle"
+            );
             let luma = center_luma(&capture.bgra, capture.width, capture.height);
             assert!(
                 expected.contains(&luma),

@@ -78,12 +78,22 @@ pub(crate) fn create_authorized(
 }
 
 pub(crate) fn driver_host_options() -> DriverHostOptions {
+    // Upstream's native renderer is a process-lifetime singleton. Its opaque
+    // title token lets our presenter adopt only this configured local instance.
+    #[cfg(windows)]
+    static CURSOR_ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    #[cfg(windows)]
+    let cursor_id = CURSOR_ID.get_or_init(|| {
+        dcc_cua_indicator::register_cursor_renderer_id(format!("dcc-cua-{}", uuid::Uuid::new_v4()))
+    });
     DriverHostOptions {
         cursor: CursorConfig {
             // Embedded Windows and Linux use CUA's native theme renderer;
             // packaged macOS uses the same renderer through a private worker.
             enabled: UPSTREAM_CURSOR_RENDERER_ENABLED,
             theme_id: MOUSE_CURSOR_THEME.into(),
+            #[cfg(windows)]
+            cursor_id: cursor_id.clone(),
             ..CursorConfig::default()
         },
         host_owns_permission_ux: true,

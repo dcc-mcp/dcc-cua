@@ -196,13 +196,15 @@ stderr 状态文本污染。需要检查并安装完整发布包时，请显式�
 长时间运行的 `host-jsonl`、Native Messaging 和 MCP 命令继续使用各自协议规定的 stdout
 帧格式。
 
-对于 accessibility provider 缺失或无响应的自绘窗口，使用
+在 Windows 上，对于 accessibility provider 缺失或无响应的自绘窗口，使用
 `snapshot --pid PID --window-id HWND --pixels-only`。该显式模式不会启动
 accessibility provider，只会捕获指定 PID/HWND；发布前后会复核窗口身份、原生边界、
 DPI、可见性、遮挡和 capture generation。窗口移动、缩放、PID/HWND 复用、最小化、
 隐藏、遮挡或跨窗口替换都会 fail closed，且绝不会返回或裁剪整桌面截图。普通 snapshot
 遇到 typed bounded accessibility timeout 时可安全降级到同一精确窗口捕获路径，但
 provenance 会标记为 `accessibility_timeout_degraded`；显式模式标记为 `pixels_only`。
+macOS 与 Linux 的 manifest 不会广告 `runtime.exact_window_pixels` 或对应 Host capability，
+该路由在这些平台会返回 `BackendUnavailable`。
 provider 缺失则标记为 `accessibility_unavailable_degraded`，不会误报成 timeout。
 
 `doctor` 默认继续执行严格的完整健康检查。对于 Houdini、Unreal 等自绘 DCC 界面，

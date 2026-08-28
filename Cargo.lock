@@ -1252,8 +1252,11 @@ version = "1.5.7"
 dependencies = [
  "cua-driver-testkit",
  "dcc-cua-client",
+ "dcc-cua-core",
+ "dcc-cua-indicator",
  "dcc-cua-platform-windows",
  "dcc-cua-workspace-hack",
+ "png 0.17.16",
  "rstest",
  "serde_json",
  "tempfile",

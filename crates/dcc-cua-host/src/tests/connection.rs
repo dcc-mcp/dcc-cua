@@ -54,8 +54,13 @@ fn long_delays_poll_the_interrupt_boundary_at_least_every_fifty_ms(
 #[tokio::test]
 async fn process_connection_requires_hello_pings_and_rejects_duplicate_hello() {
     let (mut client, server_stream): (DuplexStream, DuplexStream) = tokio::io::duplex(16 * 1024);
+    let driver = ComputerUseDriver::create().unwrap();
+    let expected_capabilities = host_capabilities(
+        crate::request_contract::cursor_render_backend(driver.upstream_cursor_renderer_enabled())
+            != "unavailable",
+    );
     let server = tokio::spawn(process_connection_with_security_services(
-        ComputerUseDriver::create().unwrap(),
+        driver,
         server_stream,
         HostSecurityServices::default(),
     ));
@@ -95,6 +100,7 @@ async fn process_connection_requires_hello_pings_and_rejects_duplicate_hello() {
         .unwrap();
     let response: Value = serde_json::from_slice(&response).unwrap();
     assert_eq!(response["type"], "hello");
+    assert_eq!(response["capabilities"], json!(expected_capabilities));
     assert_eq!(response["request_id"], "hello-1");
     assert_eq!(response["protocol_version"], HOST_PROTOCOL_VERSION);
     for capability in [

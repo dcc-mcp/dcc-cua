@@ -416,6 +416,14 @@ fn host_runtime_uses_the_upstream_cursor_renderer_only_where_it_can_run() {
         cfg!(any(windows, target_os = "linux"))
     );
     assert_eq!(options.cursor.enabled, UPSTREAM_CURSOR_RENDERER_ENABLED);
+    #[cfg(windows)]
+    {
+        assert!(options.cursor.cursor_id.starts_with("dcc-cua-"));
+        assert_eq!(
+            options.cursor.cursor_id,
+            driver_host_options().cursor.cursor_id
+        );
+    }
     assert!(options.host_owns_permission_ux);
     assert!(options.prepare_desktop_environment);
 }
@@ -1070,55 +1078,6 @@ async fn exact_observation_publication_rejects_a_target_minimized_during_finaliz
     assert_eq!(error.code, ComputerUseErrorCode::TargetMinimized);
     assert_eq!(gate_calls.get(), 3);
     assert_eq!(publish_calls.get(), 0);
-}
-
-#[rstest]
-fn desktop_fallback_crops_an_8_bit_rgba_png() {
-    let mut source = Vec::new();
-    let mut encoder = png::Encoder::new(&mut source, 4, 3);
-    encoder.set_color(png::ColorType::Rgba);
-    encoder.set_depth(png::BitDepth::Eight);
-    let mut writer = encoder.write_header().unwrap();
-    writer
-        .write_image_data(&(0..48).map(|value| value as u8).collect::<Vec<_>>())
-        .unwrap();
-    writer.finish().unwrap();
-
-    let cropped = crop_png_to_bounds(&source, [1, 1, 2, 2]).unwrap();
-    assert_eq!(png_dimensions(&cropped), Some((2, 2)));
-    let mut reader = png::Decoder::new(Cursor::new(cropped)).read_info().unwrap();
-    let mut bytes = vec![0; reader.output_buffer_size()];
-    let info = reader.next_frame(&mut bytes).unwrap();
-    assert_eq!(
-        &bytes[..info.buffer_size()],
-        &(20..28).chain(36..44).map(|v| v as u8).collect::<Vec<_>>()
-    );
-}
-
-#[rstest]
-fn exact_window_identity_failures_never_degrade_to_desktop_pixels() {
-    assert!(
-        !crate::runtime::exact_capture_failure_allows_desktop_fallback(
-            ComputerUseErrorCode::InvalidTarget
-        )
-    );
-    assert!(
-        crate::runtime::exact_capture_failure_allows_desktop_fallback(
-            ComputerUseErrorCode::CaptureFailed
-        )
-    );
-}
-
-#[rstest]
-fn desktop_fallback_maps_per_monitor_dpi_bounds_to_capture_pixels() {
-    assert_eq!(
-        scale_bounds_for_dpi([1, 1, 3118, 1982], 192).unwrap(),
-        [0, 0, 1560, 992]
-    );
-    assert_eq!(
-        scale_bounds_for_dpi([10, 20, 300, 400], 96).unwrap(),
-        [10, 20, 300, 400]
-    );
 }
 
 #[rstest]

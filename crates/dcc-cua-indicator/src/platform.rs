@@ -30,10 +30,10 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GetMessageW, GetPropW, GetWindow, GetWindowRect, GetWindowTextLengthW, GetWindowTextW,
     GetWindowThreadProcessId, HC_ACTION, HHOOK, HICON, HTTRANSPARENT, HWND_NOTOPMOST, HWND_TOP,
     HWND_TOPMOST, ICON_SMALL2, IsWindow, IsWindowVisible, KBDLLHOOKSTRUCT, KillTimer,
-    LLKHF_INJECTED, LWA_ALPHA, MA_NOACTIVATE, MSG, PM_NOREMOVE, PM_REMOVE, PeekMessageW,
-    PostThreadMessageW, RegisterClassW, RemovePropW, SEND_MESSAGE_TIMEOUT_FLAGS,
-    SET_WINDOW_POS_FLAGS, SMTO_ABORTIFHUNG, SPI_GETCLIENTAREAANIMATION, SW_HIDE, SW_SHOWNOACTIVATE,
-    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOOWNERZORDER, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW,
+    LLKHF_INJECTED, LWA_ALPHA, MA_NOACTIVATE, MSG, PM_NOREMOVE, PeekMessageW, PostThreadMessageW,
+    RegisterClassW, RemovePropW, SEND_MESSAGE_TIMEOUT_FLAGS, SET_WINDOW_POS_FLAGS,
+    SMTO_ABORTIFHUNG, SPI_GETCLIENTAREAANIMATION, SW_HIDE, SW_SHOWNOACTIVATE, SWP_NOACTIVATE,
+    SWP_NOMOVE, SWP_NOOWNERZORDER, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW,
     SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SendMessageTimeoutW, SetLayeredWindowAttributes, SetPropW,
     SetTimer, SetWindowPos, SetWindowsHookExW, ShowWindow, SystemParametersInfoW, TranslateMessage,
     UnhookWindowsHookEx, WH_KEYBOARD_LL, WINDOW_EX_STYLE, WINDOW_STYLE, WM_GETICON, WM_KEYDOWN,
@@ -44,7 +44,9 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use windows::core::{BOOL, HRESULT, PCWSTR, w};
 
 pub(crate) mod capture_exclusion;
+pub(crate) mod cursor_registration;
 mod escape_hub_lifecycle;
+mod frame_wait;
 mod presentation;
 mod rendering;
 use capture_exclusion::CaptureExclusionState;
@@ -813,8 +815,8 @@ fn run_banner(
         .try_send(Ok(()))
         .map_err(|error| IndicatorError::Backend(format!("signal banner readiness: {error}")))?;
 
-    let mut message = MSG::default();
     let mut acknowledged_capture_request = 0_u64;
+    let mut cursor_exclusion = capture_exclusion::CursorSuppression::default();
     while !stop.load(Ordering::Acquire) {
         if !runtime.hub_active.load(Ordering::Acquire) {
             return Err(IndicatorError::Backend("Escape hub stopped".into()));
@@ -831,15 +833,10 @@ fn run_banner(
             visible,
             frame_visible,
             &mut acknowledged_capture_request,
+            &mut cursor_exclusion,
         ) {
-            thread::sleep(FRAME_INTERVAL);
+            frame_wait::wait_for_frame(stop, interrupted, runtime)?;
             continue;
-        }
-        while unsafe { PeekMessageW(&mut message, None, 0, 0, PM_REMOVE) }.as_bool() {
-            unsafe {
-                let _ = TranslateMessage(&message);
-                DispatchMessageW(&message);
-            }
         }
         let indicators = BannerIndicators {
             recording: runtime.recording.load(Ordering::Acquire),
@@ -971,7 +968,7 @@ fn run_banner(
             }
             frame_visible.store(false, Ordering::Release);
         }
-        thread::sleep(FRAME_INTERVAL);
+        frame_wait::wait_for_frame(stop, interrupted, runtime)?;
     }
     Ok(())
 }

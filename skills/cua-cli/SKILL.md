@@ -62,19 +62,27 @@ typed route cannot cover.
    one conjunctive identity. Any conflict, missing or ambiguous match, or live
    PID/HWND/title drift must stop the command; never fall back to app-only scope.
 
-   If the exact live window has no responsive accessibility provider, use the
+   On Windows, if the exact live window has no responsive accessibility provider, use the
    explicit provider-free route:
 
    ```powershell
    dcc-cua snapshot --pid $pid --window-id $hwnd --pixels-only --output frame.png
    ```
 
-   This route requires both selectors, captures only that native window, and
-   never falls back to a whole-desktop screenshot or desktop crop. Treat
-   `pixels_only`, `accessibility_unavailable_degraded`, and
-   `accessibility_timeout_degraded` as distinct provenance.
+   This route requires both selectors and never publishes a whole-desktop
+   screenshot. When native window-content capture cannot prove one exact HWND,
+   Windows may use the `VisibleDesktopCrop` fallback: it reads only the target's
+   physical rectangle from the desktop DC, and only after complete z-order,
+   visibility, PID/HWND, native instance, bounds, and DPI evidence is proven
+   before and after capture. Occlusion, ambiguity, or drift discards
+   the pixels. Treat this visible desktop-rectangle provenance separately from
+   native window-content pixels, `pixels_only`,
+   `accessibility_unavailable_degraded`, and
+   `accessibility_timeout_degraded`.
    Any identity, bounds, DPI, generation, visibility, or occlusion change
    invalidates the frame; rediscover and take a fresh observation.
+   On macOS and Linux the manifest omits this Windows-only capability and
+   `--pixels-only` returns `BackendUnavailable`; do not advertise or invoke it.
 
 4. Verify state after every mutation. A successful input call proves that input
    was delivered, not that the application reached the requested state. Use a

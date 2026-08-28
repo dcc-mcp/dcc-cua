@@ -1,6 +1,83 @@
 use super::*;
 use rstest::rstest;
 
+#[cfg(windows)]
+#[rstest]
+#[tokio::test]
+async fn issue_228_rejected_start_preserves_active_explicit_pixels_route() {
+    check_rejected_start_preserves_pixels_route(false).await;
+}
+
+#[cfg(windows)]
+#[rstest]
+#[tokio::test]
+async fn issue_228_rejected_start_preserves_active_explicit_pixels_route_with_request() {
+    check_rejected_start_preserves_pixels_route(true).await;
+}
+
+#[cfg(windows)]
+async fn check_rejected_start_preserves_pixels_route(guarded: bool) {
+    // Remote in-memory driver only: the active guard must reject before any
+    // provider, native target resolution, banner or capture can be entered.
+    let (mut session, calls) = counting_session();
+    session.pixel_observation_route = Some(PixelObservationRoute::ExplicitPixelsOnly);
+    session.upstream_session_state = UpstreamSessionState::VisualOnly {
+        reason: "explicit pixels-only observation; accessibility provider was not started".into(),
+    };
+    let observation_id = session.observation.as_ref().unwrap().observation_id.clone();
+    let target_before = session.target.as_ref().unwrap().clone();
+    let error = if guarded {
+        session
+            .start_with_request(&ComputerUseSessionStartRequest::default())
+            .await
+    } else {
+        session.start().await
+    }
+    .expect_err("already active");
+    assert_eq!(error.code, ComputerUseErrorCode::InvalidAction);
+    assert!(session.active);
+    assert_eq!(
+        session.pixel_observation_route,
+        Some(PixelObservationRoute::ExplicitPixelsOnly)
+    );
+    assert_eq!(
+        session.observation.as_ref().unwrap().observation_id,
+        observation_id
+    );
+    assert!(
+        matches!(&session.upstream_session_state, UpstreamSessionState::VisualOnly { reason } if reason == "explicit pixels-only observation; accessibility provider was not started")
+    );
+    assert_eq!(calls.load(AtomicOrdering::SeqCst), 0);
+    session
+        .ensure_active()
+        .expect("still eligible for observations");
+    let target_after = session.target.as_ref().unwrap();
+    assert_eq!(
+        (
+            target_before.pid,
+            target_before.window_id,
+            target_before.bounds
+        ),
+        (
+            target_after.pid,
+            target_after.window_id,
+            target_after.bounds
+        )
+    );
+    // Use the same provenance builder consumed by capture_window_pixels. The
+    // actual screenshot method is exercised after both rejections in CI.
+    let provenance = exact_window_pixel_provenance(
+        session.pixel_observation_route.unwrap(),
+        target_after,
+        11,
+        96,
+        "test-native-boundary",
+    );
+    assert_eq!(provenance["observation_mode"], "pixels_only");
+    assert_eq!(provenance["degraded"], false);
+    assert_eq!(provenance["accessibility_available"], false);
+}
+
 fn target(pid: u32, window_id: u64, bounds: [i32; 4]) -> WindowTarget {
     WindowTarget {
         pid,
@@ -111,71 +188,24 @@ fn issue_228_missing_and_hung_accessibility_providers_degrade_but_target_loss_do
     );
 }
 
-#[rstest]
-#[case(target(42, 77, [-1920, 100, 1280, 720]), "stable negative-coordinate monitor")]
-#[case(target(42, 77, [3840, -600, 1600, 900]), "stable mixed-DPI monitor")]
-fn issue_228_exact_window_publication_accepts_stable_native_evidence(
-    #[case] before: WindowTarget,
-    #[case] _label: &str,
-) {
-    let after = before.clone();
-    validate_exact_window_pixel_publication(&before, &after, 144, 144, 9, 9)
-        .expect("stable exact-window evidence publishes");
-}
-
-#[rstest]
-#[case(target(43, 77, [0, 0, 800, 600]), 96, 5, "PID reuse")]
-#[case(target(42, 78, [0, 0, 800, 600]), 96, 5, "HWND substitution")]
-#[case(target(42, 77, [20, 0, 800, 600]), 96, 5, "window movement")]
-#[case(target(42, 77, [0, 0, 801, 600]), 96, 5, "window resize")]
-#[case(target(42, 77, [0, 0, 800, 600]), 120, 5, "DPI transition")]
-#[case(target(42, 77, [0, 0, 800, 600]), 96, 6, "capture generation change")]
-fn issue_228_exact_window_publication_rejects_stale_or_substituted_evidence(
-    #[case] after: WindowTarget,
-    #[case] after_dpi: u32,
-    #[case] after_generation: u64,
-    #[case] _label: &str,
-) {
-    let before = target(42, 77, [0, 0, 800, 600]);
-    let error = validate_exact_window_pixel_publication(
-        &before,
-        &after,
-        96,
-        after_dpi,
-        5,
-        after_generation,
-    )
-    .expect_err("changed capture evidence must fail closed");
-    assert_eq!(error.code, ComputerUseErrorCode::StaleObservation);
-}
-
-#[rstest]
-fn issue_228_visual_fallback_revalidates_native_pixels_after_accessibility() {
-    let source = include_str!("../observation.rs");
-    let visual_fallback = source
-        .split_once("async fn capture_window_visually")
-        .expect("visual fallback implementation exists")
-        .1
-        .split_once("async fn capture_window_pixels")
-        .expect("explicit pixel route follows the visual fallback")
-        .0;
-    let accessibility = visual_fallback
-        .find("visual_fallback_accessibility")
-        .expect("visual fallback awaits accessibility");
-    let final_native = visual_fallback
-        .find("sample_exact_window_pixel_evidence")
-        .expect("visual fallback resamples exact native evidence");
-    let final_fence = visual_fallback
-        .find("validate_final_exact_window_pixel_publication")
-        .expect("visual fallback applies the final pixel publication fence");
-    let publication = visual_fallback
-        .find("self.observation = Some")
-        .expect("visual fallback publishes one bounded observation");
-
-    assert!(
-        accessibility < final_native && final_native < final_fence && final_fence < publication,
-        "native evidence and the final fence must run after accessibility and before publication"
-    );
+fn publication_fence(
+    bounds: [i32; 4],
+    dpi: u32,
+    generation: u64,
+    mode: ExactWindowPixelCaptureMode,
+) -> ExactWindowPixelPublicationFence {
+    ExactWindowPixelPublicationFence {
+        geometry: ExactWindowPixelGeometry { bounds, dpi },
+        source_rect: bounds,
+        generation,
+        mode,
+        instance: ExactWindowPixelInstanceIdentity {
+            process_creation_time_100ns: 1001,
+            window_thread_id: 7,
+            window_class_hash: 0xA11CE,
+            owner_window_handle: 0,
+        },
+    }
 }
 
 #[rstest]
@@ -219,16 +249,18 @@ fn issue_228_visual_fallback_discards_post_accessibility_pixel_drift(
     let result = validate_final_exact_window_pixel_publication(
         &captured,
         &final_inventory,
-        ExactWindowPixelGeometry {
-            bounds: captured.bounds,
-            dpi: 96,
-        },
-        ExactWindowPixelGeometry {
-            bounds: final_native_bounds,
-            dpi: final_native_dpi,
-        },
-        17,
-        ExactWindowPixelCaptureMode::VisibleDesktopCrop,
+        publication_fence(
+            captured.bounds,
+            96,
+            17,
+            ExactWindowPixelCaptureMode::VisibleDesktopCrop,
+        ),
+        publication_fence(
+            final_native_bounds,
+            final_native_dpi,
+            18,
+            ExactWindowPixelCaptureMode::VisibleDesktopCrop,
+        ),
         final_unobscured,
     );
     if result.is_ok() {
@@ -245,19 +277,50 @@ fn issue_228_visual_fallback_publishes_stable_post_accessibility_pixels() {
     validate_final_exact_window_pixel_publication(
         &captured,
         &captured,
-        ExactWindowPixelGeometry {
-            bounds: captured.bounds,
-            dpi: 96,
-        },
-        ExactWindowPixelGeometry {
-            bounds: captured.bounds,
-            dpi: 96,
-        },
-        17,
-        ExactWindowPixelCaptureMode::VisibleDesktopCrop,
+        publication_fence(
+            captured.bounds,
+            96,
+            17,
+            ExactWindowPixelCaptureMode::VisibleDesktopCrop,
+        ),
+        publication_fence(
+            captured.bounds,
+            96,
+            18,
+            ExactWindowPixelCaptureMode::VisibleDesktopCrop,
+        ),
         true,
     )
     .expect("stable visual fallback pixels may publish after accessibility");
+}
+
+#[rstest]
+fn issue_228_visible_crop_fences_a_distinct_stable_physical_source_rect() {
+    let captured = target(42, 77, [0, 0, 816, 616]);
+    let source_rect = [8, 8, 800, 600];
+    let mut before = publication_fence(
+        captured.bounds,
+        96,
+        17,
+        ExactWindowPixelCaptureMode::VisibleDesktopCrop,
+    );
+    before.source_rect = source_rect;
+    let mut after = publication_fence(
+        captured.bounds,
+        96,
+        18,
+        ExactWindowPixelCaptureMode::VisibleDesktopCrop,
+    );
+    after.source_rect = source_rect;
+
+    validate_final_exact_window_pixel_publication(&captured, &captured, before, after, true)
+        .expect("stable DWM crop may differ from stable PMv2 inventory bounds");
+
+    after.source_rect[0] += 1;
+    let error =
+        validate_final_exact_window_pixel_publication(&captured, &captured, before, after, true)
+            .expect_err("DWM crop drift must discard desktop pixels");
+    assert_eq!(error.code, ComputerUseErrorCode::StaleObservation);
 }
 
 #[rstest]
@@ -289,16 +352,18 @@ fn issue_228_final_publication_fence_rejects_geometry_drift_between_revalidation
     let error = validate_final_exact_window_pixel_publication(
         &captured,
         &final_inventory,
-        ExactWindowPixelGeometry {
-            bounds: captured.bounds,
-            dpi: 96,
-        },
-        ExactWindowPixelGeometry {
-            bounds: final_native_bounds,
-            dpi: final_native_dpi,
-        },
-        5,
-        ExactWindowPixelCaptureMode::VisibleDesktopCrop,
+        publication_fence(
+            captured.bounds,
+            96,
+            5,
+            ExactWindowPixelCaptureMode::VisibleDesktopCrop,
+        ),
+        publication_fence(
+            final_native_bounds,
+            final_native_dpi,
+            6,
+            ExactWindowPixelCaptureMode::VisibleDesktopCrop,
+        ),
         true,
     )
     .expect_err("geometry drift after capture must discard the pixel evidence");
@@ -311,16 +376,18 @@ fn issue_228_final_publication_fence_accepts_only_exact_capture_geometry() {
     validate_final_exact_window_pixel_publication(
         &captured,
         &captured,
-        ExactWindowPixelGeometry {
-            bounds: captured.bounds,
-            dpi: 144,
-        },
-        ExactWindowPixelGeometry {
-            bounds: captured.bounds,
-            dpi: 144,
-        },
-        5,
-        ExactWindowPixelCaptureMode::VisibleDesktopCrop,
+        publication_fence(
+            captured.bounds,
+            144,
+            5,
+            ExactWindowPixelCaptureMode::VisibleDesktopCrop,
+        ),
+        publication_fence(
+            captured.bounds,
+            144,
+            6,
+            ExactWindowPixelCaptureMode::VisibleDesktopCrop,
+        ),
         true,
     )
     .expect("unchanged final native and inventory geometry may publish");
@@ -332,16 +399,18 @@ fn issue_228_window_content_publication_does_not_require_desktop_visibility() {
     validate_final_exact_window_pixel_publication(
         &captured,
         &captured,
-        ExactWindowPixelGeometry {
-            bounds: captured.bounds,
-            dpi: 120,
-        },
-        ExactWindowPixelGeometry {
-            bounds: captured.bounds,
-            dpi: 120,
-        },
-        7,
-        ExactWindowPixelCaptureMode::WindowContent,
+        publication_fence(
+            captured.bounds,
+            120,
+            7,
+            ExactWindowPixelCaptureMode::WindowContent,
+        ),
+        publication_fence(
+            captured.bounds,
+            120,
+            8,
+            ExactWindowPixelCaptureMode::WindowContent,
+        ),
         false,
     )
     .expect("window-content pixels remain exact when another desktop window overlaps them");
@@ -353,16 +422,18 @@ fn issue_228_visible_desktop_crop_publication_requires_complete_visibility() {
     let error = validate_final_exact_window_pixel_publication(
         &captured,
         &captured,
-        ExactWindowPixelGeometry {
-            bounds: captured.bounds,
-            dpi: 120,
-        },
-        ExactWindowPixelGeometry {
-            bounds: captured.bounds,
-            dpi: 120,
-        },
-        7,
-        ExactWindowPixelCaptureMode::VisibleDesktopCrop,
+        publication_fence(
+            captured.bounds,
+            120,
+            7,
+            ExactWindowPixelCaptureMode::VisibleDesktopCrop,
+        ),
+        publication_fence(
+            captured.bounds,
+            120,
+            8,
+            ExactWindowPixelCaptureMode::VisibleDesktopCrop,
+        ),
         false,
     )
     .expect_err("desktop-crop pixels must not publish when any overlap is unproven");
@@ -391,4 +462,59 @@ fn issue_228_exact_window_publication_rejects_uncapturable_target_state(
             | ComputerUseErrorCode::TargetUnavailable
             | ComputerUseErrorCode::CaptureFailed
     ));
+}
+
+#[rstest]
+fn issue_228_final_publication_compares_distinct_capture_generations_and_modes() {
+    let captured = target(42, 77, [0, 0, 800, 600]);
+    let error = validate_final_exact_window_pixel_publication(
+        &captured,
+        &captured,
+        publication_fence(
+            captured.bounds,
+            96,
+            17,
+            ExactWindowPixelCaptureMode::WindowContent,
+        ),
+        publication_fence(
+            captured.bounds,
+            96,
+            18,
+            ExactWindowPixelCaptureMode::VisibleDesktopCrop,
+        ),
+        true,
+    )
+    .expect_err("a fresh final capture may not change capture mode");
+
+    assert_eq!(error.code, ComputerUseErrorCode::StaleObservation);
+}
+
+#[rstest]
+fn issue_228_final_publication_rejects_reused_numeric_pid_hwnd_with_new_instance() {
+    let captured = target(42, 77, [0, 0, 800, 600]);
+    let before = publication_fence(
+        captured.bounds,
+        96,
+        17,
+        ExactWindowPixelCaptureMode::WindowContent,
+    );
+    let mut after = publication_fence(
+        captured.bounds,
+        96,
+        18,
+        ExactWindowPixelCaptureMode::WindowContent,
+    );
+    after.instance = ExactWindowPixelInstanceIdentity {
+        process_creation_time_100ns: 2002,
+        window_thread_id: 7,
+        window_class_hash: 0xB0B,
+        owner_window_handle: 0,
+    };
+    let error =
+        validate_final_exact_window_pixel_publication(&captured, &captured, before, after, true)
+            .expect_err("same numeric PID/HWND must not hide process/window replacement");
+
+    assert_eq!(error.code, ComputerUseErrorCode::StaleObservation);
+    assert_eq!(captured.pid, 42);
+    assert_eq!(captured.window_id, 77);
 }

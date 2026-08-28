@@ -4,6 +4,8 @@ use std::process::Output;
 use super::*;
 use rstest::rstest;
 
+mod pixels_only;
+
 #[derive(Clone, Debug)]
 struct CliWindowTarget {
     app: String,

@@ -8,11 +8,12 @@ use std::time::{Duration, Instant};
 use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM};
 use windows::Win32::System::Threading::{CreateEventW, OpenEventW, SYNCHRONIZATION_SYNCHRONIZE};
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GetClassNameW, IsWindow, IsWindowVisible, SW_HIDE, SW_SHOWNOACTIVATE, ShowWindow,
+    EnumWindows, GetClassNameW, IsWindowVisible, SW_HIDE, SW_SHOWNOACTIVATE, ShowWindow,
 };
 use windows::core::{BOOL, w};
 
 use super::OverlayWindow;
+use super::cursor_registration::{OwnedCursorWindow, registered_window};
 use crate::IndicatorError;
 
 const CAPTURE_EXCLUSION_TIMEOUT: Duration = Duration::from_secs(1);
@@ -106,7 +107,7 @@ fn cross_process_capture_requested() -> bool {
 struct VisibleOverlayEnumeration {
     visible_overlay_found: bool,
     failed: bool,
-    hidden_cursor_windows: *mut Vec<usize>,
+    hidden_cursor_windows: *mut Vec<OwnedCursorWindow>,
 }
 
 unsafe extern "system" fn find_visible_overlay(window: HWND, context: LPARAM) -> BOOL {
@@ -120,25 +121,28 @@ unsafe extern "system" fn find_visible_overlay(window: HWND, context: LPARAM) ->
     let class_name = String::from_utf16_lossy(&class_name[..length as usize]);
     if unsafe { IsWindowVisible(window) }.as_bool() {
         if dcc_cua_overlay_kind(&class_name) == Some(DccCuaOverlayKind::AgentCursor) {
+            let Some(owned) = registered_window(window) else {
+                enumeration.visible_overlay_found = true;
+                return BOOL(1);
+            };
+            let hidden_cursor_windows = unsafe { &mut *enumeration.hidden_cursor_windows };
+            if !hidden_cursor_windows.contains(&owned) {
+                hidden_cursor_windows.push(owned);
+            }
             let _ = unsafe { ShowWindow(window, SW_HIDE) };
             if unsafe { IsWindowVisible(window) }.as_bool() {
                 enumeration.visible_overlay_found = true;
-                return BOOL(0);
-            }
-            let hidden_cursor_windows = unsafe { &mut *enumeration.hidden_cursor_windows };
-            let raw = window.0 as usize;
-            if !hidden_cursor_windows.contains(&raw) {
-                hidden_cursor_windows.push(raw);
             }
         } else if dcc_cua_overlay_kind(&class_name) == Some(DccCuaOverlayKind::Presenter) {
             enumeration.visible_overlay_found = true;
-            return BOOL(0);
         }
     }
     BOOL(1)
 }
 
-fn hide_cursor_overlays_and_confirm_all_hidden(hidden_cursor_windows: &mut Vec<usize>) -> bool {
+fn hide_cursor_overlays_and_confirm_all_hidden(
+    hidden_cursor_windows: &mut Vec<OwnedCursorWindow>,
+) -> bool {
     let mut enumeration = VisibleOverlayEnumeration {
         visible_overlay_found: false,
         failed: false,
@@ -223,7 +227,7 @@ impl Drop for RegistrationGate {
 
 pub(crate) struct Guard {
     state: &'static CaptureExclusionState,
-    hidden_cursor_windows: Vec<usize>,
+    hidden_cursor_windows: Vec<OwnedCursorWindow>,
     _registration_gate: RegistrationGate,
     _cross_process_request: CrossProcessCaptureRequest,
     _cross_process_gate: CrossProcessGate,
@@ -232,12 +236,7 @@ pub(crate) struct Guard {
 impl Drop for Guard {
     fn drop(&mut self) {
         self.state.suppressed.store(false, Ordering::Release);
-        for raw in self.hidden_cursor_windows.drain(..).rev() {
-            let window = HWND(raw as *mut _);
-            if unsafe { IsWindow(Some(window)) }.as_bool() {
-                let _ = unsafe { ShowWindow(window, SW_SHOWNOACTIVATE) };
-            }
-        }
+        restore_cursors(&mut self.hidden_cursor_windows);
     }
 }
 
@@ -246,42 +245,44 @@ pub(super) fn begin(active: &AtomicBool) -> Result<Guard, IndicatorError> {
     let cross_process_gate = CrossProcessGate::acquire()?;
     let registration_gate = RegistrationGate::acquire()?;
     let cross_process_request = CrossProcessCaptureRequest::begin()?;
+    // Own all restoration before publishing suppression or hiding any cursor.
+    // Every early return below drops this owner while its serialization gates
+    // still prevent a concurrent exclusion/registration.
+    let mut guard = Guard {
+        state,
+        hidden_cursor_windows: Vec::new(),
+        _registration_gate: registration_gate,
+        _cross_process_request: cross_process_request,
+        _cross_process_gate: cross_process_gate,
+    };
     state.requested.fetch_add(1, Ordering::AcqRel);
     state.acknowledged.store(0, Ordering::Release);
     state.suppressed.store(true, Ordering::Release);
-    let mut hidden_cursor_windows = Vec::new();
     let deadline = Instant::now() + CAPTURE_EXCLUSION_TIMEOUT;
     loop {
         let registered = state.registered.load(Ordering::Acquire);
         let acknowledged = state.acknowledged.load(Ordering::Acquire);
         if acknowledged >= registered
-            && hide_cursor_overlays_and_confirm_all_hidden(&mut hidden_cursor_windows)
+            && hide_cursor_overlays_and_confirm_all_hidden(&mut guard.hidden_cursor_windows)
         {
             break;
         }
         if !active.load(Ordering::Acquire) {
-            state.suppressed.store(false, Ordering::Release);
             return Err(IndicatorError::Backend(
                 "control-banner presenter stopped before DCC-CUA overlay capture exclusion".into(),
             ));
         }
         if Instant::now() >= deadline {
-            state.suppressed.store(false, Ordering::Release);
             return Err(IndicatorError::Backend(
                 "timed out while excluding DCC-CUA overlays from exact-window capture".into(),
             ));
         }
         thread::sleep(Duration::from_millis(1));
     }
-    Ok(Guard {
-        state,
-        hidden_cursor_windows,
-        _registration_gate: registration_gate,
-        _cross_process_request: cross_process_request,
-        _cross_process_gate: cross_process_gate,
-    })
+    Ok(guard)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn hide_and_acknowledge(
     state: &CaptureExclusionState,
     overlay: HWND,
@@ -289,10 +290,15 @@ pub(super) fn hide_and_acknowledge(
     visible: &AtomicBool,
     frame_visible: &AtomicBool,
     acknowledged_request: &mut u64,
+    cursors: &mut CursorSuppression,
 ) -> bool {
     if !state.suppressed.load(Ordering::Acquire) && !cross_process_capture_requested() {
+        restore_cursors(&mut cursors.0);
         return false;
     }
+    // Each peer cooperates only on its own registered renderer. Enumeration
+    // may find an unknown/visible peer; the capturing process then refuses.
+    hide_cursor_overlays_and_confirm_all_hidden(&mut cursors.0);
     let requested = state.requested.load(Ordering::Acquire);
     let _ = unsafe { ShowWindow(overlay, SW_HIDE) };
     for frame in frames {
@@ -310,4 +316,21 @@ pub(super) fn hide_and_acknowledge(
         *acknowledged_request = requested;
     }
     true
+}
+
+fn restore_cursors(windows: &mut Vec<OwnedCursorWindow>) {
+    for owned in windows.drain(..).rev() {
+        if owned.still_registered() {
+            let _ = unsafe { ShowWindow(HWND(owned.raw as *mut _), SW_SHOWNOACTIVATE) };
+        }
+    }
+}
+
+#[derive(Default)]
+pub(super) struct CursorSuppression(Vec<OwnedCursorWindow>);
+
+impl Drop for CursorSuppression {
+    fn drop(&mut self) {
+        restore_cursors(&mut self.0);
+    }
 }

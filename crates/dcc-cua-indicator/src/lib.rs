@@ -18,6 +18,15 @@ mod theme_tokens {
 }
 
 const MAX_DISPLAY_NAME_CHARS: usize = 80;
+
+/// Register the process-lifetime singleton cursor renderer configured by this
+/// runtime. Pass the returned opaque ID to its CursorConfig before creation.
+/// Registration does not inspect or mutate any native window.
+#[must_use]
+#[cfg(windows)]
+pub fn register_cursor_renderer_id(id: String) -> String {
+    platform::cursor_registration::register(id)
+}
 /// Nominal target-frame thickness in device-independent pixels.
 ///
 /// Windows scales this value using the exact target window's current monitor
