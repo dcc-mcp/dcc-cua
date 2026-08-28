@@ -293,6 +293,55 @@ fn compile_failing_jsonl_host(output_directory: &Path) -> PathBuf {
     binary_path
 }
 
+fn compile_doctor_shutdown_failure_host(output_directory: &Path) -> PathBuf {
+    let binary_name = if cfg!(windows) {
+        "doctor-shutdown-failure-host.exe"
+    } else {
+        "doctor-shutdown-failure-host"
+    };
+    let binary_path = output_directory.join(binary_name);
+    let source_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join("scripts/fixtures/doctor_shutdown_failure_host.rs");
+    let output = Command::new("rustc")
+        .arg("--edition=2024")
+        .arg("-o")
+        .arg(&binary_path)
+        .arg(source_path)
+        .output()
+        .expect("rustc should compile the doctor shutdown failure Host fixture");
+    assert!(
+        output.status.success(),
+        "doctor shutdown failure Host fixture compilation failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    binary_path
+}
+
+#[rstest]
+fn host_doctor_publishes_diagnostics_before_shutdown_failure() {
+    let fixture_directory = tempfile::tempdir().expect("create Host fixture directory");
+    let fixture = compile_doctor_shutdown_failure_host(fixture_directory.path());
+    let output = Command::new(env!("CARGO_BIN_EXE_dcc-cua"))
+        .env("DCC_CUA_NO_UPDATE_CHECK", "1")
+        .args(["doctor", "--spawn"])
+        .arg(fixture)
+        .output()
+        .expect("dcc-cua doctor should start");
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        output.stderr.is_empty(),
+        "doctor shutdown failure escaped to stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let diagnostics: serde_json::Value = serde_json::from_slice(&output.stdout)
+        .expect("stdout should contain exactly one diagnostics document and no trailer");
+    assert_eq!(diagnostics["type"], "diagnostics");
+    assert_eq!(diagnostics["ready"], false);
+    assert!(diagnostics.get("success").is_none());
+}
+
 #[rstest]
 #[case(&["chrome-extension://abcdefghijklmnop/"])]
 #[case(&["native-host.json", "chrome-extension://abcdefghijklmnop/"])]
