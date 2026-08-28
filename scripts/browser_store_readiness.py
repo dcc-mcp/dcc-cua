@@ -81,6 +81,9 @@ PINNED_REMOTE_ACTION_PATTERN = re.compile(r"^([^@\s]+)@([0-9a-f]{40})$")
 PINNED_DOCKER_ACTION_PATTERN = re.compile(
     r"^docker://[^@\s]+@sha256:[0-9a-f]{64}$"
 )
+ENVIRONMENT_PROTECTION_CONTRACT_NAME = (
+    "DCC_CUA_BROWSER_STORE_ENVIRONMENT_PROTECTION_V1"
+)
 PUBLIC_VERSION_PATTERN = re.compile(
     r"^(?:0|[1-9][0-9]*)(?:\.(?:0|[1-9][0-9]*)){2,3}$"
 )
@@ -229,7 +232,122 @@ def _publishing_gate(configuration: Mapping[str, Any]) -> tuple[bool, str]:
     return False, "unknown"
 
 
+def _environment_protection_receipt(
+    environment: Mapping[str, Any],
+) -> dict[str, object]:
+    result: dict[str, object] = {
+        "version": 1,
+        "valid": False,
+        "reason": "environment_protection_invalid",
+        "reviewer_count": None,
+        "prevent_self_review": None,
+        "admin_bypass": None,
+    }
+    if "protection_rules" not in environment:
+        result["reason"] = "environment_protection_missing"
+        return result
+    rules = environment.get("protection_rules")
+    if not isinstance(rules, list):
+        return result
+    required_rules = [
+        rule
+        for rule in rules
+        if isinstance(rule, Mapping) and rule.get("type") == "required_reviewers"
+    ]
+    branch_rules = [
+        rule
+        for rule in rules
+        if isinstance(rule, Mapping) and rule.get("type") == "branch_policy"
+    ]
+    if not required_rules:
+        result["reason"] = "environment_required_reviewers_missing"
+        return result
+    if len(rules) != 2 or len(required_rules) != 1 or len(branch_rules) != 1:
+        return result
+    required_rule = required_rules[0]
+    branch_rule = branch_rules[0]
+    if "prevent_self_review" not in required_rule:
+        result["reason"] = "environment_self_review_not_prevented"
+        return result
+    if set(required_rule) != {
+        "id",
+        "node_id",
+        "type",
+        "prevent_self_review",
+        "reviewers",
+    } or set(branch_rule) != {"id", "node_id", "type"}:
+        return result
+    if not all(
+        _external_id(rule.get("id"))
+        and isinstance(rule.get("node_id"), str)
+        and bool(rule.get("node_id"))
+        for rule in (required_rule, branch_rule)
+    ):
+        return result
+    reviewers = required_rule.get("reviewers")
+    if not isinstance(reviewers, list) or not reviewers:
+        result["reviewer_count"] = 0 if isinstance(reviewers, list) else None
+        result["reason"] = "environment_required_reviewers_missing"
+        return result
+    identities: list[dict[str, object]] = []
+    for entry in reviewers:
+        if not isinstance(entry, Mapping) or set(entry) != {"type", "reviewer"}:
+            return result
+        reviewer_type = entry.get("type")
+        reviewer = entry.get("reviewer")
+        if reviewer_type not in {"User", "Team"} or not isinstance(reviewer, Mapping):
+            return result
+        reviewer_id = reviewer.get("id")
+        if not _external_id(reviewer_id):
+            return result
+        node_id = reviewer.get("node_id")
+        if not isinstance(node_id, str) or not node_id:
+            return result
+        if reviewer_type == "User" and reviewer.get("type") != "User":
+            return result
+        identities.append({"type": reviewer_type, "id": reviewer_id})
+    identities.sort(key=lambda item: (str(item["type"]), int(item["id"])))
+    if len({(item["type"], item["id"]) for item in identities}) != len(identities):
+        return result
+    prevent_self_review = required_rule.get("prevent_self_review")
+    admin_bypass = environment.get("can_admins_bypass")
+    result.update(
+        reviewer_count=len(identities),
+        prevent_self_review=(
+            prevent_self_review if isinstance(prevent_self_review, bool) else None
+        ),
+        admin_bypass=admin_bypass if isinstance(admin_bypass, bool) else None,
+    )
+    if prevent_self_review is not True:
+        result["reason"] = "environment_self_review_not_prevented"
+        return result
+    if admin_bypass is not False:
+        result["reason"] = "environment_admin_bypass_not_prevented"
+        return result
+    expected = environment.get("protection_contract")
+    if not isinstance(expected, str) or DIGEST_PATTERN.fullmatch(expected) is None:
+        result["reason"] = "environment_protection_contract_missing"
+        return result
+    canonical = json.dumps(
+        {
+            "version": 1,
+            "reviewers": identities,
+            "prevent_self_review": prevent_self_review,
+            "can_admins_bypass": admin_bypass,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    observed = "sha256:" + hashlib.sha256(canonical).hexdigest()
+    if not hmac.compare_digest(expected, observed):
+        result["reason"] = "environment_protection_contract_mismatch"
+        return result
+    result.update(valid=True, reason="verified")
+    return result
+
+
 def _environment_receipt(environment: Mapping[str, Any]) -> dict[str, object]:
+    protection = _environment_protection_receipt(environment)
     raw_policy = environment.get("deployment_branch_policy")
     policy_present = "deployment_branch_policy" in environment
     policy_valid = (
@@ -247,6 +365,9 @@ def _environment_receipt(environment: Mapping[str, Any]) -> dict[str, object]:
     reason = "eligible"
     if not valid:
         reason = "environment_missing"
+    elif not protection["valid"]:
+        valid = False
+        reason = str(protection["reason"])
     elif not policy_present:
         valid = False
         reason = "environment_policy_missing"
@@ -299,6 +420,7 @@ def _environment_receipt(environment: Mapping[str, Any]) -> dict[str, object]:
         "custom_branch_policies": custom,
         "default_branch_protected": default_protected,
         "main_branch_observed": main_branch_observed,
+        "protection": protection,
     }
 
 
@@ -1004,6 +1126,35 @@ def _configuration_names(payload: object, key: str) -> set[str]:
     }
 
 
+def _environment_variable_contract(payload: object) -> tuple[set[str], str | None]:
+    if not isinstance(payload, Mapping):
+        return set(), None
+    total_count = payload.get("total_count")
+    variables = payload.get("variables")
+    if (
+        type(total_count) is not int
+        or total_count < 0
+        or not isinstance(variables, list)
+        or total_count != len(variables)
+        or total_count > 30
+    ):
+        return set(), None
+    names: set[str] = set()
+    contracts: list[str] = []
+    for variable in variables:
+        if not isinstance(variable, Mapping) or not isinstance(variable.get("name"), str):
+            return set(), None
+        name = str(variable["name"])
+        names.add(name)
+        if name == ENVIRONMENT_PROTECTION_CONTRACT_NAME:
+            value = variable.get("value")
+            if isinstance(value, str):
+                contracts.append(value)
+            else:
+                return names, None
+    return names, contracts[0] if len(contracts) == 1 else None
+
+
 def _branch_policy_evidence(status: int, payload: object) -> str:
     if status != 200 or not isinstance(payload, Mapping):
         return "unknown"
@@ -1127,9 +1278,18 @@ def collect_github_snapshot(repository: str, token: str) -> dict[str, Any]:
             token,
         )
         branch_policy_evidence = _branch_policy_evidence(policies_status, policies)
-    names: set[str] = set()
+    environment_variables_status, environment_variables = _github_get(
+        repository,
+        "environments/browser-stores/variables?per_page=30",
+        token,
+    )
+    environment_names, protection_contract = (
+        _environment_variable_contract(environment_variables)
+        if environment_variables_status == 200
+        else (set(), None)
+    )
+    names: set[str] = set(environment_names)
     for path, key in (
-        ("environments/browser-stores/variables?per_page=100", "variables"),
         ("environments/browser-stores/secrets?per_page=100", "secrets"),
         ("actions/variables?per_page=100", "variables"),
     ):
@@ -1147,6 +1307,9 @@ def collect_github_snapshot(repository: str, token: str) -> dict[str, Any]:
         },
         "environment": {
             "name": environment.get("name"),
+            "can_admins_bypass": environment.get("can_admins_bypass"),
+            "protection_rules": environment.get("protection_rules"),
+            "protection_contract": protection_contract,
             "deployment_branch_policy": environment.get("deployment_branch_policy"),
             "default_branch": default_branch,
             "main_branch_observed": main_branch_observed,
