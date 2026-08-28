@@ -35,6 +35,18 @@ Keep publication disabled and add a manual, two-phase, read-only readiness check
    lookup, so Edge remains `human_action_required` rather than manufacturing an
    upload or publish call.
 
+Environment eligibility is bound to the artifact producer's exact `main`
+branch. The repository default branch must be exactly `main`, the `main` branch
+must be freshly observed, and the `browser-stores` deployment policy must be a
+custom policy containing exactly one branch entry whose exact name is `main`.
+The policy query is bounded and its declared count must equal the returned
+entries. Missing or renamed defaults, missing `main`, all-branch policy,
+protected-branch-only policy, non-`main` entries, tags or patterns, multiple or
+truncated entries, malformed responses, and unknown policy state fail closed.
+Protected-branch-only policy is not accepted because it cannot prove that only
+`main` is eligible and leaves protected-branch scope and administrator bypass
+semantics ambiguous.
+
 Receipts expose configuration names and presence only. Provider messages,
 credentials, tokens, publisher/item identifiers, and account details are never
 serialized. Store states are classified independently per provider: Chrome

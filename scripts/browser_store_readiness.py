@@ -240,6 +240,8 @@ def _environment_receipt(environment: Mapping[str, Any]) -> dict[str, object]:
     policy = raw_policy if policy_valid else {}
     protected_only = _bool(policy.get("protected_branches"))
     custom = _bool(policy.get("custom_branch_policies"))
+    default_branch = environment.get("default_branch")
+    main_branch_observed = environment.get("main_branch_observed") is True
     default_protected = _bool(environment.get("default_branch_protected"))
     valid = environment.get("name") == "browser-stores"
     reason = "eligible"
@@ -251,21 +253,44 @@ def _environment_receipt(environment: Mapping[str, Any]) -> dict[str, object]:
     elif not policy_valid:
         valid = False
         reason = "environment_policy_invalid"
+    elif not isinstance(default_branch, str) or not default_branch:
+        valid = False
+        reason = "default_branch_unknown"
+    elif default_branch != "main":
+        valid = False
+        reason = "default_branch_not_main"
+    elif not main_branch_observed:
+        valid = False
+        reason = "main_branch_unknown"
+    elif protected_only and custom:
+        valid = False
+        reason = "environment_policy_invalid"
+    elif not protected_only and not custom:
+        valid = False
+        reason = "all_branches_allowed"
     elif protected_only and not custom and not default_protected:
         valid = False
         reason = "default_branch_not_eligible"
+    elif protected_only and not custom:
+        valid = False
+        reason = "protected_branch_policy_ambiguous"
     elif custom:
-        eligibility = environment.get("default_branch_eligible")
-        valid = isinstance(eligibility, bool) and eligibility
-        reason = (
-            "eligible"
-            if valid
-            else (
-                "default_branch_not_eligible"
-                if eligibility is False
-                else "default_branch_eligibility_unknown"
-            )
-        )
+        evidence = environment.get("branch_policy_evidence")
+        if evidence == "non_main_only":
+            valid = False
+            reason = "branch_policy_not_exact_main"
+        elif evidence == "no_policies":
+            valid = False
+            reason = "main_branch_policy_missing"
+        elif evidence == "ambiguous_or_multiple":
+            valid = False
+            reason = "branch_policy_ambiguous"
+        elif evidence == "exact_main":
+            valid = True
+            reason = "eligible"
+        else:
+            valid = False
+            reason = "branch_policy_unknown"
     return {
         "name": "browser-stores",
         "valid": valid,
@@ -273,6 +298,7 @@ def _environment_receipt(environment: Mapping[str, Any]) -> dict[str, object]:
         "protected_branches_only": protected_only,
         "custom_branch_policies": custom,
         "default_branch_protected": default_protected,
+        "main_branch_observed": main_branch_observed,
     }
 
 
@@ -978,6 +1004,33 @@ def _configuration_names(payload: object, key: str) -> set[str]:
     }
 
 
+def _branch_policy_evidence(status: int, payload: object) -> str:
+    if status != 200 or not isinstance(payload, Mapping):
+        return "unknown"
+    total_count = payload.get("total_count")
+    policies = payload.get("branch_policies")
+    if (
+        not isinstance(total_count, int)
+        or isinstance(total_count, bool)
+        or total_count < 0
+        or not isinstance(policies, list)
+        or total_count != len(policies)
+    ):
+        return "ambiguous_or_multiple"
+    if total_count == 0:
+        return "no_policies"
+    if total_count != 1:
+        return "ambiguous_or_multiple"
+    policy = policies[0]
+    if not isinstance(policy, Mapping):
+        return "ambiguous_or_multiple"
+    if policy.get("type") == "branch" and policy.get("name") == "main":
+        return "exact_main"
+    if policy.get("type") == "branch" and isinstance(policy.get("name"), str):
+        return "non_main_only"
+    return "ambiguous_or_multiple"
+
+
 def collect_github_snapshot(repository: str, token: str) -> dict[str, Any]:
     if not token:
         raise ReadinessError("GitHub token is required for read-only recapture")
@@ -1051,31 +1104,29 @@ def collect_github_snapshot(repository: str, token: str) -> dict[str, Any]:
     environment = environment if status == 200 and isinstance(environment, Mapping) else {}
     branch_status, branch = _github_get(
         repository,
-        f"branches/{urllib.parse.quote(default_branch, safe='')}",
+        "branches/main",
         token,
         expected=(200,),
     )
-    default_branch_protected = bool(
+    main_branch_observed = bool(
         branch_status == 200
         and isinstance(branch, Mapping)
-        and branch.get("name") == default_branch
+        and branch.get("name") == "main"
+        and isinstance(branch.get("protected"), bool)
+    )
+    default_branch_protected = bool(
+        main_branch_observed
         and branch.get("protected") is True
     )
-    default_branch_eligible = False
+    branch_policy_evidence = "not_applicable"
     policy = _mapping(environment.get("deployment_branch_policy"))
     if _bool(policy.get("custom_branch_policies")):
         policies_status, policies = _github_get(
             repository,
-            "environments/browser-stores/deployment-branch-policies?per_page=100",
+            "environments/browser-stores/deployment-branch-policies?per_page=2",
             token,
         )
-        branches = _mapping(policies).get("branch_policies", []) if policies_status == 200 else []
-        default_branch_eligible = any(
-            isinstance(value, Mapping)
-            and value.get("type") == "branch"
-            and value.get("name") == default_branch
-            for value in branches
-        ) if isinstance(branches, list) else False
+        branch_policy_evidence = _branch_policy_evidence(policies_status, policies)
     names: set[str] = set()
     for path, key in (
         ("environments/browser-stores/variables?per_page=100", "variables"),
@@ -1098,8 +1149,9 @@ def collect_github_snapshot(repository: str, token: str) -> dict[str, Any]:
             "name": environment.get("name"),
             "deployment_branch_policy": environment.get("deployment_branch_policy"),
             "default_branch": default_branch,
+            "main_branch_observed": main_branch_observed,
             "default_branch_protected": default_branch_protected,
-            "default_branch_eligible": default_branch_eligible,
+            "branch_policy_evidence": branch_policy_evidence,
         },
         "github": {
             "repository": {"id": repository_id, "full_name": repo.get("full_name")},
