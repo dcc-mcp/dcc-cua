@@ -20,6 +20,7 @@ SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
 MAX_BUNDLE_BYTES = 512 * 1024 * 1024
 MAX_MEMBER_BYTES = 256 * 1024 * 1024
 MAX_COMPRESSION_RATIO = 200
+MAX_SERVER_ID = 2**63 - 1
 
 
 def _sha256(path: Path) -> str:
@@ -41,16 +42,29 @@ def _canonical_root_name(name: str) -> bool:
     )
 
 
+def _require_server_id(value: object, field: str) -> int:
+    if type(value) is not int or not 1 <= value <= MAX_SERVER_ID:
+        raise ValueError(f"{field} ID must be an exact bounded positive integer")
+    return value
+
+
 def _validate_metadata(
     document: dict,
+    repository_document: dict,
     *,
     artifact_id: int,
     artifact_name: str,
     artifact_digest: str,
     run_id: int,
     head_sha: str,
+    repository_id: int,
+    head_repository_id: int,
     bundle_size: int,
 ) -> None:
+    _require_server_id(repository_document.get("id"), "artifact repository")
+    if repository_document.get("id") != repository_id:
+        raise ValueError("artifact repository identity does not match the workflow")
+    _require_server_id(document.get("id"), "artifact metadata")
     if document.get("id") != artifact_id:
         raise ValueError("artifact metadata ID does not match the upload output")
     if document.get("name") != artifact_name:
@@ -62,10 +76,23 @@ def _validate_metadata(
     if document.get("digest") != f"sha256:{artifact_digest}":
         raise ValueError("artifact digest does not match server metadata")
     workflow_run = document.get("workflow_run")
-    if not isinstance(workflow_run, dict) or workflow_run.get("id") != run_id:
+    if not isinstance(workflow_run, dict):
+        raise TypeError("artifact workflow run must be a JSON object")
+    _require_server_id(workflow_run.get("id"), "artifact workflow run")
+    if workflow_run.get("id") != run_id:
         raise ValueError("artifact workflow run does not match the current run")
     if workflow_run.get("head_sha") != head_sha:
         raise ValueError("artifact workflow head does not match the current run")
+    _require_server_id(workflow_run.get("repository_id"), "workflow repository")
+    if workflow_run.get("repository_id") != repository_id:
+        raise ValueError("workflow repository identity does not match the workflow")
+    _require_server_id(
+        workflow_run.get("head_repository_id"), "workflow head repository"
+    )
+    if workflow_run.get("head_repository_id") != head_repository_id:
+        raise ValueError(
+            "workflow head repository identity does not match the workflow"
+        )
 
 
 def _extract_exact_bundle(snapshot: Path, output_root: Path, names: set[str]) -> None:
@@ -106,6 +133,7 @@ def _extract_exact_bundle(snapshot: Path, output_root: Path, names: set[str]) ->
 def verify_uploaded_artifact(
     *,
     metadata_path: Path,
+    repository_metadata_path: Path,
     bundle_path: Path,
     output_root: Path,
     expected_artifact_id: int,
@@ -113,6 +141,8 @@ def verify_uploaded_artifact(
     expected_artifact_digest: str,
     expected_run_id: int,
     expected_head_sha: str,
+    expected_repository_id: int,
+    expected_head_repository_id: int,
     archive_name: str,
     manifest_name: str,
     source_root: Path,
@@ -122,8 +152,10 @@ def verify_uploaded_artifact(
     install_root: Path,
     after_snapshot: Callable[[], None] | None = None,
 ) -> dict:
-    if expected_artifact_id <= 0 or expected_run_id <= 0:
-        raise ValueError("artifact and run IDs must be positive integers")
+    _require_server_id(expected_artifact_id, "expected artifact")
+    _require_server_id(expected_run_id, "expected workflow run")
+    _require_server_id(expected_repository_id, "expected repository")
+    _require_server_id(expected_head_repository_id, "expected head repository")
     if SHA256_PATTERN.fullmatch(expected_artifact_digest) is None:
         raise ValueError("artifact digest must be a lowercase SHA-256 value")
     if re.fullmatch(r"[0-9a-f]{40}", expected_head_sha) is None:
@@ -133,12 +165,23 @@ def verify_uploaded_artifact(
         raise ValueError("expected artifact member names must be canonical basenames")
     if output_root.exists() or extract_root.exists() or install_root.exists():
         raise ValueError("artifact verification roots must be fresh and absent")
-    if not metadata_path.is_file() or not bundle_path.is_file():
-        raise ValueError("artifact metadata and downloaded bundle are required")
+    if (
+        not metadata_path.is_file()
+        or not repository_metadata_path.is_file()
+        or not bundle_path.is_file()
+    ):
+        raise ValueError(
+            "artifact metadata, repository metadata, and downloaded bundle are required"
+        )
 
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
     if not isinstance(metadata, dict):
         raise TypeError("artifact metadata must be a JSON object")
+    repository_metadata = json.loads(
+        repository_metadata_path.read_text(encoding="utf-8")
+    )
+    if not isinstance(repository_metadata, dict):
+        raise TypeError("repository metadata must be a JSON object")
     initial_stat = bundle_path.stat()
     if initial_stat.st_size > MAX_BUNDLE_BYTES:
         raise ValueError("downloaded artifact bundle exceeds the size limit")
@@ -160,11 +203,14 @@ def verify_uploaded_artifact(
             raise ValueError("artifact digest does not match the upload output")
         _validate_metadata(
             metadata,
+            repository_metadata,
             artifact_id=expected_artifact_id,
             artifact_name=expected_artifact_name,
             artifact_digest=expected_artifact_digest,
             run_id=expected_run_id,
             head_sha=expected_head_sha,
+            repository_id=expected_repository_id,
+            head_repository_id=expected_head_repository_id,
             bundle_size=snapshot.stat().st_size,
         )
         _extract_exact_bundle(snapshot, output_root, expected_names)
@@ -198,6 +244,8 @@ def verify_uploaded_artifact(
         "artifact_digest": expected_artifact_digest,
         "workflow_run_id": expected_run_id,
         "workflow_head_sha": expected_head_sha,
+        "repository_id": expected_repository_id,
+        "head_repository_id": expected_head_repository_id,
         "final_archive": final_receipt,
     }
 
@@ -205,6 +253,7 @@ def verify_uploaded_artifact(
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--metadata", type=Path, required=True)
+    parser.add_argument("--repository-metadata", type=Path, required=True)
     parser.add_argument("--bundle", type=Path, required=True)
     parser.add_argument("--output-root", type=Path, required=True)
     parser.add_argument("--artifact-id", type=int, required=True)
@@ -212,6 +261,8 @@ def main() -> None:
     parser.add_argument("--artifact-digest", required=True)
     parser.add_argument("--run-id", type=int, required=True)
     parser.add_argument("--head-sha", required=True)
+    parser.add_argument("--repository-id", type=int, required=True)
+    parser.add_argument("--head-repository-id", type=int, required=True)
     parser.add_argument("--archive-name", required=True)
     parser.add_argument("--manifest-name", required=True)
     parser.add_argument("--source-root", type=Path, required=True)
@@ -222,6 +273,7 @@ def main() -> None:
     args = parser.parse_args()
     receipt = verify_uploaded_artifact(
         metadata_path=args.metadata,
+        repository_metadata_path=args.repository_metadata,
         bundle_path=args.bundle,
         output_root=args.output_root,
         expected_artifact_id=args.artifact_id,
@@ -229,6 +281,8 @@ def main() -> None:
         expected_artifact_digest=args.artifact_digest,
         expected_run_id=args.run_id,
         expected_head_sha=args.head_sha,
+        expected_repository_id=args.repository_id,
+        expected_head_repository_id=args.head_repository_id,
         archive_name=args.archive_name,
         manifest_name=args.manifest_name,
         source_root=args.source_root,
