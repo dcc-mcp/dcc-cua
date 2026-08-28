@@ -439,17 +439,21 @@ jobs:
           artifact_download_root="$RUNNER_TEMP/dcc-cua-pr-artifact-${ARTIFACT_ID}-${GITHUB_RUN_ATTEMPT}"
           mkdir "$artifact_download_root"
           artifact_metadata="$artifact_download_root/metadata.json"
+          artifact_repository_metadata="$artifact_download_root/repository.json"
           artifact_bundle="$artifact_download_root/artifact.zip"
           gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${ARTIFACT_ID}" > "$artifact_metadata"
+          gh api "repos/${GITHUB_REPOSITORY}" > "$artifact_repository_metadata"
           gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${ARTIFACT_ID}/zip" > "$artifact_bundle"
-          printf 'ARTIFACT_METADATA=%s\nARTIFACT_BUNDLE=%s\n' \
-            "$artifact_metadata" "$artifact_bundle" >> "$GITHUB_ENV"
+          printf 'ARTIFACT_METADATA=%s\nARTIFACT_REPOSITORY_METADATA=%s\nARTIFACT_BUNDLE=%s\n' \
+            "$artifact_metadata" "$artifact_repository_metadata" "$artifact_bundle" >> "$GITHUB_ENV"
       - name: Verify downloaded immutable native artifact
         shell: bash
         env:
           ARTIFACT_ID: ${{ steps.upload-pr-native.outputs.artifact-id }}
           ARTIFACT_DIGEST: ${{ steps.upload-pr-native.outputs.artifact-digest }}
           EXPECTED_SOURCE_SHA: ${{ steps.ci-source.outputs.sha }}
+          EXPECTED_REPOSITORY_ID: ${{ github.repository_id }}
+          EXPECTED_HEAD_REPOSITORY_ID: ${{ github.event.pull_request.head.repo.id || github.repository_id }}
         run: |
           set -euo pipefail
           host="$(rustc -vV | sed -n 's/^host: //p')"
@@ -462,6 +466,7 @@ jobs:
           manifest_name="dcc-cua-install-manifest-${host}.json"
           python -B scripts/verify_uploaded_artifact.py \
             --metadata "$ARTIFACT_METADATA" \
+            --repository-metadata "$ARTIFACT_REPOSITORY_METADATA" \
             --bundle "$ARTIFACT_BUNDLE" \
             --output-root "$RUNNER_TEMP/dcc-cua-pr-readback-${ARTIFACT_ID}" \
             --artifact-id "$ARTIFACT_ID" \
@@ -469,6 +474,8 @@ jobs:
             --artifact-digest "$ARTIFACT_DIGEST" \
             --run-id "$GITHUB_RUN_ID" \
             --head-sha "$EXPECTED_SOURCE_SHA" \
+            --repository-id "$EXPECTED_REPOSITORY_ID" \
+            --head-repository-id "$EXPECTED_HEAD_REPOSITORY_ID" \
             --archive-name "$archive_name" \
             --manifest-name "$manifest_name" \
             --source-root target/release \

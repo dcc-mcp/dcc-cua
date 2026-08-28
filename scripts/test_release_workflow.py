@@ -1,4 +1,5 @@
 import contextlib
+import hashlib
 import json
 import unittest
 from pathlib import Path
@@ -33,6 +34,39 @@ UPLOAD_ACTION = "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa0
 RELEASE_PLEASE_ACTION = (
     "googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7"
 )
+CI_EXECUTABLE_SURFACE_SHA256 = (
+    "93c10cea2bcf736186b4229a54f8d4f103370a0dafba46acc62360a211489718"
+)
+
+
+def _ci_executable_surface(workflow: str) -> str:
+    job_markers = (
+        ("browser-extension", "  browser-extension:", "  policy:"),
+        ("policy", "  policy:", "  verify:"),
+        ("verify", "  verify:", "  e2e:"),
+        ("e2e", "  e2e:", None),
+    )
+    surface = []
+    for name, start_marker, end_marker in job_markers:
+        start = workflow.index(start_marker)
+        end = workflow.index(end_marker, start) if end_marker else len(workflow)
+        lines = workflow[start:end].splitlines()
+        blocks = []
+        current = []
+        for line in lines:
+            if line.startswith("      - "):
+                if current:
+                    blocks.append("\n".join(current).rstrip())
+                current = [line]
+            elif current and (not line.strip() or line.startswith("        ")):
+                current.append(line)
+            elif current:
+                blocks.append("\n".join(current).rstrip())
+                current = []
+        if current:
+            blocks.append("\n".join(current).rstrip())
+        surface.append(f"job:{name}\n" + "\n---step---\n".join(blocks))
+    return "\n===job===\n".join(surface)
 
 
 class ReleaseWorkflowTests(unittest.TestCase):
@@ -167,6 +201,10 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertIn("scripts.test_select_ci_source_sha", release)
 
     def assert_ci_source_checkout_contract(self, workflow, *, subtests=True):
+        surface_digest = hashlib.sha256(
+            _ci_executable_surface(workflow).encode("utf-8")
+        ).hexdigest()
+        self.assertEqual(surface_digest, CI_EXECUTABLE_SURFACE_SHA256)
         jobs = (
             ("  browser-extension:", "  policy:"),
             ("  policy:", "  verify:"),
@@ -254,10 +292,7 @@ class ReleaseWorkflowTests(unittest.TestCase):
                     '--expected "$EXPECTED_SOURCE_SHA"'
                 )
                 self.assertIn(trusted_integrity, verify_step)
-                source_consumers = job[verify_end:] if verify_end >= 0 else ""
                 self.assertGreaterEqual(job.count(trusted_integrity), 2)
-                untrusted_commands = source_consumers.replace(trusted_integrity, "")
-                self.assertNotIn("git ", untrusted_commands)
 
     def test_ci_builds_only_the_event_selected_immutable_source_checkout(self):
         self.assert_ci_source_checkout_contract(CI_WORKFLOW.read_text(encoding="utf-8"))
@@ -314,6 +349,28 @@ class ReleaseWorkflowTests(unittest.TestCase):
             "git restore --source attacker-ref --worktree -- .",
             "git archive attacker-ref | tar -x -f -",
         ):
+            mutated = ci.replace(
+                insertion,
+                f"      - run: {command}\n{insertion}",
+                1,
+            )
+            with (
+                self.subTest(command=command),
+                self.assertRaises(AssertionError),
+            ):
+                self.assert_ci_source_checkout_contract(mutated, subtests=False)
+
+    def test_ci_source_checkout_rejects_indirect_git_and_extra_step_surface(self):
+        ci = CI_WORKFLOW.read_text(encoding="utf-8")
+        insertion = "      - uses: dtolnay/rust-toolchain@stable"
+        commands = (
+            'GIT=git; "$GIT" restore --source attacker-ref --worktree -- .',
+            "alias source_swap=git; source_swap checkout attacker-ref -- .",
+            'source_swap() { "$@"; }; source_swap git read-tree attacker-ref',
+            "GIT='g'\\\n          'it'; \"$GIT\" restore --source attacker-ref --worktree -- .",
+            "printf 'executable decoy\\n'",
+        )
+        for command in commands:
             mutated = ci.replace(
                 insertion,
                 f"      - run: {command}\n{insertion}",
@@ -531,6 +588,10 @@ class ReleaseWorkflowTests(unittest.TestCase):
             download_step,
         )
         self.assertIn(
+            'gh api "repos/${GITHUB_REPOSITORY}" > "$artifact_repository_metadata"',
+            download_step,
+        )
+        self.assertIn(
             'gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${ARTIFACT_ID}/zip"',
             download_step,
         )
@@ -542,18 +603,31 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertIn(f"ARTIFACT_DIGEST: {artifact_digest}", verify_step)
         if expected_head_sha:
             self.assertIn(f"EXPECTED_HEAD_SHA: {expected_head_sha}", verify_step)
+            expected_head_repository = "${{ github.repository_id }}"
         else:
             self.assertIn(
                 "EXPECTED_SOURCE_SHA: ${{ steps.ci-source.outputs.sha }}",
                 verify_step,
             )
+            expected_head_repository = (
+                "${{ github.event.pull_request.head.repo.id || github.repository_id }}"
+            )
+        self.assertIn(
+            "EXPECTED_REPOSITORY_ID: ${{ github.repository_id }}", verify_step
+        )
+        self.assertIn(
+            f"EXPECTED_HEAD_REPOSITORY_ID: {expected_head_repository}", verify_step
+        )
         self.assertIn("python -B scripts/verify_uploaded_artifact.py \\", verify_step)
         for argument in (
             '--metadata "$ARTIFACT_METADATA"',
+            '--repository-metadata "$ARTIFACT_REPOSITORY_METADATA"',
             '--bundle "$ARTIFACT_BUNDLE"',
             '--artifact-id "$ARTIFACT_ID"',
             '--artifact-digest "$ARTIFACT_DIGEST"',
             '--run-id "$GITHUB_RUN_ID"',
+            '--repository-id "$EXPECTED_REPOSITORY_ID"',
+            '--head-repository-id "$EXPECTED_HEAD_REPOSITORY_ID"',
             '--head-sha "$EXPECTED_SOURCE_SHA"'
             if expected_head_sha is None
             else '--head-sha "$EXPECTED_HEAD_SHA"',
