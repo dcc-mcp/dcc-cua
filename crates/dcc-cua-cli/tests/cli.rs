@@ -295,6 +295,14 @@ fn mcp_server_reports_missing_human_integration_without_creating_authority(#[cas
     assert_eq!(status["authorization_available"], false);
     assert_eq!(status["user_confirmation_available"], false);
     assert_eq!(status["provider"], "dcc-cua");
+    assert_eq!(
+        status["next_owners"],
+        serde_json::json!(["dcc_cua_core", "client_embedding_integration"])
+    );
+    assert_eq!(
+        status["signed_receipt_protocol"]["runtime_accepts_receipts"],
+        false
+    );
     assert_eq!(responses[3]["result"]["resources"], serde_json::json!([]));
     for response in &responses[4..] {
         assert_eq!(response["result"]["isError"], true);

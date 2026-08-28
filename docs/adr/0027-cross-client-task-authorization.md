@@ -39,9 +39,12 @@ opening a Host session, launching a browser, or returning a UI resource.
 
 The status document has schema `dcc-cua.authorization-integration.v1` and
 reports `authorization_available`, `user_confirmation_available`,
-`card_available`, and `process_identity_can_authorize` as false. The next owner
-is `client_embedding_integration`. `parent_identity_available` is optional
-diagnostic evidence, never permission. Caller-selected client names cannot
+`card_available`, and `process_identity_can_authorize` as false. Follow-up work
+requires both `dcc_cua_core` and `client_embedding_integration`, reported in
+`next_owners`: the verifier and client transport must be implemented, validated,
+and deployed together. Installing a client transport alone cannot enable the
+current runtime. `parent_identity_available` is optional diagnostic evidence,
+never permission. Caller-selected client names cannot
 change this behavior. Existing constructor-owned, in-process embedding APIs
 remain available; their caller owns the real user-input boundary.
 
