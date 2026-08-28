@@ -35,11 +35,13 @@ def ready_snapshot() -> dict[str, object]:
         "environment": {
             "name": "browser-stores",
             "deployment_branch_policy": {
-                "protected_branches": True,
-                "custom_branch_policies": False,
+                "protected_branches": False,
+                "custom_branch_policies": True,
             },
             "default_branch": "main",
+            "main_branch_observed": True,
             "default_branch_protected": True,
+            "branch_policy_evidence": "exact_main",
         },
         "github": {
             "repository": {"id": 123, "full_name": "dcc-mcp/dcc-cua"},
@@ -193,12 +195,19 @@ jobs:
                 {
                     "name": "browser-stores",
                     "deployment_branch_policy": {
-                        "protected_branches": True,
-                        "custom_branch_policies": False,
+                        "protected_branches": False,
+                        "custom_branch_policies": True,
                     },
                 },
             ),
             "branches/main": (200, {"name": "main", "protected": True}),
+            "environments/browser-stores/deployment-branch-policies?per_page=2": (
+                200,
+                {
+                    "total_count": 1,
+                    "branch_policies": [{"type": "branch", "name": "main"}],
+                },
+            ),
             "environments/browser-stores/variables?per_page=100": (
                 200,
                 {"variables": []},
@@ -239,10 +248,135 @@ jobs:
 
     def test_protected_only_environment_rejects_unprotected_main(self) -> None:
         snapshot = ready_snapshot()
+        snapshot["environment"]["deployment_branch_policy"] = {
+            "protected_branches": True,
+            "custom_branch_policies": False,
+        }
         snapshot["environment"]["default_branch_protected"] = False
         receipt = READINESS.build_receipt(snapshot)
         self.assertEqual("not_ready", receipt["overall_state"])
         self.assertEqual("default_branch_not_eligible", receipt["environment"]["reason"])
+
+    def test_protected_only_environment_rejects_scope_and_admin_ambiguity(self) -> None:
+        snapshot = ready_snapshot()
+        snapshot["environment"]["deployment_branch_policy"] = {
+            "protected_branches": True,
+            "custom_branch_policies": False,
+        }
+        snapshot["environment"]["default_branch_protected"] = True
+
+        receipt = READINESS.build_receipt(snapshot)
+
+        self.assertFalse(receipt["ready"])
+        self.assertFalse(receipt["environment"]["valid"])
+        self.assertEqual(
+            "protected_branch_policy_ambiguous", receipt["environment"]["reason"]
+        )
+
+    def test_environment_rejects_missing_repository_default_branch(self) -> None:
+        snapshot = ready_snapshot()
+        snapshot["environment"].pop("default_branch")
+
+        receipt = READINESS.build_receipt(snapshot)
+
+        self.assertFalse(receipt["ready"])
+        self.assertFalse(receipt["environment"]["valid"])
+        self.assertEqual("default_branch_unknown", receipt["environment"]["reason"])
+
+    def test_environment_rejects_protected_develop_as_default_branch(self) -> None:
+        snapshot = ready_snapshot()
+        snapshot["environment"]["default_branch"] = "develop"
+        snapshot["environment"]["default_branch_protected"] = True
+
+        receipt = READINESS.build_receipt(snapshot)
+
+        self.assertFalse(receipt["ready"])
+        self.assertFalse(receipt["environment"]["valid"])
+        self.assertEqual("default_branch_not_main", receipt["environment"]["reason"])
+
+    def test_environment_rejects_custom_policy_for_non_main_branch(self) -> None:
+        snapshot = ready_snapshot()
+        snapshot["environment"]["deployment_branch_policy"] = {
+            "protected_branches": False,
+            "custom_branch_policies": True,
+        }
+        snapshot["environment"]["branch_policy_evidence"] = "non_main_only"
+
+        receipt = READINESS.build_receipt(snapshot)
+
+        self.assertFalse(receipt["ready"])
+        self.assertFalse(receipt["environment"]["valid"])
+        self.assertEqual(
+            "branch_policy_not_exact_main", receipt["environment"]["reason"]
+        )
+
+    def test_environment_rejects_custom_policy_without_main(self) -> None:
+        snapshot = ready_snapshot()
+        snapshot["environment"]["deployment_branch_policy"] = {
+            "protected_branches": False,
+            "custom_branch_policies": True,
+        }
+        snapshot["environment"]["branch_policy_evidence"] = "no_policies"
+
+        receipt = READINESS.build_receipt(snapshot)
+
+        self.assertFalse(receipt["ready"])
+        self.assertFalse(receipt["environment"]["valid"])
+        self.assertEqual("main_branch_policy_missing", receipt["environment"]["reason"])
+
+    def test_environment_rejects_multiple_or_ambiguous_custom_policies(self) -> None:
+        snapshot = ready_snapshot()
+        snapshot["environment"]["deployment_branch_policy"] = {
+            "protected_branches": False,
+            "custom_branch_policies": True,
+        }
+        snapshot["environment"]["branch_policy_evidence"] = "ambiguous_or_multiple"
+
+        receipt = READINESS.build_receipt(snapshot)
+
+        self.assertFalse(receipt["ready"])
+        self.assertFalse(receipt["environment"]["valid"])
+        self.assertEqual("branch_policy_ambiguous", receipt["environment"]["reason"])
+
+    def test_environment_rejects_unknown_custom_policy_evidence(self) -> None:
+        snapshot = ready_snapshot()
+        snapshot["environment"]["deployment_branch_policy"] = {
+            "protected_branches": False,
+            "custom_branch_policies": True,
+        }
+        snapshot["environment"].pop("branch_policy_evidence", None)
+
+        receipt = READINESS.build_receipt(snapshot)
+
+        self.assertFalse(receipt["ready"])
+        self.assertFalse(receipt["environment"]["valid"])
+        self.assertEqual("branch_policy_unknown", receipt["environment"]["reason"])
+
+    def test_environment_rejects_all_branch_and_conflicting_policy_modes(self) -> None:
+        cases = (
+            (
+                {"protected_branches": False, "custom_branch_policies": False},
+                "all_branches_allowed",
+            ),
+            (
+                {"protected_branches": True, "custom_branch_policies": True},
+                "environment_policy_invalid",
+            ),
+        )
+        for policy, expected_reason in cases:
+            with self.subTest(expected_reason=expected_reason):
+                snapshot = ready_snapshot()
+                snapshot["environment"]["deployment_branch_policy"] = policy
+                receipt = READINESS.build_receipt(snapshot)
+                self.assertFalse(receipt["ready"])
+                self.assertFalse(receipt["environment"]["valid"])
+                self.assertEqual(expected_reason, receipt["environment"]["reason"])
+
+    def test_environment_accepts_only_observed_main_with_exact_custom_policy(self) -> None:
+        receipt = READINESS.build_receipt(ready_snapshot())
+        self.assertTrue(receipt["environment"]["valid"])
+        self.assertEqual("eligible", receipt["environment"]["reason"])
+        self.assertTrue(receipt["environment"]["main_branch_observed"])
 
     def test_missing_or_malformed_environment_policy_fails_closed(self) -> None:
         mutations = (
@@ -402,11 +536,123 @@ jobs:
 
         self.assertIn("branches/main", paths)
         self.assertNotIn("branches/main/protection", paths)
+        self.assertIn(
+            "environments/browser-stores/deployment-branch-policies?per_page=2",
+            paths,
+        )
+        self.assertTrue(snapshot["environment"]["main_branch_observed"])
         self.assertTrue(snapshot["environment"]["default_branch_protected"])
+        self.assertEqual("exact_main", snapshot["environment"]["branch_policy_evidence"])
         self.assertTrue(
             READINESS.build_receipt(snapshot)["environment"]["valid"],
-            "a protected public main must remain eligible with Contents-read",
+            "an exact custom main policy must remain eligible with Contents-read",
         )
+
+    def test_collected_environment_fails_closed_without_main_branch_proof(self) -> None:
+        def fake_get(repository: str, path: str, token: str, **kwargs: object):
+            if path == "branches/main":
+                return 404, {}
+            return self.github_api_fixture(path)
+
+        with mock.patch.object(READINESS, "_github_get", side_effect=fake_get):
+            snapshot = READINESS.collect_github_snapshot(
+                "dcc-mcp/dcc-cua", "configured"
+            )
+
+        receipt = READINESS.build_receipt(snapshot)
+        self.assertFalse(receipt["ready"])
+        self.assertEqual("main_branch_unknown", receipt["environment"]["reason"])
+
+    def test_collected_environment_fails_closed_when_default_is_develop(self) -> None:
+        paths: list[str] = []
+
+        def fake_get(repository: str, path: str, token: str, **kwargs: object):
+            paths.append(path)
+            status, payload = self.github_api_fixture(path)
+            payload = copy.deepcopy(payload)
+            if path == "":
+                payload["default_branch"] = "develop"
+            return status, payload
+
+        with mock.patch.object(READINESS, "_github_get", side_effect=fake_get):
+            snapshot = READINESS.collect_github_snapshot(
+                "dcc-mcp/dcc-cua", "configured"
+            )
+
+        receipt = READINESS.build_receipt(snapshot)
+        self.assertIn("branches/main", paths)
+        self.assertNotIn("branches/develop", paths)
+        self.assertFalse(receipt["ready"])
+        self.assertEqual("default_branch_not_main", receipt["environment"]["reason"])
+
+    def test_collected_environment_fails_closed_when_default_branch_is_missing(self) -> None:
+        def fake_get(repository: str, path: str, token: str, **kwargs: object):
+            status, payload = self.github_api_fixture(path)
+            payload = copy.deepcopy(payload)
+            if path == "":
+                payload.pop("default_branch")
+            return status, payload
+
+        with mock.patch.object(READINESS, "_github_get", side_effect=fake_get):
+            snapshot = READINESS.collect_github_snapshot(
+                "dcc-mcp/dcc-cua", "configured"
+            )
+
+        receipt = READINESS.build_receipt(snapshot)
+        self.assertFalse(receipt["ready"])
+        self.assertEqual("default_branch_unknown", receipt["environment"]["reason"])
+
+    def test_collected_custom_branch_policies_must_be_exactly_main(self) -> None:
+        cases = {
+            "non_main_only": (
+                {
+                    "total_count": 1,
+                    "branch_policies": [{"type": "branch", "name": "develop"}],
+                },
+                "branch_policy_not_exact_main",
+            ),
+            "no_policies": (
+                {"total_count": 0, "branch_policies": []},
+                "main_branch_policy_missing",
+            ),
+            "multiple": (
+                {
+                    "total_count": 2,
+                    "branch_policies": [
+                        {"type": "branch", "name": "main"},
+                        {"type": "branch", "name": "develop"},
+                    ],
+                },
+                "branch_policy_ambiguous",
+            ),
+            "truncated_or_inconsistent": (
+                {
+                    "total_count": 2,
+                    "branch_policies": [{"type": "branch", "name": "main"}],
+                },
+                "branch_policy_ambiguous",
+            ),
+        }
+        policy_path = (
+            "environments/browser-stores/deployment-branch-policies?per_page=2"
+        )
+        for name, (policy_payload, expected_reason) in cases.items():
+            with self.subTest(name=name):
+                def fake_get(
+                    repository: str, path: str, token: str, **kwargs: object
+                ):
+                    if path == policy_path:
+                        return 200, copy.deepcopy(policy_payload)
+                    return self.github_api_fixture(path)
+
+                with mock.patch.object(READINESS, "_github_get", side_effect=fake_get):
+                    snapshot = READINESS.collect_github_snapshot(
+                        "dcc-mcp/dcc-cua", "configured"
+                    )
+                receipt = READINESS.build_receipt(snapshot)
+                self.assertFalse(receipt["ready"])
+                self.assertEqual(expected_reason, receipt["environment"]["reason"])
+                self.assertNotIn("develop", json.dumps(receipt, sort_keys=True))
 
     def test_collected_run_metadata_is_bound_into_receipt(self) -> None:
         for field, value in {
