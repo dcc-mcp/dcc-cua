@@ -119,7 +119,7 @@ EXPECTED_CI_TRIGGER = (
     "  pull_request:",
     "  workflow_dispatch: {}",
 )
-EXPECTED_CI_PERMISSIONS = ("  contents: read",)
+EXPECTED_CI_PERMISSIONS = ("  actions: read", "  contents: read")
 EXPECTED_CI_CONCURRENCY = (
     "  group: ci-${{ github.workflow }}-${{ github.ref }}",
     "  cancel-in-progress: true",
@@ -133,18 +133,86 @@ EXPECTED_HAKARI_COMMAND = (
     "cargo hakari generate --diff\n"
     "cargo hakari manage-deps --dry-run\n"
 )
+EXPECTED_SELECT_CI_SOURCE_COMMAND = (
+    "set -euo pipefail\n"
+    'case "$CI_EVENT_NAME" in\n'
+    '  pull_request) source_sha="$CI_PULL_REQUEST_HEAD_SHA" ;;\n'
+    '  push|workflow_dispatch) source_sha="$CI_EVENT_SHA" ;;\n'
+    '  *) echo "unsupported CI event: $CI_EVENT_NAME" >&2; exit 1 ;;\n'
+    "esac\n"
+    'case "$source_sha" in\n'
+    "  *[!0-9a-f]*|'') echo \"CI event did not provide a lowercase commit SHA\" >&2; exit 1 ;;\n"
+    "esac\n"
+    'if [ "${#source_sha}" -ne 40 ]; then\n'
+    '  echo "CI event did not provide a full commit SHA" >&2\n'
+    "  exit 1\n"
+    "fi\n"
+    "printf 'sha=%s\\n' \"$source_sha\" >> \"$GITHUB_OUTPUT\"\n"
+)
+EXPECTED_VERIFY_CI_SOURCE_COMMAND = (
+    "set -euo pipefail\n"
+    'actual_source_sha="$(git rev-parse --verify \'HEAD^{commit}\')"\n'
+    'if [ "$actual_source_sha" != "$EXPECTED_SOURCE_SHA" ]; then\n'
+    '  echo "checkout source identity mismatch" >&2\n'
+    "  exit 1\n"
+    "fi\n"
+    'git show "$EXPECTED_SOURCE_SHA:scripts/verify_ci_source_integrity.py" |\n'
+    '  python -B - --repository . --expected "$EXPECTED_SOURCE_SHA"\n'
+)
+EXPECTED_REVERIFY_CI_SOURCE_COMMAND = (
+    "set -euo pipefail\n"
+    'git show "$EXPECTED_SOURCE_SHA:scripts/verify_ci_source_integrity.py" |\n'
+    '  python -B - --repository . --expected "$EXPECTED_SOURCE_SHA"\n'
+)
+EXPECTED_CI_SOURCE_ENV = {
+    "CI_EVENT_NAME": "${{ github.event_name }}",
+    "CI_EVENT_SHA": "${{ github.sha }}",
+    "CI_PULL_REQUEST_HEAD_SHA": "${{ github.event.pull_request.head.sha }}",
+}
+EXPECTED_CI_REVERIFY_ENV = {
+    "EXPECTED_SOURCE_SHA": "${{ steps.ci-source.outputs.sha }}"
+}
 EXPECTED_POLICY_STEPS = (
-    {"uses": "actions/checkout@v7"},
+    {
+        "name": "Select immutable CI source SHA",
+        "id": "ci-source",
+        "shell": "bash",
+        "env": EXPECTED_CI_SOURCE_ENV,
+        "run": EXPECTED_SELECT_CI_SOURCE_COMMAND,
+    },
+    {
+        "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+        "with": {
+            "ref": "${{ steps.ci-source.outputs.sha }}",
+            "persist-credentials": "false",
+        },
+    },
+    {
+        "name": "Verify exact CI source checkout",
+        "shell": "bash",
+        "env": EXPECTED_CI_REVERIFY_ENV,
+        "run": EXPECTED_VERIFY_CI_SOURCE_COMMAND,
+    },
     {
         "uses": "dtolnay/rust-toolchain@stable",
         "with": {"toolchain": "1.95.0", "components": "rustfmt"},
     },
     {"uses": "taiki-e/install-action@v2", "with": {"tool": "cargo-hakari"}},
+    {
+        "name": "Reverify immutable source before policy execution",
+        "shell": "bash",
+        "env": EXPECTED_CI_REVERIFY_ENV,
+        "run": EXPECTED_REVERIFY_CI_SOURCE_COMMAND,
+    },
     {"run": CI_YAML_INSTALL_COMMAND},
     {"run": "pwsh -NoProfile -File scripts/check-rust-layout.ps1"},
     {"run": "pwsh -NoProfile -File scripts/check-agent-skills.ps1"},
     {"run": "python -B scripts/test_write_install_manifest.py"},
     {"run": "python -B -m unittest scripts.test_verify_release_assets"},
+    {"run": "python -B -m unittest scripts.test_verify_final_archive"},
+    {"run": "python -B -m unittest scripts.test_verify_uploaded_artifact"},
+    {"run": "python -B -m unittest scripts.test_select_ci_source_sha"},
+    {"run": "python -B -m unittest scripts.test_verify_ci_source_integrity"},
     {"run": "python -B -m unittest scripts.test_release_integrity"},
     {"run": "python -B -m unittest scripts.test_release_workflow"},
     {"run": "python -B -m unittest scripts.test_refresh_release_please_prs"},
@@ -153,7 +221,10 @@ EXPECTED_POLICY_STEPS = (
     {"run": "cargo fmt --all -- --check"},
 )
 EXPECTED_POLICY_ACTION_INPUTS = {
-    "actions/checkout@v7": {},
+    "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1": {
+        "ref": "${{ steps.ci-source.outputs.sha }}",
+        "persist-credentials": "false",
+    },
     "dtolnay/rust-toolchain@stable": {
         "toolchain": "1.95.0",
         "components": "rustfmt",
@@ -978,21 +1049,28 @@ def audit_ci_contract(
             current = {}
             steps.append(current)
             if start.group(1):
-                current[start.group(1)] = (start.group(2) or "").strip()
+                current[start.group(1)] = (start.group(2) or "").split(
+                    " #", 1
+                )[0].strip()
             continue
         field = re.fullmatch(r"        ([A-Za-z0-9_-]+):(?:\s*(.*))?", line)
         nested = re.fullmatch(r"          ([A-Za-z0-9_-]+):(?:\s*(.*))?", line)
         if field and current is not None:
-            key, value = field.group(1), (field.group(2) or "").strip()
+            key = field.group(1)
+            value = (field.group(2) or "").split(" #", 1)[0].strip()
             if key in current:
                 reasons.append("ci_step_duplicate_field")
-            current[key] = {} if key == "with" and value == "" else value
-        elif nested and current is not None and isinstance(current.get("with"), dict):
-            key, value = nested.group(1), (nested.group(2) or "").strip()
-            action_inputs = current["with"]
-            if key in action_inputs:
+            current[key] = {} if key in {"with", "env"} and value == "" else value
+        elif nested and current is not None and any(
+            isinstance(current.get(parent), dict) for parent in ("with", "env")
+        ):
+            key = nested.group(1)
+            value = (nested.group(2) or "").split(" #", 1)[0].strip()
+            parent = "with" if isinstance(current.get("with"), dict) else "env"
+            nested_values = current[parent]
+            if key in nested_values:
                 reasons.append("ci_step_duplicate_input")
-            action_inputs[key] = value
+            nested_values[key] = value
         else:
             indentation = len(line) - len(line.lstrip(" "))
             if indentation == 6:
@@ -1020,7 +1098,11 @@ def audit_ci_contract(
         if not isinstance(value, str):
             reasons.append("ci_step_execution_ambiguous")
             continue
-        allowed_fields = {"uses", "with"} if key == "uses" else {"run"}
+        allowed_fields = (
+            {"uses", "with"}
+            if key == "uses"
+            else {"run", "name", "id", "shell", "env"}
+        )
         if set(step) - allowed_fields:
             reasons.append("ci_step_execution_modifier_not_allowed")
         if key == "uses":
