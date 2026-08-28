@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import shutil
+import struct
 import tempfile
 import unittest
 import zipfile
@@ -120,8 +122,55 @@ class ExtensionContractTests(unittest.TestCase):
                 expected = [path.relative_to(built).as_posix() for path in PACKAGE_EXTENSION.archive_files(built)]
                 with zipfile.ZipFile(first) as archive:
                     self.assertEqual(expected, archive.namelist(), browser)
+                    self.assertTrue(set(PACKAGE_EXTENSION.ICON_PATHS.values()).issubset(archive.namelist()))
+                    self.assertFalse(any(name.startswith(("artwork/", "store/")) for name in archive.namelist()))
                 sidecar = first.with_name(f"{first.name}.sha256").read_text(encoding="utf-8")
                 self.assertEqual(f"{first_hash}  {first.name}\n", sidecar)
+
+    def test_store_artwork_has_upload_dimensions(self) -> None:
+        for name, dimensions in (("logo-300.png", (300, 300)), ("promo-440x280.png", (440, 280))):
+            content = (ROOT / "store" / "assets" / name).read_bytes()
+            self.assertEqual(b"\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR", content[:16], name)
+            self.assertEqual(dimensions, struct.unpack(">II", content[16:24]), name)
+
+    def test_packaging_rejects_missing_or_changed_store_icons_before_writing(self) -> None:
+        for mutation in (
+            "missing_mapping", "missing_action", "outside_path", "missing_file",
+            "wrong_size", "invalid_png", "changed_output",
+        ):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory) / "extension"
+                built = root / ".output" / "chrome-mv3"
+                shutil.copytree(ROOT / ".output" / "chrome-mv3", built)
+                shutil.copytree(ROOT / "public", root / "public")
+                shutil.copyfile(ROOT / "package.json", root / "package.json")
+                manifest_path = built / "manifest.json"
+                manifest = json_file(manifest_path)
+                icon = built / "icons" / "icon-128.png"
+                source = root / "public" / "icons" / "icon-128.png"
+                if mutation == "missing_mapping":
+                    del manifest["icons"]
+                elif mutation == "missing_action":
+                    del manifest["action"]
+                elif mutation == "outside_path":
+                    assert isinstance(manifest["icons"], dict)
+                    manifest["icons"]["128"] = "../outside.png"
+                elif mutation == "missing_file":
+                    icon.unlink()
+                elif mutation == "wrong_size":
+                    icon.write_bytes((built / "icons" / "icon-16.png").read_bytes())
+                    source.write_bytes(icon.read_bytes())
+                elif mutation == "invalid_png":
+                    source.write_bytes(b"invalid PNG")
+                    icon.write_bytes(source.read_bytes())
+                else:
+                    icon.write_bytes(icon.read_bytes() + b"changed")
+                manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+                archive = root / "dist" / "extension.zip"
+                with self.assertRaisesRegex(ValueError, "icon"):
+                    PACKAGE_EXTENSION.build_archive(root, archive, "chrome")
+                self.assertFalse(archive.exists())
+                self.assertFalse(archive.with_name(f"{archive.name}.sha256").exists())
 
 
 if __name__ == "__main__":

@@ -2,3 +2,6 @@
 /dist/
 /.wxt/
 /node_modules/
+!artwork/*.png
+!public/icons/*.png
+!store/assets/*.png

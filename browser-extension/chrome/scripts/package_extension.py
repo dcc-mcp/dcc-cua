@@ -6,12 +6,47 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import struct
 import zipfile
 from pathlib import Path
 
 
 SUPPORTED_BROWSERS = ("chrome", "edge", "firefox")
 FIXED_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
+ICON_PATHS = {str(size): f"icons/icon-{size}.png" for size in (16, 32, 48, 128)}
+
+
+def validate_icons(root: Path, output: Path, manifest: dict[str, object]) -> None:
+    action = manifest.get("action")
+    if (
+        manifest.get("icons") != ICON_PATHS
+        or not isinstance(action, dict)
+        or action.get("default_icon") != ICON_PATHS
+    ):
+        raise ValueError("extension and action icons must use the packaged size-specific PNGs")
+    for size, name in ICON_PATHS.items():
+        source = root / "public" / name
+        built = output / name
+        if (
+            not source.is_file()
+            or not built.is_file()
+            or source.is_symlink()
+            or built.is_symlink()
+            or source.resolve() != root.resolve() / "public" / name
+            or built.resolve() != output.resolve() / name
+        ):
+            raise ValueError("extension icon source or built file is missing or linked")
+        content = source.read_bytes()
+        if (
+            len(content) < 45
+            or content[:16] != b"\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR"
+            or struct.unpack(">II", content[16:24]) != (int(size), int(size))
+            or content[24:29] != b"\x08\x06\x00\x00\x00"
+            or content[-12:] != b"\x00\x00\x00\x00IEND\xaeB`\x82"
+        ):
+            raise ValueError("extension icon must be an RGBA PNG with its declared dimensions")
+        if built.read_bytes() != content:
+            raise ValueError("built extension icon differs from its checked-in source")
 
 
 def sha256_file(path: Path) -> str:
@@ -60,6 +95,7 @@ def validate_manifest(root: Path, output: Path, expected_version: str | None) ->
         raise ValueError("generated extension must use Manifest V3")
     if "host_permissions" in manifest:
         raise ValueError("generated extension must not request blanket host permissions")
+    validate_icons(root, output, manifest)
     return version
 
 

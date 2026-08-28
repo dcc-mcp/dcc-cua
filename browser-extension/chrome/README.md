@@ -40,6 +40,10 @@ Chrome Web Store, Edge Add-ons, or Firefox Add-ons.
 
 ## Store publishing
 
+See the [submission checklist and draft listing assets](store/README.md) for
+package requirements, owner-reviewed disclosures and real screenshot gates.
+A successful build or ZIP hash check does not mean a store submission is ready.
+
 Tagged extension releases publish through the `browser-stores` protected
 GitHub Environment only when the repository variable
 `DCC_CUA_BROWSER_STORE_PUBLISH_READY` is `true`. Configure required reviewers
