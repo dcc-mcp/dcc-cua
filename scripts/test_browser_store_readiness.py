@@ -34,6 +34,29 @@ def ready_snapshot() -> dict[str, object]:
         "configuration": configuration,
         "environment": {
             "name": "browser-stores",
+            "can_admins_bypass": False,
+            "protection_rules": [
+                {
+                    "id": 10,
+                    "node_id": "rule-reviewers",
+                    "type": "required_reviewers",
+                    "prevent_self_review": True,
+                    "reviewers": [
+                        {
+                            "type": "User",
+                            "reviewer": {
+                                "id": 7,
+                                "node_id": "reviewer-7",
+                                "login": "fixture-reviewer",
+                                "type": "User",
+                            },
+                        }
+                    ],
+                },
+                {"id": 11, "node_id": "rule-branch", "type": "branch_policy"},
+            ],
+            "protection_contract": "sha256:"
+            + "21757ca54b0fcab5b1969e24957567080dd41954328e12061e158a853c3adb18",
             "deployment_branch_policy": {
                 "protected_branches": False,
                 "custom_branch_policies": True,
@@ -194,6 +217,10 @@ jobs:
                 200,
                 {
                     "name": "browser-stores",
+                    "can_admins_bypass": False,
+                    "protection_rules": copy.deepcopy(
+                        ready_snapshot()["environment"]["protection_rules"]
+                    ),
                     "deployment_branch_policy": {
                         "protected_branches": False,
                         "custom_branch_policies": True,
@@ -208,9 +235,17 @@ jobs:
                     "branch_policies": [{"type": "branch", "name": "main"}],
                 },
             ),
-            "environments/browser-stores/variables?per_page=100": (
+            "environments/browser-stores/variables?per_page=30": (
                 200,
-                {"variables": []},
+                {
+                    "total_count": 1,
+                    "variables": [
+                        {
+                            "name": READINESS.ENVIRONMENT_PROTECTION_CONTRACT_NAME,
+                            "value": ready_snapshot()["environment"]["protection_contract"],
+                        }
+                    ],
+                },
             ),
             "environments/browser-stores/secrets?per_page=100": (
                 200,
@@ -377,6 +412,118 @@ jobs:
         self.assertTrue(receipt["environment"]["valid"])
         self.assertEqual("eligible", receipt["environment"]["reason"])
         self.assertTrue(receipt["environment"]["main_branch_observed"])
+
+    def test_environment_required_reviewer_removal_fails_closed(self) -> None:
+        snapshot = ready_snapshot()
+        snapshot["environment"]["protection_rules"][0]["reviewers"] = []
+
+        receipt = READINESS.build_receipt(snapshot)
+
+        self.assertFalse(receipt["ready"])
+        self.assertFalse(receipt["environment"]["valid"])
+        self.assertEqual(
+            "environment_required_reviewers_missing",
+            receipt["environment"]["reason"],
+        )
+
+    def test_environment_protection_contract_binds_exact_reviewer_identity(self) -> None:
+        for mutation in ("removed", "changed", "added"):
+            with self.subTest(mutation=mutation):
+                snapshot = ready_snapshot()
+                reviewers = snapshot["environment"]["protection_rules"][0]["reviewers"]
+                if mutation == "removed":
+                    reviewers.clear()
+                    expected = "environment_required_reviewers_missing"
+                elif mutation == "changed":
+                    reviewers[0]["reviewer"]["id"] = 8
+                    expected = "environment_protection_contract_mismatch"
+                else:
+                    reviewers.append(
+                        {
+                            "type": "Team",
+                            "reviewer": {"id": 9, "node_id": "team-9"},
+                        }
+                    )
+                    expected = "environment_protection_contract_mismatch"
+                receipt = READINESS.build_receipt(snapshot)
+                self.assertFalse(receipt["ready"])
+                self.assertEqual(expected, receipt["environment"]["reason"])
+
+    def test_environment_protection_rejects_self_review_and_admin_bypass_ambiguity(self) -> None:
+        cases = (
+            ("prevent_self_review", False, "environment_self_review_not_prevented"),
+            ("prevent_self_review", None, "environment_self_review_not_prevented"),
+            ("can_admins_bypass", True, "environment_admin_bypass_not_prevented"),
+            ("can_admins_bypass", None, "environment_admin_bypass_not_prevented"),
+        )
+        for field, value, expected in cases:
+            with self.subTest(field=field, value=value):
+                snapshot = ready_snapshot()
+                if field == "prevent_self_review":
+                    rule = snapshot["environment"]["protection_rules"][0]
+                    if value is None:
+                        rule.pop(field)
+                    else:
+                        rule[field] = value
+                elif value is None:
+                    snapshot["environment"].pop(field)
+                else:
+                    snapshot["environment"][field] = value
+                receipt = READINESS.build_receipt(snapshot)
+                self.assertFalse(receipt["ready"])
+                self.assertEqual(expected, receipt["environment"]["reason"])
+
+    def test_environment_protection_rule_schema_is_closed(self) -> None:
+        mutations = (
+            lambda rules: rules.clear(),
+            lambda rules: rules.pop(),
+            lambda rules: rules.append(copy.deepcopy(rules[0])),
+            lambda rules: rules.append(
+                {
+                    "id": 12,
+                    "node_id": "wait",
+                    "type": "wait_timer",
+                    "wait_timer": 1,
+                }
+            ),
+            lambda rules: rules[0].__setitem__("unexpected", True),
+            lambda rules: rules[1].__setitem__("unexpected", True),
+            lambda rules: rules[0].__setitem__("reviewers", "truncated"),
+            lambda rules: rules[0]["reviewers"][0].__setitem__("unexpected", True),
+        )
+        for index, mutate in enumerate(mutations):
+            with self.subTest(index=index):
+                snapshot = ready_snapshot()
+                mutate(snapshot["environment"]["protection_rules"])
+                receipt = READINESS.build_receipt(snapshot)
+                self.assertFalse(receipt["ready"])
+                self.assertIn(
+                    receipt["environment"]["reason"],
+                    {
+                        "environment_protection_invalid",
+                        "environment_required_reviewers_missing",
+                    },
+                )
+
+    def test_environment_protection_contract_is_required_and_redacted(self) -> None:
+        for value in (None, "", "sha256:not-a-digest"):
+            with self.subTest(value=value):
+                snapshot = ready_snapshot()
+                if value is None:
+                    snapshot["environment"].pop("protection_contract")
+                else:
+                    snapshot["environment"]["protection_contract"] = value
+                receipt = READINESS.build_receipt(snapshot)
+                self.assertFalse(receipt["ready"])
+                self.assertEqual(
+                    "environment_protection_contract_missing",
+                    receipt["environment"]["reason"],
+                )
+        serialized = READINESS.serialize_receipt(
+            READINESS.build_receipt(ready_snapshot())
+        )
+        self.assertNotIn("fixture-reviewer", serialized)
+        self.assertNotIn("21757ca54b0f", serialized)
 
     def test_missing_or_malformed_environment_policy_fails_closed(self) -> None:
         mutations = (
@@ -547,6 +694,58 @@ jobs:
             READINESS.build_receipt(snapshot)["environment"]["valid"],
             "an exact custom main policy must remain eligible with Contents-read",
         )
+
+    def test_github_snapshot_preserves_fresh_environment_protection_contract(self) -> None:
+        paths: list[str] = []
+
+        def fake_get(repository: str, path: str, token: str, **kwargs: object):
+            paths.append(path)
+            return self.github_api_fixture(path)
+
+        with mock.patch.object(READINESS, "_github_get", side_effect=fake_get):
+            snapshot = READINESS.collect_github_snapshot(
+                "dcc-mcp/dcc-cua", "configured"
+            )
+
+        self.assertIn("environments/browser-stores/variables?per_page=30", paths)
+        self.assertNotIn("environments/browser-stores/variables?per_page=100", paths)
+        self.assertEqual(2, len(snapshot["environment"]["protection_rules"]))
+        self.assertFalse(snapshot["environment"]["can_admins_bypass"])
+        self.assertTrue(
+            READINESS.build_receipt(snapshot)["environment"]["protection"]["valid"]
+        )
+
+    def test_collected_environment_variable_contract_fails_closed_when_truncated(self) -> None:
+        variable_path = "environments/browser-stores/variables?per_page=30"
+        for payload in (
+            {"variables": []},
+            {"total_count": 2, "variables": []},
+            {"total_count": 31, "variables": []},
+            {
+                "total_count": 1,
+                "variables": [
+                    {"name": READINESS.ENVIRONMENT_PROTECTION_CONTRACT_NAME}
+                ],
+            },
+        ):
+            with self.subTest(payload=payload):
+                def fake_get(
+                    repository: str, path: str, token: str, **kwargs: object
+                ):
+                    if path == variable_path:
+                        return 200, copy.deepcopy(payload)
+                    return self.github_api_fixture(path)
+
+                with mock.patch.object(READINESS, "_github_get", side_effect=fake_get):
+                    snapshot = READINESS.collect_github_snapshot(
+                        "dcc-mcp/dcc-cua", "configured"
+                    )
+                receipt = READINESS.build_receipt(snapshot)
+                self.assertFalse(receipt["ready"])
+                self.assertEqual(
+                    "environment_protection_contract_missing",
+                    receipt["environment"]["reason"],
+                )
 
     def test_collected_environment_fails_closed_without_main_branch_proof(self) -> None:
         def fake_get(repository: str, path: str, token: str, **kwargs: object):
@@ -1030,6 +1229,24 @@ jobs:
             self.assertNotIn("private", combined)
             self.assertNotIn("Traceback", combined)
             self.assertEqual("browser store readiness preflight failed\n", stderr.getvalue())
+
+    def test_cli_preflight_rejects_removed_environment_reviewer(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            snapshot = ready_snapshot()
+            snapshot["environment"]["protection_rules"][0]["reviewers"] = []
+            snapshot_path = Path(directory) / "snapshot.json"
+            snapshot_path.write_text(json.dumps(snapshot), encoding="utf-8")
+
+            result = self.run_cli("--snapshot", snapshot_path)
+
+            self.assertEqual(1, result.returncode)
+            receipt = json.loads(result.stdout)
+            self.assertFalse(receipt["ready"])
+            self.assertEqual(
+                "environment_required_reviewers_missing",
+                receipt["environment"]["reason"],
+            )
+            self.assertNotIn("fixture-reviewer", result.stdout + result.stderr)
 
     def test_malformed_snapshot_still_writes_terminal_receipt(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

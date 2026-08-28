@@ -12,9 +12,9 @@ challenges are not safe to infer from credentials or a successful package build.
 They remain dependent on the exact foreground delivery in PR #223 and the bounded
 human challenge handoff in Issue #224.
 
-The environment currently permits protected branches only, while the default
-branch is not protected. A job that enters the environment cannot explain that
-mismatch because GitHub rejects it before steps run.
+Environment eligibility includes both branch scope and the human approval
+boundary. A branch-only receipt can remain green after required reviewers are
+removed or changed, self-review is enabled, or administrator bypass is allowed.
 
 ## Decision
 
@@ -46,6 +46,27 @@ truncated entries, malformed responses, and unknown policy state fail closed.
 Protected-branch-only policy is not accepted because it cannot prove that only
 `main` is eligible and leaves protected-branch scope and administrator bypass
 semantics ambiguous.
+
+The environment protection contract is version 1 and is closed. The fresh
+Environment response must contain exactly one `required_reviewers` rule and one
+`branch_policy` rule, with no other rule types or rule fields. Reviewer wrappers
+contain exactly `type` and `reviewer`; every reviewer is a unique GitHub `User`
+or `Team` with a positive signed 64-bit numeric ID and a non-empty node ID.
+`prevent_self_review` must be exactly `true`, and the Environment's
+`can_admins_bypass` field must be exactly `false`. Missing, malformed,
+truncated, duplicated, additional, or unknown rules and fields fail closed.
+
+Expected reviewer identities are repository configuration, not public source.
+The `browser-stores` Environment owns the
+`DCC_CUA_BROWSER_STORE_ENVIRONMENT_PROTECTION_V1` Actions variable. Its value is
+`sha256:` followed by the SHA-256 of compact, key-sorted JSON containing
+`version: 1`, the exact reviewer `type` and numeric `id` pairs sorted by type and
+ID, `prevent_self_review: true`, and `can_admins_bypass: false`. The variables
+query is bounded to one complete 30-entry page and declared count must equal the
+returned entries. Missing, duplicate, malformed, or truncated contract state
+fails closed. Receipts expose only the contract version, validity, stable reason,
+reviewer count, and the two protection booleans; reviewer identities and contract
+digests are never serialized.
 
 Receipts expose configuration names and presence only. Provider messages,
 credentials, tokens, publisher/item identifiers, and account details are never
