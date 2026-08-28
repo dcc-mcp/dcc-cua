@@ -97,8 +97,10 @@ function Assert-CommandFailureStdoutContract {
     $fixtureExtension = if ($isWindowsHost) { ".exe" } else { "" }
     $hostileHost = Join-Path ([System.IO.Path]::GetTempPath()) "dcc-cua-hostile-host-$([guid]::NewGuid().ToString('N'))${fixtureExtension}"
     $failingJsonlHost = Join-Path ([System.IO.Path]::GetTempPath()) "dcc-cua-failing-jsonl-host-$([guid]::NewGuid().ToString('N'))${fixtureExtension}"
+    $doctorShutdownFailureHost = Join-Path ([System.IO.Path]::GetTempPath()) "dcc-cua-doctor-shutdown-failure-host-$([guid]::NewGuid().ToString('N'))${fixtureExtension}"
     $hostileHostSource = Join-Path $PSScriptRoot "fixtures\hostile_host.rs"
     $failingJsonlHostSource = Join-Path $PSScriptRoot "fixtures\failing_jsonl_host.rs"
+    $doctorShutdownFailureHostSource = Join-Path $PSScriptRoot "fixtures\doctor_shutdown_failure_host.rs"
     $jsonlInput = Join-Path ([System.IO.Path]::GetTempPath()) "dcc-cua-jsonl-failure-$([guid]::NewGuid().ToString('N')).in"
     try {
         & rustc --edition=2024 -o $hostileHost $hostileHostSource
@@ -108,6 +110,10 @@ function Assert-CommandFailureStdoutContract {
         & rustc --edition=2024 -o $failingJsonlHost $failingJsonlHostSource
         if ($LASTEXITCODE -ne 0) {
             throw "failed to compile the failing JSONL Host fixture"
+        }
+        & rustc --edition=2024 -o $doctorShutdownFailureHost $doctorShutdownFailureHostSource
+        if ($LASTEXITCODE -ne 0) {
+            throw "failed to compile the doctor shutdown failure Host fixture"
         }
 
         $failure = Start-Process -FilePath $binaryPath -ArgumentList @("definitely-not-a-command") -RedirectStandardOutput $failureOutput -RedirectStandardError $failureError -PassThru -Wait
@@ -247,9 +253,37 @@ finally:
             $hostileStdout.Contains("CHILD_PRIVATE_DIAGNOSTIC_7e87d1")) {
             throw "spawned Host diagnostics escaped the release CLI structured-output boundary"
         }
+
+        $doctorFailure = Start-Process -FilePath $binaryPath -ArgumentList @("doctor", "--spawn", $doctorShutdownFailureHost) -RedirectStandardOutput $failureOutput -RedirectStandardError $failureError -PassThru -Wait
+        $doctorStdout = [System.IO.File]::ReadAllText($failureOutput, [System.Text.Encoding]::UTF8)
+        $doctorStderr = [System.IO.File]::ReadAllText($failureError, [System.Text.Encoding]::UTF8)
+        $doctorDocument = $null
+        $oneShotSuccess = [System.Text.Json.JsonElement]::new()
+        try {
+            $doctorDocument = [System.Text.Json.JsonDocument]::Parse($doctorStdout)
+            $doctorRoot = $doctorDocument.RootElement
+            $doctorType = $doctorRoot.GetProperty("type").GetString()
+            $doctorReady = $doctorRoot.GetProperty("ready").GetBoolean()
+            $hasOneShotSuccess = $doctorRoot.TryGetProperty("success", [ref]$oneShotSuccess)
+        }
+        catch {
+            throw "release Host doctor did not publish exactly one diagnostics document: $_"
+        }
+        finally {
+            if ($null -ne $doctorDocument) {
+                $doctorDocument.Dispose()
+            }
+        }
+        if ($doctorFailure.ExitCode -ne 1 -or
+            $doctorStderr.Length -ne 0 -or
+            $doctorType -ne "diagnostics" -or
+            $doctorReady -ne $false -or
+            $hasOneShotSuccess) {
+            throw "release Host doctor shutdown failure violated its diagnostics-native boundary"
+        }
     }
     finally {
-        foreach ($path in @($failureOutput, $failureError, $hostileHost, $failingJsonlHost, $jsonlInput)) {
+        foreach ($path in @($failureOutput, $failureError, $hostileHost, $failingJsonlHost, $doctorShutdownFailureHost, $jsonlInput)) {
             if (Test-Path -LiteralPath $path) {
                 Remove-Item -LiteralPath $path -Force
             }

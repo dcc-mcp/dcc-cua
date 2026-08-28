@@ -601,8 +601,11 @@ async fn host_doctor(flags: &[String]) -> Result<(), Box<dyn std::error::Error>>
     let snapshot_transport = snapshot_transport(flags)?;
     let mut connection = connect_host(flags, snapshot_transport).await?;
     let response = connection.client_mut().doctor().await?;
-    connection.shutdown().await?;
-    stdoutln!("{}", serde_json::to_string_pretty(&response.value)?);
+    let diagnostics = serde_json::to_string_pretty(&response.value)?;
+    let publish_result = write_stdout_line(format_args!("{diagnostics}"));
+    let shutdown_result = connection.shutdown().await;
+    publish_result?;
+    shutdown_result?;
     let route = doctor_route(flags)?;
     if !diagnostic_route_ready(&response.value, route) {
         return Err(format!("CUA Host {route} diagnostics are not ready").into());
