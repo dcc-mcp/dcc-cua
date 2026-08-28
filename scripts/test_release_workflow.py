@@ -1,6 +1,7 @@
 import contextlib
 import hashlib
 import json
+import re
 import unittest
 from pathlib import Path
 
@@ -35,38 +36,212 @@ RELEASE_PLEASE_ACTION = (
     "googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7"
 )
 CI_EXECUTABLE_SURFACE_SHA256 = (
-    "93c10cea2bcf736186b4229a54f8d4f103370a0dafba46acc62360a211489718"
+    "a88a93c1c1e67696cf5fc8d795ba7e7587e26ec2b3be58465088f2139a84cde7"
 )
 
 
+_YAML_META_TOKEN = re.compile(r"(?:^|[\s\[{:,-])[&*][A-Za-z_][\w.-]*")
+_YAML_TAG_TOKEN = re.compile(r"(?:^|[\s\[{:,-])![A-Za-z_][\w!.-]*")
+
+
+def _strip_yaml_comment(value: str) -> str:
+    quote = None
+    escaped = False
+    for index, character in enumerate(value):
+        if quote == '"' and character == "\\" and not escaped:
+            escaped = True
+            continue
+        if character in ("'", '"') and not escaped:
+            if quote is None:
+                quote = character
+            elif quote == character:
+                quote = None
+        if character == "#" and quote is None and (
+            index == 0 or value[index - 1].isspace()
+        ):
+            return value[:index].rstrip()
+        escaped = False
+    if quote is not None:
+        raise AssertionError("unterminated quoted YAML scalar")
+    return value.rstrip()
+
+
+def _split_yaml_mapping_entry(value: str) -> tuple[str, str]:
+    quote = None
+    escaped = False
+    for index, character in enumerate(value):
+        if quote == '"' and character == "\\" and not escaped:
+            escaped = True
+            continue
+        if character in ("'", '"') and not escaped:
+            if quote is None:
+                quote = character
+            elif quote == character:
+                quote = None
+        elif character == ":" and quote is None:
+            key = value[:index].strip()
+            if not key:
+                raise AssertionError("empty YAML mapping key")
+            if key == "<<":
+                raise AssertionError("YAML merge keys are forbidden")
+            return key, value[index + 1 :].strip()
+        escaped = False
+    raise AssertionError(f"expected YAML mapping entry: {value!r}")
+
+
+def _assert_plain_yaml_scalar(value: str) -> str:
+    scalar = _strip_yaml_comment(value)
+    if not scalar:
+        raise AssertionError("empty inline YAML scalar")
+    if _YAML_META_TOKEN.search(scalar) or _YAML_TAG_TOKEN.search(scalar):
+        raise AssertionError("YAML anchors, aliases, and tags are forbidden")
+    return scalar
+
+
+class _RestrictedWorkflowYamlParser:
+    """Parse the reviewed GitHub Actions YAML subset without implicit YAML types."""
+
+    def __init__(self, workflow: str):
+        normalized = workflow.replace("\r\n", "\n").replace("\r", "\n")
+        if normalized.startswith("\ufeff"):
+            raise AssertionError("YAML byte-order marks are forbidden")
+        self.lines = normalized.split("\n")
+        for line in self.lines:
+            if "\t" in line[: len(line) - len(line.lstrip())]:
+                raise AssertionError("tabs are forbidden in YAML indentation")
+            if line.startswith(("%", "---", "...")):
+                raise AssertionError("YAML directives and document markers are forbidden")
+
+    @staticmethod
+    def _indent(line: str) -> int:
+        return len(line) - len(line.lstrip(" "))
+
+    def _next_content(self, index: int) -> tuple[int, str] | None:
+        while index < len(self.lines):
+            stripped = self.lines[index].strip()
+            if stripped and not stripped.startswith("#"):
+                return index, self.lines[index]
+            index += 1
+        return None
+
+    def parse(self):
+        first = self._next_content(0)
+        if first is None:
+            raise AssertionError("workflow YAML is empty")
+        index, line = first
+        if self._indent(line) != 0:
+            raise AssertionError("workflow root must start at indentation zero")
+        value, index = self._parse_node(index, 0)
+        if self._next_content(index) is not None:
+            raise AssertionError("unexpected trailing YAML content")
+        return value
+
+    def _parse_node(self, index: int, indent: int):
+        line = self.lines[index]
+        if self._indent(line) != indent:
+            raise AssertionError("unexpected YAML indentation")
+        if line[indent:].startswith("- "):
+            return self._parse_sequence(index, indent)
+        return self._parse_mapping(index, indent)
+
+    def _parse_mapping(self, index: int, indent: int, initial=None):
+        mapping = {} if initial is None else initial
+        while True:
+            content = self._next_content(index)
+            if content is None:
+                return mapping, len(self.lines)
+            index, line = content
+            current_indent = self._indent(line)
+            if current_indent < indent:
+                return mapping, index
+            if current_indent > indent:
+                raise AssertionError("unexpected nested YAML mapping content")
+            text = line[indent:]
+            if text.startswith("- "):
+                return mapping, index
+            key, raw_value = _split_yaml_mapping_entry(text)
+            if key in mapping:
+                raise AssertionError(f"duplicate YAML mapping key: {key}")
+            mapping[key], index = self._parse_mapping_value(
+                raw_value, index + 1, indent
+            )
+
+    def _parse_mapping_value(self, raw_value: str, index: int, key_indent: int):
+        raw_value = _strip_yaml_comment(raw_value)
+        if raw_value in ("|", "|-", "|+", ">", ">-", ">+"):
+            return self._parse_block_scalar(index, key_indent, raw_value)
+        if raw_value:
+            return _assert_plain_yaml_scalar(raw_value), index
+        child = self._next_content(index)
+        if child is None:
+            return None, len(self.lines)
+        child_index, child_line = child
+        child_indent = self._indent(child_line)
+        if child_indent <= key_indent:
+            return None, child_index
+        if child_indent != key_indent + 2:
+            raise AssertionError("YAML nesting must use two-space indentation")
+        return self._parse_node(child_index, child_indent)
+
+    def _parse_block_scalar(self, index: int, key_indent: int, style: str):
+        block_indent = key_indent + 2
+        block_lines = []
+        while index < len(self.lines):
+            line = self.lines[index]
+            if line.strip() and self._indent(line) <= key_indent:
+                break
+            if line.strip() and self._indent(line) < block_indent:
+                raise AssertionError("invalid block scalar indentation")
+            block_lines.append(line[block_indent:] if line.strip() else "")
+            index += 1
+        while block_lines and not block_lines[-1]:
+            block_lines.pop()
+        text = "\n".join(block_lines)
+        if style in ("|", ">"):
+            text += "\n"
+        return {"style": style, "text": text}, index
+
+    def _parse_sequence(self, index: int, indent: int):
+        sequence = []
+        while True:
+            content = self._next_content(index)
+            if content is None:
+                return sequence, len(self.lines)
+            index, line = content
+            current_indent = self._indent(line)
+            if current_indent < indent:
+                return sequence, index
+            if current_indent != indent or not line[indent:].startswith("- "):
+                return sequence, index
+            item = line[indent + 2 :]
+            try:
+                key, raw_value = _split_yaml_mapping_entry(item)
+            except AssertionError:
+                sequence.append(_assert_plain_yaml_scalar(item))
+                index += 1
+                continue
+            mapping = {}
+            mapping[key], index = self._parse_mapping_value(
+                raw_value, index + 1, indent + 2
+            )
+            mapping, index = self._parse_mapping(index, indent + 2, mapping)
+            sequence.append(mapping)
+
+
 def _ci_executable_surface(workflow: str) -> str:
-    job_markers = (
-        ("browser-extension", "  browser-extension:", "  policy:"),
-        ("policy", "  policy:", "  verify:"),
-        ("verify", "  verify:", "  e2e:"),
-        ("e2e", "  e2e:", None),
-    )
-    surface = []
-    for name, start_marker, end_marker in job_markers:
-        start = workflow.index(start_marker)
-        end = workflow.index(end_marker, start) if end_marker else len(workflow)
-        lines = workflow[start:end].splitlines()
-        blocks = []
-        current = []
-        for line in lines:
-            if line.startswith("      - "):
-                if current:
-                    blocks.append("\n".join(current).rstrip())
-                current = [line]
-            elif current and (not line.strip() or line.startswith("        ")):
-                current.append(line)
-            elif current:
-                blocks.append("\n".join(current).rstrip())
-                current = []
-        if current:
-            blocks.append("\n".join(current).rstrip())
-        surface.append(f"job:{name}\n" + "\n---step---\n".join(blocks))
-    return "\n===job===\n".join(surface)
+    parsed = _RestrictedWorkflowYamlParser(workflow).parse()
+    expected_root_keys = {"name", "on", "permissions", "concurrency", "jobs"}
+    if set(parsed) != expected_root_keys:
+        raise AssertionError("unexpected top-level CI workflow keys")
+    jobs = parsed["jobs"]
+    if not isinstance(jobs, dict) or set(jobs) != {
+        "browser-extension",
+        "policy",
+        "verify",
+        "e2e",
+    }:
+        raise AssertionError("CI workflow job graph differs from the reviewed graph")
+    return json.dumps(parsed, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
 
 
 class ReleaseWorkflowTests(unittest.TestCase):
@@ -296,6 +471,150 @@ class ReleaseWorkflowTests(unittest.TestCase):
 
     def test_ci_builds_only_the_event_selected_immutable_source_checkout(self):
         self.assert_ci_source_checkout_contract(CI_WORKFLOW.read_text(encoding="utf-8"))
+
+    def test_ci_source_checkout_rejects_an_additional_executable_job(self):
+        ci = CI_WORKFLOW.read_text(encoding="utf-8")
+        mutated = ci.replace(
+            "jobs:\n  browser-extension:",
+            "jobs:\n"
+            "  unreviewed-execution:\n"
+            "    runs-on: ubuntu-latest\n"
+            "    steps:\n"
+            "      - run: printf 'unreviewed execution\\n'\n\n"
+            "  browser-extension:",
+            1,
+        )
+        with self.assertRaises(AssertionError):
+            self.assert_ci_source_checkout_contract(mutated, subtests=False)
+
+    def test_ci_source_checkout_rejects_job_defaults_that_mutate_before_build(self):
+        ci = CI_WORKFLOW.read_text(encoding="utf-8")
+        mutated = ci.replace(
+            "  verify:\n    timeout-minutes: 45",
+            "  verify:\n"
+            "    defaults:\n"
+            "      run:\n"
+            "        shell: bash -c 'grep -q \"cargo check\" {0} && "
+            "git restore --source attacker-ref --worktree -- .; bash {0}'\n"
+            "    timeout-minutes: 45",
+            1,
+        )
+        with self.assertRaises(AssertionError):
+            self.assert_ci_source_checkout_contract(mutated, subtests=False)
+
+    def test_ci_source_checkout_rejects_execution_affecting_job_mappings(self):
+        ci = CI_WORKFLOW.read_text(encoding="utf-8")
+        insertions = (
+            "    env:\n      UNREVIEWED_EXECUTION: enabled\n",
+            "    permissions:\n      contents: write\n",
+            "    container: ubuntu:24.04\n",
+            "    services:\n      helper:\n        image: redis:7\n",
+        )
+        for insertion in insertions:
+            mutated = ci.replace(
+                "  verify:\n    timeout-minutes: 45",
+                f"  verify:\n{insertion}    timeout-minutes: 45",
+                1,
+            )
+            with self.subTest(insertion=insertion), self.assertRaises(AssertionError):
+                self.assert_ci_source_checkout_contract(mutated, subtests=False)
+
+    def test_ci_source_checkout_rejects_execution_affecting_step_mappings(self):
+        ci = CI_WORKFLOW.read_text(encoding="utf-8")
+        original = "      - run: cargo check --workspace --all-targets --locked"
+        mutations = (
+            original + "\n        name: Unreviewed name",
+            original + "\n        id: unreviewed-id",
+            original + "\n        env:\n          UNREVIEWED_EXECUTION: enabled",
+            original + "\n        if: always()",
+            original + "\n        shell: bash",
+            original + "\n        working-directory: crates",
+            original + "\n        timeout-minutes: 44",
+            original + "\n        continue-on-error: true",
+        )
+        for replacement in mutations:
+            mutated = ci.replace(original, replacement, 1)
+            with (
+                self.subTest(replacement=replacement),
+                self.assertRaises(AssertionError),
+            ):
+                self.assert_ci_source_checkout_contract(mutated, subtests=False)
+
+    def test_ci_source_checkout_rejects_pre_and_post_reverify_mutations(self):
+        ci = CI_WORKFLOW.read_text(encoding="utf-8")
+        reverify = "      - name: Reverify immutable source before build"
+        cargo_check = "      - run: cargo check --workspace --all-targets --locked"
+        verify_start = ci.index("  verify:")
+        reverify_start = ci.index(reverify, verify_start)
+        before_reverify = (
+            ci[:reverify_start]
+            + "      - run: git restore --source attacker-ref --worktree -- .\n"
+            + ci[reverify_start:]
+        )
+        mutations = (
+            before_reverify,
+            ci.replace(
+                cargo_check,
+                "      - run: git restore --source attacker-ref --worktree -- .\n"
+                + cargo_check,
+                1,
+            ),
+        )
+        for mutated in mutations:
+            with self.subTest(), self.assertRaises(AssertionError):
+                self.assert_ci_source_checkout_contract(mutated, subtests=False)
+
+    def test_ci_source_checkout_rejects_commented_and_multiline_decoys(self):
+        ci = CI_WORKFLOW.read_text(encoding="utf-8")
+        original = "      - run: cargo check --workspace --all-targets --locked"
+        mutations = (
+            ci.replace(
+                original,
+                "      # - run: cargo check --workspace --all-targets --locked\n"
+                "      - run: printf 'decoy bypass\\n'",
+                1,
+            ),
+            ci.replace(
+                original,
+                "      - run: |\n"
+                "          GIT=git\n"
+                "          source_swap() { \"$@\"; }\n"
+                "          source_swap \"$GIT\" restore --source attacker-ref "
+                "--worktree -- .\n"
+                "          cargo check --workspace --all-targets --locked",
+                1,
+            ),
+        )
+        for mutated in mutations:
+            with self.subTest(), self.assertRaises(AssertionError):
+                self.assert_ci_source_checkout_contract(mutated, subtests=False)
+
+    def test_ci_workflow_parser_rejects_anchors_aliases_and_duplicate_keys(self):
+        ci = CI_WORKFLOW.read_text(encoding="utf-8")
+        mutations = (
+            ci.replace(
+                "    timeout-minutes: 45",
+                "    env: &unreviewed-env\n"
+                "      UNREVIEWED_EXECUTION: enabled\n"
+                "    timeout-minutes: 45",
+                1,
+            ),
+            ci.replace(
+                "      - run: cargo check --workspace --all-targets --locked",
+                "      - run: cargo check --workspace --all-targets --locked\n"
+                "        env: *unreviewed-env",
+                1,
+            ),
+            ci.replace(
+                "      - run: cargo check --workspace --all-targets --locked",
+                "      - run: cargo check --workspace --all-targets --locked\n"
+                "        run: printf 'duplicate run\\n'",
+                1,
+            ),
+        )
+        for mutated in mutations:
+            with self.subTest(), self.assertRaises(AssertionError):
+                self.assert_ci_source_checkout_contract(mutated, subtests=False)
 
     def test_ci_source_checkout_rejects_reviewer_merge_ref_counterexample(self):
         ci = CI_WORKFLOW.read_text(encoding="utf-8")
