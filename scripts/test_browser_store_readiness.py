@@ -1805,26 +1805,15 @@ jobs:
                 step, "      - run: echo skipped\n        run: " + command, 1
             ),
             "checkout_repository_input": workflow.replace(
-                "  policy:\n    runs-on: ubuntu-latest\n"
-                "    timeout-minutes: 10\n    steps:\n"
-                "      - uses: actions/checkout@v7\n",
-                "  policy:\n    runs-on: ubuntu-latest\n"
-                "    timeout-minutes: 10\n    steps:\n"
-                "      - uses: actions/checkout@v7\n"
-                "        with:\n"
-                "          repository: owner/other\n",
-                1,
+                "          persist-credentials: false",
+                "          persist-credentials: false\n"
+                "          repository: owner/other",
+                2,
             ),
             "checkout_ref_input": workflow.replace(
-                "  policy:\n    runs-on: ubuntu-latest\n"
-                "    timeout-minutes: 10\n    steps:\n"
-                "      - uses: actions/checkout@v7\n",
-                "  policy:\n    runs-on: ubuntu-latest\n"
-                "    timeout-minutes: 10\n    steps:\n"
-                "      - uses: actions/checkout@v7\n"
-                "        with:\n"
-                "          ref: refs/heads/other\n",
-                1,
+                "          ref: ${{ steps.ci-source.outputs.sha }}",
+                "          ref: refs/heads/other",
+                2,
             ),
             "toolchain_input_changed": workflow.replace(
                 "          toolchain: 1.95.0",
