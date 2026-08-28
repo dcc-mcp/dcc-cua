@@ -16,6 +16,9 @@ use serde_json::Value;
 
 use crate::contracts::MOUSE_CURSOR_THEME;
 
+#[cfg(target_os = "macos")]
+const PRIVATE_WORKER_FAILURE_DIAGNOSTIC: &str = "dcc-cua: private worker failed";
+
 struct InitializationSignal(Option<std::sync::mpsc::SyncSender<bool>>);
 
 impl InitializationSignal {
@@ -50,8 +53,8 @@ pub fn run_private_worker_with_appkit(generation: String) -> Result<(), String> 
                 .and_then(|runtime| {
                     runtime.block_on(run_private_worker_inner(generation, Some(initialized_tx)))
                 });
-            if let Err(error) = &result {
-                eprintln!("dcc-cua private worker: {error}");
+            if result.is_err() {
+                eprintln!("{PRIVATE_WORKER_FAILURE_DIAGNOSTIC}");
             }
             std::process::exit(i32::from(result.is_err()));
         })

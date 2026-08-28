@@ -4,6 +4,13 @@ use serde_json::json;
 use super::*;
 
 #[rstest]
+fn doctor_failures_preserve_the_diagnostics_native_stdout_boundary() {
+    assert!(
+        terminal_error_output(&[OsString::from("doctor")]) == TerminalErrorOutput::ProtocolNative
+    );
+}
+
+#[rstest]
 fn typed_one_shot_failures_keep_only_allowlisted_identity() {
     let error = ComputerUseError::new(
         ComputerUseErrorCode::StaleObservation,

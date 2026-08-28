@@ -152,21 +152,50 @@ function Assert-CommandFailureStdoutContract {
             throw "command substitution did not receive the failed command envelope from stdout"
         }
 
-        $closedStdoutStart = [System.Diagnostics.ProcessStartInfo]::new($binaryPath)
-        $closedStdoutStart.UseShellExecute = $false
-        $closedStdoutStart.RedirectStandardOutput = $true
-        $closedStdoutStart.RedirectStandardError = $true
-        $closedStdoutStart.ArgumentList.Add("manifest")
-        $closedStdout = [System.Diagnostics.Process]::Start($closedStdoutStart)
-        $closedStdout.StandardOutput.BaseStream.Dispose()
-        $closedStdoutStderrTask = $closedStdout.StandardError.ReadToEndAsync()
-        $closedStdout.WaitForExit()
-        $closedStdoutStderr = $closedStdoutStderrTask.GetAwaiter().GetResult()
-        $closedStdoutDiagnostics = @($closedStdoutStderr -split "`r?`n" | Where-Object { $_.Length -gt 0 })
-        if ($closedStdout.ExitCode -ne 1 -or
+        $closedStdoutProbe = @'
+import json
+import os
+import subprocess
+import sys
+
+read_fd, write_fd = os.pipe()
+os.close(read_fd)
+process = None
+try:
+    process = subprocess.Popen(
+        [sys.argv[1], "manifest"],
+        stdout=write_fd,
+        stderr=subprocess.PIPE,
+    )
+    os.close(write_fd)
+    write_fd = None
+    try:
+        _, stderr = process.communicate(timeout=10)
+        timed_out = False
+    except subprocess.TimeoutExpired:
+        process.kill()
+        _, stderr = process.communicate(timeout=10)
+        timed_out = True
+    print(json.dumps({
+        "exit_code": process.returncode,
+        "timed_out": timed_out,
+        "stderr_lines": stderr.decode("utf-8").splitlines(),
+    }))
+finally:
+    if write_fd is not None:
+        os.close(write_fd)
+'@
+        $closedStdoutJson = & python -B -c $closedStdoutProbe $binaryPath
+        if ($LASTEXITCODE -ne 0) {
+            throw "release CLI closed stdout fixture did not complete"
+        }
+        $closedStdout = $closedStdoutJson | Out-String | ConvertFrom-Json
+        $closedStdoutDiagnostics = @($closedStdout.stderr_lines)
+        if ($closedStdout.timed_out -or
+            $closedStdout.exit_code -ne 1 -or
             $closedStdoutDiagnostics.Count -ne 1 -or
             $closedStdoutDiagnostics[0] -ne "dcc-cua: command result could not be written to stdout") {
-            throw "release CLI closed stdout did not emit exactly one fixed safe diagnostic: $closedStdoutStderr"
+            throw "release CLI closed stdout did not emit exactly one fixed safe diagnostic"
         }
 
         $nativeStart = [System.Diagnostics.ProcessStartInfo]::new($binaryPath)

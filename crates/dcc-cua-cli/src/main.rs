@@ -123,7 +123,7 @@ fn terminal_error_output(arguments: &[OsString]) -> TerminalErrorOutput {
     if native_messaging
         || matches!(
             first_text,
-            Some("host" | "host-jsonl" | "mcp-server" | "__private-worker")
+            Some("doctor" | "host" | "host-jsonl" | "mcp-server" | "__private-worker")
         )
     {
         TerminalErrorOutput::ProtocolNative
@@ -602,11 +602,11 @@ async fn host_doctor(flags: &[String]) -> Result<(), Box<dyn std::error::Error>>
     let mut connection = connect_host(flags, snapshot_transport).await?;
     let response = connection.client_mut().doctor().await?;
     connection.shutdown().await?;
+    stdoutln!("{}", serde_json::to_string_pretty(&response.value)?);
     let route = doctor_route(flags)?;
     if !diagnostic_route_ready(&response.value, route) {
         return Err(format!("CUA Host {route} diagnostics are not ready").into());
     }
-    stdoutln!("{}", serde_json::to_string_pretty(&response.value)?);
     Ok(())
 }
 
@@ -1819,11 +1819,11 @@ async fn doctor(
     flags: &[String],
 ) -> Result<(), Box<dyn std::error::Error>> {
     let report = driver.diagnostics().await;
+    stdoutln!("{}", serde_json::to_string_pretty(&report)?);
     let route = doctor_route(flags)?;
     if !diagnostic_route_ready(&report, route) {
         return Err(format!("CUA {route} diagnostics are not ready").into());
     }
-    stdoutln!("{}", serde_json::to_string_pretty(&report)?);
     Ok(())
 }
 

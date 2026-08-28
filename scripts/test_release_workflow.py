@@ -263,7 +263,10 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertIn("fixtures\\hostile_host.rs", script)
         self.assertIn("CHILD_PRIVATE_DIAGNOSTIC_7e87d1", script)
         self.assertIn('"host-call", "--spawn", $hostileHost', script)
-        self.assertIn("StandardOutput.BaseStream.Dispose()", script)
+        self.assertIn("os.pipe()", script)
+        self.assertIn("os.close(read_fd)", script)
+        self.assertIn("process.communicate(timeout=10)", script)
+        self.assertIn("process.kill()", script)
         self.assertIn(
             "closed stdout did not emit exactly one fixed safe diagnostic", script
         )
