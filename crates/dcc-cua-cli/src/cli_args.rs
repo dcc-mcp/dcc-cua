@@ -106,6 +106,7 @@ const KNOWN_FLAG_NAMES: &[&str] = &[
     "--spawn",
     "--stable-samples",
     "--start-minimized",
+    "--state",
     "--stdio",
     "--steps",
     "--surface",
@@ -257,7 +258,8 @@ pub(super) fn print_help() -> std::io::Result<()> {
   host-ensure [--endpoint PATH] [--grant existing-profile]
   browser-extension plan|status|install-native-host --browser chrome|edge|firefox --extension-id PUBLISHED_ID [--cdp-state available|unavailable]
   manifest
-  profiles                         # list built-in and installed profile packages
+  profiles [--state valid|invalid|all] [--profile-store DIR]
+                                   # default: list only usable built-in and installed profiles; invalid shows package diagnostics
   profile validate PACKAGE_DIR [--profile-store DIR]
   profile install PACKAGE_DIR [--replace] [--profile-store DIR]
   profile uninstall ID --confirm [--profile-store DIR]

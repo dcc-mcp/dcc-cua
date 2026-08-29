@@ -160,6 +160,11 @@ of execution:
    dcc-cua profile --id fab
    ```
 
+   The default `profiles` result contains only usable entries. If an installed
+   package is missing or malformed, inspect it explicitly with `dcc-cua
+   profiles --state invalid`; this diagnostic view reports its path, validation
+   reason, and remediation hint. Use `--state all` only for a combined audit.
+
 2. Match a selector against the real native window or URL, then choose one
    `surface` and stable target ID. `supported_locales` describes available
    aliases; every locale remains active, so do not guess the UI language or

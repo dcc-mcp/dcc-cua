@@ -99,6 +99,70 @@ fn help_routes_remain_successful_and_do_not_write_diagnostics() {
 }
 
 #[rstest]
+fn profiles_default_to_usable_entries_and_offer_an_explicit_invalid_diagnostic_view() {
+    let store = tempfile::tempdir().expect("Profile store");
+    std::fs::create_dir(store.path().join("artstation")).expect("invalid Profile directory");
+
+    let run = |state: Option<&str>| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_dcc-cua"));
+        command
+            .arg("profiles")
+            .arg("--profile-store")
+            .arg(store.path());
+        if let Some(state) = state {
+            command.args(["--state", state]);
+        }
+        command.output().expect("dcc-cua profiles should start")
+    };
+
+    let default = run(None);
+    assert!(default.status.success());
+    let default_profiles: serde_json::Value =
+        serde_json::from_slice(&default.stdout).expect("default Profile listing");
+    assert!(
+        default_profiles
+            .as_array()
+            .expect("Profile array")
+            .iter()
+            .all(|profile| profile["status"] == "ready")
+    );
+    assert!(
+        !default_profiles
+            .as_array()
+            .expect("Profile array")
+            .iter()
+            .any(|profile| profile["id"] == "artstation")
+    );
+
+    let invalid = run(Some("invalid"));
+    assert!(invalid.status.success());
+    let invalid_profiles: serde_json::Value =
+        serde_json::from_slice(&invalid.stdout).expect("invalid Profile listing");
+    assert_eq!(invalid_profiles.as_array().expect("Profile array").len(), 1);
+    assert_eq!(invalid_profiles[0]["id"], "artstation");
+    assert_eq!(invalid_profiles[0]["status"], "invalid");
+    assert!(
+        invalid_profiles[0]["error"]
+            .as_str()
+            .expect("invalid reason")
+            .contains("profile-package.json")
+    );
+    assert!(invalid.stderr.is_empty());
+
+    let all = run(Some("all"));
+    assert!(all.status.success());
+    let all_profiles: serde_json::Value =
+        serde_json::from_slice(&all.stdout).expect("complete Profile listing");
+    assert!(
+        all_profiles
+            .as_array()
+            .expect("Profile array")
+            .iter()
+            .any(|profile| profile["id"] == "artstation")
+    );
+}
+
+#[rstest]
 fn exact_window_commands_advertise_the_snapshot_selector_contract() {
     let output = Command::new(env!("CARGO_BIN_EXE_dcc-cua"))
         .arg("help")

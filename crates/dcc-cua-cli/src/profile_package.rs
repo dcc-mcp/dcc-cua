@@ -7,6 +7,27 @@ use serde_json::{Value, json};
 
 use super::{flag_value, has_flag};
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ProfileListingState {
+    Valid,
+    Invalid,
+    All,
+}
+
+pub(crate) fn profile_listing_state(
+    flags: &[String],
+) -> Result<ProfileListingState, Box<dyn std::error::Error>> {
+    match flag_value(flags, "--state").as_deref() {
+        None | Some("valid") => Ok(ProfileListingState::Valid),
+        Some("invalid") => Ok(ProfileListingState::Invalid),
+        Some("all") => Ok(ProfileListingState::All),
+        Some(state) => Err(format!(
+            "profiles --state must be valid, invalid, or all; received {state:?}"
+        )
+        .into()),
+    }
+}
+
 pub(crate) fn is_management_command(flags: &[String]) -> bool {
     matches!(
         flags.first().map(String::as_str),
@@ -69,19 +90,27 @@ pub(crate) fn open_store(
     }
 }
 
-pub(crate) fn installed_profile_summaries(store: &ProfileStore) -> Vec<Value> {
+pub(crate) fn installed_profile_summaries(
+    store: &ProfileStore,
+    state: ProfileListingState,
+) -> Vec<Value> {
     store
         .entries()
         .iter()
-        .map(|entry| match entry {
-            ProfileStoreEntry::Ready(package) => package_summary(package, "ready"),
-            ProfileStoreEntry::Invalid { id, path, error } => json!({
+        .filter_map(|entry| match entry {
+            ProfileStoreEntry::Ready(package) if state != ProfileListingState::Invalid => {
+                Some(package_summary(package, "ready"))
+            }
+            ProfileStoreEntry::Invalid { id, path, error }
+                if state != ProfileListingState::Valid => Some(json!({
                 "id": id,
                 "source": "user",
                 "status": "invalid",
                 "path": path,
                 "error": error,
-            }),
+                "remediation": "repair or remove this package, then rerun `dcc-cua profiles --state invalid`",
+            })),
+            ProfileStoreEntry::Ready(_) | ProfileStoreEntry::Invalid { .. } => None,
         })
         .collect()
 }

@@ -131,6 +131,10 @@ dcc-cua profile --id maya
 dcc-cua profile --profile-file C:\profiles\maya-studio.json
 ```
 
+`dcc-cua profiles` 默认只列出可用的内置和已安装 Profile。使用 `dcc-cua
+profiles --state invalid` 可检查被拒绝的安装包及其路径、校验原因和修复提示；仅在
+需要一次性审计可用与无效条目时使用 `--state all`。
+
 发现窗口后，按稳定 target 查询或执行一个 accessibility 操作：
 
 ```powershell
