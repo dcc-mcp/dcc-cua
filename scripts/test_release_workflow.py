@@ -25,6 +25,7 @@ REFRESH_SCRIPT = Path(__file__).with_name("refresh-release-please-prs.ps1")
 GUI_E2E_SCRIPT = Path(__file__).with_name("run-gui-e2e.ps1")
 CLI_E2E_SCRIPT = Path(__file__).with_name("test-cli-e2e.ps1")
 ROOT = Path(__file__).parent.parent
+GIT_ATTRIBUTES = ROOT / ".gitattributes"
 MARKETPLACE = ROOT / ".claude-plugin" / "marketplace.json"
 ROOT_PLUGIN = ROOT / ".codex-plugin" / "plugin.json"
 MARKETPLACE_PLUGIN = ROOT / "plugins" / "dcc-cua-computer-use"
@@ -282,6 +283,22 @@ class ReleaseWorkflowTests(unittest.TestCase):
         )
         self.assertIn('--archive "$archive" --source .', workflow)
         self.assertIn('--archive "$native_archive" --source .', workflow)
+
+    def test_release_documentation_has_platform_stable_line_endings(self):
+        attributes = {
+            line.strip()
+            for line in GIT_ATTRIBUTES.read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        }
+
+        self.assertTrue(
+            {
+                "/README.md text eol=lf",
+                "/README.zh-CN.md text eol=lf",
+            }.issubset(attributes)
+        )
+        self.assertNotIn(b"\r", README.read_bytes())
+        self.assertNotIn(b"\r", README_ZH.read_bytes())
 
     def test_release_matrix_builds_every_supported_native_target(self):
         workflow = WORKFLOW.read_text(encoding="utf-8")
