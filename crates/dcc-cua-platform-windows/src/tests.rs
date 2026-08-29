@@ -49,8 +49,9 @@ use windows_sys::Win32::{
 
 #[cfg(windows)]
 use crate::input::{
-    WindowsInputCount, combined_source_move_and_left_down_inputs, release_all_keys, virtual_key,
-    wait_until_interrupted,
+    BoundedForegroundDispatchError, ForegroundDispatch, WindowsInputCount,
+    combined_source_move_and_left_down_inputs, release_all_keys, run_bounded_foreground_dispatch,
+    virtual_key, wait_until_interrupted,
 };
 #[cfg(windows)]
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
@@ -113,6 +114,126 @@ fn held_key_cleanup_attempts_every_release_after_a_failure() {
 fn held_key_wait_honors_interrupts_and_zero_duration() {
     assert!(wait_until_interrupted(1_000, || true));
     assert!(!wait_until_interrupted(0, || false));
+}
+
+#[cfg(windows)]
+#[rstest]
+fn foreground_dispatch_retries_one_activation_refusal_before_input() {
+    let mut activations = 0;
+    let mut dispatches = 0;
+
+    let result = run_bounded_foreground_dispatch(
+        || {
+            activations += 1;
+            if activations == 1 {
+                Err("foreground refused")
+            } else {
+                Ok(())
+            }
+        },
+        || {
+            dispatches += 1;
+            ForegroundDispatch::<_, &str, &str>::Completed("accepted")
+        },
+        |_| true,
+        |_| true,
+    )
+    .expect("the second pre-input activation may dispatch once");
+
+    assert_eq!(result, "accepted");
+    assert_eq!(activations, 2);
+    assert_eq!(dispatches, 1);
+}
+
+#[cfg(windows)]
+#[rstest]
+fn foreground_dispatch_reacquires_after_a_typed_no_input_preflight() {
+    let mut activations = 0;
+    let mut dispatches = 0;
+
+    let result = run_bounded_foreground_dispatch(
+        || {
+            activations += 1;
+            Ok::<_, &str>(())
+        },
+        || {
+            dispatches += 1;
+            if dispatches == 1 {
+                ForegroundDispatch::<&str, _, &str>::NotAttempted("target_not_foreground")
+            } else {
+                ForegroundDispatch::Completed("accepted")
+            }
+        },
+        |_| false,
+        |reason| *reason == "target_not_foreground",
+    )
+    .expect("a typed no-input refusal may be retried once");
+
+    assert_eq!(result, "accepted");
+    assert_eq!(activations, 2);
+    assert_eq!(dispatches, 2);
+}
+
+#[cfg(windows)]
+#[rstest]
+fn foreground_dispatch_never_retries_after_input_was_attempted() {
+    let mut activations = 0;
+    let mut dispatches = 0;
+
+    let error = run_bounded_foreground_dispatch(
+        || {
+            activations += 1;
+            Ok::<_, &str>(())
+        },
+        || {
+            dispatches += 1;
+            ForegroundDispatch::<(), &str, _>::Attempted("partial_send_input")
+        },
+        |_| true,
+        |_| true,
+    )
+    .unwrap_err();
+
+    assert!(matches!(
+        error,
+        BoundedForegroundDispatchError::Attempted {
+            attempts: 1,
+            error: "partial_send_input"
+        }
+    ));
+    assert_eq!(activations, 1);
+    assert_eq!(dispatches, 1);
+}
+
+#[cfg(windows)]
+#[rstest]
+fn foreground_dispatch_stops_after_the_second_safe_preflight_refusal() {
+    let mut activations = 0;
+    let mut dispatches = 0;
+
+    let error = run_bounded_foreground_dispatch(
+        || {
+            activations += 1;
+            Ok::<_, &str>(())
+        },
+        || {
+            dispatches += 1;
+            ForegroundDispatch::<(), _, &str>::NotAttempted("target_not_foreground")
+        },
+        |_| true,
+        |_| true,
+    )
+    .unwrap_err();
+
+    assert!(matches!(
+        error,
+        BoundedForegroundDispatchError::NotAttempted {
+            attempts: 2,
+            error: "target_not_foreground"
+        }
+    ));
+    assert_eq!(activations, 2);
+    assert_eq!(dispatches, 2);
 }
 
 #[cfg(windows)]

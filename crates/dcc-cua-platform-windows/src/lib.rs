@@ -30,11 +30,13 @@ pub use capture_identity::{
 };
 #[cfg(windows)]
 pub use input::{
-    RelativeMoveInjection, WindowsHeldKeyError, WindowsInputCount, WindowsOverlayCommand,
-    WindowsPostButtonUpSnapshot, animate_cursor_to, cursor_position, inject_absolute_mouse_move,
+    RelativeMoveInjection, WindowsForegroundClickError, WindowsForegroundClickOutcome,
+    WindowsForegroundClickPreflightFailure, WindowsForegroundClickPreflightReason,
+    WindowsHeldKeyError, WindowsInputCount, WindowsOverlayCommand, WindowsPostButtonUpSnapshot,
+    animate_cursor_to, cursor_position, inject_absolute_mouse_move,
     inject_combined_source_move_and_left_down, inject_consumable_mouse_move, inject_drag_screen,
     inject_mouse_button, inject_relative_mouse_move, move_cursor_desktop,
-    post_message_blocked_by_uipi, send_click_synthesized_active_mods,
+    post_message_blocked_by_uipi, send_click_exact_foreground_mods,
     send_held_keys_exact_foreground, send_key_synthesized, send_overlay_command,
     snapshot_left_button_after_up,
 };

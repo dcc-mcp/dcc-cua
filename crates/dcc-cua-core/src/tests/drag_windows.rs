@@ -770,3 +770,147 @@ fn synthetic_touch_result_reports_api_acceptance_without_claiming_effect() {
         false
     );
 }
+
+#[cfg(windows)]
+fn accepted_foreground_click_outcome(
+    relation: dcc_cua_platform_windows::WindowsForegroundRelation,
+    foreground_after: Option<dcc_cua_platform_windows::WindowsWindowIdentity>,
+) -> dcc_cua_platform_windows::WindowsForegroundClickOutcome {
+    dcc_cua_platform_windows::WindowsForegroundClickOutcome {
+        activation_attempts: 2,
+        target: dcc_cua_platform_windows::WindowsWindowIdentity {
+            window_handle: 7,
+            process_id: 42,
+        },
+        foreground_before: dcc_cua_platform_windows::WindowsWindowIdentity {
+            window_handle: 7,
+            process_id: 42,
+        },
+        foreground_after,
+        foreground_after_relation: relation,
+        requested_clicks: 1,
+        completed_clicks: 1,
+        modifier_down: None,
+        click_batches: vec![dcc_cua_platform_windows::WindowsInputCount::accepted()],
+        modifier_up: None,
+        modifier_up_retry: None,
+        emergency_button_up: None,
+        error: None,
+    }
+}
+
+#[cfg(windows)]
+#[rstest]
+fn foreground_click_reports_bounded_reacquisition_and_exact_physical_delivery() {
+    let outcome = accepted_foreground_click_outcome(
+        dcc_cua_platform_windows::WindowsForegroundRelation::ExactTarget,
+        Some(dcc_cua_platform_windows::WindowsWindowIdentity {
+            window_handle: 7,
+            process_id: 42,
+        }),
+    );
+
+    let result = windows_foreground_click_result(outcome, (10, 20));
+
+    assert_eq!(result.status, ComputerUseToolStatus::Succeeded);
+    assert!(!result.degraded);
+    assert_eq!(result.value["delivery"]["input_sent"], true);
+    assert_eq!(result.value["delivery"]["activation_attempts"], 2);
+    assert_eq!(
+        result.value["delivery"]["post_dispatch_foreground_relation"],
+        "exact_target"
+    );
+    assert_eq!(result.value["effect"], "unverifiable");
+}
+
+#[cfg(windows)]
+#[rstest]
+fn foreground_click_does_not_repeat_after_verified_sendinput_when_focus_changes() {
+    let outcome = accepted_foreground_click_outcome(
+        dcc_cua_platform_windows::WindowsForegroundRelation::ForeignProcess,
+        Some(dcc_cua_platform_windows::WindowsWindowIdentity {
+            window_handle: 99,
+            process_id: 100,
+        }),
+    );
+
+    let result = windows_foreground_click_result(outcome, (10, 20));
+
+    assert_eq!(result.status, ComputerUseToolStatus::Succeeded);
+    assert!(result.degraded);
+    assert_eq!(result.value["delivery"]["input_sent"], true);
+    assert_eq!(result.value["delivery"]["retry_safe"], false);
+    assert_eq!(result.value["delivery"]["verification_required"], true);
+    assert_eq!(
+        result.value["delivery"]["post_dispatch_foreground"],
+        json!({"window_handle": 99, "process_id": 100})
+    );
+    assert!(result.text.contains("HWND 0x63 PID 100"));
+}
+
+#[cfg(windows)]
+#[rstest]
+fn foreground_click_pre_dispatch_exhaustion_is_known_not_sent_with_diagnostics() {
+    let error = map_windows_foreground_click_error(
+        dcc_cua_platform_windows::WindowsForegroundClickError::NotAttempted {
+            attempts: 2,
+            failure: dcc_cua_platform_windows::WindowsForegroundClickPreflightFailure {
+                reason: dcc_cua_platform_windows::WindowsForegroundClickPreflightReason::TargetNotForeground,
+                target: dcc_cua_platform_windows::WindowsWindowIdentity {
+                    window_handle: 7,
+                    process_id: 42,
+                },
+                foreground: Some(dcc_cua_platform_windows::WindowsWindowIdentity {
+                    window_handle: 99,
+                    process_id: 100,
+                }),
+                detail: "exact target HWND 0x7 PID 42 was not foreground; current foreground: HWND 0x63 PID 100; no input was submitted".into(),
+            },
+        },
+    );
+
+    let details = error.details.expect("typed pre-dispatch details");
+    assert_eq!(
+        error.code,
+        ComputerUseErrorCode::ForegroundActivationRefused
+    );
+    assert_eq!(details.action_attempted, Some(false));
+    assert_eq!(details.input_sent, Some(ComputerUseInputState::NotSent));
+    assert_eq!(details.completion, Some(ComputerUseCompletionState::Known));
+    assert_eq!(details.blind_retry, Some(false));
+    assert!(error.message.contains("HWND 0x63 PID 100"));
+}
+
+#[cfg(windows)]
+#[rstest]
+fn foreground_click_partial_sendinput_is_terminal_and_never_blindly_retried() {
+    let mut outcome = accepted_foreground_click_outcome(
+        dcc_cua_platform_windows::WindowsForegroundRelation::ForeignProcess,
+        Some(dcc_cua_platform_windows::WindowsWindowIdentity {
+            window_handle: 99,
+            process_id: 100,
+        }),
+    );
+    outcome.completed_clicks = 0;
+    outcome.click_batches = vec![dcc_cua_platform_windows::WindowsInputCount::incomplete(
+        0,
+        "simulated SendInput refusal",
+    )];
+    outcome.error = Some("simulated incomplete click batch".into());
+    let error = map_windows_foreground_click_error(
+        dcc_cua_platform_windows::WindowsForegroundClickError::Attempted {
+            attempts: 1,
+            detail: "simulated incomplete click batch".into(),
+            outcome: Box::new(outcome),
+        },
+    );
+
+    let details = error.details.expect("typed attempted-dispatch details");
+    assert_eq!(error.code, ComputerUseErrorCode::CompletionUnknown);
+    assert_eq!(details.action_attempted, Some(true));
+    assert_eq!(details.input_sent, Some(ComputerUseInputState::Unknown));
+    assert_eq!(details.blind_retry, Some(false));
+    assert_eq!(details.fresh_observation_required, Some(true));
+    assert!(error.message.contains("will not be retried"));
+    assert!(error.message.contains("HWND 0x63 PID 100"));
+}
