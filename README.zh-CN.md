@@ -211,6 +211,12 @@ macOS 与 Linux 的 manifest 不会广告 `runtime.exact_window_pixels` 或对�
 该路由在这些平台会返回 `BackendUnavailable`。
 provider 缺失则标记为 `accessibility_unavailable_degraded`，不会误报成 timeout。
 
+独立的 `accessibility` 命令会区分“自绘窗口没有可用的语义 provider”和“provider 或
+worker 运行失败”。前者返回 `no_accessibility_provider`，并明确说明该窗口类不可通过
+重试获得语义树，调用方应改用 `snapshot --pixels-only`，再结合 OCR 或其他感知层。
+`backend_unavailable` 仍表示 provider 或后端执行失败，不能据此断言该窗口类永久不支持
+accessibility。
+
 `doctor` 默认继续执行严格的完整健康检查。对于 Houdini、Unreal 等自绘 DCC 界面，
 可用 `doctor --route visual` 单独验收精确窗口枚举、WGC 截图和受限坐标输入；输出仍会
 保留 UIA 降级信息，并分别报告 `full`、`visual`、`semantic` 三条路由，避免一个挂起的

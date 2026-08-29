@@ -344,6 +344,7 @@ fn error_detail(error: &UiaError) -> &str {
         | UiaError::StaleSnapshot(message)
         | UiaError::PermissionDenied(message)
         | UiaError::InvalidAction(message)
+        | UiaError::NoAccessibilityProvider(message)
         | UiaError::BackendUnavailable(message)
         | UiaError::OperationFailed(message) => message,
         UiaError::InteractiveDesktopUnavailable { reason, .. } => reason,
@@ -792,7 +793,7 @@ fn fence_value(fence: &ElementFence) -> Value {
     })
 }
 
-fn ensure_ok(value: &Value) -> Result<(), UiaError> {
+pub(crate) fn ensure_ok(value: &Value) -> Result<(), UiaError> {
     if value.get("ok").and_then(Value::as_bool) == Some(true) {
         return Ok(());
     }
@@ -810,6 +811,7 @@ fn ensure_ok(value: &Value) -> Result<(), UiaError> {
         "permission_denied" => Err(UiaError::PermissionDenied(message)),
         "invalid_target" | "missing_window" => Err(UiaError::InvalidTarget(message)),
         "unsupported_action" => Err(UiaError::InvalidAction(message)),
+        "no_accessibility_provider" => Err(UiaError::NoAccessibilityProvider(message)),
         _ => Err(UiaError::OperationFailed(message)),
     }
 }

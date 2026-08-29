@@ -8,6 +8,10 @@ use super::*;
 #[case(ComputerUseErrorCode::TargetUnavailable, "target_unavailable")]
 #[case(ComputerUseErrorCode::TargetModalChanged, "target_modal_changed")]
 #[case(ComputerUseErrorCode::MissingWindow, "target_unavailable")]
+#[case(
+    ComputerUseErrorCode::NoAccessibilityProvider,
+    "no_accessibility_provider"
+)]
 fn target_error_codes_keep_wire_contract(
     #[case] code: ComputerUseErrorCode,
     #[case] expected: &str,

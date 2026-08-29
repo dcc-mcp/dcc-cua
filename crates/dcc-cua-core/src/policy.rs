@@ -1216,6 +1216,7 @@ fn classify_driver_failure(code: &str, fallback: ComputerUseErrorCode) -> Comput
             ComputerUseErrorCode::ClipboardRefused
         }
         "recording_refused" | "recording_not_granted" => ComputerUseErrorCode::RecordingRefused,
+        "no_accessibility_provider" => ComputerUseErrorCode::NoAccessibilityProvider,
         "backend_unavailable" | "uia_timeout" | "timeout" => {
             ComputerUseErrorCode::BackendUnavailable
         }
@@ -1242,7 +1243,8 @@ pub(crate) fn is_uia_snapshot_failure(result: &cua_driver_sdk::ToolResult) -> bo
     matches!(
         result.error_code.as_deref(),
         Some(
-            "backend_unavailable"
+            "no_accessibility_provider"
+                | "backend_unavailable"
                 | "input_failed"
                 | "uia_timeout"
                 | "target_unavailable"

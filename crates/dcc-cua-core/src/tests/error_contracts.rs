@@ -112,6 +112,20 @@ fn native_provider_timeout_is_backend_unavailable() {
 }
 
 #[rstest]
+fn missing_provider_has_a_distinct_non_retryable_error_code() {
+    let error = map_driver_error(
+        "capture CUA window state",
+        cua_driver_sdk::DriverError::Tool {
+            tool: "get_window_state".into(),
+            message: "the exact window exposes no semantic provider".into(),
+            error_code: "no_accessibility_provider".into(),
+        },
+    );
+
+    assert_eq!(error.code, ComputerUseErrorCode::NoAccessibilityProvider);
+}
+
+#[rstest]
 fn tool_provider_timeout_is_backend_unavailable() {
     let result = cua_driver_sdk::ToolResult {
         is_error: true,

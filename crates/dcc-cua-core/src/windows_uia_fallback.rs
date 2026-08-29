@@ -187,6 +187,7 @@ fn map_error(error: UiaError) -> ComputerUseError {
         UiaError::PermissionDenied(_) | UiaError::InvalidAction(_) => {
             ComputerUseErrorCode::InvalidAction
         }
+        UiaError::NoAccessibilityProvider(_) => ComputerUseErrorCode::NoAccessibilityProvider,
         UiaError::Unsupported
         | UiaError::BackendUnavailable(_)
         | UiaError::OperationFailed(_)

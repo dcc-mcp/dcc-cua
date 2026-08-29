@@ -35,7 +35,7 @@ pub(super) fn pixel_route_for_accessibility_failure(
     {
         return Some(PixelObservationRoute::AccessibilityTimeoutDegraded);
     }
-    (error.code == ComputerUseErrorCode::BackendUnavailable)
+    (error.code == ComputerUseErrorCode::NoAccessibilityProvider)
         .then_some(PixelObservationRoute::AccessibilityUnavailableDegraded)
 }
 
@@ -47,7 +47,7 @@ pub(super) fn pixel_route_for_uia_tool_failure(
     }
     match result.error_code.as_deref() {
         Some("uia_timeout") => Some(PixelObservationRoute::AccessibilityTimeoutDegraded),
-        Some("backend_unavailable" | "input_failed" | "target_unavailable" | "missing_window") => {
+        Some("no_accessibility_provider") => {
             Some(PixelObservationRoute::AccessibilityUnavailableDegraded)
         }
         _ => None,

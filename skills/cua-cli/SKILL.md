@@ -83,6 +83,11 @@ typed route cannot cover.
    invalidates the frame; rediscover and take a fresh observation.
    On macOS and Linux the manifest omits this Windows-only capability and
    `--pixels-only` returns `BackendUnavailable`; do not advertise or invoke it.
+   If standalone `accessibility` returns `no_accessibility_provider`, treat the
+   result as non-retryable for that window class and use `snapshot
+   --pixels-only` plus OCR or another perception layer. A
+   `backend_unavailable` error is a provider/backend failure, not evidence that
+   the window class permanently lacks a provider.
 
 4. Verify state after every mutation. A successful input call proves that input
    was delivered, not that the application reached the requested state. Use a

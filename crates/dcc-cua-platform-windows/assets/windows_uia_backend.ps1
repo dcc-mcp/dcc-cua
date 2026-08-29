@@ -13,6 +13,18 @@ function As-Array($value) {
   return @($value)
 }
 
+function Accessibility-Failure-Code-From-Facts($facts) {
+  $EFail = -2147467259
+  if (
+    [bool]$facts.root_traversal_started -and
+    [int]$facts.node_count -le 1 -and
+    [int64]$facts.hresult -eq $EFail
+  ) {
+    return "no_accessibility_provider"
+  }
+  return "backend_error"
+}
+
 function Runtime-Id([System.Windows.Automation.AutomationElement]$element) {
   try {
     $ids = $element.GetRuntimeId()
@@ -574,12 +586,17 @@ function Invoke-UiaRequest($requestPayload) {
         "expand_collapse_click_operation" {
           return @{ok = $true; result = Expand-Collapse-Click-Operation-From-State ([string]$requestPayload.state)}
         }
+        "accessibility_failure_code" {
+          return @{ok = $true; result = Accessibility-Failure-Code-From-Facts $requestPayload.facts}
+        }
         default {
           return @{ok = $false; error = "unsupported_action"; message = "Unknown policy fixture operation."}
         }
       }
     }
     $script:scopeError = $null
+    $script:rootTraversalStarted = $false
+    $script:nodeCount = 0
     $root = Find-Scoped-Root
     if ($null -eq $root) {
       $scopeErrorCode = if ($null -eq $script:scopeError) { "missing_window" } else { "invalid_target" }
@@ -594,7 +611,6 @@ function Invoke-UiaRequest($requestPayload) {
     if ($null -ne $deniedTargetReason) {
       return @{ok = $false; error = "permission_denied"; message = $deniedTargetReason}
     }
-    $script:nodeCount = 0
     if ($payload.mode -eq "act") {
       $target = Find-By-Id $root ([string]$payload.action.control_id) 0 "0"
       if ($null -eq $target) {
@@ -633,16 +649,29 @@ function Invoke-UiaRequest($requestPayload) {
         control = $control
       }
     }
+    $script:rootTraversalStarted = $true
+    $rawRoot = Element-Raw $root 0 "0"
     return @{
       ok = $true
-      root = Element-Raw $root 0 "0"
+      root = $rawRoot
       focus_runtime_id = Runtime-Id ([System.Windows.Automation.AutomationElement]::FocusedElement)
       node_count = $script:nodeCount
     }
   } catch {
-    return @{ok = $false; error = "backend_error"; message = $_.Exception.Message}
+    $errorCode = Accessibility-Failure-Code-From-Facts @{
+      root_traversal_started = $script:rootTraversalStarted
+      node_count = $script:nodeCount
+      hresult = [int64]$_.Exception.HResult
+    }
+    $message = if ($errorCode -eq "no_accessibility_provider") {
+      "The exact window exposes no usable UI Automation provider."
+    } else {
+      $_.Exception.Message
+    }
+    return @{ok = $false; error = $errorCode; message = $message}
   } finally {
     $script:payload = $null
+    $script:rootTraversalStarted = $false
   }
 }
 
