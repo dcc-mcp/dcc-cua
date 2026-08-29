@@ -145,6 +145,180 @@ async fn wait_for_window_cleanup(host: &mut HostProcess, pid: u32) {
 }
 
 #[cfg(feature = "gui-e2e")]
+fn external_lifecycle_fixture() -> (PathBuf, &'static [&'static str]) {
+    #[cfg(windows)]
+    {
+        (harness_app("harness-wpf", "CuaTestHarness.Wpf.exe"), &[])
+    }
+    #[cfg(target_os = "linux")]
+    {
+        (harness_app("harness-gtk3", "CuaTestHarness.Gtk3"), &[])
+    }
+    #[cfg(target_os = "macos")]
+    {
+        (
+            harness_app(
+                "harness-appkit",
+                "CuaTestHarness.AppKit.app/Contents/MacOS/CuaTestHarness.AppKit",
+            ),
+            &[],
+        )
+    }
+}
+
+#[cfg(feature = "gui-e2e")]
+fn run_cli(binary: &std::path::Path, arguments: &[String]) -> std::process::Output {
+    Command::new(binary)
+        .args(arguments)
+        .output()
+        .unwrap_or_else(|error| panic!("launch dcc-cua CLI {arguments:?}: {error}"))
+}
+
+#[cfg(feature = "gui-e2e")]
+fn wait_for_cli_window(binary: &std::path::Path, pid: u32) -> u64 {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut previous = None;
+    let mut stable_samples = 0_u8;
+    loop {
+        let ready = run_cli(
+            binary,
+            &[
+                "wait-window".into(),
+                "--pid".into(),
+                pid.to_string(),
+                "--timeout-ms".into(),
+                "30000".into(),
+                "--poll-ms".into(),
+                "100".into(),
+            ],
+        );
+        assert!(
+            ready.status.success(),
+            "wait-window failed: stdout={} stderr={}",
+            String::from_utf8_lossy(&ready.stdout),
+            String::from_utf8_lossy(&ready.stderr)
+        );
+        let ready: Value = serde_json::from_slice(&ready.stdout).expect("parse wait-window output");
+        let window_id = ready["windows"]
+            .as_array()
+            .and_then(|windows| windows.first())
+            .and_then(|window| window["window_id"].as_u64())
+            .expect("external fixture window id");
+        if previous == Some(window_id) {
+            stable_samples += 1;
+        } else {
+            previous = Some(window_id);
+            stable_samples = 1;
+        }
+        if stable_samples >= 3 {
+            return window_id;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "external fixture window did not stabilize"
+        );
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}
+
+#[cfg(feature = "gui-e2e")]
+async fn wait_for_process_exit(child: &mut std::process::Child) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if child.try_wait().expect("query fixture process").is_some() {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "externally launched fixture process {} survived termination",
+            child.id()
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+#[cfg(feature = "gui-e2e")]
+#[rstest]
+#[tokio::test]
+async fn cli_requires_explicit_acknowledgement_to_terminate_an_external_process() {
+    let binary = std::env::var_os("DCC_CUA_E2E_BINARY")
+        .map(PathBuf::from)
+        .expect("DCC_CUA_E2E_BINARY must point to dcc-cua");
+    let (fixture_path, fixture_args) = external_lifecycle_fixture();
+    assert!(
+        fixture_path.is_file(),
+        "external lifecycle fixture is missing: {}",
+        fixture_path.display()
+    );
+    let mut fixture = Command::new(&fixture_path)
+        .args(fixture_args)
+        .stdout(Stdio::null())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .expect("launch external lifecycle fixture");
+    let pid = fixture.id();
+    let mut process_guard = ExactProcessGuard::new(pid);
+    let pid_text = pid.to_string();
+    let window_id = wait_for_cli_window(&binary, pid);
+    eprintln!(
+        "provider=dcc-cua runtime={} target_pid={pid} target_hwnd={window_id} external_termination=true",
+        env!("CARGO_PKG_VERSION")
+    );
+
+    let bounded = [
+        "terminate".into(),
+        "--pid".into(),
+        pid_text.clone(),
+        "--window-id".into(),
+        window_id.to_string(),
+        "--confirm".into(),
+    ];
+    let denied = run_cli(&binary, &bounded);
+    assert!(
+        !denied.status.success(),
+        "standard termination unexpectedly accepted an external process"
+    );
+    let denied: Value = serde_json::from_slice(&denied.stdout).expect("parse denied termination");
+    assert_eq!(denied["error"]["code"], "input_failed", "{denied}");
+    assert!(
+        fixture.try_wait().expect("query fixture process").is_none(),
+        "standard termination killed the external process"
+    );
+
+    let revalidated_window_id = wait_for_cli_window(&binary, pid);
+    eprintln!(
+        "provider=dcc-cua runtime={} target_pid={pid} target_hwnd={revalidated_window_id} fresh_observation=true",
+        env!("CARGO_PKG_VERSION")
+    );
+    let mut acknowledged = vec![
+        "terminate".into(),
+        "--pid".into(),
+        pid_text,
+        "--window-id".into(),
+        revalidated_window_id.to_string(),
+        "--confirm".into(),
+    ];
+    acknowledged.push("--allow-external".into());
+    let terminated = run_cli(&binary, &acknowledged);
+    assert!(
+        terminated.status.success(),
+        "acknowledged termination failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&terminated.stdout),
+        String::from_utf8_lossy(&terminated.stderr)
+    );
+    let terminated: Value =
+        serde_json::from_slice(&terminated.stdout).expect("parse terminate output");
+    assert_eq!(terminated["success"], true, "{terminated}");
+    assert_eq!(terminated["target"]["pid"], pid, "{terminated}");
+    assert_eq!(
+        terminated["target"]["window_id"], revalidated_window_id,
+        "{terminated}"
+    );
+    wait_for_process_exit(&mut fixture).await;
+    process_guard.disarm();
+}
+
+#[cfg(feature = "gui-e2e")]
 #[rstest]
 #[tokio::test]
 async fn host_launches_records_and_terminates_one_exact_application() {

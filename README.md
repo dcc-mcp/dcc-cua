@@ -923,6 +923,13 @@ and application label promotes that ownership into the exact window session. Thi
 CUA standard mode prove that `terminate_app` targets a process created by that
 runtime; a different PID or grant is rejected. Keep these requests on one
 persistent Host connection because launch ownership is connection-scoped.
+The direct CLI keeps the same runtime-owned default. To force-close one
+externally launched exact target, pass both `terminate --confirm` and
+`--allow-external`. That explicit acknowledgement creates a short-lived
+Unrestricted CUA runtime used only for the termination call; exact window
+resolution, live PID/window revalidation, process-fingerprint checking, and
+post-termination session cleanup still fail closed. Host IPC does not inherit
+this CLI acknowledgement or gain a model-callable elevation route.
 Browser mutations additionally require `allow_browser_input: true`.
 `browser_prepare` is destructive and separately requires
 `allow_browser_prepare: true`; it never changes a personal browser profile

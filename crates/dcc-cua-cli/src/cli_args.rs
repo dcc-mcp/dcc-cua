@@ -31,6 +31,7 @@ const KNOWN_FLAG_NAMES: &[&str] = &[
     "--action-json",
     "--activate",
     "--agent-name",
+    "--allow-external",
     "--app",
     "--arg",
     "--aumid",
@@ -272,7 +273,7 @@ pub(super) fn print_help() -> std::io::Result<()> {
   screen-size
   cursor-position
   launch --name NAME|--bundle-id ID|--aumid ID|--path PATH|--launch-path PATH [--url URL] [--arg ARG] [--new-instance] [--start-minimized]
-  terminate --app APP --confirm
+  terminate --app APP|--pid PID|--window-id ID|--title TITLE --confirm [--allow-external]
   snapshot --app APP|--pid PID|--window-id ID|--title TITLE [--pixels-only] [--activate] [--escalate --escalation-reason REASON] [--escalation-detail NOTE] [--output FILE]
   restore-activate --pid PID --window-id ID
   set-window-frame --app APP|--pid PID --window-id ID --x N --y N --width N --height N
@@ -289,6 +290,9 @@ Host uses versioned big-endian JSON frames. Hello version 1 negotiates binary-fr
     );
     stdoutln!(
         "Profiles are built-in, installed from ~/.dcc-cua/profiles, or loaded explicitly from JSON; package installation copies declarative content only and never launches bundled code. snapshot --pid PID --window-id ID --pixels-only skips accessibility and captures only that exact native window; it never falls back to a whole-desktop screenshot. Window snapshots/actions accept --escalate --escalation-reason REASON for legacy visual fallback routes; --activate keeps custom-rendered foreground capture and actions in one session."
+    );
+    stdoutln!(
+        "terminate defaults to runtime-owned processes. --allow-external is an explicit risk acknowledgement for terminating one externally launched exact target; it still requires --confirm and revalidates the live PID/window and process fingerprint immediately before termination."
     );
     stdoutln!("{}", escalation_reason_help());
     stdoutln!("Zoom: zoom --app APP --x1 N --y1 N --x2 N --y2 N [--output FILE].");

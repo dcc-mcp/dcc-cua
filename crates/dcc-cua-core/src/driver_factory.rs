@@ -7,7 +7,7 @@ use cursor_overlay::CursorConfig;
 
 use crate::contracts::{
     ComputerUseError, ComputerUseErrorCode, ComputerUseResult, ConfiguredDriverOptions,
-    MOUSE_CURSOR_THEME,
+    MOUSE_CURSOR_THEME, RuntimeAuthorizationOptions, SessionPermissionMode,
 };
 use crate::platform_process::prepare_platform_process;
 
@@ -57,6 +57,30 @@ pub(crate) fn create_embedded() -> Result<(Arc<CuaDriver>, bool), DriverError> {
     prepare_platform_process();
     CuaDriver::try_create_for_host(driver_host_options())
         .map(|driver| (driver, UPSTREAM_CURSOR_RENDERER_ENABLED))
+}
+
+pub(crate) fn create_external_process_termination() -> Result<(Arc<CuaDriver>, bool), DriverError> {
+    prepare_platform_process();
+    CuaDriver::try_create_configured_for_host(
+        external_process_termination_options(),
+        driver_host_options(),
+    )
+    .map(|driver| (driver, UPSTREAM_CURSOR_RENDERER_ENABLED))
+}
+
+pub(crate) fn external_process_termination_options() -> ConfiguredDriverOptions {
+    ConfiguredDriverOptions {
+        claude_code_compatibility: false,
+        authorization: RuntimeAuthorizationOptions {
+            allowed_modes: vec![SessionPermissionMode::Unrestricted],
+            compatibility_mode: SessionPermissionMode::Unrestricted,
+            compatibility_bounded_manifest_path: None,
+            compatibility_capability_manifest_path: None,
+            unrestricted_acknowledged: true,
+            max_session_ttl_seconds: 60,
+            max_idle_ttl_seconds: 30,
+        },
+    }
 }
 
 pub(crate) fn create_private_worker(

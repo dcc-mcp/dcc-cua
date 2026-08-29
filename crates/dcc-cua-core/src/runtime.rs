@@ -445,6 +445,23 @@ impl ComputerUseDriver {
             .map_err(|error| map_driver_error("create CUA runtime", error))
     }
 
+    /// Create a short-lived runtime for terminating one externally launched
+    /// exact-window process after the caller has explicitly acknowledged that
+    /// this runtime does not own its launch.
+    ///
+    /// Callers must confine this driver to the termination command. Target
+    /// resolution, live PID/window revalidation, process fingerprint checks,
+    /// termination, and session cleanup remain inside the upstream CUA
+    /// boundary.
+    pub fn create_external_process_termination_with_acknowledged_risk() -> ComputerUseResult<Self> {
+        crate::driver_factory::ensure_bundled_cursor_theme()?;
+        crate::driver_factory::create_external_process_termination()
+            .map(Self::from_driver)
+            .map_err(|error| {
+                map_driver_error("create acknowledged external termination runtime", error)
+            })
+    }
+
     /// Create a directly supervised official CUA worker.
     ///
     /// The packaged macOS Host uses this upstream-owned process boundary so
