@@ -24,6 +24,7 @@ mod issue_228_window_pixels;
 mod owned_process;
 mod process_output;
 mod profile_listing;
+mod snapshot_activation;
 mod task_authorization_manifest;
 mod trusted_confirmation;
 mod update_tests;

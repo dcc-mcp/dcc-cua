@@ -102,6 +102,8 @@ fn help_routes_remain_successful_and_do_not_write_diagnostics() {
         assert!(stdout.contains("Coordinate actions require --observation-width"));
         assert!(stdout.contains("screen_x = bounds.x + x * bounds.width / observation_width"));
         assert!(stdout.contains("Do not apply screen-size scale_factor"));
+        assert!(stdout.contains("activation.status=refused_fallback_background"));
+        assert!(stdout.contains("Every other activation error remains fatal"));
         assert!(output.stderr.is_empty());
     }
 }

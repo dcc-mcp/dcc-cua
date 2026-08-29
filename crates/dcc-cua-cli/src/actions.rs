@@ -337,6 +337,37 @@ pub(super) fn snapshot_coordinate_space_value(
     })
 }
 
+pub(super) fn snapshot_activation_result(
+    result: dcc_cua_core::ComputerUseResult<serde_json::Value>,
+) -> dcc_cua_core::ComputerUseResult<serde_json::Value> {
+    match result {
+        Err(error) => {
+            let safe_background_fallback = error.code
+                == ComputerUseErrorCode::ForegroundActivationRefused
+                && error
+                    .details
+                    .as_ref()
+                    .is_some_and(|details| details.background_delivery_viable == Some(true));
+            if !safe_background_fallback {
+                return Err(error);
+            }
+            let suggested_delivery_mode = error
+                .details
+                .as_ref()
+                .and_then(|details| details.suggested_delivery_mode.clone());
+            Ok(json!({
+                "status": "refused_fallback_background",
+                "code": error.code,
+                "activated": false,
+                "degraded": true,
+                "background_delivery_viable": true,
+                "suggested_delivery_mode": suggested_delivery_mode,
+            }))
+        }
+        success => success,
+    }
+}
+
 pub(super) fn map_visible_snapshot_coordinates(
     action: &mut ComputerUseAction,
     visible_dimensions: Option<(u32, u32)>,

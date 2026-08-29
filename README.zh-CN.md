@@ -227,6 +227,12 @@ accessibility。
 包含最大化窗口边框和负坐标显示器；不得再次乘以
 `screen-size.structuredContent.scale_factor`，否则会造成二次缩放。
 
+当 `snapshot --activate` 收到带有 `background_delivery_viable: true` 的类型化
+`foreground_activation_refused` 错误时，会保持原有精确 PID/HWND session 并直接执行后台
+截图，不再丢弃可用观察。成功结果会返回
+`activation.status: "refused_fallback_background"`，且 activation receipt 中
+`degraded: true`。若缺少后台可行性证明、激活超时或出现其他激活错误，仍会失败关闭。
+
 `doctor` 默认继续执行严格的完整健康检查。对于 Houdini、Unreal 等自绘 DCC 界面，
 可用 `doctor --route visual` 单独验收精确窗口枚举、WGC 截图和受限坐标输入；输出仍会
 保留 UIA 降级信息，并分别报告 `full`、`visual`、`semantic` 三条路由，避免一个挂起的

@@ -299,6 +299,9 @@ Host uses versioned big-endian JSON frames. Hello version 1 negotiates binary-fr
         "Coordinate mapping: snapshot.coordinate_space width/height are the encoded PNG pixel dimensions. screen_x = bounds.x + x * bounds.width / observation_width; screen_y = bounds.y + y * bounds.height / observation_height. window-state bounds are already device pixels. Do not apply screen-size scale_factor to them."
     );
     stdoutln!(
+        "Snapshot activation: when snapshot --activate receives foreground_activation_refused with background_delivery_viable=true, it preserves the exact PID/HWND session, captures without foreground activation, and reports activation.status=refused_fallback_background. Every other activation error remains fatal."
+    );
+    stdoutln!(
         "Semantic tree: accessibility --app APP [--max-elements N] [--max-depth N]. no_accessibility_provider is permanent for that window class: do not retry accessibility; use snapshot --pixels-only plus OCR or another perception layer. Window: window-state|activate|restore-activate|set-window-frame|invoke-menu. restore-activate requires an exact --pid/--window-id pair."
     );
     Ok(())

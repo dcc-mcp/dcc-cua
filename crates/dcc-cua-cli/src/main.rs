@@ -35,7 +35,8 @@ mod update;
 use actions::{
     act, action_result_value, activate_window, desktop_act, friendly_action, invoke_menu,
     is_friendly_action, restore_activate_window, semantic_post_snapshot_value, set_window_frame,
-    snapshot_coordinate_space_value, verify_state, window_post_snapshot_value, zoom,
+    snapshot_activation_result, snapshot_coordinate_space_value, verify_state,
+    window_post_snapshot_value, zoom,
 };
 use cli_args::*;
 use failure_output::{fatal_error_line, internal_failure_line};
@@ -1719,7 +1720,7 @@ async fn snapshot(
     let result = async {
         maybe_escalate(&mut session, flags).await?;
         let activation = if has_flag(flags, "--activate") {
-            Some(session.activate().await?)
+            Some(snapshot_activation_result(session.activate().await)?)
         } else {
             None
         };
