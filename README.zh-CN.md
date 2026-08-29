@@ -190,7 +190,9 @@ stderr 状态文本污染。需要检查并安装完整发布包时，请显式�
 必须传入 `--pid` 和 `--window-id`。优先使用观察结果中的 `element_token` 或
 `element_index`，自绘界面才使用坐标。窗口像素动作使用最新精确窗口截图内的非负局部
 坐标；UIA 元素 `bounds` 标记为 `virtual_desktop`，桌面动作则使用可为负数的虚拟桌面
-绝对坐标，因此无需为了操作左侧或上方显示器而移动用户窗口。
+绝对坐标，因此无需为了操作左侧或上方显示器而移动用户窗口。携带 x/y/path 的窗口动作
+必须同时传入 `--observation-width` 和 `--observation-height`，值取自生成坐标的那次
+`snapshot.coordinate_space`；缺少任一尺寸会在 session 启动前拒绝动作。
 
 单次 CLI 命令会把正常的结构化成功或错误信封写入 stdout。命令错误保留非零退出码，
 并且只输出一个 JSON 信封，因此 stdout 管道、重定向和命令替换无需合并 stderr 即可
@@ -216,6 +218,14 @@ worker 运行失败”。前者返回 `no_accessibility_provider`，并明确说
 重试获得语义树，调用方应改用 `snapshot --pixels-only`，再结合 OCR 或其他感知层。
 `backend_unavailable` 仍表示 provider 或后端执行失败，不能据此断言该窗口类永久不支持
 accessibility。
+
+成功的窗口 `snapshot` 会返回独立的 `coordinate_space`。其中 `width`/`height` 直接来自
+编码 PNG 的 IHDR，表示 `--output` 实际写入图像的像素尺寸，而不是应用 render target
+尺寸。若图像点为 `(x, y)`，`window-state` 的设备像素边界为 `bounds`，对应屏幕点为
+`screen_x = bounds.x + x * bounds.width / observation_width`、
+`screen_y = bounds.y + y * bounds.height / observation_height`。`window-state` 已是设备像素，
+包含最大化窗口边框和负坐标显示器；不得再次乘以
+`screen-size.structuredContent.scale_factor`，否则会造成二次缩放。
 
 `doctor` 默认继续执行严格的完整健康检查。对于 Houdini、Unreal 等自绘 DCC 界面，
 可用 `doctor --route visual` 单独验收精确窗口枚举、WGC 截图和受限坐标输入；输出仍会

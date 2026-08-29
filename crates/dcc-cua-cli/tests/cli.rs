@@ -99,6 +99,9 @@ fn help_routes_remain_successful_and_do_not_write_diagnostics() {
         assert!(stdout.contains("no_accessibility_provider"));
         assert!(stdout.contains("snapshot --pixels-only"));
         assert!(stdout.contains("OCR or another perception layer"));
+        assert!(stdout.contains("Coordinate actions require --observation-width"));
+        assert!(stdout.contains("screen_x = bounds.x + x * bounds.width / observation_width"));
+        assert!(stdout.contains("Do not apply screen-size scale_factor"));
         assert!(output.stderr.is_empty());
     }
 }
