@@ -289,7 +289,7 @@ async fn dispatch(arguments: Vec<String>) -> Result<(), Box<dyn std::error::Erro
         return Ok(());
     }
     if command == "profiles" {
-        list_semantic_profiles()?;
+        list_semantic_profiles(&flags)?;
         return Ok(());
     }
     if command == "profile" && profile_package::is_management_command(&flags) {
@@ -412,28 +412,34 @@ async fn list_windows(
     Ok(())
 }
 
-fn list_semantic_profiles() -> Result<(), Box<dyn std::error::Error>> {
-    let mut profiles = builtin_profiles()
-        .iter()
-        .map(|profile| {
-            json!({
-                "id": profile.id,
-                "display_name": profile.display_name,
-                "source": "builtin",
-                "version": profile.profile_version,
-                "application": profile.application,
-                "extends": profile.extends,
-                "status": "ready",
-                "preferred_route": profile.settings.preferred_route,
-                "dialog_style": profile.settings.dialog_style,
-                "supported_locales": profile.supported_locales(),
-                "surface_count": profile.surfaces.len(),
-                "state_source_count": profile.state_sources.len(),
+fn list_semantic_profiles(flags: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let state = profile_package::profile_listing_state(flags)?;
+    let mut profiles = if state == profile_package::ProfileListingState::Invalid {
+        Vec::new()
+    } else {
+        builtin_profiles()
+            .iter()
+            .map(|profile| {
+                json!({
+                    "id": profile.id,
+                    "display_name": profile.display_name,
+                    "source": "builtin",
+                    "version": profile.profile_version,
+                    "application": profile.application,
+                    "extends": profile.extends,
+                    "status": "ready",
+                    "preferred_route": profile.settings.preferred_route,
+                    "dialog_style": profile.settings.dialog_style,
+                    "supported_locales": profile.supported_locales(),
+                    "surface_count": profile.surfaces.len(),
+                    "state_source_count": profile.state_sources.len(),
+                })
             })
-        })
-        .collect::<Vec<_>>();
-    let store = profile_package::open_store(None)?;
-    profiles.extend(profile_package::installed_profile_summaries(&store));
+            .collect::<Vec<_>>()
+    };
+    let store_path = flag_value(flags, "--profile-store").map(PathBuf::from);
+    let store = profile_package::open_store(store_path.as_deref())?;
+    profiles.extend(profile_package::installed_profile_summaries(&store, state));
     profiles.sort_by(|left, right| {
         left.get("id")
             .and_then(serde_json::Value::as_str)

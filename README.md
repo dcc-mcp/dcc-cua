@@ -206,6 +206,11 @@ dcc-cua profile match --app maya.exe --title "Autodesk Maya 2024: scene.ma"
 dcc-cua profile --profile-file C:\profiles\maya-studio.json
 ```
 
+`dcc-cua profiles` lists only usable built-in and installed profiles by default.
+Use `dcc-cua profiles --state invalid` to inspect rejected installed packages,
+including their path, validation reason, and remediation hint. Use `--state all`
+only when both usable and rejected entries are needed in one diagnostic view.
+
 After discovery, inspect or execute one accessibility target using the exact
 identity returned by `list`:
 

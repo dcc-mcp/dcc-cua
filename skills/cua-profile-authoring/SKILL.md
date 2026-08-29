@@ -182,6 +182,7 @@ Minimal valid profile:
 
 ```powershell
 dcc-cua profiles
+dcc-cua profiles --state invalid
 dcc-cua profile --id maya
 dcc-cua profile match --app maya.exe --title "Autodesk Maya 2024: scene.ma"
 dcc-cua profile --profile-file C:\profiles\studio.json
@@ -189,9 +190,11 @@ dcc-cua list --app maya.exe --on-screen
 dcc-cua profile --profile-file C:\profiles\studio.json --pid $pid --window-id $hwnd --surface home --query new_scene
 ```
 
-The first two commands inspect official profiles; the third validates and prints
-a user profile without starting an application. The live form binds the profile
-to one target, takes a fresh semantic observation, and reports current matches.
+The default listing contains only usable profiles. The explicit `invalid` view
+reports rejected installed packages with their path, validation reason, and
+remediation hint. The profile inspection commands print official or user
+profiles without starting an application. The live form binds the profile to
+one target, takes a fresh semantic observation, and reports current matches.
 Execute an action only when the profile route supports it and exactly one live
 element has a current locator, or when the target declares a validated key
 binding. Both paths take a fresh exact-window observation first.
