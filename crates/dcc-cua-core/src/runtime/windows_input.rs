@@ -846,6 +846,180 @@ pub(crate) fn windows_synthetic_touch_result(
 }
 
 #[cfg(windows)]
+pub(crate) fn windows_foreground_click_result(
+    outcome: dcc_cua_platform_windows::WindowsForegroundClickOutcome,
+    point: (i32, i32),
+) -> ComputerUseToolResult {
+    debug_assert!(outcome.accepted());
+    let exact_foreground_preserved = outcome.foreground_after_relation
+        == dcc_cua_platform_windows::WindowsForegroundRelation::ExactTarget;
+    let current_foreground = outcome.foreground_after.map_or_else(
+        || "none".into(),
+        |identity| {
+            format!(
+                "HWND 0x{:x} PID {}",
+                identity.window_handle, identity.process_id
+            )
+        },
+    );
+    let text = if !exact_foreground_preserved {
+        format!(
+            "Windows accepted the complete scoped click at ({}, {}), then foreground changed to \
+             {current_foreground}; the click was not repeated and a fresh observation is required.",
+            point.0, point.1,
+        )
+    } else {
+        format!(
+            "Windows accepted the complete scoped click at ({}, {}); verify the target effect \
+             before continuing.",
+            point.0, point.1,
+        )
+    };
+    let activation_attempts = outcome.activation_attempts;
+    let foreground_before = outcome.foreground_before;
+    let foreground_after = outcome.foreground_after;
+    let foreground_after_relation = outcome.foreground_after_relation;
+    ComputerUseToolResult {
+        status: ComputerUseToolStatus::Succeeded,
+        value: json!({
+            "success": true,
+            "route": "windows_scoped_fast_input",
+            "delivery": {
+                "mode": "foreground",
+                "backend_id": "windows.send_input.foreground_click.v1",
+                "api_accepted": true,
+                "consumer_effect_confirmed": false,
+                "completion_known": true,
+                "confirmed": true,
+                "input_sent": true,
+                "retry_safe": false,
+                "verification_required": true,
+                "foreground_reacquisition_attempted": activation_attempts > 1,
+                "activation_attempts": activation_attempts,
+                "pre_dispatch_foreground": foreground_before,
+                "post_dispatch_foreground": foreground_after,
+                "post_dispatch_foreground_relation": foreground_after_relation,
+                "input_trace": outcome,
+            },
+            "effect": "unverifiable",
+        }),
+        text,
+        images: Vec::new(),
+        degraded: !exact_foreground_preserved,
+    }
+}
+
+#[cfg(windows)]
+pub(crate) fn map_windows_foreground_click_error(
+    error: dcc_cua_platform_windows::WindowsForegroundClickError,
+) -> ComputerUseError {
+    use dcc_cua_platform_windows::{
+        WindowsForegroundClickError, WindowsForegroundClickPreflightReason,
+    };
+    match error {
+        WindowsForegroundClickError::Activation {
+            attempts,
+            foreground,
+            source,
+        } => {
+            let foreground = foreground.map_or_else(
+                || "none".into(),
+                |identity| {
+                    format!(
+                        "HWND 0x{:x} PID {}",
+                        identity.window_handle, identity.process_id
+                    )
+                },
+            );
+            let mapped = map_windows_window_mutation_error(
+                "activate the exact Windows target for bounded foreground click delivery",
+                source,
+            );
+            let mut details = mapped.details.unwrap_or_default();
+            details.phase = Some(ComputerUseErrorPhase::ActivationDispatch);
+            details.action_attempted = Some(false);
+            details.focus_mutation_attempted = Some(true);
+            details.input_sent = Some(ComputerUseInputState::NotSent);
+            details.completion = Some(ComputerUseCompletionState::Known);
+            details.effect_unknown = Some(false);
+            details.local_session_invalidated = Some(false);
+            details.session_remains_active = Some(true);
+            details.automatic_input = Some(false);
+            details.blind_retry = Some(false);
+            details.fresh_observation_required = Some(true);
+            ComputerUseError::new(
+                mapped.code,
+                format!(
+                    "{} after {attempts} safe activation attempt(s); current foreground: \
+                     {foreground}",
+                    mapped.message
+                ),
+            )
+            .with_details(details)
+        }
+        WindowsForegroundClickError::NotAttempted { attempts, failure } => {
+            let code = match failure.reason {
+                WindowsForegroundClickPreflightReason::InvalidTarget => {
+                    ComputerUseErrorCode::InvalidTarget
+                }
+                WindowsForegroundClickPreflightReason::TargetNotForeground => {
+                    ComputerUseErrorCode::ForegroundActivationRefused
+                }
+                WindowsForegroundClickPreflightReason::UipiBlocked => {
+                    ComputerUseErrorCode::InputFailed
+                }
+            };
+            ComputerUseError::new(
+                code,
+                format!(
+                    "Windows foreground click was not sent after {attempts} safe attempt(s): \
+                     {}",
+                    failure.detail
+                ),
+            )
+            .with_details(ComputerUseErrorDetails {
+                phase: Some(ComputerUseErrorPhase::LocalMutationDispatch),
+                action_attempted: Some(false),
+                focus_mutation_attempted: Some(true),
+                input_sent: Some(ComputerUseInputState::NotSent),
+                completion: Some(ComputerUseCompletionState::Known),
+                effect_unknown: Some(false),
+                local_session_invalidated: Some(false),
+                session_remains_active: Some(true),
+                automatic_input: Some(false),
+                blind_retry: Some(false),
+                fresh_observation_required: Some(true),
+                ..Default::default()
+            })
+        }
+        WindowsForegroundClickError::Attempted {
+            attempts,
+            detail,
+            outcome,
+        } => {
+            let foreground = outcome.foreground_after.map_or_else(
+                || "none".into(),
+                |identity| {
+                    format!(
+                        "HWND 0x{:x} PID {}",
+                        identity.window_handle, identity.process_id
+                    )
+                },
+            );
+            windows_input_dispatch_unknown(ComputerUseError::new(
+                ComputerUseErrorCode::InputFailed,
+                format!(
+                    "Windows foreground click entered SendInput after {attempts} activation \
+                     attempt(s) and will not be retried: {detail}; completed clicks {}/{}; \
+                     current foreground: {foreground}",
+                    outcome.completed_clicks, outcome.requested_clicks,
+                ),
+            ))
+        }
+    }
+}
+
+#[cfg(windows)]
 pub(crate) fn windows_synthetic_touch_attempt<Inject>(
     input_gate: ComputerUseResult<()>,
     inject: Inject,
@@ -1231,19 +1405,25 @@ pub(crate) async fn perform_windows_foreground_fast_action(
         return Ok(None);
     }
 
-    dcc_cua_platform_windows::activate_window(
-        dcc_cua_platform_windows::UiaTarget {
-            process_id: target.pid,
-            window_handle: target.window_id,
-        },
-        || windows_platform_input_gate("foreground_fast_action_activation"),
-    )
-    .map_err(|error| {
-        map_windows_window_mutation_error(
-            "activate the exact Windows target before pointer input",
-            error,
+    let is_click = matches!(
+        action.action.as_str(),
+        "click" | "double_click" | "right_click" | "toggle"
+    );
+    if !is_click {
+        dcc_cua_platform_windows::activate_window(
+            dcc_cua_platform_windows::UiaTarget {
+                process_id: target.pid,
+                window_handle: target.window_id,
+            },
+            || windows_platform_input_gate("foreground_fast_action_activation"),
         )
-    })?;
+        .map_err(|error| {
+            map_windows_window_mutation_error(
+                "activate the exact Windows target before pointer input",
+                error,
+            )
+        })?;
+    }
 
     let window_id = target.window_id;
     let [left, top, _, _] = target.bounds;
@@ -1560,29 +1740,19 @@ pub(crate) async fn perform_windows_foreground_fast_action(
                 ))
             });
             tokio::task::spawn_blocking(move || {
-                dcc_cua_platform_windows::activate_window(click_target, || {
-                    windows_platform_input_gate("foreground_click_after_cursor_glide")
-                })
-                .map_err(|error| {
-                    map_windows_window_mutation_error(
-                        "validate the exact Windows target before click input",
-                        error,
-                    )
-                })?;
                 let modifiers: Vec<&str> = modifiers.iter().map(String::as_str).collect();
-                dcc_cua_platform_windows::send_click_synthesized_active_mods(
-                    window_id,
+                dcc_cua_platform_windows::send_click_exact_foreground_mods(
+                    click_target,
                     (x, y),
                     count,
                     &button,
                     &modifiers,
+                    || {
+                        dcc_cua_platform_windows::activate_window(click_target, || {
+                            windows_platform_input_gate("foreground_click_after_cursor_glide")
+                        })
+                    },
                 )
-                .map_err(|error| {
-                    ComputerUseError::new(
-                        ComputerUseErrorCode::InputFailed,
-                        format!("send Windows foreground click: {error}"),
-                    )
-                })
             })
             .await
             .map_err(|error| {
@@ -1593,13 +1763,8 @@ pub(crate) async fn perform_windows_foreground_fast_action(
             })?
         };
         match sent {
-            Ok(()) => format!("Sent scoped Windows click at ({x}, {y})."),
-            Err(error) => {
-                if error.code != ComputerUseErrorCode::InputFailed {
-                    return Err(error);
-                }
-                return Err(windows_input_dispatch_unknown(error));
-            }
+            Ok(outcome) => return Ok(Some(windows_foreground_click_result(outcome, (x, y)))),
+            Err(error) => return Err(map_windows_foreground_click_error(error)),
         }
     };
 

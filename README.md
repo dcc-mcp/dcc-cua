@@ -1152,6 +1152,14 @@ which preserves the user's foreground and lets CUA select its accessibility or
 synthetic-event route. Use `foreground` only after CUA reports that the
 background route is unavailable.
 
+On Windows, a foreground coordinate click revalidates the exact PID/HWND
+immediately before `SendInput`. If foreground was lost before any input was
+sent, dcc-cua performs one bounded reacquisition attempt. The delivery receipt
+reports `activation_attempts`, the pre- and post-dispatch foreground HWND/PID,
+and exact inserted-event counts. Once dispatch begins the click is never
+repeated; a post-dispatch foreground change returns successful physical
+delivery with `effect: "unverifiable"` and requires a fresh observation.
+
 Element indexes and tokens belong to the exact accessibility snapshot that
 created them. They are not interchangeable with indexes or tokens from a pixel
 snapshot, another backend, another window, or an earlier persistent session.

@@ -233,6 +233,12 @@ accessibility。
 `activation.status: "refused_fallback_background"`，且 activation receipt 中
 `degraded: true`。若缺少后台可行性证明、激活超时或出现其他激活错误，仍会失败关闭。
 
+Windows 前台坐标点击会在 `SendInput` 前立即重新校验精确 PID/HWND。若尚未发送任何输入
+就丢失前台，dcc-cua 最多执行一次有界前台重获；delivery receipt 会返回
+`activation_attempts`、投递前后实际前台 HWND/PID，以及精确的插入事件计数。输入一旦
+开始就绝不重复点击；若完整投递后前台发生变化，结果会保留成功的物理投递、标记
+`effect: "unverifiable"`，并要求调用方重新观察。
+
 `doctor` 默认继续执行严格的完整健康检查。对于 Houdini、Unreal 等自绘 DCC 界面，
 可用 `doctor --route visual` 单独验收精确窗口枚举、WGC 截图和受限坐标输入；输出仍会
 保留 UIA 降级信息，并分别报告 `full`、`visual`、`semantic` 三条路由，避免一个挂起的

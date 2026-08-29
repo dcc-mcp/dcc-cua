@@ -12,12 +12,13 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     VK_LBUTTON,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    GetCursorPos, GetForegroundWindow, GetSystemMetrics, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN,
-    SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SetCursorPos,
+    GetCursorPos, GetForegroundWindow, GetSystemMetrics, GetWindowThreadProcessId, IsWindow,
+    SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SetCursorPos,
 };
 
 use crate::{
-    UiaTarget, WindowsPointerButton, WindowsRawInputSnapshot, snapshot_raw_pointer_input_after_down,
+    UiaError, UiaTarget, WindowsForegroundRelation, WindowsPointerButton, WindowsRawInputSnapshot,
+    WindowsWindowIdentity, snapshot_raw_pointer_input_after_down,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -290,17 +291,495 @@ pub fn post_message_blocked_by_uipi(window_id: u64) -> Option<String> {
     platform_windows::input::post_message_blocked_by_uipi(window_id)
 }
 
-pub fn send_click_synthesized_active_mods(
-    window_id: u64,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ForegroundDispatch<T, N, A> {
+    Completed(T),
+    NotAttempted(N),
+    Attempted(A),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum BoundedForegroundDispatchError<E, N, A> {
+    Activation { attempts: usize, error: E },
+    NotAttempted { attempts: usize, error: N },
+    Attempted { attempts: usize, error: A },
+}
+
+/// Run at most two activation/preflight attempts and dispatch input once.
+///
+/// A typed `NotAttempted` result may reacquire foreground because the physical
+/// dispatcher proved that no input was submitted. `Attempted` is terminal even
+/// when its inserted-event count is zero: the operating system call was entered
+/// and repeating it could duplicate an action whose completion is not known.
+pub(crate) fn run_bounded_foreground_dispatch<T, E, N, A>(
+    mut activate: impl FnMut() -> Result<(), E>,
+    mut dispatch: impl FnMut() -> ForegroundDispatch<T, N, A>,
+    retry_activation: impl Fn(&E) -> bool,
+    retry_not_attempted: impl Fn(&N) -> bool,
+) -> Result<T, BoundedForegroundDispatchError<E, N, A>> {
+    const MAX_ATTEMPTS: usize = 2;
+    for attempts in 1..=MAX_ATTEMPTS {
+        if let Err(error) = activate() {
+            if attempts < MAX_ATTEMPTS && retry_activation(&error) {
+                continue;
+            }
+            return Err(BoundedForegroundDispatchError::Activation { attempts, error });
+        }
+        match dispatch() {
+            ForegroundDispatch::Completed(value) => return Ok(value),
+            ForegroundDispatch::NotAttempted(error)
+                if attempts < MAX_ATTEMPTS && retry_not_attempted(&error) => {}
+            ForegroundDispatch::NotAttempted(error) => {
+                return Err(BoundedForegroundDispatchError::NotAttempted { attempts, error });
+            }
+            ForegroundDispatch::Attempted(error) => {
+                return Err(BoundedForegroundDispatchError::Attempted { attempts, error });
+            }
+        }
+    }
+    unreachable!("the bounded foreground loop always returns on its final attempt")
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WindowsForegroundClickPreflightReason {
+    InvalidTarget,
+    TargetNotForeground,
+    UipiBlocked,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct WindowsForegroundClickPreflightFailure {
+    pub reason: WindowsForegroundClickPreflightReason,
+    pub target: WindowsWindowIdentity,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub foreground: Option<WindowsWindowIdentity>,
+    pub detail: String,
+}
+
+impl std::fmt::Display for WindowsForegroundClickPreflightFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{}", self.detail)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct WindowsForegroundClickOutcome {
+    pub activation_attempts: usize,
+    pub target: WindowsWindowIdentity,
+    pub foreground_before: WindowsWindowIdentity,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub foreground_after: Option<WindowsWindowIdentity>,
+    pub foreground_after_relation: WindowsForegroundRelation,
+    pub requested_clicks: usize,
+    pub completed_clicks: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub modifier_down: Option<WindowsInputCount>,
+    pub click_batches: Vec<WindowsInputCount>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub modifier_up: Option<WindowsInputCount>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub modifier_up_retry: Option<WindowsInputCount>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub emergency_button_up: Option<WindowsInputCount>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+impl WindowsForegroundClickOutcome {
+    #[must_use]
+    pub fn accepted(&self) -> bool {
+        self.error.is_none()
+            && self.completed_clicks == self.requested_clicks
+            && self
+                .modifier_down
+                .as_ref()
+                .is_none_or(WindowsInputCount::was_accepted)
+            && self
+                .modifier_up_retry
+                .as_ref()
+                .or(self.modifier_up.as_ref())
+                .is_none_or(WindowsInputCount::was_accepted)
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum WindowsForegroundClickError {
+    #[error(
+        "foreground activation failed after {attempts} safe attempt(s); current foreground: {foreground:?}: {source}"
+    )]
+    Activation {
+        attempts: usize,
+        foreground: Option<WindowsWindowIdentity>,
+        #[source]
+        source: UiaError,
+    },
+    #[error("foreground click was not attempted after {attempts} safe attempt(s): {failure}")]
+    NotAttempted {
+        attempts: usize,
+        failure: WindowsForegroundClickPreflightFailure,
+    },
+    #[error(
+        "foreground click input was attempted and will not be retried after {attempts} activation attempt(s): {detail}"
+    )]
+    Attempted {
+        attempts: usize,
+        detail: String,
+        outcome: Box<WindowsForegroundClickOutcome>,
+    },
+}
+
+/// Deliver an exact-foreground click with a typed physical outcome.
+///
+/// The pinned upstream click helper currently collapses both pre-injection
+/// foreground refusal and post-injection foreground change into one string
+/// error. This host-owned boundary performs the same `SendInput` sequence while
+/// retaining inserted-event counts. It may reacquire foreground once only when
+/// no input was sent, and it never repeats a click after dispatch begins.
+pub fn send_click_exact_foreground_mods(
+    target: UiaTarget,
     point: (i32, i32),
     count: usize,
     button: &str,
     modifiers: &[&str],
-) -> Result<(), String> {
-    platform_windows::input::mouse::send_click_synthesized_active_mods(
-        window_id, point.0, point.1, count, button, modifiers,
+    mut activate: impl FnMut() -> Result<(), UiaError>,
+) -> Result<WindowsForegroundClickOutcome, WindowsForegroundClickError> {
+    let mut activation_attempts = 0;
+    let result = run_bounded_foreground_dispatch(
+        || {
+            activation_attempts += 1;
+            activate()
+        },
+        || dispatch_click_exact_foreground(target, point, count, button, modifiers),
+        |error| matches!(error, UiaError::ForegroundActivationRefused { .. }),
+        |failure| failure.reason == WindowsForegroundClickPreflightReason::TargetNotForeground,
+    );
+    match result {
+        Ok(mut outcome) => {
+            outcome.activation_attempts = activation_attempts;
+            Ok(outcome)
+        }
+        Err(BoundedForegroundDispatchError::Activation { attempts, error }) => {
+            Err(WindowsForegroundClickError::Activation {
+                attempts,
+                foreground: foreground_identity(),
+                source: error,
+            })
+        }
+        Err(BoundedForegroundDispatchError::NotAttempted { attempts, error }) => {
+            Err(WindowsForegroundClickError::NotAttempted {
+                attempts,
+                failure: error,
+            })
+        }
+        Err(BoundedForegroundDispatchError::Attempted {
+            attempts,
+            error: mut outcome,
+        }) => {
+            outcome.activation_attempts = attempts;
+            let detail = outcome
+                .error
+                .clone()
+                .unwrap_or_else(|| "Windows returned an incomplete click outcome".into());
+            Err(WindowsForegroundClickError::Attempted {
+                attempts,
+                detail,
+                outcome: Box::new(outcome),
+            })
+        }
+    }
+}
+
+fn dispatch_click_exact_foreground(
+    target: UiaTarget,
+    point: (i32, i32),
+    count: usize,
+    button: &str,
+    modifiers: &[&str],
+) -> ForegroundDispatch<
+    WindowsForegroundClickOutcome,
+    WindowsForegroundClickPreflightFailure,
+    WindowsForegroundClickOutcome,
+> {
+    let target_identity = WindowsWindowIdentity {
+        window_handle: target.window_handle,
+        process_id: target.process_id,
+    };
+    let foreground = foreground_identity();
+    if !exact_target_identity_is_current(target) {
+        return ForegroundDispatch::NotAttempted(WindowsForegroundClickPreflightFailure {
+            reason: WindowsForegroundClickPreflightReason::InvalidTarget,
+            target: target_identity,
+            foreground,
+            detail: format!(
+                "exact target HWND 0x{:x} no longer exists or belongs to PID {} (current foreground: {})",
+                target.window_handle,
+                target.process_id,
+                foreground_diagnostic(foreground),
+            ),
+        });
+    }
+    let Some(foreground_before) = foreground else {
+        return ForegroundDispatch::NotAttempted(WindowsForegroundClickPreflightFailure {
+            reason: WindowsForegroundClickPreflightReason::TargetNotForeground,
+            target: target_identity,
+            foreground: None,
+            detail: format!(
+                "exact target HWND 0x{:x} PID {} was not foreground; current foreground: none; no input was submitted",
+                target.window_handle, target.process_id,
+            ),
+        });
+    };
+    if foreground_before.window_handle != target.window_handle {
+        return ForegroundDispatch::NotAttempted(WindowsForegroundClickPreflightFailure {
+            reason: WindowsForegroundClickPreflightReason::TargetNotForeground,
+            target: target_identity,
+            foreground: Some(foreground_before),
+            detail: format!(
+                "exact target HWND 0x{:x} PID {} was not foreground; current foreground: {}; no input was submitted",
+                target.window_handle,
+                target.process_id,
+                foreground_diagnostic(Some(foreground_before)),
+            ),
+        });
+    }
+    if let Some(detail) = post_message_blocked_by_uipi(target.window_handle) {
+        return ForegroundDispatch::NotAttempted(WindowsForegroundClickPreflightFailure {
+            reason: WindowsForegroundClickPreflightReason::UipiBlocked,
+            target: target_identity,
+            foreground: Some(foreground_before),
+            detail: format!("{detail}; no input was submitted"),
+        });
+    }
+
+    let requested_clicks = count.max(1);
+    let modifier_keys = modifiers
+        .iter()
+        .filter_map(|modifier| modifier_virtual_key(modifier))
+        .collect::<Vec<_>>();
+    let modifier_down_inputs = modifier_keys
+        .iter()
+        .map(|key| keyboard_input(*key, false))
+        .collect::<Vec<_>>();
+    let modifier_up_inputs = modifier_keys
+        .iter()
+        .rev()
+        .map(|key| keyboard_input(*key, true))
+        .collect::<Vec<_>>();
+    let mut outcome = WindowsForegroundClickOutcome {
+        activation_attempts: 0,
+        target: target_identity,
+        foreground_before,
+        foreground_after: None,
+        foreground_after_relation: WindowsForegroundRelation::NoForeground,
+        requested_clicks,
+        completed_clicks: 0,
+        modifier_down: None,
+        click_batches: Vec::with_capacity(requested_clicks),
+        modifier_up: None,
+        modifier_up_retry: None,
+        emergency_button_up: None,
+        error: None,
+    };
+
+    let _ = unsafe { SetCursorPos(point.0, point.1) };
+    if !modifier_down_inputs.is_empty() {
+        let down = submit(&modifier_down_inputs);
+        let accepted_modifier_count = down.inserted() as usize;
+        let down_accepted = down.was_accepted();
+        outcome.modifier_down = Some(down);
+        if !down_accepted {
+            let cleanup = modifier_keys
+                .iter()
+                .take(accepted_modifier_count)
+                .rev()
+                .map(|key| keyboard_input(*key, true))
+                .collect::<Vec<_>>();
+            if !cleanup.is_empty() {
+                outcome.modifier_up = Some(submit(&cleanup));
+            }
+            outcome.error = Some("SendInput did not accept every modifier-down event".into());
+            finish_click_outcome_foreground(&mut outcome);
+            return ForegroundDispatch::Attempted(outcome);
+        }
+        sleep(Duration::from_millis(5));
+    }
+
+    let click_inputs = click_input_batch(point, button);
+    for click_index in 0..requested_clicks {
+        let batch = submit(&click_inputs);
+        let inserted = batch.inserted();
+        let accepted = batch.was_accepted();
+        outcome.click_batches.push(batch);
+        if !accepted {
+            if inserted == 2 {
+                outcome.emergency_button_up =
+                    Some(inject_mouse_button(pointer_button(button), false));
+            }
+            outcome.error = Some(format!(
+                "SendInput did not accept the complete mouse batch for click {} of {}",
+                click_index + 1,
+                requested_clicks,
+            ));
+            break;
+        }
+        outcome.completed_clicks += 1;
+        if click_index + 1 < requested_clicks {
+            sleep(Duration::from_millis(80));
+        }
+    }
+
+    if !modifier_up_inputs.is_empty() {
+        let up = submit(&modifier_up_inputs);
+        let up_accepted = up.was_accepted();
+        outcome.modifier_up = Some(up);
+        if !up_accepted {
+            let retry = submit(&modifier_up_inputs);
+            let retry_accepted = retry.was_accepted();
+            outcome.modifier_up_retry = Some(retry);
+            if !retry_accepted {
+                outcome.error.get_or_insert_with(|| {
+                    "SendInput did not accept every modifier-up cleanup event".into()
+                });
+            }
+        }
+    }
+    sleep(Duration::from_millis(120));
+    finish_click_outcome_foreground(&mut outcome);
+    if outcome.accepted() {
+        ForegroundDispatch::Completed(outcome)
+    } else {
+        ForegroundDispatch::Attempted(outcome)
+    }
+}
+
+fn click_input_batch(point: (i32, i32), button: &str) -> [INPUT; 3] {
+    let desktop = virtual_desktop();
+    let (normalized_x, normalized_y) = platform_windows::virtualdesk::to_virtualdesk_absolute(
+        point.0, point.1, desktop.0, desktop.1, desktop.2, desktop.3,
+    );
+    let (down_flag, up_flag) = match pointer_button(button) {
+        WindowsPointerButton::Left => (MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP),
+        WindowsPointerButton::Right => (MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP),
+        WindowsPointerButton::Middle => (MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP),
+    };
+    [
+        INPUT {
+            r#type: INPUT_MOUSE,
+            Anonymous: INPUT_0 {
+                mi: MOUSEINPUT {
+                    dx: normalized_x,
+                    dy: normalized_y,
+                    mouseData: 0,
+                    dwFlags: MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK,
+                    time: 0,
+                    dwExtraInfo: 0,
+                },
+            },
+        },
+        INPUT {
+            r#type: INPUT_MOUSE,
+            Anonymous: INPUT_0 {
+                mi: MOUSEINPUT {
+                    dx: 0,
+                    dy: 0,
+                    mouseData: 0,
+                    dwFlags: down_flag,
+                    time: 0,
+                    dwExtraInfo: 0,
+                },
+            },
+        },
+        INPUT {
+            r#type: INPUT_MOUSE,
+            Anonymous: INPUT_0 {
+                mi: MOUSEINPUT {
+                    dx: 0,
+                    dy: 0,
+                    mouseData: 0,
+                    dwFlags: up_flag,
+                    time: 0,
+                    dwExtraInfo: 0,
+                },
+            },
+        },
+    ]
+}
+
+fn pointer_button(button: &str) -> WindowsPointerButton {
+    match button {
+        "right" => WindowsPointerButton::Right,
+        "middle" => WindowsPointerButton::Middle,
+        _ => WindowsPointerButton::Left,
+    }
+}
+
+fn modifier_virtual_key(modifier: &str) -> Option<u16> {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{VK_CONTROL, VK_LWIN, VK_MENU, VK_SHIFT};
+    match modifier.trim().to_ascii_lowercase().as_str() {
+        "ctrl" | "control" => Some(VK_CONTROL),
+        "shift" => Some(VK_SHIFT),
+        "alt" | "menu" | "option" => Some(VK_MENU),
+        "win" | "meta" | "windows" | "cmd" | "command" => Some(VK_LWIN),
+        _ => None,
+    }
+}
+
+fn exact_target_identity_is_current(target: UiaTarget) -> bool {
+    let hwnd = target.window_handle as usize as *mut core::ffi::c_void;
+    if hwnd.is_null() || unsafe { IsWindow(hwnd) } == 0 {
+        return false;
+    }
+    let mut process_id = 0;
+    unsafe { GetWindowThreadProcessId(hwnd, &mut process_id) };
+    process_id == target.process_id
+}
+
+fn foreground_identity() -> Option<WindowsWindowIdentity> {
+    let hwnd = unsafe { GetForegroundWindow() };
+    if hwnd.is_null() {
+        return None;
+    }
+    let mut process_id = 0;
+    unsafe { GetWindowThreadProcessId(hwnd, &mut process_id) };
+    (process_id != 0).then_some(WindowsWindowIdentity {
+        window_handle: hwnd as usize as u64,
+        process_id,
+    })
+}
+
+fn foreground_relation(
+    target: WindowsWindowIdentity,
+    foreground: Option<WindowsWindowIdentity>,
+) -> WindowsForegroundRelation {
+    match foreground {
+        None => WindowsForegroundRelation::NoForeground,
+        Some(actual) if actual.window_handle == target.window_handle => {
+            WindowsForegroundRelation::ExactTarget
+        }
+        Some(actual) if actual.process_id == target.process_id => {
+            WindowsForegroundRelation::SameProcess
+        }
+        Some(_) => WindowsForegroundRelation::ForeignProcess,
+    }
+}
+
+fn finish_click_outcome_foreground(outcome: &mut WindowsForegroundClickOutcome) {
+    outcome.foreground_after = foreground_identity();
+    outcome.foreground_after_relation =
+        foreground_relation(outcome.target, outcome.foreground_after);
+}
+
+fn foreground_diagnostic(foreground: Option<WindowsWindowIdentity>) -> String {
+    foreground.map_or_else(
+        || "none".into(),
+        |identity| {
+            format!(
+                "HWND 0x{:x} PID {}",
+                identity.window_handle, identity.process_id
+            )
+        },
     )
-    .map_err(|error| error.to_string())
 }
 
 pub fn move_cursor_desktop(x: i32, y: i32) -> Result<(), String> {
