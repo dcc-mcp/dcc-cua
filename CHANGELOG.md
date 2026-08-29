@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.6.2](https://github.com/dcc-mcp/dcc-cua/compare/v1.6.1...v1.6.2) (2026-08-29)
+
+
+### Bug Fixes
+
+* stabilize packaged skill bytes ([c108724](https://github.com/dcc-mcp/dcc-cua/commit/c108724924c0e61dd8726f250cec6ab16f993c2f))
+
 ## [1.6.1](https://github.com/dcc-mcp/dcc-cua/compare/v1.6.0...v1.6.1) (2026-08-29)
 
 
