@@ -83,17 +83,22 @@ fn version_aliases_match_the_long_flag() {
 
 #[rstest]
 fn help_routes_remain_successful_and_do_not_write_diagnostics() {
-    for arguments in [&[][..], &["--help"][..], &["snapshot", "--help"][..]] {
+    for arguments in [
+        &[][..],
+        &["--help"][..],
+        &["snapshot", "--help"][..],
+        &["accessibility", "--help"][..],
+    ] {
         let output = Command::new(env!("CARGO_BIN_EXE_dcc-cua"))
             .args(arguments)
             .output()
             .expect("dcc-cua should start");
         assert!(output.status.success());
-        assert!(
-            std::str::from_utf8(&output.stdout)
-                .expect("help output should be UTF-8")
-                .contains("host-batch")
-        );
+        let stdout = std::str::from_utf8(&output.stdout).expect("help output should be UTF-8");
+        assert!(stdout.contains("host-batch"));
+        assert!(stdout.contains("no_accessibility_provider"));
+        assert!(stdout.contains("snapshot --pixels-only"));
+        assert!(stdout.contains("OCR or another perception layer"));
         assert!(output.stderr.is_empty());
     }
 }

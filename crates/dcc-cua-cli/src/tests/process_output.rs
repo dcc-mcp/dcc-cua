@@ -1,6 +1,8 @@
 use rstest::rstest;
 use serde_json::json;
 
+use crate::failure_output::{PUBLIC_FAILURE_MESSAGE, fatal_error_value};
+
 use super::*;
 
 #[rstest]
@@ -52,6 +54,35 @@ fn typed_one_shot_failures_keep_only_allowlisted_identity() {
     assert_eq!(value["error"]["message"], PUBLIC_FAILURE_MESSAGE);
     assert!(value["error"].get("details").is_none());
     assert!(!line.contains("REVIEW_PRIVATE_"));
+}
+
+#[rstest]
+fn missing_provider_failure_publishes_only_fixed_fallback_guidance() {
+    let error = ComputerUseError::new(
+        ComputerUseErrorCode::NoAccessibilityProvider,
+        "REVIEW_PRIVATE_PROVIDER_DETAIL_42f97a",
+    );
+    let value = fatal_error_value(&error);
+
+    assert_eq!(value["error"]["code"], "no_accessibility_provider");
+    assert_eq!(
+        value["error"]["message"],
+        "The exact window has no usable accessibility provider."
+    );
+    assert_eq!(value["error"]["details"]["retryable"], false);
+    assert_eq!(
+        value["error"]["details"]["permanent_for_window_class"],
+        true
+    );
+    assert_eq!(
+        value["error"]["details"]["fallback_command"],
+        "snapshot --pixels-only"
+    );
+    assert_eq!(
+        value["error"]["details"]["fallback_requires"],
+        "ocr_or_another_perception_layer"
+    );
+    assert!(!value.to_string().contains("REVIEW_PRIVATE_"));
 }
 
 #[rstest]

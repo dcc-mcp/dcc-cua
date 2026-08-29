@@ -23,7 +23,7 @@ use crate::visible_capture::{
 };
 #[cfg(windows)]
 use crate::windows::{
-    REQUEST_TIMEOUT, STARTUP_TIMEOUT, UIA_WORKER_PROTOCOL_VERSION, UiaWorker,
+    REQUEST_TIMEOUT, STARTUP_TIMEOUT, UIA_WORKER_PROTOCOL_VERSION, UiaWorker, ensure_ok,
     retry_read_only_after_backend_failure, validate_worker_protocol_message,
     validate_worker_readiness_message,
 };
@@ -714,6 +714,46 @@ fn powershell_worker_readiness_is_behaviorally_fixture_tested() {
         )
         .unwrap_or_else(|error| panic!("request UIA worker attempt {attempt}: {error}"));
         assert_eq!(response["result"], "expand");
+    }
+}
+
+#[cfg(windows)]
+#[rstest]
+fn missing_accessibility_provider_is_a_typed_terminal_worker_error() {
+    let error = ensure_ok(&json!({
+        "ok": false,
+        "error": "no_accessibility_provider",
+        "message": "the exact window exposes no semantic provider",
+    }))
+    .unwrap_err();
+
+    assert!(matches!(error, super::UiaError::NoAccessibilityProvider(_)));
+}
+
+#[cfg(windows)]
+#[rstest]
+fn powershell_root_failure_classification_distinguishes_provider_absence_from_failure() {
+    let _guard = policy_fixture_test_guard();
+    let mut worker = UiaWorker::start().expect("start accessibility failure fixture worker");
+    for (root_traversal_started, node_count, hresult, expected) in [
+        (true, 1, -2_147_467_259_i64, "no_accessibility_provider"),
+        (true, 2, -2_147_467_259_i64, "backend_error"),
+        (true, 1, -2_147_024_809_i64, "backend_error"),
+        (false, 0, -2_147_467_259_i64, "backend_error"),
+    ] {
+        let response = evaluate_policy_fixture(
+            &mut worker,
+            json!({
+                "operation": "accessibility_failure_code",
+                "facts": {
+                    "root_traversal_started": root_traversal_started,
+                    "node_count": node_count,
+                    "hresult": hresult,
+                },
+            }),
+        )
+        .expect("accessibility failure fixture response");
+        assert_eq!(response["result"], expected);
     }
 }
 

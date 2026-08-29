@@ -131,8 +131,12 @@ fn issue_228_pixel_routes_have_distinct_stable_provenance(
 #[rstest]
 fn issue_228_missing_and_hung_accessibility_providers_degrade_but_target_loss_does_not() {
     let missing = ComputerUseError::new(
-        ComputerUseErrorCode::BackendUnavailable,
+        ComputerUseErrorCode::NoAccessibilityProvider,
         "controlled fixture has no accessibility provider",
+    );
+    let failed = ComputerUseError::new(
+        ComputerUseErrorCode::BackendUnavailable,
+        "controlled provider failed while reading a semantic child",
     );
     let hung = ComputerUseError::new(
         ComputerUseErrorCode::InputFailed,
@@ -161,10 +165,11 @@ fn issue_228_missing_and_hung_accessibility_providers_degrade_but_target_loss_do
     );
     assert_eq!(pixel_route_for_accessibility_failure(&vanished), None);
     assert_eq!(pixel_route_for_accessibility_failure(&prose_only), None);
+    assert_eq!(pixel_route_for_accessibility_failure(&failed), None);
 
     let unavailable_tool = cua_driver_sdk::ToolResult {
         is_error: true,
-        error_code: Some("backend_unavailable".into()),
+        error_code: Some("no_accessibility_provider".into()),
         raw_json: "{}".into(),
         text: "provider unavailable".into(),
         structured_json: None,
@@ -178,6 +183,11 @@ fn issue_228_missing_and_hung_accessibility_providers_degrade_but_target_loss_do
         text: "provider timed out".into(),
         ..unavailable_tool.clone()
     };
+    let failed_tool = cua_driver_sdk::ToolResult {
+        error_code: Some("backend_unavailable".into()),
+        text: "provider failed".into(),
+        ..unavailable_tool.clone()
+    };
     assert_eq!(
         pixel_route_for_uia_tool_failure(&unavailable_tool),
         Some(PixelObservationRoute::AccessibilityUnavailableDegraded)
@@ -186,6 +196,7 @@ fn issue_228_missing_and_hung_accessibility_providers_degrade_but_target_loss_do
         pixel_route_for_uia_tool_failure(&timeout_tool),
         Some(PixelObservationRoute::AccessibilityTimeoutDegraded)
     );
+    assert_eq!(pixel_route_for_uia_tool_failure(&failed_tool), None);
 }
 
 fn publication_fence(

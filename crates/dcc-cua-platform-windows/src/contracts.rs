@@ -81,6 +81,8 @@ pub enum UiaError {
     InteractiveDesktopUnavailable { stage: String, reason: String },
     #[error("Windows UI Automation action is invalid: {0}")]
     InvalidAction(String),
+    #[error("the exact window has no usable Windows UI Automation provider: {0}")]
+    NoAccessibilityProvider(String),
     #[error("Windows UI Automation backend failed: {0}")]
     BackendUnavailable(String),
     #[error("Windows UI Automation operation failed: {0}")]

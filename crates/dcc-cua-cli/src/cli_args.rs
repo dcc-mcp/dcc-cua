@@ -296,7 +296,7 @@ Host uses versioned big-endian JSON frames. Hello version 1 negotiates binary-fr
         "Friendly window actions accept --delivery-mode background|foreground. x/y and drag paths are non-negative coordinates in the latest exact-window screenshot (not UIA virtual-desktop bounds). When coordinates come from a previously returned resized PNG, pass --observation-width and --observation-height together so the fresh action observation preserves that visible coordinate space. Desktop actions use signed virtual-desktop coordinates. Actions: click [--x X --y Y|--element-index N|--element-token TOKEN] [--button left|middle|right --duration-ms N], double-click/right-click/toggle [--x X --y Y|--element-index N|--element-token TOKEN] [--button left|middle|right], drag --from-x X --from-y Y --to-x X --to-y Y [--button B --modifier M --duration-ms N --steps N], type [--text TEXT] [--focused|--x X --y Y|--element-index N], set-text/set-value, press [--key K] [--modifier M] [--x X --y Y|--element-index N], hotkey [--key K ...] [--x X --y Y], scroll [--scroll-x N|--scroll-y N] [--by line|page] [--x X --y Y|--element-index N], move."
     );
     stdoutln!(
-        "Semantic tree: accessibility --app APP [--max-elements N] [--max-depth N]. Window: window-state|activate|restore-activate|set-window-frame|invoke-menu. restore-activate requires an exact --pid/--window-id pair."
+        "Semantic tree: accessibility --app APP [--max-elements N] [--max-depth N]. no_accessibility_provider is permanent for that window class: do not retry accessibility; use snapshot --pixels-only plus OCR or another perception layer. Window: window-state|activate|restore-activate|set-window-frame|invoke-menu. restore-activate requires an exact --pid/--window-id pair."
     );
     Ok(())
 }

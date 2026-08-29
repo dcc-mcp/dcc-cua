@@ -397,6 +397,14 @@ capability on macOS and Linux, where this route returns `BackendUnavailable`.
 An absent provider is labeled `accessibility_unavailable_degraded` rather than
 being misreported as a timeout.
 
+The standalone `accessibility` command distinguishes a custom-rendered window
+that has no usable semantic provider from a provider or worker failure. It
+returns `no_accessibility_provider`, marks the condition non-retryable for that
+window class, and points callers to `snapshot --pixels-only` plus OCR or another
+perception layer. `backend_unavailable` continues to mean that a provider or
+backend failed and must not be treated as proof that the window class is
+permanently inaccessible.
+
 `doctor` runs CUA's `check_permissions` and `health_report` concurrently with
 driver/window discovery. It reports the upstream structured checks for native
 accessibility, screen capture, platform support, and input readiness, and exits

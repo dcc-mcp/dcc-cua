@@ -16,6 +16,7 @@ mod authorization;
 mod authorization_integration;
 mod browser_extension;
 mod cli_args;
+mod failure_output;
 mod host_lifecycle;
 mod manifest;
 mod mcp_output;
@@ -37,6 +38,7 @@ use actions::{
     verify_state, window_post_snapshot_value, zoom,
 };
 use cli_args::*;
+use failure_output::{fatal_error_line, internal_failure_line};
 use mcp_output::{
     HostJsonlImageMetrics, HostJsonlResponseFormat, JsonlResponseOutput, response_image_metrics,
 };
@@ -66,7 +68,6 @@ use tokio::io::{AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader, BufWriter
 const PARALLEL_DISCOVERY_WINDOW_MS: u64 = 5;
 const INTERNAL_FAILURE_DIAGNOSTIC: &str = "dcc-cua: internal command failure";
 const STDOUT_FAILURE_DIAGNOSTIC: &str = "dcc-cua: command result could not be written to stdout";
-const PUBLIC_FAILURE_MESSAGE: &str = "dcc-cua could not complete the command";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum TerminalErrorOutput {
@@ -163,16 +164,6 @@ fn run_main() -> Result<(), Box<dyn std::error::Error>> {
     async_main()
 }
 
-fn fatal_error_line(error: &(dyn std::error::Error + 'static)) -> String {
-    serde_json::to_string(&fatal_error_value(error)).unwrap_or_else(|_| {
-        r#"{"success":false,"error":{"code":"command_failed","message":"dcc-cua could not complete the command"}}"#.into()
-    })
-}
-
-fn internal_failure_line() -> String {
-    r#"{"success":false,"error":{"code":"internal_failure","message":"dcc-cua could not complete the command"}}"#.into()
-}
-
 fn write_error_line(writer: &mut dyn Write, line: &str) -> std::io::Result<()> {
     writer.write_all(line.as_bytes())?;
     writer.write_all(b"\n")?;
@@ -184,34 +175,6 @@ fn write_stdout_line(arguments: std::fmt::Arguments<'_>) -> std::io::Result<()> 
     stdout.write_fmt(arguments)?;
     stdout.write_all(b"\n")?;
     stdout.flush()
-}
-
-fn fatal_error_value(error: &(dyn std::error::Error + 'static)) -> serde_json::Value {
-    if let Some(error) = error.downcast_ref::<ComputerUseError>() {
-        return json!({
-            "success": false,
-            "error": {
-                "code": error.code,
-                "message": PUBLIC_FAILURE_MESSAGE,
-            }
-        });
-    }
-    if let Some(error) = error.downcast_ref::<HostClientError>() {
-        let code = match error {
-            HostClientError::Io(_) => "host_transport_failed",
-            HostClientError::Protocol(_) => "host_protocol_failed",
-            HostClientError::Timeout { .. } => "host_timeout",
-            HostClientError::Remote { .. } => "host_remote_failed",
-        };
-        return json!({
-            "success": false,
-            "error": {"code": code, "message": PUBLIC_FAILURE_MESSAGE},
-        });
-    }
-    json!({
-        "success": false,
-        "error": {"code": "command_failed", "message": PUBLIC_FAILURE_MESSAGE},
-    })
 }
 
 #[tokio::main]
