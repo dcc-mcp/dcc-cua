@@ -38,7 +38,14 @@ fn manifest_advertises_the_split_capability_task_authorization_broker() {
     assert_eq!(integration["user_confirmation_available"], false);
     assert_eq!(integration["card_available"], false);
     assert_eq!(integration["process_identity_can_authorize"], false);
-    assert_eq!(integration["signed_receipt_protocol"]["status"], "proposed");
+    assert_eq!(
+        integration["signed_receipt_protocol"]["status"],
+        "implemented_core"
+    );
+    assert_eq!(
+        integration["signed_receipt_protocol"]["constructor_api_available"],
+        true
+    );
     assert_eq!(
         integration["signed_receipt_protocol"]["runtime_accepts_receipts"],
         false

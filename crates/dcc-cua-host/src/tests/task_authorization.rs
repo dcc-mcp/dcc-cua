@@ -16,6 +16,21 @@ struct TaskAuthorizationHost {
 
 struct DenyingTaskAuthorizationHost;
 
+#[rstest]
+#[case("https://EXAMPLE.com")]
+#[case("https://example.com/")]
+#[case("https://example.com:443")]
+#[case("https://user@example.com")]
+#[case("https://example.com/path")]
+#[case("https://example.com?query=1")]
+#[case("javascript:alert(1)")]
+fn browser_origins_must_be_exact_canonical_http_origins(#[case] origin: &str) {
+    assert!(!crate::task_authorization::valid_browser_origin(origin));
+    assert!(crate::task_authorization::valid_browser_origin(
+        "https://example.com"
+    ));
+}
+
 #[async_trait::async_trait]
 impl TrustedTaskAuthorizationHost for DenyingTaskAuthorizationHost {
     async fn authorize(
@@ -31,6 +46,13 @@ impl TrustedTaskAuthorizationHost for DenyingTaskAuthorizationHost {
     ) -> Result<TrustedTaskAuthorizationValidationDecision, TrustedTaskAuthorizationHostError> {
         panic!("a denied task authorization must not be validated")
     }
+
+    async fn validate_lease(
+        &self,
+        _request: TrustedTaskAuthorizationLeaseValidationRequest,
+    ) -> Result<TrustedTaskAuthorizationValidationDecision, TrustedTaskAuthorizationHostError> {
+        panic!("a denied task authorization must not be validated")
+    }
 }
 
 #[async_trait::async_trait]
@@ -41,6 +63,7 @@ impl TrustedTaskAuthorizationHost for TaskAuthorizationHost {
     ) -> Result<TrustedTaskAuthorizationLease, TrustedTaskAuthorizationHostError> {
         let now = unix_time_millis();
         Ok(TrustedTaskAuthorizationLease {
+            connection_id: request.connection_id,
             authorization_id: request.authorization_id,
             session_id: request.session_id,
             task_grant_id: request.task_grant_id,
@@ -48,6 +71,7 @@ impl TrustedTaskAuthorizationHost for TaskAuthorizationHost {
             window_capability: request.window_capability,
             target_process_id: request.target_process_id,
             target_window_handle: request.target_window_handle,
+            allowed_host_methods: vec!["execute_action".into(), "snapshot".into()],
             allowed_actions: vec![TrustedTaskActionScope {
                 action: "type_chars".into(),
                 input_kind: "raw_input".into(),
@@ -56,6 +80,7 @@ impl TrustedTaskAuthorizationHost for TaskAuthorizationHost {
                 browser_origin: None,
             }],
             allowed_browser_origins: Vec::new(),
+            browser_scope: None,
             issued_at_unix_ms: now,
             expires_at_unix_ms: now + 60_000,
             request_digest: request.request_digest,
@@ -65,6 +90,20 @@ impl TrustedTaskAuthorizationHost for TaskAuthorizationHost {
     async fn validate(
         &self,
         request: TrustedTaskAuthorizationValidationRequest,
+    ) -> Result<TrustedTaskAuthorizationValidationDecision, TrustedTaskAuthorizationHostError> {
+        Ok(TrustedTaskAuthorizationValidationDecision {
+            status: if self.revoked {
+                TrustedTaskAuthorizationStatus::Revoked
+            } else {
+                TrustedTaskAuthorizationStatus::Active
+            },
+            request_digest: request.request_digest,
+        })
+    }
+
+    async fn validate_lease(
+        &self,
+        request: TrustedTaskAuthorizationLeaseValidationRequest,
     ) -> Result<TrustedTaskAuthorizationValidationDecision, TrustedTaskAuthorizationHostError> {
         Ok(TrustedTaskAuthorizationValidationDecision {
             status: if self.revoked {
@@ -102,6 +141,7 @@ fn task_action_scope_rejects_method_names_and_incoherent_special_actions() {
 
 fn task_binding<'a>() -> TaskAuthorizationBinding<'a> {
     TaskAuthorizationBinding::window(
+        "connection-test",
         "authorization-1",
         "session-1",
         "grant-1",
@@ -205,12 +245,15 @@ fn browser_credential_registration(
     expires_at_unix_ms: u64,
 ) -> TrustedTaskAuthorizationRegistration {
     TrustedTaskAuthorizationRegistration {
+        connection_id: None,
+        task_id: None,
         task_grant_id: "grant-1".into(),
         application_label: "Chrome Web Store upload".into(),
         target: TrustedTaskAuthorizationTarget::ExactWindow {
             process_id: 42,
             window_handle: 7,
         },
+        allowed_host_methods: vec!["browser_snapshot".into(), "browser_type".into()],
         allowed_actions: vec![TrustedTaskActionScope {
             action: "browser_type".into(),
             input_kind: "browser".into(),
@@ -219,6 +262,7 @@ fn browser_credential_registration(
             browser_origin: Some("https://chromewebstore.google.com".into()),
         }],
         allowed_browser_origins: vec!["https://chromewebstore.google.com".into()],
+        browser_scope: None,
         expires_at_unix_ms,
     }
 }
@@ -232,6 +276,7 @@ async fn broker_turns_one_trusted_embedding_registration_into_an_exact_no_popup_
         .unwrap();
     assert!(receipt.window_capability.starts_with("cua-window-"));
     let binding = TaskAuthorizationBinding::window(
+        "connection-test",
         &receipt.authorization_id,
         "session-1",
         "grant-1",
@@ -268,6 +313,7 @@ async fn broker_registration_is_single_use_and_cannot_be_replayed_into_a_second_
         .register(browser_credential_registration(unix_time_millis() + 60_000))
         .unwrap();
     let first = TaskAuthorizationBinding::window(
+        "connection-test",
         &receipt.authorization_id,
         "session-1",
         "grant-1",
@@ -282,6 +328,7 @@ async fn broker_registration_is_single_use_and_cannot_be_replayed_into_a_second_
         .await
         .unwrap();
     let replay = TaskAuthorizationBinding::window(
+        "connection-test",
         &receipt.authorization_id,
         "session-2",
         "grant-1",
@@ -312,6 +359,8 @@ async fn broker_binds_a_task_owned_browser_to_the_host_derived_target_once() {
     let (issuer, host) = trusted_task_authorization_broker();
     let receipt = issuer
         .register(TrustedTaskAuthorizationRegistration {
+            connection_id: None,
+            task_id: None,
             task_grant_id: "grant-owned".into(),
             application_label: "Firefox add-on upload".into(),
             target: TrustedTaskAuthorizationTarget::OwnedBrowser(
@@ -320,6 +369,7 @@ async fn broker_binds_a_task_owned_browser_to_the_host_derived_target_once() {
                     profile: dcc_cua_core::ComputerUseOwnedBrowserProfile::IsolatedNew,
                 },
             ),
+            allowed_host_methods: vec!["browser_snapshot".into(), "browser_type".into()],
             allowed_actions: vec![TrustedTaskActionScope {
                 action: "browser_type".into(),
                 input_kind: "browser".into(),
@@ -328,10 +378,12 @@ async fn broker_binds_a_task_owned_browser_to_the_host_derived_target_once() {
                 browser_origin: Some("https://addons.mozilla.org".into()),
             }],
             allowed_browser_origins: vec!["https://addons.mozilla.org".into()],
+            browser_scope: None,
             expires_at_unix_ms: unix_time_millis() + 60_000,
         })
         .unwrap();
     let binding = TaskAuthorizationBinding::window(
+        "connection-test",
         &receipt.authorization_id,
         "session-owned",
         "grant-owned",
@@ -359,6 +411,7 @@ async fn broker_rejects_a_different_exact_target_before_opening_the_session() {
         .register(browser_credential_registration(unix_time_millis() + 60_000))
         .unwrap();
     let changed_target = TaskAuthorizationBinding::window(
+        "connection-test",
         &receipt.authorization_id,
         "session-1",
         "grant-1",
@@ -391,6 +444,7 @@ async fn broker_revocation_stops_an_active_task_without_falling_back_to_a_popup(
         .register(browser_credential_registration(unix_time_millis() + 60_000))
         .unwrap();
     let binding = TaskAuthorizationBinding::window(
+        "connection-test",
         &receipt.authorization_id,
         "session-1",
         "grant-1",

@@ -9,6 +9,7 @@ mod action_confirmation;
 mod action_policy;
 mod action_response;
 mod browser_extension;
+mod cross_client_task_authorization;
 mod endpoint;
 mod error_contract;
 mod request_contract;
@@ -19,6 +20,7 @@ mod session_identity;
 mod session_state;
 mod task_authorization;
 mod task_authorization_broker;
+mod task_authorization_scope;
 mod task_grant;
 mod wait;
 mod wire;
@@ -33,6 +35,25 @@ pub use action_confirmation::{
 };
 use action_policy::HostActionSafetyTier;
 use action_response::*;
+pub use cross_client_task_authorization::{
+    CROSS_CLIENT_TASK_AUTHORIZATION_CHALLENGE_SCHEMA,
+    CROSS_CLIENT_TASK_AUTHORIZATION_RECEIPT_SCHEMA, CrossClientTaskAuthorizationAudience,
+    CrossClientTaskAuthorizationBootstrap, CrossClientTaskAuthorizationChallenge,
+    CrossClientTaskAuthorizationChallengeRequest, CrossClientTaskAuthorizationClock,
+    CrossClientTaskAuthorizationConsumption, CrossClientTaskAuthorizationDecision,
+    CrossClientTaskAuthorizationError, CrossClientTaskAuthorizationRuntime,
+    CrossClientTaskAuthorizationSecretPolicy, CrossClientTaskAuthorizationSignedDecision,
+    CrossClientTaskAuthorizationTarget, CrossClientTaskAuthorizationTargetError,
+    CrossClientTaskAuthorizationTargetObserver, CrossClientTaskAuthorizationTrustError,
+    CrossClientTaskAuthorizationTrustState, CrossClientTaskAuthorizationTrustStore,
+    CrossClientTaskAuthorizationUnsignedDecision, CrossClientTaskAuthorizationVerifier,
+    TrustedTaskAuthorizationKey, TrustedTaskAuthorizationTrustAdmin,
+    canonical_cross_client_task_authorization_challenge,
+    canonical_cross_client_task_authorization_receipt, cross_client_task_authorization,
+    cross_client_task_authorization_signing_payload, cross_client_task_authorization_with_clock,
+    cross_client_task_authorization_with_clock_and_target_observer,
+    trusted_task_authorization_trust_registry,
+};
 pub use dcc_cua_protocol::{
     DEFAULT_SESSION_IDLE_TIMEOUT_MS, HOST_PROTOCOL_VERSION, MAX_BINARY_FRAME_BYTES,
     MAX_HOST_CONNECTIONS, MAX_JSON_FRAME_BYTES, MAX_PARALLEL_DISCOVERY_REQUESTS,
@@ -48,16 +69,17 @@ use secret_vault::{
 pub use secret_vault::{HostSecretVault, HostSecretVaultError, HostSecurityServices, SecretValue};
 use session_identity::{new_runtime_session_id, rewrite_session_aliases};
 use session_state::{
-    ConnectionSessions, HostDesktopSession, HostEvidencePublication, HostLaunchSession, HostSession,
+    ConnectionSessions, HostDesktopSession, HostEvidencePublication, HostLaunchSession,
+    HostSession, task_authorization_response, task_browser_session,
 };
+use task_authorization::authorize_window_confirmation;
 pub use task_authorization::{
-    TRUSTED_TASK_AUTHORIZATION_SCHEMA, TrustedTaskActionScope, TrustedTaskAuthorizationHost,
+    TRUSTED_TASK_AUTHORIZATION_SCHEMA, TrustedTaskActionScope,
+    TrustedTaskAuthorizationBrowserScope, TrustedTaskAuthorizationHost,
     TrustedTaskAuthorizationHostError, TrustedTaskAuthorizationLease,
-    TrustedTaskAuthorizationRequest, TrustedTaskAuthorizationStatus,
-    TrustedTaskAuthorizationValidationDecision, TrustedTaskAuthorizationValidationRequest,
-};
-use task_authorization::{
-    TaskAuthorizationBinding, authorize_window_confirmation, issue_task_authorization,
+    TrustedTaskAuthorizationLeaseValidationRequest, TrustedTaskAuthorizationRequest,
+    TrustedTaskAuthorizationStatus, TrustedTaskAuthorizationValidationDecision,
+    TrustedTaskAuthorizationValidationRequest,
 };
 pub use task_authorization_broker::{
     TrustedTaskAuthorizationBrokerError, TrustedTaskAuthorizationIssuer,
@@ -87,7 +109,7 @@ use uuid::Uuid;
 
 use dcc_cua_browser::{
     BrowserClickRequest, BrowserDialogRequest, BrowserDownloadRequest, BrowserNavigateRequest,
-    BrowserPointerRequest, BrowserPrepareRequest, BrowserSession, BrowserSetInputFilesRequest,
+    BrowserPointerRequest, BrowserPrepareRequest, BrowserSetInputFilesRequest,
     BrowserSnapshotRequest, BrowserTypeRequest,
 };
 use dcc_cua_core::{
@@ -1476,6 +1498,16 @@ async fn refresh_connection_session_states(sessions: &mut HashMap<String, HostSe
     let (readiness, observed_at) = session_events::input_readiness_sample();
     for session in sessions.values_mut() {
         session.observe_input_readiness(readiness.clone(), observed_at);
+        if crate::task_authorization::validate_active_task_authorization(
+            session.task_authorization_host.as_deref(),
+            session.task_authorization.as_ref(),
+        )
+        .await
+        .is_err()
+        {
+            session.invalidate_observations();
+            continue;
+        }
         let availability = session.session.target_availability().await;
         if let Ok(availability) = session.finish_observation_sensitive_attempt(availability) {
             session.observe_target_availability(availability);
@@ -1789,6 +1821,11 @@ async fn authorized_session<'a>(
         .into());
     }
     ensure_session_not_interrupted(session).await?;
+    crate::task_authorization::validate_active_task_authorization(
+        session.task_authorization_host.as_deref(),
+        session.task_authorization.as_ref(),
+    )
+    .await?;
     session.mark_activity();
     Ok(session)
 }

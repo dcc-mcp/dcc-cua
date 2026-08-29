@@ -16,6 +16,8 @@ use crate::{
 pub const TRUSTED_TASK_AUTHORIZATION_SCHEMA: &str = "dcc-cua-trusted-task-authorization-v1";
 pub(crate) const TRUSTED_TASK_AUTHORIZATION_VALIDATION_SCHEMA: &str =
     "dcc-cua-trusted-task-authorization-validation-v1";
+pub(crate) const TRUSTED_TASK_AUTHORIZATION_LEASE_VALIDATION_SCHEMA: &str =
+    "dcc-cua-trusted-task-authorization-lease-validation-v1";
 const MAX_TASK_AUTHORIZATION_ID_CHARS: usize = 128;
 pub(crate) const MAX_TASK_AUTHORIZATION_ACTIONS: usize = 32;
 pub(crate) const MAX_TASK_AUTHORIZATION_TTL_MS: u64 = 24 * 60 * 60 * 1_000;
@@ -29,6 +31,32 @@ pub struct TrustedTaskActionScope {
     pub authorization_category: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub browser_origin: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TrustedTaskAuthorizationBrowserScope {
+    pub host_target_id: String,
+    pub tab_id: String,
+    pub document_generation: String,
+    pub origin: String,
+}
+
+impl TrustedTaskAuthorizationBrowserScope {
+    pub(crate) fn validate(&self) -> bool {
+        [
+            &self.host_target_id,
+            &self.tab_id,
+            &self.document_generation,
+        ]
+        .iter()
+        .all(|value| {
+            !value.is_empty()
+                && value.as_str() == value.trim()
+                && value.chars().count() <= 256
+                && !value.chars().any(char::is_control)
+        }) && valid_browser_origin(&self.origin)
+    }
 }
 
 impl TrustedTaskActionScope {
@@ -146,6 +174,7 @@ impl TrustedTaskActionScope {
 pub struct TrustedTaskAuthorizationRequest {
     pub schema: String,
     pub request_id: String,
+    pub connection_id: String,
     pub authorization_id: String,
     pub session_id: String,
     pub task_grant_id: String,
@@ -160,6 +189,7 @@ pub struct TrustedTaskAuthorizationRequest {
 struct UnsignedTaskAuthorizationRequest<'a> {
     schema: &'a str,
     request_id: &'a str,
+    connection_id: &'a str,
     authorization_id: &'a str,
     session_id: &'a str,
     task_grant_id: &'a str,
@@ -172,6 +202,7 @@ struct UnsignedTaskAuthorizationRequest<'a> {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TrustedTaskAuthorizationLease {
+    pub connection_id: String,
     pub authorization_id: String,
     pub session_id: String,
     pub task_grant_id: String,
@@ -179,8 +210,11 @@ pub struct TrustedTaskAuthorizationLease {
     pub window_capability: String,
     pub target_process_id: u32,
     pub target_window_handle: u64,
+    pub allowed_host_methods: Vec<String>,
     pub allowed_actions: Vec<TrustedTaskActionScope>,
     pub allowed_browser_origins: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub browser_scope: Option<TrustedTaskAuthorizationBrowserScope>,
     pub issued_at_unix_ms: u64,
     pub expires_at_unix_ms: u64,
     pub request_digest: String,
@@ -190,6 +224,7 @@ pub struct TrustedTaskAuthorizationLease {
 pub struct TrustedTaskAuthorizationValidationRequest {
     pub schema: String,
     pub request_id: String,
+    pub connection_id: String,
     pub authorization_id: String,
     pub session_id: String,
     pub task_grant_id: String,
@@ -203,10 +238,42 @@ pub struct TrustedTaskAuthorizationValidationRequest {
     pub request_digest: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TrustedTaskAuthorizationLeaseValidationRequest {
+    pub schema: String,
+    pub request_id: String,
+    pub connection_id: String,
+    pub authorization_id: String,
+    pub session_id: String,
+    pub task_grant_id: String,
+    pub application_label: String,
+    pub window_capability: String,
+    pub target_process_id: u32,
+    pub target_window_handle: u64,
+    pub lease_request_digest: String,
+    pub request_digest: String,
+}
+
+#[derive(Serialize)]
+struct UnsignedTaskAuthorizationLeaseValidationRequest<'a> {
+    schema: &'a str,
+    request_id: &'a str,
+    connection_id: &'a str,
+    authorization_id: &'a str,
+    session_id: &'a str,
+    task_grant_id: &'a str,
+    application_label: &'a str,
+    window_capability: &'a str,
+    target_process_id: u32,
+    target_window_handle: u64,
+    lease_request_digest: &'a str,
+}
+
 #[derive(Serialize)]
 struct UnsignedTaskAuthorizationValidationRequest<'a> {
     schema: &'a str,
     request_id: &'a str,
+    connection_id: &'a str,
     authorization_id: &'a str,
     session_id: &'a str,
     task_grant_id: &'a str,
@@ -252,10 +319,16 @@ pub trait TrustedTaskAuthorizationHost: Send + Sync {
         &self,
         request: TrustedTaskAuthorizationValidationRequest,
     ) -> Result<TrustedTaskAuthorizationValidationDecision, TrustedTaskAuthorizationHostError>;
+
+    async fn validate_lease(
+        &self,
+        request: TrustedTaskAuthorizationLeaseValidationRequest,
+    ) -> Result<TrustedTaskAuthorizationValidationDecision, TrustedTaskAuthorizationHostError>;
 }
 
 #[derive(Clone, Copy)]
 pub(crate) struct TaskAuthorizationBinding<'a> {
+    connection_id: &'a str,
     authorization_id: &'a str,
     session_id: &'a str,
     task_grant_id: &'a str,
@@ -266,6 +339,7 @@ pub(crate) struct TaskAuthorizationBinding<'a> {
 
 impl<'a> TaskAuthorizationBinding<'a> {
     pub(crate) fn window(
+        connection_id: &'a str,
         authorization_id: &'a str,
         session_id: &'a str,
         task_grant_id: &'a str,
@@ -274,6 +348,7 @@ impl<'a> TaskAuthorizationBinding<'a> {
         target: ConfirmationWindowIdentity,
     ) -> Self {
         Self {
+            connection_id,
             authorization_id,
             session_id,
             task_grant_id,
@@ -289,6 +364,7 @@ impl<'a> TaskAuthorizationBinding<'a> {
         let unsigned = UnsignedTaskAuthorizationRequest {
             schema: TRUSTED_TASK_AUTHORIZATION_SCHEMA,
             request_id: &request_id,
+            connection_id: self.connection_id,
             authorization_id: self.authorization_id,
             session_id: self.session_id,
             task_grant_id: self.task_grant_id,
@@ -301,6 +377,7 @@ impl<'a> TaskAuthorizationBinding<'a> {
         Ok(TrustedTaskAuthorizationRequest {
             schema: TRUSTED_TASK_AUTHORIZATION_SCHEMA.to_owned(),
             request_id,
+            connection_id: self.connection_id.to_owned(),
             authorization_id: self.authorization_id.to_owned(),
             session_id: self.session_id.to_owned(),
             task_grant_id: self.task_grant_id.to_owned(),
@@ -423,6 +500,90 @@ pub(crate) async fn authorize_window_confirmation(
     }
 }
 
+pub(crate) async fn validate_active_task_authorization(
+    host: Option<&dyn TrustedTaskAuthorizationHost>,
+    lease: Option<&TrustedTaskAuthorizationLease>,
+) -> Result<(), HostError> {
+    if lease.is_none() {
+        return Ok(());
+    }
+    let (Some(host), Some(lease)) = (host, lease) else {
+        return Err(task_authorization_required(
+            "the constructor-owned task authorization validator is unavailable",
+        ));
+    };
+    let retained_request = TrustedTaskAuthorizationRequest {
+        schema: TRUSTED_TASK_AUTHORIZATION_SCHEMA.into(),
+        request_id: String::new(),
+        connection_id: lease.connection_id.clone(),
+        authorization_id: lease.authorization_id.clone(),
+        session_id: lease.session_id.clone(),
+        task_grant_id: lease.task_grant_id.clone(),
+        application_label: lease.application_label.clone(),
+        window_capability: lease.window_capability.clone(),
+        target_process_id: lease.target_process_id,
+        target_window_handle: lease.target_window_handle,
+        request_digest: lease.request_digest.clone(),
+    };
+    if validate_lease(&retained_request, lease).is_err() {
+        return Err(HostError::coded_protocol(
+            HostProtocolErrorCode::TaskAuthorizationExpired,
+            "the trusted task authorization lease expired or became invalid",
+        ));
+    }
+    let request_id = Uuid::new_v4().to_string();
+    let unsigned = UnsignedTaskAuthorizationLeaseValidationRequest {
+        schema: TRUSTED_TASK_AUTHORIZATION_LEASE_VALIDATION_SCHEMA,
+        request_id: &request_id,
+        connection_id: &lease.connection_id,
+        authorization_id: &lease.authorization_id,
+        session_id: &lease.session_id,
+        task_grant_id: &lease.task_grant_id,
+        application_label: &lease.application_label,
+        window_capability: &lease.window_capability,
+        target_process_id: lease.target_process_id,
+        target_window_handle: lease.target_window_handle,
+        lease_request_digest: &lease.request_digest,
+    };
+    let request_digest = digest(&unsigned, "task authorization lease validation")?;
+    let request = TrustedTaskAuthorizationLeaseValidationRequest {
+        schema: TRUSTED_TASK_AUTHORIZATION_LEASE_VALIDATION_SCHEMA.into(),
+        request_id,
+        connection_id: lease.connection_id.clone(),
+        authorization_id: lease.authorization_id.clone(),
+        session_id: lease.session_id.clone(),
+        task_grant_id: lease.task_grant_id.clone(),
+        application_label: lease.application_label.clone(),
+        window_capability: lease.window_capability.clone(),
+        target_process_id: lease.target_process_id,
+        target_window_handle: lease.target_window_handle,
+        lease_request_digest: lease.request_digest.clone(),
+        request_digest,
+    };
+    let expected_digest = request.request_digest.clone();
+    match host.validate_lease(request).await {
+        Ok(decision) if decision.request_digest != expected_digest => {
+            Err(task_authorization_required(
+                "the trusted task authorization validator returned a mismatched lease decision",
+            ))
+        }
+        Ok(TrustedTaskAuthorizationValidationDecision {
+            status: TrustedTaskAuthorizationStatus::Active,
+            ..
+        }) => Ok(()),
+        Ok(TrustedTaskAuthorizationValidationDecision {
+            status: TrustedTaskAuthorizationStatus::Revoked,
+            ..
+        }) => Err(HostError::coded_protocol(
+            HostProtocolErrorCode::TaskAuthorizationRevoked,
+            "the trusted task authorization was revoked",
+        )),
+        Err(_) => Err(task_authorization_required(
+            "the trusted task authorization could not be revalidated",
+        )),
+    }
+}
+
 fn validation_request(
     lease: &TrustedTaskAuthorizationLease,
     confirmation: &TrustedActionConfirmationRequest,
@@ -432,6 +593,7 @@ fn validation_request(
     let unsigned = UnsignedTaskAuthorizationValidationRequest {
         schema: TRUSTED_TASK_AUTHORIZATION_VALIDATION_SCHEMA,
         request_id: &request_id,
+        connection_id: &lease.connection_id,
         authorization_id: &lease.authorization_id,
         session_id: &lease.session_id,
         task_grant_id: &lease.task_grant_id,
@@ -447,6 +609,7 @@ fn validation_request(
     Ok(TrustedTaskAuthorizationValidationRequest {
         schema: TRUSTED_TASK_AUTHORIZATION_VALIDATION_SCHEMA.to_owned(),
         request_id,
+        connection_id: lease.connection_id.clone(),
         authorization_id: lease.authorization_id.clone(),
         session_id: lease.session_id.clone(),
         task_grant_id: lease.task_grant_id.clone(),
@@ -466,6 +629,7 @@ fn validate_lease(
     lease: &TrustedTaskAuthorizationLease,
 ) -> Result<(), HostError> {
     let fields_match = lease.authorization_id == request.authorization_id
+        && lease.connection_id == request.connection_id
         && lease.session_id == request.session_id
         && lease.task_grant_id == request.task_grant_id
         && lease.application_label == request.application_label
@@ -489,6 +653,13 @@ fn validate_lease(
         && actions.len() == lease.allowed_actions.len()
         && actions.len() <= MAX_TASK_AUTHORIZATION_ACTIONS
         && actions.iter().all(TrustedTaskActionScope::validate);
+    let methods = lease.allowed_host_methods.iter().collect::<BTreeSet<_>>();
+    let valid_methods = !methods.is_empty()
+        && methods.len() == lease.allowed_host_methods.len()
+        && methods.len() <= 64
+        && methods.iter().all(|method| {
+            crate::task_authorization_scope::is_task_authorizable_host_method(method)
+        });
     let origins = lease
         .allowed_browser_origins
         .iter()
@@ -496,7 +667,16 @@ fn validate_lease(
     let valid_origins = origins.len() == lease.allowed_browser_origins.len()
         && origins.len() <= MAX_TASK_AUTHORIZATION_ACTIONS
         && origins.iter().all(|origin| valid_browser_origin(origin));
-    if !fields_match || !valid_time || !valid_actions || !valid_origins {
+    let valid_browser_scope = lease.browser_scope.as_ref().is_none_or(|scope| {
+        scope.validate() && lease.allowed_browser_origins.as_slice() == [scope.origin.as_str()]
+    });
+    if !fields_match
+        || !valid_time
+        || !valid_methods
+        || !valid_actions
+        || !valid_origins
+        || !valid_browser_scope
+    {
         return Err(task_authorization_required(
             "the trusted task authorization lease is invalid or out of scope",
         ));
@@ -518,17 +698,20 @@ pub(crate) fn validate_authorization_id(value: &str) -> Result<(), HostError> {
 }
 
 pub(crate) fn valid_browser_origin(value: &str) -> bool {
-    let authority = value
-        .strip_prefix("https://")
-        .or_else(|| value.strip_prefix("http://"));
-    authority.is_some_and(|authority| {
-        !authority.is_empty()
-            && value.len() <= 2_048
-            && !authority.contains('/')
-            && !authority.contains('?')
-            && !authority.contains('#')
-            && !authority.contains('@')
-    })
+    if value.is_empty() || value.len() > 2_048 {
+        return false;
+    }
+    let Ok(origin) = url::Url::parse(value) else {
+        return false;
+    };
+    matches!(origin.scheme(), "http" | "https")
+        && origin.host().is_some()
+        && origin.username().is_empty()
+        && origin.password().is_none()
+        && origin.path() == "/"
+        && origin.query().is_none()
+        && origin.fragment().is_none()
+        && origin.origin().ascii_serialization() == value
 }
 
 fn task_authorization_required(message: &str) -> HostError {

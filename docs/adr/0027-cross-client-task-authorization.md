@@ -2,10 +2,17 @@
 
 ## Status
 
-Proposed. The discovery/fail-closed behavior below is implemented. The signed
-receipt protocol, key provisioning, client UI, and runtime verifier are **not
-implemented**. No desktop, cloud, or CLI integration is certified by this ADR.
-Acceptance requires review and the end-to-end tests below.
+Accepted for the DCC-CUA core boundary. The runtime now owns immutable bounded
+challenges, RFC 8785 JCS encoding, strict Ed25519 receipt verification,
+constructor-provisioned issuer trust, atomic single consumption, browser
+bootstrap separation, clock-rollback refusal, and live lease/key revocation.
+
+The packaged MCP server still has no trusted human-input transport or
+constructor-provisioned client key, so it remains diagnostic-only and reports
+`integration_required`. No desktop, cloud, CLI, Cursor, WorkBuddy, or CodeBuddy
+integration is certified by this ADR. Enabling a client still requires its own
+protected human UI/signer, authenticated challenge channel, deployment trust
+provisioning, and real launch-chain acceptance.
 
 Implementation and client acceptance are tracked in
 [Issue #237](https://github.com/dcc-mcp/dcc-cua/issues/237).
@@ -40,15 +47,26 @@ opening a Host session, launching a browser, or returning a UI resource.
 The status document has schema `dcc-cua.authorization-integration.v1` and
 reports `authorization_available`, `user_confirmation_available`,
 `card_available`, and `process_identity_can_authorize` as false. Follow-up work
-requires both `dcc_cua_core` and `client_embedding_integration`, reported in
-`next_owners`: the verifier and client transport must be implemented, validated,
-and deployed together. Installing a client transport alone cannot enable the
-current runtime. `parent_identity_available` is optional diagnostic evidence,
-never permission. Caller-selected client names cannot
+requires `client_embedding_integration` and `deployment_trust_provisioning`,
+reported in `next_owners`. The packaged runtime does not accept a model-relayed
+receipt merely because the core constructor API exists. Installing a client
+transport alone cannot enable it. `parent_identity_available` is optional
+diagnostic evidence, never permission. Caller-selected client names cannot
 change this behavior. Existing constructor-owned, in-process embedding APIs
 remain available; their caller owns the real user-input boundary.
 
-## Proposed common protocol
+Each Host transport connection now receives a random `connection_id` in its
+`hello` response. A cross-client challenge retains that exact value; broker
+authorization, the lease digest and every live validation compare it. An
+opaque receipt relayed to another Host connection therefore cannot win a
+first-consumer race. The signed `task_id` must also equal the later Host logical
+session ID; a receipt cannot be rebound to another task on the same connection.
+For signed exact-window work, the Host also consumes and
+validates the authorization against the nominated nonzero PID/HWND before it
+starts the CUA session. Authorization failure cannot activate the window,
+start showcase recording, launch an owned browser or call a global Host route.
+
+## Common protocol
 
 ```mermaid
 sequenceDiagram
@@ -103,6 +121,12 @@ exact retained challenge, not a model-written summary. Changed scope or target
 requires a new challenge. A title is not a tab ID. A cloud task cannot nominate
 local PID/HWND as identity evidence.
 
+For the current generic browser route, `document_generation` is the exact
+snapshot generation observed after bootstrap and before the final decision.
+The final lease pre-binds the retained Host target, requires that exact tab on
+the first snapshot, and refuses target, tab, generation or origin drift before
+publishing evidence or dispatching a browser mutation.
+
 Browser setup needs a separate minimal bootstrap authorization when exact tab
 identity is not yet observable. It may authorize only fixed exact-window
 attachment or a closed isolated-browser launch spec, not DOM read/write,
@@ -117,7 +141,7 @@ instance/generation, challenge ID, nonce, SHA-256 challenge digest, decision
 (`allow` or `deny`), issuance time and expiry. No receipt-supplied scope can
 replace the pending challenge. No receipt supplies a trust root or algorithm.
 
-The proposed algorithm is Ed25519 over the ASCII domain separator
+The algorithm is Ed25519 over the ASCII domain separator
 `dcc-cua.task-authorization-receipt.v2`, a NUL byte, and the UTF-8 JCS
 serialization of the unsigned decision. Digest the JCS serialization of the
 retained challenge. Reject duplicate JSON keys, unknown fields, noncanonical
@@ -141,9 +165,12 @@ A valid signature does not prove correct human UI or target-binding integration.
 
 Every call, including observations, rechecks current runtime/connection/target
 identity, exact tab/origin, document evidence, method/action/risk scope, expiry
-and live revocation epoch. Receipt expiry cannot exceed challenge expiry. Cap
-pending confirmations at five minutes and leases at the existing 24-hour
-maximum; deployments may require shorter limits.
+and live revocation epoch. The default Windows target observer compares the
+live HWND owner and process creation FILETIME; another platform must inject an
+equivalent constructor-owned observer or authorization stays unavailable.
+Receipt expiry cannot exceed challenge expiry. Cap pending confirmations at
+five minutes and leases at the existing 24-hour maximum; deployments may
+require shorter limits.
 
 The trusted UI provides an authenticated, sequence-bound revocation path.
 Restart, connection loss, unavailable validation, clock rollback, revoked keys,
@@ -176,12 +203,26 @@ revocation transport. Cloud/local routing requires both owners. No client
 transport has been verified here; enabling one is a separate implementation
 and acceptance step.
 
-## Required follow-up tests and rollout
+## Validation and client rollout
 
-1. Core: published signature/canonicalization vectors; malformed/duplicate
-   fields; wrong/unknown/revoked key; forged signature; replay and concurrent
-   consumption; substituted runtime/task/audience/PID/HWND/tab/origin; scope or
-   expiry widening; clock rollback; restart and lost revocation state.
+Implemented core regressions cover published signature/canonicalization
+vectors; malformed, duplicate, unknown, and noncanonical fields; unsafe JSON
+integers; wrong/unknown/revoked/unavailable trust; forged signatures; replay and
+concurrent consumption; runtime/audience/nonce/digest substitution; scope and
+browser bootstrap/origin widening; wrong Host connection; process-instance,
+PID/HWND, target/tab/document drift; expiry; clock rollback; and live refusal
+of the next protected action or observation after revocation.
+
+The fixed interoperability vector in
+`crates/dcc-cua-host/src/tests/cross_client_task_authorization.rs` publishes the
+canonical v2 decision payload and its deterministic Ed25519 signature using the
+RFC 8032 test key; client implementations must reproduce both byte-for-byte.
+
+Client rollout still requires:
+
+1. Core and integration: substituted runtime/task/audience/PID/HWND/tab/origin;
+   scope or expiry widening; restart and lost revocation state against the real
+   client transport.
 2. Client isolation: model calls, forged clientInfo/metadata, hostile pages,
    shell/stdio/environment and synthetic UI events cannot sign or enroll
    trust. Cancellation/denial never yields a grant.
@@ -192,10 +233,10 @@ and acceptance step.
    receipt, and stop at the exact required human-only final step. Tests, package
    builds and successful API responses do not prove publication.
 
-Implemented regressions exercise real subprocess MCP handshakes, all six
+Packaged-server regressions exercise real subprocess MCP handshakes, all six
 client labels, absent/recognized parent identity, forged authorization fields,
-hidden card resources and no issuer creation. They do not execute the proposed
-cryptographic protocol or certify any UI.
+hidden card resources and no issuer creation. Core regressions execute the
+cryptographic protocol; neither test group certifies a client UI.
 
 ## Alternatives and costs
 
@@ -208,5 +249,5 @@ the display, but the host still owns isolation and authentication. See the
 A common receipt permits untrusted relays and avoids per-client policy forks,
 but introduces key lifecycle and local/cloud routing costs. Retain the existing
 process-local broker; do not add a public authorization daemon, database, or
-general signing API in this repair. Review and test integrations and the
-verifier before the status can become available.
+general signing API in this repair. Review and test each protected client
+integration before its status can become available.
