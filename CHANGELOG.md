@@ -1,5 +1,56 @@
 # Changelog
 
+## [1.6.0](https://github.com/dcc-mcp/dcc-cua/compare/v1.5.7...v1.6.0) (2026-08-29)
+
+
+### Features
+
+* allow external process termination ([2fad923](https://github.com/dcc-mcp/dcc-cua/commit/2fad923144db03d3b136f74b6b51bbb985a1c7d8))
+* **cli:** add exact window selectors to scoped commands ([6afac39](https://github.com/dcc-mcp/dcc-cua/commit/6afac39dadb098a8cd473608fd58fdf82b90c816))
+* **cli:** add exact-window pixel snapshots ([94635fb](https://github.com/dcc-mcp/dcc-cua/commit/94635fb7ee61734f8aacfabfe27edeeb876a4544))
+* verify cross-client task authorization ([e138d0e](https://github.com/dcc-mcp/dcc-cua/commit/e138d0e05b817724336452c69d784930a2e0a6dc))
+
+
+### Bug Fixes
+
+* bind browser store readiness evidence ([b0c833b](https://github.com/dcc-mcp/dcc-cua/commit/b0c833bef735621b3de3833663a497f7801730c5))
+* bind readiness to environment reviewers ([9d730b9](https://github.com/dcc-mcp/dcc-cua/commit/9d730b95e1e9137e9b9eaecdaf14fcdbd705f19f))
+* bind store readiness to main ([a8afd3b](https://github.com/dcc-mcp/dcc-cua/commit/a8afd3bf22adef3acb9cbfc18716bd882352016e))
+* **browser:** bind public navigation receipts ([808b1f0](https://github.com/dcc-mcp/dcc-cua/commit/808b1f0c8b9e7bdaff289a54d45108d0688fd70b))
+* **browser:** preserve navigation failure receipts ([d8dcfaa](https://github.com/dcc-mcp/dcc-cua/commit/d8dcfaaf83a8990dd74dce050ec1744ed4f6e765))
+* **browser:** verify foreground tab activation ([1727c5e](https://github.com/dcc-mcp/dcc-cua/commit/1727c5eae87a701746ec76ad6d7737e972ab105e))
+* **browser:** verify navigation completion receipts ([ed235be](https://github.com/dcc-mcp/dcc-cua/commit/ed235bec7b40643ae77d51228001074d384df4ae))
+* **ci:** freeze complete workflow execution surface ([c1db0a4](https://github.com/dcc-mcp/dcc-cua/commit/c1db0a4a2ab3e814d3db3bc8f45978ed9c4bb305))
+* clarify authorization integration ownership ([e9db883](https://github.com/dcc-mcp/dcc-cua/commit/e9db88390b2b1245ef76d7715afe6782a6c31ae1))
+* **cli:** emit command errors on stdout ([84958f9](https://github.com/dcc-mcp/dcc-cua/commit/84958f9cd42196e0c022a48123ab4c4e6b8fb381))
+* **cli:** enforce structured stream boundaries ([af8a5d6](https://github.com/dcc-mcp/dcc-cua/commit/af8a5d66858a4281b22ed1a51137edb1c24c79cb))
+* **client:** contain spawned host diagnostics ([eab0e1e](https://github.com/dcc-mcp/dcc-cua/commit/eab0e1e5c16b654c41255fdbfd2c36df1b3664c9))
+* **cli:** gate Windows process helper ([274aca4](https://github.com/dcc-mcp/dcc-cua/commit/274aca4a90a1401f311a830874d5fee494541180))
+* **cli:** harden exact window selector validation ([77efd84](https://github.com/dcc-mcp/dcc-cua/commit/77efd84f34e1d04197de1ad8b9166a1ad1720430))
+* **cli:** preserve profile watch stream boundaries ([0d78729](https://github.com/dcc-mcp/dcc-cua/commit/0d78729f7bfe556054be99af6bebf47a303aca12))
+* **cli:** preserve protocol failure boundaries ([5e5d420](https://github.com/dcc-mcp/dcc-cua/commit/5e5d42054fda56f2cdf078216e8a09a63d1716a1))
+* **cli:** publish doctor diagnostics before shutdown ([238403a](https://github.com/dcc-mcp/dcc-cua/commit/238403a852a727735301f6a29c804d474dda2bce))
+* **cli:** sanitize public command failures ([8ab88dc](https://github.com/dcc-mcp/dcc-cua/commit/8ab88dcb5f189cc5f0152c4b843930628bbf88bb))
+* contain private worker diagnostics ([b6d6681](https://github.com/dcc-mcp/dcc-cua/commit/b6d668199a3c3b0480c614c0be699c777c7aff78))
+* **core:** gate pixel capture by platform ([dc65d22](https://github.com/dcc-mcp/dcc-cua/commit/dc65d229ff9f8365dd0d734e167365a923b3d568))
+* distinguish missing accessibility providers ([2db0d1e](https://github.com/dcc-mcp/dcc-cua/commit/2db0d1e8d090d5158ca332b275e7ad1f29208ef5))
+* enforce owned capture exclusion ([04c39cb](https://github.com/dcc-mcp/dcc-cua/commit/04c39cb78c39cf36434aa9bb0b28ae4c18dabe2d))
+* enforce snapshot coordinate space ([af834d2](https://github.com/dcc-mcp/dcc-cua/commit/af834d2feccf98016bdb30a98812d94895e0340f))
+* exclude invalid profiles from default listing ([2862fe9](https://github.com/dcc-mcp/dcc-cua/commit/2862fe9e70ca2447502f27a53b91e084c3d5a6ee))
+* fail closed browser store readiness ([6630c96](https://github.com/dcc-mcp/dcc-cua/commit/6630c96d99494d9ef747f9444ae9c542de1b8d27))
+* harden browser readiness CI contract ([3c9ba11](https://github.com/dcc-mcp/dcc-cua/commit/3c9ba11e95a34e6ef5f66c3203e3aabdbc33b014))
+* harden browser readiness failure contracts ([f9c1574](https://github.com/dcc-mcp/dcc-cua/commit/f9c157440e33da78410c42948aeb5a97613723f1))
+* harden browser readiness redaction ([dd969c4](https://github.com/dcc-mcp/dcc-cua/commit/dd969c4401ffd9b2126c00be418a11d6b89d59af))
+* harden browser store ownership reads ([331a78e](https://github.com/dcc-mcp/dcc-cua/commit/331a78e3822e94bd1b4e85d209032f7e16f36768))
+* harden browser store readiness contracts ([004055c](https://github.com/dcc-mcp/dcc-cua/commit/004055c224ec0b7cca32a3657dc29e0399d2e411))
+* harden CI artifact identity gates ([988e191](https://github.com/dcc-mcp/dcc-cua/commit/988e1918cc863332880298efe4769b4a52148e0a))
+* harden exact-window pixel publication ([cb743d8](https://github.com/dcc-mcp/dcc-cua/commit/cb743d802b65d64d598c8ad5b1cbc6cc950ccf4b))
+* preserve cross-platform pixel fallback ([c8d9462](https://github.com/dcc-mcp/dcc-cua/commit/c8d94626c35d8cd9f0d7b4090f85b66e2f81dd6e))
+* preserve immutable CI readiness contract ([96d4a9d](https://github.com/dcc-mcp/dcc-cua/commit/96d4a9d9192de087ea672628c7aacd6f1ba8db17))
+* preserve snapshots after activation refusal ([fff88a7](https://github.com/dcc-mcp/dcc-cua/commit/fff88a724e61c4b2ebd2853c0edfee4f20c8b4cd))
+* report unavailable trusted authorization integration ([a96cfae](https://github.com/dcc-mcp/dcc-cua/commit/a96cfae615139318f497b51a33dac46104c0955c))
+* retry foreground clicks before dispatch ([2793758](https://github.com/dcc-mcp/dcc-cua/commit/27937581ededc24e609e768399bb428dd8e223c3))
+
 ## [1.5.7](https://github.com/dcc-mcp/dcc-cua/compare/v1.5.6...v1.5.7) (2026-08-26)
 
 
