@@ -321,7 +321,7 @@ cargo run -p dcc-cua-cli -- desktop-snapshot --output desktop.png
 cargo run -p dcc-cua-cli -- screen-size
 cargo run -p dcc-cua-cli -- cursor-position
 cargo run -p dcc-cua-cli -- desktop-act --action-json '{"action":"click","x":100,"y":100}'
-cargo run -p dcc-cua-cli -- act --pid 4242 --window-id 123456 --action-json '{"action":"click","x":100,"y":100}' --output after.png
+cargo run -p dcc-cua-cli -- act --pid 4242 --window-id 123456 --action-json '{"action":"click","x":100,"y":100}' --observation-width 1568 --observation-height 931 --output after.png
 cargo run -p dcc-cua-cli -- launch --name Calculator
 cargo run -p dcc-cua-cli -- doctor
 cargo run -p dcc-cua-cli -- doctor --spawn target/debug/dcc-cua
@@ -332,15 +332,15 @@ cargo run -p dcc-cua-cli -- window-state --app chrome.exe
 cargo run -p dcc-cua-cli -- activate --app chrome.exe
 cargo run -p dcc-cua-cli -- set-window-frame --pid 4242 --window-id 123456 --x 80 --y 80 --width 1280 --height 720
 cargo run -p dcc-cua-cli -- invoke-menu --app maya.exe --menu File --menu "New Scene"
-cargo run -p dcc-cua-cli -- click --app chrome.exe --x 100 --y 100
+cargo run -p dcc-cua-cli -- click --app chrome.exe --x 100 --y 100 --observation-width 1568 --observation-height 931
 cargo run -p dcc-cua-cli -- click --app chrome.exe --element-index 12
 cargo run -p dcc-cua-cli -- toggle --app chrome.exe --element-index 14
 cargo run -p dcc-cua-cli -- set-value --app chrome.exe --element-index 15 --value Published
-cargo run -p dcc-cua-cli -- drag --app chrome.exe --from-x 100 --from-y 100 --to-x 300 --to-y 200 --duration-ms 750 --steps 32
+cargo run -p dcc-cua-cli -- drag --app chrome.exe --from-x 100 --from-y 100 --to-x 300 --to-y 200 --observation-width 1568 --observation-height 931 --duration-ms 750 --steps 32
 cargo run -p dcc-cua-cli -- type --app chrome.exe --text "hello" --focused
 cargo run -p dcc-cua-cli -- hotkey --app chrome.exe --key CTRL --key L
-cargo run -p dcc-cua-cli -- scroll --app UE5Editor.exe --scroll-x 4 --by page --x 600 --y 900
-cargo run -p dcc-cua-cli -- act --pid 4242 --window-id 123456 --action-json '{"action":"click","x":100,"y":100}'
+cargo run -p dcc-cua-cli -- scroll --app UE5Editor.exe --scroll-x 4 --by page --x 600 --y 900 --observation-width 1568 --observation-height 931
+cargo run -p dcc-cua-cli -- act --pid 4242 --window-id 123456 --action-json '{"action":"click","x":100,"y":100}' --observation-width 1568 --observation-height 931
 cargo run -p dcc-cua-cli -- snapshot --pid 4242 --window-id 123456 --output after.png
 cargo run -p dcc-cua-cli -- verify --pid 4242 --window-id 123456 --expect-json '[{"window":{"exists":true}}]'
 cargo run -p dcc-cua-cli -- clipboard-write --pid 4242 --window-id 123456 --text "bounded text"
@@ -405,6 +405,19 @@ perception layer. `backend_unavailable` continues to mean that a provider or
 backend failed and must not be treated as proof that the window class is
 permanently inaccessible.
 
+Every successful window `snapshot` names its image coordinate system in
+`coordinate_space`. Its `width` and `height` are read from the encoded PNG IHDR
+and therefore describe the pixels in the file written by `--output`, not an
+application render size. Raw-coordinate window actions require those values as
+`--observation-width` and `--observation-height`; semantic element actions do
+not. For a point `(x, y)` in that image and device-pixel window bounds, the
+equivalent desktop point is
+`screen_x = bounds.x + x * bounds.width / observation_width` and
+`screen_y = bounds.y + y * bounds.height / observation_height`. `window-state`
+bounds are already device pixels, including maximized-window borders and
+negative monitor coordinates. Do not multiply them by
+`screen-size.structuredContent.scale_factor`; that would scale twice.
+
 `doctor` runs CUA's `check_permissions` and `health_report` concurrently with
 driver/window discovery. It reports the upstream structured checks for native
 accessibility, screen capture, platform support, and input readiness, and exits
@@ -447,7 +460,9 @@ pixels, then verify the post-action state. UIA element `bounds` are explicitly
 tagged as `virtual_desktop`, while window pixel actions use non-negative
 coordinates from the latest exact-window screenshot. Desktop actions use signed
 virtual-desktop coordinates, including negative X/Y on Windows monitors left of
-or above the primary display. `window-state`, `activate`,
+or above the primary display. Coordinate actions fail before session start
+unless both image dimensions from `snapshot.coordinate_space` are supplied.
+`window-state`, `activate`,
 `set-window-frame`, and `invoke-menu` operate on the same exact target scope.
 Long-lived recording remains on the persistent Host session so its start/stop
 lifecycle is not lost when a one-shot CLI process exits.

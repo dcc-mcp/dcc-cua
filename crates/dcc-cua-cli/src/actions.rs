@@ -208,13 +208,13 @@ async fn execute_action(
     mut action: ComputerUseAction,
 ) -> Result<(), Box<dyn std::error::Error>> {
     default_activated_action_to_foreground(flags, &mut action);
+    let semantic_action = action.element_index.is_some() || action.element_token.is_some();
+    let visible_dimensions = visible_snapshot_dimensions_for_action(flags, &action)?;
     let scope = select_scope(driver, flags).await?;
     let app = application_label(flags);
     let session_id = flag_value(flags, "--session").unwrap_or_else(|| "dcc-cua-cli".into());
     let mut session = driver.session(scope, app, session_id)?;
     session.start().await?;
-    let semantic_action = action.element_index.is_some() || action.element_token.is_some();
-    let visible_dimensions = visible_snapshot_dimensions(flags)?;
     let max_elements = bounded_u32(flags, "--max-elements", 5_000, 5_000)?;
     let max_depth = bounded_u32(flags, "--max-depth", 64, 64)?;
     let result = async {
@@ -303,6 +303,38 @@ pub(super) fn visible_snapshot_dimensions(
         }
         _ => Err("--observation-width and --observation-height must be provided together".into()),
     }
+}
+
+pub(super) fn visible_snapshot_dimensions_for_action(
+    flags: &[String],
+    action: &ComputerUseAction,
+) -> Result<Option<(u32, u32)>, Box<dyn std::error::Error>> {
+    let dimensions = visible_snapshot_dimensions(flags)?;
+    let carries_coordinates = action.x.is_some() || action.y.is_some() || !action.path.is_empty();
+    if carries_coordinates && dimensions.is_none() {
+        return Err(
+            "coordinate actions require --observation-width and --observation-height from snapshot.coordinate_space"
+                .into(),
+        );
+    }
+    Ok(dimensions)
+}
+
+pub(super) fn snapshot_coordinate_space_value(
+    observation: &ComputerUseObservation,
+) -> serde_json::Value {
+    json!({
+        "kind": "exact_window_image_pixels",
+        "origin": "top_left",
+        "width": observation.width,
+        "height": observation.height,
+        "dimensions_source": "encoded_png_ihdr",
+        "source_rect": observation.source_rect,
+        "action_flags": {
+            "width": "--observation-width",
+            "height": "--observation-height",
+        },
+    })
 }
 
 pub(super) fn map_visible_snapshot_coordinates(
@@ -708,10 +740,12 @@ pub(super) fn window_post_snapshot_value(
             let node_count = snapshot.accessibility["elements"]
                 .as_array()
                 .map_or(0, Vec::len);
+            let coordinate_space = snapshot_coordinate_space_value(&snapshot.observation);
             let (output, output_error) = snapshot_output(&snapshot.data, output);
             json!({
                 "success": true,
                 "observation": snapshot.observation,
+                "coordinate_space": coordinate_space,
                 "accessibility": snapshot.accessibility,
                 "node_count": node_count,
                 "output": output,

@@ -277,7 +277,7 @@ pub(super) fn print_help() -> std::io::Result<()> {
   restore-activate --pid PID --window-id ID
   set-window-frame --app APP|--pid PID --window-id ID --x N --y N --width N --height N
   invoke-menu --app APP|--pid PID --window-id ID --menu TOP [--menu CHILD ...]
-  act --app APP|--pid PID|--window-id ID|--title TITLE --action-json JSON [--output FILE]
+  act --app APP|--pid PID|--window-id ID|--title TITLE --action-json JSON [--observation-width W --observation-height H] [--output FILE]
   verify --app APP|--pid PID|--window-id ID|--title TITLE --expect-json JSON [--timeout-ms N] [--stable-samples N]
   desktop-act --action-json JSON [--session ID] [--output FILE]
   clipboard-read --app APP|--pid PID|--window-id ID|--title TITLE [--include-text]
@@ -293,7 +293,10 @@ Host uses versioned big-endian JSON frames. Hello version 1 negotiates binary-fr
     stdoutln!("{}", escalation_reason_help());
     stdoutln!("Zoom: zoom --app APP --x1 N --y1 N --x2 N --y2 N [--output FILE].");
     stdoutln!(
-        "Friendly window actions accept --delivery-mode background|foreground. x/y and drag paths are non-negative coordinates in the latest exact-window screenshot (not UIA virtual-desktop bounds). When coordinates come from a previously returned resized PNG, pass --observation-width and --observation-height together so the fresh action observation preserves that visible coordinate space. Desktop actions use signed virtual-desktop coordinates. Actions: click [--x X --y Y|--element-index N|--element-token TOKEN] [--button left|middle|right --duration-ms N], double-click/right-click/toggle [--x X --y Y|--element-index N|--element-token TOKEN] [--button left|middle|right], drag --from-x X --from-y Y --to-x X --to-y Y [--button B --modifier M --duration-ms N --steps N], type [--text TEXT] [--focused|--x X --y Y|--element-index N], set-text/set-value, press [--key K] [--modifier M] [--x X --y Y|--element-index N], hotkey [--key K ...] [--x X --y Y], scroll [--scroll-x N|--scroll-y N] [--by line|page] [--x X --y Y|--element-index N], move."
+        "Friendly window actions accept --delivery-mode background|foreground. x/y and drag paths are non-negative coordinates in the latest exact-window screenshot (not UIA virtual-desktop bounds). Coordinate actions require --observation-width and --observation-height from snapshot.coordinate_space. Desktop actions use signed virtual-desktop coordinates. Actions: click [--x X --y Y|--element-index N|--element-token TOKEN] [--button left|middle|right --duration-ms N], double-click/right-click/toggle [--x X --y Y|--element-index N|--element-token TOKEN] [--button left|middle|right], drag --from-x X --from-y Y --to-x X --to-y Y [--button B --modifier M --duration-ms N --steps N], type [--text TEXT] [--focused|--x X --y Y|--element-index N], set-text/set-value, press [--key K] [--modifier M] [--x X --y Y|--element-index N], hotkey [--key K ...] [--x X --y Y], scroll [--scroll-x N|--scroll-y N] [--by line|page] [--x X --y Y|--element-index N], move."
+    );
+    stdoutln!(
+        "Coordinate mapping: snapshot.coordinate_space width/height are the encoded PNG pixel dimensions. screen_x = bounds.x + x * bounds.width / observation_width; screen_y = bounds.y + y * bounds.height / observation_height. window-state bounds are already device pixels. Do not apply screen-size scale_factor to them."
     );
     stdoutln!(
         "Semantic tree: accessibility --app APP [--max-elements N] [--max-depth N]. no_accessibility_provider is permanent for that window class: do not retry accessibility; use snapshot --pixels-only plus OCR or another perception layer. Window: window-state|activate|restore-activate|set-window-frame|invoke-menu. restore-activate requires an exact --pid/--window-id pair."

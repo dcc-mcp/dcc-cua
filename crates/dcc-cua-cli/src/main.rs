@@ -35,7 +35,7 @@ mod update;
 use actions::{
     act, action_result_value, activate_window, desktop_act, friendly_action, invoke_menu,
     is_friendly_action, restore_activate_window, semantic_post_snapshot_value, set_window_frame,
-    verify_state, window_post_snapshot_value, zoom,
+    snapshot_coordinate_space_value, verify_state, window_post_snapshot_value, zoom,
 };
 use cli_args::*;
 use failure_output::{fatal_error_line, internal_failure_line};
@@ -1740,6 +1740,7 @@ async fn snapshot(
         .as_str()
         .unwrap_or("accessibility_preferred")
         .to_owned();
+    let coordinate_space = snapshot_coordinate_space_value(&screenshot.observation);
     let accessibility = screenshot.accessibility;
     fs::write(&output, &screenshot.data)?;
     stdoutln!(
@@ -1747,6 +1748,7 @@ async fn snapshot(
         serde_json::to_string_pretty(&json!({
             "success": true,
             "observation": screenshot.observation,
+            "coordinate_space": coordinate_space,
             "accessibility": accessibility,
             "node_count": node_count,
             "observation_mode": observation_mode,

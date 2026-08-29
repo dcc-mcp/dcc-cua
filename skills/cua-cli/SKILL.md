@@ -46,6 +46,7 @@ typed route cannot cover.
    ```powershell
    dcc-cua snapshot --pid $pid --window-id $hwnd --activate --output before.png
    dcc-cua act --pid $pid --window-id $hwnd --action-json '{"action":"click","element_index":12,"delivery_mode":"foreground"}'
+   dcc-cua act --pid $pid --window-id $hwnd --action-json '{"action":"click","x":100,"y":100,"delivery_mode":"foreground"}' --observation-width $imageWidth --observation-height $imageHeight
    dcc-cua snapshot --pid $pid --window-id $hwnd --output after.png
    dcc-cua verify --pid $pid --window-id $hwnd --expect-json '[{"window":{"exists":true}}]'
    dcc-cua clipboard-write --pid $pid --window-id $hwnd --text "bounded text"
@@ -56,6 +57,15 @@ typed route cannot cover.
    custom-drawn surface after a fresh pixel snapshot. A semantic action gets a
    fresh accessibility observation; do not reuse stale element indexes or mix
    tokens from pixel snapshots, other backends, windows, or sessions.
+
+   For coordinate actions, read `$imageWidth` and `$imageHeight` from the
+   producing snapshot's `coordinate_space`, whose dimensions come from the
+   encoded PNG IHDR. Both `--observation-width` and `--observation-height` are
+   required. With device-pixel `window-state` bounds, the corresponding desktop
+   point is `screen_x = bounds.x + x * bounds.width / observation_width` and
+   `screen_y = bounds.y + y * bounds.height / observation_height`. Do not apply
+   `screen-size.structuredContent.scale_factor`; the bounds are already device
+   pixels.
 
    `snapshot`, `act`, `verify`, `clipboard-read`, and `clipboard-write` share
    `--app`, `--pid`, `--window-id`, and `--title`. Treat multiple selectors as
