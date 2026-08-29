@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.6.1](https://github.com/dcc-mcp/dcc-cua/compare/v1.6.0...v1.6.1) (2026-08-29)
+
+
+### Bug Fixes
+
+* stabilize release documentation bytes ([523ee29](https://github.com/dcc-mcp/dcc-cua/commit/523ee293f8b967f3925997789b1d0d1ca2902c96))
+
 ## [1.6.0](https://github.com/dcc-mcp/dcc-cua/compare/v1.5.7...v1.6.0) (2026-08-29)
 
 
