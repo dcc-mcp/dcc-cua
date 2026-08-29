@@ -72,6 +72,12 @@ typed route cannot cover.
    one conjunctive identity. Any conflict, missing or ambiguous match, or live
    PID/HWND/title drift must stop the command; never fall back to app-only scope.
 
+   `snapshot --activate` falls back to capture on the same exact PID/HWND-bound
+   session only when the typed activation error explicitly reports
+   `background_delivery_viable: true`. Detect this safe degradation through
+   `activation.status == "refused_fallback_background"`. Do not retry or widen
+   the target for any other activation error.
+
    On Windows, if the exact live window has no responsive accessibility provider, use the
    explicit provider-free route:
 

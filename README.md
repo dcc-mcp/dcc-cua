@@ -418,6 +418,14 @@ bounds are already device pixels, including maximized-window borders and
 negative monitor coordinates. Do not multiply them by
 `screen-size.structuredContent.scale_factor`; that would scale twice.
 
+When `snapshot --activate` receives a typed `foreground_activation_refused`
+error with `background_delivery_viable: true`, it keeps the same exact
+PID/HWND-bound session and captures without foreground activation instead of
+discarding the observation. The successful result reports
+`activation.status: "refused_fallback_background"` and `degraded: true` inside
+the activation receipt. Missing background-viability proof, activation timeouts,
+and every other activation error remain fatal.
+
 `doctor` runs CUA's `check_permissions` and `health_report` concurrently with
 driver/window discovery. It reports the upstream structured checks for native
 accessibility, screen capture, platform support, and input readiness, and exits
