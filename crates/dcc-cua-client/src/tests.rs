@@ -197,6 +197,7 @@ async fn client_negotiates_and_reads_binary_attachment() {
 
     let hello = client.hello("test-client").await.unwrap();
     assert_eq!(hello.value["type"], "hello");
+    assert_eq!(client.connection_id(), Some("host-connection-test"));
     assert!(client.supports_capability("binary_snapshot_frames"));
     assert!(!client.supports_capability("missing_capability"));
     let response = client.request("desktop_snapshot", json!({})).await.unwrap();
@@ -586,6 +587,7 @@ async fn fake_server(mut stream: DuplexStream) -> HostClientResult<()> {
         hello["request_id"].as_str().unwrap(),
         json!({
             "type":"hello",
+            "connection_id":"host-connection-test",
             "capabilities":["binary_snapshot_frames"]
         }),
     )

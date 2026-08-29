@@ -416,11 +416,15 @@ impl TaskAuthorizationServer {
         }
         let proposal_id = format!("task-proposal-{}", Uuid::new_v4());
         let registration = TrustedTaskAuthorizationRegistration {
+            connection_id: None,
+            task_id: None,
             task_grant_id: format!("task-grant-{}", Uuid::new_v4()),
             application_label: input.application_label,
             target,
+            allowed_host_methods: input.allowed_methods.clone(),
             allowed_actions: input.allowed_actions,
             allowed_browser_origins,
+            browser_scope: None,
             expires_at_unix_ms: now.saturating_add(input.ttl_minutes * 60_000),
         };
         registration.validate().map_err(|error| error.to_string())?;

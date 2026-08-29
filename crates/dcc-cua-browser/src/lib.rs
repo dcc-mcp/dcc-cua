@@ -302,6 +302,46 @@ pub struct BrowserDialogRequest {
 }
 
 impl BrowserSession {
+    /// Install an exact target retained by a constructor-owned task authorization.
+    pub fn bind_authorized_exact_target(&mut self, target_id: &str) -> ComputerUseResult<()> {
+        if target_id.is_empty()
+            || target_id != target_id.trim()
+            || target_id.chars().count() > 256
+            || target_id.chars().any(char::is_control)
+        {
+            return Err(invalid("authorized browser target_id is invalid"));
+        }
+        if self
+            .target_id
+            .as_deref()
+            .is_some_and(|bound| bound != target_id)
+        {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::StaleObservation,
+                "authorized browser target does not match the existing Host binding",
+            ));
+        }
+        self.target_id = Some(target_id.to_owned());
+        self.mutation_allowed = true;
+        self.clear_snapshot();
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn target_id(&self) -> Option<&str> {
+        self.target_id.as_deref()
+    }
+
+    #[must_use]
+    pub fn latest_tab_id(&self) -> Option<&str> {
+        self.latest_tab_id.as_deref()
+    }
+
+    #[must_use]
+    pub fn latest_snapshot_id(&self) -> Option<&str> {
+        self.latest_snapshot_id.as_deref()
+    }
+
     /// Preserve the exact browser binding but fence coordinates from an old viewport.
     pub fn invalidate_snapshot(&mut self) {
         self.clear_snapshot();

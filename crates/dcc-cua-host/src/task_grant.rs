@@ -109,6 +109,11 @@ impl TaskGrant {
                 ));
             }
         }
+        if self.showcase_output_dir.is_some() && !self.allow_recording {
+            return Err(HostError::Protocol(
+                "showcase_output_dir requires allow_recording".into(),
+            ));
+        }
         if self.allowed_browser_origins.len() > 32
             || self
                 .allowed_browser_origins
@@ -127,6 +132,49 @@ impl TaskGrant {
             ));
         }
         Ok(())
+    }
+
+    pub(super) fn reject_task_authorization(&self, route: &str) -> Result<(), HostError> {
+        if self.task_authorization_id.is_some() {
+            return Err(HostError::coded_protocol(
+                crate::HostProtocolErrorCode::TaskAuthorizationDenied,
+                format!("task authorization cannot authorize the global {route} route"),
+            ));
+        }
+        Ok(())
+    }
+
+    pub(super) fn reject_task_authorization_activation(
+        &self,
+        activate_before: bool,
+    ) -> Result<(), HostError> {
+        if self.task_authorization_id.is_some() && activate_before {
+            return Err(HostError::coded_protocol(
+                crate::HostProtocolErrorCode::TaskAuthorizationDenied,
+                "task-authorized sessions cannot activate a window during open_session",
+            ));
+        }
+        Ok(())
+    }
+
+    pub(super) fn task_authorization_preflight_target(
+        &self,
+    ) -> Result<Option<crate::ConfirmationWindowIdentity>, HostError> {
+        if self.task_authorization_id.is_none() || self.owned_browser_launch.is_some() {
+            return Ok(None);
+        }
+        match (self.process_id, self.window_handle) {
+            (Some(process_id), Some(window_handle)) if process_id != 0 && window_handle != 0 => {
+                Ok(Some(crate::ConfirmationWindowIdentity {
+                    process_id,
+                    window_handle,
+                }))
+            }
+            _ => Err(HostError::coded_protocol(
+                crate::HostProtocolErrorCode::TaskAuthorizationRequired,
+                "task authorization requires an exact nonzero process_id and window_handle before opening the session",
+            )),
+        }
     }
 }
 

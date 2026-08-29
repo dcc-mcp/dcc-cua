@@ -7,7 +7,6 @@ mod session_helpers;
 pub(crate) use confirmation_evidence::*;
 pub(super) use evidence_epoch::*;
 pub(crate) use session_helpers::*;
-
 pub(super) async fn handle_request_with_security_services(
     driver: &ComputerUseDriver,
     security_services: &HostSecurityServices,
@@ -31,7 +30,6 @@ pub(super) async fn handle_request_with_security_services(
     .await;
     finish_window_evidence_request(sessions, evidence_route, result)
 }
-
 async fn handle_request_inner(
     driver: &ComputerUseDriver,
     security_services: &HostSecurityServices,
@@ -55,6 +53,7 @@ async fn handle_request_inner(
             json!({
                 "type": "hello",
                 "protocol_version": HOST_PROTOCOL_VERSION,
+                "connection_id": sessions.connection_id,
                 "client_name": params.client_name,
                 "snapshot_transport": match transport {
                     SnapshotTransport::SharedMemory => "shared_memory",
@@ -70,13 +69,14 @@ async fn handle_request_inner(
     let mode = snapshot_transport
         .ok_or_else(|| HostError::Protocol("hello is required before stateful requests".into()))?;
     let agent_name = sessions.agent_name.clone();
+    task_authorization_scope::enforce_task_authorized_method(sessions, &request)?;
     let ConnectionSessions {
+        connection_id,
         agent_name: _,
         windows: sessions,
         desktops: desktop_sessions,
         launches: launch_sessions,
     } = sessions;
-
     let request = match browser_extension::route_host_request(request, sessions).await {
         browser_extension::RoutedBrowserExtensionRequest::Unhandled(request) => *request,
         browser_extension::RoutedBrowserExtensionRequest::Handled(result) => return result,
@@ -197,12 +197,7 @@ async fn handle_request_inner(
                 sessions.len() + desktop_sessions.len() + launch_sessions.len(),
             )?;
             grant.validate_identity()?;
-            if grant.task_authorization_id.is_some() {
-                return Err(HostError::coded_protocol(
-                    HostProtocolErrorCode::TaskAuthorizationRequired,
-                    "task-scoped authorization currently requires an exact-window session",
-                ));
-            }
+            grant.reject_task_authorization("open_desktop_session")?;
             let session_generation = interrupt_generation();
             let runtime_session_id = new_runtime_session_id("desktop");
             let mut session = driver
@@ -442,6 +437,7 @@ async fn handle_request_inner(
                 sessions.len() + desktop_sessions.len() + launch_sessions.len(),
             )?;
             grant.validate_identity()?;
+            grant.reject_task_authorization("launch_app")?;
             if !grant.allow_app_launch {
                 return Err(denied(
                     HostProtocolErrorCode::AppLaunchNotGranted,
@@ -724,6 +720,20 @@ async fn handle_request_inner(
                 bind_launched_process(launched, &mut grant)?;
             }
             let allow_restore_activate = restore_activate_available(&grant);
+            let capability = grant
+                .task_authorization_window_capability
+                .clone()
+                .unwrap_or_else(|| format!("cua-window-{}", Uuid::new_v4()));
+            let preauthorized = crate::task_authorization_scope::preauthorize_task_session(
+                security_services,
+                connection_id,
+                &grant,
+                &session_id,
+                &capability,
+                activate_before,
+            )
+            .await?;
+            let browser = task_browser_session(&preauthorized)?;
             let runtime_session_id = launched
                 .as_ref()
                 .map(|session| session.runtime_session_id.clone())
@@ -741,6 +751,53 @@ async fn handle_request_inner(
                 &start_request,
             )
             .await?;
+            let Some(target) = session.target() else {
+                let _ = session.stop().await;
+                return Err(HostError::Protocol("CUA did not return a target".into()));
+            };
+            let status = session.status();
+            let marker = status["marker"].clone();
+            let banner = status["banner"].clone();
+            let upstream_session = status["upstream_session"].clone();
+            let cursor = json!({
+                "visible": marker["visible"],
+                "shape": "mouse_pointer",
+                "theme": started["cursor_theme"],
+                "render_backend": cursor_render_backend(
+                    driver.upstream_cursor_renderer_enabled(),
+                ),
+                "motion_backend": "cua-driver-sdk",
+            });
+            let input_target = match input_target_from_cua(&session_id, &target) {
+                Ok(target) => target,
+                Err(error) => {
+                    let _ = session.stop().await;
+                    return Err(error);
+                }
+            };
+            let (target_process_id, target_window_handle) =
+                (input_target.process_id, input_target.window_handle);
+            let task_authorization =
+                match crate::task_authorization_scope::finalize_task_session_authorization(
+                    security_services,
+                    connection_id,
+                    &grant,
+                    &session_id,
+                    &capability,
+                    ConfirmationWindowIdentity {
+                        process_id: target_process_id,
+                        window_handle: target_window_handle,
+                    },
+                    preauthorized,
+                )
+                .await
+                {
+                    Ok(lease) => lease,
+                    Err(error) => {
+                        let _ = session.stop().await;
+                        return Err(error);
+                    }
+                };
             let showcase = if let Some(output_dir) = grant.showcase_output_dir.as_deref() {
                 if !grant.allow_recording {
                     let _ = session.stop().await;
@@ -765,80 +822,6 @@ async fn handle_request_inner(
                 None
             };
             launch_sessions.remove(&session_id);
-            let Some(target) = session.target() else {
-                let _ = session.stop().await;
-                return Err(HostError::Protocol("CUA did not return a target".into()));
-            };
-            let status = session.status();
-            let marker = status["marker"].clone();
-            let banner = status["banner"].clone();
-            let upstream_session = status["upstream_session"].clone();
-            let cursor = json!({
-                "visible": marker["visible"],
-                "shape": "mouse_pointer",
-                "theme": started["cursor_theme"],
-                "render_backend": cursor_render_backend(
-                    driver.upstream_cursor_renderer_enabled(),
-                ),
-                "motion_backend": "cua-driver-sdk",
-            });
-            let capability = grant
-                .task_authorization_window_capability
-                .clone()
-                .unwrap_or_else(|| format!("cua-window-{}", Uuid::new_v4()));
-            let input_target = match input_target_from_cua(&session_id, &target) {
-                Ok(target) => target,
-                Err(error) => {
-                    let _ = session.stop().await;
-                    return Err(error);
-                }
-            };
-            let target_process_id = input_target.process_id;
-            let target_window_handle = input_target.window_handle;
-            let task_authorization =
-                if let Some(authorization_id) = grant.task_authorization_id.as_deref() {
-                    match issue_task_authorization(
-                        security_services.task_authorization_host.as_deref(),
-                        TaskAuthorizationBinding::window(
-                            authorization_id,
-                            &session_id,
-                            &grant.task_grant_id,
-                            &grant.application_label,
-                            &capability,
-                            ConfirmationWindowIdentity {
-                                process_id: target_process_id,
-                                window_handle: target_window_handle,
-                            },
-                        ),
-                    )
-                    .await
-                    {
-                        Ok(lease) => Some(lease),
-                        Err(error) => {
-                            let _ = session.stop().await;
-                            return Err(error);
-                        }
-                    }
-                } else {
-                    None
-                };
-            if let Some(authorization) = task_authorization.as_ref() {
-                let granted = grant
-                    .allowed_browser_origins
-                    .iter()
-                    .collect::<std::collections::BTreeSet<_>>();
-                let authorized = authorization
-                    .allowed_browser_origins
-                    .iter()
-                    .collect::<std::collections::BTreeSet<_>>();
-                if granted != authorized {
-                    let _ = session.stop().await;
-                    return Err(HostError::coded_protocol(
-                        HostProtocolErrorCode::TaskAuthorizationDenied,
-                        "task grant browser origins do not match the trusted authorization",
-                    ));
-                }
-            }
             let (input_readiness, observed_at) = crate::session_events::input_readiness_sample();
             let input_events =
                 crate::session_events::SessionInputEventQueue::new_with_restore_capability(
@@ -874,13 +857,14 @@ async fn handle_request_inner(
                     allow_session_escalation: grant.allow_session_escalation,
                     allow_trusted_confirmation: grant.allow_trusted_confirmation,
                     task_authorization: task_authorization.clone(),
+                    task_authorization_host: security_services.task_authorization_host.clone(),
                     allow_restore_activate,
                     capability: capability.clone(),
                     interrupted: false,
                     session,
                     synchronized_action_evidence_epoch,
                     browser_evidence_epoch: None,
-                    browser: BrowserSession::default(),
+                    browser,
                     latest_observation_id: None,
                     latest_accessibility_state_id: None,
                     latest_accessibility_root: None,
@@ -909,12 +893,7 @@ async fn handle_request_inner(
                 response["owned_browser"] = owned_browser.clone();
             }
             if let Some(authorization) = task_authorization {
-                response["task_authorization"] = json!({
-                    "status": "active",
-                    "authorization_id": authorization.authorization_id,
-                    "expires_at_unix_ms": authorization.expires_at_unix_ms,
-                    "allowed_actions": authorization.allowed_actions,
-                });
+                response["task_authorization"] = task_authorization_response(authorization);
             }
             if let Some(activation) = started.get("activation") {
                 response["activation"] = activation.clone();
@@ -1253,6 +1232,7 @@ async fn handle_request_inner(
             arguments,
         } => {
             grant.validate_identity()?;
+            grant.reject_task_authorization("call_global_tool")?;
             if !grant.allow_native_tool {
                 return Err(denied(
                     HostProtocolErrorCode::NativeToolNotGranted,

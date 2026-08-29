@@ -37,7 +37,7 @@ regex-syntax = { version = "0.8" }
 semver = { version = "1", features = ["serde"] }
 serde = { version = "1", features = ["alloc", "derive"] }
 serde_core = { version = "1", features = ["alloc"] }
-serde_json = { version = "1", features = ["alloc", "unbounded_depth"] }
+serde_json = { version = "1", features = ["alloc", "float_roundtrip", "unbounded_depth"] }
 simd-adler32 = { version = "0.3" }
 smallvec = { version = "1", default-features = false, features = ["const_generics"] }
 tokio = { version = "1", features = ["full", "test-util"] }

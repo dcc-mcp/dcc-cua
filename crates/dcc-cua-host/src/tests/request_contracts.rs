@@ -279,6 +279,70 @@ fn owned_browser_grant_is_closed_and_requires_trusted_authorization() {
 }
 
 #[rstest]
+fn task_authorization_is_exact_window_only_and_cannot_authorize_global_routes() {
+    let exact: TaskGrant = serde_json::from_value(json!({
+        "task_grant_id": "task-1",
+        "application_label": "Bound task",
+        "process_id": 4242,
+        "window_handle": 31337,
+        "task_authorization_id": "task-auth-1",
+        "task_authorization_window_capability": "cua-window-1"
+    }))
+    .unwrap();
+    assert_eq!(
+        exact.task_authorization_preflight_target().unwrap(),
+        Some(ConfirmationWindowIdentity {
+            process_id: 4242,
+            window_handle: 31337,
+        })
+    );
+    assert!(exact.reject_task_authorization("launch_app").is_err());
+    assert!(exact.reject_task_authorization("call_global_tool").is_err());
+    assert!(exact.reject_task_authorization_activation(true).is_err());
+    exact.reject_task_authorization_activation(false).unwrap();
+
+    for missing_exact_identity in [
+        json!({
+            "task_grant_id": "task-1",
+            "application_label": "Bound task",
+            "process_id": 4242,
+            "task_authorization_id": "task-auth-1",
+            "task_authorization_window_capability": "cua-window-1"
+        }),
+        json!({
+            "task_grant_id": "task-1",
+            "application_label": "Bound task",
+            "window_title": "replaceable title",
+            "task_authorization_id": "task-auth-1",
+            "task_authorization_window_capability": "cua-window-1"
+        }),
+    ] {
+        let grant: TaskGrant = serde_json::from_value(missing_exact_identity).unwrap();
+        assert!(grant.task_authorization_preflight_target().is_err());
+    }
+
+    let ordinary: TaskGrant = serde_json::from_value(json!({
+        "task_grant_id": "task-1",
+        "application_label": "Ordinary task"
+    }))
+    .unwrap();
+    assert_eq!(
+        ordinary.task_authorization_preflight_target().unwrap(),
+        None
+    );
+    ordinary.reject_task_authorization("launch_app").unwrap();
+}
+
+#[rstest]
+#[case("task_authorization_prepare")]
+#[case("task_authorization_consume")]
+#[case("task_authorization_sign")]
+#[case("task_authorization_enroll_key")]
+fn host_protocol_exposes_no_cross_client_signing_or_enrollment_route(#[case] method: &str) {
+    assert!(serde_json::from_value::<Request>(json!({"method": method, "params": {}})).is_err());
+}
+
+#[rstest]
 fn launch_ownership_requires_the_same_grant_and_process() {
     let launched = HostLaunchSession {
         runtime_session_id: "private-launch-session".into(),

@@ -107,6 +107,9 @@ pub(super) async fn route_host_request(
                     Ok(host) => host,
                     Err(error) => return RoutedBrowserExtensionRequest::Handled(Err(error)),
                 };
+            if let Err(error) = host.require_task_authorized_method("browser_extension_status") {
+                return RoutedBrowserExtensionRequest::Handled(Err(error));
+            }
             let mut status = browser_extension_registry()
                 .status_for_process(host.target_process_id)
                 .await;
@@ -133,6 +136,9 @@ pub(super) async fn route_host_request(
                     Ok(host) => host,
                     Err(error) => return RoutedBrowserExtensionRequest::Handled(Err(error)),
                 };
+            if let Err(error) = host.require_task_authorized_method("browser_extension_call") {
+                return RoutedBrowserExtensionRequest::Handled(Err(error));
+            }
             if matches!(method.as_str(), "click" | "type" | "unpair") && !host.allow_browser_input {
                 return RoutedBrowserExtensionRequest::Handled(Err(HostError::coded_protocol(
                     HostProtocolErrorCode::BrowserInputNotGranted,

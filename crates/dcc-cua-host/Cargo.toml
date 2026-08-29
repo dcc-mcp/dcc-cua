@@ -15,13 +15,16 @@ path = "src/lib.rs"
 
 [dependencies]
 async-trait.workspace = true
+base64 = "0.22"
 dcc-cua-browser = { path = "../dcc-cua-browser" }
 dcc-cua-core = { path = "../dcc-cua-core" }
 dcc-cua-indicator = { path = "../dcc-cua-indicator" }
 dcc-cua-interrupt = { path = "../dcc-cua-interrupt" }
 dcc-cua-protocol = { path = "../dcc-cua-protocol" }
 dcc-cua-shm = { path = "../dcc-cua-shm" }
+ed25519-dalek = "2.2.0"
 serde = { version = "1", features = ["derive"] }
+serde_jcs = "0.2.0"
 serde_json = "1"
 sha2 = "0.10.9"
 thiserror = "2"
@@ -32,7 +35,7 @@ zeroize = "1.9"
 dcc-cua-workspace-hack = { version = "1", path = "../dcc-cua-workspace-hack" }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Threading"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }
 
 [dev-dependencies]
 cua-driver-sdk = { git = "https://github.com/loonghao/cua.git", rev = "39f8a1a976f9e87d8d28affb74a1c87368893ca5", package = "cua-driver-sdk" }

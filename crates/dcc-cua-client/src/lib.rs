@@ -139,6 +139,7 @@ pub struct HostClient {
     outstanding_request_ids: HashSet<String>,
     next_request_id: u64,
     hello_complete: bool,
+    connection_id: Option<String>,
     snapshot_transport: SnapshotTransport,
     capabilities: Vec<String>,
     connection_state: Arc<AtomicU8>,
@@ -548,6 +549,7 @@ impl fmt::Debug for HostClient {
             .debug_struct("HostClient")
             .field("next_request_id", &self.next_request_id)
             .field("hello_complete", &self.hello_complete)
+            .field("connection_id", &self.connection_id)
             .field("snapshot_transport", &self.snapshot_transport)
             .field("capability_count", &self.capabilities.len())
             .field(
@@ -644,6 +646,7 @@ impl HostClient {
             outstanding_request_ids: HashSet::new(),
             next_request_id: 1,
             hello_complete: false,
+            connection_id: None,
             snapshot_transport,
             capabilities: Vec::new(),
             connection_state: Arc::new(AtomicU8::new(CONNECTION_READY)),
@@ -681,8 +684,18 @@ impl HostClient {
             ));
         }
         self.capabilities = response_capabilities(&response.value)?;
+        self.connection_id = response.value["connection_id"]
+            .as_str()
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned);
         self.hello_complete = true;
         Ok(response)
+    }
+
+    /// Host-generated identity used to bind constructor-owned task authorization.
+    #[must_use]
+    pub fn connection_id(&self) -> Option<&str> {
+        self.connection_id.as_deref()
     }
 
     /// Return the capabilities advertised by the negotiated Host.

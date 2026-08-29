@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use dcc_cua_browser::BrowserSession;
@@ -60,6 +61,7 @@ pub(super) struct HostSession {
     pub(super) allow_session_escalation: bool,
     pub(super) allow_trusted_confirmation: bool,
     pub(super) task_authorization: Option<crate::TrustedTaskAuthorizationLease>,
+    pub(super) task_authorization_host: Option<Arc<dyn crate::TrustedTaskAuthorizationHost>>,
     pub(super) allow_restore_activate: bool,
     pub(super) capability: String,
     pub(super) interrupted: bool,
@@ -76,7 +78,55 @@ pub(super) struct HostSession {
     pub(super) last_activity: Instant,
 }
 
+pub(super) fn task_browser_session(
+    lease: &Option<crate::TrustedTaskAuthorizationLease>,
+) -> Result<BrowserSession, crate::HostError> {
+    let mut browser = BrowserSession::default();
+    if let Some(scope) = lease
+        .as_ref()
+        .and_then(|lease| lease.browser_scope.as_ref())
+    {
+        browser.bind_authorized_exact_target(&scope.host_target_id)?;
+    }
+    Ok(browser)
+}
+
+pub(super) fn task_authorization_response(
+    authorization: crate::TrustedTaskAuthorizationLease,
+) -> Value {
+    serde_json::json!({
+        "status": "active",
+        "authorization_id": authorization.authorization_id,
+        "expires_at_unix_ms": authorization.expires_at_unix_ms,
+        "allowed_host_methods": authorization.allowed_host_methods,
+        "allowed_actions": authorization.allowed_actions,
+        "browser_scope": authorization.browser_scope,
+    })
+}
+
 impl HostSession {
+    pub(super) fn require_task_authorized_method(
+        &self,
+        method: &str,
+    ) -> Result<(), crate::HostError> {
+        if self
+            .task_authorization
+            .as_ref()
+            .is_some_and(|authorization| {
+                !authorization
+                    .allowed_host_methods
+                    .iter()
+                    .any(|allowed| allowed == method)
+            })
+        {
+            return Err(crate::HostError::coded_protocol(
+                crate::HostProtocolErrorCode::TaskAuthorizationDenied,
+                format!("Host method {method} is outside the trusted task authorization"),
+            ));
+        }
+        Ok(())
+    }
+
     pub(super) fn require_allowed_browser_origin(
         &self,
         origin: &str,
@@ -93,6 +143,73 @@ impl HostSession {
             ));
         }
         Ok(())
+    }
+
+    pub(super) fn require_task_authorized_browser_target(
+        &self,
+        target_id: &str,
+        tab_id: &str,
+    ) -> Result<(), crate::HostError> {
+        let Some(scope) = self
+            .task_authorization
+            .as_ref()
+            .and_then(|lease| lease.browser_scope.as_ref())
+        else {
+            return Ok(());
+        };
+        if target_id == scope.host_target_id && tab_id == scope.tab_id {
+            return Ok(());
+        }
+        Err(crate::HostError::coded_protocol(
+            crate::HostProtocolErrorCode::TaskAuthorizationDenied,
+            "the browser target or tab is outside the trusted task authorization",
+        ))
+    }
+
+    pub(super) fn require_task_authorized_browser_document(
+        &self,
+        target_id: &str,
+        tab_id: &str,
+        document_generation: &str,
+    ) -> Result<(), crate::HostError> {
+        self.require_task_authorized_browser_target(target_id, tab_id)?;
+        let Some(scope) = self
+            .task_authorization
+            .as_ref()
+            .and_then(|lease| lease.browser_scope.as_ref())
+        else {
+            return Ok(());
+        };
+        if document_generation == scope.document_generation {
+            return Ok(());
+        }
+        Err(crate::HostError::coded_protocol(
+            crate::HostProtocolErrorCode::TaskAuthorizationDenied,
+            "the browser document generation is outside the trusted task authorization",
+        ))
+    }
+
+    pub(super) fn require_current_task_authorized_browser_document(
+        &self,
+    ) -> Result<(), crate::HostError> {
+        let Some(scope) = self
+            .task_authorization
+            .as_ref()
+            .and_then(|lease| lease.browser_scope.as_ref())
+        else {
+            return Ok(());
+        };
+        if self.browser.target_id() == Some(scope.host_target_id.as_str())
+            && self.browser.latest_tab_id() == Some(scope.tab_id.as_str())
+            && self.browser.latest_snapshot_id() == Some(scope.document_generation.as_str())
+            && self.browser.latest_origin() == Some(scope.origin.as_str())
+        {
+            return Ok(());
+        }
+        Err(crate::HostError::coded_protocol(
+            crate::HostProtocolErrorCode::TaskAuthorizationDenied,
+            "fresh browser evidence does not match the authorized target, tab, document, and origin",
+        ))
     }
 
     pub(super) fn require_current_allowed_browser_origin(&self) -> Result<(), crate::HostError> {
@@ -245,9 +362,13 @@ impl HostSession {
         &mut self,
         result: ComputerUseResult<T>,
         publishes_snapshot_evidence: bool,
-    ) -> ComputerUseResult<T> {
+    ) -> Result<T, crate::HostError> {
         match result {
             Ok(value) if publishes_snapshot_evidence => {
+                if let Err(error) = self.require_current_task_authorized_browser_document() {
+                    self.discard_browser_evidence();
+                    return Err(error);
+                }
                 self.synchronize_action_evidence_epoch_with(
                     HostEvidencePublication::BrowserSnapshot,
                 );
@@ -261,6 +382,7 @@ impl HostSession {
             Err(error) => {
                 self.discard_browser_evidence();
                 self.finish_observation_sensitive_attempt(Err(error))
+                    .map_err(Into::into)
             }
         }
     }
@@ -314,10 +436,22 @@ pub(super) struct HostLaunchSession {
     pub(super) process_id: u32,
 }
 
-#[derive(Default)]
 pub(super) struct ConnectionSessions {
+    pub(super) connection_id: String,
     pub(super) agent_name: String,
     pub(super) windows: HashMap<String, HostSession>,
     pub(super) desktops: HashMap<String, HostDesktopSession>,
     pub(super) launches: HashMap<String, HostLaunchSession>,
+}
+
+impl Default for ConnectionSessions {
+    fn default() -> Self {
+        Self {
+            connection_id: format!("host-connection-{}", uuid::Uuid::new_v4()),
+            agent_name: String::new(),
+            windows: HashMap::new(),
+            desktops: HashMap::new(),
+            launches: HashMap::new(),
+        }
+    }
 }

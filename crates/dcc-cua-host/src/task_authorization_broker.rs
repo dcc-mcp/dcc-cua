@@ -9,10 +9,13 @@ use dcc_cua_core::ComputerUseOwnedBrowserLaunchSpec;
 
 use crate::task_authorization::{
     MAX_TASK_AUTHORIZATION_ACTIONS, MAX_TASK_AUTHORIZATION_TTL_MS,
-    TRUSTED_TASK_AUTHORIZATION_SCHEMA, TRUSTED_TASK_AUTHORIZATION_VALIDATION_SCHEMA,
-    TrustedTaskActionScope, TrustedTaskAuthorizationHost, TrustedTaskAuthorizationHostError,
-    TrustedTaskAuthorizationLease, TrustedTaskAuthorizationRequest, TrustedTaskAuthorizationStatus,
-    TrustedTaskAuthorizationValidationDecision, TrustedTaskAuthorizationValidationRequest,
+    TRUSTED_TASK_AUTHORIZATION_LEASE_VALIDATION_SCHEMA, TRUSTED_TASK_AUTHORIZATION_SCHEMA,
+    TRUSTED_TASK_AUTHORIZATION_VALIDATION_SCHEMA, TrustedTaskActionScope,
+    TrustedTaskAuthorizationBrowserScope, TrustedTaskAuthorizationHost,
+    TrustedTaskAuthorizationHostError, TrustedTaskAuthorizationLease,
+    TrustedTaskAuthorizationLeaseValidationRequest, TrustedTaskAuthorizationRequest,
+    TrustedTaskAuthorizationStatus, TrustedTaskAuthorizationValidationDecision,
+    TrustedTaskAuthorizationValidationRequest,
 };
 use crate::{MAX_APPLICATION_LABEL_CHARS, MAX_TASK_GRANT_ID_CHARS};
 
@@ -22,11 +25,15 @@ const MAX_BROKER_AUTHORIZATIONS: usize = 256;
 /// user input. This value never crosses Host IPC.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrustedTaskAuthorizationRegistration {
+    pub connection_id: Option<String>,
+    pub task_id: Option<String>,
     pub task_grant_id: String,
     pub application_label: String,
     pub target: TrustedTaskAuthorizationTarget,
+    pub allowed_host_methods: Vec<String>,
     pub allowed_actions: Vec<TrustedTaskActionScope>,
     pub allowed_browser_origins: Vec<String>,
+    pub browser_scope: Option<TrustedTaskAuthorizationBrowserScope>,
     pub expires_at_unix_ms: u64,
 }
 
@@ -162,6 +169,7 @@ struct BrokerRecord {
 }
 
 struct BrokerBinding {
+    connection_id: String,
     session_id: String,
     lease_request_digest: String,
     target_process_id: u32,
@@ -203,6 +211,14 @@ impl TrustedTaskAuthorizationHost for BrokerHost {
         let exact_match = request.task_grant_id == registration.task_grant_id
             && request.application_label == registration.application_label
             && request.window_capability == record.window_capability
+            && registration
+                .task_id
+                .as_deref()
+                .is_none_or(|expected| request.session_id == expected)
+            && registration
+                .connection_id
+                .as_deref()
+                .is_none_or(|expected| request.connection_id == expected)
             && target_matches;
         if record.revoked
             || record.binding.is_some()
@@ -212,12 +228,14 @@ impl TrustedTaskAuthorizationHost for BrokerHost {
             return Err(TrustedTaskAuthorizationHostError::Denied);
         }
         record.binding = Some(BrokerBinding {
+            connection_id: request.connection_id.clone(),
             session_id: request.session_id.clone(),
             lease_request_digest: request.request_digest.clone(),
             target_process_id: request.target_process_id,
             target_window_handle: request.target_window_handle,
         });
         Ok(TrustedTaskAuthorizationLease {
+            connection_id: request.connection_id,
             authorization_id: request.authorization_id,
             session_id: request.session_id,
             task_grant_id: request.task_grant_id,
@@ -226,7 +244,9 @@ impl TrustedTaskAuthorizationHost for BrokerHost {
             target_process_id: request.target_process_id,
             target_window_handle: request.target_window_handle,
             allowed_actions: registration.allowed_actions.clone(),
+            allowed_host_methods: registration.allowed_host_methods.clone(),
             allowed_browser_origins: registration.allowed_browser_origins.clone(),
+            browser_scope: registration.browser_scope.clone(),
             issued_at_unix_ms: now,
             expires_at_unix_ms: registration.expires_at_unix_ms,
             request_digest: request.request_digest,
@@ -248,6 +268,7 @@ impl TrustedTaskAuthorizationHost for BrokerHost {
         let binding = record.binding.as_ref().ok_or_else(unavailable)?;
         let registration = &record.registration;
         let exact_match = request.session_id == binding.session_id
+            && request.connection_id == binding.connection_id
             && request.lease_request_digest == binding.lease_request_digest
             && request.task_grant_id == registration.task_grant_id
             && request.application_label == registration.application_label
@@ -267,11 +288,52 @@ impl TrustedTaskAuthorizationHost for BrokerHost {
             request_digest: request.request_digest,
         })
     }
+
+    async fn validate_lease(
+        &self,
+        request: TrustedTaskAuthorizationLeaseValidationRequest,
+    ) -> Result<TrustedTaskAuthorizationValidationDecision, TrustedTaskAuthorizationHostError> {
+        if request.schema != TRUSTED_TASK_AUTHORIZATION_LEASE_VALIDATION_SCHEMA {
+            return Err(unavailable());
+        }
+        let state = self.state.lock().map_err(|_| unavailable())?;
+        let record = state
+            .authorizations
+            .get(&request.authorization_id)
+            .ok_or_else(unavailable)?;
+        let binding = record.binding.as_ref().ok_or_else(unavailable)?;
+        let registration = &record.registration;
+        let exact_match = request.session_id == binding.session_id
+            && request.connection_id == binding.connection_id
+            && request.lease_request_digest == binding.lease_request_digest
+            && request.task_grant_id == registration.task_grant_id
+            && request.application_label == registration.application_label
+            && request.window_capability == record.window_capability
+            && request.target_process_id == binding.target_process_id
+            && request.target_window_handle == binding.target_window_handle;
+        if !exact_match {
+            return Err(unavailable());
+        }
+        Ok(TrustedTaskAuthorizationValidationDecision {
+            status: if record.revoked {
+                TrustedTaskAuthorizationStatus::Revoked
+            } else {
+                TrustedTaskAuthorizationStatus::Active
+            },
+            request_digest: request.request_digest,
+        })
+    }
 }
 
 fn validate_registration(
     registration: &TrustedTaskAuthorizationRegistration,
 ) -> Result<(), TrustedTaskAuthorizationBrokerError> {
+    if let Some(connection_id) = registration.connection_id.as_deref() {
+        validate_identity(connection_id, 256, "connection_id")?;
+    }
+    if let Some(task_id) = registration.task_id.as_deref() {
+        validate_identity(task_id, 256, "task_id")?;
+    }
     validate_identity(
         &registration.task_grant_id,
         MAX_TASK_GRANT_ID_CHARS,
@@ -310,6 +372,19 @@ fn validate_registration(
     {
         return invalid("allowed actions must be unique, closed, and non-empty");
     }
+    let methods = registration
+        .allowed_host_methods
+        .iter()
+        .collect::<BTreeSet<_>>();
+    if methods.is_empty()
+        || methods.len() != registration.allowed_host_methods.len()
+        || methods.len() > 64
+        || methods.iter().any(|method| {
+            !crate::task_authorization_scope::is_task_authorizable_host_method(method)
+        })
+    {
+        return invalid("allowed Host methods must be unique, closed, and non-empty");
+    }
     let origins = registration
         .allowed_browser_origins
         .iter()
@@ -321,6 +396,22 @@ fn validate_registration(
             .any(|origin| !crate::task_authorization::valid_browser_origin(origin))
     {
         return invalid("allowed browser origins must be unique exact HTTP(S) origins");
+    }
+    if let Some(scope) = registration.browser_scope.as_ref()
+        && (!scope.validate()
+            || matches!(
+                registration.target,
+                TrustedTaskAuthorizationTarget::OwnedBrowser(_)
+            )
+            || registration.allowed_browser_origins.as_slice() != [scope.origin.as_str()]
+            || !registration
+                .allowed_host_methods
+                .iter()
+                .any(|method| method == "browser_snapshot"))
+    {
+        return invalid(
+            "an exact browser scope requires an exact window, its sole origin, and browser_snapshot",
+        );
     }
     Ok(())
 }

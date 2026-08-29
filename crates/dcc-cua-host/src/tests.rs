@@ -10,6 +10,7 @@ use crate::request_handler::bind_launched_process;
 use crate::request_handler::finish_window_mutation_attempt;
 use crate::request_handler::session_stopped_response;
 use crate::session_events::SessionInputEventQueue;
+use dcc_cua_browser::BrowserSession;
 use dcc_cua_shm::SharedImageReader;
 use rstest::rstest;
 use serde_json::Value;
@@ -230,6 +231,7 @@ fn cached_host_session(driver: &ComputerUseDriver) -> HostSession {
         allow_session_escalation: false,
         allow_trusted_confirmation: false,
         task_authorization: None,
+        task_authorization_host: None,
         allow_restore_activate: cfg!(windows),
         capability: "capability-1".into(),
         interrupted: false,
@@ -1781,6 +1783,7 @@ mod browser_extension;
 mod browser_navigation_receipts;
 mod confirmation_latency;
 mod connection;
+mod cross_client_task_authorization;
 mod request_contracts;
 mod request_parsing;
 mod response_contracts;

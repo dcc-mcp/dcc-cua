@@ -15,10 +15,14 @@ pub(crate) fn status() -> Value {
         "card_available": false,
         "process_identity_can_authorize": false,
         "reason": "trusted_human_confirmation_transport_not_configured",
-        "next_owners": ["dcc_cua_core", "client_embedding_integration"],
-        "next_action": "DCC-CUA must implement the proposed receipt verifier; the client must integrate a protected human confirmation transport with independently provisioned trust. Validate and deploy both before requesting fresh exact-target authorization. Do not fill task_grant_id or approve through model-visible input.",
+        "next_owners": ["client_embedding_integration", "deployment_trust_provisioning"],
+        "next_action": "Integrate a protected human confirmation transport and constructor-provisioned issuer trust, then validate the actual client launch chain before requesting fresh exact-target authorization. Do not fill task_grant_id or approve through model-visible input.",
         "contract": "https://github.com/dcc-mcp/dcc-cua/blob/main/docs/adr/0027-cross-client-task-authorization.md",
-        "signed_receipt_protocol": {"status": "proposed", "runtime_accepts_receipts": false},
+        "signed_receipt_protocol": {
+            "status": "implemented_core",
+            "constructor_api_available": true,
+            "runtime_accepts_receipts": false
+        },
         "fallback": "none"
     })
 }
