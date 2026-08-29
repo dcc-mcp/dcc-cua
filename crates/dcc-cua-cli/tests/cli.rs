@@ -104,6 +104,8 @@ fn help_routes_remain_successful_and_do_not_write_diagnostics() {
         assert!(stdout.contains("Do not apply screen-size scale_factor"));
         assert!(stdout.contains("activation.status=refused_fallback_background"));
         assert!(stdout.contains("Every other activation error remains fatal"));
+        assert!(stdout.contains("terminate --app APP|--pid PID|--window-id ID|--title TITLE"));
+        assert!(stdout.contains("--allow-external"));
         assert!(output.stderr.is_empty());
     }
 }

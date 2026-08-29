@@ -16,6 +16,7 @@ use crate::contracts::{
 };
 use crate::driver_factory::{
     BUNDLED_CURSOR_THEME, UPSTREAM_CURSOR_RENDERER_ENABLED, driver_host_options,
+    external_process_termination_options,
 };
 #[cfg(not(windows))]
 use crate::interactive_desktop::{platform_managed_diagnostic, require_input_available_from};
@@ -30,6 +31,32 @@ use crate::live_observation::{
     observation_sequence_fence, terminal_capture_error, wait_for_latest_frame,
 };
 use crate::policy::*;
+
+#[rstest]
+fn external_termination_runtime_has_one_explicit_unrestricted_ceiling() {
+    let options = external_process_termination_options();
+    assert_eq!(
+        options.authorization.allowed_modes,
+        vec![SessionPermissionMode::Unrestricted]
+    );
+    assert_eq!(
+        options.authorization.compatibility_mode,
+        SessionPermissionMode::Unrestricted
+    );
+    assert!(options.authorization.unrestricted_acknowledged);
+    assert!(
+        options
+            .authorization
+            .compatibility_bounded_manifest_path
+            .is_none()
+    );
+    assert!(
+        options
+            .authorization
+            .compatibility_capability_manifest_path
+            .is_none()
+    );
+}
 
 #[rstest]
 fn core_runtime_does_not_own_platform_input_or_media_codecs() {

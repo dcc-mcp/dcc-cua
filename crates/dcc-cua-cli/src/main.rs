@@ -285,6 +285,8 @@ async fn dispatch(arguments: Vec<String>) -> Result<(), Box<dyn std::error::Erro
     }
     let driver = if command == "host" {
         host_driver(&flags)?
+    } else if external_termination_runtime_requested(&command, &flags) {
+        ComputerUseDriver::create_external_process_termination_with_acknowledged_risk()?
     } else {
         ComputerUseDriver::create()?
     };
@@ -1660,6 +1662,10 @@ async fn terminate_app(
     }
     stdoutln!("{}", serde_json::to_string_pretty(&result?)?);
     Ok(())
+}
+
+fn external_termination_runtime_requested(command: &str, flags: &[String]) -> bool {
+    command == "terminate" && has_flag(flags, "--confirm") && has_flag(flags, "--allow-external")
 }
 
 async fn clipboard_read(

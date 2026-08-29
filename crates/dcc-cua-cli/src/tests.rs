@@ -271,6 +271,27 @@ fn help_requests_are_handled_before_driver_or_host_start(
 }
 
 #[rstest]
+fn unrestricted_runtime_is_confined_to_acknowledged_external_termination() {
+    let acknowledged = vec!["--confirm".to_owned(), "--allow-external".to_owned()];
+    assert!(external_termination_runtime_requested(
+        "terminate",
+        &acknowledged
+    ));
+    assert!(!external_termination_runtime_requested(
+        "snapshot",
+        &acknowledged
+    ));
+    assert!(!external_termination_runtime_requested(
+        "terminate",
+        &["--allow-external".to_owned()]
+    ));
+    assert!(!external_termination_runtime_requested(
+        "terminate",
+        &["--confirm".to_owned()]
+    ));
+}
+
+#[rstest]
 fn ordinary_subcommands_are_not_help_requests() {
     assert!(!is_help_request(
         "host-jsonl",
@@ -290,6 +311,7 @@ fn unknown_cli_flags_fail_closed_before_dispatch() {
 #[rstest]
 fn known_cli_flags_and_private_worker_equals_form_are_accepted() {
     reject_unknown_flags(&[
+        "--allow-external".into(),
         "--window-id".into(),
         "123".into(),
         "--generation=worker-1".into(),
