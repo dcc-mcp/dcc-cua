@@ -31,6 +31,7 @@ ROOT_PLUGIN = ROOT / ".codex-plugin" / "plugin.json"
 MARKETPLACE_PLUGIN = ROOT / "plugins" / "dcc-cua-computer-use"
 README = ROOT / "README.md"
 README_ZH = ROOT / "README.zh-CN.md"
+CLI_SKILL = ROOT / "skills" / "cua-cli" / "SKILL.md"
 CHECKOUT_ACTION = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"
 DOWNLOAD_ACTION = "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093"
 UPLOAD_ACTION = "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02"
@@ -295,10 +296,12 @@ class ReleaseWorkflowTests(unittest.TestCase):
             {
                 "/README.md text eol=lf",
                 "/README.zh-CN.md text eol=lf",
+                "/skills/cua-cli/SKILL.md text eol=lf",
             }.issubset(attributes)
         )
         self.assertNotIn(b"\r", README.read_bytes())
         self.assertNotIn(b"\r", README_ZH.read_bytes())
+        self.assertNotIn(b"\r", CLI_SKILL.read_bytes())
 
     def test_release_matrix_builds_every_supported_native_target(self):
         workflow = WORKFLOW.read_text(encoding="utf-8")
