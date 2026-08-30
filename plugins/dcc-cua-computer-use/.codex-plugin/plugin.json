@@ -20,14 +20,14 @@
   "interface": {
     "displayName": "dcc-cua",
     "shortDescription": "Authorize exact-window CUA tasks",
-    "longDescription": "Check trusted human authorization integration before scoped DCC-CUA tasks. The packaged MCP server provides diagnostics and fails closed until a trusted confirmation transport is integrated.",
+    "longDescription": "Authorize bounded exact-window DCC-CUA tasks through protected Windows user-presence verification. Unsupported platforms remain diagnostic-only and fail closed.",
     "developerName": "loonghao",
     "category": "Productivity",
     "capabilities": ["Read", "Write"],
     "websiteURL": "https://github.com/dcc-mcp/dcc-cua",
     "defaultPrompt": [
+      "Authorize this exact-window DCC-CUA task through the protected Windows confirmation flow.",
       "Check whether trusted human authorization is available for this DCC-CUA task.",
-      "Explain the missing integration before attempting an exact-bound browser task.",
       "Report the DCC-CUA authorization status without creating a task grant."
     ],
     "screenshots": [],

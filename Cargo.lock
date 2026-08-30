@@ -1203,6 +1203,8 @@ dependencies = [
  "thiserror 2.0.19",
  "tokio",
  "uuid",
+ "windows 0.61.3",
+ "windows-future",
  "windows-sys 0.61.2",
 ]
 
@@ -1463,6 +1465,7 @@ dependencies = [
  "uniffi_core",
  "uuid",
  "windows 0.61.3",
+ "windows-future",
  "windows-sys 0.61.2",
  "winnow 1.0.4",
  "x11rb",

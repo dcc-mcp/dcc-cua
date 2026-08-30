@@ -1020,13 +1020,16 @@ retain per-action confirmation. The packaged CLI does not trust flags or
 redirected stdin as user presence, so it keeps per-action confirmation until a
 trusted non-modal input broker is installed by its embedding.
 
-The packaged `dcc-cua mcp-server` currently exposes only
-`authorization_integration_status`. It reports `integration_required` rather
-than disappearing when a desktop helper lacks package/version metadata. A
-recognized process identity no longer creates an issuer or exposes the old
-inline card. No signed-receipt verifier or protected client confirmation
-transport is integrated yet. See [plugin diagnosis](docs/agent-plugin.md) and
-the [proposed cross-client contract](docs/adr/0027-cross-client-task-authorization.md).
+On Windows, the packaged `dcc-cua mcp-server` exposes
+`authorization_integration_status`, the bounded authorization card, and its
+app-only task tools. It reports `available` only because the runtime installs a
+protected native user-presence verifier: Windows Hello/PIN/biometric when
+configured, otherwise the physical F12, F11, F10 sequence whose low-level hook
+rejects injected events. The card displays the exact retained PID/HWND, scope
+digest and expiry; card text, client/process identity, environment, stdin and
+forged receipt fields cannot authorize. Non-Windows packaged servers still
+report `integration_required`. See [plugin diagnosis](docs/agent-plugin.md) and
+the [cross-client contract](docs/adr/0027-cross-client-task-authorization.md).
 
 Embeddings can construct that broker with
 `dcc_cua_host::trusted_task_authorization_broker`. It returns two separate

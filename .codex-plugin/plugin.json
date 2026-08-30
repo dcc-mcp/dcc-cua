@@ -1,7 +1,7 @@
 {
   "name": "dcc-cua-computer-use",
   "version": "0.6.0",
-  "description": "Exact-window DCC-CUA skills and trusted authorization integration diagnostics.",
+  "description": "Exact-window DCC-CUA skills with protected Windows task authorization.",
   "author": {
     "name": "loonghao",
     "email": "hal.long@outlook.com",
@@ -22,7 +22,7 @@
   "interface": {
     "displayName": "dcc-cua",
     "shortDescription": "Operate exact-window CUA sessions",
-    "longDescription": "Check trusted human authorization integration before scoped DCC-CUA tasks. The packaged MCP server provides diagnostics and fails closed until a trusted confirmation transport is integrated.",
+    "longDescription": "Authorize bounded exact-window DCC-CUA tasks through protected Windows user-presence verification. Unsupported platforms remain diagnostic-only and fail closed.",
     "developerName": "loonghao",
     "category": "Productivity",
     "capabilities": ["Read", "Write"],
