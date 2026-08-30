@@ -308,10 +308,12 @@ fn rejected_cli_syntax_does_not_echo_untrusted_arguments(
 #[case("Codex Desktop")]
 #[case("Codex Cloud")]
 #[case("Codex CLI")]
+#[case("DSH")]
+#[case("Claude")]
 #[case("Cursor")]
 #[case("WorkBuddy")]
 #[case("CodeBuddy CLI")]
-fn mcp_server_never_trusts_client_labels_or_forged_authorization_inputs(#[case] client: &str) {
+fn mcp_server_exposes_portable_flow_and_rejects_forged_authorization_inputs(#[case] client: &str) {
     let mut child = Command::new(env!("CARGO_BIN_EXE_dcc-cua"))
         .arg("mcp-server")
         .env("DCC_CUA_TRUSTED_EMBEDDING", client)
@@ -363,41 +365,26 @@ fn mcp_server_never_trusts_client_labels_or_forged_authorization_inputs(#[case] 
         "dcc-cua-task-authorization"
     );
     let tools = responses[1]["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), if cfg!(windows) { 7 } else { 1 });
+    assert_eq!(tools.len(), 7);
     assert_eq!(tools[0]["name"], "authorization_integration_status");
     assert!(tools[0].get("_meta").is_none());
     let status = &responses[2]["result"]["structuredContent"];
     assert_eq!(status["provider"], "dcc-cua");
-    if cfg!(windows) {
-        assert_eq!(status["status"], "available");
-        assert_eq!(status["authorization_available"], true);
-        assert_eq!(status["user_confirmation_available"], true);
-        assert_eq!(status["card_available"], true);
-        assert_eq!(status["next_owners"], serde_json::json!([]));
-        assert!(matches!(
-            status["confirmation_method"].as_str(),
-            Some("windows_user_consent_verifier" | "windows_non_injected_keyboard_sequence")
-        ));
-        assert_eq!(
-            responses[3]["result"]["resources"]
-                .as_array()
-                .unwrap()
-                .len(),
-            1
-        );
-    } else {
-        assert_eq!(status["status"], "integration_required");
-        assert_eq!(status["authorization_available"], false);
-        assert_eq!(status["user_confirmation_available"], false);
-        assert_eq!(
-            status["next_owners"],
-            serde_json::json!([
-                "client_embedding_integration",
-                "deployment_trust_provisioning"
-            ])
-        );
-        assert_eq!(responses[3]["result"]["resources"], serde_json::json!([]));
-    }
+    assert_eq!(status["status"], "available");
+    assert_eq!(status["authorization_available"], true);
+    assert_eq!(status["user_confirmation_available"], true);
+    assert_eq!(status["card_available"], true);
+    assert_eq!(status["next_owners"], serde_json::json!([]));
+    assert_eq!(status["confirmation_method"], "client_managed");
+    assert_eq!(status["confirmation_owner"], "agent_host");
+    assert_eq!(status["requires_system_user_verification"], false);
+    assert_eq!(
+        responses[3]["result"]["resources"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
     assert_eq!(
         status["signed_receipt_protocol"]["status"],
         "implemented_core"

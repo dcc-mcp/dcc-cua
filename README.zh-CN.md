@@ -294,15 +294,14 @@ let stopped = host.interrupt_all().await?;
 
 ## MCP 任务授权
 
-Windows 上打包的 `dcc-cua mcp-server` 会公开
-`authorization_integration_status`、有界授权卡以及仅供卡片调用的任务工具。
-运行时优先使用 Windows Hello/PIN/生物识别完成受保护的用户在场验证；未配置时，
-原生提示要求用户在实体键盘依次按 F12、F11、F10，底层键盘钩子会拒绝标记为注入或
-低完整性注入的事件。授权卡只显示运行时保留的精确 PID/HWND、范围摘要和到期时间；
-卡片文字、客户端或进程身份、环境变量、stdin 以及伪造回执字段都不能签发权限。
-非 Windows 打包运行时仍返回 `integration_required` 并失败关闭。完整边界见
-[插件说明](docs/agent-plugin.md)与
-[跨客户端任务授权 ADR](docs/adr/0027-cross-client-task-authorization.md)。
+所有支持的平台上，`dcc-cua mcp-server` 都会公开
+`authorization_integration_status`、有界授权卡和可移植的任务工具，并报告
+`confirmation_method=client_managed`。Codex、DSH、Claude、WorkBuddy 或其他 Agent
+宿主负责用户/工具审批；DCC-CUA 不再弹出 Windows Hello 或实体按键二次确认。
+运行时仍保留精确 PID/HWND 或 owned-browser 规格、范围摘要、允许的方法/动作/origin
+和到期时间；`authorize_task` 只接受服务端生成的 proposal ID，不能扩展范围。
+完整边界见[插件说明](docs/agent-plugin.md)与
+[Agent 宿主授权 ADR](docs/adr/0028-delegate-task-authorization-to-agent-hosts.md)。
 
 ## 开发门槛
 

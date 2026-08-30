@@ -24,10 +24,6 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader, BufWrit
 use uuid::Uuid;
 
 use super::authorization_integration;
-use super::task_authorization_confirmation::{
-    TaskAuthorizationConfirmationHost, TaskAuthorizationConfirmationRequest,
-    native_task_authorization_confirmation_host,
-};
 use super::trusted_embedding::verify_trusted_embedding_parent;
 
 const SERVER_NAME: &str = "dcc-cua-task-authorization";
@@ -40,6 +36,7 @@ const DEFAULT_IDLE_TIMEOUT_MS: u64 = 15 * 60 * 1_000;
 const MAX_ALLOWED_METHODS: usize = 32;
 const AUTHORIZATION_CARD_HTML: &str = include_str!("task_authorization_card.html");
 const CUA_RUNTIME_SESSION_PREFIX: &str = "__cua_runtime_";
+const CLIENT_MANAGED_CONFIRMATION: &str = "client_managed";
 
 struct TaskBrowserPrepareAuthorizationHost {
     expected_public_session: String,
@@ -214,7 +211,6 @@ impl TaskSurface {
 }
 
 struct TaskProposal {
-    confirmation_method: &'static str,
     surface: TaskSurface,
     allowed_methods: Vec<String>,
     registration: TrustedTaskAuthorizationRegistration,
@@ -241,55 +237,34 @@ impl TaskProposal {
 struct TaskAuthorizationAuthority {
     issuer: TrustedTaskAuthorizationIssuer,
     authorization_host: std::sync::Arc<dyn TrustedTaskAuthorizationHost>,
-    confirmation_host: Arc<dyn TaskAuthorizationConfirmationHost>,
 }
 
 struct TaskAuthorizationServer {
-    authority: Option<TaskAuthorizationAuthority>,
+    authority: TaskAuthorizationAuthority,
     parent_identity_available: bool,
     proposals: BTreeMap<String, TaskProposal>,
 }
 
 impl TaskAuthorizationServer {
-    fn diagnostic_only(parent_identity_available: bool) -> Self {
-        Self {
-            authority: None,
-            parent_identity_available,
-            proposals: BTreeMap::new(),
-        }
-    }
-
-    fn with_confirmation_host(
-        parent_identity_available: bool,
-        confirmation_host: Arc<dyn TaskAuthorizationConfirmationHost>,
-    ) -> Self {
+    fn new(parent_identity_available: bool) -> Self {
         let (issuer, authorization_host) = dcc_cua_host::trusted_task_authorization_broker();
         Self {
-            authority: Some(TaskAuthorizationAuthority {
+            authority: TaskAuthorizationAuthority {
                 issuer,
                 authorization_host,
-                confirmation_host,
-            }),
+            },
             parent_identity_available,
             proposals: BTreeMap::new(),
         }
     }
 
     fn integration_status(&self) -> Value {
-        let mut status = if self.authority.is_some() {
-            authorization_integration::available_status()
-        } else {
-            authorization_integration::status()
-        };
-        if let Some(authority) = self.authority.as_ref() {
-            status["confirmation_method"] = json!(authority.confirmation_host.method());
-        }
+        let mut status = authorization_integration::status();
         status["parent_identity_available"] = json!(self.parent_identity_available);
         status
     }
 
     async fn handle_rpc(&mut self, message: Value) -> Option<Value> {
-        let integration_available = self.authority.is_some();
         let id = message.get("id").cloned().unwrap_or(Value::Null);
         let Some(method) = message.get("method").and_then(Value::as_str) else {
             return Some(rpc_error(id, -32600, "Invalid Request"));
@@ -313,28 +288,15 @@ impl TaskAuthorizationServer {
                     "name": SERVER_NAME,
                     "title": "DCC-CUA task authorization",
                     "version": env!("CARGO_PKG_VERSION"),
-                    "description": if integration_available {
-                        "DCC-CUA exact-task authorization with protected Windows user-presence verification."
-                    } else {
-                        "DCC-CUA authorization integration status; task authority requires an independently trusted human confirmation transport."
-                    }
+                    "description": "DCC-CUA exact-task authorization delegated to the connected agent host."
                 },
-                "instructions": if integration_available {
-                    "Check authorization_integration_status, prepare one exact bounded task, and render its card. Authorization requires protected Windows user-presence verification; card text, model input, client names, and process identity cannot authorize."
-                } else {
-                    "Check authorization_integration_status first. Without a trusted human confirmation transport, report integration_required. Do not claim an authorization card exists, invent grants, or change providers. Client names and process identity cannot authorize a task."
-                }
+                "instructions": "Prepare one exact bounded task, obtain approval through the connected agent host, call authorize_task with only the retained proposal_id, then start the task. DCC-CUA preserves exact-target, method, action, origin, expiry, and revocation bounds without an operating-system confirmation step."
             })),
             "ping" => Ok(json!({})),
-            "tools/list" => Ok(json!({"tools": if self.authority.is_some() {
-                json!(tool_definitions())
-            } else { authorization_integration::tools() }})),
+            "tools/list" => Ok(json!({"tools": tool_definitions()})),
             "tools/call" => self.call_tool(params).await,
-            "resources/list" => Ok(json!({"resources": if self.authority.is_some() {
-                json!([authorization_card_resource()])
-            } else { json!([]) }})),
-            "resources/read" if self.authority.is_some() => read_resource(&params),
-            "resources/read" => Err(authorization_integration::REQUIRED.into()),
+            "resources/list" => Ok(json!({"resources": [authorization_card_resource()]})),
+            "resources/read" => read_resource(&params),
             "resources/templates/list" => Ok(json!({"resourceTemplates": []})),
             "prompts/list" => Ok(json!({"prompts": []})),
             _ => {
@@ -352,16 +314,6 @@ impl TaskAuthorizationServer {
             .get("name")
             .and_then(Value::as_str)
             .ok_or_else(|| "tools/call requires a tool name".to_owned())?;
-        if self.authority.is_none() {
-            let mut status = self.integration_status();
-            let unavailable = name != "authorization_integration_status";
-            if unavailable {
-                status["code"] = json!(authorization_integration::REQUIRED);
-            }
-            let mut result = tool_result(status, false);
-            result["isError"] = json!(unavailable);
-            return Ok(result);
-        }
         let arguments = params
             .get("arguments")
             .filter(|value| value.is_object())
@@ -389,10 +341,6 @@ impl TaskAuthorizationServer {
     }
 
     fn prepare_task(&mut self, arguments: Value) -> Result<Value, String> {
-        let authority = self
-            .authority
-            .as_ref()
-            .ok_or(authorization_integration::REQUIRED)?;
         let input: PrepareTaskInput = serde_json::from_value(arguments)
             .map_err(|error| format!("invalid task authorization proposal: {error}"))?;
         if !(1..=MAX_TTL_MINUTES).contains(&input.ttl_minutes) {
@@ -473,7 +421,6 @@ impl TaskAuthorizationServer {
         };
         registration.validate().map_err(|error| error.to_string())?;
         let proposal = TaskProposal {
-            confirmation_method: authority.confirmation_host.method(),
             surface: input.surface,
             allowed_methods: input.allowed_methods,
             registration,
@@ -481,19 +428,15 @@ impl TaskAuthorizationServer {
             session: None,
             revoked: false,
         };
-        let payload = proposal_payload(&proposal_id, &proposal, "awaiting_user_input");
+        let payload = proposal_payload(&proposal_id, &proposal, "awaiting_client_authorization");
         self.proposals.insert(proposal_id, proposal);
         Ok(payload)
     }
 
     fn authorize_task(&mut self, arguments: Value) -> Result<Value, String> {
-        let authority = self
-            .authority
-            .as_ref()
-            .ok_or(authorization_integration::REQUIRED)?;
         if arguments.get("acknowledgement").is_some() {
             return Err(
-                "task authorization requires a verified human-presence decision; card text is not authority"
+                "authorize_task accepts only a server-generated proposal_id; client approval state is not passed as text"
                     .into(),
             );
         }
@@ -515,10 +458,6 @@ impl TaskAuthorizationServer {
         if proposal.receipt.is_some() {
             return Ok(proposal_payload(&input.proposal_id, proposal, "authorized"));
         }
-        authority
-            .confirmation_host
-            .verify(task_confirmation_request(&input.proposal_id, proposal))?;
-
         let proposal = self
             .proposals
             .get_mut(&input.proposal_id)
@@ -531,7 +470,7 @@ impl TaskAuthorizationServer {
         }
         if proposal.receipt.is_none() {
             proposal.receipt = Some(
-                authority
+                self.authority
                     .issuer
                     .register(proposal.registration.clone())
                     .map_err(|error| error.to_string())?,
@@ -541,10 +480,6 @@ impl TaskAuthorizationServer {
     }
 
     fn revoke_task(&mut self, arguments: Value) -> Result<Value, String> {
-        let authority = self
-            .authority
-            .as_ref()
-            .ok_or(authorization_integration::REQUIRED)?;
         let proposal_id = required_string(&arguments, "proposal_id")?;
         let proposal = self
             .proposals
@@ -554,7 +489,7 @@ impl TaskAuthorizationServer {
             .receipt
             .as_ref()
             .ok_or_else(|| "task authorization has not been issued".to_owned())?;
-        authority
+        self.authority
             .issuer
             .revoke(&receipt.authorization_id)
             .map_err(|error| error.to_string())?;
@@ -563,10 +498,6 @@ impl TaskAuthorizationServer {
     }
 
     async fn start_task(&mut self, arguments: Value) -> Result<Value, String> {
-        let authority = self
-            .authority
-            .as_ref()
-            .ok_or(authorization_integration::REQUIRED)?;
         let proposal_id = required_string(&arguments, "proposal_id")?.to_owned();
         let proposal = self
             .proposals
@@ -579,12 +510,16 @@ impl TaskAuthorizationServer {
             return Err("task authorization expired".into());
         }
         if proposal.receipt.is_none() {
-            return Err("task requires protected user-presence verification".into());
+            return Err("task requires client authorization".into());
         }
         if proposal.session.is_none() {
             proposal.session = Some(
-                open_task_session(&proposal_id, proposal, authority.authorization_host.clone())
-                    .await?,
+                open_task_session(
+                    &proposal_id,
+                    proposal,
+                    self.authority.authorization_host.clone(),
+                )
+                .await?,
             );
         }
         let target = proposal
@@ -620,7 +555,7 @@ impl TaskAuthorizationServer {
         } else if proposal.receipt.is_some() {
             "authorized"
         } else {
-            "awaiting_user_input"
+            "awaiting_client_authorization"
         };
         Ok(proposal_payload(proposal_id, proposal, status))
     }
@@ -644,7 +579,7 @@ impl TaskAuthorizationServer {
             return Err("task authorization expired".into());
         }
         if proposal.receipt.is_none() {
-            return Err("task requires protected user-presence verification".into());
+            return Err("task requires client authorization".into());
         }
         if !proposal
             .allowed_methods
@@ -776,7 +711,7 @@ fn proposal_payload(proposal_id: &str, proposal: &TaskProposal, status: &str) ->
         "ok": true,
         "provider": "dcc-cua",
         "runtime_version": env!("CARGO_PKG_VERSION"),
-        "confirmation_method": proposal.confirmation_method,
+        "confirmation_method": CLIENT_MANAGED_CONFIRMATION,
         "confirmation_digest_sha256": confirmation_digest(proposal_id, proposal),
         "proposal_id": proposal_id,
         "status": status,
@@ -788,7 +723,7 @@ fn proposal_payload(proposal_id: &str, proposal: &TaskProposal, status: &str) ->
         "allowed_browser_origins": proposal.registration.allowed_browser_origins,
         "expires_at_unix_ms": proposal.registration.expires_at_unix_ms,
         "requires_user_text_input": false,
-        "requires_system_user_verification": true,
+        "requires_system_user_verification": false,
         "native_action_popups": false,
         "secrets_accepted": false,
     })
@@ -827,75 +762,6 @@ fn confirmation_digest(proposal_id: &str, proposal: &TaskProposal) -> String {
         .expect("a retained task-authorization scope is always JSON serializable");
     let digest = Sha256::digest(encoded);
     digest.iter().map(|byte| format!("{byte:02x}")).collect()
-}
-
-fn task_confirmation_request(
-    proposal_id: &str,
-    proposal: &TaskProposal,
-) -> TaskAuthorizationConfirmationRequest {
-    let (window_handle, target) = match proposal.registration.target {
-        TrustedTaskAuthorizationTarget::ExactWindow {
-            process_id,
-            window_handle,
-        } => (
-            window_handle,
-            format!("Exact window\nPID: {process_id}\nHWND: {window_handle:#x}"),
-        ),
-        TrustedTaskAuthorizationTarget::OwnedBrowser(launch) => {
-            let launch_value = json!(launch);
-            let browser = launch_value["browser"]
-                .as_str()
-                .expect("validated owned-browser family serializes as a string");
-            let profile = launch_value["profile"]
-                .as_str()
-                .expect("validated owned-browser profile serializes as a string");
-            (
-                0,
-                format!(
-                    "DCC-CUA-owned browser\nBrowser: {browser}\nProfile: {profile}\nPID/HWND: derived after authorization"
-                ),
-            )
-        }
-    };
-    let methods = proposal.allowed_methods.join(", ");
-    let actions = proposal
-        .registration
-        .allowed_actions
-        .iter()
-        .map(|scope| {
-            let origin = scope
-                .browser_origin
-                .as_deref()
-                .map(|value| format!(" @ {value}"))
-                .unwrap_or_default();
-            format!(
-                "{} / {} / {}{}",
-                scope.action, scope.input_kind, scope.authorization_category, origin
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n- ");
-    let origins = if proposal.registration.allowed_browser_origins.is_empty() {
-        "none".to_owned()
-    } else {
-        proposal.registration.allowed_browser_origins.join(", ")
-    };
-    let digest = confirmation_digest(proposal_id, proposal);
-    TaskAuthorizationConfirmationRequest::new(
-        window_handle,
-        format!(
-            "Approve this exact DCC-CUA task?\n\nApplication: {}\nProposal: {}\nSurface: {}\n{}\nAllowed methods: {}\nAllowed actions:\n- {}\nAllowed browser origins: {}\nScope SHA-256: {}\nExpires: {}",
-            proposal.registration.application_label,
-            proposal_id,
-            proposal.surface.as_str(),
-            target,
-            methods,
-            actions,
-            origins,
-            digest,
-            proposal.registration.expires_at_unix_ms,
-        ),
-    )
 }
 
 fn method_allowed(surface: TaskSurface, method: &str) -> bool {
@@ -979,7 +845,7 @@ fn authorization_card_resource() -> Value {
         "uri": AUTHORIZATION_CARD_URI,
         "name": "dcc_cua_task_authorization_card",
         "title": "DCC-CUA task authorization",
-        "description": "Review one exact bounded DCC-CUA task before protected native user-presence verification.",
+        "description": "Review one exact bounded DCC-CUA task before the connected agent host authorizes it.",
         "mimeType": AUTHORIZATION_CARD_MIME,
         "_meta": authorization_card_resource_meta(),
     })
@@ -987,7 +853,7 @@ fn authorization_card_resource() -> Value {
 
 fn authorization_card_resource_meta() -> Value {
     json!({
-        "openai/widgetDescription": "Review the exact DCC-CUA task scope, then complete protected Windows user verification before the task starts.",
+        "openai/widgetDescription": "Review the exact DCC-CUA task scope, then authorize it through the connected agent host.",
         "openai/widgetPrefersBorder": true,
         "openai/widgetCSP": {
             "connect_domains": [],
@@ -1096,7 +962,7 @@ fn tool_definitions() -> Vec<Value> {
         json!({
             "name": "prepare_task_authorization",
             "title": "Prepare DCC-CUA task authorization",
-            "description": "Render one inline authorization card for a bounded exact PID/HWND task. This does not authorize the task; protected Windows user verification is still required. Never include credentials or secret values.",
+            "description": "Prepare and optionally render one exact bounded task proposal. The connected Agent host owns user approval; never include credentials or secret values.",
             "inputSchema": {
                 "type": "object",
                 "additionalProperties": false,
@@ -1168,17 +1034,19 @@ fn tool_definitions() -> Vec<Value> {
                 "openai/toolInvocation/invoked": "Task authorization ready"
             }
         }),
-        app_only_tool(
+        agent_host_tool(
             "authorize_task",
             "Authorize DCC-CUA task",
-            "Called only from the authorization card. The server opens protected Windows user verification; card text, model input, and process identity cannot authorize. Scope comes from the retained server-side proposal.",
+            "Call only after the connected Agent host has approved the exact retained proposal. This issues no wider scope than the server-generated proposal_id.",
             proposal_id_schema(),
+            true,
         ),
-        app_only_tool(
+        agent_host_tool(
             "revoke_task_authorization",
             "Revoke DCC-CUA task",
-            "Called only from the authorization card to revoke the exact task immediately.",
+            "Revoke the exact task immediately from any connected Agent host.",
             proposal_id_schema(),
+            false,
         ),
         json!({
             "name": "task_authorization_status",
@@ -1213,17 +1081,19 @@ fn tool_definitions() -> Vec<Value> {
     ]
 }
 
-fn app_only_tool(name: &str, title: &str, description: &str, input_schema: Value) -> Value {
+fn agent_host_tool(
+    name: &str,
+    title: &str,
+    description: &str,
+    input_schema: Value,
+    destructive: bool,
+) -> Value {
     json!({
         "name": name,
         "title": title,
         "description": description,
         "inputSchema": input_schema,
-        "annotations": {"readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
-        "_meta": {
-            "ui": {"visibility": ["app"]},
-            "openai/visibility": "private"
-        }
+        "annotations": {"readOnlyHint": false, "destructiveHint": destructive, "idempotentHint": true, "openWorldHint": false}
     })
 }
 
@@ -1275,13 +1145,7 @@ pub async fn run() -> Result<(), Box<dyn Error>> {
     let parent_identity_available = verify_trusted_embedding_parent()
         .map(|attestation| !attestation.label().is_empty())
         .unwrap_or(false);
-    let mut server = match native_task_authorization_confirmation_host() {
-        Some(confirmation_host) => TaskAuthorizationServer::with_confirmation_host(
-            parent_identity_available,
-            confirmation_host,
-        ),
-        None => TaskAuthorizationServer::diagnostic_only(parent_identity_available),
-    };
+    let mut server = TaskAuthorizationServer::new(parent_identity_available);
     let mut input = BufReader::new(tokio::io::stdin());
     let mut output = BufWriter::new(tokio::io::stdout());
     loop {
