@@ -253,8 +253,11 @@ pub(crate) fn document_for_platform(exact_window_pixels_available: bool) -> Valu
             },
         },
     });
-    document["host"]["task_authorization"]["cli_integration"] =
-        crate::authorization_integration::status();
+    document["host"]["task_authorization"]["cli_integration"] = if cfg!(windows) {
+        crate::authorization_integration::available_status()
+    } else {
+        crate::authorization_integration::status()
+    };
     if !exact_window_pixels_available {
         document["runtime"]
             .as_object_mut()

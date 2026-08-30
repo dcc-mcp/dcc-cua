@@ -13,8 +13,6 @@
     dt { font-weight: 650; }
     dd { margin: 0; overflow-wrap: anywhere; }
     ul { margin: 8px 0 14px; padding-left: 20px; }
-    label { display: block; font-weight: 650; margin: 12px 0 6px; }
-    input { box-sizing: border-box; width: 100%; padding: 9px 11px; border: 1px solid color-mix(in srgb, CanvasText 24%, transparent); border-radius: 8px; background: Canvas; color: CanvasText; }
     .actions { display: flex; gap: 8px; margin-top: 12px; }
     button { border: 0; border-radius: 8px; padding: 9px 14px; font-weight: 650; cursor: pointer; }
     button.primary { background: #087cd8; color: white; }
@@ -28,15 +26,13 @@
 <body>
   <section class="card" aria-labelledby="title">
     <h2 id="title">DCC-CUA 任务授权</h2>
-    <div class="subtitle">任务开始前输入一次；授权范围内不再显示原生动作弹框。</div>
+    <div class="subtitle">确认范围后完成一次 Windows 受保护用户在场验证；授权范围内不再显示原生动作弹框。</div>
     <dl id="scope"></dl>
     <strong>允许的 Host 方法</strong>
     <ul id="methods"></ul>
     <strong>允许的敏感动作与风险范围</strong>
     <ul id="actions"></ul>
-    <div class="hint">此卡片不收集密码、令牌或凭证。凭证只能通过 DCC-CUA secret handle 进入目标页面。</div>
-    <label for="ack">输入“授权”或“AUTHORIZE”</label>
-    <input id="ack" type="text" autocomplete="off" spellcheck="false" aria-describedby="status">
+    <div class="hint">此卡片不收集密码、令牌或凭证。优先使用 Windows Hello；未配置时要求实体键盘序列，注入或自动化按键不会签发权限。</div>
     <div class="actions">
       <button id="authorize" class="primary" type="button">授权并开始</button>
       <button id="revoke" class="secondary" type="button" disabled>撤销</button>
@@ -64,6 +60,7 @@
           ["应用", text(next.application_label)],
           ["Surface", text(next.surface)],
           ["浏览器 Origins", (next.allowed_browser_origins ?? []).join(", ") || "无"],
+          ["范围摘要", text(next.confirmation_digest_sha256)],
           ["到期", new Date(Number(next.expires_at_unix_ms)).toLocaleString()],
         ];
         byId("scope").replaceChildren(...rows.flatMap(([key, value]) => {
@@ -91,14 +88,10 @@
       };
       byId("authorize").addEventListener("click", async () => {
         if (!proposal) return setStatus("授权范围尚未加载。", "error");
-        const acknowledgement = byId("ack").value.trim();
-        if (acknowledgement !== "授权" && acknowledgement.toUpperCase() !== "AUTHORIZE") {
-          return setStatus("请输入“授权”或“AUTHORIZE”。", "error");
-        }
         byId("authorize").disabled = true;
-        setStatus("正在授权…");
+        setStatus("等待 Windows 受保护用户在场验证…");
         try {
-          const result = await call("authorize_task", { proposal_id: proposal.proposal_id, acknowledgement });
+          const result = await call("authorize_task", { proposal_id: proposal.proposal_id });
           if (!result?.ok) throw new Error(result?.error || "授权失败");
           byId("revoke").disabled = false;
           setStatus("已授权，正在启动并派生精确目标…");
@@ -108,7 +101,6 @@
           const hwnd = Number(started.target?.window_handle || 0);
           if (!pid || !hwnd) throw new Error("任务启动未返回精确 PID/HWND");
           setStatus(`已启动：PID ${pid} / HWND 0x${hwnd.toString(16)}。任务范围内不会再出现原生动作弹框。`, "ok");
-          byId("ack").disabled = true;
           await window.openai?.sendFollowUpMessage?.({
             prompt: `我已授权并启动 DCC-CUA 任务 ${proposal.proposal_id}。provider=${started.provider} runtime=${started.runtime_version} pid=${pid} hwnd=0x${hwnd.toString(16)}，请在该精确范围内继续。`,
             scrollToBottom: true,

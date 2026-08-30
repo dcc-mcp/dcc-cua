@@ -33,10 +33,21 @@ fn manifest_advertises_the_split_capability_task_authorization_broker() {
         assert_eq!(authorization[field], false);
     }
     let integration = &authorization["cli_integration"];
-    assert_eq!(integration["status"], "integration_required");
-    assert_eq!(integration["authorization_available"], false);
-    assert_eq!(integration["user_confirmation_available"], false);
-    assert_eq!(integration["card_available"], false);
+    if cfg!(windows) {
+        assert_eq!(integration["status"], "available");
+        assert_eq!(integration["authorization_available"], true);
+        assert_eq!(integration["user_confirmation_available"], true);
+        assert_eq!(integration["card_available"], true);
+        assert_eq!(
+            integration["confirmation_method"],
+            "windows_protected_user_presence"
+        );
+    } else {
+        assert_eq!(integration["status"], "integration_required");
+        assert_eq!(integration["authorization_available"], false);
+        assert_eq!(integration["user_confirmation_available"], false);
+        assert_eq!(integration["card_available"], false);
+    }
     assert_eq!(integration["process_identity_can_authorize"], false);
     assert_eq!(
         integration["signed_receipt_protocol"]["status"],

@@ -292,6 +292,18 @@ let stopped = host.interrupt_all().await?;
 原生工具返回的图像附件会提升为 MCP 原生 `image` content。默认 `host` 格式保持不变；
 该选项只投影 Host 响应，不会把 JSONL 传输伪装成完整的 MCP JSON-RPC Server。
 
+## MCP 任务授权
+
+Windows 上打包的 `dcc-cua mcp-server` 会公开
+`authorization_integration_status`、有界授权卡以及仅供卡片调用的任务工具。
+运行时优先使用 Windows Hello/PIN/生物识别完成受保护的用户在场验证；未配置时，
+原生提示要求用户在实体键盘依次按 F12、F11、F10，底层键盘钩子会拒绝标记为注入或
+低完整性注入的事件。授权卡只显示运行时保留的精确 PID/HWND、范围摘要和到期时间；
+卡片文字、客户端或进程身份、环境变量、stdin 以及伪造回执字段都不能签发权限。
+非 Windows 打包运行时仍返回 `integration_required` 并失败关闭。完整边界见
+[插件说明](docs/agent-plugin.md)与
+[跨客户端任务授权 ADR](docs/adr/0027-cross-client-task-authorization.md)。
+
 ## 开发门槛
 
 Windows 的 `vx.toml` 固定 MSVC 14.44、Spectre 缓解库和 Windows SDK 环境。

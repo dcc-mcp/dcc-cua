@@ -3,24 +3,32 @@ use serde_json::{Value, json};
 
 use super::*;
 
-fn test_server() -> TaskAuthorizationServer {
-    let embedding = crate::trusted_embedding::validate_codex_identity(
-        "codex.exe",
-        "OpenAI.Codex_2p2nqsd0c76g0",
-    )
-    .unwrap();
-    // Only this separated test fixture can construct model-facing issuer
-    // authority. Production process attestation is diagnostic, never consent.
-    let (issuer, authorization_host) = dcc_cua_host::trusted_task_authorization_broker();
-    TaskAuthorizationServer {
-        authority: Some(TaskAuthorizationAuthority {
-            embedding,
-            issuer,
-            authorization_host,
-        }),
-        parent_identity_available: true,
-        proposals: BTreeMap::new(),
+struct TestConfirmationHost;
+
+impl TaskAuthorizationConfirmationHost for TestConfirmationHost {
+    fn method(&self) -> &'static str {
+        "test_verified_human_presence"
     }
+
+    fn verify(&self, _request: TaskAuthorizationConfirmationRequest) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+struct RejectingConfirmationHost;
+
+impl TaskAuthorizationConfirmationHost for RejectingConfirmationHost {
+    fn method(&self) -> &'static str {
+        "test_rejected_human_presence"
+    }
+
+    fn verify(&self, _request: TaskAuthorizationConfirmationRequest) -> Result<(), String> {
+        Err("protected user verification was rejected".into())
+    }
+}
+
+fn test_server() -> TaskAuthorizationServer {
+    TaskAuthorizationServer::with_confirmation_host(true, Arc::new(TestConfirmationHost))
 }
 
 #[rstest]
@@ -159,10 +167,7 @@ fn owned_browser_proposal_exposes_only_a_closed_launch_spec_until_start() {
 
     let proposal_id = prepared["proposal_id"].as_str().unwrap();
     server
-        .authorize_task(json!({
-            "proposal_id": proposal_id,
-            "acknowledgement": "授权"
-        }))
+        .authorize_task(json!({"proposal_id": proposal_id}))
         .unwrap();
     let proposal = server.proposals.get(proposal_id).unwrap();
     let grant = task_session_grant(proposal, proposal.receipt.as_ref().unwrap());
@@ -172,6 +177,42 @@ fn owned_browser_proposal_exposes_only_a_closed_launch_spec_until_start() {
     assert_eq!(
         grant["allowed_browser_origins"],
         json!(["https://addons.mozilla.org"])
+    );
+}
+
+#[rstest]
+fn protected_prompt_binds_the_exact_proposal_target_and_closed_scope() {
+    let mut server = test_server();
+    let prepared = server.prepare_task(browser_task()).unwrap();
+    let proposal_id = prepared["proposal_id"].as_str().unwrap();
+    let proposal = server.proposals.get(proposal_id).unwrap();
+    let request = task_confirmation_request(proposal_id, proposal);
+
+    assert_eq!(request.owner_window_handle, 7);
+    for exact_text in [
+        format!("Proposal: {proposal_id}"),
+        "Surface: browser".to_owned(),
+        "PID: 42".to_owned(),
+        "HWND: 0x7".to_owned(),
+        "Allowed methods: browser_snapshot, browser_type".to_owned(),
+        "browser_type / browser / credential @ https://chromewebstore.google.com".to_owned(),
+        "Allowed browser origins: https://chromewebstore.google.com".to_owned(),
+    ] {
+        assert!(
+            request.message.contains(&exact_text),
+            "missing {exact_text:?}"
+        );
+    }
+    let digest = confirmation_digest(proposal_id, proposal);
+    assert_eq!(digest.len(), 64);
+    assert!(
+        request
+            .message
+            .contains(&format!("Scope SHA-256: {digest}"))
+    );
+    assert_ne!(
+        digest,
+        confirmation_digest("substituted-proposal", proposal)
     );
 }
 
@@ -200,10 +241,7 @@ async fn authorized_task_call_requires_start_attestation_before_observation() {
     let prepared = server.prepare_task(browser_task()).unwrap();
     let proposal_id = prepared["proposal_id"].as_str().unwrap();
     server
-        .authorize_task(json!({
-            "proposal_id": proposal_id,
-            "acknowledgement": "授权"
-        }))
+        .authorize_task(json!({"proposal_id": proposal_id}))
         .unwrap();
 
     let error = server
@@ -219,7 +257,7 @@ async fn authorized_task_call_requires_start_attestation_before_observation() {
 }
 
 #[rstest]
-fn explicit_card_text_authorizes_once_without_exposing_broker_receipts() {
+fn explicit_card_text_cannot_issue_authority_without_verified_human_presence() {
     let mut server = test_server();
     let prepared = server.prepare_task(browser_task()).unwrap();
     let proposal_id = prepared["proposal_id"].as_str().unwrap();
@@ -237,16 +275,33 @@ fn explicit_card_text_authorizes_once_without_exposing_broker_receipts() {
             .is_err()
     );
 
-    let authorized = server
+    let error = server
         .authorize_task(json!({
             "proposal_id": proposal_id,
             "acknowledgement": "授权"
         }))
-        .unwrap();
+        .unwrap_err();
 
-    assert_eq!(authorized["status"], "authorized");
-    assert!(authorized.get("authorization_id").is_none());
-    assert!(authorized.get("window_capability").is_none());
+    assert_eq!(
+        error,
+        "task authorization requires a verified human-presence decision; card text is not authority"
+    );
+    assert!(server.proposals.get(proposal_id).unwrap().receipt.is_none());
+}
+
+#[rstest]
+fn rejected_human_presence_never_registers_task_authority() {
+    let mut server =
+        TaskAuthorizationServer::with_confirmation_host(false, Arc::new(RejectingConfirmationHost));
+    let prepared = server.prepare_task(browser_task()).unwrap();
+    let proposal_id = prepared["proposal_id"].as_str().unwrap();
+
+    let error = server
+        .authorize_task(json!({"proposal_id": proposal_id}))
+        .unwrap_err();
+
+    assert_eq!(error, "protected user verification was rejected");
+    assert!(server.proposals.get(proposal_id).unwrap().receipt.is_none());
 }
 
 #[rstest]
@@ -263,10 +318,7 @@ fn clipboard_capture_grants_read_and_clear_as_one_authorized_capability() {
     let prepared = server.prepare_task(task).unwrap();
     let proposal_id = prepared["proposal_id"].as_str().unwrap();
     server
-        .authorize_task(json!({
-            "proposal_id": proposal_id,
-            "acknowledgement": "授权"
-        }))
+        .authorize_task(json!({"proposal_id": proposal_id}))
         .unwrap();
     let proposal = server.proposals.get(proposal_id).unwrap();
     let receipt = proposal.receipt.as_ref().unwrap();
@@ -283,10 +335,7 @@ fn browser_prepare_is_granted_only_when_the_authorization_card_includes_the_meth
     let prepared = server.prepare_task(browser_task()).unwrap();
     let proposal_id = prepared["proposal_id"].as_str().unwrap();
     server
-        .authorize_task(json!({
-            "proposal_id": proposal_id,
-            "acknowledgement": "授权"
-        }))
+        .authorize_task(json!({"proposal_id": proposal_id}))
         .unwrap();
     let proposal = server.proposals.get(proposal_id).unwrap();
     let receipt = proposal.receipt.as_ref().unwrap();
@@ -305,10 +354,7 @@ async fn authorized_browser_prepare_accepts_the_exact_logical_task_session() {
     let prepared = server.prepare_task(task).unwrap();
     let proposal_id = prepared["proposal_id"].as_str().unwrap();
     server
-        .authorize_task(json!({
-            "proposal_id": proposal_id,
-            "acknowledgement": "授权"
-        }))
+        .authorize_task(json!({"proposal_id": proposal_id}))
         .unwrap();
     let proposal = server.proposals.get(proposal_id).unwrap();
     let host = browser_prepare_authorization_host(proposal_id, proposal).unwrap();
@@ -441,7 +487,7 @@ async fn authorized_browser_prepare_rejects_every_non_exact_driver_request() {
 }
 
 #[rstest]
-fn browser_prepare_driver_authorization_requires_the_card_method_and_user_receipt() {
+fn browser_prepare_driver_authorization_requires_the_card_method_and_verified_presence() {
     let mut server = test_server();
     let mut task = browser_task();
     task["allowed_methods"] = json!(["browser_snapshot", "browser_prepare"]);
@@ -453,10 +499,7 @@ fn browser_prepare_driver_authorization_requires_the_card_method_and_user_receip
     let prepared = server.prepare_task(browser_task()).unwrap();
     let proposal_id = prepared["proposal_id"].as_str().unwrap();
     server
-        .authorize_task(json!({
-            "proposal_id": proposal_id,
-            "acknowledgement": "授权"
-        }))
+        .authorize_task(json!({"proposal_id": proposal_id}))
         .unwrap();
     let method_omitted = server.proposals.get(proposal_id).unwrap();
     assert!(browser_prepare_authorization_host(proposal_id, method_omitted).is_none());
@@ -478,12 +521,12 @@ async fn task_call_fails_closed_before_user_input_and_never_requests_a_popup() {
         .await
         .unwrap_err();
 
-    assert!(error.contains("explicit user input"));
+    assert!(error.contains("protected user-presence verification"));
     assert_eq!(prepared["native_action_popups"], false);
 }
 
 #[rstest]
-fn authorization_card_accepts_no_secret_fields() {
+fn authorization_card_accepts_no_secret_or_model_visible_approval_fields() {
     let prepare = tool_definitions()
         .into_iter()
         .find(|tool| tool["name"] == "prepare_task_authorization")
@@ -492,8 +535,19 @@ fn authorization_card_accepts_no_secret_fields() {
     for forbidden in ["text", "secret", "password", "token", "credential"] {
         assert!(!properties.contains_key(forbidden));
     }
-    assert!(AUTHORIZATION_CARD_HTML.contains("type=\"text\""));
+    assert!(!AUTHORIZATION_CARD_HTML.contains("<input"));
     assert!(!AUTHORIZATION_CARD_HTML.contains("type=\"password\""));
+    assert!(AUTHORIZATION_CARD_HTML.contains("authorize_task"));
+    let authorize = tool_definitions()
+        .into_iter()
+        .find(|tool| tool["name"] == "authorize_task")
+        .unwrap();
+    assert_eq!(authorize["inputSchema"]["required"], json!(["proposal_id"]));
+    assert!(
+        authorize["inputSchema"]["properties"]
+            .get("acknowledgement")
+            .is_none()
+    );
 }
 
 #[rstest]
@@ -574,10 +628,7 @@ async fn task_call_scope_rejects_methods_not_shown_to_the_user() {
     let prepared = server.prepare_task(browser_task()).unwrap();
     let proposal_id = prepared["proposal_id"].as_str().unwrap();
     server
-        .authorize_task(json!({
-            "proposal_id": proposal_id,
-            "acknowledgement": "授权"
-        }))
+        .authorize_task(json!({"proposal_id": proposal_id}))
         .unwrap();
     let error = server
         .task_call(json!({

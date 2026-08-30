@@ -7,12 +7,17 @@ challenges, RFC 8785 JCS encoding, strict Ed25519 receipt verification,
 constructor-provisioned issuer trust, atomic single consumption, browser
 bootstrap separation, clock-rollback refusal, and live lease/key revocation.
 
-The packaged MCP server still has no trusted human-input transport or
-constructor-provisioned client key, so it remains diagnostic-only and reports
-`integration_required`. No desktop, cloud, CLI, Cursor, WorkBuddy, or CodeBuddy
-integration is certified by this ADR. Enabling a client still requires its own
-protected human UI/signer, authenticated challenge channel, deployment trust
-provisioning, and real launch-chain acceptance.
+The packaged Windows MCP server now has a process-local protected user-presence
+transport. It reports `available`, exposes a bounded authorization card, and
+uses Windows `UserConsentVerifier` when configured. Otherwise it requires the
+physical F12, F11, F10 sequence through a low-level keyboard hook that rejects
+injected and lower-integrity-injected events. The card and MCP Apps visibility
+metadata carry scope and routing only; neither is authority. Non-Windows
+packaged servers remain diagnostic-only and report `integration_required`.
+
+This ADR does not certify cloud/local routing, non-Windows confirmation,
+browser-store publication, or a particular client deployment. Those still
+require real launch-chain, exact-target, revocation, and user acceptance.
 
 Implementation and client acceptance are tracked in
 [Issue #237](https://github.com/dcc-mcp/dcc-cua/issues/237).
@@ -38,22 +43,28 @@ trusted public key.
 
 ## Implemented boundary
 
-The packaged `mcp-server` creates no issuer, even when parent attestation
-succeeds. It remains discoverable and exposes only the read-only
-`authorization_integration_status` tool. Attempted task calls return
-`integration_required` without reading proposal scope, creating capabilities,
-opening a Host session, launching a browser, or returning a UI resource.
+On Windows, the packaged `mcp-server` creates the split issuer/validator broker
+inside the process, but retains the issuer behind the native user-presence
+host. `authorize_task` accepts only the server-generated proposal ID. It
+displays the retained application, proposal, PID/HWND, SHA-256 scope digest,
+and expiry, then invokes the private issuer only after Windows verifies user
+presence. A click on the native prompt never authorizes the physical-sequence
+fallback. Chat/card text, forged signature or grant fields, environment,
+stdin, process identity, and injected keyboard events cannot register scope.
 
-The status document has schema `dcc-cua.authorization-integration.v1` and
-reports `authorization_available`, `user_confirmation_available`,
-`card_available`, and `process_identity_can_authorize` as false. Follow-up work
-requires `client_embedding_integration` and `deployment_trust_provisioning`,
-reported in `next_owners`. The packaged runtime does not accept a model-relayed
-receipt merely because the core constructor API exists. Installing a client
-transport alone cannot enable it. `parent_identity_available` is optional
-diagnostic evidence, never permission. Caller-selected client names cannot
-change this behavior. Existing constructor-owned, in-process embedding APIs
-remain available; their caller owns the real user-input boundary.
+The status document has schema `dcc-cua.authorization-integration.v1`. On
+Windows it reports the selected `confirmation_method` and makes the card plus
+private issuer tools available; on other platforms it exposes only the status
+tool and reports `integration_required`. In both modes,
+`process_identity_can_authorize` is false. Parent attestation is optional
+diagnostic evidence and caller-selected client names cannot change behavior.
+The packaged runtime still does not accept a model-relayed receipt merely
+because the core constructor API exists.
+
+Authorization is single-use for session open and binds the exact retained
+target, closed Host methods, final action/risk scopes, browser origins, expiry,
+and revocation state. The runtime rechecks expiry after the blocking verifier
+returns and the Host revalidates the resulting lease on every operation.
 
 Each Host transport connection now receives a random `connection_id` in its
 `hello` response. A cross-client challenge retains that exact value; broker
@@ -187,21 +198,21 @@ effect, target item and artifact/version where applicable.
 
 | Client | Current packaged MCP behavior | Required host work |
 | --- | --- | --- |
-| Codex desktop | Diagnostic only; helper metadata cannot hide status | Protected human UI/signer, independent trust provisioning, authenticated runtime channel; test the actual launch chain |
+| Codex desktop on Windows | Packaged protected user-presence verifier available; helper metadata cannot authorize | Install matching binary/plugin, test the actual prompt, exact target, effect and revocation chain |
 | Codex cloud | Diagnostic only; no implied local browser access | Authenticated local companion or cloud-owned target, audience-bound confirmation and revocation |
-| Codex CLI | Diagnostic only; stdin acknowledgement is untrusted | Independent protected confirmation service inaccessible to the model's shell |
-| Cursor | Diagnostic only; client name is not identity | Verified human UI/signing integration and lifecycle tests |
-| WorkBuddy | Diagnostic only; signed product identity is not user presence | Verify the deployed product and integrate its real human-input boundary |
-| CodeBuddy CLI | Diagnostic only; no inherited desktop trust | Independent confirmation service; do not infer CLI trust from a desktop executable |
+| Windows desktop/CLI clients | Same packaged verifier; client name, stdin and parent process are not authority | Verify each actual launch chain and card rendering; never substitute client metadata for user presence |
+| Cursor on non-Windows | Diagnostic only; client name is not identity | Verified human UI/signing integration and lifecycle tests |
+| WorkBuddy on non-Windows | Diagnostic only; signed product identity is not user presence | Verify the deployed product and integrate its real human-input boundary |
+| CodeBuddy CLI on non-Windows | Diagnostic only; no inherited desktop trust | Independent confirmation service; do not infer CLI trust from a desktop executable |
 | Unknown/noninteractive client | `integration_required` | May relay an independently signed exact challenge only after verifier integration; otherwise stop |
 | Trusted in-process embedding | Existing constructor-owned broker API | Keep issuer on authenticated user-input side; never expose registration as a model tool |
 
 DCC-CUA owns challenge types, strict decoding, the verifier adapter, atomic
 consumption, exact-target lease enforcement and diagnostics. Client owners own
 human presence, signer/key provisioning, trusted display, audience binding and
-revocation transport. Cloud/local routing requires both owners. No client
-transport has been verified here; enabling one is a separate implementation
-and acceptance step.
+revocation transport. Cloud/local routing requires both owners. The Windows
+transport is implemented here, but each installed client and real target still
+needs an acceptance run; source tests do not prove its UI.
 
 ## Validation and client rollout
 
@@ -235,8 +246,9 @@ Client rollout still requires:
 
 Packaged-server regressions exercise real subprocess MCP handshakes, all six
 client labels, absent/recognized parent identity, forged authorization fields,
-hidden card resources and no issuer creation. Core regressions execute the
-cryptographic protocol; neither test group certifies a client UI.
+app-only tools, rejected human-presence decisions, and physical-key transition
+logic including injected events. Core regressions execute the cryptographic
+protocol; neither test group certifies a live client UI or physical input path.
 
 ## Alternatives and costs
 
@@ -250,4 +262,4 @@ A common receipt permits untrusted relays and avoids per-client policy forks,
 but introduces key lifecycle and local/cloud routing costs. Retain the existing
 process-local broker; do not add a public authorization daemon, database, or
 general signing API in this repair. Review and test each protected client
-integration before its status can become available.
+deployment before claiming live acceptance.
