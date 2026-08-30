@@ -881,9 +881,9 @@ fn task_confirmation_request(
         proposal.registration.allowed_browser_origins.join(", ")
     };
     let digest = confirmation_digest(proposal_id, proposal);
-    TaskAuthorizationConfirmationRequest {
-        owner_window_handle: window_handle,
-        message: format!(
+    TaskAuthorizationConfirmationRequest::new(
+        window_handle,
+        format!(
             "Approve this exact DCC-CUA task?\n\nApplication: {}\nProposal: {}\nSurface: {}\n{}\nAllowed methods: {}\nAllowed actions:\n- {}\nAllowed browser origins: {}\nScope SHA-256: {}\nExpires: {}",
             proposal.registration.application_label,
             proposal_id,
@@ -895,7 +895,7 @@ fn task_confirmation_request(
             digest,
             proposal.registration.expires_at_unix_ms,
         ),
-    }
+    )
 }
 
 fn method_allowed(surface: TaskSurface, method: &str) -> bool {

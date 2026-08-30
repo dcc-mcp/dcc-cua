@@ -1,3 +1,4 @@
+#[cfg(windows)]
 use rstest::rstest;
 
 #[cfg(windows)]

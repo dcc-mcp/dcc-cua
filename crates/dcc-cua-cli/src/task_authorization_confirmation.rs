@@ -1,8 +1,27 @@
 use std::sync::Arc;
 
 pub(crate) struct TaskAuthorizationConfirmationRequest {
+    #[cfg(any(windows, test))]
     pub(crate) owner_window_handle: u64,
+    #[cfg(any(windows, test))]
     pub(crate) message: String,
+}
+
+impl TaskAuthorizationConfirmationRequest {
+    pub(crate) fn new(owner_window_handle: u64, message: String) -> Self {
+        #[cfg(any(windows, test))]
+        {
+            Self {
+                owner_window_handle,
+                message,
+            }
+        }
+        #[cfg(not(any(windows, test)))]
+        {
+            let _ = (owner_window_handle, message);
+            Self {}
+        }
+    }
 }
 
 pub(crate) trait TaskAuthorizationConfirmationHost: Send + Sync {
@@ -217,7 +236,7 @@ fn verify_non_injected_keyboard_sequence(
     }
 }
 
-#[cfg(any(windows, test))]
+#[cfg(windows)]
 pub(crate) fn physical_confirmation_transition(
     expected_index: usize,
     virtual_key: u32,
