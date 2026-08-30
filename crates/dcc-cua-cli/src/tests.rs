@@ -25,7 +25,6 @@ mod owned_process;
 mod process_output;
 mod profile_listing;
 mod snapshot_activation;
-mod task_authorization_confirmation;
 mod task_authorization_manifest;
 mod trusted_confirmation;
 mod update_tests;
@@ -1451,7 +1450,11 @@ fn manifest_is_a_machine_readable_core_launch_contract() {
         "dcc-cua-trusted-task-authorization-v1"
     );
     assert_eq!(task_authorization["modal"], false);
-    assert_eq!(task_authorization["ipc_can_mint_or_widen"], false);
+    assert_eq!(
+        task_authorization["ipc_can_mint_exact_retained_proposal"],
+        true
+    );
+    assert_eq!(task_authorization["ipc_can_widen"], false);
     assert_eq!(
         manifest["host"]["secret_vault"]["backend"],
         "platform_keyring"

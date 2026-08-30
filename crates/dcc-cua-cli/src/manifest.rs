@@ -168,8 +168,8 @@ pub(crate) fn document_for_platform(exact_window_pixels_available: bool) -> Valu
             "task_authorization": {
                 "request_schema": dcc_cua_host::TRUSTED_TASK_AUTHORIZATION_SCHEMA,
                 "mode": "split_constructor_capability_broker",
-                "issuer_owner": "authenticated_embedding_user_input",
-                "embedding": "constructor_owned_user_input",
+                "issuer_owner": "dcc_cua_mcp_server",
+                "embedding": "client_managed_agent_host",
                 "task_scoped": true,
                 "modal": false,
                 "registration_single_use": true,
@@ -188,12 +188,12 @@ pub(crate) fn document_for_platform(exact_window_pixels_available: bool) -> Valu
                 "action_risk_category_bound": true,
                 "browser_origin_bound": true,
                 "expiry_and_revocation_checked_per_action": true,
-                "ipc_can_mint_or_widen": false,
+                "ipc_can_widen": false,
                 "cli_arguments_can_authorize": false,
                 "environment_can_authorize": false,
                 "stdin_can_authorize": false,
                 "input_text_echoed": false,
-                "cli_fallback": "per_action_confirmation",
+                "cli_fallback": "none",
             },
             "secret_vault": {
                 "backend": "platform_keyring",
@@ -253,11 +253,10 @@ pub(crate) fn document_for_platform(exact_window_pixels_available: bool) -> Valu
             },
         },
     });
-    document["host"]["task_authorization"]["cli_integration"] = if cfg!(windows) {
-        crate::authorization_integration::available_status()
-    } else {
-        crate::authorization_integration::status()
-    };
+    document["host"]["task_authorization"]["authorization_owner"] = json!("connected_agent_host");
+    document["host"]["task_authorization"]["ipc_can_mint_exact_retained_proposal"] = json!(true);
+    document["host"]["task_authorization"]["cli_integration"] =
+        crate::authorization_integration::status();
     if !exact_window_pixels_available {
         document["runtime"]
             .as_object_mut()

@@ -28,7 +28,6 @@ mod profile_package;
 mod profile_state;
 mod secret_vault;
 mod semantic_profile;
-mod task_authorization_confirmation;
 mod trusted_confirmation;
 mod trusted_embedding;
 mod update;

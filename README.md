@@ -1003,7 +1003,7 @@ secret-value injection, sensitive intents, semantic controls classified above th
 window or process scope changes, and non-foreground raw input keep their
 existing confirmation or refusal behavior.
 
-For long-running automation, an embedding may instead collect explicit user
+For long-running automation, a trusted embedding may collect explicit user
 input before the task and install a constructor-owned
 `TrustedTaskAuthorizationHost` through `HostSecurityServices`. The task grant
 references only an authorization ID; Host IPC cannot mint or widen it. At
@@ -1017,19 +1017,18 @@ revocation, or validation failure return a typed `task_authorization_*` refusal
 and never fall back to a popup. An explicit task-start denial returns
 `task_authorization_denied`. Existing sessions without a task authorization
 retain per-action confirmation. The packaged CLI does not trust flags or
-redirected stdin as user presence, so it keeps per-action confirmation until a
-trusted non-modal input broker is installed by its embedding.
+redirected stdin as approval.
 
-On Windows, the packaged `dcc-cua mcp-server` exposes
-`authorization_integration_status`, the bounded authorization card, and its
-app-only task tools. It reports `available` only because the runtime installs a
-protected native user-presence verifier: Windows Hello/PIN/biometric when
-configured, otherwise the physical F12, F11, F10 sequence whose low-level hook
-rejects injected events. The card displays the exact retained PID/HWND, scope
-digest and expiry; card text, client/process identity, environment, stdin and
-forged receipt fields cannot authorize. Non-Windows packaged servers still
-report `integration_required`. See [plugin diagnosis](docs/agent-plugin.md) and
-the [cross-client contract](docs/adr/0027-cross-client-task-authorization.md).
+On every supported platform, the packaged `dcc-cua mcp-server` exposes
+`authorization_integration_status`, the bounded authorization card, and
+portable task tools. It reports `confirmation_method=client_managed`: Codex,
+DSH, Claude, WorkBuddy, or another connected Agent host owns the user/tool
+approval decision. DCC-CUA no longer opens Windows Hello or an F-key prompt.
+The retained proposal still displays the exact PID/HWND or owned-browser spec,
+scope digest, allowed methods/actions/origins, and expiry; `authorize_task`
+accepts only that server-generated proposal ID and cannot widen it. See
+[plugin diagnosis](docs/agent-plugin.md) and the
+[Agent-host authorization contract](docs/adr/0028-delegate-task-authorization-to-agent-hosts.md).
 
 Embeddings can construct that broker with
 `dcc_cua_host::trusted_task_authorization_broker`. It returns two separate

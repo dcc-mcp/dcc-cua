@@ -26,13 +26,13 @@
 <body>
   <section class="card" aria-labelledby="title">
     <h2 id="title">DCC-CUA 任务授权</h2>
-    <div class="subtitle">确认范围后完成一次 Windows 受保护用户在场验证；授权范围内不再显示原生动作弹框。</div>
+    <div class="subtitle">确认范围后由当前 Agent 宿主完成授权；DCC-CUA 不再显示操作系统级二次确认。</div>
     <dl id="scope"></dl>
     <strong>允许的 Host 方法</strong>
     <ul id="methods"></ul>
     <strong>允许的敏感动作与风险范围</strong>
     <ul id="actions"></ul>
-    <div class="hint">此卡片不收集密码、令牌或凭证。优先使用 Windows Hello；未配置时要求实体键盘序列，注入或自动化按键不会签发权限。</div>
+    <div class="hint">此卡片不收集密码、令牌或凭证。Agent 宿主负责用户审批，DCC-CUA 只签发并执行卡片中展示的精确范围。</div>
     <div class="actions">
       <button id="authorize" class="primary" type="button">授权并开始</button>
       <button id="revoke" class="secondary" type="button" disabled>撤销</button>
@@ -89,7 +89,7 @@
       byId("authorize").addEventListener("click", async () => {
         if (!proposal) return setStatus("授权范围尚未加载。", "error");
         byId("authorize").disabled = true;
-        setStatus("等待 Windows 受保护用户在场验证…");
+        setStatus("正在提交当前 Agent 宿主的授权…");
         try {
           const result = await call("authorize_task", { proposal_id: proposal.proposal_id });
           if (!result?.ok) throw new Error(result?.error || "授权失败");

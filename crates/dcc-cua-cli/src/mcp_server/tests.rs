@@ -3,72 +3,34 @@ use serde_json::{Value, json};
 
 use super::*;
 
-struct TestConfirmationHost;
-
-impl TaskAuthorizationConfirmationHost for TestConfirmationHost {
-    fn method(&self) -> &'static str {
-        "test_verified_human_presence"
-    }
-
-    fn verify(&self, _request: TaskAuthorizationConfirmationRequest) -> Result<(), String> {
-        Ok(())
-    }
-}
-
-struct RejectingConfirmationHost;
-
-impl TaskAuthorizationConfirmationHost for RejectingConfirmationHost {
-    fn method(&self) -> &'static str {
-        "test_rejected_human_presence"
-    }
-
-    fn verify(&self, _request: TaskAuthorizationConfirmationRequest) -> Result<(), String> {
-        Err("protected user verification was rejected".into())
-    }
-}
-
 fn test_server() -> TaskAuthorizationServer {
-    TaskAuthorizationServer::with_confirmation_host(true, Arc::new(TestConfirmationHost))
+    TaskAuthorizationServer::new(true)
 }
 
 #[rstest]
 #[tokio::test]
-async fn process_attestation_never_constructs_human_authority() {
+async fn client_managed_authorization_is_available_for_every_agent_host() {
     for parent_attested in [true, false] {
-        let mut server = TaskAuthorizationServer::diagnostic_only(parent_attested);
-        assert!(server.authority.is_none());
-        for method in [
-            "prepare_task_authorization",
-            "authorize_task",
-            "start_authorized_task",
-            "dcc_cua_task_call",
-        ] {
-            let result = server
-                .call_tool(json!({"name": method, "arguments": browser_task()}))
-                .await
-                .unwrap();
-            assert_eq!(result["structuredContent"]["code"], "integration_required");
-            assert_eq!(result["isError"], true);
-        }
-        assert_eq!(
-            server.prepare_task(browser_task()).unwrap_err(),
-            "integration_required"
-        );
-        assert_eq!(
-            server.authorize_task(json!({})).unwrap_err(),
-            "integration_required"
-        );
-        assert_eq!(
-            server.start_task(json!({})).await.unwrap_err(),
-            "integration_required"
-        );
-        assert!(server.proposals.is_empty());
+        let mut server = TaskAuthorizationServer::new(parent_attested);
+        let status = server.integration_status();
+        assert_eq!(status["status"], "available");
+        assert_eq!(status["authorization_available"], true);
+        assert_eq!(status["confirmation_method"], "client_managed");
+        assert_eq!(status["requires_system_user_verification"], false);
+        assert_eq!(status["confirmation_owner"], "agent_host");
+        assert_eq!(status["parent_identity_available"], parent_attested);
+
+        let prepared = server.prepare_task(browser_task()).unwrap();
+        assert_eq!(prepared["status"], "awaiting_client_authorization");
+        assert_eq!(prepared["requires_system_user_verification"], false);
+        assert_eq!(prepared["confirmation_method"], "client_managed");
+
         let resource = server
             .handle_rpc(json!({"jsonrpc":"2.0","id":1,"method":"resources/read",
         "params":{"uri":AUTHORIZATION_CARD_URI}}))
             .await
             .unwrap();
-        assert_eq!(resource["error"]["message"], "integration_required");
+        assert!(resource["result"]["contents"].is_array());
     }
 }
 
@@ -131,7 +93,7 @@ fn driver_authorization_request(public_session: &str) -> DriverAuthorizationRequ
 }
 
 #[rstest]
-fn issuer_tools_are_app_only_and_task_calls_cannot_mint_authority() {
+fn authorization_tools_are_portable_and_task_calls_cannot_mint_authority() {
     let tools = tool_definitions();
     let authorize = tools
         .iter()
@@ -141,7 +103,8 @@ fn issuer_tools_are_app_only_and_task_calls_cannot_mint_authority() {
         .iter()
         .find(|tool| tool["name"] == "dcc_cua_task_call")
         .unwrap();
-    assert_eq!(authorize["_meta"]["ui"]["visibility"], json!(["app"]));
+    assert!(authorize.get("_meta").is_none());
+    assert_eq!(authorize["annotations"]["destructiveHint"], true);
     assert!(
         task_call["inputSchema"]["properties"]
             .get("authorization_id")
@@ -181,35 +144,14 @@ fn owned_browser_proposal_exposes_only_a_closed_launch_spec_until_start() {
 }
 
 #[rstest]
-fn protected_prompt_binds_the_exact_proposal_target_and_closed_scope() {
+fn proposal_digest_binds_the_exact_target_and_closed_scope() {
     let mut server = test_server();
     let prepared = server.prepare_task(browser_task()).unwrap();
     let proposal_id = prepared["proposal_id"].as_str().unwrap();
     let proposal = server.proposals.get(proposal_id).unwrap();
-    let request = task_confirmation_request(proposal_id, proposal);
-
-    assert_eq!(request.owner_window_handle, 7);
-    for exact_text in [
-        format!("Proposal: {proposal_id}"),
-        "Surface: browser".to_owned(),
-        "PID: 42".to_owned(),
-        "HWND: 0x7".to_owned(),
-        "Allowed methods: browser_snapshot, browser_type".to_owned(),
-        "browser_type / browser / credential @ https://chromewebstore.google.com".to_owned(),
-        "Allowed browser origins: https://chromewebstore.google.com".to_owned(),
-    ] {
-        assert!(
-            request.message.contains(&exact_text),
-            "missing {exact_text:?}"
-        );
-    }
     let digest = confirmation_digest(proposal_id, proposal);
     assert_eq!(digest.len(), 64);
-    assert!(
-        request
-            .message
-            .contains(&format!("Scope SHA-256: {digest}"))
-    );
+    assert_eq!(prepared["confirmation_digest_sha256"], digest);
     assert_ne!(
         digest,
         confirmation_digest("substituted-proposal", proposal)
@@ -257,11 +199,11 @@ async fn authorized_task_call_requires_start_attestation_before_observation() {
 }
 
 #[rstest]
-fn explicit_card_text_cannot_issue_authority_without_verified_human_presence() {
+fn client_authorization_accepts_only_the_server_generated_proposal_id() {
     let mut server = test_server();
     let prepared = server.prepare_task(browser_task()).unwrap();
     let proposal_id = prepared["proposal_id"].as_str().unwrap();
-    assert_eq!(prepared["status"], "awaiting_user_input");
+    assert_eq!(prepared["status"], "awaiting_client_authorization");
     assert_eq!(
         prepared["allowed_methods"],
         json!(["browser_snapshot", "browser_type"])
@@ -284,23 +226,8 @@ fn explicit_card_text_cannot_issue_authority_without_verified_human_presence() {
 
     assert_eq!(
         error,
-        "task authorization requires a verified human-presence decision; card text is not authority"
+        "authorize_task accepts only a server-generated proposal_id; client approval state is not passed as text"
     );
-    assert!(server.proposals.get(proposal_id).unwrap().receipt.is_none());
-}
-
-#[rstest]
-fn rejected_human_presence_never_registers_task_authority() {
-    let mut server =
-        TaskAuthorizationServer::with_confirmation_host(false, Arc::new(RejectingConfirmationHost));
-    let prepared = server.prepare_task(browser_task()).unwrap();
-    let proposal_id = prepared["proposal_id"].as_str().unwrap();
-
-    let error = server
-        .authorize_task(json!({"proposal_id": proposal_id}))
-        .unwrap_err();
-
-    assert_eq!(error, "protected user verification was rejected");
     assert!(server.proposals.get(proposal_id).unwrap().receipt.is_none());
 }
 
@@ -487,7 +414,7 @@ async fn authorized_browser_prepare_rejects_every_non_exact_driver_request() {
 }
 
 #[rstest]
-fn browser_prepare_driver_authorization_requires_the_card_method_and_verified_presence() {
+fn browser_prepare_driver_authorization_requires_the_declared_method_and_client_authorization() {
     let mut server = test_server();
     let mut task = browser_task();
     task["allowed_methods"] = json!(["browser_snapshot", "browser_prepare"]);
@@ -507,7 +434,7 @@ fn browser_prepare_driver_authorization_requires_the_card_method_and_verified_pr
 
 #[rstest]
 #[tokio::test]
-async fn task_call_fails_closed_before_user_input_and_never_requests_a_popup() {
+async fn task_call_fails_closed_before_client_authorization_and_never_requests_a_popup() {
     let mut server = test_server();
     let prepared = server.prepare_task(browser_task()).unwrap();
     let proposal_id = prepared["proposal_id"].as_str().unwrap();
@@ -521,12 +448,12 @@ async fn task_call_fails_closed_before_user_input_and_never_requests_a_popup() {
         .await
         .unwrap_err();
 
-    assert!(error.contains("protected user-presence verification"));
+    assert!(error.contains("client authorization"));
     assert_eq!(prepared["native_action_popups"], false);
 }
 
 #[rstest]
-fn authorization_card_accepts_no_secret_or_model_visible_approval_fields() {
+fn authorization_flow_accepts_no_secret_or_free_form_approval_fields() {
     let prepare = tool_definitions()
         .into_iter()
         .find(|tool| tool["name"] == "prepare_task_authorization")
@@ -538,6 +465,8 @@ fn authorization_card_accepts_no_secret_or_model_visible_approval_fields() {
     assert!(!AUTHORIZATION_CARD_HTML.contains("<input"));
     assert!(!AUTHORIZATION_CARD_HTML.contains("type=\"password\""));
     assert!(AUTHORIZATION_CARD_HTML.contains("authorize_task"));
+    assert!(!AUTHORIZATION_CARD_HTML.contains("Windows"));
+    assert!(!AUTHORIZATION_CARD_HTML.contains("F12"));
     let authorize = tool_definitions()
         .into_iter()
         .find(|tool| tool["name"] == "authorize_task")

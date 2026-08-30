@@ -2,6 +2,12 @@
 
 ## Status
 
+Superseded for packaged MCP confirmation by
+[ADR 0028](0028-delegate-task-authorization-to-agent-hosts.md). The core
+issuer/validator, immutable-scope, exact-target, expiry, revocation, and
+single-use enforcement described below remains current; the Windows
+user-presence transport is retained here as historical rationale.
+
 Accepted for the DCC-CUA core boundary. The runtime now owns immutable bounded
 challenges, RFC 8785 JCS encoding, strict Ed25519 receipt verification,
 constructor-provisioned issuer trust, atomic single consumption, browser

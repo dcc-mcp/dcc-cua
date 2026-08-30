@@ -2,43 +2,28 @@
 
 ## Current authorization status
 
-On Windows, the packaged MCP server exposes the bounded authorization card and
-reports `available` from `authorization_integration_status`. Authorization is
-created only after a protected native user-presence check: Windows Hello/PIN/
-biometric through `UserConsentVerifier` when configured, otherwise the user
-must physically press F12, F11, then F10 in the native DCC-CUA prompt. The
-fallback rejects Windows low-level keyboard events marked injected or
-lower-integrity injected. Clicking the prompt, typing card text, a chat message
-saying “authorize,” client metadata, environment variables, and redirected
-stdin never create authority.
+The packaged MCP server exposes the same client-managed authorization flow on
+Windows, Linux, and macOS. `authorization_integration_status` reports
+`confirmation_method=client_managed`: Codex, DSH, Claude, WorkBuddy, or another
+connected Agent host owns the user/tool approval decision. DCC-CUA does not
+open Windows Hello or an F-key confirmation prompt.
 
-The prompt displays the exact application, proposal, PID/HWND, immutable scope
-digest, and expiry retained by the runtime. Only a successful protected check
-can invoke the private process-local issuer. Scope is still single-use for
-session open, short-lived, revalidated before every action, and revocable.
-MCP Apps `app`-only tool visibility limits routing but is not itself treated as
-human authorization.
+`prepare_task_authorization` returns the exact retained application, target,
+PID/HWND or owned-browser launch spec, immutable scope digest, allowed methods,
+final action/risk scopes, browser origins, and expiry. After its own approval,
+the Agent host calls `authorize_task` with only that proposal ID. DCC-CUA then
+issues a short-lived process-local receipt that is single-use for session open,
+revalidated before every action, and revocable.
 
-On non-Windows systems, the packaged server remains diagnostic-only and reports
-`integration_required` until an equivalent protected user-presence host is
-implemented. The cross-client signed-receipt verifier exists in the core API,
-but the packaged MCP runtime does not accept arbitrary model-relayed receipts.
+This delegates approval, not scope construction. Caller-supplied grant IDs,
+capabilities, receipts, free-form approval text, target changes, and scope
+widening are rejected. Parent process identity remains diagnostic only. CLI
+arguments, environment variables, and redirected stdin do not authorize.
 
-The previous bridge created an issuer after checking the MCP parent's package
-or signed product identity. That check does not prove invocation from a human
-surface. It also rejected desktop clients whose MCP launcher is an unpackaged
-signed helper without executable version resources. Parent identity is now
-diagnostic only; either result leaves the protected verifier decision unchanged.
-No ancestor traversal, publisher-only allowlist, CLI flag, environment variable,
-stdin acknowledgement, or generic automation fallback enables it.
-
-This keeps the previous process-identity-only path disabled. Parent identity is
-diagnostic context only and never selects or bypasses the protected verifier.
-
-[ADR 0027](adr/0027-cross-client-task-authorization.md) defines the common
-challenge/receipt protocol and the packaged Windows verifier boundary. It does
-not certify cloud or non-Windows confirmation surfaces, browser-store
-publication, or any action outside the exact retained task scope.
+[ADR 0028](adr/0028-delegate-task-authorization-to-agent-hosts.md) defines the
+portable Agent-host trust boundary. The core challenge/receipt and lease
+enforcement from [ADR 0027](adr/0027-cross-client-task-authorization.md)
+remains in force.
 
 Existing trusted **in-process** embeddings can still hold the move-only
 `TrustedTaskAuthorizationIssuer` on their authenticated user-input side and
@@ -50,9 +35,10 @@ unchanged. It does not turn a model-driven MCP process into a trusted embedding.
 This checkout is also a standalone Codex-compatible agent plugin. The manifest
 is [.codex-plugin/plugin.json](../.codex-plugin/plugin.json), and it exposes the
 repository `skills/` directory plus the local `dcc-cua mcp-server` bridge.
-The card is exposed by the packaged Windows server. Its private tools accept
-only server-generated proposal IDs; approval text, signatures, grant IDs, and
-caller-selected embedding labels are rejected.
+The optional card is exposed by every packaged server. The same tools are also
+normal MCP tools so clients without MCP Apps can inspect, authorize, start, and
+revoke tasks. They accept only server-generated proposal IDs; approval text,
+signatures, grant IDs, and caller-selected embedding labels are rejected.
 
 The repository marketplace installs the bounded
 `plugins/dcc-cua-computer-use` package. It contains only the MCP bridge
@@ -75,16 +61,17 @@ codex plugin add dcc-cua-computer-use@dcc-cua
 ```
 
 The checkout also includes `.claude-plugin/marketplace.json` and a portable
-`.mcp.json`. Claude, CodeBuddy, and WorkBuddy should import the bridge through
-their native plugin or MCP configuration and launch `dcc-cua mcp-server`
-directly. A shell changes the diagnostic parent identity but cannot provide
-human authorization either way.
+`.mcp.json`. DSH, Claude, CodeBuddy, and WorkBuddy should import the bridge
+through their native plugin or MCP configuration and launch
+`dcc-cua mcp-server` directly. Each host must apply its own approval policy
+before calling `authorize_task`; a shell changes only the diagnostic parent
+identity.
 
 Reconnect the MCP server after installing or upgrading it. Check
 `authorization_integration_status` before proposing browser work. A missing
-status tool is a plugin/startup/discovery problem; `integration_required` means
-discovery works on a platform without a protected confirmation host. On
-Windows, `confirmation_method` reports the verifier selected by the runtime.
+status tool is a plugin/startup/discovery problem. A current runtime reports
+schema `dcc-cua.authorization-integration.v2` and
+`confirmation_method=client_managed` on every supported platform.
 
 `browser_prepare` and `browser_snapshot` are session-bound Host operations.
 `missing field task_grant_id` means the caller did not supply an existing
@@ -92,8 +79,8 @@ authorized session's complete request, not that it should invent a grant.
 Use one persistent, exact-target session through the trusted embedding after
 integration. Never weaken PID/native-window/tab/origin or fresh-evidence checks.
 
-Browser or store validation still requires a fresh exact-target binding and a
-real human confirmation in the installed client. Account verification,
+Browser or store validation still requires a fresh exact-target binding and
+the installed Agent host's authorization. Account verification,
 CAPTCHA/2FA, agreements, payments, and the final irreversible store-publication
 step remain separate human boundaries.
 
