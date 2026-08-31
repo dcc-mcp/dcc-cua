@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.7.0](https://github.com/dcc-mcp/dcc-cua/compare/v1.6.2...v1.7.0) (2026-08-31)
+
+
+### Features
+
+* add protected task authorization ([4ec822a](https://github.com/dcc-mcp/dcc-cua/commit/4ec822a6fefda4ddfb14dc706c76581e5403ca17))
+* delegate task authorization to agent hosts ([28ad532](https://github.com/dcc-mcp/dcc-cua/commit/28ad532e5e97bee1a5c86416a3cea816be623f22))
+
+
+### Bug Fixes
+
+* keep task authorization portable ([ec7f69e](https://github.com/dcc-mcp/dcc-cua/commit/ec7f69ebd9cd44bd072698b6a5204e59dc7bcce5))
+* remove redundant task authorization gate ([#261](https://github.com/dcc-mcp/dcc-cua/issues/261)) ([013ac8b](https://github.com/dcc-mcp/dcc-cua/commit/013ac8b18546631cb0c44032148aa0f421ab5c28))
+
 ## [1.6.2](https://github.com/dcc-mcp/dcc-cua/compare/v1.6.1...v1.6.2) (2026-08-29)
 
 
