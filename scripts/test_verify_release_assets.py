@@ -31,6 +31,26 @@ def _write_complete_release(release_dir: Path, version: str = "1.6.0") -> None:
                 f"v{version}/{archive.name}",
                 "sha256": digest,
             },
+            "install": {
+                "directories": [
+                    ".claude-plugin",
+                    ".codex-plugin",
+                    "assets",
+                    "plugins",
+                    "skills",
+                ],
+                "files": [
+                    {"path": ".mcp.json", "sha256": "0" * 64},
+                    {"path": "LICENSE", "sha256": "1" * 64},
+                    {"path": "README.md", "sha256": "2" * 64},
+                    {"path": "README.zh-CN.md", "sha256": "3" * 64},
+                    {"path": "THIRD_PARTY_LICENSES.md", "sha256": "4" * 64},
+                    {
+                        "path": "dcc-cua.exe" if "windows" in target else "dcc-cua",
+                        "sha256": "5" * 64,
+                    },
+                ],
+            },
         }
         (release_dir / f"dcc-cua-install-manifest-{target}.json").write_text(
             json.dumps(manifest), encoding="utf-8"
@@ -94,6 +114,20 @@ class VerifyReleaseAssetsTests(unittest.TestCase):
             (release_dir / "unexpected-payload.bin").write_bytes(b"unexpected")
 
             with self.assertRaisesRegex(ValueError, "unexpected release assets"):
+                MODULE.verify_release_assets(release_dir, "1.6.0")
+
+    def test_install_manifest_paths_and_digests_fail_closed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            release_dir = Path(directory)
+            _write_complete_release(release_dir)
+            manifest_path = (
+                release_dir / "dcc-cua-install-manifest-x86_64-apple-darwin.json"
+            )
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["install"]["files"][0]["path"] = "../outside"
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "install manifest"):
                 MODULE.verify_release_assets(release_dir, "1.6.0")
 
 

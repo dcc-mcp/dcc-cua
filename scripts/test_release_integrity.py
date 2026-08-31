@@ -39,6 +39,26 @@ def _write_complete_release(release_dir: Path) -> None:
                 f"{TAG}/{archive.name}",
                 "sha256": digest,
             },
+            "install": {
+                "directories": [
+                    ".claude-plugin",
+                    ".codex-plugin",
+                    "assets",
+                    "plugins",
+                    "skills",
+                ],
+                "files": [
+                    {"path": ".mcp.json", "sha256": "0" * 64},
+                    {"path": "LICENSE", "sha256": "1" * 64},
+                    {"path": "README.md", "sha256": "2" * 64},
+                    {"path": "README.zh-CN.md", "sha256": "3" * 64},
+                    {"path": "THIRD_PARTY_LICENSES.md", "sha256": "4" * 64},
+                    {
+                        "path": "dcc-cua.exe" if "windows" in target else "dcc-cua",
+                        "sha256": "5" * 64,
+                    },
+                ],
+            },
         }
         (release_dir / f"dcc-cua-install-manifest-{target}.json").write_text(
             json.dumps(manifest), encoding="utf-8"

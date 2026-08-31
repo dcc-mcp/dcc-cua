@@ -7,7 +7,7 @@ import argparse
 import hashlib
 import json
 import re
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 RELEASE_TARGETS: tuple[tuple[str, str], ...] = (
     ("x86_64-pc-windows-msvc", "zip"),
@@ -16,6 +16,73 @@ RELEASE_TARGETS: tuple[tuple[str, str], ...] = (
     ("x86_64-apple-darwin", "tar.gz"),
 )
 _VERSION_PATTERN = re.compile(r"^\d+\.\d+\.\d+$")
+_SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+_PACKAGE_FILES = (
+    "LICENSE",
+    "THIRD_PARTY_LICENSES.md",
+    "README.md",
+    "README.zh-CN.md",
+    ".mcp.json",
+)
+_PACKAGE_DIRECTORIES = (
+    "assets",
+    "skills",
+    "plugins",
+    ".claude-plugin",
+    ".codex-plugin",
+)
+
+
+def _canonical_install_path(raw: object) -> str:
+    if not isinstance(raw, str):
+        raise ValueError("install manifest path must be a string")
+    path = PurePosixPath(raw)
+    if (
+        not raw
+        or "\\" in raw
+        or path.is_absolute()
+        or any(part in {"", ".", ".."} for part in path.parts)
+        or path.as_posix() != raw
+    ):
+        raise ValueError("install manifest path is not canonical")
+    return raw
+
+
+def _verify_install_manifest(install: object, target: str) -> None:
+    if not isinstance(install, dict) or set(install) != {"directories", "files"}:
+        raise ValueError("install manifest has an invalid install contract")
+    directories = install["directories"]
+    files = install["files"]
+    if not isinstance(directories, list) or not isinstance(files, list) or not files:
+        raise ValueError("install manifest has an invalid file plan")
+
+    canonical_directories = [_canonical_install_path(path) for path in directories]
+    if canonical_directories != sorted(set(canonical_directories)):
+        raise ValueError("install manifest directories must be unique and sorted")
+    directory_roots = {PurePosixPath(path).parts[0] for path in canonical_directories}
+    if not set(_PACKAGE_DIRECTORIES).issubset(directory_roots) or any(
+        root not in _PACKAGE_DIRECTORIES for root in directory_roots
+    ):
+        raise ValueError("install manifest contains an invalid package directory")
+
+    expected_binary = "dcc-cua.exe" if "windows" in target else "dcc-cua"
+    required_files = {expected_binary, *_PACKAGE_FILES}
+    file_paths: list[str] = []
+    for entry in files:
+        if not isinstance(entry, dict) or set(entry) != {"path", "sha256"}:
+            raise ValueError("install manifest has an invalid file entry")
+        path = _canonical_install_path(entry["path"])
+        digest = entry["sha256"]
+        if not isinstance(digest, str) or _SHA256_PATTERN.fullmatch(digest) is None:
+            raise ValueError("install manifest has an invalid file digest")
+        parts = PurePosixPath(path).parts
+        if path not in required_files and parts[0] not in _PACKAGE_DIRECTORIES:
+            raise ValueError("install manifest contains an invalid package file")
+        if len(parts) > 1 and "/".join(parts[:-1]) not in canonical_directories:
+            raise ValueError("install manifest file parent is not declared")
+        file_paths.append(path)
+    if file_paths != sorted(set(file_paths)) or not required_files.issubset(file_paths):
+        raise ValueError("install manifest files must be complete, unique, and sorted")
 
 
 def expected_asset_names(version: str) -> tuple[str, ...]:
@@ -70,6 +137,7 @@ def verify_release_assets(
             raise ValueError(f"invalid release manifest: {manifest_path.name}") from exc
         if not isinstance(manifest, dict) or manifest.get("target") != target:
             raise ValueError(f"manifest target does not match asset slot: {target}")
+        _verify_install_manifest(manifest.get("install"), target)
         expected_manifest = {
             "schema_version": 1,
             "name": "dcc-cua",
@@ -81,6 +149,7 @@ def verify_release_assets(
                 f"v{version}/{archive.name}",
                 "sha256": digest,
             },
+            "install": manifest["install"],
         }
         if manifest != expected_manifest:
             raise ValueError(f"manifest does not match archive: {manifest_path.name}")
