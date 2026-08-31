@@ -13,7 +13,6 @@ macro_rules! stdoutln {
 
 mod actions;
 mod authorization;
-mod authorization_integration;
 mod browser_extension;
 mod cli_args;
 mod failure_output;
@@ -29,7 +28,6 @@ mod profile_state;
 mod secret_vault;
 mod semantic_profile;
 mod trusted_confirmation;
-mod trusted_embedding;
 mod update;
 
 use actions::{

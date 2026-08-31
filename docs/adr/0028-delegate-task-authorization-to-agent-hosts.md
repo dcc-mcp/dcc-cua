@@ -1,86 +1,76 @@
-# ADR 0028: Delegate task authorization to agent hosts
+# ADR 0028: Delegate MCP task authorization to Agent Hosts
 
 ## Status
 
-Accepted. This supersedes the packaged-runtime confirmation policy in
-[ADR 0027](0027-cross-client-task-authorization.md). The immutable task scope,
-process-local issuer/validator split, exact-target checks, single-use session
-open, expiry, revocation, and per-operation validation remain unchanged.
+Accepted. This supersedes the packaged MCP confirmation policy in
+[ADR 0027](0027-cross-client-task-authorization.md) and the earlier three-step
+client-managed proposal flow. The internal immutable scope, process-local
+issuer/validator split, exact-target checks, expiry, revocation, and
+per-operation validation remain unchanged.
 
 ## Decision
 
-DCC-CUA delegates the human-approval decision to the connected Agent host.
-Codex, DSH, Claude, WorkBuddy, and other MCP clients may use their own approval
-UI or policy before calling `authorize_task`. The packaged MCP server no longer
-opens Windows Hello or a native physical-keyboard prompt, and the same flow is
-available on Windows, Linux, and macOS.
+The connected Agent Host is the user-authorization authority for the packaged
+MCP server. Its sandbox, tool approval, and permission policy decide whether a
+task may start. DCC-CUA does not repeat that decision with an authorization
+card, operating-system user-presence check, physical-key sequence, or separate
+model-visible authorize call.
 
-The portable flow is:
+The public lifecycle is:
 
-1. `prepare_task_authorization` retains an immutable proposal and returns its
-   exact PID/HWND or owned-browser launch spec, allowed Host methods, final
-   action/risk scopes, browser origins, digest, and expiry.
-2. The connected Agent host decides whether its user or policy authorizes that
-   proposal.
-3. `authorize_task` accepts only the server-generated `proposal_id` and issues
-   the process-local receipt for that retained scope.
-4. `start_authorized_task` consumes the receipt into one task session and
-   returns the exact provider/runtime/PID/HWND attestation.
-5. Every task call revalidates target identity, method/action/origin scope,
-   expiry, and revocation.
+1. `start_task` accepts one exact PID/HWND or closed owned-browser launch spec,
+   allowed Host methods, final action/risk scopes, browser origins, and expiry.
+2. The server validates and retains that request, creates a random internal
+   grant and process-local lease, opens the exact task session, and returns the
+   `task_id`, provider, runtime version, PID, and HWND.
+3. `dcc_cua_task_call` performs bounded work in that task and revalidates the
+   target, method, action, origin, expiry, and stop state on every call.
+4. `task_status` reports lifecycle state; `stop_task` closes the session and
+   revokes the internal lease.
 
-`authorize_task` is a normal MCP tool so clients without MCP Apps can use the
-same contract. It is marked destructive to give clients an opportunity to
-apply their own approval policy. The optional MCP App card remains a rendering
-of the retained proposal, not a Windows-specific transport.
+The MCP server exposes no resources and no `authorization_integration_status`,
+`prepare_task_authorization`, `authorize_task`, `start_authorized_task`, or
+`revoke_task_authorization` tools. The internal lease is an enforcement detail,
+not a second user-approval protocol.
 
 ## Trust boundary
 
-The owner of the MCP connection is now the authorization authority. DCC-CUA
-does not independently prove that a human clicked an Agent-host approval UI.
-A client that permits unattended `authorize_task` calls is explicitly choosing
-unattended authorization for that connection.
+An Agent Host that permits unattended `start_task` calls is explicitly choosing
+unattended automation for that connection. This matches IDE and Agent systems
+that already gate tools through sandboxes and permission policy, and avoids a
+duplicated prompt that blocks end-to-end automation.
 
-This is a deliberate portability and UX tradeoff. It removes the duplicated
-operating-system confirmation and makes behavior consistent across Agent
-products, but it is weaker than ADR 0027 against a malicious or
-prompt-injected client. Deployments that require independent human-presence
-proof must enforce it in the Agent host or keep using the constructor-owned
-`TrustedTaskAuthorizationIssuer` API outside the model-accessible MCP channel.
+The server still rejects caller-supplied grant IDs, authorization IDs,
+capabilities, receipts, target substitution, scope widening, and unknown
+fields. Exact PID/HWND or Host-derived browser identity, closed method/action
+scopes, expiry, stop/revocation, fresh observations, interruption, and
+post-action verification continue to fail closed.
 
-The server still refuses all caller-supplied grant IDs, capabilities, receipt
-fields, free-form approval text, scope changes, and target substitution.
-Process identity is diagnostic only and cannot widen a proposal. CLI arguments,
-environment variables, and redirected stdin cannot authorize a task.
+Deployments that require an independent human-presence service may use the
+constructor-owned `TrustedTaskAuthorizationIssuer` and signed receipt APIs from
+ADR 0027 in a custom in-process embedding. Those APIs are not exposed through
+the packaged MCP transport.
 
 ## Compatibility
 
-`authorization_integration_status` now reports schema
-`dcc-cua.authorization-integration.v2`, `confirmation_method=client_managed`,
-`confirmation_owner=agent_host`, and
-`requires_system_user_verification=false` on every supported platform.
-
-Clients should:
-
-- inspect the returned proposal rather than reconstructing it;
-- apply their own user/tool approval before `authorize_task`;
-- pass only the exact `proposal_id`;
-- report provider/runtime/PID/HWND before the first observation or input;
-- revoke or abandon the task when the user interrupts it.
+This replaces the unreleased client-managed MCP surface with a one-call task
+lifecycle. Clients must call `start_task`, retain its opaque `task_id`, report
+the returned provider/runtime/PID/HWND before work, use `dcc_cua_task_call`, and
+call `stop_task` when done. The behavior is identical on Windows, Linux, and
+macOS; no platform-specific confirmation integration is required.
 
 Account verification, CAPTCHA/2FA, agreements, payments, and final irreversible
-publication remain separate human boundaries. A task authorization never
-implies approval for those operations.
+publication remain separate human boundaries. A DCC-CUA task never implies
+approval for those external operations.
 
 ## Validation
 
 Regression coverage must prove:
 
-- authorization is available on all supported platforms without Windows APIs;
-- `authorize_task` is portable and accepts only a retained proposal ID;
-- free-form acknowledgement, secret, grant, receipt, and capability fields are
-  rejected;
-- an unissued proposal cannot start or execute a task;
-- exact target, method/action/origin, expiry, single-use, and revocation checks
-  remain unchanged;
-- the card and status payload contain no Windows-presence instructions.
+- all supported Agent Host labels receive the same four-tool MCP surface;
+- MCP resources are empty and removed authorization tools remain unavailable;
+- `start_task` creates the internal lease without user confirmation fields;
+- exact target, method/action/origin, expiry, stop, and revocation checks remain;
+- caller-supplied grant, receipt, capability, and widening fields are rejected;
+- subprocess behavior and the executable manifest match the source contract on
+  every supported platform.

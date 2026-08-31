@@ -6,8 +6,8 @@ Accepted
 
 ## Context
 
-ADR 0024 can authorize an existing exact PID/HWND, but browser-store work often
-needs a clean browser that does not exist before the user authorizes the task.
+ADR 0024 can bind an existing exact PID/HWND, but browser-store work often
+needs a clean browser that does not exist before the Agent Host starts the task.
 Allowing the client to submit an executable, profile directory, PID, HWND, or
 CDP endpoint would let it replace or widen the target after authorization.
 Attaching to an arbitrary existing browser would also cross account and origin
@@ -17,7 +17,7 @@ boundaries that the pre-task card did not establish.
 
 - Add a closed owned-browser target with only `browser=chromium` and
   `profile=isolated_new`.
-- After one authenticated user input, DCC-CUA starts one upstream session,
+- After one `start_task` request from the connected Agent Host, DCC-CUA starts one upstream session,
   calls CUA `browser_prepare`, and requires the
   `launched_isolated_browser` outcome with a newly created profile.
 - Derive the browser PID from that outcome, enumerate its on-screen windows,
@@ -27,7 +27,7 @@ boundaries that the pre-task card did not establish.
   cannot nominate, replace, replay, or widen that identity.
 - Keep the browser in the same upstream session so task stop, expiry, or Host
   teardown reaps its isolated profile lifecycle.
-- Require `start_authorized_task` before any model-visible observation or
+- Require `start_task` before any model-visible observation or
   input. Its response supplies `provider=dcc-cua`, runtime version, PID, and
   HWND for reporting before work begins.
 - Copy the authorized methods and exact HTTP(S) origins into the Host grant.
@@ -41,8 +41,8 @@ boundaries that the pre-task card did not establish.
 
 ### Positive
 
-- One pre-task authorization can launch and bind a clean browser without any
-  native per-action popup.
+- One Agent Host task start can launch and bind a clean browser without a second
+  authorization card or native per-action popup.
 - Browser identity and lifecycle are derived from DCC-CUA-owned effects rather
   than model-provided identifiers.
 - Store upload methods, origins, expiry, and revocation remain bounded by the
@@ -54,7 +54,7 @@ boundaries that the pre-task card did not establish.
   binding.
 - The initial release supports Chromium only; other browser families require a
   new typed contract and implementation.
-- A Host restart destroys the owned session and requires fresh user input.
+- A Host restart destroys the owned session and requires a fresh `start_task` request.
 
 ## Failure modes and mitigations
 

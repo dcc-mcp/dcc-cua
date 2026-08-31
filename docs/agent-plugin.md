@@ -1,59 +1,48 @@
 # dcc-cua agent plugin
 
-## Current authorization status
+## Automation model
 
-The packaged MCP server exposes the same client-managed authorization flow on
-Windows, Linux, and macOS. `authorization_integration_status` reports
-`confirmation_method=client_managed`: Codex, DSH, Claude, WorkBuddy, or another
-connected Agent host owns the user/tool approval decision. DCC-CUA does not
-open Windows Hello or an F-key confirmation prompt.
+The packaged `dcc-cua mcp-server` treats the connected Agent Host as the user
+authorization boundary. Codex, DSH, Claude, Cursor, WorkBuddy, CodeBuddy, and
+other hosts apply their own sandbox, tool approval, and permission policy before
+calling DCC-CUA. The runtime does not repeat that decision with an authorization
+card, Windows Hello/PIN, a physical-key sequence, or another prompt.
 
-`prepare_task_authorization` returns the exact retained application, target,
-PID/HWND or owned-browser launch spec, immutable scope digest, allowed methods,
-final action/risk scopes, browser origins, and expiry. After its own approval,
-the Agent host calls `authorize_task` with only that proposal ID. DCC-CUA then
-issues a short-lived process-local receipt that is single-use for session open,
-revalidated before every action, and revocable.
+The MCP surface is intentionally small:
 
-This delegates approval, not scope construction. Caller-supplied grant IDs,
-capabilities, receipts, free-form approval text, target changes, and scope
-widening are rejected. Parent process identity remains diagnostic only. CLI
-arguments, environment variables, and redirected stdin do not authorize.
+- `start_task` declares one exact PID/HWND or a closed DCC-CUA-owned browser
+  launch plus bounded Host methods, final action scopes, browser origins, and
+  expiry. It creates the internal lease, opens the session, and returns
+  provider, runtime version, PID, and HWND in one call.
+- `dcc_cua_task_call` performs one method inside that retained task scope.
+- `task_status` reads lifecycle state.
+- `stop_task` closes the session and revokes its internal lease.
 
-[ADR 0028](adr/0028-delegate-task-authorization-to-agent-hosts.md) defines the
-portable Agent-host trust boundary. The core challenge/receipt and lease
-enforcement from [ADR 0027](adr/0027-cross-client-task-authorization.md)
-remains in force.
+There are no MCP UI resources or separate prepare, authorize, and start tools.
+The internal constructor-owned broker remains process-local so an MCP caller
+cannot supply or widen grant IDs, authorization IDs, capabilities, receipts,
+targets, methods, action categories, origins, or expiry after `start_task`.
+Every call still revalidates the retained scope, target identity, lease expiry,
+stop state, fresh-observation fence, and post-action state.
 
-Existing trusted **in-process** embeddings can still hold the move-only
-`TrustedTaskAuthorizationIssuer` on their authenticated user-input side and
-install only its validator in `HostSecurityServices`. This library boundary is
-unchanged. It does not turn a model-driven MCP process into a trusted embedding.
+[ADR 0028](adr/0028-delegate-task-authorization-to-agent-hosts.md) records this
+boundary. The lower-level signed cross-client receipt API described by
+[ADR 0027](adr/0027-cross-client-task-authorization.md) remains available to
+custom in-process embeddings, but it is not part of the packaged MCP flow.
 
 ## Plugin discovery
 
-This checkout is also a standalone Codex-compatible agent plugin. The manifest
-is [.codex-plugin/plugin.json](../.codex-plugin/plugin.json), and it exposes the
-repository `skills/` directory plus the local `dcc-cua mcp-server` bridge.
-The optional card is exposed by every packaged server. The same tools are also
-normal MCP tools so clients without MCP Apps can inspect, authorize, start, and
-revoke tasks. They accept only server-generated proposal IDs; approval text,
-signatures, grant IDs, and caller-selected embedding labels are rejected.
-
-The repository marketplace installs the bounded
-`plugins/dcc-cua-computer-use` package. It contains only the MCP bridge
-manifest and configuration; Rust sources, build output, and the repository
-`target/` directory are never copied into the Codex plugin cache. The root
-manifest remains available for development checkouts that also need the
-repository Skills.
+This checkout is a standalone Codex-compatible agent plugin. The root manifest
+is [.codex-plugin/plugin.json](../.codex-plugin/plugin.json); it exposes the
+repository `skills/` directory and local `dcc-cua mcp-server` bridge. The
+marketplace package under `plugins/dcc-cua-computer-use` contains only the MCP
+manifest and configuration, never Rust sources, build output, or `target/`.
 
 ## Installation
 
-Install the checkout as a local plugin using the Codex plugin installation flow,
-or point a development Codex session at the repository checkout. Install the
-matching `dcc-cua` binary on `PATH`, then start a new Codex task so the MCP
-server is discovered. The skill files can also be copied into an agent's skills
-directory when local plugin installation is unavailable.
+Install the matching released `dcc-cua` binary on `PATH`, install or point the
+Agent Host at this plugin, then start a new task so the MCP server is
+rediscovered:
 
 ```powershell
 codex plugin marketplace add .
@@ -61,36 +50,30 @@ codex plugin add dcc-cua-computer-use@dcc-cua
 ```
 
 The checkout also includes `.claude-plugin/marketplace.json` and a portable
-`.mcp.json`. DSH, Claude, CodeBuddy, and WorkBuddy should import the bridge
-through their native plugin or MCP configuration and launch
-`dcc-cua mcp-server` directly. Each host must apply its own approval policy
-before calling `authorize_task`; a shell changes only the diagnostic parent
-identity.
+`.mcp.json`. Hosts without Codex plugin support may launch `dcc-cua mcp-server`
+directly through their native MCP configuration.
 
-Reconnect the MCP server after installing or upgrading it. Check
-`authorization_integration_status` before proposing browser work. A missing
-status tool is a plugin/startup/discovery problem. A current runtime reports
-schema `dcc-cua.authorization-integration.v2` and
-`confirmation_method=client_managed` on every supported platform.
+After installation, confirm that `tools/list` exposes exactly `start_task`,
+`task_status`, `stop_task`, and `dcc_cua_task_call`, while `resources/list` is
+empty. A stale authorization tool or card means an older runtime/plugin is
+still loaded; reconnect or restart the Agent Host after upgrading.
 
-`browser_prepare` and `browser_snapshot` are session-bound Host operations.
-`missing field task_grant_id` means the caller did not supply an existing
-authorized session's complete request, not that it should invent a grant.
-Use one persistent, exact-target session through the trusted embedding after
-integration. Never weaken PID/native-window/tab/origin or fresh-evidence checks.
+Before the first observation or input, report the `provider=dcc-cua`, runtime
+version, exact PID, and exact HWND returned by `start_task`. Use one persistent
+task for the exact target, take fresh observations, verify every mutation, and
+call `stop_task` on success, failure, interruption, or abandonment.
 
-Browser or store validation still requires a fresh exact-target binding and
-the installed Agent host's authorization. Account verification,
-CAPTCHA/2FA, agreements, payments, and the final irreversible store-publication
-step remain separate human boundaries.
+Account verification, CAPTCHA/2FA, agreements, payments, and final irreversible
+publication remain separate human boundaries. Removing the duplicated DCC-CUA
+authorization card does not automate those external account/security decisions.
 
 ## Other agent hosts
 
-Hosts that support the `.codex-plugin/plugin.json` layout can load the checkout
-directly. Hosts that only support an `SKILL.md` directory can load the individual
+Hosts that support `.codex-plugin/plugin.json` can load the checkout directly.
+Hosts that only support an `SKILL.md` directory can load the individual
 directories under `skills/`; `skills/cua-cli` is the base contract and
 `skills/game-cua-acceptance` adds the packaged-game workflow.
 
-The game workflow deliberately keeps the Host session alive so the user-facing
-ControlBanner remains visible. It uses bounded `keypress` actions with
-`duration_ms` for held WASD movement and requires fresh post-action evidence.
+The game workflow keeps the Host session alive so the user-facing ControlBanner
+remains visible. It uses bounded `keypress` actions with `duration_ms` for held
+WASD movement and requires fresh post-action evidence.

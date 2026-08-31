@@ -1,8 +1,8 @@
 {
   "mcpServers": {
-    "dccCuaTaskAuthorization": {
-      "title": "DCC-CUA task authorization",
-      "description": "Check DCC-CUA trusted human authorization integration before exact-window tasks; unavailable integrations fail closed.",
+    "dccCuaTaskAutomation": {
+      "title": "DCC-CUA task automation",
+      "description": "Start and operate exact-window DCC-CUA tasks through the connected Agent Host without a second authorization prompt.",
       "cwd": ".",
       "command": "dcc-cua",
       "args": ["mcp-server"],

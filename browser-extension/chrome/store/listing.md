@@ -21,9 +21,10 @@ extension action in the intended HTTP or HTTPS tab to pair it. Navigating or
 closing that tab clears its pairing.
 
 This extension is a companion to DCC-CUA, not a standalone automation service.
-A supported trusted human authorization integration and the native host are
-required. Pairing a tab alone does not authorize a task. Unsupported clients
-must stop rather than creating their own authorization.
+The native host and a connected Agent Host with its own sandbox and permission
+policy are required. Pairing a tab alone does not bypass those permissions or
+start a task. Unsupported clients must stop rather than creating their own
+control path.
 
 The extension requests no blanket host permission. It communicates with the
 local native host using Native Messaging. Website information returned to the
