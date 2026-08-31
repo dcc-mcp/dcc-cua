@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.8.0](https://github.com/dcc-mcp/dcc-cua/compare/v1.7.1...v1.8.0) (2026-08-31)
+
+
+### Features
+
+* add Unity runtime perception profile ([a7f0fd5](https://github.com/dcc-mcp/dcc-cua/commit/a7f0fd5788bc872c95d89231cd07a1aa78d747c6))
+
 ## [1.7.1](https://github.com/dcc-mcp/dcc-cua/compare/v1.7.0...v1.7.1) (2026-08-31)
 
 
