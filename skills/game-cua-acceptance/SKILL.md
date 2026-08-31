@@ -47,6 +47,11 @@ maintenance refresh.
    title bar. UIA title-bar nodes are not gameplay evidence and can otherwise
    select the generic tap route; held movement requires a newer WGC frame and
    the exact-window scoped input route.
+5. If a developer-owned build exposes an optional read-only Profile state
+   source, accept it only after its process/window identity matches the bound
+   PID/HWND and its coordinate space maps to the current exact-window snapshot.
+   The state source is perception evidence, not action authority. For the Unity
+   reference contract, see `examples/profiles/unity-runtime`.
 
 ## Game control loop
 

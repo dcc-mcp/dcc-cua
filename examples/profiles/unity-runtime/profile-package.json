@@ -1,0 +1,18 @@
+{
+  "schema_version": 2,
+  "kind": "dcc-cua-profile-package",
+  "id": "unity-runtime",
+  "version": "1.0.0",
+  "display_name": "Unity Runtime Sample",
+  "description": "Customizable exact-window profile and opt-in read-only UI companion for packaged Unity players.",
+  "license": "MIT-0",
+  "artifacts": [
+    {"type": "semantic_profile", "path": "profile.json"},
+    {"type": "agent_skill", "path": "SKILL.md"},
+    {"type": "documentation", "path": "README.md"},
+    {"type": "fixtures", "path": "fixtures"},
+    {"type": "companion_source", "path": "companion"}
+  ],
+  "requires": {"dcc_cua": ">=1.7.1"},
+  "platforms": ["windows"]
+}

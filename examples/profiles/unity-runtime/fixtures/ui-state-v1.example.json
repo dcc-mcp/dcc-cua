@@ -1,0 +1,28 @@
+{
+  "schemaVersion": "1.0.0",
+  "tickId": 7,
+  "application": {
+    "processId": 4242,
+    "windowId": 123456,
+    "productName": "DCC CUA Unity Runtime Sample",
+    "version": "1.0.0"
+  },
+  "coordinateSpace": {
+    "width": 1920,
+    "height": 1080,
+    "origin": "top_left",
+    "units": "unity_render_pixels"
+  },
+  "scene": "MainMenu",
+  "widgets": [
+    {
+      "id": "ugui:17248",
+      "path": "MainMenu/Canvas[0]/PlayButton[0]",
+      "kind": "Button",
+      "label": "Play",
+      "labelSource": "visible_text",
+      "interactable": true,
+      "rect": {"x": 760.0, "y": 660.0, "width": 400.0, "height": 96.0}
+    }
+  ]
+}

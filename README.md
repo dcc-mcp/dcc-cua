@@ -407,6 +407,18 @@ perception layer. `backend_unavailable` continues to mean that a provider or
 backend failed and must not be treated as proof that the window class is
 permanently inaccessible.
 
+For a packaged Unity player, use the repository's
+[`examples/profiles/unity-runtime`](examples/profiles/unity-runtime) package as
+the supported starting point. An unmodified build stays on the exact-window
+pixel, zoom, and `live_observation` path. A developer-owned or test build may
+explicitly embed the package's disabled-by-default read-only companion to expose
+active uGUI/UI Toolkit labels and render-pixel rectangles through
+`profile-state`. The executable selector must be customized for the product,
+and companion state is accepted only when its process ID and window ID equal
+the current DCC-CUA binding. The companion has no action endpoint; all input,
+authorization, and post-action verification remain in the exact-window Host.
+Do not inject it into a third-party build or use it to bypass security controls.
+
 Every successful window `snapshot` names its image coordinate system in
 `coordinate_space`. Its `width` and `height` are read from the encoded PNG IHDR
 and therefore describe the pixels in the file written by `--output`, not an
