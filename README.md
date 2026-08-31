@@ -1003,7 +1003,7 @@ secret-value injection, sensitive intents, semantic controls classified above th
 window or process scope changes, and non-foreground raw input keep their
 existing confirmation or refusal behavior.
 
-For long-running automation, a trusted embedding may collect explicit user
+For long-running automation, an embedding may instead collect explicit user
 input before the task and install a constructor-owned
 `TrustedTaskAuthorizationHost` through `HostSecurityServices`. The task grant
 references only an authorization ID; Host IPC cannot mint or widen it. At
@@ -1015,20 +1015,20 @@ An active exact-target lease runs without modal prompts. Once a session referenc
 task authorization, target changes, origin changes, category changes, expiry,
 revocation, or validation failure return a typed `task_authorization_*` refusal
 and never fall back to a popup. An explicit task-start denial returns
-`task_authorization_denied`. Existing sessions without a task authorization
-retain per-action confirmation. The packaged CLI does not trust flags or
-redirected stdin as approval.
+`task_authorization_denied`. Existing non-MCP sessions without a task
+authorization retain per-action confirmation.
 
-On every supported platform, the packaged `dcc-cua mcp-server` exposes
-`authorization_integration_status`, the bounded authorization card, and
-portable task tools. It reports `confirmation_method=client_managed`: Codex,
-DSH, Claude, WorkBuddy, or another connected Agent host owns the user/tool
-approval decision. DCC-CUA no longer opens Windows Hello or an F-key prompt.
-The retained proposal still displays the exact PID/HWND or owned-browser spec,
-scope digest, allowed methods/actions/origins, and expiry; `authorize_task`
-accepts only that server-generated proposal ID and cannot widen it. See
-[plugin diagnosis](docs/agent-plugin.md) and the
-[Agent-host authorization contract](docs/adr/0028-delegate-task-authorization-to-agent-hosts.md).
+The packaged `dcc-cua mcp-server` treats the connected Agent Host as the user
+authorization boundary. IDE, Agent sandbox, and permission policy decide
+whether the tool may be called; DCC-CUA does not repeat that decision with an
+authorization card, Windows Hello/PIN, a physical-key sequence, or another
+prompt. One `start_task` call declares the exact PID/HWND or owned-browser
+target plus its bounded Host methods and action scopes. The runtime creates a
+short-lived internal lease and returns provider, runtime version, PID, and HWND
+before any observation or input. `dcc_cua_task_call` still enforces target,
+scope, expiry, stop state, fresh observations, and post-action verification.
+See [plugin integration](docs/agent-plugin.md) and
+[ADR 0028](docs/adr/0028-delegate-task-authorization-to-agent-hosts.md).
 
 Embeddings can construct that broker with
 `dcc_cua_host::trusted_task_authorization_broker`. It returns two separate

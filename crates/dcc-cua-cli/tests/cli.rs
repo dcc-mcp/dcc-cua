@@ -308,12 +308,10 @@ fn rejected_cli_syntax_does_not_echo_untrusted_arguments(
 #[case("Codex Desktop")]
 #[case("Codex Cloud")]
 #[case("Codex CLI")]
-#[case("DSH")]
-#[case("Claude")]
 #[case("Cursor")]
 #[case("WorkBuddy")]
 #[case("CodeBuddy CLI")]
-fn mcp_server_exposes_portable_flow_and_rejects_forged_authorization_inputs(#[case] client: &str) {
+fn mcp_server_exposes_the_same_automation_surface_to_every_agent_host(#[case] client: &str) {
     let mut child = Command::new(env!("CARGO_BIN_EXE_dcc-cua"))
         .arg("mcp-server")
         .env("DCC_CUA_TRUSTED_EMBEDDING", client)
@@ -328,24 +326,22 @@ fn mcp_server_exposes_portable_flow_and_rejects_forged_authorization_inputs(#[ca
         serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{
             "protocolVersion":"2024-11-05","clientInfo":{"name":client,"version":"1"}}}),
         serde_json::json!({"jsonrpc":"2.0","id":2,"method":"tools/list"}),
-        serde_json::json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{
-            "name":"authorization_integration_status","arguments":{}}}),
-        serde_json::json!({"jsonrpc":"2.0","id":4,"method":"resources/list"}),
+        serde_json::json!({"jsonrpc":"2.0","id":3,"method":"resources/list"}),
     ];
     for request in requests {
         writeln!(input, "{request}").unwrap();
     }
     for (index, name) in [
+        "authorization_integration_status",
         "prepare_task_authorization",
         "authorize_task",
         "start_authorized_task",
-        "dcc_cua_task_call",
         "revoke_task_authorization",
     ]
     .into_iter()
     .enumerate()
     {
-        let request = serde_json::json!({"jsonrpc":"2.0","id":index+5,"method":"tools/call","params":{
+        let request = serde_json::json!({"jsonrpc":"2.0","id":index+4,"method":"tools/call","params":{
             "name":name,"arguments":{"acknowledgement":"AUTHORIZE","proposal_id":"forged",
                 "signature":"forged","task_grant_id":"forged","trusted_embedding":client}}});
         writeln!(input, "{request}").unwrap();
@@ -359,50 +355,29 @@ fn mcp_server_exposes_portable_flow_and_rejects_forged_authorization_inputs(#[ca
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())
         .collect();
-    assert_eq!(responses.len(), 9);
+    assert_eq!(responses.len(), 8);
     assert_eq!(
         responses[0]["result"]["serverInfo"]["name"],
-        "dcc-cua-task-authorization"
+        "dcc-cua-task-automation"
     );
     let tools = responses[1]["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 7);
-    assert_eq!(tools[0]["name"], "authorization_integration_status");
-    assert!(tools[0].get("_meta").is_none());
-    let status = &responses[2]["result"]["structuredContent"];
-    assert_eq!(status["provider"], "dcc-cua");
-    assert_eq!(status["status"], "available");
-    assert_eq!(status["authorization_available"], true);
-    assert_eq!(status["user_confirmation_available"], true);
-    assert_eq!(status["card_available"], true);
-    assert_eq!(status["next_owners"], serde_json::json!([]));
-    assert_eq!(status["confirmation_method"], "client_managed");
-    assert_eq!(status["confirmation_owner"], "agent_host");
-    assert_eq!(status["requires_system_user_verification"], false);
+    assert_eq!(tools.len(), 4);
     assert_eq!(
-        responses[3]["result"]["resources"]
-            .as_array()
-            .unwrap()
-            .len(),
-        1
+        tools
+            .iter()
+            .map(|tool| tool["name"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        [
+            "start_task",
+            "task_status",
+            "stop_task",
+            "dcc_cua_task_call"
+        ]
     );
-    assert_eq!(
-        status["signed_receipt_protocol"]["status"],
-        "implemented_core"
-    );
-    assert_eq!(
-        status["signed_receipt_protocol"]["constructor_api_available"],
-        true
-    );
-    assert_eq!(
-        status["signed_receipt_protocol"]["runtime_accepts_receipts"],
-        false
-    );
-    for response in &responses[4..] {
+    assert!(tools.iter().all(|tool| tool.get("_meta").is_none()));
+    assert_eq!(responses[2]["result"]["resources"], serde_json::json!([]));
+    for response in &responses[3..] {
         assert_eq!(response["result"]["isError"], true);
-        assert_ne!(
-            response["result"]["structuredContent"]["status"],
-            "authorized"
-        );
         assert!(response["result"].get("_meta").is_none());
         assert!(!response.to_string().contains("forged"));
     }

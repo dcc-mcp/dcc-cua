@@ -193,7 +193,7 @@ pub(crate) fn document_for_platform(exact_window_pixels_available: bool) -> Valu
                 "environment_can_authorize": false,
                 "stdin_can_authorize": false,
                 "input_text_echoed": false,
-                "cli_fallback": "none",
+                "cli_fallback": "per_action_confirmation",
             },
             "secret_vault": {
                 "backend": "platform_keyring",
@@ -255,8 +255,6 @@ pub(crate) fn document_for_platform(exact_window_pixels_available: bool) -> Valu
     });
     document["host"]["task_authorization"]["authorization_owner"] = json!("connected_agent_host");
     document["host"]["task_authorization"]["ipc_can_mint_exact_retained_proposal"] = json!(true);
-    document["host"]["task_authorization"]["cli_integration"] =
-        crate::authorization_integration::status();
     if !exact_window_pixels_available {
         document["runtime"]
             .as_object_mut()

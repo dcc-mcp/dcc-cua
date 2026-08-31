@@ -42,10 +42,11 @@ Review this platform distinction during AMO validation.
 
 ## Release gates
 
-1. Complete and accept the trusted authorization integration tracked in
-   [#237](https://github.com/dcc-mcp/dcc-cua/issues/237). A paired extension tab
-   does not replace a DCC-CUA task authorization. Do not claim that every model
-   client works, or submit a public release whose documented setup cannot work.
+1. Install a released runtime and plugin that expose the automation-first
+   `start_task` MCP surface. The connected Agent Host or IDE permission layer is
+   the user-authorization boundary; a paired extension tab does not bypass its
+   sandbox or permissions. Do not claim that every Agent Host works without a
+   real exact-target runtime check.
 2. Run `npm ci`, `npm run check`, `npm test`, `npm run build`, and
    `python -B scripts/test_extension.py` in the extension directory using Node
    22 or later. Existing CI and release jobs run the icon checks; no store

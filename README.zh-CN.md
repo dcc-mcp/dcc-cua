@@ -292,16 +292,16 @@ let stopped = host.interrupt_all().await?;
 原生工具返回的图像附件会提升为 MCP 原生 `image` content。默认 `host` 格式保持不变；
 该选项只投影 Host 响应，不会把 JSONL 传输伪装成完整的 MCP JSON-RPC Server。
 
-## MCP 任务授权
+## MCP 自动化任务
 
-所有支持的平台上，`dcc-cua mcp-server` 都会公开
-`authorization_integration_status`、有界授权卡和可移植的任务工具，并报告
-`confirmation_method=client_managed`。Codex、DSH、Claude、WorkBuddy 或其他 Agent
-宿主负责用户/工具审批；DCC-CUA 不再弹出 Windows Hello 或实体按键二次确认。
-运行时仍保留精确 PID/HWND 或 owned-browser 规格、范围摘要、允许的方法/动作/origin
-和到期时间；`authorize_task` 只接受服务端生成的 proposal ID，不能扩展范围。
-完整边界见[插件说明](docs/agent-plugin.md)与
-[Agent 宿主授权 ADR](docs/adr/0028-delegate-task-authorization-to-agent-hosts.md)。
+`dcc-cua mcp-server` 把已连接的 Agent Host 视为用户授权边界；IDE、Agent 沙箱和权限
+策略负责是否允许调用。MCP 层不再重复显示授权卡，也不再要求 Windows Hello、PIN、
+实体按键序列或任何额外确认。Agent 一次调用 `start_task` 即可声明精确 PID/HWND 或
+受控浏览器目标、允许的方法和动作范围；运行时会在进程内生成短期 task lease 并返回
+`provider`、运行时版本、PID 与 HWND。后续 `dcc_cua_task_call` 仍会校验目标、范围、
+有效期、停止状态、新鲜观察和动作后状态，因此移除的是重复的人机门禁，而不是精确绑定
+和验证契约。完整边界见[插件说明](docs/agent-plugin.md)与
+[Agent Host 自动化 ADR](docs/adr/0028-delegate-task-authorization-to-agent-hosts.md)。
 
 ## 开发门槛
 

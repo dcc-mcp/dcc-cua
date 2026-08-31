@@ -4,34 +4,7 @@ use serde_json::{Value, json};
 use super::*;
 
 fn test_server() -> TaskAuthorizationServer {
-    TaskAuthorizationServer::new(true)
-}
-
-#[rstest]
-#[tokio::test]
-async fn client_managed_authorization_is_available_for_every_agent_host() {
-    for parent_attested in [true, false] {
-        let mut server = TaskAuthorizationServer::new(parent_attested);
-        let status = server.integration_status();
-        assert_eq!(status["status"], "available");
-        assert_eq!(status["authorization_available"], true);
-        assert_eq!(status["confirmation_method"], "client_managed");
-        assert_eq!(status["requires_system_user_verification"], false);
-        assert_eq!(status["confirmation_owner"], "agent_host");
-        assert_eq!(status["parent_identity_available"], parent_attested);
-
-        let prepared = server.prepare_task(browser_task()).unwrap();
-        assert_eq!(prepared["status"], "awaiting_client_authorization");
-        assert_eq!(prepared["requires_system_user_verification"], false);
-        assert_eq!(prepared["confirmation_method"], "client_managed");
-
-        let resource = server
-            .handle_rpc(json!({"jsonrpc":"2.0","id":1,"method":"resources/read",
-        "params":{"uri":AUTHORIZATION_CARD_URI}}))
-            .await
-            .unwrap();
-        assert!(resource["result"]["contents"].is_array());
-    }
+    TaskAuthorizationServer::automatic()
 }
 
 fn browser_task() -> Value {
@@ -50,6 +23,51 @@ fn browser_task() -> Value {
         }],
         "ttl_minutes": 15
     })
+}
+
+#[rstest]
+fn connected_agent_host_creates_a_task_lease_without_secondary_confirmation() {
+    let mut server = test_server();
+
+    let created = server.prepare_task(browser_task()).unwrap();
+    let task_id = created["task_id"].as_str().unwrap();
+    let task = server.proposals.get(task_id).unwrap();
+
+    assert_eq!(created["status"], "ready");
+    assert!(task.receipt.is_some());
+    assert!(created.get("confirmation_method").is_none());
+}
+
+#[rstest]
+#[tokio::test]
+async fn mcp_surface_has_no_secondary_authorization_ui_or_tools() {
+    let mut server = test_server();
+    let tools = tool_definitions();
+    let tool_names = tools
+        .iter()
+        .filter_map(|tool| tool["name"].as_str())
+        .collect::<Vec<_>>();
+
+    assert!(tool_names.contains(&"start_task"));
+    assert!(tool_names.contains(&"task_status"));
+    assert!(tool_names.contains(&"stop_task"));
+    assert!(tool_names.contains(&"dcc_cua_task_call"));
+    assert!(
+        tool_names
+            .iter()
+            .all(|name| !name.contains("authorization") && *name != "authorize_task")
+    );
+
+    let resources = server
+        .handle_rpc(json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "resources/list",
+            "params": {}
+        }))
+        .await
+        .unwrap();
+    assert_eq!(resources["result"]["resources"], json!([]));
 }
 
 fn owned_browser_task() -> Value {
@@ -93,18 +111,12 @@ fn driver_authorization_request(public_session: &str) -> DriverAuthorizationRequ
 }
 
 #[rstest]
-fn authorization_tools_are_portable_and_task_calls_cannot_mint_authority() {
+fn task_calls_cannot_mint_or_widen_the_internal_runtime_lease() {
     let tools = tool_definitions();
-    let authorize = tools
-        .iter()
-        .find(|tool| tool["name"] == "authorize_task")
-        .unwrap();
     let task_call = tools
         .iter()
         .find(|tool| tool["name"] == "dcc_cua_task_call")
         .unwrap();
-    assert!(authorize.get("_meta").is_none());
-    assert_eq!(authorize["annotations"]["destructiveHint"], true);
     assert!(
         task_call["inputSchema"]["properties"]
             .get("authorization_id")
@@ -118,7 +130,7 @@ fn authorization_tools_are_portable_and_task_calls_cannot_mint_authority() {
 }
 
 #[rstest]
-fn owned_browser_proposal_exposes_only_a_closed_launch_spec_until_start() {
+fn owned_browser_task_exposes_only_a_closed_launch_spec_until_start() {
     let mut server = test_server();
     let prepared = server.prepare_task(owned_browser_task()).unwrap();
 
@@ -128,10 +140,7 @@ fn owned_browser_proposal_exposes_only_a_closed_launch_spec_until_start() {
     assert!(prepared["target"]["process_id"].is_null());
     assert!(prepared["target"]["window_handle"].is_null());
 
-    let proposal_id = prepared["proposal_id"].as_str().unwrap();
-    server
-        .authorize_task(json!({"proposal_id": proposal_id}))
-        .unwrap();
+    let proposal_id = prepared["task_id"].as_str().unwrap();
     let proposal = server.proposals.get(proposal_id).unwrap();
     let grant = task_session_grant(proposal, proposal.receipt.as_ref().unwrap());
     assert!(grant["process_id"].is_null());
@@ -140,21 +149,6 @@ fn owned_browser_proposal_exposes_only_a_closed_launch_spec_until_start() {
     assert_eq!(
         grant["allowed_browser_origins"],
         json!(["https://addons.mozilla.org"])
-    );
-}
-
-#[rstest]
-fn proposal_digest_binds_the_exact_target_and_closed_scope() {
-    let mut server = test_server();
-    let prepared = server.prepare_task(browser_task()).unwrap();
-    let proposal_id = prepared["proposal_id"].as_str().unwrap();
-    let proposal = server.proposals.get(proposal_id).unwrap();
-    let digest = confirmation_digest(proposal_id, proposal);
-    assert_eq!(digest.len(), 64);
-    assert_eq!(prepared["confirmation_digest_sha256"], digest);
-    assert_ne!(
-        digest,
-        confirmation_digest("substituted-proposal", proposal)
     );
 }
 
@@ -178,17 +172,14 @@ fn owned_browser_proposal_rejects_target_substitution_and_prepare_reentry() {
 
 #[rstest]
 #[tokio::test]
-async fn authorized_task_call_requires_start_attestation_before_observation() {
+async fn task_call_requires_start_attestation_before_observation() {
     let mut server = test_server();
     let prepared = server.prepare_task(browser_task()).unwrap();
-    let proposal_id = prepared["proposal_id"].as_str().unwrap();
-    server
-        .authorize_task(json!({"proposal_id": proposal_id}))
-        .unwrap();
+    let proposal_id = prepared["task_id"].as_str().unwrap();
 
     let error = server
         .task_call(json!({
-            "proposal_id": proposal_id,
+            "task_id": proposal_id,
             "method": "browser_snapshot",
             "params": {}
         }))
@@ -196,39 +187,6 @@ async fn authorized_task_call_requires_start_attestation_before_observation() {
         .unwrap_err();
 
     assert!(error.contains("provider/runtime/PID/HWND"));
-}
-
-#[rstest]
-fn client_authorization_accepts_only_the_server_generated_proposal_id() {
-    let mut server = test_server();
-    let prepared = server.prepare_task(browser_task()).unwrap();
-    let proposal_id = prepared["proposal_id"].as_str().unwrap();
-    assert_eq!(prepared["status"], "awaiting_client_authorization");
-    assert_eq!(
-        prepared["allowed_methods"],
-        json!(["browser_snapshot", "browser_type"])
-    );
-    assert!(
-        server
-            .authorize_task(json!({
-                "proposal_id": proposal_id,
-                "acknowledgement": "yes"
-            }))
-            .is_err()
-    );
-
-    let error = server
-        .authorize_task(json!({
-            "proposal_id": proposal_id,
-            "acknowledgement": "授权"
-        }))
-        .unwrap_err();
-
-    assert_eq!(
-        error,
-        "authorize_task accepts only a server-generated proposal_id; client approval state is not passed as text"
-    );
-    assert!(server.proposals.get(proposal_id).unwrap().receipt.is_none());
 }
 
 #[rstest]
@@ -243,10 +201,7 @@ fn clipboard_capture_grants_read_and_clear_as_one_authorized_capability() {
         "authorization_category": "credential"
     }]);
     let prepared = server.prepare_task(task).unwrap();
-    let proposal_id = prepared["proposal_id"].as_str().unwrap();
-    server
-        .authorize_task(json!({"proposal_id": proposal_id}))
-        .unwrap();
+    let proposal_id = prepared["task_id"].as_str().unwrap();
     let proposal = server.proposals.get(proposal_id).unwrap();
     let receipt = proposal.receipt.as_ref().unwrap();
 
@@ -257,13 +212,10 @@ fn clipboard_capture_grants_read_and_clear_as_one_authorized_capability() {
 }
 
 #[rstest]
-fn browser_prepare_is_granted_only_when_the_authorization_card_includes_the_method() {
+fn browser_prepare_is_granted_only_when_the_task_includes_the_method() {
     let mut server = test_server();
     let prepared = server.prepare_task(browser_task()).unwrap();
-    let proposal_id = prepared["proposal_id"].as_str().unwrap();
-    server
-        .authorize_task(json!({"proposal_id": proposal_id}))
-        .unwrap();
+    let proposal_id = prepared["task_id"].as_str().unwrap();
     let proposal = server.proposals.get(proposal_id).unwrap();
     let receipt = proposal.receipt.as_ref().unwrap();
 
@@ -274,15 +226,12 @@ fn browser_prepare_is_granted_only_when_the_authorization_card_includes_the_meth
 
 #[rstest]
 #[tokio::test]
-async fn authorized_browser_prepare_accepts_the_exact_logical_task_session() {
+async fn browser_prepare_accepts_the_exact_logical_task_session() {
     let mut server = test_server();
     let mut task = browser_task();
     task["allowed_methods"] = json!(["browser_snapshot", "browser_prepare"]);
     let prepared = server.prepare_task(task).unwrap();
-    let proposal_id = prepared["proposal_id"].as_str().unwrap();
-    server
-        .authorize_task(json!({"proposal_id": proposal_id}))
-        .unwrap();
+    let proposal_id = prepared["task_id"].as_str().unwrap();
     let proposal = server.proposals.get(proposal_id).unwrap();
     let host = browser_prepare_authorization_host(proposal_id, proposal).unwrap();
     let public_session = task_session_id(proposal_id);
@@ -414,69 +363,32 @@ async fn authorized_browser_prepare_rejects_every_non_exact_driver_request() {
 }
 
 #[rstest]
-fn browser_prepare_driver_authorization_requires_the_declared_method_and_client_authorization() {
+fn browser_prepare_driver_authorization_requires_the_declared_task_method() {
     let mut server = test_server();
     let mut task = browser_task();
     task["allowed_methods"] = json!(["browser_snapshot", "browser_prepare"]);
     let prepared = server.prepare_task(task).unwrap();
-    let proposal_id = prepared["proposal_id"].as_str().unwrap();
-    let awaiting_input = server.proposals.get(proposal_id).unwrap();
-    assert!(browser_prepare_authorization_host(proposal_id, awaiting_input).is_none());
+    let proposal_id = prepared["task_id"].as_str().unwrap();
+    let allowed = server.proposals.get(proposal_id).unwrap();
+    assert!(browser_prepare_authorization_host(proposal_id, allowed).is_some());
 
     let prepared = server.prepare_task(browser_task()).unwrap();
-    let proposal_id = prepared["proposal_id"].as_str().unwrap();
-    server
-        .authorize_task(json!({"proposal_id": proposal_id}))
-        .unwrap();
+    let proposal_id = prepared["task_id"].as_str().unwrap();
     let method_omitted = server.proposals.get(proposal_id).unwrap();
     assert!(browser_prepare_authorization_host(proposal_id, method_omitted).is_none());
 }
 
 #[rstest]
-#[tokio::test]
-async fn task_call_fails_closed_before_client_authorization_and_never_requests_a_popup() {
-    let mut server = test_server();
-    let prepared = server.prepare_task(browser_task()).unwrap();
-    let proposal_id = prepared["proposal_id"].as_str().unwrap();
-
-    let error = server
-        .task_call(json!({
-            "proposal_id": proposal_id,
-            "method": "browser_snapshot",
-            "params": {}
-        }))
-        .await
-        .unwrap_err();
-
-    assert!(error.contains("client authorization"));
-    assert_eq!(prepared["native_action_popups"], false);
-}
-
-#[rstest]
-fn authorization_flow_accepts_no_secret_or_free_form_approval_fields() {
-    let prepare = tool_definitions()
+fn start_task_has_no_confirmation_ui_or_secret_value_fields() {
+    let start = tool_definitions()
         .into_iter()
-        .find(|tool| tool["name"] == "prepare_task_authorization")
+        .find(|tool| tool["name"] == "start_task")
         .unwrap();
-    let properties = prepare["inputSchema"]["properties"].as_object().unwrap();
+    let properties = start["inputSchema"]["properties"].as_object().unwrap();
     for forbidden in ["text", "secret", "password", "token", "credential"] {
         assert!(!properties.contains_key(forbidden));
     }
-    assert!(!AUTHORIZATION_CARD_HTML.contains("<input"));
-    assert!(!AUTHORIZATION_CARD_HTML.contains("type=\"password\""));
-    assert!(AUTHORIZATION_CARD_HTML.contains("authorize_task"));
-    assert!(!AUTHORIZATION_CARD_HTML.contains("Windows"));
-    assert!(!AUTHORIZATION_CARD_HTML.contains("F12"));
-    let authorize = tool_definitions()
-        .into_iter()
-        .find(|tool| tool["name"] == "authorize_task")
-        .unwrap();
-    assert_eq!(authorize["inputSchema"]["required"], json!(["proposal_id"]));
-    assert!(
-        authorize["inputSchema"]["properties"]
-            .get("acknowledgement")
-            .is_none()
-    );
+    assert!(start.get("_meta").is_none());
 }
 
 #[rstest]
@@ -530,18 +442,18 @@ fn task_action_schema_matches_the_closed_runtime_contract() {
     );
     assert_eq!(clipboard["properties"]["secret_input"]["const"], true);
 
-    let prepare = tool_definitions()
+    let start = tool_definitions()
         .into_iter()
-        .find(|tool| tool["name"] == "prepare_task_authorization")
+        .find(|tool| tool["name"] == "start_task")
         .unwrap();
     assert_eq!(
-        prepare["inputSchema"]["properties"]["allowed_actions"]["uniqueItems"],
+        start["inputSchema"]["properties"]["allowed_actions"]["uniqueItems"],
         true
     );
 }
 
 #[rstest]
-fn method_style_action_name_is_rejected_before_a_proposal_is_created() {
+fn method_style_action_name_is_rejected_before_a_task_is_created() {
     let mut server = test_server();
     let mut task = browser_task();
     task["allowed_actions"][0]["action"] = json!("browser_click");
@@ -552,26 +464,23 @@ fn method_style_action_name_is_rejected_before_a_proposal_is_created() {
 
 #[rstest]
 #[tokio::test]
-async fn task_call_scope_rejects_methods_not_shown_to_the_user() {
+async fn task_call_scope_rejects_methods_not_declared_by_the_agent() {
     let mut server = test_server();
     let prepared = server.prepare_task(browser_task()).unwrap();
-    let proposal_id = prepared["proposal_id"].as_str().unwrap();
-    server
-        .authorize_task(json!({"proposal_id": proposal_id}))
-        .unwrap();
+    let proposal_id = prepared["task_id"].as_str().unwrap();
     let error = server
         .task_call(json!({
-            "proposal_id": proposal_id,
+            "task_id": proposal_id,
             "method": "browser_navigate",
             "params": {}
         }))
         .await
         .unwrap_err();
-    assert!(error.contains("user-authorized method scope"));
+    assert!(error.contains("configured task method scope"));
 }
 
 #[rstest]
-fn task_proposal_rejects_surface_mismatches_and_duplicate_methods() {
+fn task_request_rejects_surface_mismatches_and_duplicate_methods() {
     let mut server = test_server();
     let mut mismatch = browser_task();
     mismatch["surface"] = json!("window");

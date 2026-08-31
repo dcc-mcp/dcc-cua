@@ -1,7 +1,7 @@
 {
   "name": "dcc-cua-computer-use",
   "version": "0.6.0",
-  "description": "Exact-window DCC-CUA skills with protected Windows task authorization.",
+  "description": "Exact-window DCC-CUA skills with an automation-first Agent Host bridge.",
   "author": {
     "name": "loonghao",
     "email": "hal.long@outlook.com",
@@ -22,7 +22,7 @@
   "interface": {
     "displayName": "dcc-cua",
     "shortDescription": "Operate exact-window CUA sessions",
-    "longDescription": "Authorize bounded exact-window DCC-CUA tasks through protected Windows user-presence verification. Unsupported platforms remain diagnostic-only and fail closed.",
+    "longDescription": "Start bounded exact-window DCC-CUA tasks directly through the connected Agent Host, without a second authorization card or physical-key confirmation.",
     "developerName": "loonghao",
     "category": "Productivity",
     "capabilities": ["Read", "Write"],
