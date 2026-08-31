@@ -33,6 +33,7 @@ const KNOWN_FLAG_NAMES: &[&str] = &[
     "--agent-name",
     "--allow-external",
     "--app",
+    "--apply",
     "--arg",
     "--aumid",
     "--bundle-id",
@@ -268,7 +269,7 @@ pub(super) fn print_help() -> std::io::Result<()> {
   profile context --id PROFILE [--identity NAMESPACE=VALUE]... [--selector KEY=VALUE]... [--profile-store DIR] [--knowledge-root DIR]
   profile --id ue|maya|fab|... [--profile-file PATH] [--app APP] [--surface ID] [--query TARGET] [--action ACTION] [--activate] [--max-elements N] [--max-depth N]
   profile-state --id PROFILE|--profile-file PATH [--source ID] [--etag ETAG] [--watch] [--poll-ms N] [--max-updates N]
-  update [--check]
+  update [--check|--apply]
   desktop-snapshot [--output FILE]
   screen-size
   cursor-position

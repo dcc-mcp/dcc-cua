@@ -19,14 +19,22 @@ const RELEASE_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(30);
 
 type UpdateResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum UpdateMode {
+    Prompt,
+    Check,
+    Apply,
+}
+
 pub fn run(flags: &[String]) -> UpdateResult<()> {
+    let mode = update_mode(flags)?;
     let current = env!("CARGO_PKG_VERSION");
     let target = self_update::get_target();
     let releases = fetch_releases()?;
     let (release, asset, checksum) = latest_release_assets(&releases, target)
         .ok_or_else(|| format!("no complete {target} release bundle found"))?;
 
-    if has_flag(flags, "--check") {
+    if mode == UpdateMode::Check {
         stdoutln!(
             "{}",
             serde_json::json!({
@@ -42,10 +50,21 @@ pub fn run(flags: &[String]) -> UpdateResult<()> {
         return Ok(());
     }
 
-    confirm_update(current, &release.version)?;
+    if mode == UpdateMode::Prompt {
+        confirm_update(current, &release.version)?;
+    }
     install_release(&std::env::current_exe()?, &asset, &checksum)?;
     stdoutln!("dcc-cua updated to v{}", release.version);
     Ok(())
+}
+
+pub(crate) fn update_mode(flags: &[String]) -> UpdateResult<UpdateMode> {
+    match (has_flag(flags, "--check"), has_flag(flags, "--apply")) {
+        (true, true) => Err("--check and --apply cannot be combined".into()),
+        (true, false) => Ok(UpdateMode::Check),
+        (false, true) => Ok(UpdateMode::Apply),
+        (false, false) => Ok(UpdateMode::Prompt),
+    }
 }
 
 /// Query GitHub for the available releases.

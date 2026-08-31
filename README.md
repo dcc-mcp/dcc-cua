@@ -347,6 +347,7 @@ cargo run -p dcc-cua-cli -- clipboard-write --pid 4242 --window-id 123456 --text
 cargo run -p dcc-cua-cli -- clipboard-read --pid 4242 --window-id 123456 --include-text
 cargo run -p dcc-cua-cli -- --version
 cargo run -p dcc-cua-cli -- update --check
+cargo run -p dcc-cua-cli -- update --apply
 ```
 
 `update` downloads one exact platform archive, validates the replacement
@@ -358,8 +359,9 @@ quota of 60 requests per hour per IP address.
 
 Automatic update notices are not emitted by commands. This keeps successful
 machine-readable output free from dynamic stderr status text under every TTY
-and redirection combination. Use the explicit `dcc-cua update` command when
-you want to check for and install a complete release bundle.
+and redirection combination. Use the explicit `dcc-cua update` command for an
+interactive installation, or `dcc-cua update --apply` for a non-interactive
+installation of a complete release bundle.
 
 `manifest` is the stable machine-readable discovery entry for Core and other
 independent callers. It reports the current platform, Host protocol, frame

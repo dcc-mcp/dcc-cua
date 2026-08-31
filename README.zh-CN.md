@@ -169,10 +169,12 @@ dcc-cua clipboard-write --pid 4242 --window-id 123456 --text "bounded text"
 dcc-cua clipboard-read --pid 4242 --window-id 123456 --include-text
 dcc-cua interrupt-all
 dcc-cua update --check
+dcc-cua update --apply
 ```
 
 所有命令都不会自动输出动态更新提示，确保机器可读结果在任意 TTY 与重定向组合下都不受
-stderr 状态文本污染。需要检查并安装完整发布包时，请显式执行 `dcc-cua update`。
+stderr 状态文本污染。需要交互式安装完整发布包时，请显式执行 `dcc-cua update`；自动化
+环境可使用非交互式的 `dcc-cua update --apply`。
 
 `snapshot`、`act`、`verify`、`clipboard-read` 和 `clipboard-write` 接受同一组
 `--app`、`--pid`、`--window-id`、`--title` 窗口选择器。多个选择器按 AND 同时校验；
