@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.7.1](https://github.com/dcc-mcp/dcc-cua/compare/v1.7.0...v1.7.1) (2026-08-31)
+
+
+### Bug Fixes
+
+* support non-interactive updates and release assets ([#262](https://github.com/dcc-mcp/dcc-cua/issues/262)) ([a97130b](https://github.com/dcc-mcp/dcc-cua/commit/a97130b7fd1160aae4d46cbbcaa073606fd6a8ae))
+
 ## [1.7.0](https://github.com/dcc-mcp/dcc-cua/compare/v1.6.2...v1.7.0) (2026-08-31)
 
 
