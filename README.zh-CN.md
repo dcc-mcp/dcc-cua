@@ -221,6 +221,15 @@ worker 运行失败”。前者返回 `no_accessibility_provider`，并明确说
 `backend_unavailable` 仍表示 provider 或后端执行失败，不能据此断言该窗口类永久不支持
 accessibility。
 
+对于打包后的 Unity Player，推荐从仓库中的
+[`examples/profiles/unity-runtime`](examples/profiles/unity-runtime) 示例包开始。未改造的
+发布版继续使用精确窗口像素、`zoom` 与 `live_observation` 路径；开发者自有或测试构建可
+显式嵌入默认关闭的只读 companion，通过 `profile-state` 提供活动 uGUI/UI Toolkit 控件的
+标签与 render-pixel 矩形。必须按实际产品修改 executable selector，并且只有 companion
+返回的 PID/HWND 与当前 DCC-CUA 绑定完全一致时才能接受该语义状态。companion 不包含
+action endpoint；所有输入、授权与操作后验证仍由精确窗口 Host 负责。不得向第三方构建
+注入该组件，也不得用于绕过安全控制。
+
 成功的窗口 `snapshot` 会返回独立的 `coordinate_space`。其中 `width`/`height` 直接来自
 编码 PNG 的 IHDR，表示 `--output` 实际写入图像的像素尺寸，而不是应用 render target
 尺寸。若图像点为 `(x, y)`，`window-state` 的设备像素边界为 `bounds`，对应屏幕点为

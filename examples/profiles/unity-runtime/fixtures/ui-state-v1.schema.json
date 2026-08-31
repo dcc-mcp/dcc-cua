@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dcc-mcp.dev/schemas/dcc-cua/examples/unity-ui-state-v1.schema.json",
+  "title": "DCC CUA Unity runtime UI state v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "tickId", "application", "coordinateSpace", "scene", "widgets"],
+  "properties": {
+    "schemaVersion": {"const": "1.0.0"},
+    "tickId": {"type": "integer", "minimum": 1},
+    "application": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["processId", "windowId", "productName", "version"],
+      "properties": {
+        "processId": {"type": "integer", "minimum": 1},
+        "windowId": {"type": "integer", "minimum": 0},
+        "productName": {"type": "string", "maxLength": 256},
+        "version": {"type": "string", "maxLength": 64}
+      }
+    },
+    "coordinateSpace": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["width", "height", "origin", "units"],
+      "properties": {
+        "width": {"type": "integer", "minimum": 1},
+        "height": {"type": "integer", "minimum": 1},
+        "origin": {"const": "top_left"},
+        "units": {"const": "unity_render_pixels"}
+      }
+    },
+    "scene": {"type": "string", "maxLength": 512},
+    "widgets": {
+      "type": "array",
+      "maxItems": 1024,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "path", "kind", "label", "labelSource", "interactable", "rect"],
+        "properties": {
+          "id": {"type": "string", "minLength": 1, "maxLength": 1024},
+          "path": {"type": "string", "minLength": 1, "maxLength": 1024},
+          "kind": {"type": "string", "minLength": 1, "maxLength": 128},
+          "label": {"type": "string", "maxLength": 512},
+          "labelSource": {"enum": ["visible_text", "placeholder", "element_name", "game_object_name"]},
+          "interactable": {"type": "boolean"},
+          "rect": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["x", "y", "width", "height"],
+            "properties": {
+              "x": {"type": "number"},
+              "y": {"type": "number"},
+              "width": {"type": "number", "minimum": 0},
+              "height": {"type": "number", "minimum": 0}
+            }
+          }
+        }
+      }
+    }
+  }
+}

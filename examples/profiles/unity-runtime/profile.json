@@ -1,0 +1,43 @@
+{
+  "schema_version": 3,
+  "id": "unity-runtime",
+  "profile_version": "1.0.0",
+  "application": {"family": "unity-runtime", "versions": []},
+  "display_name": "Unity Runtime Sample",
+  "selectors": [
+    {
+      "application_names": ["SampleUnityPlayer.exe"],
+      "window_title_contains": ["DCC CUA Unity Runtime Sample"]
+    }
+  ],
+  "surfaces": [
+    {
+      "id": "runtime_ui",
+      "label": "Custom-rendered runtime UI",
+      "role": "game_surface",
+      "route": "visual_fallback",
+      "targets": []
+    }
+  ],
+  "state_sources": [
+    {
+      "id": "unity-ui",
+      "type": "loopback_http_json",
+      "mode": "read_only",
+      "url": "http://127.0.0.1:47910/v1/ui",
+      "expected_schema_version": "1.0.0",
+      "schema_version_pointer": "/schemaVersion",
+      "tick_pointer": "/tickId",
+      "use_etag": true,
+      "timeout_ms": 1000,
+      "max_response_bytes": 8388608,
+      "optional": true
+    }
+  ],
+  "settings": {
+    "dialog_style": "application_rendered",
+    "preferred_route": "visual_fallback",
+    "default_locale": "en",
+    "destructive_confirmation_required": true
+  }
+}
