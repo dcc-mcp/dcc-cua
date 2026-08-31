@@ -321,6 +321,26 @@ fn known_cli_flags_and_private_worker_equals_form_are_accepted() {
 }
 
 #[rstest]
+fn update_apply_is_a_known_non_interactive_mode() {
+    let flags = strings(["--apply"]);
+    reject_unknown_flags(&flags).unwrap();
+    assert_eq!(
+        update::update_mode(&flags).unwrap(),
+        update::UpdateMode::Apply
+    );
+    assert_eq!(
+        update::update_mode(&[]).unwrap(),
+        update::UpdateMode::Prompt
+    );
+}
+
+#[rstest]
+fn update_check_and_apply_are_mutually_exclusive() {
+    let error = update::update_mode(&strings(["--check", "--apply"])).unwrap_err();
+    assert_eq!(error.to_string(), "--check and --apply cannot be combined");
+}
+
+#[rstest]
 fn accepted_equals_form_flags_are_consumed_by_every_parser() {
     let flags = strings([
         "--json={\"x\":1}",
