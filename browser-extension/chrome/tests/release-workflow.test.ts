@@ -55,6 +55,7 @@ const STEP_ALLOWLIST: Record<string, string[]> = {
   "release-please": [
     "uses:actions/checkout",
     "name:Refuse pre-existing release identities",
+    "name:Reuse already published release identities",
     "uses:googleapis/release-please-action",
     "name:Keep the native runtime release Latest",
     "name:Refresh independent release PRs from current main",
@@ -252,7 +253,8 @@ const RUN_STATEMENT_DIGESTS: Record<string, string> = {
   "validate|Validate release configuration": "8d3f02794bf7a97330d98fa4d70ce5cc7f62e474df31c860bc71c2a29d178cbd",
   "validate|#3": "007b41ff968a7d8b2e96752351831db1ab9ff3248cf5215b5fa2e6b19ed1234e",
   "validate|#4": "1eb46dc0e86486e716d122b102b6e6e6043c1977f78ab9123b79202fcaa05161",
-  "release-please|Refuse pre-existing release identities": "0ce04695628ad6a72542b32d24e1b715f99c873707d5440660849620cba5b0fa",
+  "release-please|Refuse pre-existing release identities": "ce3343e2d9ba02496d925d0c7ca384dea6dbe9c9215b4477cefe165a6865d9ec",
+  "release-please|Reuse already published release identities": "66451b7afa5be4d35678a7462e2a9ec5d98d4f055efa2ebad407e30c94285a00",
   "release-please|Keep the native runtime release Latest": "3a51ac0c7bad4c6a9a83661752cb94a506d49a56350494c3a5a2c76faefecebb",
   "release-please|Refresh independent release PRs from current main": "2be98e30902d17319ab0347ce92c886e80573c2a50ce9d52f1aec56e213f8652",
   "build|Verify native release source binding": "c395d2eb87e998ccc88df9d8b441766c8ff3fdd3b2eed789b1eadcc0d20cf099",
@@ -527,20 +529,26 @@ function validateReleaseWorkflow(source: string): void {
   assert.equal(releaseCheckout.with?.["fetch-tags"], true);
   assert.match(existingIdentity.run ?? "", /release_integrity\.py changed-tags/);
   assert.match(existingIdentity.run ?? "", /git ls-remote --exit-code --tags/);
-  assert.match(existingIdentity.run ?? "", /gh api --paginate/);
+  assert.match(existingIdentity.run ?? "", /gh release view/);
   assertExecutableInvocation(
     existingIdentity,
     "python -B scripts/release_integrity.py changed-tags \\",
   );
   assert.equal(
     release.outputs?.release_created,
-    "${{ steps.release.outputs.release_created == 'true' }}",
+    "${{ steps.release.outputs.release_created == 'true' || steps.existing_release.outputs.release_created == 'true' }}",
   );
-  assert.equal(release.outputs?.tag_name, "${{ steps.release.outputs.tag_name }}");
-  assert.equal(release.outputs?.source_sha, "${{ steps.release.outputs.sha }}");
+  assert.equal(
+    release.outputs?.tag_name,
+    "${{ steps.release.outputs.tag_name || steps.existing_release.outputs.tag_name }}",
+  );
+  assert.equal(
+    release.outputs?.source_sha,
+    "${{ steps.release.outputs.sha || steps.existing_release.outputs.sha }}",
+  );
   assert.equal(
     release.outputs?.extension_source_sha,
-    "${{ steps.release.outputs['browser-extension/chrome--sha'] }}",
+    "${{ steps.release.outputs['browser-extension/chrome--sha'] || steps.existing_release.outputs.extension_source_sha }}",
   );
 
   const build = requiredJob(jobs, "build");
