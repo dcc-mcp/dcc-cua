@@ -15,6 +15,9 @@
     "selectors": {"type": "array", "items": {"$ref": "#/$defs/selector"}},
     "surfaces": {"type": "array", "items": {"$ref": "#/$defs/surface"}},
     "state_sources": {"type": "array", "items": {"$ref": "#/$defs/state_source"}},
+    "binding": {"$ref": "#/$defs/binding"},
+    "capability_probes": {"type": "array", "items": {"$ref": "#/$defs/capability_probe"}},
+    "flows": {"type": "array", "items": {"$ref": "#/$defs/flow"}},
     "settings": {"$ref": "#/$defs/settings"}
   },
   "$defs": {
@@ -92,6 +95,40 @@
         "timeout_ms": {"type": "integer", "minimum": 50, "maximum": 10000},
         "max_response_bytes": {"type": "integer", "minimum": 1024, "maximum": 8388608},
         "optional": {"type": "boolean"}
+      }
+    },
+    "binding": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "require_exact_pid": {"type": "boolean"},
+        "require_exact_window_handle": {"type": "boolean"},
+        "require_window_version_match": {"type": "boolean"},
+        "fail_closed_on_ambiguity": {"type": "boolean"}
+      }
+    },
+    "capability_probe": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "route", "capabilities"],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"},
+        "route": {"enum": ["accessibility", "browser_dom"]},
+        "capabilities": {"$ref": "#/$defs/string_array"},
+        "optional": {"type": "boolean"}
+      }
+    },
+    "flow": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "surface_id", "action_target_id", "verify_target_id", "route"],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"},
+        "surface_id": {"$ref": "#/$defs/id"},
+        "action_target_id": {"$ref": "#/$defs/id"},
+        "verify_target_id": {"$ref": "#/$defs/id"},
+        "route": {"enum": ["accessibility", "browser_dom"]},
+        "requires_fresh_snapshot": {"type": "boolean"},
+        "requires_post_action_verification": {"type": "boolean"},
+        "prohibit_coordinates": {"type": "boolean"},
+        "prohibit_keyboard_shortcuts": {"type": "boolean"}
       }
     },
     "settings": {

@@ -1,0 +1,16 @@
+{
+  "kind": "dcc-cua-profile-package",
+  "schema_version": 2,
+  "id": "steam-chromium",
+  "version": "1.0.0",
+  "display_name": "Steam embedded Chromium",
+  "description": "Declarative Steam embedded-Chromium profile with exact-window and fail-closed install flow.",
+  "license": "MIT",
+  "artifacts": [
+    {"type": "semantic_profile", "path": "profile.json"},
+    {"type": "documentation", "path": "README.md"},
+    {"type": "agent_skill", "path": "SKILL.md"}
+  ],
+  "requires": {"dcc_cua": ">=0.6.0"},
+  "platforms": ["windows"]
+}
