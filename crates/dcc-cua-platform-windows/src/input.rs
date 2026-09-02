@@ -337,7 +337,7 @@ pub fn post_scroll_screen(
     };
     let count = horizontal.unsigned_abs().max(vertical.unsigned_abs());
     for _ in 0..count {
-        let wparam = ((delta as i16 as u16 as usize) << 16) as usize;
+        let wparam = (delta as i16 as u16 as usize) << 16;
         if unsafe { PostMessageW(hwnd, message, wparam, lparam) } == 0 {
             return Err(std::io::Error::last_os_error().to_string());
         }
