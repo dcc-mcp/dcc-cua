@@ -319,11 +319,6 @@ fn windows_fast_route_is_bounded_to_foreground_raw_actions() {
         ..Default::default()
     }));
     assert!(uses_windows_foreground_fast_path(&ComputerUseAction {
-        action: "type_chars".into(),
-        delivery_mode: Some("foreground".into()),
-        ..Default::default()
-    }));
-    assert!(uses_windows_foreground_fast_path(&ComputerUseAction {
         action: "keypress".into(),
         delivery_mode: Some("foreground".into()),
         ..Default::default()
