@@ -1194,6 +1194,46 @@ class ReleaseWorkflowTests(unittest.TestCase):
         protection_section = workflow[protection:final_assertion]
         self.assertEqual(protection_section.count("$LASTEXITCODE -ne 0"), 4)
 
+    def test_release_reuses_identity_when_tag_and_release_match_current_sha(self):
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+
+        preflight = workflow.index("id: release_preflight")
+        existing = workflow.index("id: existing_release", preflight)
+        release_action = workflow.index(RELEASE_PLEASE_ACTION, existing)
+        release_outputs = workflow.index("outputs:", workflow.index("  release-please:"))
+
+        self.assertIn(
+            'remote_tag_sha="$(git ls-remote --exit-code --tags origin "refs/tags/$tag"',
+            workflow[preflight:existing],
+        )
+        self.assertIn(
+            'if [ "$remote_tag_sha" != "$GITHUB_SHA" ]; then',
+            workflow[preflight:existing],
+        )
+        self.assertIn(
+            'release_target="$(gh release view "$tag"',
+            workflow[preflight:existing],
+        )
+        self.assertIn('echo "already_released=true" >> "$GITHUB_OUTPUT"', workflow)
+        self.assertIn(
+            "if: steps.release_preflight.outputs.already_released == 'true'",
+            workflow[existing:release_action],
+        )
+        self.assertIn(
+            "if: steps.release_preflight.outputs.already_released != 'true'",
+            workflow[release_action:],
+        )
+        self.assertIn(
+            "steps.existing_release.outputs.release_created == 'true'",
+            workflow[release_outputs:]
+        )
+        self.assertIn(
+            "steps.existing_release.outputs.sha",
+            workflow[release_outputs:]
+        )
+        self.assertLess(preflight, existing)
+        self.assertLess(existing, release_action)
+
     def test_release_pr_is_rebuilt_from_main_without_manifest_merge_conflicts(self):
         script = REFRESH_SCRIPT.read_text(encoding="utf-8")
 

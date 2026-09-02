@@ -53,13 +53,13 @@ jobs:
       contents: write
       pull-requests: write
     outputs:
-      release_created: ${{ steps.release.outputs.release_created == 'true' }}
-      tag_name: ${{ steps.release.outputs.tag_name }}
-      source_sha: ${{ steps.release.outputs.sha }}
-      extension_release_created: ${{ steps.release.outputs['browser-extension/chrome--release_created'] == 'true' }}
-      extension_tag_name: ${{ steps.release.outputs['browser-extension/chrome--tag_name'] }}
-      extension_version: ${{ steps.release.outputs['browser-extension/chrome--version'] }}
-      extension_source_sha: ${{ steps.release.outputs['browser-extension/chrome--sha'] }}
+      release_created: ${{ steps.release.outputs.release_created == 'true' || steps.existing_release.outputs.release_created == 'true' }}
+      tag_name: ${{ steps.release.outputs.tag_name || steps.existing_release.outputs.tag_name }}
+      source_sha: ${{ steps.release.outputs.sha || steps.existing_release.outputs.sha }}
+      extension_release_created: ${{ steps.release.outputs['browser-extension/chrome--release_created'] == 'true' || steps.existing_release.outputs.extension_release_created == 'true' }}
+      extension_tag_name: ${{ steps.release.outputs['browser-extension/chrome--tag_name'] || steps.existing_release.outputs.extension_tag_name }}
+      extension_version: ${{ steps.release.outputs['browser-extension/chrome--version'] || steps.existing_release.outputs.extension_version }}
+      extension_source_sha: ${{ steps.release.outputs['browser-extension/chrome--sha'] || steps.existing_release.outputs.extension_source_sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -67,6 +67,7 @@ jobs:
           fetch-depth: 2
           fetch-tags: true
       - name: Refuse pre-existing release identities
+        id: release_preflight
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -77,44 +78,92 @@ jobs:
             --before "$RUNNER_TEMP/release-manifest-before.json" \
             --after .release-please-manifest.json \
             > "$RUNNER_TEMP/changed-release-tags.txt"
-          published_tags="$(
-            gh api --paginate \
-              "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
-              --jq '.[].tag_name'
-          )"
+          all_existing=true
+          changed_count=0
+          native_release_created=false
+          extension_release_created=false
+          native_tag_name=""
+          extension_tag_name=""
           while IFS= read -r tag; do
             if [ -z "$tag" ]; then
               continue
             fi
+            changed_count=$((changed_count + 1))
             set +e
-            git ls-remote --exit-code --tags origin "refs/tags/$tag" > /dev/null
+            remote_tag_sha="$(git ls-remote --exit-code --tags origin "refs/tags/$tag" | awk '{print $1}')"
             tag_status=$?
             set -e
             case "$tag_status" in
               0)
-                echo "release tag $tag already exists" >&2
-                exit 1
+                if [ "$remote_tag_sha" != "$GITHUB_SHA" ]; then
+                  echo "release tag $tag already exists at $remote_tag_sha, expected $GITHUB_SHA" >&2
+                  exit 1
+                fi
+                release_target="$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json targetCommitish --jq .targetCommitish 2>/dev/null || true)"
+                if [ "$release_target" != "$GITHUB_SHA" ]; then
+                  echo "release $tag is missing or targets $release_target, expected $GITHUB_SHA" >&2
+                  exit 1
+                fi
+                case "$tag" in
+                  v*)
+                    native_release_created=true
+                    native_tag_name="$tag"
+                    ;;
+                  dcc-cua-browser-extension-v*)
+                    extension_release_created=true
+                    extension_tag_name="$tag"
+                    ;;
+                  *)
+                    echo "unexpected release tag identity: $tag" >&2
+                    exit 1
+                    ;;
+                esac
                 ;;
               2)
+                all_existing=false
                 ;;
               *)
                 echo "cannot verify release tag $tag" >&2
                 exit 1
                 ;;
             esac
-            if grep -Fqx -- "$tag" <<< "$published_tags"; then
-              echo "GitHub Release $tag already exists" >&2
-              exit 1
-            fi
           done < "$RUNNER_TEMP/changed-release-tags.txt"
+          if [ "$changed_count" -gt 0 ] && [ "$all_existing" = true ]; then
+            echo "already_released=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "already_released=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "native_release_created=$native_release_created" >> "$GITHUB_OUTPUT"
+          echo "native_tag_name=$native_tag_name" >> "$GITHUB_OUTPUT"
+          echo "native_source_sha=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+          echo "extension_release_created=$extension_release_created" >> "$GITHUB_OUTPUT"
+          echo "extension_tag_name=$extension_tag_name" >> "$GITHUB_OUTPUT"
+          echo "extension_source_sha=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+      - name: Reuse already published release identities
+        id: existing_release
+        if: steps.release_preflight.outputs.already_released == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "release_created=${{ steps.release_preflight.outputs.native_release_created }}" >> "$GITHUB_OUTPUT"
+          echo "tag_name=${{ steps.release_preflight.outputs.native_tag_name }}" >> "$GITHUB_OUTPUT"
+          echo "sha=${{ steps.release_preflight.outputs.native_source_sha }}" >> "$GITHUB_OUTPUT"
+          echo "extension_release_created=${{ steps.release_preflight.outputs.extension_release_created }}" >> "$GITHUB_OUTPUT"
+          echo "extension_tag_name=${{ steps.release_preflight.outputs.extension_tag_name }}" >> "$GITHUB_OUTPUT"
+          echo "extension_source_sha=${{ steps.release_preflight.outputs.extension_source_sha }}" >> "$GITHUB_OUTPUT"
+          extension_tag='${{ steps.release_preflight.outputs.extension_tag_name }}'
+          if [ -n "$extension_tag" ]; then
+            echo "extension_version=${extension_tag#dcc-cua-browser-extension-v}" >> "$GITHUB_OUTPUT"
+          fi
       - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5
         id: release
+        if: steps.release_preflight.outputs.already_released != 'true'
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
       - name: Keep the native runtime release Latest
-        if: steps.release.outputs['browser-extension/chrome--release_created'] == 'true'
+        if: steps.release.outputs['browser-extension/chrome--release_created'] == 'true' || steps.existing_release.outputs.extension_release_created == 'true'
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

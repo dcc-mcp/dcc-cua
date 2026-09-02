@@ -225,6 +225,38 @@ fn browser_prepare_is_granted_only_when_the_task_includes_the_method() {
 }
 
 #[rstest]
+fn browser_download_is_closed_to_browser_tasks_and_granted_only_when_requested() {
+    assert!(method_allowed(TaskSurface::Browser, "browser_download"));
+    assert!(!method_allowed(TaskSurface::Window, "browser_download"));
+
+    let start = tool_definitions()
+        .into_iter()
+        .find(|tool| tool["name"] == "start_task")
+        .unwrap();
+    let methods = start["inputSchema"]["properties"]["allowed_methods"]["items"]["enum"]
+        .as_array()
+        .unwrap();
+    assert!(methods.iter().any(|method| method == "browser_download"));
+
+    let mut server = test_server();
+    let mut task = browser_task();
+    task["allowed_methods"] = json!(["browser_snapshot", "browser_download"]);
+    let prepared = server.prepare_task(task).unwrap();
+    let proposal_id = prepared["task_id"].as_str().unwrap();
+    let proposal = server.proposals.get(proposal_id).unwrap();
+    let grant = task_session_grant(proposal, proposal.receipt.as_ref().unwrap());
+
+    assert_eq!(grant["allow_browser_download"], true);
+
+    let prepared_without_download = server.prepare_task(browser_task()).unwrap();
+    let proposal_id = prepared_without_download["task_id"].as_str().unwrap();
+    let proposal = server.proposals.get(proposal_id).unwrap();
+    let grant = task_session_grant(proposal, proposal.receipt.as_ref().unwrap());
+
+    assert_eq!(grant["allow_browser_download"], false);
+}
+
+#[rstest]
 #[tokio::test]
 async fn browser_prepare_accepts_the_exact_logical_task_session() {
     let mut server = test_server();
