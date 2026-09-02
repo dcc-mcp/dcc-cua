@@ -382,6 +382,12 @@ messaging, and MCP commands keep their protocol-specific stdout framing.
 target; if an application has multiple windows, pass `--pid` and
 `--window-id` instead of relying on an app name.
 
+Task-authorized Host clients can request `snapshot_pixels_only` for an exact
+native window. The method starts a provider-free session, preserves the same
+PID/HWND grant, and publishes `observation_mode: "pixels_only"` with the
+normal binary-frame or shared-memory image transport. It is available only on
+the Window task surface; browser tasks are rejected before a session starts.
+
 On Windows, for a live custom-rendered window whose accessibility provider is missing or
 unresponsive, use `snapshot --pid PID --window-id HWND --pixels-only`. This
 explicit mode does not start accessibility. It inventories the native window,
@@ -826,7 +832,7 @@ binary frame following the JSON response is the concatenation of those images;
 each descriptor gives its `offset`, `length`, and `mime_type`.
 
 The supported request surface is `hello`, `ping`, `list_apps`, `list_tools`, `list_windows`, `wait_for_window`, `launch_app`, `open_session`,
-`get_window_state`, `change_window_state` (`activate`, `restore_activate`, or `close`), `set_window_frame`, `invoke_menu`, `snapshot`,
+`get_window_state`, `change_window_state` (`activate`, `restore_activate`, or `close`), `set_window_frame`, `invoke_menu`, `snapshot`, `snapshot_pixels_only`,
 `accessibility_snapshot`, `verify_state`, `call_tool`, `call_global_tool`, `get_session_state`, `cursor_tool`, `escalate_session`, `find`, `wait_for`, `browser_snapshot`,
 `browser_prepare`, `browser_navigate`, `browser_click`, `browser_type`, `browser_pointer`,
 `browser_set_input_files`, `browser_download`, `browser_dialog`,

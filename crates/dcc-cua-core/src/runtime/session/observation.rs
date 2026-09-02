@@ -684,17 +684,34 @@ impl ComputerUseSession {
         route: PixelObservationRoute,
     ) -> ComputerUseResult<ComputerUseScreenshot> {
         validate_exact_window_pixel_target_state(target, true)?;
-        let _banner_capture_exclusion = self
-            .control_banner
-            .as_ref()
-            .map(ControlBanner::begin_capture_exclusion)
-            .transpose()
-            .map_err(|error| {
-                map_indicator_error(
-                    "exclude the control banner from exact-window capture",
-                    error,
-                )
-            })?;
+        // WGC captures the exact HWND's content rather than a desktop crop,
+        // so unrelated overlay windows cannot contaminate its frame. Avoid
+        // waiting on cross-process banner exclusion in that route; stale
+        // presenters from another task must not make a valid native capture
+        // unavailable. The visible-crop route still requires the exclusion
+        // lease because it reads desktop pixels.
+        let capture_route =
+            dcc_cua_platform_windows::exact_window_capture_route(target.pid, target.window_id)
+                .map_err(|error| {
+                    ComputerUseError::new(ComputerUseErrorCode::InvalidTarget, error.to_string())
+                })?;
+        let _banner_capture_exclusion = if matches!(
+            capture_route,
+            dcc_cua_platform_windows::ExactWindowCaptureRoute::VerifiedVisible
+        ) {
+            self.control_banner
+                .as_ref()
+                .map(ControlBanner::begin_capture_exclusion)
+                .transpose()
+                .map_err(|error| {
+                    map_indicator_error(
+                        "exclude the control banner from exact-window capture",
+                        error,
+                    )
+                })?
+        } else {
+            None
+        };
         let capture = gated_exact_window_observation(
             interactive_desktop::require_exact_window_observation_available,
             || capture_exact_window(target.pid, target.window_id),

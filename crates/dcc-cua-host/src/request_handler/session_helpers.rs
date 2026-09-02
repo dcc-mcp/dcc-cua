@@ -19,6 +19,11 @@ pub(crate) async fn start_granted_window_session(
     runtime_session_id: &str,
     start_request: &ComputerUseSessionStartRequest,
 ) -> Result<(dcc_cua_core::ComputerUseSession, Value), HostError> {
+    if grant.pixels_only && grant.owned_browser_launch.is_some() {
+        return Err(HostError::Protocol(
+            "pixels_only observation is available only for exact native windows".into(),
+        ));
+    }
     if let Some(launch) = grant.owned_browser_launch {
         if launched.is_some() {
             return Err(HostError::Protocol(
@@ -47,7 +52,11 @@ pub(crate) async fn start_granted_window_session(
         agent_name,
         runtime_session_id,
     )?;
-    let started = session.start_with_request(start_request).await?;
+    let started = if grant.pixels_only {
+        session.start_pixels_only().await?
+    } else {
+        session.start_with_request(start_request).await?
+    };
     Ok((session, started))
 }
 
