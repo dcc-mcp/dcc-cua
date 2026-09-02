@@ -620,6 +620,10 @@ fn task_session_grant(proposal: &TaskProposal, receipt: &TrustedTaskAuthorizatio
         .allowed_actions
         .iter()
         .any(|scope| scope.input_kind == "clipboard");
+    let allow_browser_download = proposal
+        .allowed_methods
+        .iter()
+        .any(|method| method == "browser_download");
     let allowed_browser_origins = &proposal.registration.allowed_browser_origins;
     let (process_id, window_handle, owned_browser_launch) = match proposal.registration.target {
         TrustedTaskAuthorizationTarget::ExactWindow {
@@ -641,6 +645,7 @@ fn task_session_grant(proposal: &TaskProposal, receipt: &TrustedTaskAuthorizatio
         "allow_live_observation": true,
         "allow_browser_input": browser,
         "allow_browser_prepare": proposal.authorizes_existing_profile_prepare(),
+        "allow_browser_download": allow_browser_download,
         "allow_trusted_confirmation": true,
         "task_authorization_id": receipt.authorization_id,
         "task_authorization_window_capability": receipt.window_capability,
@@ -713,6 +718,7 @@ fn method_allowed(surface: TaskSurface, method: &str) -> bool {
                     | "browser_type"
                     | "browser_pointer"
                     | "browser_set_input_files"
+                    | "browser_download"
                     | "browser_dialog"
             )
         )
@@ -884,7 +890,7 @@ fn tool_definitions() -> Vec<Value> {
                             "get_input_state", "session_health", "poll_session_events",
                             "clipboard_capture_secret", "browser_snapshot", "browser_prepare",
                             "browser_navigate", "browser_click", "browser_type", "browser_pointer",
-                            "browser_set_input_files", "browser_dialog"
+                            "browser_set_input_files", "browser_download", "browser_dialog"
                         ]}
                     },
                     "allowed_actions": {
