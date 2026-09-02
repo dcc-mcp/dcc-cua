@@ -1,6 +1,6 @@
 [package]
 name = "dcc-cua-semantic-profiles"
-description = "Independent deep semantic profiles for Unreal, Maya, and Fab"
+description = "Independent deep semantic profiles for Unreal, Maya, Fab, and Steam Chromium"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

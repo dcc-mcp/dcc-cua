@@ -1,0 +1,25 @@
+{
+  "schema_version": 3,
+  "id": "steam-chromium",
+  "profile_version": "1.0.0",
+  "application": {"family": "steam-chromium", "versions": []},
+  "display_name": "Steam embedded Chromium",
+  "selectors": [
+    {"application_names": ["steam.exe", "steamwebhelper.exe"], "window_title_contains": ["Steam"]},
+    {"url_hosts": ["store.steampowered.com", "steamcommunity.com"]}
+  ],
+  "binding": {"require_exact_pid": true, "require_exact_window_handle": true, "require_window_version_match": true, "fail_closed_on_ambiguity": true},
+  "capability_probes": [
+    {"id": "chromium-dom", "route": "browser_dom", "capabilities": ["browser_dom_v1", "exact_tab_binding_v1"]},
+    {"id": "accessibility-bridge", "route": "accessibility", "capabilities": ["accessibility_snapshot_v1"], "optional": true}
+  ],
+  "surfaces": [{
+    "id": "store", "label": "Steam store page", "role": "store_page", "route": "browser_dom", "targets": [
+      {"id": "install_button", "label": "Install", "role": "button", "names": ["Install"], "localized_names": {"zh-CN": ["安装"], "zh-TW": ["安裝"], "ja-JP": ["インストール"], "ko-KR": ["설치"]}, "automation_ids": ["steam-install-button"], "supported_actions": ["inspect", "click", "verify"]},
+      {"id": "installed_state", "label": "Installed state", "role": "status", "names": ["Installed", "In Library"], "localized_names": {"zh-CN": ["已安装", "在库中"], "zh-TW": ["已安裝", "在庫中"], "ja-JP": ["インストール済み", "ライブラリ内"], "ko-KR": ["설치됨", "라이브러리에 있음"]}, "supported_actions": ["inspect", "verify"]},
+      {"id": "security_confirmation", "label": "Steam security confirmation", "role": "dialog", "supported_actions": ["inspect", "request_confirmation", "dismiss"]}
+    ]
+  }],
+  "flows": [{"id": "install", "surface_id": "store", "action_target_id": "install_button", "verify_target_id": "installed_state", "route": "browser_dom", "requires_fresh_snapshot": true, "requires_post_action_verification": true, "prohibit_coordinates": true, "prohibit_keyboard_shortcuts": true}],
+  "settings": {"dialog_style": "application_rendered", "preferred_route": "browser_dom", "default_locale": "en", "destructive_confirmation_required": true}
+}

@@ -5,13 +5,13 @@ use serde_json::json;
 #[rstest]
 fn builtins_are_valid_and_have_independent_ids() {
     let profiles = builtin_profiles();
-    assert_eq!(profiles.len(), 4);
+    assert_eq!(profiles.len(), 5);
     assert_eq!(
         profiles
             .iter()
             .map(|profile| profile.id.as_str())
             .collect::<Vec<_>>(),
-        ["ue", "maya", "maya-2024", "fab"]
+        ["ue", "maya", "maya-2024", "fab", "steam-chromium"]
     );
 }
 
@@ -167,6 +167,94 @@ fn fab_profile_matches_browser_urls_without_matching_unrelated_hosts() {
             .map(|fallback| (fallback.profile_id.as_str(), fallback.surface_id.as_str())),
         Some(("fab", "launcher_download"))
     );
+}
+
+#[rstest]
+fn steam_profile_requires_exact_binding_and_prefers_controlled_browser_bridges() {
+    let profile = builtin_profile("steam-chromium").expect("Steam profile");
+    assert!(profile.binding.require_exact_pid);
+    assert!(profile.binding.require_exact_window_handle);
+    assert!(profile.binding.require_window_version_match);
+    assert!(profile.binding.fail_closed_on_ambiguity);
+    assert!(profile.matches_window("steam.exe", "Steam - Library"));
+    assert!(profile.matches_window("steamwebhelper.exe", "Steam Store"));
+    assert!(profile.matches_bound_window(
+        "steam.exe",
+        "Steam Store",
+        Some(4242),
+        Some(0x1234),
+        Some("Steam 1.0")
+    ));
+    assert!(!profile.matches_bound_window(
+        "steam.exe",
+        "Steam Store",
+        None,
+        Some(0x1234),
+        Some("Steam 1.0")
+    ));
+    assert!(profile.matches_url("https://store.steampowered.com/app/123"));
+    assert!(!profile.matches_url("https://example.com/store.steampowered.com"));
+    assert_eq!(profile.capability_probes.len(), 2);
+    assert_eq!(
+        profile.capability_probes[0].route,
+        SemanticRoute::BrowserDom
+    );
+    assert!(profile.capability_probes[1].optional);
+    let flow = profile
+        .flows
+        .iter()
+        .find(|flow| flow.id == "install")
+        .unwrap();
+    assert!(flow.requires_fresh_snapshot);
+    assert!(flow.requires_post_action_verification);
+    assert!(flow.prohibit_coordinates);
+    assert!(flow.prohibit_keyboard_shortcuts);
+}
+
+#[rstest]
+fn steam_install_resolution_fails_closed_when_dom_is_missing_or_ambiguous() {
+    let profile = builtin_profile("steam-chromium").expect("Steam profile");
+    let missing = json!({"elements": [{"role": "status", "name": "Installed"}]});
+    assert!(
+        profile
+            .find_unique_element("store", &missing, "install_button")
+            .is_none()
+    );
+    let ambiguous = json!({"elements": [
+        {"role": "button", "name": "Install", "automation_id": "steam-install-button"},
+        {"role": "button", "name": "Install", "automation_id": "steam-install-button"}
+    ]});
+    assert!(
+        profile
+            .find_unique_element("store", &ambiguous, "install_button")
+            .is_none()
+    );
+    let unique = json!({"elements": [
+        {"role": "button", "name": "安装", "automation_id": "steam-install-button"}
+    ]});
+    assert!(
+        profile
+            .find_unique_element("store", &unique, "install_button")
+            .is_some()
+    );
+}
+
+#[rstest]
+fn steam_profile_rejects_uncontrolled_probe_routes_and_unsafe_flow_edits() {
+    let source = include_str!("../profiles/steam-chromium.json");
+    let mut value: Value = serde_json::from_str(source).expect("Steam profile JSON");
+    value["capability_probes"][0]["route"] = json!("visual_fallback");
+    assert!(matches!(
+        parse_profile(&value.to_string()),
+        Err(ProfileError::InvalidCapabilityProbeRoute(..))
+    ));
+
+    let mut value: Value = serde_json::from_str(source).expect("Steam profile JSON");
+    value["flows"][0]["prohibit_coordinates"] = json!(false);
+    assert!(matches!(
+        parse_profile(&value.to_string()),
+        Err(ProfileError::UnsafeFlowPolicy(..))
+    ));
 }
 
 #[rstest]

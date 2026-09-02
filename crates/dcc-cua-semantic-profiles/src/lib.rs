@@ -32,7 +32,68 @@ pub struct SemanticProfile {
     pub surfaces: Vec<SemanticSurface>,
     #[serde(default)]
     pub state_sources: Vec<StateSource>,
+    #[serde(default)]
+    pub binding: ProfileBinding,
+    #[serde(default)]
+    pub capability_probes: Vec<CapabilityProbe>,
+    #[serde(default)]
+    pub flows: Vec<ProfileFlow>,
     pub settings: ProfileSettings,
+}
+
+/// Exact-window and version fencing requirements shared by every application
+/// profile.  These are declarative policy; the Host remains responsible for
+/// supplying the actual PID/HWND and version evidence.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProfileBinding {
+    #[serde(default = "default_true")]
+    pub require_exact_pid: bool,
+    #[serde(default = "default_true")]
+    pub require_exact_window_handle: bool,
+    #[serde(default = "default_true")]
+    pub require_window_version_match: bool,
+    #[serde(default = "default_true")]
+    pub fail_closed_on_ambiguity: bool,
+}
+
+impl Default for ProfileBinding {
+    fn default() -> Self {
+        Self {
+            require_exact_pid: true,
+            require_exact_window_handle: true,
+            require_window_version_match: true,
+            fail_closed_on_ambiguity: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CapabilityProbe {
+    pub id: String,
+    pub route: SemanticRoute,
+    pub capabilities: Vec<String>,
+    #[serde(default)]
+    pub optional: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProfileFlow {
+    pub id: String,
+    pub surface_id: String,
+    pub action_target_id: String,
+    pub verify_target_id: String,
+    pub route: SemanticRoute,
+    #[serde(default = "default_true")]
+    pub requires_fresh_snapshot: bool,
+    #[serde(default = "default_true")]
+    pub requires_post_action_verification: bool,
+    #[serde(default = "default_true")]
+    pub prohibit_coordinates: bool,
+    #[serde(default = "default_true")]
+    pub prohibit_keyboard_shortcuts: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -263,6 +324,24 @@ pub enum ProfileError {
     InvalidStateContract(String, String),
     #[error("profile {0:?} state source {1:?} exceeds runtime bounds")]
     InvalidStateSourceBounds(String, String),
+    #[error("profile {0:?} contains duplicate capability probe id {1:?}")]
+    DuplicateCapabilityProbe(String, String),
+    #[error("profile {0:?} capability probe {1:?} must declare at least one capability")]
+    EmptyCapabilityProbe(String, String),
+    #[error("profile {0:?} capability probe {1:?} uses an uncontrolled route")]
+    InvalidCapabilityProbeRoute(String, String),
+    #[error("profile {0:?} contains duplicate flow id {1:?}")]
+    DuplicateFlow(String, String),
+    #[error("profile {0:?} flow {1:?} references unknown surface or target")]
+    InvalidFlowReference(String, String),
+    #[error("profile {0:?} flow {1:?} route does not match its surface")]
+    FlowRouteMismatch(String, String),
+    #[error("profile {0:?} flow {1:?} does not declare click/verify targets")]
+    InvalidFlowActions(String, String),
+    #[error(
+        "profile {0:?} flow {1:?} weakens the snapshot, verification, or coordinate safety policy"
+    )]
+    UnsafeFlowPolicy(String, String),
 }
 
 impl SemanticProfile {
@@ -385,6 +464,98 @@ impl SemanticProfile {
                 validate_localized_aliases(&self.id, &target.localized_names)?;
             }
         }
+        let mut probe_ids = HashSet::new();
+        for probe in &self.capability_probes {
+            validate_identifier(&self.id, &probe.id, "capability_probes[].id")?;
+            if !probe_ids.insert(probe.id.as_str()) {
+                return Err(ProfileError::DuplicateCapabilityProbe(
+                    self.id.clone(),
+                    probe.id.clone(),
+                ));
+            }
+            if probe.capabilities.is_empty()
+                || probe
+                    .capabilities
+                    .iter()
+                    .any(|capability| capability.trim().is_empty() || capability.len() > 128)
+            {
+                return Err(ProfileError::EmptyCapabilityProbe(
+                    self.id.clone(),
+                    probe.id.clone(),
+                ));
+            }
+            if !matches!(
+                probe.route,
+                SemanticRoute::BrowserDom | SemanticRoute::Accessibility
+            ) {
+                return Err(ProfileError::InvalidCapabilityProbeRoute(
+                    self.id.clone(),
+                    probe.id.clone(),
+                ));
+            }
+        }
+        let mut flow_ids = HashSet::new();
+        for flow in &self.flows {
+            validate_identifier(&self.id, &flow.id, "flows[].id")?;
+            if !flow_ids.insert(flow.id.as_str()) {
+                return Err(ProfileError::DuplicateFlow(
+                    self.id.clone(),
+                    flow.id.clone(),
+                ));
+            }
+            let Some(surface) = self.surface(&flow.surface_id) else {
+                return Err(ProfileError::InvalidFlowReference(
+                    self.id.clone(),
+                    flow.id.clone(),
+                ));
+            };
+            let action_exists = surface
+                .targets
+                .iter()
+                .any(|target| target.id == flow.action_target_id);
+            let verify_exists = surface
+                .targets
+                .iter()
+                .any(|target| target.id == flow.verify_target_id);
+            if !action_exists || !verify_exists {
+                return Err(ProfileError::InvalidFlowReference(
+                    self.id.clone(),
+                    flow.id.clone(),
+                ));
+            }
+            let action_target = surface
+                .targets
+                .iter()
+                .find(|target| target.id == flow.action_target_id)
+                .expect("action target checked above");
+            let verify_target = surface
+                .targets
+                .iter()
+                .find(|target| target.id == flow.verify_target_id)
+                .expect("verify target checked above");
+            if !action_target.supports_action("click") || !verify_target.supports_action("verify") {
+                return Err(ProfileError::InvalidFlowActions(
+                    self.id.clone(),
+                    flow.id.clone(),
+                ));
+            }
+            if surface.route != flow.route {
+                return Err(ProfileError::FlowRouteMismatch(
+                    self.id.clone(),
+                    flow.id.clone(),
+                ));
+            }
+            if !flow.requires_fresh_snapshot
+                || !flow.requires_post_action_verification
+                || !flow.prohibit_coordinates
+                || !flow.prohibit_keyboard_shortcuts
+            {
+                return Err(ProfileError::UnsafeFlowPolicy(
+                    self.id.clone(),
+                    flow.id.clone(),
+                ));
+            }
+        }
         Ok(())
     }
 
@@ -418,6 +589,33 @@ impl SemanticProfile {
                 || self.application.versions.iter().any(|version| {
                     contains_version_token(application_name, version)
                         || contains_version_token(window_title, version)
+                }))
+    }
+
+    /// Match a window only when the Host has supplied all identity evidence
+    /// requested by the profile.  The profile never invents or stores these
+    /// values; they are ephemeral capabilities owned by the Host session.
+    #[must_use]
+    pub fn matches_bound_window(
+        &self,
+        application_name: &str,
+        window_title: &str,
+        process_id: Option<u32>,
+        window_handle: Option<u64>,
+        window_version: Option<&str>,
+    ) -> bool {
+        self.matches_window(application_name, window_title)
+            && (!self.binding.require_exact_pid || process_id.is_some_and(|value| value != 0))
+            && (!self.binding.require_exact_window_handle
+                || window_handle.is_some_and(|value| value != 0))
+            && (!self.binding.require_window_version_match
+                || window_version.is_some_and(|value| !value.trim().is_empty()))
+            && (self.application.versions.is_empty()
+                || window_version.is_some_and(|version| {
+                    self.application
+                        .versions
+                        .iter()
+                        .any(|expected| contains_version_token(version, expected))
                 }))
     }
 
@@ -485,6 +683,20 @@ impl SemanticProfile {
             .flatten()
             .filter(|element| target.matches_element(element))
             .collect()
+    }
+
+    /// Resolve exactly one current semantic element.  Ambiguous or missing
+    /// controls intentionally return `None` so callers cannot fall back to a
+    /// coordinate or guessed-label action.
+    #[must_use]
+    pub fn find_unique_element<'a>(
+        &'a self,
+        surface_id: &str,
+        root: &'a Value,
+        query: &str,
+    ) -> Option<&'a Value> {
+        let matches = self.find_elements(surface_id, root, query);
+        (matches.len() == 1).then(|| matches[0])
     }
 
     #[must_use]
@@ -738,6 +950,7 @@ pub fn builtin_profiles() -> &'static [SemanticProfile] {
                 include_str!("../profiles/maya.json"),
                 include_str!("../profiles/maya-2024.json"),
                 include_str!("../profiles/fab.json"),
+                include_str!("../profiles/steam-chromium.json"),
             ]
             .into_iter()
             .map(|profile| parse_profile(profile).expect("built-in semantic profile is valid"))
