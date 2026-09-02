@@ -1403,7 +1403,7 @@ pub(crate) fn windows_input_dispatch_unknown(error: ComputerUseError) -> Compute
 }
 
 #[cfg(windows)]
-fn windows_post_message_result(
+pub(crate) fn windows_post_message_result(
     route: &'static str,
     backend_id: &'static str,
     text: String,
@@ -1431,7 +1431,6 @@ fn windows_post_message_result(
         degraded: false,
     }
 }
-
 #[cfg(windows)]
 pub(crate) async fn perform_windows_foreground_fast_action(
     action: &ComputerUseAction,
@@ -1557,6 +1556,10 @@ pub(crate) async fn perform_windows_foreground_fast_action(
                 "Posted {character_count} scoped Unicode text character(s) via {WINDOWS_POST_MESSAGE_TEXT_BACKEND_ID}; verify the target effect before continuing."
             ),
         )));
+    }
+
+    if let Some(result) = super::windows_post_message_key::dispatch(action, window_id).await? {
+        return Ok(Some(result));
     }
 
     if action.input_backend_id.as_deref() == Some(WINDOWS_POST_MESSAGE_SCROLL_BACKEND_ID)

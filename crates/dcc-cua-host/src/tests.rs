@@ -85,6 +85,10 @@ fn capabilities_follow_the_selected_cursor_runtime() {
         capabilities.contains(&"input_backend:windows.synthetic_touch.v1"),
         cfg!(windows)
     );
+    assert_eq!(
+        capabilities.contains(&"input_backend:windows.post_message_key.v1"),
+        cfg!(windows)
+    );
     assert!(capabilities.contains(&"live_observation_latest_frame"));
     assert!(capabilities.contains(&"session_input_state_events"));
     assert!(capabilities.contains(&"session_target_state_events"));
