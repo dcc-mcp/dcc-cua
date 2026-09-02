@@ -206,7 +206,43 @@ const RELATIVE_DRAG_STAGNATION_ESCAPE_MAX_RESIDUAL_PX: i32 = 3;
 const RELATIVE_DRAG_STAGNATION_ESCAPE_MAX_COMMAND_PX: i32 = 4;
 
 pub(crate) fn explicit_input_backend_rejection(action: &ComputerUseAction) -> Option<String> {
-    action.input_backend_id.as_ref()?;
+    let backend_id = action.input_backend_id.as_deref()?;
+    #[cfg(windows)]
+    {
+        if backend_id == WINDOWS_POST_MESSAGE_BACKEND_ID
+            && action.delivery_mode.as_deref() == Some("foreground")
+            && matches!(
+                action.action.as_str(),
+                "click" | "double_click" | "right_click" | "toggle"
+            )
+            && action.x.is_some()
+            && action.y.is_some()
+            && action.modifiers.is_empty()
+        {
+            return None;
+        }
+        if backend_id == WINDOWS_POST_MESSAGE_TEXT_BACKEND_ID
+            && action.delivery_mode.as_deref() == Some("foreground")
+            && matches!(action.action.as_str(), "type" | "type_chars")
+            && action.modifiers.is_empty()
+            && action.keys.is_empty()
+            && action.x.is_none()
+            && action.y.is_none()
+        {
+            return None;
+        }
+        if backend_id == WINDOWS_POST_MESSAGE_SCROLL_BACKEND_ID
+            && action.delivery_mode.as_deref() == Some("foreground")
+            && action.action == "scroll"
+            && action.element_index.is_none()
+            && action.element_token.is_none()
+            && action.modifiers.is_empty()
+            && action.keys.is_empty()
+            && action.scroll_by.is_none()
+        {
+            return None;
+        }
+    }
     #[cfg(windows)]
     {
         select_windows_foreground_drag_backend(action).err()

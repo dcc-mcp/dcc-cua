@@ -5,9 +5,9 @@ use windows::Win32::{
     Graphics::{
         Dwm::{DWMWA_EXTENDED_FRAME_BOUNDS, DwmFlush, DwmGetWindowAttribute},
         Gdi::{
-            BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BitBlt, CreateCompatibleBitmap,
-            CreateCompatibleDC, DIB_RGB_COLORS, DeleteDC, DeleteObject, GetDC, GetDIBits, RGBQUAD,
-            ReleaseDC, SRCCOPY, SelectObject,
+            BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BLACKNESS, BitBlt, CreateCompatibleBitmap,
+            CreateCompatibleDC, DIB_RGB_COLORS, DeleteDC, DeleteObject, GetDC, GetDIBits, PatBlt,
+            RGBQUAD, ReleaseDC, SRCCOPY, SelectObject,
         },
     },
     Storage::Xps::{PRINT_WINDOW_FLAGS, PrintWindow},
@@ -517,7 +517,6 @@ pub fn capture_window_content(
             return Err(capture_error("create exact HWND render bitmap"));
         }
         let previous = SelectObject(memory_dc, bitmap);
-        let rendered = PrintWindow(hwnd, memory_dc, PRINT_WINDOW_FLAGS(2));
         let mut bitmap_info = BITMAPINFO {
             bmiHeader: BITMAPINFOHEADER {
                 biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
@@ -531,28 +530,48 @@ pub fn capture_window_content(
             },
             bmiColors: [RGBQUAD::default(); 1],
         };
-        let mut bgra = vec![0_u8; (width * height * 4) as usize];
-        let rows = GetDIBits(
-            memory_dc,
-            bitmap,
-            0,
-            height as u32,
-            Some(bgra.as_mut_ptr().cast()),
-            &mut bitmap_info,
-            DIB_RGB_COLORS,
-        );
+        let mut selected_pixels = None;
+        let mut rendered_flags = Vec::new();
+        for flags in [2_u32, 0_u32, 1_u32] {
+            // PrintWindow can return TRUE while leaving a stale/uninitialized
+            // bitmap for CEF surfaces. Clear the caller-owned bitmap before
+            // every rendering mode and only accept a frame with visible RGB.
+            if !PatBlt(memory_dc, 0, 0, width, height, BLACKNESS).as_bool() {
+                return Err(capture_error("clear exact HWND render bitmap"));
+            }
+            let rendered = PrintWindow(hwnd, memory_dc, PRINT_WINDOW_FLAGS(flags));
+            if rendered.as_bool() {
+                rendered_flags.push(flags);
+            }
+            let mut bgra = vec![0_u8; (width * height * 4) as usize];
+            let rows = GetDIBits(
+                memory_dc,
+                bitmap,
+                0,
+                height as u32,
+                Some(bgra.as_mut_ptr().cast()),
+                &mut bitmap_info,
+                DIB_RGB_COLORS,
+            );
+            if rendered.as_bool()
+                && rows != 0
+                && bgra
+                    .chunks_exact(4)
+                    .any(|pixel| pixel[0] != 0 || pixel[1] != 0 || pixel[2] != 0)
+            {
+                selected_pixels = Some(bgra);
+                break;
+            }
+        }
         SelectObject(memory_dc, previous);
         let _ = DeleteObject(bitmap);
         let _ = DeleteDC(memory_dc);
         ReleaseDC(HWND(std::ptr::null_mut()), screen_dc);
-        if !rendered.as_bool() {
-            return Err(capture_error(
-                "the exact HWND rejected PrintWindow rendering",
-            ));
-        }
-        if rows == 0 {
-            return Err(capture_error("read exact HWND PrintWindow bitmap"));
-        }
+        let Some(bgra) = selected_pixels else {
+            return Err(capture_error(format!(
+                "PrintWindow returned blank content for exact HWND (successful flags: {rendered_flags:?})"
+            )));
+        };
         validate_exact_window_owner(process_id, window_handle)
             .map_err(|error| capture_error(error.to_string()))?;
         Ok(VisibleWindowCapture {

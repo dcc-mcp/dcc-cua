@@ -213,8 +213,13 @@ async fn execute_action(
     let scope = select_scope(driver, flags).await?;
     let app = application_label(flags);
     let session_id = flag_value(flags, "--session").unwrap_or_else(|| "dcc-cua-cli".into());
+    let pixels_only = action_pixels_only_mode(flags, &action)?;
     let mut session = driver.session(scope, app, session_id)?;
-    session.start().await?;
+    if pixels_only {
+        session.start_pixels_only().await?;
+    } else {
+        session.start().await?;
+    }
     let max_elements = bounded_u32(flags, "--max-elements", 5_000, 5_000)?;
     let max_depth = bounded_u32(flags, "--max-depth", 64, 64)?;
     let result = async {
@@ -284,6 +289,28 @@ async fn execute_action(
         }))?
     );
     Ok(())
+}
+
+pub(super) fn action_pixels_only_mode(
+    flags: &[String],
+    action: &ComputerUseAction,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    if !has_flag(flags, "--pixels-only") {
+        return Ok(false);
+    }
+    if flag_value(flags, "--pid").is_none() || flag_value(flags, "--window-id").is_none() {
+        return Err("act --pixels-only requires an exact --pid PID --window-id ID pair".into());
+    }
+    if action.element_index.is_some()
+        || action.element_token.is_some()
+        || matches!(action.action.as_str(), "set_text" | "set_value")
+    {
+        return Err(
+            "act --pixels-only supports coordinate actions only; semantic element actions require accessibility"
+                .into(),
+        );
+    }
+    Ok(true)
 }
 
 pub(super) fn visible_snapshot_dimensions(

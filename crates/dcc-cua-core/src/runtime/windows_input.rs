@@ -1,5 +1,9 @@
 #[allow(unused_imports)]
 use super::*;
+use crate::contracts::{
+    WINDOWS_POST_MESSAGE_BACKEND_ID, WINDOWS_POST_MESSAGE_SCROLL_BACKEND_ID,
+    WINDOWS_POST_MESSAGE_TEXT_BACKEND_ID,
+};
 
 #[cfg(windows)]
 #[derive(Debug, Clone, serde::Serialize)]
@@ -1353,7 +1357,7 @@ fn send_windows_calibrated_relative_drag(
 #[cfg(windows)]
 pub(crate) fn uses_windows_foreground_fast_path(action: &ComputerUseAction) -> bool {
     action.delivery_mode.as_deref() == Some("foreground")
-        && matches!(
+        && (matches!(
             action.action.as_str(),
             "click"
                 | "double_click"
@@ -1362,7 +1366,10 @@ pub(crate) fn uses_windows_foreground_fast_path(action: &ComputerUseAction) -> b
                 | "drag"
                 | "keypress"
                 | "keyboard_shortcut"
-        )
+                | "type"
+                | "type_chars"
+        ) || (action.action == "scroll"
+            && action.input_backend_id.as_deref() == Some(WINDOWS_POST_MESSAGE_SCROLL_BACKEND_ID)))
 }
 
 #[cfg(windows)]
@@ -1445,6 +1452,169 @@ pub(crate) async fn perform_windows_foreground_fast_action(
     };
     let mut raw_drag_outcome = None;
 
+    if action.input_backend_id.as_deref() == Some(WINDOWS_POST_MESSAGE_BACKEND_ID)
+        && matches!(
+            action.action.as_str(),
+            "click" | "double_click" | "right_click" | "toggle"
+        )
+    {
+        let point = screen_point(ComputerUsePoint {
+            x: action.x.unwrap_or_default(),
+            y: action.y.unwrap_or_default(),
+        });
+        let count = usize::from(action.action == "double_click") + 1;
+        let button = action
+            .button
+            .as_deref()
+            .unwrap_or(if action.action == "right_click" {
+                "right"
+            } else {
+                "left"
+            })
+            .to_owned();
+        let result = tokio::task::spawn_blocking(move || {
+            dcc_cua_platform_windows::post_click_screen(window_id, point.0, point.1, count, &button)
+        })
+        .await
+        .map_err(|error| {
+            ComputerUseError::new(
+                ComputerUseErrorCode::InputFailed,
+                format!("join Windows PostMessage click: {error}"),
+            )
+        })?;
+        result.map_err(|error| {
+            ComputerUseError::new(
+                ComputerUseErrorCode::InputFailed,
+                format!("send Windows PostMessage click: {error}"),
+            )
+        })?;
+        return Ok(Some(ComputerUseToolResult {
+            status: ComputerUseToolStatus::Succeeded,
+            value: json!({
+                "success": true,
+                "route": "windows_scoped_post_message",
+                "delivery": {
+                    "mode": "foreground",
+                    "backend_id": WINDOWS_POST_MESSAGE_BACKEND_ID,
+                    "api_accepted": true,
+                    "consumer_effect_confirmed": false,
+                    "completion_known": true,
+                    "confirmed": true,
+                    "input_sent": true,
+                    "retry_safe": false,
+                    "verification_required": true,
+                },
+                "effect": "unverifiable",
+            }),
+            text: format!(
+                "Posted scoped Windows click via {WINDOWS_POST_MESSAGE_BACKEND_ID} at ({}, {}); verify the target effect before continuing.",
+                point.0, point.1
+            ),
+            images: Vec::new(),
+            degraded: false,
+        }));
+    }
+
+    if action.input_backend_id.as_deref() == Some(WINDOWS_POST_MESSAGE_TEXT_BACKEND_ID)
+        && matches!(action.action.as_str(), "type" | "type_chars")
+    {
+        let value = action.text.clone().unwrap_or_default();
+        let character_count = value.chars().count();
+        let result = tokio::task::spawn_blocking(move || {
+            dcc_cua_platform_windows::post_text(window_id, &value)
+        })
+        .await
+        .map_err(|error| {
+            ComputerUseError::new(
+                ComputerUseErrorCode::InputFailed,
+                format!("join Windows PostMessage text: {error}"),
+            )
+        })?;
+        result.map_err(|error| {
+            ComputerUseError::new(
+                ComputerUseErrorCode::InputFailed,
+                format!("send Windows PostMessage text: {error}"),
+            )
+        })?;
+        return Ok(Some(ComputerUseToolResult {
+            status: ComputerUseToolStatus::Succeeded,
+            value: json!({
+                "success": true,
+                "route": "windows_scoped_post_message_text",
+                "delivery": {
+                    "mode": "foreground",
+                    "backend_id": WINDOWS_POST_MESSAGE_TEXT_BACKEND_ID,
+                    "api_accepted": true,
+                    "consumer_effect_confirmed": false,
+                    "completion_known": true,
+                    "confirmed": true,
+                    "input_sent": true,
+                    "retry_safe": false,
+                    "verification_required": true,
+                },
+                "effect": "unverifiable",
+            }),
+            text: format!(
+                "Posted {character_count} scoped Unicode text character(s) via {WINDOWS_POST_MESSAGE_TEXT_BACKEND_ID}; verify the target effect before continuing."
+            ),
+            images: Vec::new(),
+            degraded: false,
+        }));
+    }
+
+    if action.input_backend_id.as_deref() == Some(WINDOWS_POST_MESSAGE_SCROLL_BACKEND_ID)
+        && action.action == "scroll"
+    {
+        let point = screen_point(ComputerUsePoint {
+            x: action.x.unwrap_or(target.bounds[2] as f64 / 2.0),
+            y: action.y.unwrap_or(target.bounds[3] as f64 / 2.0),
+        });
+        let horizontal = action.scroll_x.unwrap_or_default();
+        let vertical = action.scroll_y.unwrap_or_default();
+        let result = tokio::task::spawn_blocking(move || {
+            dcc_cua_platform_windows::post_scroll_screen(
+                window_id, point.0, point.1, horizontal, vertical,
+            )
+        })
+        .await
+        .map_err(|error| {
+            ComputerUseError::new(
+                ComputerUseErrorCode::InputFailed,
+                format!("join Windows PostMessage scroll: {error}"),
+            )
+        })?;
+        result.map_err(|error| {
+            ComputerUseError::new(
+                ComputerUseErrorCode::InputFailed,
+                format!("send Windows PostMessage scroll: {error}"),
+            )
+        })?;
+        return Ok(Some(ComputerUseToolResult {
+            status: ComputerUseToolStatus::Succeeded,
+            value: json!({
+                "success": true,
+                "route": "windows_scoped_post_message_scroll",
+                "delivery": {
+                    "mode": "foreground",
+                    "backend_id": WINDOWS_POST_MESSAGE_SCROLL_BACKEND_ID,
+                    "api_accepted": true,
+                    "consumer_effect_confirmed": false,
+                    "completion_known": true,
+                    "confirmed": true,
+                    "input_sent": true,
+                    "retry_safe": false,
+                    "verification_required": true,
+                },
+                "effect": "unverifiable",
+            }),
+            text: format!(
+                "Posted scoped Windows scroll via {WINDOWS_POST_MESSAGE_SCROLL_BACKEND_ID}; verify the target effect before continuing."
+            ),
+            images: Vec::new(),
+            degraded: false,
+        }));
+    }
+
     let text = if matches!(action.action.as_str(), "keypress" | "keyboard_shortcut") {
         let keys = if action.action == "keyboard_shortcut" {
             keyboard_shortcut_keys(action)
@@ -1503,6 +1673,40 @@ pub(crate) async fn perform_windows_foreground_fast_action(
         action.duration_ms.map_or_else(
             || "Sent scoped Windows keypress.".to_owned(),
             |duration_ms| format!("Sent scoped Windows held keypress for {duration_ms} ms."),
+        )
+    } else if matches!(action.action.as_str(), "type" | "type_chars") {
+        let value = action.text.clone().unwrap_or_default();
+        let character_count = value.chars().count();
+        let text_target = dcc_cua_platform_windows::UiaTarget {
+            process_id: target.pid,
+            window_handle: target.window_id,
+        };
+        {
+            let _input_activity = control_banner.map(|banner| {
+                banner.begin_activity(banner_activity_for_action_phase(
+                    action,
+                    ActionBannerPhase::Injecting,
+                ))
+            });
+            tokio::task::spawn_blocking(move || {
+                dcc_cua_platform_windows::send_text_synthesized(text_target.window_handle, &value)
+                    .map_err(|error| {
+                        windows_input_dispatch_unknown(ComputerUseError::new(
+                            ComputerUseErrorCode::InputFailed,
+                            format!("send Windows foreground text: {error}"),
+                        ))
+                    })
+            })
+            .await
+            .map_err(|error| {
+                ComputerUseError::new(
+                    ComputerUseErrorCode::InputFailed,
+                    format!("join Windows foreground text input: {error}"),
+                )
+            })??;
+        }
+        format!(
+            "Sent {character_count} scoped Unicode text character(s); verify the target effect before continuing."
         )
     } else if action.action == "drag" {
         let first = action.path.first().copied().unwrap_or(ComputerUsePoint {

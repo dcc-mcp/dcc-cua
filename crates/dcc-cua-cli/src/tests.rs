@@ -8,9 +8,9 @@ use serde_json::json;
 use sha2::Digest;
 
 use super::actions::{
-    action_from_command, action_from_json, action_result_value, bind_fresh_element_token,
-    default_activated_action_to_foreground, menu_request, require_exact_window_target,
-    visible_snapshot_dimensions, window_frame_request,
+    action_from_command, action_from_json, action_pixels_only_mode, action_result_value,
+    bind_fresh_element_token, default_activated_action_to_foreground, menu_request,
+    require_exact_window_target, visible_snapshot_dimensions, window_frame_request,
 };
 use super::authorization::{existing_profile_grant_requested, host_private_worker_options};
 use super::host_lifecycle::{
@@ -1899,6 +1899,40 @@ fn friendly_actions_reject_unknown_delivery_mode() {
         error.to_string(),
         "--delivery-mode must be background or foreground"
     );
+}
+
+#[rstest]
+fn pixels_only_actions_require_exact_target_and_reject_semantic_selectors() {
+    let coordinate = ComputerUseAction {
+        action: "click".into(),
+        x: Some(120.0),
+        y: Some(80.0),
+        ..Default::default()
+    };
+    assert!(
+        action_pixels_only_mode(
+            &strings(["--pixels-only", "--pid", "42", "--window-id", "77"]),
+            &coordinate
+        )
+        .expect("exact provider-free action mode")
+    );
+
+    let missing_target =
+        action_pixels_only_mode(&strings(["--pixels-only", "--pid", "42"]), &coordinate)
+            .expect_err("pixels-only actions must bind both PID and HWND");
+    assert!(missing_target.to_string().contains("--window-id"));
+
+    let semantic = ComputerUseAction {
+        action: "click".into(),
+        element_index: Some(1),
+        ..Default::default()
+    };
+    let semantic_error = action_pixels_only_mode(
+        &strings(["--pixels-only", "--pid", "42", "--window-id", "77"]),
+        &semantic,
+    )
+    .expect_err("semantic selectors need an accessibility provider");
+    assert!(semantic_error.to_string().contains("coordinate actions"));
 }
 
 #[rstest]
