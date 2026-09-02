@@ -1402,6 +1402,36 @@ pub(crate) fn windows_input_dispatch_unknown(error: ComputerUseError) -> Compute
 }
 
 #[cfg(windows)]
+fn windows_post_message_result(
+    route: &'static str,
+    backend_id: &'static str,
+    text: String,
+) -> ComputerUseToolResult {
+    ComputerUseToolResult {
+        status: ComputerUseToolStatus::Succeeded,
+        value: json!({
+            "success": true,
+            "route": route,
+            "delivery": {
+                "mode": "foreground",
+                "backend_id": backend_id,
+                "api_accepted": true,
+                "consumer_effect_confirmed": false,
+                "completion_known": true,
+                "confirmed": true,
+                "input_sent": true,
+                "retry_safe": false,
+                "verification_required": true,
+            },
+            "effect": "unverifiable",
+        }),
+        text,
+        images: Vec::new(),
+        degraded: false,
+    }
+}
+
+#[cfg(windows)]
 pub(crate) async fn perform_windows_foreground_fast_action(
     action: &ComputerUseAction,
     session_id: &str,
@@ -1488,31 +1518,14 @@ pub(crate) async fn perform_windows_foreground_fast_action(
                 format!("send Windows PostMessage click: {error}"),
             )
         })?;
-        return Ok(Some(ComputerUseToolResult {
-            status: ComputerUseToolStatus::Succeeded,
-            value: json!({
-                "success": true,
-                "route": "windows_scoped_post_message",
-                "delivery": {
-                    "mode": "foreground",
-                    "backend_id": WINDOWS_POST_MESSAGE_BACKEND_ID,
-                    "api_accepted": true,
-                    "consumer_effect_confirmed": false,
-                    "completion_known": true,
-                    "confirmed": true,
-                    "input_sent": true,
-                    "retry_safe": false,
-                    "verification_required": true,
-                },
-                "effect": "unverifiable",
-            }),
-            text: format!(
+        return Ok(Some(windows_post_message_result(
+            "windows_scoped_post_message",
+            WINDOWS_POST_MESSAGE_BACKEND_ID,
+            format!(
                 "Posted scoped Windows click via {WINDOWS_POST_MESSAGE_BACKEND_ID} at ({}, {}); verify the target effect before continuing.",
                 point.0, point.1
             ),
-            images: Vec::new(),
-            degraded: false,
-        }));
+        )));
     }
 
     if action.input_backend_id.as_deref() == Some(WINDOWS_POST_MESSAGE_TEXT_BACKEND_ID)
@@ -1536,30 +1549,13 @@ pub(crate) async fn perform_windows_foreground_fast_action(
                 format!("send Windows PostMessage text: {error}"),
             )
         })?;
-        return Ok(Some(ComputerUseToolResult {
-            status: ComputerUseToolStatus::Succeeded,
-            value: json!({
-                "success": true,
-                "route": "windows_scoped_post_message_text",
-                "delivery": {
-                    "mode": "foreground",
-                    "backend_id": WINDOWS_POST_MESSAGE_TEXT_BACKEND_ID,
-                    "api_accepted": true,
-                    "consumer_effect_confirmed": false,
-                    "completion_known": true,
-                    "confirmed": true,
-                    "input_sent": true,
-                    "retry_safe": false,
-                    "verification_required": true,
-                },
-                "effect": "unverifiable",
-            }),
-            text: format!(
+        return Ok(Some(windows_post_message_result(
+            "windows_scoped_post_message_text",
+            WINDOWS_POST_MESSAGE_TEXT_BACKEND_ID,
+            format!(
                 "Posted {character_count} scoped Unicode text character(s) via {WINDOWS_POST_MESSAGE_TEXT_BACKEND_ID}; verify the target effect before continuing."
             ),
-            images: Vec::new(),
-            degraded: false,
-        }));
+        )));
     }
 
     if action.input_backend_id.as_deref() == Some(WINDOWS_POST_MESSAGE_SCROLL_BACKEND_ID)
@@ -1589,30 +1585,13 @@ pub(crate) async fn perform_windows_foreground_fast_action(
                 format!("send Windows PostMessage scroll: {error}"),
             )
         })?;
-        return Ok(Some(ComputerUseToolResult {
-            status: ComputerUseToolStatus::Succeeded,
-            value: json!({
-                "success": true,
-                "route": "windows_scoped_post_message_scroll",
-                "delivery": {
-                    "mode": "foreground",
-                    "backend_id": WINDOWS_POST_MESSAGE_SCROLL_BACKEND_ID,
-                    "api_accepted": true,
-                    "consumer_effect_confirmed": false,
-                    "completion_known": true,
-                    "confirmed": true,
-                    "input_sent": true,
-                    "retry_safe": false,
-                    "verification_required": true,
-                },
-                "effect": "unverifiable",
-            }),
-            text: format!(
+        return Ok(Some(windows_post_message_result(
+            "windows_scoped_post_message_scroll",
+            WINDOWS_POST_MESSAGE_SCROLL_BACKEND_ID,
+            format!(
                 "Posted scoped Windows scroll via {WINDOWS_POST_MESSAGE_SCROLL_BACKEND_ID}; verify the target effect before continuing."
             ),
-            images: Vec::new(),
-            degraded: false,
-        }));
+        )));
     }
 
     let text = if matches!(action.action.as_str(), "keypress" | "keyboard_shortcut") {
