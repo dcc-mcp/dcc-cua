@@ -1,5 +1,6 @@
 #[allow(unused_imports)]
 use super::*;
+#[cfg(windows)]
 use crate::contracts::{
     WINDOWS_POST_MESSAGE_BACKEND_ID, WINDOWS_POST_MESSAGE_SCROLL_BACKEND_ID,
     WINDOWS_POST_MESSAGE_TEXT_BACKEND_ID,

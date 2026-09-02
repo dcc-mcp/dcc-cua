@@ -207,6 +207,8 @@ const RELATIVE_DRAG_STAGNATION_ESCAPE_MAX_COMMAND_PX: i32 = 4;
 
 pub(crate) fn explicit_input_backend_rejection(action: &ComputerUseAction) -> Option<String> {
     let backend_id = action.input_backend_id.as_deref()?;
+    #[cfg(not(windows))]
+    let _ = backend_id;
     #[cfg(windows)]
     {
         if backend_id == WINDOWS_POST_MESSAGE_BACKEND_ID
