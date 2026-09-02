@@ -21,6 +21,7 @@ async fn check_rejected_start_preserves_pixels_route(guarded: bool) {
     // provider, native target resolution, banner or capture can be entered.
     let (mut session, calls) = counting_session();
     session.pixel_observation_route = Some(PixelObservationRoute::ExplicitPixelsOnly);
+    assert!(session.is_pixels_only());
     session.upstream_session_state = UpstreamSessionState::VisualOnly {
         reason: "explicit pixels-only observation; accessibility provider was not started".into(),
     };

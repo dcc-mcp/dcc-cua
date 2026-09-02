@@ -387,6 +387,10 @@ native window. The method starts a provider-free session, preserves the same
 PID/HWND grant, and publishes `observation_mode: "pixels_only"` with the
 normal binary-frame or shared-memory image transport. It is available only on
 the Window task surface; browser tasks are rejected before a session starts.
+When the same task authorization also grants `execute_action`, raw foreground
+pointer/keyboard actions remain bound to the latest pixel observation and the
+`capture_after` response stays on the pixels-only route. This keeps custom
+renderers operable without silently re-entering UIA.
 
 On Windows, for a live custom-rendered window whose accessibility provider is missing or
 unresponsive, use `snapshot --pid PID --window-id HWND --pixels-only`. This
