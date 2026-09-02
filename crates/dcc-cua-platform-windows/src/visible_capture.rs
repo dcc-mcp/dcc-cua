@@ -10,6 +10,7 @@ use windows::Win32::{
             ReleaseDC, SRCCOPY, SelectObject,
         },
     },
+    Storage::Xps::{PRINT_WINDOW_FLAGS, PrintWindow},
     UI::{
         HiDpi::GetDpiForWindow,
         WindowsAndMessaging::{
@@ -459,6 +460,106 @@ pub fn capture_visible_window(
                 physical_width,
                 physical_height,
             ],
+        })
+    }
+}
+
+/// Ask the exact HWND to render into a caller-owned bitmap without reading
+/// the desktop. This is a bounded fallback for applications whose WGC
+/// surface is temporarily black (for example, a software-rendered CEF
+/// surface during startup). It never widens the target beyond the validated
+/// PID/HWND and is reported separately from visible desktop capture.
+pub fn capture_window_content(
+    process_id: u32,
+    window_handle: u64,
+) -> Result<VisibleWindowCapture, VisibleWindowCaptureError> {
+    let _dpi_scope = ThreadDpiAwarenessGuard::per_monitor_v2()?;
+    validate_exact_window_owner(process_id, window_handle)
+        .map_err(|error| capture_error(error.to_string()))?;
+    let raw = usize::try_from(window_handle)
+        .map_err(|error| capture_error(format!("convert window handle: {error}")))?;
+    let hwnd = HWND(raw as *mut _);
+    if hwnd.0.is_null() || !unsafe { IsWindow(hwnd) }.as_bool() {
+        return Err(capture_error("the exact HWND no longer exists"));
+    }
+    if unsafe { IsIconic(hwnd) }.as_bool() {
+        return Err(capture_error("the exact HWND is minimized"));
+    }
+    let mut rect = RECT::default();
+    unsafe { GetWindowRect(hwnd, &mut rect) }
+        .map_err(|error| capture_error(format!("read exact HWND bounds: {error}")))?;
+    let width = rect.right - rect.left;
+    let height = rect.bottom - rect.top;
+    if width <= 4 || height <= 4 {
+        return Err(capture_error(format!(
+            "the exact HWND has invalid bounds {width}x{height}"
+        )));
+    }
+
+    unsafe {
+        let screen_dc = GetDC(HWND(std::ptr::null_mut()));
+        if screen_dc.0.is_null() {
+            return Err(capture_error(
+                "acquire desktop device context for exact HWND render",
+            ));
+        }
+        let memory_dc = CreateCompatibleDC(screen_dc);
+        if memory_dc.0.is_null() {
+            ReleaseDC(HWND(std::ptr::null_mut()), screen_dc);
+            return Err(capture_error(
+                "create compatible device context for exact HWND render",
+            ));
+        }
+        let bitmap = CreateCompatibleBitmap(screen_dc, width, height);
+        if bitmap.0.is_null() {
+            let _ = DeleteDC(memory_dc);
+            ReleaseDC(HWND(std::ptr::null_mut()), screen_dc);
+            return Err(capture_error("create exact HWND render bitmap"));
+        }
+        let previous = SelectObject(memory_dc, bitmap);
+        let rendered = PrintWindow(hwnd, memory_dc, PRINT_WINDOW_FLAGS(2));
+        let mut bitmap_info = BITMAPINFO {
+            bmiHeader: BITMAPINFOHEADER {
+                biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                biWidth: width,
+                biHeight: -height,
+                biPlanes: 1,
+                biBitCount: 32,
+                biCompression: BI_RGB.0,
+                biSizeImage: (width * height * 4) as u32,
+                ..Default::default()
+            },
+            bmiColors: [RGBQUAD::default(); 1],
+        };
+        let mut bgra = vec![0_u8; (width * height * 4) as usize];
+        let rows = GetDIBits(
+            memory_dc,
+            bitmap,
+            0,
+            height as u32,
+            Some(bgra.as_mut_ptr().cast()),
+            &mut bitmap_info,
+            DIB_RGB_COLORS,
+        );
+        SelectObject(memory_dc, previous);
+        let _ = DeleteObject(bitmap);
+        let _ = DeleteDC(memory_dc);
+        ReleaseDC(HWND(std::ptr::null_mut()), screen_dc);
+        if !rendered.as_bool() {
+            return Err(capture_error(
+                "the exact HWND rejected PrintWindow rendering",
+            ));
+        }
+        if rows == 0 {
+            return Err(capture_error("read exact HWND PrintWindow bitmap"));
+        }
+        validate_exact_window_owner(process_id, window_handle)
+            .map_err(|error| capture_error(error.to_string()))?;
+        Ok(VisibleWindowCapture {
+            bgra,
+            width: width as u32,
+            height: height as u32,
+            bounds: [rect.left, rect.top, width, height],
         })
     }
 }
