@@ -1643,6 +1643,13 @@ struct ExactWindowCapture {
 }
 
 #[cfg(windows)]
+fn bgra_has_visible_rgb(pixels: &[u8]) -> bool {
+    pixels
+        .chunks_exact(4)
+        .any(|pixel| pixel[0] != 0 || pixel[1] != 0 || pixel[2] != 0)
+}
+
+#[cfg(windows)]
 static EXACT_WINDOW_CAPTURE_GENERATION: AtomicU64 = AtomicU64::new(1);
 
 #[cfg(windows)]
@@ -1749,6 +1756,42 @@ async fn capture_exact_window(
                         &after,
                         ExactWindowPixelCaptureMode::WindowContent,
                     )?;
+                    if !bgra_has_visible_rgb(&bgra) {
+                        // Chromium/CEF windows can publish an all-zero WGC
+                        // surface while software rendering is unavailable or
+                        // during a compositor transition. Ask the same HWND
+                        // to render into a private bitmap before considering
+                        // the observation unusable. This remains exact HWND
+                        // content; it never falls back to a desktop crop.
+                        let print_window =
+                            dcc_cua_platform_windows::capture_window_content(process_id, window_id)
+                                .map_err(|error| error.to_string());
+                        if let Ok(content) = print_window
+                            && content.width == u32::try_from(after.bounds[2]).unwrap_or(0)
+                            && content.height == u32::try_from(after.bounds[3]).unwrap_or(0)
+                            && bgra_has_visible_rgb(&content.bgra)
+                        {
+                            return Ok(ExactWindowCapture {
+                                data: encode_bgra_to_png(
+                                    &content.bgra,
+                                    content.width,
+                                    content.height,
+                                )?,
+                                backend: "dcc-cua-print-window-exact",
+                                fallback: "exact_window_print_window_after_blank_wgc",
+                                mode: ExactWindowPixelCaptureMode::WindowContent,
+                                generation,
+                                dpi: after.dpi,
+                                bounds: after.bounds,
+                                source_rect: after.bounds,
+                                native_evidence: after,
+                            });
+                        }
+                        return Err(ComputerUseError::new(
+                            ComputerUseErrorCode::CaptureFailed,
+                            "exact WGC and PrintWindow content are blank; refusing to publish a black observation",
+                        ));
+                    }
                     return Ok(ExactWindowCapture {
                         data: encode_bgra_to_png(&bgra, width, height)?,
                         backend: "dcc-cua-wgc-exact-window",

@@ -51,6 +51,7 @@ fn exact_source_first_capture_instance_boundary() {
         selected.push('\n');
     }
     selected.push_str(item(runtime, "struct ExactWindowCapture"));
+    selected.push_str(item(runtime, "fn bgra_has_visible_rgb"));
     selected.push_str(item(runtime, "async fn capture_exact_window("));
     selected.push_str(item(
         gates,

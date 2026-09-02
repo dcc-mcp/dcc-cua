@@ -45,6 +45,16 @@ pub fn capture_visible_window(pid: u32, hwnd: u64) -> Result<VisibleWindowCaptur
         bounds: [0, 0, 800, 600],
     })
 }
+pub fn capture_window_content(pid: u32, hwnd: u64) -> Result<VisibleWindowCapture, String> {
+    assert_eq!((pid, hwnd), (42, 77));
+    OS.with_borrow_mut(|os| os.trace.push("PrintWindow pixels"));
+    Ok(VisibleWindowCapture {
+        bgra: vec![255; 4],
+        width: 1,
+        height: 1,
+        bounds: [0, 0, 800, 600],
+    })
+}
 pub struct PersistentWgcCapture;
 impl PersistentWgcCapture {
     pub fn new(pid: u32, hwnd: u64) -> Result<Self, String> {
