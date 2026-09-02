@@ -1,9 +1,10 @@
 use super::*;
 
 impl ComputerUseSession {
-    /// Start an exact-window observation session without initializing an
-    /// accessibility provider. This route is read-only until a later explicit
-    /// semantic session is opened and never widens the PID/HWND binding.
+    /// Start an exact-window session without initializing an accessibility
+    /// provider. Observation stays pixels-only while any later input remains
+    /// subject to the normal task grant, fresh-observation, and action-policy
+    /// checks; this route never widens the PID/HWND binding.
     pub async fn start_pixels_only(&mut self) -> ComputerUseResult<Value> {
         #[cfg(not(windows))]
         return Err(ComputerUseError::new(

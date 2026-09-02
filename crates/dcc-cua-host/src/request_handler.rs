@@ -1688,10 +1688,18 @@ async fn handle_request_inner(
                     response["observation_required"] = Value::Bool(true);
                     return Ok((response, attachment));
                 }
-                let screenshot = host
-                    .session
-                    .screenshot_with_bounds(post_snapshot_max_nodes, post_snapshot_max_depth)
-                    .await;
+                // Preserve the observation route selected at session start.
+                // A pixels-only session deliberately has no UIA provider, so
+                // asking for a regular post-action snapshot would re-enter
+                // the unavailable accessibility path and lose the only
+                // trustworthy visual evidence for the action.
+                let screenshot = if host.session.is_pixels_only() {
+                    host.session.screenshot_pixels_only().await
+                } else {
+                    host.session
+                        .screenshot_with_bounds(post_snapshot_max_nodes, post_snapshot_max_depth)
+                        .await
+                };
                 let screenshot = host.finish_observation_sensitive_attempt(screenshot);
                 drop(input_turn);
                 return match screenshot {

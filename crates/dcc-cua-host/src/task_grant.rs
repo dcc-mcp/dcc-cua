@@ -52,9 +52,9 @@ pub(super) struct TaskGrant {
     pub(super) allow_session_escalation: bool,
     #[serde(default)]
     pub(super) allow_trusted_confirmation: bool,
-    /// Start the exact-window session without initializing UIA. This is a
-    /// read-only observation mode for custom-rendered windows whose
-    /// accessibility provider is unavailable or hangs.
+    /// Start the exact-window session without initializing UIA. Observation
+    /// is pixels-only for custom-rendered windows whose accessibility provider
+    /// is unavailable or hangs; input still needs an explicit action grant.
     #[serde(default)]
     pub(super) pixels_only: bool,
     #[serde(default)]

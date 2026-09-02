@@ -45,6 +45,24 @@ fn windows_fast_preflight_rejection(
 }
 
 impl ComputerUseSession {
+    /// Return whether this exact-window session was started through the
+    /// provider-free pixels-only route.
+    ///
+    /// The host uses this bit to keep post-action evidence on the same
+    /// capture route.  In particular, a pixels-only session must not
+    /// accidentally fall back to UIA when `capture_after` is requested.
+    #[must_use]
+    pub fn is_pixels_only(&self) -> bool {
+        #[cfg(windows)]
+        {
+            self.pixel_observation_route == Some(PixelObservationRoute::ExplicitPixelsOnly)
+        }
+        #[cfg(not(windows))]
+        {
+            false
+        }
+    }
+
     /// Return the monotonic receipt for all action-scoped evidence.
     #[must_use]
     pub const fn action_evidence_epoch(&self) -> ActionEvidenceEpoch {
