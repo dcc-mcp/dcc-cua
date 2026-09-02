@@ -415,6 +415,17 @@ perception layer. `backend_unavailable` continues to mean that a provider or
 backend failed and must not be treated as proof that the window class is
 permanently inaccessible.
 
+For custom-rendered Windows surfaces such as Epic's CEF launcher, `act
+--pixels-only` also exposes three explicit, bounded input hooks. Use
+`windows.post_message.v1` for coordinate clicks,
+`windows.post_message_text.v1` for focused Unicode text, and
+`windows.post_message_scroll.v1` for one-axis wheel scrolling. Each hook
+requires the exact PID/HWND, foreground delivery, and the latest screenshot
+coordinate dimensions. The receipt proves only that Windows accepted the
+message; callers must use the post-snapshot (or an independent application
+state check) to confirm the consumer effect. Arbitrary window messages and
+semantic selectors remain rejected.
+
 Every successful window `snapshot` names its image coordinate system in
 `coordinate_space`. Its `width` and `height` are read from the encoded PNG IHDR
 and therefore describe the pixels in the file written by `--output`, not an

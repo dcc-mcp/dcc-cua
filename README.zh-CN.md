@@ -219,6 +219,13 @@ worker 运行失败”。前者返回 `no_accessibility_provider`，并明确说
 `backend_unavailable` 仍表示 provider 或后端执行失败，不能据此断言该窗口类永久不支持
 accessibility。
 
+对于 Epic CEF 这类自绘 Windows 界面，`act --pixels-only` 还提供三个显式且有界的输入
+hook：坐标点击使用 `windows.post_message.v1`，焦点 Unicode 文本使用
+`windows.post_message_text.v1`，单轴滚轮使用 `windows.post_message_scroll.v1`。每个 hook
+都要求精确 PID/HWND、前台投递以及最新截图的坐标尺寸。返回信封只证明 Windows 接受了
+消息；调用方仍须用 post-snapshot 或独立应用状态检查确认消费效果。任意窗口消息和语义
+selector 仍会被拒绝。
+
 成功的窗口 `snapshot` 会返回独立的 `coordinate_space`。其中 `width`/`height` 直接来自
 编码 PNG 的 IHDR，表示 `--output` 实际写入图像的像素尺寸，而不是应用 render target
 尺寸。若图像点为 `(x, y)`，`window-state` 的设备像素边界为 `bounds`，对应屏幕点为

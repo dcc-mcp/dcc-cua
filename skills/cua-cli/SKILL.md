@@ -105,6 +105,15 @@ typed route cannot cover.
    `backend_unavailable` error is a provider/backend failure, not evidence that
    the window class permanently lacks a provider.
 
+   For custom-rendered Windows targets, a pixels-only session can use the
+   explicit bounded hooks `windows.post_message.v1` (coordinate click),
+   `windows.post_message_text.v1` (focused Unicode text), and
+   `windows.post_message_scroll.v1` (one-axis wheel). Keep the exact PID/HWND,
+   foreground delivery, and screenshot coordinate dimensions bound on every
+   call. These receipts report API acceptance only; always verify the target
+   effect with a post-snapshot or an independent state readback. Do not invent
+   arbitrary PostMessage payloads or mix these hooks with semantic selectors.
+
 4. Verify state after every mutation. A successful input call proves that input
    was delivered, not that the application reached the requested state. Use a
    post-snapshot, changed title/tree/value, or an independent application state

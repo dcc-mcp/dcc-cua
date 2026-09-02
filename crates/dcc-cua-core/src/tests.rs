@@ -313,8 +313,13 @@ fn windows_fast_route_is_bounded_to_foreground_raw_actions() {
         delivery_mode: Some("background".into()),
         ..Default::default()
     }));
-    assert!(!uses_windows_foreground_fast_path(&ComputerUseAction {
+    assert!(uses_windows_foreground_fast_path(&ComputerUseAction {
         action: "type".into(),
+        delivery_mode: Some("foreground".into()),
+        ..Default::default()
+    }));
+    assert!(uses_windows_foreground_fast_path(&ComputerUseAction {
+        action: "type_chars".into(),
         delivery_mode: Some("foreground".into()),
         ..Default::default()
     }));
@@ -323,6 +328,49 @@ fn windows_fast_route_is_bounded_to_foreground_raw_actions() {
         delivery_mode: Some("foreground".into()),
         ..Default::default()
     }));
+    assert!(uses_windows_foreground_fast_path(&ComputerUseAction {
+        action: "scroll".into(),
+        delivery_mode: Some("foreground".into()),
+        input_backend_id: Some(WINDOWS_POST_MESSAGE_SCROLL_BACKEND_ID.into()),
+        scroll_y: Some(-8),
+        ..Default::default()
+    }));
+    assert!(!uses_windows_foreground_fast_path(&ComputerUseAction {
+        action: "scroll".into(),
+        delivery_mode: Some("foreground".into()),
+        ..Default::default()
+    }));
+    assert_eq!(
+        explicit_input_backend_rejection(&ComputerUseAction {
+            action: "click".into(),
+            delivery_mode: Some("foreground".into()),
+            input_backend_id: Some(WINDOWS_POST_MESSAGE_BACKEND_ID.into()),
+            x: Some(10.0),
+            y: Some(10.0),
+            ..Default::default()
+        }),
+        None
+    );
+    assert_eq!(
+        explicit_input_backend_rejection(&ComputerUseAction {
+            action: "type".into(),
+            delivery_mode: Some("foreground".into()),
+            input_backend_id: Some(WINDOWS_POST_MESSAGE_TEXT_BACKEND_ID.into()),
+            text: Some("free".into()),
+            ..Default::default()
+        }),
+        None
+    );
+    assert_eq!(
+        explicit_input_backend_rejection(&ComputerUseAction {
+            action: "scroll".into(),
+            delivery_mode: Some("foreground".into()),
+            input_backend_id: Some(WINDOWS_POST_MESSAGE_SCROLL_BACKEND_ID.into()),
+            scroll_y: Some(-8),
+            ..Default::default()
+        }),
+        None
+    );
 }
 
 #[cfg(windows)]

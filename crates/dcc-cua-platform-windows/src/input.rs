@@ -3,6 +3,7 @@ use std::thread::sleep;
 use std::time::{Duration, Instant};
 
 use windows_sys::Win32::Foundation::POINT;
+use windows_sys::Win32::Graphics::Gdi::ScreenToClient;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT,
     KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE, MAPVK_VK_TO_VSC,
@@ -13,7 +14,8 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     GetCursorPos, GetForegroundWindow, GetSystemMetrics, GetWindowThreadProcessId, IsWindow,
-    SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SetCursorPos,
+    PostMessageW, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
+    SetCursorPos, WM_MOUSEHWHEEL, WM_MOUSEWHEEL,
 };
 
 use crate::{
@@ -271,6 +273,77 @@ pub fn snapshot_left_button_after_up(target: UiaTarget) -> WindowsPostButtonUpSn
 pub fn send_key_synthesized(window_id: u64, key: &str, modifiers: &[&str]) -> Result<(), String> {
     platform_windows::input::keyboard::send_key_synthesized(window_id, key, modifiers)
         .map_err(|error| error.to_string())
+}
+
+pub fn send_text_synthesized(window_id: u64, text: &str) -> Result<(), String> {
+    platform_windows::input::keyboard::send_text_synthesized(window_id, text)
+        .map_err(|error| error.to_string())
+}
+
+pub fn post_click_screen(
+    window_id: u64,
+    x: i32,
+    y: i32,
+    count: usize,
+    button: &str,
+) -> Result<(), String> {
+    platform_windows::input::mouse::post_click_screen(window_id, x, y, count, button)
+        .map_err(|error| error.to_string())
+}
+
+/// Post Unicode text through the target window's message queue. This is an
+/// explicit provider-free route for custom-rendered windows whose Unreal/CEF
+/// bridge consumes WM_CHAR but ignores SendInput Unicode packets.
+pub fn post_text(window_id: u64, text: &str) -> Result<(), String> {
+    platform_windows::input::keyboard::post_type_text(window_id, text)
+        .map_err(|error| error.to_string())
+}
+
+/// Post bounded mouse-wheel messages at a screen point inside an exact window.
+/// This is an explicit provider-free route for custom-rendered Unreal/CEF
+/// surfaces that consume wheel messages but expose no UIA scroll pattern.
+pub fn post_scroll_screen(
+    window_id: u64,
+    x: i32,
+    y: i32,
+    horizontal: i32,
+    vertical: i32,
+) -> Result<(), String> {
+    if horizontal != 0 && vertical != 0 {
+        return Err("Windows PostMessage scroll supports one axis per action".into());
+    }
+    if horizontal.unsigned_abs() > 50 || vertical.unsigned_abs() > 50 {
+        return Err("Windows PostMessage scroll amount must be at most 50".into());
+    }
+    if horizontal == 0 && vertical == 0 {
+        return Err("Windows PostMessage scroll requires a non-zero axis".into());
+    }
+    if let Some(msg) = post_message_blocked_by_uipi(window_id) {
+        return Err(msg);
+    }
+    let hwnd = window_id as isize as windows_sys::Win32::Foundation::HWND;
+    if hwnd.is_null() || unsafe { IsWindow(hwnd) == 0 } {
+        return Err("invalid target hwnd".into());
+    }
+    let mut point = POINT { x, y };
+    if unsafe { ScreenToClient(hwnd, &mut point) == 0 } {
+        return Err(std::io::Error::last_os_error().to_string());
+    }
+    let lparam = (((point.y as u32 as usize) << 16) | (point.x as u32 as usize & 0xffff)) as isize;
+    let (message, delta) = if horizontal != 0 {
+        (WM_MOUSEHWHEEL, horizontal.signum() * 120)
+    } else {
+        (WM_MOUSEWHEEL, vertical.signum() * 120)
+    };
+    let count = horizontal.unsigned_abs().max(vertical.unsigned_abs());
+    for _ in 0..count {
+        let wparam = ((delta as i16 as u16 as usize) << 16) as usize;
+        if unsafe { PostMessageW(hwnd, message, wparam, lparam) } == 0 {
+            return Err(std::io::Error::last_os_error().to_string());
+        }
+        sleep(Duration::from_millis(4));
+    }
+    Ok(())
 }
 
 pub fn inject_drag_screen(
