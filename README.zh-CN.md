@@ -221,7 +221,8 @@ accessibility。
 
 对于 Epic CEF 这类自绘 Windows 界面，`act --pixels-only` 还提供三个显式且有界的输入
 hook：坐标点击使用 `windows.post_message.v1`，焦点 Unicode 文本使用
-`windows.post_message_text.v1`，单轴滚轮使用 `windows.post_message_scroll.v1`。每个 hook
+`windows.post_message_text.v1`，单轴滚轮使用 `windows.post_message_scroll.v1`，命名按键/组合键使用
+`windows.post_message_key.v1`。每个 hook
 都要求精确 PID/HWND、前台投递以及最新截图的坐标尺寸。返回信封只证明 Windows 接受了
 消息；调用方仍须用 post-snapshot 或独立应用状态检查确认消费效果。任意窗口消息和语义
 selector 仍会被拒绝。

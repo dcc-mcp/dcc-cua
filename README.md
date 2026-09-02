@@ -419,7 +419,8 @@ For custom-rendered Windows surfaces such as Epic's CEF launcher, `act
 --pixels-only` also exposes three explicit, bounded input hooks. Use
 `windows.post_message.v1` for coordinate clicks,
 `windows.post_message_text.v1` for focused Unicode text, and
-`windows.post_message_scroll.v1` for one-axis wheel scrolling. Each hook
+`windows.post_message_scroll.v1` for one-axis wheel scrolling, or
+`windows.post_message_key.v1` for a named key/chord. Each hook
 requires the exact PID/HWND, foreground delivery, and the latest screenshot
 coordinate dimensions. The receipt proves only that Windows accepted the
 message; callers must use the post-snapshot (or an independent application

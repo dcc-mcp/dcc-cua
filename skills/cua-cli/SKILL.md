@@ -108,7 +108,8 @@ typed route cannot cover.
    For custom-rendered Windows targets, a pixels-only session can use the
    explicit bounded hooks `windows.post_message.v1` (coordinate click),
    `windows.post_message_text.v1` (focused Unicode text), and
-   `windows.post_message_scroll.v1` (one-axis wheel). Keep the exact PID/HWND,
+   `windows.post_message_scroll.v1` (one-axis wheel), or
+   `windows.post_message_key.v1` (named key/chord). Keep the exact PID/HWND,
    foreground delivery, and screenshot coordinate dimensions bound on every
    call. These receipts report API acceptance only; always verify the target
    effect with a post-snapshot or an independent state readback. Do not invent

@@ -23,6 +23,7 @@ pub const WINDOWS_SEND_INPUT_BACKEND_ID: &str = "windows.send_input.v1";
 pub const WINDOWS_POST_MESSAGE_BACKEND_ID: &str = "windows.post_message.v1";
 pub const WINDOWS_POST_MESSAGE_TEXT_BACKEND_ID: &str = "windows.post_message_text.v1";
 pub const WINDOWS_POST_MESSAGE_SCROLL_BACKEND_ID: &str = "windows.post_message_scroll.v1";
+pub const WINDOWS_POST_MESSAGE_KEY_BACKEND_ID: &str = "windows.post_message_key.v1";
 pub const WINDOWS_RELATIVE_SEND_INPUT_BACKEND_ID: &str = "windows.send_input.relative_drag.v1";
 pub const WINDOWS_COMBINED_DOWN_DRAG_BACKEND_ID: &str = "windows.send_input.combined_down_drag.v1";
 pub const WINDOWS_SYNTHETIC_TOUCH_BACKEND_ID: &str = "windows.synthetic_touch.v1";

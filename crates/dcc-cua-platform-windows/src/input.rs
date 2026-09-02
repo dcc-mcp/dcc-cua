@@ -299,6 +299,14 @@ pub fn post_text(window_id: u64, text: &str) -> Result<(), String> {
         .map_err(|error| error.to_string())
 }
 
+/// Post a named key and optional modifiers through the target window's
+/// message queue. This is an explicit provider-free route for custom-rendered
+/// Unreal/CEF surfaces that consume WM_KEYDOWN/WM_KEYUP but ignore SendInput.
+pub fn post_key(window_id: u64, key: &str, modifiers: &[&str]) -> Result<(), String> {
+    platform_windows::input::keyboard::post_key(window_id, key, modifiers)
+        .map_err(|error| error.to_string())
+}
+
 /// Post bounded mouse-wheel messages at a screen point inside an exact window.
 /// This is an explicit provider-free route for custom-rendered Unreal/CEF
 /// surfaces that consume wheel messages but expose no UIA scroll pattern.

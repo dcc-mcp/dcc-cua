@@ -55,6 +55,8 @@ pub(crate) mod windows_held_key;
 #[cfg(any(windows, test))]
 mod windows_input;
 #[cfg(any(windows, test))]
+mod windows_post_message_key;
+#[cfg(any(windows, test))]
 pub(crate) use windows_input::*;
 mod window_commands;
 
@@ -230,6 +232,11 @@ pub(crate) fn explicit_input_backend_rejection(action: &ComputerUseAction) -> Op
             && action.keys.is_empty()
             && action.x.is_none()
             && action.y.is_none()
+        {
+            return None;
+        }
+        if backend_id == WINDOWS_POST_MESSAGE_KEY_BACKEND_ID
+            && windows_post_message_key::supported(action)
         {
             return None;
         }

@@ -146,6 +146,7 @@ pub const HOST_CAPABILITIES: &[&str] = &[
     "input_backend:windows.send_input.relative_drag.v1",
     "input_backend:windows.send_input.combined_down_drag.v1",
     "input_backend:windows.synthetic_touch.v1",
+    "input_backend:windows.post_message_key.v1",
     "host_wide_interrupt",
     "accessibility_snapshot",
     "accessibility_find",
