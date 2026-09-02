@@ -665,10 +665,11 @@ impl TaskAuthorizationServer {
             .session
             .as_mut()
             .expect("task session was initialized")
-            .request(method, params)
+            .request(method.as_str(), params)
             .await
             .map_err(|error| error.to_string())?;
         let mut host = response.value;
+        host["requested_method"] = Value::String(method.clone());
         host["task_authorization_context"] = json!({
             "provider": "dcc-cua",
             "runtime_version": env!("CARGO_PKG_VERSION"),
@@ -748,6 +749,11 @@ fn task_session_grant(proposal: &TaskProposal, receipt: &TrustedTaskAuthorizatio
         "allow_browser_input": browser,
         "allow_browser_prepare": proposal.authorizes_existing_profile_prepare(),
         "allow_trusted_confirmation": true,
+        "pixels_only": proposal.surface == TaskSurface::Window
+            && proposal
+                .allowed_methods
+                .iter()
+                .any(|method| method == "snapshot_pixels_only"),
         "task_authorization_id": receipt.authorization_id,
         "task_authorization_window_capability": receipt.window_capability,
     })
@@ -915,6 +921,7 @@ fn method_allowed(surface: TaskSurface, method: &str) -> bool {
             | "clipboard_capture_secret"
     );
     common
+        || (surface == TaskSurface::Window && method == "snapshot_pixels_only")
         || matches!(
             (surface, method),
             (
@@ -1134,7 +1141,7 @@ fn tool_definitions() -> Vec<Value> {
                         "maxItems": MAX_ALLOWED_METHODS,
                         "uniqueItems": true,
                         "items": {"type": "string", "enum": [
-                            "get_window_state", "snapshot", "accessibility_snapshot", "verify_state",
+                            "get_window_state", "snapshot", "snapshot_pixels_only", "accessibility_snapshot", "verify_state",
                             "find", "wait_for", "execute_action", "get_session_state",
                             "get_input_state", "session_health", "poll_session_events",
                             "clipboard_capture_secret", "browser_snapshot", "browser_prepare",

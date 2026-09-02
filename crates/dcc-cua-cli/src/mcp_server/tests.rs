@@ -662,3 +662,45 @@ fn task_proposal_rejects_surface_mismatches_and_duplicate_methods() {
             .contains("duplicates")
     );
 }
+
+#[rstest]
+fn pixels_only_snapshot_is_window_only_and_grants_provider_free_start() {
+    let mut server = test_server();
+    let task = json!({
+        "application_label": "Epic Games Launcher",
+        "target_process_id": 4048,
+        "target_window_handle": 33304110,
+        "surface": "window",
+        "allowed_methods": ["snapshot_pixels_only"],
+        "allowed_actions": [{
+            "action": "click",
+            "input_kind": "semantic",
+            "secret_input": false,
+            "authorization_category": "publishing"
+        }],
+        "ttl_minutes": 15
+    });
+    let prepared = server.prepare_task(task).unwrap();
+    let proposal_id = prepared["proposal_id"].as_str().unwrap();
+    server
+        .authorize_task(json!({"proposal_id": proposal_id}))
+        .unwrap();
+    let proposal = server.proposals.get(proposal_id).unwrap();
+    let receipt = proposal.receipt.as_ref().unwrap();
+    let grant = task_session_grant(proposal, receipt);
+    assert_eq!(grant["pixels_only"], true);
+    assert!(method_allowed(TaskSurface::Window, "snapshot_pixels_only"));
+    assert!(!method_allowed(
+        TaskSurface::Browser,
+        "snapshot_pixels_only"
+    ));
+
+    let mut browser = browser_task();
+    browser["allowed_methods"] = json!(["snapshot_pixels_only"]);
+    assert!(
+        server
+            .prepare_task(browser)
+            .unwrap_err()
+            .contains("closed browser")
+    );
+}

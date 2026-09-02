@@ -132,6 +132,7 @@ pub(crate) fn is_task_authorizable_host_method(method: &str) -> bool {
             | "set_window_frame"
             | "invoke_menu"
             | "snapshot"
+            | "snapshot_pixels_only"
             | "zoom"
             | "accessibility_snapshot"
             | "verify_state"
@@ -275,6 +276,7 @@ fn enforce_task_authorized_browser_scope(
         | Request::SetWindowFrame { .. }
         | Request::InvokeMenu { .. }
         | Request::Snapshot { .. }
+        | Request::SnapshotPixelsOnly { .. }
         | Request::Zoom { .. }
         | Request::AccessibilitySnapshot { .. }
         | Request::VerifyState { .. }
@@ -452,6 +454,17 @@ impl Request {
                 window_capability,
                 ..
             } => (session_id, task_grant_id, window_capability, "snapshot"),
+            Self::SnapshotPixelsOnly {
+                session_id,
+                task_grant_id,
+                window_capability,
+                ..
+            } => (
+                session_id,
+                task_grant_id,
+                window_capability,
+                "snapshot_pixels_only",
+            ),
             Self::Zoom {
                 session_id,
                 task_grant_id,

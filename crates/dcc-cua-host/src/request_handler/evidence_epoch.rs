@@ -31,6 +31,7 @@ pub(crate) fn window_evidence_epoch_route(request: &Request) -> Option<WindowEvi
         | Request::SetWindowFrame { session_id, .. }
         | Request::InvokeMenu { session_id, .. }
         | Request::Snapshot { session_id, .. }
+        | Request::SnapshotPixelsOnly { session_id, .. }
         | Request::Zoom { session_id, .. }
         | Request::AccessibilitySnapshot { session_id, .. }
         | Request::VerifyState { session_id, .. }

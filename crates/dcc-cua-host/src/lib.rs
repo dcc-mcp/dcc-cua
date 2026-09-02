@@ -164,6 +164,7 @@ pub const HOST_CAPABILITIES: &[&str] = &[
     "two_axis_scroll",
     "bounded_wait_for",
     "binary_snapshot_frames",
+    "exact_window_pixels_task_v1",
     "shared_memory_snapshots",
     "shared_memory_verification_images",
     "shared_memory_browser_images",
@@ -436,6 +437,19 @@ enum Request {
         request: ComputerUseMenuRequest,
     },
     Snapshot {
+        session_id: String,
+        task_grant_id: String,
+        window_capability: String,
+        #[serde(default)]
+        max_depth: u32,
+        #[serde(default)]
+        max_nodes: u32,
+        #[serde(default)]
+        activate_before: bool,
+    },
+    /// Capture an exact native window without consulting UIA. The task
+    /// authorization bridge maps this to the provider-free pixels route.
+    SnapshotPixelsOnly {
         session_id: String,
         task_grant_id: String,
         window_capability: String,
