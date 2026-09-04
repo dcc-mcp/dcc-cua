@@ -30,3 +30,12 @@ repository = "https://github.com/dcc-mcp/dcc-cua"
 [workspace.dependencies]
 async-trait = "0.1"
 rstest = "0.26.1"
+
+# Keep the SDK, platform adapters, cursor renderer and testkit on one revision.
+# The compatibility fork retains browser contracts not yet merged upstream.
+cua-driver-contract = { git = "https://github.com/loonghao/cua.git", rev = "50f5d303e3b81c031ef67f1dfb7127e8aaabfff7" }
+cua-driver-sdk = { git = "https://github.com/loonghao/cua.git", rev = "50f5d303e3b81c031ef67f1dfb7127e8aaabfff7" }
+cua-driver-testkit = { git = "https://github.com/loonghao/cua.git", rev = "50f5d303e3b81c031ef67f1dfb7127e8aaabfff7" }
+cursor-overlay = { git = "https://github.com/loonghao/cua.git", rev = "50f5d303e3b81c031ef67f1dfb7127e8aaabfff7" }
+platform-macos = { git = "https://github.com/loonghao/cua.git", rev = "50f5d303e3b81c031ef67f1dfb7127e8aaabfff7" }
+platform-windows = { git = "https://github.com/loonghao/cua.git", rev = "50f5d303e3b81c031ef67f1dfb7127e8aaabfff7" }
