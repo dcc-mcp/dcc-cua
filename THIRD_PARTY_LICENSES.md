@@ -1,7 +1,11 @@
 # Third-party licenses
 
-`dcc-cua` statically links the official Cua Driver SDK and related components
-from [trycua/cua](https://github.com/trycua/cua). The hidden private-worker
+`dcc-cua` statically links the Cua Driver SDK and related components
+from [trycua/cua](https://github.com/trycua/cua), through a
+[compatibility fork](https://github.com/loonghao/cua). The exact revision is
+pinned in the root `Cargo.toml`; see
+[SDK maintenance](docs/design/sdk-dependency-maintenance.md) for its upstream
+base and retained changes. The hidden private-worker
 runtime is adapted from that project's implementation. Those components are
 licensed as follows:
 

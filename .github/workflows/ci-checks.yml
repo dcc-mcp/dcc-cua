@@ -157,6 +157,7 @@ jobs:
       - run: python -B -m unittest scripts.test_release_workflow
       - run: python -B -m unittest scripts.test_refresh_release_please_prs
       - run: python -B -m unittest scripts.test_browser_store_readiness
+      - run: python -B -m unittest scripts.test_sdk_dependency_contract
       - run: |
           cargo hakari generate --diff
           cargo hakari manage-deps --dry-run
