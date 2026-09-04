@@ -15,6 +15,7 @@ SDK_PACKAGES = {
     "platform-macos",
     "platform-windows",
 }
+RESOLVED_SDK_PACKAGES = SDK_PACKAGES | {"cua-driver-core", "pip-preview", "platform-linux"}
 
 
 class SdkDependencyContractTests(unittest.TestCase):
@@ -53,12 +54,12 @@ class SdkDependencyContractTests(unittest.TestCase):
         resolved = set()
         for package in lock["package"]:
             source = package.get("source", "")
-            if package["name"] in SDK_PACKAGES:
+            if package["name"] in RESOLVED_SDK_PACKAGES:
                 self.assertEqual(source, expected_source, package["name"])
                 resolved.add(package["name"])
             if re.match(r"git\+https://github\.com/(?:loonghao|trycua)/cua(?:\.git)?\?", source):
                 self.assertEqual(source, expected_source, package["name"])
-        self.assertEqual(resolved, SDK_PACKAGES)
+        self.assertEqual(resolved, RESOLVED_SDK_PACKAGES)
 
 
 if __name__ == "__main__":
