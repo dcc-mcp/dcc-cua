@@ -32,3 +32,24 @@ test("snapshot names retain bounded public labeling metadata", () => {
     "API key",
   );
 });
+
+test("snapshot names fall back to text only when metadata is absent", () => {
+  assert.equal(
+    snapshotElementName({
+      ariaLabel: null,
+      alt: null,
+      title: null,
+      placeholder: null,
+      innerText: "  Visible   button  ",
+    }),
+    "Visible button",
+  );
+  assert.equal(
+    snapshotElementName({
+      ariaLabel: "  ",
+      title: "Tooltip",
+      innerText: "Visible button",
+    }),
+    "",
+  );
+});

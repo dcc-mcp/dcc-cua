@@ -67,13 +67,22 @@ export default defineUnlistedScript(() => {
   }
 
   function elementName(element: HTMLElement): string {
-    return snapshotElementName({
-      ariaLabel: element.getAttribute("aria-label"),
-      alt: element.getAttribute("alt"),
-      title: element.getAttribute("title"),
-      placeholder: element.getAttribute("placeholder"),
-      innerText: element.innerText,
-    });
+    const ariaLabel = element.getAttribute("aria-label");
+    const alt = element.getAttribute("alt");
+    const title = element.getAttribute("title");
+    const placeholder = element.getAttribute("placeholder");
+    // Preserve attribute precedence (including whitespace-only values) while
+    // avoiding a layout-backed innerText read for the common metadata case.
+    if (ariaLabel || alt || title || placeholder) {
+      return snapshotElementName({ ariaLabel, alt, title, placeholder });
+    }
+    const textContent = element.textContent ?? "";
+    if (textContent.trim()) {
+      return snapshotElementName({ innerText: textContent });
+    }
+    // Generated content and other browser-rendered text have no textContent;
+    // retain the old fallback only when the cheap path cannot provide a name.
+    return snapshotElementName({ innerText: element.innerText });
   }
 
   function visibility(element: HTMLElement): "in_viewport" | "offscreen" | null {
@@ -131,12 +140,21 @@ export default defineUnlistedScript(() => {
       "[role=link]",
       "[role=menuitem]",
     ].join(",");
+    // Limit expensive per-element style/layout work on pages with a very
+    // large number of unrelated candidates. A four-times margin preserves
+    // useful coverage while making the work bounded for every snapshot.
+    const candidateLimit = Math.min(maxNodes * 4, 1_200);
+    const candidates = document.querySelectorAll<HTMLElement>(selectors);
     const refs: Array<Record<string, unknown>> = [];
-    for (const element of document.querySelectorAll<HTMLElement>(selectors)) {
+    const scannedCandidates = Math.min(candidates.length, candidateLimit);
+    for (let index = 0; index < scannedCandidates; index += 1) {
       if (refs.length >= maxNodes) break;
-      const visible = visibility(element);
+      const element = candidates[index];
+      if (!element) continue;
       const actions = elementActions(element);
-      if (visible === null || actions.length === 0) continue;
+      if (actions.length === 0) continue;
+      const visible = visibility(element);
+      if (visible === null) continue;
       const ref = `p${state.generation}:${refs.length + 1}`;
       state.refs.set(ref, { element, actions });
       refs.push({
@@ -152,7 +170,7 @@ export default defineUnlistedScript(() => {
     return {
       snapshot_id: state.snapshotId,
       generation: state.generation,
-      complete: refs.length < maxNodes,
+      complete: refs.length < maxNodes && candidates.length <= candidateLimit,
       document: {
         id: state.documentId,
         origin: location.origin,
