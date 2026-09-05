@@ -12,10 +12,12 @@ const pairing: Pairing = {
   document_id: "document-1",
 };
 
-function memoryStore(initial: unknown = null): PairingStore & { value: unknown } {
+function memoryStore(initial: unknown = null): PairingStore & { value: unknown; reads: number } {
   return {
     value: initial,
+    reads: 0,
     async read() {
+      this.reads += 1;
       return this.value;
     },
     async write(value) {
@@ -23,6 +25,49 @@ function memoryStore(initial: unknown = null): PairingStore & { value: unknown }
     },
   };
 }
+
+test("pairing reads storage once and serves cache hits", async () => {
+  const store = memoryStore(pairing);
+  const lifecycle = new PairingLifecycle(store);
+
+  await lifecycle.requireMatch({ session_nonce: "session-1", tab_id: 42 });
+  await lifecycle.requireMatch({ session_nonce: "session-1", tab_id: 42 });
+
+  assert.equal(store.reads, 1);
+});
+
+test("pair and unpair update the cache without another storage read", async () => {
+  const store = memoryStore();
+  const lifecycle = new PairingLifecycle(store);
+
+  await lifecycle.save(pairing);
+  assert.deepEqual(await lifecycle.load(), pairing);
+  await lifecycle.clear();
+  assert.equal(await lifecycle.load(), null);
+  assert.equal(store.reads, 0);
+});
+
+test("storage changes replace or invalidate the cached pairing", async () => {
+  const store = memoryStore(pairing);
+  const lifecycle = new PairingLifecycle(store);
+  await lifecycle.load();
+
+  const changed = { ...pairing, session_nonce: "session-2" };
+  store.value = changed;
+  lifecycle.updateFromStorage(changed);
+  assert.deepEqual(
+    await lifecycle.requireMatch({ session_nonce: "session-2", tab_id: 42 }),
+    changed,
+  );
+
+  store.value = null;
+  lifecycle.updateFromStorage(undefined);
+  await assert.rejects(
+    () => lifecycle.requireMatch({ session_nonce: "session-2", tab_id: 42 }),
+    /explicitly paired tab/,
+  );
+  assert.equal(store.reads, 1);
+});
 
 test("pairing survives an extension worker restart through session storage", async () => {
   const store = memoryStore();

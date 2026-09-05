@@ -269,6 +269,14 @@ export default defineBackground(() => {
     });
   });
 
+  browser.storage.onChanged.addListener((changes, areaName) => {
+    if (areaName !== "session") return;
+    const change = changes[PAIRING_STORAGE_KEY];
+    if (change !== undefined) {
+      pairings.updateFromStorage(change.newValue);
+    }
+  });
+
   void pairings
     .load()
     .then((pairing) => {
