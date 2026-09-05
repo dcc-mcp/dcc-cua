@@ -7,13 +7,13 @@ import {
   validateNativeRequest,
   type NativeRequest,
   type Pairing,
-} from "../protocol";
+} from "../protocol.ts";
 import {
   buildPairCommand,
   contentCommandFromNative,
   type ContentCommand,
-} from "../content-protocol";
-import { PairingLifecycle } from "../pairing";
+} from "../content-protocol.ts";
+import { PairingLifecycle } from "../pairing.ts";
 import { browser, type Browser } from "wxt/browser";
 import { defineBackground } from "wxt/utils/define-background";
 
@@ -23,6 +23,63 @@ const PAIRING_STORAGE_KEY = "dcc_cua_pairing_v1";
 type TabResponse =
   | { ok: true; result: unknown }
   | { ok: false; error: { code: string; message: string } };
+
+type ContentScriptState = {
+  generation: number;
+  promise: Promise<void>;
+};
+
+export type ContentScriptEnsurer = {
+  ensure(tabId: number): Promise<void>;
+  invalidate(tabId: number): void;
+  remove(tabId: number): void;
+};
+
+/**
+ * Injects the bridge once per tab document while coalescing concurrent calls.
+ * A navigation invalidates the generation before the next command is sent.
+ */
+export function createContentScriptEnsurer(
+  inject: (tabId: number) => Promise<void>,
+): ContentScriptEnsurer {
+  const generations = new Map<number, number>();
+  const states = new Map<number, ContentScriptState>();
+
+  function generationFor(tabId: number): number {
+    return generations.get(tabId) ?? 0;
+  }
+
+  function invalidate(tabId: number): void {
+    generations.set(tabId, generationFor(tabId) + 1);
+    states.delete(tabId);
+  }
+
+  function remove(tabId: number): void {
+    generations.delete(tabId);
+    states.delete(tabId);
+  }
+
+  async function ensure(tabId: number): Promise<void> {
+    const generation = generationFor(tabId);
+    const existing = states.get(tabId);
+    if (existing?.generation === generation) {
+      return existing.promise;
+    }
+
+    const promise = Promise.resolve()
+      .then(() => inject(tabId))
+      .catch((error: unknown) => {
+        if (states.get(tabId)?.promise === promise) {
+          states.delete(tabId);
+        }
+        throw error;
+      });
+    states.set(tabId, { generation, promise });
+    return promise;
+  }
+
+  return { ensure, invalidate, remove };
+}
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -71,6 +128,12 @@ export default defineBackground(() => {
       }
     },
   });
+  const contentScripts = createContentScriptEnsurer(async (tabId) => {
+    await browser.scripting.executeScript({
+      target: { tabId },
+      files: ["/tab-bridge.js"],
+    });
+  });
 
   async function setBadge(text: string, color: string): Promise<void> {
     await browser.action.setBadgeText({ text });
@@ -80,10 +143,7 @@ export default defineBackground(() => {
   }
 
   async function ensureContentScript(tabId: number): Promise<void> {
-    await browser.scripting.executeScript({
-      target: { tabId },
-      files: ["/tab-bridge.js"],
-    });
+    await contentScripts.ensure(tabId);
   }
 
   async function sendTabCommand(tabId: number, command: ContentCommand): Promise<unknown> {
@@ -192,6 +252,7 @@ export default defineBackground(() => {
 
   browser.tabs.onUpdated.addListener((tabId, changeInfo) => {
     if (changeInfo.status !== "loading") return;
+    contentScripts.invalidate(tabId);
     void pairings.clearIfTab(tabId).then(async (cleared) => {
       if (cleared) {
         await setBadge("", "#000000");
@@ -200,6 +261,7 @@ export default defineBackground(() => {
   });
 
   browser.tabs.onRemoved.addListener((tabId) => {
+    contentScripts.remove(tabId);
     void pairings.clearIfTab(tabId).then(async (cleared) => {
       if (cleared) {
         await setBadge("", "#000000");
