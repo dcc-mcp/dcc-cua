@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.2.2](https://github.com/dcc-mcp/dcc-cua/compare/dcc-cua-browser-extension-v0.2.1...dcc-cua-browser-extension-v0.2.2) (2026-09-05)
+
+
+### Bug Fixes
+
+* **ci:** freeze complete workflow execution surface ([c1db0a4](https://github.com/dcc-mcp/dcc-cua/commit/c1db0a4a2ab3e814d3db3bc8f45978ed9c4bb305))
+* **cli:** enforce structured stream boundaries ([af8a5d6](https://github.com/dcc-mcp/dcc-cua/commit/af8a5d66858a4281b22ed1a51137edb1c24c79cb))
+* contain private worker diagnostics ([b6d6681](https://github.com/dcc-mcp/dcc-cua/commit/b6d668199a3c3b0480c614c0be699c777c7aff78))
+* harden CI artifact identity gates ([988e191](https://github.com/dcc-mcp/dcc-cua/commit/988e1918cc863332880298efe4769b4a52148e0a))
+* remove redundant task authorization gate ([#261](https://github.com/dcc-mcp/dcc-cua/issues/261)) ([013ac8b](https://github.com/dcc-mcp/dcc-cua/commit/013ac8b18546631cb0c44032148aa0f421ab5c28))
+* validate browser extension store artwork ([d7cabae](https://github.com/dcc-mcp/dcc-cua/commit/d7cabae88589b22220e4d90f829652fc35fbb11e))
+
+
+### Performance Improvements
+
+* bound browser semantic snapshot layout work ([#272](https://github.com/dcc-mcp/dcc-cua/issues/272)) ([20ccb39](https://github.com/dcc-mcp/dcc-cua/commit/20ccb399ad1f7c3ee8a76a42fe5ea4f419f1b948))
+* cache browser bridge injection per document ([#271](https://github.com/dcc-mcp/dcc-cua/issues/271)) ([71c8052](https://github.com/dcc-mcp/dcc-cua/commit/71c805280fbb20e8eb3375b0ddaff8da18f1f7b8))
+* cache browser pairing state ([#273](https://github.com/dcc-mcp/dcc-cua/issues/273)) ([c6263cd](https://github.com/dcc-mcp/dcc-cua/commit/c6263cd9eeddb662e3d3931917c4ba3a51acb854))
+
 ## [0.2.1](https://github.com/dcc-mcp/dcc-cua/compare/dcc-cua-browser-extension-v0.2.0...dcc-cua-browser-extension-v0.2.1) (2026-08-26)
 
 
