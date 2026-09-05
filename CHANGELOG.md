@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.8.1](https://github.com/dcc-mcp/dcc-cua/compare/v1.8.0...v1.8.1) (2026-09-05)
+
+
+### Bug Fixes
+
+* make release recovery idempotent ([362cd22](https://github.com/dcc-mcp/dcc-cua/commit/362cd22358f617320a077abc6a822a41924363d4))
+* update CUA SDK and unify dependency pins ([b25945e](https://github.com/dcc-mcp/dcc-cua/commit/b25945e00a1620cf350bdeb16a00077569beb9b7))
+
+
+### Performance Improvements
+
+* bound JSONL request lines ([#274](https://github.com/dcc-mcp/dcc-cua/issues/274)) ([5f1a5ff](https://github.com/dcc-mcp/dcc-cua/commit/5f1a5ff8190f4bdf4bcb4346d5d704c3313a9b4b))
+
 ## [1.8.0](https://github.com/dcc-mcp/dcc-cua/compare/v1.7.1...v1.8.0) (2026-08-31)
 
 
