@@ -28,27 +28,69 @@ function pairingMismatch(): Error & { code: string } {
 
 export class PairingLifecycle {
   private readonly store: PairingStore;
+  private cachedPairing: Pairing | null = null;
+  private cacheLoaded = false;
+  private cacheGeneration = 0;
+  private loadPromise: Promise<Pairing | null> | null = null;
 
   constructor(store: PairingStore) {
     this.store = store;
   }
 
   async load(): Promise<Pairing | null> {
-    const value = await this.store.read();
-    if (value == null) return null;
-    if (!isPairing(value)) {
-      await this.store.write(null);
-      throw new Error("stored browser pairing is malformed");
-    }
-    return value;
+    if (this.cacheLoaded) return this.cachedPairing;
+    if (this.loadPromise !== null) return this.loadPromise;
+
+    const generation = this.cacheGeneration;
+    const loadPromise = this.readAndValidate().then((pairing) => {
+      if (this.cacheGeneration !== generation) {
+        if (!this.cacheLoaded) this.loadPromise = null;
+        return this.load();
+      }
+      this.cachedPairing = pairing;
+      this.cacheLoaded = true;
+      return pairing;
+    });
+    let trackedPromise: Promise<Pairing | null>;
+    trackedPromise = loadPromise.finally(() => {
+      if (this.loadPromise === trackedPromise) this.loadPromise = null;
+    });
+    this.loadPromise = trackedPromise;
+    return trackedPromise;
   }
 
   async save(pairing: Pairing): Promise<void> {
     await this.store.write(pairing);
+    this.cachedPairing = pairing;
+    this.cacheLoaded = true;
+    this.cacheGeneration += 1;
   }
 
   async clear(): Promise<void> {
     await this.store.write(null);
+    this.cachedPairing = null;
+    this.cacheLoaded = true;
+    this.cacheGeneration += 1;
+  }
+
+  /**
+   * Applies a browser storage change without an extra read. Malformed values
+   * stay uncached so the next load can remove them and fail closed.
+   */
+  updateFromStorage(value: unknown): void {
+    this.cacheGeneration += 1;
+    if (value == null) {
+      this.cachedPairing = null;
+      this.cacheLoaded = true;
+      return;
+    }
+    if (isPairing(value)) {
+      this.cachedPairing = value;
+      this.cacheLoaded = true;
+      return;
+    }
+    this.cachedPairing = null;
+    this.cacheLoaded = false;
   }
 
   async requireMatch(request: {
@@ -71,5 +113,15 @@ export class PairingLifecycle {
     if (pairing?.tab_id !== tabId) return false;
     await this.clear();
     return true;
+  }
+
+  private async readAndValidate(): Promise<Pairing | null> {
+    const value = await this.store.read();
+    if (value == null) return null;
+    if (!isPairing(value)) {
+      await this.store.write(null);
+      throw new Error("stored browser pairing is malformed");
+    }
+    return value;
   }
 }
