@@ -4,7 +4,7 @@
 //! no standalone `cua-driver` executable or public endpoint is involved.
 
 use std::collections::HashMap;
-use std::io::{BufRead, Write};
+use std::io::{self, BufRead, Write};
 use std::sync::Arc;
 
 use cua_driver_sdk::worker::{
@@ -15,11 +15,80 @@ use cua_driver_sdk::{CuaDriver, CuaDriverSession, DriverHostOptions};
 use serde_json::Value;
 
 use crate::contracts::MOUSE_CURSOR_THEME;
+use dcc_cua_protocol::MAX_JSON_FRAME_BYTES;
 
 #[cfg(target_os = "macos")]
 const PRIVATE_WORKER_FAILURE_DIAGNOSTIC: &str = "dcc-cua: private worker failed";
 
 struct InitializationSignal(Option<std::sync::mpsc::SyncSender<bool>>);
+
+pub(crate) struct BoundedJsonlReader<R> {
+    reader: R,
+}
+
+impl<R> BoundedJsonlReader<R> {
+    pub(crate) fn new(reader: R) -> Self {
+        Self { reader }
+    }
+}
+
+impl<R: BufRead> BoundedJsonlReader<R> {
+    pub(crate) fn next_line(&mut self) -> io::Result<Option<String>> {
+        let mut line = Vec::new();
+        loop {
+            let chunk = self.reader.fill_buf()?;
+            if chunk.is_empty() {
+                return if line.is_empty() {
+                    Ok(None)
+                } else {
+                    String::from_utf8(line)
+                        .map(Some)
+                        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+                };
+            }
+            let newline = chunk.iter().position(|byte| *byte == b'\n');
+            let take = newline.map_or(chunk.len(), |index| index + 1);
+            if line.len().saturating_add(take) > MAX_JSON_FRAME_BYTES {
+                self.reader.consume(take);
+                if newline.is_none() {
+                    self.discard_until_newline()?;
+                }
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "JSONL request exceeds maximum frame size of {MAX_JSON_FRAME_BYTES} bytes"
+                    ),
+                ));
+            }
+            line.extend_from_slice(&chunk[..take]);
+            self.reader.consume(take);
+            if newline.is_some() {
+                return String::from_utf8(line)
+                    .map(Some)
+                    .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error));
+            }
+        }
+    }
+
+    fn discard_until_newline(&mut self) -> io::Result<()> {
+        loop {
+            let chunk = self.reader.fill_buf()?;
+            if chunk.is_empty() {
+                return Ok(());
+            }
+            let chunk_len = chunk.len();
+            let take = chunk
+                .iter()
+                .position(|byte| *byte == b'\n')
+                .map_or(chunk_len, |index| index + 1);
+            let ends_with_newline = chunk.last() == Some(&b'\n');
+            self.reader.consume(take);
+            if take < chunk_len || ends_with_newline {
+                return Ok(());
+            }
+        }
+    }
+}
 
 impl InitializationSignal {
     fn ready(&mut self) {
@@ -88,15 +157,14 @@ async fn run_private_worker_inner(
     }
 
     let stdin = std::io::stdin();
-    let mut lines = stdin.lock().lines();
+    let mut lines = BoundedJsonlReader::new(stdin.lock());
     let stdout = std::io::stdout();
     let mut writer = stdout.lock();
-    let Some(first_line) = lines.next() else {
+    let Some(first_line) = lines.next_line().map_err(|error| error.to_string())? else {
         return Ok(());
     };
     let initialization_request: ChannelRequest =
-        serde_json::from_str(&first_line.map_err(|error| error.to_string())?)
-            .map_err(|error| error.to_string())?;
+        serde_json::from_str(&first_line).map_err(|error| error.to_string())?;
     if initialization_request.protocol_version != PRIVATE_WORKER_PROTOCOL_VERSION
         || initialization_request.request_id != 0
         || initialization_request.generation != generation
@@ -184,9 +252,23 @@ async fn run_private_worker_inner(
     )?;
 
     let mut sessions: HashMap<String, Arc<CuaDriverSession>> = HashMap::new();
-    for line in lines {
-        let line = match line {
-            Ok(line) => line,
+    loop {
+        let line = match lines.next_line() {
+            Ok(Some(line)) => line,
+            Ok(None) => break,
+            Err(error) if error.kind() == io::ErrorKind::InvalidData => {
+                write_response(
+                    &mut writer,
+                    &ChannelResponse::error(
+                        0,
+                        &generation,
+                        "invalid_request",
+                        error.to_string(),
+                        ActionCompletion::NotStarted,
+                    ),
+                )?;
+                continue;
+            }
             Err(_) => break,
         };
         let request: ChannelRequest = match serde_json::from_str(&line) {

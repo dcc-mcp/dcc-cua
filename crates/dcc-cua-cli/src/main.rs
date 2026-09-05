@@ -1,7 +1,7 @@
 use std::env;
 use std::ffi::OsString;
 use std::fs;
-use std::io::{Read, Write};
+use std::io::{self, Read, Write};
 use std::path::PathBuf;
 use std::{collections::BTreeMap, time::Instant};
 
@@ -10,7 +10,6 @@ macro_rules! stdoutln {
         crate::write_stdout_line(format_args!($($argument)*))?
     }};
 }
-
 mod actions;
 mod authorization;
 mod browser_extension;
@@ -36,6 +35,7 @@ use actions::{
     snapshot_activation_result, snapshot_coordinate_space_value, verify_state,
     window_post_snapshot_value, zoom,
 };
+use bounded_jsonl::BoundedJsonlReader;
 use cli_args::*;
 use failure_output::{fatal_error_line, internal_failure_line};
 use mcp_output::{
@@ -62,8 +62,9 @@ use dcc_cua_semantic_profiles::{
 };
 use dcc_cua_shm::{SharedImageDescriptor, SharedImageReader};
 use serde_json::json;
-use tokio::io::{AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader, BufWriter};
+use tokio::io::{AsyncWrite, AsyncWriteExt, BufReader, BufWriter};
 
+mod bounded_jsonl;
 const PARALLEL_DISCOVERY_WINDOW_MS: u64 = 5;
 const INTERNAL_FAILURE_DIAGNOSTIC: &str = "dcc-cua: internal command failure";
 const STDOUT_FAILURE_DIAGNOSTIC: &str = "dcc-cua: command result could not be written to stdout";
@@ -676,7 +677,7 @@ async fn host_jsonl_inner(
     }
     let stdin = tokio::io::stdin();
     let stdout = tokio::io::stdout();
-    let mut lines = BufReader::new(stdin).lines();
+    let mut lines = BoundedJsonlReader::new(BufReader::new(stdin));
     let mut output = BufWriter::new(stdout);
     let mut index = 0_usize;
     let parallel_discovery = has_flag(flags, "--parallel-discovery");
@@ -687,8 +688,26 @@ async fn host_jsonl_inner(
         let (line_index, line) = match pending_line.take() {
             Some(value) => value,
             None => {
-                let Some(line) = lines.next_line().await? else {
-                    break;
+                let line = match lines.next_line().await {
+                    Ok(Some(line)) => line,
+                    Ok(None) => break,
+                    Err(error) if error.kind() == io::ErrorKind::InvalidData => {
+                        write_jsonl_response(
+                            &mut output,
+                            mcp_output::format_value(
+                                json!({
+                                    "type": "error",
+                                    "code": "invalid_request",
+                                    "message": error.to_string(),
+                                }),
+                                response_format,
+                            )?,
+                            metrics,
+                        )
+                        .await?;
+                        continue;
+                    }
+                    Err(error) => return Err(error.into()),
                 };
                 if line.trim().is_empty() {
                     continue;
@@ -736,7 +755,24 @@ async fn host_jsonl_inner(
                 )
                 .await
                 {
-                    Ok(line) => line?,
+                    Ok(Ok(line)) => line,
+                    Ok(Err(error)) if error.kind() == io::ErrorKind::InvalidData => {
+                        write_jsonl_response(
+                            &mut output,
+                            mcp_output::format_value(
+                                json!({
+                                    "type": "error",
+                                    "code": "invalid_request",
+                                    "message": error.to_string(),
+                                }),
+                                response_format,
+                            )?,
+                            metrics,
+                        )
+                        .await?;
+                        continue;
+                    }
+                    Ok(Err(error)) => return Err(error.into()),
                     Err(_) => break,
                 };
                 let Some(next_line) = next_line else {

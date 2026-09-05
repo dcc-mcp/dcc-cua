@@ -33,6 +33,28 @@ use crate::live_observation::{
 use crate::policy::*;
 
 #[rstest]
+fn bounded_jsonl_reader_accepts_limit_and_resynchronizes_after_oversize() {
+    let mut payload = vec![b'a'; dcc_cua_protocol::MAX_JSON_FRAME_BYTES - 1];
+    payload.push(b'\n');
+    payload.extend(std::iter::repeat_n(
+        b'b',
+        dcc_cua_protocol::MAX_JSON_FRAME_BYTES,
+    ));
+    payload.push(b'\n');
+    payload.extend_from_slice(b"{}\n");
+
+    let mut reader = crate::private_worker::BoundedJsonlReader::new(Cursor::new(payload));
+    assert_eq!(
+        reader.next_line().unwrap().unwrap().len(),
+        dcc_cua_protocol::MAX_JSON_FRAME_BYTES
+    );
+    let error = reader.next_line().expect_err("oversize line must fail");
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    assert!(error.to_string().contains("maximum frame size"));
+    assert_eq!(reader.next_line().unwrap().as_deref(), Some("{}\n"));
+}
+
+#[rstest]
 fn external_termination_runtime_has_one_explicit_unrestricted_ceiling() {
     let options = external_process_termination_options();
     assert_eq!(

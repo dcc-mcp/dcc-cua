@@ -31,6 +31,34 @@ mod update_tests;
 mod window_selectors;
 
 #[rstest]
+#[tokio::test]
+async fn bounded_jsonl_reader_accepts_limit_and_resynchronizes_after_oversize() {
+    let limit = dcc_cua_protocol::MAX_JSON_FRAME_BYTES;
+    let mut payload = vec![b'a'; limit - 1];
+    payload.push(b'\n');
+    payload.extend(std::iter::repeat_n(b'b', limit));
+    payload.push(b'\n');
+    payload.extend_from_slice(b"{}\n");
+    let (mut writer, reader) = tokio::io::duplex(payload.len());
+    tokio::io::AsyncWriteExt::write_all(&mut writer, &payload)
+        .await
+        .unwrap();
+    tokio::io::AsyncWriteExt::shutdown(&mut writer)
+        .await
+        .unwrap();
+
+    let mut reader = BoundedJsonlReader::new(tokio::io::BufReader::new(reader));
+    assert_eq!(reader.next_line().await.unwrap().unwrap().len(), limit);
+    let error = reader
+        .next_line()
+        .await
+        .expect_err("oversize line must fail");
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    assert!(error.to_string().contains("maximum frame size"));
+    assert_eq!(reader.next_line().await.unwrap().as_deref(), Some("{}\n"));
+}
+
+#[rstest]
 fn detects_chromium_and_firefox_native_invocations() {
     assert_eq!(
         invocation_origin(&["chrome-extension://extension-id/".into()]),
