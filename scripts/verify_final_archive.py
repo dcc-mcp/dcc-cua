@@ -64,6 +64,28 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+class _DigestCache:
+    """Cache file digests for one verification run using file identity metadata."""
+
+    def __init__(self) -> None:
+        self._entries: dict[Path, tuple[tuple[int, int, int, int], str]] = {}
+
+    def digest(self, path: Path) -> str:
+        if path.is_symlink() or not path.is_file():
+            raise ValueError(f"digest target is not a regular file: {path}")
+        identity = _archive_identity(path)
+        cached = self._entries.get(path)
+        if cached is not None and cached[0] == identity:
+            return cached[1]
+        digest = _sha256(path)
+        self._entries[path] = (identity, digest)
+        return digest
+
+
+def _digest(path: Path, cache: _DigestCache | None = None) -> str:
+    return cache.digest(path) if cache is not None else _sha256(path)
+
+
 def _safe_relative_path(
     raw_name: str, *, directory_suffix: bool = False
 ) -> PurePosixPath:
@@ -270,12 +292,14 @@ def _expected_directories(expected_files: dict[str, Path]) -> set[str]:
 
 
 def _install_plan(
-    expected_files: dict[str, Path], expected_directories: set[str]
+    expected_files: dict[str, Path],
+    expected_directories: set[str],
+    cache: _DigestCache | None = None,
 ) -> dict:
     return {
         "directories": sorted(expected_directories),
         "files": [
-            {"path": relative, "sha256": _sha256(path)}
+            {"path": relative, "sha256": _digest(path, cache)}
             for relative, path in sorted(expected_files.items())
         ],
     }
@@ -288,6 +312,7 @@ def _expected_manifest(
     digest: str,
     expected_files: dict[str, Path],
     expected_directories: set[str],
+    cache: _DigestCache | None = None,
 ) -> dict:
     return {
         "schema_version": 1,
@@ -300,7 +325,7 @@ def _expected_manifest(
             f"v{version}/{archive.name}",
             "sha256": digest,
         },
-        "install": _install_plan(expected_files, expected_directories),
+        "install": _install_plan(expected_files, expected_directories, cache),
     }
 
 
@@ -330,21 +355,26 @@ def _load_manifest(path: Path) -> dict:
     return document
 
 
-def _verify_file_digests(expected: dict[str, Path], root: Path, label: str) -> None:
+def _verify_file_digests(
+    expected: dict[str, Path],
+    root: Path,
+    label: str,
+    cache: _DigestCache | None = None,
+) -> None:
     for relative, source in expected.items():
         candidate = root / Path(*PurePosixPath(relative).parts)
         if candidate.is_symlink() or not candidate.is_file():
             raise ValueError(f"{label} package is missing a regular file: {relative}")
-        if _sha256(candidate) != _sha256(source):
+        if _digest(candidate, cache) != _digest(source, cache):
             raise ValueError(f"{label} package digest drift: {relative}")
 
 
-def _tree_digest(files: dict[str, Path]) -> str:
+def _tree_digest(files: dict[str, Path], cache: _DigestCache | None = None) -> str:
     digest = hashlib.sha256()
     for relative, path in sorted(files.items()):
         digest.update(relative.encode("utf-8"))
         digest.update(b"\0")
-        digest.update(bytes.fromhex(_sha256(path)))
+        digest.update(bytes.fromhex(_digest(path, cache)))
     return digest.hexdigest()
 
 
@@ -428,6 +458,7 @@ def _install_from_manifest(
     manifest: dict,
     extraction: Path,
     install: Path,
+    cache: _DigestCache | None = None,
 ) -> None:
     plan = manifest.get("install")
     if not isinstance(plan, dict) or set(plan) != {"directories", "files"}:
@@ -471,12 +502,12 @@ def _install_from_manifest(
         source = extraction / Path(*PurePosixPath(relative).parts)
         if source.is_symlink() or not source.is_file():
             raise ValueError(f"install manifest source is missing: {relative}")
-        if _sha256(source) != expected_digest:
+        if _digest(source, cache) != expected_digest:
             raise ValueError(f"install manifest source digest drift: {relative}")
         destination = install / Path(*PurePosixPath(relative).parts)
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, destination)
-        if _sha256(destination) != expected_digest:
+        if _digest(destination, cache) != expected_digest:
             raise ValueError(f"installed manifest digest drift: {relative}")
 
 
@@ -502,6 +533,7 @@ def _verify_snapshot(
     digest: str,
     extract_root: Path,
     install_root: Path,
+    cache: _DigestCache | None = None,
 ) -> dict:
     extract_root.mkdir(parents=False)
     archive_files, archive_directories = (
@@ -522,10 +554,10 @@ def _verify_snapshot(
             f"missing_directories={missing_directories}; "
             f"extra_directories={extra_directories}"
         )
-    _verify_file_digests(expected_files, extract_root, "archive")
+    _verify_file_digests(expected_files, extract_root, "archive", cache)
     _smoke_binary(extract_root, binary_name, target, version)
 
-    _install_from_manifest(manifest, extract_root, install_root)
+    _install_from_manifest(manifest, extract_root, install_root, cache)
     installed_names = {
         path.relative_to(install_root).as_posix()
         for path in install_root.rglob("*")
@@ -540,11 +572,11 @@ def _verify_snapshot(
     }
     if installed_directories != expected_directories:
         raise ValueError("installed directory topology does not match the archive")
-    _verify_file_digests(expected_files, install_root, "installed")
+    _verify_file_digests(expected_files, install_root, "installed", cache)
     _smoke_binary(install_root, binary_name, target, version)
-    source_tree_digest = _tree_digest(expected_files)
-    archive_tree_digest = _tree_digest(_tree_at_root(expected_names, extract_root))
-    install_tree_digest = _tree_digest(_tree_at_root(expected_names, install_root))
+    source_tree_digest = _tree_digest(expected_files, cache)
+    archive_tree_digest = _tree_digest(_tree_at_root(expected_names, extract_root), cache)
+    install_tree_digest = _tree_digest(_tree_at_root(expected_names, install_root), cache)
     if len({source_tree_digest, archive_tree_digest, install_tree_digest}) != 1:
         raise ValueError("source, archive, and installed tree digests differ")
     return {
@@ -585,10 +617,11 @@ def verify_final_archive(
 
     expected_files = _package_files(source_root, binary_name)
     expected_directories = _expected_directories(expected_files)
+    cache = _DigestCache()
     initial_identity = _archive_identity(archive)
     if initial_identity[2] > MAX_TOTAL_BYTES:
         raise ValueError("archive exceeds the compressed size limit")
-    digest = _sha256(archive)
+    digest = _digest(archive, cache)
     manifest = _load_manifest(manifest_path)
     if manifest != _expected_manifest(
         archive,
@@ -597,6 +630,7 @@ def verify_final_archive(
         digest,
         expected_files,
         expected_directories,
+        cache,
     ):
         raise ValueError("install manifest does not match the exact archive")
     checksum = _read_bounded_text(checksum_path, MAX_CHECKSUM_BYTES, "checksum sidecar")
@@ -609,8 +643,8 @@ def verify_final_archive(
         shutil.copyfile(archive, snapshot)
         if (
             _archive_identity(archive) != initial_identity
-            or _sha256(archive) != digest
-            or _sha256(snapshot) != digest
+            or _digest(archive, cache) != digest
+            or _digest(snapshot, cache) != digest
         ):
             raise ValueError("archive changed during verification snapshot creation")
         receipt = _verify_snapshot(
@@ -624,11 +658,12 @@ def verify_final_archive(
             digest=digest,
             extract_root=extract_root,
             install_root=install_root,
+            cache=cache,
         )
         try:
             unchanged = (
                 _archive_identity(archive) == initial_identity
-                and _sha256(archive) == digest
+                and _digest(archive, cache) == digest
             )
         except OSError:
             unchanged = False
