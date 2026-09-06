@@ -31,6 +31,23 @@ def host_target() -> tuple[str, str, str]:
 class FinalArchiveVerifierTests(unittest.TestCase):
     version = "1.2.3"
 
+    def test_digest_cache_reuses_identity_and_invalidates_after_mutation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "payload.bin"
+            path.write_bytes(b"first")
+            cache = MODULE._DigestCache()
+            with mock.patch.object(
+                MODULE, "_sha256", wraps=MODULE._sha256
+            ) as hasher:
+                first = cache.digest(path)
+                self.assertEqual(cache.digest(path), first)
+                self.assertEqual(hasher.call_count, 1)
+
+                path.write_bytes(b"second")
+                second = cache.digest(path)
+                self.assertNotEqual(second, first)
+                self.assertEqual(hasher.call_count, 2)
+
     def _source(self, root: Path) -> tuple[Path, str, str, str]:
         target, extension, binary_name = host_target()
         source = root / "source"
