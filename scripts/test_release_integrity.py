@@ -1,5 +1,6 @@
 import hashlib
 import importlib.util
+import io
 import json
 import stat
 import tarfile
@@ -7,6 +8,7 @@ import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from unittest import mock
 
 SCRIPT = Path(__file__).with_name("release_integrity.py")
 SPEC = importlib.util.spec_from_file_location("release_integrity", SCRIPT)
@@ -615,6 +617,32 @@ class ReleaseIntegrityTests(unittest.TestCase):
 
                 self.assertEqual(_directory_snapshot(release_dir), before)
                 self.assertFalse((release_dir.parent / "escape.txt").exists())
+
+    def test_zip_members_enforce_resource_limits_before_reads(self):
+        member = zipfile.ZipInfo("manifest.json")
+        member.file_size = 11
+        member.compress_size = 10
+        archive = mock.Mock()
+        archive.infolist.return_value = [member]
+
+        cases = {
+            "entry count": {"MAX_ARCHIVE_ENTRIES": 0},
+            "per-file size": {"MAX_FILE_BYTES": 10},
+            "total size": {"MAX_TOTAL_BYTES": 10},
+            "compression ratio": {"MAX_COMPRESSION_RATIO": 1},
+        }
+        for expected, limits in cases.items():
+            with self.subTest(expected=expected), mock.patch.multiple(
+                MODULE, **limits
+            ):
+                with self.assertRaisesRegex(ValueError, expected):
+                    MODULE._validated_zip_members(archive, "test archive")
+
+    def test_zip_member_reads_must_match_declared_size(self):
+        with self.assertRaisesRegex(ValueError, "expanded beyond"):
+            MODULE._copy_bounded_zip_member(io.BytesIO(b"oversized"), None, 4)
+        with self.assertRaisesRegex(ValueError, "does not match"):
+            MODULE._copy_bounded_zip_member(io.BytesIO(b"short"), None, 8)
 
     @staticmethod
     def _symlink_zip_info() -> zipfile.ZipInfo:

@@ -45,6 +45,10 @@ _DIGEST_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _VERSION_PATTERN = re.compile(r"^\d+\.\d+\.\d+$")
 _WINDOWS_DRIVE_PATH_PATTERN = re.compile(r"^[A-Za-z]:")
 _SIGNING_FACT = {"status": "not_performed", "verification": "sha256_only"}
+MAX_ARCHIVE_ENTRIES = 20_000
+MAX_FILE_BYTES = 256 * 1024 * 1024
+MAX_TOTAL_BYTES = 1024 * 1024 * 1024
+MAX_COMPRESSION_RATIO = 1_000
 _RELEASE_COMPONENTS = (
     (".", "v"),
     ("browser-extension/chrome", "dcc-cua-browser-extension-v"),
@@ -255,7 +259,7 @@ def verify_and_extract_artifact(
                         bundle.open(member) as source,
                         destination.open("wb") as target,
                     ):
-                        shutil.copyfileobj(source, target)
+                        _copy_bounded_zip_member(source, target, member.file_size)
 
                 staged_paths = sorted(
                     staged.rglob("*"),
@@ -291,7 +295,10 @@ def _validated_zip_members(
     members = archive.infolist()
     if not any(not member.is_dir() for member in members):
         raise ValueError(f"{description} must contain at least one regular file")
+    if len(members) > MAX_ARCHIVE_ENTRIES:
+        raise ValueError(f"{description} exceeds the entry count limit")
     seen = set()
+    total_size = 0
     for member in members:
         raw_name = member.filename.replace("\\", "/")
         relative = PurePosixPath(raw_name)
@@ -312,7 +319,34 @@ def _validated_zip_members(
         unix_mode = member.external_attr >> 16
         if stat.S_IFMT(unix_mode) == stat.S_IFLNK:
             raise ValueError(f"{description} contains a symbolic link")
+        if member.is_dir():
+            continue
+        if member.file_size < 0 or member.file_size > MAX_FILE_BYTES:
+            raise ValueError(f"{description} member exceeds the per-file size limit")
+        total_size += member.file_size
+        if total_size > MAX_TOTAL_BYTES:
+            raise ValueError(f"{description} exceeds the total size limit")
+        if member.file_size > 0 and (
+            member.compress_size == 0
+            or member.file_size > member.compress_size * MAX_COMPRESSION_RATIO
+        ):
+            raise ValueError(f"{description} member exceeds the compression ratio limit")
     return members
+
+
+def _copy_bounded_zip_member(source, target, expected_size: int) -> None:
+    written = 0
+    while True:
+        chunk = source.read(min(1024 * 1024, expected_size - written + 1))
+        if not chunk:
+            break
+        written += len(chunk)
+        if written > expected_size:
+            raise ValueError("ZIP member expanded beyond its declared size")
+        if target is not None:
+            target.write(chunk)
+    if written != expected_size:
+        raise ValueError("ZIP member size does not match its declaration")
 
 
 def extension_asset_names(version: str) -> tuple[str, ...]:
@@ -349,8 +383,7 @@ def verify_extension_asset_set(directory: Path, version: str) -> None:
                     if member.is_dir():
                         continue
                     with archive.open(member) as source:
-                        while source.read(1024 * 1024):
-                            pass
+                        _copy_bounded_zip_member(source, None, member.file_size)
     except ValueError:
         raise
     except (OSError, RuntimeError, zipfile.BadZipFile) as exc:
