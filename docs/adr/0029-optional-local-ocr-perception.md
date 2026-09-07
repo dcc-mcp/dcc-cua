@@ -52,6 +52,35 @@ The observation request adds an optional, closed configuration:
 fields fail closed. Model installation is a download only: it never starts an
 automation task, emits input, or changes an application window.
 
+### Internal deployment overrides
+
+Internal pipelines may stage approved bundles without depending on a
+user-profile cache. The provider supports these process-start environment
+variables:
+
+- `DCC_CUA_OCR_BUNDLE_DIR`: absolute directory containing one or more
+  preinstalled, versioned bundles.
+- `DCC_CUA_OCR_CACHE_DIR`: absolute writable directory used for the normal
+  verified download cache when `DCC_CUA_OCR_BUNDLE_DIR` does not provide the
+  requested bundle.
+
+`DCC_CUA_OCR_BUNDLE_DIR` has precedence for lookup; the normal cache remains
+the fallback only when installation was explicitly requested. A matching local
+bundle must contain its signed release manifest and every artifact must match
+the manifest's bundle ID, version, platform, architecture, and SHA-256.
+Missing, relative, inaccessible, duplicated, or mismatched directories fail
+with a typed OCR-unavailable result. They do not silently fall back to a
+different bundle or download a replacement. The runtime canonicalizes the
+path before use, rejects traversal outside the configured root, and reports
+only the bundle identity and source (`environment`, `cache`, or `download`) in
+MCP responses; it never exposes an internal filesystem path.
+
+The environment selects storage only. It cannot select an arbitrary model,
+disable verification, alter the caller's closed `bundle` allowlist, enable
+OCR, or widen any task/action scope. This keeps hermetic pipeline deployment
+compatible with the same supply-chain and automation safety contract as a
+user-initiated download.
+
 An OCR-augmented observation returns the normal image identity plus ordered
 regions. Each region carries its recognized text, normalized and pixel bounds,
 confidence, reading order, language when available, and the exact observation
@@ -137,12 +166,15 @@ The implementation PR must include:
 2. Downloader tests for manifest/signature verification, checksum mismatch,
    interrupted download, concurrent installation, offline mode, disk limits,
    cancellation, and atomic rollback.
-3. Golden screenshot tests covering Chinese and English desktop UI, game HUD
+3. Deployment-override tests for precedence, absolute/canonical path handling,
+   platform and architecture mismatch, traversal/symlink escape, redacted
+   errors, inaccessible roots, and a fully offline preinstalled bundle.
+4. Golden screenshot tests covering Chinese and English desktop UI, game HUD
    text, small fonts, scaled windows, overlap, and intentionally ambiguous
    labels. Results must report precision, recall, and coordinate error rather
    than only text-match rate.
-4. Safety tests proving stale OCR regions, wrong PID/HWND, low-confidence or
+5. Safety tests proving stale OCR regions, wrong PID/HWND, low-confidence or
    multiple matches, task expiry, and stop/revocation cannot produce input.
-5. Exact-head native CI plus real Windows host acceptance with a packaged
+6. Exact-head native CI plus real Windows host acceptance with a packaged
    bundle. Local tests and successful installation are not evidence of a
    correct action on a live target.
