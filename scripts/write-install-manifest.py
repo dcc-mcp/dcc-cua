@@ -9,6 +9,19 @@ import json
 import os
 from pathlib import Path, PurePosixPath
 
+try:
+    from scripts.path_safety import (
+        is_reparse_point,
+        is_regular_unlinked_directory,
+        is_regular_unlinked_file,
+    )
+except ModuleNotFoundError:  # Direct execution from the scripts directory.
+    from path_safety import (
+        is_reparse_point,
+        is_regular_unlinked_directory,
+        is_regular_unlinked_file,
+    )
+
 PACKAGE_FILES = (
     "LICENSE",
     "THIRD_PARTY_LICENSES.md",
@@ -55,7 +68,7 @@ def _canonical_relative_path(raw: str) -> str:
 def collect_install_plan(
     source_root: Path, target: str
 ) -> tuple[dict[str, str], set[str]]:
-    if source_root.is_symlink() or not source_root.is_dir():
+    if not is_regular_unlinked_directory(source_root):
         raise ValueError("install source root must be a regular directory")
     try:
         binary_name = SUPPORTED_TARGETS[target]
@@ -65,12 +78,12 @@ def collect_install_plan(
     directories: set[str] = set()
     for name in (binary_name, *PACKAGE_FILES):
         path = source_root / name
-        if path.is_symlink() or not path.is_file():
+        if not is_regular_unlinked_file(path):
             raise ValueError(f"install source is missing a regular file: {name}")
         files[name] = _sha256(path)
     for directory_name in PACKAGE_DIRECTORIES:
         directory = source_root / directory_name
-        if directory.is_symlink() or not directory.is_dir():
+        if not is_regular_unlinked_directory(directory):
             raise ValueError(f"install source is missing a directory: {directory_name}")
         directories.add(directory_name)
         for current_root, directory_names, file_names in os.walk(
@@ -79,14 +92,14 @@ def collect_install_plan(
             current = Path(current_root)
             for name in sorted(directory_names):
                 path = current / name
-                if path.is_symlink():
+                if is_reparse_point(path):
                     raise ValueError("install source contains a directory link")
                 directories.add(
                     _canonical_relative_path(path.relative_to(source_root).as_posix())
                 )
             for name in sorted(file_names):
                 path = current / name
-                if path.is_symlink() or not path.is_file():
+                if not is_regular_unlinked_file(path):
                     raise ValueError("install source contains a non-regular file")
                 relative = _canonical_relative_path(
                     path.relative_to(source_root).as_posix()

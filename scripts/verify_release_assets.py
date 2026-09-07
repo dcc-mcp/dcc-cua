@@ -9,6 +9,11 @@ import json
 import re
 from pathlib import Path, PurePosixPath
 
+try:
+    from scripts.path_safety import is_regular_unlinked_file
+except ModuleNotFoundError:  # Direct execution from the scripts directory.
+    from path_safety import is_regular_unlinked_file
+
 RELEASE_TARGETS: tuple[tuple[str, str], ...] = (
     ("x86_64-pc-windows-msvc", "zip"),
     ("x86_64-unknown-linux-gnu", "tar.gz"),
@@ -108,18 +113,22 @@ def verify_release_assets(
     allowed_names = set(expected_names) | set(allowed_extras)
     missing: list[str] = []
     for name in expected_names:
-        if not (directory / name).is_file():
+        if not is_regular_unlinked_file(directory / name):
             missing.append(name)
     if missing:
         raise ValueError("missing release assets: {}".format(", ".join(missing)))
     unexpected = sorted(
-        path.name for path in directory.iterdir() if path.name not in allowed_names
+        path.name
+        for path in directory.iterdir()
+        if path.name not in allowed_names or not is_regular_unlinked_file(path)
     )
     if unexpected:
         raise ValueError("unexpected release assets: {}".format(", ".join(unexpected)))
     for target, extension in RELEASE_TARGETS:
         archive = directory / f"dcc-cua-{version}-{target}.{extension}"
         digest_builder = hashlib.sha256()
+        if not is_regular_unlinked_file(archive):
+            raise ValueError(f"release asset is not a regular file: {archive.name}")
         with archive.open("rb") as stream:
             for chunk in iter(lambda: stream.read(1024 * 1024), b""):
                 digest_builder.update(chunk)
@@ -127,11 +136,15 @@ def verify_release_assets(
 
         checksum = directory / (archive.name + ".sha256")
         expected_checksum = f"{digest}  {archive.name}\n"
+        if not is_regular_unlinked_file(checksum):
+            raise ValueError(f"release checksum is not a regular file: {checksum.name}")
         if checksum.read_text(encoding="utf-8") != expected_checksum:
             raise ValueError(f"checksum does not match archive: {archive.name}")
 
         manifest_path = directory / f"dcc-cua-install-manifest-{target}.json"
         try:
+            if not is_regular_unlinked_file(manifest_path):
+                raise ValueError("release manifest is not a regular file")
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         except (OSError, UnicodeError, ValueError) as exc:
             raise ValueError(f"invalid release manifest: {manifest_path.name}") from exc
