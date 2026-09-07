@@ -121,6 +121,21 @@ fn generic_error_boundary_does_not_publish_private_error_text() {
 }
 
 #[rstest]
+fn pixels_only_activation_conflict_publishes_safe_typed_guidance() {
+    let value = fatal_error_value(&CliUsageError::PixelsOnlyConflictsWithActivation);
+
+    assert_eq!(value["error"]["code"], "invalid_argument_combination");
+    assert_eq!(
+        value["error"]["message"],
+        "snapshot --pixels-only is read-only and cannot be combined with --activate or --escalate"
+    );
+    assert_eq!(
+        value["error"]["details"]["incompatible_options"],
+        json!(["--activate", "--escalate"])
+    );
+}
+
+#[rstest]
 fn broken_stdout_is_reported_without_panicking_or_retrying_the_envelope() {
     struct BrokenStdout;
 

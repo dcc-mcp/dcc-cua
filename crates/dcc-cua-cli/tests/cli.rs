@@ -277,6 +277,35 @@ fn ordinary_command_failures_emit_one_machine_envelope_on_stdout() {
 }
 
 #[rstest]
+fn pixels_only_activation_conflict_returns_a_diagnostic_envelope() {
+    let output = Command::new(env!("CARGO_BIN_EXE_dcc-cua"))
+        .args([
+            "snapshot",
+            "--pid",
+            "42",
+            "--window-id",
+            "77",
+            "--pixels-only",
+            "--activate",
+        ])
+        .output()
+        .expect("dcc-cua should start");
+
+    assert_eq!(output.status.code(), Some(1));
+    let envelope = parse_single_json_envelope(&output.stdout);
+    assert_eq!(envelope["error"]["code"], "invalid_argument_combination");
+    assert_eq!(
+        envelope["error"]["message"],
+        "snapshot --pixels-only is read-only and cannot be combined with --activate or --escalate"
+    );
+    assert_eq!(
+        envelope["error"]["details"]["valid_form"],
+        "snapshot --pid PID --window-id HWND --pixels-only --output FILE"
+    );
+    assert!(output.stderr.is_empty());
+}
+
+#[rstest]
 #[case("REVIEW_PRIVATE_ARGUMENT_8e1ab4", &[])]
 #[case("snapshot", &["--REVIEW_PRIVATE_OPTION_351cc7"])]
 fn rejected_cli_syntax_does_not_echo_untrusted_arguments(
