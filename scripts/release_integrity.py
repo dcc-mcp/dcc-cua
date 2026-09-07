@@ -15,6 +15,11 @@ import zipfile
 from pathlib import Path, PurePosixPath
 
 try:
+    from scripts.path_safety import is_regular_unlinked_file
+except ModuleNotFoundError:  # Direct execution from the scripts directory.
+    from path_safety import is_regular_unlinked_file
+
+try:
     from scripts.verify_release_assets import (
         RELEASE_TARGETS,
         expected_asset_names,
@@ -322,10 +327,7 @@ def extension_asset_names(version: str) -> tuple[str, ...]:
 
 
 def _is_regular_unlinked_file(path: Path) -> bool:
-    status = path.lstat()
-    file_attributes = getattr(status, "st_file_attributes", 0)
-    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
-    return stat.S_ISREG(status.st_mode) and not (file_attributes & reparse_flag)
+    return is_regular_unlinked_file(path)
 
 
 def verify_extension_asset_set(directory: Path, version: str) -> None:
@@ -416,9 +418,9 @@ def _verify_published_assets(
 ) -> None:
     _require_sha(expected_target_sha, "expected published release target")
     local_entries = list(directory.iterdir())
-    local_names = {path.name for path in local_entries if path.is_file()}
+    local_names = {path.name for path in local_entries if _is_regular_unlinked_file(path)}
     if local_names != set(expected_names) or any(
-        not path.is_file() for path in local_entries
+        not _is_regular_unlinked_file(path) for path in local_entries
     ):
         raise ValueError("published release local asset set has missing or extra files")
     if not isinstance(metadata, dict):

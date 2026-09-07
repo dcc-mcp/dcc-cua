@@ -17,6 +17,19 @@ import unicodedata
 import zipfile
 from pathlib import Path, PurePosixPath
 
+try:
+    from scripts.path_safety import (
+        is_reparse_point,
+        is_regular_unlinked_directory,
+        is_regular_unlinked_file,
+    )
+except ModuleNotFoundError:  # Direct execution from the scripts directory.
+    from path_safety import (
+        is_reparse_point,
+        is_regular_unlinked_directory,
+        is_regular_unlinked_file,
+    )
+
 REQUIRED_FILES = (
     "LICENSE",
     "THIRD_PARTY_LICENSES.md",
@@ -71,7 +84,7 @@ class _DigestCache:
         self._entries: dict[Path, tuple[tuple[int, int, int, int], str]] = {}
 
     def digest(self, path: Path) -> str:
-        if path.is_symlink() or not path.is_file():
+        if not is_regular_unlinked_file(path):
             raise ValueError(f"digest target is not a regular file: {path}")
         identity = _archive_identity(path)
         cached = self._entries.get(path)
@@ -264,18 +277,18 @@ def _package_files(source_root: Path, binary_name: str) -> dict[str, Path]:
         entries[name] = path
     for directory_name in REQUIRED_DIRECTORIES:
         directory = source_root / directory_name
-        if directory.is_symlink() or not directory.is_dir():
+        if not is_regular_unlinked_directory(directory):
             raise ValueError(f"source package is missing a directory: {directory_name}")
         for current_root, directory_names, file_names in os.walk(
             directory, followlinks=False
         ):
             current = Path(current_root)
             for name in directory_names:
-                if (current / name).is_symlink():
+                if is_reparse_point(current / name):
                     raise ValueError("source package links are not allowed")
             for name in file_names:
                 path = current / name
-                if path.is_symlink() or not path.is_file():
+                if not is_regular_unlinked_file(path):
                     raise ValueError("source package contains a non-regular file")
                 total = _bounded_size(path.stat().st_size, total)
                 relative = path.relative_to(source_root).as_posix()
@@ -363,7 +376,7 @@ def _verify_file_digests(
 ) -> None:
     for relative, source in expected.items():
         candidate = root / Path(*PurePosixPath(relative).parts)
-        if candidate.is_symlink() or not candidate.is_file():
+        if not is_regular_unlinked_file(candidate):
             raise ValueError(f"{label} package is missing a regular file: {relative}")
         if _digest(candidate, cache) != _digest(source, cache):
             raise ValueError(f"{label} package digest drift: {relative}")
