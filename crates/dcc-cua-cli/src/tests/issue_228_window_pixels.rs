@@ -33,6 +33,7 @@ fn snapshot_pixels_only_is_an_explicit_cli_contract() {
 fn pixels_only_rejects_unbound_window_selection() {
     let error = snapshot_mode(&strings(["--app", "game.exe", "--pixels-only"]))
         .expect_err("pixels-only requires an exact PID/HWND pair");
+    assert_eq!(error, CliUsageError::PixelsOnlyRequiresExactWindow);
     assert!(error.to_string().contains("--pid"));
     assert!(error.to_string().contains("--window-id"));
 }
@@ -50,6 +51,7 @@ fn pixels_only_rejects_mutating_or_provider_starting_options(#[case] flag: &str)
         flag,
     ]))
     .expect_err("pixels-only remains provider-free and read-only");
+    assert_eq!(error, CliUsageError::PixelsOnlyConflictsWithActivation);
     assert!(error.to_string().contains("read-only"));
 }
 

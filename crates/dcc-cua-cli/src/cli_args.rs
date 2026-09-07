@@ -1,6 +1,41 @@
 //! Command-line argument helpers and stable help text.
 
 use dcc_cua_core::{COMPUTER_USE_ESCALATION_REASONS, MAX_ESCALATION_DETAIL_CHARS};
+use std::fmt;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum CliUsageError {
+    PixelsOnlyRequiresExactWindow,
+    PixelsOnlyConflictsWithActivation,
+}
+
+impl CliUsageError {
+    pub(super) fn code(self) -> &'static str {
+        match self {
+            Self::PixelsOnlyRequiresExactWindow => "missing_required_arguments",
+            Self::PixelsOnlyConflictsWithActivation => "invalid_argument_combination",
+        }
+    }
+
+    pub(super) fn message(self) -> &'static str {
+        match self {
+            Self::PixelsOnlyRequiresExactWindow => {
+                "snapshot --pixels-only requires both --pid and --window-id"
+            }
+            Self::PixelsOnlyConflictsWithActivation => {
+                "snapshot --pixels-only is read-only and cannot be combined with --activate or --escalate"
+            }
+        }
+    }
+}
+
+impl fmt::Display for CliUsageError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.message())
+    }
+}
+
+impl std::error::Error for CliUsageError {}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum SnapshotMode {
@@ -8,20 +43,15 @@ pub(super) enum SnapshotMode {
     PixelsOnly,
 }
 
-pub(super) fn snapshot_mode(flags: &[String]) -> Result<SnapshotMode, Box<dyn std::error::Error>> {
+pub(super) fn snapshot_mode(flags: &[String]) -> Result<SnapshotMode, CliUsageError> {
     if !has_flag(flags, "--pixels-only") {
         return Ok(SnapshotMode::AccessibilityPreferred);
     }
     if flag_value(flags, "--pid").is_none() || flag_value(flags, "--window-id").is_none() {
-        return Err(
-            "snapshot --pixels-only requires an exact --pid PID --window-id ID pair".into(),
-        );
+        return Err(CliUsageError::PixelsOnlyRequiresExactWindow);
     }
     if has_flag(flags, "--activate") || has_flag(flags, "--escalate") {
-        return Err(
-            "snapshot --pixels-only is read-only and cannot be combined with --activate or --escalate"
-                .into(),
-        );
+        return Err(CliUsageError::PixelsOnlyConflictsWithActivation);
     }
     Ok(SnapshotMode::PixelsOnly)
 }

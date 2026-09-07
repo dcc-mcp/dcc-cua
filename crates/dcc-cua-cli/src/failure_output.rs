@@ -4,6 +4,8 @@ use dcc_cua_client::HostClientError;
 use dcc_cua_core::{ComputerUseError, ComputerUseErrorCode};
 use serde_json::{Value, json};
 
+use crate::cli_args::CliUsageError;
+
 pub(super) const PUBLIC_FAILURE_MESSAGE: &str = "dcc-cua could not complete the command";
 const NO_ACCESSIBILITY_PROVIDER_MESSAGE: &str =
     "The exact window has no usable accessibility provider.";
@@ -19,6 +21,29 @@ pub(super) fn internal_failure_line() -> String {
 }
 
 pub(super) fn fatal_error_value(error: &(dyn std::error::Error + 'static)) -> Value {
+    if let Some(error) = error.downcast_ref::<CliUsageError>() {
+        let details = match error {
+            CliUsageError::PixelsOnlyRequiresExactWindow => json!({
+                "command": "snapshot",
+                "mode": "pixels_only",
+                "required_selectors": ["--pid", "--window-id"],
+            }),
+            CliUsageError::PixelsOnlyConflictsWithActivation => json!({
+                "command": "snapshot",
+                "mode": "pixels_only",
+                "incompatible_options": ["--activate", "--escalate"],
+                "valid_form": "snapshot --pid PID --window-id HWND --pixels-only --output FILE",
+            }),
+        };
+        return json!({
+            "success": false,
+            "error": {
+                "code": error.code(),
+                "message": error.message(),
+                "details": details,
+            }
+        });
+    }
     if let Some(error) = error.downcast_ref::<ComputerUseError>() {
         if error.code == ComputerUseErrorCode::NoAccessibilityProvider {
             return json!({
