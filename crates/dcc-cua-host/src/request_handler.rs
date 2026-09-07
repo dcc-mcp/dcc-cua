@@ -1505,7 +1505,7 @@ async fn handle_request_inner(
             host.refresh_input_readiness();
             let availability = host.session.target_availability().await;
             finish_target_sensitive_cached_read(host, availability)?;
-            let root = host.latest_accessibility_root.clone().ok_or_else(|| {
+            let root = host.latest_accessibility_root.as_ref().ok_or_else(|| {
                 HostError::ComputerUse(ComputerUseError::new(
                     ComputerUseErrorCode::StaleObservation,
                     "take a snapshot before finding accessibility elements",
@@ -1517,7 +1517,8 @@ async fn handle_request_inner(
                     "accessibility state is unavailable; take a snapshot first",
                 ))
             })?;
-            let matches = find_elements(&root, &query, max_results);
+            let matches = find_elements(root, &query, max_results);
+            let node_count = root["elements"].as_array().map_or(0, Vec::len);
             let target = host
                 .session
                 .target()
@@ -1528,7 +1529,7 @@ async fn handle_request_inner(
                     "accessibility_state_id":state_id,
                     "target":target_wire(&target),
                     "matches":matches,
-                    "node_count":root["elements"].as_array().map_or(0, Vec::len),
+                    "node_count":node_count,
                 }),
                 None,
             ))
