@@ -42,6 +42,8 @@ fn exact_source_capture_exclusion_native_boundary() {
                 "const BANNER_CLASS_NAME:",
                 "const FRAME_CLASS_NAME:",
                 "const CURSOR_CLASS_NAME:",
+                "const CURSOR_WATCH_ACTIVE_INTERVAL:",
+                "const CURSOR_WATCH_IDLE_INTERVAL:",
             ]
             .iter()
             .any(|prefix| line.starts_with(prefix))
@@ -49,7 +51,7 @@ fn exact_source_capture_exclusion_native_boundary() {
         .collect::<Vec<_>>();
     assert_eq!(
         constants.len(),
-        4,
+        6,
         "use the production deadline and classifier constants"
     );
     let constants = constants.join("\n");

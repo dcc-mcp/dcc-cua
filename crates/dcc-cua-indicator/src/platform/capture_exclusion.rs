@@ -23,6 +23,8 @@ const BANNER_CLASS_NAME: &str = "DccCuaControlBanner";
 const FRAME_CLASS_NAME: &str = "DccCuaControlFrame";
 const CURSOR_CLASS_NAME: &str = "Cua.AgentCursorOverlay";
 const CROSS_PROCESS_GATE_FILE: &str = "dcc-cua-control-banner-capture-v1.lock";
+const CURSOR_WATCH_ACTIVE_INTERVAL: Duration = Duration::from_millis(10);
+const CURSOR_WATCH_IDLE_INTERVAL: Duration = Duration::from_millis(100);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum DccCuaOverlayKind {
@@ -65,7 +67,7 @@ impl CrossProcessGate {
                 }
                 Err(error) => {
                     let kind = error.kind();
-                    return Err(IndicatorError::Backend(format!(
+                    return Err(IndicatorError::CaptureExclusion(format!(
                         "timed out while serializing cross-process DCC-CUA overlay capture exclusion ({kind:?})"
                     )));
                 }
@@ -108,6 +110,71 @@ struct VisibleOverlayEnumeration {
     visible_overlay_found: bool,
     failed: bool,
     hidden_cursor_windows: *mut Vec<OwnedCursorWindow>,
+}
+
+struct OwnedCursorEnumeration {
+    hidden_cursor_windows: *mut Vec<OwnedCursorWindow>,
+}
+
+unsafe extern "system" fn hide_registered_cursor(window: HWND, context: LPARAM) -> BOOL {
+    if !unsafe { IsWindowVisible(window) }.as_bool() {
+        return BOOL(1);
+    }
+    let Some(owned) = registered_window(window) else {
+        return BOOL(1);
+    };
+    let enumeration = unsafe { &mut *(context.0 as *mut OwnedCursorEnumeration) };
+    let hidden_cursor_windows = unsafe { &mut *enumeration.hidden_cursor_windows };
+    if !hidden_cursor_windows.contains(&owned) {
+        hidden_cursor_windows.push(owned);
+    }
+    let _ = unsafe { ShowWindow(window, SW_HIDE) };
+    BOOL(1)
+}
+
+fn hide_registered_cursors(hidden_cursor_windows: &mut Vec<OwnedCursorWindow>) {
+    let mut enumeration = OwnedCursorEnumeration {
+        hidden_cursor_windows,
+    };
+    let _ = unsafe {
+        EnumWindows(
+            Some(hide_registered_cursor),
+            LPARAM(&mut enumeration as *mut OwnedCursorEnumeration as isize),
+        )
+    };
+}
+
+fn synchronize_registered_cursors(requested: bool, cursors: &mut CursorSuppression) {
+    if requested {
+        hide_registered_cursors(&mut cursors.0);
+    } else {
+        restore_cursors(&mut cursors.0);
+    }
+}
+
+/// The upstream cursor renderer can outlive its last control-banner session.
+/// Keep process-local cursor ownership responsive to a peer Host's capture
+/// request even while no banner presenter is running. Foreign windows are
+/// observed but never hidden by this worker.
+pub(crate) fn ensure_cursor_watcher() {
+    static WATCHER: OnceLock<bool> = OnceLock::new();
+    WATCHER.get_or_init(|| {
+        thread::Builder::new()
+            .name("dcc-cua-cursor-capture-exclusion".into())
+            .spawn(|| {
+                let mut cursors = CursorSuppression::default();
+                loop {
+                    let requested = cross_process_capture_requested();
+                    synchronize_registered_cursors(requested, &mut cursors);
+                    thread::sleep(if requested {
+                        CURSOR_WATCH_ACTIVE_INTERVAL
+                    } else {
+                        CURSOR_WATCH_IDLE_INTERVAL
+                    });
+                }
+            })
+            .is_ok()
+    });
 }
 
 unsafe extern "system" fn find_visible_overlay(window: HWND, context: LPARAM) -> BOOL {
@@ -209,7 +276,7 @@ impl RegistrationGate {
             .is_err()
         {
             if Instant::now() >= deadline {
-                return Err(IndicatorError::Backend(
+                return Err(IndicatorError::CaptureExclusion(
                     "timed out while serializing control-banner capture exclusion".into(),
                 ));
             }
@@ -268,12 +335,12 @@ pub(super) fn begin(active: &AtomicBool) -> Result<Guard, IndicatorError> {
             break;
         }
         if !active.load(Ordering::Acquire) {
-            return Err(IndicatorError::Backend(
+            return Err(IndicatorError::CaptureExclusion(
                 "control-banner presenter stopped before DCC-CUA overlay capture exclusion".into(),
             ));
         }
         if Instant::now() >= deadline {
-            return Err(IndicatorError::Backend(
+            return Err(IndicatorError::CaptureExclusion(
                 "timed out while excluding DCC-CUA overlays from exact-window capture".into(),
             ));
         }

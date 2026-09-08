@@ -334,6 +334,7 @@ pub(crate) fn attach_indicator_motion_to_activation(
 pub(crate) fn map_indicator_error(context: &str, error: IndicatorError) -> ComputerUseError {
     let code = match error {
         IndicatorError::InvalidTarget(_) => ComputerUseErrorCode::InvalidTarget,
+        IndicatorError::CaptureExclusion(_) => ComputerUseErrorCode::OverlayExclusionUnavailable,
         IndicatorError::Backend(_) | IndicatorError::Rendering(_) => {
             ComputerUseErrorCode::BackendUnavailable
         }

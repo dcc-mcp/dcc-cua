@@ -25,7 +25,9 @@ const MAX_DISPLAY_NAME_CHARS: usize = 80;
 #[must_use]
 #[cfg(windows)]
 pub fn register_cursor_renderer_id(id: String) -> String {
-    platform::cursor_registration::register(id)
+    let id = platform::cursor_registration::register(id);
+    platform::capture_exclusion::ensure_cursor_watcher();
+    id
 }
 /// Nominal target-frame thickness in device-independent pixels.
 ///
@@ -480,6 +482,8 @@ pub enum IndicatorError {
     InvalidTarget(String),
     #[error("control banner backend failed: {0}")]
     Backend(String),
+    #[error("control banner capture exclusion blocked: {0}")]
+    CaptureExclusion(String),
     #[error("control banner rendering degraded: {0}")]
     Rendering(String),
 }
@@ -489,7 +493,9 @@ impl From<&IndicatorError> for BannerFailure {
         Self {
             kind: match error {
                 IndicatorError::InvalidTarget(_) => BannerFailureKind::TargetLost,
-                IndicatorError::Backend(_) => BannerFailureKind::Backend,
+                IndicatorError::Backend(_) | IndicatorError::CaptureExclusion(_) => {
+                    BannerFailureKind::Backend
+                }
                 IndicatorError::Rendering(_) => BannerFailureKind::Rendering,
             },
             message: error.to_string(),

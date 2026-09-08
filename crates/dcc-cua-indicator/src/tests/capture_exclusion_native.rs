@@ -32,6 +32,7 @@ impl BOOL {
 #[derive(Debug)]
 pub(crate) enum IndicatorError {
     Backend(String),
+    CaptureExclusion(String),
 }
 pub(crate) struct OverlayWindow(pub(crate) HWND);
 
@@ -176,6 +177,28 @@ fn owned_cursor_success_restores_on_guard_drop() {
 }
 
 #[rstest]
+fn idle_host_cursor_watcher_hides_and_restores_only_its_registered_overlay() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    setup(std::process::id());
+    WINDOWS.lock().unwrap().push(Window {
+        raw: 66,
+        pid: std::process::id().wrapping_add(1),
+        class: "Cua.AgentCursorOverlay",
+        title: "Cua.AgentCursorOverlay.dcc-cua-foreign".into(),
+        visible: true,
+    });
+    let mut cursors = CursorSuppression::default();
+
+    synchronize_registered_cursors(true, &mut cursors);
+    assert!(!visible(55), "idle Host must suppress its registered cursor");
+    assert!(visible(66), "a peer cursor remains under its owning Host");
+
+    synchronize_registered_cursors(false, &mut cursors);
+    assert!(visible(55), "the worker restores only the cursor it hid");
+    assert!(visible(66));
+}
+
+#[rstest]
 fn foreign_same_class_window_is_not_hidden_and_capture_is_refused() {
     let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     setup(std::process::id().wrapping_add(1));
@@ -184,10 +207,10 @@ fn foreign_same_class_window_is_not_hidden_and_capture_is_refused() {
         visible(55),
         "foreign same-class ordinary root must never be hidden"
     );
-    assert!(
-        result.is_err(),
-        "unknown matching overlay must refuse capture"
-    );
+    assert!(matches!(
+        result,
+        Err(IndicatorError::CaptureExclusion(_))
+    ));
 }
 
 #[rstest]
@@ -197,7 +220,10 @@ fn same_process_unregistered_cursor_title_is_not_authority() {
     WINDOWS.lock().unwrap()[0].title = "Cua.AgentCursorOverlay.other-consumer".into();
     let result = capture_exclusion::begin(&AtomicBool::new(true));
     assert!(visible(55));
-    assert!(result.is_err());
+    assert!(matches!(
+        result,
+        Err(IndicatorError::CaptureExclusion(_))
+    ));
 }
 
 #[rstest]
@@ -234,7 +260,10 @@ fn assert_partial_exclusion_restores_owned_cursor(stop_after_hide: bool) {
     let result = capture_exclusion::begin(&ACTIVE);
     presenter.join().unwrap();
     drop(registration);
-    assert!(result.is_err());
+    assert!(matches!(
+        result,
+        Err(IndicatorError::CaptureExclusion(_))
+    ));
     assert!(
         visible(55),
         "partial acquisition must restore its already-hidden cursor on Err"

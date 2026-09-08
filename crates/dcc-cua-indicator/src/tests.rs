@@ -389,6 +389,19 @@ fn backend_indicator_failures_remain_distinct_from_target_loss() {
 }
 
 #[rstest]
+fn capture_exclusion_failures_remain_typed_as_backend_status() {
+    let failure = BannerFailure::from(&IndicatorError::CaptureExclusion(
+        "peer did not acknowledge".into(),
+    ));
+
+    assert_eq!(failure.kind, BannerFailureKind::Backend);
+    assert_eq!(
+        failure.message,
+        "control banner capture exclusion blocked: peer did not acknowledge"
+    );
+}
+
+#[rstest]
 fn cosmetic_rendering_failures_are_typed_and_non_fatal() {
     let failure = BannerFailure::from(&IndicatorError::Rendering("paint failed".into()));
 

@@ -12,6 +12,10 @@ use super::*;
     ComputerUseErrorCode::NoAccessibilityProvider,
     "no_accessibility_provider"
 )]
+#[case(
+    ComputerUseErrorCode::OverlayExclusionUnavailable,
+    "overlay_exclusion_unavailable"
+)]
 fn target_error_codes_keep_wire_contract(
     #[case] code: ComputerUseErrorCode,
     #[case] expected: &str,

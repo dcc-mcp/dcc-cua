@@ -9,6 +9,23 @@ use crate::cli_args::CliUsageError;
 pub(super) const PUBLIC_FAILURE_MESSAGE: &str = "dcc-cua could not complete the command";
 const NO_ACCESSIBILITY_PROVIDER_MESSAGE: &str =
     "The exact window has no usable accessibility provider.";
+pub(super) const OVERLAY_EXCLUSION_MESSAGE: &str =
+    "Another DCC-CUA cursor overlay did not acknowledge capture exclusion.";
+
+fn overlay_exclusion_failure() -> Value {
+    json!({
+        "success": false,
+        "error": {
+            "code": "overlay_exclusion_unavailable",
+            "message": OVERLAY_EXCLUSION_MESSAGE,
+            "details": {
+                "retryable": true,
+                "scope_preserved": "exact_window",
+                "whole_desktop_fallback": false,
+            }
+        }
+    })
+}
 
 pub(super) fn fatal_error_line(error: &(dyn std::error::Error + 'static)) -> String {
     serde_json::to_string(&fatal_error_value(error)).unwrap_or_else(|_| {
@@ -45,6 +62,9 @@ pub(super) fn fatal_error_value(error: &(dyn std::error::Error + 'static)) -> Va
         });
     }
     if let Some(error) = error.downcast_ref::<ComputerUseError>() {
+        if error.code == ComputerUseErrorCode::OverlayExclusionUnavailable {
+            return overlay_exclusion_failure();
+        }
         if error.code == ComputerUseErrorCode::NoAccessibilityProvider {
             return json!({
                 "success": false,
@@ -69,6 +89,12 @@ pub(super) fn fatal_error_value(error: &(dyn std::error::Error + 'static)) -> Va
         });
     }
     if let Some(error) = error.downcast_ref::<HostClientError>() {
+        if matches!(
+            error,
+            HostClientError::Remote { code, .. } if code == "overlay_exclusion_unavailable"
+        ) {
+            return overlay_exclusion_failure();
+        }
         let code = match error {
             HostClientError::Io(_) => "host_transport_failed",
             HostClientError::Protocol(_) => "host_protocol_failed",

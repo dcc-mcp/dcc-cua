@@ -558,6 +558,7 @@ pub struct ComputerUseVerification {
 #[serde(rename_all = "snake_case")]
 pub enum ComputerUseErrorCode {
     BackendUnavailable,
+    OverlayExclusionUnavailable,
     NoAccessibilityProvider,
     BrowserRefused,
     ClipboardRefused,
