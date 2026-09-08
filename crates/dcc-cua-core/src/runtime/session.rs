@@ -1,5 +1,6 @@
 use super::*;
 mod gates;
+mod input_target_policy;
 #[cfg(any(windows, test))]
 use gates::run_gated_preinvalidated_window_mutation;
 use gates::{BrowserToolDisposition, browser_tool_requires_input, browser_tool_route};
@@ -8,6 +9,7 @@ pub(crate) use gates::{
     gated_cursor_operation, gated_exact_window_observation, gated_exact_window_publication,
     gated_upstream_session_refresh, preflight_live_observation_start,
 };
+use input_target_policy::reject_ambiguous_embedded_browser_navigation;
 mod browser;
 mod error_contracts;
 mod observation;
@@ -703,6 +705,7 @@ impl ComputerUseSession {
                 "the exact target window changed after the screenshot",
             ));
         }
+        reject_ambiguous_embedded_browser_navigation(action, &target)?;
         self.reject_owned_modal_takeover(&target)?;
         if action_requires_physical_input_desktop(action, &observation) {
             self.require_observed_input_available()?;

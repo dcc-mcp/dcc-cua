@@ -12,6 +12,7 @@ fn structured_error_details(error: &ComputerUseError) -> &ComputerUseErrorDetail
         .as_ref()
         .unwrap_or_else(|| panic!("safety-relevant errors must expose structured details"))
 }
+
 use cua_driver_sdk::{CuaDriver, DriverError, TrustedSessionOptions};
 use rstest::rstest;
 use std::cell::Cell;
@@ -25,6 +26,7 @@ mod browser_boundaries;
 mod continuity;
 mod degraded_shutdown;
 mod dispatch_errors;
+mod input_target_policy;
 mod issue_228_window_pixels;
 mod modal_takeover;
 mod recording;
