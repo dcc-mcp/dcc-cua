@@ -24,8 +24,8 @@ use crate::visible_capture::{
 #[cfg(windows)]
 use crate::windows::{
     REQUEST_TIMEOUT, STARTUP_TIMEOUT, UIA_WORKER_PROTOCOL_VERSION, UiaWorker, ensure_ok,
-    retry_read_only_after_backend_failure, validate_worker_protocol_message,
-    validate_worker_readiness_message,
+    reject_app_shell_text_target, retry_read_only_after_backend_failure,
+    validate_worker_protocol_message, validate_worker_readiness_message,
 };
 #[cfg(windows)]
 use windows::Win32::{
@@ -58,6 +58,38 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     INPUT_MOUSE, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_MOVE,
     MOUSEEVENTF_MOVE_NOCOALESCE, MOUSEEVENTF_VIRTUALDESK,
 };
+
+#[cfg(windows)]
+fn test_element_fence(name: &str) -> crate::snapshot::ElementFence {
+    crate::snapshot::ElementFence {
+        control_id: "control".into(),
+        identity: "identity".into(),
+        is_password: false,
+        name: name.into(),
+        automation_id: String::new(),
+        class_name: "Edit".into(),
+        policy_tier: "task_grant".into(),
+        policy_category: "content_change".into(),
+    }
+}
+
+#[cfg(windows)]
+#[rstest]
+fn chat_title_cannot_be_used_as_a_browser_address_target() {
+    let action = UiaAction {
+        action: "set_text".into(),
+        text: Some("https://example.test/document".into()),
+        ..UiaAction::default()
+    };
+
+    let error = reject_app_shell_text_target(&action, &test_element_fence("聊天标题"))
+        .expect_err("URL input into a chat title must fail closed");
+    assert!(matches!(error, crate::UiaError::InvalidAction(_)));
+    assert!(
+        reject_app_shell_text_target(&action, &test_element_fence("Address and search bar"))
+            .is_ok()
+    );
+}
 
 #[cfg(windows)]
 #[rstest]

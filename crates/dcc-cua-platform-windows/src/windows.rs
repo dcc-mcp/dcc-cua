@@ -250,6 +250,7 @@ impl UiaSession {
         })?;
         let index = resolve_index(state, action.element_index, action.element_token.as_deref())?;
         let fence = state.fences[index].clone();
+        reject_app_shell_text_target(action, &fence)?;
         let action_name = normalized_action(&action.action)?;
         let foreground = (action.delivery_mode.as_deref() == Some("background")).then(|| {
             (
@@ -298,6 +299,29 @@ impl UiaSession {
             .expect("worker was initialized")
             .request(payload)
     }
+}
+
+pub(crate) fn reject_app_shell_text_target(
+    action: &UiaAction,
+    fence: &ElementFence,
+) -> Result<(), UiaError> {
+    let is_text_input = matches!(
+        action.action.as_str(),
+        "type" | "type_chars" | "set_text" | "set_value"
+    );
+    let is_web_url = action.text.as_deref().is_some_and(|text| {
+        let text = text.trim();
+        text.starts_with("https://") || text.starts_with("http://")
+    });
+    let name = fence.name.trim();
+    let is_chat_title = name.eq_ignore_ascii_case("Chat title") || name == "聊天标题";
+
+    if is_text_input && is_web_url && is_chat_title {
+        return Err(UiaError::InvalidAction(
+            "a chat title field cannot be used as a browser address target".into(),
+        ));
+    }
+    Ok(())
 }
 
 pub(crate) fn retry_read_only_after_backend_failure<T>(
