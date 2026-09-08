@@ -11,6 +11,7 @@ macro_rules! stdoutln {
     }};
 }
 mod actions;
+mod async_runtime;
 mod authorization;
 mod browser_extension;
 mod cli_args;
@@ -161,7 +162,7 @@ fn run_main() -> Result<(), Box<dyn std::error::Error>> {
             return Ok(());
         }
     }
-    async_main()
+    async_main(env::args().skip(1).collect())
 }
 
 fn write_error_line(writer: &mut dyn Write, line: &str) -> std::io::Result<()> {
@@ -177,10 +178,8 @@ fn write_stdout_line(arguments: std::fmt::Arguments<'_>) -> std::io::Result<()> 
     stdout.flush()
 }
 
-#[tokio::main]
-async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
-    let arguments = env::args().skip(1).collect::<Vec<_>>();
-    dispatch(arguments).await
+fn async_main(arguments: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
+    async_runtime::build(&arguments)?.block_on(dispatch(arguments))
 }
 
 async fn dispatch(arguments: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
