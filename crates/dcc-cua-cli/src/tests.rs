@@ -18,6 +18,7 @@ use super::host_lifecycle::{
 };
 use super::*;
 
+mod async_runtime;
 mod coordinate_space;
 mod host_jsonl;
 mod issue_228_window_pixels;
