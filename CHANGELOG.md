@@ -1,5 +1,23 @@
 # Changelog
 
+## [1.8.2](https://github.com/dcc-mcp/dcc-cua/compare/v1.8.1...v1.8.2) (2026-09-08)
+
+
+### Bug Fixes
+
+* bound release ZIP resource usage ([#279](https://github.com/dcc-mcp/dcc-cua/issues/279)) ([33aa2eb](https://github.com/dcc-mcp/dcc-cua/commit/33aa2eb244928df017a31f26abba97ceb019e2cf))
+* **capture:** suppress idle peer cursor overlays ([e531374](https://github.com/dcc-mcp/dcc-cua/commit/e5313748fa623f7467f9f629bf76e580a6a94756))
+* **cli:** align window action tool contracts ([#284](https://github.com/dcc-mcp/dcc-cua/issues/284)) ([843a776](https://github.com/dcc-mcp/dcc-cua/commit/843a776ef66598e0de68a6276bbc2d67305b2509))
+* **cli:** diagnose invalid pixels-only options ([b28804b](https://github.com/dcc-mcp/dcc-cua/commit/b28804b106cda8ccec038a8784b63d60060e7ca6))
+* reject ambiguous Codex shell URL input ([#285](https://github.com/dcc-mcp/dcc-cua/issues/285)) ([983288d](https://github.com/dcc-mcp/dcc-cua/commit/983288dceb827a72c8e1abca78c3e03291c054c6))
+* reject Windows reparse points in release validation ([7015fc3](https://github.com/dcc-mcp/dcc-cua/commit/7015fc33aeabb6b5cc952ec46402de1686ed1d7d))
+
+
+### Performance Improvements
+
+* avoid cloning cached accessibility trees ([fdda24e](https://github.com/dcc-mcp/dcc-cua/commit/fdda24e38203d0937ed61ce04e2cc98a646475c7))
+* reduce idle MCP server threads ([#286](https://github.com/dcc-mcp/dcc-cua/issues/286)) ([41956c8](https://github.com/dcc-mcp/dcc-cua/commit/41956c8f0bf33fd36739656ba64cfa33a297ecde))
+
 ## [1.8.1](https://github.com/dcc-mcp/dcc-cua/compare/v1.8.0...v1.8.1) (2026-09-06)
 
 
