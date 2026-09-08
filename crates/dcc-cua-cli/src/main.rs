@@ -20,6 +20,7 @@ mod host_lifecycle;
 mod manifest;
 mod mcp_output;
 mod mcp_server;
+mod native_tools;
 #[cfg(windows)]
 mod owned_process;
 mod profile_context;
@@ -42,6 +43,7 @@ use failure_output::{fatal_error_line, internal_failure_line};
 use mcp_output::{
     HostJsonlImageMetrics, HostJsonlResponseFormat, JsonlResponseOutput, response_image_metrics,
 };
+use native_tools::{call_tool, list_apps, list_tools};
 
 use dcc_cua_client::{
     HostClient, HostClientError, HostProcess, HostResponse, SnapshotTransport,
@@ -481,58 +483,6 @@ fn window_wait_request(
     };
     request.query.validate()?;
     Ok(request)
-}
-
-async fn list_apps(driver: &ComputerUseDriver) -> Result<(), Box<dyn std::error::Error>> {
-    stdoutln!(
-        "{}",
-        serde_json::to_string_pretty(&driver.list_apps().await?)?
-    );
-    Ok(())
-}
-
-async fn list_tools(driver: &ComputerUseDriver) -> Result<(), Box<dyn std::error::Error>> {
-    stdoutln!(
-        "{}",
-        serde_json::to_string_pretty(&driver.list_tools().await?)?
-    );
-    Ok(())
-}
-
-async fn call_tool(
-    driver: &ComputerUseDriver,
-    flags: &[String],
-) -> Result<(), Box<dyn std::error::Error>> {
-    let name = flag_value(flags, "--tool").ok_or("call requires --tool NAME")?;
-    let arguments = json_arguments(flags)?;
-    let output = flag_value(flags, "--output");
-    let has_target = ["--app", "--pid", "--window-id", "--title"]
-        .into_iter()
-        .any(|flag| flag_value(flags, flag).is_some());
-    let result = if has_target {
-        let scope = select_scope(driver, flags).await?;
-        let app = application_label(flags);
-        let session_id =
-            flag_value(flags, "--session").unwrap_or_else(|| "dcc-cua-call-cli".into());
-        let mut session = driver.session(scope, app, session_id)?;
-        session.start().await?;
-        let result = session.call_tool(&name, arguments).await;
-        let stop_result = session.stop().await;
-        let result = result?;
-        stop_result?;
-        result
-    } else {
-        driver.call_global_tool(&name, arguments).await?
-    };
-    if let (Some(path), Some(image)) = (output.as_deref(), result.images.first()) {
-        fs::write(path, &image.data)?;
-    }
-    let mut value = result.value;
-    if let Some(path) = output {
-        value["_dcc_cua_image_output"] = json!(path);
-    }
-    stdoutln!("{}", serde_json::to_string_pretty(&value)?);
-    Ok(())
 }
 
 async fn host_call(flags: &[String]) -> Result<(), Box<dyn std::error::Error>> {
