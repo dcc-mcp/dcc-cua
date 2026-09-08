@@ -161,7 +161,13 @@ pub(super) async fn act(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let action_json = flag_value(flags, "--action-json")
         .ok_or("act requires --action-json with a ComputerUseAction JSON object")?;
-    execute_action(driver, flags, action_from_json(&action_json)?).await
+    execute_action(
+        driver,
+        flags,
+        action_from_json(&action_json)?,
+        ActionCoordinateSource::DeclaredVisibleSnapshot,
+    )
+    .await
 }
 
 pub(super) fn action_from_json(
@@ -191,7 +197,153 @@ pub(super) fn action_from_json(
         object.insert("keys".into(), serde_json::Value::Array(vec![key]));
     }
 
+    normalize_compatibility_drag(object)?;
+    normalize_compatibility_scroll(object)?;
+
     Ok(serde_json::from_value(value)?)
+}
+
+fn normalize_compatibility_drag(
+    object: &mut serde_json::Map<String, serde_json::Value>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if object.get("action").and_then(serde_json::Value::as_str) != Some("drag")
+        || object.contains_key("path")
+    {
+        return Ok(());
+    }
+    let names = ["from_x", "from_y", "to_x", "to_y"];
+    if !names.iter().any(|name| object.contains_key(*name)) {
+        return Ok(());
+    }
+    let mut coordinates = Vec::with_capacity(4);
+    for name in names {
+        let value = object
+            .remove(name)
+            .ok_or_else(|| format!("drag compatibility input requires {name}"))?;
+        let value = value
+            .as_f64()
+            .ok_or_else(|| format!("drag compatibility input requires numeric {name}"))?;
+        coordinates.push(value);
+    }
+    object.insert(
+        "path".into(),
+        serde_json::json!([
+            {"x": coordinates[0], "y": coordinates[1]},
+            {"x": coordinates[2], "y": coordinates[3]}
+        ]),
+    );
+    if !object.contains_key("modifiers")
+        && let Some(modifier) = object.remove("modifier")
+    {
+        object.insert("modifiers".into(), modifier);
+    }
+    Ok(())
+}
+
+fn normalize_compatibility_scroll(
+    object: &mut serde_json::Map<String, serde_json::Value>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Computer-use compatibility clients express wheel movement as Win32
+    // WHEEL_DELTA units; the typed driver contract expresses the same movement
+    // as a bounded tick count.
+    const WINDOWS_WHEEL_DELTA: i64 = 120;
+    const MAX_DRIVER_SCROLL_AMOUNT: i64 = 50;
+    if object.get("action").and_then(serde_json::Value::as_str) != Some("scroll")
+        || object.contains_key("scroll_by")
+    {
+        return Ok(());
+    }
+    for name in ["scroll_x", "scroll_y"] {
+        let Some(delta) = object.get(name).and_then(serde_json::Value::as_i64) else {
+            continue;
+        };
+        if delta.unsigned_abs() < WINDOWS_WHEEL_DELTA as u64 {
+            continue;
+        }
+        let magnitude = delta
+            .checked_abs()
+            .ok_or("scroll compatibility delta is out of range")?;
+        if magnitude > WINDOWS_WHEEL_DELTA * MAX_DRIVER_SCROLL_AMOUNT {
+            return Err("scroll compatibility delta exceeds 50 wheel ticks".into());
+        }
+        let ticks = ((magnitude + WINDOWS_WHEEL_DELTA / 2) / WINDOWS_WHEEL_DELTA)
+            .clamp(1, MAX_DRIVER_SCROLL_AMOUNT);
+        object.insert(name.into(), serde_json::json!(delta.signum() * ticks));
+    }
+    Ok(())
+}
+
+pub(super) fn action_from_tool_call(
+    name: &str,
+    arguments: &serde_json::Value,
+) -> Result<Option<ComputerUseAction>, Box<dyn std::error::Error>> {
+    if !matches!(name, "scroll" | "drag") {
+        return Ok(None);
+    }
+    let mut object = arguments
+        .as_object()
+        .cloned()
+        .ok_or("tool action arguments must be a JSON object")?;
+    for reserved in ["pid", "window_id", "session"] {
+        object.remove(reserved);
+    }
+    if let Some(scope) = object.remove("scope")
+        && scope.as_str() != Some("window")
+    {
+        return Err("window-bound action tool calls require scope=window".into());
+    }
+    object.insert("action".into(), serde_json::Value::String(name.into()));
+    if name == "scroll" {
+        let direction = object
+            .remove("direction")
+            .and_then(|value| value.as_str().map(str::to_owned))
+            .ok_or("scroll tool call requires direction")?;
+        let amount = object
+            .remove("amount")
+            .map(|value| {
+                value
+                    .as_u64()
+                    .filter(|amount| (1..=50).contains(amount))
+                    .ok_or("scroll tool call amount must be an integer from 1 to 50")
+            })
+            .transpose()?
+            .unwrap_or(3);
+        let amount = i32::try_from(amount)?;
+        let (axis, signed) = match direction.as_str() {
+            "up" => ("scroll_y", -amount),
+            "down" => ("scroll_y", amount),
+            "left" => ("scroll_x", -amount),
+            "right" => ("scroll_x", amount),
+            _ => return Err("scroll tool call direction must be up, down, left, or right".into()),
+        };
+        object.insert(axis.into(), serde_json::json!(signed));
+        if let Some(by) = object.remove("by") {
+            object.insert("scroll_by".into(), by);
+        }
+        object.remove("snapshot_id");
+    } else if object.remove("from_zoom").and_then(|value| value.as_bool()) == Some(true) {
+        return Err(
+            "window-bound drag tool calls with from_zoom=true require the dedicated zoom route"
+                .into(),
+        );
+    }
+    Ok(Some(action_from_json(
+        &serde_json::Value::Object(object).to_string(),
+    )?))
+}
+
+pub(super) async fn execute_tool_action(
+    driver: &ComputerUseDriver,
+    flags: &[String],
+    action: ComputerUseAction,
+) -> Result<(), Box<dyn std::error::Error>> {
+    execute_action(
+        driver,
+        flags,
+        action,
+        ActionCoordinateSource::ExactWindowScreenshot,
+    )
+    .await
 }
 
 pub(super) async fn friendly_action(
@@ -199,17 +351,35 @@ pub(super) async fn friendly_action(
     flags: &[String],
     command: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    execute_action(driver, flags, action_from_command(command, flags)?).await
+    execute_action(
+        driver,
+        flags,
+        action_from_command(command, flags)?,
+        ActionCoordinateSource::DeclaredVisibleSnapshot,
+    )
+    .await
+}
+
+#[derive(Clone, Copy)]
+enum ActionCoordinateSource {
+    DeclaredVisibleSnapshot,
+    ExactWindowScreenshot,
 }
 
 async fn execute_action(
     driver: &ComputerUseDriver,
     flags: &[String],
     mut action: ComputerUseAction,
+    coordinate_source: ActionCoordinateSource,
 ) -> Result<(), Box<dyn std::error::Error>> {
     default_activated_action_to_foreground(flags, &mut action);
     let semantic_action = action.element_index.is_some() || action.element_token.is_some();
-    let visible_dimensions = visible_snapshot_dimensions_for_action(flags, &action)?;
+    let visible_dimensions = match coordinate_source {
+        ActionCoordinateSource::DeclaredVisibleSnapshot => {
+            visible_snapshot_dimensions_for_action(flags, &action)?
+        }
+        ActionCoordinateSource::ExactWindowScreenshot => visible_snapshot_dimensions(flags)?,
+    };
     let scope = select_scope(driver, flags).await?;
     let app = application_label(flags);
     let session_id = flag_value(flags, "--session").unwrap_or_else(|| "dcc-cua-cli".into());

@@ -8,9 +8,9 @@ use serde_json::json;
 use sha2::Digest;
 
 use super::actions::{
-    action_from_command, action_from_json, action_result_value, bind_fresh_element_token,
-    default_activated_action_to_foreground, menu_request, require_exact_window_target,
-    visible_snapshot_dimensions, window_frame_request,
+    action_from_command, action_from_json, action_from_tool_call, action_result_value,
+    bind_fresh_element_token, default_activated_action_to_foreground, menu_request,
+    require_exact_window_target, visible_snapshot_dimensions, window_frame_request,
 };
 use super::authorization::{existing_profile_grant_requested, host_private_worker_options};
 use super::host_lifecycle::{
@@ -18,6 +18,7 @@ use super::host_lifecycle::{
 };
 use super::*;
 
+mod action_tool_contract;
 mod async_runtime;
 mod coordinate_space;
 mod host_jsonl;
