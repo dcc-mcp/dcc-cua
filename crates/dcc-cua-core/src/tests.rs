@@ -258,6 +258,10 @@ async fn cursor_input_gate_blocks_only_real_pointer_movement_before_backend_exec
     ComputerUseErrorCode::BackendUnavailable
 )]
 #[case(
+    IndicatorError::CaptureExclusion("peer did not acknowledge".into()),
+    ComputerUseErrorCode::OverlayExclusionUnavailable
+)]
+#[case(
     IndicatorError::Rendering("initial paint failed".into()),
     ComputerUseErrorCode::BackendUnavailable
 )]

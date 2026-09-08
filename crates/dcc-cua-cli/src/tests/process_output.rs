@@ -1,7 +1,7 @@
 use rstest::rstest;
 use serde_json::json;
 
-use crate::failure_output::{PUBLIC_FAILURE_MESSAGE, fatal_error_value};
+use crate::failure_output::{OVERLAY_EXCLUSION_MESSAGE, PUBLIC_FAILURE_MESSAGE, fatal_error_value};
 
 use super::*;
 
@@ -82,6 +82,39 @@ fn missing_provider_failure_publishes_only_fixed_fallback_guidance() {
         value["error"]["details"]["fallback_requires"],
         "ocr_or_another_perception_layer"
     );
+    assert!(!value.to_string().contains("REVIEW_PRIVATE_"));
+}
+
+#[rstest]
+fn overlay_exclusion_failure_publishes_stable_retry_guidance() {
+    let error = ComputerUseError::new(
+        ComputerUseErrorCode::OverlayExclusionUnavailable,
+        "REVIEW_PRIVATE_OVERLAY_OWNER_92af10",
+    );
+    let value = fatal_error_value(&error);
+
+    assert_eq!(value["error"]["code"], "overlay_exclusion_unavailable");
+    assert_eq!(
+        value["error"]["message"],
+        "Another DCC-CUA cursor overlay did not acknowledge capture exclusion."
+    );
+    assert_eq!(value["error"]["details"]["retryable"], true);
+    assert_eq!(value["error"]["details"]["scope_preserved"], "exact_window");
+    assert_eq!(value["error"]["details"]["whole_desktop_fallback"], false);
+    assert!(!value.to_string().contains("REVIEW_PRIVATE_"));
+}
+
+#[rstest]
+fn remote_overlay_exclusion_failure_keeps_the_same_allowlisted_identity() {
+    let error = HostClientError::Remote {
+        code: "overlay_exclusion_unavailable".into(),
+        message: "REVIEW_PRIVATE_REMOTE_OVERLAY_3c64b1".into(),
+        response: json!({"private": "REVIEW_PRIVATE_REMOTE_RESPONSE_a72c8f"}),
+    };
+    let value = fatal_error_value(&error);
+
+    assert_eq!(value["error"]["code"], "overlay_exclusion_unavailable");
+    assert_eq!(value["error"]["message"], OVERLAY_EXCLUSION_MESSAGE);
     assert!(!value.to_string().contains("REVIEW_PRIVATE_"));
 }
 
