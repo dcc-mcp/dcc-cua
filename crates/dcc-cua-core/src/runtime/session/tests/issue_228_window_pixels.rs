@@ -199,6 +199,35 @@ fn issue_228_missing_and_hung_accessibility_providers_degrade_but_target_loss_do
     assert_eq!(pixel_route_for_uia_tool_failure(&failed_tool), None);
 }
 
+#[rstest]
+#[case("get_window_state", "uia_timeout", true)]
+#[case("get_window_state", "input_failed", false)]
+#[case("get_window_state", "missing_window", false)]
+#[case("get_window_state", "timeout", false)]
+#[case("click", "uia_timeout", false)]
+fn typed_driver_observation_timeout_preserves_pixel_degradation(
+    #[case] tool: &str,
+    #[case] code: &str,
+    #[case] degrades: bool,
+) {
+    let error = crate::policy::map_driver_error(
+        "capture CUA window state",
+        cua_driver_sdk::DriverError::Tool {
+            tool: tool.into(),
+            error_code: code.into(),
+            message: "get_window_state timed out after 4s".into(),
+        },
+    );
+    assert_eq!(
+        pixel_route_for_accessibility_failure(&error),
+        degrades.then_some(PixelObservationRoute::AccessibilityTimeoutDegraded),
+    );
+    assert_eq!(
+        error.details.as_ref().and_then(|details| details.timed_out),
+        degrades.then_some(true),
+    );
+}
+
 fn publication_fence(
     bounds: [i32; 4],
     dpi: u32,
