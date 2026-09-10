@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.8.3](https://github.com/dcc-mcp/dcc-cua/compare/v1.8.2...v1.8.3) (2026-09-10)
+
+
+### Bug Fixes
+
+* preserve typed observation timeout details ([3793c67](https://github.com/dcc-mcp/dcc-cua/commit/3793c6793ee77999e46fc965270871b738f80545))
+
 ## [1.8.2](https://github.com/dcc-mcp/dcc-cua/compare/v1.8.1...v1.8.2) (2026-09-08)
 
 
