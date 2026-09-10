@@ -1169,6 +1169,11 @@ pub(crate) fn map_driver_error(
     error: cua_driver_sdk::DriverError,
 ) -> ComputerUseError {
     let message = error.to_string();
+    let observation_timed_out = matches!(
+        &error,
+        cua_driver_sdk::DriverError::Tool { tool, error_code, .. }
+            if tool == "get_window_state" && error_code == "uia_timeout"
+    );
     let code = match &error {
         cua_driver_sdk::DriverError::Configuration { .. }
         | cua_driver_sdk::DriverError::InvalidArguments { .. } => {
@@ -1193,7 +1198,15 @@ pub(crate) fn map_driver_error(
         | cua_driver_sdk::DriverError::Worker { .. }
         | cua_driver_sdk::DriverError::Remote { .. } => ComputerUseErrorCode::BackendUnavailable,
     };
-    ComputerUseError::new(code, format!("{context}: {message}"))
+    let error = ComputerUseError::new(code, format!("{context}: {message}"));
+    if observation_timed_out {
+        error.with_details(ComputerUseErrorDetails {
+            timed_out: Some(true),
+            ..Default::default()
+        })
+    } else {
+        error
+    }
 }
 
 fn classify_driver_failure(code: &str, fallback: ComputerUseErrorCode) -> ComputerUseErrorCode {
