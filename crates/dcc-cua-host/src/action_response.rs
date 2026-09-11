@@ -249,6 +249,36 @@ pub(super) fn action_completed_with_snapshot_response(
     Ok((response, attachment))
 }
 
+pub(super) fn action_completed_with_accessibility_response(
+    session_id: &str,
+    action_id: String,
+    result: ComputerUseToolResult,
+    observation: dcc_cua_core::ComputerUseObservation,
+    accessibility: Value,
+    mode: SnapshotTransport,
+    shared_image: &mut Option<SharedImage>,
+) -> Result<(Value, Option<Vec<u8>>), HostError> {
+    let node_count = accessibility["elements"].as_array().map_or(0, Vec::len);
+    let observation_id = observation.observation_id.clone();
+    let (mut response, attachment) = action_completed_response(
+        session_id,
+        action_id,
+        "CUA action completed with a fresh semantic post-action snapshot",
+        result,
+        mode,
+        shared_image,
+    )?;
+    response["post_snapshot"] = json!({
+        "success": true,
+        "observation_id": observation_id,
+        "accessibility_state_id": observation.observation_id,
+        "observation": observation,
+        "root": accessibility,
+        "node_count": node_count,
+    });
+    Ok((response, attachment))
+}
+
 pub(super) fn desktop_action_completed_with_snapshot_response(
     session_id: &str,
     action_id: String,

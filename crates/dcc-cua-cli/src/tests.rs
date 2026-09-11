@@ -1105,6 +1105,22 @@ fn host_jsonl_metrics_count_capture_after_as_a_visual_observation_request() {
 }
 
 #[rstest]
+fn host_jsonl_metrics_count_semantic_post_snapshot_as_semantic_observation() {
+    let mut metrics = HostJsonlMetrics::default();
+    let request = parse_jsonl_request(
+        r#"{"method":"execute_action","params":{"capture_after":true,"post_snapshot_mode":"semantic","action":{"action":"click"}}}"#,
+    )
+    .unwrap();
+
+    metrics.record_request(&request);
+    let report = metrics.report(HostJsonlRunStatus::Succeeded, std::time::Duration::ZERO);
+
+    assert_eq!(report.visual_observation_requests_total, 0);
+    assert_eq!(report.semantic_observation_requests_total, 1);
+    assert_eq!(report.post_action_observation_requests_total, 1);
+}
+
+#[rstest]
 fn host_jsonl_metrics_count_desktop_capture_after_as_a_visual_observation_request() {
     let mut metrics = HostJsonlMetrics::default();
     let request = parse_jsonl_request(

@@ -1571,6 +1571,7 @@ async fn handle_request_inner(
             post_snapshot_delay_ms,
             post_snapshot_max_depth,
             post_snapshot_max_nodes,
+            post_snapshot_mode,
         } => {
             let post_snapshot_delay = post_snapshot_delay(capture_after, post_snapshot_delay_ms)?;
             let host =
@@ -1727,6 +1728,60 @@ async fn handle_request_inner(
                     });
                     response["observation_required"] = Value::Bool(true);
                     return Ok((response, attachment));
+                }
+                if post_snapshot_mode == PostSnapshotMode::Semantic {
+                    let accessibility = host
+                        .session
+                        .accessibility_snapshot(post_snapshot_max_nodes, post_snapshot_max_depth)
+                        .await;
+                    let accessibility = host.finish_observation_sensitive_attempt(accessibility);
+                    drop(input_turn);
+                    return match accessibility {
+                        Ok(accessibility) => {
+                            let observation =
+                                host.session.latest_observation().cloned().ok_or_else(|| {
+                                    HostError::Protocol(
+                                        "semantic post-action snapshot returned no observation"
+                                            .into(),
+                                    )
+                                })?;
+                            let observation_id = observation.observation_id.clone();
+                            host.latest_observation_id = Some(observation_id.clone());
+                            host.latest_accessibility_state_id = Some(observation_id);
+                            host.latest_accessibility_root = Some(accessibility.clone());
+                            action_completed_with_accessibility_response(
+                                &session_id,
+                                action_id,
+                                result,
+                                observation,
+                                accessibility,
+                                mode,
+                                &mut host.latest_shared_image,
+                            )
+                        }
+                        Err(error) => {
+                            host.latest_observation_id = None;
+                            host.latest_accessibility_state_id = None;
+                            host.latest_accessibility_root = None;
+                            let code = error_code(&HostError::ComputerUse(error.clone()));
+                            let (mut response, attachment) = action_completed_response(
+                                &session_id,
+                                action_id,
+                                "CUA action completed, but the semantic post-action snapshot failed",
+                                result,
+                                mode,
+                                &mut host.latest_shared_image,
+                            )?;
+                            response["post_snapshot"] = json!({
+                                "success": false,
+                                "action_was_executed": true,
+                                "code": code,
+                                "message": error.message,
+                            });
+                            response["observation_required"] = Value::Bool(true);
+                            Ok((response, attachment))
+                        }
+                    };
                 }
                 let screenshot = host
                     .session

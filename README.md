@@ -874,7 +874,11 @@ the restore attempt only partially succeeds. Live observation, showcase, and
 recording ownership remain intact.
 `execute_action` accepts `capture_after: true` plus optional
 `post_snapshot_delay_ms` (0..5000), `post_snapshot_max_nodes`, and
-`post_snapshot_max_depth`. The Host then performs
+`post_snapshot_max_depth`. Set `post_snapshot_mode: "semantic"` when the next
+action only needs the bounded accessibility tree; this skips transferring
+post-action pixels while keeping the fresh observation and semantic evidence.
+The default mode is `full`, which returns both pixels and the semantic tree.
+The Host then performs
 the mutation and captures the next exact-window observation in one serialized
 request, returns its screenshot and semantic tree as `post_snapshot`, and keeps
 that observation current for the next action. The handshake advertises this as

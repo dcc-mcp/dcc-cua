@@ -138,6 +138,30 @@ fn app_requests_parse_with_host_params_frames() {
     ));
     assert!(matches!(
         serde_json::from_value::<Request>(json!({
+            "method": "execute_action",
+            "params": {
+                "session_id": "session-1",
+                "task_grant_id": "task-1",
+                "window_capability": "cap-1",
+                "observation_id": "obs-1",
+                "accessibility_state_id": "obs-1",
+                "action": {
+                    "action": "click",
+                    "input_kind": "semantic",
+                    "intent": "ordinary_edit",
+                    "element_token": "token-1"
+                },
+                "capture_after": true,
+                "post_snapshot_mode": "semantic"
+            }
+        })),
+        Ok(Request::ExecuteAction {
+            post_snapshot_mode: super::super::PostSnapshotMode::Semantic,
+            ..
+        })
+    ));
+    assert!(matches!(
+        serde_json::from_value::<Request>(json!({
             "method": "zoom",
             "params": {
                 "session_id": "session-1",
