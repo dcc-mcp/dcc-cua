@@ -880,8 +880,8 @@ post-action pixels while keeping the fresh observation and semantic evidence.
 The default mode is `full`, which returns both pixels and the semantic tree.
 The Host then performs
 the mutation and captures the next exact-window observation in one serialized
-request, returns its screenshot and semantic tree as `post_snapshot`, and keeps
-that observation current for the next action. The handshake advertises this as
+request, returns the selected pixel/semantic evidence as `post_snapshot`, and
+keeps that observation current for the next action. The handshake advertises this as
 `action_post_snapshot` and `action_post_snapshot_delay`. Use the delay for
 custom-rendered applications that need a bounded settle period instead of
 issuing a second snapshot. If only the post-action capture fails, the response
