@@ -13,6 +13,8 @@
 ## 当前实现的事实
 
 - Host 支持持久 JSONL 会话；README 明确建议一个 Host IPC session 承载多步操作，而不是每个 action 启动进程（`crates/dcc-cua-host/src/lib.rs`、README 的 Host IPC 章节）。
+- CLI 的单次 `execute_action` 路径在 `crates/dcc-cua-cli/src/actions.rs` 中会创建 driver session、执行 `start()`，获取前置 observation，执行 action，获取后置 observation，执行 `stop()`。它适合一次性命令的隔离语义，不适合拿来代表热 session 的吞吐。
+- `dcc-cua-client` 已提供 `LogicalTaskSession`，把 session、task grant、window capability 和 Host connection 绑定在一起。连续动作若没有复用这个对象，会重新支付连接、授权绑定和初次 readiness 成本。
 - `execute_action` 可设置 `capture_after`，直接返回 `post_snapshot` 并保留为下一步 observation；如果客户端仍然在每次动作后再次调用 `snapshot`，就会产生重复捕获。
 - 语义 action 必须携带最新 `accessibility_state_id`；这是防 stale-reference 的安全契约，但 UIA 快照过大时会成为明显瓶颈。
 - 浏览器默认应走 typed CDP，只有 CDP 不可用才走 extension；`crates/dcc-cua-browser` 已维护 tab snapshot、origin 和 epoch 绑定。浏览器 extension 还已有 per-document bridge injection cache。
@@ -36,14 +38,54 @@
 
 ### P0：先把路径测清楚
 
-在 Host response 中增加内部 timing（默认不暴露敏感内容）：
+项目已经有 `host-jsonl --metrics-output`，可统计 action/observation 数量、JSON 字节数和图像字节数，但它记录的是请求级汇总，不足以解释单次延迟。补充内部 timing（默认不暴露敏感内容）：
 `provider_ms`, `capture_ms`, `uia_ms`, `action_ms`, `verify_ms`, `serialize_ms`, `transport_ms`，并记录 `request_id`、session、route、node_count、image_bytes、cache_hit。提供本地 trace 导出和 p50/p95/p99 汇总。没有这一步，不应声称 Codex 或 DCC-CUA 更快。
+
+基准必须至少分成两条路径：
+
+| 基准 | 操作序列 | 用途 |
+| --- | --- | --- |
+| CLI 冷路径 | 每个动作单独 `start → observe → act → observe → stop` | 衡量一次性命令的启动与清理成本 |
+| Host 热路径 | 一个连接和 `LogicalTaskSession` 内重复 `observe → act(capture_after) → consume post_snapshot` | 衡量产品集成实际可以达到的连续操作延迟 |
+
+浏览器还要把 CDP、extension 和 exact-window fallback 分开测量；不能把 provider 切换后的结果混成一个平均数。
 
 ### P1：客户端/协议去重复
 
 - 将 `post_snapshot` 作为正式的 next-observation 候选；只有 `observation_required=true` 或证据不匹配才重新 snapshot。
 - 为连续语义动作增加批量/transaction 请求：一次请求携带多个已授权 action，Host 在每一步重新检查同一 exact target 和 observation epoch，并可选择只在批次末尾返回图像。
 - 在同一 logical session 内复用 browser tab binding、CDP connection 和 semantic snapshot；导航、窗口变化、epoch 变化时精确失效。
+
+### P1：让默认调用走热路径
+
+- 面向 Agent/MCP 集成提供一个长期持有的 task client；不要让上层为每个动作调用一次 CLI `execute_action`。
+- 如果必须保留 CLI，增加显式的 session batch/JSONL 模式，让多个请求共享一个已经协商的 Host connection 和 logical task session，并在批次结束时统一 stop。
+- 在文档和示例中同时给出冷路径与热路径，避免使用一次性 CLI 的数字评估 Host 或 provider 的真实性能。
+
+`HostClient::request_batch` 当前只允许 read-only Host methods；这是正确的副作用边界，但也解释了为什么连续 mutating action 仍然需要逐个往返。后续若增加动作批处理，应新增显式的顺序执行协议，逐步返回 action receipt 和新的 observation epoch，不能把普通 read-only batch 约束放宽成并发 mutation。
+
+## 一条可落地的热路径
+
+```mermaid
+sequenceDiagram
+    participant A as Agent/MCP client
+    participant H as Persistent Host
+    participant P as Provider
+    A->>H: hello + open_session
+    H->>P: bind exact target / prepare route
+    P-->>H: target + capability
+    H-->>A: LogicalTaskSession
+    loop Each action
+        A->>H: execute_action(capture_after=true, latest observation)
+        H->>P: validate fence + dispatch mutation
+        P-->>H: action receipt
+        H->>P: post-action capture when requested
+        P-->>H: next observation
+        H-->>A: receipt + post_snapshot
+    end
+```
+
+这条路径把连接、授权和目标绑定成本摊到整个任务，并把动作后的观察直接交给下一步。它仍然保留每次动作的 observation fence；减少的是重复工作，不是证据要求。
 
 ### P1：路由与观察分层
 
@@ -72,4 +114,3 @@
 ## 建议的验收矩阵
 
 固定同一机器、同一目标、同一动作脚本，对 Codex-like baseline 与 DCC-CUA 分别跑冷启动/热 session、浏览器 CDP、浏览器 extension、Windows UIA、pixels-only 五组；报告 p50/p95/p99、成功率、重复 snapshot 数、post-verification 延迟、图像字节数和安全拒绝数。任何优化必须保持 stale-reference、目标变更、provider 失败和 action-executed-but-post-capture-failed 的现有错误契约。
-
