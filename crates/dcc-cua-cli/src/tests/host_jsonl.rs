@@ -5,6 +5,22 @@ use tokio::io::AsyncReadExt;
 use super::*;
 
 #[rstest]
+fn metrics_record_host_request_and_batch_latency() {
+    let mut metrics = HostJsonlMetrics::default();
+    metrics.record_request_latency(std::time::Duration::from_millis(7));
+    metrics.record_request_latency(std::time::Duration::from_millis(11));
+    metrics.record_batch_latency(std::time::Duration::from_millis(19));
+
+    let report = metrics.report(HostJsonlRunStatus::Running, std::time::Duration::ZERO);
+    assert_eq!(report.host_request_latency_samples_total, 2);
+    assert_eq!(report.host_request_latency_ms_total, 18);
+    assert_eq!(report.host_request_latency_ms_max, 11);
+    assert_eq!(report.host_batch_latency_samples_total, 1);
+    assert_eq!(report.host_batch_latency_ms_total, 19);
+    assert_eq!(report.host_batch_latency_ms_max, 19);
+}
+
+#[rstest]
 #[tokio::test]
 async fn output_error_keeps_the_stream_available_for_the_next_response() {
     let image_response = HostResponse {

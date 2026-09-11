@@ -1257,22 +1257,6 @@ fn host_jsonl_metrics_break_down_action_kinds() {
 }
 
 #[rstest]
-fn host_jsonl_metrics_record_host_request_and_batch_latency() {
-    let mut metrics = HostJsonlMetrics::default();
-    metrics.record_request_latency(std::time::Duration::from_millis(7));
-    metrics.record_request_latency(std::time::Duration::from_millis(11));
-    metrics.record_batch_latency(std::time::Duration::from_millis(19));
-
-    let report = metrics.report(HostJsonlRunStatus::Running, std::time::Duration::ZERO);
-    assert_eq!(report.host_request_latency_samples_total, 2);
-    assert_eq!(report.host_request_latency_ms_total, 18);
-    assert_eq!(report.host_request_latency_ms_max, 11);
-    assert_eq!(report.host_batch_latency_samples_total, 1);
-    assert_eq!(report.host_batch_latency_ms_total, 19);
-    assert_eq!(report.host_batch_latency_ms_max, 19);
-}
-
-#[rstest]
 fn host_jsonl_metrics_checkpoint_is_readable_before_eof() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("metrics.json");
