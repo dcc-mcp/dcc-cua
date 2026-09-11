@@ -770,10 +770,12 @@ async fn host_jsonl_inner(
                 metadata.push((request_index, request.method.clone()));
                 requests.push((request_id, request.method, request.params));
             }
+            let batch_started = Instant::now();
             let host_results = connection
                 .client_mut()
                 .request_batch_with_ids_all(requests)
                 .await?;
+            metrics.record_batch_latency(batch_started.elapsed());
             for ((request_index, request_method), host_result) in
                 metadata.into_iter().zip(host_results)
             {
@@ -810,6 +812,7 @@ async fn host_jsonl_inner(
         }
 
         let request_method = request.method.clone();
+        let request_started = Instant::now();
         let host_result = match request.request_id {
             Some(request_id) => {
                 connection
@@ -824,6 +827,7 @@ async fn host_jsonl_inner(
                     .await
             }
         };
+        metrics.record_request_latency(request_started.elapsed());
         let response = match host_result {
             Ok(response) => {
                 write_measured_jsonl_response(
@@ -882,6 +886,12 @@ struct HostJsonlMetrics {
     live_observation_start_requests_total: u64,
     live_observation_stop_requests_total: u64,
     live_observation_final_states_total: u64,
+    host_request_latency_samples_total: u64,
+    host_request_latency_ms_total: u64,
+    host_request_latency_ms_max: u64,
+    host_batch_latency_samples_total: u64,
+    host_batch_latency_ms_total: u64,
+    host_batch_latency_ms_max: u64,
     methods: BTreeMap<String, u64>,
     action_kinds: BTreeMap<String, u64>,
     error_codes: BTreeMap<String, u64>,
@@ -915,6 +925,12 @@ struct HostJsonlMetricsReport<'a> {
     live_observation_start_requests_total: u64,
     live_observation_stop_requests_total: u64,
     live_observation_final_states_total: u64,
+    host_request_latency_samples_total: u64,
+    host_request_latency_ms_total: u64,
+    host_request_latency_ms_max: u64,
+    host_batch_latency_samples_total: u64,
+    host_batch_latency_ms_total: u64,
+    host_batch_latency_ms_max: u64,
     methods: &'a BTreeMap<String, u64>,
     action_kinds: &'a BTreeMap<String, u64>,
     error_codes: &'a BTreeMap<String, u64>,
@@ -964,6 +980,25 @@ impl HostJsonlMetrics {
         self.json_input_bytes = self
             .json_input_bytes
             .saturating_add(line.len().try_into().unwrap_or(u64::MAX));
+    }
+
+    fn record_request_latency(&mut self, elapsed: std::time::Duration) {
+        let elapsed_ms = elapsed.as_millis().try_into().unwrap_or(u64::MAX);
+        self.host_request_latency_samples_total =
+            self.host_request_latency_samples_total.saturating_add(1);
+        self.host_request_latency_ms_total = self
+            .host_request_latency_ms_total
+            .saturating_add(elapsed_ms);
+        self.host_request_latency_ms_max = self.host_request_latency_ms_max.max(elapsed_ms);
+    }
+
+    fn record_batch_latency(&mut self, elapsed: std::time::Duration) {
+        let elapsed_ms = elapsed.as_millis().try_into().unwrap_or(u64::MAX);
+        self.host_batch_latency_samples_total =
+            self.host_batch_latency_samples_total.saturating_add(1);
+        self.host_batch_latency_ms_total =
+            self.host_batch_latency_ms_total.saturating_add(elapsed_ms);
+        self.host_batch_latency_ms_max = self.host_batch_latency_ms_max.max(elapsed_ms);
     }
 
     fn record_request(&mut self, request: &JsonlRequest) {
@@ -1096,6 +1131,12 @@ impl HostJsonlMetrics {
             live_observation_start_requests_total: self.live_observation_start_requests_total,
             live_observation_stop_requests_total: self.live_observation_stop_requests_total,
             live_observation_final_states_total: self.live_observation_final_states_total,
+            host_request_latency_samples_total: self.host_request_latency_samples_total,
+            host_request_latency_ms_total: self.host_request_latency_ms_total,
+            host_request_latency_ms_max: self.host_request_latency_ms_max,
+            host_batch_latency_samples_total: self.host_batch_latency_samples_total,
+            host_batch_latency_ms_total: self.host_batch_latency_ms_total,
+            host_batch_latency_ms_max: self.host_batch_latency_ms_max,
             methods: &self.methods,
             action_kinds: &self.action_kinds,
             error_codes: &self.error_codes,
@@ -1195,6 +1236,12 @@ fn write_host_jsonl_metrics(
         "live_observation_start_requests_total": report.live_observation_start_requests_total,
         "live_observation_stop_requests_total": report.live_observation_stop_requests_total,
         "live_observation_final_states_total": report.live_observation_final_states_total,
+        "host_request_latency_samples_total": report.host_request_latency_samples_total,
+        "host_request_latency_ms_total": report.host_request_latency_ms_total,
+        "host_request_latency_ms_max": report.host_request_latency_ms_max,
+        "host_batch_latency_samples_total": report.host_batch_latency_samples_total,
+        "host_batch_latency_ms_total": report.host_batch_latency_ms_total,
+        "host_batch_latency_ms_max": report.host_batch_latency_ms_max,
         "methods": report.methods,
         "action_kinds": report.action_kinds,
         "error_codes": report.error_codes,
