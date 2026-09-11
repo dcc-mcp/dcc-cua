@@ -255,6 +255,14 @@ fn rewrite_runtime_session_ids(value: &mut Value, sessions: &ConnectionSessions)
     rewrite_session_aliases(value, &aliases);
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+enum PostSnapshotMode {
+    #[default]
+    Full,
+    Semantic,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(tag = "method", content = "params", rename_all = "snake_case")]
 enum Request {
@@ -569,6 +577,8 @@ enum Request {
         post_snapshot_max_depth: u32,
         #[serde(default)]
         post_snapshot_max_nodes: u32,
+        #[serde(default)]
+        post_snapshot_mode: PostSnapshotMode,
     },
     ResumeSession {
         session_id: String,
