@@ -1574,6 +1574,7 @@ async fn handle_request_inner(
             post_snapshot_mode,
         } => {
             let post_snapshot_delay = post_snapshot_delay(capture_after, post_snapshot_delay_ms)?;
+            validate_post_snapshot_mode(capture_after, post_snapshot_mode)?;
             let host =
                 authorized_session(sessions, &session_id, &task_grant_id, &window_capability)
                     .await?;

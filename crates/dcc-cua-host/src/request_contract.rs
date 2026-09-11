@@ -80,6 +80,19 @@ pub(super) fn post_snapshot_delay(
     Ok(std::time::Duration::from_millis(delay_ms))
 }
 
+pub(super) fn validate_post_snapshot_mode(
+    capture_after: bool,
+    mode: super::PostSnapshotMode,
+) -> Result<(), HostError> {
+    if !capture_after && mode != super::PostSnapshotMode::Full {
+        return Err(HostError::ComputerUse(ComputerUseError::new(
+            ComputerUseErrorCode::InvalidAction,
+            "post_snapshot_mode requires capture_after",
+        )));
+    }
+    Ok(())
+}
+
 pub(super) fn poll_session_events_timeout(
     timeout_ms: u64,
 ) -> Result<std::time::Duration, HostError> {
