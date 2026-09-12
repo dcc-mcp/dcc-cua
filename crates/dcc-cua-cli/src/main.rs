@@ -1016,14 +1016,12 @@ impl HostJsonlMetrics {
                 *self.action_kinds.entry(kind.to_owned()).or_default() += 1;
             }
         }
-        if matches!(
-            request.method.as_str(),
-            "execute_action" | "execute_desktop_action"
-        ) && request
-            .params
-            .get("capture_after")
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(false)
+        if request.method == "execute_action"
+            && request
+                .params
+                .get("capture_after")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
         {
             self.post_action_snapshot_requests_total =
                 self.post_action_snapshot_requests_total.saturating_add(1);
