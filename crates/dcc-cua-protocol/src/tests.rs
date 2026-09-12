@@ -249,8 +249,13 @@ fn rejects_empty_fence_and_batch_target_switch() {
                 abort_on_failure: true
             },
             &continuity::ObservationFrame {
+                frame_id: "frame-1".into(),
+                observation_id: "obs-1".into(),
+                action_evidence_epoch: 10,
                 target: continuity_target(),
-                ..continuity_next()
+                parent_frame_id: None,
+                image_ref: None,
+                semantic_state_id: None
             },
             &[(receipt, continuity_next())]
         ),
