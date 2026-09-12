@@ -981,23 +981,26 @@ impl HostJsonlMetrics {
                 *self.action_kinds.entry(kind.to_owned()).or_default() += 1;
             }
         }
-        if request.method == "execute_action"
-            && request
-                .params
-                .get("capture_after")
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(false)
+        if matches!(
+            request.method.as_str(),
+            "execute_action" | "execute_desktop_action"
+        ) && request
+            .params
+            .get("capture_after")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)
         {
             self.post_action_snapshot_requests_total =
                 self.post_action_snapshot_requests_total.saturating_add(1);
             self.post_action_observation_requests_total = self
                 .post_action_observation_requests_total
                 .saturating_add(1);
-            if request
-                .params
-                .get("post_snapshot_mode")
-                .and_then(serde_json::Value::as_str)
-                == Some("semantic")
+            if request.method == "execute_action"
+                && request
+                    .params
+                    .get("post_snapshot_mode")
+                    .and_then(serde_json::Value::as_str)
+                    == Some("semantic")
             {
                 self.semantic_observation_requests_total =
                     self.semantic_observation_requests_total.saturating_add(1);
