@@ -20,6 +20,12 @@ receipt, or non-advancing epoch fails closed. This is intentionally below a
 vision model: models propose candidates, while the host owns exact-target and
 freshness validation.
 
+The same module also defines a bounded `BatchPolicy`, `ContinuityState`, and
+`ObservationDelta`. The state keeps pending and completed candidates on the
+Host, so the model receives only changes instead of replaying the full task
+history. `ContinuityMetrics` records model calls and input/output tokens for
+budget and latency reporting.
+
 ## QQ classic farm harvest example
 
 The following is a workflow shape, not live QQ acceptance. It must be bound to
@@ -52,6 +58,9 @@ Visual models should run on keyframes, semantic deltas, action completion, or
 uncertainty—not on every transport round trip. Accessibility/UIA/DOM evidence
 remains the preferred grounding route; pixels are a fallback for candidate
 discovery and verification.
+
+Batching is bounded and fail-closed: a batch over its action limit aborts, and
+each step still requires its own completion receipt and sequential observation.
 
 The contract supports continuity; it does not claim that a model can yet solve
 all long-horizon visual tasks. Progress should be measured with long-horizon

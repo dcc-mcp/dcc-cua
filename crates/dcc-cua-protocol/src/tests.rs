@@ -241,3 +241,54 @@ fn rejects_window_switch() {
         Err(continuity::ChainError::TargetChanged)
     );
 }
+
+#[rstest]
+fn bounded_batch_rejects_over_limit() {
+    let receipt = continuity_receipt();
+    let frame = continuity_next();
+    assert_eq!(
+        continuity::validate_batch(
+            continuity::BatchPolicy {
+                max_actions: 0,
+                abort_on_failure: true
+            },
+            &frame,
+            &[(receipt, frame.clone())]
+        ),
+        Err(continuity::ChainError::BatchLimitExceeded)
+    );
+}
+
+#[rstest]
+fn state_applies_deltas_without_repeating_completed_targets() {
+    let frame = continuity_next();
+    let mut state = continuity::ContinuityState::default();
+    state.apply_observation(
+        &frame,
+        continuity::ObservationDelta {
+            added_candidates: vec!["plot-1".into(), "plot-2".into()],
+            removed_candidates: Vec::new(),
+            changed: true,
+        },
+    );
+    state.mark_completed("plot-1".into());
+    state.apply_observation(
+        &frame,
+        continuity::ObservationDelta {
+            added_candidates: vec!["plot-1".into(), "plot-3".into()],
+            removed_candidates: vec!["plot-2".into()],
+            changed: true,
+        },
+    );
+    assert_eq!(state.pending_candidates, vec!["plot-3"]);
+    assert_eq!(state.completed_targets, vec!["plot-1"]);
+}
+
+#[rstest]
+fn metrics_accumulate_token_usage_safely() {
+    let mut metrics = continuity::ContinuityMetrics::default();
+    metrics.record_model_call(120, 30);
+    metrics.record_model_call(80, 20);
+    assert_eq!(metrics.model_calls, 2);
+    assert_eq!(metrics.total_tokens(), 250);
+}
