@@ -195,6 +195,23 @@ fn accepts_chained_farm_observation() {
 }
 
 #[rstest]
+fn accepts_multi_action_batch_only_when_each_step_chains() {
+    let mut receipt = continuity_receipt();
+    for step in 1..=3 {
+        let mut frame = continuity_next();
+        frame.frame_id = format!("frame-{step}");
+        frame.observation_id = format!("obs-{}", step + 1);
+        frame.parent_frame_id = Some(receipt.post_observation_id.clone());
+        frame.action_evidence_epoch = receipt.post_action_evidence_epoch + 1;
+        assert!(continuity::validate_next_observation(&receipt, &frame).is_ok());
+
+        receipt.action_id = format!("harvest:plot-{step}");
+        receipt.post_observation_id = frame.observation_id.clone();
+        receipt.post_action_evidence_epoch = frame.action_evidence_epoch;
+    }
+}
+
+#[rstest]
 fn rejects_stale_or_unrelated_observation() {
     let mut frame = continuity_next();
     frame.parent_frame_id = Some("obs-0".into());
