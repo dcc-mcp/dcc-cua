@@ -453,6 +453,32 @@ function Find-By-Id($element, [string]$controlId, [int]$depth, [string]$path) {
   return $null
 }
 
+# Path hints are a bounded, process-local accelerator for repeated actions in
+# the same window.  They never authorize an action: the resolved element still
+# goes through the normal fence and scope checks, and a miss falls back to the
+# complete tree walk.  UIA runtime ids remain the authoritative control id.
+if ($null -eq $script:controlPathCache) {
+  $script:controlPathCache = @{}
+}
+
+function Find-By-Path($element, [string]$path) {
+  if ($null -eq $element -or $path -notmatch '^0(?:\.\d+)*$') { return $null }
+  $current = $element
+  foreach ($index in ($path -split '\.' | Select-Object -Skip 1)) {
+    try {
+      $items = $current.FindAll($ChildScope, $TrueCondition)
+      $position = [int]$index
+      if ($position -ge $items.Count) { return $null }
+      $current = $items.Item($position)
+    } catch { return $null }
+  }
+  return $current
+}
+
+function Control-Cache-Key([string]$controlId) {
+  return "{0}:{1}:{2}" -f ([string]$payload.process_id), ([string]$payload.window_handle), $controlId
+}
+
 function Invoke-LegacyDefaultAction($element) {
   try {
     $pattern = $null
@@ -612,12 +638,33 @@ function Invoke-UiaRequest($requestPayload) {
       return @{ok = $false; error = "permission_denied"; message = $deniedTargetReason}
     }
     if ($payload.mode -eq "act") {
-      $target = Find-By-Id $root ([string]$payload.action.control_id) 0 "0"
+      $controlId = [string]$payload.action.control_id
+      $cacheKey = Control-Cache-Key $controlId
+      $cachedPath = $script:controlPathCache[$cacheKey]
+      $target = if ($null -ne $cachedPath) { Find-By-Path $root $cachedPath } else { $null }
+      if ($null -ne $target) {
+        $runtimeId = Runtime-Id $target
+        $resolvedId = if ([string]::IsNullOrWhiteSpace($runtimeId)) { "uia:path:$cachedPath" } else { "uia:$runtimeId" }
+        if ($resolvedId -ne $controlId) { $target = $null }
+      }
       if ($null -eq $target) {
+        $target = Find-By-Id $root $controlId 0 "0"
+        if ($null -ne $target) {
+          # Find-By-Id does not currently return its path, so only cache
+          # path-based ids. Runtime ids already resolve cheaply in most UIA
+          # providers and remain safe when the tree is rebuilt.
+          if ($controlId.StartsWith("uia:path:")) {
+            $script:controlPathCache[$cacheKey] = $controlId.Substring(9)
+          }
+        }
+      }
+      if ($null -eq $target) {
+        $script:controlPathCache.Remove($cacheKey)
         return @{ok = $false; error = "not_found"; message = "Control not found in scoped Windows UIA window."}
       }
       $beforeFocus = Runtime-Id ([System.Windows.Automation.AutomationElement]::FocusedElement)
       if (-not (Matches-Expected-Fence $target $payload.expected_fence)) {
+        $script:controlPathCache.Remove($cacheKey)
         return @{ok = $false; error = "stale_observation"; message = "The action-time UI Automation target changed after confirmation."}
       }
       $deniedActionTargetReason = Denied-Action-Target-Reason $root $target
