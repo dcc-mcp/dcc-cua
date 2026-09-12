@@ -57,7 +57,10 @@ pub fn validate_next_observation(
     if next.parent_frame_id.as_deref() != Some(receipt.post_observation_id.as_str()) {
         return Err(ChainError::ObservationNotChained);
     }
-    if next.action_evidence_epoch <= receipt.post_action_evidence_epoch {
+    let Some(expected_epoch) = receipt.post_action_evidence_epoch.checked_add(1) else {
+        return Err(ChainError::EpochNotAdvanced);
+    };
+    if next.action_evidence_epoch != expected_epoch {
         return Err(ChainError::EpochNotAdvanced);
     }
     Ok(())
@@ -113,6 +116,11 @@ mod tests {
         );
         frame.parent_frame_id = Some("obs-1".into());
         frame.action_evidence_epoch = 10;
+        assert_eq!(
+            validate_next_observation(&receipt(), &frame),
+            Err(ChainError::EpochNotAdvanced)
+        );
+        frame.action_evidence_epoch = 12;
         assert_eq!(
             validate_next_observation(&receipt(), &frame),
             Err(ChainError::EpochNotAdvanced)
