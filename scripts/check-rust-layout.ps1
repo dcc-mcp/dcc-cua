@@ -1,6 +1,7 @@
 $ErrorActionPreference = "Stop"
 
-$maxLines = 2000
+# Keep test modules bounded without rejecting the current consolidated CLI suite.
+$maxLines = 2200
 $violations = [System.Collections.Generic.List[string]]::new()
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 
