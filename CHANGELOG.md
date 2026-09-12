@@ -1,5 +1,30 @@
 # Changelog
 
+## [1.9.0](https://github.com/dcc-mcp/dcc-cua/compare/v1.8.3...v1.9.0) (2026-09-12)
+
+
+### Features
+
+* add bounded continuity state and metrics ([8464aaa](https://github.com/dcc-mcp/dcc-cua/commit/8464aaa2f422c2adb4e79e84a3a516edb55ae8f0))
+* add continuity chain contract ([a93c7b4](https://github.com/dcc-mcp/dcc-cua/commit/a93c7b4a08b57a116b0ba0104a239f135cbf3322))
+
+
+### Bug Fixes
+
+* align rust layout limit with test suite ([84c52cd](https://github.com/dcc-mcp/dcc-cua/commit/84c52cdabd98771834b5fce4555ad24d062ec414))
+* classify desktop captures as visual ([2f232dd](https://github.com/dcc-mcp/dcc-cua/commit/2f232ddd6771c70af3d91ed9ef1ddf5476006af6))
+* move continuity tests to protocol test module ([24a97e7](https://github.com/dcc-mcp/dcc-cua/commit/24a97e710aaa9174e8b7b94340573fe95d432d9e))
+* preserve desktop observation metrics ([0b69531](https://github.com/dcc-mcp/dcc-cua/commit/0b69531782d54ffdab26d57a47467338fca782f8))
+* require sequential continuity epochs ([9ca6880](https://github.com/dcc-mcp/dcc-cua/commit/9ca6880adff381e120bdc7bdeba423f354517827))
+* use rstest for continuity tests ([ed31f82](https://github.com/dcc-mcp/dcc-cua/commit/ed31f827ca579407701b28e6ba90df3a85e57866))
+* validate semantic post snapshot mode ([01e6849](https://github.com/dcc-mcp/dcc-cua/commit/01e68492dd95c458bf182be8aad457e36758c6fc))
+
+
+### Performance Improvements
+
+* expose host request latency metrics ([3990e9b](https://github.com/dcc-mcp/dcc-cua/commit/3990e9b49d688ecfb3415cce129482cd30eb2724))
+* support semantic post-action snapshots ([cc01afd](https://github.com/dcc-mcp/dcc-cua/commit/cc01afda55d167e23006f3d48ccff01b0e54ce59))
+
 ## [1.8.3](https://github.com/dcc-mcp/dcc-cua/compare/v1.8.2...v1.8.3) (2026-09-10)
 
 
