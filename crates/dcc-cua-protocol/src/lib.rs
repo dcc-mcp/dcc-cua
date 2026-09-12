@@ -20,6 +20,8 @@ pub const DEFAULT_SESSION_IDLE_TIMEOUT_MS: u64 = 15 * 60 * 1_000;
 pub const MIN_SESSION_IDLE_TIMEOUT_MS: u64 = 1_000;
 pub const MAX_SESSION_IDLE_TIMEOUT_MS: u64 = 24 * 60 * 60 * 1_000;
 
+pub mod continuity;
+
 #[derive(Debug, thiserror::Error, Clone, Copy, PartialEq, Eq)]
 pub enum SecretHandleError {
     #[error(
