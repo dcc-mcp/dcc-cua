@@ -187,14 +187,14 @@ fn continuity_next() -> continuity::ObservationFrame {
     }
 }
 
-#[test]
+#[rstest]
 fn accepts_chained_farm_observation() {
     assert!(
         continuity::validate_next_observation(&continuity_receipt(), &continuity_next()).is_ok()
     );
 }
 
-#[test]
+#[rstest]
 fn rejects_stale_or_unrelated_observation() {
     let mut frame = continuity_next();
     frame.parent_frame_id = Some("obs-0".into());
@@ -215,7 +215,7 @@ fn rejects_stale_or_unrelated_observation() {
     );
 }
 
-#[test]
+#[rstest]
 fn rejects_window_switch() {
     let mut frame = continuity_next();
     frame.target.window_handle = 8;
