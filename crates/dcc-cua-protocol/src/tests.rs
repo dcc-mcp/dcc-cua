@@ -155,3 +155,72 @@ fn insecure_xdg_runtime_directory_falls_back_to_a_user_namespace() {
 
     std::fs::remove_dir(runtime_dir).unwrap();
 }
+
+fn continuity_target() -> continuity::TargetBinding {
+    continuity::TargetBinding {
+        process_id: 42,
+        window_handle: 7,
+    }
+}
+
+fn continuity_receipt() -> continuity::ActionReceipt {
+    continuity::ActionReceipt {
+        receipt_id: "r1".into(),
+        action_id: "harvest:plot-1".into(),
+        target: continuity_target(),
+        completed: true,
+        post_observation_id: "obs-1".into(),
+        post_action_evidence_epoch: 10,
+        transition_fence: "fence-1".into(),
+    }
+}
+
+fn continuity_next() -> continuity::ObservationFrame {
+    continuity::ObservationFrame {
+        frame_id: "frame-2".into(),
+        observation_id: "obs-2".into(),
+        action_evidence_epoch: 11,
+        target: continuity_target(),
+        parent_frame_id: Some("obs-1".into()),
+        image_ref: Some("qq-classic-farm://frame-2".into()),
+        semantic_state_id: Some("farm-grid-v2".into()),
+    }
+}
+
+#[test]
+fn accepts_chained_farm_observation() {
+    assert!(
+        continuity::validate_next_observation(&continuity_receipt(), &continuity_next()).is_ok()
+    );
+}
+
+#[test]
+fn rejects_stale_or_unrelated_observation() {
+    let mut frame = continuity_next();
+    frame.parent_frame_id = Some("obs-0".into());
+    assert_eq!(
+        continuity::validate_next_observation(&continuity_receipt(), &frame),
+        Err(continuity::ChainError::ObservationNotChained)
+    );
+    frame.parent_frame_id = Some("obs-1".into());
+    frame.action_evidence_epoch = 10;
+    assert_eq!(
+        continuity::validate_next_observation(&continuity_receipt(), &frame),
+        Err(continuity::ChainError::EpochNotAdvanced)
+    );
+    frame.action_evidence_epoch = 12;
+    assert_eq!(
+        continuity::validate_next_observation(&continuity_receipt(), &frame),
+        Err(continuity::ChainError::EpochNotAdvanced)
+    );
+}
+
+#[test]
+fn rejects_window_switch() {
+    let mut frame = continuity_next();
+    frame.target.window_handle = 8;
+    assert_eq!(
+        continuity::validate_next_observation(&continuity_receipt(), &frame),
+        Err(continuity::ChainError::TargetChanged)
+    );
+}
