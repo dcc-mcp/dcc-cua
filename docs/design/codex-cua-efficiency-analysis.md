@@ -53,7 +53,7 @@
 ### P1：客户端/协议去重复
 
 - 将 `post_snapshot` 作为正式的 next-observation 候选；只有 `observation_required=true` 或证据不匹配才重新 snapshot。
-- 为连续语义动作增加批量/transaction 请求：一次请求携带多个已授权 action，Host 在每一步重新检查同一 exact target 和 observation epoch，并可选择只在批次末尾返回图像。
+- 为连续语义动作增加批量/transaction 请求：每一步都消费前一步的 action-completion receipt 和新发布的 observation epoch，再绑定下一步的 `observation_id`/`accessibility_state_id`；Host 必须在每一步重新验证 exact target 与 epoch，任一步失败就中止批次，同时沿用 observation publication path 的 action-completion 与 transition-fence sequence。若客户端无法提供这种链式状态，批处理范围限制为不会使语义引用失效的动作。
 - 在同一 logical session 内复用 browser tab binding、CDP connection 和 semantic snapshot；导航、窗口变化、epoch 变化时精确失效。
 
 ### P1：让默认调用走热路径
