@@ -1423,6 +1423,7 @@ dependencies = [
  "getrandom 0.4.3",
  "hyper-rustls",
  "idna",
+ "image",
  "indexmap",
  "ipnet",
  "jsonschema",
