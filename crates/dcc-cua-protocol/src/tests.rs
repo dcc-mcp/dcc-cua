@@ -197,6 +197,7 @@ fn accepts_chained_farm_observation() {
 #[rstest]
 fn accepts_multi_action_batch_only_when_each_step_chains() {
     let mut receipt = continuity_receipt();
+    let mut steps = Vec::new();
     for step in 1..=3 {
         let mut frame = continuity_next();
         frame.frame_id = format!("frame-{step}");
@@ -204,11 +205,57 @@ fn accepts_multi_action_batch_only_when_each_step_chains() {
         frame.parent_frame_id = Some(receipt.post_observation_id.clone());
         frame.action_evidence_epoch = receipt.post_action_evidence_epoch + 1;
         assert!(continuity::validate_next_observation(&receipt, &frame).is_ok());
+        steps.push((receipt.clone(), frame.clone()));
 
         receipt.action_id = format!("harvest:plot-{step}");
         receipt.post_observation_id = frame.observation_id.clone();
         receipt.post_action_evidence_epoch = frame.action_evidence_epoch;
     }
+    assert!(
+        continuity::validate_batch(
+            continuity::BatchPolicy {
+                max_actions: 3,
+                abort_on_failure: true
+            },
+            &continuity::ObservationFrame {
+                frame_id: "frame-0".into(),
+                observation_id: "obs-1".into(),
+                action_evidence_epoch: 10,
+                target: continuity_target(),
+                parent_frame_id: None,
+                image_ref: None,
+                semantic_state_id: None,
+            },
+            &steps
+        )
+        .is_ok()
+    );
+}
+
+#[rstest]
+fn rejects_empty_fence_and_batch_target_switch() {
+    let mut receipt = continuity_receipt();
+    receipt.transition_fence.clear();
+    assert_eq!(
+        continuity::validate_next_observation(&receipt, &continuity_next()),
+        Err(continuity::ChainError::ObservationNotChained)
+    );
+    let mut receipt = continuity_receipt();
+    receipt.target.window_handle = 8;
+    assert_eq!(
+        continuity::validate_batch(
+            continuity::BatchPolicy {
+                max_actions: 1,
+                abort_on_failure: true
+            },
+            &continuity::ObservationFrame {
+                target: continuity_target(),
+                ..continuity_next()
+            },
+            &[(receipt, continuity_next())]
+        ),
+        Err(continuity::ChainError::TargetChanged)
+    );
 }
 
 #[rstest]

@@ -53,6 +53,8 @@ pub struct ContinuityState {
     pub completed_targets: Vec<String>,
 }
 
+const MAX_RETAINED_CANDIDATES: usize = 1024;
+
 impl ContinuityState {
     pub fn apply_observation(&mut self, frame: &ObservationFrame, delta: ObservationDelta) {
         self.latest_frame_id = Some(frame.frame_id.clone());
@@ -61,6 +63,14 @@ impl ContinuityState {
         self.pending_candidates
             .retain(|id| !delta.removed_candidates.contains(id));
         for id in delta.added_candidates {
+            if self.pending_candidates.len() + self.completed_targets.len()
+                >= MAX_RETAINED_CANDIDATES
+            {
+                // Start a fresh bounded episode.  This is replay-safe because
+                // callers must establish a new observation chain after reset.
+                self.pending_candidates.clear();
+                self.completed_targets.clear();
+            }
             if !self.pending_candidates.contains(&id) && !self.completed_targets.contains(&id) {
                 self.pending_candidates.push(id);
             }
@@ -122,6 +132,9 @@ pub fn validate_next_observation(
     if receipt.target != next.target {
         return Err(ChainError::TargetChanged);
     }
+    if receipt.transition_fence.is_empty() {
+        return Err(ChainError::ObservationNotChained);
+    }
     if next.parent_frame_id.as_deref() != Some(receipt.post_observation_id.as_str()) {
         return Err(ChainError::ObservationNotChained);
     }
@@ -147,6 +160,9 @@ pub fn validate_batch(
     for (receipt, next) in steps {
         if receipt.post_observation_id != previous.observation_id {
             return Err(ChainError::ObservationNotChained);
+        }
+        if receipt.target != previous.target {
+            return Err(ChainError::TargetChanged);
         }
         validate_next_observation(receipt, next)?;
         previous = next.clone();
