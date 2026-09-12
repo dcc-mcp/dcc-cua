@@ -654,6 +654,10 @@ function Invoke-UiaRequest($requestPayload) {
           # path-based ids. Runtime ids already resolve cheaply in most UIA
           # providers and remain safe when the tree is rebuilt.
           if ($controlId.StartsWith("uia:path:")) {
+            if (-not $script:controlPathCache.ContainsKey($cacheKey) -and
+                $script:controlPathCache.Count -ge 1024) {
+              $script:controlPathCache.Clear()
+            }
             $script:controlPathCache[$cacheKey] = $controlId.Substring(9)
           }
         }
