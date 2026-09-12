@@ -8,15 +8,14 @@ this contract with `scripts/test_sdk_dependency_contract.py`.
 ## Current source
 
 - Previous SDK: 0.22.0 at `loonghao/cua@39f8a1a976f9e87d8d28affb74a1c87368893ca5`.
-- Updated SDK: 0.23.2 at `loonghao/cua@50f5d303e3b81c031ef67f1dfb7127e8aaabfff7`.
+- Updated SDK: 0.28.1 at `loonghao/cua@044448f4cf46b9777c63df0d5a07d4432674b46e`.
 - Upstream base: `trycua/cua@aabb2082c170289256f0c8d9db4cce094c778578`.
 
-The updated revision merges upstream into the previous compatibility branch;
-it retains both parent histories and contributor attribution. It includes
-upstream's embedded shutdown drain, browser debugging cleanup, capture-only
-window observations, macOS backing-scale fixes and Linux Wayland fixes.
-This source revision includes changes after the 0.23.2 release tag; the Git
-revision, rather than the package version alone, identifies the tested SDK.
+The updated revision is the compatibility fork's published mainline. It
+includes the upstream browser consent hardening, embedded shutdown drain,
+debugging cleanup, capture-only window observations, macOS backing-scale fixes,
+and Linux Wayland fixes. The Git revision, rather than the package version
+alone, identifies the tested SDK.
 
 ## Why the compatibility fork remains
 

@@ -797,6 +797,17 @@ fn windows_uia_click_supports_expandable_controls_without_raw_input() {
     assert!(backend.contains("$pattern.Collapse()"));
 }
 
+#[rstest]
+fn windows_uia_reuses_only_scoped_path_hints_and_invalidates_on_stale_state() {
+    let backend = include_str!("../assets/windows_uia_backend.ps1");
+
+    assert!(backend.contains("$script:controlPathCache"));
+    assert!(backend.contains("Control-Cache-Key"));
+    assert!(backend.contains("Find-By-Path"));
+    assert!(backend.contains("$script:controlPathCache.Remove($cacheKey)"));
+    assert!(backend.contains("Matches-Expected-Fence"));
+}
+
 #[cfg(windows)]
 #[rstest]
 fn worker_protocol_rejects_missing_or_mismatched_versions() {
