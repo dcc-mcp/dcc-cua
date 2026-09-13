@@ -179,13 +179,14 @@ jobs:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
       - name: Keep the native runtime release Latest
-        if: steps.release.outputs['browser-extension/chrome--release_created'] == 'true' || steps.existing_release.outputs.extension_release_created == 'true' || steps.recovery.outputs.extension_release_created == 'true'
+        if: steps.release.outputs['browser-extension/chrome--release_created'] == 'true' || steps.existing_release.outputs.extension_release_created == 'true' || steps.recovery.outputs.extension_release_created == 'true' || steps.recovery.outputs.release_created == 'true'
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EXTENSION_CREATED: ${{ steps.release.outputs['browser-extension/chrome--release_created'] == 'true' || steps.existing_release.outputs.extension_release_created == 'true' || steps.recovery.outputs.extension_release_created == 'true' }}
           EXTENSION_TAG: ${{ steps.release.outputs['browser-extension/chrome--tag_name'] || steps.existing_release.outputs.extension_tag_name || steps.recovery.outputs.extension_tag_name }}
         run: |
-          if ([string]::IsNullOrWhiteSpace($env:EXTENSION_TAG)) {
+          if ($env:EXTENSION_CREATED -eq 'true' -and [string]::IsNullOrWhiteSpace($env:EXTENSION_TAG)) {
             throw 'resolved extension release tag is missing'
           }
           $nativeVersion = (Get-Content version.txt -Raw).Trim()
@@ -197,8 +198,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "native runtime release $nativeTag does not exist" }
           gh release edit $nativeTag --repo "$env:GITHUB_REPOSITORY" --latest
           if ($LASTEXITCODE -ne 0) { throw "cannot mark native runtime release $nativeTag Latest" }
-          gh release edit "$env:EXTENSION_TAG" --repo "$env:GITHUB_REPOSITORY" --latest=false
-          if ($LASTEXITCODE -ne 0) { throw 'cannot exclude extension release from Latest' }
+          if ($env:EXTENSION_CREATED -eq 'true') {
+            gh release edit "$env:EXTENSION_TAG" --repo "$env:GITHUB_REPOSITORY" --latest=false
+            if ($LASTEXITCODE -ne 0) { throw 'cannot exclude extension release from Latest' }
+          }
           $latestJson = gh release view --repo "$env:GITHUB_REPOSITORY" --json tagName
           if ($LASTEXITCODE -ne 0) { throw 'cannot read repository Latest release' }
           $latest = $latestJson | ConvertFrom-Json
