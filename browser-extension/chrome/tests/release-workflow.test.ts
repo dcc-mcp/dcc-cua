@@ -22,6 +22,7 @@ const ACTION_PINS: Record<string, string> = {
 };
 
 type Step = {
+  if?: string;
   env?: Record<string, unknown>;
   id?: string;
   name?: string;
@@ -50,10 +51,11 @@ const STEP_ALLOWLIST: Record<string, string[]> = {
     "name:Validate release configuration",
     "uses:dtolnay/rust-toolchain",
     "run:cargo metadata --locked --no-deps --format-version 1",
-    "run:python -B -m unittest scripts.test_release_workflow scripts.test_release_integrity scripts.test_verify_release_assets scripts.test_verify_final_archive scripts.test_verify_uploaded_artifact scripts.test_select_ci_source_sha scripts.test_refresh_release_please_prs",
+    "run:python -B -m unittest scripts.test_release_workflow scripts.test_release_integrity scripts.test_verify_release_assets scripts.test_verify_final_archive scripts.test_verify_uploaded_artifact scripts.test_select_ci_source_sha scripts.test_refresh_release_please_prs scripts.test_resolve_release_recovery",
   ],
   "release-please": [
     "uses:actions/checkout",
+    "name:Resolve immutable release recovery",
     "name:Refuse pre-existing release identities",
     "name:Reuse already published release identities",
     "uses:googleapis/release-please-action",
@@ -75,6 +77,7 @@ const STEP_ALLOWLIST: Record<string, string[]> = {
   ],
   "consolidate-native": [
     "uses:actions/checkout",
+    "name:Checkout release verification tools",
     "name:Verify native build artifact set",
     "name:Download and verify native build artifacts",
     "name:Write immutable native release provenance",
@@ -82,6 +85,7 @@ const STEP_ALLOWLIST: Record<string, string[]> = {
   ],
   "attach-assets": [
     "uses:actions/checkout",
+    "name:Checkout release verification tools",
     "name:Verify immutable native artifact identity",
     "name:Audit immutable native artifact download",
     "name:Download and extract verified native artifact",
@@ -157,7 +161,7 @@ const SOURCE_BINDING_STATEMENTS = [
 const NATIVE_ARTIFACT_IDENTITY_STATEMENTS = [
   "set -euo pipefail",
   'gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID" > "$RUNNER_TEMP/artifact.json"',
-  "python -B scripts/release_integrity.py verify-artifact \\",
+  "python -B .release-tools/scripts/release_integrity.py verify-artifact \\",
   '--metadata "$RUNNER_TEMP/artifact.json" \\',
   '--expected-id "$ARTIFACT_ID" \\',
   '--expected-digest "$EXPECTED_ARTIFACT_DIGEST" \\',
@@ -184,7 +188,7 @@ const NATIVE_ARTIFACT_EXTRACTION_STATEMENTS = [
   "gh api \\",
   '"repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID/zip" \\',
   '> "$archive"',
-  "python -B scripts/release_integrity.py verify-extract \\",
+  "python -B .release-tools/scripts/release_integrity.py verify-extract \\",
   '--archive "$archive" \\',
   '--expected-digest "$EXPECTED_ARTIFACT_DIGEST" \\',
   "--output dist",
@@ -219,7 +223,8 @@ const NATIVE_PUBLISHED_READBACK_STATEMENTS = [
   'gh release view --repo "$GITHUB_REPOSITORY" \\',
   "--json tagName --jq .tagName",
   ')"',
-  "python -B scripts/release_integrity.py verify-published-native \\",
+  "python -B .release-tools/scripts/release_integrity.py verify-published-native \\",
+  '--workflow-head-sha "$GITHUB_SHA" \\',
   '--metadata "$RUNNER_TEMP/published-native-release.json" \\',
   "--directory dist \\",
   '--version "${TAG_NAME#v}" \\',
@@ -252,10 +257,11 @@ const EXTENSION_PUBLISHED_READBACK_STATEMENTS = [
 const RUN_STATEMENT_DIGESTS: Record<string, string> = {
   "validate|Validate release configuration": "8d3f02794bf7a97330d98fa4d70ce5cc7f62e474df31c860bc71c2a29d178cbd",
   "validate|#3": "007b41ff968a7d8b2e96752351831db1ab9ff3248cf5215b5fa2e6b19ed1234e",
-  "validate|#4": "1eb46dc0e86486e716d122b102b6e6e6043c1977f78ab9123b79202fcaa05161",
+  "validate|#4": "22a575dfc6e06b71087e58e2c83cc0445740f2fa87f3d851ccc876cdd56ccedc",
+  "release-please|Resolve immutable release recovery": "3f6abfb9d7ee8be152c7c8c89f0b4af58126dd4d57eafbb635b78c6ffb9a9650",
   "release-please|Refuse pre-existing release identities": "ce3343e2d9ba02496d925d0c7ca384dea6dbe9c9215b4477cefe165a6865d9ec",
   "release-please|Reuse already published release identities": "66451b7afa5be4d35678a7462e2a9ec5d98d4f055efa2ebad407e30c94285a00",
-  "release-please|Keep the native runtime release Latest": "3a51ac0c7bad4c6a9a83661752cb94a506d49a56350494c3a5a2c76faefecebb",
+  "release-please|Keep the native runtime release Latest": "fdcff61169c456f87933c68242b651981a1680b9dfc826e4d53dee0ec4f8ac29",
   "release-please|Refresh independent release PRs from current main": "2be98e30902d17319ab0347ce92c886e80573c2a50ce9d52f1aec56e213f8652",
   "build|Verify native release source binding": "c395d2eb87e998ccc88df9d8b441766c8ff3fdd3b2eed789b1eadcc0d20cf099",
   "build|#4": "0c9fd2bfc5153caf2f158fa8161b842aa52a3183cbb65d62b11be4f52b137204",
@@ -264,15 +270,15 @@ const RUN_STATEMENT_DIGESTS: Record<string, string> = {
   "build|Package dcc-cua": "d0be86de777d9e05f0503cf14ef50ece1bc92bc6d69a52a9a4cfb6edcece0d25",
   "build|Download exact native artifact by ID": "79dbc3bff6bd9bdc05cb84145af809f49373898cd92ac375504596c735b2d97b",
   "build|Verify downloaded immutable native artifact": "e9d378c66d4f3241118c5c5a2b4d6bbf49bd86befa724e65c4142291c8ce0805",
-  "consolidate-native|Verify native build artifact set": "a22a2661b450fdd465e1cc5c05d91c7ea15069dab4d8d72f24d442280a3dd672",
-  "consolidate-native|Download and verify native build artifacts": "99f40f70e30563eb79ab259b162fab2716e5010be8d2eecfdeb77f292ccd38f1",
-  "consolidate-native|Write immutable native release provenance": "fc8e085354a828c16431d7024a44127cb1c8890820e9b2ab61b98a40d249f1fc",
-  "attach-assets|Verify immutable native artifact identity": "bc366f560c9a500468596b8d200ee5d2fd4fac7e957cb5aa2b29201a61099c6b",
-  "attach-assets|Download and extract verified native artifact": "85f5327c24ec687979179e3c09b0b37070b07146ceea1c4fbc9f8fcbb5a118f4",
-  "attach-assets|Verify native release asset completeness and provenance": "3c37f870acd06367d11001622d187388b775de5f5cc50e0a3b6794557b5d9bb3",
+  "consolidate-native|Verify native build artifact set": "3b6fc5ffceca3e1a606ee43bb9ab338a356a0a2c0f62242ffe259c63db5cf5b6",
+  "consolidate-native|Download and verify native build artifacts": "68ac24904ac71c8f7f6044ac7abea1ec7468b4ee3656227a49078be748db3721",
+  "consolidate-native|Write immutable native release provenance": "ddd15810911e16bf46418d7c7ad5d8b5e761cff4c7294a0762d1ab9ca308d2c2",
+  "attach-assets|Verify immutable native artifact identity": "1fe28f38c51eaf56ee0e658b5b87ac7edb44a427ffcaedd48ffdad2eeb699de8",
+  "attach-assets|Download and extract verified native artifact": "a8990631fcad1483b8ab5f552e61624aa2699f88cf085d2ea4b58084823f6ee8",
+  "attach-assets|Verify native release asset completeness and provenance": "e0c16c6167691faa6ecf40e881838f21cba912711ada1c74577e8041c9bc1b0c",
   "attach-assets|Refuse existing native release assets": "cdf8ddf1f49d77393c4e4721b06381c577e2bda26d0f0b44bc1ba6c289cf5f7e",
   "attach-assets|Attach release archives": "a12b9c4e3713e8000995688a2697f7cf9f7af2f4cf448f8f609f7455d30de5c2",
-  "attach-assets|Verify published native release immutability": "8322831cb7b3c919995622489cca0f5f96bc442bae5903d6b3bf13d18f19b053",
+  "attach-assets|Verify published native release immutability": "ee574c2039fbea4b7457dab286c4c39a9e002a5d785a50a5c93aae6fe0997205",
   "package-browser-extension|Verify browser extension release source binding": "c395d2eb87e998ccc88df9d8b441766c8ff3fdd3b2eed789b1eadcc0d20cf099",
   "package-browser-extension|#3": "ea914f3855acfa08dce0988d9e918c5aee81b877d891d789a7ea6f668aedfd1a",
   "package-browser-extension|#4": "20e54c943b7b465505a2056e5b7e54e2df18e24d6c51c54692c56b99dc5df285",
@@ -299,7 +305,7 @@ const RUN_STATEMENT_DIGESTS: Record<string, string> = {
   "publish-firefox-addons|Verify immutable browser extension artifact identity": "dcfc8adc9cfe1836b7290a3d2100001f84fa68af97c51b5969e176985eca33ca",
   "publish-firefox-addons|Download and extract verified browser extension artifact": "1dda8d720c3ad3fc6fdc88d28c6ebf0ae9e8cc8fa6be77d3b361b38a3c236cb8",
   "publish-firefox-addons|Verify browser extension asset set": "f75d416f0b832a307b0820123f4eb8a9318561734b4249f56e8d36be9d56246b",
-  "publish-firefox-addons|Submit Firefox Add-ons release": "7883a6e1f5db317d8f718fefe7dbc4b91cddb66ded2e184527ac2fc727f59a38",
+  "publish-firefox-addons|Submit Firefox Add-ons release": "7883a6e1f5db317d8f718fefe7dbc4b91cddb66ded2e184527ac2fc727f59a38"
 };
 
 function executableLines(run: string | undefined): string[] {
@@ -404,9 +410,39 @@ function assertNeeds(job: Job, expected: string[]): void {
 function validateReleaseWorkflow(source: string): void {
   const workflow = parseWorkflow(source);
   assert.deepEqual(workflow.permissions, {});
-  assert.deepEqual(Object.keys(workflow.on ?? {}), ["push"]);
+  assert.deepEqual(Object.keys(workflow.on ?? {}), ["workflow_dispatch", "push"]);
 
+  assert.deepEqual(workflow.on?.workflow_dispatch, {
+    inputs: {
+      recover_component: {
+        description: "Rebuild empty existing releases from their immutable tags",
+        type: "choice",
+        required: true,
+        default: "both",
+        options: ["native", "browser-extension", "both"],
+      },
+    },
+  });
   const jobs = workflow.jobs ?? {};
+  for (const jobName of ["consolidate-native", "attach-assets"]) {
+    const job = requiredJob(jobs, jobName);
+    assert.equal(steps(job)[0]?.with?.ref, "${{ needs.release-please.outputs.source_sha }}");
+    assert.deepEqual(namedStep(job, "Checkout release verification tools").with, {
+      ref: "${{ github.sha }}",
+      path: ".release-tools",
+      "persist-credentials": false,
+    });
+  }
+  for (const job of Object.values(jobs)) {
+    for (const step of steps(job)) {
+      if (step.env?.EXPECTED_HEAD_SHA !== undefined) {
+        assert.equal(step.env.EXPECTED_HEAD_SHA, "${{ github.sha }}");
+      }
+    }
+  }
+  const recovery = namedStep(requiredJob(jobs, "release-please"), "Resolve immutable release recovery");
+  assert.equal(recovery.if, "github.event_name == 'workflow_dispatch'");
+  assert.equal(recovery.env?.RECOVER_COMPONENT, "${{ inputs.recover_component }}");
   assert.deepEqual(Object.keys(jobs).sort(), [
     "attach-assets",
     "attach-browser-extension-assets",
@@ -525,7 +561,7 @@ function validateReleaseWorkflow(source: string): void {
   assert.ok(releaseSteps.indexOf(releaseCheckout) < releaseSteps.indexOf(existingIdentity));
   assert.ok(releaseSteps.indexOf(existingIdentity) < releaseSteps.indexOf(releaseAction));
   assert.equal(releaseCheckout.with?.ref, "${{ github.sha }}");
-  assert.equal(releaseCheckout.with?.["fetch-depth"], 2);
+  assert.equal(releaseCheckout.with?.["fetch-depth"], 0);
   assert.equal(releaseCheckout.with?.["fetch-tags"], true);
   assert.match(existingIdentity.run ?? "", /release_integrity\.py changed-tags/);
   assert.match(existingIdentity.run ?? "", /git ls-remote --exit-code --tags/);
@@ -536,19 +572,19 @@ function validateReleaseWorkflow(source: string): void {
   );
   assert.equal(
     release.outputs?.release_created,
-    "${{ steps.release.outputs.release_created == 'true' || steps.existing_release.outputs.release_created == 'true' }}",
+    "${{ steps.release.outputs.release_created == 'true' || steps.existing_release.outputs.release_created == 'true' || steps.recovery.outputs.release_created == 'true' }}",
   );
   assert.equal(
     release.outputs?.tag_name,
-    "${{ steps.release.outputs.tag_name || steps.existing_release.outputs.tag_name }}",
+    "${{ steps.release.outputs.tag_name || steps.existing_release.outputs.tag_name || steps.recovery.outputs.tag_name }}",
   );
   assert.equal(
     release.outputs?.source_sha,
-    "${{ steps.release.outputs.sha || steps.existing_release.outputs.sha }}",
+    "${{ steps.release.outputs.sha || steps.existing_release.outputs.sha || steps.recovery.outputs.source_sha }}",
   );
   assert.equal(
     release.outputs?.extension_source_sha,
-    "${{ steps.release.outputs['browser-extension/chrome--sha'] || steps.existing_release.outputs.extension_source_sha }}",
+    "${{ steps.release.outputs['browser-extension/chrome--sha'] || steps.existing_release.outputs.extension_source_sha || steps.recovery.outputs.extension_source_sha }}",
   );
 
   const build = requiredJob(jobs, "build");
@@ -613,7 +649,7 @@ function validateReleaseWorkflow(source: string): void {
   );
   assert.equal(
     nativeExactVerify.env?.EXPECTED_HEAD_SHA,
-    "${{ needs.release-please.outputs.source_sha }}",
+    "${{ github.sha }}",
   );
   assertExecutableInvocation(
     nativeExactVerify,
@@ -624,11 +660,11 @@ function validateReleaseWorkflow(source: string): void {
   assertNeeds(consolidate, ["release-please", "build"]);
   assertExecutableInvocation(
     namedStep(consolidate, "Verify native build artifact set"),
-    "python -B scripts/release_integrity.py write-native-plan \\",
+    "python -B .release-tools/scripts/release_integrity.py write-native-plan \\",
   );
   assertExecutableInvocation(
     namedStep(consolidate, "Download and verify native build artifacts"),
-    "python -B scripts/release_integrity.py verify-extract \\",
+    "python -B .release-tools/scripts/release_integrity.py verify-extract \\",
   );
   namedStep(consolidate, "Write immutable native release provenance");
   const consolidatedUpload = actionStep(consolidate, "actions/upload-artifact");
@@ -664,7 +700,7 @@ function validateReleaseWorkflow(source: string): void {
   );
   assertExecutableInvocation(
     nativeArtifact,
-    "python -B scripts/release_integrity.py verify-artifact \\",
+    "python -B .release-tools/scripts/release_integrity.py verify-artifact \\",
   );
   assertExecutableStatements(
     nativeArtifact,
@@ -672,7 +708,7 @@ function validateReleaseWorkflow(source: string): void {
   );
   assertExecutableInvocation(
     namedStep(attach, "Download and extract verified native artifact"),
-    "python -B scripts/release_integrity.py verify-extract \\",
+    "python -B .release-tools/scripts/release_integrity.py verify-extract \\",
   );
   assertExecutableStatements(
     namedStep(attach, "Download and extract verified native artifact"),
@@ -686,7 +722,7 @@ function validateReleaseWorkflow(source: string): void {
   );
   assertExecutableInvocation(
     namedStep(attach, "Verify published native release immutability"),
-    "python -B scripts/release_integrity.py verify-published-native \\",
+    "python -B .release-tools/scripts/release_integrity.py verify-published-native \\",
   );
   assertExecutableStatements(
     namedStep(attach, "Verify published native release immutability"),
@@ -874,7 +910,7 @@ function assertAdversarialMutations(source: string): void {
   assert.throws(() => validateReleaseWorkflow(moved));
 
   const validateCommand =
-    "python -B -m unittest scripts.test_release_workflow scripts.test_release_integrity scripts.test_verify_release_assets scripts.test_verify_final_archive scripts.test_verify_uploaded_artifact scripts.test_select_ci_source_sha scripts.test_refresh_release_please_prs";
+    "python -B -m unittest scripts.test_release_workflow scripts.test_release_integrity scripts.test_verify_release_assets scripts.test_verify_final_archive scripts.test_verify_uploaded_artifact scripts.test_select_ci_source_sha scripts.test_refresh_release_please_prs scripts.test_resolve_release_recovery";
   const weakenedValidateCommand =
     "python -B -m unittest scripts.test_release_workflow scripts.test_release_integrity scripts.test_verify_release_assets scripts.test_verify_final_archive";
   assert.throws(() =>
