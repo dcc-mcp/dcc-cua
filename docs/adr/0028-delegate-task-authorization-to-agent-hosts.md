@@ -10,6 +10,12 @@ per-operation validation remain unchanged.
 
 ## Decision
 
+The no-popup rule also applies to the ordinary `dcc-cua host` command.
+Packaged CLI startup does not install an OS-native action confirmation
+callback. Lifecycle diagnostics cannot create a native approval dialog.
+The library callback contract remains available to explicit embeddings;
+without a callback or a valid task lease, approval-required actions fail closed.
+
 The connected Agent Host is the user-authorization authority for the packaged
 MCP server. Its sandbox, tool approval, and permission policy decide whether a
 task may start. DCC-CUA does not repeat that decision with an authorization

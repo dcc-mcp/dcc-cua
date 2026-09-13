@@ -28,7 +28,6 @@ mod process_output;
 mod profile_listing;
 mod snapshot_activation;
 mod task_authorization_manifest;
-mod trusted_confirmation;
 mod update_tests;
 mod window_selectors;
 
@@ -1504,6 +1503,12 @@ fn manifest_is_a_machine_readable_core_launch_contract() {
         "dcc-cua-trusted-action-confirmation-request-v2"
     );
     let confirmation = &manifest["host"]["trusted_confirmation"];
+    assert_eq!(confirmation["mode"], "embedding_callback");
+    assert_eq!(confirmation["native_action_popups"], false);
+    assert_eq!(
+        manifest["host"]["task_authorization"]["cli_fallback"],
+        "typed_authorization_error"
+    );
     for (field, expected) in [
         ("action_scoped", true),
         ("exact_window_identity", true),

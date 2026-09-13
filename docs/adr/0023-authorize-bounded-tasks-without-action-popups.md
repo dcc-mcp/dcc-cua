@@ -4,6 +4,10 @@
 
 Accepted
 
+The packaged CLI fallback described below is superseded by ADR 0028: the CLI
+no longer installs native modal confirmation. Library embeddings may still
+provide a constructor-owned callback; missing authorization fails closed.
+
 ## Context
 
 Per-action confirmation preserves a strong user-presence boundary, but modal

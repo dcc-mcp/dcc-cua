@@ -28,7 +28,6 @@ mod profile_package;
 mod profile_state;
 mod secret_vault;
 mod semantic_profile;
-mod trusted_confirmation;
 mod update;
 
 use actions::{
@@ -313,11 +312,8 @@ async fn dispatch(arguments: Vec<String>) -> Result<(), Box<dyn std::error::Erro
                         .unwrap_or_else(HostTransport::default_endpoint),
                 )
             };
-            let mut security_services = HostSecurityServices::default()
+            let security_services = HostSecurityServices::default()
                 .with_secret_vault(secret_vault::native_secret_vault());
-            if let Some(confirmation_host) = trusted_confirmation::native_confirmation_host() {
-                security_services = security_services.with_confirmation_host(confirmation_host);
-            }
             run_with_security_services(driver, transport, security_services).await?;
         }
         "snapshot" => snapshot(&driver, &flags).await?,

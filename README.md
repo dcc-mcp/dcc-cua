@@ -994,12 +994,14 @@ only permits the Host to ask for confirmation; it never authorizes an action
 by itself. Embeddings that support confirmation must start the library Host
 with `dcc_cua_host::run_with_confirmation_host` and a constructor-owned
 `TrustedActionConfirmationHost`. The callback is not reachable through Host
-IPC. On Windows, the packaged CLI Host installs a native user prompt at this
-constructor boundary by default. Each request binds the session, task grant,
+IPC. The packaged CLI Host does not install a native confirmation callback on
+any platform. It cannot open a modal authorization dialog, including during
+lifecycle diagnostics. Authorization belongs to the connected Agent Host or an
+explicit library embedding. Each request binds the session, task grant,
 exact capability, PID/HWND when window-scoped, current
 observation/accessibility state, intent, and complete action into a SHA-256
-digest. The prompt serializes concurrent requests, identifies the exact target
-and action type, defaults to denial, and never echoes action text or secrets.
+digest. A library embedding owns its confirmation surface and must not expose
+action text or secrets in diagnostics.
 The Host accepts only an inline decision echoing that exact digest, so a
 decision cannot be replayed after the evidence, target, or action changes.
 Missing, failed, or mismatched callbacks remain `approval_required`; explicit
@@ -1033,8 +1035,9 @@ An active exact-target lease runs without modal prompts. Once a session referenc
 task authorization, target changes, origin changes, category changes, expiry,
 revocation, or validation failure return a typed `task_authorization_*` refusal
 and never fall back to a popup. An explicit task-start denial returns
-`task_authorization_denied`. Existing non-MCP sessions without a task
-authorization retain per-action confirmation.
+`task_authorization_denied`. Non-MCP sessions without a task authorization or
+an embedding-owned confirmation callback return a typed authorization error
+for actions that require approval; they do not fall back to a native popup.
 
 The packaged `dcc-cua mcp-server` treats the connected Agent Host as the user
 authorization boundary. IDE, Agent sandbox, and permission policy decide

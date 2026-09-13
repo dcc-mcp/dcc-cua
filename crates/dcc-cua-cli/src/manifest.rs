@@ -159,7 +159,8 @@ pub(crate) fn document_for_platform(exact_window_pixels_available: bool) -> Valu
             },
             "trusted_confirmation": {
                 "request_schema": dcc_cua_host::TRUSTED_ACTION_CONFIRMATION_SCHEMA,
-                "mode": if cfg!(windows) { "native_user_prompt" } else { "embedding_callback" },
+                "mode": "embedding_callback",
+                "native_action_popups": false,
                 "action_scoped": true,
                 "exact_window_identity": true,
                 "default_decision": "deny",
@@ -193,7 +194,7 @@ pub(crate) fn document_for_platform(exact_window_pixels_available: bool) -> Valu
                 "environment_can_authorize": false,
                 "stdin_can_authorize": false,
                 "input_text_echoed": false,
-                "cli_fallback": "per_action_confirmation",
+                "cli_fallback": "typed_authorization_error",
             },
             "secret_vault": {
                 "backend": "platform_keyring",
