@@ -11,13 +11,15 @@
 Cross-platform Computer Use Automation runtime and CLI, backed by the
 open-source [CUA SDK](https://github.com/trycua/cua).
 
-## Showcase: Kdenlive creative workflow
+## Bounded actions, traceable workflows
 
-![Kdenlive solar-system project with a vertical preview, scene markers, separate audio tracks, and the visible DCC-CUA control state](docs/showcase/kdenlive-solar-system.png)
+![AI concept illustration of a tool inside a permission boundary with a path of trace records](docs/showcase/scoped-workflow-concept.png)
 
-A real vertical solar-system edit in Kdenlive, with scene markers, separate music
-and Chinese narration tracks, and the DCC-CUA control banner. The banner makes
-the connected control state visible. [Image source and details](docs/showcase/README.md).
+*AI-generated concept illustration.* The gate and trace tiles explain permission
+boundaries and audit trails in a Skills + MCP workflow. This is a conceptual
+model, not a captured application state or security benchmark.
+[How Skills and MCP work together](https://dcc-mcp.github.io/why-dcc-mcp).
+[Image provenance and the real Kdenlive case](docs/showcase/README.md).
 
 ## Runtime and integration
 

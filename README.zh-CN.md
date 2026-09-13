@@ -11,12 +11,14 @@
 `dcc-cua` 是基于开源 [CUA SDK](https://github.com/trycua/cua) 的跨平台
 Computer Use Automation 运行时和命令行工具，支持 Windows、Linux 和 macOS。
 
-## 案例：Kdenlive 创作工作流
+## 有边界的操作，可追查的流程
 
-![Kdenlive 太阳系工程：竖屏预览、分镜标记、独立音轨与可见的 DCC-CUA 控制状态](docs/showcase/kdenlive-solar-system.png)
+![AI 概念示意：工具位于权限边界内，路径上的标记代表调用记录](docs/showcase/scoped-workflow-concept.png)
 
-真实的 Kdenlive 太阳系竖屏短片工程，包含分镜标记、独立的配乐与中文旁白音轨。
-DCC-CUA 横幅展示当前连接状态。[图片来源与详情](docs/showcase/README.md)。
+*AI 生成的概念示意。* 门与路径标记用于解释 Skills + MCP 工作流中的权限边界和审计记录，
+不代表软件实机画面或安全性能测试。
+[了解 Skills 与 MCP 如何协作](https://dcc-mcp.github.io/zh/why-dcc-mcp)。
+[图片来源与真实 Kdenlive 案例](docs/showcase/README.md)。
 
 项目最初来自 `dcc-mcp-core`，现在由独立仓库维护通用的 Host 协议、安全边界和
 平台能力。`dcc-mcp-core` 是它的使用方，而不是运行时依赖。发布包内只有一个
