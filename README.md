@@ -11,6 +11,16 @@
 Cross-platform Computer Use Automation runtime and CLI, backed by the
 open-source [CUA SDK](https://github.com/trycua/cua).
 
+## Showcase: Kdenlive creative workflow
+
+![Kdenlive solar-system project with a vertical preview, scene markers, separate audio tracks, and the visible DCC-CUA control state](docs/showcase/kdenlive-solar-system.png)
+
+A real vertical solar-system edit in Kdenlive, with scene markers, separate music
+and Chinese narration tracks, and the DCC-CUA control banner. The banner makes
+the connected control state visible. [Image source and details](docs/showcase/README.md).
+
+## Runtime and integration
+
 The project began inside `dcc-mcp-core`, where it reproduced the Computer Use
 workflow used by Codex. CUA SDK's cross-platform support made that boundary
 useful beyond one host, so it was extracted and extended as `dcc-cua` for any
