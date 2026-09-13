@@ -315,23 +315,27 @@ fn bounded_batch_rejects_over_limit() {
 fn state_applies_deltas_without_repeating_completed_targets() {
     let frame = continuity_next();
     let mut state = continuity::ContinuityState::default();
-    state.apply_observation(
-        &frame,
-        continuity::ObservationDelta {
-            added_candidates: vec!["plot-1".into(), "plot-2".into()],
-            removed_candidates: Vec::new(),
-            changed: true,
-        },
-    );
-    state.mark_completed("plot-1".into());
-    state.apply_observation(
-        &frame,
-        continuity::ObservationDelta {
-            added_candidates: vec!["plot-1".into(), "plot-3".into()],
-            removed_candidates: vec!["plot-2".into()],
-            changed: true,
-        },
-    );
+    state
+        .apply_observation(
+            &frame,
+            continuity::ObservationDelta {
+                added_candidates: vec!["plot-1".into(), "plot-2".into()],
+                removed_candidates: Vec::new(),
+                changed: true,
+            },
+        )
+        .unwrap();
+    state.mark_completed("plot-1".into()).unwrap();
+    state
+        .apply_observation(
+            &frame,
+            continuity::ObservationDelta {
+                added_candidates: vec!["plot-1".into(), "plot-3".into()],
+                removed_candidates: vec!["plot-2".into()],
+                changed: true,
+            },
+        )
+        .unwrap();
     assert_eq!(state.pending_candidates, vec!["plot-3"]);
     assert_eq!(state.completed_targets, vec!["plot-1"]);
 }
@@ -343,4 +347,31 @@ fn metrics_accumulate_token_usage_safely() {
     metrics.record_model_call(80, 20);
     assert_eq!(metrics.model_calls, 2);
     assert_eq!(metrics.total_tokens(), 250);
+}
+
+#[rstest]
+fn continuity_capacity_preserves_completion_history_and_rejects_overflow() {
+    let mut state = continuity::ContinuityState::default();
+    for index in 0..1024 {
+        state.mark_completed(format!("target-{index}")).unwrap();
+    }
+    let full = state.clone();
+    state.mark_completed("target-0".into()).unwrap();
+    assert_eq!(state, full);
+    assert_eq!(
+        state.mark_completed("overflow".into()),
+        Err(continuity::ChainError::CapacityExceeded)
+    );
+    assert_eq!(state, full);
+    assert_eq!(
+        state.apply_observation(
+            &continuity_next(),
+            continuity::ObservationDelta {
+                added_candidates: vec!["target-0".into(), "overflow".into()],
+                ..Default::default()
+            }
+        ),
+        Err(continuity::ChainError::CapacityExceeded)
+    );
+    assert_eq!(state, full);
 }

@@ -56,32 +56,42 @@ pub struct ContinuityState {
 const MAX_RETAINED_CANDIDATES: usize = 1024;
 
 impl ContinuityState {
-    pub fn apply_observation(&mut self, frame: &ObservationFrame, delta: ObservationDelta) {
+    pub fn apply_observation(
+        &mut self,
+        frame: &ObservationFrame,
+        delta: ObservationDelta,
+    ) -> Result<(), ChainError> {
+        let mut pending = self.pending_candidates.clone();
+        pending.retain(|id| !delta.removed_candidates.contains(id));
+        for id in delta.added_candidates {
+            if !pending.contains(&id) && !self.completed_targets.contains(&id) {
+                if pending.len() + self.completed_targets.len() >= MAX_RETAINED_CANDIDATES {
+                    return Err(ChainError::CapacityExceeded);
+                }
+                pending.push(id);
+            }
+        }
+        self.pending_candidates = pending;
         self.latest_frame_id = Some(frame.frame_id.clone());
         self.latest_observation_id = Some(frame.observation_id.clone());
         self.latest_action_evidence_epoch = Some(frame.action_evidence_epoch);
-        self.pending_candidates
-            .retain(|id| !delta.removed_candidates.contains(id));
-        for id in delta.added_candidates {
-            if self.pending_candidates.len() + self.completed_targets.len()
-                >= MAX_RETAINED_CANDIDATES
-            {
-                // Start a fresh bounded episode.  This is replay-safe because
-                // callers must establish a new observation chain after reset.
-                self.pending_candidates.clear();
-                self.completed_targets.clear();
-            }
-            if !self.pending_candidates.contains(&id) && !self.completed_targets.contains(&id) {
-                self.pending_candidates.push(id);
-            }
-        }
+        Ok(())
     }
 
-    pub fn mark_completed(&mut self, target_id: String) {
-        self.pending_candidates.retain(|id| id != &target_id);
+    pub fn mark_completed(&mut self, target_id: String) -> Result<(), ChainError> {
+        let retained = self
+            .pending_candidates
+            .iter()
+            .filter(|id| *id != &target_id)
+            .count();
         if !self.completed_targets.contains(&target_id) {
-            self.completed_targets.push(target_id);
+            if retained + self.completed_targets.len() >= MAX_RETAINED_CANDIDATES {
+                return Err(ChainError::CapacityExceeded);
+            }
+            self.completed_targets.push(target_id.clone());
         }
+        self.pending_candidates.retain(|id| id != &target_id);
+        Ok(())
     }
 }
 
@@ -109,6 +119,8 @@ impl ContinuityMetrics {
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum ChainError {
+    #[error("continuity state capacity exceeded; start a new task explicitly")]
+    CapacityExceeded,
     #[error("batch exceeds the configured action limit")]
     BatchLimitExceeded,
     #[error("action receipt did not complete")]
