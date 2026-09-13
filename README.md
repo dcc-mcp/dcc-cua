@@ -11,6 +11,18 @@
 Cross-platform Computer Use Automation runtime and CLI, backed by the
 open-source [CUA SDK](https://github.com/trycua/cua).
 
+## Bounded actions, traceable workflows
+
+![AI concept illustration of a tool inside a permission boundary with a path of trace records](docs/showcase/scoped-workflow-concept.png)
+
+*AI-generated concept illustration.* The gate and trace tiles explain permission
+boundaries and audit trails in a Skills + MCP workflow. This is a conceptual
+model, not a captured application state or security benchmark.
+[How Skills and MCP work together](https://dcc-mcp.github.io/why-dcc-mcp).
+[Image provenance and the real Kdenlive case](docs/showcase/README.md).
+
+## Runtime and integration
+
 The project began inside `dcc-mcp-core`, where it reproduced the Computer Use
 workflow used by Codex. CUA SDK's cross-platform support made that boundary
 useful beyond one host, so it was extracted and extended as `dcc-cua` for any

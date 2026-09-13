@@ -11,6 +11,15 @@
 `dcc-cua` 是基于开源 [CUA SDK](https://github.com/trycua/cua) 的跨平台
 Computer Use Automation 运行时和命令行工具，支持 Windows、Linux 和 macOS。
 
+## 有边界的操作，可追查的流程
+
+![AI 概念示意：工具位于权限边界内，路径上的标记代表调用记录](docs/showcase/scoped-workflow-concept.png)
+
+*AI 生成的概念示意。* 门与路径标记用于解释 Skills + MCP 工作流中的权限边界和审计记录，
+不代表软件实机画面或安全性能测试。
+[了解 Skills 与 MCP 如何协作](https://dcc-mcp.github.io/zh/why-dcc-mcp)。
+[图片来源与真实 Kdenlive 案例](docs/showcase/README.md)。
+
 项目最初来自 `dcc-mcp-core`，现在由独立仓库维护通用的 Host 协议、安全边界和
 平台能力。`dcc-mcp-core` 是它的使用方，而不是运行时依赖。发布包内只有一个
 `dcc-cua` 可执行文件，不需要额外安装或分发 `cua-driver`。

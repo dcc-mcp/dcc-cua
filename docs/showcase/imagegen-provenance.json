@@ -1,0 +1,18 @@
+{
+  "generator": "OpenAI built-in ImageGen",
+  "generated_on": "2026-09-14",
+  "purpose": "Educational concept illustration for the DCC-MCP project",
+  "image": "scoped-workflow-concept.png",
+  "source_sha256": "744a684efea0c8007bc4fc3b75be8aa1c93c5aa3f40a4aec91cb48adc4b04ded",
+  "published_sha256": "744a684efea0c8007bc4fc3b75be8aa1c93c5aa3f40a4aec91cb48adc4b04ded",
+  "size_bytes": 1934765,
+  "width": 1254,
+  "height": 1254,
+  "processing": "Exact PNG copy of the selected ImageGen output; no crop, resize, repainting, or retouching.",
+  "disclosure": "AI-generated concept illustration. The physical objects are metaphors, not product UI, a captured software result, a benchmark, or evidence that an operation completed.",
+  "prompt": "Use the supplied image as STYLE REFERENCE ONLY, not an edit target. NEW distinct square 2048x2048 composition in exactly its premium ivory/cobalt/coral miniature science-workshop aesthetic. Tactile warm white ceramic, cobalt metal, coral-orange machinery, subtle brushed aluminum, paper. Warm seamless ivory cyclorama, soft long shadows, three-quarter product-photography camera. Central 65% subject, air around edges. No written text, letters, numbers, logos or watermarks. No UI screenshots, dashboards, neon or purple. PERMISSION BOUNDARIES AND AUDIT TRAIL: a translucent frosted glass circular enclosure around a small blue creative tool and a simple ceramic object. A single beautifully engineered coral-orange gate opens onto one precise path. Along the path, five small ivory tiles each bear a cobalt embossed dot and short blue line, forming a clear physical trace record. One loose unapproved path visibly stops outside the glass boundary. Friendly clarity, not threat imagery: no padlock icons or shields, no security badges, no logs or text. Gate and bounded workspace central, sequential trace tiles flow to lower right. Minimal strong shapes.",
+  "style_reference": {
+    "description": "The Skills + MCP concept illustration from the same educational set",
+    "sha256": "245ed5b78537d899fa34bae57244f88a26e1db0f171f733c07823862a05464e9"
+  }
+}
