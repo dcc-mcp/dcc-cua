@@ -4,6 +4,7 @@ use serde_json::json;
 
 use crate::trusted_confirmation::{native_confirmation_host, prompt_text};
 
+#[rstest]
 #[tokio::test]
 async fn aborting_confirmation_marks_its_blocking_prompt_cancelled() {
     use crate::trusted_confirmation::CancelPromptOnDrop;
