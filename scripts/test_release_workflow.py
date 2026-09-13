@@ -39,7 +39,7 @@ RELEASE_PLEASE_ACTION = (
     "googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7"
 )
 CI_EXECUTABLE_SURFACE_SHA256 = (
-    "dde9f3606d76bfc6657d251c5d6ffadad67332c36e46b4e033ab9a7ca1f86d7a"
+    "81aab5645d13728006c85628b16c2b380a2530f74be5964daaf7395245404a7e"
 )
 
 
@@ -59,8 +59,10 @@ def _strip_yaml_comment(value: str) -> str:
                 quote = character
             elif quote == character:
                 quote = None
-        if character == "#" and quote is None and (
-            index == 0 or value[index - 1].isspace()
+        if (
+            character == "#"
+            and quote is None
+            and (index == 0 or value[index - 1].isspace())
         ):
             return value[:index].rstrip()
         escaped = False
@@ -113,7 +115,9 @@ class _RestrictedWorkflowYamlParser:
             if "\t" in line[: len(line) - len(line.lstrip())]:
                 raise AssertionError("tabs are forbidden in YAML indentation")
             if line.startswith(("%", "---", "...")):
-                raise AssertionError("YAML directives and document markers are forbidden")
+                raise AssertionError(
+                    "YAML directives and document markers are forbidden"
+                )
 
     @staticmethod
     def _indent(line: str) -> int:
@@ -552,7 +556,7 @@ class ReleaseWorkflowTests(unittest.TestCase):
             "  verify:\n"
             "    defaults:\n"
             "      run:\n"
-            "        shell: bash -c 'grep -q \"cargo check\" {0} && "
+            '        shell: bash -c \'grep -q "cargo check" {0} && '
             "git restore --source attacker-ref --worktree -- .; bash {0}'\n"
             "    timeout-minutes: 45",
             1,
@@ -636,8 +640,8 @@ class ReleaseWorkflowTests(unittest.TestCase):
                 original,
                 "      - run: |\n"
                 "          GIT=git\n"
-                "          source_swap() { \"$@\"; }\n"
-                "          source_swap \"$GIT\" restore --source attacker-ref "
+                '          source_swap() { "$@"; }\n'
+                '          source_swap "$GIT" restore --source attacker-ref '
                 "--worktree -- .\n"
                 "          cargo check --workspace --all-targets --locked",
                 1,
@@ -1025,7 +1029,7 @@ class ReleaseWorkflowTests(unittest.TestCase):
             "  consolidate-native:",
             "Package dcc-cua",
             "upload-native",
-            "${{ needs.release-please.outputs.source_sha }}",
+            "${{ github.sha }}",
         )
 
     def test_pr_ci_native_archives_are_verified_from_exact_uploaded_bytes(self):
@@ -1143,6 +1147,27 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertIn("--force-with-lease", script)
         self.assertNotIn("git merge", script)
 
+    def test_recovery_keeps_workflow_identity_separate_from_tagged_sources(self):
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("recover_component:", workflow)
+        self.assertIn("run: python -B scripts/resolve_release_recovery.py", workflow)
+        self.assertIn("fetch-depth: 0", workflow)
+        self.assertIn(
+            "steps.existing_release.outputs.extension_tag_name || steps.recovery.outputs.extension_tag_name",
+            workflow,
+        )
+        self.assertIn("IsNullOrWhiteSpace($env:EXTENSION_TAG)", workflow)
+        for line in workflow.splitlines():
+            if "EXPECTED_HEAD_SHA:" in line:
+                self.assertEqual(line.strip(), "EXPECTED_HEAD_SHA: ${{ github.sha }}")
+        self.assertIn("WORKFLOW_HEAD_SHA: ${{ github.sha }}", workflow)
+        self.assertIn("ref: ${{ needs.release-please.outputs.source_sha }}", workflow)
+        self.assertIn(
+            "ref: ${{ needs.release-please.outputs.extension_source_sha }}", workflow
+        )
+        self.assertEqual(workflow.count('--workflow-head-sha "$GITHUB_SHA"'), 3)
+        self.assertEqual(workflow.count("path: .release-tools"), 2)
+
     def test_extension_release_cannot_replace_native_latest(self):
         workflow = WORKFLOW.read_text(encoding="utf-8")
 
@@ -1200,7 +1225,9 @@ class ReleaseWorkflowTests(unittest.TestCase):
         preflight = workflow.index("id: release_preflight")
         existing = workflow.index("id: existing_release", preflight)
         release_action = workflow.index(RELEASE_PLEASE_ACTION, existing)
-        release_outputs = workflow.index("outputs:", workflow.index("  release-please:"))
+        release_outputs = workflow.index(
+            "outputs:", workflow.index("  release-please:")
+        )
 
         self.assertIn(
             'remote_tag_sha="$(git ls-remote --exit-code --tags origin "refs/tags/$tag"',
@@ -1225,12 +1252,9 @@ class ReleaseWorkflowTests(unittest.TestCase):
         )
         self.assertIn(
             "steps.existing_release.outputs.release_created == 'true'",
-            workflow[release_outputs:]
+            workflow[release_outputs:],
         )
-        self.assertIn(
-            "steps.existing_release.outputs.sha",
-            workflow[release_outputs:]
-        )
+        self.assertIn("steps.existing_release.outputs.sha", workflow[release_outputs:])
         self.assertLess(preflight, existing)
         self.assertLess(existing, release_action)
 

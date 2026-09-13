@@ -382,6 +382,50 @@ class ReleaseIntegrityTests(unittest.TestCase):
                     provenance_path=provenance_path,
                 )
 
+    def test_recovery_provenance_binds_workflow_and_release_sources_independently(self):
+        with tempfile.TemporaryDirectory() as directory:
+            release_dir = Path(directory)
+            _write_complete_release(release_dir)
+            metadata = _build_artifacts()
+            workflow_sha = "2" * 40
+            for artifact in metadata["artifacts"]:
+                artifact["workflow_run"]["head_sha"] = workflow_sha
+            kwargs = dict(
+                version=VERSION,
+                tag=TAG,
+                source_sha=SOURCE_SHA,
+                release_target_sha=SOURCE_SHA,
+                workflow_head_sha=workflow_sha,
+            )
+            provenance = MODULE.build_release_provenance(
+                release_dir,
+                **kwargs,
+                workflow_run_id=RUN_ID,
+                workflow_artifacts=metadata,
+            )
+            self.assertEqual(provenance["source_commit"], SOURCE_SHA)
+            self.assertEqual(provenance["workflow_commit"], workflow_sha)
+            path = release_dir / MODULE.PROVENANCE_NAME
+            MODULE.write_release_provenance(path, provenance)
+            MODULE.verify_release_provenance(
+                release_dir, **kwargs, provenance_path=path
+            )
+            with self.assertRaisesRegex(ValueError, "workflow commit"):
+                MODULE.verify_release_provenance(
+                    release_dir,
+                    **{**kwargs, "workflow_head_sha": "3" * 40},
+                    provenance_path=path,
+                )
+            path.unlink()
+            metadata["artifacts"][0]["workflow_run"]["head_sha"] = SOURCE_SHA
+            with self.assertRaisesRegex(ValueError, "different source commit"):
+                MODULE.build_release_provenance(
+                    release_dir,
+                    **kwargs,
+                    workflow_run_id=RUN_ID,
+                    workflow_artifacts=metadata,
+                )
+
     def test_native_provenance_ignores_a_separate_extension_artifact(self):
         with tempfile.TemporaryDirectory() as directory:
             release_dir = Path(directory)
@@ -632,9 +676,7 @@ class ReleaseIntegrityTests(unittest.TestCase):
             "compression ratio": {"MAX_COMPRESSION_RATIO": 1},
         }
         for expected, limits in cases.items():
-            with self.subTest(expected=expected), mock.patch.multiple(
-                MODULE, **limits
-            ):
+            with self.subTest(expected=expected), mock.patch.multiple(MODULE, **limits):
                 with self.assertRaisesRegex(ValueError, expected):
                     MODULE._validated_zip_members(archive, "test archive")
 

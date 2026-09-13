@@ -330,7 +330,9 @@ def _validated_zip_members(
             member.compress_size == 0
             or member.file_size > member.compress_size * MAX_COMPRESSION_RATIO
         ):
-            raise ValueError(f"{description} member exceeds the compression ratio limit")
+            raise ValueError(
+                f"{description} member exceeds the compression ratio limit"
+            )
     return members
 
 
@@ -451,7 +453,9 @@ def _verify_published_assets(
 ) -> None:
     _require_sha(expected_target_sha, "expected published release target")
     local_entries = list(directory.iterdir())
-    local_names = {path.name for path in local_entries if _is_regular_unlinked_file(path)}
+    local_names = {
+        path.name for path in local_entries if _is_regular_unlinked_file(path)
+    }
     if local_names != set(expected_names) or any(
         not _is_regular_unlinked_file(path) for path in local_entries
     ):
@@ -495,6 +499,7 @@ def verify_published_native_release(
     tag: str,
     source_sha: str,
     actual_latest_tag: str,
+    workflow_head_sha: str | None = None,
 ) -> None:
     verify_release_provenance(
         directory,
@@ -503,6 +508,7 @@ def verify_published_native_release(
         source_sha=source_sha,
         release_target_sha=source_sha,
         provenance_path=directory / PROVENANCE_NAME,
+        workflow_head_sha=workflow_head_sha,
     )
     _verify_published_assets(
         metadata,
@@ -546,7 +552,11 @@ def build_release_provenance(
     release_target_sha: str,
     workflow_run_id: int,
     workflow_artifacts: object,
+    workflow_head_sha: str | None = None,
 ) -> dict:
+    if workflow_head_sha is None:
+        workflow_head_sha = source_sha
+    _require_sha(workflow_head_sha, "workflow head SHA")
     if _VERSION_PATTERN.fullmatch(version) is None or tag != f"v{version}":
         raise ValueError("release tag and version must identify one stable release")
     verify_release_source(
@@ -566,12 +576,13 @@ def build_release_provenance(
         "source_commit": source_sha,
         "release_target_commit": release_target_sha,
         "workflow_run_id": workflow_run_id,
+        "workflow_commit": workflow_head_sha,
         "signing": dict(_SIGNING_FACT),
         "assets": _asset_facts(directory, version),
         "build_artifacts": native_build_artifact_facts(
             workflow_artifacts,
             workflow_run_id=workflow_run_id,
-            source_sha=source_sha,
+            source_sha=workflow_head_sha,
         ),
     }
 
@@ -590,7 +601,11 @@ def verify_release_provenance(
     source_sha: str,
     release_target_sha: str,
     provenance_path: Path,
+    workflow_head_sha: str | None = None,
 ) -> None:
+    if workflow_head_sha is None:
+        workflow_head_sha = source_sha
+    _require_sha(workflow_head_sha, "workflow head SHA")
     try:
         document = json.loads(provenance_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, ValueError) as exc:
@@ -615,6 +630,8 @@ def verify_release_provenance(
         release_target=release_target_sha,
         expected_sha=source_sha,
     )
+    if document.get("workflow_commit", source_sha) != workflow_head_sha:
+        raise ValueError("release provenance workflow commit does not match")
     if document.get("assets") != _asset_facts(directory, version):
         raise ValueError("release provenance asset facts do not match release contents")
     workflow_run_id = document.get("workflow_run_id")
@@ -634,7 +651,7 @@ def verify_release_provenance(
         ids.append(artifact.get("id"))
         if artifact.get("workflow_run_id") != workflow_run_id:
             raise ValueError("release provenance build artifact run does not match")
-        if artifact.get("head_sha") != source_sha:
+        if artifact.get("head_sha") != workflow_head_sha:
             raise ValueError("release provenance build artifact source does not match")
         if not isinstance(artifact.get("id"), int) or artifact["id"] <= 0:
             raise ValueError("release provenance build artifact ID is invalid")
@@ -726,6 +743,9 @@ def main() -> None:
     published_extension.add_argument("--expected-latest-tag", required=True)
     published_extension.add_argument("--actual-latest-tag", required=True)
 
+    for command in ("write-provenance", "verify-provenance", "verify-published-native"):
+        subparsers.choices[command].add_argument("--workflow-head-sha")
+
     args = parser.parse_args()
     if args.command == "changed-tags":
         for tag in changed_release_tags(
@@ -772,6 +792,7 @@ def main() -> None:
             release_target_sha=args.release_target_sha,
             workflow_run_id=args.workflow_run_id,
             workflow_artifacts=_load_json(args.workflow_artifacts),
+            workflow_head_sha=args.workflow_head_sha,
         )
         write_release_provenance(args.output, document)
     elif args.command == "verify-provenance":
@@ -782,6 +803,7 @@ def main() -> None:
             source_sha=args.source_sha,
             release_target_sha=args.release_target_sha,
             provenance_path=args.provenance,
+            workflow_head_sha=args.workflow_head_sha,
         )
     elif args.command == "verify-published-native":
         verify_published_native_release(
@@ -791,6 +813,7 @@ def main() -> None:
             tag=args.tag,
             source_sha=args.source_sha,
             actual_latest_tag=args.actual_latest_tag,
+            workflow_head_sha=args.workflow_head_sha,
         )
     else:
         verify_published_extension_release(

@@ -1,6 +1,14 @@
 name: Release
 
 on:
+  workflow_dispatch:
+    inputs:
+      recover_component:
+        description: Rebuild empty existing releases from their immutable tags
+        type: choice
+        required: true
+        default: both
+        options: [native, browser-extension, both]
   push:
     branches: [main]
 
@@ -41,7 +49,7 @@ jobs:
         with:
           toolchain: 1.95.0
       - run: cargo metadata --locked --no-deps --format-version 1
-      - run: python -B -m unittest scripts.test_release_workflow scripts.test_release_integrity scripts.test_verify_release_assets scripts.test_verify_final_archive scripts.test_verify_uploaded_artifact scripts.test_select_ci_source_sha scripts.test_refresh_release_please_prs
+      - run: python -B -m unittest scripts.test_release_workflow scripts.test_release_integrity scripts.test_verify_release_assets scripts.test_verify_final_archive scripts.test_verify_uploaded_artifact scripts.test_select_ci_source_sha scripts.test_refresh_release_please_prs scripts.test_resolve_release_recovery
 
   release-please:
     needs: validate
@@ -53,20 +61,28 @@ jobs:
       contents: write
       pull-requests: write
     outputs:
-      release_created: ${{ steps.release.outputs.release_created == 'true' || steps.existing_release.outputs.release_created == 'true' }}
-      tag_name: ${{ steps.release.outputs.tag_name || steps.existing_release.outputs.tag_name }}
-      source_sha: ${{ steps.release.outputs.sha || steps.existing_release.outputs.sha }}
-      extension_release_created: ${{ steps.release.outputs['browser-extension/chrome--release_created'] == 'true' || steps.existing_release.outputs.extension_release_created == 'true' }}
-      extension_tag_name: ${{ steps.release.outputs['browser-extension/chrome--tag_name'] || steps.existing_release.outputs.extension_tag_name }}
-      extension_version: ${{ steps.release.outputs['browser-extension/chrome--version'] || steps.existing_release.outputs.extension_version }}
-      extension_source_sha: ${{ steps.release.outputs['browser-extension/chrome--sha'] || steps.existing_release.outputs.extension_source_sha }}
+      release_created: ${{ steps.release.outputs.release_created == 'true' || steps.existing_release.outputs.release_created == 'true' || steps.recovery.outputs.release_created == 'true' }}
+      tag_name: ${{ steps.release.outputs.tag_name || steps.existing_release.outputs.tag_name || steps.recovery.outputs.tag_name }}
+      source_sha: ${{ steps.release.outputs.sha || steps.existing_release.outputs.sha || steps.recovery.outputs.source_sha }}
+      extension_release_created: ${{ steps.release.outputs['browser-extension/chrome--release_created'] == 'true' || steps.existing_release.outputs.extension_release_created == 'true' || steps.recovery.outputs.extension_release_created == 'true' }}
+      extension_tag_name: ${{ steps.release.outputs['browser-extension/chrome--tag_name'] || steps.existing_release.outputs.extension_tag_name || steps.recovery.outputs.extension_tag_name }}
+      extension_version: ${{ steps.release.outputs['browser-extension/chrome--version'] || steps.existing_release.outputs.extension_version || steps.recovery.outputs.extension_version }}
+      extension_source_sha: ${{ steps.release.outputs['browser-extension/chrome--sha'] || steps.existing_release.outputs.extension_source_sha || steps.recovery.outputs.extension_source_sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ github.sha }}
-          fetch-depth: 2
+          fetch-depth: 0
           fetch-tags: true
+      - name: Resolve immutable release recovery
+        id: recovery
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RECOVER_COMPONENT: ${{ inputs.recover_component }}
+        run: python -B scripts/resolve_release_recovery.py
       - name: Refuse pre-existing release identities
+        if: github.event_name != 'workflow_dispatch'
         id: release_preflight
         shell: bash
         env:
@@ -157,18 +173,21 @@ jobs:
           fi
       - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5
         id: release
-        if: steps.release_preflight.outputs.already_released != 'true'
+        if: steps.release_preflight.outputs.already_released != 'true' && github.event_name != 'workflow_dispatch'
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
       - name: Keep the native runtime release Latest
-        if: steps.release.outputs['browser-extension/chrome--release_created'] == 'true' || steps.existing_release.outputs.extension_release_created == 'true'
+        if: steps.release.outputs['browser-extension/chrome--release_created'] == 'true' || steps.existing_release.outputs.extension_release_created == 'true' || steps.recovery.outputs.extension_release_created == 'true'
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          EXTENSION_TAG: ${{ steps.release.outputs['browser-extension/chrome--tag_name'] }}
+          EXTENSION_TAG: ${{ steps.release.outputs['browser-extension/chrome--tag_name'] || steps.existing_release.outputs.extension_tag_name || steps.recovery.outputs.extension_tag_name }}
         run: |
+          if ([string]::IsNullOrWhiteSpace($env:EXTENSION_TAG)) {
+            throw 'resolved extension release tag is missing'
+          }
           $nativeVersion = (Get-Content version.txt -Raw).Trim()
           if ($nativeVersion -notmatch '^\d+\.\d+\.\d+$') {
             throw 'native runtime version is not valid semver'
@@ -187,6 +206,7 @@ jobs:
             throw 'repository Latest release is not the native runtime'
           }
       - name: Refresh independent release PRs from current main
+        if: github.event_name != 'workflow_dispatch'
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -341,7 +361,7 @@ jobs:
           ARCHIVE_TYPE: ${{ matrix.archive }}
           ARTIFACT_ID: ${{ steps.upload-native.outputs.artifact-id }}
           ARTIFACT_DIGEST: ${{ steps.upload-native.outputs.artifact-digest }}
-          EXPECTED_HEAD_SHA: ${{ needs.release-please.outputs.source_sha }}
+          EXPECTED_HEAD_SHA: ${{ github.sha }}
           EXPECTED_REPOSITORY_ID: ${{ github.repository_id }}
           EXPECTED_HEAD_REPOSITORY_ID: ${{ github.repository_id }}
         run: |
@@ -393,21 +413,27 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ needs.release-please.outputs.source_sha }}
+      - name: Checkout release verification tools
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          path: .release-tools
+          persist-credentials: false
       - name: Verify native build artifact set
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RUN_ID: ${{ github.run_id }}
-          SOURCE_SHA: ${{ needs.release-please.outputs.source_sha }}
+          WORKFLOW_HEAD_SHA: ${{ github.sha }}
         shell: bash
         run: |
           set -euo pipefail
           gh api \
             "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/artifacts?per_page=100" \
             > "$RUNNER_TEMP/native-build-artifacts.json"
-          python -B scripts/release_integrity.py write-native-plan \
+          python -B .release-tools/scripts/release_integrity.py write-native-plan \
             --metadata "$RUNNER_TEMP/native-build-artifacts.json" \
             --expected-run-id "$RUN_ID" \
-            --expected-head-sha "$SOURCE_SHA" \
+            --expected-head-sha "$WORKFLOW_HEAD_SHA" \
             --output "$RUNNER_TEMP/native-build-plan.json"
       - name: Download and verify native build artifacts
         env:
@@ -421,7 +447,7 @@ jobs:
             gh api \
               "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id/zip" \
               > "$archive"
-            python -B scripts/release_integrity.py verify-extract \
+            python -B .release-tools/scripts/release_integrity.py verify-extract \
               --archive "$archive" \
               --expected-digest "$artifact_digest" \
               --output dist
@@ -431,7 +457,7 @@ jobs:
           )
           for native_archive in dist/dcc-cua-*.zip dist/dcc-cua-*.tar.gz; do
             [ -f "$native_archive" ] || continue
-            python -B scripts/release_integrity.py verify-native-docs --archive "$native_archive" --source .
+            python -B .release-tools/scripts/release_integrity.py verify-native-docs --archive "$native_archive" --source .
           done
       - name: Write immutable native release provenance
         env:
@@ -441,7 +467,8 @@ jobs:
         run: |
           set -euo pipefail
           version="${TAG_NAME#v}"
-          python -B scripts/release_integrity.py write-provenance \
+          python -B .release-tools/scripts/release_integrity.py write-provenance \
+            --workflow-head-sha "$GITHUB_SHA" \
             --directory dist \
             --version "$version" \
             --tag "$TAG_NAME" \
@@ -470,17 +497,23 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ needs.release-please.outputs.source_sha }}
+      - name: Checkout release verification tools
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          path: .release-tools
+          persist-credentials: false
       - name: Verify immutable native artifact identity
         env:
           ARTIFACT_ID: ${{ needs.consolidate-native.outputs.artifact_id }}
           EXPECTED_ARTIFACT_DIGEST: ${{ needs.consolidate-native.outputs.artifact_digest }}
-          EXPECTED_HEAD_SHA: ${{ needs.release-please.outputs.source_sha }}
+          EXPECTED_HEAD_SHA: ${{ github.sha }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |
           set -euo pipefail
           gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID" > "$RUNNER_TEMP/artifact.json"
-          python -B scripts/release_integrity.py verify-artifact \
+          python -B .release-tools/scripts/release_integrity.py verify-artifact \
             --metadata "$RUNNER_TEMP/artifact.json" \
             --expected-id "$ARTIFACT_ID" \
             --expected-digest "$EXPECTED_ARTIFACT_DIGEST" \
@@ -505,7 +538,7 @@ jobs:
           gh api \
             "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID/zip" \
             > "$archive"
-          python -B scripts/release_integrity.py verify-extract \
+          python -B .release-tools/scripts/release_integrity.py verify-extract \
             --archive "$archive" \
             --expected-digest "$EXPECTED_ARTIFACT_DIGEST" \
             --output dist
@@ -516,7 +549,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python -B scripts/release_integrity.py verify-provenance \
+          python -B .release-tools/scripts/release_integrity.py verify-provenance \
+            --workflow-head-sha "$GITHUB_SHA" \
             --directory dist \
             --version "${TAG_NAME#v}" \
             --tag "$TAG_NAME" \
@@ -556,7 +590,8 @@ jobs:
             gh release view --repo "$GITHUB_REPOSITORY" \
               --json tagName --jq .tagName
           )"
-          python -B scripts/release_integrity.py verify-published-native \
+          python -B .release-tools/scripts/release_integrity.py verify-published-native \
+            --workflow-head-sha "$GITHUB_SHA" \
             --metadata "$RUNNER_TEMP/published-native-release.json" \
             --directory dist \
             --version "${TAG_NAME#v}" \
@@ -658,7 +693,7 @@ jobs:
         env:
           ARTIFACT_ID: ${{ needs.package-browser-extension.outputs.artifact_id }}
           EXPECTED_ARTIFACT_DIGEST: ${{ needs.package-browser-extension.outputs.artifact_digest }}
-          EXPECTED_HEAD_SHA: ${{ needs.release-please.outputs.extension_source_sha }}
+          EXPECTED_HEAD_SHA: ${{ github.sha }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |
@@ -764,7 +799,7 @@ jobs:
         env:
           ARTIFACT_ID: ${{ needs.package-browser-extension.outputs.artifact_id }}
           EXPECTED_ARTIFACT_DIGEST: ${{ needs.package-browser-extension.outputs.artifact_digest }}
-          EXPECTED_HEAD_SHA: ${{ needs.release-please.outputs.extension_source_sha }}
+          EXPECTED_HEAD_SHA: ${{ github.sha }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |
@@ -844,7 +879,7 @@ jobs:
         env:
           ARTIFACT_ID: ${{ needs.package-browser-extension.outputs.artifact_id }}
           EXPECTED_ARTIFACT_DIGEST: ${{ needs.package-browser-extension.outputs.artifact_digest }}
-          EXPECTED_HEAD_SHA: ${{ needs.release-please.outputs.extension_source_sha }}
+          EXPECTED_HEAD_SHA: ${{ github.sha }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |
@@ -923,7 +958,7 @@ jobs:
         env:
           ARTIFACT_ID: ${{ needs.package-browser-extension.outputs.artifact_id }}
           EXPECTED_ARTIFACT_DIGEST: ${{ needs.package-browser-extension.outputs.artifact_digest }}
-          EXPECTED_HEAD_SHA: ${{ needs.release-please.outputs.extension_source_sha }}
+          EXPECTED_HEAD_SHA: ${{ github.sha }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |
