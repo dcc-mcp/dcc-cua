@@ -4,6 +4,29 @@ use serde_json::json;
 
 use crate::trusted_confirmation::{native_confirmation_host, prompt_text};
 
+#[tokio::test]
+async fn aborting_confirmation_marks_its_blocking_prompt_cancelled() {
+    use crate::trusted_confirmation::CancelPromptOnDrop;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let worker_flag = cancelled.clone();
+    let (started, ready) = tokio::sync::oneshot::channel();
+    let waiting = tokio::spawn(async move {
+        let _guard = CancelPromptOnDrop(worker_flag);
+        started.send(()).unwrap();
+        std::future::pending::<()>().await;
+    });
+    ready.await.unwrap();
+    assert!(!cancelled.load(Ordering::Acquire));
+    waiting.abort();
+    assert!(waiting.await.unwrap_err().is_cancelled());
+    assert!(cancelled.load(Ordering::Acquire));
+}
+
 #[cfg(windows)]
 #[rstest]
 fn windows_cli_host_installs_the_native_confirmation_boundary() {
