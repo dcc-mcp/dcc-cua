@@ -1,18 +1,43 @@
 {
   "generator": "OpenAI built-in ImageGen",
   "generated_on": "2026-09-14",
-  "purpose": "Educational concept illustration for the DCC-MCP project",
-  "image": "scoped-workflow-concept.png",
-  "source_sha256": "744a684efea0c8007bc4fc3b75be8aa1c93c5aa3f40a4aec91cb48adc4b04ded",
-  "published_sha256": "744a684efea0c8007bc4fc3b75be8aa1c93c5aa3f40a4aec91cb48adc4b04ded",
-  "size_bytes": 1934765,
-  "width": 1254,
-  "height": 1254,
-  "processing": "Exact PNG copy of the selected ImageGen output; no crop, resize, repainting, or retouching.",
-  "disclosure": "AI-generated concept illustration. The physical objects are metaphors, not product UI, a captured software result, a benchmark, or evidence that an operation completed.",
-  "prompt": "Use the supplied image as STYLE REFERENCE ONLY, not an edit target. NEW distinct square 2048x2048 composition in exactly its premium ivory/cobalt/coral miniature science-workshop aesthetic. Tactile warm white ceramic, cobalt metal, coral-orange machinery, subtle brushed aluminum, paper. Warm seamless ivory cyclorama, soft long shadows, three-quarter product-photography camera. Central 65% subject, air around edges. No written text, letters, numbers, logos or watermarks. No UI screenshots, dashboards, neon or purple. PERMISSION BOUNDARIES AND AUDIT TRAIL: a translucent frosted glass circular enclosure around a small blue creative tool and a simple ceramic object. A single beautifully engineered coral-orange gate opens onto one precise path. Along the path, five small ivory tiles each bear a cobalt embossed dot and short blue line, forming a clear physical trace record. One loose unapproved path visibly stops outside the glass boundary. Friendly clarity, not threat imagery: no padlock icons or shields, no security badges, no logs or text. Gate and bounded workspace central, sequential trace tiles flow to lower right. Minimal strong shapes.",
-  "style_reference": {
-    "description": "The Skills + MCP concept illustration from the same educational set",
-    "sha256": "245ed5b78537d899fa34bae57244f88a26e1db0f171f733c07823862a05464e9"
-  }
+  "purpose": "Realistic DCC interface reconstruction illustrating a headphone product-video workflow",
+  "image": "kdenlive-headphones-workflow.png",
+  "source_sha256": "c62c33089b8ce99143e2e21f193affd124c93636c62e538c142b6771f0f03560",
+  "source_size_bytes": 1627554,
+  "published_image": "headphones-workflow-showcase.webp",
+  "published_sha256": "3d17a0fec8bc3e1365901e366c61775da27bb1f801ccd1e407943ec078b8541f",
+  "published_size_bytes": 161720,
+  "width": 1672,
+  "height": 941,
+  "processing": "Source PNG copied exactly. Published WebP encoded with Pillow at quality 90, method 6, RGB; dimensions unchanged, no crop, repainting or retouching.",
+  "disclosure": "ImageGen interface reconstruction and workflow illustration. Not a live recording, captured execution result, permission receipt, audit record, or export evidence.",
+  "license": "CC-BY-SA-4.0 for these reference-derived interface illustrations; existing application marks and trademarks remain their owners' property and imply no endorsement.",
+  "license_url": "https://creativecommons.org/licenses/by-sa/4.0/",
+  "prompt": "Use case: compositing; precise UI reconstruction.\nInput image 1 is the user's real Kdenlive screenshot: reference for actual editor layout, toolbar shapes, bin, effects pane, timeline and project monitor. Input image 2 is the established Blender headphone product: reference for the EXACT headphone shape, silver finish, navy cushions and charcoal studio shot.\nGenerate one high-fidelity Kdenlive desktop UI operation illustration in normal charcoal dark theme, flat front-on screen capture style, clean landscape16:9. Keep genuine recognizable Kdenlive top menus/workspace buttons, clip bin at left, effects browser center-left, video timeline lower half, project monitor on right. Adapt the photo's tall screenshot into a balanced landscape editor workspace. REMOVE the floating dcc-cua connection HUD and its purple border. No fabricated connection, no task-grant or success badge.\nReplace the entire old Solar System project content with a coherent Headphones product video project. The right project monitor is a portrait 9:16 video showing the exact reference2 headphone large and beautiful on charcoal studio background. NO planets, no science text, no old captions. Only a small simple accurate title 'HEADPHONES' may appear in the project title bar, not on the product image.\nProject bin contains 4 believable clip thumbnails: Clay model, Metal finish, Product preview, Male narration; content matches the SAME headphone. Bottom timeline contains a row of 6 believable video edits with real thumbnail strips and a lower pair of audio tracks with normal green waveforms. Use ordinary Kdenlive UI clip colors and transition strips, normal timeline ruler. Timeline clips should visually demonstrate grey model→material operation→final silver-blue headphones. The editor monitor is the unmistakable focal point. Right monitor ~35%canvas width; timeline ~bottom33%; clipbin/effects remaining upperleft. No giant empty panels.\nUse coherent genuine UI labels only, minimal tiny text rather than gibberish paragraphs. No marketing headlines, assistant chat, fake logs, exports completed banners, mock benchmark, watermark or success claims. This is an AI-generated reconstruction of a software workflow, not a real execution capture; the final movie will label it appropriately. Preserve headphone identity exactly and let this frame visually demonstrate that DCC-MCP also supports video editing workflows.",
+  "references": [
+    {
+      "role": "Kdenlive interface layout",
+      "source": "Project-owner screenshot supplied for public showcase use on 2026-09-14",
+      "file": "kdenlive-solar-system.png",
+      "sha256": "e16173506107d1742603facea3e180842ce7b819f2239ad4e92e4052ebe0dbb1",
+      "changes": "Replaced Solar System content with the headphone project, removed the floating connection HUD, and rebalanced panels for landscape framing."
+    },
+    {
+      "role": "Headphone identity and finish",
+      "source": "Earlier ImageGen headphone frame from this production",
+      "source_sha256": "f60e7e74ea29e265cd3fb1f41db0f03ea0fecf8ff2a6f8197aa4c376fc16fd53",
+      "prompt": "Use case: ui-mockup.\nAsset type: cinematic DCC software operation illustration for a DCC-MCP explainer advert.\nInput image 1 is a real Blender manual screenshot used ONLY as a layout and UI identity reference. Reconstruct a clean, believable Blender desktop interface in neutral charcoal dark theme. REMOVE all translucent green, purple and red explanatory tint from the manual screenshot. Keep recognizable Blender top menu/workspace tabs, left viewport toolbar, right Outliner and Properties, small bottom timeline. Front-on flat screen capture style, absolutely no monitor device, room, people, hands, perspective distortion or surrounding border. Landscape 16:9 at highest practical resolution.\nMain viewport: a stunning photoreal rendered preview of one original unbranded over-ear headphone design, oversized rounded rectangular ear cups in fine bead-blasted silver aluminum, deep midnight-blue fabric ear cushions, smooth arched metal headband with dark-blue padding. Elegant professional industrial design. Headphones standing three-quarter view on a charcoal studio plinth, softbox lighting with tasteful cool-blue rim reflection, crisp real metal microtexture. Whole headphone silhouette visible and large inside the main viewport. The model occupies x~0.28–0.66 y~0.18–0.79 of full canvas. Studio background nearly black, dramatic but realistic product photography look. Clearly a rendered product in software, not abstract toy art.\nThe viewport should occupy about left 80 percent of the image, with realistic thin toolbars. Right Outliner can have short accurate item labels only: Headphones, Camera, Key, Fill, Rim. Right Properties shows Materials with restrained actual-looking controls. Correct normal Blender labels, not invented AI control panels. No chat overlays, no marketing text, no logo except normal Blender application icon, no success logs, no benchmarks, no fake progress indicators, no watermark. This is an AI-reconstructed operation illustration, not an execution screenshot; disclosure will be added in the final video.\nCreate ONE polished final-after state frame, composition suitable for a before/after match cut. This establishes the exact headphone identity and fixed camera for later states.",
+      "layout_reference": {
+        "author": "Blender Documentation Team",
+        "title": "Blender Manual — Window System Introduction",
+        "url": "https://docs.blender.org/manual/en/latest/interface/window_system/introduction.html",
+        "image_url": "https://docs.blender.org/manual/en/latest/_images/interface_window-system_introduction_default-screen.png",
+        "license": "CC-BY-SA-4.0",
+        "license_url": "https://creativecommons.org/licenses/by-sa/4.0/",
+        "license_source": "https://docs.blender.org/manual/en/latest/copyright.html",
+        "changes": "Reconstructed neutral dark interface colours and replaced the cube with an original headphone illustration; the Kdenlive illustration reuses that generated headphone identity."
+      }
+    }
+  ]
 }

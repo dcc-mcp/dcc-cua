@@ -1,19 +1,36 @@
 # Showcase sources
 
-## AI concept illustration: Permission boundaries and audit trails
+## ImageGen interface reconstruction: a headphone product-video edit
 
-- Image: [`scoped-workflow-concept.png`](scoped-workflow-concept.png)
-- Generator: OpenAI built-in ImageGen, generated on 2026-09-14 for this project.
-- Dimensions: 1254 × 1254 pixels.
-- Size: 1,934,765 bytes.
-- Original and published SHA-256: `744a684efea0c8007bc4fc3b75be8aa1c93c5aa3f40a4aec91cb48adc4b04ded`.
-- Processing: exact PNG copy; no cropping, resizing, repainting, or retouching.
-- [Complete generation prompt and provenance](imagegen-provenance.json).
+- [Generated source PNG](kdenlive-headphones-workflow.png): 1672 × 941 pixels, 1,627,554 bytes; exact copy of the selected built-in ImageGen output.
+- [README WebP](headphones-workflow-showcase.webp): same dimensions, 161,720 bytes; encoded at quality 90 with no crop or visual retouching.
+- Source SHA-256: `c62c33089b8ce99143e2e21f193affd124c93636c62e538c142b6771f0f03560`.
+- WebP SHA-256: `3d17a0fec8bc3e1365901e366c61775da27bb1f801ccd1e407943ec078b8541f`.
+- [Complete prompts, reference chain and asset provenance](imagegen-provenance.json).
 
-This is an AI-generated educational concept illustration. The physical objects
-are metaphors, not product UI, a captured software result, a benchmark, or proof
-that a particular operation completed. The [official Skills + MCP explanation](https://dcc-mcp.github.io/why-dcc-mcp)
-describes the actual architecture and its boundaries.
+This is an **ImageGen interface reconstruction and workflow illustration**,
+created on 2026-09-14. It depicts a headphone product-video edit with source
+clips, a timeline, narration/music tracks and a portrait preview. It is not a
+live recording, a captured application state, a permission receipt, an audit
+record, or evidence that an operation or export completed.
+
+### References and attribution
+
+The Kdenlive layout comes from the project-owner screenshot preserved below.
+ImageGen replaced its Solar System content with the headphone project, removed
+the floating connection HUD and rebalanced panels for landscape framing.
+
+The headphone design was first generated using an interface reference from the
+**Blender Documentation Team, Blender Manual**,
+[Window System Introduction](https://docs.blender.org/manual/en/latest/interface/window_system/introduction.html).
+The [original reference image](https://docs.blender.org/manual/en/latest/_images/interface_window-system_introduction_default-screen.png)
+is supplied under [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/),
+as described in the [Blender Manual copyright notice](https://docs.blender.org/manual/en/latest/copyright.html).
+ImageGen reconstructed neutral dark interface colours and replaced the cube
+with an original headphone illustration; this Kdenlive image reuses that
+generated headphone identity. The reference-derived PNG and WebP illustrations
+in this section are also provided under CC BY-SA 4.0. Application marks and
+third-party trademarks remain their owners' property and imply no endorsement.
 
 ## Kdenlive solar-system project
 
