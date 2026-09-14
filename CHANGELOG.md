@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.9.1](https://github.com/dcc-mcp/dcc-cua/compare/v1.9.0...v1.9.1) (2026-09-14)
+
+
+### Bug Fixes
+
+* recover releases with distinct workflow and source commits ([704086e](https://github.com/dcc-mcp/dcc-cua/commit/704086e7f32967209e48a0f7f5d8d85feecbf322))
+* retain native latest during component recovery ([189a9ce](https://github.com/dcc-mcp/dcc-cua/commit/189a9ce2f8f0ba5eb626cac3e0d1eabc50047393))
+
 ## [1.9.0](https://github.com/dcc-mcp/dcc-cua/compare/v1.8.3...v1.9.0) (2026-09-13)
 
 
