@@ -26,6 +26,7 @@ futures-core = { version = "0.3" }
 futures-io = { version = "0.3" }
 futures-util = { version = "0.3", features = ["io", "sink"] }
 idna = { version = "1" }
+jsonschema = { version = "0.46" }
 memchr = { version = "2" }
 miniz_oxide = { version = "0.8", features = ["simd"] }
 num-rational = { version = "0.4", features = ["num-bigint-std", "serde"] }
@@ -70,11 +71,12 @@ getrandom-9fbad63c4bcf4a8f = { package = "getrandom", version = "0.4", default-f
 hyper-rustls = { version = "0.27", default-features = false, features = ["aws-lc-rs", "http1", "http2", "tls12"] }
 indexmap = { version = "2", features = ["serde"] }
 ipnet = { version = "2" }
-jsonschema = { version = "0.46" }
 keyring = { version = "4" }
 libc = { version = "0.2", features = ["extra_traits"] }
 linux-raw-sys = { version = "0.12", default-features = false, features = ["auxvec", "elf", "errno", "general", "if_ether", "ioctl", "net", "netlink", "no_std", "prctl", "system", "xdp"] }
 num = { version = "0.4" }
+proc-macro2 = { version = "1" }
+quote = { version = "1" }
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "http2", "json", "rustls", "rustls-no-provider"] }
 rustix = { version = "1", features = ["event", "fs", "net", "pipe", "process", "system", "time"] }
 serde = { version = "1", default-features = false, features = ["rc"] }
@@ -91,7 +93,6 @@ x11rb = { version = "0.13", default-features = false, features = ["composite", "
 x11rb-protocol = { version = "0.13", default-features = false, features = ["composite", "randr", "shm", "std", "xinput", "xtest"] }
 zbus = { version = "5", features = ["p2p", "tokio"] }
 zeroize = { version = "1", features = ["derive"] }
-zvariant = { version = "5", features = ["enumflags2", "uuid"] }
 
 [target.x86_64-unknown-linux-gnu.build-dependencies]
 aho-corasick = { version = "1", default-features = false, features = ["perf-literal", "std"] }
@@ -100,7 +101,6 @@ libc = { version = "0.2" }
 linux-raw-sys = { version = "0.12", default-features = false, features = ["auxvec", "elf", "errno", "general", "ioctl", "no_std"] }
 memchr = { version = "2" }
 rustix = { version = "1", features = ["fs"] }
-zvariant = { version = "5", features = ["enumflags2"] }
 
 [target.x86_64-apple-darwin.dependencies]
 aho-corasick = { version = "1" }
@@ -112,9 +112,9 @@ errno = { version = "0.3" }
 futures-sink = { version = "0.3" }
 getrandom-9fbad63c4bcf4a8f = { package = "getrandom", version = "0.4", default-features = false, features = ["std", "sys_rng"] }
 hyper-rustls = { version = "0.27", default-features = false, features = ["aws-lc-rs", "http1", "http2", "tls12"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "tiff"] }
 indexmap = { version = "2", features = ["serde"] }
 ipnet = { version = "2" }
-jsonschema = { version = "0.46" }
 libc = { version = "0.2" }
 objc2 = { version = "0.5" }
 objc2-app-kit = { version = "0.2", features = ["NSApplication", "NSCell", "NSColor", "NSControl", "NSEvent", "NSGraphicsContext", "NSImage", "NSImageView", "NSResponder", "NSRunningApplication", "NSScreen", "NSTextField", "NSView", "NSWindow", "NSWorkspace", "block2", "libc"] }
@@ -147,9 +147,9 @@ errno = { version = "0.3" }
 futures-sink = { version = "0.3" }
 getrandom-9fbad63c4bcf4a8f = { package = "getrandom", version = "0.4", default-features = false, features = ["std", "sys_rng"] }
 hyper-rustls = { version = "0.27", default-features = false, features = ["aws-lc-rs", "http1", "http2", "tls12"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "tiff"] }
 indexmap = { version = "2", features = ["serde"] }
 ipnet = { version = "2" }
-jsonschema = { version = "0.46" }
 libc = { version = "0.2" }
 objc2 = { version = "0.5" }
 objc2-app-kit = { version = "0.2", features = ["NSApplication", "NSCell", "NSColor", "NSControl", "NSEvent", "NSGraphicsContext", "NSImage", "NSImageView", "NSResponder", "NSRunningApplication", "NSScreen", "NSTextField", "NSView", "NSWindow", "NSWorkspace", "block2", "libc"] }
@@ -181,7 +181,6 @@ getrandom-9fbad63c4bcf4a8f = { package = "getrandom", version = "0.4", default-f
 hyper-rustls = { version = "0.27", default-features = false, features = ["aws-lc-rs", "http1", "http2", "tls12"] }
 indexmap = { version = "2", features = ["serde"] }
 ipnet = { version = "2" }
-jsonschema = { version = "0.46" }
 keyring = { version = "4" }
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "http2", "json", "rustls", "rustls-no-provider"] }
 serde = { version = "1", default-features = false, features = ["rc"] }
@@ -201,6 +200,6 @@ zeroize = { version = "1", features = ["derive"] }
 aho-corasick = { version = "1", default-features = false, features = ["perf-literal", "std"] }
 getrandom-9fbad63c4bcf4a8f = { package = "getrandom", version = "0.4", default-features = false, features = ["std"] }
 indexmap = { version = "2" }
-windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem", "Win32_System_Console", "Win32_System_SystemInformation"] }
 
 ### END HAKARI SECTION
