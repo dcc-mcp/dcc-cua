@@ -1473,7 +1473,6 @@ dependencies = [
  "zbus",
  "zerocopy",
  "zeroize",
- "zvariant",
 ]
 
 [[package]]
@@ -6621,7 +6620,6 @@ dependencies = [
  "endi",
  "enumflags2",
  "serde",
- "uuid",
  "winnow 1.0.4",
  "zvariant_derive",
  "zvariant_utils",
