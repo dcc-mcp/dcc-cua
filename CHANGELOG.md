@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.9.2](https://github.com/dcc-mcp/dcc-cua/compare/v1.9.1...v1.9.2) (2026-09-26)
+
+
+### Bug Fixes
+
+* clarify isolated browser startup failures ([42ee098](https://github.com/dcc-mcp/dcc-cua/commit/42ee098973dda965df29e3db9305ef587b9267a2))
+* narrow browser startup diagnostic wording ([557e0e8](https://github.com/dcc-mcp/dcc-cua/commit/557e0e8f22ce7dc351a186733bb7b6d1fc9e9d51))
+
 ## [1.9.1](https://github.com/dcc-mcp/dcc-cua/compare/v1.9.0...v1.9.1) (2026-09-14)
 
 
