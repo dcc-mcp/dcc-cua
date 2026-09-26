@@ -1031,26 +1031,7 @@ async fn launch_owned_browser_target(
     .await?;
     ensure_tool_ok("launch task-owned isolated browser", &prepared)?;
     let prepared = tool_structured_content(&prepared, "browser_prepare")?;
-    if prepared["status"] != "ok"
-        || prepared["action"] != "launched_isolated_browser"
-        || prepared["side_effects"]["launched_browser"] != true
-        || prepared["side_effects"]["created_profile"] != true
-    {
-        return Err(ComputerUseError::new(
-            ComputerUseErrorCode::BrowserRefused,
-            "CUA did not create the authorized isolated browser profile",
-        ));
-    }
-    let process_id = prepared["prepared_pid"]
-        .as_u64()
-        .and_then(|value| u32::try_from(value).ok())
-        .filter(|value| *value > 0)
-        .ok_or_else(|| {
-            ComputerUseError::new(
-                ComputerUseErrorCode::BackendUnavailable,
-                "CUA browser_prepare omitted the derived browser PID",
-            )
-        })?;
+    let process_id = owned_browser_prepare_pid(&prepared)?;
 
     let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
     loop {
@@ -1131,6 +1112,68 @@ async fn launch_owned_browser_target(
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
+}
+
+fn owned_browser_prepare_pid(prepared: &Value) -> ComputerUseResult<u32> {
+    // Browser refusals are successful MCP calls with status=refused, not
+    // isError=true. Preserve the stable reason without copying upstream
+    // messages/details, which can contain profile paths or endpoints.
+    let required = [
+        ("/status", json!("ok")),
+        ("/action", json!("launched_isolated_browser")),
+        ("/side_effects/launched_browser", json!(true)),
+        ("/side_effects/created_profile", json!(true)),
+    ];
+    let mismatches = required
+        .iter()
+        .filter(|(path, expected)| prepared.pointer(path) != Some(expected))
+        .map(|(path, _)| {
+            let observed = match prepared.pointer(path) {
+                None => "missing",
+                Some(Value::Null) => "null",
+                Some(Value::Bool(false)) => "false",
+                Some(Value::String(value)) if value == "refused" => "refused",
+                Some(_) => "unexpected_value",
+            };
+            format!("{path}={observed}")
+        })
+        .collect::<Vec<_>>();
+    if !mismatches.is_empty() {
+        let refusal = match prepared["refusal"]["code"].as_str() {
+            Some(
+                code @ ("browser_route_unavailable"
+                | "browser_requires_setup"
+                | "browser_endpoint_owner_mismatch"
+                | "browser_consent_required"
+                | "browser_consent_revoked"
+                | "browser_origin_outside_scope"),
+            ) => code,
+            Some(_) => "unrecognized_refusal",
+            None => "no_refusal_code",
+        };
+        let recovery = if cfg!(windows) && refusal == "browser_route_unavailable" {
+            " If the runtime is elevated on Windows, use a standard-user runtime: the protected-installation check requires vendor-signed Chrome or Edge files and parent directories that the runtime cannot modify."
+        } else {
+            ""
+        };
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::BrowserRefused,
+            format!(
+                "CUA did not create the authorized isolated browser profile: {refusal}; {}.{recovery}",
+                mismatches.join(", ")
+            ),
+        ));
+    }
+    prepared["prepared_pid"]
+        .as_u64()
+        .and_then(|value| u32::try_from(value).ok())
+        .filter(|value| *value > 0)
+        .ok_or_else(|| {
+            ComputerUseError::new(
+                ComputerUseErrorCode::BackendUnavailable,
+                "CUA browser_prepare omitted the derived browser PID",
+            )
+        })
 }
 
 fn tool_structured_content(

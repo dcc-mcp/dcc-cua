@@ -1090,6 +1090,14 @@ into the Host lease and checked for navigation and browser mutations. Repeating
 `browser_set_input_files`, never a native file chooser. Existing-browser
 attachment still requires a separately authorized exact target.
 
+On Windows, isolated launch requires a vendor-signed Chrome or Edge installation
+whose executable and parent directories cannot be modified by the runtime's
+current token. An elevated administrator runtime can therefore be refused even
+when the browser is installed and its signature is valid. Run the task runtime
+with standard-user privileges; keep the protected-installation check intact.
+Startup failures report the stable upstream refusal code and missing ownership
+evidence without exposing browser profile paths or endpoints.
+
 Secret-bearing input uses an opaque `secret_handle` instead of putting the
 secret in Host IPC. The packaged Host resolves that handle from the current
 platform keyring only after the exact action confirmation succeeds. `text` and
