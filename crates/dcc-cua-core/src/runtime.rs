@@ -1171,7 +1171,7 @@ fn owned_browser_prepare_pid(prepared: &Value) -> ComputerUseResult<u32> {
         .ok_or_else(|| {
             ComputerUseError::new(
                 ComputerUseErrorCode::BackendUnavailable,
-                "CUA browser_prepare omitted the derived browser PID",
+                "CUA browser_prepare returned a missing or invalid derived browser PID",
             )
         })
 }
