@@ -1,7 +1,9 @@
 [tools]
 node = "22"
 
+# MSVC is host-provided (Visual Studio Build Tools): vx cannot install a
+# numbered MSVC version, so it must be requested as "system".
 [tools.msvc]
-version = "14.44"
+version = "system"
 os = ["windows"]
 components = ["spectre"]
