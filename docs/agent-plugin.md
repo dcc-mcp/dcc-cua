@@ -63,6 +63,23 @@ version, exact PID, and exact HWND returned by `start_task`. Use one persistent
 task for the exact target, take fresh observations, verify every mutation, and
 call `stop_task` on success, failure, interruption, or abandonment.
 
+For an exact PID/HWND target that is minimized, declare `change_window_state`
+in `start_task.allowed_methods` and call it through the same task:
+
+```json
+{
+  "task_id": "<task_id returned by start_task>",
+  "method": "change_window_state",
+  "params": {"operation": "restore_activate"}
+}
+```
+
+Take a fresh observation after restoring. This operation restores only the
+bound window and verifies its identity and foreground state. The MCP bridge
+also accepts `activate`, which does not restore a minimized window; it rejects
+`close` and other window state operations. An unavailable interactive desktop
+still blocks activation and input. Repair that environment before retrying.
+
 Account verification, CAPTCHA/2FA, agreements, payments, and final irreversible
 publication remain separate human boundaries. Removing the duplicated DCC-CUA
 authorization card does not automate those external account/security decisions.
