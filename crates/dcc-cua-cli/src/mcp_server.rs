@@ -527,6 +527,7 @@ impl TaskAuthorizationServer {
             .filter(|value| value.is_object())
             .cloned()
             .unwrap_or_else(|| json!({}));
+        validate_task_method_params(&method, &params)?;
         let proposal = self
             .proposals
             .get_mut(&proposal_id)
@@ -694,6 +695,7 @@ fn method_allowed(surface: TaskSurface, method: &str) -> bool {
     let common = matches!(
         method,
         "get_window_state"
+            | "change_window_state"
             | "snapshot"
             | "accessibility_snapshot"
             | "verify_state"
@@ -722,6 +724,21 @@ fn method_allowed(surface: TaskSurface, method: &str) -> bool {
                     | "browser_dialog"
             )
         )
+}
+
+fn validate_task_method_params(method: &str, params: &Value) -> Result<(), String> {
+    if method == "change_window_state"
+        && !matches!(
+            params.get("operation").and_then(Value::as_str),
+            Some("activate" | "restore_activate")
+        )
+    {
+        return Err(
+            "change_window_state requires operation activate or restore_activate in the task bridge"
+                .into(),
+        );
+    }
+    Ok(())
 }
 
 fn validate_allowed_methods(surface: TaskSurface, methods: &[String]) -> Result<(), String> {
@@ -885,7 +902,7 @@ fn tool_definitions() -> Vec<Value> {
                         "maxItems": MAX_ALLOWED_METHODS,
                         "uniqueItems": true,
                         "items": {"type": "string", "enum": [
-                            "get_window_state", "snapshot", "accessibility_snapshot", "verify_state",
+                            "get_window_state", "change_window_state", "snapshot", "accessibility_snapshot", "verify_state",
                             "find", "wait_for", "execute_action", "get_session_state",
                             "get_input_state", "session_health", "poll_session_events",
                             "clipboard_capture_secret", "browser_snapshot", "browser_prepare",
@@ -929,7 +946,7 @@ fn tool_definitions() -> Vec<Value> {
         json!({
             "name": "dcc_cua_task_call",
             "title": "Run DCC-CUA task call",
-            "description": "Call one closed Host method after start_task returned its provider/runtime/PID/HWND binding. Out-of-scope, expired, stopped, or changed targets fail without prompting. Never pass credential values; use secret handles.",
+            "description": "Call one closed Host method after start_task returned its provider/runtime/PID/HWND binding. change_window_state accepts only operation activate or restore_activate; restore_activate requires the exact PID/HWND and a fresh observation afterward. Out-of-scope, expired, stopped, or changed targets fail without prompting. Never pass credential values; use secret handles.",
             "inputSchema": {
                 "type": "object",
                 "additionalProperties": false,

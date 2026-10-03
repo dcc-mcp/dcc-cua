@@ -7,6 +7,90 @@ fn test_server() -> TaskAuthorizationServer {
     TaskAuthorizationServer::automatic()
 }
 
+#[rstest]
+#[case(TaskSurface::Window)]
+#[case(TaskSurface::Browser)]
+fn exact_window_restore_is_available_in_both_task_surfaces(#[case] surface: TaskSurface) {
+    assert!(method_allowed(surface, "change_window_state"));
+    validate_allowed_methods(surface, &["change_window_state".into()]).unwrap();
+
+    let start = tool_definitions()
+        .into_iter()
+        .find(|tool| tool["name"] == "start_task")
+        .unwrap();
+    let methods = start["inputSchema"]["properties"]["allowed_methods"]["items"]["enum"]
+        .as_array()
+        .unwrap();
+    assert!(methods.iter().any(|method| method == "change_window_state"));
+}
+
+#[rstest]
+#[case(json!({"operation": "activate"}), true)]
+#[case(json!({"operation": "restore_activate"}), true)]
+#[case(json!({"operation": "close"}), false)]
+#[case(json!({"operation": "minimize"}), false)]
+#[case(json!({"operation": "RESTORE_ACTIVATE"}), false)]
+#[case(json!({"operation": 1}), false)]
+#[case(json!({}), false)]
+fn task_window_state_operations_remain_bounded(#[case] params: Value, #[case] allowed: bool) {
+    assert_eq!(
+        validate_task_method_params("change_window_state", &params).is_ok(),
+        allowed
+    );
+}
+
+#[rstest]
+#[tokio::test]
+async fn task_call_rejects_window_close_before_host_dispatch() {
+    let error = test_server()
+        .task_call(json!({
+            "task_id": "unstarted-task",
+            "method": "change_window_state",
+            "params": {"operation": "close"}
+        }))
+        .await
+        .unwrap_err();
+    assert!(error.contains("activate or restore_activate"), "{error}");
+}
+
+#[rstest]
+#[tokio::test]
+async fn restore_keeps_the_declared_method_scope_and_session_start_fence() {
+    let mut server = test_server();
+    let prepared = server.prepare_task(browser_task()).unwrap();
+    let error = server
+        .task_call(json!({
+            "task_id": prepared["task_id"],
+            "method": "change_window_state",
+            "params": {"operation": "restore_activate"}
+        }))
+        .await
+        .unwrap_err();
+    assert!(error.contains("configured task method scope"), "{error}");
+
+    let mut task = browser_task();
+    task["allowed_methods"] = json!(["change_window_state"]);
+    let prepared = server.prepare_task(task).unwrap();
+    let task_id = prepared["task_id"].as_str().unwrap();
+    let proposal = server.proposals.get(task_id).unwrap();
+    assert_eq!(
+        proposal.registration.allowed_host_methods,
+        vec!["change_window_state"]
+    );
+    let grant = task_session_grant(proposal, proposal.receipt.as_ref().unwrap());
+    assert_eq!(grant["process_id"], 42);
+    assert_eq!(grant["window_handle"], 7);
+    let error = server
+        .task_call(json!({
+            "task_id": task_id,
+            "method": "change_window_state",
+            "params": {"operation": "restore_activate"}
+        }))
+        .await
+        .unwrap_err();
+    assert!(error.contains("call start_task"), "{error}");
+}
+
 fn browser_task() -> Value {
     json!({
         "application_label": "Chrome Web Store credentials",
