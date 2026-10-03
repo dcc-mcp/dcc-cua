@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.9.3](https://github.com/dcc-mcp/dcc-cua/compare/v1.9.2...v1.9.3) (2026-10-03)
+
+
+### Bug Fixes
+
+* expose scoped window restore in MCP tasks ([#306](https://github.com/dcc-mcp/dcc-cua/issues/306)) ([e36b49e](https://github.com/dcc-mcp/dcc-cua/commit/e36b49eafce12ea7dfa475fa6a1b6af4ebdd77a8))
+
 ## [1.9.2](https://github.com/dcc-mcp/dcc-cua/compare/v1.9.1...v1.9.2) (2026-09-26)
 
 
