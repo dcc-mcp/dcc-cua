@@ -193,7 +193,7 @@ impl WindowsDesktopProbe {
     }
 
     fn diagnostic(&self) -> Value {
-        windows_diagnostic_with_thread_fallback(
+        let mut report = windows_diagnostic_with_thread_fallback(
             self.state.clone(),
             self.input_desktop
                 .as_ref()
@@ -205,7 +205,30 @@ impl WindowsDesktopProbe {
                 .map_err(String::as_str),
             self.input_surface.as_ref().copied().map_err(String::as_str),
             self.foreground,
-        )
+        );
+        let station = process_window_station_name();
+        let receives_input = thread_desktop_receives_input();
+        let mut context = windows_execution_context(
+            station
+                .as_ref()
+                .map(|name| name.as_deref())
+                .map_err(String::as_str),
+            self.thread_desktop
+                .as_ref()
+                .map(|name| name.as_deref())
+                .map_err(String::as_str),
+            receives_input.as_ref().copied().map_err(String::as_str),
+            self.input_desktop
+                .as_ref()
+                .map(|name| name.as_deref())
+                .map_err(String::as_str),
+        );
+        context["process_id"] = Value::from(std::process::id());
+        // SAFETY: querying our current thread ID does not open or change a desktop.
+        context["thread_id"] =
+            Value::from(unsafe { windows_sys::Win32::System::Threading::GetCurrentThreadId() });
+        report["execution_context"] = context;
+        report
     }
 }
 
@@ -250,10 +273,13 @@ fn windows_input_surface() -> Result<(), String> {
 
 #[cfg(windows)]
 fn thread_desktop_name() -> Result<Option<String>, String> {
-    use std::{mem, ptr};
+    user_object_name(current_thread_desktop()?, "current thread desktop")
+}
+
+#[cfg(windows)]
+fn current_thread_desktop() -> Result<windows_sys::Win32::Foundation::HANDLE, String> {
     use windows_sys::Win32::System::{
-        StationsAndDesktops::{GetThreadDesktop, GetUserObjectInformationW, UOI_NAME},
-        Threading::GetCurrentThreadId,
+        StationsAndDesktops::GetThreadDesktop, Threading::GetCurrentThreadId,
     };
 
     // SAFETY: the current thread ID is valid for the lifetime of this call;
@@ -262,13 +288,75 @@ fn thread_desktop_name() -> Result<Option<String>, String> {
     if desktop.is_null() {
         return Err(std::io::Error::last_os_error().to_string());
     }
+    Ok(desktop)
+}
+
+#[cfg(windows)]
+fn process_window_station_name() -> Result<Option<String>, String> {
+    use windows_sys::Win32::System::StationsAndDesktops::GetProcessWindowStation;
+
+    // SAFETY: this returns our process's borrowed window-station handle. It must
+    // not be closed, and querying its name does not modify its access policy.
+    let station = unsafe { GetProcessWindowStation() };
+    if station.is_null() {
+        return Err(std::io::Error::last_os_error().to_string());
+    }
+    user_object_name(station, "process window station")
+}
+
+#[cfg(windows)]
+fn thread_desktop_receives_input() -> Result<bool, String> {
+    use std::mem;
+    use windows_sys::Win32::System::StationsAndDesktops::{GetUserObjectInformationW, UOI_IO};
+
+    let desktop = current_thread_desktop()?;
+    let mut receives_input = 0_i32;
+    let mut required_bytes = 0_u32;
+    // SAFETY: UOI_IO writes one BOOL to this valid buffer. The borrowed handle
+    // belongs to our current thread; no desktop is opened, switched, or changed.
+    if unsafe {
+        GetUserObjectInformationW(
+            desktop,
+            UOI_IO,
+            (&raw mut receives_input).cast(),
+            mem::size_of::<i32>() as u32,
+            &mut required_bytes,
+        )
+    } == 0
+    {
+        return Err(std::io::Error::last_os_error().to_string());
+    }
+    if required_bytes != mem::size_of::<i32>() as u32 {
+        return Err("UOI_IO returned an invalid BOOL buffer size".into());
+    }
+    Ok(receives_input != 0)
+}
+
+#[cfg(windows)]
+fn user_object_name(
+    object: windows_sys::Win32::Foundation::HANDLE,
+    description: &str,
+) -> Result<Option<String>, String> {
+    use std::{mem, ptr};
+    use windows_sys::Win32::{
+        Foundation::ERROR_INSUFFICIENT_BUFFER,
+        System::StationsAndDesktops::{GetUserObjectInformationW, UOI_NAME},
+    };
 
     let mut required_bytes = 0_u32;
-    // SAFETY: the null buffer is an explicit size query for this desktop handle.
+    // SAFETY: the null buffer is an explicit size query for this borrowed handle.
     let queried = unsafe {
-        GetUserObjectInformationW(desktop, UOI_NAME, ptr::null_mut(), 0, &mut required_bytes)
+        GetUserObjectInformationW(object, UOI_NAME, ptr::null_mut(), 0, &mut required_bytes)
     };
-    if queried != 0 || required_bytes < mem::size_of::<u16>() as u32 {
+    // Capture GetLastError immediately: a denied query must remain an error,
+    // rather than being silently represented as an unknown name.
+    if queried == 0 {
+        let error = std::io::Error::last_os_error();
+        if error.raw_os_error() != Some(ERROR_INSUFFICIENT_BUFFER as i32) {
+            return Err(error.to_string());
+        }
+    }
+    if required_bytes < mem::size_of::<u16>() as u32 {
         return Ok(None);
     }
 
@@ -278,7 +366,7 @@ fn thread_desktop_name() -> Result<Option<String>, String> {
     // pointer is valid for the duration of the call.
     let succeeded = unsafe {
         GetUserObjectInformationW(
-            desktop,
+            object,
             UOI_NAME,
             buffer.as_mut_ptr().cast(),
             required_bytes,
@@ -295,7 +383,32 @@ fn thread_desktop_name() -> Result<Option<String>, String> {
         .unwrap_or(buffer.len());
     String::from_utf16(&buffer[..length])
         .map(Some)
-        .map_err(|error| format!("thread desktop name is not valid UTF-16: {error}"))
+        .map_err(|error| format!("{description} name is not valid UTF-16: {error}"))
+}
+
+#[cfg(any(windows, test))]
+pub(crate) fn windows_execution_context(
+    station: Result<Option<&str>, &str>,
+    thread_desktop: Result<Option<&str>, &str>,
+    receives_input: Result<bool, &str>,
+    input_desktop: Result<Option<&str>, &str>,
+) -> Value {
+    fn name_probe(result: Result<Option<&str>, &str>) -> Value {
+        match result {
+            Ok(name) => json!({"name": name, "error": Value::Null}),
+            Err(error) => json!({"name": Value::Null, "error": error}),
+        }
+    }
+
+    let mut thread = name_probe(thread_desktop);
+    thread["receives_input"] = receives_input.ok().map_or(Value::Null, Value::Bool);
+    thread["receives_input_error"] = receives_input.err().map_or(Value::Null, Value::from);
+    json!({
+        "source": "current_process_and_thread",
+        "window_station": name_probe(station),
+        "thread_desktop": thread,
+        "input_desktop": name_probe(input_desktop),
+    })
 }
 
 #[cfg(windows)]
