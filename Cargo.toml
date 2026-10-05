@@ -37,9 +37,9 @@ rstest = "0.26.1"
 # ancestor-scoped browser contract and consent/navigation compatibility fixes.
 # Source review: https://github.com/loonghao/cua/pull/5 (draft).
 # See docs/design/sdk-dependency-maintenance.md for outstanding acceptance gates.
-cua-driver-contract = { git = "https://github.com/loonghao/cua.git", rev = "7ce18efd2489c29244235481fb547e013f0f4c14" }
-cua-driver-sdk = { git = "https://github.com/loonghao/cua.git", rev = "7ce18efd2489c29244235481fb547e013f0f4c14" }
-cua-driver-testkit = { git = "https://github.com/loonghao/cua.git", rev = "7ce18efd2489c29244235481fb547e013f0f4c14" }
-cursor-overlay = { git = "https://github.com/loonghao/cua.git", rev = "7ce18efd2489c29244235481fb547e013f0f4c14" }
-platform-macos = { git = "https://github.com/loonghao/cua.git", rev = "7ce18efd2489c29244235481fb547e013f0f4c14" }
-platform-windows = { git = "https://github.com/loonghao/cua.git", rev = "7ce18efd2489c29244235481fb547e013f0f4c14" }
+cua-driver-contract = { git = "https://github.com/loonghao/cua.git", rev = "fa80a8e3560641dd9e732a755afd467339cf6ba3" }
+cua-driver-sdk = { git = "https://github.com/loonghao/cua.git", rev = "fa80a8e3560641dd9e732a755afd467339cf6ba3" }
+cua-driver-testkit = { git = "https://github.com/loonghao/cua.git", rev = "fa80a8e3560641dd9e732a755afd467339cf6ba3" }
+cursor-overlay = { git = "https://github.com/loonghao/cua.git", rev = "fa80a8e3560641dd9e732a755afd467339cf6ba3" }
+platform-macos = { git = "https://github.com/loonghao/cua.git", rev = "fa80a8e3560641dd9e732a755afd467339cf6ba3" }
+platform-windows = { git = "https://github.com/loonghao/cua.git", rev = "fa80a8e3560641dd9e732a755afd467339cf6ba3" }
