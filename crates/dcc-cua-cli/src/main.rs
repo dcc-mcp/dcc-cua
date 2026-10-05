@@ -154,6 +154,11 @@ where
 }
 
 fn run_main() -> Result<(), Box<dyn std::error::Error>> {
+    let arguments = env::args().skip(1).collect::<Vec<_>>();
+    diagnostics_only_requested(
+        arguments.first().map_or("help", String::as_str),
+        arguments.get(1..).unwrap_or_default(),
+    )?;
     #[cfg(target_os = "macos")]
     {
         let arguments = env::args().skip(1).collect::<Vec<_>>();
@@ -163,7 +168,7 @@ fn run_main() -> Result<(), Box<dyn std::error::Error>> {
             return Ok(());
         }
     }
-    async_main(env::args().skip(1).collect())
+    async_main(arguments)
 }
 
 fn write_error_line(writer: &mut dyn Write, line: &str) -> std::io::Result<()> {
@@ -184,6 +189,10 @@ fn async_main(arguments: Vec<String>) -> Result<(), Box<dyn std::error::Error>> 
 }
 
 async fn dispatch(arguments: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
+    let diagnostics_only = diagnostics_only_requested(
+        arguments.first().map_or("help", String::as_str),
+        arguments.get(1..).unwrap_or_default(),
+    )?;
     if let Some(invocation_origin) = browser_extension::invocation_origin(&arguments) {
         browser_extension::run_native_host(invocation_origin).await?;
         return Ok(());
@@ -198,6 +207,11 @@ async fn dispatch(arguments: Vec<String>) -> Result<(), Box<dyn std::error::Erro
     reject_unknown_flags(&flags)?;
     if is_help_request(&command, &flags) {
         print_help()?;
+        return Ok(());
+    }
+    if diagnostics_only {
+        let report = dcc_cua_core::diagnostics_only().await;
+        stdoutln!("{}", serde_json::to_string_pretty(&report)?);
         return Ok(());
     }
     if command == "__private-worker" {

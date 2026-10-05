@@ -220,6 +220,14 @@ pub(crate) fn document_for_platform(exact_window_pixels_available: bool) -> Valu
         },
         "runtime": {
             "backend": "cua-driver-sdk",
+            "diagnostics_only": {
+                "command": ["doctor", "--diagnostics-only"],
+                "scope": "local_process_desktop_context_and_static_inventory",
+                "read_only": true,
+                "input_readiness": "not_tested",
+                "permissions_health_window_inventory": "not_run",
+                "endpoint_or_spawn": "rejected",
+            },
             "separate_driver_required": false,
             "exact_window_pixels": {
                 "availability": "windows",
