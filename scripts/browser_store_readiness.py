@@ -117,6 +117,7 @@ EXPECTED_CI_TRIGGER = (
     "  push:",
     "    branches: [main]",
     "  pull_request:",
+    "    types: [opened, synchronize, reopened, ready_for_review]",
     "  workflow_dispatch: {}",
 )
 EXPECTED_CI_PERMISSIONS = ("  actions: read", "  contents: read")
