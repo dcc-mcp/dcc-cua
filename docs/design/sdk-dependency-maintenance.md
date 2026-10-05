@@ -9,7 +9,7 @@ this contract with `scripts/test_sdk_dependency_contract.py`.
 
 - Previous SDK: 0.28.2 at `loonghao/cua@3d2bcf50089ea18aa5bedab328b1afb3f710ea00`.
 - Candidate SDK: 0.33.2 at
-  `loonghao/cua@7ce18efd2489c29244235481fb547e013f0f4c14`.
+  `loonghao/cua@fa80a8e3560641dd9e732a755afd467339cf6ba3`.
 - Official upstream base:
   `trycua/cua@c82d32e3e1adbc6578a148962002ddf6e3e8a15a`.
 - Compatibility source review: [loonghao/cua#5](https://github.com/loonghao/cua/pull/5),
