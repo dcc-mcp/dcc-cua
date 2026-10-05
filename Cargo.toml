@@ -32,18 +32,14 @@ async-trait = "0.1"
 rstest = "0.26.1"
 
 # Keep the SDK, platform adapters, cursor renderer and testkit on one revision.
-#
-# The compatibility fork retains browser contracts that upstream trycua/cua has
-# not merged: `scope_ancestor_role` / `scope_anchor` ancestor-scoped semantic
-# snapshots and the `browser_scope_unavailable` refusal code. Upstream
-# cua-driver-rs-v0.28.2 and upstream main contain none of them, so the pin
-# cannot move back to upstream until those contracts land there.
-#
-# This revision is the fork-only delta replayed verbatim on top of the official
-# upstream release tag `cua-driver-rs-v0.28.2` (commit fc188250b4ca8549b8e61f937fdb1fb560770e86).
-cua-driver-contract = { git = "https://github.com/loonghao/cua.git", rev = "3d2bcf50089ea18aa5bedab328b1afb3f710ea00" }
-cua-driver-sdk = { git = "https://github.com/loonghao/cua.git", rev = "3d2bcf50089ea18aa5bedab328b1afb3f710ea00" }
-cua-driver-testkit = { git = "https://github.com/loonghao/cua.git", rev = "3d2bcf50089ea18aa5bedab328b1afb3f710ea00" }
-cursor-overlay = { git = "https://github.com/loonghao/cua.git", rev = "3d2bcf50089ea18aa5bedab328b1afb3f710ea00" }
-platform-macos = { git = "https://github.com/loonghao/cua.git", rev = "3d2bcf50089ea18aa5bedab328b1afb3f710ea00" }
-platform-windows = { git = "https://github.com/loonghao/cua.git", rev = "3d2bcf50089ea18aa5bedab328b1afb3f710ea00" }
+# This compatibility candidate uses SDK 0.33.2, based on official upstream
+# trycua/cua@c82d32e3e1adbc6578a148962002ddf6e3e8a15a. The fork retains the
+# ancestor-scoped browser contract and consent/navigation compatibility fixes.
+# Source review: https://github.com/loonghao/cua/pull/5 (draft).
+# See docs/design/sdk-dependency-maintenance.md for outstanding acceptance gates.
+cua-driver-contract = { git = "https://github.com/loonghao/cua.git", rev = "7ce18efd2489c29244235481fb547e013f0f4c14" }
+cua-driver-sdk = { git = "https://github.com/loonghao/cua.git", rev = "7ce18efd2489c29244235481fb547e013f0f4c14" }
+cua-driver-testkit = { git = "https://github.com/loonghao/cua.git", rev = "7ce18efd2489c29244235481fb547e013f0f4c14" }
+cursor-overlay = { git = "https://github.com/loonghao/cua.git", rev = "7ce18efd2489c29244235481fb547e013f0f4c14" }
+platform-macos = { git = "https://github.com/loonghao/cua.git", rev = "7ce18efd2489c29244235481fb547e013f0f4c14" }
+platform-windows = { git = "https://github.com/loonghao/cua.git", rev = "7ce18efd2489c29244235481fb547e013f0f4c14" }

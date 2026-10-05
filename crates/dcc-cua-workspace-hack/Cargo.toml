@@ -19,32 +19,40 @@ repository.workspace = true
 
 ### BEGIN HAKARI SECTION
 [dependencies]
+aho-corasick = { version = "1" }
 bytemuck = { version = "1", default-features = false, features = ["aarch64_simd", "extern_crate_alloc"] }
 camino = { version = "1", default-features = false, features = ["serde1"] }
+chacha20 = { version = "0.10", default-features = false, features = ["rng", "xchacha", "zeroize"] }
+cua-driver-core = { git = "https://github.com/loonghao/cua.git", rev = "7ce18efd2489c29244235481fb547e013f0f4c14" }
 flate2 = { version = "1", features = ["zlib-rs"] }
 futures-core = { version = "0.3" }
-futures-io = { version = "0.3" }
 futures-util = { version = "0.3", features = ["io", "sink"] }
+getrandom-9fbad63c4bcf4a8f = { package = "getrandom", version = "0.4", default-features = false, features = ["std", "sys_rng"] }
 idna = { version = "1" }
+indexmap = { version = "2", features = ["serde"] }
 jsonschema = { version = "0.46" }
 memchr = { version = "2" }
-miniz_oxide = { version = "0.8", features = ["simd"] }
 num-rational = { version = "0.4", features = ["num-bigint-std", "serde"] }
 num-traits = { version = "0.2", features = ["i128"] }
 once_cell = { version = "1" }
 percent-encoding = { version = "2" }
+postcard = { version = "1", features = ["alloc"] }
 regex-automata = { version = "0.4", default-features = false, features = ["dfa", "hybrid", "meta", "nfa", "perf", "std", "unicode"] }
 regex-syntax = { version = "0.8" }
 semver = { version = "1", features = ["serde"] }
-serde = { version = "1", features = ["alloc", "derive"] }
-serde_core = { version = "1", features = ["alloc"] }
+serde = { version = "1", features = ["alloc", "derive", "rc"] }
+serde_core = { version = "1", features = ["alloc", "rc"] }
 serde_json = { version = "1", features = ["alloc", "float_roundtrip", "unbounded_depth"] }
-simd-adler32 = { version = "0.3" }
 smallvec = { version = "1", default-features = false, features = ["const_generics"] }
 tokio = { version = "1", features = ["full", "test-util"] }
+uniffi = { version = "0.31", features = ["tokio"] }
+uniffi_core = { version = "0.31", features = ["tokio"] }
+uuid = { version = "1", features = ["fast-rng", "v4"] }
 zerocopy = { version = "0.8", default-features = false, features = ["derive", "simd"] }
 
 [build-dependencies]
+aho-corasick = { version = "1", default-features = false, features = ["perf-literal", "std"] }
+indexmap = { version = "2" }
 memchr = { version = "2", default-features = false, features = ["std"] }
 once_cell = { version = "1" }
 proc-macro2 = { version = "1" }
@@ -61,26 +69,22 @@ toml_parser = { version = "1" }
 winnow = { version = "1" }
 
 [target.x86_64-unknown-linux-gnu.dependencies]
-aho-corasick = { version = "1" }
-chacha20 = { version = "0.10", default-features = false, features = ["rng", "xchacha", "zeroize"] }
+byteorder = { version = "1" }
 crossbeam-utils = { version = "0.8", default-features = false, features = ["std"] }
 crypto-common = { version = "0.2", default-features = false, features = ["getrandom"] }
+futures-io = { version = "0.3" }
 futures-sink = { version = "0.3" }
 getrandom-6f8ce4dd05d13bba = { package = "getrandom", version = "0.2", default-features = false, features = ["std"] }
-getrandom-9fbad63c4bcf4a8f = { package = "getrandom", version = "0.4", default-features = false, features = ["std", "sys_rng"] }
 hyper-rustls = { version = "0.27", default-features = false, features = ["aws-lc-rs", "http1", "http2", "tls12"] }
-indexmap = { version = "2", features = ["serde"] }
 ipnet = { version = "2" }
 keyring = { version = "4" }
 libc = { version = "0.2", features = ["extra_traits"] }
 linux-raw-sys = { version = "0.12", default-features = false, features = ["auxvec", "elf", "errno", "general", "if_ether", "ioctl", "net", "netlink", "no_std", "prctl", "system", "xdp"] }
+miniz_oxide = { version = "0.8", features = ["simd"] }
 num = { version = "0.4" }
-proc-macro2 = { version = "1" }
-quote = { version = "1" }
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "http2", "json", "rustls", "rustls-no-provider"] }
 rustix = { version = "1", features = ["event", "fs", "net", "pipe", "process", "system", "time"] }
-serde = { version = "1", default-features = false, features = ["rc"] }
-serde_core = { version = "1", default-features = false, features = ["rc"] }
+simd-adler32 = { version = "0.3" }
 slab = { version = "0.4" }
 smallvec = { version = "1", default-features = false, features = ["const_new", "union"] }
 syn-f595c2ba2a3f28df = { package = "syn", version = "2", features = ["extra-traits", "full"] }
@@ -88,118 +92,102 @@ tokio = { version = "1", default-features = false, features = ["tracing"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["aws-lc-rs", "tls12"] }
 tracing = { version = "0.1" }
 typenum = { version = "1", default-features = false, features = ["const-generics"] }
-uuid = { version = "1", features = ["fast-rng", "serde", "v4"] }
-x11rb = { version = "0.13", default-features = false, features = ["composite", "randr", "shm", "xinput", "xtest"] }
-x11rb-protocol = { version = "0.13", default-features = false, features = ["composite", "randr", "shm", "std", "xinput", "xtest"] }
+uuid = { version = "1", default-features = false, features = ["serde"] }
+x11rb = { version = "0.13", default-features = false, features = ["composite", "randr", "res", "shm", "xinput", "xtest"] }
+x11rb-protocol = { version = "0.13", default-features = false, features = ["composite", "randr", "res", "shm", "std", "xinput", "xtest"] }
 zbus = { version = "5", features = ["p2p", "tokio"] }
 zeroize = { version = "1", features = ["derive"] }
+zvariant = { version = "5", features = ["enumflags2", "uuid"] }
 
 [target.x86_64-unknown-linux-gnu.build-dependencies]
-aho-corasick = { version = "1", default-features = false, features = ["perf-literal", "std"] }
-indexmap = { version = "2" }
 libc = { version = "0.2" }
 linux-raw-sys = { version = "0.12", default-features = false, features = ["auxvec", "elf", "errno", "general", "ioctl", "no_std"] }
 memchr = { version = "2" }
 rustix = { version = "1", features = ["fs"] }
+zvariant = { version = "5", features = ["enumflags2"] }
 
 [target.x86_64-apple-darwin.dependencies]
-aho-corasick = { version = "1" }
 block2 = { version = "0.5" }
-chacha20 = { version = "0.10", default-features = false, features = ["rng", "xchacha", "zeroize"] }
-core-foundation-sys = { version = "0.8" }
 crypto-common = { version = "0.2", default-features = false, features = ["getrandom"] }
+digest = { version = "0.10", features = ["mac", "std"] }
 errno = { version = "0.3" }
+futures-io = { version = "0.3" }
 futures-sink = { version = "0.3" }
-getrandom-9fbad63c4bcf4a8f = { package = "getrandom", version = "0.4", default-features = false, features = ["std", "sys_rng"] }
+half = { version = "2" }
 hyper-rustls = { version = "0.27", default-features = false, features = ["aws-lc-rs", "http1", "http2", "tls12"] }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "tiff"] }
-indexmap = { version = "2", features = ["serde"] }
 ipnet = { version = "2" }
 libc = { version = "0.2" }
 objc2 = { version = "0.5" }
-objc2-app-kit = { version = "0.2", features = ["NSApplication", "NSCell", "NSColor", "NSControl", "NSEvent", "NSGraphicsContext", "NSImage", "NSImageView", "NSResponder", "NSRunningApplication", "NSScreen", "NSTextField", "NSView", "NSWindow", "NSWorkspace", "block2", "libc"] }
+objc2-app-kit = { version = "0.2", features = ["NSApplication", "NSCell", "NSColor", "NSControl", "NSCursor", "NSEvent", "NSGraphicsContext", "NSImage", "NSImageView", "NSResponder", "NSRunningApplication", "NSScreen", "NSTextField", "NSView", "NSWindow", "NSWorkspace", "block2", "libc"] }
 objc2-foundation = { version = "0.2", features = ["NSAppleEventDescriptor", "NSArray", "NSAttributedString", "NSBundle", "NSCoder", "NSData", "NSDate", "NSDictionary", "NSError", "NSException", "NSFileManager", "NSFormatter", "NSGeometry", "NSItemProvider", "NSLocale", "NSNotification", "NSNull", "NSObjCRuntime", "NSObject", "NSOperation", "NSRange", "NSRunLoop", "NSSet", "NSString", "NSTextCheckingResult", "NSThread", "NSURL", "NSUndoManager", "NSUserActivity", "NSValue", "block2", "libc"] }
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "http2", "json", "rustls", "rustls-no-provider"] }
 security-framework = { version = "3", features = ["OSX_10_15"] }
 security-framework-sys = { version = "2", features = ["OSX_10_15"] }
-serde = { version = "1", default-features = false, features = ["rc"] }
-serde_core = { version = "1", default-features = false, features = ["rc"] }
 slab = { version = "0.4" }
 smallvec = { version = "1", default-features = false, features = ["const_new"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["aws-lc-rs", "tls12"] }
+tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
 tracing = { version = "0.1" }
-uuid = { version = "1", features = ["fast-rng", "v4"] }
+tungstenite = { version = "0.24", default-features = false, features = ["handshake", "native-tls"] }
+typenum = { version = "1", default-features = false, features = ["const-generics"] }
 zeroize = { version = "1", features = ["derive"] }
 
 [target.x86_64-apple-darwin.build-dependencies]
-aho-corasick = { version = "1", default-features = false, features = ["perf-literal", "std"] }
 errno = { version = "0.3", default-features = false, features = ["std"] }
-indexmap = { version = "2" }
 libc = { version = "0.2" }
 
 [target.aarch64-apple-darwin.dependencies]
-aho-corasick = { version = "1" }
 block2 = { version = "0.5" }
-chacha20 = { version = "0.10", default-features = false, features = ["rng", "xchacha", "zeroize"] }
-core-foundation-sys = { version = "0.8" }
 crypto-common = { version = "0.2", default-features = false, features = ["getrandom"] }
+digest = { version = "0.10", features = ["mac", "std"] }
 errno = { version = "0.3" }
+futures-io = { version = "0.3" }
 futures-sink = { version = "0.3" }
-getrandom-9fbad63c4bcf4a8f = { package = "getrandom", version = "0.4", default-features = false, features = ["std", "sys_rng"] }
+half = { version = "2" }
 hyper-rustls = { version = "0.27", default-features = false, features = ["aws-lc-rs", "http1", "http2", "tls12"] }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "tiff"] }
-indexmap = { version = "2", features = ["serde"] }
 ipnet = { version = "2" }
 libc = { version = "0.2" }
 objc2 = { version = "0.5" }
-objc2-app-kit = { version = "0.2", features = ["NSApplication", "NSCell", "NSColor", "NSControl", "NSEvent", "NSGraphicsContext", "NSImage", "NSImageView", "NSResponder", "NSRunningApplication", "NSScreen", "NSTextField", "NSView", "NSWindow", "NSWorkspace", "block2", "libc"] }
+objc2-app-kit = { version = "0.2", features = ["NSApplication", "NSCell", "NSColor", "NSControl", "NSCursor", "NSEvent", "NSGraphicsContext", "NSImage", "NSImageView", "NSResponder", "NSRunningApplication", "NSScreen", "NSTextField", "NSView", "NSWindow", "NSWorkspace", "block2", "libc"] }
 objc2-foundation = { version = "0.2", features = ["NSAppleEventDescriptor", "NSArray", "NSAttributedString", "NSBundle", "NSCoder", "NSData", "NSDate", "NSDictionary", "NSError", "NSException", "NSFileManager", "NSFormatter", "NSGeometry", "NSItemProvider", "NSLocale", "NSNotification", "NSNull", "NSObjCRuntime", "NSObject", "NSOperation", "NSRange", "NSRunLoop", "NSSet", "NSString", "NSTextCheckingResult", "NSThread", "NSURL", "NSUndoManager", "NSUserActivity", "NSValue", "block2", "libc"] }
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "http2", "json", "rustls", "rustls-no-provider"] }
 security-framework = { version = "3", features = ["OSX_10_15"] }
 security-framework-sys = { version = "2", features = ["OSX_10_15"] }
-serde = { version = "1", default-features = false, features = ["rc"] }
-serde_core = { version = "1", default-features = false, features = ["rc"] }
 slab = { version = "0.4" }
 smallvec = { version = "1", default-features = false, features = ["const_new"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["aws-lc-rs", "tls12"] }
+tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
 tracing = { version = "0.1" }
-uuid = { version = "1", features = ["fast-rng", "v4"] }
+tungstenite = { version = "0.24", default-features = false, features = ["handshake", "native-tls"] }
+typenum = { version = "1", default-features = false, features = ["const-generics"] }
 zeroize = { version = "1", features = ["derive"] }
 
 [target.aarch64-apple-darwin.build-dependencies]
-aho-corasick = { version = "1", default-features = false, features = ["perf-literal", "std"] }
 errno = { version = "0.3", default-features = false, features = ["std"] }
-indexmap = { version = "2" }
 libc = { version = "0.2" }
 
 [target.x86_64-pc-windows-msvc.dependencies]
-aho-corasick = { version = "1" }
-chacha20 = { version = "0.10", default-features = false, features = ["rng", "xchacha", "zeroize"] }
 crypto-common = { version = "0.2", default-features = false, features = ["getrandom"] }
+futures-io = { version = "0.3" }
 futures-sink = { version = "0.3" }
-getrandom-9fbad63c4bcf4a8f = { package = "getrandom", version = "0.4", default-features = false, features = ["std", "sys_rng"] }
 hyper-rustls = { version = "0.27", default-features = false, features = ["aws-lc-rs", "http1", "http2", "tls12"] }
-indexmap = { version = "2", features = ["serde"] }
 ipnet = { version = "2" }
 keyring = { version = "4" }
+miniz_oxide = { version = "0.8", features = ["simd"] }
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "http2", "json", "rustls", "rustls-no-provider"] }
-serde = { version = "1", default-features = false, features = ["rc"] }
-serde_core = { version = "1", default-features = false, features = ["rc"] }
+simd-adler32 = { version = "0.3" }
 slab = { version = "0.4" }
 smallvec = { version = "1", default-features = false, features = ["const_new"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["aws-lc-rs", "tls12"] }
 tracing = { version = "0.1" }
-uniffi = { version = "0.31", features = ["tokio"] }
-uniffi_core = { version = "0.31", features = ["tokio"] }
-uuid = { version = "1", features = ["fast-rng", "v4"] }
 windows = { version = "0.61", features = ["Win32_Globalization", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_Console", "Win32_System_IO", "Win32_System_JobObjects", "Win32_System_LibraryLoader", "Win32_System_Pipes", "Win32_System_Threading", "Win32_UI_HiDpi", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
 windows-sys = { version = "0.61", features = ["Wdk_Foundation", "Wdk_Storage_FileSystem", "Wdk_System_IO", "Win32_Graphics_Gdi", "Win32_Networking_WinSock", "Win32_Security_Authorization", "Win32_Security_Credentials", "Win32_Security_Cryptography_Catalog", "Win32_Security_Cryptography_Sip", "Win32_Security_WinTrust", "Win32_Storage_FileSystem", "Win32_Storage_Packaging_Appx", "Win32_System_Console", "Win32_System_Diagnostics_ToolHelp", "Win32_System_IO", "Win32_System_LibraryLoader", "Win32_System_Memory", "Win32_System_Pipes", "Win32_System_RemoteDesktop", "Win32_System_StationsAndDesktops", "Win32_System_SystemServices", "Win32_System_Threading", "Win32_System_WindowsProgramming", "Win32_UI_HiDpi", "Win32_UI_Input_Ime", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
 zeroize = { version = "1", features = ["derive"] }
 
 [target.x86_64-pc-windows-msvc.build-dependencies]
-aho-corasick = { version = "1", default-features = false, features = ["perf-literal", "std"] }
 getrandom-9fbad63c4bcf4a8f = { package = "getrandom", version = "0.4", default-features = false, features = ["std"] }
-indexmap = { version = "2" }
-windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem", "Win32_System_Console", "Win32_System_SystemInformation"] }
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
 
 ### END HAKARI SECTION
