@@ -259,10 +259,10 @@ impl ConnectionDiagnostics {
 
     fn publish(&mut self) {
         self.record.registry_available = true;
-        if !self
+        if self
             .directory
             .as_deref()
-            .is_some_and(|directory| registry::publish(directory, &self.record).is_ok())
+            .is_none_or(|directory| registry::publish(directory, &self.record).is_err())
         {
             self.record.registry_available = false;
         }

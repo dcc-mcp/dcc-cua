@@ -51,7 +51,7 @@ fn is_link(metadata: &fs::Metadata) -> bool {
     #[cfg(windows)]
     {
         use std::os::windows::fs::MetadataExt;
-        return metadata.file_attributes() & 0x400 != 0; // FILE_ATTRIBUTE_REPARSE_POINT
+        metadata.file_attributes() & 0x400 != 0 // FILE_ATTRIBUTE_REPARSE_POINT
     }
     #[cfg(not(windows))]
     false
@@ -258,13 +258,12 @@ pub(super) fn retain_recent_terminal_records(directory: &Path) {
         let path = directory.join(format!("{}.json", record.connection_id));
         // Recheck immutable identity and terminal state immediately before
         // removing only an old diagnostic record in the private directory.
-        if let Ok(current) = read_record(&path, &record.connection_id) {
-            if current.created_at_unix_ms == record.created_at_unix_ms
-                && (current.state == ConnectionState::Closed
-                    || process_identity::status(&current.bridge) == ProcessStatus::Ended)
-            {
-                let _ = fs::remove_file(path);
-            }
+        if let Ok(current) = read_record(&path, &record.connection_id)
+            && current.created_at_unix_ms == record.created_at_unix_ms
+            && (current.state == ConnectionState::Closed
+                || process_identity::status(&current.bridge) == ProcessStatus::Ended)
+        {
+            let _ = fs::remove_file(path);
         }
     }
 }
