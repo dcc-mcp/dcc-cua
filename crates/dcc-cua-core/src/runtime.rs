@@ -1674,6 +1674,8 @@ impl ComputerUseDesktopSession {
 struct ExactWindowCapture {
     #[cfg(windows)]
     diagnostics: Option<crate::capture_diagnostics::PixelBufferDiagnostics>,
+    #[cfg(windows)]
+    wgc_geometry: Option<dcc_cua_platform_windows::ResolvedWgcGeometry>,
     data: Vec<u8>,
     backend: &'static str,
     fallback: &'static str,
@@ -2007,6 +2009,7 @@ async fn capture_exact_window_with_diagnostics(
             return Ok(ExactWindowCapture {
                 data: encoded.data,
                 diagnostics: encoded.diagnostics,
+                wgc_geometry: None,
                 backend: "dcc-cua-visible-exact-window",
                 fallback: "same_executable_multi_window_exact_visible_proof",
                 mode: ExactWindowPixelCaptureMode::VisibleDesktopCrop,
@@ -2019,8 +2022,8 @@ async fn capture_exact_window_with_diagnostics(
         }
         let wgc_error =
             match dcc_cua_platform_windows::PersistentWgcCapture::new(process_id, window_id) {
-            Ok(mut capture) => match capture.next_frame(Duration::from_secs(5)) {
-                Ok((bgra, width, height)) => {
+            Ok(mut capture) => match capture.next_measured_frame(Duration::from_secs(5)) {
+                Ok(frame) => {
                     let capture_to_raw_elapsed = capture_started.elapsed();
                     if dcc_cua_platform_windows::exact_window_capture_route(
                         process_id,
@@ -2048,25 +2051,49 @@ async fn capture_exact_window_with_diagnostics(
                         &after,
                         ExactWindowPixelCaptureMode::WindowContent,
                     )?;
+                    let geometry = dcc_cua_platform_windows::resolve_exact_wgc_geometry(
+                        dcc_cua_platform_windows::NativeWindowGeometry {
+                            win32_bounds: before.bounds, dwm_bounds: Some(before.visible_bounds), dpi: before.dpi,
+                        },
+                        dcc_cua_platform_windows::NativeWindowGeometry {
+                            win32_bounds: after.bounds, dwm_bounds: Some(after.visible_bounds), dpi: after.dpi,
+                        },
+                        frame.geometry, frame.bgra.len(),
+                    ).map_err(|error| ComputerUseError::new(ComputerUseErrorCode::StaleObservation, error.to_string()))?;
+                    if frame.geometry.content_size != [frame.width, frame.height] {
+                        return Err(ComputerUseError::new(ComputerUseErrorCode::StaleObservation,
+                            "the WGC raw frame dimensions differ from its actual content proof"));
+                    }
                     let encoded = crate::capture_diagnostics::encode_exact_frame(
-                        &bgra, width, height, diagnostics_enabled, capture_to_raw_elapsed,
+                        &frame.bgra, frame.width, frame.height, diagnostics_enabled, capture_to_raw_elapsed,
                     )?;
                     return Ok(ExactWindowCapture {
                         data: encoded.data,
                         diagnostics: encoded.diagnostics,
+                        wgc_geometry: Some(geometry),
                         backend: "dcc-cua-wgc-exact-window",
                         fallback: "exact_window_wgc",
                         mode: ExactWindowPixelCaptureMode::WindowContent,
                         generation,
                         dpi: after.dpi,
                         bounds: after.bounds,
-                        source_rect: after.bounds,
+                        source_rect: geometry.source_rect,
                         native_evidence: after,
                     });
                 }
-                Err(error) => error.to_string(),
+                Err(error) => {
+                    if let Some(reason) = error.geometry_failure() {
+                        return Err(ComputerUseError::new(ComputerUseErrorCode::StaleObservation, reason.to_string()));
+                    }
+                    error.to_string()
+                },
             },
-            Err(error) => error.to_string(),
+            Err(error) => {
+                if let Some(reason) = error.geometry_failure() {
+                    return Err(ComputerUseError::new(ComputerUseErrorCode::StaleObservation, reason.to_string()));
+                }
+                error.to_string()
+            },
         };
         let visible = capture_verified_visible_bgra(process_id, window_id, before)
             .map_err(|mut error| {
@@ -2081,6 +2108,7 @@ async fn capture_exact_window_with_diagnostics(
         Ok(ExactWindowCapture {
             data: encoded.data,
             diagnostics: encoded.diagnostics,
+            wgc_geometry: None,
             backend: "dcc-cua-visible-exact-window",
             fallback: "verified_same_process_visible_window_crop",
             mode: ExactWindowPixelCaptureMode::VisibleDesktopCrop,

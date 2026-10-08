@@ -57,6 +57,101 @@ pub(super) fn exact_native_observation_instance(
     })
 }
 
+#[cfg(windows)]
+pub(super) fn exact_native_observation_geometry(
+    observation: &ComputerUseObservation,
+) -> ComputerUseResult<dcc_cua_platform_windows::NativeWindowGeometry> {
+    let stale = || {
+        ComputerUseError::new(
+            ComputerUseErrorCode::StaleObservation,
+            "the latest native observation requires complete unscaled physical capture geometry",
+        )
+    };
+    let provenance = &observation.capture_provenance;
+    let native = dcc_cua_platform_windows::NativeWindowGeometry {
+        win32_bounds: serde_json::from_value(provenance["native_window_bounds"].clone())
+            .map_err(|_| stale())?,
+        dwm_bounds: Some(
+            serde_json::from_value(provenance["native_visible_bounds"].clone())
+                .map_err(|_| stale())?,
+        ),
+        dpi: provenance["window_dpi"]
+            .as_u64()
+            .and_then(|value| u32::try_from(value).ok())
+            .ok_or_else(stale)?,
+    };
+    dcc_cua_platform_windows::validate_native_window_geometry(native, native)
+        .map_err(|_| stale())?;
+    if [observation.source_rect[2], observation.source_rect[3]]
+        != [
+            i32::try_from(observation.width).map_err(|_| stale())?,
+            i32::try_from(observation.height).map_err(|_| stale())?,
+        ]
+    {
+        return Err(stale());
+    }
+    match observation.capture_backend.as_str() {
+        "dcc-cua-wgc-exact-window" => {
+            let proof: dcc_cua_platform_windows::ResolvedWgcGeometry =
+                serde_json::from_value(provenance["wgc_geometry"].clone()).map_err(|_| stale())?;
+            let resolved = dcc_cua_platform_windows::resolve_exact_wgc_geometry(
+                native,
+                native,
+                proof.frame,
+                proof.bgra_byte_len,
+            )
+            .map_err(|_| stale())?;
+            if resolved != proof || resolved.source_rect != observation.source_rect {
+                return Err(stale());
+            }
+        }
+        "dcc-cua-visible-exact-window" => {
+            if Some(observation.source_rect) != native.dwm_bounds
+                || !provenance["wgc_geometry"].is_null()
+            {
+                return Err(stale());
+            }
+        }
+        _ => return Err(stale()),
+    }
+    Ok(native)
+}
+
+#[cfg(windows)]
+fn validate_observed_minimize_geometry(
+    geometry: dcc_cua_platform_windows::NativeWindowGeometry,
+    instance: dcc_cua_platform_windows::ExactWindowPixelInstanceEvidence,
+    current: &dcc_cua_platform_windows::ExactWindowPixelEvidence,
+) -> ComputerUseResult<()> {
+    let actual = dcc_cua_platform_windows::NativeWindowGeometry {
+        win32_bounds: current.bounds,
+        dwm_bounds: Some(current.visible_bounds),
+        dpi: current.dpi,
+    };
+    if current.instance != instance
+        || !current.visible
+        || current.minimized
+        || dcc_cua_platform_windows::validate_native_window_geometry(geometry, actual).is_err()
+    {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::StaleObservation,
+            "exact captured Win32/DWM geometry or native instance changed before minimize",
+        )
+        .with_details(ComputerUseErrorDetails {
+            phase: Some(ComputerUseErrorPhase::PreDispatch),
+            action_attempted: Some(false),
+            input_sent: Some(ComputerUseInputState::NotSent),
+            completion: Some(ComputerUseCompletionState::Known),
+            effect_unknown: Some(false),
+            automatic_input: Some(false),
+            blind_retry: Some(false),
+            fresh_observation_required: Some(true),
+            ..Default::default()
+        }));
+    }
+    Ok(())
+}
+
 impl ComputerUseSession {
     /// One exact-instance minimize request authorized by the latest actual
     /// native capture. A state read or semantic-only token cannot authorize it.
@@ -93,8 +188,11 @@ impl ComputerUseSession {
                 &self.scope,
                 &self.session_id,
             )?;
+            let geometry = exact_native_observation_geometry(&observation)?;
             let target = self.revalidate_observed_target().await?;
-            if target.pid != observation.process_id || target.window_id != observation.window_handle
+            if target.pid != observation.process_id
+                || target.window_id != observation.window_handle
+                || target.bounds != geometry.win32_bounds
             {
                 self.invalidate_action_observations();
                 return Err(ComputerUseError::new(
@@ -102,7 +200,7 @@ impl ComputerUseSession {
                     "exact minimize target changed after observation",
                 ));
             }
-            let mut interrupted = None;
+            let mut pre_dispatch_error = None;
             let outcome = dcc_cua_platform_windows::minimize_exact_window(
                 dcc_cua_platform_windows::UiaTarget {
                     process_id: target.pid,
@@ -115,18 +213,46 @@ impl ComputerUseSession {
                         dcc_cua_interrupt::interrupt_generation(),
                         self.control_banner_interrupted(),
                     ) {
-                        interrupted = Some(error);
+                        pre_dispatch_error = Some(error);
                         return Err(dcc_cua_platform_windows::UiaError::PermissionDenied(
                             "exact window mutation was interrupted before native dispatch".into(),
                         ));
                     }
-                    windows_platform_window_activation_gate("exact_minimize_pre_dispatch")
+                    windows_platform_window_activation_gate("exact_minimize_pre_dispatch")?;
+                    let current = dcc_cua_platform_windows::exact_window_pixel_evidence(
+                        target.pid,
+                        target.window_id,
+                    )
+                    .map_err(|_| {
+                        dcc_cua_platform_windows::UiaError::InvalidTarget(
+                            "exact captured physical geometry is unavailable before minimize"
+                                .into(),
+                        )
+                    })?;
+                    if let Err(error) =
+                        validate_observed_minimize_geometry(geometry, instance, &current)
+                    {
+                        pre_dispatch_error = Some(error);
+                        return Err(dcc_cua_platform_windows::UiaError::InvalidTarget(
+                            "exact captured physical geometry changed before minimize".into(),
+                        ));
+                    }
+                    if let Err(error) = super::windows_pixel_input::validate_pixel_interrupt(
+                        started_generation,
+                        dcc_cua_interrupt::interrupt_generation(),
+                        self.control_banner_interrupted(),
+                    ) {
+                        pre_dispatch_error = Some(error);
+                        return Err(dcc_cua_platform_windows::UiaError::PermissionDenied(
+                            "exact window mutation was interrupted after native geometry validation".into()));
+                    }
+                    Ok(())
                 },
             );
             // Dispatch may have occurred even when readback fails. Never reuse the token.
             self.invalidate_action_observations();
             let state = outcome.map_err(|failure| {
-                if let Some(error) = interrupted {
+                if let Some(error) = pre_dispatch_error {
                     return error;
                 }
                 let (attempted, source) = match failure {
@@ -375,5 +501,77 @@ mod minimize_tests {
             exact_native_observation_instance(&observed, requested, &scope, "test").is_ok(),
             valid
         );
+    }
+
+    #[test]
+    fn native_observation_geometry_requires_actual_unscaled_wgc_proof() {
+        use dcc_cua_platform_windows::*;
+        let mut observed = observation();
+        observed.width = 646;
+        observed.height = 495;
+        observed.source_rect = [73, 80, 646, 495];
+        let native = NativeWindowGeometry {
+            win32_bounds: [60, 80, 672, 508],
+            dwm_bounds: Some(observed.source_rect),
+            dpi: 240,
+        };
+        let shape = WgcFrameGeometry {
+            item_size_before: [646, 495],
+            item_size_after: [646, 495],
+            pool_size: [646, 495],
+            content_size: [646, 495],
+            texture_size: [646, 495],
+            row_pitch_bytes: 2688,
+        };
+        let proof = resolve_exact_wgc_geometry(native, native, shape, 646 * 495 * 4).unwrap();
+        observed.capture_provenance["native_window_bounds"] = json!(native.win32_bounds);
+        observed.capture_provenance["native_visible_bounds"] = json!(native.dwm_bounds.unwrap());
+        observed.capture_provenance["wgc_geometry"] = json!(proof);
+        assert_eq!(
+            exact_native_observation_geometry(&observed).unwrap(),
+            native
+        );
+        for change in 0..7 {
+            let mut invalid = observed.clone();
+            match change {
+                0 => invalid.width -= 1,
+                1 => invalid.source_rect[0] -= 1,
+                2 => invalid.capture_provenance["native_visible_bounds"] = Value::Null,
+                3 => invalid.capture_provenance["wgc_geometry"] = Value::Null,
+                4 => {
+                    invalid.capture_provenance["wgc_geometry"]["frame"]["item_size_after"][0] =
+                        json!(647)
+                }
+                5 => invalid.capture_provenance["wgc_geometry"]["bgra_byte_len"] = json!(1),
+                _ => invalid.capture_provenance["wgc_geometry"]["origin"] = json!("win32_window"),
+            }
+            assert!(
+                exact_native_observation_geometry(&invalid).is_err(),
+                "change {change}"
+            );
+        }
+        let instance = ExactWindowPixelInstanceEvidence {
+            process_creation_time_100ns: 7,
+            window_thread_id: 8,
+            window_class_hash: 9,
+            owner_window_handle: 0,
+        };
+        let current = ExactWindowPixelEvidence {
+            process_id: 42,
+            window_handle: 99,
+            bounds: native.win32_bounds,
+            visible_bounds: native.dwm_bounds.unwrap(),
+            dpi: 240,
+            visible: true,
+            minimized: false,
+            unobscured: false,
+            instance,
+        };
+        validate_observed_minimize_geometry(native, instance, &current).unwrap();
+        for index in 0..4 {
+            let mut changed = current;
+            changed.visible_bounds[index] += 1;
+            assert!(validate_observed_minimize_geometry(native, instance, &changed).is_err());
+        }
     }
 }

@@ -13,6 +13,10 @@ enum Backend {
     Wgc,
     Visible,
     WgcFailure,
+    WgcGeometryFailure,
+    WgcReadbackGeometryFailure,
+    WgcActualShapeDrift,
+    WgcDwm,
 }
 struct Native {
     backend: Backend,
@@ -440,5 +444,70 @@ fn diagnostic_opt_in_never_publishes_after_native_instance_drift() {
             );
             assert_eq!(session.publications, 0);
         }
+    }
+}
+
+#[rstest]
+fn actual_wgc_geometry_failures_never_fall_back_or_publish() {
+    for backend in [
+        Backend::WgcGeometryFailure,
+        Backend::WgcReadbackGeometryFailure,
+        Backend::WgcActualShapeDrift,
+    ] {
+        for path in paths() {
+            let a = evidence();
+            OS.set(Native {
+                backend,
+                evidence: [a; 4].into(),
+                trace: vec![],
+            });
+            let (mut session, target) = session();
+            assert_eq!(
+                publish(&mut session, &target, path).err().unwrap().code,
+                ComputerUseErrorCode::StaleObservation
+            );
+            assert_eq!(session.publications, 0);
+            OS.with_borrow(|os| {
+                assert!(!os.trace.contains(&"visible pixels"));
+                assert!(!os.trace.contains(&"encode"));
+                assert!(!os.trace.contains(&"accessibility"));
+            });
+        }
+    }
+}
+
+#[rstest]
+fn actual_wgc_dimensions_publish_only_the_unique_dwm_origin() {
+    for path in paths() {
+        let mut a = evidence();
+        a.visible_bounds = [10, 0, 780, 590];
+        // WGC content may be occluded; this is not the desktop GDI route.
+        a.unobscured = false;
+        OS.set(Native {
+            backend: Backend::WgcDwm,
+            evidence: [a; 4].into(),
+            trace: vec![],
+        });
+        let (mut session, target) = session();
+        let capture = publish(&mut session, &target, path).unwrap();
+        assert_eq!(session.publications, 1);
+        assert_eq!(capture.bounds, [0, 0, 800, 600]);
+        assert_eq!(capture.source_rect, [10, 0, 780, 590]);
+        assert_eq!(
+            capture.wgc_geometry.unwrap().origin,
+            dcc_cua_platform_windows::WgcSourceOrigin::DwmExtendedFrame
+        );
+        OS.with_borrow(|os| {
+            assert!(os.evidence.is_empty());
+            assert_eq!(
+                os.trace
+                    .iter()
+                    .filter(|step| **step == "WGC pixels")
+                    .count(),
+                2
+            );
+            assert_eq!(os.trace.iter().filter(|step| **step == "encode").count(), 2);
+            assert!(!os.trace.contains(&"visible pixels"));
+        });
     }
 }

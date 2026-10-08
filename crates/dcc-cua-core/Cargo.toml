@@ -42,6 +42,7 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_
 platform-macos.workspace = true
 
 [dev-dependencies]
+dcc-cua-platform-windows = { path = "../dcc-cua-platform-windows" }
 async-trait.workspace = true
 rstest.workspace = true
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "test-util", "time"] }

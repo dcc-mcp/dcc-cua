@@ -115,32 +115,8 @@ fn input_fence(
     {
         return Err(stale());
     }
-    let values = provenance["native_window_bounds"]
-        .as_array()
-        .ok_or_else(stale)?;
-    let mut bounds = [0_i32; 4];
-    if values.len() != bounds.len() {
-        return Err(stale());
-    }
-    for (destination, value) in bounds.iter_mut().zip(values) {
-        *destination = value
-            .as_i64()
-            .and_then(|number| i32::try_from(number).ok())
-            .ok_or_else(stale)?;
-    }
-    let dpi = provenance["window_dpi"]
-        .as_u64()
-        .and_then(|number| u32::try_from(number).ok())
-        .filter(|number| *number > 0)
-        .ok_or_else(stale)?;
-    if bounds != target.bounds
-        || bounds[2] <= 0
-        || bounds[3] <= 0
-        || observation.width == 0
-        || observation.height == 0
-        || observation.source_rect[2] <= 0
-        || observation.source_rect[3] <= 0
-    {
+    let geometry = super::window_commands::exact_native_observation_geometry(observation)?;
+    if geometry.win32_bounds != target.bounds {
         return Err(stale());
     }
     Ok(dcc_cua_platform_windows::WindowsPhysicalInputFence {
@@ -149,8 +125,9 @@ fn input_fence(
             window_handle: target.window_id,
         },
         native_instance: instance,
-        native_window_bounds: bounds,
-        window_dpi: dpi,
+        native_window_bounds: geometry.win32_bounds,
+        native_visible_bounds: geometry.dwm_bounds.ok_or_else(stale)?,
+        window_dpi: geometry.dpi,
     })
 }
 
@@ -159,7 +136,18 @@ fn physical_point(
     action: &ComputerUseAction,
     observation: &ComputerUseObservation,
 ) -> ComputerUseResult<(i32, i32)> {
-    let point = |coordinate: Option<f64>, size: u32, origin: i32, extent: i32| {
+    if [observation.source_rect[2], observation.source_rect[3]]
+        != [
+            i32::try_from(observation.width).unwrap_or(-1),
+            i32::try_from(observation.height).unwrap_or(-1),
+        ]
+    {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::StaleObservation,
+            "native pixel input requires one physical pixel per screenshot pixel",
+        ));
+    }
+    let point = |coordinate: Option<f64>, size: u32, origin: i32| {
         let coordinate = coordinate
             .filter(|number| number.is_finite() && *number >= 0.0 && *number < f64::from(size))
             .ok_or_else(|| {
@@ -168,7 +156,7 @@ fn physical_point(
                     "pixel coordinates must remain inside the latest screenshot",
                 )
             })?;
-        let physical = f64::from(origin) + coordinate * f64::from(extent) / f64::from(size);
+        let physical = f64::from(origin) + coordinate;
         if physical < f64::from(i32::MIN) || physical > f64::from(i32::MAX) {
             return Err(ComputerUseError::new(
                 ComputerUseErrorCode::InvalidAction,
@@ -178,18 +166,8 @@ fn physical_point(
         Ok(physical.floor() as i32)
     };
     Ok((
-        point(
-            action.x,
-            observation.width,
-            observation.source_rect[0],
-            observation.source_rect[2],
-        )?,
-        point(
-            action.y,
-            observation.height,
-            observation.source_rect[1],
-            observation.source_rect[3],
-        )?,
+        point(action.x, observation.width, observation.source_rect[0])?,
+        point(action.y, observation.height, observation.source_rect[1])?,
     ))
 }
 
@@ -439,8 +417,8 @@ mod tests {
             window_handle: 99,
             process_id: 42,
             window_title: String::new(),
-            width: 200,
-            height: 100,
+            width: 400,
+            height: 200,
             source_rect: [-300, 80, 400, 200],
             capture_backend: "dcc-cua-visible-exact-window".into(),
             session_id: "owned".into(),
@@ -448,6 +426,7 @@ mod tests {
                 "process_id":42,"window_handle":99,"pixels_captured":true,"whole_desktop_capture":false,
                 "scope":"window","capture_generation":1,"window_dpi":240,
                 "native_window_bounds":[-310,70,420,220],"observation_mode":"pixels_only","accessibility_available":false,
+                "native_visible_bounds":[-300,80,400,200],
                 "native_instance":{"process_creation_time_100ns":7,"window_thread_id":8,
                     "window_class_hash":9,"owner_window_handle":0}
             }),
@@ -465,6 +444,9 @@ mod tests {
     #[case("wrong_pid", false)]
     #[case("wrong_hwnd", false)]
     #[case("zero_source", false)]
+    #[case("scaled_source", false)]
+    #[case("missing_dwm", false)]
+    #[case("wrong_dwm", false)]
     fn native_input_requires_the_actual_physical_capture_fence(
         #[case] variant: &str,
         #[case] accepted: bool,
@@ -494,6 +476,9 @@ mod tests {
             "wrong_pid" => target.pid += 1,
             "wrong_hwnd" => target.window_id += 1,
             "zero_source" => observation.source_rect[2] = 0,
+            "scaled_source" => observation.width /= 2,
+            "missing_dwm" => observation.capture_provenance["native_visible_bounds"] = Value::Null,
+            "wrong_dwm" => observation.capture_provenance["native_visible_bounds"][0] = json!(-299),
             _ => {}
         }
         let scope = ComputerUseTargetScope {
@@ -514,7 +499,7 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn cropped_scaled_pixels_use_the_saved_physical_origin_including_negative_monitors() {
+    fn native_pixels_use_one_to_one_physical_origin_including_negative_monitors() {
         let observation = observed();
         let action = ComputerUseAction {
             action: "click".into(),
@@ -522,14 +507,69 @@ mod tests {
             y: Some(50.0),
             ..Default::default()
         };
-        assert_eq!(physical_point(&action, &observation).unwrap(), (-100, 180));
+        assert_eq!(physical_point(&action, &observation).unwrap(), (-200, 130));
         let outside = ComputerUseAction {
-            x: Some(200.0),
-            ..action
+            x: Some(400.0),
+            ..action.clone()
         };
         assert_eq!(
             physical_point(&outside, &observation).unwrap_err().code,
             ComputerUseErrorCode::InvalidAction
         );
+        let mut scaled = observation;
+        scaled.width /= 2;
+        assert_eq!(
+            physical_point(&action, &scaled).unwrap_err().code,
+            ComputerUseErrorCode::StaleObservation
+        );
+    }
+
+    #[cfg(windows)]
+    #[rstest]
+    #[case("click")]
+    #[case("double_click")]
+    #[case("right_click")]
+    #[case("toggle")]
+    #[case("keypress")]
+    #[case("keyboard_shortcut")]
+    #[case("type")]
+    #[case("type_chars")]
+    fn every_pixel_action_requires_trusted_unscaled_capture_geometry(#[case] name: &str) {
+        let scope = ComputerUseTargetScope {
+            process_id: Some(42),
+            window_handle: Some(99),
+            ..Default::default()
+        };
+        let target = WindowTarget {
+            pid: 42,
+            window_id: 99,
+            title: String::new(),
+            app_name: String::new(),
+            bounds: [-310, 70, 420, 220],
+            is_on_screen: true,
+            is_minimized: false,
+            z_index: None,
+            is_foreground: true,
+        };
+        let action = ComputerUseAction {
+            action: name.into(),
+            observation_id: Some("pixel-1".into()),
+            ..Default::default()
+        };
+        assert!(input_fence(&action, &observed(), &scope, "owned", &target).is_ok());
+        for variant in 0..2 {
+            let mut observation = observed();
+            if variant == 0 {
+                observation.width /= 2;
+            } else {
+                observation.capture_provenance["native_visible_bounds"][0] = json!(-299);
+            }
+            assert_eq!(
+                input_fence(&action, &observation, &scope, "owned", &target)
+                    .unwrap_err()
+                    .code,
+                ComputerUseErrorCode::StaleObservation
+            );
+        }
     }
 }

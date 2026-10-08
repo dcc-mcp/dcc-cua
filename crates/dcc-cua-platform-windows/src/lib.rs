@@ -4,6 +4,7 @@
 //! Windows-only semantic fallback used when an application's UIA provider is
 //! usable but CUA's combined window snapshot path is not.
 
+mod capture_geometry;
 #[cfg(windows)]
 mod capture_identity;
 #[cfg(windows)]
@@ -27,6 +28,10 @@ mod wgc;
 #[cfg(windows)]
 mod windows;
 
+pub use capture_geometry::{
+    NativeWindowGeometry, ResolvedWgcGeometry, WgcFrameGeometry, WgcGeometryError, WgcSourceOrigin,
+    resolve_exact_wgc_geometry, validate_native_window_geometry, validate_wgc_frame_geometry,
+};
 pub use contracts::{
     UiaAction, UiaError, UiaTarget, WindowsForegroundRelation, WindowsPointerButton,
     WindowsRawInputSnapshot, WindowsWindowIdentity,

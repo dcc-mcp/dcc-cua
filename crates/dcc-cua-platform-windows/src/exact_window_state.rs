@@ -14,7 +14,7 @@ use crate::{
     capture_identity::validate_exact_window_owner,
     visible_capture::{
         ExactWindowPixelInstanceEvidence, ThreadDpiAwarenessGuard, exact_window_instance_evidence,
-        physical_root_bounds,
+        physical_root_bounds, physical_window_rect,
     },
 };
 
@@ -23,6 +23,9 @@ pub struct ExactWindowNativeState {
     pub process_id: u32,
     pub window_handle: u64,
     pub bounds: Option<[i32; 4]>,
+    /// Actual DWM extended bounds; absent metadata never substitutes Win32 bounds.
+    /// Pixel mutation fences require this field; semantic state reads may report None.
+    pub visible_bounds: Option<[i32; 4]>,
     pub dpi: u32,
     pub visible: bool,
     pub minimized: bool,
@@ -57,6 +60,9 @@ pub fn exact_window_native_state(
         process_id,
         window_handle,
         bounds: physical_root_bounds(rect),
+        visible_bounds: physical_window_rect(hwnd)
+            .ok()
+            .and_then(physical_root_bounds),
         dpi,
         visible: unsafe { IsWindowVisible(hwnd) }.as_bool(),
         minimized: unsafe { IsIconic(hwnd) }.as_bool(),
@@ -185,6 +191,7 @@ mod tests {
             process_id: 42,
             window_handle: 99,
             bounds: Some([80, 80, 1500, 1400]),
+            visible_bounds: Some([80, 80, 1500, 1400]),
             dpi: 240,
             visible: true,
             minimized: false,
@@ -196,6 +203,46 @@ mod tests {
                 owner_window_handle: 0,
             },
         }
+    }
+
+    #[test]
+    fn minimize_final_gate_refuses_dwm_motion_during_native_state_read() {
+        use crate::{NativeWindowGeometry, validate_native_window_geometry};
+        let expected = NativeWindowGeometry {
+            win32_bounds: [60, 80, 672, 508],
+            dwm_bounds: Some([73, 80, 646, 495]),
+            dpi: 240,
+        };
+        let actual = Cell::new(expected);
+        let dispatched = Cell::new(false);
+        let current = state();
+        let result = run_exact_minimize_sequence(
+            UiaTarget {
+                process_id: 42,
+                window_handle: 99,
+            },
+            current.instance,
+            || {
+                validate_native_window_geometry(expected, actual.get())
+                    .map_err(|_| UiaError::InvalidTarget("captured DWM bounds changed".into()))
+            },
+            || {
+                let mut moved = actual.get();
+                moved.dwm_bounds.as_mut().unwrap()[0] += 1;
+                actual.set(moved);
+                Ok(current)
+            },
+            || {
+                dispatched.set(true);
+                Ok(())
+            },
+            || panic!("no readback without dispatch"),
+        );
+        assert!(matches!(
+            result,
+            Err(ExactWindowMinimizeError::BeforeDispatch(_))
+        ));
+        assert!(!dispatched.get());
     }
 
     #[rstest]

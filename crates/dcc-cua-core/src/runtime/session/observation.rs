@@ -705,6 +705,8 @@ impl ComputerUseSession {
                     generation: captured.generation,
                     mode: captured.mode,
                     instance: captured.native_evidence.instance.into(),
+                    native_visible_bounds: captured.native_evidence.visible_bounds,
+                    wgc_geometry: captured.wgc_geometry,
                 },
                 ExactWindowPixelPublicationFence {
                     geometry: ExactWindowPixelGeometry {
@@ -715,6 +717,8 @@ impl ComputerUseSession {
                     generation: final_capture.generation,
                     mode: final_capture.mode,
                     instance: final_capture.native_evidence.instance.into(),
+                    native_visible_bounds: final_capture.native_evidence.visible_bounds,
+                    wgc_geometry: final_capture.wgc_geometry,
                 },
                 final_capture.native_evidence.unobscured,
             )?;
@@ -727,6 +731,15 @@ impl ComputerUseSession {
             )
         })?;
         let capture_backend = final_capture.backend;
+        #[cfg(windows)]
+        if [final_capture.source_rect[2], final_capture.source_rect[3]]
+            != [width as i32, height as i32]
+        {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::StaleObservation,
+                "the PNG dimensions do not match the actual native physical source rectangle",
+            ));
+        }
         let mut capture_provenance = json!({
             "backend": capture_backend,
             "pixels_captured": true,
@@ -748,6 +761,11 @@ impl ComputerUseSession {
             capture_provenance["native_window_bounds"] =
                 json!(final_capture.native_evidence.bounds);
             capture_provenance["native_instance"] = json!(final_capture.native_evidence.instance);
+            capture_provenance["native_visible_bounds"] =
+                json!(final_capture.native_evidence.visible_bounds);
+            if let Some(geometry) = final_capture.wgc_geometry {
+                capture_provenance["wgc_geometry"] = json!(geometry);
+            }
             if final_capture.mode == ExactWindowPixelCaptureMode::VisibleDesktopCrop {
                 capture_provenance["desktop_crop_bounds"] = json!(final_capture.source_rect);
             }
@@ -870,6 +888,8 @@ impl ComputerUseSession {
                 generation: capture.generation,
                 mode: capture.mode,
                 instance: capture.native_evidence.instance.into(),
+                native_visible_bounds: capture.native_evidence.visible_bounds,
+                wgc_geometry: capture.wgc_geometry,
             },
             ExactWindowPixelPublicationFence {
                 geometry: ExactWindowPixelGeometry {
@@ -880,6 +900,8 @@ impl ComputerUseSession {
                 generation: final_capture.generation,
                 mode: final_capture.mode,
                 instance: final_capture.native_evidence.instance.into(),
+                native_visible_bounds: final_capture.native_evidence.visible_bounds,
+                wgc_geometry: final_capture.wgc_geometry,
             },
             final_capture.native_evidence.unobscured,
         )?;
@@ -899,6 +921,18 @@ impl ComputerUseSession {
         provenance["fallback"] = json!(final_capture.fallback);
         provenance["native_window_bounds"] = json!(final_capture.native_evidence.bounds);
         provenance["native_instance"] = json!(final_capture.native_evidence.instance);
+        if [final_capture.source_rect[2], final_capture.source_rect[3]]
+            != [width as i32, height as i32]
+        {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::StaleObservation,
+                "the PNG dimensions do not match the actual native physical source rectangle",
+            ));
+        }
+        provenance["native_visible_bounds"] = json!(final_capture.native_evidence.visible_bounds);
+        if let Some(geometry) = final_capture.wgc_geometry {
+            provenance["wgc_geometry"] = json!(geometry);
+        }
         if final_capture.mode == ExactWindowPixelCaptureMode::VisibleDesktopCrop {
             provenance["desktop_crop_bounds"] = json!(final_capture.source_rect);
         }
@@ -919,6 +953,8 @@ impl ComputerUseSession {
                     "window_handle": capture.native_evidence.window_handle,
                     "native_instance": capture.native_evidence.instance,
                     "native_window_bounds": capture.native_evidence.bounds,
+                    "native_visible_bounds": capture.native_evidence.visible_bounds,
+                    "wgc_geometry": capture.wgc_geometry,
                     "source_rect": capture.source_rect,
                     "window_dpi": capture.dpi,
                     "capture_backend": capture.backend,
@@ -930,6 +966,8 @@ impl ComputerUseSession {
                     "window_handle": final_capture.native_evidence.window_handle,
                     "native_instance": final_capture.native_evidence.instance,
                     "native_window_bounds": final_capture.native_evidence.bounds,
+                    "native_visible_bounds": final_capture.native_evidence.visible_bounds,
+                    "wgc_geometry": final_capture.wgc_geometry,
                     "source_rect": final_capture.source_rect,
                     "window_dpi": final_capture.dpi,
                     "capture_backend": final_capture.backend,

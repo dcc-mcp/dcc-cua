@@ -60,6 +60,7 @@ fn exact_source_first_capture_instance_boundary() {
         "impl ExactWindowPixelCaptureMode",
         "pub(super) fn validate_exact_window_pixel_target_state",
         "fn validate_final_exact_window_pixel_instance",
+        "fn validate_exact_window_pixel_source",
         "pub(super) fn validate_final_exact_window_pixel_publication",
         "pub(super) fn validate_native_exact_window_pixel_evidence",
     ] {
@@ -106,6 +107,40 @@ fn exact_source_first_capture_instance_boundary() {
         native_types.push_str(item(native, marker));
     }
     native_types.push_str(item(native, "pub struct VisibleWindowCaptureError"));
+    // Compile the actual shared geometry algorithm too. Only serialization and
+    // derive macros are omitted from this standalone, dependency-free harness.
+    let geometry = include_str!("../../dcc-cua-platform-windows/src/capture_geometry.rs");
+    native_types.push_str(
+        geometry
+            .lines()
+            .find(|line| line.starts_with("pub(crate) const MAX_WGC_FRAME_PIXELS"))
+            .unwrap(),
+    );
+    for marker in [
+        "pub struct NativeWindowGeometry",
+        "pub struct WgcFrameGeometry",
+        "pub enum WgcSourceOrigin",
+        "pub struct ResolvedWgcGeometry",
+        "pub enum WgcGeometryError",
+    ] {
+        native_types.push_str("\n#[derive(Clone, Copy, Debug, PartialEq, Eq)]\n");
+        native_types.push_str(
+            &item(geometry, marker)
+                .lines()
+                .filter(|line| !line.trim_start().starts_with("#[error("))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+    }
+    for marker in [
+        "pub fn validate_wgc_frame_geometry",
+        "fn valid_rectangle",
+        "pub fn validate_native_window_geometry",
+        "pub fn resolve_exact_wgc_geometry",
+    ] {
+        native_types.push('\n');
+        native_types.push_str(item(geometry, marker));
+    }
     let mut methods = item(
         observation,
         "pub(crate) fn finish_observation_sensitive_attempt",
