@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use dcc_cua_core::{ComputerUseTargetAvailability, ComputerUseTargetStatus};
 use rstest::rstest;
 
 use super::*;
@@ -258,6 +259,220 @@ async fn observation_only_authorization_retains_exact_expiry_revocation_and_vali
             ..
         }
     ));
+}
+
+#[test]
+fn native_frame_action_scope_is_closed_and_grants_no_raw_input() {
+    let value = json!({"action":"set_window_frame","input_kind":"window_state","secret_input":false,"authorization_category":"window_state"});
+    let scope: TrustedTaskActionScope = serde_json::from_value(value.clone()).unwrap();
+    assert!(scope.validate());
+    assert!(scope.is_window_frame());
+    assert!(!scope.is_window_minimize());
+    assert!(!scope.is_pixels_input());
+    for (field, replacement) in [
+        ("action", json!("activate")),
+        ("input_kind", json!("raw_input")),
+        ("secret_input", json!(true)),
+        ("authorization_category", json!("raw_input")),
+        ("browser_origin", json!("https://example.com")),
+    ] {
+        let mut changed = value.clone();
+        changed[field] = replacement;
+        let invalid: TrustedTaskActionScope = serde_json::from_value(changed).unwrap();
+        assert!(!invalid.is_window_frame());
+        assert!(!invalid.validate());
+    }
+}
+
+#[test]
+fn native_frame_host_pre_dispatch_refusal_preserves_known_completion() {
+    let result = crate::request_handler::native_frame_pre_dispatch_failure(HostError::ComputerUse(
+        ComputerUseError::new(
+            ComputerUseErrorCode::UserInterrupted,
+            "stopped before queue dispatch",
+        ),
+    ));
+    let HostError::ComputerUse(error) = result else {
+        panic!("typed failure required")
+    };
+    let details = error.details.unwrap();
+    assert_eq!(details.action_attempted, Some(false));
+    assert_eq!(
+        details.completion,
+        Some(dcc_cua_core::ComputerUseCompletionState::Known)
+    );
+    assert_eq!(details.effect_unknown, Some(false));
+    assert_eq!(details.blind_retry, Some(false));
+}
+
+async fn native_frame_test_lease() -> (
+    TrustedTaskAuthorizationIssuer,
+    Arc<dyn TrustedTaskAuthorizationHost>,
+    TrustedTaskAuthorizationLease,
+) {
+    let (issuer, authority) = trusted_task_authorization_broker();
+    let mut registration = browser_credential_registration(unix_time_millis() + 60_000);
+    registration.application_label = "Test DCC".into();
+    registration.target = TrustedTaskAuthorizationTarget::ExactWindow {
+        process_id: 42,
+        window_handle: 77,
+    };
+    registration.allowed_host_methods = vec!["get_window_state".into(), "set_window_frame".into()];
+    registration.allowed_actions=vec![serde_json::from_value(json!({"action":"set_window_frame","input_kind":"window_state","secret_input":false,"authorization_category":"window_state"})).unwrap()];
+    registration.allowed_browser_origins.clear();
+    let receipt = issuer.register(registration).unwrap();
+    let lease = issue_task_authorization(
+        Some(authority.as_ref()),
+        TaskAuthorizationBinding::window(
+            "connection-test",
+            &receipt.authorization_id,
+            "session-1",
+            "grant-1",
+            "Test DCC",
+            &receipt.window_capability,
+            ConfirmationWindowIdentity {
+                process_id: 42,
+                window_handle: 77,
+            },
+        ),
+    )
+    .await
+    .unwrap();
+    (issuer, authority, lease)
+}
+
+#[tokio::test]
+async fn native_frame_broker_lease_rejects_foreign_expired_and_revoked_bindings() {
+    let (issuer, authority, lease) = native_frame_test_lease().await;
+    let permitted = |candidate: &TrustedTaskAuthorizationLease| {
+        crate::session_state::native_frame_lease_matches_binding(
+            Some(candidate),
+            "session-1",
+            "grant-1",
+            &lease.window_capability,
+            42,
+            77,
+        )
+    };
+    assert!(permitted(&lease));
+    for field in 0..8 {
+        let mut changed = lease.clone();
+        match field {
+            0 => changed.session_id.push('x'),
+            1 => changed.task_grant_id.push('x'),
+            2 => changed.window_capability.push('x'),
+            3 => changed.target_process_id += 1,
+            4 => changed.target_window_handle += 1,
+            5 => changed
+                .allowed_host_methods
+                .retain(|m| m != "get_window_state"),
+            6 => changed
+                .allowed_host_methods
+                .retain(|m| m != "set_window_frame"),
+            _ => changed.allowed_actions.clear(),
+        }
+        assert!(!permitted(&changed), "field {field}");
+    }
+    crate::task_authorization::validate_active_task_authorization(
+        Some(authority.as_ref()),
+        Some(&lease),
+    )
+    .await
+    .unwrap();
+    let mut expired = lease.clone();
+    expired.expires_at_unix_ms = unix_time_millis().saturating_sub(1);
+    assert!(
+        crate::task_authorization::validate_active_task_authorization(
+            Some(authority.as_ref()),
+            Some(&expired)
+        )
+        .await
+        .is_err()
+    );
+    issuer.revoke(&lease.authorization_id).unwrap();
+    assert!(
+        crate::task_authorization::validate_active_task_authorization(
+            Some(authority.as_ref()),
+            Some(&lease)
+        )
+        .await
+        .is_err()
+    );
+}
+
+#[tokio::test]
+async fn native_frame_host_refuses_missing_metadata_without_driver_dispatch() {
+    let (_issuer, authority, lease) = native_frame_test_lease().await;
+    let channel = ObservationOnlyTestChannel::default();
+    let driver = ComputerUseDriver::from_test_remote_channel(Arc::new(channel.clone())).unwrap();
+    let mut host = cached_host_session(&driver);
+    host.observation_mode = TaskObservationMode::PixelsOnly;
+    host.capability = lease.window_capability.clone();
+    host.task_authorization = Some(lease.clone());
+    host.task_authorization_host = Some(authority);
+    host.require_window_frame_grant("session-1").unwrap();
+    assert!(host.require_minimize_grant("session-1").is_err());
+    for action in TrustedTaskActionScope::PIXELS_INPUT_ACTIONS {
+        let action = serde_json::from_value(
+            json!({"action":action,"input_kind":"raw_input","intent":"ordinary_edit"}),
+        )
+        .unwrap();
+        assert!(
+            host.require_pixels_input_grant("session-1", &action)
+                .is_err()
+        );
+    }
+    let mut sessions = ConnectionSessions::default();
+    sessions.connection_id = "connection-test".into();
+    sessions.windows.insert("session-1".into(), host);
+    let request=serde_json::from_value(json!({"method":"set_window_frame","params":{
+        "session_id":"session-1","task_grant_id":"grant-1","window_capability":lease.window_capability,
+        "frame":{"x":50,"y":800,"width":926,"height":680}}})).unwrap();
+    assert!(
+        handle_request(
+            &driver,
+            &mut sessions,
+            &mut Some(SnapshotTransport::BinaryFrame),
+            &mut None,
+            &CancellationRegistry::default(),
+            request
+        )
+        .await
+        .is_err()
+    );
+    assert!(
+        sessions.windows["session-1"]
+            .latest_observation_id
+            .is_none()
+    );
+    assert_eq!(
+        channel.exchanges.load(std::sync::atomic::Ordering::Relaxed),
+        0
+    );
+}
+
+#[test]
+fn native_frame_available_transition_keeps_old_pixels_invalid_without_reconstructing_metadata() {
+    let channel = ObservationOnlyTestChannel::default();
+    let driver = ComputerUseDriver::from_test_remote_channel(Arc::new(channel.clone())).unwrap();
+    let mut host = cached_host_session(&driver);
+    host.observe_target_availability(ComputerUseTargetAvailability {
+        status: ComputerUseTargetStatus::Unavailable,
+        code: "target_unavailable".into(),
+        visible: false,
+        minimized: false,
+        foreground: false,
+    });
+    host.latest_observation_id = Some("old-pixel".into());
+    assert!(host.observe_target_state(
+        &json!({"exists":true,"visible":true,"minimized":false,"foreground":false,
+        "process_id":42,"window_handle":77,"window_state_id":"untrusted-state-id"})
+    ));
+    assert!(host.latest_observation_id.is_none());
+    assert_eq!(
+        channel.exchanges.load(std::sync::atomic::Ordering::Relaxed),
+        0
+    );
 }
 
 struct TaskAuthorizationHost {

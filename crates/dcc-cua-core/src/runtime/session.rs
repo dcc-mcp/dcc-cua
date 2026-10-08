@@ -83,6 +83,8 @@ impl ComputerUseSession {
             control_banner: None,
             target: None,
             observation: None,
+            #[cfg(windows)]
+            native_frame_metadata: None,
             action_evidence_epoch: ActionEvidenceEpoch::default(),
             live_observation: None,
             post_action_live_sequence_fence: None,
@@ -1024,6 +1026,10 @@ impl ComputerUseSession {
     /// Invalidate action-scoped evidence without stopping live observation,
     /// showcase, or recording owners.
     pub fn invalidate_action_observations(&mut self) {
+        #[cfg(windows)]
+        {
+            self.native_frame_metadata = None;
+        }
         self.action_evidence_epoch = self.action_evidence_epoch.advanced();
         if let Some(fence) = self
             .live_observation
@@ -1616,6 +1622,50 @@ impl ComputerUseSession {
 
     /// Revalidate and return the current exact-window state.
     pub async fn window_state(&mut self) -> ComputerUseResult<Value> {
+        self.window_state_with_frame_metadata(false).await
+    }
+
+    /// Explicit metadata-only observation. Internal mutation readbacks use
+    /// window_state instead and never mint a subsequent movement authority.
+    pub async fn native_window_state_for_frame(&mut self) -> ComputerUseResult<Value> {
+        #[cfg(not(windows))]
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::BackendUnavailable,
+            "native frame metadata is available only on Windows",
+        ));
+        #[cfg(windows)]
+        {
+            self.native_frame_metadata = None;
+            #[cfg(feature = "test-support")]
+            if self.synthetic_test_session {
+                return Err(ComputerUseError::new(
+                    ComputerUseErrorCode::BackendUnavailable,
+                    "synthetic test sessions cannot read native frame metadata",
+                ));
+            }
+            if self.pixel_observation_route != Some(PixelObservationRoute::ExplicitPixelsOnly)
+                || self.scope.process_id.is_none_or(|pid| pid == 0)
+                || self.scope.window_handle.is_none_or(|hwnd| hwnd == 0)
+            {
+                return Err(ComputerUseError::new(
+                    ComputerUseErrorCode::InvalidAction,
+                    "native frame metadata requires explicit pixels_only and an exact PID/HWND",
+                ));
+            }
+            self.window_state_with_frame_metadata(true).await
+        }
+    }
+
+    async fn window_state_with_frame_metadata(
+        &mut self,
+        mint_metadata: bool,
+    ) -> ComputerUseResult<Value> {
+        #[cfg(not(windows))]
+        let _ = mint_metadata;
+        #[cfg(windows)]
+        {
+            self.native_frame_metadata = None;
+        }
         self.ensure_active()?;
         #[cfg(all(windows, feature = "test-support"))]
         let use_native_state = !self.synthetic_test_session;
@@ -1634,12 +1684,22 @@ impl ComputerUseSession {
             if state.minimized || !state.visible {
                 self.invalidate_action_observations();
             }
-            return Ok(json!({
+            let metadata_id = if mint_metadata {
+                self.remember_native_frame_metadata(state)
+            } else {
+                None
+            };
+            let mut result = json!({
                 "process_id":state.process_id,"window_handle":state.window_handle,"exists":true,
                 "visible":state.visible && !state.minimized,"minimized":state.minimized,
                 "foreground":state.foreground,"bounds":state.bounds,"dpi":state.dpi,
+                "visible_bounds":state.visible_bounds,
                 "native_instance":state.instance,"backend":"windows-exact-native-state",
-            }));
+            });
+            if let Some(id) = metadata_id {
+                result["window_state_id"] = json!(id);
+            }
+            return Ok(result);
         }
         let target = self.revalidate_observed_target().await?;
         if target.is_minimized || !target.is_on_screen {

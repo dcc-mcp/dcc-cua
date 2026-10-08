@@ -89,6 +89,15 @@ impl TrustedTaskActionScope {
             && self.browser_origin.is_none()
     }
 
+    /// Closed authorization for one metadata-bound native frame mutation.
+    pub fn is_window_frame(&self) -> bool {
+        self.action == "set_window_frame"
+            && self.input_kind == "window_state"
+            && !self.secret_input
+            && self.authorization_category == "window_state"
+            && self.browser_origin.is_none()
+    }
+
     /// Final window-input action names accepted by trusted task authorization.
     ///
     /// These are action identities, not Host method names such as `browser_click`.
@@ -126,7 +135,7 @@ impl TrustedTaskActionScope {
 
     pub(crate) fn validate(&self) -> bool {
         match self.input_kind.as_str() {
-            "window_state" => self.is_window_minimize(),
+            "window_state" => self.is_window_minimize() || self.is_window_frame(),
             "browser" => {
                 self.action == "browser_type"
                     && self.secret_input

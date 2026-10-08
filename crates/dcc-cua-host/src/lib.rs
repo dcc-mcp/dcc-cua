@@ -441,6 +441,8 @@ enum Request {
         session_id: String,
         task_grant_id: String,
         window_capability: String,
+        #[serde(default)]
+        window_state_id: Option<String>,
         frame: ComputerUseWindowFrameRequest,
     },
     InvokeMenu {

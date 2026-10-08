@@ -99,10 +99,9 @@ fn validate_grant_against_task_authorization(
             .iter()
             .any(crate::TrustedTaskActionScope::is_pixels_input);
         if grant.allow_raw_input != trusted_raw_input
-            || lease
-                .allowed_actions
-                .iter()
-                .any(|scope| !scope.is_window_minimize() && !scope.is_pixels_input())
+            || lease.allowed_actions.iter().any(|scope| {
+                !scope.is_window_minimize() && !scope.is_window_frame() && !scope.is_pixels_input()
+            })
             || (lease
                 .allowed_host_methods
                 .iter()
@@ -111,6 +110,23 @@ fn validate_grant_against_task_authorization(
         {
             return Err(browser_scope_denied(
                 "pixels_only grant must exactly derive supported raw input from its trusted action scopes",
+            ));
+        }
+        if lease
+            .allowed_host_methods
+            .iter()
+            .any(|method| method == "set_window_frame")
+            && (!lease
+                .allowed_actions
+                .iter()
+                .any(crate::TrustedTaskActionScope::is_window_frame)
+                || !lease
+                    .allowed_host_methods
+                    .iter()
+                    .any(|method| method == "get_window_state"))
+        {
+            return Err(browser_scope_denied(
+                "set_window_frame requires its closed action scope and explicit native state read method",
             ));
         }
         if grant.allow_recording {

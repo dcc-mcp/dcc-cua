@@ -105,6 +105,35 @@ pub(super) fn task_authorization_response(
     })
 }
 
+pub(super) fn native_frame_lease_matches_binding(
+    lease: Option<&crate::TrustedTaskAuthorizationLease>,
+    session_id: &str,
+    task_grant_id: &str,
+    capability: &str,
+    process_id: u32,
+    window_handle: u64,
+) -> bool {
+    lease.is_some_and(|lease| {
+        lease.session_id == session_id
+            && lease.task_grant_id == task_grant_id
+            && lease.window_capability == capability
+            && lease.target_process_id == process_id
+            && lease.target_window_handle == window_handle
+            && ["get_window_state", "set_window_frame"]
+                .iter()
+                .all(|required| {
+                    lease
+                        .allowed_host_methods
+                        .iter()
+                        .any(|method| method == required)
+                })
+            && lease
+                .allowed_actions
+                .iter()
+                .any(crate::TrustedTaskActionScope::is_window_frame)
+    })
+}
+
 impl HostSession {
     fn bound_task_authorization(
         &self,
@@ -137,6 +166,26 @@ impl HostSession {
             return Err(crate::HostError::coded_protocol(
                 crate::HostProtocolErrorCode::TaskAuthorizationDenied,
                 "minimize_window requires the trusted window_state/minimize_window action scope",
+            ));
+        }
+        Ok(())
+    }
+
+    pub(super) fn require_window_frame_grant(
+        &self,
+        session_id: &str,
+    ) -> Result<(), crate::HostError> {
+        if !native_frame_lease_matches_binding(
+            self.task_authorization.as_ref(),
+            session_id,
+            &self.task_grant_id,
+            &self.capability,
+            self.target_process_id,
+            self.target_window_handle,
+        ) {
+            return Err(crate::HostError::coded_protocol(
+                crate::HostProtocolErrorCode::TaskAuthorizationDenied,
+                "set_window_frame requires its exact trusted window_state action scope and native state read method",
             ));
         }
         Ok(())
@@ -427,6 +476,19 @@ impl HostSession {
     }
 
     pub(super) fn observe_target_state(&mut self, state: &Value) -> bool {
+        #[cfg(windows)]
+        if let Some(state_id) = state.get("window_state_id").and_then(Value::as_str) {
+            let transitioned = crate::session_events::refresh_target_availability(
+                &mut self.input_events,
+                ComputerUseTargetAvailability::from_window_state(state),
+            );
+            if transitioned {
+                self.session
+                    .invalidate_action_observations_preserving_native_state(state_id);
+                self.synchronize_action_evidence_epoch();
+            }
+            return transitioned;
+        }
         self.observe_target_availability(ComputerUseTargetAvailability::from_window_state(state))
     }
 

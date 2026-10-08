@@ -1389,6 +1389,8 @@ pub struct ComputerUseSession {
     control_banner: Option<ControlBanner>,
     target: Option<WindowTarget>,
     pub(crate) observation: Option<ComputerUseObservation>,
+    #[cfg(windows)]
+    native_frame_metadata: Option<window_commands::NativeWindowFrameMetadata>,
     action_evidence_epoch: ActionEvidenceEpoch,
     live_observation: Option<LiveObservation>,
     post_action_live_sequence_fence: Option<LiveObservationFence>,
@@ -1451,6 +1453,10 @@ impl ComputerUseSession {
         request: &ComputerUseSessionStartRequest,
         activation: Option<Value>,
     ) -> ComputerUseResult<Value> {
+        #[cfg(windows)]
+        {
+            self.native_frame_metadata = None;
+        }
         self.app_name = resolved_application_name(&self.app_name, &target);
         self.marker.label = localized_control_label(&self.agent_name, &self.app_name);
         let control_banner = match ControlBanner::start_with_motion(

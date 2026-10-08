@@ -19,6 +19,24 @@ pub(super) fn validate_snapshot_capture_diagnostics(
     Ok(())
 }
 
+pub(super) fn native_frame_pre_dispatch_failure(error: HostError) -> HostError {
+    let HostError::ComputerUse(mut error) = error else {
+        return error;
+    };
+    let details = error.details.get_or_insert_default();
+    if details.action_attempted.is_none() {
+        details.phase = Some(dcc_cua_core::ComputerUseErrorPhase::PreDispatch);
+        details.action_attempted = Some(false);
+        details.input_sent = Some(dcc_cua_core::ComputerUseInputState::NotSent);
+        details.completion = Some(dcc_cua_core::ComputerUseCompletionState::Known);
+        details.effect_unknown = Some(false);
+        details.automatic_input = Some(false);
+        details.blind_retry = Some(false);
+        details.fresh_observation_required = Some(true);
+    }
+    HostError::ComputerUse(error)
+}
+
 pub(super) async fn handle_request_with_security_services(
     driver: &ComputerUseDriver,
     security_services: &HostSecurityServices,
@@ -922,7 +940,11 @@ async fn handle_request_inner(
             let host =
                 authorized_session(sessions, &session_id, &task_grant_id, &window_capability)
                     .await?;
-            let state = host.session.window_state().await;
+            let state = if host.observation_mode == crate::TaskObservationMode::PixelsOnly {
+                host.session.native_window_state_for_frame().await
+            } else {
+                host.session.window_state().await
+            };
             let state = host.finish_observation_sensitive_attempt(state)?;
             Ok((
                 observed_window_state_response(host, &session_id, state),
@@ -1024,12 +1046,59 @@ async fn handle_request_inner(
             session_id,
             task_grant_id,
             window_capability,
+            window_state_id,
             frame,
         } => {
-            frame.validate()?;
+            let mutation_generation = interrupt_generation();
             let host =
                 authorized_session(sessions, &session_id, &task_grant_id, &window_capability)
                     .await?;
+            if host.observation_mode == crate::TaskObservationMode::PixelsOnly {
+                // This branch consumes its trusted metadata even if a queued
+                // request is refused. It never falls back to the legacy route.
+                let prior_epoch = host.session.action_evidence_epoch();
+                let result = async {
+                    host.require_window_frame_grant(&session_id)?;
+                    let state_id = window_state_id.as_deref().filter(|id| !id.is_empty() && id.len() <= 128)
+                        .ok_or_else(|| HostError::ComputerUse(ComputerUseError::new(
+                            ComputerUseErrorCode::StaleObservation,
+                            "set_window_frame requires a fresh native window_state_id",
+                        )))?;
+                    let _input_turn = RAW_INPUT_QUEUE.lock().await;
+                    revalidate_queued_window_mutation(host).await?;
+                    ensure_session_not_interrupted(host).await?;
+                    if interrupt_generation() != mutation_generation {
+                        return Err(HostError::ComputerUse(ComputerUseError::new(
+                            ComputerUseErrorCode::UserInterrupted,
+                            "frame mutation was interrupted while awaiting its trusted queue or lease",
+                        )));
+                    }
+                    host.require_window_frame_grant(&session_id)?;
+                    let result = host.session.set_window_frame_from_native_state(state_id, &frame).await;
+                    host.finish_observation_sensitive_attempt(result).map_err(HostError::from)
+                }.await.map_err(native_frame_pre_dispatch_failure);
+                if host.session.action_evidence_epoch() == prior_epoch {
+                    host.session.invalidate_action_observations();
+                }
+                host.invalidate_observations();
+                let result = result?;
+                let state = result["state"].clone();
+                host.observe_target_state(&state);
+                return Ok((
+                    json!({
+                        "type":"window_frame_set", "session_id":session_id,
+                        "result":result, "state":state,
+                    }),
+                    None,
+                ));
+            }
+            if window_state_id.is_some() {
+                return Err(HostError::ComputerUse(ComputerUseError::new(
+                    ComputerUseErrorCode::InvalidAction,
+                    "native window_state_id is reserved for explicit pixels_only frame mutations",
+                )));
+            }
+            frame.validate()?;
             let _input_turn = RAW_INPUT_QUEUE.lock().await;
             let result = host.session.set_window_frame(&frame).await;
             let result = host.finish_observation_sensitive_attempt(result);

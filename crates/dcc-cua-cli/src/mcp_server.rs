@@ -372,13 +372,14 @@ impl TaskAuthorizationServer {
                 .allowed_methods
                 .iter()
                 .any(|method| !input.observation_mode.permits_method(method))
-                || input
-                    .allowed_actions
-                    .iter()
-                    .any(|action| !action.is_window_minimize() && !action.is_pixels_input())
+                || input.allowed_actions.iter().any(|action| {
+                    !action.is_window_minimize()
+                        && !action.is_window_frame()
+                        && !action.is_pixels_input()
+                })
             {
                 return Err(
-                    "pixels_only permits only native minimize or covered raw_input scopes, without semantic/browser methods or secrets"
+                    "pixels_only permits only closed native window_state or covered raw_input scopes, without semantic/browser methods or secrets"
                         .into(),
                 );
             }
@@ -393,6 +394,22 @@ impl TaskAuthorizationServer {
             {
                 return Err("pixels_only execute_action requires an actual supported raw_input action scope".into());
             }
+        }
+        if input
+            .allowed_methods
+            .iter()
+            .any(|method| method == "set_window_frame")
+            && (input.observation_mode != TaskObservationMode::PixelsOnly
+                || !input
+                    .allowed_actions
+                    .iter()
+                    .any(TrustedTaskActionScope::is_window_frame)
+                || !input
+                    .allowed_methods
+                    .iter()
+                    .any(|method| method == "get_window_state"))
+        {
+            return Err("set_window_frame requires explicit pixels_only, get_window_state, and its closed window_state action scope".into());
         }
         if input
             .allowed_methods
@@ -706,13 +723,14 @@ impl TaskAuthorizationServer {
             .session
             .as_mut()
             .expect("task session was initialized")
-            .request(method, params)
+            .request(method.as_str(), params)
             .await;
         let response = match response {
             Ok(response) => response,
             Err(error @ HostClientError::Remote { .. }) => {
                 return Ok(task_remote_error(
                     &error,
+                    &method,
                     &proposal_id,
                     proposal
                         .session
@@ -881,6 +899,7 @@ fn method_allowed(surface: TaskSurface, method: &str) -> bool {
             | "recording_stop"
     );
     common
+        || (surface == TaskSurface::Window && method == "set_window_frame")
         || matches!(
             (surface, method),
             (
@@ -899,6 +918,9 @@ fn method_allowed(surface: TaskSurface, method: &str) -> bool {
 }
 
 fn validate_task_method_params(method: &str, params: &Value) -> Result<(), String> {
+    if method == "set_window_frame" {
+        validate_native_frame_params(params)?;
+    }
     if matches!(
         method,
         "recording_state" | "recording_stop" | "live_observation_state" | "live_observation_stop"
@@ -975,6 +997,58 @@ fn validate_task_method_params(method: &str, params: &Value) -> Result<(), Strin
             "change_window_state requires operation activate or restore_activate in the task bridge"
                 .into(),
         );
+    }
+    Ok(())
+}
+
+fn validate_native_frame_params(params: &Value) -> Result<(), String> {
+    let invalid = || {
+        "set_window_frame requires only a fresh window_state_id and exact i32 physical frame"
+            .to_owned()
+    };
+    let object = params.as_object().ok_or_else(invalid)?;
+    if object.len() != 2
+        || object
+            .keys()
+            .any(|key| !matches!(key.as_str(), "window_state_id" | "frame"))
+        || !object
+            .get("window_state_id")
+            .and_then(Value::as_str)
+            .is_some_and(|id| {
+                !id.is_empty()
+                    && id.len() <= 128
+                    && id.trim() == id
+                    && !id.chars().any(char::is_control)
+            })
+    {
+        return Err(invalid());
+    }
+    let frame = object
+        .get("frame")
+        .and_then(Value::as_object)
+        .ok_or_else(invalid)?;
+    if frame.len() != 4
+        || frame
+            .keys()
+            .any(|key| !matches!(key.as_str(), "x" | "y" | "width" | "height"))
+    {
+        return Err(invalid());
+    }
+    let values = ["x", "y", "width", "height"].map(|key| {
+        frame
+            .get(key)
+            .and_then(Value::as_i64)
+            .and_then(|value| i32::try_from(value).ok())
+    });
+    let [Some(x), Some(y), Some(width), Some(height)] = values else {
+        return Err(invalid());
+    };
+    if width <= 0
+        || height <= 0
+        || x.checked_add(width).is_none()
+        || y.checked_add(height).is_none()
+    {
+        return Err(invalid());
     }
     Ok(())
 }
@@ -1116,9 +1190,22 @@ fn native_minimize_scope_schema() -> Value {
     })
 }
 
+fn native_frame_scope_schema() -> Value {
+    json!({
+        "title":"Metadata-bound non-activating native window frame",
+        "type":"object", "additionalProperties":false,
+        "required":["action","input_kind","secret_input","authorization_category"],
+        "properties":{
+            "action":{"const":"set_window_frame"},"input_kind":{"const":"window_state"},
+            "secret_input":{"const":false},"authorization_category":{"const":"window_state"},
+            "browser_origin":{"type":"null"}
+        }
+    })
+}
+
 fn pixels_action_scope_schema() -> Value {
     json!({
-        "oneOf": [native_minimize_scope_schema(), {
+        "oneOf": [native_minimize_scope_schema(), native_frame_scope_schema(), {
             "title": "Observation-bound foreground pixel input",
             "type": "object",
             "additionalProperties": false,
@@ -1144,6 +1231,7 @@ fn task_action_scope_schema() -> Value {
     json!({
         "oneOf": [
             native_minimize_scope_schema(),
+            native_frame_scope_schema(),
             {
                 "title": "Semantic exact-window input",
                 "type": "object",
@@ -1215,7 +1303,7 @@ fn tool_definitions() -> Vec<Value> {
         json!({
             "name": "start_task",
             "title": "Start DCC-CUA task",
-            "description": "Start one exact bounded DCC-CUA task without a secondary confirmation step. The connected Agent Host owns user authorization. observation_mode defaults to semantic; explicitly choose pixels_only for an exact window snapshot without UIA or semantic selectors. Pixels-only tasks require complete exact-window capture proof and grant only native minimize_window or the advertised non-secret raw_input actions. Each input requires the latest observation and a foreground, unobscured, unchanged native instance. Explicit allow_recording=true grants native video-only recording_start/state/stop in an operator-owned task directory. Live observation and recording reuse the same native source, without an accessibility tree or trajectory.",
+            "description": "Start one exact bounded DCC-CUA task without a secondary confirmation step. The connected Agent Host owns user authorization. observation_mode defaults to semantic; explicitly choose pixels_only for an exact window snapshot without UIA or semantic selectors. Pixels-only tasks require complete exact-window capture proof and grant only closed native window_state methods or the advertised non-secret raw_input actions. Explicit set_window_frame requires get_window_state and its own action scope; it never grants raw input or recording. Each input requires the latest observation and a foreground, unobscured, unchanged native instance. Explicit allow_recording=true grants native video-only recording_start/state/stop in an operator-owned task directory. Live observation and recording reuse the same native source, without an accessibility tree or trajectory.",
             "inputSchema": {
                 "type": "object",
                 "additionalProperties": false,
@@ -1245,7 +1333,7 @@ fn tool_definitions() -> Vec<Value> {
                             "surface": {"const": "window"},
                             "allowed_browser_origins": {"maxItems": 0},
                             "allowed_methods": {"items": {"enum": [
-                                "get_window_state", "change_window_state", "minimize_window", "snapshot",
+                                "get_window_state", "change_window_state", "minimize_window", "set_window_frame", "snapshot",
                                 "execute_action", "get_session_state", "get_input_state", "session_health", "poll_session_events",
                                 "live_observation_start", "live_observation_state", "live_observation_stop",
                                 "recording_start", "recording_state", "recording_stop"
@@ -1272,6 +1360,13 @@ fn tool_definitions() -> Vec<Value> {
                         {"contains":{"const":"live_observation_state"}},
                         {"contains":{"const":"live_observation_stop"}}
                     ]}}}
+                }, {
+                    "if":{"properties":{"allowed_methods":{"contains":{"const":"set_window_frame"}}}},
+                    "then":{"required":["observation_mode"],"properties":{
+                        "observation_mode":{"const":"pixels_only"},"surface":{"const":"window"},
+                        "allowed_methods":{"contains":{"const":"get_window_state"}},
+                        "allowed_actions":{"contains":native_frame_scope_schema()}
+                    }}
                 }],
                 "properties": {
                     "application_label": {"type": "string", "minLength": 1, "maxLength": 80},
@@ -1296,7 +1391,7 @@ fn tool_definitions() -> Vec<Value> {
                         "maxItems": MAX_ALLOWED_METHODS,
                         "uniqueItems": true,
                         "items": {"type": "string", "enum": [
-                            "get_window_state", "change_window_state", "minimize_window", "snapshot", "accessibility_snapshot", "verify_state",
+                            "get_window_state", "change_window_state", "minimize_window", "set_window_frame", "snapshot", "accessibility_snapshot", "verify_state",
                             "find", "wait_for", "execute_action", "get_session_state",
                             "get_input_state", "session_health", "poll_session_events",
                             "clipboard_capture_secret", "browser_snapshot", "browser_prepare",
@@ -1308,7 +1403,7 @@ fn tool_definitions() -> Vec<Value> {
                     },
                     "allowed_actions": {
                         "type": "array",
-                        "description": "Closed final action scopes; use an empty array for observation-only tasks. pixels_only accepts minimize_window/window_state or click, double_click, right_click, toggle, keypress, keyboard_shortcut, type, type_chars with input_kind=raw_input, secret_input=false, authorization_category=raw_input. execute_action requires an actual supported raw scope. Other modes use click/type action names for browser input methods; only secret-handle browser typing uses browser_type.",
+                        "description": "Closed final action scopes; use an empty array for observation-only tasks. pixels_only accepts minimize_window or set_window_frame with input_kind=window_state, secret_input=false, authorization_category=window_state; these grant no raw input. Pixel input accepts click, double_click, right_click, toggle, keypress, keyboard_shortcut, type, type_chars with input_kind=raw_input, secret_input=false, authorization_category=raw_input. execute_action requires an actual supported raw scope. Other modes use click/type action names for browser input methods; only secret-handle browser typing uses browser_type.",
                         "minItems": 0,
                         "maxItems": 32,
                         "uniqueItems": true,
@@ -1342,7 +1437,7 @@ fn tool_definitions() -> Vec<Value> {
         json!({
             "name": "dcc_cua_task_call",
             "title": "Run DCC-CUA task call",
-            "description": "Call one closed Host method after start_task returned its provider/runtime/PID/HWND binding. A pixels_only snapshot yields a formal observation_id and accessibility_available=false, without semantic element tokens. Its optional capture_diagnostics boolean defaults to false; true adds bounded byte hashes, histograms, timing, and native provenance for the existing two captures without changing pixels or input authority. Semantic snapshots reject this diagnostic opt-in. Its execute_action requires a granted supported raw_input action and that latest observation_id; omit accessibility_state_id, element selectors, secret handles, and input_backend_id. Delivery is foreground only, without implicit activation. Use capture_after for a fresh pixel post-action observation; semantic post snapshots are refused. minimize_window requires the latest observation and same native instance, consumes it after an attempt, and reports native minimized state. change_window_state accepts only activate or restore_activate; take a fresh snapshot afterward. Out-of-scope, expired, stopped, changed, or stale targets fail without prompting. Recording requires explicit allow_recording and an immutable task output directory; call recording_start with an empty params object for video-only output. Granted live_observation_start/state/stop expose the same native source. Recording start validates the actual first encoded frame, state reports source pauses and failures, and stop awaits video/sidecar finalization. Never pass credential values; use secret handles in supported semantic/browser tasks.",
+            "description": "Call one closed Host method after start_task returned its provider/runtime/PID/HWND binding. A pixels_only snapshot yields a formal observation_id and accessibility_available=false, without semantic element tokens. Its optional capture_diagnostics boolean defaults to false; true adds bounded byte hashes, histograms, timing, and native provenance for the existing two captures without changing pixels or input authority. Semantic snapshots reject this diagnostic opt-in. Its execute_action requires a granted supported raw_input action and that latest observation_id; omit accessibility_state_id, element selectors, secret handles, and input_backend_id. Delivery is foreground only, without implicit activation. Use capture_after for a fresh pixel post-action observation; semantic post snapshots are refused. minimize_window requires the latest observation and same native instance, consumes it after an attempt, and reports native minimized state. set_window_frame requires a one-use window_state_id from explicit get_window_state no more than five seconds old, and frame={x,y,width,height} in exact i32 physical pixels with checked extents. It moves the same full native instance without activation or z-order change and confirms only an exact bounded native readback; every attempt consumes metadata and prior pixel evidence. Its response state does not mint another token. change_window_state accepts only activate or restore_activate; take a fresh snapshot afterward. Out-of-scope, expired, stopped, changed, or stale targets fail without prompting. Recording requires explicit allow_recording and an immutable task output directory; call recording_start with an empty params object for video-only output. Granted live_observation_start/state/stop expose the same native source. Recording start validates the actual first encoded frame, state reports source pauses and failures, and stop awaits video/sidecar finalization. Never pass credential values; use secret handles in supported semantic/browser tasks.",
             "inputSchema": {
                 "type": "object",
                 "additionalProperties": false,
@@ -1353,6 +1448,23 @@ fn tool_definitions() -> Vec<Value> {
                     "params": {"type": "object"}
                 },
                 "allOf": [{
+                    "if":{"properties":{"method":{"const":"set_window_frame"}}},
+                    "then":{"properties":{"params":{
+                        "type":"object","additionalProperties":false,"required":["window_state_id","frame"],
+                        "properties":{
+                            "window_state_id":{"type":"string","minLength":1,"maxLength":128,
+                                "description":"One-use token from explicit pixels_only get_window_state, at most five seconds old. Snapshot observation IDs do not authorize this method."},
+                            "frame":{"type":"object","additionalProperties":false,"required":["x","y","width","height"],
+                                "properties":{
+                                    "x":{"type":"integer","minimum":-2147483648,"maximum":2147483647},
+                                    "y":{"type":"integer","minimum":-2147483648,"maximum":2147483647},
+                                    "width":{"type":"integer","minimum":1,"maximum":2147483647},
+                                    "height":{"type":"integer","minimum":1,"maximum":2147483647}
+                                }
+                            }
+                        }
+                    }}}
+                }, {
                     "if": {"properties": {"method": {"const": "snapshot"}}},
                     "then": {"properties": {"params": {
                         "properties": {"capture_diagnostics": {
@@ -1413,6 +1525,7 @@ fn tool_error(message: String) -> Value {
 
 fn task_remote_error(
     error: &HostClientError,
+    method: &str,
     task_id: &str,
     session: &LogicalTaskSession,
 ) -> Value {
@@ -1429,6 +1542,14 @@ fn task_remote_error(
         // arbitrary remote response fields, titles, paths, or capabilities.
         payload["details"] = json!({"capture": capture});
     }
+    if method == "set_window_frame"
+        && let HostClientError::Remote { response, .. } = error
+        && let Some(details) = response
+            .get("details")
+            .and_then(native_frame_failure_projection)
+    {
+        payload["details"] = details;
+    }
     payload["task_context"] = json!({
         "provider": "dcc-cua",
         "runtime_version": env!("CARGO_PKG_VERSION"),
@@ -1441,6 +1562,44 @@ fn task_remote_error(
     });
     result["content"] = json!([{"type":"text", "text": result["structuredContent"].to_string()}]);
     result
+}
+
+#[derive(serde::Serialize, Deserialize)]
+struct NativeFrameFailureProjection {
+    phase: dcc_cua_core::ComputerUseErrorPhase,
+    action_attempted: bool,
+    input_sent: dcc_cua_core::ComputerUseInputState,
+    completion: dcc_cua_core::ComputerUseCompletionState,
+    effect_unknown: bool,
+    automatic_input: bool,
+    blind_retry: bool,
+    fresh_observation_required: bool,
+}
+
+fn native_frame_failure_projection(value: &Value) -> Option<Value> {
+    use dcc_cua_core::{ComputerUseCompletionState, ComputerUseErrorPhase, ComputerUseInputState};
+    let projection: NativeFrameFailureProjection = serde_json::from_value(value.clone()).ok()?;
+    let expected_phase = if projection.action_attempted {
+        ComputerUseErrorPhase::LocalMutationDispatch
+    } else {
+        ComputerUseErrorPhase::PreDispatch
+    };
+    let expected_completion = if projection.action_attempted {
+        ComputerUseCompletionState::Unknown
+    } else {
+        ComputerUseCompletionState::Known
+    };
+    if projection.phase != expected_phase
+        || projection.completion != expected_completion
+        || projection.input_sent != ComputerUseInputState::NotSent
+        || projection.effect_unknown != projection.action_attempted
+        || projection.automatic_input
+        || projection.blind_retry
+        || !projection.fresh_observation_required
+    {
+        return None;
+    }
+    serde_json::to_value(projection).ok()
 }
 
 fn rpc_result(id: Value, result: Value) -> Value {

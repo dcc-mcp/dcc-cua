@@ -2,6 +2,30 @@ use rstest::rstest;
 
 use super::*;
 
+#[test]
+fn native_frame_request_keeps_metadata_token_separate_from_observation_id() {
+    let value = json!({"method":"set_window_frame","params":{
+        "session_id":"session-1","task_grant_id":"grant-1","window_capability":"cap-1",
+        "window_state_id":"native-state-1","frame":{"x":50,"y":800,"width":926,"height":680}}});
+    assert!(matches!(serde_json::from_value::<Request>(value.clone()),
+        Ok(Request::SetWindowFrame{window_state_id:Some(id),frame,..}) if id=="native-state-1" && frame.x==50.0));
+    let mut invalid = value;
+    invalid["params"]
+        .as_object_mut()
+        .unwrap()
+        .remove("window_state_id");
+    invalid["params"]["observation_id"] = json!("snapshot-1");
+    assert!(matches!(
+        serde_json::from_value::<Request>(invalid.clone()),
+        Ok(Request::SetWindowFrame {
+            window_state_id: None,
+            ..
+        })
+    ));
+    invalid["params"]["window_state_id"] = json!(7);
+    assert!(serde_json::from_value::<Request>(invalid).is_err());
+}
+
 #[rstest]
 fn pixel_raw_request_does_not_need_an_accessibility_id() {
     let request: Request = serde_json::from_value(json!({"method":"execute_action", "params":{

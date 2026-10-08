@@ -532,6 +532,281 @@ fn pixels_task() -> Value {
     })
 }
 
+fn native_frame_task() -> Value {
+    let mut task = pixels_task();
+    task["allowed_methods"] = json!(["get_window_state", "set_window_frame"]);
+    task["allowed_actions"] = json!([{"action":"set_window_frame","input_kind":"window_state","secret_input":false,"authorization_category":"window_state"}]);
+    task
+}
+
+fn native_frame_params() -> Value {
+    json!({"window_state_id":"native-state-1","frame":{"x":50,"y":800,"width":926,"height":680}})
+}
+
+#[test]
+fn native_frame_public_task_derives_only_closed_window_state_authority() {
+    let mut server = test_server();
+    let prepared = server.prepare_task(native_frame_task()).unwrap();
+    let proposal = &server.proposals[prepared["task_id"].as_str().unwrap()];
+    let grant = task_session_grant(proposal, proposal.receipt.as_ref().unwrap());
+    assert_eq!(grant["allow_raw_input"], false);
+    assert_eq!(grant["allow_recording"], false);
+    assert_eq!(grant["allow_browser_input"], false);
+    assert!(proposal.registration.allowed_actions[0].is_window_frame());
+    assert_eq!(
+        proposal.registration.allowed_host_methods,
+        vec!["get_window_state", "set_window_frame"]
+    );
+    for (field, value) in [
+        ("observation_mode", json!("semantic")),
+        ("surface", json!("browser")),
+        ("allowed_actions", json!([])),
+        ("allowed_methods", json!(["set_window_frame"])),
+    ] {
+        let mut invalid = native_frame_task();
+        invalid[field] = value;
+        assert!(test_server().prepare_task(invalid).is_err(), "{field}");
+    }
+    for (field, value) in [
+        ("input_kind", json!("raw_input")),
+        ("secret_input", json!(true)),
+        ("authorization_category", json!("credential")),
+        ("browser_origin", json!("https://example.com")),
+    ] {
+        let mut invalid = native_frame_task();
+        invalid["allowed_actions"][0][field] = value;
+        assert!(test_server().prepare_task(invalid).is_err(), "{field}");
+    }
+}
+
+#[test]
+fn native_frame_public_parameters_require_closed_physical_i32_extents() {
+    assert!(validate_task_method_params("set_window_frame", &native_frame_params()).is_ok());
+    for change in 0..13 {
+        let mut invalid = native_frame_params();
+        match change {
+            0 => invalid["window_state_id"] = json!(""),
+            1 => invalid["window_state_id"] = json!(7),
+            2 => invalid["window_state_id"] = json!(" id "),
+            3 => invalid["window_state_id"] = json!("x".repeat(129)),
+            4 => invalid["observation_id"] = json!("snapshot-1"),
+            5 => invalid["frame"]["x"] = json!(50.5),
+            6 => invalid["frame"]["x"] = json!(2147483647_i64),
+            7 => invalid["frame"]["y"] = json!(2147483647_i64),
+            8 => invalid["frame"]["width"] = json!(0),
+            9 => invalid["frame"]["height"] = json!(-1),
+            10 => invalid["frame"]["activate"] = json!(true),
+            11 => invalid["frame"]["x"] = json!(-2147483649_i64),
+            _ => {
+                invalid["frame"].as_object_mut().unwrap().remove("height");
+            }
+        }
+        assert!(
+            validate_task_method_params("set_window_frame", &invalid).is_err(),
+            "change {change}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn native_frame_public_task_retains_start_expiry_stop_and_scope_fences() {
+    let mut server = test_server();
+    let prepared = server.prepare_task(native_frame_task()).unwrap();
+    let id = prepared["task_id"].as_str().unwrap().to_owned();
+    let args = |task_id: &str| json!({"task_id":task_id,"method":"set_window_frame","params":native_frame_params()});
+    assert!(
+        server
+            .task_call(args("foreign-task"))
+            .await
+            .unwrap_err()
+            .contains("not found")
+    );
+    assert!(
+        server
+            .task_call(args(&id))
+            .await
+            .unwrap_err()
+            .contains("call start_task")
+    );
+    server.proposals.get_mut(&id).unwrap().allowed_methods = vec!["get_window_state".into()];
+    assert!(
+        server
+            .task_call(args(&id))
+            .await
+            .unwrap_err()
+            .contains("configured task method scope")
+    );
+    server
+        .proposals
+        .get_mut(&id)
+        .unwrap()
+        .registration
+        .expires_at_unix_ms = 0;
+    assert!(
+        server
+            .task_call(args(&id))
+            .await
+            .unwrap_err()
+            .contains("expired")
+    );
+    server.proposals.get_mut(&id).unwrap().revoked = true;
+    assert!(
+        server
+            .task_call(args(&id))
+            .await
+            .unwrap_err()
+            .contains("stopped")
+    );
+}
+
+#[test]
+fn native_frame_public_schema_advertises_distinct_metadata_token_and_exact_frame() {
+    let tools = tool_definitions();
+    let start = tools
+        .iter()
+        .find(|tool| tool["name"] == "start_task")
+        .unwrap();
+    let conditional = start["inputSchema"]["allOf"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| {
+            entry["if"]["properties"]["allowed_methods"]["contains"]["const"] == "set_window_frame"
+        })
+        .unwrap();
+    assert_eq!(
+        conditional["then"]["properties"]["observation_mode"]["const"],
+        "pixels_only"
+    );
+    assert_eq!(
+        conditional["then"]["properties"]["allowed_actions"]["contains"]["properties"]["action"]["const"],
+        "set_window_frame"
+    );
+    let call = tools
+        .iter()
+        .find(|tool| tool["name"] == "dcc_cua_task_call")
+        .unwrap();
+    let frame = call["inputSchema"]["allOf"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["if"]["properties"]["method"]["const"] == "set_window_frame")
+        .unwrap();
+    let params = &frame["then"]["properties"]["params"];
+    assert_eq!(params["required"], json!(["window_state_id", "frame"]));
+    assert_eq!(params["additionalProperties"], false);
+    assert_eq!(
+        params["properties"]["frame"]["properties"]["x"]["type"],
+        "integer"
+    );
+    assert!(!method_allowed(TaskSurface::Browser, "set_window_frame"));
+}
+
+#[test]
+fn native_frame_failure_projection_is_finite_coherent_and_method_specific() {
+    let mut details = json!({"phase":"local_mutation_dispatch","action_attempted":true,"input_sent":"not_sent",
+        "completion":"unknown","effect_unknown":true,"automatic_input":false,"blind_retry":false,"fresh_observation_required":true,
+        "PRIVATE_PATH":"PRIVATE_VALUE","window_state_id":"PRIVATE_TOKEN"});
+    let projected = native_frame_failure_projection(&details).unwrap();
+    assert_eq!(projected.as_object().unwrap().len(), 8);
+    assert!(!projected.to_string().contains("PRIVATE"));
+    details["completion"] = json!("known");
+    assert!(native_frame_failure_projection(&details).is_none());
+    details["phase"] = json!("PRIVATE_PHASE");
+    assert!(native_frame_failure_projection(&details).is_none());
+}
+
+#[tokio::test]
+async fn native_frame_actual_public_error_adapter_preserves_only_typed_completion() {
+    for attempted in [false, true] {
+        let (client_stream, mut host_stream) = tokio::io::duplex(32 * 1024);
+        let worker = tokio::spawn(async move {
+            for step in 0..3 {
+                let bytes = dcc_cua_protocol::read_frame(
+                    &mut host_stream,
+                    dcc_cua_protocol::MAX_JSON_FRAME_BYTES,
+                )
+                .await
+                .unwrap()
+                .unwrap();
+                let request: Value = serde_json::from_slice(&bytes).unwrap();
+                let mut response = match step {
+                    0 => json!({"type":"hello","capabilities":[]}),
+                    1 => {
+                        json!({"type":"session_opened","session_id":"fixture-session","window_capability":"PRIVATE_CAPABILITY","target":{"process_id":42,"window_handle":7}})
+                    }
+                    _ => {
+                        assert_eq!(request["method"], "set_window_frame");
+                        assert_eq!(request["params"]["window_state_id"], "native-state-1");
+                        assert_eq!(request["params"]["frame"], native_frame_params()["frame"]);
+                        assert!(request["params"].get("observation_id").is_none());
+                        json!({"type":"error","code":"invalid_target","message":"frame refused",
+                            "details":{"phase":if attempted{"local_mutation_dispatch"}else{"pre_dispatch"},
+                                "action_attempted":attempted,"input_sent":"not_sent",
+                                "completion":if attempted{"unknown"}else{"known"},"effect_unknown":attempted,
+                                "automatic_input":false,"blind_retry":false,"fresh_observation_required":true,
+                                "PRIVATE_PATH":"PRIVATE_VALUE","window_state_id":"PRIVATE_TOKEN"}})
+                    }
+                };
+                response["request_id"] = request["request_id"].clone();
+                dcc_cua_protocol::write_frame(
+                    &mut host_stream,
+                    &serde_json::to_vec(&response).unwrap(),
+                    dcc_cua_protocol::MAX_JSON_FRAME_BYTES,
+                )
+                .await
+                .unwrap();
+                host_stream.flush().await.unwrap();
+            }
+        });
+        let mut client = HostClient::from_stream(client_stream);
+        client.hello("pure-frame-contract").await.unwrap();
+        let session = client
+            .open_logical_task_session(
+                "fixture-session",
+                json!({"task_grant_id":"fixture-grant"}),
+                DEFAULT_IDLE_TIMEOUT_MS,
+            )
+            .await
+            .unwrap();
+        let mut server = test_server();
+        let prepared = server.prepare_task(native_frame_task()).unwrap();
+        let id = prepared["task_id"].as_str().unwrap().to_owned();
+        server.proposals.get_mut(&id).unwrap().session = Some(session);
+        let result = server
+            .task_call(
+                json!({"task_id":id,"method":"set_window_frame","params":native_frame_params()}),
+            )
+            .await
+            .unwrap();
+        worker.await.unwrap();
+        assert_eq!(result["isError"], true);
+        assert_eq!(
+            result["structuredContent"]["details"]["action_attempted"],
+            attempted
+        );
+        assert_eq!(
+            result["structuredContent"]["details"]["effect_unknown"],
+            attempted
+        );
+        assert_eq!(
+            result["structuredContent"]["details"]
+                .as_object()
+                .unwrap()
+                .len(),
+            8
+        );
+        assert_eq!(
+            result["structuredContent"]["task_context"]["target"],
+            json!({"process_id":42,"window_handle":7})
+        );
+        assert!(!result.to_string().contains("PRIVATE"));
+        let text: Value =
+            serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(text, result["structuredContent"]);
+    }
+}
+
 #[rstest]
 fn explicit_pixel_mode_survives_public_proposal_and_host_grant() {
     let mut server = test_server();
@@ -689,8 +964,8 @@ fn public_tool_schema_advertises_closed_pixel_actions_and_exact_window_only() {
     let scopes = pixel["properties"]["allowed_actions"]["items"]["oneOf"]
         .as_array()
         .unwrap();
-    assert_eq!(scopes.len(), 2);
-    let input = &scopes[1]["properties"];
+    assert_eq!(scopes.len(), 3);
+    let input = &scopes[2]["properties"];
     assert_eq!(
         input["action"]["enum"],
         json!([
@@ -1181,7 +1456,7 @@ fn start_task_has_no_confirmation_ui_or_secret_value_fields() {
 fn task_action_schema_matches_the_closed_runtime_contract() {
     let schema = task_action_scope_schema();
     let variants = schema["oneOf"].as_array().unwrap();
-    assert_eq!(variants.len(), 5);
+    assert_eq!(variants.len(), 6);
 
     let variant = |input_kind: &str| {
         variants
@@ -1326,7 +1601,12 @@ fn capture_diagnostics_public_schema_defaults_false_without_an_extra_tool_or_gra
         .into_iter()
         .find(|tool| tool["name"] == "dcc_cua_task_call")
         .unwrap();
-    let condition = &call["inputSchema"]["allOf"][0];
+    let condition = call["inputSchema"]["allOf"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|condition| condition["if"]["properties"]["method"]["const"] == "snapshot")
+        .unwrap();
     assert_eq!(condition["if"]["properties"]["method"]["const"], "snapshot");
     let flag = &condition["then"]["properties"]["params"]["properties"]["capture_diagnostics"];
     assert_eq!(flag["type"], "boolean");
