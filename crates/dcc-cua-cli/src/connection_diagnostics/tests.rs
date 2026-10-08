@@ -61,12 +61,29 @@ fn initialize_records_only_allowlisted_client_metadata_and_binds_once() {
     );
     assert_eq!(record.client_metadata.chat_id.as_deref(), Some("chat-123"));
     assert_eq!(record.client_metadata.source, "client_supplied");
-    let text = serde_json::to_string(&list_connections(Some(path))).unwrap();
-    assert!(!text.contains("do-not-copy"));
-    assert!(
-        text.contains("initialized"),
-        "first initialize must be published even in the startup millisecond"
+    let report = list_connections(Some(path));
+    assert_eq!(report.connections.len(), 1);
+    let published = &report.connections[0];
+    assert_eq!(published.state, ConnectionState::Initialized);
+    assert_eq!(
+        published.initialized_at_unix_ms,
+        record.initialized_at_unix_ms
     );
+    assert!(published.initialized_at_unix_ms.is_some());
+    let client = published.client_info.as_ref().unwrap();
+    assert_eq!(client.name.as_deref(), Some("Codex Desktop"));
+    assert_eq!(client.version.as_deref(), Some("1.2.3"));
+    assert_eq!(
+        published.client_metadata.chat_id.as_deref(),
+        Some("chat-123")
+    );
+    assert_eq!(
+        published.client_metadata.task_id.as_deref(),
+        Some("task:456")
+    );
+    assert_eq!(published.client_metadata.source, "client_supplied");
+    let text = serde_json::to_string(&report).unwrap();
+    assert!(!text.contains("do-not-copy"));
     diagnostics.initialized(&json!({"clientInfo":{"name":"Substitution"}}));
     assert_eq!(
         diagnostics.snapshot().client_info.unwrap().name.as_deref(),
@@ -235,6 +252,70 @@ fn report_limit_does_not_disable_terminal_retention() {
         129,
         "128 terminal records plus this valid live connection"
     );
+}
+
+#[rstest]
+fn truncated_scan_prunes_only_confirmed_terminal_history() {
+    let (_temporary, path) = directory();
+    let diagnostics = ConnectionDiagnostics::new(build(), Some(path.clone()));
+    let live_path = path.join(format!("{}.json", diagnostics.snapshot().connection_id));
+    let mut record = diagnostics.snapshot();
+    record.connection_id = format!("mcp-connection-{}", Uuid::new_v4());
+    record.bridge.creation_id = None;
+    registry::publish(&path, &record).unwrap();
+    let unknown_path = path.join(format!("{}.json", record.connection_id));
+    let unrelated = (0..32)
+        .map(|index| {
+            let unrelated_path = path.join(format!("unrelated-{index}.txt"));
+            fs::write(&unrelated_path, b"untouched").unwrap();
+            unrelated_path
+        })
+        .collect::<Vec<_>>();
+
+    record = diagnostics.snapshot();
+    record.state = ConnectionState::Closed;
+    record.close_reason = Some(CloseReason::StdinEof);
+    let terminal = (0..1100)
+        .map(|index| {
+            record.connection_id = format!("mcp-connection-{}", Uuid::new_v4());
+            record.closed_at_unix_ms = Some(index);
+            registry::publish(&path, &record).unwrap();
+            (path.join(format!("{}.json", record.connection_id)), index)
+        })
+        .collect::<Vec<_>>();
+    let (available, truncated, scanned) = registry::read_records(&path);
+    assert!(available && truncated);
+    // Whichever order the OS chooses, 1100 terminal files and only 34 other
+    // entries guarantee a truncated subset with more than 128 terminals.
+    assert!(
+        scanned
+            .iter()
+            .filter(|record| record.state == ConnectionState::Closed)
+            .count()
+            > 128
+    );
+
+    registry::retain_recent_terminal_records(&path);
+    let (remaining, removed): (Vec<_>, Vec<_>) =
+        terminal.iter().partition(|(path, _)| path.exists());
+    assert!(
+        !removed.is_empty(),
+        "truncation must not disable all retention"
+    );
+    for (_, removed_at) in removed {
+        assert!(
+            remaining
+                .iter()
+                .filter(|(_, retained_at)| retained_at > removed_at)
+                .count()
+                >= 128
+        );
+    }
+    assert!(live_path.exists());
+    assert!(unknown_path.exists());
+    for unrelated_path in unrelated {
+        assert_eq!(fs::read(unrelated_path).unwrap(), b"untouched");
+    }
 }
 
 #[rstest]

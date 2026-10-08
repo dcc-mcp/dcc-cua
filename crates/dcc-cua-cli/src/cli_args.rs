@@ -2,6 +2,7 @@
 
 use dcc_cua_core::{COMPUTER_USE_ESCALATION_REASONS, MAX_ESCALATION_DETAIL_CHARS};
 use std::fmt;
+use std::path::PathBuf;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum CliUsageError {
@@ -231,6 +232,18 @@ pub(super) fn checked_flag_values(flags: &[String], name: &str) -> Result<Vec<St
         values.push(value.to_owned());
     }
     Ok(values)
+}
+
+pub(super) fn diagnostics_directory(flags: &[String]) -> Result<Option<PathBuf>, String> {
+    let values = checked_flag_values(flags, "--diagnostics-dir")?;
+    if values.len() > 1 {
+        return Err("--diagnostics-dir must be supplied at most once".into());
+    }
+    let directory = values.into_iter().next().map(PathBuf::from);
+    if directory.as_ref().is_some_and(|path| !path.is_absolute()) {
+        return Err("--diagnostics-dir requires an absolute path".into());
+    }
+    Ok(directory)
 }
 
 fn is_known_flag(argument: &str) -> bool {

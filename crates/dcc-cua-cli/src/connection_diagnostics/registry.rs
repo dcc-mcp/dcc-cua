@@ -236,10 +236,13 @@ pub(super) fn read_records(directory: &Path) -> (bool, bool, Vec<ConnectionRecor
 /// Writers retain a bounded recent history; the public query stays read-only.
 /// Unknown process identity never qualifies a live-looking record for deletion.
 pub(super) fn retain_recent_terminal_records(directory: &Path) {
-    let (available, truncated, records) = read_records(directory);
-    if !available || truncated {
+    let (available, _, records) = read_records(directory);
+    if !available {
         return;
     }
+    // Even a truncated scan can safely prune its observed terminal subset:
+    // each removed record has at least MAX_TERMINAL_RECORDS terminal snapshots
+    // at least as recent in that subset. Unscanned records cannot invalidate it.
     let mut terminal = records
         .into_iter()
         .filter(|record| {

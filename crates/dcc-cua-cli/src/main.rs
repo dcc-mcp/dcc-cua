@@ -234,13 +234,11 @@ async fn dispatch(arguments: Vec<String>) -> Result<(), Box<dyn std::error::Erro
         return Ok(());
     }
     if command == "mcp-server" {
-        mcp_server::run(flag_value(&flags, "--diagnostics-dir").map(PathBuf::from)).await?;
+        mcp_server::run(diagnostics_directory(&flags)?).await?;
         return Ok(());
     }
     if command == "connections" {
-        let report = connection_diagnostics::list_connections(
-            flag_value(&flags, "--diagnostics-dir").map(PathBuf::from),
-        );
+        let report = connection_diagnostics::list_connections(diagnostics_directory(&flags)?);
         stdoutln!("{}", serde_json::to_string(&report)?);
         return Ok(());
     }

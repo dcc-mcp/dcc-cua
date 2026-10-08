@@ -334,6 +334,75 @@ fn rejected_cli_syntax_does_not_echo_untrusted_arguments(
 }
 
 #[rstest]
+#[case("connections")]
+#[case("mcp-server")]
+fn connection_commands_reject_incomplete_or_ambiguous_registry_overrides(#[case] command: &str) {
+    let parent = tempfile::tempdir().expect("isolated parent directory");
+    let directory = parent
+        .path()
+        .canonicalize()
+        .unwrap()
+        .join("uncreated-registry");
+    let absolute = directory.to_str().expect("temporary path should be UTF-8");
+    for arguments in [
+        vec!["--diagnostics-dir"],
+        vec!["--diagnostics-dir="],
+        vec!["--diagnostics-dir", "--json"],
+        vec!["--diagnostics-dir", "relative-private-path"],
+        vec!["--diagnostics-dir=relative-private-path"],
+        vec!["--diagnostics-dir", absolute, "--diagnostics-dir", absolute],
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_dcc-cua"))
+            .arg(command)
+            .args(arguments)
+            .stdin(Stdio::null())
+            .output()
+            .expect("dcc-cua should start");
+        assert_eq!(output.status.code(), Some(1));
+        if command == "connections" {
+            let envelope = parse_single_json_envelope(&output.stdout);
+            assert_eq!(envelope["success"], false);
+            assert_eq!(envelope["error"]["code"], "command_failed");
+        } else {
+            assert!(
+                output.stdout.is_empty(),
+                "MCP startup errors must not emit non-protocol stdout"
+            );
+        }
+        assert!(output.stderr.is_empty());
+        assert!(
+            !directory.exists(),
+            "invalid overrides must not create a registry"
+        );
+    }
+}
+
+#[rstest]
+fn connections_accepts_an_absolute_override_without_creating_the_directory() {
+    let parent = tempfile::tempdir().expect("isolated parent directory");
+    let directory = parent
+        .path()
+        .canonicalize()
+        .unwrap()
+        .join("uncreated-registry");
+    let output = Command::new(env!("CARGO_BIN_EXE_dcc-cua"))
+        .arg("connections")
+        .arg("--diagnostics-dir")
+        .arg(&directory)
+        .output()
+        .expect("dcc-cua should start");
+    assert!(output.status.success());
+    let report = parse_single_json_envelope(&output.stdout);
+    assert_eq!(report["registry_available"], false);
+    assert_eq!(report["connections"], serde_json::json!([]));
+    assert!(output.stderr.is_empty());
+    assert!(
+        !directory.exists(),
+        "the read-only query must not create a registry"
+    );
+}
+
+#[rstest]
 #[case("Codex Desktop")]
 #[case("Codex Cloud")]
 #[case("Codex CLI")]

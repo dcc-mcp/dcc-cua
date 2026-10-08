@@ -150,9 +150,12 @@ changing processes, or cleaning records.
 
 Reports scan at most 1,024 directory entries, accept at most 64 KiB per record,
 return at most 256 records, and tolerate unreadable or malformed records. A
-writer retains the newest 128 terminal records; a record with unknown process
-status is not treated as an ended process for deletion. Terminal history is
-bounded during bridge publication, not during the read-only query.
+writer retains the newest 128 terminal records observed in each bounded scan;
+even a truncated scan can prune older confirmed terminal records from its
+observed subset. Unscanned history may remain until a later publication. A
+record with unknown process status is not treated as an ended process for
+deletion. Retention runs during bridge publication, not during the read-only
+query.
 `scan_truncated` indicates incomplete directory enumeration. Windows uses
 FILETIME and Linux uses boot ID plus start ticks for PID reuse detection; the
 current macOS implementation reports unknown creation identity and process
