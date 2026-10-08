@@ -1,13 +1,222 @@
+use std::io::{self, ErrorKind};
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
-use dcc_cua_client::HostClient;
+use dcc_cua_client::{HostClient, HostClientError};
 use serde_json::{Value, json};
 use tokio::time::Instant;
 
 const HOST_PROBE_TIMEOUT: Duration = Duration::from_millis(500);
 const HOST_START_TIMEOUT: Duration = Duration::from_secs(15);
 const HOST_START_RETRY_MS: u64 = 100;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct SupervisorIoError {
+    kind: ErrorKind,
+    os_error: Option<i32>,
+}
+
+impl SupervisorIoError {
+    pub(super) fn from_io(error: &io::Error) -> Self {
+        Self {
+            kind: error.kind(),
+            os_error: error.raw_os_error(),
+        }
+    }
+
+    fn details(self) -> Value {
+        let kind = match self.kind {
+            ErrorKind::NotFound => "not_found",
+            ErrorKind::PermissionDenied => "permission_denied",
+            ErrorKind::ConnectionRefused => "connection_refused",
+            ErrorKind::ConnectionReset => "connection_reset",
+            ErrorKind::ConnectionAborted => "connection_aborted",
+            ErrorKind::NotConnected => "not_connected",
+            ErrorKind::AddrInUse => "address_in_use",
+            ErrorKind::AddrNotAvailable => "address_not_available",
+            ErrorKind::BrokenPipe => "broken_pipe",
+            ErrorKind::AlreadyExists => "already_exists",
+            ErrorKind::WouldBlock => "would_block",
+            ErrorKind::InvalidInput => "invalid_input",
+            ErrorKind::InvalidData => "invalid_data",
+            ErrorKind::TimedOut => "timed_out",
+            ErrorKind::Interrupted => "interrupted",
+            ErrorKind::UnexpectedEof => "unexpected_eof",
+            ErrorKind::Unsupported => "unsupported",
+            _ => "other",
+        };
+        json!({"io_error_kind": kind, "os_error": self.os_error})
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum HostProbeFailure {
+    Io(SupervisorIoError),
+    Protocol,
+    Timeout,
+    Remote,
+}
+
+impl HostProbeFailure {
+    pub(super) fn from_client_error(error: HostClientError) -> Self {
+        match error {
+            HostClientError::Io(error) => Self::Io(SupervisorIoError::from_io(&error)),
+            HostClientError::Protocol(_) => Self::Protocol,
+            HostClientError::Timeout { .. } => Self::Timeout,
+            HostClientError::Remote { .. } => Self::Remote,
+        }
+    }
+
+    fn code(self) -> &'static str {
+        match self {
+            Self::Io(error) if error.kind == ErrorKind::PermissionDenied => {
+                "host_permission_denied"
+            }
+            Self::Io(_) => "host_transport_failed",
+            Self::Protocol => "host_protocol_failed",
+            Self::Timeout => "host_timeout",
+            Self::Remote => "host_remote_failed",
+        }
+    }
+
+    fn details(self) -> Value {
+        let mut details = match self {
+            Self::Io(error) => error.details(),
+            _ => json!({}),
+        };
+        details["code"] = Value::from(self.code());
+        details
+    }
+}
+
+pub(super) fn initial_probe_allows_spawn(failure: HostProbeFailure) -> bool {
+    match failure {
+        HostProbeFailure::Io(error) => matches!(
+            error.kind,
+            ErrorKind::NotFound | ErrorKind::ConnectionRefused | ErrorKind::TimedOut
+        ),
+        HostProbeFailure::Timeout => true,
+        HostProbeFailure::Protocol | HostProbeFailure::Remote => false,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum HostEnsureIoStage {
+    PrepareSpawn,
+    ResolveExecutable,
+    Spawn,
+    PollChild,
+}
+
+impl HostEnsureIoStage {
+    fn name(self) -> &'static str {
+        match self {
+            Self::PrepareSpawn => "prepare_spawn",
+            Self::ResolveExecutable => "resolve_executable",
+            Self::Spawn => "spawn",
+            Self::PollChild => "poll_child",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum HostEnsureError {
+    InitialProbe(HostProbeFailure),
+    Io {
+        stage: HostEnsureIoStage,
+        error: SupervisorIoError,
+    },
+    VersionMissing,
+    VersionMismatch,
+    ChildExited {
+        exit_code: Option<i32>,
+        last_probe: HostProbeFailure,
+    },
+    ReadyTimeout {
+        last_probe: HostProbeFailure,
+    },
+}
+
+impl HostEnsureError {
+    pub(super) fn io(stage: HostEnsureIoStage, error: io::Error) -> Self {
+        Self::Io {
+            stage,
+            error: SupervisorIoError::from_io(&error),
+        }
+    }
+
+    pub(super) fn code(&self) -> &'static str {
+        match self {
+            Self::InitialProbe(failure) => failure.code(),
+            Self::Io { error, .. } if error.kind == ErrorKind::PermissionDenied => {
+                "host_permission_denied"
+            }
+            Self::Io {
+                stage: HostEnsureIoStage::PrepareSpawn,
+                ..
+            } => "host_prepare_spawn_failed",
+            Self::Io {
+                stage: HostEnsureIoStage::ResolveExecutable,
+                ..
+            } => "host_executable_unavailable",
+            Self::Io {
+                stage: HostEnsureIoStage::Spawn,
+                ..
+            } => "host_spawn_failed",
+            Self::Io {
+                stage: HostEnsureIoStage::PollChild,
+                ..
+            } => "host_child_status_failed",
+            Self::VersionMissing => "host_protocol_failed",
+            Self::VersionMismatch => "host_version_mismatch",
+            Self::ChildExited { .. } => "host_start_failed",
+            Self::ReadyTimeout { .. } => "host_start_timeout",
+        }
+    }
+
+    pub(super) fn details(&self) -> Value {
+        match *self {
+            Self::InitialProbe(failure) => {
+                let mut details = match failure {
+                    HostProbeFailure::Io(error) => error.details(),
+                    _ => json!({}),
+                };
+                details["stage"] = Value::from("initial_probe");
+                details
+            }
+            Self::Io { stage, error } => {
+                let mut details = error.details();
+                details["stage"] = Value::from(stage.name());
+                details
+            }
+            Self::VersionMissing | Self::VersionMismatch => json!({"stage": "version_check"}),
+            Self::ChildExited { last_probe, .. } => json!({
+                "stage": "wait_ready", "last_probe": last_probe.details(),
+            }),
+            Self::ReadyTimeout { last_probe } => {
+                json!({"stage": "wait_ready", "last_probe": last_probe.details()})
+            }
+        }
+    }
+}
+
+impl std::fmt::Display for HostEnsureError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.code())
+    }
+}
+
+impl std::error::Error for HostEnsureError {}
+
+pub(super) fn validate_supervised_host_version(ping: &Value) -> Result<(), HostEnsureError> {
+    validate_host_version(ping).map_err(|_| {
+        if ping["host_version"].as_str().is_some() {
+            HostEnsureError::VersionMismatch
+        } else {
+            HostEnsureError::VersionMissing
+        }
+    })
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum HostStartPollDecision {
@@ -31,23 +240,43 @@ pub(super) const fn host_start_poll_decision(
 pub(crate) async fn ensure(
     endpoint: String,
     host_args: &[String],
-) -> Result<Value, Box<dyn std::error::Error>> {
-    if let Ok(ping) = ping(&endpoint).await {
-        validate_host_version(&ping)?;
-        return Ok(ready_response("existing", &endpoint, None, ping));
-    }
+) -> Result<Value, HostEnsureError> {
+    let mut last_probe = match ping(&endpoint).await {
+        Ok(ping) => {
+            validate_supervised_host_version(&ping)?;
+            return Ok(ready_response("existing", &endpoint, None, ping));
+        }
+        Err(failure) if !initial_probe_allows_spawn(failure) => {
+            // Peer rejection or unknown I/O is not evidence of an absent Host.
+            // Stop before changing standard-handle inheritance or spawning.
+            return Err(HostEnsureError::InitialProbe(failure));
+        }
+        Err(failure) => failure,
+    };
 
-    prepare_detached_spawn()?;
-    let binary = std::env::current_exe()?;
-    let mut child = host_command(&binary, host_args).spawn()?;
+    prepare_detached_spawn()
+        .map_err(|error| HostEnsureError::io(HostEnsureIoStage::PrepareSpawn, error))?;
+    let binary = std::env::current_exe()
+        .map_err(|error| HostEnsureError::io(HostEnsureIoStage::ResolveExecutable, error))?;
+    let mut child = host_command(&binary, host_args)
+        .spawn()
+        .map_err(|error| HostEnsureError::io(HostEnsureIoStage::Spawn, error))?;
     let child_pid = child.id();
     let deadline = Instant::now() + HOST_START_TIMEOUT;
     let mut spawned_exit = None;
     loop {
-        let ping = ping(&endpoint).await.ok();
-        let child_status = child.try_wait()?;
+        let ping = match ping(&endpoint).await {
+            Ok(ping) => Some(ping),
+            Err(failure) => {
+                last_probe = failure;
+                None
+            }
+        };
+        let child_status = child
+            .try_wait()
+            .map_err(|error| HostEnsureError::io(HostEnsureIoStage::PollChild, error))?;
         if spawned_exit.is_none() {
-            spawned_exit = child_status.map(|status| status.to_string());
+            spawned_exit = child_status.map(|status| status.code());
         }
         match host_start_poll_decision(
             ping.is_some(),
@@ -56,9 +285,9 @@ pub(crate) async fn ensure(
         ) {
             HostStartPollDecision::Ready => {
                 let ping = ping.expect("ready decision requires a successful Host probe");
-                if let Err(error) = validate_host_version(&ping) {
+                if let Err(error) = validate_supervised_host_version(&ping) {
                     stop_failed_child(&mut child);
-                    return Err(error.into());
+                    return Err(error);
                 }
                 let running = child_status.is_none();
                 return Ok(ready_response(
@@ -76,13 +305,13 @@ pub(crate) async fn ensure(
     }
 
     stop_failed_child(&mut child);
-    if let Some(status) = spawned_exit {
-        return Err(format!(
-            "Host exited before this or a competing process made the endpoint ready: {status}"
-        )
-        .into());
+    if let Some(exit_code) = spawned_exit {
+        return Err(HostEnsureError::ChildExited {
+            exit_code,
+            last_probe,
+        });
     }
-    Err(format!("Host endpoint did not become ready: {endpoint}").into())
+    Err(HostEnsureError::ReadyTimeout { last_probe })
 }
 
 pub(super) fn validate_host_version(ping: &Value) -> Result<(), String> {
@@ -147,14 +376,14 @@ fn prepare_detached_spawn() -> std::io::Result<()> {
     Ok(())
 }
 
-async fn ping(endpoint: &str) -> Result<Value, String> {
+async fn ping(endpoint: &str) -> Result<Value, HostProbeFailure> {
     tokio::time::timeout(HOST_PROBE_TIMEOUT, async {
         let mut client = HostClient::connect(endpoint.to_owned(), "dcc-cua-host-ensure").await?;
         Ok::<_, dcc_cua_client::HostClientError>(client.ping().await?.value)
     })
     .await
-    .map_err(|_| format!("Host endpoint probe timed out: {endpoint}"))?
-    .map_err(|error| error.to_string())
+    .map_err(|_| HostProbeFailure::Timeout)?
+    .map_err(HostProbeFailure::from_client_error)
 }
 
 fn ready_response(status: &str, endpoint: &str, pid: Option<u32>, ping: Value) -> Value {
