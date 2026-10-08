@@ -8,6 +8,7 @@ use windows::Win32::{
 
 use crate::{
     capture_identity::validate_exact_window_owner,
+    display_color::{NativeDisplayColorProof, exact_window_display_color},
     visible_capture::{
         ExactWindowPixelInstanceEvidence, MAX_ROOT_WINDOWS, RootProofTraceEntry,
         ThreadDpiAwarenessGuard, VisibleWindowCaptureDiagnostic, VisibleWindowCaptureReason,
@@ -112,6 +113,7 @@ pub struct NativeCaptureProof {
     pub desktop_dc_after_flush: Option<NativeDesktopDcProof>,
     pub after_flush: Option<NativeProofPhase>,
     pub target_evidence_stable: bool,
+    pub display_color: Option<NativeDisplayColorProof>,
 }
 
 fn diagnostic(reason: VisibleWindowCaptureReason) -> VisibleWindowCaptureDiagnostic {
@@ -303,6 +305,7 @@ pub fn native_capture_proof(process_id: u32, window_handle: u64) -> NativeCaptur
         desktop_dc_after_flush: None,
         after_flush: None,
         target_evidence_stable: false,
+        display_color: None,
     };
     let guard = match ThreadDpiAwarenessGuard::per_monitor_v2() {
         Ok(guard) => guard,
@@ -321,6 +324,7 @@ pub fn native_capture_proof(process_id: u32, window_handle: u64) -> NativeCaptur
     report.target_evidence_stable = target_evidence_stable(&before, &after);
     report.before_flush = Some(before);
     report.after_flush = Some(after);
+    report.display_color = Some(exact_window_display_color(process_id, window_handle));
     drop(guard);
     report.restored_dpi_context = dpi_context();
     report
@@ -434,6 +438,7 @@ mod tests {
             flush_error: None,
             desktop_dc_after_flush: None,
             target_evidence_stable: true,
+            display_color: None,
         };
         let value = serde_json::to_value(report).unwrap();
         assert_eq!(value["authorizes_capture_or_input"], false);

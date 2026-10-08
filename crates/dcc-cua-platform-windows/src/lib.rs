@@ -10,6 +10,8 @@ mod capture_identity;
 mod capture_proof;
 mod contracts;
 #[cfg(windows)]
+mod display_color;
+#[cfg(windows)]
 mod exact_window_state;
 #[cfg(windows)]
 mod input;
