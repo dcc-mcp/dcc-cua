@@ -6,11 +6,143 @@ use std::sync::Arc;
 
 use super::*;
 
+#[rstest]
+#[tokio::test]
+async fn first_encoded_acknowledgement_matches_the_actual_first_sample_sidecar() {
+    let directory =
+        std::env::temp_dir().join(format!("dcc-cua-first-ack-{}", uuid::Uuid::new_v4()));
+    let captured_at = std::time::Instant::now();
+    let proof = FrameCaptureProvenance::NativeExactWindow(NativeFrameProvenance {
+        source: NativeFrameSource::VerifiedVisible,
+        process_id: 42,
+        window_handle: 77,
+        native_instance: NativeFrameInstance {
+            process_creation_time_100ns: 123,
+            window_thread_id: 8,
+            window_class_hash: 90,
+            owner_window_handle: 0,
+        },
+        native_window_bounds: [-10, 20, 32, 16],
+        native_visible_bounds: [-10, 20, 32, 16],
+        source_rect: [-10, 20, 32, 16],
+        window_dpi: 144,
+        capture_generation: 19,
+        stream_id: 7,
+    });
+    let mut initial = LiveObservationStatus::default();
+    initial.publish_frame(
+        LiveObservationFrame::new(18, vec![0; 16 * 16 * 4], 16, 16, captured_at),
+        std::time::Duration::ZERO,
+        "test",
+    );
+    let (sender, receiver) = watch::channel(initial);
+    // The producer watch advanced after a consumer's preparation read. The
+    // acknowledgement must describe the frame actually encoded, not that read.
+    sender.send_modify(|status| {
+        status.publish_frame(
+            LiveObservationFrame::new(
+                19,
+                vec![210; 32 * 16 * 4],
+                32,
+                16,
+                captured_at + std::time::Duration::from_millis(1),
+            )
+            .with_provenance(proof.clone()),
+            std::time::Duration::ZERO,
+            "test",
+        )
+    });
+    let recorder = ShowcaseRecorder::start(receiver, directory.to_str().unwrap(), 10)
+        .await
+        .unwrap();
+    let receipt = recorder.first_frame().clone();
+    assert_eq!(receipt.sequence(), 19);
+    assert_eq!(receipt.provenance(), &proof);
+    assert_eq!(
+        receipt.captured_at(),
+        captured_at + std::time::Duration::from_millis(1)
+    );
+    let stopped = recorder.stop().await.unwrap();
+    let receipt_json = serde_json::to_value(&receipt).unwrap();
+    assert_eq!(stopped["first_encoded_frame"], receipt_json);
+    let rows = std::fs::read_to_string(directory.join("showcase.capture.jsonl")).unwrap();
+    let first: Value = serde_json::from_str(rows.lines().next().unwrap()).unwrap();
+    for field in [
+        "source_sequence",
+        "captured_at_ms",
+        "source_width",
+        "source_height",
+        "capture_provenance",
+    ] {
+        assert_eq!(first[field], receipt_json[field], "{field}");
+    }
+    assert_eq!(first["media_sample_index"], 0);
+    assert_independently_decodable_segment(&directory.join("showcase.mp4"));
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn stop_preserves_both_producer_and_encoder_failures() {
+    let error = combine_stop_results(
+        Err(capture_error("producer failed")),
+        Err(capture_error("encoder failed")),
+    )
+    .unwrap_err();
+    assert!(error.message.contains("producer failed"));
+    assert!(error.message.contains("encoder failed"));
+    assert_eq!(
+        combine_stop_results(Ok(()), Ok(json!({"finalized":true}))).unwrap()["finalized"],
+        true
+    );
+}
+
+#[tokio::test]
+async fn startup_failure_joins_encoder_and_retains_actual_partial_outcome() {
+    let directory =
+        std::env::temp_dir().join(format!("dcc-cua-start-failure-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir(&directory).unwrap();
+    let capture_partial = directory.join("showcase.capture.partial.jsonl");
+    std::fs::write(&capture_partial, b"previous evidence\n").unwrap();
+    let mut status = LiveObservationStatus::default();
+    status.publish_frame(
+        LiveObservationFrame::new(1, vec![190; 16 * 16 * 4], 16, 16, std::time::Instant::now()),
+        std::time::Duration::ZERO,
+        "pure-test",
+    );
+    let (_source, receiver) = watch::channel(status);
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        ShowcaseRecorder::start_with_outcome(receiver, directory.to_str().unwrap(), 10),
+    )
+    .await
+    .unwrap();
+    let (error, outcome) = match result {
+        Ok(_) => panic!("an existing sidecar must refuse startup"),
+        Err(failure) => failure,
+    };
+    assert_eq!(outcome["active"], false);
+    assert_eq!(outcome["finalized"], false);
+    assert_eq!(outcome["error"]["message"], error.message);
+    let video_partial = std::path::Path::new(outcome["current_partial"].as_str().unwrap());
+    assert!(video_partial.is_file());
+    // Both tasks are joined: this path can be read immediately without waiting
+    // for a detached encoder to release or change it.
+    let partial_bytes = std::fs::read(video_partial).unwrap();
+    assert!(!partial_bytes.is_empty());
+    assert_eq!(
+        std::fs::read(capture_partial).unwrap(),
+        b"previous evidence\n"
+    );
+    assert!(!directory.join("showcase.mp4").exists());
+    assert!(!directory.join("showcase.capture.jsonl").exists());
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
 fn encode_frames(
     frames: mpsc::Receiver<ShowcaseProducerEvent>,
     path: &Path,
     fps: u32,
-    ready: oneshot::Sender<ShowcaseResult<()>>,
+    ready: oneshot::Sender<ShowcaseResult<EncodedFirstFrameEvidence>>,
 ) -> ShowcaseResult<Value> {
     encode_frames_with_progress(
         frames,

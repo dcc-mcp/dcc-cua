@@ -86,6 +86,13 @@ fn validate_grant_against_task_authorization(
     grant: &TaskGrant,
     lease: &TrustedTaskAuthorizationLease,
 ) -> Result<(), HostError> {
+    if (grant.recording_output_dir.is_some() || lease.recording_output_dir.is_some())
+        && grant.observation_mode != crate::TaskObservationMode::PixelsOnly
+    {
+        return Err(browser_scope_denied(
+            "trusted native recording output cannot authorize a semantic trajectory session",
+        ));
+    }
     if grant.observation_mode == crate::TaskObservationMode::PixelsOnly {
         let trusted_raw_input = lease
             .allowed_actions
@@ -105,6 +112,51 @@ fn validate_grant_against_task_authorization(
             return Err(browser_scope_denied(
                 "pixels_only grant must exactly derive supported raw input from its trusted action scopes",
             ));
+        }
+        if grant.allow_recording {
+            if grant.recording_output_dir != lease.recording_output_dir
+                || lease.recording_output_dir.is_none()
+                || !["recording_start", "recording_state", "recording_stop"]
+                    .iter()
+                    .all(|required| {
+                        lease
+                            .allowed_host_methods
+                            .iter()
+                            .any(|method| method == required)
+                    })
+            {
+                return Err(browser_scope_denied(
+                    "pixels_only recording output and lifecycle must exactly match trusted authorization",
+                ));
+            }
+        } else if grant.recording_output_dir.is_some() || lease.recording_output_dir.is_some() {
+            return Err(browser_scope_denied(
+                "manual recording output requires explicit recording permission",
+            ));
+        }
+        for group in [
+            ["recording_start", "recording_state", "recording_stop"],
+            [
+                "live_observation_start",
+                "live_observation_state",
+                "live_observation_stop",
+            ],
+        ] {
+            if lease
+                .allowed_host_methods
+                .iter()
+                .any(|method| method == group[0])
+                && !group.iter().all(|required| {
+                    lease
+                        .allowed_host_methods
+                        .iter()
+                        .any(|method| method == required)
+                })
+            {
+                return Err(browser_scope_denied(
+                    "native lifecycle start requires its state and stop methods",
+                ));
+            }
         }
     }
     let granted_origins = grant
@@ -210,6 +262,26 @@ pub(crate) fn enforce_task_authorized_method(
     {
         host.require_pixels_input_grant(session_id, action)?;
         host.require_latest_observation(observation_id)?;
+    }
+    if host.observation_mode == crate::TaskObservationMode::PixelsOnly
+        && let Request::RecordingStart { request, .. } = request
+    {
+        let directory = host
+            .task_authorization
+            .as_ref()
+            .and_then(|lease| lease.recording_output_dir.as_deref())
+            .filter(|_| host.allow_recording)
+            .ok_or_else(|| {
+                browser_scope_denied(
+                    "native recording requires a trusted immutable output directory",
+                )
+            })?;
+        if !request.record_video || request.output_dir != directory {
+            return Err(browser_scope_denied(
+                "native recording requires video-only output in its exact authorized directory",
+            ));
+        }
+        crate::task_grant::validate_recording_output_location(directory)?;
     }
     enforce_task_authorized_browser_scope(host, request)
 }

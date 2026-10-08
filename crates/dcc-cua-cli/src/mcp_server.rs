@@ -174,6 +174,8 @@ struct PrepareTaskInput {
     allowed_methods: Vec<String>,
     allowed_actions: Vec<TrustedTaskActionScope>,
     #[serde(default)]
+    allow_recording: bool,
+    #[serde(default)]
     allowed_browser_origins: Vec<String>,
     #[serde(default = "default_ttl_minutes")]
     ttl_minutes: u64,
@@ -202,7 +204,9 @@ struct TaskProposal {
     registration: TrustedTaskAuthorizationRegistration,
     receipt: Option<TrustedTaskAuthorizationReceipt>,
     session: Option<LogicalTaskSession>,
+    session_open_attempted: bool,
     revoked: bool,
+    cleanup: Option<Value>,
 }
 
 impl TaskProposal {
@@ -228,6 +232,7 @@ struct TaskAuthorizationAuthority {
 struct TaskAuthorizationServer {
     authority: TaskAuthorizationAuthority,
     proposals: BTreeMap<String, TaskProposal>,
+    recording_output_root: Option<std::path::PathBuf>,
 }
 
 impl TaskAuthorizationServer {
@@ -239,6 +244,8 @@ impl TaskAuthorizationServer {
                 authorization_host,
             },
             proposals: BTreeMap::new(),
+            recording_output_root: std::env::var_os("DCC_CUA_RECORDING_OUTPUT_ROOT")
+                .map(Into::into),
         }
     }
 
@@ -310,7 +317,7 @@ impl TaskAuthorizationServer {
                     Err(message) => tool_error(message),
                 });
             }
-            "stop_task" => self.revoke_task(arguments),
+            "stop_task" => self.revoke_task(arguments).await,
             "task_status" => self.task_status(arguments),
             _ => Err(format!("unknown DCC-CUA MCP tool: {name}")),
         };
@@ -330,6 +337,26 @@ impl TaskAuthorizationServer {
             ));
         }
         validate_allowed_methods(input.surface, &input.allowed_methods)?;
+        validate_native_lifecycle_methods(&input.allowed_methods)?;
+        let requested_recording = input
+            .allowed_methods
+            .iter()
+            .any(|method| method.starts_with("recording_"));
+        if input.allow_recording != requested_recording
+            || (input.allow_recording
+                && (input.observation_mode != TaskObservationMode::PixelsOnly
+                    || input.surface != TaskSurface::Window
+                    || !["recording_start", "recording_state", "recording_stop"]
+                        .iter()
+                        .all(|required| {
+                            input
+                                .allowed_methods
+                                .iter()
+                                .any(|method| method == required)
+                        })))
+        {
+            return Err("recording methods require explicit allow_recording=true on a pixels_only window task".into());
+        }
         if input.observation_mode == TaskObservationMode::PixelsOnly {
             if input.surface != TaskSurface::Window
                 || !matches!(input.target_process_id, Some(pid) if pid != 0)
@@ -439,7 +466,7 @@ impl TaskAuthorizationServer {
             return Err("too many live tasks".into());
         }
         let proposal_id = format!("task-{}", Uuid::new_v4());
-        let registration = TrustedTaskAuthorizationRegistration {
+        let mut registration = TrustedTaskAuthorizationRegistration {
             connection_id: None,
             task_id: None,
             task_grant_id: format!("task-grant-{}", Uuid::new_v4()),
@@ -449,9 +476,24 @@ impl TaskAuthorizationServer {
             allowed_actions: input.allowed_actions,
             allowed_browser_origins,
             browser_scope: None,
+            recording_output_dir: None,
             expires_at_unix_ms: now.saturating_add(input.ttl_minutes * 60_000),
         };
         registration.validate().map_err(|error| error.to_string())?;
+        if input.allow_recording {
+            let root = self.recording_output_root.as_ref().ok_or_else(||
+                "recording requires operator configuration DCC_CUA_RECORDING_OUTPUT_ROOT; callers cannot nominate an output root".to_owned())?;
+            let root_text = root
+                .to_str()
+                .ok_or_else(|| "recording output root must be Unicode".to_owned())?;
+            TrustedTaskAuthorizationRegistration::validate_recording_directory(root_text)
+                .map_err(|error| error.to_string())?;
+            let directory = root.join(&proposal_id);
+            std::fs::create_dir(&directory)
+                .map_err(|error| format!("create owned recording task directory: {error}"))?;
+            registration.recording_output_dir = Some(directory.to_string_lossy().into_owned());
+            registration.validate().map_err(|error| error.to_string())?;
+        }
         let receipt = authority
             .issuer
             .register(registration.clone())
@@ -463,7 +505,9 @@ impl TaskAuthorizationServer {
             registration,
             receipt: Some(receipt),
             session: None,
+            session_open_attempted: false,
             revoked: false,
+            cleanup: None,
         };
         let payload = proposal_payload(&proposal_id, &proposal, "ready");
         self.proposals.insert(proposal_id, proposal);
@@ -479,19 +523,17 @@ impl TaskAuthorizationServer {
         match self.start_task(json!({"task_id": proposal_id})).await {
             Ok(started) => Ok(started),
             Err(error) => {
-                if let Some(task) = self.proposals.get_mut(&proposal_id) {
-                    if let Some(receipt) = task.receipt.as_ref() {
-                        let _ = self.authority.issuer.revoke(&receipt.authorization_id);
-                    }
-                    task.revoked = true;
-                    task.session.take();
+                let cleanup = self.revoke_task(json!({"task_id":proposal_id})).await;
+                match cleanup {
+                    Ok(cleanup) if cleanup["status"] == "stopped" => Err(error),
+                    Ok(cleanup) => Err(format!("{error}; startup cleanup: {cleanup}")),
+                    Err(cleanup) => Err(format!("{error}; startup cleanup failed: {cleanup}")),
                 }
-                Err(error)
             }
         }
     }
 
-    fn revoke_task(&mut self, arguments: Value) -> Result<Value, String> {
+    async fn revoke_task(&mut self, arguments: Value) -> Result<Value, String> {
         let authority = &self.authority;
         let proposal_id = required_string(&arguments, "task_id")?;
         let proposal = self
@@ -499,7 +541,11 @@ impl TaskAuthorizationServer {
             .get_mut(proposal_id)
             .ok_or_else(|| "task was not found".to_owned())?;
         if proposal.revoked {
-            return Ok(proposal_payload(proposal_id, proposal, "stopped"));
+            return Ok(proposal_payload(
+                proposal_id,
+                proposal,
+                stopped_task_status(proposal.cleanup.as_ref()),
+            ));
         }
         let receipt = proposal
             .receipt
@@ -510,8 +556,43 @@ impl TaskAuthorizationServer {
             .revoke(&receipt.authorization_id)
             .map_err(|error| error.to_string())?;
         proposal.revoked = true;
-        proposal.session.take();
-        Ok(proposal_payload(proposal_id, proposal, "stopped"))
+        proposal.cleanup = Some(match proposal.session.take() {
+            Some(session) => stop_owned_task_session(session).await,
+            None if !proposal.session_open_attempted => {
+                json!({"success":true,"active":false,"cleanup_pending":false,"cleanup_issues":[]})
+            }
+            None => json!({"success":false,"active":null,"cleanup_pending":true,
+                "error":"task session startup did not return an owned session cleanup acknowledgement"}),
+        });
+        Ok(proposal_payload(
+            proposal_id,
+            proposal,
+            stopped_task_status(proposal.cleanup.as_ref()),
+        ))
+    }
+
+    async fn shutdown_tasks(&mut self) -> Vec<Value> {
+        let ids = self.proposals.keys().cloned().collect::<Vec<_>>();
+        let mut failures = Vec::new();
+        for id in ids {
+            match self.revoke_task(json!({"task_id":id})).await {
+                Ok(result) if result["status"] == "stopped" => {}
+                Ok(result) => failures.push(result),
+                Err(error) => {
+                    // Even a lease-service failure must not silently drop an owned recorder.
+                    let cleanup = match self
+                        .proposals
+                        .get_mut(&id)
+                        .and_then(|task| task.session.take())
+                    {
+                        Some(session) => stop_owned_task_session(session).await,
+                        None => json!({"active":false,"cleanup_pending":false}),
+                    };
+                    failures.push(json!({"task_id":id,"error":error,"cleanup":cleanup}));
+                }
+            }
+        }
+        failures
     }
 
     async fn start_task(&mut self, arguments: Value) -> Result<Value, String> {
@@ -531,6 +612,7 @@ impl TaskAuthorizationServer {
             return Err("task runtime lease was not issued".into());
         }
         if proposal.session.is_none() {
+            proposal.session_open_attempted = true;
             proposal.session = Some(
                 open_task_session(&proposal_id, proposal, authority.authorization_host.clone())
                     .await?,
@@ -551,6 +633,7 @@ impl TaskAuthorizationServer {
             "target": target,
             "report_before_first_observation_or_input": true,
             "native_action_popups": false,
+            "recording_output_dir": proposal.registration.recording_output_dir,
         }))
     }
 
@@ -561,7 +644,7 @@ impl TaskAuthorizationServer {
             .get(proposal_id)
             .ok_or_else(|| "task was not found".to_owned())?;
         let status = if proposal.revoked {
-            "stopped"
+            stopped_task_status(proposal.cleanup.as_ref())
         } else if proposal.registration.expires_at_unix_ms <= unix_time_millis() {
             "expired"
         } else if proposal.session.is_some() {
@@ -577,11 +660,11 @@ impl TaskAuthorizationServer {
     async fn task_call(&mut self, arguments: Value) -> Result<Value, String> {
         let proposal_id = required_string(&arguments, "task_id")?.to_owned();
         let method = required_string(&arguments, "method")?.to_owned();
-        let params = arguments
+        let mut params = arguments
             .get("params")
             .filter(|value| value.is_object())
             .cloned()
-            .unwrap_or_else(|| json!({}));
+            .ok_or_else(|| "task call params must be an object".to_owned())?;
         validate_task_method_params(&method, &params)?;
         let proposal = self
             .proposals
@@ -610,6 +693,14 @@ impl TaskAuthorizationServer {
                 "call start_task and report provider/runtime/PID/HWND before the first observation or input"
                     .into(),
             );
+        }
+        if method == "recording_start" {
+            bind_recording_request(
+                &mut params,
+                proposal.registration.recording_output_dir.as_deref(),
+            )?;
+        } else if method == "live_observation_start" && params.get("request").is_none() {
+            params["request"] = json!({});
         }
         let response = proposal
             .session
@@ -700,6 +791,8 @@ fn task_session_grant(proposal: &TaskProposal, receipt: &TrustedTaskAuthorizatio
         "allow_clipboard_read": allow_clipboard,
         "allow_clipboard_write": allow_clipboard,
         "allow_live_observation": true,
+        "allow_recording": proposal.registration.recording_output_dir.is_some(),
+        "recording_output_dir": proposal.registration.recording_output_dir,
         "allow_browser_input": browser,
         "allow_browser_prepare": proposal.authorizes_existing_profile_prepare(),
         "allow_browser_download": allow_browser_download,
@@ -729,7 +822,7 @@ fn proposal_payload(proposal_id: &str, proposal: &TaskProposal, status: &str) ->
         }),
     };
     json!({
-        "ok": true,
+        "ok": !matches!(status, "cleanup_failed" | "cleanup_unknown"),
         "provider": "dcc-cua",
         "runtime_version": env!("CARGO_PKG_VERSION"),
         "task_id": proposal_id,
@@ -745,6 +838,8 @@ fn proposal_payload(proposal_id: &str, proposal: &TaskProposal, status: &str) ->
         "confirmation_required": false,
         "native_action_popups": false,
         "secrets_accepted": false,
+        "recording_output_dir": proposal.registration.recording_output_dir,
+        "cleanup": proposal.cleanup,
     })
 }
 
@@ -765,6 +860,12 @@ fn method_allowed(surface: TaskSurface, method: &str) -> bool {
             | "session_health"
             | "poll_session_events"
             | "clipboard_capture_secret"
+            | "live_observation_start"
+            | "live_observation_state"
+            | "live_observation_stop"
+            | "recording_start"
+            | "recording_state"
+            | "recording_stop"
     );
     common
         || matches!(
@@ -785,6 +886,57 @@ fn method_allowed(surface: TaskSurface, method: &str) -> bool {
 }
 
 fn validate_task_method_params(method: &str, params: &Value) -> Result<(), String> {
+    if matches!(
+        method,
+        "recording_state" | "recording_stop" | "live_observation_state" | "live_observation_stop"
+    ) && params.as_object().is_none_or(|params| !params.is_empty())
+    {
+        return Err("recording/live state and stop accept no caller parameters".into());
+    }
+    if matches!(method, "recording_start" | "live_observation_start") {
+        let object = params
+            .as_object()
+            .ok_or_else(|| "lifecycle parameters must be an object".to_owned())?;
+        if object.keys().any(|key| key != "request") {
+            return Err("lifecycle start accepts only its bounded request object".into());
+        }
+        if let Some(request) = object.get("request") {
+            let request = request
+                .as_object()
+                .ok_or_else(|| "lifecycle request must be an object".to_owned())?;
+            if method == "recording_start" {
+                if request
+                    .keys()
+                    .any(|key| !matches!(key.as_str(), "output_dir" | "record_video"))
+                    || request
+                        .get("record_video")
+                        .is_some_and(|value| value != &json!(true))
+                    || request
+                        .get("output_dir")
+                        .is_some_and(|value| !value.is_string())
+                {
+                    return Err("native recording is video-only and cannot override its authorized output directory".into());
+                }
+            } else if request
+                .keys()
+                .any(|key| !matches!(key.as_str(), "fps" | "max_dimension"))
+                || request.get("fps").is_some_and(|value| {
+                    value
+                        .as_u64()
+                        .is_none_or(|value| !(1..=30).contains(&value))
+                })
+                || request.get("max_dimension").is_some_and(|value| {
+                    value
+                        .as_u64()
+                        .is_none_or(|value| !(256..=4096).contains(&value))
+                })
+            {
+                return Err(
+                    "live observation requires fps 1..30 and max_dimension 256..4096".into(),
+                );
+            }
+        }
+    }
     if let Some(value) = params.get("capture_diagnostics") {
         if method != "snapshot" || !value.is_boolean() {
             return Err(
@@ -812,6 +964,84 @@ fn validate_task_method_params(method: &str, params: &Value) -> Result<(), Strin
         );
     }
     Ok(())
+}
+
+fn validate_native_lifecycle_methods(methods: &[String]) -> Result<(), String> {
+    for group in [
+        ["recording_start", "recording_state", "recording_stop"],
+        [
+            "live_observation_start",
+            "live_observation_state",
+            "live_observation_stop",
+        ],
+    ] {
+        if methods.iter().any(|method| method == group[0])
+            && !group
+                .iter()
+                .all(|required| methods.iter().any(|method| method == required))
+        {
+            return Err("recording/live start requires its state and stop methods in the same immutable task scope".into());
+        }
+    }
+    Ok(())
+}
+
+fn bind_recording_request(params: &mut Value, directory: Option<&str>) -> Result<(), String> {
+    let directory =
+        directory.ok_or_else(|| "native recording output was not authorized".to_owned())?;
+    validate_task_method_params("recording_start", params)?;
+    if params
+        .get("request")
+        .and_then(|request| request.get("output_dir"))
+        .is_some_and(|value| value.as_str() != Some(directory))
+    {
+        return Err(
+            "recording output directory does not match the immutable task authorization".into(),
+        );
+    }
+    params["request"] = json!({"output_dir":directory,"record_video":true});
+    Ok(())
+}
+
+async fn stop_owned_task_session(session: LogicalTaskSession) -> Value {
+    let session_id = session.session_id().to_owned();
+    let mut client = session.into_client();
+    match client
+        .request_with_timeout(
+            "stop_session",
+            json!({"session_id":session_id}),
+            std::time::Duration::from_secs(60),
+        )
+        .await
+    {
+        Ok(response)
+            if response.value["type"] == "session_stopped"
+                && response.value["session_id"] == session_id
+                && response.value["success"].is_boolean()
+                && response.value["active"] == false
+                && response.value["cleanup_pending"] == false =>
+        {
+            response.value
+        }
+        Ok(response) => json!({"success":false,"active":null,"cleanup_pending":true,
+            "error":"Host did not acknowledge authoritative session cleanup",
+            "host_response":response.value}),
+        Err(error) => json!({"success":false,"active":null,"cleanup_pending":true,
+            "error":error.to_string()}),
+    }
+}
+
+fn stopped_task_status(cleanup: Option<&Value>) -> &'static str {
+    match cleanup {
+        Some(cleanup) if cleanup["cleanup_pending"] == false && cleanup["active"] == false => {
+            if cleanup["success"] == true {
+                "stopped"
+            } else {
+                "cleanup_failed"
+            }
+        }
+        _ => "cleanup_unknown",
+    }
 }
 
 fn validate_allowed_methods(surface: TaskSurface, methods: &[String]) -> Result<(), String> {
@@ -972,7 +1202,7 @@ fn tool_definitions() -> Vec<Value> {
         json!({
             "name": "start_task",
             "title": "Start DCC-CUA task",
-            "description": "Start one exact bounded DCC-CUA task without a secondary confirmation step. The connected Agent Host owns user authorization. observation_mode defaults to semantic; explicitly choose pixels_only for an exact window snapshot without UIA or semantic selectors. Pixels-only tasks require complete exact-window capture proof and grant only native minimize_window or the advertised non-secret raw_input actions. Each input requires the latest observation and a foreground, unobscured, unchanged native instance.",
+            "description": "Start one exact bounded DCC-CUA task without a secondary confirmation step. The connected Agent Host owns user authorization. observation_mode defaults to semantic; explicitly choose pixels_only for an exact window snapshot without UIA or semantic selectors. Pixels-only tasks require complete exact-window capture proof and grant only native minimize_window or the advertised non-secret raw_input actions. Each input requires the latest observation and a foreground, unobscured, unchanged native instance. Explicit allow_recording=true grants native video-only recording_start/state/stop in an operator-owned task directory. Live observation and recording reuse the same native source, without an accessibility tree or trajectory.",
             "inputSchema": {
                 "type": "object",
                 "additionalProperties": false,
@@ -1003,11 +1233,32 @@ fn tool_definitions() -> Vec<Value> {
                             "allowed_browser_origins": {"maxItems": 0},
                             "allowed_methods": {"items": {"enum": [
                                 "get_window_state", "change_window_state", "minimize_window", "snapshot",
-                                "execute_action", "get_session_state", "get_input_state", "session_health", "poll_session_events"
+                                "execute_action", "get_session_state", "get_input_state", "session_health", "poll_session_events",
+                                "live_observation_start", "live_observation_state", "live_observation_stop",
+                                "recording_start", "recording_state", "recording_stop"
                             ]}},
                             "allowed_actions": {"items": pixels_action_scope_schema()}
                         }
                     }
+                }, {
+                    "if": {"required":["allow_recording"],"properties":{"allow_recording":{"const":true}}},
+                    "then": {"required":["observation_mode"],"properties":{
+                        "observation_mode":{"const":"pixels_only"},"surface":{"const":"window"},
+                        "allowed_methods":{"allOf":[
+                            {"contains":{"const":"recording_start"}},
+                            {"contains":{"const":"recording_state"}},
+                            {"contains":{"const":"recording_stop"}}
+                        ]}
+                    }}
+                }, {
+                    "if":{"properties":{"allowed_methods":{"contains":{"enum":["recording_start","recording_state","recording_stop"]}}}},
+                    "then":{"required":["allow_recording"],"properties":{"allow_recording":{"const":true}}}
+                }, {
+                    "if":{"properties":{"allowed_methods":{"contains":{"const":"live_observation_start"}}}},
+                    "then":{"properties":{"allowed_methods":{"allOf":[
+                        {"contains":{"const":"live_observation_state"}},
+                        {"contains":{"const":"live_observation_stop"}}
+                    ]}}}
                 }],
                 "properties": {
                     "application_label": {"type": "string", "minLength": 1, "maxLength": 80},
@@ -1024,6 +1275,8 @@ fn tool_definitions() -> Vec<Value> {
                     },
                     "surface": {"type": "string", "enum": ["window", "browser"]},
                     "observation_mode": {"type": "string", "enum": ["semantic", "pixels_only"], "default": "semantic"},
+                    "allow_recording": {"type":"boolean","default":false,
+                        "description":"Explicit native pixels video-only permission. Requires recording_start/state/stop and an operator-configured DCC_CUA_RECORDING_OUTPUT_ROOT. The server allocates an immutable task directory; callers cannot configure its root."},
                     "allowed_methods": {
                         "type": "array",
                         "minItems": 1,
@@ -1035,7 +1288,9 @@ fn tool_definitions() -> Vec<Value> {
                             "get_input_state", "session_health", "poll_session_events",
                             "clipboard_capture_secret", "browser_snapshot", "browser_prepare",
                             "browser_navigate", "browser_click", "browser_type", "browser_pointer",
-                            "browser_set_input_files", "browser_download", "browser_dialog"
+                            "browser_set_input_files", "browser_download", "browser_dialog",
+                            "live_observation_start", "live_observation_state", "live_observation_stop",
+                            "recording_start", "recording_state", "recording_stop"
                         ]}
                     },
                     "allowed_actions": {
@@ -1067,14 +1322,14 @@ fn tool_definitions() -> Vec<Value> {
         json!({
             "name": "stop_task",
             "title": "Stop DCC-CUA task",
-            "description": "Stop one exact DCC-CUA task and revoke its internal runtime lease.",
+            "description": "Revoke one exact task's runtime lease, then await Host session cleanup, including video and sidecar finalization. Cleanup errors or unknown acknowledgements remain visible; a dropped connection is not a successful stop.",
             "inputSchema": task_id_schema(),
             "annotations": {"readOnlyHint": false, "destructiveHint": true, "idempotentHint": true, "openWorldHint": false}
         }),
         json!({
             "name": "dcc_cua_task_call",
             "title": "Run DCC-CUA task call",
-            "description": "Call one closed Host method after start_task returned its provider/runtime/PID/HWND binding. A pixels_only snapshot yields a formal observation_id and accessibility_available=false, without semantic element tokens. Its optional capture_diagnostics boolean defaults to false; true adds bounded byte hashes, histograms, timing, and native provenance for the existing two captures without changing pixels or input authority. Semantic snapshots reject this diagnostic opt-in. Its execute_action requires a granted supported raw_input action and that latest observation_id; omit accessibility_state_id, element selectors, secret handles, and input_backend_id. Delivery is foreground only, without implicit activation. Use capture_after for a fresh pixel post-action observation; semantic post snapshots are refused. minimize_window requires the latest observation and same native instance, consumes it after an attempt, and reports native minimized state. change_window_state accepts only activate or restore_activate; take a fresh snapshot afterward. Out-of-scope, expired, stopped, changed, or stale targets fail without prompting. Never pass credential values; use secret handles in supported semantic/browser tasks.",
+            "description": "Call one closed Host method after start_task returned its provider/runtime/PID/HWND binding. A pixels_only snapshot yields a formal observation_id and accessibility_available=false, without semantic element tokens. Its optional capture_diagnostics boolean defaults to false; true adds bounded byte hashes, histograms, timing, and native provenance for the existing two captures without changing pixels or input authority. Semantic snapshots reject this diagnostic opt-in. Its execute_action requires a granted supported raw_input action and that latest observation_id; omit accessibility_state_id, element selectors, secret handles, and input_backend_id. Delivery is foreground only, without implicit activation. Use capture_after for a fresh pixel post-action observation; semantic post snapshots are refused. minimize_window requires the latest observation and same native instance, consumes it after an attempt, and reports native minimized state. change_window_state accepts only activate or restore_activate; take a fresh snapshot afterward. Out-of-scope, expired, stopped, changed, or stale targets fail without prompting. Recording requires explicit allow_recording and an immutable task output directory; call recording_start with an empty params object for video-only output. Granted live_observation_start/state/stop expose the same native source. Recording start validates the actual first encoded frame, state reports source pauses and failures, and stop awaits video/sidecar finalization. Never pass credential values; use secret handles in supported semantic/browser tasks.",
             "inputSchema": {
                 "type": "object",
                 "additionalProperties": false,
@@ -1092,6 +1347,23 @@ fn tool_definitions() -> Vec<Value> {
                             "description": "Opt-in content-free byte diagnostics on an explicit pixels_only snapshot only. No extra capture or input permission."
                         }}
                     }}}
+                }, {
+                    "if":{"properties":{"method":{"const":"recording_start"}}},
+                    "then":{"properties":{"params":{"type":"object","additionalProperties":false,
+                        "properties":{"request":{"type":"object","additionalProperties":false,
+                            "properties":{"record_video":{"const":true},"output_dir":{"type":"string",
+                                "description":"Optional exact task-authorized directory. The server supplies its immutable path and rejects a different value."}}}}
+                    }}}
+                }, {
+                    "if":{"properties":{"method":{"const":"live_observation_start"}}},
+                    "then":{"properties":{"params":{"type":"object","additionalProperties":false,
+                        "properties":{"request":{"type":"object","additionalProperties":false,
+                            "properties":{"fps":{"type":"integer","minimum":1,"maximum":30},
+                                "max_dimension":{"type":"integer","minimum":256,"maximum":4096}}}}
+                    }}}
+                }, {
+                    "if":{"properties":{"method":{"enum":["recording_state","recording_stop","live_observation_state","live_observation_stop"]}}},
+                    "then":{"properties":{"params":{"type":"object","maxProperties":0}}}
                 }]
             },
             "annotations": {"readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": true}
@@ -1109,10 +1381,11 @@ fn task_id_schema() -> Value {
 }
 
 fn tool_result(payload: Value) -> Value {
+    let is_error = payload.get("ok").and_then(Value::as_bool) == Some(false);
     json!({
         "content": [{"type": "text", "text": payload.to_string()}],
         "structuredContent": payload,
-        "isError": false,
+        "isError": is_error,
     })
 }
 
@@ -1137,59 +1410,77 @@ pub async fn run() -> Result<(), Box<dyn Error>> {
     let mut server = TaskAuthorizationServer::automatic();
     let mut input = BufReader::new(tokio::io::stdin());
     let mut output = BufWriter::new(tokio::io::stdout());
-    loop {
-        let mut line = Vec::new();
-        let count = (&mut input)
-            .take(dcc_cua_protocol::MAX_JSON_FRAME_BYTES as u64 + 1)
-            .read_until(b'\n', &mut line)
-            .await?;
-        if count == 0 {
-            break;
-        }
-        if count > dcc_cua_protocol::MAX_JSON_FRAME_BYTES {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "MCP request exceeds frame limit",
-            )
-            .into());
-        }
-        if line.iter().all(u8::is_ascii_whitespace) {
-            continue;
-        }
-        let decoded: Value = match serde_json::from_slice(&line) {
-            Ok(value) => value,
-            Err(_) => {
-                output
-                    .write_all(
-                        format!("{}\n", rpc_error(Value::Null, -32700, "Parse error")).as_bytes(),
-                    )
-                    .await?;
-                output.flush().await?;
+    let protocol_result: Result<(), Box<dyn Error>> = async {
+        loop {
+            let mut line = Vec::new();
+            let count = (&mut input)
+                .take(dcc_cua_protocol::MAX_JSON_FRAME_BYTES as u64 + 1)
+                .read_until(b'\n', &mut line)
+                .await?;
+            if count == 0 {
+                break;
+            }
+            if count > dcc_cua_protocol::MAX_JSON_FRAME_BYTES {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "MCP request exceeds frame limit",
+                )
+                .into());
+            }
+            if line.iter().all(u8::is_ascii_whitespace) {
                 continue;
             }
-        };
-        let mut responses = Vec::new();
-        if let Some(batch) = decoded.as_array() {
-            for message in batch {
-                if let Some(response) = server.handle_rpc(message.clone()).await {
-                    responses.push(response);
+            let decoded: Value = match serde_json::from_slice(&line) {
+                Ok(value) => value,
+                Err(_) => {
+                    output
+                        .write_all(
+                            format!("{}\n", rpc_error(Value::Null, -32700, "Parse error"))
+                                .as_bytes(),
+                        )
+                        .await?;
+                    output.flush().await?;
+                    continue;
                 }
+            };
+            let mut responses = Vec::new();
+            if let Some(batch) = decoded.as_array() {
+                for message in batch {
+                    if let Some(response) = server.handle_rpc(message.clone()).await {
+                        responses.push(response);
+                    }
+                }
+            } else if let Some(response) = server.handle_rpc(decoded).await {
+                responses.push(response);
             }
-        } else if let Some(response) = server.handle_rpc(decoded).await {
-            responses.push(response);
+            if responses.is_empty() {
+                continue;
+            }
+            let response = if responses.len() == 1 {
+                responses.remove(0)
+            } else {
+                Value::Array(responses)
+            };
+            output.write_all(format!("{response}\n").as_bytes()).await?;
+            output.flush().await?;
         }
-        if responses.is_empty() {
-            continue;
-        }
-        let response = if responses.len() == 1 {
-            responses.remove(0)
-        } else {
-            Value::Array(responses)
-        };
-        output.write_all(format!("{response}\n").as_bytes()).await?;
-        output.flush().await?;
+        Ok(())
     }
-    Ok(())
+    .await;
+    let cleanup_failures = server.shutdown_tasks().await;
+    if cleanup_failures.is_empty() {
+        protocol_result
+    } else {
+        Err(std::io::Error::other(format!(
+            "MCP shutdown cleanup failed: {}; transport: {}",
+            Value::Array(cleanup_failures),
+            protocol_result
+                .err()
+                .map(|error| error.to_string())
+                .unwrap_or_else(|| "closed".into())
+        ))
+        .into())
+    }
 }
 
 #[cfg(test)]

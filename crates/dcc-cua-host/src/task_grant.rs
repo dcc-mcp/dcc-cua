@@ -30,6 +30,12 @@ impl TaskObservationMode {
                     | "get_input_state"
                     | "session_health"
                     | "poll_session_events"
+                    | "live_observation_start"
+                    | "live_observation_state"
+                    | "live_observation_stop"
+                    | "recording_start"
+                    | "recording_state"
+                    | "recording_stop"
             )
     }
 }
@@ -65,6 +71,10 @@ pub(super) struct TaskGrant {
     pub(super) allow_recording: bool,
     #[serde(default)]
     pub(super) showcase_output_dir: Option<String>,
+    /// Manual recording is closed to a constructor-authorized exact directory;
+    /// unlike showcase_output_dir this never starts recording during attach.
+    #[serde(default)]
+    pub(super) recording_output_dir: Option<String>,
     #[serde(default)]
     pub(super) allow_live_observation: bool,
     #[serde(default)]
@@ -153,6 +163,25 @@ impl TaskGrant {
                 "showcase_output_dir requires allow_recording".into(),
             ));
         }
+        if self.recording_output_dir.is_some() && !self.allow_recording {
+            return Err(HostError::Protocol(
+                "recording_output_dir requires allow_recording".into(),
+            ));
+        }
+        if let Some(output_dir) = self.recording_output_dir.as_deref() {
+            validate_recording_output_dir(output_dir)?;
+        }
+        if self.observation_mode == TaskObservationMode::PixelsOnly && self.allow_recording {
+            if self.recording_output_dir.is_none()
+                || self.task_authorization_id.is_none()
+                || self.showcase_output_dir.is_some()
+                || !self.allow_live_observation
+            {
+                return Err(HostError::Protocol(
+                    "pixels_only recording requires trusted manual output authorization and live observation; automatic showcase attach is unavailable".into(),
+                ));
+            }
+        }
         if self.allowed_browser_origins.len() > 32
             || self
                 .allowed_browser_origins
@@ -219,6 +248,155 @@ impl TaskGrant {
                 "task authorization requires an exact nonzero process_id and window_handle before opening the session",
             )),
         }
+    }
+}
+
+/// Validate the immutable directory nominated by the trusted embedding. This
+/// does not grant it: the grant, lease and each start request must still agree.
+pub(crate) fn validate_recording_output_dir(value: &str) -> Result<(), HostError> {
+    use std::path::{Component, Path};
+    #[cfg(windows)]
+    let ordinary_root = matches!(Path::new(value).components().next(),
+        Some(Component::Prefix(prefix)) if matches!(prefix.kind(), std::path::Prefix::Disk(_)));
+    #[cfg(not(windows))]
+    let ordinary_root = true;
+    if value.is_empty()
+        || value != value.trim()
+        || value.len() > 4096
+        || value.chars().any(char::is_control)
+        || !ordinary_root
+        || value
+            .split(['/', '\\'])
+            .any(|part| matches!(part, "." | ".."))
+        || !Path::new(value).is_absolute()
+        || Path::new(value)
+            .components()
+            .any(|component| match component {
+                Component::CurDir | Component::ParentDir => true,
+                Component::Normal(name) => name
+                    .to_str()
+                    .is_none_or(|name| name.contains(':') || name.ends_with(['.', ' '])),
+                _ => false,
+            })
+    {
+        return Err(HostError::Protocol(
+            "recording_output_dir must be an exact absolute directory without traversal or alternate streams".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// A trusted path string must still name ordinary directories at use time.
+/// Reject reparse ancestors instead of silently following links outside the
+/// embedding-owned recording root. No directories are created by this check.
+pub(crate) fn validate_recording_output_location(value: &str) -> Result<(), HostError> {
+    validate_recording_output_dir(value)?;
+    for path in std::path::Path::new(value).ancestors() {
+        let metadata = std::fs::symlink_metadata(path).map_err(|_| {
+            HostError::Protocol(
+                "recording output must be a pre-created directory with ordinary ancestors".into(),
+            )
+        })?;
+        #[cfg(windows)]
+        let reparse = {
+            use std::os::windows::fs::MetadataExt;
+            metadata.file_attributes() & 0x400 != 0
+        };
+        #[cfg(not(windows))]
+        let reparse = metadata.file_type().is_symlink();
+        if !metadata.is_dir() || reparse {
+            return Err(HostError::Protocol(
+                "recording output cannot traverse a file, symlink or reparse directory".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod recording_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn grant() -> serde_json::Value {
+        json!({"task_grant_id":"grant","application_label":"Test",
+            "observation_mode":"pixels_only","process_id":42,"window_handle":77,
+            "allow_recording":true,"allow_live_observation":true,
+            "recording_output_dir":std::env::temp_dir().join("owned-recording").to_string_lossy(),
+            "task_authorization_id":"task-auth-test","task_authorization_window_capability":"window"})
+    }
+
+    #[test]
+    fn native_recording_grant_requires_explicit_trusted_manual_directory() {
+        serde_json::from_value::<TaskGrant>(grant())
+            .unwrap()
+            .validate_identity()
+            .unwrap();
+        for field in [
+            "recording_output_dir",
+            "task_authorization_id",
+            "allow_live_observation",
+        ] {
+            let mut value = grant();
+            value.as_object_mut().unwrap().remove(field);
+            assert!(
+                serde_json::from_value::<TaskGrant>(value)
+                    .unwrap()
+                    .validate_identity()
+                    .is_err(),
+                "{field}"
+            );
+        }
+        let mut automatic = grant();
+        automatic["showcase_output_dir"] = automatic["recording_output_dir"].clone();
+        assert!(
+            serde_json::from_value::<TaskGrant>(automatic)
+                .unwrap()
+                .validate_identity()
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn native_recording_directory_refuses_relative_traversal_and_alternate_streams() {
+        for value in ["relative", "", "  ", "bad\npath"] {
+            assert!(validate_recording_output_dir(value).is_err());
+        }
+        let directory = std::env::temp_dir().join("owned-recording");
+        for bad in [
+            directory.join("..").join("foreign"),
+            directory.join(".").join("foreign"),
+            directory.join("output:stream"),
+        ] {
+            assert!(validate_recording_output_dir(bad.to_str().unwrap()).is_err());
+        }
+        #[cfg(windows)]
+        for value in [
+            r"\\server\share\recording",
+            r"\\?\C:\recording",
+            r"\\.\C:\recording",
+            r"C:relative",
+            r"C:\recording.\clip",
+            r"C:\recording \clip",
+        ] {
+            assert!(validate_recording_output_dir(value).is_err(), "{value}");
+        }
+    }
+
+    #[test]
+    fn native_recording_public_method_scope_is_explicit_without_semantic_access() {
+        for method in [
+            "live_observation_start",
+            "live_observation_state",
+            "live_observation_stop",
+            "recording_start",
+            "recording_state",
+            "recording_stop",
+        ] {
+            assert!(TaskObservationMode::PixelsOnly.permits_method(method));
+        }
+        assert!(!TaskObservationMode::PixelsOnly.permits_method("accessibility_snapshot"));
+        assert!(!TaskObservationMode::PixelsOnly.permits_method("call_tool"));
     }
 }
 

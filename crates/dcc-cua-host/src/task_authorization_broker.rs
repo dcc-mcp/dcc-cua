@@ -34,6 +34,9 @@ pub struct TrustedTaskAuthorizationRegistration {
     pub allowed_actions: Vec<TrustedTaskActionScope>,
     pub allowed_browser_origins: Vec<String>,
     pub browser_scope: Option<TrustedTaskAuthorizationBrowserScope>,
+    /// An exact pre-created directory owned by the authenticated embedding.
+    /// It is immutable for this registration and never nominated through Host IPC.
+    pub recording_output_dir: Option<String>,
     pub expires_at_unix_ms: u64,
 }
 
@@ -58,6 +61,17 @@ pub struct TrustedTaskAuthorizationReceipt {
 }
 
 impl TrustedTaskAuthorizationRegistration {
+    /// Validate the operator-owned recording root before allocating a task
+    /// directory. This read-only check grants no task or filesystem authority.
+    pub fn validate_recording_directory(
+        directory: &str,
+    ) -> Result<(), TrustedTaskAuthorizationBrokerError> {
+        crate::task_grant::validate_recording_output_location(directory)
+            .map_err(|_| TrustedTaskAuthorizationBrokerError::InvalidRegistration {
+                reason: "recording output must be an existing ordinary absolute directory without reparse ancestors".into(),
+            })
+    }
+
     /// Validate a proposed exact task scope before presenting it to a user.
     pub fn validate(&self) -> Result<(), TrustedTaskAuthorizationBrokerError> {
         validate_registration(self)
@@ -247,6 +261,7 @@ impl TrustedTaskAuthorizationHost for BrokerHost {
             allowed_host_methods: registration.allowed_host_methods.clone(),
             allowed_browser_origins: registration.allowed_browser_origins.clone(),
             browser_scope: registration.browser_scope.clone(),
+            recording_output_dir: registration.recording_output_dir.clone(),
             issued_at_unix_ms: now,
             expires_at_unix_ms: registration.expires_at_unix_ms,
             request_digest: request.request_digest,
@@ -389,6 +404,25 @@ fn validate_registration(
         .allowed_browser_origins
         .iter()
         .collect::<BTreeSet<_>>();
+    if let Some(directory) = registration.recording_output_dir.as_deref() {
+        if !matches!(
+            registration.target,
+            TrustedTaskAuthorizationTarget::ExactWindow { .. }
+        ) || crate::task_grant::validate_recording_output_location(directory).is_err()
+            || !["recording_start", "recording_state", "recording_stop"]
+                .iter()
+                .all(|required| {
+                    registration
+                        .allowed_host_methods
+                        .iter()
+                        .any(|method| method == required)
+                })
+        {
+            return invalid(
+                "manual recording requires an exact window, a pre-created ordinary directory, and start/state/stop methods",
+            );
+        }
+    }
     if origins.len() != registration.allowed_browser_origins.len()
         || origins.len() > MAX_TASK_AUTHORIZATION_ACTIONS
         || origins

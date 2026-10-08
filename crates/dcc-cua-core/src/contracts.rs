@@ -739,6 +739,7 @@ pub struct ComputerUseMarker {
 #[serde(rename_all = "snake_case")]
 pub enum ComputerUseCleanupPhase {
     RecordingStop,
+    LiveObservationStop,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -759,12 +760,51 @@ impl ComputerUseCleanupIssue {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ComputerUseRecordingCleanupOutcome {
+    pub active: bool,
+    pub finalized: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub manifest_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_partial: Option<String>,
+    pub segment_paths: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub capture_sidecar: Option<ComputerUseRecordingSidecarOutcome>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_code: Option<ComputerUseErrorCode>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ComputerUseRecordingSidecarOutcome {
+    pub path: String,
+    pub sha256: String,
+    pub records: u64,
+    pub frames: u64,
+    pub finalized: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ComputerUseLiveObservationCleanupOutcome {
+    pub active: bool,
+    pub cleanup_complete: bool,
+    pub cleanup_pending: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stream_id: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ComputerUseSessionStopResult {
     pub success: bool,
     pub active: bool,
     pub cleanup_pending: bool,
     pub cleanup_issues: Vec<ComputerUseCleanupIssue>,
     pub marker: ComputerUseMarker,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recording_video: Option<ComputerUseRecordingCleanupOutcome>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub live_observation: Option<ComputerUseLiveObservationCleanupOutcome>,
 }
 
 impl ComputerUseSessionStopResult {
@@ -778,6 +818,14 @@ impl ComputerUseSessionStopResult {
             cleanup_pending: false,
             cleanup_issues,
             marker,
+            recording_video: None,
+            live_observation: None,
         }
+    }
+
+    pub(crate) fn with_cleanup_pending(mut self, pending: bool) -> Self {
+        self.cleanup_pending = pending;
+        self.success &= !pending;
+        self
     }
 }

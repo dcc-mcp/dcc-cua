@@ -558,8 +558,34 @@ impl ComputerUseSession {
         self.post_action_live_sequence_fence = None;
         self.observation_transition_live_sequence_fence = None;
         let result = match self.live_observation.take() {
-            Some(observation) => observation.stop().await,
-            None => json!({"active": false}),
+            Some(observation) => {
+                self.local_cleanup.source_pending = true;
+                self.local_cleanup.last_source = Some(json!({"active":false,
+                    "stream_id":observation.stream_id(),
+                    "cleanup_complete":false,"cleanup_pending":true}));
+                let result = observation.stop().await;
+                self.local_cleanup.source_pending = result["cleanup_complete"] != true;
+                if self.local_cleanup.source_pending {
+                    self.local_cleanup.remember(
+                        ComputerUseCleanupPhase::LiveObservationStop,
+                        ComputerUseError::new(
+                            ComputerUseErrorCode::CompletionUnknown,
+                            result["cleanup_error"]
+                                .as_str()
+                                .unwrap_or("live observation shutdown has not been acknowledged"),
+                        ),
+                    );
+                }
+                self.local_cleanup.last_source = Some(result.clone());
+                result
+            }
+            None => self.local_cleanup.last_source.clone().unwrap_or_else(|| {
+                json!({
+                    "active":false,
+                    "cleanup_complete": !self.local_cleanup.source_pending,
+                    "cleanup_pending": self.local_cleanup.source_pending,
+                })
+            }),
         };
         self.set_banner_live_observation(false);
         self.set_banner_activity(BannerActivity::Ready);

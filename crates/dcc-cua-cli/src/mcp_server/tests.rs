@@ -4,7 +4,341 @@ use serde_json::{Value, json};
 use super::*;
 
 fn test_server() -> TaskAuthorizationServer {
-    TaskAuthorizationServer::automatic()
+    let mut server = TaskAuthorizationServer::automatic();
+    server.recording_output_root = None;
+    server
+}
+
+fn native_recording_task() -> Value {
+    let mut task = pixels_task();
+    task["allowed_methods"] = json!(["recording_start", "recording_state", "recording_stop"]);
+    task["allowed_actions"] = json!([]);
+    task["allow_recording"] = json!(true);
+    task
+}
+
+#[test]
+fn native_recording_public_scope_requires_operator_owned_output_and_complete_lifecycle() {
+    assert!(
+        test_server()
+            .prepare_task(native_recording_task())
+            .unwrap_err()
+            .contains("operator configuration")
+    );
+    let root = tempfile::tempdir().unwrap();
+    let mut server = test_server();
+    server.recording_output_root = Some(root.path().to_owned());
+    for (field, value) in [
+        ("allow_recording", json!(false)),
+        ("allowed_methods", json!(["recording_state"])),
+        (
+            "allowed_methods",
+            json!(["recording_start", "recording_state"]),
+        ),
+        ("observation_mode", json!("semantic")),
+        ("recording_output_dir", json!("caller-owned")),
+        ("recording_output_root", json!("caller-owned")),
+    ] {
+        let mut task = native_recording_task();
+        task[field] = value;
+        assert!(server.prepare_task(task).is_err(), "{field}");
+    }
+    assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
+    let prepared = server.prepare_task(native_recording_task()).unwrap();
+    let proposal = &server.proposals[prepared["task_id"].as_str().unwrap()];
+    let directory = proposal.registration.recording_output_dir.as_ref().unwrap();
+    assert_eq!(std::path::Path::new(directory).parent(), Some(root.path()));
+    assert!(std::path::Path::new(directory).is_dir());
+    let grant = task_session_grant(proposal, proposal.receipt.as_ref().unwrap());
+    assert_eq!(grant["allow_recording"], true);
+    assert_eq!(grant["recording_output_dir"], *directory);
+    assert!(grant["showcase_output_dir"].is_null());
+    assert_eq!(grant["allow_raw_input"], false);
+    let mut params = json!({});
+    bind_recording_request(&mut params, Some(directory)).unwrap();
+    assert_eq!(
+        params,
+        json!({"request":{"record_video":true,"output_dir":directory}})
+    );
+    assert!(
+        bind_recording_request(
+            &mut json!({"request":{"output_dir":"elsewhere"}}),
+            Some(directory)
+        )
+        .is_err()
+    );
+    assert!(bind_recording_request(&mut json!({}), None).is_err());
+}
+
+#[rstest]
+#[case("recording_start", json!({}), true)]
+#[case("recording_start", json!({"request":{"record_video":true}}), true)]
+#[case("recording_start", json!({"request":{"record_video":false}}), false)]
+#[case("recording_start", json!({"request":{"record_video":1}}), false)]
+#[case("recording_start", json!({"request":{"trajectory":true}}), false)]
+#[case("recording_start", json!({"output_dir":"outside"}), false)]
+#[case("recording_state", json!({"output_dir":"outside"}), false)]
+#[case("recording_stop", json!({}), true)]
+#[case("live_observation_start", json!({"request":{"fps":30,"max_dimension":256}}), true)]
+#[case("live_observation_start", json!({"request":{"fps":31}}), false)]
+#[case("live_observation_start", json!({"request":{"fps":1.5}}), false)]
+#[case("live_observation_start", json!({"request":{"max_dimension":4097}}), false)]
+#[case("live_observation_start", json!({"request":{"capture_backend":"unguarded"}}), false)]
+#[case("live_observation_stop", json!({"session_id":"other"}), false)]
+fn native_recording_requests_are_bounded(
+    #[case] method: &str,
+    #[case] params: Value,
+    #[case] allowed: bool,
+) {
+    assert_eq!(
+        validate_task_method_params(method, &params).is_ok(),
+        allowed
+    );
+}
+
+// A real framed client transport with no driver or native application.
+async fn cleanup_mock_session(
+    response: Option<Value>,
+) -> (LogicalTaskSession, tokio::task::JoinHandle<()>) {
+    cleanup_mock_session_with_calls(response, Vec::new()).await
+}
+
+async fn cleanup_mock_session_with_calls(
+    response: Option<Value>,
+    calls: Vec<(&'static str, Value, Value)>,
+) -> (LogicalTaskSession, tokio::task::JoinHandle<()>) {
+    use dcc_cua_protocol::{MAX_JSON_FRAME_BYTES, read_frame, write_frame};
+    let (client_stream, mut host_stream) = tokio::io::duplex(16 * 1024);
+    let server = tokio::spawn(async move {
+        for mut value in [
+            json!({"type":"hello","capabilities":[]}),
+            json!({"type":"session_opened","session_id":"cleanup-session","window_capability":"cleanup-cap","target":{"process_id":42,"window_handle":7}}),
+        ] {
+            let request: Value = serde_json::from_slice(
+                &read_frame(&mut host_stream, MAX_JSON_FRAME_BYTES)
+                    .await
+                    .unwrap()
+                    .unwrap(),
+            )
+            .unwrap();
+            value["request_id"] = request["request_id"].clone();
+            write_frame(
+                &mut host_stream,
+                &serde_json::to_vec(&value).unwrap(),
+                MAX_JSON_FRAME_BYTES,
+            )
+            .await
+            .unwrap();
+        }
+        for (method, request, mut response) in calls {
+            let actual: Value = serde_json::from_slice(
+                &read_frame(&mut host_stream, MAX_JSON_FRAME_BYTES)
+                    .await
+                    .unwrap()
+                    .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(actual["method"], method);
+            assert_eq!(actual["params"]["session_id"], "cleanup-session");
+            assert_eq!(actual["params"]["task_grant_id"], "cleanup-grant");
+            assert_eq!(actual["params"]["window_capability"], "cleanup-cap");
+            assert_eq!(actual["params"]["request"], request);
+            response["request_id"] = actual["request_id"].clone();
+            write_frame(
+                &mut host_stream,
+                &serde_json::to_vec(&response).unwrap(),
+                MAX_JSON_FRAME_BYTES,
+            )
+            .await
+            .unwrap();
+        }
+        let stop: Value = serde_json::from_slice(
+            &read_frame(&mut host_stream, MAX_JSON_FRAME_BYTES)
+                .await
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(stop["method"], "stop_session");
+        assert_eq!(stop["params"]["session_id"], "cleanup-session");
+        if let Some(mut response) = response {
+            response["request_id"] = stop["request_id"].clone();
+            write_frame(
+                &mut host_stream,
+                &serde_json::to_vec(&response).unwrap(),
+                MAX_JSON_FRAME_BYTES,
+            )
+            .await
+            .unwrap();
+        }
+    });
+    let mut client =
+        HostClient::from_stream_with_transport(client_stream, SnapshotTransport::BinaryFrame);
+    client.hello("pure-cleanup-test").await.unwrap();
+    let session = client
+        .open_logical_task_session(
+            "cleanup-session",
+            json!({"task_grant_id":"cleanup-grant"}),
+            60_000,
+        )
+        .await
+        .unwrap();
+    (session, server)
+}
+
+#[tokio::test]
+async fn native_recording_public_calls_keep_the_same_session_and_bind_output() {
+    let root = tempfile::tempdir().unwrap();
+    let mut server = test_server();
+    server.recording_output_root = Some(root.path().to_owned());
+    let mut task = native_recording_task();
+    task["allowed_methods"] = json!([
+        "recording_start",
+        "recording_state",
+        "recording_stop",
+        "live_observation_start",
+        "live_observation_state",
+        "live_observation_stop"
+    ]);
+    let prepared = server.prepare_task(task).unwrap();
+    let id = prepared["task_id"].as_str().unwrap();
+    let directory = prepared["recording_output_dir"].as_str().unwrap();
+    let pairs = [
+        (
+            "live_observation_start",
+            json!({}),
+            "live_observation_started",
+        ),
+        (
+            "live_observation_state",
+            Value::Null,
+            "live_observation_state",
+        ),
+        (
+            "recording_start",
+            json!({"record_video":true,"output_dir":directory}),
+            "recording_started",
+        ),
+        ("recording_state", Value::Null, "recording_state"),
+        ("recording_stop", Value::Null, "recording_stopped"),
+        (
+            "live_observation_stop",
+            Value::Null,
+            "live_observation_stopped",
+        ),
+    ];
+    let (session, fake_host) = cleanup_mock_session_with_calls(
+        Some(json!({"type":"session_stopped","session_id":"cleanup-session","success":true,"active":false,"cleanup_pending":false})),
+        pairs.iter().map(|(method,request,response)| (*method,request.clone(),json!({"type":response,"session_id":"cleanup-session","result":{"backend":"pure_mock","trajectory_available":false}}))).collect()
+    ).await;
+    server.proposals.get_mut(id).unwrap().session = Some(session);
+    for method in [
+        "live_observation_start",
+        "live_observation_state",
+        "recording_start",
+        "recording_state",
+        "recording_stop",
+        "live_observation_stop",
+    ] {
+        let result = server
+            .task_call(json!({"task_id":id,"method":method,"params":{}}))
+            .await
+            .unwrap();
+        assert_eq!(result["structuredContent"]["session_id"], "cleanup-session");
+        assert_eq!(result["structuredContent"]["task_context"]["task_id"], id);
+        assert_eq!(
+            result["structuredContent"]["result"]["backend"],
+            "pure_mock"
+        );
+    }
+    let stopped = server.revoke_task(json!({"task_id":id})).await.unwrap();
+    assert_eq!(stopped["status"], "stopped");
+    fake_host.await.unwrap();
+}
+
+#[rstest]
+#[case(Some(json!({"type":"session_stopped","session_id":"cleanup-session","success":true,"active":false,"cleanup_pending":false})), "stopped")]
+#[case(Some(json!({"type":"session_stopped","session_id":"cleanup-session","success":false,"active":false,"cleanup_pending":false,"cleanup_issues":[{"component":"recording","message":"encoder failed"}]})), "cleanup_failed")]
+#[case(Some(json!({"type":"session_stopped","session_id":"wrong","success":true,"active":false,"cleanup_pending":false})), "cleanup_unknown")]
+#[case(Some(json!({"type":"session_stopped","session_id":"cleanup-session","success":true,"active":false})), "cleanup_unknown")]
+#[case(None, "cleanup_unknown")]
+#[tokio::test]
+async fn native_recording_task_stop_preserves_authoritative_cleanup(
+    #[case] response: Option<Value>,
+    #[case] expected: &str,
+) {
+    let (session, fake_host) = cleanup_mock_session(response).await;
+    let mut server = test_server();
+    let mut task = pixels_task();
+    task["allowed_actions"] = json!([]);
+    task["allowed_methods"] = json!(["snapshot"]);
+    let prepared = server.prepare_task(task).unwrap();
+    let id = prepared["task_id"].as_str().unwrap();
+    server.proposals.get_mut(id).unwrap().session = Some(session);
+    let stopped = server.revoke_task(json!({"task_id":id})).await.unwrap();
+    assert_eq!(stopped["status"], expected);
+    assert_eq!(stopped["ok"], expected == "stopped");
+    if expected == "cleanup_failed" {
+        assert_eq!(
+            stopped["cleanup"]["cleanup_issues"][0]["component"],
+            "recording"
+        );
+    }
+    assert_eq!(
+        server.revoke_task(json!({"task_id":id})).await.unwrap(),
+        stopped
+    );
+    assert_eq!(
+        server.task_status(json!({"task_id":id})).unwrap()["status"],
+        expected
+    );
+    assert!(
+        server
+            .task_call(json!({"task_id":id,"method":"snapshot","params":{}}))
+            .await
+            .unwrap_err()
+            .contains("stopped")
+    );
+    fake_host.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_recording_mcp_shutdown_awaits_cleanup_and_reports_failures() {
+    let (session, fake_host) = cleanup_mock_session(Some(json!({"type":"session_stopped","session_id":"cleanup-session","success":false,"active":false,"cleanup_pending":false,"cleanup_issues":["partial video"]}))).await;
+    let mut server = test_server();
+    let prepared = server.prepare_task(pixels_task()).unwrap();
+    server
+        .proposals
+        .get_mut(prepared["task_id"].as_str().unwrap())
+        .unwrap()
+        .session = Some(session);
+    let failures = server.shutdown_tasks().await;
+    assert_eq!(failures.len(), 1);
+    assert_eq!(failures[0]["status"], "cleanup_failed");
+    assert_eq!(failures[0]["cleanup"]["cleanup_issues"][0], "partial video");
+    fake_host.await.unwrap();
+}
+
+#[tokio::test]
+async fn native_recording_start_without_an_owned_session_ack_cannot_claim_cleanup() {
+    let mut server = test_server();
+    let prepared = server.prepare_task(pixels_task()).unwrap();
+    let id = prepared["task_id"].as_str().unwrap();
+    server.proposals.get_mut(id).unwrap().session_open_attempted = true;
+    assert_eq!(
+        server.revoke_task(json!({"task_id":id})).await.unwrap()["status"],
+        "cleanup_unknown"
+    );
+    assert_eq!(server.shutdown_tasks().await.len(), 1);
+    let mut server = test_server();
+    let prepared = server.prepare_task(pixels_task()).unwrap();
+    assert!(
+        server
+            .task_call(json!({"task_id":prepared["task_id"],"method":"snapshot","params":[]}))
+            .await
+            .unwrap_err()
+            .contains("must be an object")
+    );
 }
 
 #[rstest]
@@ -876,7 +1210,7 @@ async fn capture_diagnostics_observation_only_stop_and_expiry_remain_closed() {
     task["allowed_actions"] = json!([]);
     let prepared = server.prepare_task(task.clone()).unwrap();
     let id = prepared["task_id"].as_str().unwrap();
-    server.revoke_task(json!({"task_id": id})).unwrap();
+    server.revoke_task(json!({"task_id": id})).await.unwrap();
     let error = server
         .task_call(
             json!({"task_id":id, "method":"snapshot", "params":{"capture_diagnostics":true}}),

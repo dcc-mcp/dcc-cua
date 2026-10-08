@@ -126,7 +126,7 @@ pub(crate) fn session_stopped_response(
     session_id: &str,
     result: ComputerUseSessionStopResult,
 ) -> Value {
-    json!({
+    let mut response = json!({
         "type": "session_stopped",
         "session_id": session_id,
         "success": result.success,
@@ -134,7 +134,14 @@ pub(crate) fn session_stopped_response(
         "cleanup_pending": result.cleanup_pending,
         "cleanup_issues": result.cleanup_issues,
         "marker": result.marker,
-    })
+    });
+    if let Some(video) = result.recording_video {
+        response["recording_video"] = json!(video);
+    }
+    if let Some(source) = result.live_observation {
+        response["live_observation"] = json!(source);
+    }
+    response
 }
 
 pub(crate) fn observed_window_state_response(

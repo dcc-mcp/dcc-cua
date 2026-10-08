@@ -40,8 +40,8 @@ mod pixel_observation;
 use pixel_observation::*;
 mod recording;
 pub(crate) use recording::{
-    RecordingHealth, RecordingKeepalive, RecordingVideoTerminalEvidence, aggregate_recording_state,
-    call_recording_tool_without_refresh, probe_recording_state,
+    LocalSessionCleanup, RecordingHealth, RecordingKeepalive, RecordingVideoTerminalEvidence,
+    aggregate_recording_state, call_recording_tool_without_refresh, probe_recording_state,
 };
 mod session;
 mod session_status;
@@ -1395,6 +1395,7 @@ pub struct ComputerUseSession {
     observation_transition_live_sequence_fence: Option<LiveObservationFence>,
     showcase: Option<ActiveShowcase>,
     last_recording_video: Option<RecordingVideoTerminalEvidence>,
+    local_cleanup: LocalSessionCleanup,
     recording_active: bool,
     recording_expected_video: bool,
     recording_health: Option<RecordingHealth>,

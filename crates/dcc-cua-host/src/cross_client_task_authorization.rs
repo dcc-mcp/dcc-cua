@@ -581,6 +581,7 @@ impl CrossClientTaskAuthorizationVerifier {
                 allowed_actions: challenge.allowed_actions,
                 allowed_browser_origins: challenge.allowed_browser_origins,
                 browser_scope,
+                recording_output_dir: None,
                 expires_at_unix_ms: receipt.decision.expires_at_unix_ms,
             })
             .map_err(map_broker_error)?;

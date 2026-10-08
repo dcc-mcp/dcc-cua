@@ -536,6 +536,7 @@ impl TrustedTaskAuthorizationHost for TaskAuthorizationHost {
             }],
             allowed_browser_origins: Vec::new(),
             browser_scope: None,
+            recording_output_dir: None,
             issued_at_unix_ms: now,
             expires_at_unix_ms: now + 60_000,
             request_digest: request.request_digest,
@@ -576,6 +577,152 @@ fn unix_time_millis() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_millis() as u64
+}
+
+#[rstest]
+#[tokio::test]
+async fn native_recording_authorization_binds_directory_target_and_video_before_core() {
+    let directory =
+        std::env::temp_dir().join(format!("dcc-cua-recording-scope-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir(&directory).unwrap();
+    let output = directory.to_str().unwrap().to_owned();
+    let (issuer, authority) = trusted_task_authorization_broker();
+    let mut registration = browser_credential_registration(unix_time_millis() + 60_000);
+    registration.connection_id = Some("connection-test".into());
+    registration.task_id = Some("session-1".into());
+    registration.application_label = "Test DCC".into();
+    registration.target = TrustedTaskAuthorizationTarget::ExactWindow {
+        process_id: 42,
+        window_handle: 77,
+    };
+    registration.allowed_host_methods = vec![
+        "recording_start".into(),
+        "recording_state".into(),
+        "recording_stop".into(),
+    ];
+    registration.allowed_actions.clear();
+    registration.allowed_browser_origins.clear();
+    registration.recording_output_dir = Some(output.clone());
+    let receipt = issuer.register(registration).unwrap();
+    let security = HostSecurityServices::default().with_task_authorization_host(authority.clone());
+    let grant_value = json!({"task_grant_id":"grant-1","application_label":"Test DCC",
+        "observation_mode":"pixels_only","process_id":42,"window_handle":77,
+        "allow_recording":true,"allow_live_observation":true,"recording_output_dir":output,
+        "task_authorization_id":receipt.authorization_id,"task_authorization_window_capability":receipt.window_capability});
+    let grant: TaskGrant = serde_json::from_value(grant_value.clone()).unwrap();
+    grant.validate_identity().unwrap();
+    let lease = crate::task_authorization_scope::preauthorize_task_session(
+        &security,
+        "connection-test",
+        &grant,
+        "session-1",
+        &receipt.window_capability,
+        false,
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(lease.recording_output_dir.as_deref(), Some(output.as_str()));
+    for (field, value) in [
+        (
+            "recording_output_dir",
+            json!(directory.join("elsewhere").to_str().unwrap()),
+        ),
+        ("allow_recording", json!(false)),
+        ("observation_mode", json!("semantic")),
+        ("process_id", json!(43)),
+        ("window_handle", json!(78)),
+        ("task_authorization_id", json!("unknown-authorization")),
+    ] {
+        let mut changed = grant_value.clone();
+        changed[field] = value;
+        let changed: TaskGrant = serde_json::from_value(changed).unwrap();
+        assert!(
+            crate::task_authorization_scope::preauthorize_task_session(
+                &security,
+                "connection-test",
+                &changed,
+                "session-1",
+                &receipt.window_capability,
+                false
+            )
+            .await
+            .is_err(),
+            "{field}"
+        );
+    }
+    let channel = ObservationOnlyTestChannel::default();
+    let driver = ComputerUseDriver::from_test_remote_channel(Arc::new(channel.clone())).unwrap();
+    let mut host = cached_host_session(&driver);
+    host.observation_mode = TaskObservationMode::PixelsOnly;
+    host.capability = receipt.window_capability.clone();
+    host.allow_recording = true;
+    host.allow_live_observation = true;
+    host.task_authorization_host = Some(authority);
+    host.task_authorization = Some(lease);
+    let mut sessions = ConnectionSessions::default();
+    sessions.connection_id = "connection-test".into();
+    sessions.windows.insert("session-1".into(), host);
+    let valid = json!({"method":"recording_start","params":{"session_id":"session-1","task_grant_id":"grant-1",
+        "window_capability":receipt.window_capability,"request":{"record_video":true,"output_dir":output}}});
+    let request = serde_json::from_value(valid.clone()).unwrap();
+    // Grant enforcement only: a valid native start is deliberately not executed.
+    crate::task_authorization_scope::enforce_task_authorized_method(&mut sessions, &request)
+        .unwrap();
+    for changed in [
+        json!({"output_dir":directory.join("outside").to_str().unwrap(),"record_video":true}),
+        json!({"output_dir":output,"record_video":false}),
+    ] {
+        let mut invalid = valid.clone();
+        invalid["params"]["request"] = changed;
+        let request = serde_json::from_value(invalid).unwrap();
+        assert!(
+            handle_request(
+                &driver,
+                &mut sessions,
+                &mut Some(SnapshotTransport::BinaryFrame),
+                &mut None,
+                &CancellationRegistry::default(),
+                request
+            )
+            .await
+            .is_err()
+        );
+    }
+    sessions
+        .windows
+        .get_mut("session-1")
+        .unwrap()
+        .allow_recording = false;
+    let request = serde_json::from_value(valid.clone()).unwrap();
+    assert!(
+        crate::task_authorization_scope::enforce_task_authorized_method(&mut sessions, &request)
+            .is_err()
+    );
+    sessions
+        .windows
+        .get_mut("session-1")
+        .unwrap()
+        .allow_recording = true;
+    issuer.revoke(&receipt.authorization_id).unwrap();
+    let request = serde_json::from_value(valid).unwrap();
+    assert!(
+        handle_request(
+            &driver,
+            &mut sessions,
+            &mut Some(SnapshotTransport::BinaryFrame),
+            &mut None,
+            &CancellationRegistry::default(),
+            request
+        )
+        .await
+        .is_err()
+    );
+    assert_eq!(
+        channel.exchanges.load(std::sync::atomic::Ordering::Relaxed),
+        0
+    );
+    std::fs::remove_dir(directory).unwrap();
 }
 
 #[rstest]
@@ -718,6 +865,7 @@ fn browser_credential_registration(
         }],
         allowed_browser_origins: vec!["https://chromewebstore.google.com".into()],
         browser_scope: None,
+        recording_output_dir: None,
         expires_at_unix_ms,
     }
 }
@@ -887,6 +1035,7 @@ async fn broker_binds_a_task_owned_browser_to_the_host_derived_target_once() {
             }],
             allowed_browser_origins: vec!["https://addons.mozilla.org".into()],
             browser_scope: None,
+            recording_output_dir: None,
             expires_at_unix_ms: unix_time_millis() + 60_000,
         })
         .unwrap();

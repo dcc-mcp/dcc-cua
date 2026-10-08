@@ -245,6 +245,8 @@ pub struct TrustedTaskAuthorizationLease {
     pub allowed_browser_origins: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub browser_scope: Option<TrustedTaskAuthorizationBrowserScope>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recording_output_dir: Option<String>,
     pub issued_at_unix_ms: u64,
     pub expires_at_unix_ms: u64,
     pub request_digest: String,
@@ -700,12 +702,27 @@ fn validate_lease(
     let valid_browser_scope = lease.browser_scope.as_ref().is_none_or(|scope| {
         scope.validate() && lease.allowed_browser_origins.as_slice() == [scope.origin.as_str()]
     });
+    let valid_recording_scope = lease
+        .recording_output_dir
+        .as_deref()
+        .is_none_or(|directory| {
+            crate::task_grant::validate_recording_output_dir(directory).is_ok()
+                && ["recording_start", "recording_state", "recording_stop"]
+                    .iter()
+                    .all(|required| {
+                        lease
+                            .allowed_host_methods
+                            .iter()
+                            .any(|method| method == required)
+                    })
+        });
     if !fields_match
         || !valid_time
         || !valid_methods
         || !valid_actions
         || !valid_origins
         || !valid_browser_scope
+        || !valid_recording_scope
     {
         return Err(task_authorization_required(
             "the trusted task authorization lease is invalid or out of scope",

@@ -47,6 +47,31 @@ impl LiveObservationTestPublisher {
 }
 
 impl LiveObservation {
+    pub(crate) fn from_test_panicking_worker() -> Self {
+        let mut source = Self::from_test_frame(99, 1);
+        source.task.abort();
+        source.task = tokio::spawn(async { panic!("injected owned source worker failure") });
+        source
+    }
+
+    pub(crate) fn from_test_shutdown_gate() -> (
+        Self,
+        tokio::sync::oneshot::Receiver<()>,
+        tokio::sync::oneshot::Sender<()>,
+    ) {
+        let mut source = Self::from_test_frame(99, 1);
+        source.task.abort();
+        let shutdown = source.shutdown.clone();
+        let (entered, acknowledgement) = tokio::sync::oneshot::channel();
+        let (release, released) = tokio::sync::oneshot::channel();
+        source.task = tokio::spawn(async move {
+            shutdown.cancelled().await;
+            let _ = entered.send(());
+            let _ = released.await;
+        });
+        (source, acknowledgement, release)
+    }
+
     pub(crate) fn from_test_frame(stream_id: u64, sequence: u64) -> Self {
         Self::from_test_stream(stream_id, sequence).0
     }
@@ -106,6 +131,23 @@ async fn stop_requests_shutdown_and_waits_for_worker_acknowledgement() {
 
     assert!(acknowledged.load(std::sync::atomic::Ordering::Acquire));
     assert_eq!(state["active"], false);
+    assert_eq!(state["cleanup_complete"], true);
+    assert_eq!(state["cleanup_pending"], false);
+}
+
+#[rstest]
+#[tokio::test]
+async fn native_recording_source_worker_failure_is_not_a_cleanup_acknowledgement() {
+    let state = LiveObservation::from_test_panicking_worker().stop().await;
+    assert_eq!(state["active"], false);
+    assert_eq!(state["cleanup_complete"], false);
+    assert_eq!(state["cleanup_pending"], true);
+    assert!(
+        state["cleanup_error"]
+            .as_str()
+            .unwrap()
+            .contains("injected owned source worker failure")
+    );
 }
 
 #[cfg(windows)]

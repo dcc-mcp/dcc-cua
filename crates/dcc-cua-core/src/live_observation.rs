@@ -759,8 +759,17 @@ impl LiveObservation {
 
     pub(crate) async fn stop(mut self) -> Value {
         self.shutdown.request();
-        let _ = (&mut self.task).await;
-        self.receiver.borrow().as_json(false, self.fps)
+        let joined = (&mut self.task).await;
+        let mut state = self.receiver.borrow().as_json(false, self.fps);
+        state["stream_id"] = json!(self.stream_id);
+        state["cleanup_complete"] = json!(joined.is_ok());
+        state["cleanup_pending"] = json!(joined.is_err());
+        if let Err(error) = joined {
+            state["cleanup_error"] = json!(format!(
+                "live observation worker did not acknowledge shutdown: {error}"
+            ));
+        }
+        state
     }
 }
 

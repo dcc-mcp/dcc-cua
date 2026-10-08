@@ -12,6 +12,7 @@ pub(crate) use gates::{
 use input_target_policy::reject_ambiguous_embedded_browser_navigation;
 mod browser;
 mod error_contracts;
+mod native_recording;
 mod observation;
 mod pixel_start;
 #[cfg(test)]
@@ -88,6 +89,7 @@ impl ComputerUseSession {
             observation_transition_live_sequence_fence: None,
             showcase: None,
             last_recording_video: None,
+            local_cleanup: LocalSessionCleanup::default(),
             recording_active: false,
             recording_expected_video: false,
             recording_health: None,
@@ -121,6 +123,7 @@ impl ComputerUseSession {
         &mut self,
         request: &ComputerUseSessionStartRequest,
     ) -> ComputerUseResult<Value> {
+        self.ensure_local_cleanup_reusable()?;
         if self.active {
             return Err(ComputerUseError::new(
                 ComputerUseErrorCode::InvalidAction,
@@ -478,6 +481,9 @@ impl ComputerUseSession {
     ) -> ComputerUseResult<Value> {
         validate_recording_start_request(request)?;
         self.ensure_active()?;
+        if self.uses_native_video_recording() {
+            return self.native_recording_start(request).await;
+        }
         self.require_observed_target_available().await?;
         if self.recording_active {
             return Err(ComputerUseError::new(
@@ -568,6 +574,9 @@ impl ComputerUseSession {
 
     /// Stop recording and return the finalized recording state.
     pub async fn recording_stop(&mut self) -> ComputerUseResult<Value> {
+        if self.uses_native_video_recording() {
+            return self.native_recording_stop().await;
+        }
         self.ensure_active()?;
         if !self.recording_active {
             return Err(ComputerUseError::new(
@@ -639,6 +648,9 @@ impl ComputerUseSession {
     /// Read the current recording state without exposing arbitrary CUA calls.
     pub async fn recording_state(&mut self) -> ComputerUseResult<Value> {
         self.ensure_active()?;
+        if self.uses_native_video_recording() {
+            return Ok(self.native_recording_state());
+        }
         // This is session-owned diagnostic state. It must remain queryable
         // when the target HWND disappears so callers can see a degraded lease
         // and stop the recording lifecycle without an unrelated target fence.
@@ -1295,22 +1307,16 @@ impl ComputerUseSession {
     }
 
     pub async fn stop(&mut self) -> ComputerUseResult<ComputerUseSessionStopResult> {
-        let mut cleanup_issues = Vec::new();
         if self.recording_active
             && let Err(error) = self.recording_stop().await
         {
-            cleanup_issues.push(ComputerUseCleanupIssue::from_error(
-                ComputerUseCleanupPhase::RecordingStop,
-                error,
-            ));
+            self.local_cleanup
+                .remember(ComputerUseCleanupPhase::RecordingStop, error);
         }
         self.stop_live_observation().await;
         if !self.active {
             self.invalidate_local_session().await;
-            return Ok(ComputerUseSessionStopResult::completed(
-                self.marker.clone(),
-                cleanup_issues,
-            ));
+            return Ok(self.local_stop_result());
         }
         self.set_banner_activity(BannerActivity::Stopping);
         let result = if self.target.is_some()
@@ -1332,26 +1338,13 @@ impl ComputerUseSession {
         };
         self.invalidate_local_session().await;
         result?;
-        Ok(ComputerUseSessionStopResult::completed(
-            self.marker.clone(),
-            cleanup_issues,
-        ))
+        Ok(self.local_stop_result())
     }
 
     async fn invalidate_local_session(&mut self) {
-        // Terminal input/transport failures must not leave any local presenter,
-        // capture producer, or recorder owning the target after the Host has
-        // declared this session unusable. Their Drop implementations abort the
-        // producer tasks; clean user-requested stops finalize them above first.
-        self.stop_recording_keepalive().await;
-        self.showcase.take();
-        self.live_observation.take();
-        self.post_action_live_sequence_fence = None;
-        self.observation_transition_live_sequence_fence = None;
-        self.recording_active = false;
-        self.set_banner_recording(false);
-        self.set_banner_live_observation(false);
-        self.control_banner.take();
+        // Revoke capability before the first await, including if the caller
+        // cancels cleanup. Owned drains below never probe a lost native target
+        // or the process-global upstream recording lease.
         self.active = false;
         self.upstream_session_state = UpstreamSessionState::Inactive;
         self.pixel_observation_route = None;
@@ -1359,6 +1352,54 @@ impl ComputerUseSession {
         self.marker.visible = false;
         self.target = None;
         self.invalidate_action_observations();
+        self.post_action_live_sequence_fence = None;
+        self.observation_transition_live_sequence_fence = None;
+        self.recording_active = false;
+        self.set_banner_recording(false);
+        self.set_banner_live_observation(false);
+        self.control_banner.take();
+        self.stop_recording_keepalive().await;
+        if self.showcase.is_some() {
+            let _ = self.finalize_owned_recording_video().await;
+        }
+        self.stop_live_observation().await;
+    }
+
+    fn local_stop_result(&self) -> ComputerUseSessionStopResult {
+        let mut result = ComputerUseSessionStopResult::completed(
+            self.marker.clone(),
+            self.local_cleanup.stop_issues(),
+        )
+        .with_cleanup_pending(self.local_cleanup.pending());
+        result.recording_video = self
+            .last_recording_video
+            .as_ref()
+            .map(RecordingVideoTerminalEvidence::cleanup_outcome);
+        if self.local_cleanup.last_source.is_some() || self.local_cleanup.source_pending {
+            let source = self.local_cleanup.last_source.as_ref();
+            result.live_observation = Some(ComputerUseLiveObservationCleanupOutcome {
+                active: false,
+                cleanup_complete: source.is_some_and(|source| source["cleanup_complete"] == true)
+                    && !self.local_cleanup.source_pending,
+                cleanup_pending: self.local_cleanup.source_pending,
+                stream_id: source.and_then(|source| source["stream_id"].as_u64()),
+            });
+        }
+        result
+    }
+
+    fn ensure_local_cleanup_reusable(&self) -> ComputerUseResult<()> {
+        if self.local_cleanup.pending() || !self.local_cleanup.issues.is_empty() {
+            return Err(ComputerUseError::new(
+                if self.local_cleanup.pending() {
+                    ComputerUseErrorCode::CompletionUnknown
+                } else {
+                    ComputerUseErrorCode::CaptureFailed
+                },
+                "previous owned cleanup is unresolved or failed; create a new session object",
+            ));
+        }
+        Ok(())
     }
 
     /// Read CUA's live capture policy for this exact session.
