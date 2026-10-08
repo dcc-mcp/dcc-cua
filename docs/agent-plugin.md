@@ -156,3 +156,13 @@ directories under `skills/`; `skills/cua-cli` is the base contract and
 The game workflow keeps the Host session alive so the user-facing ControlBanner
 remains visible. It uses bounded `keypress` actions with `duration_ms` for held
 WASD movement and requires fresh post-action evidence.
+
+For a byte-pipeline diagnostic on an explicitly bound `pixels_only` task, call
+`dcc_cua_task_call` with `method: "snapshot"` and
+`params: {"capture_diagnostics": true}`. The flag defaults to false; semantic
+snapshots reject the opt-in. The final observation's
+`capture_provenance.capture_diagnostics` contains SHA-256 digests of native BGRA
+and canonical PNG RGBA bytes, four bounded 256-bin channel histograms, timings,
+and separate provenance for the existing first and final captures. The fourth
+native byte is reported as a raw high byte, without an alpha interpretation.
+This adds no capture, normalization, retry, activation, or input permission.

@@ -10,6 +10,256 @@ use crate::task_authorization::{
     issue_task_authorization,
 };
 
+// This channel cannot reach a desktop or native driver. Even a regression that
+// crosses a Host authorization boundary records a failure rather than input.
+#[derive(Clone, Default)]
+struct ObservationOnlyTestChannel {
+    exchanges: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[async_trait::async_trait]
+impl cua_driver_sdk::remote::DriverEnvelopeChannel for ObservationOnlyTestChannel {
+    async fn negotiate(&self) -> Result<cua_driver_sdk::remote::DriverChannelCapabilities, String> {
+        Ok(cua_driver_sdk::remote::DriverChannelCapabilities {
+            minimum_envelope_version: cua_driver_sdk::remote::DRIVER_ENVELOPE_VERSION,
+            maximum_envelope_version: cua_driver_sdk::remote::DRIVER_ENVELOPE_VERSION,
+            supports_cancellation: true,
+        })
+    }
+    async fn exchange(
+        &self,
+        _: cua_driver_sdk::remote::DriverRequestEnvelope,
+    ) -> Result<cua_driver_sdk::remote::DriverResponseEnvelope, String> {
+        self.exchanges
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Err("observation-only authorization test forbids all driver dispatch".into())
+    }
+    async fn bind_session(
+        &self,
+        _: cua_driver_sdk::TrustedSessionOptions,
+    ) -> Result<Arc<dyn cua_driver_sdk::remote::DriverEnvelopeChannel>, String> {
+        Ok(Arc::new(self.clone()))
+    }
+    async fn close(&self) -> Result<(), String> {
+        Ok(())
+    }
+    async fn cancel(&self, _: &str) -> Result<(), String> {
+        Ok(())
+    }
+    fn authenticated_principal(&self) -> &str {
+        "observation-only-pure-test"
+    }
+    fn connection_generation(&self) -> &str {
+        "generation-1"
+    }
+}
+
+async fn observation_only_lease() -> (
+    TrustedTaskAuthorizationIssuer,
+    Arc<dyn TrustedTaskAuthorizationHost>,
+    TrustedTaskAuthorizationLease,
+) {
+    let (issuer, authority) = trusted_task_authorization_broker();
+    let mut registration = browser_credential_registration(unix_time_millis() + 60_000);
+    registration.connection_id = Some("connection-test".into());
+    registration.task_id = Some("session-1".into());
+    registration.application_label = "Test DCC".into();
+    registration.target = TrustedTaskAuthorizationTarget::ExactWindow {
+        process_id: 42,
+        window_handle: 77,
+    };
+    // Method names alone must never create an action scope, even if a caller
+    // declares input/minimize methods alongside observation methods.
+    registration.allowed_host_methods = vec![
+        "snapshot".into(),
+        "get_window_state".into(),
+        "change_window_state".into(),
+        "execute_action".into(),
+        "minimize_window".into(),
+    ];
+    registration.allowed_actions.clear();
+    registration.allowed_browser_origins.clear();
+    let receipt = issuer.register(registration).unwrap();
+    let lease = issue_task_authorization(
+        Some(authority.as_ref()),
+        TaskAuthorizationBinding::window(
+            "connection-test",
+            &receipt.authorization_id,
+            "session-1",
+            "grant-1",
+            "Test DCC",
+            &receipt.window_capability,
+            ConfirmationWindowIdentity {
+                process_id: 42,
+                window_handle: 77,
+            },
+        ),
+    )
+    .await
+    .unwrap();
+    (issuer, authority, lease)
+}
+
+#[rstest]
+#[tokio::test]
+async fn observation_only_authorization_registers_starts_and_refuses_all_input_and_minimize() {
+    let (_issuer, authority, lease) = observation_only_lease().await;
+    assert!(lease.allowed_actions.is_empty());
+    crate::task_authorization::validate_active_task_authorization(
+        Some(authority.as_ref()),
+        Some(&lease),
+    )
+    .await
+    .unwrap();
+    let channel = ObservationOnlyTestChannel::default();
+    let driver = ComputerUseDriver::from_test_remote_channel(Arc::new(channel.clone())).unwrap();
+    let mut host = cached_host_session(&driver);
+    host.observation_mode = TaskObservationMode::PixelsOnly;
+    host.capability = lease.window_capability.clone();
+    host.task_authorization_host = Some(authority);
+    host.task_authorization = Some(lease.clone());
+    host.allow_raw_input = true; // Stronger negative: a boolean cannot invent scopes.
+    host.require_task_authorized_method("snapshot").unwrap();
+    host.require_task_authorized_method("get_window_state")
+        .unwrap();
+    let mut sessions = ConnectionSessions::default();
+    sessions.connection_id = "connection-test".into();
+    sessions.windows.insert("session-1".into(), host);
+    for action_name in TrustedTaskActionScope::PIXELS_INPUT_ACTIONS {
+        let action: HostAction = serde_json::from_value(
+            json!({"action": action_name, "input_kind":"raw_input", "intent":"ordinary_edit"}),
+        )
+        .unwrap();
+        assert!(
+            sessions.windows["session-1"]
+                .require_pixels_input_grant("session-1", &action)
+                .is_err()
+        );
+        let request = serde_json::from_value(json!({"method":"execute_action", "params":{
+            "session_id":"session-1", "task_grant_id":"grant-1", "window_capability":lease.window_capability,
+            "observation_id":"observation-before-transition", "action":action, "capture_after":false
+        }})).unwrap();
+        let error = handle_request(
+            &driver,
+            &mut sessions,
+            &mut Some(SnapshotTransport::BinaryFrame),
+            &mut None,
+            &CancellationRegistry::default(),
+            request,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(
+                error,
+                HostError::CodedProtocol {
+                    code: HostProtocolErrorCode::TaskAuthorizationDenied,
+                    ..
+                }
+            ),
+            "{error:?}"
+        );
+    }
+    assert!(
+        sessions.windows["session-1"]
+            .require_minimize_grant("session-1")
+            .is_err()
+    );
+    let request = serde_json::from_value(json!({"method":"minimize_window", "params":{
+        "session_id":"session-1", "task_grant_id":"grant-1", "window_capability":lease.window_capability,
+        "observation_id":"observation-before-transition"
+    }})).unwrap();
+    let error = handle_request(
+        &driver,
+        &mut sessions,
+        &mut Some(SnapshotTransport::BinaryFrame),
+        &mut None,
+        &CancellationRegistry::default(),
+        request,
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        matches!(
+            error,
+            HostError::CodedProtocol {
+                code: HostProtocolErrorCode::TaskAuthorizationDenied,
+                ..
+            }
+        ),
+        "{error:?}"
+    );
+    assert_eq!(
+        channel.exchanges.load(std::sync::atomic::Ordering::Relaxed),
+        0
+    );
+}
+
+#[rstest]
+#[tokio::test]
+async fn observation_only_authorization_retains_exact_expiry_revocation_and_validator_fences() {
+    let (issuer, authority, lease) = observation_only_lease().await;
+    for field in [
+        "connection",
+        "session",
+        "grant",
+        "capability",
+        "pid",
+        "hwnd",
+        "digest",
+    ] {
+        let mut foreign = lease.clone();
+        match field {
+            "connection" => foreign.connection_id.push_str("-foreign"),
+            "session" => foreign.session_id.push_str("-foreign"),
+            "grant" => foreign.task_grant_id.push_str("-foreign"),
+            "capability" => foreign.window_capability.push_str("-foreign"),
+            "pid" => foreign.target_process_id += 1,
+            "hwnd" => foreign.target_window_handle += 1,
+            "digest" => foreign.request_digest.push_str("-foreign"),
+            _ => unreachable!(),
+        }
+        assert!(
+            crate::task_authorization::validate_active_task_authorization(
+                Some(authority.as_ref()),
+                Some(&foreign)
+            )
+            .await
+            .is_err(),
+            "{field}"
+        );
+    }
+    let mut expired = lease.clone();
+    expired.expires_at_unix_ms = unix_time_millis().saturating_sub(1);
+    assert!(
+        crate::task_authorization::validate_active_task_authorization(
+            Some(authority.as_ref()),
+            Some(&expired)
+        )
+        .await
+        .is_err()
+    );
+    assert!(
+        crate::task_authorization::validate_active_task_authorization(None, Some(&lease))
+            .await
+            .is_err()
+    );
+    issuer.revoke(&lease.authorization_id).unwrap();
+    let error = crate::task_authorization::validate_active_task_authorization(
+        Some(authority.as_ref()),
+        Some(&lease),
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(
+        error,
+        HostError::CodedProtocol {
+            code: HostProtocolErrorCode::TaskAuthorizationRevoked,
+            ..
+        }
+    ));
+}
+
 struct TaskAuthorizationHost {
     revoked: bool,
 }

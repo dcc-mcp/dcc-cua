@@ -1671,6 +1671,8 @@ impl ComputerUseDesktopSession {
 }
 
 struct ExactWindowCapture {
+    #[cfg(windows)]
+    diagnostics: Option<crate::capture_diagnostics::PixelBufferDiagnostics>,
     data: Vec<u8>,
     backend: &'static str,
     fallback: &'static str,
@@ -1965,7 +1967,17 @@ async fn capture_exact_window(
     process_id: u32,
     window_id: u64,
 ) -> ComputerUseResult<ExactWindowCapture> {
+    capture_exact_window_with_diagnostics(process_id, window_id, false).await
+}
+
+#[cfg(windows)]
+async fn capture_exact_window_with_diagnostics(
+    process_id: u32,
+    window_id: u64,
+    diagnostics_enabled: bool,
+) -> ComputerUseResult<ExactWindowCapture> {
     tokio::task::spawn_blocking(move || {
+        let capture_started = std::time::Instant::now();
         let generation = EXACT_WINDOW_CAPTURE_GENERATION.fetch_add(1, Ordering::Relaxed);
         let before = dcc_cua_platform_windows::exact_window_pixel_evidence(
             process_id,
@@ -1986,8 +1998,14 @@ async fn capture_exact_window(
             })?;
         if route == dcc_cua_platform_windows::ExactWindowCaptureRoute::VerifiedVisible {
             let visible = capture_verified_visible_bgra(process_id, window_id, before)?;
+            let capture_to_raw_elapsed = capture_started.elapsed();
+            let encoded = crate::capture_diagnostics::encode_exact_frame(
+                &visible.capture.bgra, visible.capture.width, visible.capture.height,
+                diagnostics_enabled, capture_to_raw_elapsed,
+            )?;
             return Ok(ExactWindowCapture {
-                data: encode_bgra_to_png(&visible.capture.bgra, visible.capture.width, visible.capture.height)?,
+                data: encoded.data,
+                diagnostics: encoded.diagnostics,
                 backend: "dcc-cua-visible-exact-window",
                 fallback: "same_executable_multi_window_exact_visible_proof",
                 mode: ExactWindowPixelCaptureMode::VisibleDesktopCrop,
@@ -2002,6 +2020,7 @@ async fn capture_exact_window(
             match dcc_cua_platform_windows::PersistentWgcCapture::new(process_id, window_id) {
             Ok(mut capture) => match capture.next_frame(Duration::from_secs(5)) {
                 Ok((bgra, width, height)) => {
+                    let capture_to_raw_elapsed = capture_started.elapsed();
                     if dcc_cua_platform_windows::exact_window_capture_route(
                         process_id,
                         window_id,
@@ -2028,8 +2047,12 @@ async fn capture_exact_window(
                         &after,
                         ExactWindowPixelCaptureMode::WindowContent,
                     )?;
+                    let encoded = crate::capture_diagnostics::encode_exact_frame(
+                        &bgra, width, height, diagnostics_enabled, capture_to_raw_elapsed,
+                    )?;
                     return Ok(ExactWindowCapture {
-                        data: encode_bgra_to_png(&bgra, width, height)?,
+                        data: encoded.data,
+                        diagnostics: encoded.diagnostics,
                         backend: "dcc-cua-wgc-exact-window",
                         fallback: "exact_window_wgc",
                         mode: ExactWindowPixelCaptureMode::WindowContent,
@@ -2049,8 +2072,14 @@ async fn capture_exact_window(
                 error.message = format!("exact WGC capture failed ({wgc_error}); {}", error.message);
                 error
             })?;
+        let capture_to_raw_elapsed = capture_started.elapsed();
+        let encoded = crate::capture_diagnostics::encode_exact_frame(
+            &visible.capture.bgra, visible.capture.width, visible.capture.height,
+            diagnostics_enabled, capture_to_raw_elapsed,
+        )?;
         Ok(ExactWindowCapture {
-            data: encode_bgra_to_png(&visible.capture.bgra, visible.capture.width, visible.capture.height)?,
+            data: encoded.data,
+            diagnostics: encoded.diagnostics,
             backend: "dcc-cua-visible-exact-window",
             fallback: "verified_same_process_visible_window_crop",
             mode: ExactWindowPixelCaptureMode::VisibleDesktopCrop,

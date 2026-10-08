@@ -698,3 +698,27 @@ fn app_requests_parse_with_host_params_frames() {
         Ok(Request::BrowserDialog { .. })
     ));
 }
+
+#[rstest]
+#[case(None, Some(false))]
+#[case(Some(json!(false)), Some(false))]
+#[case(Some(json!(true)), Some(true))]
+#[case(Some(json!("true")), None)]
+#[case(Some(json!(null)), None)]
+#[case(Some(json!(1)), None)]
+fn capture_diagnostics_snapshot_request_defaults_and_boolean_schema(
+    #[case] value: Option<Value>,
+    #[case] expected: Option<bool>,
+) {
+    let mut params = json!({"session_id":"s", "task_grant_id":"g", "window_capability":"c"});
+    if let Some(value) = value {
+        params["capture_diagnostics"] = value;
+    }
+    let request = serde_json::from_value::<Request>(json!({"method":"snapshot", "params":params}));
+    match expected {
+        Some(expected) => assert!(
+            matches!(request, Ok(Request::Snapshot { capture_diagnostics, activate_before: false, .. }) if capture_diagnostics == expected)
+        ),
+        None => assert!(request.is_err()),
+    }
+}

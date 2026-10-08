@@ -80,6 +80,16 @@ impl ComputerUseSession {
 
     /// Capture pixels for the exact PID/HWND without consulting accessibility.
     pub async fn screenshot_pixels_only(&mut self) -> ComputerUseResult<ComputerUseScreenshot> {
+        self.screenshot_pixels_only_with_diagnostics(false).await
+    }
+
+    /// Explicit opt-in byte summaries; available only on the pixels-only route.
+    pub async fn screenshot_pixels_only_with_diagnostics(
+        &mut self,
+        capture_diagnostics: bool,
+    ) -> ComputerUseResult<ComputerUseScreenshot> {
+        #[cfg(not(windows))]
+        let _ = capture_diagnostics;
         #[cfg(not(windows))]
         return Err(ComputerUseError::new(
             ComputerUseErrorCode::BackendUnavailable,
@@ -95,8 +105,12 @@ impl ComputerUseSession {
                 ));
             }
             let target = self.require_observed_target_available().await?;
-            self.capture_window_pixels(&target, PixelObservationRoute::ExplicitPixelsOnly)
-                .await
+            self.capture_window_pixels_with_diagnostics(
+                &target,
+                PixelObservationRoute::ExplicitPixelsOnly,
+                capture_diagnostics,
+            )
+            .await
         }
     }
 
@@ -748,6 +762,24 @@ impl ComputerUseSession {
         target: &WindowTarget,
         route: PixelObservationRoute,
     ) -> ComputerUseResult<ComputerUseScreenshot> {
+        self.capture_window_pixels_with_diagnostics(target, route, false)
+            .await
+    }
+
+    #[cfg(windows)]
+    async fn capture_window_pixels_with_diagnostics(
+        &mut self,
+        target: &WindowTarget,
+        route: PixelObservationRoute,
+        capture_diagnostics: bool,
+    ) -> ComputerUseResult<ComputerUseScreenshot> {
+        if capture_diagnostics && route != PixelObservationRoute::ExplicitPixelsOnly {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::InvalidAction,
+                "capture diagnostics require the explicit pixels_only observation route",
+            ));
+        }
+        let capture_operation_started = std::time::Instant::now();
         validate_exact_window_pixel_target_state(target, true)?;
         let _banner_capture_exclusion = self
             .control_banner
@@ -760,9 +792,16 @@ impl ComputerUseSession {
                     error,
                 )
             })?;
+        let exclusion_acknowledged = std::time::Instant::now();
         let capture = gated_exact_window_observation(
             interactive_desktop::require_exact_window_observation_available,
-            || capture_exact_window(target.pid, target.window_id),
+            || {
+                capture_exact_window_with_diagnostics(
+                    target.pid,
+                    target.window_id,
+                    capture_diagnostics,
+                )
+            },
         )
         .await;
         let capture = self.finish_observation_sensitive_attempt(capture)?;
@@ -778,7 +817,13 @@ impl ComputerUseSession {
             .await?;
         let final_capture = gated_exact_window_observation(
             interactive_desktop::require_exact_window_observation_available,
-            || capture_exact_window(after.pid, after.window_id),
+            || {
+                capture_exact_window_with_diagnostics(
+                    after.pid,
+                    after.window_id,
+                    capture_diagnostics,
+                )
+            },
         )
         .await;
         let final_capture = self.finish_observation_sensitive_attempt(final_capture)?;
@@ -830,6 +875,41 @@ impl ComputerUseSession {
         provenance["native_instance"] = json!(final_capture.native_evidence.instance);
         if final_capture.mode == ExactWindowPixelCaptureMode::VisibleDesktopCrop {
             provenance["desktop_crop_bounds"] = json!(final_capture.source_rect);
+        }
+        if capture_diagnostics {
+            provenance["capture_diagnostics"] = json!({
+                "schema": "dcc-cua-exact-capture-byte-diagnostics-v1",
+                "diagnostic_only": true,
+                "channel_order": ["blue", "green", "red", "raw_high_byte"],
+                "canonical_rgba_mapping": "R=BGRA[2],G=BGRA[1],B=BGRA[0],A=BGRA[3]; no normalization",
+                "capture_count": 2,
+                "capture_operation_elapsed_micros": capture_operation_started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64,
+                "banner_exclusion_guard_present": _banner_capture_exclusion.is_some(),
+                "banner_exclusion_held_elapsed_micros": _banner_capture_exclusion.as_ref().map(|_| exclusion_acknowledged.elapsed().as_micros().min(u128::from(u64::MAX)) as u64),
+                "compositor_animation_completion_attested": false,
+                "first": {
+                    "generation": capture.generation,
+                    "process_id": capture.native_evidence.process_id,
+                    "window_handle": capture.native_evidence.window_handle,
+                    "native_instance": capture.native_evidence.instance,
+                    "native_window_bounds": capture.native_evidence.bounds,
+                    "source_rect": capture.source_rect,
+                    "window_dpi": capture.dpi,
+                    "capture_backend": capture.backend,
+                    "pixels": capture.diagnostics,
+                },
+                "final": {
+                    "generation": final_capture.generation,
+                    "process_id": final_capture.native_evidence.process_id,
+                    "window_handle": final_capture.native_evidence.window_handle,
+                    "native_instance": final_capture.native_evidence.instance,
+                    "native_window_bounds": final_capture.native_evidence.bounds,
+                    "source_rect": final_capture.source_rect,
+                    "window_dpi": final_capture.dpi,
+                    "capture_backend": final_capture.backend,
+                    "pixels": final_capture.diagnostics,
+                },
+            });
         }
         let accessibility = json!({
             "accessibility_available": false,

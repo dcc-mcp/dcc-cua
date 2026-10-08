@@ -365,12 +365,12 @@ fn validate_registration(
         .iter()
         .cloned()
         .collect::<BTreeSet<_>>();
-    if actions.is_empty()
-        || actions.len() != registration.allowed_actions.len()
+    // An empty set grants no actions; every action still requires explicit membership.
+    if actions.len() != registration.allowed_actions.len()
         || actions.len() > MAX_TASK_AUTHORIZATION_ACTIONS
         || !actions.iter().all(TrustedTaskActionScope::validate)
     {
-        return invalid("allowed actions must be unique, closed, and non-empty");
+        return invalid("allowed actions must be unique, closed, and bounded");
     }
     let methods = registration
         .allowed_host_methods

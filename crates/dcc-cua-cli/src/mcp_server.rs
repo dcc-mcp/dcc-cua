@@ -785,6 +785,13 @@ fn method_allowed(surface: TaskSurface, method: &str) -> bool {
 }
 
 fn validate_task_method_params(method: &str, params: &Value) -> Result<(), String> {
+    if let Some(value) = params.get("capture_diagnostics") {
+        if method != "snapshot" || !value.is_boolean() {
+            return Err(
+                "capture_diagnostics must be a boolean on an explicit pixels_only snapshot".into(),
+            );
+        }
+    }
     if method == "minimize_window"
         && !params
             .get("observation_id")
@@ -1033,8 +1040,8 @@ fn tool_definitions() -> Vec<Value> {
                     },
                     "allowed_actions": {
                         "type": "array",
-                        "description": "Closed final action scopes. pixels_only accepts minimize_window/window_state or click, double_click, right_click, toggle, keypress, keyboard_shortcut, type, type_chars with input_kind=raw_input, secret_input=false, authorization_category=raw_input. execute_action requires an actual supported raw scope. Other modes use click/type action names for browser input methods; only secret-handle browser typing uses browser_type.",
-                        "minItems": 1,
+                        "description": "Closed final action scopes; use an empty array for observation-only tasks. pixels_only accepts minimize_window/window_state or click, double_click, right_click, toggle, keypress, keyboard_shortcut, type, type_chars with input_kind=raw_input, secret_input=false, authorization_category=raw_input. execute_action requires an actual supported raw scope. Other modes use click/type action names for browser input methods; only secret-handle browser typing uses browser_type.",
+                        "minItems": 0,
                         "maxItems": 32,
                         "uniqueItems": true,
                         "items": action_scope
@@ -1067,7 +1074,7 @@ fn tool_definitions() -> Vec<Value> {
         json!({
             "name": "dcc_cua_task_call",
             "title": "Run DCC-CUA task call",
-            "description": "Call one closed Host method after start_task returned its provider/runtime/PID/HWND binding. A pixels_only snapshot yields a formal observation_id and accessibility_available=false, without semantic element tokens. Its execute_action requires a granted supported raw_input action and that latest observation_id; omit accessibility_state_id, element selectors, secret handles, and input_backend_id. Delivery is foreground only, without implicit activation. Use capture_after for a fresh pixel post-action observation; semantic post snapshots are refused. minimize_window requires the latest observation and same native instance, consumes it after an attempt, and reports native minimized state. change_window_state accepts only activate or restore_activate; take a fresh snapshot afterward. Out-of-scope, expired, stopped, changed, or stale targets fail without prompting. Never pass credential values; use secret handles in supported semantic/browser tasks.",
+            "description": "Call one closed Host method after start_task returned its provider/runtime/PID/HWND binding. A pixels_only snapshot yields a formal observation_id and accessibility_available=false, without semantic element tokens. Its optional capture_diagnostics boolean defaults to false; true adds bounded byte hashes, histograms, timing, and native provenance for the existing two captures without changing pixels or input authority. Semantic snapshots reject this diagnostic opt-in. Its execute_action requires a granted supported raw_input action and that latest observation_id; omit accessibility_state_id, element selectors, secret handles, and input_backend_id. Delivery is foreground only, without implicit activation. Use capture_after for a fresh pixel post-action observation; semantic post snapshots are refused. minimize_window requires the latest observation and same native instance, consumes it after an attempt, and reports native minimized state. change_window_state accepts only activate or restore_activate; take a fresh snapshot afterward. Out-of-scope, expired, stopped, changed, or stale targets fail without prompting. Never pass credential values; use secret handles in supported semantic/browser tasks.",
             "inputSchema": {
                 "type": "object",
                 "additionalProperties": false,
@@ -1076,7 +1083,16 @@ fn tool_definitions() -> Vec<Value> {
                     "task_id": {"type": "string"},
                     "method": {"type": "string"},
                     "params": {"type": "object"}
-                }
+                },
+                "allOf": [{
+                    "if": {"properties": {"method": {"const": "snapshot"}}},
+                    "then": {"properties": {"params": {
+                        "properties": {"capture_diagnostics": {
+                            "type": "boolean", "default": false,
+                            "description": "Opt-in content-free byte diagnostics on an explicit pixels_only snapshot only. No extra capture or input permission."
+                        }}
+                    }}}
+                }]
             },
             "annotations": {"readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": true}
         }),

@@ -7,6 +7,18 @@ mod session_helpers;
 pub(crate) use confirmation_evidence::*;
 pub(super) use evidence_epoch::*;
 pub(crate) use session_helpers::*;
+pub(super) fn validate_snapshot_capture_diagnostics(
+    mode: TaskObservationMode,
+    capture_diagnostics: bool,
+) -> Result<(), HostError> {
+    if capture_diagnostics && mode != TaskObservationMode::PixelsOnly {
+        return Err(HostError::Protocol(
+            "capture_diagnostics is available only for an explicit pixels_only snapshot".into(),
+        ));
+    }
+    Ok(())
+}
+
 pub(super) async fn handle_request_with_security_services(
     driver: &ComputerUseDriver,
     security_services: &HostSecurityServices,
@@ -1067,10 +1079,12 @@ async fn handle_request_inner(
             max_depth,
             max_nodes,
             activate_before,
+            capture_diagnostics,
         } => {
             let host =
                 authorized_session(sessions, &session_id, &task_grant_id, &window_capability)
                     .await?;
+            validate_snapshot_capture_diagnostics(host.observation_mode, capture_diagnostics)?;
             if host.observation_mode == TaskObservationMode::PixelsOnly && activate_before {
                 return Err(HostError::Protocol(
                     "pixels_only snapshot cannot activate the target; use an explicitly authorized change_window_state method".into(),
@@ -1083,7 +1097,9 @@ async fn handle_request_inner(
                 None
             };
             let screenshot = if host.observation_mode == TaskObservationMode::PixelsOnly {
-                host.session.screenshot_pixels_only().await
+                host.session
+                    .screenshot_pixels_only_with_diagnostics(capture_diagnostics)
+                    .await
             } else {
                 host.session
                     .screenshot_with_bounds(max_nodes, max_depth)

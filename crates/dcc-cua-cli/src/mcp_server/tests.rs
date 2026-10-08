@@ -810,3 +810,93 @@ fn task_request_rejects_surface_mismatches_and_duplicate_methods() {
             .contains("duplicates")
     );
 }
+
+#[rstest]
+#[case("snapshot", json!({}), true)]
+#[case("snapshot", json!({"capture_diagnostics":false}), true)]
+#[case("snapshot", json!({"capture_diagnostics":true}), true)]
+#[case("snapshot", json!({"capture_diagnostics":"true"}), false)]
+#[case("snapshot", json!({"capture_diagnostics":null}), false)]
+#[case("get_window_state", json!({"capture_diagnostics":true}), false)]
+fn capture_diagnostics_public_task_params_are_explicit_and_typed(
+    #[case] method: &str,
+    #[case] params: Value,
+    #[case] allowed: bool,
+) {
+    assert_eq!(
+        validate_task_method_params(method, &params).is_ok(),
+        allowed
+    );
+}
+
+#[rstest]
+fn capture_diagnostics_public_schema_defaults_false_without_an_extra_tool_or_grant() {
+    let start = tool_definitions()
+        .into_iter()
+        .find(|tool| tool["name"] == "start_task")
+        .unwrap();
+    assert_eq!(
+        start["inputSchema"]["properties"]["allowed_actions"]["minItems"],
+        0
+    );
+    let call = tool_definitions()
+        .into_iter()
+        .find(|tool| tool["name"] == "dcc_cua_task_call")
+        .unwrap();
+    let condition = &call["inputSchema"]["allOf"][0];
+    assert_eq!(condition["if"]["properties"]["method"]["const"], "snapshot");
+    let flag = &condition["then"]["properties"]["params"]["properties"]["capture_diagnostics"];
+    assert_eq!(flag["type"], "boolean");
+    assert_eq!(flag["default"], false);
+    let mut task = pixels_task();
+    task["allowed_methods"] = json!([
+        "snapshot",
+        "get_window_state",
+        "change_window_state",
+        "session_health"
+    ]);
+    task["allowed_actions"] = json!([]);
+    let mut server = test_server();
+    let prepared = server.prepare_task(task).unwrap();
+    let proposal = server
+        .proposals
+        .get(prepared["task_id"].as_str().unwrap())
+        .unwrap();
+    let grant = task_session_grant(proposal, proposal.receipt.as_ref().unwrap());
+    assert_eq!(grant["allow_raw_input"], false);
+    assert_eq!(grant["allow_browser_input"], false);
+}
+
+#[rstest]
+#[tokio::test]
+async fn capture_diagnostics_observation_only_stop_and_expiry_remain_closed() {
+    let mut server = test_server();
+    let mut task = pixels_task();
+    task["allowed_methods"] = json!(["snapshot"]);
+    task["allowed_actions"] = json!([]);
+    let prepared = server.prepare_task(task.clone()).unwrap();
+    let id = prepared["task_id"].as_str().unwrap();
+    server.revoke_task(json!({"task_id": id})).unwrap();
+    let error = server
+        .task_call(
+            json!({"task_id":id, "method":"snapshot", "params":{"capture_diagnostics":true}}),
+        )
+        .await
+        .unwrap_err();
+    assert!(error.contains("stopped"), "{error}");
+    let prepared = server.prepare_task(task).unwrap();
+    let id = prepared["task_id"].as_str().unwrap();
+    server
+        .proposals
+        .get_mut(id)
+        .unwrap()
+        .registration
+        .expires_at_unix_ms = unix_time_millis().saturating_sub(1);
+    let error = server
+        .task_call(
+            json!({"task_id":id, "method":"snapshot", "params":{"capture_diagnostics":true}}),
+        )
+        .await
+        .unwrap_err();
+    assert!(error.contains("expired"), "{error}");
+}

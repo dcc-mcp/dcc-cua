@@ -679,8 +679,8 @@ fn validate_lease(
         .iter()
         .cloned()
         .collect::<BTreeSet<_>>();
-    let valid_actions = !actions.is_empty()
-        && actions.len() == lease.allowed_actions.len()
+    // Empty action scopes are valid for observation and grant no input authority.
+    let valid_actions = actions.len() == lease.allowed_actions.len()
         && actions.len() <= MAX_TASK_AUTHORIZATION_ACTIONS
         && actions.iter().all(TrustedTaskActionScope::validate);
     let methods = lease.allowed_host_methods.iter().collect::<BTreeSet<_>>();

@@ -88,6 +88,10 @@ fn exact_source_first_capture_instance_boundary() {
     }
     selected.push_str(item(runtime, "async fn capture_exact_window("));
     selected.push_str(item(
+        runtime,
+        "async fn capture_exact_window_with_diagnostics(",
+    ));
+    selected.push_str(item(
         gates,
         "pub(crate) async fn gated_exact_window_observation",
     ));
@@ -109,9 +113,10 @@ fn exact_source_first_capture_instance_boundary() {
     .to_owned();
     // Retain each real method through every native capture/final fence. Only
     // the successful serialization tail becomes a counted publication sink.
+    methods.push_str(item(observation, "async fn capture_window_pixels("));
     for (marker, tail) in [
         (
-            "async fn capture_window_pixels(",
+            "async fn capture_window_pixels_with_diagnostics(",
             "        let (width, height) = png_dimensions",
         ),
         (
@@ -127,7 +132,7 @@ fn exact_source_first_capture_instance_boundary() {
         .replace("use rstest::rstest;", "")
         .replace("#[rstest]", "#[test]");
     let source = format!(
-        "#![allow(dead_code, unused_variables)]\nmod actual {{ {model}\n{selected}\nimpl ComputerUseSession {{ {methods} }}\nmod dcc_cua_platform_windows {{ use super::*; {native_types} NATIVE_BOUNDARY }} }}"
+        "#![allow(dead_code, unused_variables)]\nuse actual::capture_diagnostics;\nmod actual {{ {model}\n{selected}\nimpl ComputerUseSession {{ {methods} }}\nmod dcc_cua_platform_windows {{ use super::*; {native_types} NATIVE_BOUNDARY }} }}"
     ).replace("NATIVE_BOUNDARY", include_str!("../src/runtime/session/tests/pixel_capture_os.rs"))
         .replace("use rstest::rstest;", "")
         .replace("#[cfg(windows)]", "");

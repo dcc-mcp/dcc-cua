@@ -459,6 +459,8 @@ enum Request {
         max_nodes: u32,
         #[serde(default)]
         activate_before: bool,
+        #[serde(default)]
+        capture_diagnostics: bool,
     },
     Zoom {
         session_id: String,

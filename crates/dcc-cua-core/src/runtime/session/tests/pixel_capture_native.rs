@@ -23,6 +23,7 @@ thread_local! { static OS: RefCell<Native> = RefCell::new(Native { backend: Back
 static EXACT_WINDOW_CAPTURE_GENERATION: AtomicU64 = AtomicU64::new(1);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ComputerUseErrorCode {
+    InvalidAction,
     InvalidTarget,
     StaleObservation,
     TargetMinimized,
@@ -96,6 +97,27 @@ mod tokio {
 fn encode_bgra_to_png(_: &[u8], _: u32, _: u32) -> ComputerUseResult<Vec<u8>> {
     OS.with_borrow_mut(|os| os.trace.push("encode"));
     Ok(vec![1]) // encoding sink, not PNG correctness/native acceptance
+}
+pub(crate) mod capture_diagnostics {
+    use super::*;
+    pub struct PixelBufferDiagnostics;
+    pub struct EncodedPixelFrame {
+        pub data: Vec<u8>,
+        pub diagnostics: Option<PixelBufferDiagnostics>,
+    }
+    pub fn encode_exact_frame(
+        bgra: &[u8],
+        width: u32,
+        height: u32,
+        enabled: bool,
+        _: Duration,
+    ) -> ComputerUseResult<EncodedPixelFrame> {
+        // Hashes/PNG correctness use the real pure module's separate tests.
+        Ok(EncodedPixelFrame {
+            data: encode_bgra_to_png(bgra, width, height)?,
+            diagnostics: enabled.then_some(PixelBufferDiagnostics),
+        })
+    }
 }
 struct ComputerUseSession {
     control_banner: Option<ControlBanner>,
@@ -342,6 +364,81 @@ fn late_instance_drift_remains_rejected_between_or_inside_final_capture() {
                     });
                 }
             }
+        }
+    }
+}
+
+#[rstest]
+fn opt_in_diagnostics_use_only_the_existing_two_fenced_captures() {
+    for backend in [Backend::Wgc, Backend::Visible, Backend::WgcFailure] {
+        for enabled in [false, true] {
+            let a = evidence();
+            OS.set(Native {
+                backend,
+                evidence: [a, a, a, a].into(),
+                trace: vec![],
+            });
+            let (mut session, target) = session();
+            let captured = block_on(session.capture_window_pixels_with_diagnostics(
+                &target,
+                PixelObservationRoute::ExplicitPixelsOnly,
+                enabled,
+            ))
+            .unwrap();
+            assert_eq!(captured.diagnostics.is_some(), enabled);
+            assert_eq!(session.publications, 1);
+            assert_eq!(
+                OS.with_borrow(|os| os.trace.iter().filter(|entry| **entry == "encode").count()),
+                2
+            );
+            assert!(OS.with_borrow(|os| os.evidence.is_empty()));
+        }
+    }
+}
+
+#[rstest]
+fn diagnostics_cannot_enable_a_semantic_degraded_capture() {
+    OS.set(Native {
+        backend: Backend::Visible,
+        evidence: VecDeque::new(),
+        trace: vec![],
+    });
+    let (mut session, target) = session();
+    let result = block_on(session.capture_window_pixels_with_diagnostics(
+        &target,
+        PixelObservationRoute::AccessibilityUnavailableDegraded,
+        true,
+    ));
+    assert_eq!(
+        result.err().unwrap().code,
+        ComputerUseErrorCode::InvalidAction
+    );
+    assert_eq!(session.publications, 0);
+    assert!(OS.with_borrow(|os| os.trace.is_empty()));
+}
+
+#[rstest]
+fn diagnostic_opt_in_never_publishes_after_native_instance_drift() {
+    for backend in [Backend::Wgc, Backend::Visible, Backend::WgcFailure] {
+        let a = evidence();
+        let b = changed_instance(0);
+        for sequence in [[a, b, b, b], [a, a, b, b], [a, a, a, b]] {
+            OS.set(Native {
+                backend,
+                evidence: sequence.into(),
+                trace: vec![],
+            });
+            let (mut session, target) = session();
+            let result = block_on(session.capture_window_pixels_with_diagnostics(
+                &target,
+                PixelObservationRoute::ExplicitPixelsOnly,
+                true,
+            ));
+            assert_eq!(
+                result.err().unwrap().code,
+                ComputerUseErrorCode::StaleObservation
+            );
+            assert_eq!(session.publications, 0);
         }
     }
 }

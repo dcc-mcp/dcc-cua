@@ -912,6 +912,7 @@ fn successful_native_snapshot_mint_survives_outer_epoch_reconciliation() {
         max_depth: 5,
         max_nodes: 100,
         activate_before: false,
+        capture_diagnostics: false,
     });
 
     request_handler::finish_window_evidence_request(
@@ -1893,3 +1894,19 @@ mod secret_vault;
 mod session_concurrency;
 mod session_health;
 mod task_authorization;
+
+#[rstest]
+#[case(TaskObservationMode::Semantic, false, true)]
+#[case(TaskObservationMode::Semantic, true, false)]
+#[case(TaskObservationMode::PixelsOnly, false, true)]
+#[case(TaskObservationMode::PixelsOnly, true, true)]
+fn capture_diagnostics_remain_explicit_pixels_only(
+    #[case] mode: TaskObservationMode,
+    #[case] enabled: bool,
+    #[case] allowed: bool,
+) {
+    assert_eq!(
+        request_handler::validate_snapshot_capture_diagnostics(mode, enabled).is_ok(),
+        allowed
+    );
+}
