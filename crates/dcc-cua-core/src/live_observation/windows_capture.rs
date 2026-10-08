@@ -1,10 +1,12 @@
 use super::*;
 use crate::runtime::{
     capture_verified_visible_bgra, live_native_evidence, map_capture_identity_error,
-    next_exact_capture_generation, validate_exact_bgra_dimensions, validate_live_native_evidence,
+    native_wgc_frame_geometry, next_exact_capture_generation, validate_exact_bgra_dimensions,
+    validate_live_native_evidence,
 };
 use dcc_cua_platform_windows::{
     ExactWindowCaptureRoute, ExactWindowPixelEvidence, ExactWindowPixelInstanceEvidence,
+    NativeWindowGeometry, ResolvedWgcGeometry, WgcFrameGeometry, resolve_exact_wgc_geometry,
 };
 use dcc_cua_showcase::{NativeFrameInstance, NativeFrameProvenance, NativeFrameSource};
 
@@ -90,9 +92,21 @@ impl WindowsLiveTarget {
     fn provenance(
         self,
         evidence: ExactWindowPixelEvidence,
-        source: NativeFrameSource,
+        geometry: WindowsFrameGeometry,
         generation: u64,
     ) -> FrameCaptureProvenance {
+        let (source, source_rect, wgc_geometry) = match geometry {
+            WindowsFrameGeometry::VerifiedVisible => (
+                NativeFrameSource::VerifiedVisible,
+                evidence.visible_bounds,
+                None,
+            ),
+            WindowsFrameGeometry::Wgc(resolved) => (
+                NativeFrameSource::Wgc,
+                resolved.source_rect,
+                Some(native_wgc_frame_geometry(resolved)),
+            ),
+        };
         FrameCaptureProvenance::NativeExactWindow(NativeFrameProvenance {
             source,
             process_id: self.process_id,
@@ -105,16 +119,51 @@ impl WindowsLiveTarget {
             },
             native_window_bounds: evidence.bounds,
             native_visible_bounds: evidence.visible_bounds,
-            source_rect: if source == NativeFrameSource::VerifiedVisible {
-                evidence.visible_bounds
-            } else {
-                evidence.bounds
-            },
+            source_rect,
             window_dpi: evidence.dpi,
             capture_generation: generation,
             stream_id: self.stream_id,
+            wgc_geometry,
         })
     }
+}
+
+#[derive(Clone, Copy)]
+enum WindowsFrameGeometry {
+    VerifiedVisible,
+    Wgc(ResolvedWgcGeometry),
+}
+
+fn resolve_live_wgc_geometry(
+    before: ExactWindowPixelEvidence,
+    after: ExactWindowPixelEvidence,
+    frame: WgcFrameGeometry,
+    bgra_len: usize,
+    width: u32,
+    height: u32,
+) -> ComputerUseResult<ResolvedWgcGeometry> {
+    let native = |evidence: ExactWindowPixelEvidence| NativeWindowGeometry {
+        win32_bounds: evidence.bounds,
+        dwm_bounds: Some(evidence.visible_bounds),
+        dpi: evidence.dpi,
+    };
+    let resolved = resolve_exact_wgc_geometry(native(before), native(after), frame, bgra_len)
+        .map_err(|error| {
+            ComputerUseError::new(ComputerUseErrorCode::StaleObservation, error.to_string())
+        })?;
+    validate_exact_bgra_dimensions(bgra_len, width, height, resolved.source_rect)?;
+    Ok(resolved)
+}
+
+fn map_live_wgc_error(error: dcc_cua_platform_windows::WgcCaptureError) -> ComputerUseError {
+    ComputerUseError::new(
+        if error.geometry_failure().is_some() {
+            ComputerUseErrorCode::StaleObservation
+        } else {
+            ComputerUseErrorCode::CaptureFailed
+        },
+        error.to_string(),
+    )
 }
 
 fn validate_instance(
@@ -185,8 +234,10 @@ impl WindowsLiveCapture {
         if target.route == ExactWindowCaptureRoute::VerifiedVisible {
             return Self::VerifiedVisible;
         }
-        dcc_cua_platform_windows::PersistentWgcCapture::new(target.process_id, target.window_handle)
-            .map_or(Self::Uninitialized, Self::Persistent)
+        // Initialize once through the same checked path as recovery. A typed
+        // geometry error must reach the pause fence instead of being hidden by
+        // an immediate second capture attempt.
+        Self::Uninitialized
     }
 
     fn next_frame(&mut self, target: WindowsLiveTarget) -> ComputerUseResult<WindowsCapturedFrame> {
@@ -206,7 +257,7 @@ impl WindowsLiveCapture {
                 measurement: None,
                 provenance: target.provenance(
                     after,
-                    NativeFrameSource::VerifiedVisible,
+                    WindowsFrameGeometry::VerifiedVisible,
                     visible.generation,
                 ),
             });
@@ -216,15 +267,25 @@ impl WindowsLiveCapture {
         let (frame, capture_mode) = match self {
             Self::Persistent(capture) => match capture.next_measured_frame(FIRST_FRAME_TIMEOUT) {
                 Ok(frame) => (frame, "persistent_wgc"),
-                Err(_) => self.reinitialize(target)?,
+                Err(error) if error.geometry_failure().is_some() => {
+                    return Err(map_live_wgc_error(error));
+                }
+                Err(_) => self.reinitialize(target, "reinitialized_wgc_recovery")?,
             },
-            Self::Uninitialized => self.reinitialize(target)?,
+            Self::Uninitialized => self.reinitialize(target, "persistent_wgc")?,
             Self::VerifiedVisible => unreachable!("visible producer returned above"),
         };
         target.require_wgc_route()?;
         let after = target.evidence()?;
         validate_live_native_evidence(&before, &after, false)?;
-        validate_exact_bgra_dimensions(frame.bgra.len(), frame.width, frame.height, after.bounds)?;
+        let geometry = resolve_live_wgc_geometry(
+            before,
+            after,
+            frame.geometry,
+            frame.bgra.len(),
+            frame.width,
+            frame.height,
+        )?;
         crate::interactive_desktop::require_exact_window_observation_available()?;
         Ok(WindowsCapturedFrame {
             bgra: frame.bgra,
@@ -233,7 +294,7 @@ impl WindowsLiveCapture {
             capture_mode,
             provenance: target.provenance(
                 after,
-                NativeFrameSource::Wgc,
+                WindowsFrameGeometry::Wgc(geometry),
                 next_exact_capture_generation(),
             ),
             measurement: Some(frame.measurement),
@@ -243,22 +304,19 @@ impl WindowsLiveCapture {
     fn reinitialize(
         &mut self,
         target: WindowsLiveTarget,
+        capture_mode: &'static str,
     ) -> ComputerUseResult<(dcc_cua_platform_windows::PersistentWgcFrame, &'static str)> {
         target.require_wgc_route()?;
         let mut capture = dcc_cua_platform_windows::PersistentWgcCapture::new(
             target.process_id,
             target.window_handle,
         )
-        .map_err(|error| {
-            ComputerUseError::new(ComputerUseErrorCode::CaptureFailed, error.to_string())
-        })?;
+        .map_err(map_live_wgc_error)?;
         let frame = capture
             .next_measured_frame(FIRST_FRAME_TIMEOUT)
-            .map_err(|error| {
-                ComputerUseError::new(ComputerUseErrorCode::CaptureFailed, error.to_string())
-            })?;
+            .map_err(map_live_wgc_error)?;
         *self = Self::Persistent(capture);
-        Ok((frame, "reinitialized_wgc_recovery"))
+        Ok((frame, capture_mode))
     }
 }
 
@@ -433,6 +491,85 @@ mod tests {
         );
     }
 
+    fn measured_wgc_frame() -> WgcFrameGeometry {
+        WgcFrameGeometry {
+            item_size_before: [96, 86],
+            item_size_after: [96, 86],
+            pool_size: [96, 86],
+            content_size: [96, 86],
+            texture_size: [96, 86],
+            row_pitch_bytes: 400,
+        }
+    }
+
+    #[test]
+    fn live_wgc_uses_shared_actual_dwm_geometry_and_carries_measurements() {
+        let native = evidence();
+        let resolved =
+            resolve_live_wgc_geometry(native, native, measured_wgc_frame(), 96 * 86 * 4, 96, 86)
+                .unwrap();
+        assert_eq!(resolved.source_rect, native.visible_bounds);
+        assert_ne!(resolved.source_rect, native.bounds);
+        let target = WindowsLiveTarget {
+            process_id: native.process_id,
+            window_handle: native.window_handle,
+            stream_id: 7,
+            instance: native.instance,
+            route: ExactWindowCaptureRoute::Wgc,
+        };
+        let FrameCaptureProvenance::NativeExactWindow(proof) =
+            target.provenance(native, WindowsFrameGeometry::Wgc(resolved), 9)
+        else {
+            panic!("native WGC provenance")
+        };
+        assert_eq!(proof.source_rect, native.visible_bounds);
+        assert_eq!(proof.native_window_bounds, native.bounds);
+        let measured = proof.wgc_geometry.unwrap();
+        assert_eq!(measured.content_size, [96, 86]);
+        assert_eq!(measured.row_pitch_bytes, 400);
+        assert_eq!(measured.bgra_byte_len, 96 * 86 * 4);
+    }
+
+    #[test]
+    fn live_wgc_shared_geometry_rejects_drift_ambiguity_and_unproved_raw_shape() {
+        let before = evidence();
+        for mutation in 0..8 {
+            let mut after = before;
+            let mut frame = measured_wgc_frame();
+            let mut length = 96 * 86 * 4;
+            let mut width = 96;
+            match mutation {
+                0 => after.bounds[0] += 1,
+                1 => after.visible_bounds[0] += 1,
+                2 => after.dpi += 1,
+                3 => frame.item_size_after[0] += 1,
+                4 => frame.texture_size[1] += 1,
+                5 => frame.row_pitch_bytes = 380,
+                6 => length -= 1,
+                7 => width += 1,
+                _ => unreachable!(),
+            }
+            assert!(
+                resolve_live_wgc_geometry(before, after, frame, length, width, 86).is_err(),
+                "mutation {mutation}"
+            );
+        }
+        let mut ambiguous = before;
+        ambiguous.bounds[2] = 96;
+        ambiguous.bounds[3] = 86;
+        assert!(
+            resolve_live_wgc_geometry(
+                ambiguous,
+                ambiguous,
+                measured_wgc_frame(),
+                96 * 86 * 4,
+                96,
+                86
+            )
+            .is_err()
+        );
+    }
+
     #[test]
     fn raw_frame_admission_rejects_length_crop_and_dimension_mismatch() {
         assert!(validate_exact_bgra_dimensions(96 * 86 * 4, 96, 86, [-98, 21, 96, 86]).is_ok());
@@ -458,11 +595,12 @@ mod tests {
             route: ExactWindowCaptureRoute::VerifiedVisible,
         };
         let FrameCaptureProvenance::NativeExactWindow(proof) =
-            target.provenance(evidence, NativeFrameSource::VerifiedVisible, 9)
+            target.provenance(evidence, WindowsFrameGeometry::VerifiedVisible, 9)
         else {
             panic!("native proof");
         };
         assert_eq!(proof.source_rect, evidence.visible_bounds);
+        assert!(proof.wgc_geometry.is_none());
         assert_ne!(proof.source_rect, proof.native_window_bounds);
         assert_eq!(proof.stream_id, 7);
         assert_eq!(

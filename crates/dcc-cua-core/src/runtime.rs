@@ -1794,15 +1794,63 @@ pub(crate) fn live_native_evidence(
     process_id: u32,
     window_id: u64,
 ) -> ComputerUseResult<dcc_cua_platform_windows::ExactWindowPixelEvidence> {
-    dcc_cua_platform_windows::exact_window_pixel_evidence(process_id, window_id).map_err(|error| {
-        map_visible_capture_error(
-            ComputerUseErrorCode::CaptureFailed,
-            ComputerUseCaptureStage::NativeEvidence,
-            process_id,
-            window_id,
-            error,
-        )
-    })
+    let evidence = dcc_cua_platform_windows::exact_window_pixel_evidence(process_id, window_id)
+        .map_err(|error| {
+            map_visible_capture_error(
+                ComputerUseErrorCode::CaptureFailed,
+                ComputerUseCaptureStage::NativeEvidence,
+                process_id,
+                window_id,
+                error,
+            )
+        })?;
+    // Native proof performs a potentially slow occlusion traversal after its
+    // geometry reads. Re-read actual metadata before admitting those pixels.
+    let final_state = dcc_cua_platform_windows::exact_window_native_state(process_id, window_id)
+        .map_err(|error| {
+            ComputerUseError::new(ComputerUseErrorCode::InvalidTarget, error.to_string())
+        })?;
+    validate_live_final_native_state(&evidence, &final_state)?;
+    Ok(evidence)
+}
+
+#[cfg(windows)]
+fn validate_live_final_native_state(
+    evidence: &dcc_cua_platform_windows::ExactWindowPixelEvidence,
+    state: &dcc_cua_platform_windows::ExactWindowNativeState,
+) -> ComputerUseResult<()> {
+    if evidence.process_id != state.process_id
+        || evidence.window_handle != state.window_handle
+        || evidence.instance != state.instance
+    {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::InvalidTarget,
+            "the exact live target instance changed after native proof",
+        ));
+    }
+    if state.minimized {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::TargetMinimized,
+            "the live target was minimized after native proof",
+        ));
+    }
+    if !state.visible {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::TargetUnavailable,
+            "the live target was hidden after native proof",
+        ));
+    }
+    if state.bounds != Some(evidence.bounds)
+        || state.visible_bounds != Some(evidence.visible_bounds)
+        || state.dpi == 0
+        || state.dpi != evidence.dpi
+    {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::StaleObservation,
+            "the exact live Win32/DWM geometry or DPI changed after native proof",
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(windows)]
@@ -1853,7 +1901,6 @@ fn validate_live_frame_provenance(
     target: &WindowTarget,
     final_evidence: &dcc_cua_platform_windows::ExactWindowPixelEvidence,
 ) -> ComputerUseResult<()> {
-    use dcc_cua_showcase::NativeFrameSource;
     let captured = dcc_cua_platform_windows::ExactWindowPixelEvidence {
         process_id: proof.process_id,
         window_handle: proof.window_handle,
@@ -1875,22 +1922,80 @@ fn validate_live_frame_provenance(
         || proof.native_window_bounds != target.bounds
         || proof.capture_generation == 0
         || proof.window_dpi == 0
-        || proof.source_rect
-            != match proof.source {
-                NativeFrameSource::Wgc => proof.native_window_bounds,
-                NativeFrameSource::VerifiedVisible => proof.native_visible_bounds,
-            }
     {
         return Err(ComputerUseError::new(
             ComputerUseErrorCode::StaleObservation,
             "the live frame proof does not match the final exact target",
         ));
     }
+    validate_live_source_geometry(proof)?;
     validate_live_native_evidence(
         &captured,
         final_evidence,
-        proof.source == NativeFrameSource::VerifiedVisible,
+        proof.source == dcc_cua_showcase::NativeFrameSource::VerifiedVisible,
     )
+}
+
+#[cfg(windows)]
+pub(crate) fn native_wgc_frame_geometry(
+    geometry: dcc_cua_platform_windows::ResolvedWgcGeometry,
+) -> dcc_cua_showcase::NativeWgcFrameGeometry {
+    let frame = geometry.frame;
+    dcc_cua_showcase::NativeWgcFrameGeometry {
+        item_size_before: frame.item_size_before,
+        item_size_after: frame.item_size_after,
+        pool_size: frame.pool_size,
+        content_size: frame.content_size,
+        texture_size: frame.texture_size,
+        row_pitch_bytes: frame.row_pitch_bytes,
+        bgra_byte_len: geometry.bgra_byte_len,
+    }
+}
+
+#[cfg(windows)]
+fn validate_live_source_geometry(
+    proof: &dcc_cua_showcase::NativeFrameProvenance,
+) -> ComputerUseResult<()> {
+    use dcc_cua_showcase::NativeFrameSource;
+    let invalid = || {
+        ComputerUseError::new(
+            ComputerUseErrorCode::StaleObservation,
+            "the live native frame lacks its actual physical source geometry proof",
+        )
+    };
+    match proof.source {
+        NativeFrameSource::VerifiedVisible => {
+            if proof.wgc_geometry.is_some() || proof.source_rect != proof.native_visible_bounds {
+                return Err(invalid());
+            }
+        }
+        NativeFrameSource::Wgc => {
+            let measured = proof.wgc_geometry.ok_or_else(invalid)?;
+            let native = dcc_cua_platform_windows::NativeWindowGeometry {
+                win32_bounds: proof.native_window_bounds,
+                dwm_bounds: Some(proof.native_visible_bounds),
+                dpi: proof.window_dpi,
+            };
+            let resolved = dcc_cua_platform_windows::resolve_exact_wgc_geometry(
+                native,
+                native,
+                dcc_cua_platform_windows::WgcFrameGeometry {
+                    item_size_before: measured.item_size_before,
+                    item_size_after: measured.item_size_after,
+                    pool_size: measured.pool_size,
+                    content_size: measured.content_size,
+                    texture_size: measured.texture_size,
+                    row_pitch_bytes: measured.row_pitch_bytes,
+                },
+                measured.bgra_byte_len,
+            )
+            .map_err(|_| invalid())?;
+            if proof.source_rect != resolved.source_rect {
+                return Err(invalid());
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(windows)]

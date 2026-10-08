@@ -13,7 +13,7 @@ async fn first_encoded_acknowledgement_matches_the_actual_first_sample_sidecar()
         std::env::temp_dir().join(format!("dcc-cua-first-ack-{}", uuid::Uuid::new_v4()));
     let captured_at = std::time::Instant::now();
     let proof = FrameCaptureProvenance::NativeExactWindow(NativeFrameProvenance {
-        source: NativeFrameSource::VerifiedVisible,
+        source: NativeFrameSource::Wgc,
         process_id: 42,
         window_handle: 77,
         native_instance: NativeFrameInstance {
@@ -22,12 +22,21 @@ async fn first_encoded_acknowledgement_matches_the_actual_first_sample_sidecar()
             window_class_hash: 90,
             owner_window_handle: 0,
         },
-        native_window_bounds: [-10, 20, 32, 16],
+        native_window_bounds: [-14, 18, 40, 20],
         native_visible_bounds: [-10, 20, 32, 16],
         source_rect: [-10, 20, 32, 16],
         window_dpi: 144,
         capture_generation: 19,
         stream_id: 7,
+        wgc_geometry: Some(NativeWgcFrameGeometry {
+            item_size_before: [32, 16],
+            item_size_after: [32, 16],
+            pool_size: [32, 16],
+            content_size: [32, 16],
+            texture_size: [32, 16],
+            row_pitch_bytes: 160,
+            bgra_byte_len: 32 * 16 * 4,
+        }),
     });
     let mut initial = LiveObservationStatus::default();
     initial.publish_frame(
@@ -1802,6 +1811,7 @@ fn recording_manifest_covers_encoded_samples_across_pause_resize_and_source_gaps
             window_dpi: 144,
             capture_generation: sequence,
             stream_id: 7,
+            wgc_geometry: None,
         });
         Arc::new(
             LiveObservationFrame::new(

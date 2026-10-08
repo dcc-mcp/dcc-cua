@@ -1360,7 +1360,7 @@ impl ComputerUseSession {
         self.control_banner.take();
         self.stop_recording_keepalive().await;
         if self.showcase.is_some() {
-            let _ = self.finalize_owned_recording_video().await;
+            let _ = self.finalize_owned_recording_video(None).await;
         }
         self.stop_live_observation().await;
     }

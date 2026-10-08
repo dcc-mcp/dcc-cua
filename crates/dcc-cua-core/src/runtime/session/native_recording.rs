@@ -17,6 +17,7 @@ impl ComputerUseSession {
         &mut self,
         request: &ComputerUseRecordingStartRequest,
     ) -> ComputerUseResult<Value> {
+        self.ensure_local_cleanup_reusable()?;
         if !request.record_video {
             return Err(ComputerUseError::new(
                 ComputerUseErrorCode::InvalidAction,
@@ -78,27 +79,28 @@ impl ComputerUseSession {
                     validate_native_recording_frame(&frame, &target, stream_id, requested_at)?;
                 observation.validate_frame_eligibility(frame.sequence())?;
                 self.validate_native_recording_publication(proof, &target, started_generation)?;
-                let observation = self
-                    .live_observation
-                    .as_ref()
-                    .expect("live source remains owned");
-                let recorder = ShowcaseRecorder::start_with_outcome(
-                    observation.subscribe_showcase(),
+                let (frames, fps) = {
+                    let observation = self
+                        .live_observation
+                        .as_ref()
+                        .expect("live source remains owned");
+                    (observation.subscribe_showcase(), observation.fps())
+                };
+                self.start_owned_native_recorder(
+                    frames,
                     &request.output_dir,
-                    observation.fps(),
+                    fps,
+                    owns_live_observation,
                 )
-                .await
-                .map_err(|(error, mut outcome)| {
-                    let error = map_showcase_error(error);
-                    outcome["startup_error"] = json!({"code":error.code,"message":error.message});
-                    self.last_recording_video = Some(
-                        RecordingVideoTerminalEvidence::from_failed_stop(outcome, &error),
-                    );
-                    error
-                })?;
+                .await?;
                 // The first encoder acknowledgement is necessary but not sufficient:
                 // a pause, replacement or stop during encoding still refuses startup.
-                let first_encoded = recorder.first_frame();
+                let first_encoded = self
+                    .showcase
+                    .as_ref()
+                    .expect("ready recorder ownership is attached")
+                    .recorder
+                    .first_frame();
                 let publication = validate_native_recording_metadata(
                     first_encoded.provenance(),
                     first_encoded.captured_at(),
@@ -127,39 +129,13 @@ impl ComputerUseSession {
                     )
                 });
                 if let Err(error) = publication {
-                    let (cleanup, final_video) = recorder.stop_with_outcome().await;
-                    if let Err(cleanup_error) = cleanup {
-                        let cleanup_error = map_showcase_error(cleanup_error);
-                        self.last_recording_video =
-                            Some(RecordingVideoTerminalEvidence::from_failed_stop(
-                                final_video,
-                                &cleanup_error,
-                            ));
-                        return Err(ComputerUseError::new(
-                            error.code,
-                            format!(
-                                "{}; recorder cleanup failed: {}",
-                                error.message, cleanup_error.message
-                            ),
-                        ));
-                    }
-                    let mut final_video = final_video;
-                    final_video["startup_error"] =
-                        json!({"code":error.code,"message":error.message});
-                    self.last_recording_video = Some(
-                        RecordingVideoTerminalEvidence::try_from_finalized(final_video)?,
-                    );
-                    return Err(error);
+                    return self.refuse_native_recording_startup(error).await;
                 }
-                Ok(recorder)
+                Ok(())
             }
             .await;
             match prepared {
-                Ok(recorder) => {
-                    self.showcase = Some(ActiveShowcase {
-                        recorder,
-                        owns_live_observation,
-                    });
+                Ok(()) => {
                     self.last_recording_video = None;
                     self.recording_active = true;
                     self.recording_expected_video = true;
@@ -169,7 +145,7 @@ impl ComputerUseSession {
                     Ok(self.native_recording_state())
                 }
                 Err(error) => {
-                    if owns_live_observation {
+                    if owns_live_observation && self.live_observation.is_some() {
                         self.stop_live_observation().await;
                     }
                     self.set_banner_recording(false);
@@ -185,6 +161,63 @@ impl ComputerUseSession {
                 }
             }
         }
+    }
+
+    /// Pending is recorded before the encoder can create a partial file. A
+    /// canceled startup cannot turn absence of an attached owner into success.
+    #[cfg(any(windows, test))]
+    pub(super) async fn start_owned_native_recorder(
+        &mut self,
+        frames: tokio::sync::watch::Receiver<dcc_cua_showcase::LiveObservationStatus>,
+        output_dir: &str,
+        fps: u32,
+        owns_live_observation: bool,
+    ) -> ComputerUseResult<()> {
+        self.ensure_local_cleanup_reusable()?;
+        self.local_cleanup.recorder_pending = true;
+        if self.last_recording_video.is_none() {
+            self.last_recording_video = Some(RecordingVideoTerminalEvidence::from_failed_stop(
+                json!({}),
+                &ComputerUseError::new(
+                    ComputerUseErrorCode::CompletionUnknown,
+                    "native recorder startup has not acknowledged cleanup or transferred ownership",
+                ),
+            ));
+        }
+        match ShowcaseRecorder::start_with_outcome(frames, output_dir, fps).await {
+            Ok(recorder) => {
+                self.showcase = Some(ActiveShowcase {
+                    recorder,
+                    owns_live_observation,
+                });
+                self.local_cleanup.recorder_pending = false;
+                Ok(())
+            }
+            Err((error, outcome)) => {
+                let error = map_showcase_error(error);
+                let mut evidence =
+                    RecordingVideoTerminalEvidence::from_failed_stop(outcome, &error);
+                evidence.record_startup_error(&error);
+                self.last_recording_video = Some(evidence);
+                // The failed start API joins both tasks before returning.
+                self.local_cleanup.recorder_pending = false;
+                Err(error)
+            }
+        }
+    }
+
+    #[cfg(any(windows, test))]
+    pub(super) async fn refuse_native_recording_startup(
+        &mut self,
+        mut error: ComputerUseError,
+    ) -> ComputerUseResult<()> {
+        if let Err(cleanup_error) = self.finalize_owned_recording_video(Some(&error)).await {
+            error.message.push_str(&format!(
+                "; recorder cleanup failed: {}",
+                cleanup_error.message
+            ));
+        }
+        Err(error)
     }
 
     #[cfg(windows)]
@@ -243,11 +276,14 @@ impl ComputerUseSession {
         // It deliberately performs no target, accessibility or upstream probe.
         self.stop_recording_keepalive().await;
         let _activity = self.begin_banner_activity(BannerActivity::Waiting);
-        self.finalize_owned_recording_video().await?;
+        self.finalize_owned_recording_video(None).await?;
         Ok(self.native_recording_state())
     }
 
-    pub(super) async fn finalize_owned_recording_video(&mut self) -> ComputerUseResult<()> {
+    pub(super) async fn finalize_owned_recording_video(
+        &mut self,
+        startup_error: Option<&ComputerUseError>,
+    ) -> ComputerUseResult<()> {
         self.recording_active = false;
         self.set_banner_recording(false);
         // Keep actual partial paths/progress before consuming the owner. If
@@ -258,10 +294,12 @@ impl ComputerUseSession {
                 ComputerUseErrorCode::CompletionUnknown,
                 "recording finalization has not been acknowledged",
             );
-            self.last_recording_video = Some(RecordingVideoTerminalEvidence::from_failed_stop(
-                showcase.recorder.state(),
-                &error,
-            ));
+            let mut evidence =
+                RecordingVideoTerminalEvidence::from_failed_stop(showcase.recorder.state(), &error);
+            if let Some(error) = startup_error {
+                evidence.record_startup_error(error);
+            }
+            self.last_recording_video = Some(evidence);
         }
         let (result, outcome, owns_live) = match self.showcase.take() {
             Some(showcase) => {
@@ -283,13 +321,20 @@ impl ComputerUseSession {
         let result = result.and_then(RecordingVideoTerminalEvidence::try_from_finalized);
         let result = match result {
             Ok(evidence) => {
+                let mut evidence = evidence;
+                if let Some(error) = startup_error {
+                    evidence.record_startup_error(error);
+                }
                 self.last_recording_video = Some(evidence);
                 Ok(())
             }
             Err(error) => {
-                self.last_recording_video = Some(RecordingVideoTerminalEvidence::from_failed_stop(
-                    outcome, &error,
-                ));
+                let mut evidence =
+                    RecordingVideoTerminalEvidence::from_failed_stop(outcome, &error);
+                if let Some(error) = startup_error {
+                    evidence.record_startup_error(error);
+                }
+                self.last_recording_video = Some(evidence);
                 self.local_cleanup
                     .remember(ComputerUseCleanupPhase::RecordingStop, error.clone());
                 Err(error)
@@ -467,6 +512,7 @@ mod tests {
             window_dpi: 96,
             capture_generation: 1,
             stream_id: 9,
+            wgc_geometry: None,
         }
     }
 

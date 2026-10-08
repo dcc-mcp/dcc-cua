@@ -19,11 +19,22 @@ pub fn exact_window_pixel_evidence(
     assert_eq!((pid, hwnd), (42, 77));
     OS.with_borrow_mut(|os| {
         os.trace.push("native evidence");
-        Ok(os
+        let evidence = os
             .evidence
             .pop_front()
-            .expect("independently acquired evidence"))
+            .expect("independently acquired evidence");
+        LAST_NATIVE_EVIDENCE.set(Some(evidence));
+        Ok(evidence)
     })
+}
+pub fn exact_window_native_state(pid: u32, hwnd: u64) -> Result<ExactWindowNativeState, String> {
+    assert_eq!((pid, hwnd), (42, 77));
+    OS.with_borrow_mut(|os| os.trace.push("final native metadata"));
+    Ok(FINAL_NATIVE_OVERRIDE.take().unwrap_or_else(|| {
+        native_state(
+            LAST_NATIVE_EVIDENCE.with_borrow(|value| value.expect("metadata follows native proof")),
+        )
+    }))
 }
 pub fn exact_window_capture_route(pid: u32, hwnd: u64) -> Result<ExactWindowCaptureRoute, String> {
     assert_eq!((pid, hwnd), (42, 77));

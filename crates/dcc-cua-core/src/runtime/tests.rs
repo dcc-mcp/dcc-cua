@@ -337,6 +337,7 @@ fn live_frame_final_publication_rejects_post_encoding_native_drift() {
         window_dpi: 144,
         capture_generation: 5,
         stream_id: 7,
+        wgc_geometry: None,
     };
     let target = WindowTarget {
         pid: 42,
@@ -384,6 +385,127 @@ fn live_frame_final_publication_rejects_post_encoding_native_drift() {
         }
         assert!(
             validate_live_frame_provenance(&proof, &target, &changed).is_err(),
+            "mutation {mutation}"
+        );
+    }
+}
+
+#[cfg(windows)]
+#[rstest]
+fn live_wgc_final_geometry_revalidates_actual_measurement_with_the_shared_resolver() {
+    use dcc_cua_showcase::{NativeFrameInstance, NativeFrameProvenance, NativeFrameSource};
+    let native = dcc_cua_platform_windows::NativeWindowGeometry {
+        win32_bounds: [60, 80, 672, 508],
+        dwm_bounds: Some([73, 80, 646, 495]),
+        dpi: 240,
+    };
+    let resolved = dcc_cua_platform_windows::resolve_exact_wgc_geometry(
+        native,
+        native,
+        dcc_cua_platform_windows::WgcFrameGeometry {
+            item_size_before: [646, 495],
+            item_size_after: [646, 495],
+            pool_size: [646, 495],
+            content_size: [646, 495],
+            texture_size: [646, 495],
+            row_pitch_bytes: 2688,
+        },
+        646 * 495 * 4,
+    )
+    .unwrap();
+    let proof = NativeFrameProvenance {
+        source: NativeFrameSource::Wgc,
+        process_id: 42,
+        window_handle: 500,
+        native_instance: NativeFrameInstance {
+            process_creation_time_100ns: 1000,
+            window_thread_id: 8,
+            window_class_hash: 90,
+            owner_window_handle: 0,
+        },
+        native_window_bounds: native.win32_bounds,
+        native_visible_bounds: native.dwm_bounds.unwrap(),
+        source_rect: resolved.source_rect,
+        window_dpi: native.dpi,
+        capture_generation: 5,
+        stream_id: 7,
+        wgc_geometry: Some(native_wgc_frame_geometry(resolved)),
+    };
+    assert!(validate_live_source_geometry(&proof).is_ok());
+    for mutation in 0..8 {
+        let mut changed = proof.clone();
+        match mutation {
+            0 => changed.wgc_geometry = None,
+            1 => changed.source_rect = changed.native_window_bounds,
+            2 => changed.wgc_geometry.as_mut().unwrap().item_size_after[0] += 1,
+            3 => changed.wgc_geometry.as_mut().unwrap().texture_size[1] += 1,
+            4 => changed.wgc_geometry.as_mut().unwrap().bgra_byte_len -= 1,
+            5 => changed.wgc_geometry.as_mut().unwrap().row_pitch_bytes = 1,
+            6 => {
+                changed.native_window_bounds[2] = 646;
+                changed.native_window_bounds[3] = 495;
+            }
+            7 => changed.native_visible_bounds[0] += 1,
+            _ => unreachable!(),
+        }
+        assert!(
+            validate_live_source_geometry(&changed).is_err(),
+            "mutation {mutation}"
+        );
+    }
+}
+
+#[cfg(windows)]
+#[rstest]
+fn live_native_final_metadata_refuses_post_proof_identity_geometry_and_visibility_drift() {
+    let evidence = dcc_cua_platform_windows::ExactWindowPixelEvidence {
+        process_id: 42,
+        window_handle: 500,
+        bounds: [60, 80, 672, 508],
+        visible_bounds: [73, 80, 646, 495],
+        dpi: 240,
+        visible: true,
+        minimized: false,
+        unobscured: true,
+        instance: dcc_cua_platform_windows::ExactWindowPixelInstanceEvidence {
+            process_creation_time_100ns: 1000,
+            window_thread_id: 8,
+            window_class_hash: 90,
+            owner_window_handle: 0,
+        },
+    };
+    let state = dcc_cua_platform_windows::ExactWindowNativeState {
+        process_id: evidence.process_id,
+        window_handle: evidence.window_handle,
+        bounds: Some(evidence.bounds),
+        visible_bounds: Some(evidence.visible_bounds),
+        dpi: evidence.dpi,
+        visible: true,
+        minimized: false,
+        foreground: false,
+        instance: evidence.instance,
+    };
+    assert!(validate_live_final_native_state(&evidence, &state).is_ok());
+    for mutation in 0..13 {
+        let mut changed = state;
+        match mutation {
+            0 => changed.process_id += 1,
+            1 => changed.window_handle += 1,
+            2 => changed.instance.process_creation_time_100ns += 1,
+            3 => changed.instance.window_thread_id += 1,
+            4 => changed.instance.window_class_hash += 1,
+            5 => changed.instance.owner_window_handle += 1,
+            6 => changed.bounds.as_mut().unwrap()[0] += 1,
+            7 => changed.visible_bounds.as_mut().unwrap()[0] += 1,
+            8 => changed.bounds = None,
+            9 => changed.visible_bounds = None,
+            10 => changed.dpi += 1,
+            11 => changed.minimized = true,
+            12 => changed.visible = false,
+            _ => unreachable!(),
+        }
+        assert!(
+            validate_live_final_native_state(&evidence, &changed).is_err(),
             "mutation {mutation}"
         );
     }

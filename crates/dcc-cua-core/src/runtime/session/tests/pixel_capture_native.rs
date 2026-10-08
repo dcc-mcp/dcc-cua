@@ -24,6 +24,10 @@ struct Native {
     trace: Vec<&'static str>,
 }
 thread_local! { static OS: RefCell<Native> = RefCell::new(Native { backend: Backend::Wgc, evidence: VecDeque::new(), trace: vec![] }); }
+thread_local! {
+    static LAST_NATIVE_EVIDENCE: RefCell<Option<dcc_cua_platform_windows::ExactWindowPixelEvidence>> = const { RefCell::new(None) };
+    static FINAL_NATIVE_OVERRIDE: RefCell<Option<dcc_cua_platform_windows::ExactWindowNativeState>> = const { RefCell::new(None) };
+}
 static EXACT_WINDOW_CAPTURE_GENERATION: AtomicU64 = AtomicU64::new(1);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ComputerUseErrorCode {
@@ -301,7 +305,7 @@ fn every_instance_component_is_fenced_inside_first_capture_on_all_shared_paths()
                         2,
                         "first capture must fail before recapture"
                     );
-                    assert_eq!(os.trace.len(), 3);
+                    assert_eq!(os.trace.len(), if backend == Backend::Wgc { 3 } else { 4 });
                     assert!(!os.trace.contains(&"encode") && !os.trace.contains(&"accessibility"));
                 });
             }
@@ -509,5 +513,116 @@ fn actual_wgc_dimensions_publish_only_the_unique_dwm_origin() {
             assert_eq!(os.trace.iter().filter(|step| **step == "encode").count(), 2);
             assert!(!os.trace.contains(&"visible pixels"));
         });
+    }
+}
+
+#[rstest]
+fn verified_visible_final_metadata_drift_cannot_encode_or_publish() {
+    for backend in [Backend::Visible, Backend::WgcFailure] {
+        for component in 0..13 {
+            let a = evidence();
+            let mut state = native_state(a);
+            let expected = match component {
+                0 => {
+                    state.process_id += 1;
+                    ComputerUseErrorCode::InvalidTarget
+                }
+                1 => {
+                    state.window_handle += 1;
+                    ComputerUseErrorCode::InvalidTarget
+                }
+                2 => {
+                    state.instance.process_creation_time_100ns += 1;
+                    ComputerUseErrorCode::InvalidTarget
+                }
+                3 => {
+                    state.instance.window_thread_id += 1;
+                    ComputerUseErrorCode::InvalidTarget
+                }
+                4 => {
+                    state.instance.window_class_hash += 1;
+                    ComputerUseErrorCode::InvalidTarget
+                }
+                5 => {
+                    state.instance.owner_window_handle += 1;
+                    ComputerUseErrorCode::InvalidTarget
+                }
+                6 => {
+                    state.bounds = Some([1, 0, 800, 600]);
+                    ComputerUseErrorCode::StaleObservation
+                }
+                7 => {
+                    state.visible_bounds = Some([1, 0, 800, 600]);
+                    ComputerUseErrorCode::StaleObservation
+                }
+                8 => {
+                    state.visible_bounds = None;
+                    ComputerUseErrorCode::StaleObservation
+                }
+                9 => {
+                    state.dpi = 120;
+                    ComputerUseErrorCode::StaleObservation
+                }
+                10 => {
+                    state.bounds = None;
+                    ComputerUseErrorCode::StaleObservation
+                }
+                11 => {
+                    state.minimized = true;
+                    ComputerUseErrorCode::TargetMinimized
+                }
+                12 => {
+                    state.visible = false;
+                    ComputerUseErrorCode::TargetUnavailable
+                }
+                _ => unreachable!(),
+            };
+            OS.set(Native {
+                backend,
+                evidence: [a; 4].into(),
+                trace: vec![],
+            });
+            FINAL_NATIVE_OVERRIDE.set(Some(state));
+            let (mut session, target) = session();
+            assert_eq!(
+                publish(
+                    &mut session,
+                    &target,
+                    Some(PixelObservationRoute::ExplicitPixelsOnly)
+                )
+                .err()
+                .unwrap()
+                .code,
+                expected
+            );
+            assert_eq!(session.publications, 0);
+            OS.with_borrow(|os| {
+                assert_eq!(
+                    os.evidence.len(),
+                    2,
+                    "final metadata refuses before recapture"
+                );
+                assert_eq!(os.trace.last(), Some(&"final native metadata"));
+                assert!(!os.trace.contains(&"encode"));
+                assert!(!os.trace.contains(&"accessibility"));
+            });
+            assert!(FINAL_NATIVE_OVERRIDE.with_borrow(|value| value.is_none()));
+        }
+    }
+}
+
+fn native_state(
+    evidence: dcc_cua_platform_windows::ExactWindowPixelEvidence,
+) -> dcc_cua_platform_windows::ExactWindowNativeState {
+    dcc_cua_platform_windows::ExactWindowNativeState {
+        process_id: evidence.process_id,
+        window_handle: evidence.window_handle,
+        bounds: Some(evidence.bounds),
+        visible_bounds: Some(evidence.visible_bounds),
+        dpi: evidence.dpi,
+        visible: evidence.visible,
+        minimized: evidence.minimized,
+        foreground: false,
+        instance: evidence.instance,
     }
 }

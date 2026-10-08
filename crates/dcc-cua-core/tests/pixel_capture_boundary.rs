@@ -80,6 +80,7 @@ fn exact_source_first_capture_instance_boundary() {
         "pub(crate) struct VerifiedVisibleBgraFrame",
         "pub(crate) fn next_exact_capture_generation(",
         "pub(crate) fn live_native_evidence(",
+        "fn validate_live_final_native_state(",
         "pub(crate) fn validate_live_native_evidence(",
         "pub(crate) fn validate_exact_bgra_dimensions(",
         "pub(crate) fn capture_verified_visible_bgra(",
@@ -107,6 +108,9 @@ fn exact_source_first_capture_instance_boundary() {
         native_types.push_str(item(native, marker));
     }
     native_types.push_str(item(native, "pub struct VisibleWindowCaptureError"));
+    let state = include_str!("../../dcc-cua-platform-windows/src/exact_window_state.rs");
+    native_types.push_str("\n#[derive(Clone, Copy, Debug, PartialEq, Eq)]\n");
+    native_types.push_str(item(state, "pub struct ExactWindowNativeState"));
     // Compile the actual shared geometry algorithm too. Only serialization and
     // derive macros are omitted from this standalone, dependency-free harness.
     let geometry = include_str!("../../dcc-cua-platform-windows/src/capture_geometry.rs");

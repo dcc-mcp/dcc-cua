@@ -122,6 +122,10 @@ impl RecordingVideoTerminalEvidence {
         &self.state
     }
 
+    pub(super) fn record_startup_error(&mut self, error: &ComputerUseError) {
+        self.state["startup_error"] = json!({"code":error.code,"message":error.message});
+    }
+
     pub(super) fn cleanup_outcome(&self) -> ComputerUseRecordingCleanupOutcome {
         let state = &self.state;
         let path = |key: &str| state[key].as_str().map(str::to_owned);

@@ -33,6 +33,19 @@ pub struct NativeFrameInstance {
     pub owner_window_handle: u64,
 }
 
+/// Actual WGC measurements carried as portable data, without native APIs or
+/// an independent geometry policy in the media encoder.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NativeWgcFrameGeometry {
+    pub item_size_before: [u32; 2],
+    pub item_size_after: [u32; 2],
+    pub pool_size: [u32; 2],
+    pub content_size: [u32; 2],
+    pub texture_size: [u32; 2],
+    pub row_pitch_bytes: u32,
+    pub bgra_byte_len: usize,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NativeFrameProvenance {
     pub source: NativeFrameSource,
@@ -45,4 +58,6 @@ pub struct NativeFrameProvenance {
     pub window_dpi: u32,
     pub capture_generation: u64,
     pub stream_id: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wgc_geometry: Option<NativeWgcFrameGeometry>,
 }

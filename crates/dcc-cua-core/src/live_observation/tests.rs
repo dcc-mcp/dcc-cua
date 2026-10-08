@@ -376,6 +376,7 @@ fn showcase_projection_preserves_immutable_native_provenance_and_shared_pixels()
         window_dpi: 144,
         capture_generation: 5,
         stream_id: 7,
+        wgc_geometry: None,
     });
     let frame = LiveObservationFrame::new(9, vec![17; 4], 1, 1, Instant::now())
         .with_provenance(provenance.clone());
