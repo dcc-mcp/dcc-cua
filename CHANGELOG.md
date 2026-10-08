@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.10.0](https://github.com/dcc-mcp/dcc-cua/compare/v1.9.4...v1.10.0) (2026-10-08)
+
+
+### Features
+
+* expose read-only MCP connection diagnostics ([#312](https://github.com/dcc-mcp/dcc-cua/issues/312)) ([5891425](https://github.com/dcc-mcp/dcc-cua/commit/5891425515dff637d1a21ecad3a8bfcd02cf42de))
+
 ## [1.9.4](https://github.com/dcc-mcp/dcc-cua/compare/v1.9.3...v1.9.4) (2026-10-04)
 
 
