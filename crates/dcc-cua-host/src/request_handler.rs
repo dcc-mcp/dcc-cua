@@ -996,11 +996,7 @@ async fn handle_request_inner(
             host.require_latest_observation(&observation_id)?;
             host.require_minimize_grant(&session_id)?;
             let _input_turn = RAW_INPUT_QUEUE.lock().await;
-            crate::task_authorization::validate_active_task_authorization(
-                host.task_authorization_host.as_deref(),
-                host.task_authorization.as_ref(),
-            )
-            .await?;
+            revalidate_queued_window_mutation(host).await?;
             let result = host.session.minimize_window(&observation_id).await;
             let result = host.finish_observation_sensitive_attempt(result);
             let result = finish_window_mutation_attempt(result, || host.invalidate_observations())?;
@@ -1623,10 +1619,13 @@ async fn handle_request_inner(
             }
             action.validate_secret_source()?;
             if host.observation_mode == TaskObservationMode::PixelsOnly {
-                return Err(HostError::ComputerUse(ComputerUseError::new(
-                    ComputerUseErrorCode::InvalidAction,
-                    "pixels_only observation currently authorizes minimize_window only; execute_action is unavailable",
-                )));
+                host.require_pixels_input_grant(&session_id, &action)?;
+                if capture_after && post_snapshot_mode == PostSnapshotMode::Semantic {
+                    return Err(HostError::ComputerUse(ComputerUseError::new(
+                        ComputerUseErrorCode::InvalidAction,
+                        "pixels_only input cannot request a semantic post-action observation",
+                    )));
+                }
             }
             host.require_latest_observation(&observation_id)?;
             if (action.element_index.is_some() || action.element_token.is_some())
@@ -1676,7 +1675,8 @@ async fn handle_request_inner(
                             window_handle: host.target_window_handle,
                         },
                         &observation_id,
-                        Some(&accessibility_state_id),
+                        (host.observation_mode == TaskObservationMode::Semantic)
+                            .then_some(accessibility_state_id.as_str()),
                     ),
                     &action.intent,
                     action_value,
@@ -1685,10 +1685,11 @@ async fn handle_request_inner(
                 if outcome != ActionConfirmationOutcome::Allowed {
                     return Ok(action_confirmation_refusal(outcome));
                 }
-                if confirmed_action_evidence_refresh(
-                    &action,
-                    host.session.confirmed_action_evidence_refresh_due(),
-                ) == ConfirmedActionEvidenceRefresh::AccessibilityObservation
+                if host.observation_mode == TaskObservationMode::Semantic
+                    && confirmed_action_evidence_refresh(
+                        &action,
+                        host.session.confirmed_action_evidence_refresh_due(),
+                    ) == ConfirmedActionEvidenceRefresh::AccessibilityObservation
                 {
                     let refreshed_root = host
                         .session
@@ -1738,9 +1739,21 @@ async fn handle_request_inner(
             let raw_input = action.input_kind == "raw_input" || action.uses_physical_keyboard();
             let mut action = action.into_computer_use(observation_id)?;
             let input_turn = acquire_raw_input_turn(raw_input).await;
+            if host.observation_mode == TaskObservationMode::PixelsOnly {
+                let authorization = revalidate_queued_window_mutation(host).await;
+                if let Err(error) = authorization {
+                    action.text.zeroize();
+                    return Err(error);
+                }
+            }
             let result = host.session.perform_action(&action).await;
             action.text.zeroize();
-            let result = host.finish_observation_sensitive_attempt(result)?;
+            let result = host.finish_observation_sensitive_attempt(result);
+            let result = if host.observation_mode == TaskObservationMode::PixelsOnly {
+                finish_window_mutation_attempt(result, || host.invalidate_observations())
+            } else {
+                result
+            }?;
             let action_id = format!("cua-action-{}", Uuid::new_v4());
             if capture_after {
                 if let Err(error) =
@@ -1822,26 +1835,32 @@ async fn handle_request_inner(
                         }
                     };
                 }
-                let screenshot = host
-                    .session
-                    .screenshot_with_bounds(post_snapshot_max_nodes, post_snapshot_max_depth)
-                    .await;
+                let screenshot = if host.observation_mode == TaskObservationMode::PixelsOnly {
+                    host.session.screenshot_pixels_only().await
+                } else {
+                    host.session
+                        .screenshot_with_bounds(post_snapshot_max_nodes, post_snapshot_max_depth)
+                        .await
+                };
                 let screenshot = host.finish_observation_sensitive_attempt(screenshot);
                 drop(input_turn);
                 return match screenshot {
                     Ok(screenshot) => {
                         let observation_id = screenshot.observation.observation_id.clone();
-                        host.latest_observation_id = Some(observation_id.clone());
-                        host.latest_accessibility_state_id = Some(observation_id);
-                        host.latest_accessibility_root = Some(screenshot.accessibility.clone());
-                        action_completed_with_snapshot_response(
+                        host.record_snapshot_observation(observation_id, &screenshot.accessibility);
+                        let (mut response, attachment) = action_completed_with_snapshot_response(
                             &session_id,
                             action_id,
                             result,
                             screenshot,
                             mode,
                             &mut host.latest_shared_image,
-                        )
+                        )?;
+                        response["post_snapshot"]["accessibility_state_id"] =
+                            json!(host.latest_accessibility_state_id);
+                        response["post_snapshot"]["observation_mode"] =
+                            json!(host.observation_mode);
+                        Ok((response, attachment))
                     }
                     Err(error) => {
                         host.latest_observation_id = None;

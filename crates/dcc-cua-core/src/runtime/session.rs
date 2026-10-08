@@ -676,6 +676,8 @@ impl ComputerUseSession {
         &mut self,
         action: &ComputerUseAction,
     ) -> ComputerUseResult<ComputerUseToolResult> {
+        #[cfg(windows)]
+        let pixel_started_generation = dcc_cua_interrupt::interrupt_generation();
         self.ensure_active()?;
         let _preparing_activity = self.begin_banner_activity(banner_activity_for_action_phase(
             action,
@@ -711,6 +713,30 @@ impl ComputerUseSession {
             self.require_observed_input_available()?;
         }
         validate_action_observation(action, &observation)?;
+        #[cfg(windows)]
+        if self.pixel_observation_route == Some(PixelObservationRoute::ExplicitPixelsOnly) {
+            #[cfg(feature = "test-support")]
+            if self.synthetic_test_session {
+                return Err(ComputerUseError::new(
+                    ComputerUseErrorCode::BackendUnavailable,
+                    "synthetic sessions cannot dispatch native pixel input",
+                ));
+            }
+            let outcome = super::windows_pixel_input::perform_exact_pixel_action(
+                action,
+                &observation,
+                &self.scope,
+                &self.session_id,
+                &target,
+                pixel_started_generation,
+                self.control_banner_interrupted(),
+            )
+            .await;
+            // A native dispatch or uncertain partial result must never reuse its token.
+            self.invalidate_action_observations();
+            let result = self.finish_observation_sensitive_attempt(outcome)?;
+            return Ok(self.complete_action(result));
+        }
         if let Some(reason) = explicit_input_backend_rejection(action) {
             let backend_id = action.input_backend_id.as_deref().unwrap_or_default();
             let mut result = input_backend_rejection_result(backend_id, &reason, &target);

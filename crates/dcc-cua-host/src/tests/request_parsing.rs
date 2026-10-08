@@ -3,6 +3,17 @@ use rstest::rstest;
 use super::*;
 
 #[rstest]
+fn pixel_raw_request_does_not_need_an_accessibility_id() {
+    let request: Request = serde_json::from_value(json!({"method":"execute_action", "params":{
+        "session_id":"session-1", "task_grant_id":"grant-1", "window_capability":"cap-1",
+        "observation_id":"pixel-1", "action":{"action":"click", "input_kind":"raw_input", "intent":"ordinary_edit", "x":30,"y":40}
+    }})).unwrap();
+    assert!(
+        matches!(request, Request::ExecuteAction { accessibility_state_id, .. } if accessibility_state_id.is_empty())
+    );
+}
+
+#[rstest]
 fn minimize_is_a_separate_observation_bound_method() {
     let mut request = json!({"method":"minimize_window", "params":{
         "session_id":"session-1", "task_grant_id":"grant-1",

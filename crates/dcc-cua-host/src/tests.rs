@@ -1546,7 +1546,7 @@ fn minimize_method_cannot_substitute_a_session_grant_or_capability() {
 #[rstest]
 #[case("snapshot", true)]
 #[case("minimize_window", true)]
-#[case("execute_action", false)]
+#[case("execute_action", true)]
 #[case("accessibility_snapshot", false)]
 #[case("find", false)]
 #[case("wait_for", false)]
@@ -1565,7 +1565,7 @@ fn pixels_only_host_scope_is_closed(#[case] method: &str, #[case] allowed: bool)
 #[case(json!({"action":"click", "input_kind":"semantic", "element_index":1}))]
 #[case(json!({"action":"click", "input_kind":"raw_input", "element_token":"borrowed"}))]
 #[case(json!({"action":"keypress", "input_kind":"raw_input", "keys":["ENTER"]}))]
-fn pixels_only_host_rejects_all_generic_input_before_core_dispatch(#[case] mut action: Value) {
+fn pixels_only_host_rejects_ungranted_input_before_core_dispatch(#[case] mut action: Value) {
     action["intent"] = json!("ordinary_edit");
     let driver = ComputerUseDriver::create().unwrap();
     let mut host = cached_host_session(&driver);

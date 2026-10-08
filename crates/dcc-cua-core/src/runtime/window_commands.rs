@@ -3,7 +3,7 @@ use super::action_result::validated_action_effect;
 use super::*;
 
 #[cfg(windows)]
-fn minimize_observation_instance(
+pub(super) fn exact_native_observation_instance(
     observation: &ComputerUseObservation,
     requested_id: &str,
     scope: &ComputerUseTargetScope,
@@ -12,7 +12,7 @@ fn minimize_observation_instance(
     let stale = || {
         ComputerUseError::new(
             ComputerUseErrorCode::StaleObservation,
-            "minimize requires the latest exact-window observation with actual native capture identity",
+            "the action requires the latest exact-window observation with actual native capture identity",
         )
     };
     let provenance = &observation.capture_provenance;
@@ -61,6 +61,8 @@ impl ComputerUseSession {
     /// One exact-instance minimize request authorized by the latest actual
     /// native capture. A state read or semantic-only token cannot authorize it.
     pub async fn minimize_window(&mut self, observation_id: &str) -> ComputerUseResult<Value> {
+        #[cfg(windows)]
+        let started_generation = dcc_cua_interrupt::interrupt_generation();
         self.ensure_active()?;
         #[cfg(feature = "test-support")]
         if self.synthetic_test_session {
@@ -85,7 +87,7 @@ impl ComputerUseSession {
                     "take a fresh exact native screenshot before minimize",
                 )
             })?;
-            let instance = minimize_observation_instance(
+            let instance = exact_native_observation_instance(
                 &observation,
                 observation_id,
                 &self.scope,
@@ -100,17 +102,33 @@ impl ComputerUseSession {
                     "exact minimize target changed after observation",
                 ));
             }
+            let mut interrupted = None;
             let outcome = dcc_cua_platform_windows::minimize_exact_window(
                 dcc_cua_platform_windows::UiaTarget {
                     process_id: target.pid,
                     window_handle: target.window_id,
                 },
                 instance,
-                || windows_platform_window_activation_gate("exact_minimize_pre_dispatch"),
+                || {
+                    if let Err(error) = super::windows_pixel_input::validate_pixel_interrupt(
+                        started_generation,
+                        dcc_cua_interrupt::interrupt_generation(),
+                        self.control_banner_interrupted(),
+                    ) {
+                        interrupted = Some(error);
+                        return Err(dcc_cua_platform_windows::UiaError::PermissionDenied(
+                            "exact window mutation was interrupted before native dispatch".into(),
+                        ));
+                    }
+                    windows_platform_window_activation_gate("exact_minimize_pre_dispatch")
+                },
             );
             // Dispatch may have occurred even when readback fails. Never reuse the token.
             self.invalidate_action_observations();
             let state = outcome.map_err(|failure| {
+                if let Some(error) = interrupted {
+                    return error;
+                }
                 let (attempted, source) = match failure {
                     dcc_cua_platform_windows::ExactWindowMinimizeError::BeforeDispatch(error) => {
                         (false, error)
@@ -354,7 +372,7 @@ mod minimize_tests {
             window_title: None,
         };
         assert_eq!(
-            minimize_observation_instance(&observed, requested, &scope, "test").is_ok(),
+            exact_native_observation_instance(&observed, requested, &scope, "test").is_ok(),
             valid
         );
     }

@@ -86,6 +86,27 @@ fn validate_grant_against_task_authorization(
     grant: &TaskGrant,
     lease: &TrustedTaskAuthorizationLease,
 ) -> Result<(), HostError> {
+    if grant.observation_mode == crate::TaskObservationMode::PixelsOnly {
+        let trusted_raw_input = lease
+            .allowed_actions
+            .iter()
+            .any(crate::TrustedTaskActionScope::is_pixels_input);
+        if grant.allow_raw_input != trusted_raw_input
+            || lease
+                .allowed_actions
+                .iter()
+                .any(|scope| !scope.is_window_minimize() && !scope.is_pixels_input())
+            || (lease
+                .allowed_host_methods
+                .iter()
+                .any(|method| method == "execute_action")
+                && !trusted_raw_input)
+        {
+            return Err(browser_scope_denied(
+                "pixels_only grant must exactly derive supported raw input from its trusted action scopes",
+            ));
+        }
+    }
     let granted_origins = grant
         .allowed_browser_origins
         .iter()
@@ -179,6 +200,16 @@ pub(crate) fn enforce_task_authorized_method(
         return Err(browser_scope_denied(
             "Host method requires semantic observation and is unavailable in pixels_only sessions",
         ));
+    }
+    if host.observation_mode == crate::TaskObservationMode::PixelsOnly
+        && let Request::ExecuteAction {
+            action,
+            observation_id,
+            ..
+        } = request
+    {
+        host.require_pixels_input_grant(session_id, action)?;
+        host.require_latest_observation(observation_id)?;
     }
     enforce_task_authorized_browser_scope(host, request)
 }

@@ -57,6 +57,8 @@ mod windows_input;
 #[cfg(any(windows, test))]
 pub(crate) use windows_input::*;
 mod window_commands;
+#[cfg(any(windows, test))]
+mod windows_pixel_input;
 
 #[cfg(any(not(windows), test))]
 pub(crate) fn activation_completion_unknown(error: ComputerUseError) -> ComputerUseError {

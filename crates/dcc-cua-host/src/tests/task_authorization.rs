@@ -16,6 +16,190 @@ struct TaskAuthorizationHost {
 
 struct DenyingTaskAuthorizationHost;
 
+async fn pixel_input_host(actions: &[&str]) -> HostSession {
+    let (issuer, authority) = trusted_task_authorization_broker();
+    let mut registration = browser_credential_registration(unix_time_millis() + 60_000);
+    registration.application_label = "Test DCC".into();
+    registration.target = TrustedTaskAuthorizationTarget::ExactWindow {
+        process_id: 42,
+        window_handle: 77,
+    };
+    registration.allowed_host_methods = vec!["snapshot".into(), "execute_action".into()];
+    registration.allowed_actions = actions
+        .iter()
+        .map(|action| TrustedTaskActionScope {
+            action: (*action).into(),
+            input_kind: "raw_input".into(),
+            secret_input: false,
+            authorization_category: "raw_input".into(),
+            browser_origin: None,
+        })
+        .collect();
+    registration.allowed_browser_origins.clear();
+    let receipt = issuer.register(registration).unwrap();
+    let lease = issue_task_authorization(
+        Some(authority.as_ref()),
+        TaskAuthorizationBinding::window(
+            "connection-test",
+            &receipt.authorization_id,
+            "session-1",
+            "grant-1",
+            "Test DCC",
+            &receipt.window_capability,
+            ConfirmationWindowIdentity {
+                process_id: 42,
+                window_handle: 77,
+            },
+        ),
+    )
+    .await
+    .unwrap();
+    let driver = ComputerUseDriver::create().unwrap();
+    let mut host = cached_host_session(&driver);
+    host.observation_mode = TaskObservationMode::PixelsOnly;
+    host.capability = receipt.window_capability;
+    host.task_authorization = Some(lease);
+    host.task_authorization_host = Some(authority);
+    host
+}
+
+#[rstest]
+#[tokio::test]
+async fn pixel_input_uses_real_scope_and_rejects_missing_stale_or_foreign_bindings() {
+    let mut host = pixel_input_host(&["click"]).await;
+    let action: HostAction = serde_json::from_value(json!({"action":"click", "input_kind":"raw_input", "intent":"ordinary_edit", "x":30, "y":40})).unwrap();
+    host.require_pixels_input_grant("session-1", &action)
+        .unwrap();
+    assert!(
+        host.require_pixels_input_grant("other-session", &action)
+            .is_err()
+    );
+    host.target_process_id += 1;
+    assert!(
+        host.require_pixels_input_grant("session-1", &action)
+            .is_err()
+    );
+    host.target_process_id -= 1;
+    host.target_window_handle += 1;
+    assert!(
+        host.require_pixels_input_grant("session-1", &action)
+            .is_err()
+    );
+    host.target_window_handle -= 1;
+    host.allow_raw_input = false;
+    assert!(
+        host.require_pixels_input_grant("session-1", &action)
+            .is_err()
+    );
+    host.allow_raw_input = true;
+    let capability = host.capability.clone();
+    let mut sessions = ConnectionSessions::default();
+    sessions.windows.insert("session-1".into(), host);
+    for (id, allowed) in [
+        ("", false),
+        ("stale", false),
+        ("observation-before-transition", true),
+    ] {
+        let request: Request = serde_json::from_value(json!({"method":"execute_action", "params":{
+            "session_id":"session-1", "task_grant_id":"grant-1", "window_capability":capability,
+            "observation_id":id, "action":{"action":"click", "input_kind":"raw_input", "intent":"ordinary_edit", "x":30,"y":40}
+        }})).unwrap();
+        assert_eq!(
+            crate::task_authorization_scope::enforce_task_authorized_method(
+                &mut sessions,
+                &request
+            )
+            .is_ok(),
+            allowed
+        );
+    }
+}
+
+#[rstest]
+#[tokio::test]
+async fn pixel_input_stop_while_queued_refuses_before_any_core_attempt() {
+    let mut host = pixel_input_host(&["click"]).await;
+    let queue = tokio::sync::Mutex::new(());
+    let held_turn = queue.lock().await;
+    let stopped = std::cell::Cell::new(false);
+    let core_attempted = std::cell::Cell::new(false);
+    let queued = async {
+        let _turn = queue.lock().await;
+        // The connection's stop latch changed while this request was queued.
+        host.interrupted = stopped.get();
+        crate::request_handler::revalidate_queued_window_mutation(&mut host).await?;
+        core_attempted.set(true);
+        Ok::<_, HostError>(())
+    };
+    tokio::pin!(queued);
+    std::future::poll_fn(|context| {
+        assert!(std::future::Future::poll(queued.as_mut(), context).is_pending());
+        std::task::Poll::Ready(())
+    })
+    .await;
+    stopped.set(true);
+    drop(held_turn);
+    let error = queued.await.unwrap_err();
+    assert!(
+        matches!(error, HostError::ComputerUse(ref error) if error.code == ComputerUseErrorCode::UserInterrupted)
+    );
+    assert!(!core_attempted.get());
+}
+
+#[rstest]
+#[tokio::test]
+async fn pixel_input_cannot_widen_a_click_grant_or_borrow_semantic_tokens() {
+    let host = pixel_input_host(&["click"]).await;
+    let base = json!({"action":"click", "input_kind":"raw_input", "intent":"ordinary_edit", "x":30, "y":40});
+    for (field, value) in [
+        ("action", json!("keypress")),
+        ("action", json!("drag")),
+        ("action", json!("scroll")),
+        ("input_kind", json!("semantic")),
+        ("element_index", json!(1)),
+        ("element_token", json!("foreign")),
+        ("secret_handle", json!("fixture-secret")),
+        ("input_backend_id", json!("post_message")),
+        ("delivery_mode", json!("background")),
+    ] {
+        let mut value_action = base.clone();
+        value_action[field] = value;
+        let action: HostAction = serde_json::from_value(value_action).unwrap();
+        assert!(
+            host.require_pixels_input_grant("session-1", &action)
+                .is_err(),
+            "field {field}"
+        );
+    }
+}
+
+#[rstest]
+fn pixel_input_scope_is_a_strict_subset_of_raw_input() {
+    for action in TrustedTaskActionScope::PIXELS_INPUT_ACTIONS {
+        let scope = TrustedTaskActionScope {
+            action: (*action).into(),
+            input_kind: "raw_input".into(),
+            secret_input: false,
+            authorization_category: "raw_input".into(),
+            browser_origin: None,
+        };
+        assert!(scope.validate());
+        assert!(scope.is_pixels_input());
+    }
+    let mut scope = TrustedTaskActionScope {
+        action: "click".into(),
+        input_kind: "raw_input".into(),
+        secret_input: false,
+        authorization_category: "raw_input".into(),
+        browser_origin: None,
+    };
+    scope.secret_input = true;
+    assert!(!scope.is_pixels_input());
+    scope.secret_input = false;
+    scope.authorization_category = "credential".into();
+    assert!(!scope.is_pixels_input());
+}
+
 #[rstest]
 fn native_minimize_action_scope_is_closed_and_does_not_grant_input() {
     let scope = json!({"action":"minimize_window", "input_kind":"window_state", "secret_input":false, "authorization_category":"window_state"});

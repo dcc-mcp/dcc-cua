@@ -106,8 +106,12 @@ pub(super) fn task_authorization_response(
 }
 
 impl HostSession {
-    pub(super) fn require_minimize_grant(&self, session_id: &str) -> Result<(), crate::HostError> {
-        if !self.task_authorization.as_ref().is_some_and(|lease| {
+    fn bound_task_authorization(
+        &self,
+        session_id: &str,
+        method: &str,
+    ) -> Option<&crate::TrustedTaskAuthorizationLease> {
+        self.task_authorization.as_ref().filter(|lease| {
             lease.session_id == session_id
                 && lease.task_grant_id == self.task_grant_id
                 && lease.window_capability == self.capability
@@ -116,15 +120,65 @@ impl HostSession {
                 && lease
                     .allowed_host_methods
                     .iter()
-                    .any(|method| method == "minimize_window")
-                && lease
+                    .any(|allowed| allowed == method)
+        })
+    }
+
+    pub(super) fn require_minimize_grant(&self, session_id: &str) -> Result<(), crate::HostError> {
+        if !self
+            .bound_task_authorization(session_id, "minimize_window")
+            .is_some_and(|lease| {
+                lease
                     .allowed_actions
                     .iter()
                     .any(crate::TrustedTaskActionScope::is_window_minimize)
-        }) {
+            })
+        {
             return Err(crate::HostError::coded_protocol(
                 crate::HostProtocolErrorCode::TaskAuthorizationDenied,
                 "minimize_window requires the trusted window_state/minimize_window action scope",
+            ));
+        }
+        Ok(())
+    }
+
+    pub(super) fn require_pixels_input_grant(
+        &self,
+        session_id: &str,
+        action: &crate::HostAction,
+    ) -> Result<(), crate::HostError> {
+        if action.input_kind != "raw_input"
+            || !crate::TrustedTaskActionScope::PIXELS_INPUT_ACTIONS
+                .contains(&action.action.as_str())
+            || action.element_index.is_some()
+            || action.element_token.is_some()
+            || action.secret_handle.is_some()
+            || action.input_backend_id.is_some()
+            || action
+                .delivery_mode
+                .as_deref()
+                .is_some_and(|mode| mode != "foreground")
+        {
+            return Err(crate::HostError::ComputerUse(
+                dcc_cua_core::ComputerUseError::new(
+                    ComputerUseErrorCode::InvalidAction,
+                    "pixels_only input requires a supported raw action without semantic selectors, secrets, or alternate backends",
+                ),
+            ));
+        }
+        if !self.allow_raw_input
+            || !self
+                .bound_task_authorization(session_id, "execute_action")
+                .is_some_and(|lease| {
+                    lease
+                        .allowed_actions
+                        .iter()
+                        .any(|scope| scope.is_pixels_input() && scope.action == action.action)
+                })
+        {
+            return Err(crate::HostError::coded_protocol(
+                crate::HostProtocolErrorCode::TaskAuthorizationDenied,
+                "pixels_only input requires the exact supported raw_input action in the bound trusted task grant",
             ));
         }
         Ok(())

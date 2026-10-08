@@ -25,6 +25,7 @@ impl TaskObservationMode {
                     | "change_window_state"
                     | "minimize_window"
                     | "snapshot"
+                    | "execute_action"
                     | "get_session_state"
                     | "get_input_state"
                     | "session_health"

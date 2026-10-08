@@ -70,6 +70,18 @@ pub(crate) async fn acquire_raw_input_turn(
     }
 }
 
+pub(crate) async fn revalidate_queued_window_mutation(
+    host: &mut HostSession,
+) -> Result<(), HostError> {
+    // A stop may arrive while another session owns the physical input queue.
+    ensure_session_not_interrupted(host).await?;
+    crate::task_authorization::validate_active_task_authorization(
+        host.task_authorization_host.as_deref(),
+        host.task_authorization.as_ref(),
+    )
+    .await
+}
+
 pub(crate) fn ensure_connection_session_capacity(
     active_session_count: usize,
 ) -> Result<(), HostError> {

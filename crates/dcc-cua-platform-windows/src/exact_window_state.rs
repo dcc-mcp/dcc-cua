@@ -108,7 +108,7 @@ fn validate_instance(
 pub(crate) fn run_exact_minimize_sequence(
     target: UiaTarget,
     expected: ExactWindowPixelInstanceEvidence,
-    gate: impl FnOnce() -> Result<(), UiaError>,
+    mut gate: impl FnMut() -> Result<(), UiaError>,
     read_before: impl FnOnce() -> Result<ExactWindowNativeState, UiaError>,
     dispatch: impl FnOnce() -> Result<(), UiaError>,
     read_after: impl FnOnce() -> Result<ExactWindowNativeState, UiaError>,
@@ -122,6 +122,7 @@ pub(crate) fn run_exact_minimize_sequence(
             "exact observed target is hidden or already minimized".into(),
         )));
     }
+    gate().map_err(BeforeDispatch)?;
     dispatch().map_err(AfterDispatch)?;
     let after = read_after().map_err(AfterDispatch)?;
     validate_instance(target, expected, &after).map_err(AfterDispatch)?;
@@ -139,7 +140,7 @@ pub(crate) fn run_exact_minimize_sequence(
 pub fn minimize_exact_window(
     target: UiaTarget,
     expected: ExactWindowPixelInstanceEvidence,
-    input_available: impl FnOnce() -> Result<(), UiaError>,
+    input_available: impl FnMut() -> Result<(), UiaError>,
 ) -> Result<ExactWindowNativeState, ExactWindowMinimizeError> {
     use windows_sys::Win32::UI::WindowsAndMessaging::{SW_SHOWMINNOACTIVE, ShowWindowAsync};
     run_exact_minimize_sequence(
@@ -177,7 +178,7 @@ pub fn minimize_exact_window(
 mod tests {
     use super::*;
     use rstest::rstest;
-    use std::cell::RefCell;
+    use std::cell::{Cell, RefCell};
 
     fn state() -> ExactWindowNativeState {
         ExactWindowNativeState {
@@ -282,7 +283,49 @@ mod tests {
             );
         }
         if attempted {
-            assert_eq!(events.borrow()[..3], ["gate", "before", "dispatch"]);
+            assert_eq!(events.borrow()[..4], ["gate", "before", "gate", "dispatch"]);
         }
+    }
+
+    #[test]
+    fn exact_minimize_late_interruption_gate_prevents_dispatch() {
+        let expected = state();
+        let interrupted = Cell::new(false);
+        let events = RefCell::new(Vec::new());
+        let result = run_exact_minimize_sequence(
+            UiaTarget {
+                process_id: 42,
+                window_handle: 99,
+            },
+            expected.instance,
+            || {
+                events.borrow_mut().push("gate");
+                if interrupted.get() {
+                    Err(UiaError::OperationFailed("interrupted".into()))
+                } else {
+                    Ok(())
+                }
+            },
+            || {
+                events.borrow_mut().push("before");
+                interrupted.set(true);
+                Ok(expected)
+            },
+            || {
+                events.borrow_mut().push("dispatch");
+                Ok(())
+            },
+            || {
+                events.borrow_mut().push("after");
+                let mut after = expected;
+                after.minimized = true;
+                Ok(after)
+            },
+        );
+        assert!(matches!(
+            result,
+            Err(ExactWindowMinimizeError::BeforeDispatch(_))
+        ));
+        assert_eq!(*events.borrow(), ["gate", "before", "gate"]);
     }
 }

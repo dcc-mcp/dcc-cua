@@ -573,6 +573,7 @@ enum Request {
         task_grant_id: String,
         window_capability: String,
         observation_id: String,
+        #[serde(default)]
         accessibility_state_id: String,
         action: HostAction,
         #[serde(default)]

@@ -80,7 +80,7 @@ fn explicit_pixel_mode_survives_public_proposal_and_host_grant() {
 #[case("allowed_methods", json!(["accessibility_snapshot"]))]
 #[case("allowed_methods", json!(["find"]))]
 #[case("allowed_methods", json!(["execute_action"]))]
-#[case("allowed_actions", json!([{"action":"click", "input_kind":"raw_input", "secret_input":false, "authorization_category":"raw_input"}]))]
+#[case("allowed_actions", json!([{"action":"drag", "input_kind":"raw_input", "secret_input":false, "authorization_category":"raw_input"}]))]
 #[case("allowed_actions", json!([{"action":"click", "input_kind":"semantic", "secret_input":false, "authorization_category":"content_change"}]))]
 fn public_pixels_mode_refuses_ambiguous_or_semantic_grants(
     #[case] field: &str,
@@ -88,6 +88,48 @@ fn public_pixels_mode_refuses_ambiguous_or_semantic_grants(
 ) {
     let mut task = pixels_task();
     task[field] = value;
+    assert!(test_server().prepare_task(task).is_err());
+}
+
+#[rstest]
+#[case("click")]
+#[case("double_click")]
+#[case("right_click")]
+#[case("toggle")]
+#[case("keypress")]
+#[case("keyboard_shortcut")]
+#[case("type")]
+#[case("type_chars")]
+fn pixel_raw_input_permission_is_derived_from_a_real_supported_scope(#[case] action: &str) {
+    let mut server = test_server();
+    let mut task = pixels_task();
+    task["allowed_methods"] = json!(["snapshot", "execute_action"]);
+    task["allowed_actions"] = json!([{"action":action, "input_kind":"raw_input", "secret_input":false, "authorization_category":"raw_input"}]);
+    let prepared = server.prepare_task(task).unwrap();
+    let proposal = server
+        .proposals
+        .get(prepared["task_id"].as_str().unwrap())
+        .unwrap();
+    let grant = task_session_grant(proposal, proposal.receipt.as_ref().unwrap());
+    assert_eq!(grant["allow_raw_input"], true);
+    assert_eq!(grant["allow_browser_input"], false);
+    assert_eq!(proposal.registration.allowed_actions[0].action, action);
+}
+
+#[rstest]
+#[case("action", json!("drag"))]
+#[case("action", json!("scroll"))]
+#[case("action", json!("move"))]
+#[case("action", json!("press"))]
+#[case("input_kind", json!("semantic"))]
+#[case("secret_input", json!(true))]
+#[case("authorization_category", json!("credential"))]
+#[case("browser_origin", json!("https://example.com"))]
+fn pixel_task_refuses_uncovered_or_sensitive_raw_scopes(#[case] field: &str, #[case] value: Value) {
+    let mut task = pixels_task();
+    task["allowed_methods"] = json!(["snapshot", "execute_action"]);
+    task["allowed_actions"] = json!([{"action":"click", "input_kind":"raw_input", "secret_input":false, "authorization_category":"raw_input"}]);
+    task["allowed_actions"][0][field] = value;
     assert!(test_server().prepare_task(task).is_err());
 }
 
@@ -119,7 +161,7 @@ async fn minimize_cannot_escape_declared_method_scope_or_start_fence() {
 }
 
 #[rstest]
-fn public_tool_schema_advertises_explicit_pixels_and_observation_bound_minimize() {
+fn public_tool_schema_advertises_closed_pixel_actions_and_exact_window_only() {
     let tools = tool_definitions();
     let start = tools
         .iter()
@@ -141,6 +183,47 @@ fn public_tool_schema_advertises_explicit_pixels_and_observation_bound_minimize(
             .unwrap()
             .contains(&json!("minimize_window"))
     );
+    let pixel_condition = &start["inputSchema"]["allOf"][0];
+    assert_eq!(
+        pixel_condition["if"]["properties"]["observation_mode"]["const"],
+        "pixels_only"
+    );
+    let pixel = &pixel_condition["then"];
+    assert_eq!(
+        pixel["required"],
+        json!(["target_process_id", "target_window_handle"])
+    );
+    assert_eq!(pixel["properties"]["surface"]["const"], "window");
+    assert_eq!(
+        pixel["properties"]["allowed_browser_origins"]["maxItems"],
+        0
+    );
+    let methods = pixel["properties"]["allowed_methods"]["items"]["enum"]
+        .as_array()
+        .unwrap();
+    assert!(methods.contains(&json!("execute_action")));
+    assert!(!methods.contains(&json!("accessibility_snapshot")));
+    let scopes = pixel["properties"]["allowed_actions"]["items"]["oneOf"]
+        .as_array()
+        .unwrap();
+    assert_eq!(scopes.len(), 2);
+    let input = &scopes[1]["properties"];
+    assert_eq!(
+        input["action"]["enum"],
+        json!([
+            "click",
+            "double_click",
+            "right_click",
+            "toggle",
+            "keypress",
+            "keyboard_shortcut",
+            "type",
+            "type_chars"
+        ])
+    );
+    assert_eq!(input["input_kind"]["const"], "raw_input");
+    assert_eq!(input["secret_input"]["const"], false);
+    assert_eq!(input["authorization_category"]["const"], "raw_input");
 }
 
 #[rstest]

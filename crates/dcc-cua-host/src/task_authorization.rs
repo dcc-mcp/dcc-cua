@@ -60,6 +60,26 @@ impl TrustedTaskAuthorizationBrowserScope {
 }
 
 impl TrustedTaskActionScope {
+    /// Pixel actions whose native dispatch has the complete observation fence.
+    pub const PIXELS_INPUT_ACTIONS: &'static [&'static str] = &[
+        "click",
+        "double_click",
+        "right_click",
+        "toggle",
+        "keypress",
+        "keyboard_shortcut",
+        "type",
+        "type_chars",
+    ];
+
+    pub fn is_pixels_input(&self) -> bool {
+        Self::PIXELS_INPUT_ACTIONS.contains(&self.action.as_str())
+            && self.input_kind == "raw_input"
+            && !self.secret_input
+            && self.authorization_category == "raw_input"
+            && self.browser_origin.is_none()
+    }
+
     /// Closed authorization for the observation-bound native minimize method.
     pub fn is_window_minimize(&self) -> bool {
         self.action == "minimize_window"
