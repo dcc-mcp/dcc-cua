@@ -19,7 +19,7 @@ use super::{
 };
 #[cfg(windows)]
 use crate::visible_capture::{
-    physical_capture_rect, root_z_order_entry, root_z_order_proves_unobscured,
+    physical_capture_rect, physical_root_bounds, root_z_order_entry, root_z_order_proves_unobscured,
 };
 #[cfg(windows)]
 use crate::windows::{
@@ -293,15 +293,22 @@ fn evaluate_policy_fixture(
 #[rstest]
 #[case([1, 1, 8, 8], "unsampled corner overlap")]
 #[case([49, 49, 3, 3], "single center-sample overlap")]
+#[case([1, 1, 1, 1], "one-pixel overlap")]
+#[case([99, 99, 4, 1], "thin edge overlap")]
 fn visible_crop_rejects_every_foreign_root_intersection(
     #[case] covering_bounds: [i32; 4],
     #[case] _label: &str,
 ) {
     let target_bounds = [0, 0, 100, 100];
-    let roots = [
-        (91_u64, covering_bounds, true),
-        (77_u64, target_bounds, true),
-    ];
+    let covering_rect = WindowsRect {
+        left: covering_bounds[0],
+        top: covering_bounds[1],
+        right: covering_bounds[0] + covering_bounds[2],
+        bottom: covering_bounds[1] + covering_bounds[3],
+    };
+    let covering_entry = root_z_order_entry(91, true, || physical_root_bounds(covering_rect))
+        .expect("even a one-pixel root must remain an occluder");
+    let roots = [covering_entry, (77_u64, target_bounds, true)];
 
     assert!(
         !root_z_order_proves_unobscured(77, target_bounds, &roots),
@@ -338,6 +345,55 @@ fn invisible_roots_do_not_require_compositor_bounds_for_z_order_proof() {
     assert_eq!(entry, Some((91, [0; 4], false)));
 
     assert!(root_z_order_entry(92, true, || None).is_none());
+}
+
+#[cfg(windows)]
+#[rstest]
+#[case([0, 0, 1, 1])]
+#[case([1_599, 227, 1, 1])]
+#[case([3_369, 227, 1, 1])]
+#[case([1_600, 1_927, 4, 1])]
+#[case([-10, -10, 1, 4])]
+fn visible_crop_proves_disjoint_small_root_bounds(#[case] bounds: [i32; 4]) {
+    let physical = WindowsRect {
+        left: bounds[0],
+        top: bounds[1],
+        right: bounds[0] + bounds[2],
+        bottom: bounds[1] + bounds[3],
+    };
+    let entry = root_z_order_entry(91, true, || physical_root_bounds(physical))
+        .expect("a measured positive-area root must participate in the overlap proof");
+    assert_eq!(entry, (91, bounds, true));
+    assert!(
+        physical_capture_rect(physical).is_err(),
+        "capture targets still require more than four pixels on each axis"
+    );
+
+    let target_bounds = [1_600, 227, 1_769, 1_700];
+    assert!(root_z_order_proves_unobscured(
+        77,
+        target_bounds,
+        &[entry, (77, target_bounds, true)],
+    ));
+}
+
+#[cfg(windows)]
+#[rstest]
+#[case([0, 0, 0, 1])]
+#[case([0, 0, 1, 0])]
+#[case([1, 0, 0, 1])]
+#[case([0, 1, 1, 0])]
+#[case([i32::MIN, 0, i32::MAX, 1])]
+#[case([0, i32::MIN, 1, i32::MAX])]
+fn visible_crop_rejects_empty_inverted_or_overflowing_root_bounds(#[case] edges: [i32; 4]) {
+    let physical = WindowsRect {
+        left: edges[0],
+        top: edges[1],
+        right: edges[2],
+        bottom: edges[3],
+    };
+    assert!(root_z_order_entry(91, true, || physical_root_bounds(physical)).is_none());
+    assert!(physical_capture_rect(physical).is_err());
 }
 
 #[cfg(windows)]

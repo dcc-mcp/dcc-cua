@@ -176,7 +176,18 @@ fn physical_window_rect(window: HWND) -> Result<RECT, VisibleWindowCaptureError>
         )
     }
     .map_err(|error| capture_error(format!("read exact physical DWM frame bounds: {error}")))?;
-    physical_capture_rect(rect)
+    Ok(rect)
+}
+
+/// Root occluders may be smaller than a usable capture target. Keep every
+/// positive-area rectangle in the overlap proof, including one-pixel roots.
+pub(crate) fn physical_root_bounds(physical: RECT) -> Option<[i32; 4]> {
+    let width = physical.right.checked_sub(physical.left)?;
+    let height = physical.bottom.checked_sub(physical.top)?;
+    if width <= 0 || height <= 0 {
+        return None;
+    }
+    Some([physical.left, physical.top, width, height])
 }
 
 unsafe fn root_or_self(window: HWND) -> HWND {
@@ -217,12 +228,7 @@ unsafe extern "system" fn collect_root_z_order(window: HWND, context: LPARAM) ->
     let window_handle = window.0 as usize as u64;
     let Some(entry) = root_z_order_entry(window_handle, visible, || {
         let rect = physical_window_rect(window).ok()?;
-        Some([
-            rect.left,
-            rect.top,
-            rect.right - rect.left,
-            rect.bottom - rect.top,
-        ])
+        physical_root_bounds(rect)
     }) else {
         enumeration.failed = true;
         return BOOL(0);
@@ -246,7 +252,8 @@ where
     if !visible {
         return Some((window_handle, [0; 4], false));
     }
-    read_visible_bounds().map(|bounds| (window_handle, bounds, true))
+    let bounds = read_visible_bounds()?;
+    (bounds[2] > 0 && bounds[3] > 0).then_some((window_handle, bounds, true))
 }
 
 unsafe fn target_is_unobscured(target: HWND, rect: RECT) -> bool {
@@ -285,7 +292,7 @@ unsafe fn target_is_unobscured(target: HWND, rect: RECT) -> bool {
 }
 
 pub(crate) fn physical_capture_rect(physical: RECT) -> Result<RECT, VisibleWindowCaptureError> {
-    if physical.right - physical.left <= 4 || physical.bottom - physical.top <= 4 {
+    if !physical_root_bounds(physical).is_some_and(|bounds| bounds[2] > 4 && bounds[3] > 4) {
         return Err(capture_error(
             "the exact HWND physical desktop rectangle is invalid",
         ));
@@ -323,7 +330,7 @@ pub fn exact_window_pixel_evidence(
     if dpi == 0 {
         return Err(capture_error("the exact HWND DPI is unavailable"));
     }
-    let visible_rect = physical_window_rect(hwnd)?;
+    let visible_rect = physical_capture_rect(physical_window_rect(hwnd)?)?;
     Ok(ExactWindowPixelEvidence {
         process_id,
         window_handle,
@@ -364,7 +371,7 @@ pub fn capture_visible_window(
         return Err(capture_error("the exact HWND is minimized"));
     }
 
-    let rect = physical_window_rect(hwnd)?;
+    let rect = physical_capture_rect(physical_window_rect(hwnd)?)?;
     let width = rect.right - rect.left;
     let height = rect.bottom - rect.top;
     if width <= 4 || height <= 4 {
