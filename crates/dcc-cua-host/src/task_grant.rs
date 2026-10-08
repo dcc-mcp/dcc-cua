@@ -172,16 +172,16 @@ impl TaskGrant {
         if let Some(output_dir) = self.recording_output_dir.as_deref() {
             validate_recording_output_dir(output_dir)?;
         }
-        if self.observation_mode == TaskObservationMode::PixelsOnly && self.allow_recording {
-            if self.recording_output_dir.is_none()
+        if self.observation_mode == TaskObservationMode::PixelsOnly
+            && self.allow_recording
+            && (self.recording_output_dir.is_none()
                 || self.task_authorization_id.is_none()
                 || self.showcase_output_dir.is_some()
-                || !self.allow_live_observation
-            {
-                return Err(HostError::Protocol(
-                    "pixels_only recording requires trusted manual output authorization and live observation; automatic showcase attach is unavailable".into(),
-                ));
-            }
+                || !self.allow_live_observation)
+        {
+            return Err(HostError::Protocol(
+                "pixels_only recording requires trusted manual output authorization and live observation; automatic showcase attach is unavailable".into(),
+            ));
         }
         if self.allowed_browser_origins.len() > 32
             || self

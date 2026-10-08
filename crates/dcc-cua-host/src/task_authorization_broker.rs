@@ -404,8 +404,8 @@ fn validate_registration(
         .allowed_browser_origins
         .iter()
         .collect::<BTreeSet<_>>();
-    if let Some(directory) = registration.recording_output_dir.as_deref() {
-        if !matches!(
+    if let Some(directory) = registration.recording_output_dir.as_deref()
+        && (!matches!(
             registration.target,
             TrustedTaskAuthorizationTarget::ExactWindow { .. }
         ) || crate::task_grant::validate_recording_output_location(directory).is_err()
@@ -416,12 +416,11 @@ fn validate_registration(
                         .allowed_host_methods
                         .iter()
                         .any(|method| method == required)
-                })
-        {
-            return invalid(
-                "manual recording requires an exact window, a pre-created ordinary directory, and start/state/stop methods",
-            );
-        }
+                }))
+    {
+        return invalid(
+            "manual recording requires an exact window, a pre-created ordinary directory, and start/state/stop methods",
+        );
     }
     if origins.len() != registration.allowed_browser_origins.len()
         || origins.len() > MAX_TASK_AUTHORIZATION_ACTIONS

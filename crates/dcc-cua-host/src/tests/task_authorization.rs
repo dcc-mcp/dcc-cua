@@ -123,8 +123,10 @@ async fn observation_only_authorization_registers_starts_and_refuses_all_input_a
     host.require_task_authorized_method("snapshot").unwrap();
     host.require_task_authorized_method("get_window_state")
         .unwrap();
-    let mut sessions = ConnectionSessions::default();
-    sessions.connection_id = "connection-test".into();
+    let mut sessions = ConnectionSessions {
+        connection_id: "connection-test".into(),
+        ..ConnectionSessions::default()
+    };
     sessions.windows.insert("session-1".into(), host);
     for action_name in TrustedTaskActionScope::PIXELS_INPUT_ACTIONS {
         let action: HostAction = serde_json::from_value(
@@ -424,8 +426,10 @@ async fn native_frame_host_refuses_missing_metadata_without_driver_dispatch() {
                 .is_err()
         );
     }
-    let mut sessions = ConnectionSessions::default();
-    sessions.connection_id = "connection-test".into();
+    let mut sessions = ConnectionSessions {
+        connection_id: "connection-test".into(),
+        ..ConnectionSessions::default()
+    };
     sessions.windows.insert("session-1".into(), host);
     let request=serde_json::from_value(json!({"method":"set_window_frame","params":{
         "session_id":"session-1","task_grant_id":"grant-1","window_capability":lease.window_capability,
@@ -877,8 +881,10 @@ async fn native_recording_authorization_binds_directory_target_and_video_before_
     host.allow_live_observation = true;
     host.task_authorization_host = Some(authority);
     host.task_authorization = Some(lease);
-    let mut sessions = ConnectionSessions::default();
-    sessions.connection_id = "connection-test".into();
+    let mut sessions = ConnectionSessions {
+        connection_id: "connection-test".into(),
+        ..ConnectionSessions::default()
+    };
     sessions.windows.insert("session-1".into(), host);
     let valid = json!({"method":"recording_start","params":{"session_id":"session-1","task_grant_id":"grant-1",
         "window_capability":receipt.window_capability,"request":{"record_video":true,"output_dir":output}}});
