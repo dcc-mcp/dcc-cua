@@ -1,4 +1,5 @@
 use crate::capture_identity::validate_exact_window_owner;
+use serde::Serialize;
 use thiserror::Error;
 use windows::Win32::{
     Foundation::{BOOL, HWND, LPARAM, RECT},
@@ -20,12 +21,12 @@ use windows::Win32::{
     },
 };
 
-const MAX_ROOT_WINDOWS: usize = 4_096;
+pub(super) const MAX_ROOT_WINDOWS: usize = 4_096;
 
-struct ThreadDpiAwarenessGuard(windows_sys::Win32::UI::HiDpi::DPI_AWARENESS_CONTEXT);
+pub(super) struct ThreadDpiAwarenessGuard(windows_sys::Win32::UI::HiDpi::DPI_AWARENESS_CONTEXT);
 
 impl ThreadDpiAwarenessGuard {
-    fn per_monitor_v2() -> Result<Self, VisibleWindowCaptureError> {
+    pub(super) fn per_monitor_v2() -> Result<Self, VisibleWindowCaptureError> {
         use windows_sys::Win32::UI::HiDpi::{
             DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetThreadDpiAwarenessContext,
         };
@@ -58,7 +59,8 @@ pub struct VisibleWindowCaptureError {
     pub diagnostic: VisibleWindowCaptureDiagnostic,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum VisibleWindowCaptureReason {
     NativeReadFailed,
     TargetUnavailable,
@@ -75,7 +77,7 @@ pub enum VisibleWindowCaptureReason {
     RootOverlap,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub struct VisibleWindowCaptureDiagnostic {
     pub reason: VisibleWindowCaptureReason,
     pub target_bounds: Option<[i32; 4]>,
@@ -108,7 +110,7 @@ pub struct VisibleWindowCapture {
     pub bounds: [i32; 4],
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub struct ExactWindowPixelInstanceEvidence {
     pub process_creation_time_100ns: u64,
     pub window_thread_id: u32,
@@ -143,7 +145,7 @@ fn proof_error(
     }
 }
 
-fn exact_window_instance_evidence(
+pub(super) fn exact_window_instance_evidence(
     process_id: u32,
     window_handle: u64,
 ) -> Result<ExactWindowPixelInstanceEvidence, VisibleWindowCaptureError> {
@@ -222,7 +224,7 @@ fn rectangles_intersect(left: [i32; 4], right: [i32; 4]) -> bool {
         && right_top < left_bottom
 }
 
-fn physical_window_rect(window: HWND) -> Result<RECT, VisibleWindowCaptureError> {
+pub(super) fn physical_window_rect(window: HWND) -> Result<RECT, VisibleWindowCaptureError> {
     let mut rect = RECT::default();
     unsafe {
         DwmGetWindowAttribute(
@@ -251,7 +253,7 @@ pub(crate) fn physical_root_bounds(physical: RECT) -> Option<[i32; 4]> {
     Some([physical.left, physical.top, width, height])
 }
 
-unsafe fn root_or_self(window: HWND) -> HWND {
+pub(super) unsafe fn root_or_self(window: HWND) -> HWND {
     let root = unsafe { GetAncestor(window, GA_ROOT) };
     if root.0.is_null() { window } else { root }
 }
@@ -326,11 +328,86 @@ pub(crate) fn root_is_composited(
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RootProofDecision {
+    Hidden,
+    Cloaked,
+    Composited,
+    Disjoint,
+    Overlap,
+    TargetReached,
+    RejectCloakingQuery,
+    RejectBoundsQuery,
+    RejectBounds,
+}
+
+/// Numeric metadata only. No title, class text, executable path or backend error text.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct RootProofTraceEntry {
+    pub window_handle: u64,
+    pub process_id: u32,
+    pub thread_id: u32,
+    pub root_window_handle: u64,
+    pub owner_window_handle: u64,
+    pub extended_style: i64,
+    pub visible: bool,
+    pub minimized: bool,
+    pub dpi: u32,
+    pub win32_bounds: Option<[i32; 4]>,
+    pub win32_bounds_error: Option<i32>,
+    pub cloaked: Option<u32>,
+    pub cloak_query_error: Option<i32>,
+    pub dwm_bounds: Option<[i32; 4]>,
+    pub dwm_bounds_error: Option<i32>,
+    pub decision: RootProofDecision,
+}
+
+impl RootProofTraceEntry {
+    unsafe fn read(window: HWND, visible: bool) -> Self {
+        use windows::Win32::UI::WindowsAndMessaging::{
+            GW_OWNER, GWL_EXSTYLE, GetWindow, GetWindowLongPtrW,
+        };
+        let mut process_id = 0;
+        let thread_id = unsafe { GetWindowThreadProcessId(window, Some(&mut process_id)) };
+        let mut bounds = RECT::default();
+        let bounds_result = unsafe { GetWindowRect(window, &mut bounds) };
+        Self {
+            window_handle: window.0 as usize as u64,
+            process_id,
+            thread_id,
+            root_window_handle: unsafe { root_or_self(window) }.0 as usize as u64,
+            owner_window_handle: unsafe { GetWindow(window, GW_OWNER) }.unwrap_or_default().0
+                as usize as u64,
+            extended_style: unsafe { GetWindowLongPtrW(window, GWL_EXSTYLE) } as i64,
+            visible,
+            minimized: unsafe { IsIconic(window) }.as_bool(),
+            dpi: unsafe { GetDpiForWindow(window) },
+            win32_bounds: bounds_result
+                .as_ref()
+                .ok()
+                .and_then(|_| physical_root_bounds(bounds)),
+            win32_bounds_error: bounds_result.err().map(|error| error.code().0),
+            cloaked: None,
+            cloak_query_error: None,
+            dwm_bounds: None,
+            dwm_bounds_error: None,
+            decision: if visible {
+                RootProofDecision::Composited
+            } else {
+                RootProofDecision::Hidden
+            },
+        }
+    }
+}
+
 #[derive(Default)]
-struct RootZOrderEnumeration {
+pub(super) struct RootZOrderEnumeration {
     target_window_handle: u64,
+    target_bounds: [i32; 4],
     roots: Vec<(u64, [i32; 4], bool)>,
     failure: Option<VisibleWindowCaptureError>,
+    pub(super) trace: Option<Vec<RootProofTraceEntry>>,
 }
 
 unsafe extern "system" fn collect_root_z_order(window: HWND, context: LPARAM) -> BOOL {
@@ -344,10 +421,14 @@ unsafe extern "system" fn collect_root_z_order(window: HWND, context: LPARAM) ->
     }
     let visible = unsafe { IsWindowVisible(window) }.as_bool();
     let window_handle = window.0 as usize as u64;
+    let mut trace = enumeration
+        .trace
+        .as_ref()
+        .map(|_| unsafe { RootProofTraceEntry::read(window, visible) });
     let measured = (|| {
         let composited = root_is_composited(visible, || {
             let mut cloaked = 0_u32;
-            unsafe {
+            let result = unsafe {
                 DwmGetWindowAttribute(
                     window,
                     DWMWA_CLOAKED,
@@ -356,15 +437,49 @@ unsafe extern "system" fn collect_root_z_order(window: HWND, context: LPARAM) ->
                 )
             }
             .map(|()| cloaked)
-            .map_err(|error| error.code().0)
+            .map_err(|error| error.code().0);
+            if let Some(trace) = trace.as_mut() {
+                match result {
+                    Ok(cloaked) => trace.cloaked = Some(cloaked),
+                    Err(error) => {
+                        trace.cloak_query_error = Some(error);
+                        trace.decision = RootProofDecision::RejectCloakingQuery;
+                    }
+                }
+            }
+            result
         })?;
         if !composited {
+            if let Some(trace) = trace.as_mut() {
+                trace.decision = if visible {
+                    RootProofDecision::Cloaked
+                } else {
+                    RootProofDecision::Hidden
+                };
+            }
             return Ok((window_handle, [0; 4], false));
         }
         let rect = physical_window_rect(window).map_err(|mut error| {
             error.diagnostic.reason = VisibleWindowCaptureReason::RootBoundsUnavailable;
+            if let Some(trace) = trace.as_mut() {
+                trace.dwm_bounds_error = error.diagnostic.os_error;
+                trace.decision = RootProofDecision::RejectBoundsQuery;
+            }
             error
         })?;
+        if let Some(trace) = trace.as_mut() {
+            trace.dwm_bounds = physical_root_bounds(rect);
+            trace.decision = match trace.dwm_bounds {
+                None => RootProofDecision::RejectBounds,
+                Some(_) if window_handle == enumeration.target_window_handle => {
+                    RootProofDecision::TargetReached
+                }
+                Some(bounds) if rectangles_intersect(bounds, enumeration.target_bounds) => {
+                    RootProofDecision::Overlap
+                }
+                Some(_) => RootProofDecision::Disjoint,
+            };
+        }
         root_z_order_entry(window_handle, true, || physical_root_bounds(rect)).ok_or_else(|| {
             proof_error(
                 VisibleWindowCaptureReason::RootBoundsInvalid,
@@ -372,6 +487,9 @@ unsafe extern "system" fn collect_root_z_order(window: HWND, context: LPARAM) ->
             )
         })
     })();
+    if let (Some(entries), Some(trace)) = (enumeration.trace.as_mut(), trace) {
+        entries.push(trace);
+    }
     let entry = match measured {
         Ok(entry) => entry,
         Err(mut error) => {
@@ -406,14 +524,20 @@ where
     (bounds[2] > 0 && bounds[3] > 0).then_some((window_handle, bounds, true))
 }
 
-unsafe fn prove_target_unobscured(
+pub(super) unsafe fn enumerate_target_root_proof(
     target: HWND,
     rect: RECT,
-) -> Result<(), VisibleWindowCaptureError> {
+    trace: bool,
+) -> (
+    Result<(), VisibleWindowCaptureError>,
+    Vec<RootProofTraceEntry>,
+) {
     let target_root = unsafe { root_or_self(target) };
     let target_window_handle = target_root.0 as usize as u64;
     let mut enumeration = RootZOrderEnumeration {
         target_window_handle,
+        target_bounds: physical_root_bounds(rect).unwrap_or_default(),
+        trace: trace.then(Vec::new),
         ..Default::default()
     };
     let result = unsafe {
@@ -449,7 +573,7 @@ unsafe fn prove_target_unobscured(
             &enumeration.roots,
         )
     };
-    proof.map_err(|mut error| {
+    let proof = proof.map_err(|mut error| {
         error.diagnostic.target_bounds = physical_root_bounds(rect);
         if let Some(blocker) = error.diagnostic.blocker_window_handle {
             let mut process_id = 0;
@@ -459,7 +583,15 @@ unsafe fn prove_target_unobscured(
             error.diagnostic.blocker_process_id = (process_id != 0).then_some(process_id);
         }
         error
-    })
+    });
+    (proof, enumeration.trace.unwrap_or_default())
+}
+
+unsafe fn prove_target_unobscured(
+    target: HWND,
+    rect: RECT,
+) -> Result<(), VisibleWindowCaptureError> {
+    unsafe { enumerate_target_root_proof(target, rect, false) }.0
 }
 
 unsafe fn target_is_unobscured(target: HWND, rect: RECT) -> bool {
@@ -487,6 +619,36 @@ pub(crate) fn physical_rectangle_within_desktop(target: [i32; 4], desktop: [i32;
             <= i64::from(desktop[0]) + i64::from(desktop[2])
         && i64::from(target[1]) + i64::from(target[3])
             <= i64::from(desktop[1]) + i64::from(desktop[3])
+}
+
+/// GetDIBits requires the bitmap to be deselected. Restore even after a failed
+/// copy; never publish a partial scanline readback as a complete exact frame.
+pub(crate) fn finish_bitmap_readback(
+    copied: Result<(), i32>,
+    expected_rows: u32,
+    restore_bitmap: impl FnOnce() -> bool,
+    read_rows: impl FnOnce() -> i32,
+    cleanup: impl FnOnce(),
+) -> Result<(), VisibleWindowCaptureError> {
+    let result = (|| {
+        let restored = restore_bitmap();
+        if let Err(code) = copied {
+            let mut error = capture_error("copy visible window pixels");
+            error.diagnostic.os_error = Some(code);
+            return Err(error);
+        }
+        if !restored {
+            return Err(capture_error(
+                "deselect the exact capture bitmap before readback",
+            ));
+        }
+        if expected_rows == 0 || i64::from(read_rows()) != i64::from(expected_rows) {
+            return Err(capture_error("read every exact capture bitmap scanline"));
+        }
+        Ok(())
+    })();
+    cleanup();
+    result
 }
 
 /// Snapshot the native evidence used to fence one exact-window pixel frame.
@@ -631,6 +793,12 @@ pub fn capture_visible_window(
             return Err(capture_error("create compatible bitmap"));
         }
         let previous = SelectObject(memory_dc, bitmap);
+        if previous.0.is_null() || previous.0 as isize == -1 {
+            let _ = DeleteObject(bitmap);
+            let _ = DeleteDC(memory_dc);
+            ReleaseDC(HWND(std::ptr::null_mut()), screen_dc);
+            return Err(capture_error("select the exact capture bitmap"));
+        }
         let copied = BitBlt(
             memory_dc,
             0,
@@ -656,23 +824,32 @@ pub fn capture_visible_window(
             bmiColors: [RGBQUAD::default(); 1],
         };
         let mut bgra = vec![0_u8; (physical_width * physical_height * 4) as usize];
-        let rows = GetDIBits(
-            memory_dc,
-            bitmap,
-            0,
+        // https://learn.microsoft.com/en-us/windows/win32/api/wingdi/nf-wingdi-getdibits
+        // The bitmap must not be selected into a DC when GetDIBits is called.
+        let readback = finish_bitmap_readback(
+            copied.map_err(|error| error.code().0),
             physical_height as u32,
-            Some(bgra.as_mut_ptr().cast()),
-            &mut bitmap_info,
-            DIB_RGB_COLORS,
+            || SelectObject(memory_dc, previous).0 == bitmap.0,
+            || {
+                GetDIBits(
+                    memory_dc,
+                    bitmap,
+                    0,
+                    physical_height as u32,
+                    Some(bgra.as_mut_ptr().cast()),
+                    &mut bitmap_info,
+                    DIB_RGB_COLORS,
+                )
+            },
+            || {
+                // Destroy the private DC first: a failed restore must not leave
+                // the bitmap selected when its object is deleted.
+                let _ = DeleteDC(memory_dc);
+                let _ = DeleteObject(bitmap);
+                ReleaseDC(HWND(std::ptr::null_mut()), screen_dc);
+            },
         );
-        SelectObject(memory_dc, previous);
-        let _ = DeleteObject(bitmap);
-        let _ = DeleteDC(memory_dc);
-        ReleaseDC(HWND(std::ptr::null_mut()), screen_dc);
-        copied.map_err(|error| capture_error(format!("copy visible window pixels: {error}")))?;
-        if rows == 0 {
-            return Err(capture_error("read visible window bitmap"));
-        }
+        readback?;
         validate_exact_window_owner(process_id, window_handle)
             .map_err(|error| capture_error(error.to_string()))?;
         Ok(VisibleWindowCapture {

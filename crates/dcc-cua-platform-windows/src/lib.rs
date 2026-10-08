@@ -6,6 +6,8 @@
 
 #[cfg(windows)]
 mod capture_identity;
+#[cfg(windows)]
+mod capture_proof;
 mod contracts;
 #[cfg(windows)]
 mod input;
@@ -28,6 +30,8 @@ pub use contracts::{
 pub use capture_identity::{
     ExactWindowCaptureIdentityError, ExactWindowCaptureRoute, exact_window_capture_route,
 };
+#[cfg(windows)]
+pub use capture_proof::{NativeCaptureProof, native_capture_proof};
 #[cfg(windows)]
 pub use input::{
     RelativeMoveInjection, WindowsForegroundClickError, WindowsForegroundClickOutcome,

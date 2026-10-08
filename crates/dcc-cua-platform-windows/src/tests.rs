@@ -19,10 +19,57 @@ use super::{
 };
 #[cfg(windows)]
 use crate::visible_capture::{
-    VisibleWindowCaptureReason, physical_capture_rect, physical_rectangle_within_desktop,
-    physical_root_bounds, root_is_composited, root_z_order_entry, root_z_order_proof,
-    root_z_order_proves_unobscured,
+    VisibleWindowCaptureReason, finish_bitmap_readback, physical_capture_rect,
+    physical_rectangle_within_desktop, physical_root_bounds, root_is_composited,
+    root_z_order_entry, root_z_order_proof, root_z_order_proves_unobscured,
 };
+
+#[cfg(windows)]
+#[rstest]
+#[case(Ok(()), true, 1400, true, true)]
+#[case(Ok(()), true, 1399, false, true)]
+#[case(Ok(()), true, 0, false, true)]
+#[case(Ok(()), true, -1, false, true)]
+#[case(Ok(()), false, 1400, false, false)]
+#[case(Err(-2147024891), true, 1400, false, false)]
+#[case(Err(-2147024891), false, 1400, false, false)]
+fn visible_crop_deselects_bitmap_before_complete_readback(
+    #[case] copied: Result<(), i32>,
+    #[case] restore_ok: bool,
+    #[case] rows: i32,
+    #[case] success: bool,
+    #[case] should_read: bool,
+) {
+    use std::cell::RefCell;
+    let events = RefCell::new(vec!["copy_attempted"]);
+    let readback = finish_bitmap_readback(
+        copied,
+        1400,
+        || {
+            events.borrow_mut().push("deselect");
+            restore_ok
+        },
+        || {
+            events.borrow_mut().push("read");
+            rows
+        },
+        || {
+            events
+                .borrow_mut()
+                .extend(["delete_memory_dc", "delete_bitmap", "release_screen_dc"]);
+        },
+    );
+    assert_eq!(readback.is_ok(), success);
+    let mut expected = vec!["copy_attempted", "deselect"];
+    if should_read {
+        expected.push("read");
+    }
+    expected.extend(["delete_memory_dc", "delete_bitmap", "release_screen_dc"]);
+    assert_eq!(*events.borrow(), expected);
+    if let Err(code) = copied {
+        assert_eq!(readback.unwrap_err().diagnostic.os_error, Some(code));
+    }
+}
 #[cfg(windows)]
 use crate::windows::{
     REQUEST_TIMEOUT, STARTUP_TIMEOUT, UIA_WORKER_PROTOCOL_VERSION, UiaWorker, ensure_ok,

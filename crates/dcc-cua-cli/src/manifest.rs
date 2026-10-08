@@ -221,6 +221,17 @@ pub(crate) fn document_for_platform(exact_window_pixels_available: bool) -> Valu
         "runtime": {
             "backend": "cua-driver-sdk",
             "separate_driver_required": false,
+            "native_capture_proof": {
+                "availability": "windows",
+                "cli_command": "capture-proof",
+                "required_selectors": ["--pid", "--window-id"],
+                "content_free": true,
+                "pixels_read": false,
+                "input_sent": false,
+                "host_or_uia_started": false,
+                "max_root_entries_per_phase": 4096,
+                "authorizes_capture_or_input": false,
+            },
             "exact_window_pixels": {
                 "availability": "windows",
                 "cli_flag": "--pixels-only",
@@ -260,10 +271,11 @@ pub(crate) fn document_for_platform(exact_window_pixels_available: bool) -> Valu
     document["host"]["task_authorization"]["authorization_owner"] = json!("connected_agent_host");
     document["host"]["task_authorization"]["ipc_can_mint_exact_retained_proposal"] = json!(true);
     if !exact_window_pixels_available {
-        document["runtime"]
+        let runtime = document["runtime"]
             .as_object_mut()
-            .expect("manifest runtime is an object")
-            .remove("exact_window_pixels");
+            .expect("manifest runtime is an object");
+        runtime.remove("exact_window_pixels");
+        runtime.remove("native_capture_proof");
     }
     document
 }

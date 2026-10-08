@@ -306,6 +306,7 @@ pub(super) fn print_help() -> std::io::Result<()> {
   launch --name NAME|--bundle-id ID|--aumid ID|--path PATH|--launch-path PATH [--url URL] [--arg ARG] [--new-instance] [--start-minimized]
   terminate --app APP|--pid PID|--window-id ID|--title TITLE --confirm [--allow-external]
   snapshot --app APP|--pid PID|--window-id ID|--title TITLE [--pixels-only] [--activate] [--escalate --escalation-reason REASON] [--escalation-detail NOTE] [--output FILE]
+  capture-proof --pid PID --window-id ID (Windows; content-free native metadata only)
   restore-activate --pid PID --window-id ID
   set-window-frame --app APP|--pid PID --window-id ID --x N --y N --width N --height N
   invoke-menu --app APP|--pid PID --window-id ID --menu TOP [--menu CHILD ...]
