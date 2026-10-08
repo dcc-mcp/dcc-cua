@@ -51,7 +51,7 @@ fn summarize_bgra(
     let started = Instant::now();
     let mut rgba_hash = Sha256::new();
     let mut histograms = std::array::from_fn(|_| vec![0_u64; 256]);
-    for pixel in bgra.chunks_exact(4) {
+    for pixel in bgra.as_chunks::<4>().0 {
         rgba_hash.update([pixel[2], pixel[1], pixel[0], pixel[3]]);
         for (channel, value) in pixel.iter().enumerate() {
             histograms[channel][usize::from(*value)] += 1;

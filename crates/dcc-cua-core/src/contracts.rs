@@ -739,7 +739,7 @@ pub enum ComputerUseCompletionState {
 pub struct ComputerUseError {
     pub code: ComputerUseErrorCode,
     pub message: String,
-    pub details: Option<ComputerUseErrorDetails>,
+    pub details: Option<Box<ComputerUseErrorDetails>>,
 }
 
 impl ComputerUseError {
@@ -753,7 +753,7 @@ impl ComputerUseError {
 
     #[must_use]
     pub fn with_details(mut self, details: ComputerUseErrorDetails) -> Self {
-        self.details = Some(details);
+        self.details = Some(Box::new(details));
         self
     }
 }

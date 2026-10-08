@@ -321,7 +321,7 @@ struct LiveObservationReason {
     message: String,
     timestamp_ms: u128,
     last_sequence: Option<u64>,
-    details: Option<crate::ComputerUseErrorDetails>,
+    details: Option<Box<crate::ComputerUseErrorDetails>>,
 }
 
 impl LiveObservationReason {
@@ -943,16 +943,16 @@ pub(crate) fn decode_png_to_bgra(data: &[u8]) -> ComputerUseResult<(Vec<u8>, u32
         .ok_or_else(|| capture_error("PNG dimensions overflow"))?;
     let mut bgra = Vec::with_capacity(pixel_count * 4);
     match info.color_type {
-        png::ColorType::Rgba => pixels.chunks_exact(4).for_each(|pixel| {
+        png::ColorType::Rgba => pixels.as_chunks::<4>().0.iter().for_each(|pixel| {
             bgra.extend_from_slice(&[pixel[2], pixel[1], pixel[0], pixel[3]]);
         }),
-        png::ColorType::Rgb => pixels.chunks_exact(3).for_each(|pixel| {
+        png::ColorType::Rgb => pixels.as_chunks::<3>().0.iter().for_each(|pixel| {
             bgra.extend_from_slice(&[pixel[2], pixel[1], pixel[0], 255]);
         }),
         png::ColorType::Grayscale => pixels.iter().for_each(|value| {
             bgra.extend_from_slice(&[*value, *value, *value, 255]);
         }),
-        png::ColorType::GrayscaleAlpha => pixels.chunks_exact(2).for_each(|pixel| {
+        png::ColorType::GrayscaleAlpha => pixels.as_chunks::<2>().0.iter().for_each(|pixel| {
             bgra.extend_from_slice(&[pixel[0], pixel[0], pixel[0], pixel[1]]);
         }),
         png::ColorType::Indexed => {

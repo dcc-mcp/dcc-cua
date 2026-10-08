@@ -45,7 +45,7 @@ enum ComputerUseErrorCode {
 struct ComputerUseError {
     code: ComputerUseErrorCode,
     message: String,
-    details: Option<ComputerUseErrorDetails>,
+    details: Option<Box<ComputerUseErrorDetails>>,
 }
 #[derive(Debug, Default)]
 struct ComputerUseErrorDetails {
@@ -65,7 +65,7 @@ impl ComputerUseError {
         }
     }
     fn with_details(mut self, details: ComputerUseErrorDetails) -> Self {
-        self.details = Some(details);
+        self.details = Some(Box::new(details));
         self
     }
 }

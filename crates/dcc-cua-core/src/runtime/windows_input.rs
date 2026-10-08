@@ -955,7 +955,7 @@ pub(crate) fn map_windows_foreground_click_error(
                     mapped.message
                 ),
             )
-            .with_details(details)
+            .with_details(*details)
         }
         WindowsForegroundClickError::NotAttempted { attempts, failure } => {
             let code = match failure.reason {

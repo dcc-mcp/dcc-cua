@@ -32,7 +32,7 @@ fn diagnostics_describe_raw_bytes_and_decoded_png_without_alpha_normalization() 
     for (channel, histogram) in diagnostics.bgra_channel_histograms.iter().enumerate() {
         assert_eq!(histogram.len(), 256);
         assert_eq!(histogram.iter().sum::<u64>(), 3);
-        for pixel in bgra.chunks_exact(4) {
+        for pixel in bgra.as_chunks::<4>().0 {
             assert_eq!(histogram[usize::from(pixel[channel])], 1);
         }
     }
