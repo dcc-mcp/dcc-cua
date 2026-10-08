@@ -9,7 +9,6 @@ pub(super) enum PixelObservationRoute {
 }
 
 impl PixelObservationRoute {
-    #[cfg(any(windows, test))]
     pub(super) const fn observation_mode(self) -> &'static str {
         match self {
             #[cfg(any(windows, test))]

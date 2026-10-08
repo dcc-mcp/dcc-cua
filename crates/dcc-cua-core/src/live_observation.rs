@@ -5,6 +5,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use dcc_cua_interrupt::{interrupt_generation, interrupt_generation_changed};
+use dcc_cua_showcase::FrameCaptureProvenance;
 use serde_json::{Value, json};
 use tokio::sync::{Notify, watch};
 use tokio::task::JoinHandle;
@@ -18,6 +19,10 @@ use crate::{
 
 #[cfg(test)]
 mod tests;
+#[cfg(windows)]
+mod windows_capture;
+#[cfg(windows)]
+use windows_capture::{WindowsLiveTarget, run_windows_capture_loop};
 
 const FIRST_FRAME_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 const PAUSE_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
@@ -115,6 +120,7 @@ pub(crate) struct LiveObservationFrame {
     height: u32,
     captured_at_ms: u128,
     captured_at: Instant,
+    provenance: FrameCaptureProvenance,
 }
 
 impl LiveObservationFrame {
@@ -135,7 +141,18 @@ impl LiveObservationFrame {
                 .duration_since(UNIX_EPOCH)
                 .map_or(0, |duration| duration.as_millis()),
             captured_at,
+            provenance: FrameCaptureProvenance::Portable,
         }
+    }
+
+    #[cfg(any(windows, test))]
+    pub(crate) fn with_provenance(mut self, provenance: FrameCaptureProvenance) -> Self {
+        self.provenance = provenance;
+        self
+    }
+
+    pub(crate) fn provenance(&self) -> &FrameCaptureProvenance {
+        &self.provenance
     }
 
     #[cfg(any(not(windows), test))]
@@ -294,6 +311,7 @@ pub(crate) struct LiveObservationStatus {
     capture_mode: Option<&'static str>,
     last_error: Option<String>,
     pause_reason: Option<LiveObservationReason>,
+    pause_sequence_fence: Option<u64>,
     terminal_reason: Option<LiveObservationReason>,
 }
 
@@ -303,6 +321,7 @@ struct LiveObservationReason {
     message: String,
     timestamp_ms: u128,
     last_sequence: Option<u64>,
+    details: Option<crate::ComputerUseErrorDetails>,
 }
 
 impl LiveObservationReason {
@@ -314,6 +333,7 @@ impl LiveObservationReason {
                 .duration_since(UNIX_EPOCH)
                 .map_or(0, |duration| duration.as_millis()),
             last_sequence,
+            details: error.details.clone(),
         }
     }
 
@@ -323,6 +343,7 @@ impl LiveObservationReason {
             "message": self.message,
             "timestamp_ms": self.timestamp_ms,
             "last_sequence": self.last_sequence,
+            "details": self.details,
         })
     }
 }
@@ -350,6 +371,17 @@ impl LiveObservationStatus {
         capture_mode: &'static str,
         measurement: FrameCaptureMeasurement,
     ) {
+        if self.terminal_reason.is_some() {
+            return;
+        }
+        if self
+            .latest
+            .as_ref()
+            .is_some_and(|latest| latest.sequence() >= frame.sequence())
+        {
+            self.record_error("a stale live frame cannot cross the pause or publication fence");
+            return;
+        }
         self.first_captured_at.get_or_insert(frame.captured_at);
         if let Some(previous) = self.previous_captured_at {
             let interval_ms = frame
@@ -422,6 +454,9 @@ impl LiveObservationStatus {
             return;
         }
         self.record_error(error.message.clone());
+        self.pause_sequence_fence = self
+            .pause_sequence_fence
+            .max(self.latest.as_ref().map(|frame| frame.sequence()));
         self.pause_reason = Some(LiveObservationReason::from_error(
             error,
             self.latest.as_ref().map(|frame| frame.sequence()),
@@ -441,15 +476,19 @@ impl LiveObservationStatus {
     }
 
     fn pause_error(&self) -> Option<ComputerUseError> {
-        self.pause_reason
-            .as_ref()
-            .map(|reason| ComputerUseError::new(reason.code, reason.message.clone()))
+        self.pause_reason.as_ref().map(|reason| {
+            let mut error = ComputerUseError::new(reason.code, reason.message.clone());
+            error.details = reason.details.clone();
+            error
+        })
     }
 
     fn terminal_error(&self) -> Option<ComputerUseError> {
-        self.terminal_reason
-            .as_ref()
-            .map(|reason| ComputerUseError::new(reason.code, reason.message.clone()))
+        self.terminal_reason.as_ref().map(|reason| {
+            let mut error = ComputerUseError::new(reason.code, reason.message.clone());
+            error.details = reason.details.clone();
+            error
+        })
     }
 
     pub(crate) fn latest(&self) -> Option<Arc<LiveObservationFrame>> {
@@ -503,6 +542,7 @@ impl LiveObservationStatus {
             "last_error": self.last_error,
             "paused": self.pause_reason.is_some(),
             "pause_reason": self.pause_reason(),
+            "pause_sequence_fence": self.pause_sequence_fence,
             "terminal_reason": self.terminal_reason(),
         })
     }
@@ -579,11 +619,13 @@ impl LiveObservation {
         process_id: u32,
         window_handle: u64,
         request: &ComputerUseLiveObservationStartRequest,
+        capture_exclusion: Option<dcc_cua_indicator::BannerCaptureExclusionSource>,
     ) -> ComputerUseResult<Self> {
         request.validate()?;
         let stream_id = LIVE_OBSERVATION_STREAM_COUNTER.fetch_add(1, Ordering::Relaxed);
         #[cfg(not(windows))]
         {
+            let _ = capture_exclusion;
             let fps = request.fps;
             let (sender, receiver) = watch::channel(LiveObservationStatus::default());
             let shutdown = LiveObservationShutdown::default();
@@ -615,24 +657,13 @@ impl LiveObservation {
             let _ = (driver, session_id);
             crate::interactive_desktop::require_exact_window_observation_available()?;
             ensure_window_owner(process_id, window_handle)?;
-            match dcc_cua_platform_windows::exact_window_capture_route(process_id, window_handle)
-                .map_err(|error| {
-                    ComputerUseError::new(ComputerUseErrorCode::InvalidTarget, error.to_string())
-                })? {
-                dcc_cua_platform_windows::ExactWindowCaptureRoute::Wgc => {}
-                dcc_cua_platform_windows::ExactWindowCaptureRoute::VerifiedVisible => {
-                    return Err(ComputerUseError::new(
-                        ComputerUseErrorCode::InvalidTarget,
-                        "live WGC pixels cannot prove the exact HWND while another visible window from the same executable exists",
-                    ));
-                }
-            }
+            let target = WindowsLiveTarget::new(process_id, window_handle, stream_id)?;
             let fps = request.fps;
             let (sender, receiver) = watch::channel(LiveObservationStatus::default());
             let shutdown = LiveObservationShutdown::default();
             let task = tokio::spawn(run_capture_loop(
-                process_id,
-                window_handle,
+                target,
+                capture_exclusion,
                 fps,
                 interrupt_generation(),
                 sender,
@@ -663,6 +694,32 @@ impl LiveObservation {
             .borrow()
             .latest()
             .map(|frame| LiveObservationFence::new(self.stream_id, frame.sequence()))
+    }
+
+    pub(crate) fn validate_frame_eligibility(&self, sequence: u64) -> ComputerUseResult<()> {
+        let status = self.receiver.borrow();
+        if let Some(error) = status.terminal_error().or_else(|| status.pause_error()) {
+            return Err(error);
+        }
+        if status
+            .pause_sequence_fence
+            .is_some_and(|fence| sequence <= fence)
+        {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::StaleObservation,
+                "the live frame predates a pause and cannot be reused after resume",
+            ));
+        }
+        if status
+            .latest()
+            .is_none_or(|frame| frame.sequence() < sequence)
+        {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::StaleObservation,
+                "the live frame no longer belongs to the active stream",
+            ));
+        }
+        Ok(())
     }
 
     pub(crate) const fn stream_id(&self) -> u64 {
@@ -732,20 +789,24 @@ pub(crate) fn project_showcase_status(
 ) -> dcc_cua_showcase::LiveObservationStatus {
     let latest = status.latest().map(|frame| {
         let (width, height) = frame.dimensions();
-        Arc::new(dcc_cua_showcase::LiveObservationFrame::from_parts(
-            frame.sequence(),
-            frame.shared_bgra(),
-            width,
-            height,
-            frame.captured_at_ms(),
-            frame.captured_at(),
-        ))
+        Arc::new(
+            dcc_cua_showcase::LiveObservationFrame::from_parts(
+                frame.sequence(),
+                frame.shared_bgra(),
+                width,
+                height,
+                frame.captured_at_ms(),
+                frame.captured_at(),
+            )
+            .with_provenance(frame.provenance().clone()),
+        )
     });
     dcc_cua_showcase::LiveObservationStatus::projected(
         latest,
         status.pause_reason(),
         status.terminal_reason(),
     )
+    .with_pause_sequence_fence(status.pause_sequence_fence)
 }
 
 #[cfg(not(windows))]
@@ -836,6 +897,7 @@ fn pause_capture_error(error: &ComputerUseError) -> bool {
     error.code == ComputerUseErrorCode::InteractiveDesktopUnavailable
 }
 
+#[cfg(any(not(windows), test))]
 #[derive(Debug)]
 pub(crate) enum CaptureFailureDisposition {
     Retry(ComputerUseError),
@@ -843,6 +905,7 @@ pub(crate) enum CaptureFailureDisposition {
     Terminal(ComputerUseError),
 }
 
+#[cfg(any(not(windows), test))]
 fn capture_failure_disposition(error: ComputerUseError) -> CaptureFailureDisposition {
     if pause_capture_error(&error) {
         CaptureFailureDisposition::Pause(error)
@@ -853,7 +916,7 @@ fn capture_failure_disposition(error: ComputerUseError) -> CaptureFailureDisposi
     }
 }
 
-#[cfg(any(windows, test))]
+#[cfg(test)]
 pub(crate) fn live_capture_failure_disposition(
     capture_error: ComputerUseError,
     observation_availability: ComputerUseResult<()>,
@@ -918,8 +981,8 @@ impl Drop for LiveObservation {
 
 #[cfg(windows)]
 async fn run_capture_loop(
-    process_id: u32,
-    window_handle: u64,
+    target: WindowsLiveTarget,
+    capture_exclusion: Option<dcc_cua_indicator::BannerCaptureExclusionSource>,
     fps: u32,
     started_interrupt_generation: u64,
     sender: watch::Sender<LiveObservationStatus>,
@@ -928,8 +991,8 @@ async fn run_capture_loop(
     let join_error_sender = sender.clone();
     if let Err(error) = tokio::task::spawn_blocking(move || {
         run_windows_capture_loop(
-            process_id,
-            window_handle,
+            target,
+            capture_exclusion,
             fps,
             started_interrupt_generation,
             sender,
@@ -940,210 +1003,11 @@ async fn run_capture_loop(
     {
         let error = ComputerUseError::new(
             ComputerUseErrorCode::CaptureFailed,
-            format!("persistent WGC worker failed: {error}"),
+            format!("exact-window capture worker failed: {error}"),
         );
         join_error_sender.send_modify(|status| {
             status.record_terminal_error(&error);
         });
-    }
-}
-
-#[cfg(windows)]
-enum WindowsLiveCapture {
-    Persistent(dcc_cua_platform_windows::PersistentWgcCapture),
-    Uninitialized,
-}
-
-#[cfg(windows)]
-struct WindowsCapturedFrame {
-    bgra: Vec<u8>,
-    width: u32,
-    height: u32,
-    capture_mode: &'static str,
-    measurement: Option<dcc_cua_platform_windows::WgcFrameMeasurement>,
-}
-
-#[cfg(windows)]
-impl From<dcc_cua_platform_windows::WgcPublishedFrameMeasurement> for FrameCaptureMeasurement {
-    fn from(measurement: dcc_cua_platform_windows::WgcPublishedFrameMeasurement) -> Self {
-        let compositor = match measurement.compositor {
-            dcc_cua_platform_windows::WgcCompositorTiming::Available {
-                system_relative_time_100ns,
-                compositor_to_publish,
-            } => CompositorTiming::Available {
-                system_relative_time_100ns,
-                compositor_to_publish,
-            },
-            dcc_cua_platform_windows::WgcCompositorTiming::Unavailable { reason } => {
-                CompositorTiming::unavailable(reason.as_str())
-            }
-        };
-        Self::measured(
-            measurement.source_wait,
-            measurement.readback_total,
-            measurement.gpu_copy_map,
-            measurement.cpu_copy,
-            compositor,
-        )
-    }
-}
-
-#[cfg(windows)]
-impl WindowsLiveCapture {
-    fn new(process_id: u32, window_handle: u64) -> Self {
-        dcc_cua_platform_windows::PersistentWgcCapture::new(process_id, window_handle)
-            .map_or(Self::Uninitialized, Self::Persistent)
-    }
-
-    fn next_frame(
-        &mut self,
-        process_id: u32,
-        window_handle: u64,
-    ) -> ComputerUseResult<WindowsCapturedFrame> {
-        match self {
-            Self::Persistent(capture) => match capture.next_measured_frame(FIRST_FRAME_TIMEOUT) {
-                Ok(frame) => Ok(Self::publishable_frame(frame, "persistent_wgc")),
-                Err(persistent_error) => self.reinitialize(
-                    process_id,
-                    window_handle,
-                    "reinitialized_wgc_recovery",
-                    Some(&persistent_error),
-                ),
-            },
-            Self::Uninitialized => self.reinitialize(
-                process_id,
-                window_handle,
-                "reinitialized_wgc_fallback",
-                None,
-            ),
-        }
-    }
-
-    fn reinitialize(
-        &mut self,
-        process_id: u32,
-        window_handle: u64,
-        capture_mode: &'static str,
-        prior_error: Option<&dyn std::fmt::Display>,
-    ) -> ComputerUseResult<WindowsCapturedFrame> {
-        let mut capture =
-            dcc_cua_platform_windows::PersistentWgcCapture::new(process_id, window_handle)
-                .map_err(|error| {
-                    ComputerUseError::new(
-                        ComputerUseErrorCode::CaptureFailed,
-                        prior_error.map_or_else(
-                            || error.to_string(),
-                            |prior| format!("{prior}; WGC reinitialization failed: {error}"),
-                        ),
-                    )
-                })?;
-        let frame = capture
-            .next_measured_frame(FIRST_FRAME_TIMEOUT)
-            .map_err(|error| {
-                ComputerUseError::new(ComputerUseErrorCode::CaptureFailed, error.to_string())
-            })?;
-        *self = Self::Persistent(capture);
-        Ok(Self::publishable_frame(frame, capture_mode))
-    }
-
-    fn publishable_frame(
-        frame: dcc_cua_platform_windows::PersistentWgcFrame,
-        capture_mode: &'static str,
-    ) -> WindowsCapturedFrame {
-        WindowsCapturedFrame {
-            bgra: frame.bgra,
-            width: frame.width,
-            height: frame.height,
-            capture_mode,
-            measurement: Some(frame.measurement),
-        }
-    }
-}
-
-#[cfg(windows)]
-fn run_windows_capture_loop(
-    process_id: u32,
-    window_handle: u64,
-    fps: u32,
-    started_interrupt_generation: u64,
-    sender: watch::Sender<LiveObservationStatus>,
-    shutdown: LiveObservationShutdown,
-) {
-    let interval = std::time::Duration::from_secs_f64(1.0 / f64::from(fps));
-    let mut sequence = 0_u64;
-    let mut capture = WindowsLiveCapture::new(process_id, window_handle);
-    loop {
-        if shutdown.is_requested()
-            || sender.is_closed()
-            || interrupt_generation_changed(started_interrupt_generation, interrupt_generation())
-        {
-            return;
-        }
-        let capture_started = Instant::now();
-        match ensure_window_owner(process_id, window_handle)
-            .and_then(|()| capture.next_frame(process_id, window_handle))
-            .and_then(|frame| {
-                ensure_window_owner(process_id, window_handle)?;
-                Ok(frame)
-            }) {
-            Ok(frame) => {
-                if shutdown.is_requested()
-                    || interrupt_generation_changed(
-                        started_interrupt_generation,
-                        interrupt_generation(),
-                    )
-                {
-                    return;
-                }
-                sequence = sequence.saturating_add(1);
-                let measurement = frame.measurement.map_or_else(
-                    || {
-                        FrameCaptureMeasurement::unavailable(
-                            "capture_mode_does_not_report_split_timing",
-                        )
-                    },
-                    |measurement| FrameCaptureMeasurement::from(measurement.at_publish()),
-                );
-                sender.send_modify(|status| {
-                    status.publish_measured_frame(
-                        LiveObservationFrame::new(
-                            sequence,
-                            frame.bgra,
-                            frame.width,
-                            frame.height,
-                            Instant::now(),
-                        ),
-                        capture_started.elapsed(),
-                        frame.capture_mode,
-                        measurement,
-                    );
-                });
-            }
-            Err(error) => {
-                match live_capture_failure_disposition(
-                    error,
-                    crate::interactive_desktop::require_exact_window_observation_available(),
-                ) {
-                    CaptureFailureDisposition::Terminal(error) => {
-                        sender.send_modify(|status| status.record_terminal_error(&error));
-                        return;
-                    }
-                    CaptureFailureDisposition::Pause(error) => {
-                        sender.send_modify(|status| status.record_paused_error(&error));
-                        if shutdown.wait_timeout(PAUSE_RETRY_INTERVAL) {
-                            return;
-                        }
-                        continue;
-                    }
-                    CaptureFailureDisposition::Retry(error) => {
-                        sender.send_modify(|status| status.record_error(error.message));
-                    }
-                }
-            }
-        }
-        if shutdown.wait_timeout(interval.saturating_sub(capture_started.elapsed())) {
-            return;
-        }
     }
 }
 

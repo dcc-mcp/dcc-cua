@@ -287,3 +287,84 @@ fn showcase_projection_shares_the_live_frame_buffer() {
 
     assert!(Arc::ptr_eq(&source, &projected));
 }
+
+#[rstest]
+#[tokio::test]
+async fn paused_stream_rejects_old_frame_until_fresh_sequence_and_retains_metrics() {
+    let (observation, publisher) = LiveObservation::from_test_stream(7, 10);
+    publisher.pause(ComputerUseError::new(
+        ComputerUseErrorCode::TargetMinimized,
+        "target minimized",
+    ));
+    assert!(observation.validate_frame_eligibility(10).is_err());
+    let paused = observation.state();
+    publisher.publish_frame(10, "stale_after_pause");
+    assert!(observation.validate_frame_eligibility(10).is_err());
+    assert_eq!(
+        observation.state()["frames_captured"],
+        paused["frames_captured"]
+    );
+    assert_eq!(
+        observation.state()["last_capture_duration_ms"],
+        paused["last_capture_duration_ms"]
+    );
+    publisher.publish_frame(11, "fresh_after_pause");
+    assert!(observation.validate_frame_eligibility(11).is_ok());
+    assert!(observation.validate_frame_eligibility(10).is_err());
+    assert_eq!(observation.state()["paused"], false);
+    observation.stop().await;
+}
+
+#[rstest]
+fn showcase_projection_preserves_immutable_native_provenance_and_shared_pixels() {
+    use dcc_cua_showcase::{NativeFrameInstance, NativeFrameProvenance, NativeFrameSource};
+    let provenance = FrameCaptureProvenance::NativeExactWindow(NativeFrameProvenance {
+        source: NativeFrameSource::VerifiedVisible,
+        process_id: 42,
+        window_handle: 500,
+        native_instance: NativeFrameInstance {
+            process_creation_time_100ns: 1000,
+            window_thread_id: 8,
+            window_class_hash: 90,
+            owner_window_handle: 0,
+        },
+        native_window_bounds: [-100, 20, 100, 90],
+        native_visible_bounds: [-98, 21, 96, 86],
+        source_rect: [-98, 21, 96, 86],
+        window_dpi: 144,
+        capture_generation: 5,
+        stream_id: 7,
+    });
+    let frame = LiveObservationFrame::new(9, vec![17; 4], 1, 1, Instant::now())
+        .with_provenance(provenance.clone());
+    let shared = frame.shared_bgra();
+    let mut status = LiveObservationStatus::default();
+    status.publish_frame(frame, Duration::ZERO, "verified_visible");
+    let projected = project_showcase_status(&status).latest().unwrap();
+    assert_eq!(projected.provenance(), &provenance);
+    assert!(Arc::ptr_eq(&shared, &projected.shared_bgra()));
+    assert_eq!(projected.sequence(), 9);
+}
+
+#[test]
+fn showcase_projection_retains_pause_fence_after_source_has_resumed() {
+    let mut status = LiveObservationStatus::default();
+    status.publish_frame(
+        LiveObservationFrame::new(9, vec![1; 4], 1, 1, Instant::now()),
+        Duration::ZERO,
+        "verified_visible",
+    );
+    status.record_paused_error(&ComputerUseError::new(
+        ComputerUseErrorCode::TargetMinimized,
+        "controlled target minimization",
+    ));
+    status.publish_frame(
+        LiveObservationFrame::new(10, vec![2; 4], 1, 1, Instant::now()),
+        Duration::ZERO,
+        "verified_visible",
+    );
+    let projected = project_showcase_status(&status);
+    assert!(projected.pause_reason().is_none());
+    assert_eq!(projected.pause_sequence_fence(), Some(9));
+    assert_eq!(projected.latest().unwrap().sequence(), 10);
+}

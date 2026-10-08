@@ -14,6 +14,13 @@ use serde_json::{Value, json};
 use tokio::sync::{Notify, mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 
+mod capture_manifest;
+use capture_manifest::CaptureManifest;
+mod provenance;
+pub use provenance::{
+    FrameCaptureProvenance, NativeFrameInstance, NativeFrameProvenance, NativeFrameSource,
+};
+
 #[derive(Debug)]
 pub struct LiveObservationFrame {
     sequence: u64,
@@ -22,6 +29,7 @@ pub struct LiveObservationFrame {
     height: u32,
     captured_at_ms: u128,
     captured_at: std::time::Instant,
+    provenance: FrameCaptureProvenance,
 }
 
 impl LiveObservationFrame {
@@ -61,7 +69,19 @@ impl LiveObservationFrame {
             height,
             captured_at_ms,
             captured_at,
+            provenance: FrameCaptureProvenance::Portable,
         }
+    }
+
+    #[must_use]
+    pub fn with_provenance(mut self, provenance: FrameCaptureProvenance) -> Self {
+        self.provenance = provenance;
+        self
+    }
+
+    #[must_use]
+    pub const fn provenance(&self) -> &FrameCaptureProvenance {
+        &self.provenance
     }
 
     #[must_use]
@@ -99,6 +119,7 @@ impl LiveObservationFrame {
 pub struct LiveObservationStatus {
     latest: Option<Arc<LiveObservationFrame>>,
     pause_reason: Option<Value>,
+    pause_sequence_fence: Option<u64>,
     terminal_reason: Option<Value>,
 }
 
@@ -112,8 +133,20 @@ impl LiveObservationStatus {
         Self {
             latest,
             pause_reason,
+            pause_sequence_fence: None,
             terminal_reason,
         }
+    }
+
+    #[must_use]
+    pub const fn with_pause_sequence_fence(mut self, fence: Option<u64>) -> Self {
+        self.pause_sequence_fence = fence;
+        self
+    }
+
+    #[must_use]
+    pub const fn pause_sequence_fence(&self) -> Option<u64> {
+        self.pause_sequence_fence
     }
 
     pub fn publish_frame(
@@ -128,6 +161,9 @@ impl LiveObservationStatus {
 
     pub fn record_paused_error(&mut self, error: &ShowcaseError) {
         if self.terminal_reason.is_none() {
+            self.pause_sequence_fence = self
+                .pause_sequence_fence
+                .max(self.latest.as_ref().map(|frame| frame.sequence()));
             self.pause_reason = Some(error.as_reason(self.latest.as_ref()));
         }
     }
@@ -227,6 +263,7 @@ struct ShowcaseProducer {
     frames: watch::Receiver<LiveObservationStatus>,
     sender: mpsc::Sender<ShowcaseProducerEvent>,
     last_forwarded_sequence: Option<u64>,
+    last_applied_pause_fence: Option<u64>,
     paused: bool,
     pause_reason: Arc<Mutex<Option<Value>>>,
     terminal_reason: Arc<Mutex<Option<Value>>>,
@@ -277,6 +314,22 @@ impl ShowcaseProducer {
 
     async fn apply_status(&mut self, status: &LiveObservationStatus, guaranteed: bool) -> bool {
         let source_pause_reason = status.pause_reason();
+        let new_pause_fence = status.pause_sequence_fence.is_some_and(|fence| {
+            self.last_applied_pause_fence
+                .is_none_or(|applied| fence > applied)
+        });
+        if new_pause_fence && self.last_forwarded_sequence.is_none() {
+            // A pause predating the recorder's first sample has no media to close.
+            self.last_applied_pause_fence = status.pause_sequence_fence;
+        } else if new_pause_fence && source_pause_reason.is_none() {
+            // A latest-value watch can conflate pause and fresh resume. Preserve
+            // the durable boundary before forwarding that resumed frame.
+            if !self.paused && !send_pause_boundary(&self.sender).await {
+                return false;
+            }
+            self.paused = true;
+            self.last_applied_pause_fence = status.pause_sequence_fence;
+        }
         if let Some(reason) = source_pause_reason {
             if self.last_forwarded_sequence.is_none() && status.latest().is_none() {
                 // No recorder handle exists until the encoder has a first
@@ -287,6 +340,7 @@ impl ShowcaseProducer {
             if !self.paused && !self.enter_pause(status).await {
                 return false;
             }
+            self.last_applied_pause_fence = status.pause_sequence_fence;
             self.project_applied_pause(Some(reason));
         } else if self.paused {
             match self.resume(status).await {
@@ -326,6 +380,13 @@ impl ShowcaseProducer {
     }
 
     async fn resume(&mut self, status: &LiveObservationStatus) -> GuaranteedFrameSend {
+        if status.pause_sequence_fence.is_some_and(|fence| {
+            status
+                .latest()
+                .is_none_or(|frame| frame.sequence() <= fence)
+        }) {
+            return GuaranteedFrameSend::NoNewFrame;
+        }
         let sent =
             send_resume_frame_guaranteed(status, &self.sender, &mut self.last_forwarded_sequence)
                 .await;
@@ -474,6 +535,7 @@ impl ShowcaseRecorder {
                 frames,
                 sender: frame_sender,
                 last_forwarded_sequence: None,
+                last_applied_pause_fence: None,
                 paused: false,
                 pause_reason: producer_pause_reason,
                 terminal_reason: producer_terminal_reason,
@@ -764,6 +826,8 @@ fn encode_frames_with_progress(
             &mut current_progress,
         )?
     });
+    let mut capture_manifest = CaptureManifest::create(path)?;
+    capture_manifest.frame(&first, 0, 0, 0, width, height)?;
     if let Some(acknowledged) = first_frame_acknowledgement {
         let _ = acknowledged.send(Ok(()));
     }
@@ -797,6 +861,7 @@ fn encode_frames_with_progress(
                 match result {
                     Ok(duration_ms) => {
                         media_duration_ms = duration_ms;
+                        capture_manifest.pause(media_duration_ms)?;
                         let _ = acknowledged.send(Ok(()));
                     }
                     Err(error) => {
@@ -826,6 +891,14 @@ fn encode_frames_with_progress(
                         },
                         progress,
                     )?);
+                    capture_manifest.frame(
+                        &frame,
+                        frame_count,
+                        next_segment_index,
+                        media_duration_ms,
+                        width,
+                        height,
+                    )?;
                     next_segment_index = next_segment_index.saturating_add(1);
                     frame_count = frame_count.saturating_add(1);
                     Ok(())
@@ -889,6 +962,14 @@ fn encode_frames_with_progress(
                         &mut current_progress,
                     )?);
                     drop(current_progress);
+                    capture_manifest.frame(
+                        &frame,
+                        frame_count,
+                        next_segment_index,
+                        elapsed_ms,
+                        width,
+                        height,
+                    )?;
                     next_segment_index = next_segment_index.saturating_add(1);
                     frame_count = frame_count.saturating_add(1);
                     continue;
@@ -910,6 +991,14 @@ fn encode_frames_with_progress(
                     u32::try_from(current.start_time - segment.pending.start_time)
                         .unwrap_or(u32::MAX)
                         .max(1);
+                capture_manifest.frame(
+                    &frame,
+                    frame_count,
+                    segment.index,
+                    segment.start_ms.saturating_add(current.start_time),
+                    width,
+                    height,
+                )?;
                 let pending = std::mem::replace(&mut segment.pending, current);
                 write_sample(&mut segment.writer, pending, sample_duration)?;
                 segment.final_duration = sample_duration;
@@ -927,6 +1016,7 @@ fn encode_frames_with_progress(
     let current_progress = lock_unpoisoned(progress);
     let segments = current_progress.segments.clone();
     drop(current_progress);
+    let capture_provenance = capture_manifest.finish(frame_count)?;
     let manifest_path = manifest_output_path(path);
     let state = json!({
         "active": false,
@@ -941,6 +1031,7 @@ fn encode_frames_with_progress(
         "finalized": true,
         "segments": segments,
         "current_partial": Value::Null,
+        "capture_provenance": capture_provenance,
     });
     write_manifest(&manifest_path, &state)?;
     Ok(state)

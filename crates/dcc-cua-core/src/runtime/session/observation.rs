@@ -353,6 +353,57 @@ impl ComputerUseSession {
         let target = self
             .revalidate_observed_exact_publication_target(&target)
             .await?;
+        self.live_observation
+            .as_ref()
+            .expect("live observation was checked")
+            .validate_frame_eligibility(frame.sequence())?;
+        // The recorded BGRA is immutable. Exclusion is only needed for the fresh
+        // final native proof, never while waiting for the capture worker.
+        let _banner_capture_exclusion = self
+            .control_banner
+            .as_ref()
+            .map(ControlBanner::begin_capture_exclusion)
+            .transpose()
+            .map_err(|error| map_indicator_error("validate final live frame source", error))?;
+        let (backend, source_rect, native_provenance) = match frame.provenance() {
+            dcc_cua_showcase::FrameCaptureProvenance::NativeExactWindow(proof) => {
+                if proof.stream_id != stream_id {
+                    return Err(ComputerUseError::new(
+                        ComputerUseErrorCode::StaleObservation,
+                        "the live native frame belongs to a different stream",
+                    ));
+                }
+                #[cfg(windows)]
+                validate_native_live_publication(proof, &target)?;
+                (
+                    proof.source.backend(),
+                    proof.source_rect,
+                    serde_json::to_value(proof).map_err(|error| {
+                        ComputerUseError::new(
+                            ComputerUseErrorCode::CaptureFailed,
+                            error.to_string(),
+                        )
+                    })?,
+                )
+            }
+            dcc_cua_showcase::FrameCaptureProvenance::Portable => {
+                #[cfg(all(windows, not(test)))]
+                return Err(ComputerUseError::new(
+                    ComputerUseErrorCode::CaptureFailed,
+                    "a native live screenshot requires actual per-frame native provenance",
+                ));
+                #[cfg(any(not(windows), test))]
+                (
+                    "cua-live-portable-latest-frame",
+                    target.bounds,
+                    json!({"kind": "portable"}),
+                )
+            }
+        };
+        self.live_observation
+            .as_ref()
+            .expect("live observation was checked")
+            .validate_frame_eligibility(frame.sequence())?;
         let accessibility = json!({
             "degraded": true,
             "accessibility_available": false,
@@ -371,10 +422,18 @@ impl ComputerUseSession {
             window_title: target.title.clone(),
             width,
             height,
-            source_rect: target.bounds,
-            capture_backend: "cua-live-wgc-latest-frame".into(),
+            source_rect,
+            capture_backend: backend.into(),
             capture_provenance: json!({
-                "backend": "cua-live-wgc-latest-frame",
+                "backend": backend,
+                "whole_desktop_capture": false,
+                "native_capture": native_provenance,
+                "native_instance": native_provenance.get("native_instance"),
+                "native_window_bounds": native_provenance.get("native_window_bounds"),
+                "window_dpi": native_provenance.get("window_dpi"),
+                "capture_generation": native_provenance.get("capture_generation"),
+                "desktop_crop_bounds": source_rect,
+                "observation_mode": self.pixel_observation_route.map(PixelObservationRoute::observation_mode).unwrap_or("live_observation"),
                 "pixels_captured": true,
                 "scope": "window",
                 "process_id": target.pid,
@@ -456,6 +515,9 @@ impl ComputerUseSession {
             target.pid,
             target.window_id,
             request,
+            self.control_banner
+                .as_ref()
+                .map(ControlBanner::capture_exclusion_source),
         )
         .await?;
         let state = observation.state();

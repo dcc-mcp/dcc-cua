@@ -1713,7 +1713,7 @@ fn exact_capture_diagnostic(
 }
 
 #[cfg(windows)]
-fn map_visible_capture_error(
+pub(crate) fn map_visible_capture_error(
     code: ComputerUseErrorCode,
     stage: ComputerUseCaptureStage,
     process_id: u32,
@@ -1753,7 +1753,7 @@ fn map_visible_capture_error(
 }
 
 #[cfg(windows)]
-fn map_capture_identity_error(
+pub(crate) fn map_capture_identity_error(
     process_id: u32,
     window_id: u64,
     error: dcc_cua_platform_windows::ExactWindowCaptureIdentityError,
@@ -1770,6 +1770,194 @@ fn map_capture_identity_error(
             ..Default::default()
         },
     )
+}
+
+#[cfg(windows)]
+pub(crate) struct VerifiedVisibleBgraFrame {
+    pub capture: dcc_cua_platform_windows::VisibleWindowCapture,
+    pub evidence: dcc_cua_platform_windows::ExactWindowPixelEvidence,
+    pub generation: u64,
+}
+
+#[cfg(windows)]
+pub(crate) fn next_exact_capture_generation() -> u64 {
+    EXACT_WINDOW_CAPTURE_GENERATION.fetch_add(1, Ordering::Relaxed)
+}
+
+#[cfg(windows)]
+pub(crate) fn live_native_evidence(
+    process_id: u32,
+    window_id: u64,
+) -> ComputerUseResult<dcc_cua_platform_windows::ExactWindowPixelEvidence> {
+    dcc_cua_platform_windows::exact_window_pixel_evidence(process_id, window_id).map_err(|error| {
+        map_visible_capture_error(
+            ComputerUseErrorCode::CaptureFailed,
+            ComputerUseCaptureStage::NativeEvidence,
+            process_id,
+            window_id,
+            error,
+        )
+    })
+}
+
+#[cfg(windows)]
+pub(crate) fn validate_live_native_evidence(
+    before: &dcc_cua_platform_windows::ExactWindowPixelEvidence,
+    after: &dcc_cua_platform_windows::ExactWindowPixelEvidence,
+    visible: bool,
+) -> ComputerUseResult<()> {
+    validate_native_exact_window_pixel_evidence(
+        before,
+        after,
+        if visible {
+            ExactWindowPixelCaptureMode::VisibleDesktopCrop
+        } else {
+            ExactWindowPixelCaptureMode::WindowContent
+        },
+    )
+}
+
+#[cfg(any(windows, test))]
+pub(crate) fn validate_exact_bgra_dimensions(
+    length: usize,
+    width: u32,
+    height: u32,
+    source_rect: [i32; 4],
+) -> ComputerUseResult<()> {
+    let expected = u64::from(width)
+        .checked_mul(u64::from(height))
+        .and_then(|pixels| pixels.checked_mul(4))
+        .and_then(|bytes| usize::try_from(bytes).ok());
+    if width == 0
+        || height == 0
+        || expected != Some(length)
+        || i32::try_from(width).ok() != Some(source_rect[2])
+        || i32::try_from(height).ok() != Some(source_rect[3])
+    {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::CaptureFailed,
+            "the verified native BGRA buffer does not match its physical source rectangle",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn validate_live_frame_provenance(
+    proof: &dcc_cua_showcase::NativeFrameProvenance,
+    target: &WindowTarget,
+    final_evidence: &dcc_cua_platform_windows::ExactWindowPixelEvidence,
+) -> ComputerUseResult<()> {
+    use dcc_cua_showcase::NativeFrameSource;
+    let captured = dcc_cua_platform_windows::ExactWindowPixelEvidence {
+        process_id: proof.process_id,
+        window_handle: proof.window_handle,
+        bounds: proof.native_window_bounds,
+        visible_bounds: proof.native_visible_bounds,
+        dpi: proof.window_dpi,
+        visible: true,
+        minimized: false,
+        unobscured: true,
+        instance: dcc_cua_platform_windows::ExactWindowPixelInstanceEvidence {
+            process_creation_time_100ns: proof.native_instance.process_creation_time_100ns,
+            window_thread_id: proof.native_instance.window_thread_id,
+            window_class_hash: proof.native_instance.window_class_hash,
+            owner_window_handle: proof.native_instance.owner_window_handle,
+        },
+    };
+    if proof.process_id != target.pid
+        || proof.window_handle != target.window_id
+        || proof.native_window_bounds != target.bounds
+        || proof.capture_generation == 0
+        || proof.window_dpi == 0
+        || proof.source_rect
+            != match proof.source {
+                NativeFrameSource::Wgc => proof.native_window_bounds,
+                NativeFrameSource::VerifiedVisible => proof.native_visible_bounds,
+            }
+    {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::StaleObservation,
+            "the live frame proof does not match the final exact target",
+        ));
+    }
+    validate_live_native_evidence(
+        &captured,
+        final_evidence,
+        proof.source == NativeFrameSource::VerifiedVisible,
+    )
+}
+
+#[cfg(windows)]
+fn validate_native_live_publication(
+    proof: &dcc_cua_showcase::NativeFrameProvenance,
+    target: &WindowTarget,
+) -> ComputerUseResult<()> {
+    let final_evidence = live_native_evidence(target.pid, target.window_id)?;
+    validate_live_frame_provenance(proof, target, &final_evidence)?;
+    if proof.source == dcc_cua_showcase::NativeFrameSource::Wgc
+        && dcc_cua_platform_windows::exact_window_capture_route(target.pid, target.window_id)
+            .map_err(|error| map_capture_identity_error(target.pid, target.window_id, error))?
+            != dcc_cua_platform_windows::ExactWindowCaptureRoute::Wgc
+    {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::InvalidTarget,
+            "live WGC source became ambiguous before screenshot publication",
+        ));
+    }
+    Ok(())
+}
+
+/// Runs synchronously inside the existing snapshot/live capture worker. No PNG round trip.
+#[cfg(windows)]
+pub(crate) fn capture_verified_visible_bgra(
+    process_id: u32,
+    window_id: u64,
+    before: dcc_cua_platform_windows::ExactWindowPixelEvidence,
+) -> ComputerUseResult<VerifiedVisibleBgraFrame> {
+    interactive_desktop::require_exact_window_observation_available()?;
+    if before.process_id != process_id || before.window_handle != window_id {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::InvalidTarget,
+            "the native capture fence belongs to a different exact target",
+        ));
+    }
+    validate_live_native_evidence(&before, &before, true)?;
+    dcc_cua_platform_windows::exact_window_capture_route(process_id, window_id)
+        .map_err(|error| map_capture_identity_error(process_id, window_id, error))?;
+    let capture = dcc_cua_platform_windows::capture_visible_window(process_id, window_id).map_err(
+        |error| {
+            map_visible_capture_error(
+                ComputerUseErrorCode::CaptureFailed,
+                ComputerUseCaptureStage::VisibleDesktopProof,
+                process_id,
+                window_id,
+                error,
+            )
+        },
+    )?;
+    let after = live_native_evidence(process_id, window_id)?;
+    validate_live_native_evidence(&before, &after, true)?;
+    dcc_cua_platform_windows::exact_window_capture_route(process_id, window_id)
+        .map_err(|error| map_capture_identity_error(process_id, window_id, error))?;
+    if capture.bounds != after.visible_bounds {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::StaleObservation,
+            "the verified visible crop moved during native capture",
+        ));
+    }
+    validate_exact_bgra_dimensions(
+        capture.bgra.len(),
+        capture.width,
+        capture.height,
+        capture.bounds,
+    )?;
+    interactive_desktop::require_exact_window_observation_available()?;
+    Ok(VerifiedVisibleBgraFrame {
+        capture,
+        evidence: after,
+        generation: next_exact_capture_generation(),
+    })
 }
 
 #[cfg(windows)]
@@ -1797,46 +1985,17 @@ async fn capture_exact_window(
                 map_capture_identity_error(process_id, window_id, error)
             })?;
         if route == dcc_cua_platform_windows::ExactWindowCaptureRoute::VerifiedVisible {
-            let visible = dcc_cua_platform_windows::capture_visible_window(process_id, window_id)
-                .map_err(|error| {
-                    map_visible_capture_error(ComputerUseErrorCode::InvalidTarget,
-                        ComputerUseCaptureStage::VisibleDesktopProof, process_id, window_id, error)
-                },
-            )?;
-            dcc_cua_platform_windows::exact_window_capture_route(process_id, window_id).map_err(
-                |error| {
-                    map_capture_identity_error(process_id, window_id, error)
-                },
-            )?;
-            let after = dcc_cua_platform_windows::exact_window_pixel_evidence(
-                process_id,
-                window_id,
-            )
-            .map_err(|error| {
-                map_visible_capture_error(ComputerUseErrorCode::InvalidTarget,
-                    ComputerUseCaptureStage::NativeEvidence, process_id, window_id, error)
-            })?;
-            validate_native_exact_window_pixel_evidence(
-                &before,
-                &after,
-                ExactWindowPixelCaptureMode::VisibleDesktopCrop,
-            )?;
-            if visible.bounds != after.visible_bounds {
-                return Err(ComputerUseError::new(
-                    ComputerUseErrorCode::StaleObservation,
-                    "the visible desktop crop bounds changed before native recapture",
-                ));
-            }
+            let visible = capture_verified_visible_bgra(process_id, window_id, before)?;
             return Ok(ExactWindowCapture {
-                data: encode_bgra_to_png(&visible.bgra, visible.width, visible.height)?,
+                data: encode_bgra_to_png(&visible.capture.bgra, visible.capture.width, visible.capture.height)?,
                 backend: "dcc-cua-visible-exact-window",
                 fallback: "same_executable_multi_window_exact_visible_proof",
                 mode: ExactWindowPixelCaptureMode::VisibleDesktopCrop,
-                generation,
-                dpi: after.dpi,
-                bounds: after.bounds,
-                source_rect: visible.bounds,
-                native_evidence: after,
+                generation: visible.generation,
+                dpi: visible.evidence.dpi,
+                bounds: visible.evidence.bounds,
+                source_rect: visible.capture.bounds,
+                native_evidence: visible.evidence,
             });
         }
         let wgc_error =
@@ -1885,42 +2044,21 @@ async fn capture_exact_window(
             },
             Err(error) => error.to_string(),
         };
-        let visible = dcc_cua_platform_windows::capture_visible_window(process_id, window_id)
-            .map_err(|error| {
-                let mut mapped = map_visible_capture_error(ComputerUseErrorCode::CaptureFailed,
-                    ComputerUseCaptureStage::VisibleDesktopProof, process_id, window_id, error);
-                mapped.message = format!("exact WGC capture failed ({wgc_error}); {}", mapped.message);
-                mapped
+        let visible = capture_verified_visible_bgra(process_id, window_id, before)
+            .map_err(|mut error| {
+                error.message = format!("exact WGC capture failed ({wgc_error}); {}", error.message);
+                error
             })?;
-        let after = dcc_cua_platform_windows::exact_window_pixel_evidence(
-            process_id,
-            window_id,
-        )
-        .map_err(|error| {
-            map_visible_capture_error(ComputerUseErrorCode::InvalidTarget,
-                ComputerUseCaptureStage::NativeEvidence, process_id, window_id, error)
-        })?;
-        validate_native_exact_window_pixel_evidence(
-            &before,
-            &after,
-            ExactWindowPixelCaptureMode::VisibleDesktopCrop,
-        )?;
-        if visible.bounds != after.visible_bounds {
-            return Err(ComputerUseError::new(
-                ComputerUseErrorCode::StaleObservation,
-                "the visible desktop crop bounds changed before native recapture",
-            ));
-        }
         Ok(ExactWindowCapture {
-            data: encode_bgra_to_png(&visible.bgra, visible.width, visible.height)?,
+            data: encode_bgra_to_png(&visible.capture.bgra, visible.capture.width, visible.capture.height)?,
             backend: "dcc-cua-visible-exact-window",
             fallback: "verified_same_process_visible_window_crop",
             mode: ExactWindowPixelCaptureMode::VisibleDesktopCrop,
-            generation,
-            dpi: after.dpi,
-            bounds: after.bounds,
-            source_rect: visible.bounds,
-            native_evidence: after,
+            generation: visible.generation,
+            dpi: visible.evidence.dpi,
+            bounds: visible.evidence.bounds,
+            source_rect: visible.capture.bounds,
+            native_evidence: visible.evidence,
         })
     })
     .await

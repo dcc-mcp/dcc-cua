@@ -316,3 +316,75 @@ async fn desktop_action_cannot_reuse_an_observation_after_it_is_consumed() {
 
     assert_eq!(error.code, ComputerUseErrorCode::StaleObservation);
 }
+
+#[cfg(windows)]
+#[rstest]
+fn live_frame_final_publication_rejects_post_encoding_native_drift() {
+    use dcc_cua_showcase::{NativeFrameInstance, NativeFrameProvenance, NativeFrameSource};
+    let proof = NativeFrameProvenance {
+        source: NativeFrameSource::VerifiedVisible,
+        process_id: 42,
+        window_handle: 500,
+        native_instance: NativeFrameInstance {
+            process_creation_time_100ns: 1000,
+            window_thread_id: 8,
+            window_class_hash: 90,
+            owner_window_handle: 0,
+        },
+        native_window_bounds: [-100, 20, 100, 90],
+        native_visible_bounds: [-98, 21, 96, 86],
+        source_rect: [-98, 21, 96, 86],
+        window_dpi: 144,
+        capture_generation: 5,
+        stream_id: 7,
+    };
+    let target = WindowTarget {
+        pid: 42,
+        window_id: 500,
+        title: "fixture".into(),
+        app_name: "fixture.exe".into(),
+        bounds: proof.native_window_bounds,
+        is_on_screen: true,
+        is_minimized: false,
+        z_index: None,
+        is_foreground: true,
+    };
+    let evidence = dcc_cua_platform_windows::ExactWindowPixelEvidence {
+        process_id: 42,
+        window_handle: 500,
+        bounds: proof.native_window_bounds,
+        visible_bounds: proof.source_rect,
+        dpi: 144,
+        visible: true,
+        minimized: false,
+        unobscured: true,
+        instance: dcc_cua_platform_windows::ExactWindowPixelInstanceEvidence {
+            process_creation_time_100ns: 1000,
+            window_thread_id: 8,
+            window_class_hash: 90,
+            owner_window_handle: 0,
+        },
+    };
+    assert!(validate_live_frame_provenance(&proof, &target, &evidence).is_ok());
+    let mut wrong_crop = proof.clone();
+    wrong_crop.source_rect[0] += 1;
+    assert!(validate_live_frame_provenance(&wrong_crop, &target, &evidence).is_err());
+    for mutation in 0..8 {
+        let mut changed = evidence;
+        match mutation {
+            0 => changed.instance.process_creation_time_100ns += 1,
+            1 => changed.bounds[0] += 1,
+            2 => changed.visible_bounds[2] -= 1,
+            3 => changed.dpi += 1,
+            4 => changed.visible = false,
+            5 => changed.minimized = true,
+            6 => changed.unobscured = false,
+            7 => changed.window_handle += 1,
+            _ => unreachable!(),
+        }
+        assert!(
+            validate_live_frame_provenance(&proof, &target, &changed).is_err(),
+            "mutation {mutation}"
+        );
+    }
+}

@@ -1,3 +1,4 @@
+use openh264::formats::YUVSource;
 use rstest::rstest;
 
 use std::io::BufReader;
@@ -858,6 +859,61 @@ async fn showcase_resume_stays_paused_until_the_new_idr_segment_is_ready() {
     );
 }
 
+#[tokio::test]
+async fn showcase_preserves_pause_boundary_conflated_with_fresh_resume() {
+    let directory = std::env::temp_dir().join(format!("dcc-cua-showcase-{}", uuid::Uuid::new_v4()));
+    let captured_at = std::time::Instant::now();
+    let mut status = LiveObservationStatus::default();
+    status.publish_frame(
+        LiveObservationFrame::new(1, vec![1; 16 * 16 * 4], 16, 16, captured_at),
+        std::time::Duration::ZERO,
+        "test_capture",
+    );
+    let (sender, receiver) = watch::channel(status);
+    let recorder = ShowcaseRecorder::start(receiver, directory.to_str().unwrap(), 10)
+        .await
+        .unwrap();
+    // Exactly one watch notification; no consumer can observe the intermediate pause.
+    sender.send_modify(|status| {
+        status.record_paused_error(&capture_error("controlled source occlusion"));
+        status.publish_frame(
+            LiveObservationFrame::new(
+                2,
+                vec![2; 16 * 16 * 4],
+                16,
+                16,
+                captured_at + std::time::Duration::from_secs(60),
+            ),
+            std::time::Duration::ZERO,
+            "test_resume",
+        );
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            let progress = lock_unpoisoned(&recorder.progress).clone();
+            if progress.segments.len() == 1 && progress.current_partial.is_some() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("a conflated pause must finalize the old segment before resuming");
+    let state = recorder.stop().await.unwrap();
+    assert_eq!(state["segments"].as_array().map(Vec::len), Some(2));
+    assert_eq!(state["duration_ms"], 200);
+    assert_eq!(state["capture_provenance"]["frames"], 2);
+    let rows =
+        std::fs::read_to_string(state["capture_provenance"]["path"].as_str().unwrap()).unwrap();
+    let rows = rows
+        .lines()
+        .map(|row| serde_json::from_str::<Value>(row).unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(rows.iter().filter(|row| row["kind"] == "pause").count(), 1);
+    assert_eq!(rows[2]["media_start_ms"], 100);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
 #[rstest]
 #[tokio::test]
 async fn showcase_pause_projection_uses_the_acknowledged_status_snapshot() {
@@ -878,6 +934,7 @@ async fn showcase_pause_projection_uses_the_acknowledged_status_snapshot() {
             frames: status_receiver,
             sender: event_sender,
             last_forwarded_sequence: None,
+            last_applied_pause_fence: None,
             paused: false,
             pause_reason: producer_pause_reason,
             terminal_reason: Arc::new(Mutex::new(None)),
@@ -944,6 +1001,135 @@ async fn showcase_pause_projection_uses_the_acknowledged_status_snapshot() {
     );
     acknowledgement.await.unwrap();
     producer.await.unwrap();
+}
+
+#[tokio::test]
+async fn showcase_conflated_pause_resume_terminal_immediate_stop_preserves_sample_mapping() {
+    let directory = std::env::temp_dir().join(format!("dcc-cua-showcase-{}", uuid::Uuid::new_v4()));
+    let captured_at = std::time::Instant::now();
+    let mut status = LiveObservationStatus::default();
+    status.publish_frame(
+        LiveObservationFrame::new(7, vec![30; 16 * 16 * 4], 16, 16, captured_at),
+        std::time::Duration::ZERO,
+        "test_capture",
+    );
+    let (sender, receiver) = watch::channel(status);
+    let recorder = ShowcaseRecorder::start(receiver, directory.to_str().unwrap(), 10)
+        .await
+        .unwrap();
+    sender.send_modify(|status| {
+        status.record_paused_error(&capture_error("controlled source occlusion"));
+        status.publish_frame(
+            LiveObservationFrame::new(
+                9,
+                vec![210; 32 * 16 * 4],
+                32,
+                16,
+                captured_at + std::time::Duration::from_secs(60),
+            ),
+            std::time::Duration::ZERO,
+            "test_resume",
+        );
+        status.record_terminal_error(&ShowcaseError::new(
+            ShowcaseErrorCode::MissingWindow,
+            "controlled target closed after fresh resume",
+        ));
+    });
+    // No yield or acknowledgement wait before stop: its biased select must
+    // drain the same watch snapshot through pause, fresh resume and terminal.
+    let state = tokio::time::timeout(std::time::Duration::from_secs(3), recorder.stop())
+        .await
+        .expect("immediate stop must drain acknowledged pause and resume")
+        .unwrap();
+    assert_eq!(state["terminal_reason"]["code"], "missing_window");
+    assert_eq!(state["terminal_reason"]["last_sequence"], 9);
+    assert_eq!(
+        state["terminal_reason"]["message"],
+        "controlled target closed after fresh resume"
+    );
+    assert_eq!(state["frames"], 2);
+    assert_eq!(state["duration_ms"], 200);
+    assert_eq!(state["current_partial"], Value::Null);
+    let bytes = std::fs::read(state["capture_provenance"]["path"].as_str().unwrap()).unwrap();
+    use sha2::{Digest, Sha256};
+    assert_eq!(
+        state["capture_provenance"]["sha256"],
+        format!("{:x}", Sha256::digest(&bytes))
+    );
+    let rows = std::str::from_utf8(&bytes)
+        .unwrap()
+        .lines()
+        .map(|row| serde_json::from_str::<Value>(row).unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(rows.len(), 3);
+    assert_eq!(rows[1]["kind"], "pause");
+    assert_eq!(rows[1]["media_end_ms"], 100);
+    assert_eq!(rows[1]["next_media_sample_index"], 1);
+    let frames = rows
+        .iter()
+        .filter(|row| row["kind"] == "frame")
+        .collect::<Vec<_>>();
+    let segments = state["segments"].as_array().unwrap();
+    assert_eq!(segments.len(), frames.len());
+    for (index, (segment, row)) in segments.iter().zip(frames).enumerate() {
+        let file = File::open(segment["path"].as_str().unwrap()).unwrap();
+        let size = file.metadata().unwrap().len();
+        let mut reader = mp4::Mp4Reader::read_header(BufReader::new(file), size).unwrap();
+        assert_eq!(reader.tracks()[&1].sample_count(), 1);
+        let mut annex_b = Vec::new();
+        for parameter in [
+            reader.tracks()[&1].sequence_parameter_set().unwrap(),
+            reader.tracks()[&1].picture_parameter_set().unwrap(),
+        ] {
+            annex_b.extend_from_slice(&[0, 0, 0, 1]);
+            annex_b.extend_from_slice(parameter);
+        }
+        let sample = reader.read_sample(1, 1).unwrap().unwrap();
+        assert!(sample.is_sync);
+        assert_eq!(sample.duration, 100);
+        assert_eq!(row["media_sample_index"], index);
+        assert_eq!(row["segment_index"], index);
+        assert_eq!(row["source_sequence"], [7, 9][index]);
+        assert_eq!(row["source_width"], [16, 32][index]);
+        assert_eq!(row["encoded_width"], segment["width"]);
+        assert_eq!(row["encoded_height"], segment["height"]);
+        assert_eq!(
+            row["media_start_ms"],
+            segment["start_ms"].as_u64().unwrap() + sample.start_time
+        );
+        let mut nals = sample.bytes.as_ref();
+        while !nals.is_empty() {
+            assert!(nals.len() >= 4);
+            let length = u32::from_be_bytes(nals[..4].try_into().unwrap()) as usize;
+            nals = &nals[4..];
+            assert!(length > 0 && length <= nals.len());
+            annex_b.extend_from_slice(&[0, 0, 0, 1]);
+            annex_b.extend_from_slice(&nals[..length]);
+            nals = &nals[length..];
+        }
+        let mut decoder = openh264::decoder::Decoder::with_api_config(
+            openh264::OpenH264API::from_source(),
+            openh264::decoder::DecoderConfig::default().debug(false),
+        )
+        .unwrap();
+        let decoded = decoder
+            .decode(&annex_b)
+            .unwrap()
+            .expect("independent IDR decode");
+        let mut rgb = vec![0; decoded.rgb8_len()];
+        decoded.write_rgb8(&mut rgb);
+        // Deliberately separated dark/bright markers survive lossy H264;
+        // each actual decoded sample must match its own source sequence.
+        assert!(rgb.iter().all(|value| if index == 0 {
+            *value < 64
+        } else {
+            *value > 192
+        }));
+        assert_independently_decodable_segment(Path::new(segment["path"].as_str().unwrap()));
+    }
+    assert!(!directory.join("showcase.capture.partial.jsonl").exists());
+    drop(sender);
+    std::fs::remove_dir_all(directory).unwrap();
 }
 
 #[rstest]
@@ -1028,6 +1214,7 @@ async fn showcase_source_close_flushes_the_retained_latest_frame_after_backpress
             frames: status_receiver,
             sender: event_sender,
             last_forwarded_sequence: None,
+            last_applied_pause_fence: None,
             paused: false,
             pause_reason: Arc::new(Mutex::new(None)),
             terminal_reason: producer_terminal_reason,
@@ -1453,5 +1640,175 @@ async fn showcase_finalize_does_not_overwrite_a_concurrently_created_mp4() {
 
     assert_eq!(error.code, ShowcaseErrorCode::CaptureFailed);
     assert_eq!(std::fs::read(&final_path).unwrap(), b"concurrent-showcase");
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[rstest]
+fn recording_manifest_covers_encoded_samples_across_pause_resize_and_source_gaps() {
+    use sha2::{Digest, Sha256};
+    let directory = std::env::temp_dir().join(format!(
+        "dcc-cua-showcase-provenance-{}",
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::create_dir_all(&directory).unwrap();
+    let path = directory.join("showcase.mp4");
+    let captured_at = std::time::Instant::now();
+    let make_frame = |sequence, width, color, elapsed_ms| {
+        let proof = FrameCaptureProvenance::NativeExactWindow(NativeFrameProvenance {
+            source: NativeFrameSource::VerifiedVisible,
+            process_id: 42,
+            window_handle: 500,
+            native_instance: NativeFrameInstance {
+                process_creation_time_100ns: 1000,
+                window_thread_id: 8,
+                window_class_hash: 90,
+                owner_window_handle: 0,
+            },
+            native_window_bounds: [-104, 12, width as i32 + 8, 30],
+            native_visible_bounds: [-100, 20, width as i32, 16],
+            source_rect: [-100, 20, width as i32, 16],
+            window_dpi: 144,
+            capture_generation: sequence,
+            stream_id: 7,
+        });
+        Arc::new(
+            LiveObservationFrame::new(
+                sequence,
+                vec![color; width as usize * 16 * 4],
+                width,
+                16,
+                captured_at + std::time::Duration::from_millis(elapsed_ms),
+            )
+            .with_provenance(proof),
+        )
+    };
+    let (sender, receiver) = mpsc::channel(8);
+    sender
+        .blocking_send(ShowcaseProducerEvent::Frame(make_frame(9, 16, 30, 0)))
+        .unwrap();
+    sender
+        .blocking_send(ShowcaseProducerEvent::Frame(make_frame(11, 16, 120, 100)))
+        .unwrap();
+    let (paused, _) = oneshot::channel();
+    sender
+        .blocking_send(ShowcaseProducerEvent::Paused(paused))
+        .unwrap();
+    let (resumed, _) = oneshot::channel();
+    sender
+        .blocking_send(ShowcaseProducerEvent::ResumedFrame(
+            make_frame(12, 32, 210, 3_600_000),
+            resumed,
+        ))
+        .unwrap();
+    drop(sender);
+    let (ready, _) = oneshot::channel();
+    let state = encode_frames(receiver, &path, 10, ready).unwrap();
+    assert_eq!(state["frames"], 3);
+    let provenance_path = PathBuf::from(state["capture_provenance"]["path"].as_str().unwrap());
+    let bytes = std::fs::read(&provenance_path).unwrap();
+    assert_eq!(
+        state["capture_provenance"]["sha256"],
+        format!("{:x}", Sha256::digest(&bytes))
+    );
+    let rows: Vec<Value> = std::str::from_utf8(&bytes)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(rows.len(), 4);
+    assert_eq!(rows[2]["kind"], "pause");
+    assert_eq!(rows[2]["media_end_ms"], 200);
+    let frames: Vec<&Value> = rows.iter().filter(|row| row["kind"] == "frame").collect();
+    assert_eq!(
+        frames
+            .iter()
+            .map(|row| row["source_sequence"].as_u64().unwrap())
+            .collect::<Vec<_>>(),
+        vec![9, 11, 12]
+    );
+    for (index, row) in frames.iter().enumerate() {
+        assert_eq!(row["media_sample_index"], index);
+        assert_eq!(
+            row["capture_provenance"]["native_instance"]["window_thread_id"],
+            8
+        );
+        assert_eq!(row["capture_provenance"]["source"], "verified_visible");
+    }
+    assert_eq!(frames[2]["segment_index"], 1);
+    assert_eq!(frames[2]["media_start_ms"], 200);
+    assert_eq!(
+        frames[2]["capture_provenance"]["source_rect"],
+        json!([-100, 20, 32, 16])
+    );
+    assert_eq!(frames[2]["source_to_encoded_scale"]["x_numerator"], 16);
+    assert_eq!(frames[2]["source_to_encoded_scale"]["x_denominator"], 32);
+    let mut actual_samples = 0_u64;
+    for segment in state["segments"].as_array().unwrap() {
+        let segment_path = Path::new(segment["path"].as_str().unwrap());
+        assert_independently_decodable_segment(segment_path);
+        let file = File::open(segment_path).unwrap();
+        let size = file.metadata().unwrap().len();
+        let reader = mp4::Mp4Reader::read_header(BufReader::new(file), size).unwrap();
+        actual_samples += u64::from(reader.tracks()[&1].sample_count());
+    }
+    assert_eq!(actual_samples, frames.len() as u64);
+    assert_eq!(state["capture_provenance"]["frames"], actual_samples);
+    assert!(!directory.join("showcase.capture.partial.jsonl").exists());
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[rstest]
+fn provenance_sidecar_failure_cannot_finalize_incomplete_sample_mapping() {
+    let directory = std::env::temp_dir().join(format!(
+        "dcc-cua-showcase-provenance-{}",
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::create_dir_all(&directory).unwrap();
+    let mut manifest = CaptureManifest::create(&directory.join("showcase.mp4")).unwrap();
+    let frame = LiveObservationFrame::new(1, vec![0; 4], 1, 1, std::time::Instant::now());
+    assert!(manifest.frame(&frame, 1, 0, 0, 1, 1).is_err());
+    assert!(manifest.finish(1).is_err());
+    assert!(!directory.join("showcase.capture.jsonl").exists());
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn provenance_sidecar_create_and_publish_failures_preserve_owned_partial_evidence() {
+    let directory = std::env::temp_dir().join(format!("dcc-cua-showcase-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let video = directory.join("showcase.mp4");
+    let partial = directory.join("showcase.capture.partial.jsonl");
+    let final_path = directory.join("showcase.capture.jsonl");
+    std::fs::write(&partial, b"previous partial evidence\n").unwrap();
+    assert!(CaptureManifest::create(&video).is_err());
+    assert_eq!(
+        std::fs::read(&partial).unwrap(),
+        b"previous partial evidence\n"
+    );
+    assert!(!final_path.exists());
+    std::fs::remove_file(&partial).unwrap();
+    std::fs::write(&final_path, b"existing final evidence\n").unwrap();
+    let mut manifest = CaptureManifest::create(&video).unwrap();
+    manifest
+        .frame(
+            &LiveObservationFrame::new(7, vec![7; 4], 1, 1, std::time::Instant::now()),
+            0,
+            0,
+            0,
+            1,
+            1,
+        )
+        .unwrap();
+    assert!(manifest.finish(1).is_err());
+    assert_eq!(
+        std::fs::read(&final_path).unwrap(),
+        b"existing final evidence\n"
+    );
+    let preserved = std::fs::read_to_string(&partial).unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(preserved.trim()).unwrap()["source_sequence"],
+        7
+    );
+    assert!(!directory.join("showcase.manifest.json").exists());
     std::fs::remove_dir_all(directory).unwrap();
 }

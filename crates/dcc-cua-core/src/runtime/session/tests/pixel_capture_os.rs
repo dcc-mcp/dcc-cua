@@ -48,9 +48,9 @@ pub fn capture_visible_window(
     assert_eq!((pid, hwnd), (42, 77));
     OS.with_borrow_mut(|os| os.trace.push("visible pixels"));
     Ok(VisibleWindowCapture {
-        bgra: vec![255; 4],
-        width: 1,
-        height: 1,
+        bgra: vec![255; 800 * 600 * 4],
+        width: 800,
+        height: 600,
         bounds: [0, 0, 800, 600],
     })
 }

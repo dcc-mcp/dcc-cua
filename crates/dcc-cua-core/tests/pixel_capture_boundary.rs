@@ -75,6 +75,17 @@ fn exact_source_first_capture_instance_boundary() {
         selected.push_str(item(runtime, marker));
         selected.push('\n');
     }
+    for marker in [
+        "pub(crate) struct VerifiedVisibleBgraFrame",
+        "pub(crate) fn next_exact_capture_generation(",
+        "pub(crate) fn live_native_evidence(",
+        "pub(crate) fn validate_live_native_evidence(",
+        "pub(crate) fn validate_exact_bgra_dimensions(",
+        "pub(crate) fn capture_verified_visible_bgra(",
+    ] {
+        selected.push_str(item(runtime, marker));
+        selected.push('\n');
+    }
     selected.push_str(item(runtime, "async fn capture_exact_window("));
     selected.push_str(item(
         gates,
