@@ -655,6 +655,37 @@ pub enum ComputerUseCaptureReason {
     PixelEvidenceChanged,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ComputerUseRootBoundsRole {
+    TargetRoot,
+    AboveTargetRoot,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ComputerUseRootBoundsClass {
+    Positive,
+    ZeroArea,
+    Inverted,
+    Overflow,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ComputerUseRootBoundsFailureDiagnostic {
+    pub root_role: ComputerUseRootBoundsRole,
+    pub proof_target_root_window_handle: u64,
+    pub dwm_raw_rect_edges: [i32; 4],
+    pub dwm_classification: ComputerUseRootBoundsClass,
+    pub visible: bool,
+    pub cloaked: Option<u32>,
+    pub win32_read_after_dwm_rejection: bool,
+    pub win32_raw_rect_edges: Option<[i32; 4]>,
+    pub win32_classification: Option<ComputerUseRootBoundsClass>,
+    pub win32_os_error: Option<i32>,
+    pub zero_area_status_mismatch: Option<bool>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ComputerUseCaptureDiagnostic {
     pub stage: ComputerUseCaptureStage,
@@ -673,6 +704,8 @@ pub struct ComputerUseCaptureDiagnostic {
     pub cloaked: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub os_error: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_bounds_failure: Option<ComputerUseRootBoundsFailureDiagnostic>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

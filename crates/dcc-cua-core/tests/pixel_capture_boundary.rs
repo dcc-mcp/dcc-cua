@@ -42,6 +42,9 @@ fn exact_source_first_capture_instance_boundary() {
     for marker in [
         "pub enum ComputerUseCaptureStage",
         "pub enum ComputerUseCaptureReason",
+        "pub enum ComputerUseRootBoundsRole",
+        "pub enum ComputerUseRootBoundsClass",
+        "pub struct ComputerUseRootBoundsFailureDiagnostic",
         "pub struct ComputerUseCaptureDiagnostic",
     ] {
         selected.push_str("#[derive(Clone, Copy, Debug, PartialEq, Eq)]\n");
@@ -71,6 +74,8 @@ fn exact_source_first_capture_instance_boundary() {
     for marker in [
         "fn exact_capture_diagnostic(",
         "fn map_visible_capture_error(",
+        "pub(crate) fn map_root_bounds_failure(",
+        "fn map_root_bounds_class(",
         "fn map_capture_identity_error(",
     ] {
         selected.push_str(item(runtime, marker));
@@ -102,6 +107,9 @@ fn exact_source_first_capture_instance_boundary() {
         "pub struct ExactWindowPixelInstanceEvidence",
         "pub struct ExactWindowPixelEvidence",
         "pub enum VisibleWindowCaptureReason",
+        "pub enum RootBoundsRole",
+        "pub enum RootBoundsClass",
+        "pub struct RootBoundsFailureDiagnostic",
         "pub struct VisibleWindowCaptureDiagnostic",
     ] {
         native_types.push_str("#[derive(Clone, Copy, Debug, PartialEq, Eq)]\n");
@@ -171,7 +179,7 @@ fn exact_source_first_capture_instance_boundary() {
         .replace("use rstest::rstest;", "")
         .replace("#[rstest]", "#[test]");
     let source = format!(
-        "#![allow(dead_code, unused_variables)]\nuse actual::capture_diagnostics;\nmod actual {{ {model}\n{selected}\nimpl ComputerUseSession {{ {methods} }}\nmod dcc_cua_platform_windows {{ use super::*; {native_types} NATIVE_BOUNDARY }} }}"
+        "#![allow(dead_code, unused_variables)]\nuse actual::{{capture_diagnostics, ComputerUseRootBoundsRole, ComputerUseRootBoundsClass, ComputerUseRootBoundsFailureDiagnostic}};\nmod actual {{ {model}\n{selected}\nimpl ComputerUseSession {{ {methods} }}\nmod dcc_cua_platform_windows {{ use super::*; {native_types} NATIVE_BOUNDARY }} }}"
     ).replace("NATIVE_BOUNDARY", include_str!("../src/runtime/session/tests/pixel_capture_os.rs"))
         .replace("use rstest::rstest;", "")
         .replace("#[cfg(windows)]", "");

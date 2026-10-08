@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
-use dcc_cua_client::{HostClient, LogicalTaskSession, SnapshotTransport};
+use dcc_cua_client::{HostClient, HostClientError, LogicalTaskSession, SnapshotTransport};
 use dcc_cua_core::{
     ComputerUseDriver, ComputerUseOwnedBrowserLaunchSpec, ConfiguredDriverOptions,
     DriverAuthorizationAction, DriverAuthorizationDecision, DriverAuthorizationHost,
@@ -707,8 +707,21 @@ impl TaskAuthorizationServer {
             .as_mut()
             .expect("task session was initialized")
             .request(method, params)
-            .await
-            .map_err(|error| error.to_string())?;
+            .await;
+        let response = match response {
+            Ok(response) => response,
+            Err(error @ HostClientError::Remote { .. }) => {
+                return Ok(task_remote_error(
+                    &error,
+                    &proposal_id,
+                    proposal
+                        .session
+                        .as_ref()
+                        .expect("task session was initialized"),
+                ));
+            }
+            Err(error) => return Err(error.to_string()),
+        };
         let mut host = response.value;
         host["task_context"] = json!({
             "provider": "dcc-cua",
@@ -1396,6 +1409,38 @@ fn tool_error(message: String) -> Value {
         "structuredContent": payload,
         "isError": true,
     })
+}
+
+fn task_remote_error(
+    error: &HostClientError,
+    task_id: &str,
+    session: &LogicalTaskSession,
+) -> Value {
+    let mut result = tool_error(error.to_string());
+    let payload = &mut result["structuredContent"];
+    if let HostClientError::Remote { response, .. } = error
+        && let Some(capture) = response
+            .get("details")
+            .and_then(|details| details.get("capture"))
+        && let Ok(capture) =
+            serde_json::from_value::<dcc_cua_core::ComputerUseCaptureDiagnostic>(capture.clone())
+    {
+        // Project only the finite, content-free capture contract. Never expose
+        // arbitrary remote response fields, titles, paths, or capabilities.
+        payload["details"] = json!({"capture": capture});
+    }
+    payload["task_context"] = json!({
+        "provider": "dcc-cua",
+        "runtime_version": env!("CARGO_PKG_VERSION"),
+        "task_id": task_id,
+        "target": {
+            "process_id": session.target()["process_id"],
+            "window_handle": session.target()["window_handle"],
+        },
+        "native_action_popups": false,
+    });
+    result["content"] = json!([{"type":"text", "text": result["structuredContent"].to_string()}]);
+    result
 }
 
 fn rpc_result(id: Value, result: Value) -> Value {

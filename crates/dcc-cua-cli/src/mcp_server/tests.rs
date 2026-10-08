@@ -341,6 +341,155 @@ async fn native_recording_start_without_an_owned_session_ack_cannot_claim_cleanu
     );
 }
 
+fn root_bounds_capture_fixture() -> Value {
+    json!({
+        "stage":"visible_desktop_proof", "reason":"root_bounds_invalid",
+        "target_process_id":42, "target_window_handle":7,
+        "blocker_window_handle":91, "blocker_process_id":100,
+        "PRIVATE_CAPTURE_FIELD":"PRIVATE_CAPTURE_VALUE",
+        "root_bounds_failure":{
+            "root_role":"above_target_root", "proof_target_root_window_handle":77,
+            "dwm_raw_rect_edges":[10,20,10,30], "dwm_classification":"zero_area",
+            "visible":true, "cloaked":0, "win32_read_after_dwm_rejection":true,
+            "win32_raw_rect_edges":[10,20,30,40], "win32_classification":"positive",
+            "win32_os_error":null, "zero_area_status_mismatch":true,
+            "PRIVATE_ROOT_FIELD":"PRIVATE_ROOT_VALUE"
+        }
+    })
+}
+
+#[rstest]
+#[case("valid")]
+#[case("missing")]
+#[case("invalid_class")]
+#[case("invalid_rect")]
+#[case("invalid_reason")]
+#[tokio::test]
+async fn root_bounds_failure_survives_actual_public_task_remote_error_adapter(
+    #[case] variant: &str,
+) {
+    // Exercise the real framed Host client and task_call adapter. This fake
+    // server performs no driver, native capture, Host startup, or window call.
+    let mut capture = root_bounds_capture_fixture();
+    match variant {
+        "missing" => capture = Value::Null,
+        "invalid_class" => {
+            capture["root_bounds_failure"]["dwm_classification"] = json!("PRIVATE_ERROR")
+        }
+        "invalid_rect" => capture["root_bounds_failure"]["dwm_raw_rect_edges"] = json!([0, 0, 0]),
+        "invalid_reason" => capture["reason"] = json!("PRIVATE_ERROR"),
+        "valid" => (),
+        _ => unreachable!(),
+    }
+    let (client_stream, mut host_stream) = tokio::io::duplex(32 * 1024);
+    let host_task = tokio::spawn(async move {
+        for step in 0..3 {
+            let bytes = dcc_cua_protocol::read_frame(
+                &mut host_stream,
+                dcc_cua_protocol::MAX_JSON_FRAME_BYTES,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            let request: Value = serde_json::from_slice(&bytes).unwrap();
+            let mut response = match step {
+                0 => {
+                    assert_eq!(request["method"], "hello");
+                    json!({"type":"hello", "capabilities":[]})
+                }
+                1 => {
+                    assert_eq!(request["method"], "open_session");
+                    json!({
+                        "type":"session_opened", "session_id":"fixture-session",
+                        "window_capability":"PRIVATE_CAPABILITY",
+                        "target":{"process_id":42,"window_handle":7,"window_title":"PRIVATE_TITLE"}
+                    })
+                }
+                2 => {
+                    assert_eq!(request["method"], "snapshot");
+                    assert_eq!(request["params"]["session_id"], "fixture-session");
+                    assert_eq!(request["params"]["task_grant_id"], "fixture-grant");
+                    assert_eq!(request["params"]["window_capability"], "PRIVATE_CAPABILITY");
+                    json!({
+                        "type":"error", "code":"invalid_target", "message":"original refusal",
+                        "details":{"capture":capture, "PRIVATE_DETAILS":"PRIVATE_DETAIL_VALUE"},
+                        "task_context":{"target":{"process_id":999,"window_handle":888}},
+                        "PRIVATE_RESPONSE":"PRIVATE_RESPONSE_VALUE"
+                    })
+                }
+                _ => unreachable!(),
+            };
+            response["request_id"] = request["request_id"].clone();
+            dcc_cua_protocol::write_frame(
+                &mut host_stream,
+                response.to_string().as_bytes(),
+                dcc_cua_protocol::MAX_JSON_FRAME_BYTES,
+            )
+            .await
+            .unwrap();
+            host_stream.flush().await.unwrap();
+        }
+    });
+    let mut client = HostClient::from_stream(client_stream);
+    client.hello("pure-capture-error-fixture").await.unwrap();
+    let session = client
+        .open_logical_task_session(
+            "fixture-session",
+            json!({"task_grant_id":"fixture-grant"}),
+            DEFAULT_IDLE_TIMEOUT_MS,
+        )
+        .await
+        .unwrap();
+    let mut server = test_server();
+    let mut task = pixels_task();
+    task["allowed_methods"] = json!(["snapshot"]);
+    task["allowed_actions"] = json!([]);
+    let prepared = server.prepare_task(task).unwrap();
+    let task_id = prepared["task_id"].as_str().unwrap().to_owned();
+    server.proposals.get_mut(&task_id).unwrap().session = Some(session);
+    let result = server
+        .call_tool(json!({
+            "name":"dcc_cua_task_call",
+            "arguments":{"task_id":task_id,"method":"snapshot","params":{}}
+        }))
+        .await
+        .unwrap();
+    host_task.await.unwrap();
+    assert_eq!(result["isError"], true);
+    let payload = &result["structuredContent"];
+    assert_eq!(payload["ok"], false);
+    assert_eq!(
+        payload["error"],
+        "host returned invalid_target: original refusal"
+    );
+    assert_eq!(payload["task_context"]["provider"], "dcc-cua");
+    assert_eq!(
+        payload["task_context"]["runtime_version"],
+        env!("CARGO_PKG_VERSION")
+    );
+    assert_eq!(payload["task_context"]["task_id"], task_id);
+    assert_eq!(
+        payload["task_context"]["target"],
+        json!({"process_id":42,"window_handle":7})
+    );
+    if variant == "valid" {
+        let expected: dcc_cua_core::ComputerUseCaptureDiagnostic =
+            serde_json::from_value(root_bounds_capture_fixture()).unwrap();
+        assert_eq!(
+            payload["details"]["capture"],
+            serde_json::to_value(expected).unwrap()
+        );
+    } else {
+        assert!(payload.get("details").is_none());
+    }
+    assert!(!result.to_string().contains("PRIVATE_"));
+    assert!(payload.get("observation_id").is_none());
+    assert!(payload.get("image").is_none());
+    assert!(payload.get("window_capability").is_none());
+    let text: Value = serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(&text, payload);
+}
+
 #[rstest]
 #[case(TaskSurface::Window)]
 #[case(TaskSurface::Browser)]

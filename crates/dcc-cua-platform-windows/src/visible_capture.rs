@@ -86,6 +86,43 @@ pub struct VisibleWindowCaptureDiagnostic {
     pub blocker_bounds: Option<[i32; 4]>,
     pub cloaked: Option<u32>,
     pub os_error: Option<i32>,
+    pub root_bounds_failure: Option<RootBoundsFailureDiagnostic>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RootBoundsRole {
+    TargetRoot,
+    AboveTargetRoot,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RootBoundsClass {
+    Positive,
+    ZeroArea,
+    Inverted,
+    Overflow,
+}
+
+/// Failed proof metadata, never an authorization to ignore a root or capture it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct RootBoundsFailureDiagnostic {
+    pub root_role: RootBoundsRole,
+    pub proof_target_root_window_handle: u64,
+    pub dwm_raw_rect_edges: [i32; 4],
+    pub dwm_classification: RootBoundsClass,
+    pub visible: bool,
+    pub cloaked: Option<u32>,
+    /// The optional Win32 measurement follows the original DWM rejection; it
+    /// does not establish simultaneous or stable geometry.
+    pub win32_read_after_dwm_rejection: bool,
+    pub win32_raw_rect_edges: Option<[i32; 4]>,
+    pub win32_classification: Option<RootBoundsClass>,
+    pub win32_os_error: Option<i32>,
+    /// Only compares zero-area status for monotone, representable rectangles.
+    /// Ordinary Win32/DWM border differences are not a geometry failure.
+    pub zero_area_status_mismatch: Option<bool>,
 }
 
 impl VisibleWindowCaptureDiagnostic {
@@ -98,6 +135,7 @@ impl VisibleWindowCaptureDiagnostic {
             blocker_bounds: None,
             cloaked: None,
             os_error: None,
+            root_bounds_failure: None,
         }
     }
 }
@@ -251,6 +289,82 @@ pub(crate) fn physical_root_bounds(physical: RECT) -> Option<[i32; 4]> {
         return None;
     }
     Some([physical.left, physical.top, width, height])
+}
+
+pub(crate) fn classify_root_bounds(physical: RECT) -> RootBoundsClass {
+    let (Some(width), Some(height)) = (
+        physical.right.checked_sub(physical.left),
+        physical.bottom.checked_sub(physical.top),
+    ) else {
+        return RootBoundsClass::Overflow;
+    };
+    if width < 0 || height < 0 {
+        RootBoundsClass::Inverted
+    } else if width == 0 || height == 0 {
+        RootBoundsClass::ZeroArea
+    } else {
+        RootBoundsClass::Positive
+    }
+}
+
+fn rect_edges(rect: RECT) -> [i32; 4] {
+    [rect.left, rect.top, rect.right, rect.bottom]
+}
+
+/// Keep the original strict proof outcome. Read one bounded follow-up only
+/// after successful DWM metadata has failed the existing geometric predicate.
+pub(crate) fn composited_root_entry(
+    window_handle: u64,
+    proof_target_root_window_handle: u64,
+    physical: RECT,
+    visible: bool,
+    cloaked: Option<u32>,
+    read_win32_after_failure: impl FnOnce() -> Result<RECT, i32>,
+) -> Result<(u64, [i32; 4], bool), VisibleWindowCaptureError> {
+    root_z_order_entry(window_handle, true, || physical_root_bounds(physical)).ok_or_else(|| {
+        let dwm_classification = classify_root_bounds(physical);
+        let (win32_raw_rect_edges, win32_classification, win32_os_error) =
+            match read_win32_after_failure() {
+                Ok(rect) => (
+                    Some(rect_edges(rect)),
+                    Some(classify_root_bounds(rect)),
+                    None,
+                ),
+                Err(code) => (None, None, Some(code)),
+            };
+        let zero_area_status_mismatch = match (dwm_classification, win32_classification) {
+            (
+                RootBoundsClass::Positive | RootBoundsClass::ZeroArea,
+                Some(RootBoundsClass::Positive | RootBoundsClass::ZeroArea),
+            ) => Some(
+                (dwm_classification == RootBoundsClass::ZeroArea)
+                    != (win32_classification == Some(RootBoundsClass::ZeroArea)),
+            ),
+            _ => None,
+        };
+        let mut error = proof_error(
+            VisibleWindowCaptureReason::RootBoundsInvalid,
+            "a composited root has empty, inverted, or overflowing physical bounds",
+        );
+        error.diagnostic.root_bounds_failure = Some(RootBoundsFailureDiagnostic {
+            root_role: if window_handle == proof_target_root_window_handle {
+                RootBoundsRole::TargetRoot
+            } else {
+                RootBoundsRole::AboveTargetRoot
+            },
+            proof_target_root_window_handle,
+            dwm_raw_rect_edges: rect_edges(physical),
+            dwm_classification,
+            visible,
+            cloaked,
+            win32_read_after_dwm_rejection: true,
+            win32_raw_rect_edges,
+            win32_classification,
+            win32_os_error,
+            zero_area_status_mismatch,
+        });
+        error
+    })
 }
 
 pub(super) unsafe fn root_or_self(window: HWND) -> HWND {
@@ -426,6 +540,7 @@ unsafe extern "system" fn collect_root_z_order(window: HWND, context: LPARAM) ->
         .as_ref()
         .map(|_| unsafe { RootProofTraceEntry::read(window, visible) });
     let measured = (|| {
+        let mut measured_cloaked = None;
         let composited = root_is_composited(visible, || {
             let mut cloaked = 0_u32;
             let result = unsafe {
@@ -438,6 +553,9 @@ unsafe extern "system" fn collect_root_z_order(window: HWND, context: LPARAM) ->
             }
             .map(|()| cloaked)
             .map_err(|error| error.code().0);
+            if let Ok(cloaked) = result {
+                measured_cloaked = Some(cloaked);
+            }
             if let Some(trace) = trace.as_mut() {
                 match result {
                     Ok(cloaked) => trace.cloaked = Some(cloaked),
@@ -480,12 +598,19 @@ unsafe extern "system" fn collect_root_z_order(window: HWND, context: LPARAM) ->
                 Some(_) => RootProofDecision::Disjoint,
             };
         }
-        root_z_order_entry(window_handle, true, || physical_root_bounds(rect)).ok_or_else(|| {
-            proof_error(
-                VisibleWindowCaptureReason::RootBoundsInvalid,
-                "a composited root has empty, inverted, or overflowing physical bounds",
-            )
-        })
+        composited_root_entry(
+            window_handle,
+            enumeration.target_window_handle,
+            rect,
+            visible,
+            measured_cloaked,
+            || {
+                let mut win32 = RECT::default();
+                unsafe { GetWindowRect(window, &mut win32) }
+                    .map(|()| win32)
+                    .map_err(|error| error.code().0)
+            },
+        )
     })();
     if let (Some(entries), Some(trace)) = (enumeration.trace.as_mut(), trace) {
         entries.push(trace);

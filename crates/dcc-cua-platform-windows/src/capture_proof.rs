@@ -125,6 +125,7 @@ fn diagnostic(reason: VisibleWindowCaptureReason) -> VisibleWindowCaptureDiagnos
         blocker_bounds: None,
         cloaked: None,
         os_error: None,
+        root_bounds_failure: None,
     }
 }
 

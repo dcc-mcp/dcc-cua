@@ -1714,6 +1714,7 @@ fn exact_capture_diagnostic(
         blocker_bounds: None,
         cloaked: None,
         os_error: None,
+        root_bounds_failure: None,
     }
 }
 
@@ -1750,11 +1751,50 @@ pub(crate) fn map_visible_capture_error(
     capture.blocker_bounds = native.blocker_bounds;
     capture.cloaked = native.cloaked;
     capture.os_error = native.os_error;
+    capture.root_bounds_failure = native.root_bounds_failure.map(map_root_bounds_failure);
     ComputerUseError::new(code, error.to_string()).with_details(ComputerUseErrorDetails {
         capture: Some(capture),
         phase: Some(ComputerUseErrorPhase::EvidenceDispatch),
         ..Default::default()
     })
+}
+
+#[cfg(windows)]
+pub(crate) fn map_root_bounds_failure(
+    failure: dcc_cua_platform_windows::RootBoundsFailureDiagnostic,
+) -> crate::ComputerUseRootBoundsFailureDiagnostic {
+    use crate::{ComputerUseRootBoundsFailureDiagnostic, ComputerUseRootBoundsRole};
+    use dcc_cua_platform_windows::RootBoundsRole;
+    ComputerUseRootBoundsFailureDiagnostic {
+        root_role: match failure.root_role {
+            RootBoundsRole::TargetRoot => ComputerUseRootBoundsRole::TargetRoot,
+            RootBoundsRole::AboveTargetRoot => ComputerUseRootBoundsRole::AboveTargetRoot,
+        },
+        proof_target_root_window_handle: failure.proof_target_root_window_handle,
+        dwm_raw_rect_edges: failure.dwm_raw_rect_edges,
+        dwm_classification: map_root_bounds_class(failure.dwm_classification),
+        visible: failure.visible,
+        cloaked: failure.cloaked,
+        win32_read_after_dwm_rejection: failure.win32_read_after_dwm_rejection,
+        win32_raw_rect_edges: failure.win32_raw_rect_edges,
+        win32_classification: failure.win32_classification.map(map_root_bounds_class),
+        win32_os_error: failure.win32_os_error,
+        zero_area_status_mismatch: failure.zero_area_status_mismatch,
+    }
+}
+
+#[cfg(windows)]
+fn map_root_bounds_class(
+    native: dcc_cua_platform_windows::RootBoundsClass,
+) -> crate::ComputerUseRootBoundsClass {
+    use crate::ComputerUseRootBoundsClass as Public;
+    use dcc_cua_platform_windows::RootBoundsClass as Native;
+    match native {
+        Native::Positive => Public::Positive,
+        Native::ZeroArea => Public::ZeroArea,
+        Native::Inverted => Public::Inverted,
+        Native::Overflow => Public::Overflow,
+    }
 }
 
 #[cfg(windows)]

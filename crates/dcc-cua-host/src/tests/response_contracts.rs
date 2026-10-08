@@ -35,6 +35,46 @@ fn host_error_response_serializes_typed_computer_use_details() {
 }
 
 #[rstest]
+fn host_error_response_preserves_root_bounds_failure_without_minting_observation() {
+    let capture: dcc_cua_core::ComputerUseCaptureDiagnostic = serde_json::from_value(json!({
+        "stage":"visible_desktop_proof", "reason":"root_bounds_invalid",
+        "target_process_id":42, "target_window_handle":7,
+        "blocker_window_handle":91, "blocker_process_id":100,
+        "root_bounds_failure":{
+            "root_role":"above_target_root", "proof_target_root_window_handle":77,
+            "dwm_raw_rect_edges":[10,20,10,30], "dwm_classification":"zero_area",
+            "visible":true, "cloaked":0, "win32_read_after_dwm_rejection":true,
+            "win32_raw_rect_edges":null, "win32_classification":null,
+            "win32_os_error":-5, "zero_area_status_mismatch":null
+        }
+    }))
+    .unwrap();
+    let error = HostError::ComputerUse(
+        ComputerUseError::new(
+            ComputerUseErrorCode::InvalidTarget,
+            "unchanged original refusal",
+        )
+        .with_details(dcc_cua_core::ComputerUseErrorDetails {
+            capture: Some(capture.clone()),
+            ..Default::default()
+        }),
+    );
+    let response = host_error_response(&error);
+    assert_eq!(response["type"], "error");
+    assert_eq!(response["code"], "invalid_target");
+    assert_eq!(
+        response["message"],
+        "InvalidTarget: unchanged original refusal"
+    );
+    assert_eq!(
+        response["details"]["capture"],
+        serde_json::to_value(capture).unwrap()
+    );
+    assert!(response.get("observation_id").is_none());
+    assert!(response.get("image").is_none());
+}
+
+#[rstest]
 fn native_tool_response_moves_image_pixels_to_binary_attachment() {
     let mut shared = None;
     let (response, attachment) = native_tool_response_with_transport(

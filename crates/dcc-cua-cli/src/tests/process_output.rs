@@ -189,6 +189,7 @@ fn native_capture_failure_preserves_only_typed_content_free_proof() {
             blocker_bounds: Some([1, 1, 1, 1]),
             cloaked: Some(0),
             os_error: None,
+            root_bounds_failure: None,
         }),
         suggested_delivery_mode: Some("PRIVATE_SECRET_DETAIL".into()),
         ..Default::default()
