@@ -250,6 +250,7 @@ async fn logical_task_reuses_one_connection_and_injects_exact_credentials() {
         .await
         .unwrap();
     assert_eq!(task.session_id(), "task-7");
+    assert_eq!(task.connection_id(), Some("host-connection-test"));
     assert_eq!(task.task_grant_id(), "grant-7");
     assert_eq!(task.idle_timeout_ms(), 60_000);
     assert_eq!(task.target()["process_id"], 42);

@@ -22,6 +22,11 @@ use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader, BufWriter};
 use uuid::Uuid;
 
+use super::connection_diagnostics::{
+    AssociatedHost, CloseReason, ConnectionDiagnostics, RESOURCE_URI as CONNECTION_RESOURCE,
+    RuntimeBuildIdentity, TaskCounts,
+};
+
 const SERVER_NAME: &str = "dcc-cua-task-automation";
 const MAX_PENDING_TASKS: usize = 64;
 const MAX_TTL_MINUTES: u64 = 24 * 60;
@@ -225,6 +230,7 @@ struct TaskAuthorizationAuthority {
 struct TaskAuthorizationServer {
     authority: TaskAuthorizationAuthority,
     proposals: BTreeMap<String, TaskProposal>,
+    diagnostics: Option<ConnectionDiagnostics>,
 }
 
 impl TaskAuthorizationServer {
@@ -236,10 +242,12 @@ impl TaskAuthorizationServer {
                 authorization_host,
             },
             proposals: BTreeMap::new(),
+            diagnostics: None,
         }
     }
 
     async fn handle_rpc(&mut self, message: Value) -> Option<Value> {
+        self.update_diagnostics();
         let id = message.get("id").cloned().unwrap_or(Value::Null);
         let Some(method) = message.get("method").and_then(Value::as_str) else {
             return Some(rpc_error(id, -32600, "Invalid Request"));
@@ -252,6 +260,11 @@ impl TaskAuthorizationServer {
             .filter(|value| value.is_object())
             .cloned()
             .unwrap_or_else(|| json!({}));
+        if method == "initialize"
+            && let Some(diagnostics) = self.diagnostics.as_mut()
+        {
+            diagnostics.initialized(&params);
+        }
         let result = match method {
             "initialize" => Ok(json!({
                 "protocolVersion": params.get("protocolVersion").cloned().unwrap_or_else(|| json!("2024-11-05")),
@@ -270,8 +283,13 @@ impl TaskAuthorizationServer {
             "ping" => Ok(json!({})),
             "tools/list" => Ok(json!({"tools": tool_definitions()})),
             "tools/call" => self.call_tool(params).await,
-            "resources/list" => Ok(json!({"resources": []})),
-            "resources/read" => Err("unknown DCC-CUA MCP resource".into()),
+            "resources/list" => Ok(json!({"resources": [{
+                "uri": CONNECTION_RESOURCE,
+                "name": "dcc-cua-connection",
+                "description": "Read-only diagnostics for this MCP connection; client identifiers are self-reported.",
+                "mimeType": "application/json"
+            }]})),
+            "resources/read" => self.read_connection_resource(&params),
             "resources/templates/list" => Ok(json!({"resourceTemplates": []})),
             "prompts/list" => Ok(json!({"prompts": []})),
             _ => {
@@ -282,6 +300,47 @@ impl TaskAuthorizationServer {
             Ok(result) => rpc_result(id, result),
             Err(message) => rpc_error(id, -32602, &message),
         })
+    }
+
+    fn read_connection_resource(&self, params: &Value) -> Result<Value, String> {
+        if params.get("uri").and_then(Value::as_str) != Some(CONNECTION_RESOURCE) {
+            return Err("unknown DCC-CUA MCP resource".into());
+        }
+        let diagnostics = self
+            .diagnostics
+            .as_ref()
+            .ok_or_else(|| "connection diagnostics unavailable".to_owned())?;
+        Ok(json!({"contents": [{
+            "uri": CONNECTION_RESOURCE,
+            "mimeType": "application/json",
+            "text": serde_json::to_string(&diagnostics.snapshot()).map_err(|_| "connection diagnostics unavailable")?
+        }]}))
+    }
+
+    fn update_diagnostics(&mut self) {
+        let Some(diagnostics) = self.diagnostics.as_mut() else {
+            return;
+        };
+        let mut counts = TaskCounts::default();
+        let mut hosts = Vec::new();
+        let now = unix_time_millis();
+        for proposal in self.proposals.values() {
+            if proposal.revoked {
+                counts.stopped += 1;
+            } else if proposal.registration.expires_at_unix_ms <= now {
+                counts.expired += 1;
+            } else if proposal.session.is_some() {
+                counts.active += 1;
+            } else {
+                counts.pending += 1;
+            }
+            if let Some(session) = proposal.session.as_ref() {
+                hosts.push(AssociatedHost::embedded(
+                    session.connection_id().map(str::to_owned),
+                ));
+            }
+        }
+        diagnostics.set_tasks(counts, hosts);
     }
 
     async fn call_tool(&mut self, params: Value) -> Result<Value, String> {
@@ -996,20 +1055,57 @@ fn rpc_error(id: Value, code: i64, message: &str) -> Value {
     json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}})
 }
 
-pub async fn run() -> Result<(), Box<dyn Error>> {
+fn runtime_build() -> RuntimeBuildIdentity {
+    RuntimeBuildIdentity {
+        runtime_version: env!("CARGO_PKG_VERSION").to_owned(),
+        source_revision: option_env!("CUA_BUILD_SOURCE_REVISION").map(str::to_owned),
+        source_dirty: option_env!("CUA_BUILD_SOURCE_DIRTY").and_then(|value| value.parse().ok()),
+        build_profile: option_env!("CUA_BUILD_PROFILE").map(str::to_owned),
+        target: option_env!("CUA_BUILD_TARGET").map(str::to_owned),
+    }
+}
+
+pub async fn run(diagnostics_dir: Option<std::path::PathBuf>) -> Result<(), Box<dyn Error>> {
     let mut server = TaskAuthorizationServer::automatic();
+    server.diagnostics = Some(ConnectionDiagnostics::new(runtime_build(), diagnostics_dir));
     let mut input = BufReader::new(tokio::io::stdin());
     let mut output = BufWriter::new(tokio::io::stdout());
+    let mut reason = CloseReason::InputError;
+    let result = run_transport(&mut server, &mut input, &mut output, &mut reason).await;
+    // Preserve the last observed task/Host associations at disconnect. Dropping
+    // transports below does not attest that detached Host cleanup has finished.
+    server.update_diagnostics();
+    if let Some(diagnostics) = server.diagnostics.as_mut() {
+        diagnostics.close(reason);
+    }
+    // Drop only this connection's task transports. Other bridges and endpoint
+    // Hosts have independent ownership and are not stopped by diagnostics.
+    server.proposals.clear();
+    result
+}
+
+async fn run_transport(
+    server: &mut TaskAuthorizationServer,
+    input: &mut BufReader<tokio::io::Stdin>,
+    output: &mut BufWriter<tokio::io::Stdout>,
+    reason: &mut CloseReason,
+) -> Result<(), Box<dyn Error>> {
     loop {
+        *reason = CloseReason::InputError;
         let mut line = Vec::new();
-        let count = (&mut input)
+        let count = (&mut *input)
             .take(dcc_cua_protocol::MAX_JSON_FRAME_BYTES as u64 + 1)
             .read_until(b'\n', &mut line)
             .await?;
         if count == 0 {
+            *reason = CloseReason::StdinEof;
             break;
         }
+        if let Some(diagnostics) = server.diagnostics.as_mut() {
+            diagnostics.activity();
+        }
         if count > dcc_cua_protocol::MAX_JSON_FRAME_BYTES {
+            *reason = CloseReason::FrameLimit;
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 "MCP request exceeds frame limit",
@@ -1022,6 +1118,7 @@ pub async fn run() -> Result<(), Box<dyn Error>> {
         let decoded: Value = match serde_json::from_slice(&line) {
             Ok(value) => value,
             Err(_) => {
+                *reason = CloseReason::OutputError;
                 output
                     .write_all(
                         format!("{}\n", rpc_error(Value::Null, -32700, "Parse error")).as_bytes(),
@@ -1031,6 +1128,9 @@ pub async fn run() -> Result<(), Box<dyn Error>> {
                 continue;
             }
         };
+        if let Some(diagnostics) = server.diagnostics.as_mut() {
+            diagnostics.set_request_in_flight(true);
+        }
         let mut responses = Vec::new();
         if let Some(batch) = decoded.as_array() {
             for message in batch {
@@ -1041,6 +1141,10 @@ pub async fn run() -> Result<(), Box<dyn Error>> {
         } else if let Some(response) = server.handle_rpc(decoded).await {
             responses.push(response);
         }
+        server.update_diagnostics();
+        if let Some(diagnostics) = server.diagnostics.as_mut() {
+            diagnostics.set_request_in_flight(false);
+        }
         if responses.is_empty() {
             continue;
         }
@@ -1049,6 +1153,7 @@ pub async fn run() -> Result<(), Box<dyn Error>> {
         } else {
             Value::Array(responses)
         };
+        *reason = CloseReason::OutputError;
         output.write_all(format!("{response}\n").as_bytes()).await?;
         output.flush().await?;
     }

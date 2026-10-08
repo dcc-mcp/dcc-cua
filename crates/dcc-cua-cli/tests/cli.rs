@@ -341,8 +341,11 @@ fn rejected_cli_syntax_does_not_echo_untrusted_arguments(
 #[case("WorkBuddy")]
 #[case("CodeBuddy CLI")]
 fn mcp_server_exposes_the_same_automation_surface_to_every_agent_host(#[case] client: &str) {
+    let diagnostics = tempfile::tempdir().unwrap();
     let mut child = Command::new(env!("CARGO_BIN_EXE_dcc-cua"))
         .arg("mcp-server")
+        .arg("--diagnostics-dir")
+        .arg(diagnostics.path())
         .env("DCC_CUA_TRUSTED_EMBEDDING", client)
         .env("DCC_CUA_AUTHORIZATION", "AUTHORIZE")
         .stdin(Stdio::piped())
@@ -404,7 +407,10 @@ fn mcp_server_exposes_the_same_automation_surface_to_every_agent_host(#[case] cl
         ]
     );
     assert!(tools.iter().all(|tool| tool.get("_meta").is_none()));
-    assert_eq!(responses[2]["result"]["resources"], serde_json::json!([]));
+    assert_eq!(
+        responses[2]["result"]["resources"][0]["uri"],
+        "dcc-cua://connection/current"
+    );
     for response in &responses[3..] {
         assert_eq!(response["result"]["isError"], true);
         assert!(response["result"].get("_meta").is_none());
@@ -438,8 +444,11 @@ fn private_worker_failure_stays_on_its_protocol_native_boundary() {
 
 #[rstest]
 fn mcp_server_rejects_oversized_input_without_an_unframed_error() {
+    let diagnostics = tempfile::tempdir().unwrap();
     let mut child = Command::new(env!("CARGO_BIN_EXE_dcc-cua"))
         .arg("mcp-server")
+        .arg("--diagnostics-dir")
+        .arg(diagnostics.path())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

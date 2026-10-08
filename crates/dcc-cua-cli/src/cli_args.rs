@@ -75,6 +75,7 @@ const KNOWN_FLAG_NAMES: &[&str] = &[
     "--cdp-state",
     "--delay-ms",
     "--delivery-mode",
+    "--diagnostics-dir",
     "--duration-ms",
     "--element-index",
     "--element-token",
@@ -287,6 +288,7 @@ pub(super) fn print_help() -> std::io::Result<()> {
   host-batch --json JSON_ARRAY [--endpoint PATH|--spawn BINARY] [--agent-name NAME] [--snapshot-transport binary_frame|shared_memory] [--output-dir DIR]
   host-jsonl [--endpoint PATH|--spawn BINARY] [--agent-name NAME] [--parallel-discovery] [--showcase] [--showcase-dir DIR] [--snapshot-transport binary_frame|shared_memory] [--response-format host|mcp] [--output-dir DIR] [--metrics-output FILE]
   mcp-server                       # automation-first stdio MCP bridge owned by the connected Agent Host
+  connections [--diagnostics-dir PATH] # read-only local MCP connection records; no Host/UI startup
   host-ensure [--endpoint PATH] [--grant existing-profile]
   browser-extension plan|status|install-native-host --browser chrome|edge|firefox --extension-id PUBLISHED_ID [--cdp-state available|unavailable]
   manifest

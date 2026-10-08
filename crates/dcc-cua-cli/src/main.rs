@@ -15,6 +15,7 @@ mod async_runtime;
 mod authorization;
 mod browser_extension;
 mod cli_args;
+mod connection_diagnostics;
 mod failure_output;
 mod host_lifecycle;
 mod manifest;
@@ -233,7 +234,14 @@ async fn dispatch(arguments: Vec<String>) -> Result<(), Box<dyn std::error::Erro
         return Ok(());
     }
     if command == "mcp-server" {
-        mcp_server::run().await?;
+        mcp_server::run(flag_value(&flags, "--diagnostics-dir").map(PathBuf::from)).await?;
+        return Ok(());
+    }
+    if command == "connections" {
+        let report = connection_diagnostics::list_connections(
+            flag_value(&flags, "--diagnostics-dir").map(PathBuf::from),
+        );
+        stdoutln!("{}", serde_json::to_string(&report)?);
         return Ok(());
     }
     if command == "host-ensure" {
