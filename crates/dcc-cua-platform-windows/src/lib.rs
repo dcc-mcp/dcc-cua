@@ -63,6 +63,7 @@ pub fn desktop_state() -> WindowsDesktopState {
 #[cfg(windows)]
 pub use visible_capture::{
     ExactWindowPixelEvidence, ExactWindowPixelInstanceEvidence, VisibleWindowCapture,
+    VisibleWindowCaptureDiagnostic, VisibleWindowCaptureError, VisibleWindowCaptureReason,
     capture_visible_window, exact_window_pixel_evidence,
 };
 #[cfg(windows)]

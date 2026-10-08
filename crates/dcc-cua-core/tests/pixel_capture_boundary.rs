@@ -38,6 +38,22 @@ fn exact_source_first_capture_instance_boundary() {
         selected.push_str(item(pixel, marker));
         selected.push('\n');
     }
+    let contracts = include_str!("../src/contracts.rs");
+    for marker in [
+        "pub enum ComputerUseCaptureStage",
+        "pub enum ComputerUseCaptureReason",
+        "pub struct ComputerUseCaptureDiagnostic",
+    ] {
+        selected.push_str("#[derive(Clone, Copy, Debug, PartialEq, Eq)]\n");
+        selected.push_str(
+            &item(contracts, marker)
+                .lines()
+                .filter(|line| !line.trim_start().starts_with("#[serde("))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+        selected.push('\n');
+    }
     for marker in [
         "impl PixelObservationRoute",
         "impl From<dcc_cua_platform_windows::ExactWindowPixelInstanceEvidence>",
@@ -51,6 +67,14 @@ fn exact_source_first_capture_instance_boundary() {
         selected.push('\n');
     }
     selected.push_str(item(runtime, "struct ExactWindowCapture"));
+    for marker in [
+        "fn exact_capture_diagnostic(",
+        "fn map_visible_capture_error(",
+        "fn map_capture_identity_error(",
+    ] {
+        selected.push_str(item(runtime, marker));
+        selected.push('\n');
+    }
     selected.push_str(item(runtime, "async fn capture_exact_window("));
     selected.push_str(item(
         gates,
@@ -60,10 +84,13 @@ fn exact_source_first_capture_instance_boundary() {
     for marker in [
         "pub struct ExactWindowPixelInstanceEvidence",
         "pub struct ExactWindowPixelEvidence",
+        "pub enum VisibleWindowCaptureReason",
+        "pub struct VisibleWindowCaptureDiagnostic",
     ] {
         native_types.push_str("#[derive(Clone, Copy, Debug, PartialEq, Eq)]\n");
         native_types.push_str(item(native, marker));
     }
+    native_types.push_str(item(native, "pub struct VisibleWindowCaptureError"));
     let mut methods = item(
         observation,
         "pub(crate) fn finish_observation_sensitive_attempt",

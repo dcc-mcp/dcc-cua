@@ -1690,6 +1690,87 @@ struct ExactWindowCapture {
 static EXACT_WINDOW_CAPTURE_GENERATION: AtomicU64 = AtomicU64::new(1);
 
 #[cfg(windows)]
+fn exact_capture_diagnostic(
+    process_id: u32,
+    window_id: u64,
+    stage: ComputerUseCaptureStage,
+    reason: ComputerUseCaptureReason,
+) -> ComputerUseCaptureDiagnostic {
+    ComputerUseCaptureDiagnostic {
+        stage,
+        reason,
+        target_process_id: process_id,
+        target_window_handle: window_id,
+        target_bounds: None,
+        blocker_process_id: None,
+        blocker_window_handle: None,
+        blocker_bounds: None,
+        cloaked: None,
+        os_error: None,
+    }
+}
+
+#[cfg(windows)]
+fn map_visible_capture_error(
+    code: ComputerUseErrorCode,
+    stage: ComputerUseCaptureStage,
+    process_id: u32,
+    window_id: u64,
+    error: dcc_cua_platform_windows::VisibleWindowCaptureError,
+) -> ComputerUseError {
+    use ComputerUseCaptureReason as Public;
+    use dcc_cua_platform_windows::VisibleWindowCaptureReason as Native;
+    let native = error.diagnostic;
+    let reason = match native.reason {
+        Native::NativeReadFailed => Public::NativeReadFailed,
+        Native::TargetUnavailable => Public::TargetUnavailable,
+        Native::TargetNotVisible => Public::TargetNotVisible,
+        Native::TargetMinimized => Public::TargetMinimized,
+        Native::TargetBoundsInvalid => Public::TargetBoundsInvalid,
+        Native::TargetOutsideDesktop => Public::TargetOutsideDesktop,
+        Native::RootCloakingUnavailable => Public::RootCloakingUnavailable,
+        Native::RootBoundsUnavailable => Public::RootBoundsUnavailable,
+        Native::RootBoundsInvalid => Public::RootBoundsInvalid,
+        Native::RootEnumerationIncomplete => Public::RootEnumerationIncomplete,
+        Native::TargetNotReached => Public::TargetNotReached,
+        Native::TargetBoundsChanged => Public::TargetBoundsChanged,
+        Native::RootOverlap => Public::RootOverlap,
+    };
+    let mut capture = exact_capture_diagnostic(process_id, window_id, stage, reason);
+    capture.target_bounds = native.target_bounds;
+    capture.blocker_process_id = native.blocker_process_id;
+    capture.blocker_window_handle = native.blocker_window_handle;
+    capture.blocker_bounds = native.blocker_bounds;
+    capture.cloaked = native.cloaked;
+    capture.os_error = native.os_error;
+    ComputerUseError::new(code, error.to_string()).with_details(ComputerUseErrorDetails {
+        capture: Some(capture),
+        phase: Some(ComputerUseErrorPhase::EvidenceDispatch),
+        ..Default::default()
+    })
+}
+
+#[cfg(windows)]
+fn map_capture_identity_error(
+    process_id: u32,
+    window_id: u64,
+    error: dcc_cua_platform_windows::ExactWindowCaptureIdentityError,
+) -> ComputerUseError {
+    ComputerUseError::new(ComputerUseErrorCode::InvalidTarget, error.to_string()).with_details(
+        ComputerUseErrorDetails {
+            capture: Some(exact_capture_diagnostic(
+                process_id,
+                window_id,
+                ComputerUseCaptureStage::CaptureIdentity,
+                ComputerUseCaptureReason::CaptureIdentityUnavailable,
+            )),
+            phase: Some(ComputerUseErrorPhase::EvidenceDispatch),
+            ..Default::default()
+        },
+    )
+}
+
+#[cfg(windows)]
 async fn capture_exact_window(
     process_id: u32,
     window_id: u64,
@@ -1701,7 +1782,8 @@ async fn capture_exact_window(
             window_id,
         )
         .map_err(|error| {
-            ComputerUseError::new(ComputerUseErrorCode::InvalidTarget, error.to_string())
+            map_visible_capture_error(ComputerUseErrorCode::InvalidTarget,
+                ComputerUseCaptureStage::NativeEvidence, process_id, window_id, error)
         })?;
         validate_native_exact_window_pixel_evidence(
             &before,
@@ -1710,22 +1792,18 @@ async fn capture_exact_window(
         )?;
         let route = dcc_cua_platform_windows::exact_window_capture_route(process_id, window_id)
             .map_err(|error| {
-                ComputerUseError::new(ComputerUseErrorCode::InvalidTarget, error.to_string())
+                map_capture_identity_error(process_id, window_id, error)
             })?;
         if route == dcc_cua_platform_windows::ExactWindowCaptureRoute::VerifiedVisible {
             let visible = dcc_cua_platform_windows::capture_visible_window(process_id, window_id)
                 .map_err(|error| {
-                    ComputerUseError::new(
-                        ComputerUseErrorCode::InvalidTarget,
-                        format!(
-                            "same-executable multi-window WGC identity is ambiguous; exact visible-window proof failed: {error}"
-                        ),
-                    )
+                    map_visible_capture_error(ComputerUseErrorCode::InvalidTarget,
+                        ComputerUseCaptureStage::VisibleDesktopProof, process_id, window_id, error)
                 },
             )?;
             dcc_cua_platform_windows::exact_window_capture_route(process_id, window_id).map_err(
                 |error| {
-                    ComputerUseError::new(ComputerUseErrorCode::InvalidTarget, error.to_string())
+                    map_capture_identity_error(process_id, window_id, error)
                 },
             )?;
             let after = dcc_cua_platform_windows::exact_window_pixel_evidence(
@@ -1733,7 +1811,8 @@ async fn capture_exact_window(
                 window_id,
             )
             .map_err(|error| {
-                ComputerUseError::new(ComputerUseErrorCode::InvalidTarget, error.to_string())
+                map_visible_capture_error(ComputerUseErrorCode::InvalidTarget,
+                    ComputerUseCaptureStage::NativeEvidence, process_id, window_id, error)
             })?;
             validate_native_exact_window_pixel_evidence(
                 &before,
@@ -1767,10 +1846,7 @@ async fn capture_exact_window(
                         window_id,
                     )
                     .map_err(|error| {
-                        ComputerUseError::new(
-                            ComputerUseErrorCode::InvalidTarget,
-                            error.to_string(),
-                        )
+                        map_capture_identity_error(process_id, window_id, error)
                     })? != dcc_cua_platform_windows::ExactWindowCaptureRoute::Wgc
                     {
                         return Err(ComputerUseError::new(
@@ -1783,10 +1859,8 @@ async fn capture_exact_window(
                         window_id,
                     )
                     .map_err(|error| {
-                        ComputerUseError::new(
-                            ComputerUseErrorCode::InvalidTarget,
-                            error.to_string(),
-                        )
+                        map_visible_capture_error(ComputerUseErrorCode::InvalidTarget,
+                            ComputerUseCaptureStage::NativeEvidence, process_id, window_id, error)
                     })?;
                     validate_native_exact_window_pixel_evidence(
                         &before,
@@ -1811,17 +1885,18 @@ async fn capture_exact_window(
         };
         let visible = dcc_cua_platform_windows::capture_visible_window(process_id, window_id)
             .map_err(|error| {
-                ComputerUseError::new(
-                    ComputerUseErrorCode::CaptureFailed,
-                    format!("exact WGC capture failed ({wgc_error}); {error}"),
-                )
+                let mut mapped = map_visible_capture_error(ComputerUseErrorCode::CaptureFailed,
+                    ComputerUseCaptureStage::VisibleDesktopProof, process_id, window_id, error);
+                mapped.message = format!("exact WGC capture failed ({wgc_error}); {}", mapped.message);
+                mapped
             })?;
         let after = dcc_cua_platform_windows::exact_window_pixel_evidence(
             process_id,
             window_id,
         )
         .map_err(|error| {
-            ComputerUseError::new(ComputerUseErrorCode::InvalidTarget, error.to_string())
+            map_visible_capture_error(ComputerUseErrorCode::InvalidTarget,
+                ComputerUseCaptureStage::NativeEvidence, process_id, window_id, error)
         })?;
         validate_native_exact_window_pixel_evidence(
             &before,
@@ -1853,6 +1928,15 @@ async fn capture_exact_window(
             format!("exact window capture task failed: {error}"),
         )
     })?
+    .map_err(|mut error| {
+        let details = error.details.get_or_insert_default();
+        if details.capture.is_none() {
+            details.capture = Some(exact_capture_diagnostic(process_id, window_id,
+                ComputerUseCaptureStage::PublicationValidation,
+                ComputerUseCaptureReason::PixelEvidenceChanged));
+        }
+        error
+    })
 }
 
 #[cfg(not(windows))]

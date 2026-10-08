@@ -18,6 +18,28 @@ use crate::{
 };
 
 #[rstest]
+fn capture_diagnostic_contract_rejects_arbitrary_reason_and_stage_strings() {
+    let mut value = json!({
+        "stage": "visible_desktop_proof",
+        "reason": "root_overlap",
+        "target_process_id": 42,
+        "target_window_handle": 77,
+        "blocker_window_handle": 91,
+    });
+    let diagnostic: crate::ComputerUseCaptureDiagnostic =
+        serde_json::from_value(value.clone()).expect("closed metadata contract");
+    assert_eq!(
+        diagnostic.reason,
+        crate::ComputerUseCaptureReason::RootOverlap
+    );
+    value["reason"] = json!("PRIVATE_FOREIGN_WINDOW_TEXT");
+    assert!(serde_json::from_value::<crate::ComputerUseCaptureDiagnostic>(value.clone()).is_err());
+    value["reason"] = json!("root_overlap");
+    value["stage"] = json!("PRIVATE_BACKEND_ERROR");
+    assert!(serde_json::from_value::<crate::ComputerUseCaptureDiagnostic>(value).is_err());
+}
+
+#[rstest]
 #[tokio::test]
 async fn input_calls_have_a_hard_timeout() {
     let error = await_input_call(

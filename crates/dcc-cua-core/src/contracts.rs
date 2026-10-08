@@ -584,6 +584,10 @@ pub enum ComputerUseErrorCode {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ComputerUseErrorDetails {
+    /// Content-free native capture proof. Never contains window titles, UI text,
+    /// executable paths, arbitrary backend messages, or captured content.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capture: Option<ComputerUseCaptureDiagnostic>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timed_out: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -620,6 +624,55 @@ pub struct ComputerUseErrorDetails {
     pub background_delivery_viable: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub suggested_delivery_mode: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ComputerUseCaptureStage {
+    NativeEvidence,
+    CaptureIdentity,
+    VisibleDesktopProof,
+    PublicationValidation,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ComputerUseCaptureReason {
+    NativeReadFailed,
+    CaptureIdentityUnavailable,
+    TargetUnavailable,
+    TargetNotVisible,
+    TargetMinimized,
+    TargetBoundsInvalid,
+    TargetOutsideDesktop,
+    RootCloakingUnavailable,
+    RootBoundsUnavailable,
+    RootBoundsInvalid,
+    RootEnumerationIncomplete,
+    TargetNotReached,
+    TargetBoundsChanged,
+    RootOverlap,
+    PixelEvidenceChanged,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ComputerUseCaptureDiagnostic {
+    pub stage: ComputerUseCaptureStage,
+    pub reason: ComputerUseCaptureReason,
+    pub target_process_id: u32,
+    pub target_window_handle: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_bounds: Option<[i32; 4]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocker_process_id: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocker_window_handle: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocker_bounds: Option<[i32; 4]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cloaked: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub os_error: Option<i32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

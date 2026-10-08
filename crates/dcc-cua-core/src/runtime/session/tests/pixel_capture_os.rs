@@ -6,10 +6,16 @@ pub enum ExactWindowCaptureRoute {
     Wgc,
     VerifiedVisible,
 }
+pub type ExactWindowCaptureIdentityError = String;
+impl std::fmt::Display for VisibleWindowCaptureError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
 pub fn exact_window_pixel_evidence(
     pid: u32,
     hwnd: u64,
-) -> Result<ExactWindowPixelEvidence, String> {
+) -> Result<ExactWindowPixelEvidence, VisibleWindowCaptureError> {
     assert_eq!((pid, hwnd), (42, 77));
     OS.with_borrow_mut(|os| {
         os.trace.push("native evidence");
@@ -35,7 +41,10 @@ pub struct VisibleWindowCapture {
     pub height: u32,
     pub bounds: [i32; 4],
 }
-pub fn capture_visible_window(pid: u32, hwnd: u64) -> Result<VisibleWindowCapture, String> {
+pub fn capture_visible_window(
+    pid: u32,
+    hwnd: u64,
+) -> Result<VisibleWindowCapture, VisibleWindowCaptureError> {
     assert_eq!((pid, hwnd), (42, 77));
     OS.with_borrow_mut(|os| os.trace.push("visible pixels"));
     Ok(VisibleWindowCapture {

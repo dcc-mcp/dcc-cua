@@ -3,7 +3,7 @@ use thiserror::Error;
 use windows::Win32::{
     Foundation::{BOOL, HWND, LPARAM, RECT},
     Graphics::{
-        Dwm::{DWMWA_EXTENDED_FRAME_BOUNDS, DwmFlush, DwmGetWindowAttribute},
+        Dwm::{DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS, DwmFlush, DwmGetWindowAttribute},
         Gdi::{
             BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BitBlt, CreateCompatibleBitmap,
             CreateCompatibleDC, DIB_RGB_COLORS, DeleteDC, DeleteObject, GetDC, GetDIBits, RGBQUAD,
@@ -13,7 +13,9 @@ use windows::Win32::{
     UI::{
         HiDpi::GetDpiForWindow,
         WindowsAndMessaging::{
-            EnumWindows, GA_ROOT, GetAncestor, GetWindowRect, IsIconic, IsWindow, IsWindowVisible,
+            EnumWindows, GA_ROOT, GetAncestor, GetSystemMetrics, GetWindowRect,
+            GetWindowThreadProcessId, IsIconic, IsWindow, IsWindowVisible, SM_CXVIRTUALSCREEN,
+            SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
         },
     },
 };
@@ -50,8 +52,53 @@ impl Drop for ThreadDpiAwarenessGuard {
 }
 
 #[derive(Debug, Error)]
-#[error("visible exact-window capture failed: {0}")]
-pub struct VisibleWindowCaptureError(String);
+#[error("visible exact-window capture failed: {message}")]
+pub struct VisibleWindowCaptureError {
+    message: String,
+    pub diagnostic: VisibleWindowCaptureDiagnostic,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VisibleWindowCaptureReason {
+    NativeReadFailed,
+    TargetUnavailable,
+    TargetNotVisible,
+    TargetMinimized,
+    TargetBoundsInvalid,
+    TargetOutsideDesktop,
+    RootCloakingUnavailable,
+    RootBoundsUnavailable,
+    RootBoundsInvalid,
+    RootEnumerationIncomplete,
+    TargetNotReached,
+    TargetBoundsChanged,
+    RootOverlap,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct VisibleWindowCaptureDiagnostic {
+    pub reason: VisibleWindowCaptureReason,
+    pub target_bounds: Option<[i32; 4]>,
+    pub blocker_process_id: Option<u32>,
+    pub blocker_window_handle: Option<u64>,
+    pub blocker_bounds: Option<[i32; 4]>,
+    pub cloaked: Option<u32>,
+    pub os_error: Option<i32>,
+}
+
+impl VisibleWindowCaptureDiagnostic {
+    fn new(reason: VisibleWindowCaptureReason) -> Self {
+        Self {
+            reason,
+            target_bounds: None,
+            blocker_process_id: None,
+            blocker_window_handle: None,
+            blocker_bounds: None,
+            cloaked: None,
+            os_error: None,
+        }
+    }
+}
 
 #[derive(Debug)]
 pub struct VisibleWindowCapture {
@@ -83,7 +130,17 @@ pub struct ExactWindowPixelEvidence {
 }
 
 fn capture_error(message: impl Into<String>) -> VisibleWindowCaptureError {
-    VisibleWindowCaptureError(message.into())
+    proof_error(VisibleWindowCaptureReason::NativeReadFailed, message)
+}
+
+fn proof_error(
+    reason: VisibleWindowCaptureReason,
+    message: impl Into<String>,
+) -> VisibleWindowCaptureError {
+    VisibleWindowCaptureError {
+        message: message.into(),
+        diagnostic: VisibleWindowCaptureDiagnostic::new(reason),
+    }
 }
 
 fn exact_window_instance_evidence(
@@ -175,7 +232,11 @@ fn physical_window_rect(window: HWND) -> Result<RECT, VisibleWindowCaptureError>
             std::mem::size_of::<RECT>() as u32,
         )
     }
-    .map_err(|error| capture_error(format!("read exact physical DWM frame bounds: {error}")))?;
+    .map_err(|error| {
+        let mut failure = capture_error(format!("read exact physical DWM frame bounds: {error}"));
+        failure.diagnostic.os_error = Some(error.code().0);
+        failure
+    })?;
     Ok(rect)
 }
 
@@ -195,43 +256,132 @@ unsafe fn root_or_self(window: HWND) -> HWND {
     if root.0.is_null() { window } else { root }
 }
 
+pub(crate) fn root_z_order_proof(
+    target_window_handle: u64,
+    target_bounds: [i32; 4],
+    roots: &[(u64, [i32; 4], bool)],
+) -> Result<(), VisibleWindowCaptureError> {
+    for &(window_handle, bounds, visible) in roots {
+        if window_handle == target_window_handle {
+            if !visible {
+                return Err(proof_error(
+                    VisibleWindowCaptureReason::TargetNotVisible,
+                    "the exact target is not composited on the visible desktop",
+                ));
+            }
+            return if bounds == target_bounds {
+                Ok(())
+            } else {
+                Err(proof_error(
+                    VisibleWindowCaptureReason::TargetBoundsChanged,
+                    "the exact target bounds changed during root-window enumeration",
+                ))
+            };
+        }
+        if visible && rectangles_intersect(bounds, target_bounds) {
+            let mut error = proof_error(
+                VisibleWindowCaptureReason::RootOverlap,
+                "a higher composited root window overlaps the exact target",
+            );
+            error.diagnostic.blocker_window_handle = Some(window_handle);
+            error.diagnostic.blocker_bounds = Some(bounds);
+            error.diagnostic.cloaked = Some(0);
+            return Err(error);
+        }
+    }
+    Err(proof_error(
+        VisibleWindowCaptureReason::TargetNotReached,
+        "the exact target was not reached in the complete root-window z-order",
+    ))
+}
+
+#[cfg(test)]
 pub(crate) fn root_z_order_proves_unobscured(
     target_window_handle: u64,
     target_bounds: [i32; 4],
     roots: &[(u64, [i32; 4], bool)],
 ) -> bool {
-    for &(window_handle, bounds, visible) in roots {
-        if window_handle == target_window_handle {
-            return visible && bounds == target_bounds;
-        }
-        if visible && rectangles_intersect(bounds, target_bounds) {
-            return false;
+    root_z_order_proof(target_window_handle, target_bounds, roots).is_ok()
+}
+
+pub(crate) fn root_is_composited(
+    visible: bool,
+    read_cloaked: impl FnOnce() -> Result<u32, i32>,
+) -> Result<bool, VisibleWindowCaptureError> {
+    if !visible {
+        return Ok(false);
+    }
+    match read_cloaked() {
+        // A successfully measured cloaked window contributes no desktop pixels.
+        // Neither process identity nor transparent/no-activate styles prove this.
+        Ok(cloaked) => Ok(cloaked == 0),
+        Err(code) => {
+            let mut error = proof_error(
+                VisibleWindowCaptureReason::RootCloakingUnavailable,
+                "DWM could not prove whether a visible root is cloaked",
+            );
+            error.diagnostic.os_error = Some(code);
+            Err(error)
         }
     }
-    false
 }
 
 #[derive(Default)]
 struct RootZOrderEnumeration {
     target_window_handle: u64,
     roots: Vec<(u64, [i32; 4], bool)>,
-    failed: bool,
+    failure: Option<VisibleWindowCaptureError>,
 }
 
 unsafe extern "system" fn collect_root_z_order(window: HWND, context: LPARAM) -> BOOL {
     let enumeration = unsafe { &mut *(context.0 as *mut RootZOrderEnumeration) };
     if enumeration.roots.len() >= MAX_ROOT_WINDOWS {
-        enumeration.failed = true;
+        enumeration.failure = Some(proof_error(
+            VisibleWindowCaptureReason::RootEnumerationIncomplete,
+            "the bounded root-window enumeration did not reach the exact target",
+        ));
         return BOOL(0);
     }
     let visible = unsafe { IsWindowVisible(window) }.as_bool();
     let window_handle = window.0 as usize as u64;
-    let Some(entry) = root_z_order_entry(window_handle, visible, || {
-        let rect = physical_window_rect(window).ok()?;
-        physical_root_bounds(rect)
-    }) else {
-        enumeration.failed = true;
-        return BOOL(0);
+    let measured = (|| {
+        let composited = root_is_composited(visible, || {
+            let mut cloaked = 0_u32;
+            unsafe {
+                DwmGetWindowAttribute(
+                    window,
+                    DWMWA_CLOAKED,
+                    (&raw mut cloaked).cast(),
+                    std::mem::size_of::<u32>() as u32,
+                )
+            }
+            .map(|()| cloaked)
+            .map_err(|error| error.code().0)
+        })?;
+        if !composited {
+            return Ok((window_handle, [0; 4], false));
+        }
+        let rect = physical_window_rect(window).map_err(|mut error| {
+            error.diagnostic.reason = VisibleWindowCaptureReason::RootBoundsUnavailable;
+            error
+        })?;
+        root_z_order_entry(window_handle, true, || physical_root_bounds(rect)).ok_or_else(|| {
+            proof_error(
+                VisibleWindowCaptureReason::RootBoundsInvalid,
+                "a composited root has empty, inverted, or overflowing physical bounds",
+            )
+        })
+    })();
+    let entry = match measured {
+        Ok(entry) => entry,
+        Err(mut error) => {
+            let mut process_id = 0;
+            unsafe { GetWindowThreadProcessId(window, Some(&mut process_id)) };
+            error.diagnostic.blocker_window_handle = Some(window_handle);
+            error.diagnostic.blocker_process_id = (process_id != 0).then_some(process_id);
+            enumeration.failure = Some(error);
+            return BOOL(0);
+        }
     };
     enumeration.roots.push(entry);
     if window_handle == enumeration.target_window_handle {
@@ -256,7 +406,10 @@ where
     (bounds[2] > 0 && bounds[3] > 0).then_some((window_handle, bounds, true))
 }
 
-unsafe fn target_is_unobscured(target: HWND, rect: RECT) -> bool {
+unsafe fn prove_target_unobscured(
+    target: HWND,
+    rect: RECT,
+) -> Result<(), VisibleWindowCaptureError> {
     let target_root = unsafe { root_or_self(target) };
     let target_window_handle = target_root.0 as usize as u64;
     let mut enumeration = RootZOrderEnumeration {
@@ -269,35 +422,71 @@ unsafe fn target_is_unobscured(target: HWND, rect: RECT) -> bool {
             LPARAM(&mut enumeration as *mut RootZOrderEnumeration as isize),
         )
     };
-    if enumeration.failed {
-        return false;
-    }
     let target_was_reached = enumeration
         .roots
         .last()
         .is_some_and(|(window_handle, _, _)| *window_handle == target_window_handle);
-    if result.is_err() && !target_was_reached {
-        return false;
-    }
-    root_z_order_proves_unobscured(
-        target_window_handle,
-        [
-            rect.left,
-            rect.top,
-            rect.right - rect.left,
-            rect.bottom - rect.top,
-        ],
-        &enumeration.roots,
-    )
+    let proof = if let Some(error) = enumeration.failure {
+        Err(error)
+    } else if let Err(error) = result
+        && !target_was_reached
+    {
+        let mut failure = proof_error(
+            VisibleWindowCaptureReason::RootEnumerationIncomplete,
+            "Windows could not enumerate the complete root-window z-order",
+        );
+        failure.diagnostic.os_error = Some(error.code().0);
+        Err(failure)
+    } else {
+        root_z_order_proof(
+            target_window_handle,
+            [
+                rect.left,
+                rect.top,
+                rect.right - rect.left,
+                rect.bottom - rect.top,
+            ],
+            &enumeration.roots,
+        )
+    };
+    proof.map_err(|mut error| {
+        error.diagnostic.target_bounds = physical_root_bounds(rect);
+        if let Some(blocker) = error.diagnostic.blocker_window_handle {
+            let mut process_id = 0;
+            unsafe {
+                GetWindowThreadProcessId(HWND(blocker as usize as *mut _), Some(&mut process_id))
+            };
+            error.diagnostic.blocker_process_id = (process_id != 0).then_some(process_id);
+        }
+        error
+    })
+}
+
+unsafe fn target_is_unobscured(target: HWND, rect: RECT) -> bool {
+    unsafe { prove_target_unobscured(target, rect) }.is_ok()
 }
 
 pub(crate) fn physical_capture_rect(physical: RECT) -> Result<RECT, VisibleWindowCaptureError> {
     if !physical_root_bounds(physical).is_some_and(|bounds| bounds[2] > 4 && bounds[3] > 4) {
-        return Err(capture_error(
+        return Err(proof_error(
+            VisibleWindowCaptureReason::TargetBoundsInvalid,
             "the exact HWND physical desktop rectangle is invalid",
         ));
     }
     Ok(physical)
+}
+
+pub(crate) fn physical_rectangle_within_desktop(target: [i32; 4], desktop: [i32; 4]) -> bool {
+    target[2] > 0
+        && target[3] > 0
+        && desktop[2] > 0
+        && desktop[3] > 0
+        && target[0] >= desktop[0]
+        && target[1] >= desktop[1]
+        && i64::from(target[0]) + i64::from(target[2])
+            <= i64::from(desktop[0]) + i64::from(desktop[2])
+        && i64::from(target[1]) + i64::from(target[3])
+            <= i64::from(desktop[1]) + i64::from(desktop[3])
 }
 
 /// Snapshot the native evidence used to fence one exact-window pixel frame.
@@ -312,7 +501,10 @@ pub fn exact_window_pixel_evidence(
         .map_err(|error| capture_error(format!("convert window handle: {error}")))?;
     let hwnd = HWND(raw as *mut _);
     if hwnd.0.is_null() || !unsafe { IsWindow(hwnd) }.as_bool() {
-        return Err(capture_error("the exact HWND no longer exists"));
+        return Err(proof_error(
+            VisibleWindowCaptureReason::TargetUnavailable,
+            "the exact HWND no longer exists",
+        ));
     }
     let mut rect = RECT::default();
     unsafe { GetWindowRect(hwnd, &mut rect) }
@@ -320,9 +512,10 @@ pub fn exact_window_pixel_evidence(
     let width = rect.right - rect.left;
     let height = rect.bottom - rect.top;
     if width <= 4 || height <= 4 {
-        return Err(capture_error(format!(
-            "the exact HWND has invalid bounds {width}x{height}"
-        )));
+        return Err(proof_error(
+            VisibleWindowCaptureReason::TargetBoundsInvalid,
+            format!("the exact HWND has invalid bounds {width}x{height}"),
+        ));
     }
     validate_exact_window_owner(process_id, window_handle)
         .map_err(|error| capture_error(error.to_string()))?;
@@ -365,25 +558,51 @@ pub fn capture_visible_window(
         .map_err(|error| capture_error(format!("convert window handle: {error}")))?;
     let hwnd = HWND(raw as *mut _);
     if hwnd.0.is_null() || !unsafe { IsWindow(hwnd) }.as_bool() {
-        return Err(capture_error("the exact HWND no longer exists"));
+        return Err(proof_error(
+            VisibleWindowCaptureReason::TargetUnavailable,
+            "the exact HWND no longer exists",
+        ));
     }
     if unsafe { IsIconic(hwnd) }.as_bool() {
-        return Err(capture_error("the exact HWND is minimized"));
+        return Err(proof_error(
+            VisibleWindowCaptureReason::TargetMinimized,
+            "the exact HWND is minimized",
+        ));
+    }
+    if !unsafe { IsWindowVisible(hwnd) }.as_bool() {
+        return Err(proof_error(
+            VisibleWindowCaptureReason::TargetNotVisible,
+            "the exact HWND is hidden",
+        ));
     }
 
     let rect = physical_capture_rect(physical_window_rect(hwnd)?)?;
     let width = rect.right - rect.left;
     let height = rect.bottom - rect.top;
     if width <= 4 || height <= 4 {
-        return Err(capture_error(format!(
-            "the exact HWND has invalid bounds {width}x{height}"
-        )));
-    }
-    if !unsafe { target_is_unobscured(hwnd, rect) } {
-        return Err(capture_error(
-            "the exact HWND rectangle is covered or its complete root-window z-order could not be proven",
+        return Err(proof_error(
+            VisibleWindowCaptureReason::TargetBoundsInvalid,
+            format!("the exact HWND has invalid bounds {width}x{height}"),
         ));
     }
+    let bounds = [rect.left, rect.top, width, height];
+    let desktop = unsafe {
+        [
+            GetSystemMetrics(SM_XVIRTUALSCREEN),
+            GetSystemMetrics(SM_YVIRTUALSCREEN),
+            GetSystemMetrics(SM_CXVIRTUALSCREEN),
+            GetSystemMetrics(SM_CYVIRTUALSCREEN),
+        ]
+    };
+    if !physical_rectangle_within_desktop(bounds, desktop) {
+        let mut error = proof_error(
+            VisibleWindowCaptureReason::TargetOutsideDesktop,
+            "the complete exact HWND rectangle is not inside the physical virtual desktop",
+        );
+        error.diagnostic.target_bounds = Some(bounds);
+        return Err(error);
+    }
+    unsafe { prove_target_unobscured(hwnd, rect) }?;
 
     // DWM extended-frame bounds are physical desktop pixels and are not
     // virtualized for the caller's or target's DPI-awareness context. The

@@ -19,7 +19,9 @@ use super::{
 };
 #[cfg(windows)]
 use crate::visible_capture::{
-    physical_capture_rect, physical_root_bounds, root_z_order_entry, root_z_order_proves_unobscured,
+    VisibleWindowCaptureReason, physical_capture_rect, physical_rectangle_within_desktop,
+    physical_root_bounds, root_is_composited, root_z_order_entry, root_z_order_proof,
+    root_z_order_proves_unobscured,
 };
 #[cfg(windows)]
 use crate::windows::{
@@ -345,6 +347,95 @@ fn invisible_roots_do_not_require_compositor_bounds_for_z_order_proof() {
     assert_eq!(entry, Some((91, [0; 4], false)));
 
     assert!(root_z_order_entry(92, true, || None).is_none());
+}
+
+#[cfg(windows)]
+#[rstest]
+#[case(1)]
+#[case(2)]
+#[case(4)]
+#[case(7)]
+fn exact_capture_proof_excludes_only_successfully_measured_cloaked_roots(#[case] cloaked: u32) {
+    assert!(!root_is_composited(true, || Ok(cloaked)).unwrap());
+    assert!(root_is_composited(true, || Ok(0)).unwrap());
+    assert!(!root_is_composited(false, || panic!("hidden roots need no DWM query")).unwrap());
+}
+
+#[cfg(windows)]
+#[rstest]
+fn exact_capture_proof_cloaking_failure_keeps_numeric_failure_and_refuses() {
+    let error = root_is_composited(true, || Err(-2_147_024_891)).unwrap_err();
+    assert_eq!(
+        error.diagnostic.reason,
+        VisibleWindowCaptureReason::RootCloakingUnavailable
+    );
+    assert_eq!(error.diagnostic.os_error, Some(-2_147_024_891));
+}
+
+#[cfg(windows)]
+#[rstest]
+fn exact_capture_proof_reports_the_first_actual_overlap_without_titles() {
+    let error = root_z_order_proof(
+        77,
+        [0, 0, 100, 100],
+        &[
+            (90, [0; 4], false), // successfully cloaked/hidden, no desktop contribution
+            (91, [1, 1, 1, 1], true),
+            (92, [1, 1, 20, 20], true),
+            (77, [0, 0, 100, 100], true),
+        ],
+    )
+    .unwrap_err();
+    assert_eq!(
+        error.diagnostic.reason,
+        VisibleWindowCaptureReason::RootOverlap
+    );
+    assert_eq!(error.diagnostic.blocker_window_handle, Some(91));
+    assert_eq!(error.diagnostic.blocker_bounds, Some([1, 1, 1, 1]));
+    assert_eq!(error.diagnostic.cloaked, Some(0));
+    // The proof has no PID/name shortcut: same-process and internal overlays
+    // remain blockers unless a successful exclusion made them non-composited.
+}
+
+#[cfg(windows)]
+#[rstest]
+fn exact_capture_proof_distinguishes_target_missing_hidden_and_geometry_drift() {
+    for (roots, reason) in [
+        (vec![], VisibleWindowCaptureReason::TargetNotReached),
+        (
+            vec![(77, [0; 4], false)],
+            VisibleWindowCaptureReason::TargetNotVisible,
+        ),
+        (
+            vec![(77, [0, 0, 99, 100], true)],
+            VisibleWindowCaptureReason::TargetBoundsChanged,
+        ),
+    ] {
+        assert_eq!(
+            root_z_order_proof(77, [0, 0, 100, 100], &roots)
+                .unwrap_err()
+                .diagnostic
+                .reason,
+            reason
+        );
+    }
+}
+
+#[cfg(windows)]
+#[rstest]
+#[case([0, 0, 3840, 2400], [0, 0, 3840, 2400], true)]
+#[case([662, 382, 2515, 1515], [0, 0, 3840, 2400], true)]
+#[case([0, 0, 3975, 2555], [0, 0, 3840, 2400], false)]
+#[case([1661, 348, 2515, 1515], [0, 0, 3840, 2400], false)]
+#[case([-100, 0, 100, 100], [0, 0, 3840, 2400], false)]
+#[case([-1920, -1080, 1920, 1080], [-1920, -1080, 5760, 3480], true)]
+#[case([0, 0, 100, 100], [0, 0, 0, 0], false)]
+fn exact_capture_proof_requires_the_whole_crop_inside_the_physical_desktop(
+    #[case] target: [i32; 4],
+    #[case] desktop: [i32; 4],
+    #[case] accepted: bool,
+) {
+    assert_eq!(physical_rectangle_within_desktop(target, desktop), accepted);
 }
 
 #[cfg(windows)]

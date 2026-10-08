@@ -35,10 +35,29 @@ enum ComputerUseErrorCode {
 #[derive(Debug)]
 struct ComputerUseError {
     code: ComputerUseErrorCode,
+    message: String,
+    details: Option<ComputerUseErrorDetails>,
+}
+#[derive(Debug, Default)]
+struct ComputerUseErrorDetails {
+    capture: Option<ComputerUseCaptureDiagnostic>,
+    phase: Option<ComputerUseErrorPhase>,
+}
+#[derive(Debug)]
+enum ComputerUseErrorPhase {
+    EvidenceDispatch,
 }
 impl ComputerUseError {
-    fn new(code: ComputerUseErrorCode, _: impl Into<String>) -> Self {
-        Self { code }
+    fn new(code: ComputerUseErrorCode, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+            details: None,
+        }
+    }
+    fn with_details(mut self, details: ComputerUseErrorDetails) -> Self {
+        self.details = Some(details);
+        self
     }
 }
 type ComputerUseResult<T> = Result<T, ComputerUseError>;
