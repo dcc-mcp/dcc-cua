@@ -60,6 +60,15 @@ impl TrustedTaskAuthorizationBrowserScope {
 }
 
 impl TrustedTaskActionScope {
+    /// Closed authorization for the observation-bound native minimize method.
+    pub fn is_window_minimize(&self) -> bool {
+        self.action == "minimize_window"
+            && self.input_kind == "window_state"
+            && !self.secret_input
+            && self.authorization_category == "window_state"
+            && self.browser_origin.is_none()
+    }
+
     /// Final window-input action names accepted by trusted task authorization.
     ///
     /// These are action identities, not Host method names such as `browser_click`.
@@ -97,6 +106,7 @@ impl TrustedTaskActionScope {
 
     pub(crate) fn validate(&self) -> bool {
         match self.input_kind.as_str() {
+            "window_state" => self.is_window_minimize(),
             "browser" => {
                 self.action == "browser_type"
                     && self.secret_input

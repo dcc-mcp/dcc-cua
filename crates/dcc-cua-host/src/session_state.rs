@@ -46,6 +46,7 @@ pub(super) struct HostSession {
     pub(super) target_process_id: u32,
     pub(super) target_window_handle: u64,
     pub(super) task_grant_id: String,
+    pub(super) observation_mode: crate::TaskObservationMode,
     pub(super) allow_raw_input: bool,
     pub(super) allow_app_terminate: bool,
     pub(super) allow_clipboard_read: bool,
@@ -105,6 +106,62 @@ pub(super) fn task_authorization_response(
 }
 
 impl HostSession {
+    pub(super) fn require_minimize_grant(&self, session_id: &str) -> Result<(), crate::HostError> {
+        if !self.task_authorization.as_ref().is_some_and(|lease| {
+            lease.session_id == session_id
+                && lease.task_grant_id == self.task_grant_id
+                && lease.window_capability == self.capability
+                && lease.target_process_id == self.target_process_id
+                && lease.target_window_handle == self.target_window_handle
+                && lease
+                    .allowed_host_methods
+                    .iter()
+                    .any(|method| method == "minimize_window")
+                && lease
+                    .allowed_actions
+                    .iter()
+                    .any(crate::TrustedTaskActionScope::is_window_minimize)
+        }) {
+            return Err(crate::HostError::coded_protocol(
+                crate::HostProtocolErrorCode::TaskAuthorizationDenied,
+                "minimize_window requires the trusted window_state/minimize_window action scope",
+            ));
+        }
+        Ok(())
+    }
+
+    pub(super) fn require_latest_observation(
+        &self,
+        observation_id: &str,
+    ) -> Result<(), crate::HostError> {
+        if observation_id.is_empty()
+            || self.latest_observation_id.as_deref() != Some(observation_id)
+        {
+            return Err(crate::HostError::ComputerUse(
+                dcc_cua_core::ComputerUseError::new(
+                    ComputerUseErrorCode::StaleObservation,
+                    "observation_id does not match the latest host snapshot",
+                ),
+            ));
+        }
+        Ok(())
+    }
+
+    pub(super) fn record_snapshot_observation(
+        &mut self,
+        observation_id: String,
+        accessibility: &Value,
+    ) {
+        self.latest_observation_id = Some(observation_id.clone());
+        if self.observation_mode == crate::TaskObservationMode::PixelsOnly {
+            self.latest_accessibility_state_id = None;
+            self.latest_accessibility_root = None;
+        } else {
+            self.latest_accessibility_state_id = Some(observation_id);
+            self.latest_accessibility_root = Some(accessibility.clone());
+        }
+    }
+
     pub(super) fn require_task_authorized_method(
         &self,
         method: &str,

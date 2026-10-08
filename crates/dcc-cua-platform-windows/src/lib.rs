@@ -10,6 +10,8 @@ mod capture_identity;
 mod capture_proof;
 mod contracts;
 #[cfg(windows)]
+mod exact_window_state;
+#[cfg(windows)]
 mod input;
 #[cfg(any(windows, test))]
 mod snapshot;
@@ -32,6 +34,11 @@ pub use capture_identity::{
 };
 #[cfg(windows)]
 pub use capture_proof::{NativeCaptureProof, native_capture_proof};
+#[cfg(windows)]
+pub use exact_window_state::{
+    ExactWindowMinimizeError, ExactWindowNativeState, exact_window_native_state,
+    minimize_exact_window,
+};
 #[cfg(windows)]
 pub use input::{
     RelativeMoveInjection, WindowsForegroundClickError, WindowsForegroundClickOutcome,

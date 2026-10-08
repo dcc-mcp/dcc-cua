@@ -1,4 +1,4 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use dcc_cua_core::ComputerUseOwnedBrowserLaunchSpec;
 
@@ -7,11 +7,39 @@ use super::HostError;
 pub const MAX_APPLICATION_LABEL_CHARS: usize = 80;
 pub const MAX_TASK_GRANT_ID_CHARS: usize = 128;
 
+/// An explicit observation contract; semantic sessions never silently downgrade.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskObservationMode {
+    #[default]
+    Semantic,
+    PixelsOnly,
+}
+
+impl TaskObservationMode {
+    pub fn permits_method(self, method: &str) -> bool {
+        self == Self::Semantic
+            || matches!(
+                method,
+                "get_window_state"
+                    | "change_window_state"
+                    | "minimize_window"
+                    | "snapshot"
+                    | "get_session_state"
+                    | "get_input_state"
+                    | "session_health"
+                    | "poll_session_events"
+            )
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct TaskGrant {
     pub(super) task_grant_id: String,
     pub(super) application_label: String,
+    #[serde(default)]
+    pub(super) observation_mode: TaskObservationMode,
     #[serde(default)]
     pub(super) process_id: Option<u32>,
     #[serde(default)]
@@ -70,6 +98,16 @@ impl TaskGrant {
             MAX_APPLICATION_LABEL_CHARS,
             "application_label",
         )?;
+        if self.observation_mode == TaskObservationMode::PixelsOnly
+            && (!matches!(self.process_id, Some(pid) if pid != 0)
+                || !matches!(self.window_handle, Some(hwnd) if hwnd != 0)
+                || self.window_title.is_some()
+                || self.owned_browser_launch.is_some())
+        {
+            return Err(HostError::Protocol(
+                "pixels_only requires an exact nonzero process_id/window_handle without a title or owned browser launch".into(),
+            ));
+        }
         if let Some(authorization_id) = self.task_authorization_id.as_deref() {
             crate::task_authorization::validate_authorization_id(authorization_id)?;
         }
@@ -135,6 +173,11 @@ impl TaskGrant {
     }
 
     pub(super) fn reject_task_authorization(&self, route: &str) -> Result<(), HostError> {
+        if self.observation_mode == TaskObservationMode::PixelsOnly {
+            return Err(HostError::Protocol(format!(
+                "pixels_only cannot authorize the global {route} route",
+            )));
+        }
         if self.task_authorization_id.is_some() {
             return Err(HostError::coded_protocol(
                 crate::HostProtocolErrorCode::TaskAuthorizationDenied,

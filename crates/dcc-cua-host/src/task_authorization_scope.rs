@@ -129,6 +129,7 @@ pub(crate) fn is_task_authorizable_host_method(method: &str) -> bool {
             | "live_observation_stop"
             | "get_window_state"
             | "change_window_state"
+            | "minimize_window"
             | "set_window_frame"
             | "invoke_menu"
             | "snapshot"
@@ -174,6 +175,11 @@ pub(crate) fn enforce_task_authorized_method(
         window_capability,
     )?;
     host.require_task_authorized_method(method)?;
+    if !host.observation_mode.permits_method(method) {
+        return Err(browser_scope_denied(
+            "Host method requires semantic observation and is unavailable in pixels_only sessions",
+        ));
+    }
     enforce_task_authorized_browser_scope(host, request)
 }
 
@@ -272,6 +278,7 @@ fn enforce_task_authorized_browser_scope(
         | Request::OpenSession { .. }
         | Request::GetWindowState { .. }
         | Request::ChangeWindowState { .. }
+        | Request::MinimizeWindow { .. }
         | Request::SetWindowFrame { .. }
         | Request::InvokeMenu { .. }
         | Request::Snapshot { .. }
@@ -428,6 +435,17 @@ impl Request {
                 task_grant_id,
                 window_capability,
                 "change_window_state",
+            ),
+            Self::MinimizeWindow {
+                session_id,
+                task_grant_id,
+                window_capability,
+                ..
+            } => (
+                session_id,
+                task_grant_id,
+                window_capability,
+                "minimize_window",
             ),
             Self::SetWindowFrame {
                 session_id,

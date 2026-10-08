@@ -311,6 +311,31 @@ fn counting_session_with_envelope(
     (session, calls, names)
 }
 
+#[cfg(all(windows, feature = "test-support"))]
+#[rstest]
+#[tokio::test]
+async fn exact_minimize_synthetic_fixture_cannot_dispatch_native_mutations() {
+    let (mut session, calls) = counting_session();
+    session.synthetic_test_session = true;
+    let observation = session.observation.as_mut().unwrap();
+    observation.capture_backend = "dcc-cua-wgc-exact-window".into();
+    observation.capture_provenance = json!({"process_id":42,"window_handle":77,
+        "pixels_captured":true,"whole_desktop_capture":false,"scope":"window",
+        "capture_generation":1,"window_dpi":240,
+        "native_instance":{"process_creation_time_100ns":7,"window_thread_id":8,
+            "window_class_hash":9,"owner_window_handle":0}});
+    let observed_id = observation.observation_id.clone();
+    let error = session.minimize_window(&observed_id).await.unwrap_err();
+    assert_eq!(error.code, ComputerUseErrorCode::BackendUnavailable);
+    assert!(error.message.contains("synthetic test sessions"));
+    assert_eq!(calls.load(AtomicOrdering::SeqCst), 0);
+    let state = session.window_state().await.unwrap();
+    assert_eq!(state["process_id"], 42);
+    assert_eq!(state["window_handle"], 77);
+    assert_eq!(state["minimized"], false);
+    assert_eq!(calls.load(AtomicOrdering::SeqCst), 0);
+}
+
 #[rstest]
 #[tokio::test]
 async fn session_health_probe_components_never_activate_or_send_input() {

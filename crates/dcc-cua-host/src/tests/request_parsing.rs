@@ -3,6 +3,47 @@ use rstest::rstest;
 use super::*;
 
 #[rstest]
+fn minimize_is_a_separate_observation_bound_method() {
+    let mut request = json!({"method":"minimize_window", "params":{
+        "session_id":"session-1", "task_grant_id":"grant-1",
+        "window_capability":"cap-1", "observation_id":"obs-1"
+    }});
+    let parsed: Request = serde_json::from_value(request.clone()).unwrap();
+    assert!(
+        matches!(parsed, Request::MinimizeWindow { observation_id, .. } if observation_id == "obs-1")
+    );
+    request["params"]
+        .as_object_mut()
+        .unwrap()
+        .remove("observation_id");
+    assert!(serde_json::from_value::<Request>(request).is_err());
+    assert!(serde_json::from_value::<WindowOperation>(json!("minimize")).is_err());
+}
+
+#[rstest]
+fn observation_mode_defaults_to_semantic_and_pixels_only_requires_exact_window() {
+    let mut grant = json!({"task_grant_id":"grant-1", "application_label":"Test DCC"});
+    let parsed: TaskGrant = serde_json::from_value(grant.clone()).unwrap();
+    assert_eq!(parsed.observation_mode, TaskObservationMode::Semantic);
+    grant["observation_mode"] = json!("pixels_only");
+    let parsed: TaskGrant = serde_json::from_value(grant.clone()).unwrap();
+    assert!(parsed.validate_identity().is_err());
+    grant["process_id"] = json!(42);
+    grant["window_handle"] = json!(7);
+    let parsed: TaskGrant = serde_json::from_value(grant.clone()).unwrap();
+    parsed.validate_identity().unwrap();
+    grant["window_title"] = json!("another window");
+    assert!(
+        serde_json::from_value::<TaskGrant>(grant.clone())
+            .unwrap()
+            .validate_identity()
+            .is_err()
+    );
+    grant["observation_mode"] = json!("automatic_fallback");
+    assert!(serde_json::from_value::<TaskGrant>(grant).is_err());
+}
+
+#[rstest]
 fn session_health_policy_is_optional_for_older_clients() {
     let request = serde_json::from_value::<Request>(json!({
         "method": "session_health",

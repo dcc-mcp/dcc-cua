@@ -1550,6 +1550,30 @@ impl ComputerUseSession {
     /// Revalidate and return the current exact-window state.
     pub async fn window_state(&mut self) -> ComputerUseResult<Value> {
         self.ensure_active()?;
+        #[cfg(all(windows, feature = "test-support"))]
+        let use_native_state = !self.synthetic_test_session;
+        #[cfg(all(windows, not(feature = "test-support")))]
+        let use_native_state = true;
+        #[cfg(windows)]
+        if use_native_state && self.scope.process_id.is_some() && self.scope.window_handle.is_some()
+        {
+            let target = self.revalidate_observed_target().await?;
+            let state =
+                dcc_cua_platform_windows::exact_window_native_state(target.pid, target.window_id)
+                    .map_err(|error| {
+                        map_windows_window_mutation_error("read exact native window state", error)
+                    });
+            let state = self.finish_observation_sensitive_attempt(state)?;
+            if state.minimized || !state.visible {
+                self.invalidate_action_observations();
+            }
+            return Ok(json!({
+                "process_id":state.process_id,"window_handle":state.window_handle,"exists":true,
+                "visible":state.visible && !state.minimized,"minimized":state.minimized,
+                "foreground":state.foreground,"bounds":state.bounds,"dpi":state.dpi,
+                "native_instance":state.instance,"backend":"windows-exact-native-state",
+            }));
+        }
         let target = self.revalidate_observed_target().await?;
         if target.is_minimized || !target.is_on_screen {
             self.invalidate_action_observations();

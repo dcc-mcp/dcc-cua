@@ -80,6 +80,50 @@ also accepts `activate`, which does not restore a minimized window; it rejects
 `close` and other window state operations. An unavailable interactive desktop
 still blocks activation and input. Repair that environment before retrying.
 
+## Explicit pixels-only observation
+
+`observation_mode` defaults to `semantic`. To observe an exact native window
+without starting UIA, explicitly select `pixels_only` on the `window` surface:
+
+```json
+{
+  "application_label": "Exact native window",
+  "target_process_id": 1234,
+  "target_window_handle": 5678,
+  "surface": "window",
+  "observation_mode": "pixels_only",
+  "allowed_methods": ["snapshot", "get_window_state", "minimize_window"],
+  "allowed_actions": [{
+    "action": "minimize_window",
+    "input_kind": "window_state",
+    "secret_input": false,
+    "authorization_category": "window_state"
+  }]
+}
+```
+
+After reporting the returned provider/runtime/PID/HWND, call `snapshot` with
+`params: {}`. Exact-window capture proof, geometry, DPI, visibility, occlusion,
+and native instance checks still apply. A minimized or unproven capture fails;
+window metadata cannot substitute for a screenshot. A successful pixel snapshot
+returns a formal `observation_id`, `accessibility_available=false`, and no
+`accessibility_state_id` or semantic element authorization.
+
+This initial pixel contract permits observation and native state reads plus the
+explicit minimize operation. It does **not** permit `execute_action`, raw clicks,
+keypresses, semantic selectors, browser methods, or recording. It retains the
+existing separately authorized `change_window_state` activate/restore route;
+pixel startup and pixel snapshots never implicitly activate a window.
+
+To minimize, call `dcc_cua_task_call` with `method: "minimize_window"` and
+`params: {"observation_id": "<latest snapshot observation_id>"}`. The retained
+task must grant both the method and the exact `window_state/minimize_window`
+action scope. Host and Core check the latest observation and the actual captured
+native window instance before dispatch. The result reports native minimized
+state; an attempted mutation consumes the old observation even when its outcome
+is uncertain. Do not retry with that observation ID. `stop_task` releases this
+task without closing or terminating the application.
+
 Account verification, CAPTCHA/2FA, agreements, payments, and final irreversible
 publication remain separate human boundaries. Removing the duplicated DCC-CUA
 authorization card does not automate those external account/security decisions.

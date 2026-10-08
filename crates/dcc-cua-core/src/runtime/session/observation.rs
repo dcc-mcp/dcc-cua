@@ -643,6 +643,7 @@ impl ComputerUseSession {
         {
             capture_provenance["capture_generation"] = json!(final_capture.generation);
             capture_provenance["window_dpi"] = json!(final_capture.dpi);
+            capture_provenance["native_instance"] = json!(final_capture.native_evidence.instance);
             if final_capture.mode == ExactWindowPixelCaptureMode::VisibleDesktopCrop {
                 capture_provenance["desktop_crop_bounds"] = json!(final_capture.source_rect);
             }
@@ -761,6 +762,7 @@ impl ComputerUseSession {
             final_capture.backend,
         );
         provenance["fallback"] = json!(final_capture.fallback);
+        provenance["native_instance"] = json!(final_capture.native_evidence.instance);
         if final_capture.mode == ExactWindowPixelCaptureMode::VisibleDesktopCrop {
             provenance["desktop_crop_bounds"] = json!(final_capture.source_rect);
         }

@@ -39,6 +39,110 @@ fn task_window_state_operations_remain_bounded(#[case] params: Value, #[case] al
     );
 }
 
+fn pixels_task() -> Value {
+    json!({
+        "application_label":"Exact DCC pixels", "target_process_id":42,
+        "target_window_handle":7, "surface":"window", "observation_mode":"pixels_only",
+        "allowed_methods":["snapshot", "minimize_window"],
+        "allowed_actions":[{"action":"minimize_window", "input_kind":"window_state",
+            "secret_input":false, "authorization_category":"window_state"}]
+    })
+}
+
+#[rstest]
+fn explicit_pixel_mode_survives_public_proposal_and_host_grant() {
+    let mut server = test_server();
+    let prepared = server.prepare_task(pixels_task()).unwrap();
+    assert_eq!(prepared["observation_mode"], "pixels_only");
+    let proposal = server
+        .proposals
+        .get(prepared["task_id"].as_str().unwrap())
+        .unwrap();
+    let grant = task_session_grant(proposal, proposal.receipt.as_ref().unwrap());
+    assert_eq!(grant["observation_mode"], "pixels_only");
+    assert_eq!(grant["process_id"], 42);
+    assert_eq!(grant["window_handle"], 7);
+    assert_eq!(grant["allow_browser_input"], false);
+    assert_eq!(grant["allow_raw_input"], false);
+    assert_eq!(
+        proposal.registration.allowed_host_methods,
+        vec!["snapshot", "minimize_window"]
+    );
+    let semantic = server.prepare_task(browser_task()).unwrap();
+    assert_eq!(semantic["observation_mode"], "semantic");
+}
+
+#[rstest]
+#[case("observation_mode", json!("fallback"))]
+#[case("surface", json!("browser"))]
+#[case("target_window_handle", Value::Null)]
+#[case("target_process_id", json!(0))]
+#[case("allowed_methods", json!(["accessibility_snapshot"]))]
+#[case("allowed_methods", json!(["find"]))]
+#[case("allowed_methods", json!(["execute_action"]))]
+#[case("allowed_actions", json!([{"action":"click", "input_kind":"raw_input", "secret_input":false, "authorization_category":"raw_input"}]))]
+#[case("allowed_actions", json!([{"action":"click", "input_kind":"semantic", "secret_input":false, "authorization_category":"content_change"}]))]
+fn public_pixels_mode_refuses_ambiguous_or_semantic_grants(
+    #[case] field: &str,
+    #[case] value: Value,
+) {
+    let mut task = pixels_task();
+    task[field] = value;
+    assert!(test_server().prepare_task(task).is_err());
+}
+
+#[rstest]
+#[case(json!({}), false)]
+#[case(json!({"observation_id":""}), false)]
+#[case(json!({"observation_id":7}), false)]
+#[case(json!({"observation_id":"snapshot-1"}), true)]
+fn public_minimize_requires_observation_id(#[case] params: Value, #[case] allowed: bool) {
+    assert_eq!(
+        validate_task_method_params("minimize_window", &params).is_ok(),
+        allowed
+    );
+    assert!(method_allowed(TaskSurface::Window, "minimize_window"));
+}
+
+#[rstest]
+#[tokio::test]
+async fn minimize_cannot_escape_declared_method_scope_or_start_fence() {
+    let mut server = test_server();
+    let mut task = pixels_task();
+    task["allowed_methods"] = json!(["snapshot"]);
+    let prepared = server.prepare_task(task).unwrap();
+    let error = server.task_call(json!({"task_id":prepared["task_id"], "method":"minimize_window", "params":{"observation_id":"obs-1"}})).await.unwrap_err();
+    assert!(error.contains("configured task method scope"), "{error}");
+    let prepared = server.prepare_task(pixels_task()).unwrap();
+    let error = server.task_call(json!({"task_id":prepared["task_id"], "method":"minimize_window", "params":{"observation_id":"obs-1"}})).await.unwrap_err();
+    assert!(error.contains("call start_task"), "{error}");
+}
+
+#[rstest]
+fn public_tool_schema_advertises_explicit_pixels_and_observation_bound_minimize() {
+    let tools = tool_definitions();
+    let start = tools
+        .iter()
+        .find(|tool| tool["name"] == "start_task")
+        .unwrap();
+    assert_eq!(
+        start["inputSchema"]["properties"]["observation_mode"]["default"],
+        "semantic"
+    );
+    assert!(
+        start["inputSchema"]["properties"]["observation_mode"]["enum"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("pixels_only"))
+    );
+    assert!(
+        start["inputSchema"]["properties"]["allowed_methods"]["items"]["enum"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("minimize_window"))
+    );
+}
+
 #[rstest]
 #[tokio::test]
 async fn task_call_rejects_window_close_before_host_dispatch() {
@@ -511,7 +615,7 @@ fn start_task_has_no_confirmation_ui_or_secret_value_fields() {
 fn task_action_schema_matches_the_closed_runtime_contract() {
     let schema = task_action_scope_schema();
     let variants = schema["oneOf"].as_array().unwrap();
-    assert_eq!(variants.len(), 4);
+    assert_eq!(variants.len(), 5);
 
     let variant = |input_kind: &str| {
         variants
@@ -522,6 +626,13 @@ fn task_action_schema_matches_the_closed_runtime_contract() {
             .unwrap()
     };
     let semantic = variant("semantic");
+    let native = variant("window_state");
+    assert_eq!(native["properties"]["action"]["const"], "minimize_window");
+    assert_eq!(native["properties"]["secret_input"]["const"], false);
+    assert_eq!(
+        native["properties"]["authorization_category"]["const"],
+        "window_state"
+    );
     assert_eq!(
         semantic["properties"]["action"]["enum"],
         json!(TrustedTaskActionScope::NATIVE_ACTIONS)

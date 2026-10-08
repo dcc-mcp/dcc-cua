@@ -47,7 +47,16 @@ pub(crate) async fn start_granted_window_session(
         agent_name,
         runtime_session_id,
     )?;
-    let started = session.start_with_request(start_request).await?;
+    let started = if grant.observation_mode == TaskObservationMode::PixelsOnly {
+        if start_request.activate_before {
+            return Err(HostError::Protocol(
+                "pixels_only session startup cannot activate the target".into(),
+            ));
+        }
+        session.start_pixels_only().await?
+    } else {
+        session.start_with_request(start_request).await?
+    };
     Ok((session, started))
 }
 

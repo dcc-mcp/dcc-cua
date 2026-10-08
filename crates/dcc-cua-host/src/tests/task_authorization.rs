@@ -17,6 +17,27 @@ struct TaskAuthorizationHost {
 struct DenyingTaskAuthorizationHost;
 
 #[rstest]
+fn native_minimize_action_scope_is_closed_and_does_not_grant_input() {
+    let scope = json!({"action":"minimize_window", "input_kind":"window_state", "secret_input":false, "authorization_category":"window_state"});
+    let parsed: TrustedTaskActionScope = serde_json::from_value(scope.clone()).unwrap();
+    assert!(parsed.is_window_minimize());
+    assert!(parsed.validate());
+    for (field, value) in [
+        ("action", json!("restore_activate")),
+        ("input_kind", json!("raw_input")),
+        ("secret_input", json!(true)),
+        ("authorization_category", json!("raw_input")),
+        ("browser_origin", json!("https://example.com")),
+    ] {
+        let mut invalid = scope.clone();
+        invalid[field] = value;
+        let invalid: TrustedTaskActionScope = serde_json::from_value(invalid).unwrap();
+        assert!(!invalid.is_window_minimize());
+        assert!(!invalid.validate());
+    }
+}
+
+#[rstest]
 #[case("https://EXAMPLE.com")]
 #[case("https://example.com/")]
 #[case("https://example.com:443")]
@@ -303,6 +324,59 @@ async fn broker_turns_one_trusted_embedding_registration_into_an_exact_no_popup_
 
     assert_eq!(outcome, TaskAuthorizationOutcome::Allowed);
     assert_eq!(lease.allowed_actions.len(), 1);
+}
+
+#[rstest]
+#[tokio::test]
+async fn native_minimize_lease_grants_only_its_exact_window_operation() {
+    let (issuer, authority) = trusted_task_authorization_broker();
+    let mut registration = browser_credential_registration(unix_time_millis() + 60_000);
+    registration.allowed_host_methods = vec!["snapshot".into(), "minimize_window".into()];
+    registration.allowed_actions = vec![
+        serde_json::from_value(json!({
+            "action":"minimize_window", "input_kind":"window_state", "secret_input":false,
+            "authorization_category":"window_state"
+        }))
+        .unwrap(),
+    ];
+    registration.allowed_browser_origins.clear();
+    let receipt = issuer.register(registration).unwrap();
+    let binding = TaskAuthorizationBinding::window(
+        "connection-test",
+        &receipt.authorization_id,
+        "session-1",
+        "grant-1",
+        "Chrome Web Store upload",
+        &receipt.window_capability,
+        ConfirmationWindowIdentity {
+            process_id: 42,
+            window_handle: 7,
+        },
+    );
+    let lease = issue_task_authorization(Some(authority.as_ref()), binding)
+        .await
+        .unwrap();
+    assert_eq!(lease.allowed_actions.len(), 1);
+    assert!(lease.allowed_actions[0].is_window_minimize());
+    let driver = ComputerUseDriver::create().unwrap();
+    let mut host = cached_host_session(&driver);
+    assert!(host.require_minimize_grant("session-1").is_err());
+    host.target_window_handle = 7;
+    host.capability = receipt.window_capability.clone();
+    host.task_authorization = Some(lease);
+    host.require_minimize_grant("session-1").unwrap();
+    assert!(host.require_minimize_grant("other-session").is_err());
+    host.target_window_handle = 77;
+    assert!(host.require_minimize_grant("session-1").is_err());
+    host.target_window_handle = 7;
+    host.require_task_authorized_method("minimize_window")
+        .unwrap();
+    assert!(
+        host.require_task_authorized_method("execute_action")
+            .is_err()
+    );
+    host.task_authorization.as_mut().unwrap().allowed_actions[0].action = "click".into();
+    assert!(host.require_minimize_grant("session-1").is_err());
 }
 
 #[rstest]

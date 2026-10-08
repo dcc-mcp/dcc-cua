@@ -12,8 +12,8 @@ use dcc_cua_core::{
     SessionPermissionMode,
 };
 use dcc_cua_host::{
-    HostSecurityServices, TrustedTaskActionScope, TrustedTaskAuthorizationHost,
-    TrustedTaskAuthorizationIssuer, TrustedTaskAuthorizationReceipt,
+    HostSecurityServices, TaskObservationMode, TrustedTaskActionScope,
+    TrustedTaskAuthorizationHost, TrustedTaskAuthorizationIssuer, TrustedTaskAuthorizationReceipt,
     TrustedTaskAuthorizationRegistration, TrustedTaskAuthorizationTarget,
     process_connection_with_security_services,
 };
@@ -169,6 +169,8 @@ struct PrepareTaskInput {
     #[serde(default)]
     owned_browser_launch: Option<ComputerUseOwnedBrowserLaunchSpec>,
     surface: TaskSurface,
+    #[serde(default)]
+    observation_mode: TaskObservationMode,
     allowed_methods: Vec<String>,
     allowed_actions: Vec<TrustedTaskActionScope>,
     #[serde(default)]
@@ -195,6 +197,7 @@ impl TaskSurface {
 
 struct TaskProposal {
     surface: TaskSurface,
+    observation_mode: TaskObservationMode,
     allowed_methods: Vec<String>,
     registration: TrustedTaskAuthorizationRegistration,
     receipt: Option<TrustedTaskAuthorizationReceipt>,
@@ -327,6 +330,46 @@ impl TaskAuthorizationServer {
             ));
         }
         validate_allowed_methods(input.surface, &input.allowed_methods)?;
+        if input.observation_mode == TaskObservationMode::PixelsOnly {
+            if input.surface != TaskSurface::Window
+                || !matches!(input.target_process_id, Some(pid) if pid != 0)
+                || !matches!(input.target_window_handle, Some(hwnd) if hwnd != 0)
+                || input.owned_browser_launch.is_some()
+                || !input.allowed_browser_origins.is_empty()
+            {
+                return Err(
+                    "pixels_only requires the window surface with an exact PID/HWND".into(),
+                );
+            }
+            if input
+                .allowed_methods
+                .iter()
+                .any(|method| !input.observation_mode.permits_method(method))
+                || input
+                    .allowed_actions
+                    .iter()
+                    .any(|action| !action.is_window_minimize())
+            {
+                return Err(
+                    "pixels_only permits native window_state/minimize_window scope only, without execute_action or semantic/browser methods"
+                        .into(),
+                );
+            }
+        }
+        if input
+            .allowed_methods
+            .iter()
+            .any(|method| method == "minimize_window")
+            && !input
+                .allowed_actions
+                .iter()
+                .any(TrustedTaskActionScope::is_window_minimize)
+        {
+            return Err(
+                "minimize_window requires the closed window_state/minimize_window action scope"
+                    .into(),
+            );
+        }
         let allowed_browser_origins = input
             .allowed_browser_origins
             .iter()
@@ -404,6 +447,7 @@ impl TaskAuthorizationServer {
             .map_err(|error| error.to_string())?;
         let proposal = TaskProposal {
             surface: input.surface,
+            observation_mode: input.observation_mode,
             allowed_methods: input.allowed_methods,
             registration,
             receipt: Some(receipt),
@@ -636,6 +680,7 @@ fn task_session_grant(proposal: &TaskProposal, receipt: &TrustedTaskAuthorizatio
     json!({
         "task_grant_id": proposal.registration.task_grant_id,
         "application_label": proposal.registration.application_label,
+        "observation_mode": proposal.observation_mode,
         "process_id": process_id,
         "window_handle": window_handle,
         "owned_browser_launch": owned_browser_launch,
@@ -680,6 +725,7 @@ fn proposal_payload(proposal_id: &str, proposal: &TaskProposal, status: &str) ->
         "status": status,
         "application_label": proposal.registration.application_label,
         "surface": proposal.surface.as_str(),
+        "observation_mode": proposal.observation_mode,
         "target": target,
         "allowed_methods": proposal.allowed_methods,
         "allowed_actions": proposal.registration.allowed_actions,
@@ -696,6 +742,7 @@ fn method_allowed(surface: TaskSurface, method: &str) -> bool {
         method,
         "get_window_state"
             | "change_window_state"
+            | "minimize_window"
             | "snapshot"
             | "accessibility_snapshot"
             | "verify_state"
@@ -727,6 +774,14 @@ fn method_allowed(surface: TaskSurface, method: &str) -> bool {
 }
 
 fn validate_task_method_params(method: &str, params: &Value) -> Result<(), String> {
+    if method == "minimize_window"
+        && !params
+            .get("observation_id")
+            .and_then(Value::as_str)
+            .is_some_and(|id| !id.is_empty())
+    {
+        return Err("minimize_window requires the latest snapshot observation_id".into());
+    }
     if method == "change_window_state"
         && !matches!(
             params.get("operation").and_then(Value::as_str),
@@ -793,6 +848,19 @@ fn task_action_scope_schema() -> Value {
     ];
     json!({
         "oneOf": [
+            {
+                "title": "Observation-bound native window minimize",
+                "type": "object",
+                "additionalProperties": false,
+                "required": required,
+                "properties": {
+                    "action": {"const": "minimize_window"},
+                    "input_kind": {"const": "window_state"},
+                    "secret_input": {"const": false},
+                    "authorization_category": {"const": "window_state"},
+                    "browser_origin": {"type": "null"}
+                }
+            },
             {
                 "title": "Semantic exact-window input",
                 "type": "object",
@@ -864,7 +932,7 @@ fn tool_definitions() -> Vec<Value> {
         json!({
             "name": "start_task",
             "title": "Start DCC-CUA task",
-            "description": "Start one exact bounded DCC-CUA task without a secondary confirmation step. The connected Agent Host owns user authorization; DCC-CUA still binds the declared target and task scope.",
+            "description": "Start one exact bounded DCC-CUA task without a secondary confirmation step. The connected Agent Host owns user authorization. observation_mode defaults to semantic; explicitly choose pixels_only for an exact window snapshot without UIA or semantic selectors. Pixels-only capture requires complete exact-window capture proof and currently authorizes only observation-bound minimize_window, not execute_action.",
             "inputSchema": {
                 "type": "object",
                 "additionalProperties": false,
@@ -896,13 +964,14 @@ fn tool_definitions() -> Vec<Value> {
                         }
                     },
                     "surface": {"type": "string", "enum": ["window", "browser"]},
+                    "observation_mode": {"type": "string", "enum": ["semantic", "pixels_only"], "default": "semantic"},
                     "allowed_methods": {
                         "type": "array",
                         "minItems": 1,
                         "maxItems": MAX_ALLOWED_METHODS,
                         "uniqueItems": true,
                         "items": {"type": "string", "enum": [
-                            "get_window_state", "change_window_state", "snapshot", "accessibility_snapshot", "verify_state",
+                            "get_window_state", "change_window_state", "minimize_window", "snapshot", "accessibility_snapshot", "verify_state",
                             "find", "wait_for", "execute_action", "get_session_state",
                             "get_input_state", "session_health", "poll_session_events",
                             "clipboard_capture_secret", "browser_snapshot", "browser_prepare",
@@ -912,7 +981,7 @@ fn tool_definitions() -> Vec<Value> {
                     },
                     "allowed_actions": {
                         "type": "array",
-                        "description": "Closed final input scopes. Use click/type action names for browser_click/browser input methods; only secret-handle browser typing uses browser_type.",
+                        "description": "Closed final action scopes. pixels_only requires the native minimize_window/window_state scope; it grants no click, keypress, or semantic input. Other modes use click/type action names for browser input methods; only secret-handle browser typing uses browser_type.",
                         "minItems": 1,
                         "maxItems": 32,
                         "uniqueItems": true,
@@ -946,7 +1015,7 @@ fn tool_definitions() -> Vec<Value> {
         json!({
             "name": "dcc_cua_task_call",
             "title": "Run DCC-CUA task call",
-            "description": "Call one closed Host method after start_task returned its provider/runtime/PID/HWND binding. change_window_state accepts only operation activate or restore_activate; restore_activate requires the exact PID/HWND and a fresh observation afterward. Out-of-scope, expired, stopped, or changed targets fail without prompting. Never pass credential values; use secret handles.",
+            "description": "Call one closed Host method after start_task returned its provider/runtime/PID/HWND binding. snapshot in pixels_only mode yields a formal observation_id and accessibility_available=false, with no semantic element authorization; execute_action is unavailable in that mode. minimize_window requires that latest observation_id and the same native window instance; it invalidates the observation after an attempt and reports native minimized state. change_window_state accepts only activate or restore_activate; take a fresh snapshot afterward. Out-of-scope, expired, stopped, changed, or stale targets fail without prompting. Never pass credential values; use secret handles.",
             "inputSchema": {
                 "type": "object",
                 "additionalProperties": false,
