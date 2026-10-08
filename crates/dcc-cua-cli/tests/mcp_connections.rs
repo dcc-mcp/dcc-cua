@@ -240,11 +240,20 @@ fn record_for_pid(report: &Value, pid: u32) -> &Value {
     matching[0]
 }
 
+fn assert_process_status(record: &Value, supported_status: &str) {
+    let expected = if cfg!(any(windows, target_os = "linux")) {
+        supported_status
+    } else {
+        "unknown"
+    };
+    assert_eq!(record["process_status"], expected);
+}
+
 fn assert_observed_close(record: &Value, reason: &str) {
     assert_eq!(record["state"], "closed");
     assert_eq!(record["close_reason"], reason);
     assert_eq!(record["close_reason_source"], "observed");
-    assert_eq!(record["process_status"], "ended");
+    assert_process_status(record, "ended");
     assert!(record["closed_at_unix_ms"].is_u64());
 }
 
@@ -286,7 +295,7 @@ fn concurrent_initialized_bridges_have_private_resources_and_remain_valid_while_
         assert_eq!(current["schema"], "dcc-cua.connection.v1");
         assert_eq!(current["transport"], "stdio");
         assert_eq!(current["state"], "initialized");
-        assert_eq!(current["process_status"], "live");
+        assert_process_status(current, "live");
         assert_eq!(current["client_metadata"]["source"], "client_supplied");
         assert_eq!(current["client_metadata"]["task_id"], "client-task");
         assert_eq!(current["client_info"]["version"], "test-version");
@@ -350,7 +359,7 @@ fn concurrent_initialized_bridges_have_private_resources_and_remain_valid_while_
 }
 
 #[rstest]
-fn abrupt_owned_bridge_exit_is_inferred_without_claiming_transport_eof() {
+fn abrupt_owned_bridge_exit_requires_creation_identity_before_inference() {
     let directory = isolated_directory();
     let mut bridge = Bridge::spawn(directory.path());
     bridge.initialize("abrupt-test-client", "explicit-chat");
@@ -360,10 +369,20 @@ fn abrupt_owned_bridge_exit_is_inferred_without_claiming_transport_eof() {
     let report = connections(directory.path());
     let record = record_for_pid(&report, bridge.pid());
     assert_eq!(record["connection_id"], current["connection_id"]);
-    assert_eq!(record["process_status"], "ended");
-    assert_eq!(record["state"], "closed");
-    assert_eq!(record["close_reason"], "process_exited");
-    assert_eq!(record["close_reason_source"], "inferred");
+    assert_process_status(record, "ended");
+    if cfg!(any(windows, target_os = "linux")) {
+        assert_eq!(record["state"], "closed");
+        assert_eq!(record["close_reason"], "process_exited");
+        assert_eq!(record["close_reason_source"], "inferred");
+    } else {
+        // Without a creation identity, a reused PID cannot certify process exit.
+        assert_eq!(record["state"], "initialized");
+        assert!(record["bridge"]["creation_id"].is_null());
+        assert!(record["bridge"]["creation_time_unix_ms"].is_null());
+        assert!(record["close_reason"].is_null());
+        assert!(record["close_reason_source"].is_null());
+    }
+    assert!(record["closed_at_unix_ms"].is_null());
 }
 
 #[rstest]
