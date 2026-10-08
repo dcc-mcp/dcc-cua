@@ -15,7 +15,18 @@ fn isolated_directory() -> tempfile::TempDir {
     let temporary_root = std::env::temp_dir()
         .canonicalize()
         .expect("resolve the platform temporary directory");
-    tempfile::tempdir_in(temporary_root).expect("isolated diagnostic directory")
+    let mut builder = tempfile::Builder::new();
+    builder.prefix("dcc-cua-connections-");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        // The registry intentionally rejects group/world-accessible directories.
+        // tempfile's default directory mode otherwise depends on the runner umask.
+        builder.permissions(std::fs::Permissions::from_mode(0o700));
+    }
+    builder
+        .tempdir_in(temporary_root)
+        .expect("isolated diagnostic directory")
 }
 
 /// Every process in these tests is an owned child with isolated diagnostics.

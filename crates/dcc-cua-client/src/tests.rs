@@ -944,7 +944,7 @@ async fn fake_logical_task_server(mut stream: DuplexStream) -> HostClientResult<
     write_json_response(
         &mut stream,
         hello["request_id"].as_str().unwrap(),
-        json!({"type":"hello", "capabilities":[]}),
+        json!({"type":"hello", "connection_id":"host-connection-test", "capabilities":[]}),
     )
     .await?;
 
