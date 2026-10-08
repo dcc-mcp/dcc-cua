@@ -20,6 +20,8 @@ fn fence() -> WindowsPhysicalInputFence {
     }
 }
 
+type RecordedMutation = (bool, Vec<Event>, Option<(i32, i32)>);
+
 struct FakeBackend {
     evidence: ExactWindowPixelEvidence,
     state: ExactWindowNativeState,
@@ -30,7 +32,7 @@ struct FakeBackend {
     dwm_change_at_check: Option<usize>,
     partial_mutation: Option<(usize, u32)>,
     interrupt_after_mutation: bool,
-    mutations: Vec<(bool, Vec<Event>, Option<(i32, i32)>)>,
+    mutations: Vec<RecordedMutation>,
     trace: Rc<RefCell<Vec<&'static str>>>,
     clock: u64,
 }

@@ -56,7 +56,7 @@ impl Drop for ThreadDpiAwarenessGuard {
 #[error("visible exact-window capture failed: {message}")]
 pub struct VisibleWindowCaptureError {
     message: String,
-    pub diagnostic: VisibleWindowCaptureDiagnostic,
+    pub diagnostic: Box<VisibleWindowCaptureDiagnostic>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -179,7 +179,7 @@ fn proof_error(
 ) -> VisibleWindowCaptureError {
     VisibleWindowCaptureError {
         message: message.into(),
-        diagnostic: VisibleWindowCaptureDiagnostic::new(reason),
+        diagnostic: Box::new(VisibleWindowCaptureDiagnostic::new(reason)),
     }
 }
 

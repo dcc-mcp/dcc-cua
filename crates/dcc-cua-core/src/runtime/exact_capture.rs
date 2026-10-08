@@ -60,7 +60,7 @@ pub(crate) fn map_visible_capture_error(
 ) -> ComputerUseError {
     use ComputerUseCaptureReason as Public;
     use dcc_cua_platform_windows::VisibleWindowCaptureReason as Native;
-    let native = error.diagnostic;
+    let native = *error.diagnostic;
     let reason = match native.reason {
         Native::NativeReadFailed => Public::NativeReadFailed,
         Native::TargetUnavailable => Public::TargetUnavailable,

@@ -596,7 +596,7 @@ fn root_bounds_diagnostic_role_uses_proof_root_not_granted_child(
     let proof = error.diagnostic.root_bounds_failure.unwrap();
     assert_eq!(proof.root_role, expected);
     assert_eq!(proof.proof_target_root_window_handle, 77);
-    assert_eq!(proof.visible, true);
+    assert!(proof.visible);
     assert_eq!(proof.cloaked, Some(0));
     assert!(proof.win32_read_after_dwm_rejection);
     assert_eq!(proof.zero_area_status_mismatch, Some(false));

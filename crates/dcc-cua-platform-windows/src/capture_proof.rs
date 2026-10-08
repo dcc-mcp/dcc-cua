@@ -177,7 +177,7 @@ fn phase(process_id: u32, hwnd: HWND, start: std::time::Instant) -> NativeProofP
         Ok(rect) => rect,
         Err(error) => {
             phase.dwm_bounds_error = error.diagnostic.os_error;
-            phase.error = Some(error.diagnostic);
+            phase.error = Some(*error.diagnostic);
             return phase;
         }
     };
@@ -192,14 +192,14 @@ fn phase(process_id: u32, hwnd: HWND, start: std::time::Instant) -> NativeProofP
     match exact_window_instance_evidence(process_id, window_handle) {
         Ok(instance) => phase.instance = Some(instance),
         Err(error) => {
-            phase.error = Some(error.diagnostic);
+            phase.error = Some(*error.diagnostic);
             return phase;
         }
     }
     let (proof, roots) = unsafe { enumerate_target_root_proof(hwnd, rect, true) };
     phase.roots_above_through_target = roots;
     phase.proof_passed = proof.is_ok();
-    phase.error = proof.err().map(|error| error.diagnostic);
+    phase.error = proof.err().map(|error| *error.diagnostic);
     // Diagnostics still enumerate hidden/minimized/out-of-desktop targets, but never label them usable.
     if phase.error.is_none() {
         let reason = if phase.target_minimized {
@@ -311,7 +311,7 @@ pub fn native_capture_proof(process_id: u32, window_handle: u64) -> NativeCaptur
     let guard = match ThreadDpiAwarenessGuard::per_monitor_v2() {
         Ok(guard) => guard,
         Err(error) => {
-            report.dpi_scope_error = Some(error.diagnostic);
+            report.dpi_scope_error = Some(*error.diagnostic);
             return report;
         }
     };
