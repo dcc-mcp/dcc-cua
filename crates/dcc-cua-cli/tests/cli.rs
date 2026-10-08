@@ -334,6 +334,75 @@ fn rejected_cli_syntax_does_not_echo_untrusted_arguments(
 }
 
 #[rstest]
+#[case("connections")]
+#[case("mcp-server")]
+fn connection_commands_reject_incomplete_or_ambiguous_registry_overrides(#[case] command: &str) {
+    let parent = tempfile::tempdir().expect("isolated parent directory");
+    let directory = parent
+        .path()
+        .canonicalize()
+        .unwrap()
+        .join("uncreated-registry");
+    let absolute = directory.to_str().expect("temporary path should be UTF-8");
+    for arguments in [
+        vec!["--diagnostics-dir"],
+        vec!["--diagnostics-dir="],
+        vec!["--diagnostics-dir", "--json"],
+        vec!["--diagnostics-dir", "relative-private-path"],
+        vec!["--diagnostics-dir=relative-private-path"],
+        vec!["--diagnostics-dir", absolute, "--diagnostics-dir", absolute],
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_dcc-cua"))
+            .arg(command)
+            .args(arguments)
+            .stdin(Stdio::null())
+            .output()
+            .expect("dcc-cua should start");
+        assert_eq!(output.status.code(), Some(1));
+        if command == "connections" {
+            let envelope = parse_single_json_envelope(&output.stdout);
+            assert_eq!(envelope["success"], false);
+            assert_eq!(envelope["error"]["code"], "command_failed");
+        } else {
+            assert!(
+                output.stdout.is_empty(),
+                "MCP startup errors must not emit non-protocol stdout"
+            );
+        }
+        assert!(output.stderr.is_empty());
+        assert!(
+            !directory.exists(),
+            "invalid overrides must not create a registry"
+        );
+    }
+}
+
+#[rstest]
+fn connections_accepts_an_absolute_override_without_creating_the_directory() {
+    let parent = tempfile::tempdir().expect("isolated parent directory");
+    let directory = parent
+        .path()
+        .canonicalize()
+        .unwrap()
+        .join("uncreated-registry");
+    let output = Command::new(env!("CARGO_BIN_EXE_dcc-cua"))
+        .arg("connections")
+        .arg("--diagnostics-dir")
+        .arg(&directory)
+        .output()
+        .expect("dcc-cua should start");
+    assert!(output.status.success());
+    let report = parse_single_json_envelope(&output.stdout);
+    assert_eq!(report["registry_available"], false);
+    assert_eq!(report["connections"], serde_json::json!([]));
+    assert!(output.stderr.is_empty());
+    assert!(
+        !directory.exists(),
+        "the read-only query must not create a registry"
+    );
+}
+
+#[rstest]
 #[case("Codex Desktop")]
 #[case("Codex Cloud")]
 #[case("Codex CLI")]
@@ -341,8 +410,11 @@ fn rejected_cli_syntax_does_not_echo_untrusted_arguments(
 #[case("WorkBuddy")]
 #[case("CodeBuddy CLI")]
 fn mcp_server_exposes_the_same_automation_surface_to_every_agent_host(#[case] client: &str) {
+    let diagnostics = tempfile::tempdir().unwrap();
     let mut child = Command::new(env!("CARGO_BIN_EXE_dcc-cua"))
         .arg("mcp-server")
+        .arg("--diagnostics-dir")
+        .arg(diagnostics.path())
         .env("DCC_CUA_TRUSTED_EMBEDDING", client)
         .env("DCC_CUA_AUTHORIZATION", "AUTHORIZE")
         .stdin(Stdio::piped())
@@ -404,7 +476,10 @@ fn mcp_server_exposes_the_same_automation_surface_to_every_agent_host(#[case] cl
         ]
     );
     assert!(tools.iter().all(|tool| tool.get("_meta").is_none()));
-    assert_eq!(responses[2]["result"]["resources"], serde_json::json!([]));
+    assert_eq!(
+        responses[2]["result"]["resources"][0]["uri"],
+        "dcc-cua://connection/current"
+    );
     for response in &responses[3..] {
         assert_eq!(response["result"]["isError"], true);
         assert!(response["result"].get("_meta").is_none());
@@ -438,8 +513,11 @@ fn private_worker_failure_stays_on_its_protocol_native_boundary() {
 
 #[rstest]
 fn mcp_server_rejects_oversized_input_without_an_unframed_error() {
+    let diagnostics = tempfile::tempdir().unwrap();
     let mut child = Command::new(env!("CARGO_BIN_EXE_dcc-cua"))
         .arg("mcp-server")
+        .arg("--diagnostics-dir")
+        .arg(diagnostics.path())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

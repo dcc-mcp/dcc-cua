@@ -2,6 +2,7 @@
 
 use dcc_cua_core::{COMPUTER_USE_ESCALATION_REASONS, MAX_ESCALATION_DETAIL_CHARS};
 use std::fmt;
+use std::path::PathBuf;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum CliUsageError {
@@ -75,6 +76,7 @@ const KNOWN_FLAG_NAMES: &[&str] = &[
     "--cdp-state",
     "--delay-ms",
     "--delivery-mode",
+    "--diagnostics-dir",
     "--duration-ms",
     "--element-index",
     "--element-token",
@@ -232,6 +234,18 @@ pub(super) fn checked_flag_values(flags: &[String], name: &str) -> Result<Vec<St
     Ok(values)
 }
 
+pub(super) fn diagnostics_directory(flags: &[String]) -> Result<Option<PathBuf>, String> {
+    let values = checked_flag_values(flags, "--diagnostics-dir")?;
+    if values.len() > 1 {
+        return Err("--diagnostics-dir must be supplied at most once".into());
+    }
+    let directory = values.into_iter().next().map(PathBuf::from);
+    if directory.as_ref().is_some_and(|path| !path.is_absolute()) {
+        return Err("--diagnostics-dir requires an absolute path".into());
+    }
+    Ok(directory)
+}
+
 fn is_known_flag(argument: &str) -> bool {
     let name = argument.split_once('=').map_or(argument, |(name, _)| name);
     KNOWN_FLAG_NAMES.contains(&name)
@@ -287,6 +301,7 @@ pub(super) fn print_help() -> std::io::Result<()> {
   host-batch --json JSON_ARRAY [--endpoint PATH|--spawn BINARY] [--agent-name NAME] [--snapshot-transport binary_frame|shared_memory] [--output-dir DIR]
   host-jsonl [--endpoint PATH|--spawn BINARY] [--agent-name NAME] [--parallel-discovery] [--showcase] [--showcase-dir DIR] [--snapshot-transport binary_frame|shared_memory] [--response-format host|mcp] [--output-dir DIR] [--metrics-output FILE]
   mcp-server                       # automation-first stdio MCP bridge owned by the connected Agent Host
+  connections [--diagnostics-dir PATH] # read-only local MCP connection records; no Host/UI startup
   host-ensure [--endpoint PATH] [--grant existing-profile]
   browser-extension plan|status|install-native-host --browser chrome|edge|firefox --extension-id PUBLISHED_ID [--cdp-state available|unavailable]
   manifest
