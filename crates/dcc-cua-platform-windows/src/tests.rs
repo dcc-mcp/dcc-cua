@@ -22,7 +22,7 @@ use crate::visible_capture::{
     RootBoundsClass, RootBoundsRole, VisibleWindowCaptureReason, classify_root_bounds,
     composited_root_entry, finish_bitmap_readback, physical_capture_rect,
     physical_rectangle_within_desktop, physical_root_bounds, root_is_composited,
-    root_z_order_entry, root_z_order_proof, root_z_order_proves_unobscured,
+    root_z_order_entry, root_z_order_proof,
 };
 
 #[cfg(windows)]
@@ -1792,4 +1792,13 @@ fn persistent_wgc_captures_consecutive_real_frames() {
         first_elapsed.as_millis(),
         second_elapsed.as_millis()
     );
+}
+
+#[cfg(windows)]
+fn root_z_order_proves_unobscured(
+    target_window_handle: u64,
+    target_bounds: [i32; 4],
+    roots: &[(u64, [i32; 4], bool)],
+) -> bool {
+    root_z_order_proof(target_window_handle, target_bounds, roots).is_ok()
 }

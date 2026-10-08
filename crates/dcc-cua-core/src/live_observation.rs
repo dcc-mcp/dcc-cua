@@ -915,7 +915,7 @@ pub(crate) enum CaptureFailureDisposition {
 }
 
 #[cfg(any(not(windows), test))]
-fn capture_failure_disposition(error: ComputerUseError) -> CaptureFailureDisposition {
+pub(crate) fn capture_failure_disposition(error: ComputerUseError) -> CaptureFailureDisposition {
     if pause_capture_error(&error) {
         CaptureFailureDisposition::Pause(error)
     } else if terminal_capture_error(&error) {
@@ -923,17 +923,6 @@ fn capture_failure_disposition(error: ComputerUseError) -> CaptureFailureDisposi
     } else {
         CaptureFailureDisposition::Retry(error)
     }
-}
-
-#[cfg(test)]
-pub(crate) fn live_capture_failure_disposition(
-    capture_error: ComputerUseError,
-    observation_availability: ComputerUseResult<()>,
-) -> CaptureFailureDisposition {
-    if let Err(desktop_error) = observation_availability {
-        return capture_failure_disposition(desktop_error);
-    }
-    capture_failure_disposition(capture_error)
 }
 
 #[cfg(any(not(windows), test))]

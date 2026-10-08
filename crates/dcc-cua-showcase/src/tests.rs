@@ -90,7 +90,7 @@ async fn first_encoded_acknowledgement_matches_the_actual_first_sample_sidecar()
     std::fs::remove_dir_all(directory).unwrap();
 }
 
-#[test]
+#[rstest]
 fn stop_preserves_both_producer_and_encoder_failures() {
     let error = combine_stop_results(
         Err(capture_error("producer failed")),
@@ -105,6 +105,7 @@ fn stop_preserves_both_producer_and_encoder_failures() {
     );
 }
 
+#[rstest]
 #[tokio::test]
 async fn startup_failure_joins_encoder_and_retains_actual_partial_outcome() {
     let directory =
@@ -1000,6 +1001,7 @@ async fn showcase_resume_stays_paused_until_the_new_idr_segment_is_ready() {
     );
 }
 
+#[rstest]
 #[tokio::test]
 async fn showcase_preserves_pause_boundary_conflated_with_fresh_resume() {
     let directory = std::env::temp_dir().join(format!("dcc-cua-showcase-{}", uuid::Uuid::new_v4()));
@@ -1144,6 +1146,7 @@ async fn showcase_pause_projection_uses_the_acknowledged_status_snapshot() {
     producer.await.unwrap();
 }
 
+#[rstest]
 #[tokio::test]
 async fn showcase_conflated_pause_resume_terminal_immediate_stop_preserves_sample_mapping() {
     let directory = std::env::temp_dir().join(format!("dcc-cua-showcase-{}", uuid::Uuid::new_v4()));
@@ -1914,7 +1917,7 @@ fn provenance_sidecar_failure_cannot_finalize_incomplete_sample_mapping() {
     std::fs::remove_dir_all(directory).unwrap();
 }
 
-#[test]
+#[rstest]
 fn provenance_sidecar_create_and_publish_failures_preserve_owned_partial_evidence() {
     let directory = std::env::temp_dir().join(format!("dcc-cua-showcase-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&directory).unwrap();

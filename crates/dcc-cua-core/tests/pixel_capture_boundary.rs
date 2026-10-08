@@ -22,7 +22,7 @@ fn item<'a>(source: &'a str, marker: &str) -> &'a str {
 #[rstest]
 fn exact_source_first_capture_instance_boundary() {
     let pixel = include_str!("../src/runtime/pixel_observation.rs");
-    let runtime = include_str!("../src/runtime.rs");
+    let runtime = include_str!("../src/runtime/exact_capture.rs");
     let observation = include_str!("../src/runtime/session/observation.rs");
     let native = include_str!("../../dcc-cua-platform-windows/src/visible_capture.rs");
     let gates = include_str!("../src/runtime/session/gates.rs");
@@ -70,7 +70,7 @@ fn exact_source_first_capture_instance_boundary() {
         selected.push_str(item(pixel, marker));
         selected.push('\n');
     }
-    selected.push_str(item(runtime, "struct ExactWindowCapture"));
+    selected.push_str(&item(runtime, "struct ExactWindowCapture").replace("pub(super) ", ""));
     for marker in [
         "fn exact_capture_diagnostic(",
         "fn map_visible_capture_error(",
@@ -78,7 +78,10 @@ fn exact_source_first_capture_instance_boundary() {
         "fn map_root_bounds_class(",
         "fn map_capture_identity_error(",
     ] {
-        selected.push_str(item(runtime, marker));
+        selected.push_str(
+            &item(runtime, marker)
+                .replace("super::map_root_bounds_failure", "map_root_bounds_failure"),
+        );
         selected.push('\n');
     }
     for marker in [

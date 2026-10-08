@@ -33,6 +33,7 @@ mod recording;
 mod visual_only;
 
 #[cfg(windows)]
+#[rstest]
 #[tokio::test]
 async fn fresh_native_state_transition_preserves_only_matching_metadata_and_clears_pixels() {
     let (mut session, calls) = counting_session();
@@ -69,6 +70,7 @@ async fn fresh_native_state_transition_preserves_only_matching_metadata_and_clea
 }
 
 #[cfg(windows)]
+#[rstest]
 #[tokio::test]
 async fn invalid_native_frame_attempt_consumes_metadata_and_pixels_before_any_native_call() {
     let (mut session, calls) = counting_session();

@@ -261,7 +261,7 @@ async fn observation_only_authorization_retains_exact_expiry_revocation_and_vali
     ));
 }
 
-#[test]
+#[rstest]
 fn native_frame_action_scope_is_closed_and_grants_no_raw_input() {
     let value = json!({"action":"set_window_frame","input_kind":"window_state","secret_input":false,"authorization_category":"window_state"});
     let scope: TrustedTaskActionScope = serde_json::from_value(value.clone()).unwrap();
@@ -284,7 +284,7 @@ fn native_frame_action_scope_is_closed_and_grants_no_raw_input() {
     }
 }
 
-#[test]
+#[rstest]
 fn native_frame_host_pre_dispatch_refusal_preserves_known_completion() {
     let result = crate::request_handler::native_frame_pre_dispatch_failure(HostError::ComputerUse(
         ComputerUseError::new(
@@ -341,6 +341,7 @@ async fn native_frame_test_lease() -> (
     (issuer, authority, lease)
 }
 
+#[rstest]
 #[tokio::test]
 async fn native_frame_broker_lease_rejects_foreign_expired_and_revoked_bindings() {
     let (issuer, authority, lease) = native_frame_test_lease().await;
@@ -400,6 +401,7 @@ async fn native_frame_broker_lease_rejects_foreign_expired_and_revoked_bindings(
     );
 }
 
+#[rstest]
 #[tokio::test]
 async fn native_frame_host_refuses_missing_metadata_without_driver_dispatch() {
     let (_issuer, authority, lease) = native_frame_test_lease().await;
@@ -451,7 +453,7 @@ async fn native_frame_host_refuses_missing_metadata_without_driver_dispatch() {
     );
 }
 
-#[test]
+#[rstest]
 fn native_frame_available_transition_keeps_old_pixels_invalid_without_reconstructing_metadata() {
     let channel = ObservationOnlyTestChannel::default();
     let driver = ComputerUseDriver::from_test_remote_channel(Arc::new(channel.clone())).unwrap();

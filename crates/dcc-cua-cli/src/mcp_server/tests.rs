@@ -17,7 +17,7 @@ fn native_recording_task() -> Value {
     task
 }
 
-#[test]
+#[rstest]
 fn native_recording_public_scope_requires_operator_owned_output_and_complete_lifecycle() {
     assert!(
         test_server()
@@ -186,6 +186,7 @@ async fn cleanup_mock_session_with_calls(
     (session, server)
 }
 
+#[rstest]
 #[tokio::test]
 async fn native_recording_public_calls_keep_the_same_session_and_bind_output() {
     let root = tempfile::tempdir().unwrap();
@@ -262,6 +263,7 @@ async fn native_recording_public_calls_keep_the_same_session_and_bind_output() {
 #[case(Some(json!({"type":"session_stopped","session_id":"wrong","success":true,"active":false,"cleanup_pending":false})), "cleanup_unknown")]
 #[case(Some(json!({"type":"session_stopped","session_id":"cleanup-session","success":true,"active":false})), "cleanup_unknown")]
 #[case(None, "cleanup_unknown")]
+#[rstest]
 #[tokio::test]
 async fn native_recording_task_stop_preserves_authoritative_cleanup(
     #[case] response: Option<Value>,
@@ -302,6 +304,7 @@ async fn native_recording_task_stop_preserves_authoritative_cleanup(
     fake_host.await.unwrap();
 }
 
+#[rstest]
 #[tokio::test]
 async fn native_recording_mcp_shutdown_awaits_cleanup_and_reports_failures() {
     let (session, fake_host) = cleanup_mock_session(Some(json!({"type":"session_stopped","session_id":"cleanup-session","success":false,"active":false,"cleanup_pending":false,"cleanup_issues":["partial video"]}))).await;
@@ -319,6 +322,7 @@ async fn native_recording_mcp_shutdown_awaits_cleanup_and_reports_failures() {
     fake_host.await.unwrap();
 }
 
+#[rstest]
 #[tokio::test]
 async fn native_recording_start_without_an_owned_session_ack_cannot_claim_cleanup() {
     let mut server = test_server();
@@ -364,6 +368,7 @@ fn root_bounds_capture_fixture() -> Value {
 #[case("invalid_class")]
 #[case("invalid_rect")]
 #[case("invalid_reason")]
+#[rstest]
 #[tokio::test]
 async fn root_bounds_failure_survives_actual_public_task_remote_error_adapter(
     #[case] variant: &str,
@@ -543,7 +548,7 @@ fn native_frame_params() -> Value {
     json!({"window_state_id":"native-state-1","frame":{"x":50,"y":800,"width":926,"height":680}})
 }
 
-#[test]
+#[rstest]
 fn native_frame_public_task_derives_only_closed_window_state_authority() {
     let mut server = test_server();
     let prepared = server.prepare_task(native_frame_task()).unwrap();
@@ -579,7 +584,7 @@ fn native_frame_public_task_derives_only_closed_window_state_authority() {
     }
 }
 
-#[test]
+#[rstest]
 fn native_frame_public_parameters_require_closed_physical_i32_extents() {
     assert!(validate_task_method_params("set_window_frame", &native_frame_params()).is_ok());
     for change in 0..13 {
@@ -608,6 +613,7 @@ fn native_frame_public_parameters_require_closed_physical_i32_extents() {
     }
 }
 
+#[rstest]
 #[tokio::test]
 async fn native_frame_public_task_retains_start_expiry_stop_and_scope_fences() {
     let mut server = test_server();
@@ -659,7 +665,7 @@ async fn native_frame_public_task_retains_start_expiry_stop_and_scope_fences() {
     );
 }
 
-#[test]
+#[rstest]
 fn native_frame_public_schema_advertises_distinct_metadata_token_and_exact_frame() {
     let tools = tool_definitions();
     let start = tools
@@ -702,7 +708,7 @@ fn native_frame_public_schema_advertises_distinct_metadata_token_and_exact_frame
     assert!(!method_allowed(TaskSurface::Browser, "set_window_frame"));
 }
 
-#[test]
+#[rstest]
 fn native_frame_failure_projection_is_finite_coherent_and_method_specific() {
     let mut details = json!({"phase":"local_mutation_dispatch","action_attempted":true,"input_sent":"not_sent",
         "completion":"unknown","effect_unknown":true,"automatic_input":false,"blind_retry":false,"fresh_observation_required":true,
@@ -716,6 +722,7 @@ fn native_frame_failure_projection_is_finite_coherent_and_method_specific() {
     assert!(native_frame_failure_projection(&details).is_none());
 }
 
+#[rstest]
 #[tokio::test]
 async fn native_frame_actual_public_error_adapter_preserves_only_typed_completion() {
     for attempted in [false, true] {

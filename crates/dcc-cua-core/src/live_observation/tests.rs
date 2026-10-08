@@ -389,7 +389,7 @@ fn showcase_projection_preserves_immutable_native_provenance_and_shared_pixels()
     assert_eq!(projected.sequence(), 9);
 }
 
-#[test]
+#[rstest]
 fn showcase_projection_retains_pause_fence_after_source_has_resumed() {
     let mut status = LiveObservationStatus::default();
     status.publish_frame(

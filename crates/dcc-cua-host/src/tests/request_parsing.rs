@@ -2,7 +2,7 @@ use rstest::rstest;
 
 use super::*;
 
-#[test]
+#[rstest]
 fn native_frame_request_keeps_metadata_token_separate_from_observation_id() {
     let value = json!({"method":"set_window_frame","params":{
         "session_id":"session-1","task_grant_id":"grant-1","window_capability":"cap-1",

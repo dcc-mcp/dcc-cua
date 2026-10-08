@@ -411,15 +411,6 @@ pub(crate) fn root_z_order_proof(
     ))
 }
 
-#[cfg(test)]
-pub(crate) fn root_z_order_proves_unobscured(
-    target_window_handle: u64,
-    target_bounds: [i32; 4],
-    roots: &[(u64, [i32; 4], bool)],
-) -> bool {
-    root_z_order_proof(target_window_handle, target_bounds, roots).is_ok()
-}
-
 pub(crate) fn root_is_composited(
     visible: bool,
     read_cloaked: impl FnOnce() -> Result<u32, i32>,
