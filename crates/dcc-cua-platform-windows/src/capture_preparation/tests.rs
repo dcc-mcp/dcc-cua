@@ -302,7 +302,7 @@ fn reused_native_instance_or_changed_geometry_cannot_verify_restoration() {
     let mut reused = original.clone();
     reused.identity.native_instance.process_creation_time_100ns += 1;
     assert!(!super::native::restored_matches(
-        &[original.clone()],
+        std::slice::from_ref(&original),
         &[reused]
     ));
     let mut moved = original.clone();

@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum FrameCaptureProvenance {
     Portable,
-    NativeExactWindow(NativeFrameProvenance),
+    NativeExactWindow(Box<NativeFrameProvenance>),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

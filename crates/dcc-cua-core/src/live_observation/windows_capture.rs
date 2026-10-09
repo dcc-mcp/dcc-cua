@@ -156,7 +156,7 @@ impl WindowsLiveTarget {
                 Some(native_wgc_frame_geometry(resolved)),
             ),
         };
-        FrameCaptureProvenance::NativeExactWindow(NativeFrameProvenance {
+        FrameCaptureProvenance::NativeExactWindow(Box::new(NativeFrameProvenance {
             source,
             process_id: self.process_id,
             window_handle: self.window_handle,
@@ -174,7 +174,7 @@ impl WindowsLiveTarget {
             stream_id: self.stream_id,
             wgc_geometry,
             capture_preparation: None,
-        })
+        }))
     }
 }
 
@@ -399,16 +399,17 @@ impl WindowsLiveCapture {
     }
 }
 
-pub(super) fn run_windows_capture_loop(
-    target: WindowsLiveTarget,
-    preparation: Option<dcc_cua_platform_windows::capture_preparation::PreparedEvidenceGuard>,
-    capture_exclusion: Option<dcc_cua_indicator::BannerCaptureExclusionSource>,
-    fps: u32,
-    started_interrupt_generation: u64,
-    sender: watch::Sender<LiveObservationStatus>,
-    shutdown: LiveObservationShutdown,
-    publications: PublicationInbox<NativePublicationCheck, ComputerUseResult<()>>,
-) {
+pub(super) fn run_windows_capture_loop(context: super::NativeCaptureLoop) {
+    let super::NativeCaptureLoop {
+        target,
+        preparation,
+        capture_exclusion,
+        fps,
+        started_interrupt_generation,
+        sender,
+        shutdown,
+        publications,
+    } = context;
     let interval = Duration::from_secs_f64(1.0 / f64::from(fps));
     let mut sequence = 0_u64;
     let mut capture = preparation.as_ref().map_or_else(

@@ -12,7 +12,7 @@ async fn first_encoded_acknowledgement_matches_the_actual_first_sample_sidecar()
     let directory =
         std::env::temp_dir().join(format!("dcc-cua-first-ack-{}", uuid::Uuid::new_v4()));
     let captured_at = std::time::Instant::now();
-    let proof = FrameCaptureProvenance::NativeExactWindow(NativeFrameProvenance {
+    let proof = FrameCaptureProvenance::NativeExactWindow(Box::new(NativeFrameProvenance {
         source: NativeFrameSource::Wgc,
         process_id: 42,
         window_handle: 77,
@@ -38,7 +38,7 @@ async fn first_encoded_acknowledgement_matches_the_actual_first_sample_sidecar()
             bgra_byte_len: 32 * 16 * 4,
         }),
         capture_preparation: None,
-    });
+    }));
     let mut initial = LiveObservationStatus::default();
     initial.publish_frame(
         LiveObservationFrame::new(18, vec![0; 16 * 16 * 4], 16, 16, captured_at),
@@ -1799,7 +1799,7 @@ fn recording_manifest_covers_encoded_samples_across_pause_resize_and_source_gaps
     let path = directory.join("showcase.mp4");
     let captured_at = std::time::Instant::now();
     let make_frame = |sequence, width, color, elapsed_ms| {
-        let proof = FrameCaptureProvenance::NativeExactWindow(NativeFrameProvenance {
+        let proof = FrameCaptureProvenance::NativeExactWindow(Box::new(NativeFrameProvenance {
             source: NativeFrameSource::VerifiedVisible,
             process_id: 42,
             window_handle: 500,
@@ -1821,7 +1821,7 @@ fn recording_manifest_covers_encoded_samples_across_pause_resize_and_source_gaps
                 actual_foreground: false,
                 captured_at_ms: 50_000 + elapsed_ms,
             }),
-        });
+        }));
         Arc::new(
             LiveObservationFrame::new(
                 sequence,

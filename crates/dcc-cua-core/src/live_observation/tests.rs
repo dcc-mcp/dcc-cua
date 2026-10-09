@@ -404,7 +404,7 @@ async fn paused_stream_rejects_old_frame_until_fresh_sequence_and_retains_metric
 #[rstest]
 fn showcase_projection_preserves_immutable_native_provenance_and_shared_pixels() {
     use dcc_cua_showcase::{NativeFrameInstance, NativeFrameProvenance, NativeFrameSource};
-    let provenance = FrameCaptureProvenance::NativeExactWindow(NativeFrameProvenance {
+    let provenance = FrameCaptureProvenance::NativeExactWindow(Box::new(NativeFrameProvenance {
         source: NativeFrameSource::VerifiedVisible,
         process_id: 42,
         window_handle: 500,
@@ -422,7 +422,7 @@ fn showcase_projection_preserves_immutable_native_provenance_and_shared_pixels()
         stream_id: 7,
         wgc_geometry: None,
         capture_preparation: None,
-    });
+    }));
     let frame = LiveObservationFrame::new(9, vec![17; 4], 1, 1, Instant::now())
         .with_provenance(provenance.clone());
     let shared = frame.shared_bgra();

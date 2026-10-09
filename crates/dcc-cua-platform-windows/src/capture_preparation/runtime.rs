@@ -21,7 +21,7 @@ enum Job {
         kind: PreparationMutationKind,
     },
     Probe,
-    Settle(CapturePreparationStatus),
+    Settle(Box<CapturePreparationStatus>),
 }
 enum WorkerReturn {
     Initialized(Result<(Vec<PreparedWindowState>, String), PreparationError>),
@@ -152,7 +152,7 @@ impl Supervisor {
                             }
                             Job::Probe => WorkerReturn::Probed(native::read_scope(&worker_spec)),
                             Job::Settle(status) => WorkerReturn::Settled(
-                                worker_journal.record("settled", &status).map(|_| status),
+                                worker_journal.record("settled", &status).map(|_| *status),
                             ),
                         }));
                     let returned = outcome.unwrap_or(WorkerReturn::Panicked);
@@ -251,11 +251,11 @@ impl Supervisor {
                 }
                 Ok(WorkerReturn::Probed(result)) => {
                     self.probing = false;
-                    if let Ok(states) = result {
-                        if native::geometry_matches(&self.state.status.original, &states) {
-                            self.state.status.affected_readback = states;
-                            self.dispatch_restore();
-                        }
+                    if let Ok(states) = result
+                        && native::geometry_matches(&self.state.status.original, &states)
+                    {
+                        self.state.status.affected_readback = states;
+                        self.dispatch_restore();
                     }
                 }
                 Ok(WorkerReturn::Panicked) => self.state.unknown(PreparationFailure::WorkerLost),
@@ -285,14 +285,12 @@ impl Supervisor {
             && self.initialized
             && !self.state.status.cleanup_verified
         {
-            if self.expected_settlement.is_some() {
+            if let Some(expected) = &self.expected_settlement {
                 if !self.settlement_pending && Instant::now() >= self.next_probe {
                     self.next_probe = Instant::now() + Duration::from_millis(500);
                     self.settlement_pending = self
                         .sender
-                        .send(Job::Settle(
-                            self.expected_settlement.as_ref().unwrap().clone(),
-                        ))
+                        .send(Job::Settle(Box::new(expected.clone())))
                         .is_ok();
                 }
             } else if self.state.status.phase == PreparationPhase::RestorePending {
@@ -333,7 +331,7 @@ impl Supervisor {
     fn begin_settlement(&mut self) {
         let fixed = self.state.await_settlement();
         self.expected_settlement = Some(fixed.clone());
-        self.settlement_pending = self.sender.send(Job::Settle(fixed)).is_ok();
+        self.settlement_pending = self.sender.send(Job::Settle(Box::new(fixed))).is_ok();
         if !self.settlement_pending {
             self.state.unknown(PreparationFailure::WorkerLost);
         }

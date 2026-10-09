@@ -836,16 +836,16 @@ impl LiveObservation {
             let (publication, publications) = native_publication::channel(Arc::new(move || {
                 publication_shutdown.wake_blocking();
             }));
-            let task = tokio::spawn(run_capture_loop(
+            let task = tokio::spawn(run_capture_loop(NativeCaptureLoop {
                 target,
                 preparation,
                 capture_exclusion,
                 fps,
-                interrupt_generation(),
+                started_interrupt_generation: interrupt_generation(),
                 sender,
-                shutdown.clone(),
+                shutdown: shutdown.clone(),
                 publications,
-            ));
+            }));
             let mut observation = Self {
                 stream_id,
                 fps,
@@ -1181,7 +1181,7 @@ impl Drop for LiveObservation {
 }
 
 #[cfg(windows)]
-async fn run_capture_loop(
+struct NativeCaptureLoop {
     target: WindowsLiveTarget,
     preparation: Option<dcc_cua_platform_windows::capture_preparation::PreparedEvidenceGuard>,
     capture_exclusion: Option<dcc_cua_indicator::BannerCaptureExclusionSource>,
@@ -1190,21 +1190,12 @@ async fn run_capture_loop(
     sender: watch::Sender<LiveObservationStatus>,
     shutdown: LiveObservationShutdown,
     publications: PublicationInbox<NativePublicationCheck, ComputerUseResult<()>>,
-) {
-    let join_error_sender = sender.clone();
-    if let Err(error) = tokio::task::spawn_blocking(move || {
-        run_windows_capture_loop(
-            target,
-            preparation,
-            capture_exclusion,
-            fps,
-            started_interrupt_generation,
-            sender,
-            shutdown,
-            publications,
-        );
-    })
-    .await
+}
+
+#[cfg(windows)]
+async fn run_capture_loop(context: NativeCaptureLoop) {
+    let join_error_sender = context.sender.clone();
+    if let Err(error) = tokio::task::spawn_blocking(move || run_windows_capture_loop(context)).await
     {
         let error = ComputerUseError::new(
             ComputerUseErrorCode::CaptureFailed,

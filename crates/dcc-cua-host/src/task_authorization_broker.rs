@@ -433,8 +433,8 @@ fn validate_registration(
             "capture preparation requires its trusted journal permission and closed action scope",
         );
     }
-    if let Some(authorization) = registration.capture_preparation.as_ref() {
-        if !matches!(
+    if let Some(authorization) = registration.capture_preparation.as_ref()
+        && (!matches!(
             registration.target,
             TrustedTaskAuthorizationTarget::ExactWindow { .. }
         ) || authorization.max_lifetime_ms == 0
@@ -460,12 +460,11 @@ fn validate_registration(
                     .allowed_host_methods
                     .iter()
                     .any(|method| method == required)
-            })
-        {
-            return invalid(
-                "capture preparation requires an exact window, separate ordinary stable journal root, bounded lifetime, native state read and complete begin/state/stop methods",
-            );
-        }
+            }))
+    {
+        return invalid(
+            "capture preparation requires an exact window, separate ordinary stable journal root, bounded lifetime, native state read and complete begin/state/stop methods",
+        );
     }
     if let Some(directory) = registration.recording_output_dir.as_deref()
         && (!matches!(
