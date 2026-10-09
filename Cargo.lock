@@ -1416,6 +1416,7 @@ dependencies = [
  "core-foundation-sys",
  "crossbeam-utils",
  "crypto-common 0.2.2",
+ "digest",
  "errno",
  "flate2",
  "futures-core",
