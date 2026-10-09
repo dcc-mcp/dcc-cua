@@ -26,8 +26,11 @@ fn native_recording_public_scope_requires_operator_owned_output_and_complete_lif
             .contains("operator configuration")
     );
     let root = tempfile::tempdir().unwrap();
+    let output_root = root.path().to_owned();
+    #[cfg(not(windows))]
+    let output_root = output_root.canonicalize().unwrap();
     let mut server = test_server();
-    server.recording_output_root = Some(root.path().to_owned());
+    server.recording_output_root = Some(output_root.clone());
     for (field, value) in [
         ("allow_recording", json!(false)),
         ("allowed_methods", json!(["recording_state"])),
@@ -47,7 +50,10 @@ fn native_recording_public_scope_requires_operator_owned_output_and_complete_lif
     let prepared = server.prepare_task(native_recording_task()).unwrap();
     let proposal = &server.proposals[prepared["task_id"].as_str().unwrap()];
     let directory = proposal.registration.recording_output_dir.as_ref().unwrap();
-    assert_eq!(std::path::Path::new(directory).parent(), Some(root.path()));
+    assert_eq!(
+        std::path::Path::new(directory).parent(),
+        Some(output_root.as_path())
+    );
     assert!(std::path::Path::new(directory).is_dir());
     let grant = task_session_grant(proposal, proposal.receipt.as_ref().unwrap());
     assert_eq!(grant["allow_recording"], true);
@@ -190,8 +196,11 @@ async fn cleanup_mock_session_with_calls(
 #[tokio::test]
 async fn native_recording_public_calls_keep_the_same_session_and_bind_output() {
     let root = tempfile::tempdir().unwrap();
+    let output_root = root.path().to_owned();
+    #[cfg(not(windows))]
+    let output_root = output_root.canonicalize().unwrap();
     let mut server = test_server();
-    server.recording_output_root = Some(root.path().to_owned());
+    server.recording_output_root = Some(output_root);
     let mut task = native_recording_task();
     task["allowed_methods"] = json!([
         "recording_start",

@@ -167,6 +167,9 @@ pub struct ExactWindowPixelEvidence {
     pub visible: bool,
     pub minimized: bool,
     pub unobscured: bool,
+    /// Closed diagnostic retained from this evidence sample's failed proof.
+    /// None also supports older synthetic evidence; it is not capture authority.
+    pub visibility_failure: Option<VisibleWindowCaptureDiagnostic>,
     pub instance: ExactWindowPixelInstanceEvidence,
 }
 
@@ -711,10 +714,6 @@ unsafe fn prove_target_unobscured(
     unsafe { enumerate_target_root_proof(target, rect, false) }.0
 }
 
-unsafe fn target_is_unobscured(target: HWND, rect: RECT) -> bool {
-    unsafe { prove_target_unobscured(target, rect) }.is_ok()
-}
-
 pub(crate) fn physical_capture_rect(physical: RECT) -> Result<RECT, VisibleWindowCaptureError> {
     if !physical_root_bounds(physical).is_some_and(|bounds| bounds[2] > 4 && bounds[3] > 4) {
         return Err(proof_error(
@@ -803,6 +802,12 @@ pub fn exact_window_pixel_evidence(
         return Err(capture_error("the exact HWND DPI is unavailable"));
     }
     let visible_rect = physical_capture_rect(physical_window_rect(hwnd)?)?;
+    let visible = unsafe { IsWindowVisible(hwnd) }.as_bool();
+    let minimized = unsafe { IsIconic(hwnd) }.as_bool();
+    // Keep the same proof attempt and acquisition order; never retry for details.
+    let visibility_failure = unsafe { prove_target_unobscured(hwnd, visible_rect) }
+        .err()
+        .map(|error| *error.diagnostic);
     Ok(ExactWindowPixelEvidence {
         process_id,
         window_handle,
@@ -814,9 +819,10 @@ pub fn exact_window_pixel_evidence(
             visible_rect.bottom - visible_rect.top,
         ],
         dpi,
-        visible: unsafe { IsWindowVisible(hwnd) }.as_bool(),
-        minimized: unsafe { IsIconic(hwnd) }.as_bool(),
-        unobscured: unsafe { target_is_unobscured(hwnd, visible_rect) },
+        visible,
+        minimized,
+        unobscured: visibility_failure.is_none(),
+        visibility_failure,
         instance: exact_window_instance_evidence(process_id, window_handle)?,
     })
 }

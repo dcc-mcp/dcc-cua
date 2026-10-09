@@ -50,6 +50,7 @@ impl FakeBackend {
                 visible: true,
                 minimized: false,
                 unobscured: true,
+                visibility_failure: None,
                 instance: fence.native_instance,
             },
             state: ExactWindowNativeState {

@@ -12,6 +12,7 @@ fn evidence() -> ExactWindowPixelEvidence {
         visible: true,
         minimized: false,
         unobscured: true,
+        visibility_failure: None,
         instance: ExactWindowPixelInstanceEvidence {
             process_creation_time_100ns: 1000,
             window_thread_id: 8,

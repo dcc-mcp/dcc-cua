@@ -1830,6 +1830,21 @@ jobs:
                 "          tool: cargo-nextest",
                 1,
             ),
+            "install_tool_version_unpinned": workflow.replace(
+                "          tool: cargo-hakari@0.9.39",
+                "          tool: cargo-hakari",
+                1,
+            ),
+            "install_tool_version_old": workflow.replace(
+                "          tool: cargo-hakari@0.9.39",
+                "          tool: cargo-hakari@0.9.38",
+                1,
+            ),
+            "install_tool_version_unreviewed": workflow.replace(
+                "          tool: cargo-hakari@0.9.39",
+                "          tool: cargo-hakari@0.9.40",
+                1,
+            ),
             "hakari_block_body_replaced": workflow.replace(
                 "      - run: |\n"
                 "          cargo hakari generate --diff\n"

@@ -353,6 +353,7 @@ mod minimize_tests {
             visible: true,
             minimized: false,
             unobscured: false,
+            visibility_failure: None,
             instance,
         };
         validate_observed_minimize_geometry(native, instance, &current).unwrap();

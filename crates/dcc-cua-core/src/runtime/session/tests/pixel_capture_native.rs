@@ -167,6 +167,7 @@ fn evidence() -> dcc_cua_platform_windows::ExactWindowPixelEvidence {
         visible: true,
         minimized: false,
         unobscured: true,
+        visibility_failure: None,
         instance: ExactWindowPixelInstanceEvidence {
             process_creation_time_100ns: 1001,
             window_thread_id: 7,
@@ -624,5 +625,231 @@ fn native_state(
         minimized: evidence.minimized,
         foreground: false,
         instance: evidence.instance,
+    }
+}
+
+// Regression coverage for visibility diagnostics retained from one native proof.
+fn retained_visibility_failure(
+    reason: dcc_cua_platform_windows::VisibleWindowCaptureReason,
+) -> dcc_cua_platform_windows::ExactWindowPixelEvidence {
+    use dcc_cua_platform_windows::*;
+    let mut sample = evidence();
+    sample.unobscured = false;
+    sample.visibility_failure = Some(VisibleWindowCaptureDiagnostic {
+        reason,
+        target_bounds: Some(sample.visible_bounds),
+        // A different root in the same process remains a blocker.
+        blocker_process_id: Some(sample.process_id),
+        blocker_window_handle: Some(88),
+        blocker_bounds: Some([100, 100, 20, 20]),
+        cloaked: Some(0),
+        os_error: None,
+        root_bounds_failure: (reason == VisibleWindowCaptureReason::RootBoundsInvalid).then_some(
+            RootBoundsFailureDiagnostic {
+                root_role: RootBoundsRole::AboveTargetRoot,
+                proof_target_root_window_handle: sample.window_handle,
+                dwm_raw_rect_edges: [100, 100, 100, 100],
+                dwm_classification: RootBoundsClass::ZeroArea,
+                visible: true,
+                cloaked: Some(0),
+                win32_read_after_dwm_rejection: true,
+                win32_raw_rect_edges: Some([100, 100, 120, 120]),
+                win32_classification: Some(RootBoundsClass::Positive),
+                win32_os_error: None,
+                zero_area_status_mismatch: Some(true),
+            },
+        ),
+    });
+    sample
+}
+
+#[rstest]
+fn same_sample_visibility_reason_and_blocker_survive_outer_capture_failure() {
+    use dcc_cua_platform_windows::VisibleWindowCaptureReason as NativeReason;
+    for (native, public) in [
+        (
+            NativeReason::RootOverlap,
+            ComputerUseCaptureReason::RootOverlap,
+        ),
+        (
+            NativeReason::RootBoundsUnavailable,
+            ComputerUseCaptureReason::RootBoundsUnavailable,
+        ),
+        (
+            NativeReason::RootBoundsInvalid,
+            ComputerUseCaptureReason::RootBoundsInvalid,
+        ),
+    ] {
+        for backend in [Backend::Visible, Backend::WgcFailure] {
+            for path in paths() {
+                for failure_before_pixels in [true, false] {
+                    let good = evidence();
+                    let failed = retained_visibility_failure(native);
+                    let (before, after) = if failure_before_pixels {
+                        (failed, good)
+                    } else {
+                        (good, failed)
+                    };
+                    OS.set(Native {
+                        backend,
+                        evidence: [before, after, good, good].into(),
+                        trace: vec![],
+                    });
+                    let (mut session, target) = session();
+                    let error = publish(&mut session, &target, path).err().unwrap();
+                    assert_eq!(error.code, ComputerUseErrorCode::CaptureFailed);
+                    let capture = error.details.unwrap().capture.unwrap();
+                    assert_eq!(
+                        capture.stage,
+                        ComputerUseCaptureStage::PublicationValidation
+                    );
+                    assert_eq!(capture.reason, public);
+                    assert_eq!(
+                        (capture.target_process_id, capture.target_window_handle),
+                        (42, 77)
+                    );
+                    assert_eq!(capture.target_bounds, Some([0, 0, 800, 600]));
+                    assert_eq!(capture.blocker_process_id, Some(42));
+                    assert_eq!(capture.blocker_window_handle, Some(88));
+                    assert_eq!(capture.blocker_bounds, Some([100, 100, 20, 20]));
+                    assert_eq!(capture.cloaked, Some(0));
+                    if native == NativeReason::RootBoundsInvalid {
+                        let bounds = capture.root_bounds_failure.unwrap();
+                        assert_eq!(bounds.root_role, ComputerUseRootBoundsRole::AboveTargetRoot);
+                        assert_eq!(bounds.proof_target_root_window_handle, 77);
+                        assert_eq!(bounds.dwm_raw_rect_edges, [100, 100, 100, 100]);
+                        assert_eq!(
+                            bounds.dwm_classification,
+                            ComputerUseRootBoundsClass::ZeroArea
+                        );
+                        assert_eq!(bounds.win32_raw_rect_edges, Some([100, 100, 120, 120]));
+                        assert_eq!(
+                            bounds.win32_classification,
+                            Some(ComputerUseRootBoundsClass::Positive)
+                        );
+                        assert_eq!(bounds.zero_area_status_mismatch, Some(true));
+                    } else {
+                        assert!(capture.root_bounds_failure.is_none());
+                    }
+                    assert_eq!(session.publications, 0);
+                    OS.with_borrow(|os| {
+                        let acquisitions = if failure_before_pixels { 1 } else { 2 };
+                        assert_eq!(os.evidence.len(), 4 - acquisitions);
+                        assert_eq!(
+                            os.trace
+                                .iter()
+                                .filter(|step| **step == "native evidence")
+                                .count(),
+                            acquisitions
+                        );
+                        assert_eq!(os.trace.contains(&"visible pixels"), !failure_before_pixels);
+                        assert!(!os.trace.contains(&"encode"));
+                        assert!(!os.trace.contains(&"accessibility"));
+                    });
+                }
+            }
+        }
+    }
+}
+
+#[rstest]
+fn first_failed_sample_keeps_its_own_diagnostic_without_a_new_proof() {
+    use dcc_cua_platform_windows::VisibleWindowCaptureReason as NativeReason;
+    let mut before = retained_visibility_failure(NativeReason::RootBoundsInvalid);
+    let after = retained_visibility_failure(NativeReason::RootOverlap);
+    let error = validate_native_exact_window_pixel_evidence(
+        &before,
+        &after,
+        ExactWindowPixelCaptureMode::VisibleDesktopCrop,
+    )
+    .err()
+    .unwrap();
+    assert_eq!(
+        error.details.unwrap().capture.unwrap().reason,
+        ComputerUseCaptureReason::RootBoundsInvalid
+    );
+    // Do not substitute a later sample's diagnostic for legacy first failure.
+    before.visibility_failure = None;
+    let error = validate_native_exact_window_pixel_evidence(
+        &before,
+        &after,
+        ExactWindowPixelCaptureMode::VisibleDesktopCrop,
+    )
+    .err()
+    .unwrap();
+    assert_eq!(error.code, ComputerUseErrorCode::CaptureFailed);
+    assert!(error.details.is_none());
+}
+
+#[rstest]
+fn synthetic_false_without_diagnostic_keeps_pixel_evidence_changed_fallback() {
+    for backend in [Backend::Visible, Backend::WgcFailure] {
+        for path in paths() {
+            let mut failed = evidence();
+            failed.unobscured = false;
+            assert!(failed.visibility_failure.is_none());
+            OS.set(Native {
+                backend,
+                evidence: [failed; 4].into(),
+                trace: vec![],
+            });
+            let (mut session, target) = session();
+            let error = publish(&mut session, &target, path).err().unwrap();
+            assert_eq!(error.code, ComputerUseErrorCode::CaptureFailed);
+            let capture = error.details.unwrap().capture.unwrap();
+            assert_eq!(
+                capture.stage,
+                ComputerUseCaptureStage::PublicationValidation
+            );
+            assert_eq!(
+                capture.reason,
+                ComputerUseCaptureReason::PixelEvidenceChanged
+            );
+            assert!(capture.blocker_window_handle.is_none());
+            assert_eq!(session.publications, 0);
+            OS.with_borrow(|os| {
+                assert_eq!(os.evidence.len(), 3);
+                assert!(!os.trace.contains(&"visible pixels"));
+                assert!(!os.trace.contains(&"encode"));
+            });
+        }
+    }
+}
+
+#[rstest]
+fn wgc_window_content_still_does_not_require_unobscured_desktop() {
+    use dcc_cua_platform_windows::VisibleWindowCaptureReason as NativeReason;
+    let before = retained_visibility_failure(NativeReason::RootBoundsInvalid);
+    let after = retained_visibility_failure(NativeReason::RootOverlap);
+    assert!(
+        validate_native_exact_window_pixel_evidence(
+            &before,
+            &after,
+            ExactWindowPixelCaptureMode::WindowContent,
+        )
+        .is_ok()
+    );
+    for path in paths() {
+        OS.set(Native {
+            backend: Backend::Wgc,
+            evidence: [after; 4].into(),
+            trace: vec![],
+        });
+        let (mut session, target) = session();
+        let captured = publish(&mut session, &target, path).unwrap();
+        assert_eq!(captured.mode, ExactWindowPixelCaptureMode::WindowContent);
+        assert_eq!(session.publications, 1);
+        OS.with_borrow(|os| {
+            assert!(os.evidence.is_empty());
+            assert_eq!(
+                os.trace
+                    .iter()
+                    .filter(|step| **step == "WGC pixels")
+                    .count(),
+                2
+            );
+            assert_eq!(os.trace.iter().filter(|step| **step == "encode").count(), 2);
+            assert!(!os.trace.contains(&"visible pixels"));
+        });
     }
 }

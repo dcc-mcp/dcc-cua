@@ -74,6 +74,7 @@ fn exact_source_first_capture_instance_boundary() {
     for marker in [
         "fn exact_capture_diagnostic(",
         "fn map_visible_capture_error(",
+        "fn map_visible_capture_diagnostic(",
         "pub(crate) fn map_root_bounds_failure(",
         "fn map_root_bounds_class(",
         "fn map_capture_identity_error(",
@@ -116,7 +117,13 @@ fn exact_source_first_capture_instance_boundary() {
         "pub struct VisibleWindowCaptureDiagnostic",
     ] {
         native_types.push_str("#[derive(Clone, Copy, Debug, PartialEq, Eq)]\n");
-        native_types.push_str(item(native, marker));
+        native_types.push_str(
+            &item(native, marker)
+                .lines()
+                .filter(|line| !line.trim_start().starts_with("#[serde("))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
     }
     native_types.push_str(item(native, "pub struct VisibleWindowCaptureError"));
     let state = include_str!("../../dcc-cua-platform-windows/src/exact_window_state.rs");

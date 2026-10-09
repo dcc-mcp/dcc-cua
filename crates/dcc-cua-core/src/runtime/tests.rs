@@ -359,6 +359,7 @@ fn live_frame_final_publication_rejects_post_encoding_native_drift() {
         visible: true,
         minimized: false,
         unobscured: true,
+        visibility_failure: None,
         instance: dcc_cua_platform_windows::ExactWindowPixelInstanceEvidence {
             process_creation_time_100ns: 1000,
             window_thread_id: 8,
@@ -467,6 +468,7 @@ fn live_native_final_metadata_refuses_post_proof_identity_geometry_and_visibilit
         visible: true,
         minimized: false,
         unobscured: true,
+        visibility_failure: None,
         instance: dcc_cua_platform_windows::ExactWindowPixelInstanceEvidence {
             process_creation_time_100ns: 1000,
             window_thread_id: 8,

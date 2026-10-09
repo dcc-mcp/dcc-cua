@@ -291,6 +291,18 @@ pub(super) fn validate_native_exact_window_pixel_evidence(
         ));
     }
     if capture_mode.requires_unobscured_desktop() && (!before.unobscured || !after.unobscured) {
+        // Preserve the first failing sample's own proof, including a legacy None.
+        let failed = if !before.unobscured { before } else { after };
+        if let Some(diagnostic) = failed.visibility_failure {
+            return Err(map_visible_capture_diagnostic(
+                ComputerUseErrorCode::CaptureFailed,
+                ComputerUseCaptureStage::PublicationValidation,
+                failed.process_id,
+                failed.window_handle,
+                diagnostic,
+                "the exact pixel target failed its visibility proof; pixels were discarded",
+            ));
+        }
         return Err(ComputerUseError::new(
             ComputerUseErrorCode::CaptureFailed,
             "the exact pixel target was occluded; pixels were discarded",

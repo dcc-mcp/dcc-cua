@@ -58,9 +58,28 @@ pub(crate) fn map_visible_capture_error(
     window_id: u64,
     error: dcc_cua_platform_windows::VisibleWindowCaptureError,
 ) -> ComputerUseError {
+    let message = error.to_string();
+    map_visible_capture_diagnostic(
+        code,
+        stage,
+        process_id,
+        window_id,
+        *error.diagnostic,
+        message,
+    )
+}
+
+#[cfg(windows)]
+pub(super) fn map_visible_capture_diagnostic(
+    code: ComputerUseErrorCode,
+    stage: ComputerUseCaptureStage,
+    process_id: u32,
+    window_id: u64,
+    native: dcc_cua_platform_windows::VisibleWindowCaptureDiagnostic,
+    message: impl Into<String>,
+) -> ComputerUseError {
     use ComputerUseCaptureReason as Public;
     use dcc_cua_platform_windows::VisibleWindowCaptureReason as Native;
-    let native = *error.diagnostic;
     let reason = match native.reason {
         Native::NativeReadFailed => Public::NativeReadFailed,
         Native::TargetUnavailable => Public::TargetUnavailable,
@@ -86,7 +105,7 @@ pub(crate) fn map_visible_capture_error(
     capture.root_bounds_failure = native
         .root_bounds_failure
         .map(super::map_root_bounds_failure);
-    ComputerUseError::new(code, error.to_string()).with_details(ComputerUseErrorDetails {
+    ComputerUseError::new(code, message).with_details(ComputerUseErrorDetails {
         capture: Some(capture),
         phase: Some(ComputerUseErrorPhase::EvidenceDispatch),
         ..Default::default()
@@ -284,6 +303,7 @@ pub(super) fn validate_live_frame_provenance(
         visible: true,
         minimized: false,
         unobscured: true,
+        visibility_failure: None,
         instance: dcc_cua_platform_windows::ExactWindowPixelInstanceEvidence {
             process_creation_time_100ns: proof.native_instance.process_creation_time_100ns,
             window_thread_id: proof.native_instance.window_thread_id,
