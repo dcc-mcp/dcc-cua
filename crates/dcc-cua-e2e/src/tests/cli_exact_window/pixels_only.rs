@@ -145,16 +145,14 @@ async fn bounded_session<T>(future: impl std::future::Future<Output = T>) -> T {
         .expect("public session operation exceeded its fixture budget")
 }
 
-fn assert_failure(output: &Output, path: &Path, expected_code: &str) {
+fn assert_failure_receipt(output: &Output, path: &Path, expected: Value) {
     assert!(
         !output.status.success(),
         "capture/identity failure must fail closed"
     );
     assert_eq!(
         receipt(&output.stdout, &output.stderr).expect("single redacted failure"),
-        json!({"success":false, "error":{
-            "code":expected_code, "message":"dcc-cua could not complete the command"
-        }})
+        expected
     );
     assert_eq!(
         std::str::from_utf8(&output.stdout).unwrap().lines().count(),
@@ -163,14 +161,23 @@ fn assert_failure(output: &Output, path: &Path, expected_code: &str) {
     assert!(!path.exists(), "failed capture published PNG bytes");
 }
 
+fn assert_failure(output: &Output, path: &Path, expected_code: &str) {
+    assert_failure_receipt(
+        output,
+        path,
+        json!({"success":false, "error":{
+            "code":expected_code, "message":"dcc-cua could not complete the command"
+        }}),
+    );
+}
+
 #[rstest]
 fn pixels_only_failure_receipts_require_the_exact_case_code() {
     use std::os::windows::process::ExitStatusExt;
 
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("unpublished.png");
-    // Replay the observed wrong-owner envelope and the source-traced occlusion
-    // envelope through the same assertion used by the external CLI fixture.
+    // Generic failures, including wrong-owner, require the exact redacted envelope.
     for actual_code in ["target_unavailable", "invalid_target"] {
         let output = Output {
             status: std::process::ExitStatus::from_raw(1),
@@ -308,7 +315,27 @@ async fn external_pixels_only_cli_covers_provider_free_capture_failure_and_clean
         &binary,
         &pixel_arguments(pid, fixture.target, &blocked_path),
     );
-    assert_failure(&blocked, &blocked_path, "invalid_target");
+    let target_bounds: [i32; 4] =
+        serde_json::from_value(value["observation"]["source_rect"].clone())
+            .expect("validated physical target rectangle");
+    assert!(target_bounds[2] > 100 && target_bounds[3] > 100);
+    // Target and blocker are frameless roots with the same fixture rectangle.
+    let blocked_capture = json!({
+        "stage":"publication_validation", "reason":"root_overlap",
+        "target_process_id":pid, "target_window_handle":fixture.target,
+        "target_bounds":target_bounds,
+        "blocker_process_id":pid, "blocker_window_handle":fixture.blocker,
+        "blocker_bounds":target_bounds, "cloaked":0
+    });
+    assert_failure_receipt(
+        &blocked,
+        &blocked_path,
+        json!({"success":false, "error":{
+            "code":"capture_failed",
+            "message":"Exact-window capture was refused; see the content-free native proof details.",
+            "details":{"capture":blocked_capture.clone(), "whole_desktop_fallback":false}
+        }}),
+    );
     eprintln!("pixels-only external success, wrong-owner and occluded-capture receipts passed");
     fixture.block_capture(false);
     assert_eq!(
@@ -435,7 +462,16 @@ async fn external_pixels_only_cli_covers_provider_free_capture_failure_and_clean
     let error = bounded_session(session.screenshot_pixels_only())
         .await
         .expect_err("occluded capture must fail");
-    assert_eq!(error.code, ComputerUseErrorCode::InvalidTarget);
+    assert_eq!(error.code, ComputerUseErrorCode::CaptureFailed);
+    let capture = error
+        .details
+        .as_ref()
+        .and_then(|details| details.capture.as_ref())
+        .expect("same-proof blocked-capture diagnostic");
+    assert_eq!(
+        serde_json::to_value(capture).expect("closed capture diagnostic"),
+        blocked_capture
+    );
     let stopped = bounded_session(session.stop())
         .await
         .expect("stop after capture failure");

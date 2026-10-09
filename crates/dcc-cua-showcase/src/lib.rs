@@ -14,6 +14,14 @@ use serde_json::{Value, json};
 use tokio::sync::{Notify, mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 
+mod capture_manifest;
+use capture_manifest::CaptureManifest;
+mod provenance;
+pub use provenance::{
+    FrameCaptureProvenance, NativeFrameInstance, NativeFrameProvenance, NativeFrameSource,
+    NativeWgcFrameGeometry,
+};
+
 #[derive(Debug)]
 pub struct LiveObservationFrame {
     sequence: u64,
@@ -22,6 +30,7 @@ pub struct LiveObservationFrame {
     height: u32,
     captured_at_ms: u128,
     captured_at: std::time::Instant,
+    provenance: FrameCaptureProvenance,
 }
 
 impl LiveObservationFrame {
@@ -61,7 +70,19 @@ impl LiveObservationFrame {
             height,
             captured_at_ms,
             captured_at,
+            provenance: FrameCaptureProvenance::Portable,
         }
+    }
+
+    #[must_use]
+    pub fn with_provenance(mut self, provenance: FrameCaptureProvenance) -> Self {
+        self.provenance = provenance;
+        self
+    }
+
+    #[must_use]
+    pub const fn provenance(&self) -> &FrameCaptureProvenance {
+        &self.provenance
     }
 
     #[must_use]
@@ -99,6 +120,7 @@ impl LiveObservationFrame {
 pub struct LiveObservationStatus {
     latest: Option<Arc<LiveObservationFrame>>,
     pause_reason: Option<Value>,
+    pause_sequence_fence: Option<u64>,
     terminal_reason: Option<Value>,
 }
 
@@ -112,8 +134,20 @@ impl LiveObservationStatus {
         Self {
             latest,
             pause_reason,
+            pause_sequence_fence: None,
             terminal_reason,
         }
+    }
+
+    #[must_use]
+    pub const fn with_pause_sequence_fence(mut self, fence: Option<u64>) -> Self {
+        self.pause_sequence_fence = fence;
+        self
+    }
+
+    #[must_use]
+    pub const fn pause_sequence_fence(&self) -> Option<u64> {
+        self.pause_sequence_fence
     }
 
     pub fn publish_frame(
@@ -128,6 +162,9 @@ impl LiveObservationStatus {
 
     pub fn record_paused_error(&mut self, error: &ShowcaseError) {
         if self.terminal_reason.is_none() {
+            self.pause_sequence_fence = self
+                .pause_sequence_fence
+                .max(self.latest.as_ref().map(|frame| frame.sequence()));
             self.pause_reason = Some(error.as_reason(self.latest.as_ref()));
         }
     }
@@ -227,6 +264,7 @@ struct ShowcaseProducer {
     frames: watch::Receiver<LiveObservationStatus>,
     sender: mpsc::Sender<ShowcaseProducerEvent>,
     last_forwarded_sequence: Option<u64>,
+    last_applied_pause_fence: Option<u64>,
     paused: bool,
     pause_reason: Arc<Mutex<Option<Value>>>,
     terminal_reason: Arc<Mutex<Option<Value>>>,
@@ -277,6 +315,22 @@ impl ShowcaseProducer {
 
     async fn apply_status(&mut self, status: &LiveObservationStatus, guaranteed: bool) -> bool {
         let source_pause_reason = status.pause_reason();
+        let new_pause_fence = status.pause_sequence_fence.is_some_and(|fence| {
+            self.last_applied_pause_fence
+                .is_none_or(|applied| fence > applied)
+        });
+        if new_pause_fence && self.last_forwarded_sequence.is_none() {
+            // A pause predating the recorder's first sample has no media to close.
+            self.last_applied_pause_fence = status.pause_sequence_fence;
+        } else if new_pause_fence && source_pause_reason.is_none() {
+            // A latest-value watch can conflate pause and fresh resume. Preserve
+            // the durable boundary before forwarding that resumed frame.
+            if !self.paused && !send_pause_boundary(&self.sender).await {
+                return false;
+            }
+            self.paused = true;
+            self.last_applied_pause_fence = status.pause_sequence_fence;
+        }
         if let Some(reason) = source_pause_reason {
             if self.last_forwarded_sequence.is_none() && status.latest().is_none() {
                 // No recorder handle exists until the encoder has a first
@@ -287,6 +341,7 @@ impl ShowcaseProducer {
             if !self.paused && !self.enter_pause(status).await {
                 return false;
             }
+            self.last_applied_pause_fence = status.pause_sequence_fence;
             self.project_applied_pause(Some(reason));
         } else if self.paused {
             match self.resume(status).await {
@@ -326,6 +381,13 @@ impl ShowcaseProducer {
     }
 
     async fn resume(&mut self, status: &LiveObservationStatus) -> GuaranteedFrameSend {
+        if status.pause_sequence_fence.is_some_and(|fence| {
+            status
+                .latest()
+                .is_none_or(|frame| frame.sequence() <= fence)
+        }) {
+            return GuaranteedFrameSend::NoNewFrame;
+        }
         let sent =
             send_resume_frame_guaranteed(status, &self.sender, &mut self.last_forwarded_sequence)
                 .await;
@@ -396,6 +458,46 @@ struct ShowcaseProgress {
     current_partial: Option<PathBuf>,
 }
 
+/// Evidence acknowledged by the encoder for its actual first media sample.
+/// It shares no mutable source state and retains no additional pixel buffer.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct EncodedFirstFrameEvidence {
+    source_sequence: u64,
+    captured_at_ms: u128,
+    #[serde(skip)]
+    captured_at: std::time::Instant,
+    source_width: u32,
+    source_height: u32,
+    capture_provenance: FrameCaptureProvenance,
+}
+
+impl EncodedFirstFrameEvidence {
+    fn from_frame(frame: &LiveObservationFrame) -> Self {
+        let (source_width, source_height) = frame.dimensions();
+        Self {
+            source_sequence: frame.sequence(),
+            captured_at_ms: frame.captured_at_ms(),
+            captured_at: frame.captured_at(),
+            source_width,
+            source_height,
+            capture_provenance: frame.provenance().clone(),
+        }
+    }
+
+    #[must_use]
+    pub const fn sequence(&self) -> u64 {
+        self.source_sequence
+    }
+    #[must_use]
+    pub const fn captured_at(&self) -> std::time::Instant {
+        self.captured_at
+    }
+    #[must_use]
+    pub const fn provenance(&self) -> &FrameCaptureProvenance {
+        &self.capture_provenance
+    }
+}
+
 pub struct ShowcaseRecorder {
     path: PathBuf,
     stop_producer: Option<oneshot::Sender<ShowcaseProducerStop>>,
@@ -406,6 +508,7 @@ pub struct ShowcaseRecorder {
     outcome: Arc<Mutex<Option<Value>>>,
     finalization: Arc<Notify>,
     progress: Arc<Mutex<ShowcaseProgress>>,
+    first_frame: EncodedFirstFrameEvidence,
 }
 
 impl ShowcaseRecorder {
@@ -414,11 +517,28 @@ impl ShowcaseRecorder {
         output_dir: &str,
         fps: u32,
     ) -> ShowcaseResult<Self> {
+        Self::start_with_outcome(frames, output_dir, fps)
+            .await
+            .map_err(|(error, _)| error)
+    }
+
+    /// Retain the actual failed startup outcome after joining its owned worker
+    /// and encoder. The compatible `start` API still returns the same error.
+    pub async fn start_with_outcome(
+        frames: watch::Receiver<LiveObservationStatus>,
+        output_dir: &str,
+        fps: u32,
+    ) -> Result<Self, (ShowcaseError, Value)> {
         {
             let initial_status = frames.borrow();
             if initial_status.latest().is_none() && initial_status.pause_reason().is_some() {
-                return Err(capture_error(
+                let error = capture_error(
                     "live observation paused before its first frame; showcase was not started",
+                );
+                return Err((
+                    error,
+                    json!({"active":false,"finalized":false,
+                    "pause_reason":initial_status.pause_reason()}),
                 ));
             }
         }
@@ -474,6 +594,7 @@ impl ShowcaseRecorder {
                 frames,
                 sender: frame_sender,
                 last_forwarded_sequence: None,
+                last_applied_pause_fence: None,
                 paused: false,
                 pause_reason: producer_pause_reason,
                 terminal_reason: producer_terminal_reason,
@@ -481,7 +602,7 @@ impl ShowcaseRecorder {
             .run(stop_requested),
         );
         match ready_receiver.await {
-            Ok(Ok(())) => Ok(Self {
+            Ok(Ok(first_frame)) => Ok(Self {
                 path,
                 stop_producer: Some(stop_producer),
                 producer,
@@ -491,22 +612,66 @@ impl ShowcaseRecorder {
                 outcome,
                 finalization,
                 progress,
+                first_frame,
             }),
-            Ok(Err(error)) => {
+            failed => {
+                let mut error = match failed {
+                    Ok(Err(error)) => error,
+                    _ => ShowcaseError::new(
+                        ShowcaseErrorCode::CaptureFailed,
+                        "showcase encoder stopped before its first frame",
+                    ),
+                };
                 producer.abort();
-                Err(error)
-            }
-            Err(_) => {
-                producer.abort();
-                Err(ShowcaseError::new(
-                    ShowcaseErrorCode::CaptureFailed,
-                    "showcase encoder stopped before its first frame",
-                ))
+                // Drop the producer's channel before joining the encoder;
+                // dropping a JoinHandle would detach a partially written file.
+                let producer_result = producer.await;
+                let encoder_result = encoder.await;
+                if let Err(join) = producer_result
+                    && !join.is_cancelled()
+                {
+                    error
+                        .message
+                        .push_str(&format!("; startup producer failed: {join}"));
+                }
+                match encoder_result {
+                    Err(join) => error
+                        .message
+                        .push_str(&format!("; startup encoder failed: {join}")),
+                    Ok(Err(encoder)) if encoder.message != error.message => {
+                        error
+                            .message
+                            .push_str(&format!("; startup encoder failed: {}", encoder.message));
+                    }
+                    _ => {}
+                }
+                let progress = lock_unpoisoned(&progress).clone();
+                let mut state = lock_unpoisoned(&outcome).clone().unwrap_or_else(|| {
+                    json!({
+                        "path":path.to_string_lossy(), "segments":progress.segments,
+                        "current_partial":progress.current_partial,
+                    })
+                });
+                state["active"] = json!(false);
+                state["finalized"] = json!(false);
+                state["error"] = json!({"code":error.code,"message":error.message});
+                Err((error, state))
             }
         }
     }
 
+    #[must_use]
+    pub const fn first_frame(&self) -> &EncodedFirstFrameEvidence {
+        &self.first_frame
+    }
+
     pub fn state(&self) -> Value {
+        let mut state = self.encoder_state();
+        state["first_encoded_frame"] = json!(self.first_frame);
+        state
+    }
+
+    fn encoder_state(&self) -> Value {
         if let Some(outcome) = lock_unpoisoned(&self.outcome).clone() {
             return outcome;
         }
@@ -571,6 +736,16 @@ impl ShowcaseRecorder {
     }
 
     pub async fn stop(mut self) -> ShowcaseResult<Value> {
+        self.stop_with_outcome_inner().await.0
+    }
+
+    /// Drain the same producer/encoder and retain its authoritative outcome
+    /// even when finalization fails. No failed partial becomes a final video.
+    pub async fn stop_with_outcome(mut self) -> (ShowcaseResult<Value>, Value) {
+        self.stop_with_outcome_inner().await
+    }
+
+    async fn stop_with_outcome_inner(&mut self) -> (ShowcaseResult<Value>, Value) {
         let producer_acknowledgement = self.stop_producer.take().and_then(|stop_producer| {
             let (acknowledged, acknowledgement) = oneshot::channel();
             stop_producer
@@ -596,8 +771,34 @@ impl ShowcaseRecorder {
                 format!("showcase encoder task failed: {error}"),
             )
         });
-        producer_result?;
-        encoder_result?
+        let result =
+            combine_stop_results(producer_result, encoder_result.and_then(|result| result)).map(
+                |mut state| {
+                    state["first_encoded_frame"] = json!(self.first_frame);
+                    state
+                },
+            );
+        let mut outcome = self.state();
+        if let Err(error) = &result {
+            outcome["active"] = json!(false);
+            outcome["finalized"] = json!(false);
+            outcome["error"] = json!({"code":error.code,"message":error.message});
+        }
+        (result, outcome)
+    }
+}
+
+fn combine_stop_results(
+    producer: ShowcaseResult<()>,
+    encoder: ShowcaseResult<Value>,
+) -> ShowcaseResult<Value> {
+    match (producer, encoder) {
+        (Ok(()), result) => result,
+        (Err(error), Ok(_)) => Err(error),
+        (Err(producer), Err(encoder)) => Err(capture_error(format!(
+            "{}; encoder finalization also failed: {}",
+            producer.message, encoder.message
+        ))),
     }
 }
 
@@ -724,7 +925,7 @@ fn encode_frames_with_progress(
     mut frames: mpsc::Receiver<ShowcaseProducerEvent>,
     path: &Path,
     fps: u32,
-    ready: oneshot::Sender<ShowcaseResult<()>>,
+    ready: oneshot::Sender<ShowcaseResult<EncodedFirstFrameEvidence>>,
     progress: &Mutex<ShowcaseProgress>,
 ) -> ShowcaseResult<Value> {
     let FirstShowcaseFrame {
@@ -764,10 +965,12 @@ fn encode_frames_with_progress(
             &mut current_progress,
         )?
     });
+    let mut capture_manifest = CaptureManifest::create(path)?;
+    capture_manifest.frame(&first, 0, 0, 0, width, height)?;
     if let Some(acknowledged) = first_frame_acknowledgement {
         let _ = acknowledged.send(Ok(()));
     }
-    let _ = ready.send(Ok(()));
+    let _ = ready.send(Ok(EncodedFirstFrameEvidence::from_frame(&first)));
 
     let mut frame_count = 1_u64;
     let mut next_segment_index = 1_u32;
@@ -797,6 +1000,7 @@ fn encode_frames_with_progress(
                 match result {
                     Ok(duration_ms) => {
                         media_duration_ms = duration_ms;
+                        capture_manifest.pause(media_duration_ms)?;
                         let _ = acknowledged.send(Ok(()));
                     }
                     Err(error) => {
@@ -826,6 +1030,14 @@ fn encode_frames_with_progress(
                         },
                         progress,
                     )?);
+                    capture_manifest.frame(
+                        &frame,
+                        frame_count,
+                        next_segment_index,
+                        media_duration_ms,
+                        width,
+                        height,
+                    )?;
                     next_segment_index = next_segment_index.saturating_add(1);
                     frame_count = frame_count.saturating_add(1);
                     Ok(())
@@ -889,6 +1101,14 @@ fn encode_frames_with_progress(
                         &mut current_progress,
                     )?);
                     drop(current_progress);
+                    capture_manifest.frame(
+                        &frame,
+                        frame_count,
+                        next_segment_index,
+                        elapsed_ms,
+                        width,
+                        height,
+                    )?;
                     next_segment_index = next_segment_index.saturating_add(1);
                     frame_count = frame_count.saturating_add(1);
                     continue;
@@ -910,6 +1130,14 @@ fn encode_frames_with_progress(
                     u32::try_from(current.start_time - segment.pending.start_time)
                         .unwrap_or(u32::MAX)
                         .max(1);
+                capture_manifest.frame(
+                    &frame,
+                    frame_count,
+                    segment.index,
+                    segment.start_ms.saturating_add(current.start_time),
+                    width,
+                    height,
+                )?;
                 let pending = std::mem::replace(&mut segment.pending, current);
                 write_sample(&mut segment.writer, pending, sample_duration)?;
                 segment.final_duration = sample_duration;
@@ -927,6 +1155,7 @@ fn encode_frames_with_progress(
     let current_progress = lock_unpoisoned(progress);
     let segments = current_progress.segments.clone();
     drop(current_progress);
+    let capture_provenance = capture_manifest.finish(frame_count)?;
     let manifest_path = manifest_output_path(path);
     let state = json!({
         "active": false,
@@ -941,6 +1170,7 @@ fn encode_frames_with_progress(
         "finalized": true,
         "segments": segments,
         "current_partial": Value::Null,
+        "capture_provenance": capture_provenance,
     });
     write_manifest(&manifest_path, &state)?;
     Ok(state)

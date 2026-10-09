@@ -12,7 +12,58 @@ use super::{
     ComputerUseDriver, ComputerUseSession, RECORDING_KEEPALIVE_INTERVAL, call_driver_tool,
     ensure_tool_ok,
 };
-use crate::{ComputerUseError, ComputerUseErrorCode, ComputerUseResult};
+use crate::{
+    ComputerUseCleanupIssue, ComputerUseCleanupPhase, ComputerUseError, ComputerUseErrorCode,
+    ComputerUseRecordingCleanupOutcome, ComputerUseRecordingSidecarOutcome, ComputerUseResult,
+};
+
+/// A consumed owner is not proof of cleanup. Pending bits are set before an
+/// awaited drain so cancellation cannot make a subsequent stop look successful.
+#[derive(Default)]
+pub(crate) struct LocalSessionCleanup {
+    pub(super) recorder_pending: bool,
+    pub(super) source_pending: bool,
+    pub(super) issues: Vec<ComputerUseCleanupIssue>,
+    pub(super) last_source: Option<Value>,
+}
+
+impl LocalSessionCleanup {
+    pub(super) fn pending(&self) -> bool {
+        self.recorder_pending || self.source_pending
+    }
+
+    pub(super) fn stop_issues(&self) -> Vec<ComputerUseCleanupIssue> {
+        let mut issues = self.issues.clone();
+        for (pending, phase) in [
+            (
+                self.recorder_pending,
+                ComputerUseCleanupPhase::RecordingStop,
+            ),
+            (
+                self.source_pending,
+                ComputerUseCleanupPhase::LiveObservationStop,
+            ),
+        ] {
+            if pending && !issues.iter().any(|issue| issue.phase == phase) {
+                issues.push(ComputerUseCleanupIssue::from_error(
+                    phase,
+                    ComputerUseError::new(
+                        ComputerUseErrorCode::CompletionUnknown,
+                        "owned cleanup has not been acknowledged; do not retry native input",
+                    ),
+                ));
+            }
+        }
+        issues
+    }
+
+    pub(super) fn remember(&mut self, phase: ComputerUseCleanupPhase, error: ComputerUseError) {
+        let issue = ComputerUseCleanupIssue::from_error(phase, error);
+        if !self.issues.contains(&issue) {
+            self.issues.push(issue);
+        }
+    }
+}
 
 pub(crate) async fn probe_recording_state(
     driver: &ComputerUseDriver,
@@ -69,6 +120,49 @@ impl RecordingVideoTerminalEvidence {
 
     pub(crate) const fn state(&self) -> &Value {
         &self.state
+    }
+
+    pub(super) fn record_startup_error(&mut self, error: &ComputerUseError) {
+        self.state["startup_error"] = json!({"code":error.code,"message":error.message});
+    }
+
+    pub(super) fn cleanup_outcome(&self) -> ComputerUseRecordingCleanupOutcome {
+        let state = &self.state;
+        let path = |key: &str| state[key].as_str().map(str::to_owned);
+        let sidecar = &state["capture_provenance"];
+        let capture_sidecar = (|| {
+            Some(ComputerUseRecordingSidecarOutcome {
+                path: sidecar["path"].as_str()?.into(),
+                sha256: sidecar["sha256"].as_str()?.into(),
+                records: sidecar["records"].as_u64()?,
+                frames: sidecar["frames"].as_u64()?,
+                finalized: sidecar["finalized"].as_bool()?,
+            })
+        })();
+        ComputerUseRecordingCleanupOutcome {
+            active: state["active"] == true,
+            finalized: state["finalized"] == true,
+            path: path("path"),
+            manifest_path: path("manifest_path"),
+            current_partial: path("current_partial"),
+            segment_paths: state["segments"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|segment| segment["path"].as_str().map(str::to_owned))
+                .collect(),
+            capture_sidecar,
+            error_code: serde_json::from_value(state["error"]["code"].clone()).ok(),
+        }
+    }
+
+    /// Preserve an authoritative failed encoder outcome without advertising
+    /// finalized media. Successful terminal evidence keeps its stricter API.
+    pub(crate) fn from_failed_stop(mut state: Value, error: &ComputerUseError) -> Self {
+        state["active"] = json!(false);
+        state["finalized"] = json!(false);
+        state["error"] = json!({"code": error.code, "message": error.message});
+        Self { state }
     }
 }
 

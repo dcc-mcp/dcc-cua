@@ -135,7 +135,7 @@ jobs:
           components: rustfmt
       - uses: taiki-e/install-action@v2
         with:
-          tool: cargo-hakari
+          tool: cargo-hakari@0.9.39
       - name: Reverify immutable source before policy execution
         shell: bash
         env:
@@ -485,4 +485,5 @@ jobs:
             --target "$host" \
             --version "$version" \
             --extract-root "$RUNNER_TEMP/dcc-cua-pr-final-extract-${host}-${GITHUB_RUN_ATTEMPT}" \
-            --install-root "$RUNNER_TEMP/dcc-cua-pr-final-install-${host}-${GITHUB_RUN_ATTEMPT}"
+            --install-root "$RUNNER_TEMP/dcc-cua-pr-final-install-${host}-${GITHUB_RUN_ATTEMPT}" \
+            --allow-ci-build-metadata

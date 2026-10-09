@@ -277,7 +277,7 @@ fn ordinary_command_failures_emit_one_machine_envelope_on_stdout() {
 }
 
 #[rstest]
-fn pixels_only_activation_conflict_returns_a_diagnostic_envelope() {
+fn pixels_only_escalation_conflict_returns_a_diagnostic_envelope() {
     let output = Command::new(env!("CARGO_BIN_EXE_dcc-cua"))
         .args([
             "snapshot",
@@ -286,7 +286,7 @@ fn pixels_only_activation_conflict_returns_a_diagnostic_envelope() {
             "--window-id",
             "77",
             "--pixels-only",
-            "--activate",
+            "--escalate",
         ])
         .output()
         .expect("dcc-cua should start");
@@ -296,11 +296,11 @@ fn pixels_only_activation_conflict_returns_a_diagnostic_envelope() {
     assert_eq!(envelope["error"]["code"], "invalid_argument_combination");
     assert_eq!(
         envelope["error"]["message"],
-        "snapshot --pixels-only is read-only and cannot be combined with --activate or --escalate"
+        "snapshot --pixels-only skips accessibility and cannot be combined with --escalate"
     );
     assert_eq!(
         envelope["error"]["details"]["valid_form"],
-        "snapshot --pid PID --window-id HWND --pixels-only --output FILE"
+        "snapshot --pid PID --window-id HWND --pixels-only [--activate] --output FILE"
     );
     assert!(output.stderr.is_empty());
 }

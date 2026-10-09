@@ -87,7 +87,7 @@ pub use task_authorization_broker::{
     TrustedTaskAuthorizationTarget, trusted_task_authorization_broker,
 };
 use task_grant::TaskGrant;
-pub use task_grant::{MAX_APPLICATION_LABEL_CHARS, MAX_TASK_GRANT_ID_CHARS};
+pub use task_grant::{MAX_APPLICATION_LABEL_CHARS, MAX_TASK_GRANT_ID_CHARS, TaskObservationMode};
 use wire::*;
 
 pub const HOST_HELLO_TIMEOUT_MS: u64 = 10_000;
@@ -431,10 +431,18 @@ enum Request {
         window_capability: String,
         operation: WindowOperation,
     },
+    MinimizeWindow {
+        session_id: String,
+        task_grant_id: String,
+        window_capability: String,
+        observation_id: String,
+    },
     SetWindowFrame {
         session_id: String,
         task_grant_id: String,
         window_capability: String,
+        #[serde(default)]
+        window_state_id: Option<String>,
         frame: ComputerUseWindowFrameRequest,
     },
     InvokeMenu {
@@ -453,6 +461,8 @@ enum Request {
         max_nodes: u32,
         #[serde(default)]
         activate_before: bool,
+        #[serde(default)]
+        capture_diagnostics: bool,
     },
     Zoom {
         session_id: String,
@@ -567,6 +577,7 @@ enum Request {
         task_grant_id: String,
         window_capability: String,
         observation_id: String,
+        #[serde(default)]
         accessibility_state_id: String,
         action: HostAction,
         #[serde(default)]

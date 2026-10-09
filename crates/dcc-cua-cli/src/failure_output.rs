@@ -11,6 +11,8 @@ const NO_ACCESSIBILITY_PROVIDER_MESSAGE: &str =
     "The exact window has no usable accessibility provider.";
 pub(super) const OVERLAY_EXCLUSION_MESSAGE: &str =
     "Another DCC-CUA cursor overlay did not acknowledge capture exclusion.";
+pub(super) const CAPTURE_PROOF_MESSAGE: &str =
+    "Exact-window capture was refused; see the content-free native proof details.";
 
 fn overlay_exclusion_failure() -> Value {
     json!({
@@ -45,11 +47,11 @@ pub(super) fn fatal_error_value(error: &(dyn std::error::Error + 'static)) -> Va
                 "mode": "pixels_only",
                 "required_selectors": ["--pid", "--window-id"],
             }),
-            CliUsageError::PixelsOnlyConflictsWithActivation => json!({
+            CliUsageError::PixelsOnlyConflictsWithEscalation => json!({
                 "command": "snapshot",
                 "mode": "pixels_only",
-                "incompatible_options": ["--activate", "--escalate"],
-                "valid_form": "snapshot --pid PID --window-id HWND --pixels-only --output FILE",
+                "incompatible_options": ["--escalate"],
+                "valid_form": "snapshot --pid PID --window-id HWND --pixels-only [--activate] --output FILE",
             }),
         };
         return json!({
@@ -77,6 +79,22 @@ pub(super) fn fatal_error_value(error: &(dyn std::error::Error + 'static)) -> Va
                         "fallback_command": "snapshot --pixels-only",
                         "fallback_requires": "ocr_or_another_perception_layer",
                     }
+                }
+            });
+        }
+        if let Some(capture) = error
+            .details
+            .as_ref()
+            .and_then(|details| details.capture.as_ref())
+        {
+            // Only this closed, typed metadata contract may cross the one-shot
+            // boundary. Raw messages and arbitrary details can contain UI text.
+            return json!({
+                "success": false,
+                "error": {
+                    "code": error.code,
+                    "message": CAPTURE_PROOF_MESSAGE,
+                    "details": {"capture": capture, "whole_desktop_fallback": false},
                 }
             });
         }

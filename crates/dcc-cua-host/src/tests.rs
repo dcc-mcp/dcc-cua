@@ -216,6 +216,7 @@ fn cached_host_session(driver: &ComputerUseDriver) -> HostSession {
         target_process_id: 42,
         target_window_handle: 77,
         task_grant_id: "grant-1".into(),
+        observation_mode: TaskObservationMode::Semantic,
         allow_raw_input: true,
         allow_app_terminate: false,
         allow_clipboard_read: false,
@@ -911,6 +912,7 @@ fn successful_native_snapshot_mint_survives_outer_epoch_reconciliation() {
         max_depth: 5,
         max_nodes: 100,
         activate_before: false,
+        capture_diagnostics: false,
     });
 
     request_handler::finish_window_evidence_request(
@@ -1487,6 +1489,107 @@ fn failed_window_mutation_still_invalidates_host_observation_cache() {
 }
 
 #[rstest]
+fn pixels_only_snapshot_never_grants_semantic_elements_and_attempts_consume_it() {
+    let driver = ComputerUseDriver::create().unwrap();
+    let mut host = cached_host_session(&driver);
+    host.observation_mode = TaskObservationMode::PixelsOnly;
+    host.record_snapshot_observation("pixel-1".into(), &json!({"accessibility_available": false}));
+    assert!(host.require_latest_observation("pixel-1").is_ok());
+    assert!(host.require_latest_observation("").is_err());
+    assert!(host.require_latest_observation("old-pixel").is_err());
+    assert!(host.latest_accessibility_state_id.is_none());
+    assert!(host.latest_accessibility_root.is_none());
+    let attempted = finish_window_mutation_attempt(Err::<(), _>("uncertain native result"), || {
+        host.invalidate_observations()
+    });
+    assert!(attempted.is_err());
+    assert!(host.require_latest_observation("pixel-1").is_err());
+    let state = request_handler::observed_window_state_response(
+        &mut host,
+        "session-1",
+        json!({
+            "exists":true, "visible":true, "minimized":false
+        }),
+    );
+    assert_eq!(state["type"], "window_state");
+    assert!(host.latest_observation_id.is_none());
+    assert!(state.get("observation_id").is_none());
+}
+
+#[rstest]
+fn minimize_method_cannot_substitute_a_session_grant_or_capability() {
+    let driver = ComputerUseDriver::create().unwrap();
+    let mut sessions = ConnectionSessions::default();
+    let mut host = cached_host_session(&driver);
+    host.observation_mode = TaskObservationMode::PixelsOnly;
+    sessions.windows.insert("session-1".into(), host);
+    for (session_id, task_grant_id, window_capability) in [
+        ("another-session", "grant-1", "capability-1"),
+        ("session-1", "another-grant", "capability-1"),
+        ("session-1", "grant-1", "another-capability"),
+    ] {
+        let request = Request::MinimizeWindow {
+            session_id: session_id.into(),
+            task_grant_id: task_grant_id.into(),
+            window_capability: window_capability.into(),
+            observation_id: "observation-before-transition".into(),
+        };
+        assert!(
+            crate::task_authorization_scope::enforce_task_authorized_method(
+                &mut sessions,
+                &request
+            )
+            .is_err()
+        );
+    }
+}
+
+#[rstest]
+#[case("snapshot", true)]
+#[case("minimize_window", true)]
+#[case("execute_action", true)]
+#[case("accessibility_snapshot", false)]
+#[case("find", false)]
+#[case("wait_for", false)]
+#[case("browser_snapshot", false)]
+#[case("call_tool", false)]
+fn pixels_only_host_scope_is_closed(#[case] method: &str, #[case] allowed: bool) {
+    assert_eq!(
+        TaskObservationMode::PixelsOnly.permits_method(method),
+        allowed
+    );
+    assert!(TaskObservationMode::Semantic.permits_method(method));
+}
+
+#[rstest]
+#[case(json!({"action":"click", "input_kind":"raw_input", "x":1, "y":1}))]
+#[case(json!({"action":"click", "input_kind":"semantic", "element_index":1}))]
+#[case(json!({"action":"click", "input_kind":"raw_input", "element_token":"borrowed"}))]
+#[case(json!({"action":"keypress", "input_kind":"raw_input", "keys":["ENTER"]}))]
+fn pixels_only_host_rejects_ungranted_input_before_core_dispatch(#[case] mut action: Value) {
+    action["intent"] = json!("ordinary_edit");
+    let driver = ComputerUseDriver::create().unwrap();
+    let mut host = cached_host_session(&driver);
+    host.observation_mode = TaskObservationMode::PixelsOnly;
+    let mut sessions = ConnectionSessions::default();
+    sessions.windows.insert("session-1".into(), host);
+    for observation_id in ["", "stale", "observation-before-transition"] {
+        let request: Request = serde_json::from_value(json!({"method":"execute_action", "params":{
+            "session_id":"session-1", "task_grant_id":"grant-1", "window_capability":"capability-1",
+            "observation_id":observation_id, "accessibility_state_id":"", "action":action
+        }}))
+        .unwrap();
+        assert!(
+            crate::task_authorization_scope::enforce_task_authorized_method(
+                &mut sessions,
+                &request
+            )
+            .is_err()
+        );
+    }
+}
+
+#[rstest]
 fn sensitive_client_declared_intent_keeps_raw_keypress_on_confirmation_tier() {
     let action = HostAction {
         action: "keypress".into(),
@@ -1791,3 +1894,19 @@ mod secret_vault;
 mod session_concurrency;
 mod session_health;
 mod task_authorization;
+
+#[rstest]
+#[case(TaskObservationMode::Semantic, false, true)]
+#[case(TaskObservationMode::Semantic, true, false)]
+#[case(TaskObservationMode::PixelsOnly, false, true)]
+#[case(TaskObservationMode::PixelsOnly, true, true)]
+fn capture_diagnostics_remain_explicit_pixels_only(
+    #[case] mode: TaskObservationMode,
+    #[case] enabled: bool,
+    #[case] allowed: bool,
+) {
+    assert_eq!(
+        request_handler::validate_snapshot_capture_diagnostics(mode, enabled).is_ok(),
+        allowed
+    );
+}

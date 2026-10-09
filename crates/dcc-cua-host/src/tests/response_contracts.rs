@@ -35,6 +35,46 @@ fn host_error_response_serializes_typed_computer_use_details() {
 }
 
 #[rstest]
+fn host_error_response_preserves_root_bounds_failure_without_minting_observation() {
+    let capture: dcc_cua_core::ComputerUseCaptureDiagnostic = serde_json::from_value(json!({
+        "stage":"visible_desktop_proof", "reason":"root_bounds_invalid",
+        "target_process_id":42, "target_window_handle":7,
+        "blocker_window_handle":91, "blocker_process_id":100,
+        "root_bounds_failure":{
+            "root_role":"above_target_root", "proof_target_root_window_handle":77,
+            "dwm_raw_rect_edges":[10,20,10,30], "dwm_classification":"zero_area",
+            "visible":true, "cloaked":0, "win32_read_after_dwm_rejection":true,
+            "win32_raw_rect_edges":null, "win32_classification":null,
+            "win32_os_error":-5, "zero_area_status_mismatch":null
+        }
+    }))
+    .unwrap();
+    let error = HostError::ComputerUse(
+        ComputerUseError::new(
+            ComputerUseErrorCode::InvalidTarget,
+            "unchanged original refusal",
+        )
+        .with_details(dcc_cua_core::ComputerUseErrorDetails {
+            capture: Some(capture.clone()),
+            ..Default::default()
+        }),
+    );
+    let response = host_error_response(&error);
+    assert_eq!(response["type"], "error");
+    assert_eq!(response["code"], "invalid_target");
+    assert_eq!(
+        response["message"],
+        "InvalidTarget: unchanged original refusal"
+    );
+    assert_eq!(
+        response["details"]["capture"],
+        serde_json::to_value(capture).unwrap()
+    );
+    assert!(response.get("observation_id").is_none());
+    assert!(response.get("image").is_none());
+}
+
+#[rstest]
 fn native_tool_response_moves_image_pixels_to_binary_attachment() {
     let mut shared = None;
     let (response, attachment) = native_tool_response_with_transport(
@@ -182,6 +222,8 @@ fn session_stopped_response_preserves_typed_cleanup_issues() {
                 label: "Controlled by Codex".into(),
                 backend: "cua-driver-sdk",
             },
+            recording_video: None,
+            live_observation: None,
         },
     );
 
@@ -197,6 +239,53 @@ fn session_stopped_response_preserves_typed_cleanup_issues() {
         "injected showcase rename failure"
     );
     assert_eq!(response["marker"]["backend"], "cua-driver-sdk");
+    assert!(response.get("recording_video").is_none());
+    assert!(response.get("live_observation").is_none());
+}
+
+#[rstest]
+fn session_stopped_response_retains_typed_partial_and_unknown_source_evidence() {
+    let response = session_stopped_response(
+        "session-1",
+        dcc_cua_core::ComputerUseSessionStopResult {
+            success: false,
+            active: false,
+            cleanup_pending: true,
+            cleanup_issues: vec![],
+            marker: dcc_cua_core::ComputerUseMarker {
+                visible: false,
+                label: "Controlled by Codex".into(),
+                backend: "cua-driver-sdk",
+            },
+            recording_video: Some(dcc_cua_core::ComputerUseRecordingCleanupOutcome {
+                active: false,
+                finalized: false,
+                path: Some("F:\\owned-recordings\\task-1\\showcase.mp4".into()),
+                manifest_path: None,
+                current_partial: Some("F:\\owned-recordings\\task-1\\showcase.partial.mp4".into()),
+                segment_paths: vec![],
+                capture_sidecar: None,
+                error_code: Some(ComputerUseErrorCode::CaptureFailed),
+            }),
+            live_observation: Some(dcc_cua_core::ComputerUseLiveObservationCleanupOutcome {
+                active: false,
+                cleanup_complete: false,
+                cleanup_pending: true,
+                stream_id: Some(17),
+            }),
+        },
+    );
+    assert_eq!(response["session_id"], "session-1");
+    assert_eq!(
+        response["recording_video"]["current_partial"],
+        "F:\\owned-recordings\\task-1\\showcase.partial.mp4"
+    );
+    assert_eq!(response["recording_video"]["finalized"], false);
+    assert_eq!(response["recording_video"]["error_code"], "capture_failed");
+    assert!(response["recording_video"].get("manifest_path").is_none());
+    assert_eq!(response["live_observation"]["stream_id"], 17);
+    assert_eq!(response["live_observation"]["cleanup_complete"], false);
+    assert_eq!(response["cleanup_pending"], true);
 }
 
 #[rstest]

@@ -85,6 +85,68 @@ also accepts `activate`, which does not restore a minimized window; it rejects
 `close` and other window state operations. An unavailable interactive desktop
 still blocks activation and input. Repair that environment before retrying.
 
+## Explicit pixels-only observation
+
+`observation_mode` defaults to `semantic`. To observe an exact native window
+without starting UIA, explicitly select `pixels_only` on the `window` surface:
+
+```json
+{
+  "application_label": "Exact native window",
+  "target_process_id": 1234,
+  "target_window_handle": 5678,
+  "surface": "window",
+  "observation_mode": "pixels_only",
+  "allowed_methods": ["snapshot", "get_window_state", "minimize_window"],
+  "allowed_actions": [{
+    "action": "minimize_window",
+    "input_kind": "window_state",
+    "secret_input": false,
+    "authorization_category": "window_state"
+  }]
+}
+```
+
+After reporting the returned provider/runtime/PID/HWND, call `snapshot` with
+`params: {}`. Exact-window capture proof, geometry, DPI, visibility, occlusion,
+and native instance checks still apply. A minimized or unproven capture fails;
+window metadata cannot substitute for a screenshot. A successful pixel snapshot
+returns a formal `observation_id`, `accessibility_available=false`, and no
+`accessibility_state_id` or semantic element authorization.
+
+Pixel tasks permit observation, native state reads, the explicit minimize
+operation, and these explicitly scoped foreground raw actions: `click`,
+`double_click`, `right_click`, `toggle`, `keypress`, `keyboard_shortcut`, `type`,
+and `type_chars`. To use them, include `execute_action` in `allowed_methods` and
+grant each required action with `input_kind: "raw_input"`, `secret_input: false`,
+and `authorization_category: "raw_input"`. The Host derives raw-input permission
+from those trusted scopes; granting the method alone cannot enable input.
+
+Each action must carry the latest pixel `observation_id`. Omit
+`accessibility_state_id`, semantic element indices/tokens, secret handles, and
+`input_backend_id`. Only omitted or `foreground` delivery is accepted. The
+captured process/window instance, native bounds, DPI, foreground window, and
+occlusion proof are checked again at every physical input boundary. A failed
+check refuses dispatch or reports a partial dispatch; it does not activate the
+window or fall back to another backend. Any attempted action consumes the old
+observation. With `capture_after: true`, the post-action observation uses the
+same pixel route and cannot mint semantic element authorization. A failed post
+snapshot requires a fresh observation before another action.
+
+Semantic selectors, browser/clipboard input, secret input, drag, wheel, move,
+and recording are outside this pixel contract. It retains the existing
+separately authorized `change_window_state` activate/restore route; pixel startup,
+snapshots, and raw input never implicitly activate a window.
+
+To minimize, call `dcc_cua_task_call` with `method: "minimize_window"` and
+`params: {"observation_id": "<latest snapshot observation_id>"}`. The retained
+task must grant both the method and the exact `window_state/minimize_window`
+action scope. Host and Core check the latest observation and the actual captured
+native window instance before dispatch. The result reports native minimized
+state; an attempted mutation consumes the old observation even when its outcome
+is uncertain. Do not retry with that observation ID. `stop_task` releases this
+task without closing or terminating the application.
+
 Account verification, CAPTCHA/2FA, agreements, payments, and final irreversible
 publication remain separate human boundaries. Removing the duplicated DCC-CUA
 authorization card does not automate those external account/security decisions.
@@ -99,3 +161,13 @@ directories under `skills/`; `skills/cua-cli` is the base contract and
 The game workflow keeps the Host session alive so the user-facing ControlBanner
 remains visible. It uses bounded `keypress` actions with `duration_ms` for held
 WASD movement and requires fresh post-action evidence.
+
+For a byte-pipeline diagnostic on an explicitly bound `pixels_only` task, call
+`dcc_cua_task_call` with `method: "snapshot"` and
+`params: {"capture_diagnostics": true}`. The flag defaults to false; semantic
+snapshots reject the opt-in. The final observation's
+`capture_provenance.capture_diagnostics` contains SHA-256 digests of native BGRA
+and canonical PNG RGBA bytes, four bounded 256-bin channel histograms, timings,
+and separate provenance for the existing first and final captures. The fourth
+native byte is reported as a raw high byte, without an alpha interpretation.
+This adds no capture, normalization, retry, activation, or input permission.

@@ -653,7 +653,7 @@ fn dispatch_click_exact_foreground(
     }
 }
 
-fn click_input_batch(point: (i32, i32), button: &str) -> [INPUT; 3] {
+pub(crate) fn click_input_batch(point: (i32, i32), button: &str) -> [INPUT; 3] {
     let desktop = virtual_desktop();
     let (normalized_x, normalized_y) = platform_windows::virtualdesk::to_virtualdesk_absolute(
         point.0, point.1, desktop.0, desktop.1, desktop.2, desktop.3,
@@ -714,7 +714,7 @@ fn pointer_button(button: &str) -> WindowsPointerButton {
     }
 }
 
-fn modifier_virtual_key(modifier: &str) -> Option<u16> {
+pub(crate) fn modifier_virtual_key(modifier: &str) -> Option<u16> {
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{VK_CONTROL, VK_LWIN, VK_MENU, VK_SHIFT};
     match modifier.trim().to_ascii_lowercase().as_str() {
         "ctrl" | "control" => Some(VK_CONTROL),
@@ -909,7 +909,7 @@ pub(crate) fn release_all_keys(
     failures
 }
 
-fn keyboard_input(virtual_key: u16, key_up: bool) -> INPUT {
+pub(crate) fn keyboard_input(virtual_key: u16, key_up: bool) -> INPUT {
     let scan_code = unsafe { MapVirtualKeyW(u32::from(virtual_key), MAPVK_VK_TO_VSC) } as u16;
     let mut flags = if scan_code == 0 {
         0

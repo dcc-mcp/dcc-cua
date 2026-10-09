@@ -1,7 +1,5 @@
 use std::future::Future;
 use std::sync::Arc;
-#[cfg(windows)]
-use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
@@ -28,6 +26,14 @@ fn map_showcase_error(error: dcc_cua_showcase::ShowcaseError) -> ComputerUseErro
 }
 
 mod action_result;
+mod exact_capture;
+use exact_capture::*;
+#[cfg(windows)]
+pub(crate) use exact_capture::{
+    capture_verified_visible_bgra, live_native_evidence, map_capture_identity_error,
+    map_root_bounds_failure, native_wgc_frame_geometry, next_exact_capture_generation,
+    validate_exact_bgra_dimensions, validate_live_native_evidence,
+};
 #[cfg(any(windows, test))]
 mod drag_sequences;
 #[cfg(test)]
@@ -40,8 +46,8 @@ mod pixel_observation;
 use pixel_observation::*;
 mod recording;
 pub(crate) use recording::{
-    RecordingHealth, RecordingKeepalive, RecordingVideoTerminalEvidence, aggregate_recording_state,
-    call_recording_tool_without_refresh, probe_recording_state,
+    LocalSessionCleanup, RecordingHealth, RecordingKeepalive, RecordingVideoTerminalEvidence,
+    aggregate_recording_state, call_recording_tool_without_refresh, probe_recording_state,
 };
 mod session;
 mod session_status;
@@ -57,6 +63,8 @@ mod windows_input;
 #[cfg(any(windows, test))]
 pub(crate) use windows_input::*;
 mod window_commands;
+#[cfg(any(windows, test))]
+mod windows_pixel_input;
 
 #[cfg(any(not(windows), test))]
 pub(crate) fn activation_completion_unknown(error: ComputerUseError) -> ComputerUseError {
@@ -1387,12 +1395,15 @@ pub struct ComputerUseSession {
     control_banner: Option<ControlBanner>,
     target: Option<WindowTarget>,
     pub(crate) observation: Option<ComputerUseObservation>,
+    #[cfg(windows)]
+    native_frame_metadata: Option<window_commands::NativeWindowFrameMetadata>,
     action_evidence_epoch: ActionEvidenceEpoch,
     live_observation: Option<LiveObservation>,
     post_action_live_sequence_fence: Option<LiveObservationFence>,
     observation_transition_live_sequence_fence: Option<LiveObservationFence>,
     showcase: Option<ActiveShowcase>,
     last_recording_video: Option<RecordingVideoTerminalEvidence>,
+    local_cleanup: LocalSessionCleanup,
     recording_active: bool,
     recording_expected_video: bool,
     recording_health: Option<RecordingHealth>,
@@ -1448,6 +1459,10 @@ impl ComputerUseSession {
         request: &ComputerUseSessionStartRequest,
         activation: Option<Value>,
     ) -> ComputerUseResult<Value> {
+        #[cfg(windows)]
+        {
+            self.native_frame_metadata = None;
+        }
         self.app_name = resolved_application_name(&self.app_name, &target);
         self.marker.label = localized_control_label(&self.agent_name, &self.app_name);
         let control_banner = match ControlBanner::start_with_motion(
@@ -1666,204 +1681,6 @@ impl ComputerUseDesktopSession {
         self.latest_observation_id = None;
         Ok(json!({"success": true, "active": false, "marker": self.marker}))
     }
-}
-
-struct ExactWindowCapture {
-    data: Vec<u8>,
-    backend: &'static str,
-    fallback: &'static str,
-    #[cfg(windows)]
-    mode: ExactWindowPixelCaptureMode,
-    #[cfg(windows)]
-    generation: u64,
-    #[cfg(windows)]
-    dpi: u32,
-    #[cfg(windows)]
-    bounds: [i32; 4],
-    #[cfg(windows)]
-    source_rect: [i32; 4],
-    #[cfg(windows)]
-    native_evidence: dcc_cua_platform_windows::ExactWindowPixelEvidence,
-}
-
-#[cfg(windows)]
-static EXACT_WINDOW_CAPTURE_GENERATION: AtomicU64 = AtomicU64::new(1);
-
-#[cfg(windows)]
-async fn capture_exact_window(
-    process_id: u32,
-    window_id: u64,
-) -> ComputerUseResult<ExactWindowCapture> {
-    tokio::task::spawn_blocking(move || {
-        let generation = EXACT_WINDOW_CAPTURE_GENERATION.fetch_add(1, Ordering::Relaxed);
-        let before = dcc_cua_platform_windows::exact_window_pixel_evidence(
-            process_id,
-            window_id,
-        )
-        .map_err(|error| {
-            ComputerUseError::new(ComputerUseErrorCode::InvalidTarget, error.to_string())
-        })?;
-        validate_native_exact_window_pixel_evidence(
-            &before,
-            &before,
-            ExactWindowPixelCaptureMode::WindowContent,
-        )?;
-        let route = dcc_cua_platform_windows::exact_window_capture_route(process_id, window_id)
-            .map_err(|error| {
-                ComputerUseError::new(ComputerUseErrorCode::InvalidTarget, error.to_string())
-            })?;
-        if route == dcc_cua_platform_windows::ExactWindowCaptureRoute::VerifiedVisible {
-            let visible = dcc_cua_platform_windows::capture_visible_window(process_id, window_id)
-                .map_err(|error| {
-                    ComputerUseError::new(
-                        ComputerUseErrorCode::InvalidTarget,
-                        format!(
-                            "same-executable multi-window WGC identity is ambiguous; exact visible-window proof failed: {error}"
-                        ),
-                    )
-                },
-            )?;
-            dcc_cua_platform_windows::exact_window_capture_route(process_id, window_id).map_err(
-                |error| {
-                    ComputerUseError::new(ComputerUseErrorCode::InvalidTarget, error.to_string())
-                },
-            )?;
-            let after = dcc_cua_platform_windows::exact_window_pixel_evidence(
-                process_id,
-                window_id,
-            )
-            .map_err(|error| {
-                ComputerUseError::new(ComputerUseErrorCode::InvalidTarget, error.to_string())
-            })?;
-            validate_native_exact_window_pixel_evidence(
-                &before,
-                &after,
-                ExactWindowPixelCaptureMode::VisibleDesktopCrop,
-            )?;
-            if visible.bounds != after.visible_bounds {
-                return Err(ComputerUseError::new(
-                    ComputerUseErrorCode::StaleObservation,
-                    "the visible desktop crop bounds changed before native recapture",
-                ));
-            }
-            return Ok(ExactWindowCapture {
-                data: encode_bgra_to_png(&visible.bgra, visible.width, visible.height)?,
-                backend: "dcc-cua-visible-exact-window",
-                fallback: "same_executable_multi_window_exact_visible_proof",
-                mode: ExactWindowPixelCaptureMode::VisibleDesktopCrop,
-                generation,
-                dpi: after.dpi,
-                bounds: after.bounds,
-                source_rect: visible.bounds,
-                native_evidence: after,
-            });
-        }
-        let wgc_error =
-            match dcc_cua_platform_windows::PersistentWgcCapture::new(process_id, window_id) {
-            Ok(mut capture) => match capture.next_frame(Duration::from_secs(5)) {
-                Ok((bgra, width, height)) => {
-                    if dcc_cua_platform_windows::exact_window_capture_route(
-                        process_id,
-                        window_id,
-                    )
-                    .map_err(|error| {
-                        ComputerUseError::new(
-                            ComputerUseErrorCode::InvalidTarget,
-                            error.to_string(),
-                        )
-                    })? != dcc_cua_platform_windows::ExactWindowCaptureRoute::Wgc
-                    {
-                        return Err(ComputerUseError::new(
-                            ComputerUseErrorCode::InvalidTarget,
-                            "another window from the target executable appeared during WGC capture; pixels were discarded",
-                        ));
-                    }
-                    let after = dcc_cua_platform_windows::exact_window_pixel_evidence(
-                        process_id,
-                        window_id,
-                    )
-                    .map_err(|error| {
-                        ComputerUseError::new(
-                            ComputerUseErrorCode::InvalidTarget,
-                            error.to_string(),
-                        )
-                    })?;
-                    validate_native_exact_window_pixel_evidence(
-                        &before,
-                        &after,
-                        ExactWindowPixelCaptureMode::WindowContent,
-                    )?;
-                    return Ok(ExactWindowCapture {
-                        data: encode_bgra_to_png(&bgra, width, height)?,
-                        backend: "dcc-cua-wgc-exact-window",
-                        fallback: "exact_window_wgc",
-                        mode: ExactWindowPixelCaptureMode::WindowContent,
-                        generation,
-                        dpi: after.dpi,
-                        bounds: after.bounds,
-                        source_rect: after.bounds,
-                        native_evidence: after,
-                    });
-                }
-                Err(error) => error.to_string(),
-            },
-            Err(error) => error.to_string(),
-        };
-        let visible = dcc_cua_platform_windows::capture_visible_window(process_id, window_id)
-            .map_err(|error| {
-                ComputerUseError::new(
-                    ComputerUseErrorCode::CaptureFailed,
-                    format!("exact WGC capture failed ({wgc_error}); {error}"),
-                )
-            })?;
-        let after = dcc_cua_platform_windows::exact_window_pixel_evidence(
-            process_id,
-            window_id,
-        )
-        .map_err(|error| {
-            ComputerUseError::new(ComputerUseErrorCode::InvalidTarget, error.to_string())
-        })?;
-        validate_native_exact_window_pixel_evidence(
-            &before,
-            &after,
-            ExactWindowPixelCaptureMode::VisibleDesktopCrop,
-        )?;
-        if visible.bounds != after.visible_bounds {
-            return Err(ComputerUseError::new(
-                ComputerUseErrorCode::StaleObservation,
-                "the visible desktop crop bounds changed before native recapture",
-            ));
-        }
-        Ok(ExactWindowCapture {
-            data: encode_bgra_to_png(&visible.bgra, visible.width, visible.height)?,
-            backend: "dcc-cua-visible-exact-window",
-            fallback: "verified_same_process_visible_window_crop",
-            mode: ExactWindowPixelCaptureMode::VisibleDesktopCrop,
-            generation,
-            dpi: after.dpi,
-            bounds: after.bounds,
-            source_rect: visible.bounds,
-            native_evidence: after,
-        })
-    })
-    .await
-    .map_err(|error| {
-        ComputerUseError::new(
-            ComputerUseErrorCode::CaptureFailed,
-            format!("exact window capture task failed: {error}"),
-        )
-    })?
-}
-
-#[cfg(not(windows))]
-async fn capture_exact_window(
-    _process_id: u32,
-    _window_id: u64,
-) -> ComputerUseResult<ExactWindowCapture> {
-    Err(ComputerUseError::new(
-        ComputerUseErrorCode::BackendUnavailable,
-        "exact native window capture is unavailable on this platform",
-    ))
 }
 
 #[cfg(windows)]

@@ -4,11 +4,22 @@
 //! Windows-only semantic fallback used when an application's UIA provider is
 //! usable but CUA's combined window snapshot path is not.
 
+mod capture_geometry;
 #[cfg(windows)]
 mod capture_identity;
+#[cfg(windows)]
+mod capture_proof;
 mod contracts;
 #[cfg(windows)]
+mod display_color;
+#[cfg(windows)]
+mod exact_window_frame;
+#[cfg(windows)]
+mod exact_window_state;
+#[cfg(windows)]
 mod input;
+#[cfg(windows)]
+mod physical_input_fence;
 #[cfg(any(windows, test))]
 mod snapshot;
 
@@ -19,6 +30,10 @@ mod wgc;
 #[cfg(windows)]
 mod windows;
 
+pub use capture_geometry::{
+    NativeWindowGeometry, ResolvedWgcGeometry, WgcFrameGeometry, WgcGeometryError, WgcSourceOrigin,
+    resolve_exact_wgc_geometry, validate_native_window_geometry, validate_wgc_frame_geometry,
+};
 pub use contracts::{
     UiaAction, UiaError, UiaTarget, WindowsForegroundRelation, WindowsPointerButton,
     WindowsRawInputSnapshot, WindowsWindowIdentity,
@@ -27,6 +42,17 @@ pub use contracts::{
 #[cfg(windows)]
 pub use capture_identity::{
     ExactWindowCaptureIdentityError, ExactWindowCaptureRoute, exact_window_capture_route,
+};
+#[cfg(windows)]
+pub use capture_proof::{NativeCaptureProof, native_capture_proof};
+#[cfg(windows)]
+pub use exact_window_frame::{
+    ExactWindowFrameError, set_exact_window_frame, validate_exact_window_frame,
+};
+#[cfg(windows)]
+pub use exact_window_state::{
+    ExactWindowMinimizeError, ExactWindowNativeState, exact_window_native_state,
+    minimize_exact_window,
 };
 #[cfg(windows)]
 pub use input::{
@@ -39,6 +65,12 @@ pub use input::{
     post_message_blocked_by_uipi, send_click_exact_foreground_mods,
     send_held_keys_exact_foreground, send_key_synthesized, send_overlay_command,
     snapshot_left_button_after_up,
+};
+#[cfg(windows)]
+pub use physical_input_fence::{
+    WindowsGuardedInputError, WindowsGuardedInputOperation, WindowsGuardedInputOutcome,
+    WindowsPhysicalInputFailureReason, WindowsPhysicalInputFence, send_guarded_click,
+    send_guarded_keypress, send_guarded_text,
 };
 
 #[cfg(windows)]
@@ -62,7 +94,9 @@ pub fn desktop_state() -> WindowsDesktopState {
 }
 #[cfg(windows)]
 pub use visible_capture::{
-    ExactWindowPixelEvidence, ExactWindowPixelInstanceEvidence, VisibleWindowCapture,
+    ExactWindowPixelEvidence, ExactWindowPixelInstanceEvidence, RootBoundsClass,
+    RootBoundsFailureDiagnostic, RootBoundsRole, VisibleWindowCapture,
+    VisibleWindowCaptureDiagnostic, VisibleWindowCaptureError, VisibleWindowCaptureReason,
     capture_visible_window, exact_window_pixel_evidence,
 };
 #[cfg(windows)]

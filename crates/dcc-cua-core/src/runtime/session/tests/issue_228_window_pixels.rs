@@ -234,11 +234,35 @@ fn publication_fence(
     generation: u64,
     mode: ExactWindowPixelCaptureMode,
 ) -> ExactWindowPixelPublicationFence {
+    let native = dcc_cua_platform_windows::NativeWindowGeometry {
+        win32_bounds: bounds,
+        dwm_bounds: Some(bounds),
+        dpi,
+    };
+    let size = [bounds[2] as u32, bounds[3] as u32];
+    let shape = dcc_cua_platform_windows::WgcFrameGeometry {
+        item_size_before: size,
+        item_size_after: size,
+        pool_size: size,
+        content_size: size,
+        texture_size: size,
+        row_pitch_bytes: size[0] * 4,
+    };
     ExactWindowPixelPublicationFence {
         geometry: ExactWindowPixelGeometry { bounds, dpi },
         source_rect: bounds,
         generation,
         mode,
+        native_visible_bounds: bounds,
+        wgc_geometry: (mode == ExactWindowPixelCaptureMode::WindowContent).then(|| {
+            dcc_cua_platform_windows::resolve_exact_wgc_geometry(
+                native,
+                native,
+                shape,
+                size[0] as usize * size[1] as usize * 4,
+            )
+            .unwrap()
+        }),
         instance: ExactWindowPixelInstanceIdentity {
             process_creation_time_100ns: 1001,
             window_thread_id: 7,
@@ -345,6 +369,7 @@ fn issue_228_visible_crop_fences_a_distinct_stable_physical_source_rect() {
         ExactWindowPixelCaptureMode::VisibleDesktopCrop,
     );
     before.source_rect = source_rect;
+    before.native_visible_bounds = source_rect;
     let mut after = publication_fence(
         captured.bounds,
         96,
@@ -352,6 +377,7 @@ fn issue_228_visible_crop_fences_a_distinct_stable_physical_source_rect() {
         ExactWindowPixelCaptureMode::VisibleDesktopCrop,
     );
     after.source_rect = source_rect;
+    after.native_visible_bounds = source_rect;
 
     validate_final_exact_window_pixel_publication(&captured, &captured, before, after, true)
         .expect("stable DWM crop may differ from stable PMv2 inventory bounds");
@@ -454,6 +480,59 @@ fn issue_228_window_content_publication_does_not_require_desktop_visibility() {
         false,
     )
     .expect("window-content pixels remain exact when another desktop window overlaps them");
+}
+
+#[rstest]
+fn wgc_publication_requires_the_proven_dwm_origin_and_actual_shape() {
+    use dcc_cua_platform_windows::*;
+    let captured = target(42, 77, [60, 80, 672, 508]);
+    let dwm = [73, 80, 646, 495];
+    let native = NativeWindowGeometry {
+        win32_bounds: captured.bounds,
+        dwm_bounds: Some(dwm),
+        dpi: 240,
+    };
+    let shape = WgcFrameGeometry {
+        item_size_before: [646, 495],
+        item_size_after: [646, 495],
+        pool_size: [646, 495],
+        content_size: [646, 495],
+        texture_size: [646, 495],
+        row_pitch_bytes: 2688,
+    };
+    let proof = resolve_exact_wgc_geometry(native, native, shape, 646 * 495 * 4).unwrap();
+    let mut before = publication_fence(
+        captured.bounds,
+        240,
+        1,
+        ExactWindowPixelCaptureMode::WindowContent,
+    );
+    before.source_rect = dwm;
+    before.native_visible_bounds = dwm;
+    before.wgc_geometry = Some(proof);
+    let mut after = before;
+    after.generation = 2;
+    validate_final_exact_window_pixel_publication(&captured, &captured, before, after, false)
+        .unwrap();
+    for change in 0..7 {
+        let mut invalid = after;
+        match change {
+            0 => invalid.wgc_geometry = None,
+            1 => invalid.source_rect = captured.bounds,
+            2 => invalid.native_visible_bounds[0] += 1,
+            3 => invalid.wgc_geometry.as_mut().unwrap().frame.item_size_after[0] += 1,
+            4 => invalid.wgc_geometry.as_mut().unwrap().bgra_byte_len -= 1,
+            5 => invalid.wgc_geometry.as_mut().unwrap().origin = WgcSourceOrigin::Win32Window,
+            _ => invalid.wgc_geometry.as_mut().unwrap().frame.row_pitch_bytes = 1,
+        }
+        assert!(
+            validate_final_exact_window_pixel_publication(
+                &captured, &captured, before, invalid, false
+            )
+            .is_err(),
+            "change {change}"
+        );
+    }
 }
 
 #[rstest]

@@ -9,7 +9,6 @@ pub(super) enum PixelObservationRoute {
 }
 
 impl PixelObservationRoute {
-    #[cfg(any(windows, test))]
     pub(super) const fn observation_mode(self) -> &'static str {
         match self {
             #[cfg(any(windows, test))]
@@ -111,6 +110,8 @@ pub(super) struct ExactWindowPixelPublicationFence {
     pub generation: u64,
     pub mode: ExactWindowPixelCaptureMode,
     pub instance: ExactWindowPixelInstanceIdentity,
+    pub native_visible_bounds: [i32; 4],
+    pub wgc_geometry: Option<dcc_cua_platform_windows::ResolvedWgcGeometry>,
 }
 
 #[cfg(windows)]
@@ -149,6 +150,44 @@ impl ExactWindowPixelCaptureMode {
 }
 
 #[cfg(any(windows, test))]
+fn validate_exact_window_pixel_source(
+    fence: ExactWindowPixelPublicationFence,
+) -> ComputerUseResult<()> {
+    let invalid = || {
+        ComputerUseError::new(
+            ComputerUseErrorCode::StaleObservation,
+            "the actual exact-window capture geometry proof does not match its physical source rectangle",
+        )
+    };
+    match fence.mode {
+        ExactWindowPixelCaptureMode::WindowContent => {
+            let proof = fence.wgc_geometry.ok_or_else(invalid)?;
+            let native = dcc_cua_platform_windows::NativeWindowGeometry {
+                win32_bounds: fence.geometry.bounds,
+                dwm_bounds: Some(fence.native_visible_bounds),
+                dpi: fence.geometry.dpi,
+            };
+            let actual = dcc_cua_platform_windows::resolve_exact_wgc_geometry(
+                native,
+                native,
+                proof.frame,
+                proof.bgra_byte_len,
+            )
+            .map_err(|_| invalid())?;
+            if actual != proof || proof.source_rect != fence.source_rect {
+                return Err(invalid());
+            }
+        }
+        ExactWindowPixelCaptureMode::VisibleDesktopCrop => {
+            if fence.wgc_geometry.is_some() || fence.source_rect != fence.native_visible_bounds {
+                return Err(invalid());
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(any(windows, test))]
 pub(super) fn validate_final_exact_window_pixel_publication(
     captured_target: &WindowTarget,
     final_inventory: &WindowTarget,
@@ -157,6 +196,8 @@ pub(super) fn validate_final_exact_window_pixel_publication(
     final_unobscured: bool,
 ) -> ComputerUseResult<()> {
     validate_final_exact_window_pixel_instance(captured.instance, final_fence.instance)?;
+    validate_exact_window_pixel_source(captured)?;
+    validate_exact_window_pixel_source(final_fence)?;
     if captured_target.bounds != captured.geometry.bounds
         || final_inventory.bounds != final_fence.geometry.bounds
     {
@@ -172,9 +213,7 @@ pub(super) fn validate_final_exact_window_pixel_publication(
         ));
     }
     if captured.source_rect != final_fence.source_rect
-        || (captured.mode == ExactWindowPixelCaptureMode::WindowContent
-            && (captured.source_rect != captured.geometry.bounds
-                || final_fence.source_rect != final_fence.geometry.bounds))
+        || captured.native_visible_bounds != final_fence.native_visible_bounds
     {
         return Err(ComputerUseError::new(
             ComputerUseErrorCode::StaleObservation,
@@ -252,6 +291,18 @@ pub(super) fn validate_native_exact_window_pixel_evidence(
         ));
     }
     if capture_mode.requires_unobscured_desktop() && (!before.unobscured || !after.unobscured) {
+        // Preserve the first failing sample's own proof, including a legacy None.
+        let failed = if !before.unobscured { before } else { after };
+        if let Some(diagnostic) = failed.visibility_failure {
+            return Err(map_visible_capture_diagnostic(
+                ComputerUseErrorCode::CaptureFailed,
+                ComputerUseCaptureStage::PublicationValidation,
+                failed.process_id,
+                failed.window_handle,
+                diagnostic,
+                "the exact pixel target failed its visibility proof; pixels were discarded",
+            ));
+        }
         return Err(ComputerUseError::new(
             ComputerUseErrorCode::CaptureFailed,
             "the exact pixel target was occluded; pixels were discarded",

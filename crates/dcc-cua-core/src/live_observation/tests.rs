@@ -47,6 +47,31 @@ impl LiveObservationTestPublisher {
 }
 
 impl LiveObservation {
+    pub(crate) fn from_test_panicking_worker() -> Self {
+        let mut source = Self::from_test_frame(99, 1);
+        source.task.abort();
+        source.task = tokio::spawn(async { panic!("injected owned source worker failure") });
+        source
+    }
+
+    pub(crate) fn from_test_shutdown_gate() -> (
+        Self,
+        tokio::sync::oneshot::Receiver<()>,
+        tokio::sync::oneshot::Sender<()>,
+    ) {
+        let mut source = Self::from_test_frame(99, 1);
+        source.task.abort();
+        let shutdown = source.shutdown.clone();
+        let (entered, acknowledgement) = tokio::sync::oneshot::channel();
+        let (release, released) = tokio::sync::oneshot::channel();
+        source.task = tokio::spawn(async move {
+            shutdown.cancelled().await;
+            let _ = entered.send(());
+            let _ = released.await;
+        });
+        (source, acknowledgement, release)
+    }
+
     pub(crate) fn from_test_frame(stream_id: u64, sequence: u64) -> Self {
         Self::from_test_stream(stream_id, sequence).0
     }
@@ -73,6 +98,8 @@ impl LiveObservation {
                 receiver,
                 shutdown,
                 task,
+                #[cfg(windows)]
+                publication: native_publication::channel(Arc::new(|| {})).0,
             },
             LiveObservationTestPublisher { sender },
         )
@@ -100,12 +127,31 @@ async fn stop_requests_shutdown_and_waits_for_worker_acknowledgement() {
         receiver,
         shutdown,
         task,
+        #[cfg(windows)]
+        publication: native_publication::channel(Arc::new(|| {})).0,
     };
 
     let state = observation.stop().await;
 
     assert!(acknowledged.load(std::sync::atomic::Ordering::Acquire));
     assert_eq!(state["active"], false);
+    assert_eq!(state["cleanup_complete"], true);
+    assert_eq!(state["cleanup_pending"], false);
+}
+
+#[rstest]
+#[tokio::test]
+async fn native_recording_source_worker_failure_is_not_a_cleanup_acknowledgement() {
+    let state = LiveObservation::from_test_panicking_worker().stop().await;
+    assert_eq!(state["active"], false);
+    assert_eq!(state["cleanup_complete"], false);
+    assert_eq!(state["cleanup_pending"], true);
+    assert!(
+        state["cleanup_error"]
+            .as_str()
+            .unwrap()
+            .contains("injected owned source worker failure")
+    );
 }
 
 #[cfg(windows)]
@@ -116,7 +162,7 @@ fn shutdown_wakes_a_blocking_capture_waiter() {
     let (acknowledged, acknowledgement) = std::sync::mpsc::sync_channel(1);
     let worker = std::thread::spawn(move || {
         acknowledged
-            .send(worker_shutdown.wait_timeout(Duration::from_secs(5)))
+            .send(worker_shutdown.wait_timeout_or_work(Duration::from_secs(5), || false))
             .expect("acknowledge shutdown");
     });
 
@@ -129,6 +175,42 @@ fn shutdown_wakes_a_blocking_capture_waiter() {
             .expect("blocking capture waiter should wake promptly")
     );
     worker.join().expect("join blocking capture waiter");
+}
+
+#[cfg(windows)]
+#[rstest]
+fn publication_request_wakes_capture_pacing_without_requesting_shutdown() {
+    let shutdown = LiveObservationShutdown::default();
+    let waiter = shutdown.clone();
+    let pending = Arc::new(AtomicBool::new(false));
+    let worker_pending = Arc::clone(&pending);
+    let (reply, result) = std::sync::mpsc::sync_channel(1);
+    let worker = std::thread::spawn(move || {
+        reply
+            .send(waiter.wait_timeout_or_work(Duration::from_secs(5), || {
+                worker_pending.load(Ordering::Acquire)
+            }))
+            .expect("reply from blocking capture pacing");
+    });
+    pending.store(true, Ordering::Release);
+    shutdown.wake_blocking();
+    assert!(
+        !result
+            .recv_timeout(Duration::from_secs(2))
+            .expect("pending publication wakes pacing")
+    );
+    assert!(!shutdown.is_requested());
+    worker.join().expect("join capture pacing waiter");
+}
+
+#[cfg(windows)]
+#[rstest]
+fn queued_publication_before_capture_wait_cannot_lose_its_wakeup() {
+    let shutdown = LiveObservationShutdown::default();
+    let started = Instant::now();
+    assert!(!shutdown.wait_timeout_or_work(Duration::from_secs(5), || true));
+    assert!(started.elapsed() < Duration::from_secs(2));
+    assert!(!shutdown.is_requested());
 }
 
 #[rstest]
@@ -286,4 +368,86 @@ fn showcase_projection_shares_the_live_frame_buffer() {
     let projected = projected.latest().expect("projected frame").shared_bgra();
 
     assert!(Arc::ptr_eq(&source, &projected));
+}
+
+#[rstest]
+#[tokio::test]
+async fn paused_stream_rejects_old_frame_until_fresh_sequence_and_retains_metrics() {
+    let (observation, publisher) = LiveObservation::from_test_stream(7, 10);
+    publisher.pause(ComputerUseError::new(
+        ComputerUseErrorCode::TargetMinimized,
+        "target minimized",
+    ));
+    assert!(observation.validate_frame_eligibility(10).is_err());
+    let paused = observation.state();
+    publisher.publish_frame(10, "stale_after_pause");
+    assert!(observation.validate_frame_eligibility(10).is_err());
+    assert_eq!(
+        observation.state()["frames_captured"],
+        paused["frames_captured"]
+    );
+    assert_eq!(
+        observation.state()["last_capture_duration_ms"],
+        paused["last_capture_duration_ms"]
+    );
+    publisher.publish_frame(11, "fresh_after_pause");
+    assert!(observation.validate_frame_eligibility(11).is_ok());
+    assert!(observation.validate_frame_eligibility(10).is_err());
+    assert_eq!(observation.state()["paused"], false);
+    observation.stop().await;
+}
+
+#[rstest]
+fn showcase_projection_preserves_immutable_native_provenance_and_shared_pixels() {
+    use dcc_cua_showcase::{NativeFrameInstance, NativeFrameProvenance, NativeFrameSource};
+    let provenance = FrameCaptureProvenance::NativeExactWindow(NativeFrameProvenance {
+        source: NativeFrameSource::VerifiedVisible,
+        process_id: 42,
+        window_handle: 500,
+        native_instance: NativeFrameInstance {
+            process_creation_time_100ns: 1000,
+            window_thread_id: 8,
+            window_class_hash: 90,
+            owner_window_handle: 0,
+        },
+        native_window_bounds: [-100, 20, 100, 90],
+        native_visible_bounds: [-98, 21, 96, 86],
+        source_rect: [-98, 21, 96, 86],
+        window_dpi: 144,
+        capture_generation: 5,
+        stream_id: 7,
+        wgc_geometry: None,
+    });
+    let frame = LiveObservationFrame::new(9, vec![17; 4], 1, 1, Instant::now())
+        .with_provenance(provenance.clone());
+    let shared = frame.shared_bgra();
+    let mut status = LiveObservationStatus::default();
+    status.publish_frame(frame, Duration::ZERO, "verified_visible");
+    let projected = project_showcase_status(&status).latest().unwrap();
+    assert_eq!(projected.provenance(), &provenance);
+    assert!(Arc::ptr_eq(&shared, &projected.shared_bgra()));
+    assert_eq!(projected.sequence(), 9);
+}
+
+#[rstest]
+fn showcase_projection_retains_pause_fence_after_source_has_resumed() {
+    let mut status = LiveObservationStatus::default();
+    status.publish_frame(
+        LiveObservationFrame::new(9, vec![1; 4], 1, 1, Instant::now()),
+        Duration::ZERO,
+        "verified_visible",
+    );
+    status.record_paused_error(&ComputerUseError::new(
+        ComputerUseErrorCode::TargetMinimized,
+        "controlled target minimization",
+    ));
+    status.publish_frame(
+        LiveObservationFrame::new(10, vec![2; 4], 1, 1, Instant::now()),
+        Duration::ZERO,
+        "verified_visible",
+    );
+    let projected = project_showcase_status(&status);
+    assert!(projected.pause_reason().is_none());
+    assert_eq!(projected.pause_sequence_fence(), Some(9));
+    assert_eq!(projected.latest().unwrap().sequence(), 10);
 }

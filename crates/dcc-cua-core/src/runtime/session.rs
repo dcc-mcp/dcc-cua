@@ -12,6 +12,7 @@ pub(crate) use gates::{
 use input_target_policy::reject_ambiguous_embedded_browser_navigation;
 mod browser;
 mod error_contracts;
+mod native_recording;
 mod observation;
 mod pixel_start;
 #[cfg(test)]
@@ -82,12 +83,15 @@ impl ComputerUseSession {
             control_banner: None,
             target: None,
             observation: None,
+            #[cfg(windows)]
+            native_frame_metadata: None,
             action_evidence_epoch: ActionEvidenceEpoch::default(),
             live_observation: None,
             post_action_live_sequence_fence: None,
             observation_transition_live_sequence_fence: None,
             showcase: None,
             last_recording_video: None,
+            local_cleanup: LocalSessionCleanup::default(),
             recording_active: false,
             recording_expected_video: false,
             recording_health: None,
@@ -121,6 +125,7 @@ impl ComputerUseSession {
         &mut self,
         request: &ComputerUseSessionStartRequest,
     ) -> ComputerUseResult<Value> {
+        self.ensure_local_cleanup_reusable()?;
         if self.active {
             return Err(ComputerUseError::new(
                 ComputerUseErrorCode::InvalidAction,
@@ -478,6 +483,9 @@ impl ComputerUseSession {
     ) -> ComputerUseResult<Value> {
         validate_recording_start_request(request)?;
         self.ensure_active()?;
+        if self.uses_native_video_recording() {
+            return self.native_recording_start(request).await;
+        }
         self.require_observed_target_available().await?;
         if self.recording_active {
             return Err(ComputerUseError::new(
@@ -568,6 +576,9 @@ impl ComputerUseSession {
 
     /// Stop recording and return the finalized recording state.
     pub async fn recording_stop(&mut self) -> ComputerUseResult<Value> {
+        if self.uses_native_video_recording() {
+            return self.native_recording_stop().await;
+        }
         self.ensure_active()?;
         if !self.recording_active {
             return Err(ComputerUseError::new(
@@ -639,6 +650,9 @@ impl ComputerUseSession {
     /// Read the current recording state without exposing arbitrary CUA calls.
     pub async fn recording_state(&mut self) -> ComputerUseResult<Value> {
         self.ensure_active()?;
+        if self.uses_native_video_recording() {
+            return Ok(self.native_recording_state());
+        }
         // This is session-owned diagnostic state. It must remain queryable
         // when the target HWND disappears so callers can see a degraded lease
         // and stop the recording lifecycle without an unrelated target fence.
@@ -676,6 +690,8 @@ impl ComputerUseSession {
         &mut self,
         action: &ComputerUseAction,
     ) -> ComputerUseResult<ComputerUseToolResult> {
+        #[cfg(windows)]
+        let pixel_started_generation = dcc_cua_interrupt::interrupt_generation();
         self.ensure_active()?;
         let _preparing_activity = self.begin_banner_activity(banner_activity_for_action_phase(
             action,
@@ -711,6 +727,30 @@ impl ComputerUseSession {
             self.require_observed_input_available()?;
         }
         validate_action_observation(action, &observation)?;
+        #[cfg(windows)]
+        if self.pixel_observation_route == Some(PixelObservationRoute::ExplicitPixelsOnly) {
+            #[cfg(feature = "test-support")]
+            if self.synthetic_test_session {
+                return Err(ComputerUseError::new(
+                    ComputerUseErrorCode::BackendUnavailable,
+                    "synthetic sessions cannot dispatch native pixel input",
+                ));
+            }
+            let outcome = super::windows_pixel_input::perform_exact_pixel_action(
+                action,
+                &observation,
+                &self.scope,
+                &self.session_id,
+                &target,
+                pixel_started_generation,
+                self.control_banner_interrupted(),
+            )
+            .await;
+            // A native dispatch or uncertain partial result must never reuse its token.
+            self.invalidate_action_observations();
+            let result = self.finish_observation_sensitive_attempt(outcome)?;
+            return Ok(self.complete_action(result));
+        }
         if let Some(reason) = explicit_input_backend_rejection(action) {
             let backend_id = action.input_backend_id.as_deref().unwrap_or_default();
             let mut result = input_backend_rejection_result(backend_id, &reason, &target);
@@ -986,6 +1026,10 @@ impl ComputerUseSession {
     /// Invalidate action-scoped evidence without stopping live observation,
     /// showcase, or recording owners.
     pub fn invalidate_action_observations(&mut self) {
+        #[cfg(windows)]
+        {
+            self.native_frame_metadata = None;
+        }
         self.action_evidence_epoch = self.action_evidence_epoch.advanced();
         if let Some(fence) = self
             .live_observation
@@ -1269,22 +1313,16 @@ impl ComputerUseSession {
     }
 
     pub async fn stop(&mut self) -> ComputerUseResult<ComputerUseSessionStopResult> {
-        let mut cleanup_issues = Vec::new();
         if self.recording_active
             && let Err(error) = self.recording_stop().await
         {
-            cleanup_issues.push(ComputerUseCleanupIssue::from_error(
-                ComputerUseCleanupPhase::RecordingStop,
-                error,
-            ));
+            self.local_cleanup
+                .remember(ComputerUseCleanupPhase::RecordingStop, error);
         }
         self.stop_live_observation().await;
         if !self.active {
             self.invalidate_local_session().await;
-            return Ok(ComputerUseSessionStopResult::completed(
-                self.marker.clone(),
-                cleanup_issues,
-            ));
+            return Ok(self.local_stop_result());
         }
         self.set_banner_activity(BannerActivity::Stopping);
         let result = if self.target.is_some()
@@ -1306,26 +1344,13 @@ impl ComputerUseSession {
         };
         self.invalidate_local_session().await;
         result?;
-        Ok(ComputerUseSessionStopResult::completed(
-            self.marker.clone(),
-            cleanup_issues,
-        ))
+        Ok(self.local_stop_result())
     }
 
     async fn invalidate_local_session(&mut self) {
-        // Terminal input/transport failures must not leave any local presenter,
-        // capture producer, or recorder owning the target after the Host has
-        // declared this session unusable. Their Drop implementations abort the
-        // producer tasks; clean user-requested stops finalize them above first.
-        self.stop_recording_keepalive().await;
-        self.showcase.take();
-        self.live_observation.take();
-        self.post_action_live_sequence_fence = None;
-        self.observation_transition_live_sequence_fence = None;
-        self.recording_active = false;
-        self.set_banner_recording(false);
-        self.set_banner_live_observation(false);
-        self.control_banner.take();
+        // Revoke capability before the first await, including if the caller
+        // cancels cleanup. Owned drains below never probe a lost native target
+        // or the process-global upstream recording lease.
         self.active = false;
         self.upstream_session_state = UpstreamSessionState::Inactive;
         self.pixel_observation_route = None;
@@ -1333,6 +1358,54 @@ impl ComputerUseSession {
         self.marker.visible = false;
         self.target = None;
         self.invalidate_action_observations();
+        self.post_action_live_sequence_fence = None;
+        self.observation_transition_live_sequence_fence = None;
+        self.recording_active = false;
+        self.set_banner_recording(false);
+        self.set_banner_live_observation(false);
+        self.control_banner.take();
+        self.stop_recording_keepalive().await;
+        if self.showcase.is_some() {
+            let _ = self.finalize_owned_recording_video(None).await;
+        }
+        self.stop_live_observation().await;
+    }
+
+    fn local_stop_result(&self) -> ComputerUseSessionStopResult {
+        let mut result = ComputerUseSessionStopResult::completed(
+            self.marker.clone(),
+            self.local_cleanup.stop_issues(),
+        )
+        .with_cleanup_pending(self.local_cleanup.pending());
+        result.recording_video = self
+            .last_recording_video
+            .as_ref()
+            .map(RecordingVideoTerminalEvidence::cleanup_outcome);
+        if self.local_cleanup.last_source.is_some() || self.local_cleanup.source_pending {
+            let source = self.local_cleanup.last_source.as_ref();
+            result.live_observation = Some(ComputerUseLiveObservationCleanupOutcome {
+                active: false,
+                cleanup_complete: source.is_some_and(|source| source["cleanup_complete"] == true)
+                    && !self.local_cleanup.source_pending,
+                cleanup_pending: self.local_cleanup.source_pending,
+                stream_id: source.and_then(|source| source["stream_id"].as_u64()),
+            });
+        }
+        result
+    }
+
+    fn ensure_local_cleanup_reusable(&self) -> ComputerUseResult<()> {
+        if self.local_cleanup.pending() || !self.local_cleanup.issues.is_empty() {
+            return Err(ComputerUseError::new(
+                if self.local_cleanup.pending() {
+                    ComputerUseErrorCode::CompletionUnknown
+                } else {
+                    ComputerUseErrorCode::CaptureFailed
+                },
+                "previous owned cleanup is unresolved or failed; create a new session object",
+            ));
+        }
+        Ok(())
     }
 
     /// Read CUA's live capture policy for this exact session.
@@ -1549,7 +1622,85 @@ impl ComputerUseSession {
 
     /// Revalidate and return the current exact-window state.
     pub async fn window_state(&mut self) -> ComputerUseResult<Value> {
+        self.window_state_with_frame_metadata(false).await
+    }
+
+    /// Explicit metadata-only observation. Internal mutation readbacks use
+    /// window_state instead and never mint a subsequent movement authority.
+    pub async fn native_window_state_for_frame(&mut self) -> ComputerUseResult<Value> {
+        #[cfg(not(windows))]
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::BackendUnavailable,
+            "native frame metadata is available only on Windows",
+        ));
+        #[cfg(windows)]
+        {
+            self.native_frame_metadata = None;
+            #[cfg(feature = "test-support")]
+            if self.synthetic_test_session {
+                return Err(ComputerUseError::new(
+                    ComputerUseErrorCode::BackendUnavailable,
+                    "synthetic test sessions cannot read native frame metadata",
+                ));
+            }
+            if self.pixel_observation_route != Some(PixelObservationRoute::ExplicitPixelsOnly)
+                || self.scope.process_id.is_none_or(|pid| pid == 0)
+                || self.scope.window_handle.is_none_or(|hwnd| hwnd == 0)
+            {
+                return Err(ComputerUseError::new(
+                    ComputerUseErrorCode::InvalidAction,
+                    "native frame metadata requires explicit pixels_only and an exact PID/HWND",
+                ));
+            }
+            self.window_state_with_frame_metadata(true).await
+        }
+    }
+
+    async fn window_state_with_frame_metadata(
+        &mut self,
+        mint_metadata: bool,
+    ) -> ComputerUseResult<Value> {
+        #[cfg(not(windows))]
+        let _ = mint_metadata;
+        #[cfg(windows)]
+        {
+            self.native_frame_metadata = None;
+        }
         self.ensure_active()?;
+        #[cfg(all(windows, feature = "test-support"))]
+        let use_native_state = !self.synthetic_test_session;
+        #[cfg(all(windows, not(feature = "test-support")))]
+        let use_native_state = true;
+        #[cfg(windows)]
+        if use_native_state && self.scope.process_id.is_some() && self.scope.window_handle.is_some()
+        {
+            let target = self.revalidate_observed_target().await?;
+            let state =
+                dcc_cua_platform_windows::exact_window_native_state(target.pid, target.window_id)
+                    .map_err(|error| {
+                        map_windows_window_mutation_error("read exact native window state", error)
+                    });
+            let state = self.finish_observation_sensitive_attempt(state)?;
+            if state.minimized || !state.visible {
+                self.invalidate_action_observations();
+            }
+            let metadata_id = if mint_metadata {
+                self.remember_native_frame_metadata(state)
+            } else {
+                None
+            };
+            let mut result = json!({
+                "process_id":state.process_id,"window_handle":state.window_handle,"exists":true,
+                "visible":state.visible && !state.minimized,"minimized":state.minimized,
+                "foreground":state.foreground,"bounds":state.bounds,"dpi":state.dpi,
+                "visible_bounds":state.visible_bounds,
+                "native_instance":state.instance,"backend":"windows-exact-native-state",
+            });
+            if let Some(id) = metadata_id {
+                result["window_state_id"] = json!(id);
+            }
+            return Ok(result);
+        }
         let target = self.revalidate_observed_target().await?;
         if target.is_minimized || !target.is_on_screen {
             self.invalidate_action_observations();

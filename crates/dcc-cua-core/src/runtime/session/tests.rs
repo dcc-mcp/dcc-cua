@@ -32,6 +32,89 @@ mod modal_takeover;
 mod recording;
 mod visual_only;
 
+#[cfg(windows)]
+#[rstest]
+#[tokio::test]
+async fn fresh_native_state_transition_preserves_only_matching_metadata_and_clears_pixels() {
+    let (mut session, calls) = counting_session();
+    session.pixel_observation_route = Some(PixelObservationRoute::ExplicitPixelsOnly);
+    let state = dcc_cua_platform_windows::ExactWindowNativeState {
+        process_id: 42,
+        window_handle: 77,
+        bounds: Some([50, 800, 926, 680]),
+        visible_bounds: Some([63, 800, 900, 667]),
+        dpi: 240,
+        visible: true,
+        minimized: false,
+        foreground: false,
+        instance: dcc_cua_platform_windows::ExactWindowPixelInstanceEvidence {
+            process_creation_time_100ns: 7,
+            window_thread_id: 8,
+            window_class_hash: 9,
+            owner_window_handle: 0,
+        },
+    };
+    let token = session.remember_native_frame_metadata(state).unwrap();
+    assert!(session.observation.is_some());
+    let epoch = session.action_evidence_epoch();
+    session.invalidate_action_observations_preserving_native_state(&token);
+    assert!(session.native_frame_metadata.is_some());
+    assert!(session.observation.is_none());
+    assert_ne!(session.action_evidence_epoch(), epoch);
+    session.invalidate_action_observations_preserving_native_state("wrong-token");
+    assert!(session.native_frame_metadata.is_none());
+    session.remember_native_frame_metadata(state).unwrap();
+    session.invalidate_action_observations();
+    assert!(session.native_frame_metadata.is_none());
+    assert_eq!(calls.load(AtomicOrdering::SeqCst), 0);
+}
+
+#[cfg(windows)]
+#[rstest]
+#[tokio::test]
+async fn invalid_native_frame_attempt_consumes_metadata_and_pixels_before_any_native_call() {
+    let (mut session, calls) = counting_session();
+    session.pixel_observation_route = Some(PixelObservationRoute::ExplicitPixelsOnly);
+    let token = session
+        .remember_native_frame_metadata(dcc_cua_platform_windows::ExactWindowNativeState {
+            process_id: 42,
+            window_handle: 77,
+            bounds: Some([50, 800, 926, 680]),
+            visible_bounds: Some([63, 800, 900, 667]),
+            dpi: 240,
+            visible: true,
+            minimized: false,
+            foreground: false,
+            instance: dcc_cua_platform_windows::ExactWindowPixelInstanceEvidence {
+                process_creation_time_100ns: 7,
+                window_thread_id: 8,
+                window_class_hash: 9,
+                owner_window_handle: 0,
+            },
+        })
+        .unwrap();
+    let mut frame = ComputerUseWindowFrameRequest {
+        x: 50.5,
+        y: 800.0,
+        width: 926.0,
+        height: 680.0,
+    };
+    let error = session
+        .set_window_frame_from_native_state(&token, &frame)
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, ComputerUseErrorCode::InvalidAction);
+    assert!(session.native_frame_metadata.is_none());
+    assert!(session.observation.is_none());
+    frame.x = 50.0;
+    let error = session
+        .set_window_frame_from_native_state(&token, &frame)
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, ComputerUseErrorCode::StaleObservation);
+    assert_eq!(calls.load(AtomicOrdering::SeqCst), 0);
+}
+
 #[rstest]
 fn failed_window_restore_still_invalidates_action_cache_before_mutation() {
     let invalidated = Cell::new(false);
@@ -309,6 +392,31 @@ fn counting_session_with_envelope(
     session.live_observation = Some(LiveObservation::from_test_frame(7, 12));
     session.last_upstream_session_refresh = None;
     (session, calls, names)
+}
+
+#[cfg(all(windows, feature = "test-support"))]
+#[rstest]
+#[tokio::test]
+async fn exact_minimize_synthetic_fixture_cannot_dispatch_native_mutations() {
+    let (mut session, calls) = counting_session();
+    session.synthetic_test_session = true;
+    let observation = session.observation.as_mut().unwrap();
+    observation.capture_backend = "dcc-cua-wgc-exact-window".into();
+    observation.capture_provenance = json!({"process_id":42,"window_handle":77,
+        "pixels_captured":true,"whole_desktop_capture":false,"scope":"window",
+        "capture_generation":1,"window_dpi":240,
+        "native_instance":{"process_creation_time_100ns":7,"window_thread_id":8,
+            "window_class_hash":9,"owner_window_handle":0}});
+    let observed_id = observation.observation_id.clone();
+    let error = session.minimize_window(&observed_id).await.unwrap_err();
+    assert_eq!(error.code, ComputerUseErrorCode::BackendUnavailable);
+    assert!(error.message.contains("synthetic test sessions"));
+    assert_eq!(calls.load(AtomicOrdering::SeqCst), 0);
+    let state = session.window_state().await.unwrap();
+    assert_eq!(state["process_id"], 42);
+    assert_eq!(state["window_handle"], 77);
+    assert_eq!(state["minimized"], false);
+    assert_eq!(calls.load(AtomicOrdering::SeqCst), 0);
 }
 
 #[rstest]

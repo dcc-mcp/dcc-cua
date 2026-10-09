@@ -85,6 +85,15 @@ typed route cannot cover.
    dcc-cua snapshot --pid $pid --window-id $hwnd --pixels-only --output frame.png
    ```
 
+   Add `--activate` when explicitly authorized to bring this exact target to
+   the foreground. Activation and capture use the same PID/HWND session and
+   skip UIA; capture still requires fresh native identity, geometry, overlay
+   hide/acknowledgement, and occlusion proof. This combination cannot make a
+   covered or partially off-desktop window safe to capture. Do not combine
+   `--pixels-only` with `--escalate`. A refused native capture reports typed,
+   content-free `error.details.capture` metadata; raw backend errors and
+   foreign window titles are never included in this diagnostic.
+
    This route requires both selectors and never publishes a whole-desktop
    screenshot. When native window-content capture cannot prove one exact HWND,
    Windows may use the `VisibleDesktopCrop` fallback: it reads only the target's
@@ -97,6 +106,16 @@ typed route cannot cover.
    `accessibility_timeout_degraded`.
    Any identity, bounds, DPI, generation, visibility, or occlusion change
    invalidates the frame; rediscover and take a fresh observation.
+   If a returned frame contains foreign UI despite a successful proof, stop
+   input and retain the image and receipt. A success envelope does not override
+   contradictory pixels. For explicit Windows metadata diagnostics, run
+   `dcc-cua capture-proof --pid $pid --window-id $hwnd`: it starts neither UIA
+   nor a Host, reads no pixels, and never activates or moves a window. Its
+   bounded content-free trace records the production root traversal, native
+   geometry and DPI/DC state before and after a compositor flush. The result
+   always has `authorizes_capture_or_input=false`; it cannot certify pixel
+   ownership or replace a fresh accepted observation. This command accepts
+   only the exact numeric PID/HWND selectors.
    On macOS and Linux the manifest omits this Windows-only capability and
    `--pixels-only` returns `BackendUnavailable`; do not advertise or invoke it.
    If standalone `accessibility` returns `no_accessibility_provider`, treat the

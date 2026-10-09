@@ -508,3 +508,13 @@ fn live_observation_restart_drops_fences_from_the_previous_stream() {
 
     assert_eq!(after_sequence, None);
 }
+
+fn live_capture_failure_disposition(
+    capture_error: ComputerUseError,
+    observation_availability: ComputerUseResult<()>,
+) -> CaptureFailureDisposition {
+    if let Err(desktop_error) = observation_availability {
+        return crate::live_observation::capture_failure_disposition(desktop_error);
+    }
+    crate::live_observation::capture_failure_disposition(capture_error)
+}

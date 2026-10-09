@@ -7,6 +7,36 @@ mod session_helpers;
 pub(crate) use confirmation_evidence::*;
 pub(super) use evidence_epoch::*;
 pub(crate) use session_helpers::*;
+pub(super) fn validate_snapshot_capture_diagnostics(
+    mode: TaskObservationMode,
+    capture_diagnostics: bool,
+) -> Result<(), HostError> {
+    if capture_diagnostics && mode != TaskObservationMode::PixelsOnly {
+        return Err(HostError::Protocol(
+            "capture_diagnostics is available only for an explicit pixels_only snapshot".into(),
+        ));
+    }
+    Ok(())
+}
+
+pub(super) fn native_frame_pre_dispatch_failure(error: HostError) -> HostError {
+    let HostError::ComputerUse(mut error) = error else {
+        return error;
+    };
+    let details = error.details.get_or_insert_default();
+    if details.action_attempted.is_none() {
+        details.phase = Some(dcc_cua_core::ComputerUseErrorPhase::PreDispatch);
+        details.action_attempted = Some(false);
+        details.input_sent = Some(dcc_cua_core::ComputerUseInputState::NotSent);
+        details.completion = Some(dcc_cua_core::ComputerUseCompletionState::Known);
+        details.effect_unknown = Some(false);
+        details.automatic_input = Some(false);
+        details.blind_retry = Some(false);
+        details.fresh_observation_required = Some(true);
+    }
+    HostError::ComputerUse(error)
+}
+
 pub(super) async fn handle_request_with_security_services(
     driver: &ComputerUseDriver,
     security_services: &HostSecurityServices,
@@ -842,6 +872,7 @@ async fn handle_request_inner(
                     target_process_id,
                     target_window_handle,
                     task_grant_id: grant.task_grant_id,
+                    observation_mode: grant.observation_mode,
                     allow_raw_input: grant.allow_raw_input,
                     allow_app_terminate: grant.allow_app_terminate,
                     allow_clipboard_read: grant.allow_clipboard_read,
@@ -878,6 +909,7 @@ async fn handle_request_inner(
                 "type": "session_opened",
                 "session_id": session_id,
                 "window_capability": capability,
+                "observation_mode": grant.observation_mode,
                 "target": target_wire(&target),
                 "marker": marker,
                 "banner": banner,
@@ -908,7 +940,11 @@ async fn handle_request_inner(
             let host =
                 authorized_session(sessions, &session_id, &task_grant_id, &window_capability)
                     .await?;
-            let state = host.session.window_state().await;
+            let state = if host.observation_mode == crate::TaskObservationMode::PixelsOnly {
+                host.session.native_window_state_for_frame().await
+            } else {
+                host.session.window_state().await
+            };
             let state = host.finish_observation_sensitive_attempt(state)?;
             Ok((
                 observed_window_state_response(host, &session_id, state),
@@ -982,16 +1018,87 @@ async fn handle_request_inner(
                 None,
             ))
         }
+        Request::MinimizeWindow {
+            session_id,
+            task_grant_id,
+            window_capability,
+            observation_id,
+        } => {
+            let host =
+                authorized_session(sessions, &session_id, &task_grant_id, &window_capability)
+                    .await?;
+            host.require_latest_observation(&observation_id)?;
+            host.require_minimize_grant(&session_id)?;
+            let _input_turn = RAW_INPUT_QUEUE.lock().await;
+            revalidate_queued_window_mutation(host).await?;
+            let result = host.session.minimize_window(&observation_id).await;
+            let result = host.finish_observation_sensitive_attempt(result);
+            let result = finish_window_mutation_attempt(result, || host.invalidate_observations())?;
+            let state = host.session.window_state().await;
+            let state = host.finish_observation_sensitive_attempt(state)?;
+            host.observe_target_state(&state);
+            Ok((
+                window_state_changed_response(&session_id, "minimize", state, result),
+                None,
+            ))
+        }
         Request::SetWindowFrame {
             session_id,
             task_grant_id,
             window_capability,
+            window_state_id,
             frame,
         } => {
-            frame.validate()?;
+            let mutation_generation = interrupt_generation();
             let host =
                 authorized_session(sessions, &session_id, &task_grant_id, &window_capability)
                     .await?;
+            if host.observation_mode == crate::TaskObservationMode::PixelsOnly {
+                // This branch consumes its trusted metadata even if a queued
+                // request is refused. It never falls back to the legacy route.
+                let prior_epoch = host.session.action_evidence_epoch();
+                let result = async {
+                    host.require_window_frame_grant(&session_id)?;
+                    let state_id = window_state_id.as_deref().filter(|id| !id.is_empty() && id.len() <= 128)
+                        .ok_or_else(|| HostError::ComputerUse(ComputerUseError::new(
+                            ComputerUseErrorCode::StaleObservation,
+                            "set_window_frame requires a fresh native window_state_id",
+                        )))?;
+                    let _input_turn = RAW_INPUT_QUEUE.lock().await;
+                    revalidate_queued_window_mutation(host).await?;
+                    ensure_session_not_interrupted(host).await?;
+                    if interrupt_generation() != mutation_generation {
+                        return Err(HostError::ComputerUse(ComputerUseError::new(
+                            ComputerUseErrorCode::UserInterrupted,
+                            "frame mutation was interrupted while awaiting its trusted queue or lease",
+                        )));
+                    }
+                    host.require_window_frame_grant(&session_id)?;
+                    let result = host.session.set_window_frame_from_native_state(state_id, &frame).await;
+                    host.finish_observation_sensitive_attempt(result).map_err(HostError::from)
+                }.await.map_err(native_frame_pre_dispatch_failure);
+                if host.session.action_evidence_epoch() == prior_epoch {
+                    host.session.invalidate_action_observations();
+                }
+                host.invalidate_observations();
+                let result = result?;
+                let state = result["state"].clone();
+                host.observe_target_state(&state);
+                return Ok((
+                    json!({
+                        "type":"window_frame_set", "session_id":session_id,
+                        "result":result, "state":state,
+                    }),
+                    None,
+                ));
+            }
+            if window_state_id.is_some() {
+                return Err(HostError::ComputerUse(ComputerUseError::new(
+                    ComputerUseErrorCode::InvalidAction,
+                    "native window_state_id is reserved for explicit pixels_only frame mutations",
+                )));
+            }
+            frame.validate()?;
             let _input_turn = RAW_INPUT_QUEUE.lock().await;
             let result = host.session.set_window_frame(&frame).await;
             let result = host.finish_observation_sensitive_attempt(result);
@@ -1041,26 +1148,36 @@ async fn handle_request_inner(
             max_depth,
             max_nodes,
             activate_before,
+            capture_diagnostics,
         } => {
             let host =
                 authorized_session(sessions, &session_id, &task_grant_id, &window_capability)
                     .await?;
+            validate_snapshot_capture_diagnostics(host.observation_mode, capture_diagnostics)?;
+            if host.observation_mode == TaskObservationMode::PixelsOnly && activate_before {
+                return Err(HostError::Protocol(
+                    "pixels_only snapshot cannot activate the target; use an explicitly authorized change_window_state method".into(),
+                ));
+            }
             let activation = if activate_before {
                 let activation = host.session.activate().await;
                 Some(host.finish_observation_sensitive_attempt(activation)?)
             } else {
                 None
             };
-            let screenshot = host
-                .session
-                .screenshot_with_bounds(max_nodes, max_depth)
-                .await;
+            let screenshot = if host.observation_mode == TaskObservationMode::PixelsOnly {
+                host.session
+                    .screenshot_pixels_only_with_diagnostics(capture_diagnostics)
+                    .await
+            } else {
+                host.session
+                    .screenshot_with_bounds(max_nodes, max_depth)
+                    .await
+            };
             let screenshot = host.finish_observation_sensitive_attempt(screenshot)?;
             let observation_id = screenshot.observation.observation_id.clone();
-            host.latest_observation_id = Some(observation_id.clone());
-            host.latest_accessibility_state_id = Some(observation_id.clone());
             let accessibility = screenshot.accessibility;
-            host.latest_accessibility_root = Some(accessibility.clone());
+            host.record_snapshot_observation(observation_id.clone(), &accessibility);
             let node_count = accessibility["elements"].as_array().map_or(0, Vec::len);
             let target = json!({
                 "process_id": screenshot.observation.process_id,
@@ -1091,7 +1208,8 @@ async fn handle_request_inner(
             let response = json!({
                 "type": "snapshot",
                 "observation_id": observation_id,
-                "accessibility_state_id": screenshot.observation.observation_id,
+                "accessibility_state_id": host.latest_accessibility_state_id,
+                "observation_mode": host.observation_mode,
                 "target": target,
                 "observation": screenshot.observation,
                 "root": accessibility,
@@ -1585,12 +1703,16 @@ async fn handle_request_inner(
                 ));
             }
             action.validate_secret_source()?;
-            if host.latest_observation_id.as_deref() != Some(observation_id.as_str()) {
-                return Err(HostError::ComputerUse(ComputerUseError::new(
-                    ComputerUseErrorCode::StaleObservation,
-                    "action observation_id does not match the latest host snapshot",
-                )));
+            if host.observation_mode == TaskObservationMode::PixelsOnly {
+                host.require_pixels_input_grant(&session_id, &action)?;
+                if capture_after && post_snapshot_mode == PostSnapshotMode::Semantic {
+                    return Err(HostError::ComputerUse(ComputerUseError::new(
+                        ComputerUseErrorCode::InvalidAction,
+                        "pixels_only input cannot request a semantic post-action observation",
+                    )));
+                }
             }
+            host.require_latest_observation(&observation_id)?;
             if (action.element_index.is_some() || action.element_token.is_some())
                 && host.latest_accessibility_state_id.as_deref()
                     != Some(accessibility_state_id.as_str())
@@ -1638,7 +1760,8 @@ async fn handle_request_inner(
                             window_handle: host.target_window_handle,
                         },
                         &observation_id,
-                        Some(&accessibility_state_id),
+                        (host.observation_mode == TaskObservationMode::Semantic)
+                            .then_some(accessibility_state_id.as_str()),
                     ),
                     &action.intent,
                     action_value,
@@ -1647,10 +1770,11 @@ async fn handle_request_inner(
                 if outcome != ActionConfirmationOutcome::Allowed {
                     return Ok(action_confirmation_refusal(outcome));
                 }
-                if confirmed_action_evidence_refresh(
-                    &action,
-                    host.session.confirmed_action_evidence_refresh_due(),
-                ) == ConfirmedActionEvidenceRefresh::AccessibilityObservation
+                if host.observation_mode == TaskObservationMode::Semantic
+                    && confirmed_action_evidence_refresh(
+                        &action,
+                        host.session.confirmed_action_evidence_refresh_due(),
+                    ) == ConfirmedActionEvidenceRefresh::AccessibilityObservation
                 {
                     let refreshed_root = host
                         .session
@@ -1700,9 +1824,21 @@ async fn handle_request_inner(
             let raw_input = action.input_kind == "raw_input" || action.uses_physical_keyboard();
             let mut action = action.into_computer_use(observation_id)?;
             let input_turn = acquire_raw_input_turn(raw_input).await;
+            if host.observation_mode == TaskObservationMode::PixelsOnly {
+                let authorization = revalidate_queued_window_mutation(host).await;
+                if let Err(error) = authorization {
+                    action.text.zeroize();
+                    return Err(error);
+                }
+            }
             let result = host.session.perform_action(&action).await;
             action.text.zeroize();
-            let result = host.finish_observation_sensitive_attempt(result)?;
+            let result = host.finish_observation_sensitive_attempt(result);
+            let result = if host.observation_mode == TaskObservationMode::PixelsOnly {
+                finish_window_mutation_attempt(result, || host.invalidate_observations())
+            } else {
+                result
+            }?;
             let action_id = format!("cua-action-{}", Uuid::new_v4());
             if capture_after {
                 if let Err(error) =
@@ -1784,26 +1920,32 @@ async fn handle_request_inner(
                         }
                     };
                 }
-                let screenshot = host
-                    .session
-                    .screenshot_with_bounds(post_snapshot_max_nodes, post_snapshot_max_depth)
-                    .await;
+                let screenshot = if host.observation_mode == TaskObservationMode::PixelsOnly {
+                    host.session.screenshot_pixels_only().await
+                } else {
+                    host.session
+                        .screenshot_with_bounds(post_snapshot_max_nodes, post_snapshot_max_depth)
+                        .await
+                };
                 let screenshot = host.finish_observation_sensitive_attempt(screenshot);
                 drop(input_turn);
                 return match screenshot {
                     Ok(screenshot) => {
                         let observation_id = screenshot.observation.observation_id.clone();
-                        host.latest_observation_id = Some(observation_id.clone());
-                        host.latest_accessibility_state_id = Some(observation_id);
-                        host.latest_accessibility_root = Some(screenshot.accessibility.clone());
-                        action_completed_with_snapshot_response(
+                        host.record_snapshot_observation(observation_id, &screenshot.accessibility);
+                        let (mut response, attachment) = action_completed_with_snapshot_response(
                             &session_id,
                             action_id,
                             result,
                             screenshot,
                             mode,
                             &mut host.latest_shared_image,
-                        )
+                        )?;
+                        response["post_snapshot"]["accessibility_state_id"] =
+                            json!(host.latest_accessibility_state_id);
+                        response["post_snapshot"]["observation_mode"] =
+                            json!(host.observation_mode);
+                        Ok((response, attachment))
                     }
                     Err(error) => {
                         host.latest_observation_id = None;

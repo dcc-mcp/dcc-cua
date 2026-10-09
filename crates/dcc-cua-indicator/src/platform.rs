@@ -141,6 +141,27 @@ pub(super) fn system_language_tag() -> String {
     String::from_utf16_lossy(&locale[..length as usize - 1])
 }
 
+#[derive(Clone)]
+pub(super) struct PlatformCaptureExclusionSource {
+    active: Arc<AtomicBool>,
+}
+
+impl PlatformCaptureExclusionSource {
+    pub(super) fn validate_active(&self) -> Result<(), IndicatorError> {
+        if self.active.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        Err(IndicatorError::CaptureExclusion(
+            "the owning control-banner session is inactive".into(),
+        ))
+    }
+
+    pub(super) fn begin(&self) -> Result<PlatformCaptureExclusionGuard, IndicatorError> {
+        self.validate_active()?;
+        capture_exclusion::begin(&self.active)
+    }
+}
+
 pub(super) struct PlatformBanner {
     stop: Arc<AtomicBool>,
     active: Arc<AtomicBool>,
@@ -313,6 +334,12 @@ impl PlatformBanner {
 
     pub(super) fn activity_handle(&self) -> Arc<BannerActivitySignal> {
         Arc::clone(&self.activity)
+    }
+
+    pub(super) fn capture_exclusion_source(&self) -> PlatformCaptureExclusionSource {
+        PlatformCaptureExclusionSource {
+            active: Arc::clone(&self.active),
+        }
     }
 
     pub(super) fn begin_capture_exclusion(
@@ -1936,3 +1963,6 @@ fn scale(value: i32, dpi: u32) -> i32 {
 fn wide(value: &str) -> Vec<u16> {
     value.encode_utf16().chain(std::iter::once(0)).collect()
 }
+
+#[cfg(test)]
+mod tests;

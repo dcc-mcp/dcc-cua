@@ -60,6 +60,44 @@ impl TrustedTaskAuthorizationBrowserScope {
 }
 
 impl TrustedTaskActionScope {
+    /// Pixel actions whose native dispatch has the complete observation fence.
+    pub const PIXELS_INPUT_ACTIONS: &'static [&'static str] = &[
+        "click",
+        "double_click",
+        "right_click",
+        "toggle",
+        "keypress",
+        "keyboard_shortcut",
+        "type",
+        "type_chars",
+    ];
+
+    pub fn is_pixels_input(&self) -> bool {
+        Self::PIXELS_INPUT_ACTIONS.contains(&self.action.as_str())
+            && self.input_kind == "raw_input"
+            && !self.secret_input
+            && self.authorization_category == "raw_input"
+            && self.browser_origin.is_none()
+    }
+
+    /// Closed authorization for the observation-bound native minimize method.
+    pub fn is_window_minimize(&self) -> bool {
+        self.action == "minimize_window"
+            && self.input_kind == "window_state"
+            && !self.secret_input
+            && self.authorization_category == "window_state"
+            && self.browser_origin.is_none()
+    }
+
+    /// Closed authorization for one metadata-bound native frame mutation.
+    pub fn is_window_frame(&self) -> bool {
+        self.action == "set_window_frame"
+            && self.input_kind == "window_state"
+            && !self.secret_input
+            && self.authorization_category == "window_state"
+            && self.browser_origin.is_none()
+    }
+
     /// Final window-input action names accepted by trusted task authorization.
     ///
     /// These are action identities, not Host method names such as `browser_click`.
@@ -97,6 +135,7 @@ impl TrustedTaskActionScope {
 
     pub(crate) fn validate(&self) -> bool {
         match self.input_kind.as_str() {
+            "window_state" => self.is_window_minimize() || self.is_window_frame(),
             "browser" => {
                 self.action == "browser_type"
                     && self.secret_input
@@ -215,6 +254,8 @@ pub struct TrustedTaskAuthorizationLease {
     pub allowed_browser_origins: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub browser_scope: Option<TrustedTaskAuthorizationBrowserScope>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recording_output_dir: Option<String>,
     pub issued_at_unix_ms: u64,
     pub expires_at_unix_ms: u64,
     pub request_digest: String,
@@ -649,8 +690,8 @@ fn validate_lease(
         .iter()
         .cloned()
         .collect::<BTreeSet<_>>();
-    let valid_actions = !actions.is_empty()
-        && actions.len() == lease.allowed_actions.len()
+    // Empty action scopes are valid for observation and grant no input authority.
+    let valid_actions = actions.len() == lease.allowed_actions.len()
         && actions.len() <= MAX_TASK_AUTHORIZATION_ACTIONS
         && actions.iter().all(TrustedTaskActionScope::validate);
     let methods = lease.allowed_host_methods.iter().collect::<BTreeSet<_>>();
@@ -670,12 +711,27 @@ fn validate_lease(
     let valid_browser_scope = lease.browser_scope.as_ref().is_none_or(|scope| {
         scope.validate() && lease.allowed_browser_origins.as_slice() == [scope.origin.as_str()]
     });
+    let valid_recording_scope = lease
+        .recording_output_dir
+        .as_deref()
+        .is_none_or(|directory| {
+            crate::task_grant::validate_recording_output_dir(directory).is_ok()
+                && ["recording_start", "recording_state", "recording_stop"]
+                    .iter()
+                    .all(|required| {
+                        lease
+                            .allowed_host_methods
+                            .iter()
+                            .any(|method| method == required)
+                    })
+        });
     if !fields_match
         || !valid_time
         || !valid_methods
         || !valid_actions
         || !valid_origins
         || !valid_browser_scope
+        || !valid_recording_scope
     {
         return Err(task_authorization_required(
             "the trusted task authorization lease is invalid or out of scope",

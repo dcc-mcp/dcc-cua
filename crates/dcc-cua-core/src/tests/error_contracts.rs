@@ -18,6 +18,90 @@ use crate::{
 };
 
 #[rstest]
+fn capture_diagnostic_contract_rejects_arbitrary_reason_and_stage_strings() {
+    let mut value = json!({
+        "stage": "visible_desktop_proof",
+        "reason": "root_overlap",
+        "target_process_id": 42,
+        "target_window_handle": 77,
+        "blocker_window_handle": 91,
+    });
+    let diagnostic: crate::ComputerUseCaptureDiagnostic =
+        serde_json::from_value(value.clone()).expect("closed metadata contract");
+    assert_eq!(
+        diagnostic.reason,
+        crate::ComputerUseCaptureReason::RootOverlap
+    );
+    value["reason"] = json!("PRIVATE_FOREIGN_WINDOW_TEXT");
+    assert!(serde_json::from_value::<crate::ComputerUseCaptureDiagnostic>(value.clone()).is_err());
+    value["reason"] = json!("root_overlap");
+    value["stage"] = json!("PRIVATE_BACKEND_ERROR");
+    assert!(serde_json::from_value::<crate::ComputerUseCaptureDiagnostic>(value).is_err());
+}
+
+#[cfg(windows)]
+#[rstest]
+#[case(dcc_cua_platform_windows::RootBoundsClass::Positive, "positive")]
+#[case(dcc_cua_platform_windows::RootBoundsClass::ZeroArea, "zero_area")]
+#[case(dcc_cua_platform_windows::RootBoundsClass::Inverted, "inverted")]
+#[case(dcc_cua_platform_windows::RootBoundsClass::Overflow, "overflow")]
+fn root_bounds_failure_native_to_public_mapping_is_lossless(
+    #[case] classification: dcc_cua_platform_windows::RootBoundsClass,
+    #[case] name: &str,
+) {
+    use dcc_cua_platform_windows::{RootBoundsFailureDiagnostic, RootBoundsRole};
+    let native = RootBoundsFailureDiagnostic {
+        root_role: RootBoundsRole::AboveTargetRoot,
+        proof_target_root_window_handle: 77,
+        dwm_raw_rect_edges: [10, 20, 10, 30],
+        dwm_classification: classification,
+        visible: true,
+        cloaked: Some(0),
+        win32_read_after_dwm_rejection: true,
+        win32_raw_rect_edges: Some([10, 20, 30, 40]),
+        win32_classification: Some(classification),
+        win32_os_error: None,
+        zero_area_status_mismatch: Some(true),
+    };
+    let public = crate::runtime::map_root_bounds_failure(native);
+    let encoded = serde_json::to_value(public).unwrap();
+    assert_eq!(encoded, serde_json::to_value(native).unwrap());
+    assert_eq!(encoded["dwm_classification"], name);
+    assert_eq!(
+        serde_json::from_value::<crate::ComputerUseRootBoundsFailureDiagnostic>(encoded).unwrap(),
+        public
+    );
+}
+
+#[rstest]
+#[case("root_role", json!("PRIVATE_TITLE"))]
+#[case("dwm_classification", json!("PRIVATE_ERROR"))]
+#[case("win32_classification", json!("PRIVATE_ERROR"))]
+#[case("dwm_raw_rect_edges", json!([0, 0, 1]))]
+#[case("win32_raw_rect_edges", json!([0, 0, 1, 2, 3]))]
+#[case("visible", json!("true"))]
+fn root_bounds_failure_contract_has_only_closed_types(
+    #[case] field: &str,
+    #[case] invalid: serde_json::Value,
+) {
+    let mut value = json!({
+        "root_role":"target_root", "proof_target_root_window_handle":77,
+        "dwm_raw_rect_edges":[0,0,0,1], "dwm_classification":"zero_area",
+        "visible":true, "cloaked":0, "win32_read_after_dwm_rejection":true,
+        "win32_raw_rect_edges":null, "win32_classification":null,
+        "win32_os_error":-5, "zero_area_status_mismatch":null
+    });
+    assert!(
+        serde_json::from_value::<crate::ComputerUseRootBoundsFailureDiagnostic>(value.clone())
+            .is_ok()
+    );
+    value[field] = invalid;
+    assert!(
+        serde_json::from_value::<crate::ComputerUseRootBoundsFailureDiagnostic>(value).is_err()
+    );
+}
+
+#[rstest]
 #[tokio::test]
 async fn input_calls_have_a_hard_timeout() {
     let error = await_input_call(
