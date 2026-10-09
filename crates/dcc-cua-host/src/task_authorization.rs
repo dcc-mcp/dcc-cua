@@ -98,6 +98,15 @@ impl TrustedTaskActionScope {
             && self.browser_origin.is_none()
     }
 
+    /// Closed permission for temporary exact-root passive capture preparation.
+    pub fn is_capture_preparation(&self) -> bool {
+        self.action == "capture_preparation_begin"
+            && self.input_kind == "window_state"
+            && !self.secret_input
+            && self.authorization_category == "window_state"
+            && self.browser_origin.is_none()
+    }
+
     /// Final window-input action names accepted by trusted task authorization.
     ///
     /// These are action identities, not Host method names such as `browser_click`.
@@ -135,7 +144,9 @@ impl TrustedTaskActionScope {
 
     pub(crate) fn validate(&self) -> bool {
         match self.input_kind.as_str() {
-            "window_state" => self.is_window_minimize() || self.is_window_frame(),
+            "window_state" => {
+                self.is_window_minimize() || self.is_window_frame() || self.is_capture_preparation()
+            }
             "browser" => {
                 self.action == "browser_type"
                     && self.secret_input
@@ -256,6 +267,9 @@ pub struct TrustedTaskAuthorizationLease {
     pub browser_scope: Option<TrustedTaskAuthorizationBrowserScope>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recording_output_dir: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capture_preparation:
+        Option<dcc_cua_protocol::capture_preparation::CapturePreparationAuthorization>,
     pub issued_at_unix_ms: u64,
     pub expires_at_unix_ms: u64,
     pub request_digest: String,
@@ -725,6 +739,26 @@ fn validate_lease(
                             .any(|method| method == required)
                     })
         });
+    let preparation_requested = lease
+        .allowed_host_methods
+        .iter()
+        .any(|method| method.starts_with("capture_preparation_"));
+    let preparation_action = lease
+        .allowed_actions
+        .iter()
+        .any(TrustedTaskActionScope::is_capture_preparation);
+    let valid_preparation_scope = preparation_requested == lease.capture_preparation.is_some()
+        && preparation_action == lease.capture_preparation.is_some()
+        && lease.capture_preparation.as_ref().is_none_or(|authorization| {
+            authorization.max_lifetime_ms > 0
+                && authorization.max_lifetime_ms <= dcc_cua_protocol::capture_preparation::MAX_PREPARATION_LIFETIME_MS
+                && crate::TrustedTaskAuthorizationRegistration::validate_capture_preparation_directory(&authorization.journal_directory).is_ok()
+                && lease.recording_output_dir.as_deref() != Some(authorization.journal_directory.as_str())
+                && lease.browser_scope.is_none()
+                && lease.allowed_browser_origins.is_empty()
+                && ["get_window_state", "capture_preparation_begin", "capture_preparation_state", "capture_preparation_stop"]
+                    .iter().all(|required| lease.allowed_host_methods.iter().any(|method| method == required))
+        });
     if !fields_match
         || !valid_time
         || !valid_methods
@@ -732,6 +766,7 @@ fn validate_lease(
         || !valid_origins
         || !valid_browser_scope
         || !valid_recording_scope
+        || !valid_preparation_scope
     {
         return Err(task_authorization_required(
             "the trusted task authorization lease is invalid or out of scope",

@@ -758,6 +758,7 @@ impl TrustedTaskAuthorizationHost for TaskAuthorizationHost {
             allowed_browser_origins: Vec::new(),
             browser_scope: None,
             recording_output_dir: None,
+            capture_preparation: None,
             issued_at_unix_ms: now,
             expires_at_unix_ms: now + 60_000,
             request_digest: request.request_digest,
@@ -1092,6 +1093,7 @@ fn browser_credential_registration(
         allowed_browser_origins: vec!["https://chromewebstore.google.com".into()],
         browser_scope: None,
         recording_output_dir: None,
+        capture_preparation: None,
         expires_at_unix_ms,
     }
 }
@@ -1262,6 +1264,7 @@ async fn broker_binds_a_task_owned_browser_to_the_host_derived_target_once() {
             allowed_browser_origins: vec!["https://addons.mozilla.org".into()],
             browser_scope: None,
             recording_output_dir: None,
+            capture_preparation: None,
             expires_at_unix_ms: unix_time_millis() + 60_000,
         })
         .unwrap();
@@ -1578,4 +1581,434 @@ fn task_authorization_failures_are_machine_readable_and_non_modal() {
         assert_eq!(response["error"], expected);
         assert_eq!(response["success"], false);
     }
+}
+
+fn capture_preparation_scope() -> TrustedTaskActionScope {
+    TrustedTaskActionScope {
+        action: "capture_preparation_begin".into(),
+        input_kind: "window_state".into(),
+        secret_input: false,
+        authorization_category: "window_state".into(),
+        browser_origin: None,
+    }
+}
+
+fn capture_preparation_registration(directory: &str) -> TrustedTaskAuthorizationRegistration {
+    let mut registration = browser_credential_registration(unix_time_millis() + 60_000);
+    registration.application_label = "Test DCC".into();
+    registration.target = TrustedTaskAuthorizationTarget::ExactWindow {
+        process_id: 42,
+        window_handle: 77,
+    };
+    registration.allowed_host_methods = [
+        "get_window_state",
+        "capture_preparation_begin",
+        "capture_preparation_state",
+        "capture_preparation_stop",
+        "capture_preparation_snapshot",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect();
+    registration.allowed_actions = vec![capture_preparation_scope()];
+    registration.allowed_browser_origins.clear();
+    registration.capture_preparation = Some(
+        dcc_cua_protocol::capture_preparation::CapturePreparationAuthorization {
+            journal_directory: directory.into(),
+            max_lifetime_ms: 30_000,
+        },
+    );
+    registration
+}
+
+#[rstest]
+fn capture_preparation_registration_requires_closed_scope_complete_lifecycle_and_ordinary_journal()
+{
+    let root = std::env::temp_dir().join(format!("capture-preparation-auth-{}", Uuid::new_v4()));
+    std::fs::create_dir(&root).unwrap();
+    #[cfg(not(windows))]
+    let root = root.canonicalize().unwrap();
+    let directory = root.to_str().unwrap();
+    let registration = capture_preparation_registration(directory);
+    registration.validate().unwrap();
+    for required in [
+        "get_window_state",
+        "capture_preparation_begin",
+        "capture_preparation_state",
+        "capture_preparation_stop",
+    ] {
+        let mut invalid = registration.clone();
+        invalid
+            .allowed_host_methods
+            .retain(|method| method != required);
+        assert!(invalid.validate().is_err(), "{required}");
+    }
+    let mut invalid = registration.clone();
+    invalid.capture_preparation = None;
+    assert!(invalid.validate().is_err());
+    invalid = registration.clone();
+    invalid.allowed_actions.clear();
+    assert!(invalid.validate().is_err());
+    for (field, value) in [
+        ("action", "set_window_frame"),
+        ("input_kind", "raw_input"),
+        ("authorization_category", "raw_input"),
+    ] {
+        let mut action = serde_json::to_value(capture_preparation_scope()).unwrap();
+        action[field] = json!(value);
+        invalid = registration.clone();
+        invalid.allowed_actions = vec![serde_json::from_value(action).unwrap()];
+        assert!(invalid.validate().is_err(), "{field}");
+    }
+    invalid = registration.clone();
+    invalid.allowed_actions[0].secret_input = true;
+    assert!(invalid.validate().is_err());
+    for lifetime in [0, 30_001, u64::MAX] {
+        invalid = registration.clone();
+        invalid
+            .capture_preparation
+            .as_mut()
+            .unwrap()
+            .max_lifetime_ms = lifetime;
+        assert!(invalid.validate().is_err());
+    }
+    for journal in [
+        "relative".to_owned(),
+        root.join("missing").to_string_lossy().into_owned(),
+    ] {
+        invalid = registration.clone();
+        invalid
+            .capture_preparation
+            .as_mut()
+            .unwrap()
+            .journal_directory = journal;
+        assert!(invalid.validate().is_err());
+    }
+    invalid = registration.clone();
+    invalid.recording_output_dir = Some(directory.into());
+    assert!(invalid.validate().is_err());
+    std::fs::remove_dir(root).unwrap();
+}
+
+#[rstest]
+#[tokio::test]
+async fn capture_preparation_exact_lease_refuses_missing_changed_or_partial_permission_without_native_calls()
+ {
+    let root = std::env::temp_dir().join(format!("capture-preparation-lease-{}", Uuid::new_v4()));
+    std::fs::create_dir(&root).unwrap();
+    #[cfg(not(windows))]
+    let root = root.canonicalize().unwrap();
+    let (issuer, authority) = trusted_task_authorization_broker();
+    let receipt = issuer
+        .register(capture_preparation_registration(root.to_str().unwrap()))
+        .unwrap();
+    let lease = issue_task_authorization(
+        Some(authority.as_ref()),
+        TaskAuthorizationBinding::window(
+            "connection-test",
+            &receipt.authorization_id,
+            "session-1",
+            "grant-1",
+            "Test DCC",
+            &receipt.window_capability,
+            ConfirmationWindowIdentity {
+                process_id: 42,
+                window_handle: 77,
+            },
+        ),
+    )
+    .await
+    .unwrap();
+    let channel = ObservationOnlyTestChannel::default();
+    let driver = ComputerUseDriver::from_test_remote_channel(Arc::new(channel.clone())).unwrap();
+    let mut host = cached_host_session(&driver);
+    host.observation_mode = TaskObservationMode::PixelsOnly;
+    assert!(
+        host.require_capture_preparation_grant("session-1", "capture_preparation_begin")
+            .is_err()
+    );
+    host.capability = receipt.window_capability;
+    host.task_authorization = Some(lease.clone());
+    host.require_capture_preparation_grant("session-1", "capture_preparation_begin")
+        .unwrap();
+    let mut grant: TaskGrant = serde_json::from_value(json!({
+        "task_grant_id":"grant-1", "application_label":"Test DCC", "observation_mode":"pixels_only",
+        "process_id":42,"window_handle":77,"task_authorization_id":lease.authorization_id,
+        "task_authorization_window_capability":lease.window_capability,
+    }))
+    .unwrap();
+    assert!(
+        crate::task_authorization_scope::validate_grant_against_task_authorization(&grant, &lease)
+            .is_err()
+    );
+    grant.allow_capture_preparation = true;
+    crate::task_authorization_scope::validate_grant_against_task_authorization(&grant, &lease)
+        .unwrap();
+    for change in 0..8 {
+        let mut invalid = lease.clone();
+        match change {
+            0 => invalid.session_id = "another-session".into(),
+            1 => invalid.task_grant_id = "another-grant".into(),
+            2 => invalid.window_capability = "another-capability".into(),
+            3 => invalid.target_process_id = 99,
+            4 => invalid.target_window_handle = 99,
+            5 => invalid.allowed_actions.clear(),
+            6 => invalid
+                .allowed_host_methods
+                .retain(|method| method != "capture_preparation_stop"),
+            _ => invalid.capture_preparation = None,
+        }
+        host.task_authorization = Some(invalid);
+        assert!(
+            host.require_capture_preparation_grant("session-1", "capture_preparation_begin")
+                .is_err(),
+            "{change}"
+        );
+    }
+    host.task_authorization = Some(lease);
+    host.observation_mode = TaskObservationMode::Semantic;
+    assert!(
+        host.require_capture_preparation_grant("session-1", "capture_preparation_begin")
+            .is_err()
+    );
+    assert_eq!(
+        channel.exchanges.load(std::sync::atomic::Ordering::Relaxed),
+        0
+    );
+    std::fs::remove_dir(root).unwrap();
+}
+
+#[rstest]
+fn capture_preparation_old_grants_and_leases_default_to_no_permission() {
+    let grant: TaskGrant =
+        serde_json::from_value(json!({"task_grant_id":"old", "application_label":"Old task"}))
+            .unwrap();
+    assert!(!grant.allow_capture_preparation);
+    grant.validate_identity().unwrap();
+    let mut invalid = json!({"task_grant_id":"old", "application_label":"Old task", "allow_capture_preparation":true});
+    assert!(
+        serde_json::from_value::<TaskGrant>(invalid.clone())
+            .unwrap()
+            .validate_identity()
+            .is_err()
+    );
+    invalid["capture_preparation"] =
+        json!({"journal_directory":"caller", "max_lifetime_ms":30_000});
+    assert!(serde_json::from_value::<TaskGrant>(invalid).is_err());
+    assert_eq!(
+        host_capabilities(false).contains(&"exact_window_capture_preparation_v1"),
+        cfg!(windows)
+    );
+}
+
+#[rstest]
+#[tokio::test]
+async fn capture_preparation_legacy_lease_serde_defaults_without_widening_authority() {
+    let (_issuer, _authority, lease) = observation_only_lease().await;
+    let old_wire = serde_json::to_value(lease).unwrap();
+    assert!(old_wire.get("capture_preparation").is_none());
+    let old_lease: TrustedTaskAuthorizationLease = serde_json::from_value(old_wire).unwrap();
+    assert!(old_lease.capture_preparation.is_none());
+    assert!(
+        !old_lease
+            .allowed_actions
+            .iter()
+            .any(TrustedTaskActionScope::is_capture_preparation)
+    );
+}
+
+#[rstest]
+fn capture_preparation_wire_rejects_journal_target_and_input_tokens() {
+    for method in [
+        "capture_preparation_begin",
+        "capture_preparation_state",
+        "capture_preparation_stop",
+        "capture_preparation_snapshot",
+    ] {
+        let mut params = json!({"session_id":"s", "task_grant_id":"g", "window_capability":"c"});
+        if method == "capture_preparation_begin" {
+            params["request"] = json!({"window_state_id":"fresh", "lifetime_ms":1_000});
+        }
+        let request =
+            serde_json::from_value::<Request>(json!({"method":method,"params":params})).unwrap();
+        assert_eq!(request.window_method_scope().unwrap().3, method);
+        assert!(request_handler::window_evidence_epoch_route(&request).is_some());
+        for field in [
+            "journal_directory",
+            "target",
+            "observation_id",
+            "window_state_id",
+        ] {
+            let mut invalid = params.clone();
+            invalid[field] = json!("caller");
+            assert!(
+                serde_json::from_value::<Request>(json!({"method":method,"params":invalid}))
+                    .is_err(),
+                "{method}/{field}"
+            );
+        }
+        if method == "capture_preparation_begin" {
+            params["request"]["journal_directory"] = json!("caller");
+            assert!(
+                serde_json::from_value::<Request>(json!({"method":method,"params":params}))
+                    .is_err()
+            );
+        }
+    }
+}
+
+#[rstest]
+fn capture_preparation_passive_snapshot_has_image_and_metadata_without_action_tokens() {
+    let metadata = json!({"passive":true,"input_authorized":false,"preparation_id":[1],"process_id":42,"window_handle":77});
+    let transport = || {
+        prepare_image_transport(
+            vec![ComputerUseImage {
+                data: vec![1, 2, 3],
+                mime_type: "image/png".into(),
+            }],
+            SnapshotTransport::BinaryFrame,
+            &mut None,
+        )
+        .unwrap()
+    };
+    let (response, bytes) = request_handler::passive_preparation_snapshot_response(
+        "session-1",
+        metadata.clone(),
+        transport(),
+    )
+    .unwrap();
+    assert_eq!(bytes, Some(vec![1, 2, 3]));
+    assert_eq!(response["passive"], true);
+    assert_eq!(response["input_authorized"], false);
+    for field in [
+        "observation_id",
+        "accessibility_state_id",
+        "element_token",
+        "window_state_id",
+    ] {
+        assert!(response.get(field).is_none());
+        let mut invalid = metadata.clone();
+        invalid[field] = json!("must-not-become-actionable");
+        assert!(
+            request_handler::passive_preparation_snapshot_response("s", invalid, transport())
+                .is_err()
+        );
+    }
+}
+
+#[rstest]
+#[tokio::test]
+async fn capture_preparation_actual_host_routes_refuse_legacy_sessions_before_native_dispatch() {
+    let channel = ObservationOnlyTestChannel::default();
+    let driver = ComputerUseDriver::from_test_remote_channel(Arc::new(channel.clone())).unwrap();
+    for method in [
+        "capture_preparation_begin",
+        "capture_preparation_state",
+        "capture_preparation_stop",
+        "capture_preparation_snapshot",
+    ] {
+        let mut sessions = ConnectionSessions::default();
+        let mut host = cached_host_session(&driver);
+        host.observation_mode = TaskObservationMode::PixelsOnly;
+        sessions.windows.insert("session-1".into(), host);
+        let mut params = json!({"session_id":"session-1", "task_grant_id":"grant-1", "window_capability":"capability-1"});
+        if method == "capture_preparation_begin" {
+            params["request"] = json!({"window_state_id":"fresh", "lifetime_ms":1_000});
+        }
+        let request: Request =
+            serde_json::from_value(json!({"method":method,"params":params})).unwrap();
+        let result = handle_request(
+            &driver,
+            &mut sessions,
+            &mut Some(SnapshotTransport::BinaryFrame),
+            &mut None,
+            &Arc::new(Mutex::new(HashMap::new())),
+            request,
+        )
+        .await;
+        let error = result.unwrap_err();
+        assert_eq!(
+            error_code(&error),
+            "task_authorization_denied",
+            "{method}/{error}"
+        );
+        if method == "capture_preparation_begin" {
+            assert!(
+                sessions.windows["session-1"]
+                    .latest_observation_id
+                    .is_none()
+            );
+            assert!(
+                sessions.windows["session-1"]
+                    .latest_accessibility_state_id
+                    .is_none()
+            );
+        }
+    }
+    assert_eq!(
+        channel.exchanges.load(std::sync::atomic::Ordering::Relaxed),
+        0
+    );
+}
+
+#[rstest]
+#[tokio::test]
+async fn capture_preparation_no_active_native_handle_never_returns_fake_state_or_cleanup() {
+    let root =
+        std::env::temp_dir().join(format!("capture-preparation-no-handle-{}", Uuid::new_v4()));
+    std::fs::create_dir(&root).unwrap();
+    #[cfg(not(windows))]
+    let root = root.canonicalize().unwrap();
+    let (issuer, authority) = trusted_task_authorization_broker();
+    let receipt = issuer
+        .register(capture_preparation_registration(root.to_str().unwrap()))
+        .unwrap();
+    let lease = issue_task_authorization(
+        Some(authority.as_ref()),
+        TaskAuthorizationBinding::window(
+            "connection-test",
+            &receipt.authorization_id,
+            "session-1",
+            "grant-1",
+            "Test DCC",
+            &receipt.window_capability,
+            ConfirmationWindowIdentity {
+                process_id: 42,
+                window_handle: 77,
+            },
+        ),
+    )
+    .await
+    .unwrap();
+    let channel = ObservationOnlyTestChannel::default();
+    let driver = ComputerUseDriver::from_test_remote_channel(Arc::new(channel.clone())).unwrap();
+    for method in ["capture_preparation_state", "capture_preparation_stop"] {
+        let mut host = cached_host_session(&driver);
+        host.observation_mode = TaskObservationMode::PixelsOnly;
+        host.capability = lease.window_capability.clone();
+        host.task_authorization = Some(lease.clone());
+        host.task_authorization_host = Some(authority.clone());
+        let mut sessions = ConnectionSessions::default();
+        sessions.windows.insert("session-1".into(), host);
+        let request: Request = serde_json::from_value(json!({"method":method,"params":{
+            "session_id":"session-1","task_grant_id":"grant-1","window_capability":lease.window_capability}})).unwrap();
+        assert!(
+            handle_request(
+                &driver,
+                &mut sessions,
+                &mut Some(SnapshotTransport::BinaryFrame),
+                &mut None,
+                &Arc::new(Mutex::new(HashMap::new())),
+                request
+            )
+            .await
+            .is_err(),
+            "{method}"
+        );
+    }
+    assert_eq!(
+        channel.exchanges.load(std::sync::atomic::Ordering::Relaxed),
+        0
+    );
+    std::fs::remove_dir(root).unwrap();
 }

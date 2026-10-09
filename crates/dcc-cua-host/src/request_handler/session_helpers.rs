@@ -141,6 +141,9 @@ pub(crate) fn session_stopped_response(
     if let Some(source) = result.live_observation {
         response["live_observation"] = json!(source);
     }
+    if let Some(preparation) = result.capture_preparation {
+        response["capture_preparation"] = json!(preparation);
+    }
     response
 }
 

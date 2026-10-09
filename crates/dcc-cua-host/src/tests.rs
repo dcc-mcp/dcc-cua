@@ -244,6 +244,7 @@ fn cached_host_session(driver: &ComputerUseDriver) -> HostSession {
         latest_accessibility_state_id: Some("accessibility-before-transition".into()),
         latest_accessibility_root: Some(json!({"elements": [{"element_token": "old-token"}]})),
         latest_shared_image: Some(SharedImage::from_bytes(b"old", "image/png").unwrap()),
+        latest_preparation_image: None,
         input_events: SessionInputEventQueue::new_with_restore_capability(
             dcc_cua_core::ComputerUseInputTarget {
                 session_id: "session-1".into(),

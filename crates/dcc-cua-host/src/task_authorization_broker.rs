@@ -37,6 +37,10 @@ pub struct TrustedTaskAuthorizationRegistration {
     /// An exact pre-created directory owned by the authenticated embedding.
     /// It is immutable for this registration and never nominated through Host IPC.
     pub recording_output_dir: Option<String>,
+    /// Stable constructor-owned journal root; native code owns target indices
+    /// and UUID epochs so unresolved preparation cannot be bypassed by a task.
+    pub capture_preparation:
+        Option<dcc_cua_protocol::capture_preparation::CapturePreparationAuthorization>,
     pub expires_at_unix_ms: u64,
 }
 
@@ -69,6 +73,15 @@ impl TrustedTaskAuthorizationRegistration {
         crate::task_grant::validate_recording_output_location(directory)
             .map_err(|_| TrustedTaskAuthorizationBrokerError::InvalidRegistration {
                 reason: "recording output must be an existing ordinary absolute directory without reparse ancestors".into(),
+            })
+    }
+
+    pub fn validate_capture_preparation_directory(
+        directory: &str,
+    ) -> Result<(), TrustedTaskAuthorizationBrokerError> {
+        crate::task_grant::validate_recording_output_location(directory)
+            .map_err(|_| TrustedTaskAuthorizationBrokerError::InvalidRegistration {
+                reason: "capture preparation journal must be an existing ordinary absolute directory without reparse ancestors".into(),
             })
     }
 
@@ -262,6 +275,7 @@ impl TrustedTaskAuthorizationHost for BrokerHost {
             allowed_browser_origins: registration.allowed_browser_origins.clone(),
             browser_scope: registration.browser_scope.clone(),
             recording_output_dir: registration.recording_output_dir.clone(),
+            capture_preparation: registration.capture_preparation.clone(),
             issued_at_unix_ms: now,
             expires_at_unix_ms: registration.expires_at_unix_ms,
             request_digest: request.request_digest,
@@ -404,6 +418,54 @@ fn validate_registration(
         .allowed_browser_origins
         .iter()
         .collect::<BTreeSet<_>>();
+    let preparation_requested = registration
+        .allowed_host_methods
+        .iter()
+        .any(|method| method.starts_with("capture_preparation_"));
+    let preparation_action = registration
+        .allowed_actions
+        .iter()
+        .any(TrustedTaskActionScope::is_capture_preparation);
+    if preparation_requested != registration.capture_preparation.is_some()
+        || preparation_action != registration.capture_preparation.is_some()
+    {
+        return invalid(
+            "capture preparation requires its trusted journal permission and closed action scope",
+        );
+    }
+    if let Some(authorization) = registration.capture_preparation.as_ref()
+        && (!matches!(
+            registration.target,
+            TrustedTaskAuthorizationTarget::ExactWindow { .. }
+        ) || authorization.max_lifetime_ms == 0
+            || authorization.max_lifetime_ms
+                > dcc_cua_protocol::capture_preparation::MAX_PREPARATION_LIFETIME_MS
+            || TrustedTaskAuthorizationRegistration::validate_capture_preparation_directory(
+                &authorization.journal_directory,
+            )
+            .is_err()
+            || registration.recording_output_dir.as_deref()
+                == Some(authorization.journal_directory.as_str())
+            || registration.browser_scope.is_some()
+            || !registration.allowed_browser_origins.is_empty()
+            || ![
+                "get_window_state",
+                "capture_preparation_begin",
+                "capture_preparation_state",
+                "capture_preparation_stop",
+            ]
+            .iter()
+            .all(|required| {
+                registration
+                    .allowed_host_methods
+                    .iter()
+                    .any(|method| method == required)
+            }))
+    {
+        return invalid(
+            "capture preparation requires an exact window, separate ordinary stable journal root, bounded lifetime, native state read and complete begin/state/stop methods",
+        );
+    }
     if let Some(directory) = registration.recording_output_dir.as_deref()
         && (!matches!(
             registration.target,

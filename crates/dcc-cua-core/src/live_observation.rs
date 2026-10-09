@@ -715,6 +715,8 @@ pub(crate) struct LiveObservation {
     task: JoinHandle<()>,
     #[cfg(windows)]
     publication: PublicationController<NativePublicationCheck, ComputerUseResult<()>>,
+    #[cfg(windows)]
+    preparation_id: Option<[u8; 16]>,
 }
 
 impl LiveObservation {
@@ -725,6 +727,62 @@ impl LiveObservation {
         window_handle: u64,
         request: &ComputerUseLiveObservationStartRequest,
         capture_exclusion: Option<dcc_cua_indicator::BannerCaptureExclusionSource>,
+    ) -> ComputerUseResult<Self> {
+        #[cfg(windows)]
+        return Self::start_internal(
+            driver,
+            session_id,
+            process_id,
+            window_handle,
+            request,
+            capture_exclusion,
+            None,
+        )
+        .await;
+        #[cfg(not(windows))]
+        Self::start_internal(
+            driver,
+            session_id,
+            process_id,
+            window_handle,
+            request,
+            capture_exclusion,
+        )
+        .await
+    }
+
+    #[cfg(windows)]
+    pub(crate) async fn start_prepared(
+        driver: ComputerUseDriver,
+        session_id: String,
+        process_id: u32,
+        window_handle: u64,
+        request: &ComputerUseLiveObservationStartRequest,
+        capture_exclusion: Option<dcc_cua_indicator::BannerCaptureExclusionSource>,
+        preparation: dcc_cua_platform_windows::capture_preparation::PreparedEvidenceGuard,
+    ) -> ComputerUseResult<Self> {
+        Self::start_internal(
+            driver,
+            session_id,
+            process_id,
+            window_handle,
+            request,
+            capture_exclusion,
+            Some(preparation),
+        )
+        .await
+    }
+
+    async fn start_internal(
+        driver: ComputerUseDriver,
+        session_id: String,
+        process_id: u32,
+        window_handle: u64,
+        request: &ComputerUseLiveObservationStartRequest,
+        capture_exclusion: Option<dcc_cua_indicator::BannerCaptureExclusionSource>,
+        #[cfg(windows)] preparation: Option<
+            dcc_cua_platform_windows::capture_preparation::PreparedEvidenceGuard,
+        >,
     ) -> ComputerUseResult<Self> {
         request.validate()?;
         let stream_id = LIVE_OBSERVATION_STREAM_COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -762,7 +820,15 @@ impl LiveObservation {
             let _ = (driver, session_id);
             crate::interactive_desktop::require_exact_window_observation_available()?;
             ensure_window_owner(process_id, window_handle)?;
-            let target = WindowsLiveTarget::new(process_id, window_handle, stream_id)?;
+            let preparation_id = preparation.as_ref()
+                .map(dcc_cua_platform_windows::capture_preparation::PreparedEvidenceGuard::preparation_id)
+                .transpose().map_err(crate::runtime::map_capture_preparation_error)?;
+            let target = match preparation.as_ref() {
+                Some(guard) => {
+                    WindowsLiveTarget::new_prepared(guard, process_id, window_handle, stream_id)?
+                }
+                None => WindowsLiveTarget::new(process_id, window_handle, stream_id)?,
+            };
             let fps = request.fps;
             let (sender, receiver) = watch::channel(LiveObservationStatus::default());
             let shutdown = LiveObservationShutdown::default();
@@ -770,15 +836,16 @@ impl LiveObservation {
             let (publication, publications) = native_publication::channel(Arc::new(move || {
                 publication_shutdown.wake_blocking();
             }));
-            let task = tokio::spawn(run_capture_loop(
+            let task = tokio::spawn(run_capture_loop(NativeCaptureLoop {
                 target,
+                preparation,
                 capture_exclusion,
                 fps,
-                interrupt_generation(),
+                started_interrupt_generation: interrupt_generation(),
                 sender,
-                shutdown.clone(),
+                shutdown: shutdown.clone(),
                 publications,
-            ));
+            }));
             let mut observation = Self {
                 stream_id,
                 fps,
@@ -787,10 +854,16 @@ impl LiveObservation {
                 shutdown,
                 task,
                 publication,
+                preparation_id,
             };
             wait_for_latest_frame(&mut observation.receiver, None, FIRST_FRAME_TIMEOUT).await?;
             Ok(observation)
         }
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn preparation_id(&self) -> Option<[u8; 16]> {
+        self.preparation_id
     }
 
     pub(crate) async fn latest_after(
@@ -1022,10 +1095,14 @@ async fn run_portable_capture_loop(
 }
 
 pub(crate) fn terminal_capture_error(error: &ComputerUseError) -> bool {
-    matches!(
-        error.code,
-        ComputerUseErrorCode::MissingWindow | ComputerUseErrorCode::InvalidTarget
-    )
+    error
+        .details
+        .as_ref()
+        .is_some_and(|details| details.capture_preparation.is_some())
+        || matches!(
+            error.code,
+            ComputerUseErrorCode::MissingWindow | ComputerUseErrorCode::InvalidTarget
+        )
 }
 
 fn pause_capture_error(error: &ComputerUseError) -> bool {
@@ -1104,28 +1181,21 @@ impl Drop for LiveObservation {
 }
 
 #[cfg(windows)]
-async fn run_capture_loop(
+struct NativeCaptureLoop {
     target: WindowsLiveTarget,
+    preparation: Option<dcc_cua_platform_windows::capture_preparation::PreparedEvidenceGuard>,
     capture_exclusion: Option<dcc_cua_indicator::BannerCaptureExclusionSource>,
     fps: u32,
     started_interrupt_generation: u64,
     sender: watch::Sender<LiveObservationStatus>,
     shutdown: LiveObservationShutdown,
     publications: PublicationInbox<NativePublicationCheck, ComputerUseResult<()>>,
-) {
-    let join_error_sender = sender.clone();
-    if let Err(error) = tokio::task::spawn_blocking(move || {
-        run_windows_capture_loop(
-            target,
-            capture_exclusion,
-            fps,
-            started_interrupt_generation,
-            sender,
-            shutdown,
-            publications,
-        );
-    })
-    .await
+}
+
+#[cfg(windows)]
+async fn run_capture_loop(context: NativeCaptureLoop) {
+    let join_error_sender = context.sender.clone();
+    if let Err(error) = tokio::task::spawn_blocking(move || run_windows_capture_loop(context)).await
     {
         let error = ComputerUseError::new(
             ComputerUseErrorCode::CaptureFailed,

@@ -402,6 +402,13 @@ impl ComputerUseSession {
         );
         state["cleanup_pending"] = json!(self.local_cleanup.pending());
         state["cleanup_issues"] = json!(self.local_cleanup.stop_issues());
+        #[cfg(windows)]
+        if let Some(preparation) = &self.capture_preparation {
+            state["capture_preparation"] = match preparation.state() {
+                Ok(status) => json!(status),
+                Err(error) => json!({"status":"cleanup_unknown", "error":error}),
+            };
+        }
         state
     }
 }

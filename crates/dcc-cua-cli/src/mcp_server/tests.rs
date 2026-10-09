@@ -3,9 +3,12 @@ use serde_json::{Value, json};
 
 use super::*;
 
+mod capture_preparation_tests;
+
 fn test_server() -> TaskAuthorizationServer {
     let mut server = TaskAuthorizationServer::automatic();
     server.recording_output_root = None;
+    server.capture_preparation_journal_root = None;
     server
 }
 
@@ -272,7 +275,6 @@ async fn native_recording_public_calls_keep_the_same_session_and_bind_output() {
 #[case(Some(json!({"type":"session_stopped","session_id":"wrong","success":true,"active":false,"cleanup_pending":false})), "cleanup_unknown")]
 #[case(Some(json!({"type":"session_stopped","session_id":"cleanup-session","success":true,"active":false})), "cleanup_unknown")]
 #[case(None, "cleanup_unknown")]
-#[rstest]
 #[tokio::test]
 async fn native_recording_task_stop_preserves_authoritative_cleanup(
     #[case] response: Option<Value>,
@@ -354,6 +356,122 @@ async fn native_recording_start_without_an_owned_session_ack_cannot_claim_cleanu
     );
 }
 
+fn foreground_remote_diagnostic_fixture() -> Value {
+    json!({
+        "caller_process_id":101,"caller_thread_id":102,
+        "target":{"process_id":42,"window_handle":7},
+        "target_thread_id":43,"target_root_window_handle":7,"target_owner_window_handle":0,
+        "initial_foreground":{"process_id":99,"window_handle":100},
+        "final_foreground":{"process_id":99,"window_handle":100},
+        "attempts":[{"phase":"restore_window","api_return":1},
+            {"phase":"initial_foreground_request","api_return":0},
+            {"phase":"non_topmost_raise","api_return":0,"os_error":5},
+            {"phase":"detach_foreground_input","api_return":0,"related_thread_id":103,"os_error":87},
+            {"phase":"restore_target_frame","api_return":1}],
+        "foreground_poll_count":20
+    })
+}
+
+#[rstest]
+fn task_remote_error_projection_preserves_typed_identity_and_closed_diagnostics() {
+    let foreground = foreground_remote_diagnostic_fixture();
+    let preparation = json!({"reason":"gate_busy","os_error":5});
+    let error = HostClientError::Remote {
+        code: "foreground_activation_refused".into(),
+        message: "original refusal: code-looking text remains a message".into(),
+        response: json!({
+            "code":"PRIVATE_FORGED_CODE","message":"PRIVATE_FORGED_MESSAGE",
+            "reason":"PRIVATE_FORGED_REASON","diagnostic":{"path":"PRIVATE_PATH"},
+            "details":{"foreground_activation":foreground,"capture_preparation":preparation,
+                "phase":"activation_dispatch","input_sent":"not_sent","automatic_input":false,
+                "background_delivery_viable":true,"suggested_delivery_mode":"background",
+                "suggested_target":{"window_title":"PRIVATE_TITLE"},"PRIVATE_FIELD":"PRIVATE_VALUE"}
+        }),
+    };
+    let projected = project_task_remote_error(&error, "change_window_state").unwrap();
+    let value = serde_json::to_value(projected).unwrap();
+    assert_eq!(value["code"], "foreground_activation_refused");
+    assert_eq!(value["error_code"], value["code"]);
+    assert_eq!(
+        value["message"],
+        "original refusal: code-looking text remains a message"
+    );
+    assert_eq!(value["error"], error.to_string());
+    assert_eq!(value["reason"], "gate_busy");
+    assert_eq!(value["details"]["foreground_activation"], foreground);
+    assert_eq!(value["diagnostic"]["foreground_activation"], foreground);
+    assert_eq!(value["diagnostic"]["capture_preparation"], preparation);
+    assert_eq!(value["details"]["background_delivery_viable"], true);
+    assert_eq!(value["details"]["input_sent"], "not_sent");
+    assert_eq!(value["details"]["phase"], "activation_dispatch");
+    assert!(!value.to_string().contains("PRIVATE_"));
+    let recovered: TaskRemoteErrorProjection = serde_json::from_value(value.clone()).unwrap();
+    assert_eq!(serde_json::to_value(recovered).unwrap(), value);
+}
+
+#[rstest]
+#[case("capture")]
+#[case("foreground_activation")]
+#[case("capture_preparation")]
+fn task_remote_error_projection_rejects_malformed_diagnostic_independently(#[case] field: &str) {
+    let mut details = json!({
+        "capture":root_bounds_capture_fixture(),
+        "foreground_activation":foreground_remote_diagnostic_fixture(),
+        "capture_preparation":{"reason":"gate_busy","os_error":null},
+        "phase":"PRIVATE_PHASE","automatic_input":"PRIVATE_BOOL"
+    });
+    match field {
+        "capture" => details[field]["reason"] = json!("PRIVATE_REASON"),
+        "foreground_activation" => details[field]["attempts"][0]["phase"] = json!("PRIVATE_PHASE"),
+        "capture_preparation" => details[field]["reason"] = json!("PRIVATE_REASON"),
+        _ => unreachable!(),
+    }
+    let error = HostClientError::Remote {
+        code: "invalid_target".into(),
+        message: "original refusal".into(),
+        response: json!({"details":details}),
+    };
+    let value =
+        serde_json::to_value(project_task_remote_error(&error, "snapshot").unwrap()).unwrap();
+    for name in ["capture", "foreground_activation", "capture_preparation"] {
+        assert_eq!(
+            value["details"].get(name).is_some(),
+            name != field,
+            "{name}"
+        );
+        assert_eq!(
+            value["diagnostic"].get(name).is_some(),
+            name != field,
+            "{name}"
+        );
+    }
+    assert!(value["details"].get("phase").is_none());
+    assert!(value["details"].get("automatic_input").is_none());
+    assert!(!value.to_string().contains("PRIVATE_"));
+}
+
+#[rstest]
+fn task_remote_error_projection_keeps_frame_coherence_and_independent_diagnostic() {
+    let foreground = foreground_remote_diagnostic_fixture();
+    let error = HostClientError::Remote {
+        code: "invalid_target".into(),
+        message: "frame refused".into(),
+        response: json!({"details":{
+            "phase":"local_mutation_dispatch","action_attempted":true,"input_sent":"not_sent",
+            "completion":"known","effect_unknown":true,"automatic_input":false,
+            "blind_retry":false,"fresh_observation_required":true,"foreground_activation":foreground
+        }}),
+    };
+    let value =
+        serde_json::to_value(project_task_remote_error(&error, "set_window_frame").unwrap())
+            .unwrap();
+    assert_eq!(
+        value["details"],
+        json!({"foreground_activation":foreground})
+    );
+    assert!(value.get("reason").is_none());
+}
+
 fn root_bounds_capture_fixture() -> Value {
     json!({
         "stage":"visible_desktop_proof", "reason":"root_bounds_invalid",
@@ -377,7 +495,6 @@ fn root_bounds_capture_fixture() -> Value {
 #[case("invalid_class")]
 #[case("invalid_rect")]
 #[case("invalid_reason")]
-#[rstest]
 #[tokio::test]
 async fn root_bounds_failure_survives_actual_public_task_remote_error_adapter(
     #[case] variant: &str,
@@ -472,6 +589,9 @@ async fn root_bounds_failure_survives_actual_public_task_remote_error_adapter(
     assert_eq!(result["isError"], true);
     let payload = &result["structuredContent"];
     assert_eq!(payload["ok"], false);
+    assert_eq!(payload["code"], "invalid_target");
+    assert_eq!(payload["error_code"], "invalid_target");
+    assert_eq!(payload["message"], "original refusal");
     assert_eq!(
         payload["error"],
         "host returned invalid_target: original refusal"
@@ -493,8 +613,15 @@ async fn root_bounds_failure_survives_actual_public_task_remote_error_adapter(
             payload["details"]["capture"],
             serde_json::to_value(expected).unwrap()
         );
+        assert_eq!(payload["reason"], "root_bounds_invalid");
+        assert_eq!(
+            payload["diagnostic"]["capture"],
+            payload["details"]["capture"]
+        );
     } else {
         assert!(payload.get("details").is_none());
+        assert!(payload.get("reason").is_none());
+        assert!(payload.get("diagnostic").is_none());
     }
     assert!(!result.to_string().contains("PRIVATE_"));
     assert!(payload.get("observation_id").is_none());
@@ -980,8 +1107,56 @@ fn public_tool_schema_advertises_closed_pixel_actions_and_exact_window_only() {
     let scopes = pixel["properties"]["allowed_actions"]["items"]["oneOf"]
         .as_array()
         .unwrap();
-    assert_eq!(scopes.len(), 3);
-    let input = &scopes[2]["properties"];
+    assert_eq!(scopes.len(), 4);
+    assert_eq!(
+        scopes[0]["properties"]["action"]["const"],
+        "minimize_window"
+    );
+    assert_eq!(
+        scopes[1]["properties"]["action"]["const"],
+        "set_window_frame"
+    );
+    for scope in scopes {
+        assert_eq!(scope["type"], "object");
+        assert_eq!(scope["additionalProperties"], false);
+        assert_eq!(
+            scope["required"],
+            json!([
+                "action",
+                "input_kind",
+                "secret_input",
+                "authorization_category"
+            ])
+        );
+    }
+    let preparation = &scopes[2]["properties"];
+    assert_eq!(
+        preparation,
+        &json!({
+            "action": {"const": "capture_preparation_begin"},
+            "input_kind": {"const": "window_state"},
+            "secret_input": {"const": false},
+            "authorization_category": {"const": "window_state"},
+            "browser_origin": {"type": "null"}
+        })
+    );
+    assert_eq!(
+        start["inputSchema"]["properties"]["allow_capture_preparation"]["type"],
+        "boolean"
+    );
+    assert_eq!(
+        start["inputSchema"]["properties"]["allow_capture_preparation"]["default"],
+        false
+    );
+    for method in [
+        "capture_preparation_begin",
+        "capture_preparation_state",
+        "capture_preparation_stop",
+        "capture_preparation_snapshot",
+    ] {
+        assert!(methods.contains(&json!(method)));
+    }
+    let input = &scopes[3]["properties"];
     assert_eq!(
         input["action"]["enum"],
         json!([
@@ -998,6 +1173,12 @@ fn public_tool_schema_advertises_closed_pixel_actions_and_exact_window_only() {
     assert_eq!(input["input_kind"]["const"], "raw_input");
     assert_eq!(input["secret_input"]["const"], false);
     assert_eq!(input["authorization_category"]["const"], "raw_input");
+    assert!(
+        !input["action"]["enum"]
+            .as_array()
+            .unwrap()
+            .contains(&preparation["action"]["const"])
+    );
 }
 
 #[rstest]
@@ -1475,7 +1656,7 @@ fn start_task_has_no_confirmation_ui_or_secret_value_fields() {
 fn task_action_schema_matches_the_closed_runtime_contract() {
     let schema = task_action_scope_schema();
     let variants = schema["oneOf"].as_array().unwrap();
-    assert_eq!(variants.len(), 6);
+    assert_eq!(variants.len(), 7);
 
     let variant = |input_kind: &str| {
         variants
@@ -1485,6 +1666,45 @@ fn task_action_schema_matches_the_closed_runtime_contract() {
             })
             .unwrap()
     };
+    for action in [
+        "minimize_window",
+        "set_window_frame",
+        "capture_preparation_begin",
+    ] {
+        let mut matching = variants
+            .iter()
+            .filter(|scope| scope["properties"]["action"]["const"].as_str() == Some(action));
+        let scope = matching.next().unwrap();
+        assert!(matching.next().is_none());
+        assert_eq!(scope["type"], "object");
+        assert_eq!(scope["additionalProperties"], false);
+        assert_eq!(
+            scope["required"],
+            json!([
+                "action",
+                "input_kind",
+                "secret_input",
+                "authorization_category"
+            ])
+        );
+        assert_eq!(
+            scope["properties"],
+            json!({
+                "action": {"const": action},
+                "input_kind": {"const": "window_state"},
+                "secret_input": {"const": false},
+                "authorization_category": {"const": "window_state"},
+                "browser_origin": {"type": "null"}
+            })
+        );
+    }
+    for kind in ["semantic", "raw_input", "browser", "clipboard"] {
+        let input = &variant(kind)["properties"];
+        assert_ne!(input["action"]["const"], "capture_preparation_begin");
+        if let Some(actions) = input["action"]["enum"].as_array() {
+            assert!(!actions.contains(&json!("capture_preparation_begin")));
+        }
+    }
     let semantic = variant("semantic");
     let native = variant("window_state");
     assert_eq!(native["properties"]["action"]["const"], "minimize_window");

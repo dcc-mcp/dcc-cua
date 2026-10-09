@@ -1,9 +1,11 @@
 use super::*;
 use crate::request_contract::*;
 use zeroize::Zeroize;
+mod capture_preparation;
 mod confirmation_evidence;
 mod evidence_epoch;
 mod session_helpers;
+pub(super) use capture_preparation::passive_preparation_snapshot_response;
 pub(crate) use confirmation_evidence::*;
 pub(super) use evidence_epoch::*;
 pub(crate) use session_helpers::*;
@@ -597,6 +599,18 @@ async fn handle_request_inner(
                 None,
             ))
         }
+        Request::CapturePreparationBegin(params) => {
+            capture_preparation::begin(sessions, params).await
+        }
+        Request::CapturePreparationState(params) => {
+            capture_preparation::state(sessions, params).await
+        }
+        Request::CapturePreparationStop(params) => {
+            capture_preparation::stop(sessions, params).await
+        }
+        Request::CapturePreparationSnapshot(params) => {
+            capture_preparation::snapshot(sessions, mode, params).await
+        }
         Request::RecordingStart {
             session_id,
             task_grant_id,
@@ -900,6 +914,7 @@ async fn handle_request_inner(
                     latest_accessibility_state_id: None,
                     latest_accessibility_root: None,
                     latest_shared_image: None,
+                    latest_preparation_image: None,
                     input_events,
                     idle_timeout: Duration::from_millis(idle_timeout_ms),
                     last_activity: Instant::now(),
