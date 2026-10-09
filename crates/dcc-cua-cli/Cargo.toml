@@ -13,6 +13,10 @@ repository.workspace = true
 name = "dcc-cua"
 path = "src/main.rs"
 
+[[bin]]
+name = "dcc-cua-background"
+path = "src/background.rs"
+
 [dependencies]
 async-trait.workspace = true
 base64 = "0.22"
