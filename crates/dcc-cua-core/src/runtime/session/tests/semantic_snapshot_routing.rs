@@ -1,5 +1,6 @@
 // Provider sinks for the unchanged production screenshot dispatch prefix.
 // No native API, worker, Host, capture or input is started by these tests.
+use rstest::rstest;
 use std::future::Future;
 use std::task::{Context, Poll, Waker};
 
@@ -105,7 +106,7 @@ fn ready<T>(future: impl Future<Output = T>) -> T {
     }
 }
 
-#[test]
+#[rstest]
 fn repeated_semantic_snapshots_keep_exact_target_and_bounds_without_escalation() {
     let mut session = ComputerUseSession::new();
     let target = session.target.unwrap();
@@ -120,7 +121,7 @@ fn repeated_semantic_snapshots_keep_exact_target_and_bounds_without_escalation()
     assert!(!session.escalated);
 }
 
-#[test]
+#[rstest]
 fn explicitly_approved_visual_fallback_remains_available() {
     let mut session = ComputerUseSession::new();
     session.windows_uia = Some(());
@@ -133,7 +134,7 @@ fn explicitly_approved_visual_fallback_remains_available() {
     assert_eq!(session.semantic_calls, 0);
 }
 
-#[test]
+#[rstest]
 fn explicit_and_degraded_pixel_routes_precede_cached_uia() {
     for route in [
         PixelObservationRoute::ExplicitPixelsOnly,
@@ -154,7 +155,7 @@ fn explicit_and_degraded_pixel_routes_precede_cached_uia() {
     }
 }
 
-#[test]
+#[rstest]
 fn visual_only_session_retains_typed_timeout_route() {
     let mut session = ComputerUseSession::new();
     session.windows_uia = Some(());
@@ -171,7 +172,7 @@ fn visual_only_session_retains_typed_timeout_route() {
     assert_eq!((session.semantic_calls, session.visual_calls), (0, 0));
 }
 
-#[test]
+#[rstest]
 fn cached_uia_cannot_bypass_missing_exact_target() {
     let mut session = ComputerUseSession::new();
     session.windows_uia = Some(());

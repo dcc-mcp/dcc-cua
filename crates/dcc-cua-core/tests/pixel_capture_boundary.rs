@@ -108,7 +108,9 @@ fn exact_source_semantic_snapshot_routing() {
         .0;
     let pixel = include_str!("../src/runtime/pixel_observation.rs");
     let route = item(pixel, "pub(super) enum PixelObservationRoute");
-    let model = include_str!("../src/runtime/session/tests/semantic_snapshot_routing.rs");
+    let model = include_str!("../src/runtime/session/tests/semantic_snapshot_routing.rs")
+        .replace("use rstest::rstest;", "")
+        .replace("#[rstest]", "#[test]");
     let source = format!(
         "#![allow(dead_code, unused_variables)]\nmod actual {{ {model}\n#[derive(Clone, Copy, Debug, PartialEq, Eq)]\n{route}\nimpl ComputerUseSession {{ {prefix} self.semantic_snapshot(&target, max_elements, max_depth) }} }} }}"
     )
