@@ -53,13 +53,13 @@ fn native_frame_attempt_error(mut error: ComputerUseError, attempted: bool) -> C
 pub(super) struct NativeWindowFrameMetadata {
     id: String,
     session_id: String,
-    read_at: Instant,
-    state: dcc_cua_platform_windows::ExactWindowNativeState,
+    pub(super) read_at: Instant,
+    pub(super) state: dcc_cua_platform_windows::ExactWindowNativeState,
 }
 
 #[cfg(windows)]
 impl NativeWindowFrameMetadata {
-    fn validate(
+    pub(super) fn validate(
         &self,
         id: &str,
         scope: &ComputerUseTargetScope,

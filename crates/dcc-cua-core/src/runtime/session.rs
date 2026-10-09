@@ -11,8 +11,11 @@ pub(crate) use gates::{
 };
 use input_target_policy::reject_ambiguous_embedded_browser_navigation;
 mod browser;
+mod capture_preparation;
 mod error_contracts;
 mod native_recording;
+#[cfg(any(windows, test))]
+pub(crate) use capture_preparation::preparation_error as map_capture_preparation_error;
 mod observation;
 mod pixel_start;
 #[cfg(test)]
@@ -85,6 +88,8 @@ impl ComputerUseSession {
             observation: None,
             #[cfg(windows)]
             native_frame_metadata: None,
+            #[cfg(windows)]
+            capture_preparation: None,
             action_evidence_epoch: ActionEvidenceEpoch::default(),
             live_observation: None,
             post_action_live_sequence_fence: None,
@@ -126,6 +131,7 @@ impl ComputerUseSession {
         request: &ComputerUseSessionStartRequest,
     ) -> ComputerUseResult<Value> {
         self.ensure_local_cleanup_reusable()?;
+        self.require_capture_preparation_settled()?;
         if self.active {
             return Err(ComputerUseError::new(
                 ComputerUseErrorCode::InvalidAction,
@@ -1178,6 +1184,7 @@ impl ComputerUseSession {
     }
 
     pub(super) fn require_observed_input_available(&mut self) -> ComputerUseResult<()> {
+        self.require_capture_preparation_settled()?;
         #[cfg(feature = "test-support")]
         if self.synthetic_test_session {
             return Ok(());
@@ -1187,6 +1194,7 @@ impl ComputerUseSession {
     }
 
     pub(super) fn require_observed_window_activation_available(&mut self) -> ComputerUseResult<()> {
+        self.require_capture_preparation_settled()?;
         let result = interactive_desktop::require_window_activation_available();
         self.finish_observed_input_gate(result)
     }
@@ -1313,6 +1321,13 @@ impl ComputerUseSession {
     }
 
     pub async fn stop(&mut self) -> ComputerUseResult<ComputerUseSessionStopResult> {
+        // Revoke passive capture immediately. A pending native call is not
+        // canceled by this request; its supervisor still owns ordered rollback.
+        #[cfg(windows)]
+        if let Some(preparation) = &self.capture_preparation {
+            let _ = preparation
+                .stop(dcc_cua_protocol::capture_preparation::PreparationFailure::Stopped);
+        }
         if self.recording_active
             && let Err(error) = self.recording_stop().await
         {
@@ -1381,6 +1396,20 @@ impl ComputerUseSession {
             .last_recording_video
             .as_ref()
             .map(RecordingVideoTerminalEvidence::cleanup_outcome);
+        #[cfg(windows)]
+        if let Some(preparation) = &self.capture_preparation {
+            match preparation.state() {
+                Ok(state) => {
+                    result.cleanup_pending |= !state.cleanup_verified;
+                    result.success &= state.cleanup_verified;
+                    result.capture_preparation = Some(state);
+                }
+                Err(_) => {
+                    result.cleanup_pending = true;
+                    result.success = false;
+                }
+            }
+        }
         if self.local_cleanup.last_source.is_some() || self.local_cleanup.source_pending {
             let source = self.local_cleanup.last_source.as_ref();
             result.live_observation = Some(ComputerUseLiveObservationCleanupOutcome {

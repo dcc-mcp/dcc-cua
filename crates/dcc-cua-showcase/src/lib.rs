@@ -19,7 +19,7 @@ use capture_manifest::CaptureManifest;
 mod provenance;
 pub use provenance::{
     FrameCaptureProvenance, NativeFrameInstance, NativeFrameProvenance, NativeFrameSource,
-    NativeWgcFrameGeometry,
+    NativeWgcFrameGeometry, PreparedCaptureFrameProvenance,
 };
 
 #[derive(Debug)]

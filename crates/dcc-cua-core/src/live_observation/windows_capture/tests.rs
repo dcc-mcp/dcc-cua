@@ -2,6 +2,65 @@ use rstest::rstest;
 
 use super::*;
 
+#[rstest]
+#[case(None, None, true)]
+#[case(Some([7; 16]), Some([7; 16]), true)]
+#[case(Some([7; 16]), None, false)]
+#[case(None, Some([7; 16]), false)]
+#[case(Some([7; 16]), Some([8; 16]), false)]
+fn prepared_frame_publication_requires_matching_current_binding(
+    #[case] captured: Option<[u8; 16]>,
+    #[case] current: Option<[u8; 16]>,
+    #[case] accepted: bool,
+) {
+    let calls = std::cell::Cell::new(0);
+    let result = validate_prepared_frame_publication(captured, || {
+        calls.set(calls.get() + 1);
+        Ok(current)
+    });
+    assert_eq!(calls.get(), 1);
+    assert_eq!(result.is_ok(), accepted);
+    if let Err(error) = result {
+        assert!(terminal_capture_error(&error));
+        assert_eq!(
+            error.details.unwrap().capture_preparation.unwrap().reason,
+            dcc_cua_protocol::capture_preparation::PreparationFailure::InvalidBinding,
+        );
+    }
+}
+
+#[rstest]
+#[case(dcc_cua_protocol::capture_preparation::PreparationFailure::Expired)]
+#[case(dcc_cua_protocol::capture_preparation::PreparationFailure::Stopped)]
+#[case(dcc_cua_protocol::capture_preparation::PreparationFailure::IdentityChanged)]
+fn prepared_frame_publication_revalidates_after_indicator_fence(
+    #[case] failure: dcc_cua_protocol::capture_preparation::PreparationFailure,
+) {
+    // Capture validated successfully, then the slow indicator fence consumed
+    // the remaining lease or observed a revocation before publication.
+    let lease_active = std::cell::Cell::new(true);
+    let captured_preparation_id = Some([7; 16]);
+    let validation_called = std::cell::Cell::new(false);
+    lease_active.set(false);
+    let error = validate_prepared_frame_publication(captured_preparation_id, || {
+        validation_called.set(true);
+        assert!(!lease_active.get());
+        Err(prepared_capture_error(
+            dcc_cua_protocol::capture_preparation::PreparationError::new(failure),
+        ))
+    })
+    .unwrap_err();
+    assert!(validation_called.get());
+    assert!(terminal_capture_error(&error));
+    let details = error.details.unwrap();
+    assert_eq!(details.capture_preparation.unwrap().reason, failure);
+    assert_eq!(
+        details.input_sent,
+        Some(crate::ComputerUseInputState::NotSent)
+    );
+    assert_eq!(details.blind_retry, Some(false));
+}
+
 fn evidence() -> ExactWindowPixelEvidence {
     ExactWindowPixelEvidence {
         process_id: 42,

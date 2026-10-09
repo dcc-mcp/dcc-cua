@@ -37,6 +37,7 @@ async fn first_encoded_acknowledgement_matches_the_actual_first_sample_sidecar()
             row_pitch_bytes: 160,
             bgra_byte_len: 32 * 16 * 4,
         }),
+        capture_preparation: None,
     });
     let mut initial = LiveObservationStatus::default();
     initial.publish_frame(
@@ -1815,6 +1816,11 @@ fn recording_manifest_covers_encoded_samples_across_pause_resize_and_source_gaps
             capture_generation: sequence,
             stream_id: 7,
             wgc_geometry: None,
+            capture_preparation: Some(PreparedCaptureFrameProvenance {
+                preparation_id: [19; 16],
+                actual_foreground: false,
+                captured_at_ms: 50_000 + elapsed_ms,
+            }),
         });
         Arc::new(
             LiveObservationFrame::new(
@@ -1878,6 +1884,20 @@ fn recording_manifest_covers_encoded_samples_across_pause_resize_and_source_gaps
             8
         );
         assert_eq!(row["capture_provenance"]["source"], "verified_visible");
+        assert_eq!(
+            row["capture_provenance"]["capture_preparation"]["preparation_id"],
+            json!(vec![19; 16])
+        );
+        assert_eq!(
+            row["capture_provenance"]["capture_preparation"]["actual_foreground"],
+            false
+        );
+        assert!(
+            row["capture_provenance"]["capture_preparation"]["captured_at_ms"]
+                .as_u64()
+                .unwrap()
+                >= 50_000
+        );
     }
     assert_eq!(frames[2]["segment_index"], 1);
     assert_eq!(frames[2]["media_start_ms"], 200);

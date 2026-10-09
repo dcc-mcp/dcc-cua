@@ -9,23 +9,26 @@ use std::{
 use base64::Engine as _;
 use serde_json::{Value, json};
 use windows_sys::Win32::{
-    Foundation::RECT,
-    System::Threading::{AttachThreadInput, GetCurrentThreadId},
+    Foundation::{GetLastError, RECT},
+    System::Threading::{AttachThreadInput, GetCurrentProcessId, GetCurrentThreadId},
     UI::{
         Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON, VK_MBUTTON, VK_RBUTTON},
         WindowsAndMessaging::{
-            BringWindowToTop, GUITHREADINFO, GetForegroundWindow, GetGUIThreadInfo, GetWindowRect,
-            GetWindowThreadProcessId, HWND_TOP, IsIconic, IsWindow, IsWindowVisible, PostMessageW,
-            SMTO_ABORTIFHUNG, SW_RESTORE, SWP_ASYNCWINDOWPOS, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
-            SWP_SHOWWINDOW, SendMessageTimeoutW, SetForegroundWindow, SetWindowPos,
-            ShowWindowAsync, WM_CLOSE, WM_NULL,
+            BringWindowToTop, GA_ROOT, GUITHREADINFO, GW_OWNER, GetAncestor, GetForegroundWindow,
+            GetGUIThreadInfo, GetWindow, GetWindowRect, GetWindowThreadProcessId, HWND_TOP,
+            IsIconic, IsWindow, IsWindowVisible, PostMessageW, SMTO_ABORTIFHUNG, SW_RESTORE,
+            SWP_ASYNCWINDOWPOS, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW,
+            SendMessageTimeoutW, SetForegroundWindow, SetWindowPos, ShowWindowAsync, WM_CLOSE,
+            WM_NULL,
         },
     },
 };
 
 use crate::{
-    UiaAction, UiaError, UiaTarget, WindowsForegroundRelation, WindowsPointerButton,
-    WindowsRawInputSnapshot, WindowsWindowIdentity,
+    UiaAction, UiaError, UiaTarget, WindowsForegroundActivationAttempt,
+    WindowsForegroundActivationDiagnostic, WindowsForegroundActivationPhase,
+    WindowsForegroundRelation, WindowsPointerButton, WindowsRawInputSnapshot,
+    WindowsWindowIdentity,
     snapshot::{ElementFence, SnapshotState, normalize, resolve_index},
 };
 
@@ -378,11 +381,39 @@ fn error_detail(error: &UiaError) -> &str {
     }
 }
 
-fn foreground_activation_refused(reason: impl Into<String>) -> UiaError {
+fn foreground_activation_refused(
+    reason: impl Into<String>,
+    mut diagnostic: WindowsForegroundActivationDiagnostic,
+) -> UiaError {
+    diagnostic.final_foreground = live_window_identity(unsafe { GetForegroundWindow() });
     UiaError::ForegroundActivationRefused {
         reason: reason.into(),
         background_delivery_viable: true,
         suggested_delivery_mode: Some("background".into()),
+        diagnostic: Some(Box::new(diagnostic)),
+    }
+}
+
+fn activation_diagnostic(
+    target: UiaTarget,
+    expected: windows_sys::Win32::Foundation::HWND,
+) -> WindowsForegroundActivationDiagnostic {
+    WindowsForegroundActivationDiagnostic {
+        caller_process_id: unsafe { GetCurrentProcessId() },
+        caller_thread_id: unsafe { GetCurrentThreadId() },
+        target: WindowsWindowIdentity {
+            window_handle: target.window_handle,
+            process_id: target.process_id,
+        },
+        target_thread_id: unsafe { GetWindowThreadProcessId(expected, std::ptr::null_mut()) },
+        target_root_window_handle: unsafe { GetAncestor(expected, GA_ROOT) } as usize as u64,
+        target_owner_window_handle: unsafe { GetWindow(expected, GW_OWNER) } as usize as u64,
+        initial_foreground: live_window_identity(unsafe { GetForegroundWindow() }),
+        final_foreground: None,
+        // The existing activation and wrapper mutation phases fit within eleven
+        // attempts. Never truncate a final detach or frame restoration result.
+        attempts: Vec::with_capacity(16),
+        foreground_poll_count: 0,
     }
 }
 
@@ -442,16 +473,20 @@ pub fn activate_window(
     activation_available: impl FnOnce() -> Result<(), UiaError>,
 ) -> Result<(), UiaError> {
     let expected = require_available_window_handle(target, "activation frame capture")?;
+    let mut diagnostic = activation_diagnostic(target, expected);
     let frame_before_activation = capture_visible_window_frame(expected);
-    input_gated_window_mutation(activation_available, || activate_window_after_gate(target))?;
+    input_gated_window_mutation(activation_available, || {
+        activate_window_after_gate(target, &mut diagnostic)
+    })?;
     let expected = require_available_window_handle(target, "activation final validation")?;
     if let Some(frame) = frame_before_activation {
-        restore_window_frame_after_activation(expected, frame)?;
+        restore_window_frame_after_activation(expected, frame, &mut diagnostic)?;
     }
-    synchronize_activated_input_queue(expected)?;
+    synchronize_activated_input_queue(expected, &diagnostic)?;
     if unsafe { GetForegroundWindow() } != expected {
         return Err(foreground_activation_refused(
             "the exact target was no longer foreground at activation final validation",
+            diagnostic,
         ));
     }
     Ok(())
@@ -475,6 +510,7 @@ fn capture_visible_window_frame(
 fn restore_window_frame_after_activation(
     expected: windows_sys::Win32::Foundation::HWND,
     requested: [i32; 4],
+    diagnostic: &mut WindowsForegroundActivationDiagnostic,
 ) -> Result<(), UiaError> {
     let mut current = RECT::default();
     if unsafe { GetWindowRect(expected, &mut current) } == 0 {
@@ -492,7 +528,7 @@ fn restore_window_frame_after_activation(
         return Ok(());
     }
     let [x, y, width, height] = requested;
-    if unsafe {
+    let api_return = unsafe {
         SetWindowPos(
             expected,
             std::ptr::null_mut(),
@@ -502,11 +538,20 @@ fn restore_window_frame_after_activation(
             height,
             SWP_ASYNCWINDOWPOS | SWP_NOZORDER | SWP_SHOWWINDOW,
         )
-    } == 0
-    {
+    };
+    let os_error = (api_return == 0).then(|| unsafe { GetLastError() });
+    diagnostic
+        .attempts
+        .push(WindowsForegroundActivationAttempt::new(
+            WindowsForegroundActivationPhase::RestoreTargetFrame,
+            api_return,
+            None,
+            os_error,
+        ));
+    if let Some(os_error) = os_error {
         return Err(UiaError::OperationFailed(format!(
             "SetWindowPos failed while preserving the activation frame: {}",
-            std::io::Error::last_os_error()
+            std::io::Error::from_raw_os_error(os_error as i32)
         )));
     }
     for _ in 0..40 {
@@ -531,6 +576,7 @@ fn restore_window_frame_after_activation(
 
 fn synchronize_activated_input_queue(
     expected: windows_sys::Win32::Foundation::HWND,
+    diagnostic: &WindowsForegroundActivationDiagnostic,
 ) -> Result<(), UiaError> {
     let mut message_result = 0;
     let synchronized = unsafe {
@@ -552,18 +598,31 @@ fn synchronize_activated_input_queue(
     if unsafe { GetForegroundWindow() } != expected {
         return Err(foreground_activation_refused(
             "the exact target lost foreground while synchronizing activation input",
+            diagnostic.clone(),
         ));
     }
     Ok(())
 }
 
-fn activate_window_after_gate(target: UiaTarget) -> Result<(), UiaError> {
+fn activate_window_after_gate(
+    target: UiaTarget,
+    diagnostic: &mut WindowsForegroundActivationDiagnostic,
+) -> Result<(), UiaError> {
+    use WindowsForegroundActivationPhase as Phase;
     let expected = require_available_window_handle(target, "activation")?;
     if unsafe { GetForegroundWindow() } == expected {
         return Ok(());
     }
 
-    unsafe { SetForegroundWindow(expected) };
+    let api_return = unsafe { SetForegroundWindow(expected) };
+    diagnostic
+        .attempts
+        .push(WindowsForegroundActivationAttempt::new(
+            Phase::InitialForegroundRequest,
+            api_return,
+            None,
+            None,
+        ));
     if unsafe { GetForegroundWindow() } == expected {
         return Ok(());
     }
@@ -572,7 +631,7 @@ fn activate_window_after_gate(target: UiaTarget) -> Result<(), UiaError> {
     let insert_after = match activation_raise_mode() {
         ActivationRaiseMode::NonTopMost => HWND_TOP,
     };
-    unsafe {
+    let api_return = unsafe {
         SetWindowPos(
             expected,
             insert_after,
@@ -581,13 +640,31 @@ fn activate_window_after_gate(target: UiaTarget) -> Result<(), UiaError> {
             0,
             0,
             SWP_ASYNCWINDOWPOS | SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
-        );
-        SetForegroundWindow(expected);
-    }
+        )
+    };
+    let os_error = (api_return == 0).then(|| unsafe { GetLastError() });
+    diagnostic
+        .attempts
+        .push(WindowsForegroundActivationAttempt::new(
+            Phase::NonTopmostRaise,
+            api_return,
+            None,
+            os_error,
+        ));
+    let api_return = unsafe { SetForegroundWindow(expected) };
+    diagnostic
+        .attempts
+        .push(WindowsForegroundActivationAttempt::new(
+            Phase::RaisedForegroundRequest,
+            api_return,
+            None,
+            None,
+        ));
     if unsafe { GetForegroundWindow() } != expected {
-        activate_with_attached_input(expected);
+        activate_with_attached_input(expected, diagnostic);
     }
     let activated = (0..20).any(|_| {
+        diagnostic.foreground_poll_count += 1;
         if unsafe { GetForegroundWindow() } == expected {
             return true;
         }
@@ -599,30 +676,77 @@ fn activate_window_after_gate(target: UiaTarget) -> Result<(), UiaError> {
     } else {
         Err(foreground_activation_refused(
             "Windows could not make the exact target window foreground",
+            diagnostic.clone(),
         ))
     }
 }
 
-fn activate_with_attached_input(expected: windows_sys::Win32::Foundation::HWND) {
+fn activate_with_attached_input(
+    expected: windows_sys::Win32::Foundation::HWND,
+    diagnostic: &mut WindowsForegroundActivationDiagnostic,
+) {
+    use WindowsForegroundActivationPhase as Phase;
     let current_thread = unsafe { GetCurrentThreadId() };
     let foreground = unsafe { GetForegroundWindow() };
     let foreground_thread = unsafe { GetWindowThreadProcessId(foreground, std::ptr::null_mut()) };
     let expected_thread = unsafe { GetWindowThreadProcessId(expected, std::ptr::null_mut()) };
+    let mut attach = |phase, related_thread_id, enabled| {
+        let api_return = unsafe { AttachThreadInput(current_thread, related_thread_id, enabled) };
+        let os_error = (api_return == 0).then(|| unsafe { GetLastError() });
+        diagnostic
+            .attempts
+            .push(WindowsForegroundActivationAttempt::new(
+                phase,
+                api_return,
+                Some(related_thread_id),
+                os_error,
+            ));
+        api_return != 0
+    };
     let attached_foreground = foreground_thread != 0
         && foreground_thread != current_thread
-        && unsafe { AttachThreadInput(current_thread, foreground_thread, 1) } != 0;
+        && attach(Phase::AttachForegroundInput, foreground_thread, 1);
     let attached_expected = expected_thread != 0
         && expected_thread != current_thread
         && expected_thread != foreground_thread
-        && unsafe { AttachThreadInput(current_thread, expected_thread, 1) } != 0;
-    unsafe {
-        BringWindowToTop(expected);
-        SetForegroundWindow(expected);
-        if attached_expected {
-            AttachThreadInput(current_thread, expected_thread, 0);
-        }
-        if attached_foreground {
-            AttachThreadInput(current_thread, foreground_thread, 0);
+        && attach(Phase::AttachTargetInput, expected_thread, 1);
+    let api_return = unsafe { BringWindowToTop(expected) };
+    diagnostic
+        .attempts
+        .push(WindowsForegroundActivationAttempt::new(
+            Phase::BringTargetToTop,
+            api_return,
+            None,
+            None,
+        ));
+    let api_return = unsafe { SetForegroundWindow(expected) };
+    diagnostic
+        .attempts
+        .push(WindowsForegroundActivationAttempt::new(
+            Phase::AttachedForegroundRequest,
+            api_return,
+            None,
+            None,
+        ));
+    for (attached, related_thread_id, phase) in [
+        (attached_expected, expected_thread, Phase::DetachTargetInput),
+        (
+            attached_foreground,
+            foreground_thread,
+            Phase::DetachForegroundInput,
+        ),
+    ] {
+        if attached {
+            let api_return = unsafe { AttachThreadInput(current_thread, related_thread_id, 0) };
+            let os_error = (api_return == 0).then(|| unsafe { GetLastError() });
+            diagnostic
+                .attempts
+                .push(WindowsForegroundActivationAttempt::new(
+                    phase,
+                    api_return,
+                    Some(related_thread_id),
+                    os_error,
+                ));
         }
     }
 }
@@ -720,12 +844,18 @@ pub fn restore_and_activate_window(
     activate_input_available: impl FnOnce() -> Result<(), UiaError>,
 ) -> Result<(), UiaError> {
     let expected = require_exact_window_handle(target, "restore")?;
+    let mut diagnostic = activation_diagnostic(target, expected);
+    // The two independently gated closures run in order. Retain the actual
+    // restore BOOL without giving both closures a mutable diagnostic borrow.
+    let restore_api_return = std::cell::Cell::new(None);
     run_restore_activate_mutation_sequence(
         restore_input_available,
         || {
             require_exact_window_handle(target, "restore")?;
             if unsafe { IsIconic(expected) } != 0 {
-                if unsafe { ShowWindowAsync(expected, SW_RESTORE) } == 0 {
+                let api_return = unsafe { ShowWindowAsync(expected, SW_RESTORE) };
+                restore_api_return.set(Some(api_return));
+                if api_return == 0 {
                     return Err(UiaError::OperationFailed(
                         "Windows refused to request restoration of the exact target".into(),
                     ));
@@ -747,7 +877,19 @@ pub fn restore_and_activate_window(
             Ok(())
         },
         activate_input_available,
-        || activate_window_after_gate(target),
+        || {
+            if let Some(api_return) = restore_api_return.get() {
+                diagnostic
+                    .attempts
+                    .push(WindowsForegroundActivationAttempt::new(
+                        WindowsForegroundActivationPhase::RestoreWindow,
+                        api_return,
+                        None,
+                        None,
+                    ));
+            }
+            activate_window_after_gate(target, &mut diagnostic)
+        },
     )?;
     let mut final_process_id = 0;
     let final_exists = unsafe { IsWindow(expected) } != 0;

@@ -1,5 +1,23 @@
 use super::*;
 
+fn require_actionable_native_frame(
+    preparation: Option<&dcc_cua_showcase::PreparedCaptureFrameProvenance>,
+) -> ComputerUseResult<()> {
+    if preparation.is_some() {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::InvalidAction,
+            "passive prepared pixels cannot become actionable observation evidence; start a fresh ordinary capture source",
+        )
+        .with_details(ComputerUseErrorDetails {
+            action_attempted: Some(false),
+            input_sent: Some(ComputerUseInputState::NotSent),
+            automatic_rebind: Some(false),
+            ..Default::default()
+        }));
+    }
+    Ok(())
+}
+
 impl ComputerUseSession {
     /// Report whether a user-confirmed action must renew its exact-target
     /// evidence before dispatch. The renewal itself remains read-only; callers
@@ -98,6 +116,7 @@ impl ComputerUseSession {
         #[cfg(windows)]
         {
             self.ensure_active()?;
+            self.require_capture_preparation_settled()?;
             if self.pixel_observation_route != Some(PixelObservationRoute::ExplicitPixelsOnly) {
                 return Err(ComputerUseError::new(
                     ComputerUseErrorCode::InvalidAction,
@@ -121,6 +140,7 @@ impl ComputerUseSession {
         max_depth: u32,
     ) -> ComputerUseResult<ComputerUseScreenshot> {
         self.ensure_active()?;
+        self.require_capture_preparation_settled()?;
         let _banner_activity = self.begin_banner_activity(BannerActivity::Observing);
         self.refresh_upstream_session_before_observation_if_needed()
             .await?;
@@ -381,6 +401,7 @@ impl ComputerUseSession {
             .map_err(|error| map_indicator_error("validate final live frame source", error))?;
         let (backend, source_rect, native_provenance) = match frame.provenance() {
             dcc_cua_showcase::FrameCaptureProvenance::NativeExactWindow(proof) => {
+                require_actionable_native_frame(proof.capture_preparation.as_ref())?;
                 if proof.stream_id != stream_id {
                     return Err(ComputerUseError::new(
                         ComputerUseErrorCode::StaleObservation,
@@ -497,6 +518,37 @@ impl ComputerUseSession {
     ) -> ComputerUseResult<LiveObservationStartOutcome> {
         self.ensure_active()?;
         request.validate()?;
+        self.ensure_local_cleanup_reusable()?;
+        #[cfg(windows)]
+        let prepared_guard = self
+            .capture_preparation
+            .as_ref()
+            .map(|handle| {
+                let status = handle.state().map_err(map_capture_preparation_error)?;
+                if status.cleanup_verified {
+                    Ok(None)
+                } else {
+                    handle
+                        .prepared_guard()
+                        .map(Some)
+                        .map_err(map_capture_preparation_error)
+                }
+            })
+            .transpose()?
+            .flatten();
+        #[cfg(windows)]
+        {
+            let preparation_id = prepared_guard.as_ref()
+                .map(dcc_cua_platform_windows::capture_preparation::PreparedEvidenceGuard::preparation_id)
+                .transpose().map_err(map_capture_preparation_error)?;
+            if self
+                .live_observation
+                .as_ref()
+                .is_some_and(|observation| observation.preparation_id() != preparation_id)
+            {
+                self.stop_live_observation_for_replacement().await?;
+            }
+        }
         let existing_state = self.live_observation.as_ref().map(LiveObservation::state);
         #[cfg(windows)]
         let observation_availability =
@@ -517,12 +569,39 @@ impl ComputerUseSession {
                 disposition,
             });
         }
-        if let Some(observation) = self.live_observation.take() {
-            let _ = observation.stop().await;
-            self.set_banner_live_observation(false);
+        if self.live_observation.is_some() {
+            self.stop_live_observation_for_replacement().await?;
         }
         self.begin_live_observation_replacement();
         let _banner_activity = self.begin_banner_activity(BannerActivity::Observing);
+        #[cfg(windows)]
+        let observation = if let Some(guard) = prepared_guard {
+            LiveObservation::start_prepared(
+                self.driver.clone(),
+                self.session_id.clone(),
+                target.pid,
+                target.window_id,
+                request,
+                self.control_banner
+                    .as_ref()
+                    .map(ControlBanner::capture_exclusion_source),
+                guard,
+            )
+            .await?
+        } else {
+            LiveObservation::start(
+                self.driver.clone(),
+                self.session_id.clone(),
+                target.pid,
+                target.window_id,
+                request,
+                self.control_banner
+                    .as_ref()
+                    .map(ControlBanner::capture_exclusion_source),
+            )
+            .await?
+        };
+        #[cfg(not(windows))]
         let observation = LiveObservation::start(
             self.driver.clone(),
             self.session_id.clone(),
@@ -542,6 +621,13 @@ impl ComputerUseSession {
 
     pub(super) fn begin_live_observation_replacement(&mut self) {
         self.invalidate_action_observations();
+    }
+
+    pub(super) async fn stop_live_observation_for_replacement(&mut self) -> ComputerUseResult<()> {
+        // stop_live_observation records session-owned pending cleanup before
+        // its first await, so dropping this future cannot lose that obligation.
+        self.stop_live_observation().await;
+        self.ensure_local_cleanup_reusable()
     }
 
     #[must_use]
@@ -1122,5 +1208,32 @@ impl ComputerUseSession {
         })?;
         self.set_banner_activity(BannerActivity::Ready);
         Ok(ComputerUseVerification { value, image })
+    }
+}
+
+#[cfg(test)]
+mod prepared_evidence_tests {
+    use super::*;
+
+    #[rstest::rstest]
+    #[case(false)]
+    #[case(true)]
+    fn passive_prepared_frame_never_becomes_actionable(#[case] actual_foreground: bool) {
+        let proof = dcc_cua_showcase::PreparedCaptureFrameProvenance {
+            preparation_id: [7; 16],
+            actual_foreground,
+            captured_at_ms: 42,
+        };
+        let error = require_actionable_native_frame(Some(&proof)).unwrap_err();
+        assert_eq!(error.code, ComputerUseErrorCode::InvalidAction);
+        let details = error.details.unwrap();
+        assert_eq!(details.input_sent, Some(ComputerUseInputState::NotSent));
+        assert_eq!(details.action_attempted, Some(false));
+        assert_eq!(details.automatic_rebind, Some(false));
+    }
+
+    #[test]
+    fn ordinary_frame_has_no_passive_preparation_authority() {
+        assert!(require_actionable_native_frame(None).is_ok());
     }
 }

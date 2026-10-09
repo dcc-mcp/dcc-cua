@@ -74,6 +74,8 @@ pub(super) struct HostSession {
     pub(super) latest_accessibility_state_id: Option<String>,
     pub(super) latest_accessibility_root: Option<Value>,
     pub(super) latest_shared_image: Option<SharedImage>,
+    /// Passive prepared pixels are never bound to actionable observations.
+    pub(super) latest_preparation_image: Option<SharedImage>,
     pub(super) input_events: SessionInputEventQueue,
     pub(super) idle_timeout: Duration,
     pub(super) last_activity: Instant,
@@ -135,6 +137,35 @@ pub(super) fn native_frame_lease_matches_binding(
 }
 
 impl HostSession {
+    pub(super) fn require_capture_preparation_grant(
+        &self,
+        session_id: &str,
+        method: &str,
+    ) -> Result<
+        &dcc_cua_protocol::capture_preparation::CapturePreparationAuthorization,
+        crate::HostError,
+    > {
+        let lease = self.bound_task_authorization(session_id, method)
+            .filter(|lease| self.observation_mode == crate::TaskObservationMode::PixelsOnly
+                && lease.allowed_actions.iter().any(crate::TrustedTaskActionScope::is_capture_preparation)
+                && ["get_window_state", "capture_preparation_begin", "capture_preparation_state", "capture_preparation_stop"]
+                    .iter().all(|required| lease.allowed_host_methods.iter().any(|method| method == required)))
+            .and_then(|lease| lease.capture_preparation.as_ref())
+            .ok_or_else(|| crate::HostError::coded_protocol(
+                crate::HostProtocolErrorCode::TaskAuthorizationDenied,
+                "capture preparation requires its exact trusted pixels_only lease, journal and closed lifecycle action scope",
+            ))?;
+        crate::TrustedTaskAuthorizationRegistration::validate_capture_preparation_directory(
+            &lease.journal_directory,
+        )
+        .map_err(|error| {
+            crate::HostError::coded_protocol(
+                crate::HostProtocolErrorCode::TaskAuthorizationDenied,
+                error.to_string(),
+            )
+        })?;
+        Ok(lease)
+    }
     fn bound_task_authorization(
         &self,
         session_id: &str,

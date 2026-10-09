@@ -35,6 +35,7 @@ fn proof() -> NativeFrameProvenance {
         capture_generation: 1,
         stream_id: 9,
         wgc_geometry: None,
+        capture_preparation: None,
     }
 }
 

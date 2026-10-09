@@ -5,6 +5,75 @@ use rstest::rstest;
 use super::*;
 
 #[rstest]
+#[case(true)]
+#[case(false)]
+#[tokio::test]
+async fn prepared_source_replacement_pending_cannot_begin_capture(#[case] source_pending: bool) {
+    let (mut session, calls) = counting_session();
+    session.live_observation = None;
+    session.pixel_observation_route = Some(PixelObservationRoute::ExplicitPixelsOnly);
+    session.local_cleanup.source_pending = source_pending;
+    session.local_cleanup.recorder_pending = !source_pending;
+    let request = dcc_cua_protocol::capture_preparation::CapturePreparationBeginRequest {
+        window_state_id: "fresh-state".into(),
+        lifetime_ms: 1000,
+    };
+    let authorization = dcc_cua_protocol::capture_preparation::CapturePreparationAuthorization {
+        journal_directory: "unused-before-native-entry".into(),
+        max_lifetime_ms: 30000,
+    };
+    let error = session
+        .capture_preparation_begin(&request, &authorization, u64::MAX)
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, ComputerUseErrorCode::CompletionUnknown);
+    assert!(session.live_observation.is_none());
+    assert_eq!(calls.load(AtomicOrdering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn prepared_source_replacement_cancel_keeps_owned_cleanup_pending() {
+    let (mut session, calls) = counting_session();
+    let (source, entered, release) = LiveObservation::from_test_shutdown_gate();
+    session.live_observation = Some(source);
+    {
+        let replacement = session.stop_live_observation_for_replacement();
+        tokio::pin!(replacement);
+        tokio::select! {
+            result = entered => result.unwrap(),
+            result = &mut replacement => panic!("shutdown gate unexpectedly completed: {result:?}"),
+        }
+    }
+    assert!(session.live_observation.is_none());
+    assert!(session.local_cleanup.source_pending);
+    assert_eq!(
+        session.ensure_local_cleanup_reusable().unwrap_err().code,
+        ComputerUseErrorCode::CompletionUnknown,
+    );
+    assert_eq!(calls.load(AtomicOrdering::SeqCst), 0);
+    let _ = release.send(());
+}
+
+#[tokio::test]
+async fn prepared_source_replacement_requires_actual_shutdown_ack() {
+    let (mut session, calls) = counting_session();
+    let (source, _entered, release) = LiveObservation::from_test_shutdown_gate();
+    session.live_observation = Some(source);
+    release.send(()).unwrap();
+    session
+        .stop_live_observation_for_replacement()
+        .await
+        .unwrap();
+    assert!(session.live_observation.is_none());
+    assert!(!session.local_cleanup.source_pending);
+    assert_eq!(
+        session.local_cleanup.last_source.as_ref().unwrap()["cleanup_complete"],
+        true
+    );
+    assert_eq!(calls.load(AtomicOrdering::SeqCst), 0);
+}
+
+#[rstest]
 #[tokio::test]
 async fn native_video_state_and_stop_never_probe_upstream_and_preserve_an_existing_stream() {
     let directory =

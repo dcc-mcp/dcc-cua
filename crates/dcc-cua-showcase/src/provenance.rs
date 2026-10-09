@@ -60,4 +60,16 @@ pub struct NativeFrameProvenance {
     pub stream_id: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wgc_geometry: Option<NativeWgcFrameGeometry>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capture_preparation: Option<PreparedCaptureFrameProvenance>,
+}
+
+/// Actual passive preparation binding carried with each recorded frame.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PreparedCaptureFrameProvenance {
+    pub preparation_id: [u8; 16],
+    pub actual_foreground: bool,
+    /// Windows GetTickCount64 monotonic uptime milliseconds, never UTC.
+    pub captured_at_ms: u64,
 }

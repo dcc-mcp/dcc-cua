@@ -224,6 +224,7 @@ fn session_stopped_response_preserves_typed_cleanup_issues() {
             },
             recording_video: None,
             live_observation: None,
+            capture_preparation: None,
         },
     );
 
@@ -241,6 +242,7 @@ fn session_stopped_response_preserves_typed_cleanup_issues() {
     assert_eq!(response["marker"]["backend"], "cua-driver-sdk");
     assert!(response.get("recording_video").is_none());
     assert!(response.get("live_observation").is_none());
+    assert!(response.get("capture_preparation").is_none());
 }
 
 #[rstest]
@@ -273,6 +275,7 @@ fn session_stopped_response_retains_typed_partial_and_unknown_source_evidence() 
                 cleanup_pending: true,
                 stream_id: Some(17),
             }),
+            capture_preparation: None,
         },
     );
     assert_eq!(response["session_id"], "session-1");
@@ -286,6 +289,54 @@ fn session_stopped_response_retains_typed_partial_and_unknown_source_evidence() 
     assert_eq!(response["live_observation"]["stream_id"], 17);
     assert_eq!(response["live_observation"]["cleanup_complete"], false);
     assert_eq!(response["cleanup_pending"], true);
+}
+
+#[test]
+fn capture_preparation_stop_response_preserves_unknown_cleanup_evidence() {
+    use dcc_cua_protocol::capture_preparation::{
+        CapturePreparationStatus, PreparationError, PreparationFailure, PreparationPhase,
+    };
+    for phase in [
+        PreparationPhase::CleanupUnknown,
+        PreparationPhase::RestorePending,
+    ] {
+        let preparation = CapturePreparationStatus {
+            preparation_id: [7; 16],
+            phase,
+            deadline_ms: 123,
+            pending_sequence: Some(3),
+            capture_revoked: true,
+            cleanup_verified: false,
+            original: vec![],
+            last_mutation: None,
+            failure: Some(PreparationError::new(PreparationFailure::ReadbackFailed)),
+            journal_path: std::path::PathBuf::from("F:\\operator-journal\\epoch"),
+            affected_readback: vec![],
+            last_completed_sequence: Some(2),
+        };
+        let expected = json!(preparation);
+        let response = session_stopped_response(
+            "session-1",
+            dcc_cua_core::ComputerUseSessionStopResult {
+                success: false,
+                active: false,
+                cleanup_pending: true,
+                cleanup_issues: vec![],
+                marker: dcc_cua_core::ComputerUseMarker {
+                    visible: false,
+                    label: "Controlled by Codex".into(),
+                    backend: "cua-driver-sdk",
+                },
+                recording_video: None,
+                live_observation: None,
+                capture_preparation: Some(preparation),
+            },
+        );
+        assert_eq!(response["capture_preparation"], expected);
+        assert_eq!(response["capture_preparation"]["cleanup_verified"], false);
+        assert_eq!(response["cleanup_pending"], true);
+        assert_eq!(response["success"], false);
+    }
 }
 
 #[rstest]
