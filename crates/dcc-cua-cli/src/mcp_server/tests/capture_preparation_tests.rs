@@ -1,5 +1,7 @@
 //! Pure MCP permission/schema tests. Never start a Host or native fixture.
-use super::*;
+use rstest::rstest;
+
+use super::super::*;
 
 fn task() -> Value {
     json!({"application_label":"Passive capture", "surface":"window", "observation_mode":"pixels_only",
@@ -28,7 +30,7 @@ fn ordinary_path(root: &tempfile::TempDir) -> std::path::PathBuf {
     path
 }
 
-#[test]
+#[rstest]
 fn capture_preparation_requires_explicit_permission_exact_pixels_scope_and_stable_operator_root() {
     assert!(
         server(None)
@@ -84,7 +86,7 @@ fn capture_preparation_requires_explicit_permission_exact_pixels_scope_and_stabl
     );
 }
 
-#[test]
+#[rstest]
 fn capture_preparation_call_params_are_closed_and_never_nominate_a_journal_or_target() {
     let valid = json!({"request":{"window_state_id":"fresh-state", "lifetime_ms":1_000}});
     validate_task_method_params("capture_preparation_begin", &valid).unwrap();
@@ -124,7 +126,7 @@ fn capture_preparation_call_params_are_closed_and_never_nominate_a_journal_or_ta
     }
 }
 
-#[test]
+#[rstest]
 fn capture_preparation_schema_and_method_allowlists_retain_exact_lifecycle_boundaries() {
     for method in [
         "capture_preparation_begin",

@@ -3,6 +3,8 @@ use serde_json::{Value, json};
 
 use super::*;
 
+mod capture_preparation_tests;
+
 fn test_server() -> TaskAuthorizationServer {
     let mut server = TaskAuthorizationServer::automatic();
     server.recording_output_root = None;
@@ -1107,8 +1109,56 @@ fn public_tool_schema_advertises_closed_pixel_actions_and_exact_window_only() {
     let scopes = pixel["properties"]["allowed_actions"]["items"]["oneOf"]
         .as_array()
         .unwrap();
-    assert_eq!(scopes.len(), 3);
-    let input = &scopes[2]["properties"];
+    assert_eq!(scopes.len(), 4);
+    assert_eq!(
+        scopes[0]["properties"]["action"]["const"],
+        "minimize_window"
+    );
+    assert_eq!(
+        scopes[1]["properties"]["action"]["const"],
+        "set_window_frame"
+    );
+    for scope in scopes {
+        assert_eq!(scope["type"], "object");
+        assert_eq!(scope["additionalProperties"], false);
+        assert_eq!(
+            scope["required"],
+            json!([
+                "action",
+                "input_kind",
+                "secret_input",
+                "authorization_category"
+            ])
+        );
+    }
+    let preparation = &scopes[2]["properties"];
+    assert_eq!(
+        preparation,
+        &json!({
+            "action": {"const": "capture_preparation_begin"},
+            "input_kind": {"const": "window_state"},
+            "secret_input": {"const": false},
+            "authorization_category": {"const": "window_state"},
+            "browser_origin": {"type": "null"}
+        })
+    );
+    assert_eq!(
+        start["inputSchema"]["properties"]["allow_capture_preparation"]["type"],
+        "boolean"
+    );
+    assert_eq!(
+        start["inputSchema"]["properties"]["allow_capture_preparation"]["default"],
+        false
+    );
+    for method in [
+        "capture_preparation_begin",
+        "capture_preparation_state",
+        "capture_preparation_stop",
+        "capture_preparation_snapshot",
+    ] {
+        assert!(methods.contains(&json!(method)));
+    }
+    let input = &scopes[3]["properties"];
     assert_eq!(
         input["action"]["enum"],
         json!([
@@ -1125,6 +1175,12 @@ fn public_tool_schema_advertises_closed_pixel_actions_and_exact_window_only() {
     assert_eq!(input["input_kind"]["const"], "raw_input");
     assert_eq!(input["secret_input"]["const"], false);
     assert_eq!(input["authorization_category"]["const"], "raw_input");
+    assert!(
+        !input["action"]["enum"]
+            .as_array()
+            .unwrap()
+            .contains(&preparation["action"]["const"])
+    );
 }
 
 #[rstest]

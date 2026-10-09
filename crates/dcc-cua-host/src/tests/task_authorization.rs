@@ -1621,7 +1621,7 @@ fn capture_preparation_registration(directory: &str) -> TrustedTaskAuthorization
     registration
 }
 
-#[test]
+#[rstest]
 fn capture_preparation_registration_requires_closed_scope_complete_lifecycle_and_ordinary_journal()
 {
     let root = std::env::temp_dir().join(format!("capture-preparation-auth-{}", Uuid::new_v4()));
@@ -1690,6 +1690,7 @@ fn capture_preparation_registration_requires_closed_scope_complete_lifecycle_and
     std::fs::remove_dir(root).unwrap();
 }
 
+#[rstest]
 #[tokio::test]
 async fn capture_preparation_exact_lease_refuses_missing_changed_or_partial_permission_without_native_calls()
  {
@@ -1777,7 +1778,7 @@ async fn capture_preparation_exact_lease_refuses_missing_changed_or_partial_perm
     std::fs::remove_dir(root).unwrap();
 }
 
-#[test]
+#[rstest]
 fn capture_preparation_old_grants_and_leases_default_to_no_permission() {
     let grant: TaskGrant =
         serde_json::from_value(json!({"task_grant_id":"old", "application_label":"Old task"}))
@@ -1800,6 +1801,7 @@ fn capture_preparation_old_grants_and_leases_default_to_no_permission() {
     );
 }
 
+#[rstest]
 #[tokio::test]
 async fn capture_preparation_legacy_lease_serde_defaults_without_widening_authority() {
     let (_issuer, _authority, lease) = observation_only_lease().await;
@@ -1815,7 +1817,7 @@ async fn capture_preparation_legacy_lease_serde_defaults_without_widening_author
     );
 }
 
-#[test]
+#[rstest]
 fn capture_preparation_wire_rejects_journal_target_and_input_tokens() {
     for method in [
         "capture_preparation_begin",
@@ -1855,7 +1857,7 @@ fn capture_preparation_wire_rejects_journal_target_and_input_tokens() {
     }
 }
 
-#[test]
+#[rstest]
 fn capture_preparation_passive_snapshot_has_image_and_metadata_without_action_tokens() {
     let metadata = json!({"passive":true,"input_authorized":false,"preparation_id":[1],"process_id":42,"window_handle":77});
     let transport = || {
@@ -1894,6 +1896,7 @@ fn capture_preparation_passive_snapshot_has_image_and_metadata_without_action_to
     }
 }
 
+#[rstest]
 #[tokio::test]
 async fn capture_preparation_actual_host_routes_refuse_legacy_sessions_before_native_dispatch() {
     let channel = ObservationOnlyTestChannel::default();
@@ -1948,6 +1951,7 @@ async fn capture_preparation_actual_host_routes_refuse_legacy_sessions_before_na
     );
 }
 
+#[rstest]
 #[tokio::test]
 async fn capture_preparation_no_active_native_handle_never_returns_fake_state_or_cleanup() {
     let root =

@@ -2102,6 +2102,4 @@ async fn run_transport(
 }
 
 #[cfg(test)]
-mod capture_preparation_tests;
-#[cfg(test)]
 mod tests;

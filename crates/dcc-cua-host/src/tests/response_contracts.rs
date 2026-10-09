@@ -291,7 +291,7 @@ fn session_stopped_response_retains_typed_partial_and_unknown_source_evidence() 
     assert_eq!(response["cleanup_pending"], true);
 }
 
-#[test]
+#[rstest]
 fn capture_preparation_stop_response_preserves_unknown_cleanup_evidence() {
     use dcc_cua_protocol::capture_preparation::{
         CapturePreparationStatus, PreparationError, PreparationFailure, PreparationPhase,

@@ -4,9 +4,9 @@ use rstest::rstest;
 
 use super::*;
 
-#[rstest]
 #[case(true)]
 #[case(false)]
+#[rstest]
 #[tokio::test]
 async fn prepared_source_replacement_pending_cannot_begin_capture(#[case] source_pending: bool) {
     let (mut session, calls) = counting_session();
@@ -31,6 +31,7 @@ async fn prepared_source_replacement_pending_cannot_begin_capture(#[case] source
     assert_eq!(calls.load(AtomicOrdering::SeqCst), 0);
 }
 
+#[rstest]
 #[tokio::test]
 async fn prepared_source_replacement_cancel_keeps_owned_cleanup_pending() {
     let (mut session, calls) = counting_session();
@@ -54,6 +55,7 @@ async fn prepared_source_replacement_cancel_keeps_owned_cleanup_pending() {
     let _ = release.send(());
 }
 
+#[rstest]
 #[tokio::test]
 async fn prepared_source_replacement_requires_actual_shutdown_ack() {
     let (mut session, calls) = counting_session();

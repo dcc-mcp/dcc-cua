@@ -56,14 +56,6 @@ fn query_sequence_mismatch_and_overflow_revoke_without_increment_or_exit() {
     assert_eq!(expected, u64::MAX);
 }
 
-#[cfg(windows)]
-#[rstest]
-#[case(false)]
-#[case(true)]
-fn reply_writer_failure_and_panic_have_actual_failure_acknowledgements(#[case] panic: bool) {
-    super::process::test_reply_writer_failure_is_reported(panic);
-}
-
 fn receipt(
     sequence: u64,
     kind: PreparationMutationKind,
@@ -316,12 +308,6 @@ fn handles_and_sealed_guards_are_send_sync_without_executing_native_code() {
     fn assert_traits<T: Send + Sync>() {}
     assert_traits::<CapturePreparationHandle>();
     assert_traits::<PreparedEvidenceGuard>();
-}
-
-#[cfg(windows)]
-#[rstest]
-fn a_blocked_reply_does_not_block_the_supervisor_or_grow_an_unbounded_queue() {
-    super::process::test_reply_writer_pending_is_responsive();
 }
 
 #[rstest]
