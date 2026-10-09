@@ -806,6 +806,9 @@ async fn native_recording_authorization_binds_directory_target_and_video_before_
     let directory =
         std::env::temp_dir().join(format!("dcc-cua-recording-scope-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir(&directory).unwrap();
+    #[cfg(not(windows))]
+    let directory = std::fs::canonicalize(&directory)
+        .expect("canonicalize pre-created recording authorization fixture directory");
     let output = directory.to_str().unwrap().to_owned();
     let (issuer, authority) = trusted_task_authorization_broker();
     let mut registration = browser_credential_registration(unix_time_millis() + 60_000);
