@@ -156,5 +156,5 @@ pub(super) async fn snapshot(
     host.invalidate_observations();
     let (image, metadata) = result?;
     let image = prepare_image_transport(vec![image], mode, &mut host.latest_preparation_image)?;
-    passive_preparation_snapshot_response(&session_id, metadata, image)
+    super::passive_preparation_snapshot_response(&session_id, metadata, image)
 }

@@ -4,10 +4,10 @@ use rstest::rstest;
 
 use super::*;
 
-#[case(true)]
-#[case(false)]
 #[rstest]
 #[tokio::test]
+#[case(true)]
+#[case(false)]
 async fn prepared_source_replacement_pending_cannot_begin_capture(#[case] source_pending: bool) {
     let (mut session, calls) = counting_session();
     session.live_observation = None;
