@@ -1039,10 +1039,10 @@ fn validate_task_method_params(method: &str, params: &Value) -> Result<(), Strin
         );
     }
     if method == "minimize_window"
-        && !params
+        && params
             .get("observation_id")
             .and_then(Value::as_str)
-            .is_some_and(|id| !id.is_empty())
+            .is_none_or(|id| id.is_empty())
     {
         return Err("minimize_window requires the latest snapshot observation_id".into());
     }
