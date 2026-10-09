@@ -1003,13 +1003,50 @@ fn assert_exact_capture_luma_or_fail_closed(
                 "exact HWND returned unexpected center luma {luma}"
             );
         }
-        Err(error) => assert!(
-            error
-                .to_string()
-                .contains("complete root-window z-order could not be proven"),
-            "ambiguous pixels must fail closed: {error}"
-        ),
+        Err(error) => assert_exact_capture_fail_closed(error),
     }
+}
+
+#[cfg(windows)]
+fn assert_exact_capture_fail_closed(error: crate::visible_capture::VisibleWindowCaptureError) {
+    assert!(
+        matches!(
+            error.diagnostic.reason,
+            VisibleWindowCaptureReason::RootOverlap
+                | VisibleWindowCaptureReason::RootEnumerationIncomplete
+        ),
+        "ambiguous pixels must fail closed: {error}"
+    );
+}
+
+#[cfg(windows)]
+#[rstest]
+#[case(VisibleWindowCaptureReason::NativeReadFailed, false)]
+#[case(VisibleWindowCaptureReason::TargetUnavailable, false)]
+#[case(VisibleWindowCaptureReason::TargetNotVisible, false)]
+#[case(VisibleWindowCaptureReason::TargetMinimized, false)]
+#[case(VisibleWindowCaptureReason::TargetBoundsInvalid, false)]
+#[case(VisibleWindowCaptureReason::TargetOutsideDesktop, false)]
+#[case(VisibleWindowCaptureReason::RootCloakingUnavailable, false)]
+#[case(VisibleWindowCaptureReason::RootBoundsUnavailable, false)]
+#[case(VisibleWindowCaptureReason::RootBoundsInvalid, false)]
+#[case(VisibleWindowCaptureReason::RootEnumerationIncomplete, true)]
+#[case(VisibleWindowCaptureReason::TargetNotReached, false)]
+#[case(VisibleWindowCaptureReason::TargetBoundsChanged, false)]
+#[case(VisibleWindowCaptureReason::RootOverlap, true)]
+fn exact_capture_fail_closed_accepts_only_ambiguous_root_proof_errors(
+    #[case] reason: VisibleWindowCaptureReason,
+    #[case] accepted: bool,
+) {
+    let mut error = root_z_order_proof(
+        77,
+        [0, 0, 100, 100],
+        &[(91, [1, 1, 1, 1], true), (77, [0, 0, 100, 100], true)],
+    )
+    .unwrap_err();
+    error.diagnostic.reason = reason;
+    let assertion = std::panic::catch_unwind(|| assert_exact_capture_fail_closed(error));
+    assert_eq!(assertion.is_ok(), accepted);
 }
 
 #[rstest]
