@@ -1031,12 +1031,12 @@ fn validate_task_method_params(method: &str, params: &Value) -> Result<(), Strin
             }
         }
     }
-    if let Some(value) = params.get("capture_diagnostics") {
-        if method != "snapshot" || !value.is_boolean() {
-            return Err(
-                "capture_diagnostics must be a boolean on an explicit pixels_only snapshot".into(),
-            );
-        }
+    if let Some(value) = params.get("capture_diagnostics")
+        && (method != "snapshot" || !value.is_boolean())
+    {
+        return Err(
+            "capture_diagnostics must be a boolean on an explicit pixels_only snapshot".into(),
+        );
     }
     if method == "minimize_window"
         && !params
