@@ -1219,9 +1219,9 @@ async fn failed_implicit_activation_preflight_preserves_evidence() {
 }
 
 #[rstest]
-#[tokio::test]
 #[case("foreground action activation final validation")]
 #[case("foreground cursor move activation final validation")]
+#[tokio::test]
 async fn attempted_implicit_activation_error_consumes_evidence_and_requires_fresh_observation(
     #[case] context: &str,
 ) {

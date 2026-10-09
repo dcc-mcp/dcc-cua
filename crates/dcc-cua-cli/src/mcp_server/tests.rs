@@ -275,7 +275,6 @@ async fn native_recording_public_calls_keep_the_same_session_and_bind_output() {
 #[case(Some(json!({"type":"session_stopped","session_id":"wrong","success":true,"active":false,"cleanup_pending":false})), "cleanup_unknown")]
 #[case(Some(json!({"type":"session_stopped","session_id":"cleanup-session","success":true,"active":false})), "cleanup_unknown")]
 #[case(None, "cleanup_unknown")]
-#[rstest]
 #[tokio::test]
 async fn native_recording_task_stop_preserves_authoritative_cleanup(
     #[case] response: Option<Value>,
@@ -496,7 +495,6 @@ fn root_bounds_capture_fixture() -> Value {
 #[case("invalid_class")]
 #[case("invalid_rect")]
 #[case("invalid_reason")]
-#[rstest]
 #[tokio::test]
 async fn root_bounds_failure_survives_actual_public_task_remote_error_adapter(
     #[case] variant: &str,

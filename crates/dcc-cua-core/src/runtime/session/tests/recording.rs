@@ -5,9 +5,9 @@ use rstest::rstest;
 use super::*;
 
 #[rstest]
-#[tokio::test]
 #[case(true)]
 #[case(false)]
+#[tokio::test]
 async fn prepared_source_replacement_pending_cannot_begin_capture(#[case] source_pending: bool) {
     let (mut session, calls) = counting_session();
     session.live_observation = None;
