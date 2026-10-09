@@ -1,6 +1,7 @@
 [package]
 name = "dcc-cua-cli"
 description = "Cross-platform CUA command-line host"
+default-run = "dcc-cua"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
