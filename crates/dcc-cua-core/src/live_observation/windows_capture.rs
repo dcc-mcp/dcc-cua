@@ -327,6 +327,7 @@ pub(super) fn run_windows_capture_loop(
     started_interrupt_generation: u64,
     sender: watch::Sender<LiveObservationStatus>,
     shutdown: LiveObservationShutdown,
+    publications: PublicationInbox<NativePublicationCheck, ComputerUseResult<()>>,
 ) {
     let interval = Duration::from_secs_f64(1.0 / f64::from(fps));
     let mut sequence = 0_u64;
@@ -337,6 +338,19 @@ pub(super) fn run_windows_capture_loop(
             || interrupt_generation_changed(started_interrupt_generation, interrupt_generation())
         {
             return;
+        }
+        // The producer services its single outstanding control request before
+        // starting another frame, so it never races itself for exclusion.
+        if let Some(work) = publications.take() {
+            service_native_publication(
+                work,
+                target,
+                capture_exclusion.as_ref(),
+                None,
+                &sender,
+                &shutdown,
+            );
+            continue;
         }
         let capture_started = Instant::now();
         let captured = (|| {
@@ -356,7 +370,7 @@ pub(super) fn run_windows_capture_loop(
             Ok((frame, exclusion))
         })();
         match captured {
-            Ok((frame, _exclusion)) => {
+            Ok((frame, exclusion)) => {
                 if shutdown.is_requested()
                     || interrupt_generation_changed(
                         started_interrupt_generation,
@@ -389,6 +403,18 @@ pub(super) fn run_windows_capture_loop(
                         measurement,
                     )
                 });
+                // A request queued during readback borrows this already owned
+                // guard. It never performs a nested exclusion acquisition.
+                if let Some(work) = publications.take() {
+                    service_native_publication(
+                        work,
+                        target,
+                        capture_exclusion.as_ref(),
+                        exclusion.as_ref(),
+                        &sender,
+                        &shutdown,
+                    );
+                }
             }
             Err(error) => {
                 let error = target.require_instance().err().unwrap_or(error);
@@ -399,16 +425,115 @@ pub(super) fn run_windows_capture_loop(
                     return;
                 }
                 sender.send_modify(|status| status.record_paused_error(&error));
-                if shutdown.wait_timeout(PAUSE_RETRY_INTERVAL) {
+                if shutdown
+                    .wait_timeout_or_work(PAUSE_RETRY_INTERVAL, || publications.has_pending())
+                {
                     return;
                 }
                 continue;
             }
         }
-        if shutdown.wait_timeout(interval.saturating_sub(capture_started.elapsed())) {
+        if shutdown.wait_timeout_or_work(interval.saturating_sub(capture_started.elapsed()), || {
+            publications.has_pending()
+        }) {
             return;
         }
     }
+}
+
+/// Runs only on the existing capture owner. No Win32 guard crosses a thread or await.
+fn service_native_publication(
+    mut work: native_publication::PublicationWork<NativePublicationCheck, ComputerUseResult<()>>,
+    target: WindowsLiveTarget,
+    capture_exclusion: Option<&dcc_cua_indicator::BannerCaptureExclusionSource>,
+    held_exclusion: Option<&dcc_cua_indicator::BannerCaptureExclusionGuard>,
+    sender: &watch::Sender<LiveObservationStatus>,
+    shutdown: &LiveObservationShutdown,
+) {
+    let check = work.take_payload();
+    let metadata = work.metadata();
+    let require_live = || {
+        work.ensure_live(Instant::now())
+            .map_err(native_publication_failure)?;
+        if Instant::now() >= work.deadline()
+            || shutdown.is_requested()
+            || interrupt_generation_changed(metadata.started_generation, interrupt_generation())
+        {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::InvalidAction,
+                "native recording was interrupted before its first-frame acknowledgement",
+            ));
+        }
+        if metadata != check.metadata
+            || metadata.stream_id != target.stream_id
+            || check.proof.stream_id != target.stream_id
+            || metadata.sequence == 0
+            || check.proof.process_id != target.process_id
+            || check.proof.window_handle != target.window_handle
+            || check.target.pid != target.process_id
+            || check.target.window_id != target.window_handle
+            || !matches!(
+                (check.proof.source, target.route),
+                (NativeFrameSource::Wgc, ExactWindowCaptureRoute::Wgc)
+                    | (
+                        NativeFrameSource::VerifiedVisible,
+                        ExactWindowCaptureRoute::VerifiedVisible
+                    )
+            )
+            || check.proof.native_instance.process_creation_time_100ns
+                != target.instance.process_creation_time_100ns
+            || check.proof.native_instance.window_thread_id != target.instance.window_thread_id
+            || check.proof.native_instance.window_class_hash != target.instance.window_class_hash
+            || check.proof.native_instance.owner_window_handle
+                != target.instance.owner_window_handle
+        {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::StaleObservation,
+                "native publication request changed its exact captured source",
+            ));
+        }
+        sender
+            .borrow()
+            .validate_frame_eligibility(metadata.sequence)?;
+        crate::interactive_desktop::require_exact_window_observation_available()
+    };
+    if let Err(error) = require_live() {
+        let _ = work.complete(Err(error), Instant::now());
+        return;
+    }
+    let Some(source) = capture_exclusion else {
+        let error = ComputerUseError::new(
+            ComputerUseErrorCode::OverlayExclusionUnavailable,
+            "native recording publication requires its owned overlay exclusion source",
+        );
+        let _ = work.complete(Err(error), Instant::now());
+        return;
+    };
+    let acquired_exclusion = if held_exclusion.is_none() {
+        match source.begin() {
+            Ok(guard) => Some(guard),
+            Err(error) => {
+                let _ = work.complete(Err((check.map_exclusion_error)(error)), Instant::now());
+                return;
+            }
+        }
+    } else {
+        None
+    };
+    // Both branches retain an actual guard until the single-use reply is sent.
+    let _exclusion = held_exclusion.or(acquired_exclusion.as_ref());
+    let result = (|| {
+        require_live()?;
+        source
+            .validate_active()
+            .map_err(check.map_exclusion_error)?;
+        (check.validate)(&check.proof, &check.target)?;
+        source
+            .validate_active()
+            .map_err(check.map_exclusion_error)?;
+        require_live()
+    })();
+    let _ = work.complete(result, Instant::now());
 }
 
 #[cfg(test)]

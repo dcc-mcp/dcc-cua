@@ -98,6 +98,8 @@ impl LiveObservation {
                 receiver,
                 shutdown,
                 task,
+                #[cfg(windows)]
+                publication: native_publication::channel(Arc::new(|| {})).0,
             },
             LiveObservationTestPublisher { sender },
         )
@@ -125,6 +127,8 @@ async fn stop_requests_shutdown_and_waits_for_worker_acknowledgement() {
         receiver,
         shutdown,
         task,
+        #[cfg(windows)]
+        publication: native_publication::channel(Arc::new(|| {})).0,
     };
 
     let state = observation.stop().await;
@@ -158,7 +162,7 @@ fn shutdown_wakes_a_blocking_capture_waiter() {
     let (acknowledged, acknowledgement) = std::sync::mpsc::sync_channel(1);
     let worker = std::thread::spawn(move || {
         acknowledged
-            .send(worker_shutdown.wait_timeout(Duration::from_secs(5)))
+            .send(worker_shutdown.wait_timeout_or_work(Duration::from_secs(5), || false))
             .expect("acknowledge shutdown");
     });
 
@@ -171,6 +175,42 @@ fn shutdown_wakes_a_blocking_capture_waiter() {
             .expect("blocking capture waiter should wake promptly")
     );
     worker.join().expect("join blocking capture waiter");
+}
+
+#[cfg(windows)]
+#[rstest]
+fn publication_request_wakes_capture_pacing_without_requesting_shutdown() {
+    let shutdown = LiveObservationShutdown::default();
+    let waiter = shutdown.clone();
+    let pending = Arc::new(AtomicBool::new(false));
+    let worker_pending = Arc::clone(&pending);
+    let (reply, result) = std::sync::mpsc::sync_channel(1);
+    let worker = std::thread::spawn(move || {
+        reply
+            .send(waiter.wait_timeout_or_work(Duration::from_secs(5), || {
+                worker_pending.load(Ordering::Acquire)
+            }))
+            .expect("reply from blocking capture pacing");
+    });
+    pending.store(true, Ordering::Release);
+    shutdown.wake_blocking();
+    assert!(
+        !result
+            .recv_timeout(Duration::from_secs(2))
+            .expect("pending publication wakes pacing")
+    );
+    assert!(!shutdown.is_requested());
+    worker.join().expect("join capture pacing waiter");
+}
+
+#[cfg(windows)]
+#[rstest]
+fn queued_publication_before_capture_wait_cannot_lose_its_wakeup() {
+    let shutdown = LiveObservationShutdown::default();
+    let started = Instant::now();
+    assert!(!shutdown.wait_timeout_or_work(Duration::from_secs(5), || true));
+    assert!(started.elapsed() < Duration::from_secs(2));
+    assert!(!shutdown.is_requested());
 }
 
 #[rstest]

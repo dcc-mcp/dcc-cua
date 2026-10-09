@@ -23,10 +23,78 @@ mod tests;
 mod windows_capture;
 #[cfg(windows)]
 use windows_capture::{WindowsLiveTarget, run_windows_capture_loop};
+#[cfg(any(windows, test))]
+mod native_publication;
+#[cfg(windows)]
+pub(crate) use native_publication::NativePublicationPhase;
+#[cfg(windows)]
+use native_publication::{PublicationController, PublicationInbox};
 
 const FIRST_FRAME_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 const PAUSE_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
+#[cfg(windows)]
+const NATIVE_PUBLICATION_TIMEOUT: Duration = Duration::from_secs(1);
+#[cfg(windows)]
+const NATIVE_PUBLICATION_POLL_INTERVAL: Duration = Duration::from_millis(10);
 static LIVE_OBSERVATION_STREAM_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+#[cfg(windows)]
+type NativePublicationProofValidator = fn(
+    &dcc_cua_showcase::NativeFrameProvenance,
+    &crate::window_target::WindowTarget,
+) -> ComputerUseResult<()>;
+#[cfg(windows)]
+type NativePublicationExclusionErrorMapper =
+    fn(dcc_cua_indicator::IndicatorError) -> ComputerUseError;
+
+/// A single-use internal request; its proof and target are the caller's original evidence.
+#[cfg(windows)]
+pub(crate) struct NativePublicationCheck {
+    metadata: native_publication::Metadata,
+    proof: dcc_cua_showcase::NativeFrameProvenance,
+    target: crate::window_target::WindowTarget,
+    validate: NativePublicationProofValidator,
+    map_exclusion_error: NativePublicationExclusionErrorMapper,
+}
+
+#[cfg(windows)]
+impl NativePublicationCheck {
+    pub(crate) fn new(
+        phase: NativePublicationPhase,
+        proof: dcc_cua_showcase::NativeFrameProvenance,
+        target: crate::window_target::WindowTarget,
+        sequence: u64,
+        started_generation: u64,
+        validate: NativePublicationProofValidator,
+        map_exclusion_error: NativePublicationExclusionErrorMapper,
+    ) -> Self {
+        Self {
+            metadata: native_publication::Metadata {
+                phase,
+                stream_id: proof.stream_id,
+                sequence,
+                started_generation,
+            },
+            proof,
+            target,
+            validate,
+            map_exclusion_error,
+        }
+    }
+}
+
+#[cfg(windows)]
+fn native_publication_failure(error: native_publication::Failure) -> ComputerUseError {
+    use native_publication::Failure;
+    let message = match error {
+        Failure::Full => "native publication already has an outstanding validation request",
+        Failure::Deadline => "native publication validation exceeded its bounded deadline",
+        Failure::Stopped => "native publication source stopped before validation completed",
+        Failure::Canceled => "native publication validation was canceled",
+        Failure::ReplyUnavailable => "native publication owner did not acknowledge validation",
+    };
+    ComputerUseError::new(ComputerUseErrorCode::CaptureFailed, message)
+}
 
 #[derive(Debug, Default)]
 struct LiveObservationShutdownState {
@@ -66,7 +134,17 @@ impl LiveObservationShutdown {
     }
 
     #[cfg(windows)]
-    fn wait_timeout(&self, timeout: Duration) -> bool {
+    fn wake_blocking(&self) {
+        let _guard = self
+            .state
+            .blocking_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.state.blocking_waiter.notify_all();
+    }
+
+    #[cfg(windows)]
+    fn wait_timeout_or_work(&self, timeout: Duration, has_work: impl Fn() -> bool) -> bool {
         if self.is_requested() {
             return true;
         }
@@ -78,7 +156,7 @@ impl LiveObservationShutdown {
         let _ = self
             .state
             .blocking_waiter
-            .wait_timeout_while(guard, timeout, |_| !self.is_requested())
+            .wait_timeout_while(guard, timeout, |_| !self.is_requested() && !has_work())
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         self.is_requested()
     }
@@ -349,6 +427,31 @@ impl LiveObservationReason {
 }
 
 impl LiveObservationStatus {
+    fn validate_frame_eligibility(&self, sequence: u64) -> ComputerUseResult<()> {
+        if let Some(error) = self.terminal_error().or_else(|| self.pause_error()) {
+            return Err(error);
+        }
+        if self
+            .pause_sequence_fence
+            .is_some_and(|fence| sequence <= fence)
+        {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::StaleObservation,
+                "the live frame predates a pause and cannot be reused after resume",
+            ));
+        }
+        if self
+            .latest()
+            .is_none_or(|frame| frame.sequence() < sequence)
+        {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::StaleObservation,
+                "the live frame no longer belongs to the active stream",
+            ));
+        }
+        Ok(())
+    }
+
     #[cfg(any(not(windows), test))]
     pub(crate) fn publish_frame(
         &mut self,
@@ -610,6 +713,8 @@ pub(crate) struct LiveObservation {
     receiver: watch::Receiver<LiveObservationStatus>,
     shutdown: LiveObservationShutdown,
     task: JoinHandle<()>,
+    #[cfg(windows)]
+    publication: PublicationController<NativePublicationCheck, ComputerUseResult<()>>,
 }
 
 impl LiveObservation {
@@ -661,6 +766,10 @@ impl LiveObservation {
             let fps = request.fps;
             let (sender, receiver) = watch::channel(LiveObservationStatus::default());
             let shutdown = LiveObservationShutdown::default();
+            let publication_shutdown = shutdown.clone();
+            let (publication, publications) = native_publication::channel(Arc::new(move || {
+                publication_shutdown.wake_blocking();
+            }));
             let task = tokio::spawn(run_capture_loop(
                 target,
                 capture_exclusion,
@@ -668,6 +777,7 @@ impl LiveObservation {
                 interrupt_generation(),
                 sender,
                 shutdown.clone(),
+                publications,
             ));
             let mut observation = Self {
                 stream_id,
@@ -676,6 +786,7 @@ impl LiveObservation {
                 receiver,
                 shutdown,
                 task,
+                publication,
             };
             wait_for_latest_frame(&mut observation.receiver, None, FIRST_FRAME_TIMEOUT).await?;
             Ok(observation)
@@ -689,6 +800,43 @@ impl LiveObservation {
         wait_for_latest_frame(&mut self.receiver, sequence, FIRST_FRAME_TIMEOUT).await
     }
 
+    #[cfg(windows)]
+    pub(crate) async fn validate_native_publication(
+        &self,
+        check: NativePublicationCheck,
+    ) -> ComputerUseResult<()> {
+        if !self.is_active() || check.metadata.stream_id != self.stream_id {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::CaptureFailed,
+                "native publication belongs to a stopped or different stream",
+            ));
+        }
+        self.validate_frame_eligibility(check.metadata.sequence)?;
+        let deadline = Instant::now() + NATIVE_PUBLICATION_TIMEOUT;
+        let metadata = check.metadata;
+        let mut pending = self
+            .publication
+            .submit(check, metadata, deadline)
+            .map_err(native_publication_failure)?;
+        loop {
+            if !self.is_active() || self.shutdown.is_requested() {
+                return Err(native_publication_failure(
+                    native_publication::Failure::Stopped,
+                ));
+            }
+            match pending
+                .try_result(Instant::now())
+                .map_err(native_publication_failure)?
+            {
+                Some(result) => return result,
+                None => {
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    tokio::time::sleep(NATIVE_PUBLICATION_POLL_INTERVAL.min(remaining)).await;
+                }
+            }
+        }
+    }
+
     pub(crate) fn latest_fence(&self) -> Option<LiveObservationFence> {
         self.receiver
             .borrow()
@@ -697,29 +845,7 @@ impl LiveObservation {
     }
 
     pub(crate) fn validate_frame_eligibility(&self, sequence: u64) -> ComputerUseResult<()> {
-        let status = self.receiver.borrow();
-        if let Some(error) = status.terminal_error().or_else(|| status.pause_error()) {
-            return Err(error);
-        }
-        if status
-            .pause_sequence_fence
-            .is_some_and(|fence| sequence <= fence)
-        {
-            return Err(ComputerUseError::new(
-                ComputerUseErrorCode::StaleObservation,
-                "the live frame predates a pause and cannot be reused after resume",
-            ));
-        }
-        if status
-            .latest()
-            .is_none_or(|frame| frame.sequence() < sequence)
-        {
-            return Err(ComputerUseError::new(
-                ComputerUseErrorCode::StaleObservation,
-                "the live frame no longer belongs to the active stream",
-            ));
-        }
-        Ok(())
+        self.receiver.borrow().validate_frame_eligibility(sequence)
     }
 
     pub(crate) const fn stream_id(&self) -> u64 {
@@ -985,6 +1111,7 @@ async fn run_capture_loop(
     started_interrupt_generation: u64,
     sender: watch::Sender<LiveObservationStatus>,
     shutdown: LiveObservationShutdown,
+    publications: PublicationInbox<NativePublicationCheck, ComputerUseResult<()>>,
 ) {
     let join_error_sender = sender.clone();
     if let Err(error) = tokio::task::spawn_blocking(move || {
@@ -995,6 +1122,7 @@ async fn run_capture_loop(
             started_interrupt_generation,
             sender,
             shutdown,
+            publications,
         );
     })
     .await

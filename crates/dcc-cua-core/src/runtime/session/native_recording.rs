@@ -2,6 +2,8 @@
 //! The session keeps the existing live worker, watch and ShowcaseRecorder owner.
 
 use super::*;
+#[cfg(windows)]
+use crate::live_observation::{NativePublicationCheck, NativePublicationPhase};
 #[cfg(any(windows, test))]
 use dcc_cua_showcase::{FrameCaptureProvenance, NativeFrameProvenance};
 
@@ -78,7 +80,14 @@ impl ComputerUseSession {
                 let proof =
                     validate_native_recording_frame(&frame, &target, stream_id, requested_at)?;
                 observation.validate_frame_eligibility(frame.sequence())?;
-                self.validate_native_recording_publication(proof, &target, started_generation)?;
+                self.validate_native_recording_publication(
+                    proof,
+                    &target,
+                    frame.sequence(),
+                    started_generation,
+                    NativePublicationPhase::Prepare,
+                )
+                .await?;
                 let (frames, fps) = {
                     let observation = self
                         .live_observation
@@ -100,15 +109,16 @@ impl ComputerUseSession {
                     .as_ref()
                     .expect("ready recorder ownership is attached")
                     .recorder
-                    .first_frame();
-                let publication = validate_native_recording_metadata(
-                    first_encoded.provenance(),
-                    first_encoded.captured_at(),
-                    &target,
-                    stream_id,
-                    requested_at,
-                )
-                .and_then(|encoded_proof| {
+                    .first_frame()
+                    .clone();
+                let publication = async {
+                    let encoded_proof = validate_native_recording_metadata(
+                        first_encoded.provenance(),
+                        first_encoded.captured_at(),
+                        &target,
+                        stream_id,
+                        requested_at,
+                    )?;
                     if first_encoded.sequence() < frame.sequence()
                         || encoded_proof.native_instance != proof.native_instance
                         || encoded_proof.source != proof.source
@@ -125,9 +135,13 @@ impl ComputerUseSession {
                     self.validate_native_recording_publication(
                         encoded_proof,
                         &target,
+                        first_encoded.sequence(),
                         started_generation,
+                        NativePublicationPhase::Encoded,
                     )
-                });
+                    .await
+                }
+                .await;
                 if let Err(error) = publication {
                     return self.refuse_native_recording_startup(error).await;
                 }
@@ -237,11 +251,13 @@ impl ComputerUseSession {
     }
 
     #[cfg(windows)]
-    fn validate_native_recording_publication(
+    async fn validate_native_recording_publication(
         &self,
         proof: &NativeFrameProvenance,
         target: &WindowTarget,
+        sequence: u64,
         started_generation: u64,
+        phase: NativePublicationPhase,
     ) -> ComputerUseResult<()> {
         self.require_native_recording_not_interrupted(started_generation)?;
         if self
@@ -255,14 +271,30 @@ impl ComputerUseSession {
             ));
         }
         interactive_desktop::require_exact_window_observation_available()?;
-        let _exclusion = self
-            .control_banner
+        let source = self
+            .live_observation
             .as_ref()
-            .map(ControlBanner::begin_capture_exclusion)
-            .transpose()
-            .map_err(|error| map_indicator_error("validate native recording source", error))?;
-        validate_native_live_publication(proof, target)?;
-        self.require_native_recording_not_interrupted(started_generation)
+            .expect("the exact live source was checked");
+        source
+            .validate_native_publication(NativePublicationCheck::new(
+                phase,
+                proof.clone(),
+                target.clone(),
+                sequence,
+                started_generation,
+                validate_native_live_publication,
+                |error| map_indicator_error("validate native recording source", error),
+            ))
+            .await?;
+        self.require_native_recording_not_interrupted(started_generation)?;
+        if !source.is_active() || source.stream_id() != proof.stream_id {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::CaptureFailed,
+                "native recording source stopped or changed before startup completed",
+            ));
+        }
+        source.validate_frame_eligibility(sequence)?;
+        interactive_desktop::require_exact_window_observation_available()
     }
 
     pub(super) async fn native_recording_stop(&mut self) -> ComputerUseResult<Value> {
