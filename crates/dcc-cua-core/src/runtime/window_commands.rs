@@ -157,12 +157,12 @@ pub(super) fn exact_native_observation_instance(
         || provenance["pixels_captured"] != true
         || provenance["whole_desktop_capture"] != false
         || provenance["scope"] != "window"
-        || !provenance["capture_generation"]
+        || provenance["capture_generation"]
             .as_u64()
-            .is_some_and(|value| value > 0)
-        || !provenance["window_dpi"]
+            .is_none_or(|value| value == 0)
+        || provenance["window_dpi"]
             .as_u64()
-            .is_some_and(|value| value > 0)
+            .is_none_or(|value| value == 0)
         || !matches!(
             observation.capture_backend.as_str(),
             "dcc-cua-wgc-exact-window" | "dcc-cua-visible-exact-window"
