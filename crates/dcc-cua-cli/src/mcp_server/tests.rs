@@ -1658,7 +1658,7 @@ fn start_task_has_no_confirmation_ui_or_secret_value_fields() {
 fn task_action_schema_matches_the_closed_runtime_contract() {
     let schema = task_action_scope_schema();
     let variants = schema["oneOf"].as_array().unwrap();
-    assert_eq!(variants.len(), 6);
+    assert_eq!(variants.len(), 7);
 
     let variant = |input_kind: &str| {
         variants
@@ -1668,6 +1668,45 @@ fn task_action_schema_matches_the_closed_runtime_contract() {
             })
             .unwrap()
     };
+    for action in [
+        "minimize_window",
+        "set_window_frame",
+        "capture_preparation_begin",
+    ] {
+        let mut matching = variants
+            .iter()
+            .filter(|scope| scope["properties"]["action"]["const"].as_str() == Some(action));
+        let scope = matching.next().unwrap();
+        assert!(matching.next().is_none());
+        assert_eq!(scope["type"], "object");
+        assert_eq!(scope["additionalProperties"], false);
+        assert_eq!(
+            scope["required"],
+            json!([
+                "action",
+                "input_kind",
+                "secret_input",
+                "authorization_category"
+            ])
+        );
+        assert_eq!(
+            scope["properties"],
+            json!({
+                "action": {"const": action},
+                "input_kind": {"const": "window_state"},
+                "secret_input": {"const": false},
+                "authorization_category": {"const": "window_state"},
+                "browser_origin": {"type": "null"}
+            })
+        );
+    }
+    for kind in ["semantic", "raw_input", "browser", "clipboard"] {
+        let input = &variant(kind)["properties"];
+        assert_ne!(input["action"]["const"], "capture_preparation_begin");
+        if let Some(actions) = input["action"]["enum"].as_array() {
+            assert!(!actions.contains(&json!("capture_preparation_begin")));
+        }
+    }
     let semantic = variant("semantic");
     let native = variant("window_state");
     assert_eq!(native["properties"]["action"]["const"], "minimize_window");
