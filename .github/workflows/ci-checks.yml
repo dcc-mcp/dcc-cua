@@ -485,4 +485,5 @@ jobs:
             --target "$host" \
             --version "$version" \
             --extract-root "$RUNNER_TEMP/dcc-cua-pr-final-extract-${host}-${GITHUB_RUN_ATTEMPT}" \
-            --install-root "$RUNNER_TEMP/dcc-cua-pr-final-install-${host}-${GITHUB_RUN_ATTEMPT}"
+            --install-root "$RUNNER_TEMP/dcc-cua-pr-final-install-${host}-${GITHUB_RUN_ATTEMPT}" \
+            --allow-ci-build-metadata

@@ -4,6 +4,7 @@
 //! the dcc-cua safety shell: exact target scope, fresh observations, bounded
 //! actions, stop semantics, and auditable provenance.
 
+#[cfg(any(windows, test))]
 mod capture_diagnostics;
 mod contracts;
 mod driver_factory;

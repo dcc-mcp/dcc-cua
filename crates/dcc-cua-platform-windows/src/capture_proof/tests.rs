@@ -1,4 +1,5 @@
 use super::*;
+use crate::visible_capture::{RootBoundsClass, RootBoundsFailureDiagnostic, RootBoundsRole};
 use rstest::rstest;
 
 fn sample() -> NativeProofPhase {
@@ -80,6 +81,35 @@ fn capture_proof_error_payload_contains_only_closed_numeric_metadata() {
             "reason":"root_cloaking_unavailable", "target_bounds":null,
             "blocker_process_id":42, "blocker_window_handle":123, "blocker_bounds":null,
             "cloaked":null, "os_error":-2147024891,
+        })
+    );
+    failure.root_bounds_failure = Some(RootBoundsFailureDiagnostic {
+        root_role: RootBoundsRole::AboveTargetRoot,
+        proof_target_root_window_handle: 99,
+        dwm_raw_rect_edges: [0, 0, 0, 20],
+        dwm_classification: RootBoundsClass::ZeroArea,
+        visible: true,
+        cloaked: Some(0),
+        win32_read_after_dwm_rejection: true,
+        win32_raw_rect_edges: Some([0, 0, 1, 20]),
+        win32_classification: Some(RootBoundsClass::Positive),
+        win32_os_error: None,
+        zero_area_status_mismatch: Some(true),
+    });
+    assert_eq!(
+        serde_json::to_value(failure).unwrap()["root_bounds_failure"],
+        serde_json::json!({
+            "root_role": "above_target_root",
+            "proof_target_root_window_handle": 99,
+            "dwm_raw_rect_edges": [0, 0, 0, 20],
+            "dwm_classification": "zero_area",
+            "visible": true,
+            "cloaked": 0,
+            "win32_read_after_dwm_rejection": true,
+            "win32_raw_rect_edges": [0, 0, 1, 20],
+            "win32_classification": "positive",
+            "win32_os_error": null,
+            "zero_area_status_mismatch": true,
         })
     );
 }

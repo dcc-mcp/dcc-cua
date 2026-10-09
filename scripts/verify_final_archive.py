@@ -59,6 +59,10 @@ MAX_PATH_DEPTH = 64
 MAX_MANIFEST_BYTES = 64 * 1024
 MAX_CHECKSUM_BYTES = 1024
 VERSION_PATTERN = re.compile(r"^\d+\.\d+\.\d+$")
+CI_VERSION_PATTERN = re.compile(
+    r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
+    r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
+)
 WINDOWS_RESERVED_NAMES = {
     "CON",
     "PRN",
@@ -616,10 +620,13 @@ def verify_final_archive(
     version: str,
     extract_root: Path,
     install_root: Path,
+    allow_ci_build_metadata: bool = False,
 ) -> dict:
     if target not in SUPPORTED_TARGETS:
         raise ValueError(f"unsupported release target: {target}")
-    if VERSION_PATTERN.fullmatch(version) is None:
+    if allow_ci_build_metadata and CI_VERSION_PATTERN.fullmatch(version) is None:
+        raise ValueError("CI version must be stable semver with optional build metadata")
+    if not allow_ci_build_metadata and VERSION_PATTERN.fullmatch(version) is None:
         raise ValueError("release version must be stable semver")
     extension, binary_name, _ = SUPPORTED_TARGETS[target]
     expected_archive_name = f"dcc-cua-{version}-{target}.{extension}"
@@ -695,6 +702,7 @@ def main() -> None:
     parser.add_argument("--version", required=True)
     parser.add_argument("--extract-root", type=Path, required=True)
     parser.add_argument("--install-root", type=Path, required=True)
+    parser.add_argument("--allow-ci-build-metadata", action="store_true")
     args = parser.parse_args()
     receipt = verify_final_archive(
         source_root=args.source_root,
@@ -705,6 +713,7 @@ def main() -> None:
         version=args.version,
         extract_root=args.extract_root,
         install_root=args.install_root,
+        allow_ci_build_metadata=args.allow_ci_build_metadata,
     )
     print(json.dumps(receipt, sort_keys=True))
 

@@ -2,6 +2,7 @@
 use super::action_result::validated_action_effect;
 use super::*;
 
+#[cfg(any(windows, test))]
 pub(super) fn exact_physical_window_frame(
     request: &ComputerUseWindowFrameRequest,
 ) -> ComputerUseResult<[i32; 4]> {
@@ -333,10 +334,10 @@ impl ComputerUseSession {
         #[cfg(not(windows))]
         {
             let _ = (window_state_id, request);
-            return Err(ComputerUseError::new(
+            Err(ComputerUseError::new(
                 ComputerUseErrorCode::BackendUnavailable,
                 "native metadata frame mutation is available only on Windows",
-            ));
+            ))
         }
         #[cfg(windows)]
         {
@@ -415,10 +416,10 @@ impl ComputerUseSession {
         #[cfg(not(windows))]
         {
             let _ = observation_id;
-            return Err(ComputerUseError::new(
+            Err(ComputerUseError::new(
                 ComputerUseErrorCode::BackendUnavailable,
                 "exact-instance minimize is available only on Windows",
-            ));
+            ))
         }
         #[cfg(windows)]
         {

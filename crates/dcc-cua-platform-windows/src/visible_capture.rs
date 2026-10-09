@@ -86,6 +86,7 @@ pub struct VisibleWindowCaptureDiagnostic {
     pub blocker_bounds: Option<[i32; 4]>,
     pub cloaked: Option<u32>,
     pub os_error: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub root_bounds_failure: Option<RootBoundsFailureDiagnostic>,
 }
 

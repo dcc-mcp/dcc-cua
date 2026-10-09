@@ -244,7 +244,7 @@ pub(crate) fn validate_live_native_evidence(
     )
 }
 
-#[cfg(any(windows, test))]
+#[cfg(windows)]
 pub(crate) fn validate_exact_bgra_dimensions(
     length: usize,
     width: u32,
