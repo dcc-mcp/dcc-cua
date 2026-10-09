@@ -1,6 +1,7 @@
 [package]
 name = "dcc-cua-cli"
 description = "Cross-platform CUA command-line host"
+default-run = "dcc-cua"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -12,6 +13,10 @@ repository.workspace = true
 [[bin]]
 name = "dcc-cua"
 path = "src/main.rs"
+
+[[bin]]
+name = "dcc-cua-background"
+path = "src/background.rs"
 
 [dependencies]
 async-trait.workspace = true

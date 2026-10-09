@@ -76,7 +76,12 @@ def collect_install_plan(
         raise ValueError(f"unsupported install target: {target}") from exc
     files: dict[str, str] = {}
     directories: set[str] = set()
-    for name in (binary_name, *PACKAGE_FILES):
+    background_name = (
+        "dcc-cua-background.exe"
+        if binary_name.endswith(".exe")
+        else "dcc-cua-background"
+    )
+    for name in (binary_name, background_name, *PACKAGE_FILES):
         path = source_root / name
         if not is_regular_unlinked_file(path):
             raise ValueError(f"install source is missing a regular file: {name}")

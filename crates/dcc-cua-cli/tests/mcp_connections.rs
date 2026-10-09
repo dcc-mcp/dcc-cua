@@ -46,7 +46,7 @@ impl Bridge {
     }
 
     fn spawn_with_stdout(directory: &Path, read_stdout: bool) -> Self {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_dcc-cua"))
+        let mut child = Command::new(env!("CARGO_BIN_EXE_dcc-cua-background"))
             .arg("mcp-server")
             .arg("--diagnostics-dir")
             .arg(directory)

@@ -49,8 +49,24 @@ codex plugin marketplace add .
 codex plugin add dcc-cua-computer-use@dcc-cua
 ```
 
+The package also includes `dcc-cua-background`, the entry point used by the
+MCP manifests. Install both executables from the same archive. On Windows the
+background executable uses the GUI PE subsystem, so starting the MCP bridge
+does not allocate a console before application code runs. It uses the same
+runtime, inherited stdio pipes, diagnostics, and exit codes as `dcc-cua`;
+it does not spawn a wrapper child or change task authorization. On macOS and
+Linux it is an equivalent automation entry point.
+
+For manual MCP configuration, use `dcc-cua-background` with arguments
+`["mcp-server"]`. Use `dcc-cua` for interactive terminal commands. Existing
+clients configured to launch `dcc-cua mcp-server` keep working, but on Windows
+their launcher must set `CREATE_NO_WINDOW` to avoid allocating a console.
+Changing the manifest only takes effect after the client reconnects; it does
+not stop existing bridges. This entry point does not address repeated client
+connections or consoles created by unrelated shell commands.
+
 The checkout also includes `.claude-plugin/marketplace.json` and a portable
-`.mcp.json`. Hosts without Codex plugin support may launch `dcc-cua mcp-server`
+`.mcp.json`. Hosts without Codex plugin support may launch `dcc-cua-background mcp-server`
 directly through their native MCP configuration.
 
 After installation, confirm that `tools/list` exposes exactly `start_task`,
