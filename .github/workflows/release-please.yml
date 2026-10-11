@@ -212,7 +212,7 @@ jobs:
         if: github.event_name != 'workflow_dispatch'
         shell: pwsh
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
         run: >-
           ./scripts/refresh-release-please-prs.ps1
           -Repository $env:GITHUB_REPOSITORY
