@@ -74,6 +74,7 @@ jobs:
           ref: ${{ github.sha }}
           fetch-depth: 0
           fetch-tags: true
+          token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
       - name: Resolve immutable release recovery
         id: recovery
         if: github.event_name == 'workflow_dispatch'
