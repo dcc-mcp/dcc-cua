@@ -22,6 +22,7 @@ mod window_target;
 mod windows_uia_fallback;
 
 pub use contracts::*;
+pub use dcc_cua_showcase::RecordingAuthorization;
 pub use input_state::*;
 pub use private_worker::run_private_worker;
 #[cfg(target_os = "macos")]

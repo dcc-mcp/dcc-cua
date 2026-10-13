@@ -118,6 +118,27 @@ JSON. The authorized directory remains fixed by the task grant and lease.
 
 ## Validation boundaries
 
+Native task recording also carries a constructor-owned `RecordingAuthorization`
+shared by the issuer, the existing capture worker and the existing encoder.
+The broker binds this fence to the exact retained lease; an embedding without
+a synchronous revocation-aware fence refuses task recording. Non-recording
+authorization APIs are unchanged.
+
+Capture checks before readback and again while publishing. The encoder checks
+the first frame and every queued event before admitting new media. A shared
+mutex orders issuer revocation against these admissions. Expiry uses both the
+Unix deadline and a monotonic upper bound; an expired fence stays revoked even
+if the wall clock moves backward. A readback spanning expiry is discarded, and
+a previously queued frame cannot bypass the encoder boundary.
+
+Already admitted work may finish after the wall-clock deadline; file and sample
+finalization are cleanup, not new capture authority. This is an admission
+contract, not a promise of zero bytes written after expiry. The source reports
+a terminal authorization error and exits naturally. The Host refresh path joins
+the same session's owners instead of only invalidating observations. Expired
+`stop_task` remains available, and existing partial/finalization-unknown evidence
+is retained. No Job, parent-process, token or input guard is weakened.
+
 Pure tests cover immutable output authorization, wrong target and directory,
 revocation, video-only requests, framed cleanup acknowledgements, stale first
 frames, actual first encoded sample/sidecar correspondence, pause/terminal

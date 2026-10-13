@@ -725,12 +725,13 @@ impl LiveObservation {
         window_handle: u64,
         request: &ComputerUseLiveObservationStartRequest,
         capture_exclusion: Option<dcc_cua_indicator::BannerCaptureExclusionSource>,
+        recording_authorization: Option<Arc<dcc_cua_showcase::RecordingAuthorization>>,
     ) -> ComputerUseResult<Self> {
         request.validate()?;
         let stream_id = LIVE_OBSERVATION_STREAM_COUNTER.fetch_add(1, Ordering::Relaxed);
         #[cfg(not(windows))]
         {
-            let _ = capture_exclusion;
+            let _ = (capture_exclusion, recording_authorization);
             let fps = request.fps;
             let (sender, receiver) = watch::channel(LiveObservationStatus::default());
             let shutdown = LiveObservationShutdown::default();
@@ -773,6 +774,7 @@ impl LiveObservation {
             let task = tokio::spawn(run_capture_loop(
                 target,
                 capture_exclusion,
+                recording_authorization,
                 fps,
                 interrupt_generation(),
                 sender,
@@ -1104,9 +1106,11 @@ impl Drop for LiveObservation {
 }
 
 #[cfg(windows)]
+#[allow(clippy::too_many_arguments)] // Original worker context plus its constructor-owned lease fence.
 async fn run_capture_loop(
     target: WindowsLiveTarget,
     capture_exclusion: Option<dcc_cua_indicator::BannerCaptureExclusionSource>,
+    recording_authorization: Option<Arc<dcc_cua_showcase::RecordingAuthorization>>,
     fps: u32,
     started_interrupt_generation: u64,
     sender: watch::Sender<LiveObservationStatus>,
@@ -1118,6 +1122,7 @@ async fn run_capture_loop(
         run_windows_capture_loop(
             target,
             capture_exclusion,
+            recording_authorization,
             fps,
             started_interrupt_generation,
             sender,
