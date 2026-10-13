@@ -59,9 +59,18 @@ def _write_complete_release(release_dir: Path) -> None:
                         "path": "dcc-cua.exe" if "windows" in target else "dcc-cua",
                         "sha256": "5" * 64,
                     },
+                    {
+                        "path": (
+                            "dcc-cua-background.exe"
+                            if "windows" in target
+                            else "dcc-cua-background"
+                        ),
+                        "sha256": "6" * 64,
+                    },
                 ],
             },
         }
+        manifest["install"]["files"].sort(key=lambda entry: entry["path"])
         (release_dir / f"dcc-cua-install-manifest-{target}.json").write_text(
             json.dumps(manifest), encoding="utf-8"
         )

@@ -71,7 +71,10 @@ def _verify_install_manifest(install: object, target: str) -> None:
         raise ValueError("install manifest contains an invalid package directory")
 
     expected_binary = "dcc-cua.exe" if "windows" in target else "dcc-cua"
-    required_files = {expected_binary, *_PACKAGE_FILES}
+    expected_background = (
+        "dcc-cua-background.exe" if "windows" in target else "dcc-cua-background"
+    )
+    required_files = {expected_binary, expected_background, *_PACKAGE_FILES}
     file_paths: list[str] = []
     for entry in files:
         if not isinstance(entry, dict) or set(entry) != {"path", "sha256"}:
