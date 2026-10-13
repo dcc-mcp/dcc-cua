@@ -170,3 +170,25 @@ fn packaged_skill_describes_the_verified_visible_desktop_crop_truthfully() {
     assert!(normalized.contains("never publishes a whole-desktop screenshot"));
     assert!(!normalized.contains("never falls back to a whole-desktop screenshot or desktop crop"));
 }
+
+#[rstest]
+fn linux_pixels_manifest_advertises_only_the_read_only_x11_slice() {
+    let capability = manifest::linux_exact_window_pixels();
+    assert_eq!(capability["availability"], "linux_local_x11_non_composited");
+    for name in [
+        "input_available",
+        "activation_available",
+        "recording_available",
+        "accessibility_provider_started",
+        "whole_desktop_fallback",
+        "wayland_supported",
+    ] {
+        assert_eq!(capability[name], false, "{name}");
+    }
+    assert_eq!(capability["read_only"], true);
+    #[cfg(target_os = "linux")]
+    assert_eq!(
+        manifest::document()["runtime"]["exact_window_pixels"],
+        capability
+    );
+}

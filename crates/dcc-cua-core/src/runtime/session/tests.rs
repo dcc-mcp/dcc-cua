@@ -74,6 +74,8 @@ mod degraded_shutdown;
 mod dispatch_errors;
 mod input_target_policy;
 mod issue_228_window_pixels;
+#[cfg(target_os = "linux")]
+mod linux_pixels;
 mod modal_takeover;
 mod recording;
 mod visual_only;

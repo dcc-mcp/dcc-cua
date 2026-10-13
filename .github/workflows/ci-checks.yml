@@ -233,7 +233,7 @@ jobs:
         with:
           shared-key: verify
       - if: matrix.os == 'ubuntu-latest'
-        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y libgtk-3-dev python3-gi gir1.2-gtk-3.0 libx11-dev libxi-dev libxtst-dev
+        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y xvfb xauth libgtk-3-dev python3-gi gir1.2-gtk-3.0 libx11-dev libxi-dev libxtst-dev
       - if: startsWith(matrix.os, 'macos-')
         shell: bash
         run: |
@@ -252,6 +252,13 @@ jobs:
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo nextest run --workspace --all-targets --locked
       - run: cargo test --workspace --doc --locked
+      - name: Run exact X11 window lifecycle tests
+        if: matrix.os == 'ubuntu-latest'
+        timeout-minutes: 3
+        shell: bash
+        run: |
+          env -u WAYLAND_DISPLAY XDG_SESSION_TYPE=x11 xvfb-run -a --server-args="-screen 0 640x480x24 -nolisten tcp" \
+            cargo test --locked -p dcc-cua-core linux_pixels_native -- --ignored --test-threads=1
       - if: matrix.os == 'windows-latest'
         run: python -B -m unittest scripts.test_indicator_acceptance_probe
       - name: Compile GUI E2E on every target
@@ -326,7 +333,7 @@ jobs:
         with:
           shared-key: release
       - if: matrix.os == 'ubuntu-latest'
-        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y xvfb dbus-x11 at-spi2-core openbox picom libgtk-3-dev python3-gi gir1.2-gtk-3.0 libx11-dev libxi-dev libxtst-dev
+        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y xvfb xauth dbus-x11 at-spi2-core openbox picom libgtk-3-dev python3-gi gir1.2-gtk-3.0 libx11-dev libxi-dev libxtst-dev
       - if: startsWith(matrix.os, 'macos-')
         shell: bash
         run: |
@@ -342,6 +349,13 @@ jobs:
           git show "$EXPECTED_SOURCE_SHA:scripts/verify_ci_source_integrity.py" |
             python -B - --repository . --expected "$EXPECTED_SOURCE_SHA"
       - run: cargo build --release --locked -p dcc-cua-cli
+      - name: Run read-only exact X11 release CLI positive and negative cases
+        if: matrix.os == 'ubuntu-latest'
+        timeout-minutes: 3
+        shell: bash
+        run: |
+          env -u WAYLAND_DISPLAY XDG_SESSION_TYPE=x11 xvfb-run -a --server-args="-screen 0 640x480x24 -nolisten tcp" \
+            python -B scripts/test_linux_pixels_x11.py --binary target/release/dcc-cua
       - name: Run release CLI and Host IPC E2E
         timeout-minutes: 5
         shell: pwsh

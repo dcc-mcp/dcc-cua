@@ -27,6 +27,8 @@ fn map_showcase_error(error: dcc_cua_showcase::ShowcaseError) -> ComputerUseErro
 
 mod action_result;
 mod exact_capture;
+#[cfg(target_os = "linux")]
+mod linux_pixels;
 use exact_capture::*;
 #[cfg(windows)]
 pub(crate) use exact_capture::{
@@ -1496,6 +1498,8 @@ pub struct ComputerUseSession {
     escalated: bool,
     pub(crate) uia_timeout_escalated: bool,
     pixel_observation_route: Option<PixelObservationRoute>,
+    #[cfg(target_os = "linux")]
+    linux_pixels: Option<linux_pixels::Handle>,
     #[cfg(feature = "test-support")]
     synthetic_test_session: bool,
 }

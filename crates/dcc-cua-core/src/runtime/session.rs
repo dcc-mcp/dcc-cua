@@ -16,6 +16,8 @@ mod error_contracts;
 mod native_recording;
 #[cfg(any(windows, test))]
 pub(crate) use capture_preparation::preparation_error as map_capture_preparation_error;
+#[cfg(target_os = "linux")]
+mod linux_pixels;
 mod observation;
 mod pixel_start;
 #[cfg(test)]
@@ -109,6 +111,8 @@ impl ComputerUseSession {
             escalated: false,
             uia_timeout_escalated: false,
             pixel_observation_route: None,
+            #[cfg(target_os = "linux")]
+            linux_pixels: None,
             #[cfg(feature = "test-support")]
             synthetic_test_session: false,
         })
@@ -138,6 +142,8 @@ impl ComputerUseSession {
                 "window session is already active",
             ));
         }
+        #[cfg(target_os = "linux")]
+        self.drain_linux_pixels().await;
         self.pixel_observation_route = None;
         request.validate_for_scope(&self.scope)?;
         let target = self.resolve_target().await?;
@@ -1184,6 +1190,8 @@ impl ComputerUseSession {
     }
 
     pub(super) fn require_observed_input_available(&mut self) -> ComputerUseResult<()> {
+        #[cfg(target_os = "linux")]
+        self.require_not_linux_pixels()?;
         self.require_capture_preparation_settled()?;
         #[cfg(feature = "test-support")]
         if self.synthetic_test_session {
@@ -1194,6 +1202,8 @@ impl ComputerUseSession {
     }
 
     pub(super) fn require_observed_window_activation_available(&mut self) -> ComputerUseResult<()> {
+        #[cfg(target_os = "linux")]
+        self.require_not_linux_pixels()?;
         self.require_capture_preparation_settled()?;
         let result = interactive_desktop::require_window_activation_available();
         self.finish_observed_input_gate(result)
@@ -1258,6 +1268,8 @@ impl ComputerUseSession {
         name: &str,
         arguments: Value,
     ) -> ComputerUseResult<cua_driver_sdk::ToolResult> {
+        #[cfg(target_os = "linux")]
+        self.require_not_linux_pixels()?;
         let mut object = arguments.as_object().cloned().ok_or_else(|| {
             ComputerUseError::new(
                 ComputerUseErrorCode::InvalidAction,
@@ -1280,6 +1292,8 @@ impl ComputerUseSession {
         name: &str,
         arguments: Value,
     ) -> ComputerUseResult<cua_driver_sdk::ToolResult> {
+        #[cfg(target_os = "linux")]
+        self.require_not_linux_pixels()?;
         let mut object = arguments.as_object().cloned().ok_or_else(|| {
             ComputerUseError::new(
                 ComputerUseErrorCode::InvalidAction,
@@ -1368,6 +1382,8 @@ impl ComputerUseSession {
         // or the process-global upstream recording lease.
         self.active = false;
         self.upstream_session_state = UpstreamSessionState::Inactive;
+        #[cfg(target_os = "linux")]
+        self.drain_linux_pixels().await;
         self.pixel_observation_route = None;
         self.last_upstream_session_refresh = None;
         self.marker.visible = false;
@@ -1424,6 +1440,8 @@ impl ComputerUseSession {
     }
 
     fn ensure_local_cleanup_reusable(&self) -> ComputerUseResult<()> {
+        #[cfg(target_os = "linux")]
+        self.require_linux_cleanup_settled()?;
         if self.local_cleanup.pending() || !self.local_cleanup.issues.is_empty() {
             return Err(ComputerUseError::new(
                 if self.local_cleanup.pending() {
@@ -2087,6 +2105,14 @@ impl ComputerUseSession {
             })?;
             validate_target_policy(&target)?;
             return Ok(target);
+        }
+        #[cfg(target_os = "linux")]
+        if let Some(handle) = &self.linux_pixels {
+            return crate::runtime::linux_pixels::operate(
+                handle.clone(),
+                crate::runtime::linux_pixels::LinuxPixels::target,
+            )
+            .await;
         }
         let rows = self.list_windows().await?;
         let matches = rows

@@ -8,11 +8,13 @@ impl ComputerUseSession {
     pub async fn start_pixels_only(&mut self) -> ComputerUseResult<Value> {
         self.ensure_local_cleanup_reusable()?;
         self.require_capture_preparation_settled()?;
-        #[cfg(not(windows))]
+        #[cfg(not(any(windows, target_os = "linux")))]
         return Err(ComputerUseError::new(
             ComputerUseErrorCode::BackendUnavailable,
             "pixels-only exact native window capture is unavailable on this platform",
         ));
+        #[cfg(target_os = "linux")]
+        return self.start_linux_pixels().await;
         #[cfg(windows)]
         {
             if self.active {
