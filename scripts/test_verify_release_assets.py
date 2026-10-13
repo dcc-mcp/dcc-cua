@@ -11,6 +11,13 @@ MODULE = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None
 SPEC.loader.exec_module(MODULE)
 
+WRITER_SPEC = importlib.util.spec_from_file_location(
+    "write_install_manifest", SCRIPT.with_name("write-install-manifest.py")
+)
+WRITER = importlib.util.module_from_spec(WRITER_SPEC)
+assert WRITER_SPEC.loader is not None
+WRITER_SPEC.loader.exec_module(WRITER)
+
 
 def _write_complete_release(release_dir: Path, version: str = "1.6.0") -> None:
     for target, extension in MODULE.RELEASE_TARGETS:
@@ -49,15 +56,107 @@ def _write_complete_release(release_dir: Path, version: str = "1.6.0") -> None:
                         "path": "dcc-cua.exe" if "windows" in target else "dcc-cua",
                         "sha256": "5" * 64,
                     },
+                    {
+                        "path": (
+                            "dcc-cua-background.exe"
+                            if "windows" in target
+                            else "dcc-cua-background"
+                        ),
+                        "sha256": "6" * 64,
+                    },
                 ],
             },
         }
+        manifest["install"]["files"].sort(key=lambda entry: entry["path"])
         (release_dir / f"dcc-cua-install-manifest-{target}.json").write_text(
             json.dumps(manifest), encoding="utf-8"
         )
 
 
 class VerifyReleaseAssetsTests(unittest.TestCase):
+    def test_writer_generated_manifests_pass_for_every_release_target(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            release_dir = root / "dist"
+            release_dir.mkdir()
+            for target, extension in MODULE.RELEASE_TARGETS:
+                source = root / target
+                source.mkdir()
+                suffix = ".exe" if "windows" in target else ""
+                for name in (
+                    "dcc-cua" + suffix,
+                    "dcc-cua-background" + suffix,
+                    *WRITER.PACKAGE_FILES,
+                ):
+                    (source / name).write_bytes(name.encode("utf-8"))
+                for name in WRITER.PACKAGE_DIRECTORIES:
+                    (source / name).mkdir()
+                    (source / name / "marker.txt").write_bytes(b"package content")
+                archive = release_dir / f"dcc-cua-1.10.0-{target}.{extension}"
+                archive.write_bytes(target.encode("utf-8"))
+                files, directories = WRITER.collect_install_plan(source, target)
+                manifest = WRITER.build_manifest(
+                    archive,
+                    "1.10.0",
+                    target,
+                    "https://github.com/dcc-mcp/dcc-cua/releases/download/"
+                    f"v1.10.0/{archive.name}",
+                    files,
+                    directories,
+                )
+                (release_dir / (archive.name + ".sha256")).write_text(
+                    WRITER.build_checksum_sidecar(archive, manifest["asset"]["sha256"]),
+                    encoding="utf-8",
+                )
+                (release_dir / f"dcc-cua-install-manifest-{target}.json").write_text(
+                    json.dumps(manifest), encoding="utf-8"
+                )
+            MODULE.verify_release_assets(release_dir, "1.10.0")
+
+    def test_both_entry_points_are_required_for_every_release_target(self):
+        for target, _ in MODULE.RELEASE_TARGETS:
+            suffix = ".exe" if "windows" in target else ""
+            for binary in ("dcc-cua" + suffix, "dcc-cua-background" + suffix):
+                with self.subTest(target=target, missing=binary):
+                    with tempfile.TemporaryDirectory() as directory:
+                        release_dir = Path(directory)
+                        _write_complete_release(release_dir)
+                        manifest_path = (
+                            release_dir / f"dcc-cua-install-manifest-{target}.json"
+                        )
+                        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                        manifest["install"]["files"] = [
+                            entry for entry in manifest["install"]["files"]
+                            if entry["path"] != binary
+                        ]
+                        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+                        with self.assertRaisesRegex(ValueError, "complete, unique, and sorted"):
+                            MODULE.verify_release_assets(release_dir, "1.6.0")
+
+    def test_unexpected_background_entry_names_fail_closed(self):
+        for target, _ in MODULE.RELEASE_TARGETS:
+            other_platform = (
+                "dcc-cua-background"
+                if "windows" in target
+                else "dcc-cua-background.exe"
+            )
+            for unexpected in (other_platform, "dcc-cua-background-extra"):
+                with self.subTest(target=target, unexpected=unexpected):
+                    with tempfile.TemporaryDirectory() as directory:
+                        release_dir = Path(directory)
+                        _write_complete_release(release_dir)
+                        manifest_path = (
+                            release_dir / f"dcc-cua-install-manifest-{target}.json"
+                        )
+                        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                        manifest["install"]["files"].append(
+                            {"path": unexpected, "sha256": "7" * 64}
+                        )
+                        manifest["install"]["files"].sort(key=lambda entry: entry["path"])
+                        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+                        with self.assertRaisesRegex(ValueError, "invalid package file"):
+                            MODULE.verify_release_assets(release_dir, "1.6.0")
+
     def test_missing_intel_macos_release_assets_fail_closed(self):
         with tempfile.TemporaryDirectory() as directory:
             release_dir = Path(directory)
