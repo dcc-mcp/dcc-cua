@@ -4,7 +4,7 @@
       "title": "DCC-CUA task automation",
       "description": "Start and operate exact-window DCC-CUA tasks through the connected Agent Host without a second authorization prompt.",
       "cwd": ".",
-      "command": "dcc-cua",
+      "command": "dcc-cua-background",
       "args": ["mcp-server"],
       "startup_timeout_sec": 10,
       "tool_timeout_sec": 3600
