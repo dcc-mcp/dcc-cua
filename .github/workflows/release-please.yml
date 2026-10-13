@@ -313,11 +313,11 @@ jobs:
             archive="dist/dcc-cua-${version}-${host}.zip"
             (
               cd target/release
-              7z a "../../$archive" dcc-cua.exe LICENSE THIRD_PARTY_LICENSES.md README.md README.zh-CN.md assets skills plugins .claude-plugin .codex-plugin .mcp.json
+              7z a "../../$archive" dcc-cua.exe dcc-cua-background.exe LICENSE THIRD_PARTY_LICENSES.md README.md README.zh-CN.md assets skills plugins .claude-plugin .codex-plugin .mcp.json
             )
           else
             archive="dist/dcc-cua-${version}-${host}.tar.gz"
-            tar -czf "$archive" -C target/release dcc-cua LICENSE THIRD_PARTY_LICENSES.md README.md README.zh-CN.md assets skills plugins .claude-plugin .codex-plugin .mcp.json
+            tar -czf "$archive" -C target/release dcc-cua dcc-cua-background LICENSE THIRD_PARTY_LICENSES.md README.md README.zh-CN.md assets skills plugins .claude-plugin .codex-plugin .mcp.json
           fi
           python -B scripts/release_integrity.py verify-native-docs --archive "$archive" --source .
           asset_name="$(basename "$archive")"

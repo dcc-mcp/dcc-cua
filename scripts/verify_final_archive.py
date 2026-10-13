@@ -269,7 +269,12 @@ def _extract_tar(archive: Path, destination: Path) -> tuple[set[str], set[str]]:
 def _package_files(source_root: Path, binary_name: str) -> dict[str, Path]:
     entries: dict[str, Path] = {}
     total = 0
-    for name in (binary_name, *REQUIRED_FILES):
+    background_name = (
+        "dcc-cua-background.exe"
+        if binary_name.endswith(".exe")
+        else "dcc-cua-background"
+    )
+    for name in (binary_name, background_name, *REQUIRED_FILES):
         path = source_root / name
         if path.is_symlink() or not path.is_file():
             raise ValueError(f"source package is missing a regular file: {name}")
@@ -432,6 +437,14 @@ def _json_output(result: subprocess.CompletedProcess, command: str) -> dict:
 def _smoke_binary(root: Path, binary_name: str, target: str, version: str) -> None:
     binary = (root / binary_name).resolve()
     expected_version = f"dcc-cua {version}"
+    background_name = (
+        "dcc-cua-background.exe"
+        if binary_name.endswith(".exe")
+        else "dcc-cua-background"
+    )
+    background = _run((root / background_name).resolve(), ["--version"], root)
+    if background.returncode != 0 or background.stdout.strip() != expected_version:
+        raise ValueError("background entry smoke command failed: --version")
     for arguments in (["--version"], ["version"]):
         result = _run(binary, arguments, root)
         if result.returncode != 0 or result.stdout.strip() != expected_version:

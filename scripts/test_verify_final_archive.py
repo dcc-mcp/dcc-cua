@@ -53,6 +53,12 @@ class FinalArchiveVerifierTests(unittest.TestCase):
         source = root / "source"
         source.mkdir(parents=True)
         (source / binary_name).write_bytes(b"arbitrary but self-consistent bytes")
+        background = (
+            "dcc-cua-background.exe"
+            if binary_name.endswith(".exe")
+            else "dcc-cua-background"
+        )
+        (source / background).write_bytes(b"background entry")
         for name in MODULE.REQUIRED_FILES:
             (source / name).write_text(name, encoding="utf-8")
         for name in MODULE.REQUIRED_DIRECTORIES:
@@ -86,7 +92,7 @@ class FinalArchiveVerifierTests(unittest.TestCase):
             for name, content in entries.items():
                 entry = tarfile.TarInfo(name)
                 entry.size = len(content)
-                entry.mode = 0o755 if name == "dcc-cua" else 0o644
+                entry.mode = 0o755 if name in {"dcc-cua", "dcc-cua-background"} else 0o644
                 bundle.addfile(entry, io.BytesIO(content))
             for name in directories:
                 entry = tarfile.TarInfo(name.rstrip("/"))
@@ -337,7 +343,7 @@ class FinalArchiveVerifierTests(unittest.TestCase):
                     for name, content in entries.items():
                         entry = tarfile.TarInfo(name)
                         entry.size = len(content)
-                        entry.mode = 0o755 if name == "dcc-cua" else 0o644
+                        entry.mode = 0o755 if name in {"dcc-cua", "dcc-cua-background"} else 0o644
                         bundle.addfile(entry, io.BytesIO(content))
                     link = tarfile.TarInfo("skills/link")
                     link.type = tarfile.SYMTYPE
