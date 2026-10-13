@@ -57,6 +57,18 @@ runtime, inherited stdio pipes, diagnostics, and exit codes as `dcc-cua`;
 it does not spawn a wrapper child or change task authorization. On macOS and
 Linux it is an equivalent automation entry point.
 
+When migrating from a release that shipped only `dcc-cua`, install both
+executables from the new archive. The older updater can replace only its own
+executable. If you already used it, run the new `dcc-cua update --apply` again:
+the dual-entry updater also reapplies the current release to repair a missing
+or stale companion. Future updates install both entries from the same verified
+archive. Keep their original filenames in the same writable directory; no
+system-wide installation is required. Close MCP clients and resident Hosts
+before updating on Windows, where a loaded companion executable can refuse
+replacement. The updater never terminates those processes for you. If an
+update fails, close the clients and retry or reinstall both entries from one
+archive before reconnecting.
+
 For manual MCP configuration, use `dcc-cua-background` with arguments
 `["mcp-server"]`. Use `dcc-cua` for interactive terminal commands. Existing
 clients configured to launch `dcc-cua mcp-server` keep working, but on Windows
