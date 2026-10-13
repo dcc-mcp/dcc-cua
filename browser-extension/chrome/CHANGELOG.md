@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.3](https://github.com/dcc-mcp/dcc-cua/compare/dcc-cua-browser-extension-v0.2.2...dcc-cua-browser-extension-v0.2.3) (2026-10-13)
+
+
+### Bug Fixes
+
+* **cli:** add console-free MCP entry point ([#316](https://github.com/dcc-mcp/dcc-cua/issues/316)) ([4bde8f0](https://github.com/dcc-mcp/dcc-cua/commit/4bde8f072ba94c9ec7cf5f33d5bd3e81aab9c0a7))
+
 ## [0.2.2](https://github.com/dcc-mcp/dcc-cua/compare/dcc-cua-browser-extension-v0.2.1...dcc-cua-browser-extension-v0.2.2) (2026-09-13)
 
 
