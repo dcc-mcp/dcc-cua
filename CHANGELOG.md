@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.10.0](https://github.com/dcc-mcp/dcc-cua/compare/v1.9.4...v1.10.0) (2026-10-13)
+
+
+### Features
+
+* expose read-only MCP connection diagnostics ([#312](https://github.com/dcc-mcp/dcc-cua/issues/312)) ([5891425](https://github.com/dcc-mcp/dcc-cua/commit/5891425515dff637d1a21ecad3a8bfcd02cf42de))
+
+
+### Bug Fixes
+
+* **cli:** add console-free MCP entry point ([#316](https://github.com/dcc-mcp/dcc-cua/issues/316)) ([4bde8f0](https://github.com/dcc-mcp/dcc-cua/commit/4bde8f072ba94c9ec7cf5f33d5bd3e81aab9c0a7))
+* **cli:** preserve safe host supervisor errors ([#310](https://github.com/dcc-mcp/dcc-cua/issues/310)) ([8926d5c](https://github.com/dcc-mcp/dcc-cua/commit/8926d5c9fdfe041ee8b4f290b3115613e9c9060e))
+* preserve semantic snapshots with cached UIA context ([#318](https://github.com/dcc-mcp/dcc-cua/issues/318)) ([50ac30d](https://github.com/dcc-mcp/dcc-cua/commit/50ac30d8b6aa6a8e13c79641400d17b57d485f61))
+
 ## [1.9.4](https://github.com/dcc-mcp/dcc-cua/compare/v1.9.3...v1.9.4) (2026-10-04)
 
 
