@@ -727,6 +727,7 @@ impl LiveObservation {
         window_handle: u64,
         request: &ComputerUseLiveObservationStartRequest,
         capture_exclusion: Option<dcc_cua_indicator::BannerCaptureExclusionSource>,
+        recording_authorization: Option<Arc<dcc_cua_showcase::RecordingAuthorization>>,
     ) -> ComputerUseResult<Self> {
         #[cfg(windows)]
         return Self::start_internal(
@@ -736,6 +737,7 @@ impl LiveObservation {
             window_handle,
             request,
             capture_exclusion,
+            recording_authorization,
             None,
         )
         .await;
@@ -747,11 +749,13 @@ impl LiveObservation {
             window_handle,
             request,
             capture_exclusion,
+            recording_authorization,
         )
         .await
     }
 
     #[cfg(windows)]
+    #[allow(clippy::too_many_arguments)] // Keep the preparation and recording fences on the same source.
     pub(crate) async fn start_prepared(
         driver: ComputerUseDriver,
         session_id: String,
@@ -759,6 +763,7 @@ impl LiveObservation {
         window_handle: u64,
         request: &ComputerUseLiveObservationStartRequest,
         capture_exclusion: Option<dcc_cua_indicator::BannerCaptureExclusionSource>,
+        recording_authorization: Option<Arc<dcc_cua_showcase::RecordingAuthorization>>,
         preparation: dcc_cua_platform_windows::capture_preparation::PreparedEvidenceGuard,
     ) -> ComputerUseResult<Self> {
         Self::start_internal(
@@ -768,11 +773,13 @@ impl LiveObservation {
             window_handle,
             request,
             capture_exclusion,
+            recording_authorization,
             Some(preparation),
         )
         .await
     }
 
+    #[allow(clippy::too_many_arguments)] // Both constructor-owned fences travel into one capture worker.
     async fn start_internal(
         driver: ComputerUseDriver,
         session_id: String,
@@ -780,6 +787,7 @@ impl LiveObservation {
         window_handle: u64,
         request: &ComputerUseLiveObservationStartRequest,
         capture_exclusion: Option<dcc_cua_indicator::BannerCaptureExclusionSource>,
+        recording_authorization: Option<Arc<dcc_cua_showcase::RecordingAuthorization>>,
         #[cfg(windows)] preparation: Option<
             dcc_cua_platform_windows::capture_preparation::PreparedEvidenceGuard,
         >,
@@ -788,7 +796,7 @@ impl LiveObservation {
         let stream_id = LIVE_OBSERVATION_STREAM_COUNTER.fetch_add(1, Ordering::Relaxed);
         #[cfg(not(windows))]
         {
-            let _ = capture_exclusion;
+            let _ = (capture_exclusion, recording_authorization);
             let fps = request.fps;
             let (sender, receiver) = watch::channel(LiveObservationStatus::default());
             let shutdown = LiveObservationShutdown::default();
@@ -840,6 +848,7 @@ impl LiveObservation {
                 target,
                 preparation,
                 capture_exclusion,
+                recording_authorization,
                 fps,
                 started_interrupt_generation: interrupt_generation(),
                 sender,
@@ -1185,6 +1194,7 @@ struct NativeCaptureLoop {
     target: WindowsLiveTarget,
     preparation: Option<dcc_cua_platform_windows::capture_preparation::PreparedEvidenceGuard>,
     capture_exclusion: Option<dcc_cua_indicator::BannerCaptureExclusionSource>,
+    recording_authorization: Option<Arc<dcc_cua_showcase::RecordingAuthorization>>,
     fps: u32,
     started_interrupt_generation: u64,
     sender: watch::Sender<LiveObservationStatus>,

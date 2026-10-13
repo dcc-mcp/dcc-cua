@@ -365,6 +365,16 @@ pub enum TrustedTaskAuthorizationHostError {
 
 #[async_trait]
 pub trait TrustedTaskAuthorizationHost: Send + Sync {
+    /// Optional constructor-owned synchronous admission fence for native video.
+    /// Embeddings without a revocation-aware producer fence fail closed for
+    /// recording while retaining their existing non-recording task contracts.
+    fn recording_authorization(
+        &self,
+        _lease: &TrustedTaskAuthorizationLease,
+    ) -> Option<std::sync::Arc<dcc_cua_core::RecordingAuthorization>> {
+        None
+    }
+
     async fn authorize(
         &self,
         request: TrustedTaskAuthorizationRequest,

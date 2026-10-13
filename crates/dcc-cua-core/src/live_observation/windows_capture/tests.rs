@@ -3,6 +3,75 @@ use rstest::rstest;
 use super::*;
 
 #[rstest]
+fn source_publication_revalidates_after_recording_admission_wait() {
+    let lease_active = std::cell::Cell::new(true);
+    let validation_called = std::cell::Cell::new(false);
+    let result = admit_frame_publication(
+        || {
+            // The recording mutex waited behind an admitted encoder sample.
+            lease_active.set(false);
+            Ok(())
+        },
+        || {
+            validation_called.set(true);
+            assert!(!lease_active.get());
+            Err(ComputerUseError::new(
+                ComputerUseErrorCode::InvalidTarget,
+                "prepared source expired while waiting for recording admission",
+            ))
+        },
+    );
+    assert!(validation_called.get());
+    assert!(result.is_err());
+}
+
+#[rstest]
+fn refused_recording_admission_does_not_enter_source_validation() {
+    let result = admit_frame_publication(
+        || {
+            Err::<(), _>(ComputerUseError::new(
+                ComputerUseErrorCode::InvalidAction,
+                "expired",
+            ))
+        },
+        || panic!("expired recording admission validated the native source"),
+    );
+    assert!(result.is_err());
+}
+
+#[rstest]
+fn recording_admission_stays_held_through_source_validation_and_publication() {
+    let fence = std::sync::Mutex::new(());
+    let admission = admit_frame_publication(
+        || Ok(fence.lock().unwrap()),
+        || {
+            assert!(fence.try_lock().is_err());
+            Ok(())
+        },
+    )
+    .unwrap();
+    assert!(fence.try_lock().is_err());
+    drop(admission);
+    assert!(fence.try_lock().is_ok());
+}
+
+#[rstest]
+fn failed_source_validation_releases_recording_admission() {
+    let fence = std::sync::Mutex::new(());
+    let result = admit_frame_publication(
+        || Ok(fence.lock().unwrap()),
+        || {
+            Err(ComputerUseError::new(
+                ComputerUseErrorCode::InvalidTarget,
+                "prepared source expired",
+            ))
+        },
+    );
+    assert!(result.is_err());
+    assert!(fence.try_lock().is_ok());
+}
+
+#[rstest]
 #[case(None, None, true)]
 #[case(Some([7; 16]), Some([7; 16]), true)]
 #[case(Some([7; 16]), None, false)]

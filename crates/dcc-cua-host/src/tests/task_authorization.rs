@@ -848,6 +848,11 @@ async fn native_recording_authorization_binds_directory_target_and_video_before_
     .unwrap()
     .unwrap();
     assert_eq!(lease.recording_output_dir.as_deref(), Some(output.as_str()));
+    let recording_fence = authority.recording_authorization(&lease).unwrap();
+    assert!(recording_fence.with_active(|| ()).is_ok());
+    let mut replaced = lease.clone();
+    replaced.target_window_handle += 1;
+    assert!(authority.recording_authorization(&replaced).is_none());
     for (field, value) in [
         (
             "recording_output_dir",
@@ -932,6 +937,11 @@ async fn native_recording_authorization_binds_directory_target_and_video_before_
         .unwrap()
         .allow_recording = true;
     issuer.revoke(&receipt.authorization_id).unwrap();
+    assert!(
+        recording_fence
+            .with_active(|| panic!("revoked recording admitted a frame"))
+            .is_err()
+    );
     let request = serde_json::from_value(valid).unwrap();
     assert!(
         handle_request(

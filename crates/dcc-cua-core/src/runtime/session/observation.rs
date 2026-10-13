@@ -162,7 +162,9 @@ impl ComputerUseSession {
             return self.capture_window_pixels(&target, route).await;
         }
         #[cfg(windows)]
-        if self.windows_uia.is_some() {
+        // Successful semantic snapshots also retain a UIA context. Its
+        // presence alone does not request or authorize visual fallback.
+        if self.escalated && self.windows_uia.is_some() {
             return self
                 .capture_window_visually(&target, max_elements, max_depth)
                 .await;
@@ -585,6 +587,7 @@ impl ComputerUseSession {
                 self.control_banner
                     .as_ref()
                     .map(ControlBanner::capture_exclusion_source),
+                self.recording_authorization.clone(),
                 guard,
             )
             .await?
@@ -598,6 +601,7 @@ impl ComputerUseSession {
                 self.control_banner
                     .as_ref()
                     .map(ControlBanner::capture_exclusion_source),
+                self.recording_authorization.clone(),
             )
             .await?
         };
@@ -611,6 +615,7 @@ impl ComputerUseSession {
             self.control_banner
                 .as_ref()
                 .map(ControlBanner::capture_exclusion_source),
+            self.recording_authorization.clone(),
         )
         .await?;
         let state = observation.state();

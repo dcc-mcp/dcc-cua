@@ -1488,6 +1488,7 @@ pub struct ComputerUseSession {
     recording_expected_video: bool,
     recording_health: Option<RecordingHealth>,
     recording_keepalive: Option<RecordingKeepalive>,
+    recording_authorization: Option<Arc<dcc_cua_showcase::RecordingAuthorization>>,
     #[cfg(windows)]
     pub(crate) windows_uia: Option<WindowsUiaFallback>,
     upstream_session_state: UpstreamSessionState,

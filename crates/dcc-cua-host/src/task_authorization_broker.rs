@@ -140,6 +140,9 @@ impl TrustedTaskAuthorizationIssuer {
                 window_capability: window_capability.clone(),
                 binding: None,
                 revoked: false,
+                recording_authorization: Arc::new(dcc_cua_core::RecordingAuthorization::new(
+                    expires_at_unix_ms,
+                )),
             },
         );
         Ok(TrustedTaskAuthorizationReceipt {
@@ -162,6 +165,7 @@ impl TrustedTaskAuthorizationIssuer {
             .get_mut(authorization_id)
             .ok_or(TrustedTaskAuthorizationBrokerError::NotFound)?;
         record.revoked = true;
+        record.recording_authorization.revoke();
         Ok(())
     }
 }
@@ -193,6 +197,7 @@ struct BrokerRecord {
     window_capability: String,
     binding: Option<BrokerBinding>,
     revoked: bool,
+    recording_authorization: Arc<dcc_cua_core::RecordingAuthorization>,
 }
 
 struct BrokerBinding {
@@ -209,6 +214,30 @@ struct BrokerHost {
 
 #[async_trait]
 impl TrustedTaskAuthorizationHost for BrokerHost {
+    fn recording_authorization(
+        &self,
+        lease: &TrustedTaskAuthorizationLease,
+    ) -> Option<Arc<dcc_cua_core::RecordingAuthorization>> {
+        let state = self.state.lock().ok()?;
+        let record = state.authorizations.get(&lease.authorization_id)?;
+        let binding = record.binding.as_ref()?;
+        if record.revoked
+            || record.registration.expires_at_unix_ms != lease.expires_at_unix_ms
+            || binding.connection_id != lease.connection_id
+            || binding.session_id != lease.session_id
+            || binding.lease_request_digest != lease.request_digest
+            || binding.target_process_id != lease.target_process_id
+            || binding.target_window_handle != lease.target_window_handle
+            || record.window_capability != lease.window_capability
+            || record.registration.task_grant_id != lease.task_grant_id
+            || record.registration.application_label != lease.application_label
+        {
+            return None;
+        }
+        record.recording_authorization.with_active(|| ()).ok()?;
+        Some(Arc::clone(&record.recording_authorization))
+    }
+
     async fn authorize(
         &self,
         request: TrustedTaskAuthorizationRequest,
