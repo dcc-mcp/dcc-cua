@@ -842,45 +842,13 @@ async fn handle_request_inner(
                         return Err(error);
                     }
                 };
-            if grant.allow_recording
-                && let Some(lease) = task_authorization.as_ref()
-            {
-                let authorization = security_services
-                    .task_authorization_host
-                    .as_ref()
-                    .and_then(|host| host.recording_authorization(lease));
-                let Some(authorization) = authorization else {
-                    let _ = session.stop().await;
-                    return Err(HostError::coded_protocol(
-                        HostProtocolErrorCode::TaskAuthorizationDenied,
-                        "native recording requires a constructor-owned producer revocation fence",
-                    ));
-                };
-                session.set_recording_authorization(authorization);
-            }
-            let showcase = if let Some(output_dir) = grant.showcase_output_dir.as_deref() {
-                if !grant.allow_recording {
-                    let _ = session.stop().await;
-                    return Err(HostError::Protocol(
-                        "showcase recording requires allow_recording".into(),
-                    ));
-                }
-                match session
-                    .recording_start(&ComputerUseRecordingStartRequest {
-                        output_dir: output_dir.to_owned(),
-                        record_video: true,
-                    })
-                    .await
-                {
-                    Ok(result) => Some(result),
-                    Err(error) => {
-                        let _ = session.stop().await;
-                        return Err(error.into());
-                    }
-                }
-            } else {
-                None
-            };
+            let showcase = prepare_granted_session_recording(
+                security_services,
+                &grant,
+                task_authorization.as_ref(),
+                &mut session,
+            )
+            .await?;
             launch_sessions.remove(&session_id);
             let (input_readiness, observed_at) = crate::session_events::input_readiness_sample();
             let input_events =

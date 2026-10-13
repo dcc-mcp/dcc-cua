@@ -58,7 +58,9 @@ fn configure_windows_linker() {
         Ok("gnu") => "-Wl,--stack,8388608",
         _ => return,
     };
-    println!("cargo:rustc-link-arg-bin=dcc-cua={argument}");
+    for binary in ["dcc-cua", "dcc-cua-background"] {
+        println!("cargo:rustc-link-arg-bin={binary}={argument}");
+    }
 }
 
 fn configure_macos_loader() {
@@ -68,6 +70,8 @@ fn configure_macos_loader() {
     // scrubbed environment. Give both the Host and its worker deterministic
     // system and colocated-runtime lookup paths instead of relying on DYLD_*.
     for runtime_path in ["/usr/lib/swift", "@executable_path"] {
-        println!("cargo:rustc-link-arg-bin=dcc-cua=-Wl,-rpath,{runtime_path}");
+        for binary in ["dcc-cua", "dcc-cua-background"] {
+            println!("cargo:rustc-link-arg-bin={binary}=-Wl,-rpath,{runtime_path}");
+        }
     }
 }
