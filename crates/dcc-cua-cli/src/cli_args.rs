@@ -57,6 +57,15 @@ pub(super) fn snapshot_mode(flags: &[String]) -> Result<SnapshotMode, CliUsageEr
     Ok(SnapshotMode::PixelsOnly)
 }
 
+pub(super) fn read_only_pixels_runtime_requested(
+    command: &str,
+    flags: &[String],
+) -> Result<bool, CliUsageError> {
+    Ok(cfg!(target_os = "linux")
+        && command == "snapshot"
+        && snapshot_mode(flags)? == SnapshotMode::PixelsOnly)
+}
+
 const KNOWN_FLAG_NAMES: &[&str] = &[
     "--action",
     "--action-json",

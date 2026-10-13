@@ -135,6 +135,8 @@ def main():
             destroy(display, target)
             sync(display, False)
             run("closed_xid_refused", False)
+            assert all(path.suffix == ".png" and path.is_file() for path in directory.iterdir()), \
+                "read-only CLI must not install themes or write desktop configuration"
         print(json.dumps({"fixture": "private synthetic X11 windows", "tests": results}, indent=2))
     finally:
         api("XCloseDisplay", C.c_int, [C.c_void_p])(display)

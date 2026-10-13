@@ -533,6 +533,26 @@ impl ComputerUseDriver {
             .map_err(|error| map_driver_error("create CUA runtime", error))
     }
 
+    /// Create a short-lived Linux pixels-only runtime without desktop
+    /// preparation, accessibility startup, cursor overlays or theme writes.
+    /// Its native SDK registry is empty: only start_pixels_only's local X11
+    /// adapter can observe a window, and upstream tools cannot be dispatched.
+    /// Use a dedicated process: mixing this with a general CUA runtime is
+    /// refused for the process lifetime, including after runtime shutdown.
+    pub fn create_read_only_pixels() -> ComputerUseResult<Self> {
+        #[cfg(target_os = "linux")]
+        {
+            crate::driver_factory::create_read_only_pixels()
+                .map(Self::from_driver)
+                .map_err(|error| map_driver_error("create read-only X11 runtime", error))
+        }
+        #[cfg(not(target_os = "linux"))]
+        Err(ComputerUseError::new(
+            ComputerUseErrorCode::BackendUnavailable,
+            "read-only X11 runtime is available only on Linux",
+        ))
+    }
+
     /// Create a short-lived runtime for terminating one externally launched
     /// exact-window process after the caller has explicitly acknowledged that
     /// this runtime does not own its launch.
@@ -1492,6 +1512,7 @@ pub struct ComputerUseSession {
     recording_expected_video: bool,
     recording_health: Option<RecordingHealth>,
     recording_keepalive: Option<RecordingKeepalive>,
+    recording_authorization: Option<Arc<dcc_cua_showcase::RecordingAuthorization>>,
     #[cfg(windows)]
     pub(crate) windows_uia: Option<WindowsUiaFallback>,
     upstream_session_state: UpstreamSessionState,

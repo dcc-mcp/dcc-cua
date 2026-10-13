@@ -378,6 +378,27 @@ impl LinuxPixels {
                 {
                     continue;
                 }
+                // Native cursor overlays can be mapped full-screen windows
+                // with an empty bounding shape. Their geometry alone is not
+                // proof of occlusion. Subscribe before reading the shape so
+                // a later change cannot slip past the publication fence.
+                self.connection
+                    .shape_select_input(window, true)
+                    .map_err(native)?
+                    .check()
+                    .map_err(native)?;
+                let shape = self
+                    .connection
+                    .shape_query_extents(window)
+                    .map_err(native)?
+                    .reply()
+                    .map_err(native)?;
+                if shape.bounding_shaped
+                    && (shape.bounding_shape_extents_width == 0
+                        || shape.bounding_shape_extents_height == 0)
+                {
+                    continue;
+                }
                 let geometry = self
                     .connection
                     .get_geometry(window)
@@ -391,6 +412,9 @@ impl LinuxPixels {
                     .reply()
                     .map_err(native)?;
                 let border = i32::from(geometry.border_width);
+                // Only a provably empty bounding shape is exempt. Retain
+                // conservative geometry for every nonempty or unshaped
+                // sibling, without trusting titles or input passthrough.
                 let other = [
                     i32::from(position.dst_x) - border,
                     i32::from(position.dst_y) - border,

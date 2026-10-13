@@ -1,8 +1,10 @@
 use super::*;
 use rstest::rstest;
 use x11rb::connection::Connection as _;
+use x11rb::protocol::shape::{ConnectionExt as _, SK, SO};
 use x11rb::protocol::xproto::{
-    AtomEnum, ChangeWindowAttributesAux, ConnectionExt as _, CreateWindowAux, PropMode, WindowClass,
+    AtomEnum, ChangeWindowAttributesAux, ClipOrdering, ConfigureWindowAux, ConnectionExt as _,
+    CreateWindowAux, PropMode, Rectangle, WindowClass,
 };
 use x11rb::rust_connection::RustConnection;
 use x11rb::wrapper::ConnectionExt as _;
@@ -176,6 +178,77 @@ async fn linux_pixels_native_window_lifecycle_and_freshness() {
     assert!(session.observation.is_none());
     let stopped = session.stop().await.unwrap();
     assert!(stopped.success);
+    assert_eq!(calls.load(AtomicOrdering::SeqCst), 0);
+}
+
+#[ignore = "requires a private non-composited X11 display; exercised in Linux CI"]
+#[rstest]
+#[tokio::test]
+async fn linux_pixels_native_empty_shaped_sibling_does_not_occlude() {
+    let fixture = Fixture::new();
+    let overlay = fixture.connection.generate_id().unwrap();
+    fixture.create(overlay, 0, 0, 0x00ff00);
+    fixture
+        .connection
+        .configure_window(overlay, &ConfigureWindowAux::new().width(640).height(480))
+        .unwrap()
+        .check()
+        .unwrap();
+    // Input passthrough never exempts visible pixels from occlusion.
+    fixture
+        .connection
+        .shape_rectangles(
+            SO::SET,
+            SK::INPUT,
+            ClipOrdering::UNSORTED,
+            overlay,
+            0,
+            0,
+            &[],
+        )
+        .unwrap()
+        .check()
+        .unwrap();
+    let set_shape = |rectangles: &[Rectangle]| {
+        fixture
+            .connection
+            .shape_rectangles(
+                SO::SET,
+                SK::BOUNDING,
+                ClipOrdering::UNSORTED,
+                overlay,
+                0,
+                0,
+                rectangles,
+            )
+            .unwrap()
+            .check()
+            .unwrap();
+        fixture.sync();
+    };
+    // The upstream Linux cursor renderer maps exactly this kind of empty
+    // full-screen backing window before any cursor has been made visible.
+    set_shape(&[]);
+    let (mut session, calls) = counting_session();
+    session.active = false;
+    session.scope = fixture.scope();
+    session.live_observation = None;
+    session.start_pixels_only().await.unwrap();
+    session.screenshot_pixels_only().await.unwrap();
+    // Any nonempty shape restores conservative geometry-based occlusion,
+    // even if the shape's own pixels happen to be outside the target.
+    set_shape(&[Rectangle {
+        x: 200,
+        y: 150,
+        width: 20,
+        height: 20,
+    }]);
+    assert_eq!(
+        session.screenshot_pixels_only().await.unwrap_err().code,
+        ComputerUseErrorCode::CaptureFailed
+    );
+    assert!(session.observation.is_none());
+    assert!(session.stop().await.unwrap().success);
     assert_eq!(calls.load(AtomicOrdering::SeqCst), 0);
 }
 

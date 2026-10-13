@@ -15,7 +15,43 @@ pub(crate) const UPSTREAM_CURSOR_RENDERER_ENABLED: bool = cfg!(any(windows, targ
 pub(crate) const BUNDLED_CURSOR_THEME: &[u8] =
     include_bytes!("../../../assets/cursor-theme/dcc-cua.cua-theme");
 
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LinuxRuntimeMode {
+    General,
+    ReadOnlyPixels,
+}
+
+#[cfg(target_os = "linux")]
+static LINUX_RUNTIME_MODE: std::sync::OnceLock<LinuxRuntimeMode> = std::sync::OnceLock::new();
+
+#[cfg(target_os = "linux")]
+pub(crate) fn claim_linux_runtime_mode(
+    slot: &std::sync::OnceLock<LinuxRuntimeMode>,
+    requested: LinuxRuntimeMode,
+) -> Result<(), DriverError> {
+    // The SDK's Wayland cursor template is a process-lifetime OnceLock even
+    // after runtime shutdown. Mixing modes could disable an existing overlay
+    // or seed a disabled template for a later interactive runtime.
+    if *slot.get_or_init(|| requested) != requested {
+        return Err(DriverError::Configuration {
+            reason: "read-only X11 pixels and general CUA runtimes require separate processes"
+                .into(),
+        });
+    }
+    Ok(())
+}
+
+fn require_general_runtime_mode() -> Result<(), DriverError> {
+    #[cfg(target_os = "linux")]
+    claim_linux_runtime_mode(&LINUX_RUNTIME_MODE, LinuxRuntimeMode::General)?;
+    Ok(())
+}
+
 pub(crate) fn ensure_bundled_cursor_theme() -> ComputerUseResult<()> {
+    require_general_runtime_mode().map_err(|error| {
+        ComputerUseError::new(ComputerUseErrorCode::BackendUnavailable, error.to_string())
+    })?;
     let theme = cursor_overlay::decode_theme(BUNDLED_CURSOR_THEME).map_err(|error| {
         ComputerUseError::new(
             ComputerUseErrorCode::BackendUnavailable,
@@ -54,12 +90,43 @@ pub(crate) fn ensure_bundled_cursor_theme() -> ComputerUseResult<()> {
 }
 
 pub(crate) fn create_embedded() -> Result<(Arc<CuaDriver>, bool), DriverError> {
+    require_general_runtime_mode()?;
     prepare_platform_process();
     CuaDriver::try_create_for_host(driver_host_options())
         .map(|driver| (driver, UPSTREAM_CURSOR_RENDERER_ENABLED))
 }
 
+#[cfg(target_os = "linux")]
+pub(crate) fn read_only_pixels_host_options(
+    nested_session_requested: bool,
+) -> Result<DriverHostOptions, DriverError> {
+    // The pinned Linux registry starts an environment-selected nested
+    // compositor independently of prepare_desktop_environment. Never enter
+    // that constructor for this read-only route when nesting is requested.
+    if nested_session_requested {
+        return Err(DriverError::Configuration {
+            reason: "read-only X11 pixels cannot initialize a nested Wayland session".into(),
+        });
+    }
+    let mut options = driver_host_options();
+    options.cursor.enabled = false;
+    options.prepare_desktop_environment = false;
+    // Keep the official native SDK lifecycle, but expose no upstream action
+    // or semantic tools. Exact pixels are provided by our retained X11
+    // connection, so an accidental semantic dispatch must fail closed.
+    options.register_host_tools = Some(|registry| *registry = Default::default());
+    Ok(options)
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn create_read_only_pixels() -> Result<(Arc<CuaDriver>, bool), DriverError> {
+    let options = read_only_pixels_host_options(std::env::var_os("CUA_WAYLAND_NEST").is_some())?;
+    claim_linux_runtime_mode(&LINUX_RUNTIME_MODE, LinuxRuntimeMode::ReadOnlyPixels)?;
+    CuaDriver::try_create_for_host(options).map(|driver| (driver, false))
+}
+
 pub(crate) fn create_external_process_termination() -> Result<(Arc<CuaDriver>, bool), DriverError> {
+    require_general_runtime_mode()?;
     prepare_platform_process();
     CuaDriver::try_create_configured_for_host(
         external_process_termination_options(),
@@ -86,6 +153,7 @@ pub(crate) fn external_process_termination_options() -> ConfiguredDriverOptions 
 pub(crate) fn create_private_worker(
     options: PrivateWorkerOptions,
 ) -> Result<(Arc<CuaDriver>, bool), DriverError> {
+    require_general_runtime_mode()?;
     prepare_platform_process();
     CuaDriver::create_private_worker(options).map(|driver| (driver, true))
 }
@@ -94,6 +162,7 @@ pub(crate) fn create_authorized(
     options: ConfiguredDriverOptions,
     host: Arc<dyn DriverAuthorizationHost>,
 ) -> Result<(Arc<CuaDriver>, bool), DriverError> {
+    require_general_runtime_mode()?;
     prepare_platform_process();
     let mut host_options = driver_host_options();
     host_options.authorization_host = Some(host);

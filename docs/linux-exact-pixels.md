@@ -15,6 +15,17 @@ unsupported for this route. macOS, Wayland/XWayland, remote X11, shaped windows,
 composited desktops and other pixel formats fail closed. These limits are also
 advertised in the platform manifest; protocol method names are not capabilities.
 
+The one-shot CLI selects a dedicated native SDK runtime with desktop preparation
+and cursor rendering disabled, without installing a cursor theme. Its upstream
+tool registry is empty, so accidental semantic or input dispatch is refused.
+The SDK's independent `CUA_WAYLAND_NEST` startup opt-in is rejected before runtime
+construction. Embedders that need the same startup behavior can use
+`ComputerUseDriver::create_read_only_pixels()` in a dedicated process. Because
+the pinned SDK retains a process-global cursor template, dcc-cua refuses to mix
+read-only and general runtimes in either order, even after shutdown. Do not
+construct a separate raw SDK runtime in that process. An already-running general Host
+may have initialized its normal desktop services before a pixels-only task.
+
 The pinned upstream Linux backend already offers X11 capture, but its persistent
 MIT-SHM/XGetImage cache and ImageMagick fallback do not expose the per-session
 window lifecycle, before/after publication proof or bounded transport needed
@@ -45,6 +56,12 @@ Linux CI compiles the exact pull-request head and runs two real Xvfb checks:
 - The core session test verifies a fresh second frame, no SDK/provider/input
   calls, refusal after destroy/recreate with the same PID/XID, and cancellation
   while a private Xvfb server stalls, followed by bounded stop without publication.
+- A native empty-shape test admits a mapped full-screen sibling only when its
+  X11 bounding shape is empty, and refuses capture when that shape becomes
+  nonempty. Shape changes remain part of the publication fence.
+- The real read-only SDK constructor exposes no dispatchable tools; constructor
+  configuration and CLI isolation tests cover disabled preparation and absence
+  of theme/configuration writes.
 - The release CLI test verifies actual red and blue PNG pixels, exact selection
   between two windows with one PID, and rejection of wrong PID, activation,
   Wayland, remote DISPLAY, occlusion, hidden and closed targets. Failed commands

@@ -31,6 +31,17 @@ fn validate_prepared_frame_publication(
     Ok(())
 }
 
+fn admit_frame_publication<Admission>(
+    admit_recording: impl FnOnce() -> ComputerUseResult<Admission>,
+    validate_source: impl FnOnce() -> ComputerUseResult<()>,
+) -> ComputerUseResult<Admission> {
+    // Admission can block behind an encoder sample. Revalidate the prepared
+    // source after that wait, while keeping the recording fence until publish.
+    let admission = admit_recording()?;
+    validate_source()?;
+    Ok(admission)
+}
+
 #[derive(Clone, Copy)]
 pub(super) struct WindowsLiveTarget {
     process_id: u32,
@@ -404,6 +415,7 @@ pub(super) fn run_windows_capture_loop(context: super::NativeCaptureLoop) {
         target,
         preparation,
         capture_exclusion,
+        recording_authorization,
         fps,
         started_interrupt_generation,
         sender,
@@ -421,6 +433,17 @@ pub(super) fn run_windows_capture_loop(context: super::NativeCaptureLoop) {
             || sender.is_closed()
             || interrupt_generation_changed(started_interrupt_generation, interrupt_generation())
         {
+            return;
+        }
+        if let Some(authorization) = &recording_authorization
+            && let Err(reason) = authorization.with_active(|| ())
+        {
+            sender.send_modify(|status| {
+                status.record_terminal_error(&ComputerUseError::new(
+                    ComputerUseErrorCode::InvalidAction,
+                    reason,
+                ))
+            });
             return;
         }
         // The producer services its single outstanding control request before
@@ -447,30 +470,61 @@ pub(super) fn run_windows_capture_loop(context: super::NativeCaptureLoop) {
                     ComputerUseError::new(ComputerUseErrorCode::CaptureFailed, error.to_string())
                 })?;
             let frame = capture.next_frame(target)?;
-            if let Some(source) = capture_exclusion.as_ref() {
-                source.validate_active().map_err(|error| {
-                    ComputerUseError::new(ComputerUseErrorCode::InvalidTarget, error.to_string())
-                })?;
-            }
-            // Indicator validation may outlive the earlier prepared capture
-            // fence. Revalidate the live lease while retaining this exclusion.
-            let frame_preparation_id = match &frame.provenance {
-                FrameCaptureProvenance::NativeExactWindow(proof) => proof
-                    .capture_preparation
-                    .as_ref()
-                    .map(|prepared| prepared.preparation_id),
-                FrameCaptureProvenance::Portable => None,
-            };
-            validate_prepared_frame_publication(frame_preparation_id, || {
-                preparation
-                    .as_ref()
-                    .map(|guard| guard.preparation_id().map_err(prepared_capture_error))
-                    .transpose()
-            })?;
             Ok((frame, exclusion))
         })();
         match captured {
             Ok((frame, exclusion)) => {
+                if shutdown.is_requested()
+                    || interrupt_generation_changed(
+                        started_interrupt_generation,
+                        interrupt_generation(),
+                    )
+                {
+                    return;
+                }
+                let admission = admit_frame_publication(
+                    || {
+                        recording_authorization
+                            .as_ref()
+                            .map(|authorization| authorization.admit())
+                            .transpose()
+                            .map_err(|reason| {
+                                ComputerUseError::new(ComputerUseErrorCode::InvalidAction, reason)
+                            })
+                    },
+                    || {
+                        if let Some(source) = capture_exclusion.as_ref() {
+                            source.validate_active().map_err(|error| {
+                                ComputerUseError::new(
+                                    ComputerUseErrorCode::InvalidTarget,
+                                    error.to_string(),
+                                )
+                            })?;
+                        }
+                        // Recording admission and indicator validation may
+                        // outlive the earlier prepared capture fence.
+                        let frame_preparation_id = match &frame.provenance {
+                            FrameCaptureProvenance::NativeExactWindow(proof) => proof
+                                .capture_preparation
+                                .as_ref()
+                                .map(|prepared| prepared.preparation_id),
+                            FrameCaptureProvenance::Portable => None,
+                        };
+                        validate_prepared_frame_publication(frame_preparation_id, || {
+                            preparation
+                                .as_ref()
+                                .map(|guard| guard.preparation_id().map_err(prepared_capture_error))
+                                .transpose()
+                        })
+                    },
+                );
+                let admission = match admission {
+                    Ok(admission) => admission,
+                    Err(error) => {
+                        sender.send_modify(|status| status.record_terminal_error(&error));
+                        return;
+                    }
+                };
                 if shutdown.is_requested()
                     || interrupt_generation_changed(
                         started_interrupt_generation,
@@ -503,6 +557,7 @@ pub(super) fn run_windows_capture_loop(context: super::NativeCaptureLoop) {
                         measurement,
                     )
                 });
+                drop(admission);
                 // A request queued during readback borrows this already owned
                 // guard. It never performs a nested exclusion acquisition.
                 if let Some(work) = publications.take() {

@@ -2,6 +2,19 @@ use super::*;
 use rstest::rstest;
 
 #[rstest]
+fn only_explicit_linux_pixels_snapshots_select_the_read_only_runtime() {
+    let flags = strings(["--pid", "42", "--window-id", "77", "--pixels-only"]);
+    assert_eq!(
+        read_only_pixels_runtime_requested("snapshot", &flags).unwrap(),
+        cfg!(target_os = "linux")
+    );
+    assert!(!read_only_pixels_runtime_requested("accessibility", &flags).unwrap());
+    assert!(!read_only_pixels_runtime_requested("snapshot", &strings(["--pid", "42"])).unwrap());
+    #[cfg(target_os = "linux")]
+    assert!(read_only_pixels_runtime_requested("snapshot", &strings(["--pixels-only"])).is_err());
+}
+
+#[rstest]
 fn snapshot_pixels_only_is_an_explicit_cli_contract() {
     reject_unknown_flags(&strings([
         "--pid",

@@ -198,7 +198,14 @@ impl ComputerUseSession {
                 ),
             ));
         }
-        match ShowcaseRecorder::start_with_outcome(frames, output_dir, fps).await {
+        match ShowcaseRecorder::start_authorized_with_outcome(
+            frames,
+            output_dir,
+            fps,
+            self.recording_authorization.clone(),
+        )
+        .await
+        {
             Ok(recorder) => {
                 self.showcase = Some(ActiveShowcase {
                     recorder,
