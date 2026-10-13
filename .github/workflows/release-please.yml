@@ -74,6 +74,7 @@ jobs:
           ref: ${{ github.sha }}
           fetch-depth: 0
           fetch-tags: true
+          token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
       - name: Resolve immutable release recovery
         id: recovery
         if: github.event_name == 'workflow_dispatch'
@@ -212,7 +213,7 @@ jobs:
         if: github.event_name != 'workflow_dispatch'
         shell: pwsh
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
         run: >-
           ./scripts/refresh-release-please-prs.ps1
           -Repository $env:GITHUB_REPOSITORY
