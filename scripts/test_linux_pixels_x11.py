@@ -5,15 +5,72 @@ Run only as: xvfb-run -a --server-args='-screen 0 640x480x24 -nolisten tcp'
 No window manager, compositor, AT-SPI, input synthesis, or real desktop required.
 """
 import argparse
+from contextlib import contextmanager
 import ctypes as C
 import ctypes.util
 import json
 import os
 from pathlib import Path
+import select
 import struct
 import subprocess
 import tempfile
+import time
 import zlib
+
+
+def fixture_reply(process, timeout=10):
+    deadline = time.monotonic() + timeout
+    line = bytearray()
+    while len(line) < 4096:
+        remaining = deadline - time.monotonic()
+        assert remaining > 0, "native fixture response timed out"
+        readable, _, _ = select.select([process.stdout], [], [], remaining)
+        assert readable, "native fixture response timed out"
+        byte = os.read(process.stdout.fileno(), 1)
+        assert byte, "native fixture exited before its response"
+        if byte == b"\n":
+            return json.loads(line)
+        line.extend(byte)
+    raise AssertionError("native fixture response exceeded its bound")
+
+
+def fixture_command(process, command):
+    assert command in {"blue", "cover", "uncover", "hide", "destroy"}
+    process.stdin.write(command + "\n")
+    process.stdin.flush()
+    assert fixture_reply(process) == {"ok": command}
+
+
+@contextmanager
+def native_fixture():
+    with tempfile.TemporaryDirectory(prefix="dcc-cua-x11-native-") as directory:
+        binary = Path(directory) / "dcc-cua-x11-fixture"
+        source = Path(__file__).with_name("fixtures") / "linux_x11_window.c"
+        subprocess.run(["cc", "-std=c11", "-Wall", "-Wextra", "-Werror", "-O2",
+                        str(source), "-lX11", "-o", str(binary)], check=True, timeout=30)
+        process = subprocess.Popen([str(binary)], stdin=subprocess.PIPE,
+                                   stdout=subprocess.PIPE, text=True)
+        try:
+            ready = fixture_reply(process)
+            assert ready["pid"] == process.pid, "fixture must advertise its own PID"
+            assert Path(f"/proc/{process.pid}/exe").resolve() == binary.resolve(), \
+                "fixture must have a genuine native executable identity"
+            assert ready["target"] > 0 and ready["sibling"] > 0
+            assert ready["target"] != ready["sibling"]
+            yield process, ready
+        finally:
+            try:
+                process.stdin.close()
+            except OSError:
+                pass
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=5)
+            process.stdout.close()
+        assert process.returncode == 0, "native fixture failed"
 
 
 def png_rgb(data):
@@ -77,9 +134,7 @@ def main():
     atom = api("XInternAtom", C.c_ulong, [C.c_void_p, C.c_char_p, C.c_int])
     prop = api("XChangeProperty", C.c_int, [C.c_void_p, C.c_ulong, C.c_ulong, C.c_ulong, C.c_int, C.c_int, C.c_void_p, C.c_int])
     map_window = api("XMapWindow", C.c_int, [C.c_void_p, C.c_ulong])
-    unmap_window = api("XUnmapWindow", C.c_int, [C.c_void_p, C.c_ulong])
     sync = api("XSync", C.c_int, [C.c_void_p, C.c_int])
-    destroy = api("XDestroyWindow", C.c_int, [C.c_void_p, C.c_ulong])
     def fixture(x, y, color):
         window = create(display, root, x, y, 80, 60, 0, 0, color)
         pid = C.c_ulong(os.getpid())
@@ -89,51 +144,57 @@ def main():
         return window
     results = []
     try:
-        target = fixture(20, 20, 0xff0000)
-        fixture(200, 100, 0x00ff00)  # a different same-PID window must never substitute
-        with tempfile.TemporaryDirectory(prefix="dcc-cua-x11-") as directory:
+        with native_fixture() as (native, identity), \
+                tempfile.TemporaryDirectory(prefix="dcc-cua-x11-") as directory:
+            target, fixture_pid = identity["target"], identity["pid"]
+            python_target = fixture(400, 200, 0xff00ff)
             directory = Path(directory)
             env = dict(os.environ, HOME=str(directory), XDG_DATA_HOME=str(directory / "data"),
                        XDG_CONFIG_HOME=str(directory / "config"), XDG_CACHE_HOME=str(directory / "cache"))
             env.pop("WAYLAND_DISPLAY", None)
             env["XDG_SESSION_TYPE"] = "x11"
-            def run(name, expected=True, pid=None, extra=(), overrides=None):
+            def run(name, expected=True, pid=None, window=None, extra=(), overrides=None,
+                    error_code=None):
+                selected_pid = fixture_pid if pid is None else pid
+                selected_window = target if window is None else window
                 output = directory / f"{name}.png"
-                result = subprocess.run([binary, "snapshot", "--pid", str(pid or os.getpid()),
-                    "--window-id", str(target), "--pixels-only", "--output", str(output), *extra],
+                result = subprocess.run([binary, "snapshot", "--pid", str(selected_pid),
+                    "--window-id", str(selected_window), "--pixels-only", "--output", str(output), *extra],
                     env=env | (overrides or {}), capture_output=True, text=True, timeout=15, check=False)
                 receipt = json.loads(result.stdout)
                 assert (result.returncode == 0) == expected, (name, result.returncode, receipt, result.stderr)
                 assert output.exists() == expected, (name, "unexpected screenshot publication")
                 if expected:
                     observation = receipt["observation"]
-                    assert (observation["process_id"], observation["window_handle"]) == (os.getpid(), target)
+                    assert (observation["process_id"], observation["window_handle"]) == (selected_pid, selected_window)
                     assert receipt["accessibility"]["accessibility_available"] is False
                     assert observation["capture_provenance"]["read_only"] is True
                 else:
                     assert receipt["success"] is False
+                    if error_code is not None:
+                        assert receipt["error"]["code"] == error_code, receipt
                 results.append({"case": name, "passed": True, "exit_code": result.returncode})
                 return output
             first = run("exact_red_window")
             assert png_rgb(first.read_bytes()) == (80, 60, bytes([255, 0, 0]) * (80 * 60))
-            api("XSetWindowBackground", C.c_int, [C.c_void_p, C.c_ulong, C.c_ulong])(display, target, 0x0000ff)
-            api("XClearWindow", C.c_int, [C.c_void_p, C.c_ulong])(display, target)
-            sync(display, False)
+            fixture_command(native, "blue")
             second = run("fresh_blue_pixels")
             assert png_rgb(second.read_bytes()) == (80, 60, bytes([0, 0, 255]) * (80 * 60))
-            run("wrong_pid", False, pid=os.getppid())
+            run("python_interpreter_refused", False, pid=os.getpid(), window=python_target,
+                error_code="invalid_target")
+            with native_fixture() as (_, other_identity):
+                assert other_identity["pid"] != fixture_pid
+                run("wrong_pid", False, pid=other_identity["pid"], error_code="invalid_target")
             run("activation_refused", False, extra=("--activate",))
             run("wayland_refused", False, overrides={"WAYLAND_DISPLAY": "wayland-test"})
             run("remote_display_refused", False, overrides={"DISPLAY": "example.invalid:0"})
             run("invalid_screen_refused", False, overrides={"DISPLAY": os.environ["DISPLAY"].split(".")[0] + ".9999"})
-            cover = fixture(30, 30, 0xffffff)
+            fixture_command(native, "cover")
             run("occluded_refused", False)
-            destroy(display, cover)
-            unmap_window(display, target)
-            sync(display, False)
+            fixture_command(native, "uncover")
+            fixture_command(native, "hide")
             run("hidden_refused", False)
-            destroy(display, target)
-            sync(display, False)
+            fixture_command(native, "destroy")
             run("closed_xid_refused", False)
             assert all(path.suffix == ".png" and path.is_file() for path in directory.iterdir()), \
                 "read-only CLI must not install themes or write desktop configuration"

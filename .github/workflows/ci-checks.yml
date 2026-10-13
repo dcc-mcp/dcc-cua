@@ -354,6 +354,7 @@ jobs:
         timeout-minutes: 3
         shell: bash
         run: |
+          python -B -m unittest scripts.test_linux_pixels_fixture
           env -u WAYLAND_DISPLAY XDG_SESSION_TYPE=x11 xvfb-run -a --server-args="-screen 0 640x480x24 -nolisten tcp" \
             python -B scripts/test_linux_pixels_x11.py --binary target/release/dcc-cua
       - name: Run release CLI and Host IPC E2E

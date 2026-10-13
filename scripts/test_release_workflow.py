@@ -39,7 +39,7 @@ RELEASE_PLEASE_ACTION = (
     "googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7"
 )
 CI_EXECUTABLE_SURFACE_SHA256 = (
-    "faac622bededfeaccbdaf53f6d1aac35e9a1e3a6ae65744930b48129125c95d0"
+    "39655f604a6918f9b2aafa7ba68e89f93ba8d2bfebea0868b491c0a476221719"
 )
 
 
