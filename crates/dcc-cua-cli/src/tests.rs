@@ -27,6 +27,7 @@ mod owned_process;
 mod process_output;
 mod profile_listing;
 mod snapshot_activation;
+mod supervisor_errors;
 mod task_authorization_manifest;
 mod update_tests;
 mod window_selectors;

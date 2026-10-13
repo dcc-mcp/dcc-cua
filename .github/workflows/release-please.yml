@@ -175,7 +175,7 @@ jobs:
         id: release
         if: steps.release_preflight.outputs.already_released != 'true' && github.event_name != 'workflow_dispatch'
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
       - name: Keep the native runtime release Latest

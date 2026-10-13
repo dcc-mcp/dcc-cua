@@ -54,9 +54,14 @@ The checkout also includes `.claude-plugin/marketplace.json` and a portable
 directly through their native MCP configuration.
 
 After installation, confirm that `tools/list` exposes exactly `start_task`,
-`task_status`, `stop_task`, and `dcc_cua_task_call`, while `resources/list` is
-empty. A stale authorization tool or card means an older runtime/plugin is
-still loaded; reconnect or restart the Agent Host after upgrading.
+`task_status`, `stop_task`, and `dcc_cua_task_call`. Instrumented builds also
+advertise the read-only `dcc-cua://connection/current` resource, which reports
+only the caller's current connection. It does not grant task authority or list
+other clients. Use `dcc-cua connections` for the local bounded diagnostic
+registry; older resident bridges have no records. See
+[MCP connection diagnostics](design/mcp-connection-diagnostics.md) for the
+schema and attribution limits. A stale authorization tool or card means an
+older runtime/plugin is still loaded; reconnect after upgrading.
 
 Before the first observation or input, report the `provider=dcc-cua`, runtime
 version, exact PID, and exact HWND returned by `start_task`. Use one persistent

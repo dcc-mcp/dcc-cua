@@ -173,6 +173,12 @@ impl fmt::Debug for LogicalTaskSession {
 }
 
 impl LogicalTaskSession {
+    /// Non-secret identity of this task's actual Host transport connection.
+    #[must_use]
+    pub fn connection_id(&self) -> Option<&str> {
+        self.client.connection_id()
+    }
+
     #[must_use]
     pub fn session_id(&self) -> &str {
         &self.session_id

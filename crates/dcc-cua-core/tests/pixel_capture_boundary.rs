@@ -93,6 +93,32 @@ fn exact_source_first_capture_instance_boundary() {
     ).replace("NATIVE_BOUNDARY", include_str!("../src/runtime/session/tests/pixel_capture_os.rs"))
         .replace("use rstest::rstest;", "")
         .replace("#[cfg(windows)]", "");
+    run_boundary(&source);
+}
+
+#[rstest]
+fn exact_source_semantic_snapshot_routing() {
+    let observation = include_str!("../src/runtime/session/observation.rs");
+    let method = item(observation, "pub async fn screenshot_with_bounds(");
+    // Keep the production dispatch prefix, including all gates. Only the
+    // upstream semantic provider becomes a counted, exact-target sink.
+    let prefix = method
+        .split_once("        let result = gated_exact_window_observation(")
+        .expect("semantic provider boundary")
+        .0;
+    let pixel = include_str!("../src/runtime/pixel_observation.rs");
+    let route = item(pixel, "pub(super) enum PixelObservationRoute");
+    let model = include_str!("../src/runtime/session/tests/semantic_snapshot_routing.rs")
+        .replace("use rstest::rstest;", "")
+        .replace("#[rstest]", "#[test]");
+    let source = format!(
+        "#![allow(dead_code, unused_variables)]\nmod actual {{ {model}\n#[derive(Clone, Copy, Debug, PartialEq, Eq)]\n{route}\nimpl ComputerUseSession {{ {prefix} self.semantic_snapshot(&target, max_elements, max_depth) }} }} }}"
+    )
+    .replace("#[cfg(windows)]", "");
+    run_boundary(&source);
+}
+
+fn run_boundary(source: &str) {
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()

@@ -5,6 +5,7 @@ use dcc_cua_core::{ComputerUseError, ComputerUseErrorCode};
 use serde_json::{Value, json};
 
 use crate::cli_args::CliUsageError;
+use crate::host_lifecycle::HostEnsureError;
 
 pub(super) const PUBLIC_FAILURE_MESSAGE: &str = "dcc-cua could not complete the command";
 const NO_ACCESSIBILITY_PROVIDER_MESSAGE: &str =
@@ -38,6 +39,16 @@ pub(super) fn internal_failure_line() -> String {
 }
 
 pub(super) fn fatal_error_value(error: &(dyn std::error::Error + 'static)) -> Value {
+    if let Some(error) = error.downcast_ref::<HostEnsureError>() {
+        return json!({
+            "success": false,
+            "error": {
+                "code": error.code(),
+                "message": PUBLIC_FAILURE_MESSAGE,
+                "details": error.details(),
+            }
+        });
+    }
     if let Some(error) = error.downcast_ref::<CliUsageError>() {
         let details = match error {
             CliUsageError::PixelsOnlyRequiresExactWindow => json!({

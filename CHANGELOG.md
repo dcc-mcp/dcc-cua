@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.9.4](https://github.com/dcc-mcp/dcc-cua/compare/v1.9.3...v1.9.4) (2026-10-04)
+
+
+### Bug Fixes
+
+* **core:** preserve Windows desktop execution context in diagnostics ([#308](https://github.com/dcc-mcp/dcc-cua/issues/308)) ([b2a5a14](https://github.com/dcc-mcp/dcc-cua/commit/b2a5a147802ece095d7ba9c2ed1b8aad88186c97))
+
 ## [1.9.3](https://github.com/dcc-mcp/dcc-cua/compare/v1.9.2...v1.9.3) (2026-10-03)
 
 

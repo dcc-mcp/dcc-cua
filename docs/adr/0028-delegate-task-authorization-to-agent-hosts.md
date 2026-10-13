@@ -34,10 +34,16 @@ The public lifecycle is:
 4. `task_status` reports lifecycle state; `stop_task` closes the session and
    revokes the internal lease.
 
-The MCP server exposes no resources and no `authorization_integration_status`,
+The MCP server exposes no authorization resources and no `authorization_integration_status`,
 `prepare_task_authorization`, `authorize_task`, `start_authorized_task`, or
 `revoke_task_authorization` tools. The internal lease is an enforcement detail,
 not a second user-approval protocol.
+
+The read-only `dcc-cua://connection/current` diagnostic resource reports only
+the caller's connection. It contains no authorization receipt, grants no
+authority, and cannot enumerate other clients. The local connection registry
+and lifecycle limits are described in
+[MCP connection diagnostics](../design/mcp-connection-diagnostics.md).
 
 ## Trust boundary
 
@@ -74,7 +80,9 @@ approval for those external operations.
 Regression coverage must prove:
 
 - all supported Agent Host labels receive the same four-tool MCP surface;
-- MCP resources are empty and removed authorization tools remain unavailable;
+- the only MCP resource is the read-only current-connection diagnostic, with no
+  cross-connection enumeration or authorization receipts, and removed
+  authorization tools remain unavailable;
 - `start_task` creates the internal lease without user confirmation fields;
 - exact target, method/action/origin, expiry, stop, and revocation checks remain;
 - caller-supplied grant, receipt, capability, and widening fields are rejected;

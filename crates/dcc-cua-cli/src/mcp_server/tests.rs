@@ -151,7 +151,10 @@ async fn mcp_surface_has_no_secondary_authorization_ui_or_tools() {
         }))
         .await
         .unwrap();
-    assert_eq!(resources["result"]["resources"], json!([]));
+    assert_eq!(
+        resources["result"]["resources"][0]["uri"],
+        CONNECTION_RESOURCE
+    );
 }
 
 fn owned_browser_task() -> Value {

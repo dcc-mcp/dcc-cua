@@ -1064,6 +1064,14 @@ scope, expiry, stop state, fresh observations, and post-action verification.
 See [plugin integration](docs/agent-plugin.md) and
 [ADR 0028](docs/adr/0028-delegate-task-authorization-to-agent-hosts.md).
 
+Use `dcc-cua connections` for a bounded, read-only JSON list of instrumented
+local MCP connections. Each client can also read its own
+`dcc-cua://connection/current` MCP resource. These report process creation
+identity, compiled runtime identity, client-provided metadata, task counts,
+and observed or inferred close reasons without starting a Host or touching UI.
+Older bridges and chat IDs not supplied by clients remain unknown. See
+[connection diagnostics and lifecycle boundaries](docs/design/mcp-connection-diagnostics.md).
+
 Embeddings can construct that broker with
 `dcc_cua_host::trusted_task_authorization_broker`. It returns two separate
 capabilities: a move-only `TrustedTaskAuthorizationIssuer` retained by the
