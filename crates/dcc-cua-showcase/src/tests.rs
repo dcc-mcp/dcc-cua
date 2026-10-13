@@ -6,6 +6,113 @@ use std::sync::Arc;
 
 use super::*;
 
+#[test]
+fn recording_authorization_expired_before_first_frame_creates_no_video() {
+    let directory = std::env::temp_dir().join(format!(
+        "dcc-cua-expired-first-frame-{}",
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::create_dir(&directory).unwrap();
+    let (sender, receiver) = mpsc::channel(1);
+    let (ready, acknowledged) = oneshot::channel();
+    sender
+        .blocking_send(ShowcaseProducerEvent::Frame(Arc::new(
+            LiveObservationFrame::new(1, vec![90; 16 * 16 * 4], 16, 16, std::time::Instant::now()),
+        )))
+        .unwrap();
+    let authority = RecordingAuthorization::with_clock(10, Arc::new(|| 10));
+    let result = encode_frames_with_authorization(
+        receiver,
+        &directory.join("showcase.mp4"),
+        10,
+        ready,
+        &Mutex::new(ShowcaseProgress::default()),
+        Some(&authority),
+        &Mutex::new(None),
+    );
+    assert!(result.is_err());
+    assert!(acknowledged.blocking_recv().is_err());
+    assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 0);
+    std::fs::remove_dir(directory).unwrap();
+}
+
+#[rstest]
+#[case(false)]
+#[case(true)]
+fn recording_authorization_ends_at_encoder_admission_and_finalizes_owned_file(
+    #[case] expire: bool,
+) {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    let directory =
+        std::env::temp_dir().join(format!("dcc-cua-recording-fence-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir(&directory).unwrap();
+    let path = directory.join("showcase.mp4");
+    let clock = Arc::new(AtomicU64::new(9));
+    let read_clock = Arc::clone(&clock);
+    let authority = Arc::new(RecordingAuthorization::with_clock(
+        10,
+        Arc::new(move || read_clock.load(Ordering::SeqCst)),
+    ));
+    let (sender, receiver) = mpsc::channel(2);
+    let (ready, first_encoded) = oneshot::channel();
+    let worker_path = path.clone();
+    let worker_authority = Arc::clone(&authority);
+    let worker = std::thread::spawn(move || {
+        let terminal = Mutex::new(None);
+        let result = encode_frames_with_authorization(
+            receiver,
+            &worker_path,
+            10,
+            ready,
+            &Mutex::new(ShowcaseProgress::default()),
+            Some(&worker_authority),
+            &terminal,
+        );
+        (result, terminal.into_inner().unwrap())
+    });
+    let frame = |sequence| {
+        Arc::new(LiveObservationFrame::new(
+            sequence,
+            vec![90; 16 * 16 * 4],
+            16,
+            16,
+            std::time::Instant::now(),
+        ))
+    };
+    sender
+        .blocking_send(ShowcaseProducerEvent::Frame(frame(1)))
+        .unwrap();
+    first_encoded.blocking_recv().unwrap().unwrap();
+    if expire {
+        clock.store(10, Ordering::SeqCst);
+    } else {
+        authority.revoke();
+    }
+    // This frame reaches the real encoder queue. Producer-only filtering could
+    // not satisfy the assertion; the encoder must independently refuse it.
+    sender
+        .blocking_send(ShowcaseProducerEvent::Frame(frame(2)))
+        .unwrap();
+    drop(sender);
+    let (result, terminal) = worker.join().unwrap();
+    let state = result.unwrap();
+    assert_eq!(state["frames"], 1);
+    assert_eq!(state["finalized"], true);
+    assert_eq!(terminal.unwrap()["code"], "recording_authorization_ended");
+    assert_independently_decodable_segment(Path::new(
+        state["segments"][0]["path"].as_str().unwrap(),
+    ));
+    assert!(
+        !std::fs::read_to_string(directory.join("showcase.capture.jsonl"))
+            .unwrap()
+            .contains("\"source_sequence\":2")
+    );
+    // A post-expiry stop is cleanup: the existing worker joined and the final
+    // file/manifest are readable without renewing or minting any authority.
+    assert!(directory.join("showcase.manifest.json").is_file());
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
 #[rstest]
 #[tokio::test]
 async fn first_encoded_acknowledgement_matches_the_actual_first_sample_sidecar() {

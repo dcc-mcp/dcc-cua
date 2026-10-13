@@ -320,9 +320,11 @@ impl WindowsLiveCapture {
     }
 }
 
+#[allow(clippy::too_many_arguments)] // Keep the fence on the existing worker; no second producer.
 pub(super) fn run_windows_capture_loop(
     target: WindowsLiveTarget,
     capture_exclusion: Option<dcc_cua_indicator::BannerCaptureExclusionSource>,
+    recording_authorization: Option<Arc<dcc_cua_showcase::RecordingAuthorization>>,
     fps: u32,
     started_interrupt_generation: u64,
     sender: watch::Sender<LiveObservationStatus>,
@@ -337,6 +339,17 @@ pub(super) fn run_windows_capture_loop(
             || sender.is_closed()
             || interrupt_generation_changed(started_interrupt_generation, interrupt_generation())
         {
+            return;
+        }
+        if let Some(authorization) = &recording_authorization
+            && let Err(reason) = authorization.with_active(|| ())
+        {
+            sender.send_modify(|status| {
+                status.record_terminal_error(&ComputerUseError::new(
+                    ComputerUseErrorCode::InvalidAction,
+                    reason,
+                ))
+            });
             return;
         }
         // The producer services its single outstanding control request before
@@ -388,6 +401,22 @@ pub(super) fn run_windows_capture_loop(
                     },
                     |measurement| FrameCaptureMeasurement::from(measurement.at_publish()),
                 );
+                let admission = recording_authorization
+                    .as_ref()
+                    .map(|authorization| authorization.admit())
+                    .transpose();
+                let admission = match admission {
+                    Ok(admission) => admission,
+                    Err(reason) => {
+                        sender.send_modify(|status| {
+                            status.record_terminal_error(&ComputerUseError::new(
+                                ComputerUseErrorCode::InvalidAction,
+                                reason,
+                            ))
+                        });
+                        return;
+                    }
+                };
                 sender.send_modify(|status| {
                     status.publish_measured_frame(
                         LiveObservationFrame::new(
@@ -403,6 +432,7 @@ pub(super) fn run_windows_capture_loop(
                         measurement,
                     )
                 });
+                drop(admission);
                 // A request queued during readback borrows this already owned
                 // guard. It never performs a nested exclusion acquisition.
                 if let Some(work) = publications.take() {

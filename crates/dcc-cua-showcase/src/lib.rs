@@ -16,6 +16,8 @@ use tokio::task::JoinHandle;
 
 mod capture_manifest;
 use capture_manifest::CaptureManifest;
+mod recording_authorization;
+pub use recording_authorization::{RecordingAdmission, RecordingAuthorization};
 mod provenance;
 pub use provenance::{
     FrameCaptureProvenance, NativeFrameInstance, NativeFrameProvenance, NativeFrameSource,
@@ -529,6 +531,15 @@ impl ShowcaseRecorder {
         output_dir: &str,
         fps: u32,
     ) -> Result<Self, (ShowcaseError, Value)> {
+        Self::start_authorized_with_outcome(frames, output_dir, fps, None).await
+    }
+
+    pub async fn start_authorized_with_outcome(
+        frames: watch::Receiver<LiveObservationStatus>,
+        output_dir: &str,
+        fps: u32,
+        authorization: Option<Arc<RecordingAuthorization>>,
+    ) -> Result<Self, (ShowcaseError, Value)> {
         {
             let initial_status = frames.borrow();
             if initial_status.latest().is_none() && initial_status.pause_reason().is_some() {
@@ -557,12 +568,14 @@ impl ShowcaseRecorder {
         let encoder_finalization = Arc::clone(&finalization);
         let encoder_progress = Arc::clone(&progress);
         let encoder = tokio::task::spawn_blocking(move || {
-            let result = encode_frames_with_progress(
+            let result = encode_frames_with_authorization(
                 frame_receiver,
                 &encoder_path,
                 fps,
                 ready_sender,
                 &encoder_progress,
+                authorization.as_deref(),
+                &encoder_terminal_reason,
             );
             let terminal_reason = lock_unpoisoned(&encoder_terminal_reason).clone();
             let progress = lock_unpoisoned(&encoder_progress).clone();
@@ -921,17 +934,34 @@ async fn send_pause_boundary(sender: &mpsc::Sender<ShowcaseProducerEvent>) -> bo
     matches!(acknowledgement.await, Ok(Ok(())))
 }
 
+#[cfg(test)]
 fn encode_frames_with_progress(
-    mut frames: mpsc::Receiver<ShowcaseProducerEvent>,
+    frames: mpsc::Receiver<ShowcaseProducerEvent>,
     path: &Path,
     fps: u32,
     ready: oneshot::Sender<ShowcaseResult<EncodedFirstFrameEvidence>>,
     progress: &Mutex<ShowcaseProgress>,
 ) -> ShowcaseResult<Value> {
+    encode_frames_with_authorization(frames, path, fps, ready, progress, None, &Mutex::new(None))
+}
+
+fn encode_frames_with_authorization(
+    mut frames: mpsc::Receiver<ShowcaseProducerEvent>,
+    path: &Path,
+    fps: u32,
+    ready: oneshot::Sender<ShowcaseResult<EncodedFirstFrameEvidence>>,
+    progress: &Mutex<ShowcaseProgress>,
+    authorization: Option<&RecordingAuthorization>,
+    terminal_reason: &Mutex<Option<Value>>,
+) -> ShowcaseResult<Value> {
     let FirstShowcaseFrame {
         frame: first,
         resumed_acknowledgement: first_frame_acknowledgement,
     } = receive_first_frame(&mut frames)?;
+    let first_admission = authorization
+        .map(RecordingAuthorization::admit)
+        .transpose()
+        .map_err(capture_error)?;
     let (source_width, source_height) = first.dimensions();
     let (width, height) = fit_dimensions(source_width, source_height);
     let video_format = VideoFormat { width, height, fps };
@@ -971,6 +1001,7 @@ fn encode_frames_with_progress(
         let _ = acknowledged.send(Ok(()));
     }
     let _ = ready.send(Ok(EncodedFirstFrameEvidence::from_frame(&first)));
+    drop(first_admission);
 
     let mut frame_count = 1_u64;
     let mut next_segment_index = 1_u32;
@@ -978,6 +1009,17 @@ fn encode_frames_with_progress(
     let mut media_anchor_ms = 0_u64;
     let mut media_duration_ms = 0_u64;
     while let Some(event) = frames.blocking_recv() {
+        // Reject queued frames at the encoder, not just at capture or Host polling.
+        // Preserve the last admitted sample for ordinary drain/finalization below.
+        let _admission = match authorization.map(RecordingAuthorization::admit).transpose() {
+            Ok(admission) => admission,
+            Err(reason) => {
+                *lock_unpoisoned(terminal_reason) = Some(json!({
+                    "code": "recording_authorization_ended", "message": reason
+                }));
+                break;
+            }
+        };
         match event {
             ShowcaseProducerEvent::Paused(acknowledged) => {
                 // Only an explicit producer pause removes wall-clock time.

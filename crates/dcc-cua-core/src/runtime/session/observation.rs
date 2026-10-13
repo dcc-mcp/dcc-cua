@@ -532,6 +532,7 @@ impl ComputerUseSession {
             self.control_banner
                 .as_ref()
                 .map(ControlBanner::capture_exclusion_source),
+            self.recording_authorization.clone(),
         )
         .await?;
         let state = observation.state();

@@ -48,6 +48,14 @@ fn windows_fast_preflight_rejection(
 }
 
 impl ComputerUseSession {
+    /// Constructor-owned task fence; never accepted from Host request payloads.
+    pub fn set_recording_authorization(
+        &mut self,
+        authorization: Arc<dcc_cua_showcase::RecordingAuthorization>,
+    ) {
+        self.recording_authorization = Some(authorization);
+    }
+
     /// Return the monotonic receipt for all action-scoped evidence.
     #[must_use]
     pub const fn action_evidence_epoch(&self) -> ActionEvidenceEpoch {
@@ -96,6 +104,7 @@ impl ComputerUseSession {
             recording_expected_video: false,
             recording_health: None,
             recording_keepalive: None,
+            recording_authorization: None,
             #[cfg(windows)]
             windows_uia: None,
             upstream_session_state: UpstreamSessionState::Inactive,
