@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use super::*;
 
-#[test]
+#[rstest]
 fn recording_authorization_expired_before_first_frame_creates_no_video() {
     let directory = std::env::temp_dir().join(format!(
         "dcc-cua-expired-first-frame-{}",
@@ -2063,4 +2063,14 @@ fn provenance_sidecar_create_and_publish_failures_preserve_owned_partial_evidenc
     );
     assert!(!directory.join("showcase.manifest.json").exists());
     std::fs::remove_dir_all(directory).unwrap();
+}
+
+fn encode_frames_with_progress(
+    frames: mpsc::Receiver<ShowcaseProducerEvent>,
+    path: &Path,
+    fps: u32,
+    ready: oneshot::Sender<ShowcaseResult<EncodedFirstFrameEvidence>>,
+    progress: &Mutex<ShowcaseProgress>,
+) -> ShowcaseResult<Value> {
+    encode_frames_with_authorization(frames, path, fps, ready, progress, None, &Mutex::new(None))
 }

@@ -934,17 +934,6 @@ async fn send_pause_boundary(sender: &mpsc::Sender<ShowcaseProducerEvent>) -> bo
     matches!(acknowledgement.await, Ok(Ok(())))
 }
 
-#[cfg(test)]
-fn encode_frames_with_progress(
-    frames: mpsc::Receiver<ShowcaseProducerEvent>,
-    path: &Path,
-    fps: u32,
-    ready: oneshot::Sender<ShowcaseResult<EncodedFirstFrameEvidence>>,
-    progress: &Mutex<ShowcaseProgress>,
-) -> ShowcaseResult<Value> {
-    encode_frames_with_authorization(frames, path, fps, ready, progress, None, &Mutex::new(None))
-}
-
 fn encode_frames_with_authorization(
     mut frames: mpsc::Receiver<ShowcaseProducerEvent>,
     path: &Path,
