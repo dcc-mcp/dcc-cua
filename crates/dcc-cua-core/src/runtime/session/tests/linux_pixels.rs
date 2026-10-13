@@ -118,6 +118,8 @@ async fn linux_pixels_native_window_lifecycle_and_freshness() {
     session.scope = fixture.scope();
     session.live_observation = None;
     session.start_pixels_only().await.unwrap();
+    assert_eq!(session.status()["upstream_session"]["state"], "pixels_only");
+    assert_eq!(session.status()["upstream_session"]["read_only"], true);
     let first = session.screenshot_pixels_only().await.unwrap();
     assert_eq!(
         (first.observation.width, first.observation.height),

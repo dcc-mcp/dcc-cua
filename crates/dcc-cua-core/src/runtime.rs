@@ -1448,6 +1448,8 @@ struct LiveObservationStartOutcome {
 enum UpstreamSessionState {
     Inactive,
     Active,
+    #[cfg(target_os = "linux")]
+    LinuxPixelsOnly,
     #[cfg(windows)]
     VisualOnly {
         reason: String,

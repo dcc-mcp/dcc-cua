@@ -140,6 +140,11 @@ impl LinuxPixels {
             .map_err(native)?
             .check()
             .map_err(native)?;
+        connection
+            .shape_select_input(window, true)
+            .map_err(native)?
+            .check()
+            .map_err(native)?;
         let process = process_identity(pid)?;
         let mut bound = Self {
             connection,
@@ -415,6 +420,11 @@ impl LinuxPixels {
                     &ChangeWindowAttributesAux::new()
                         .event_mask(EventMask::STRUCTURE_NOTIFY | EventMask::SUBSTRUCTURE_NOTIFY),
                 )
+                .map_err(native)?
+                .check()
+                .map_err(native)?;
+            self.connection
+                .shape_select_input(parent, true)
                 .map_err(native)?
                 .check()
                 .map_err(native)?;

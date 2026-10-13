@@ -51,9 +51,7 @@ impl ComputerUseSession {
             .map_err(|error| {
                 ComputerUseError::new(ComputerUseErrorCode::BackendUnavailable, error.to_string())
             })??;
-        self.upstream_session_state = UpstreamSessionState::VisualOnly {
-            reason: "explicit read-only X11 pixels; accessibility provider was not started".into(),
-        };
+        self.upstream_session_state = UpstreamSessionState::LinuxPixelsOnly;
         self.last_upstream_session_refresh = None;
         self.pixel_observation_route = Some(PixelObservationRoute::ExplicitPixelsOnly);
         let result = self.finish_started_session(target, &request, None).await?;
