@@ -1,133 +1,85 @@
+use crate::update::{
+    install_single_with, latest_release_assets, lock_installation, release_archive_name,
+    should_install_release, update_entry_name,
+};
 use rstest::rstest;
 use self_update::update::{Release, ReleaseAsset};
-
-use crate::update::{
-    install_pair_with, latest_release_assets, lock_installation, release_archive_name,
-    should_install_release, update_entry_names,
-};
-
-use std::fs;
-use std::io;
 use std::path::{Path, PathBuf};
+use std::{fs, io};
 
-fn binary_name(background: bool) -> String {
-    format!(
-        "dcc-cua{}{}",
-        if background { "-background" } else { "" },
-        std::env::consts::EXE_SUFFIX
-    )
-}
-
-fn update_fixture(
-    root: &Path,
-    background: bool,
-    companion_exists: bool,
-) -> (PathBuf, PathBuf, PathBuf) {
-    let executable = root.join(binary_name(background));
-    let companion = root.join(binary_name(!background));
+fn update_fixture(root: &Path) -> (PathBuf, PathBuf) {
+    let name = format!("dcc-cua{}", std::env::consts::EXE_SUFFIX);
+    let executable = root.join(&name);
     let extracted = root.join("extracted");
     fs::create_dir(&extracted).unwrap();
     fs::write(&executable, b"old current").unwrap();
-    if companion_exists {
-        fs::write(&companion, b"old companion").unwrap();
-    }
-    fs::write(extracted.join(binary_name(false)), b"new terminal").unwrap();
-    fs::write(extracted.join(binary_name(true)), b"new background").unwrap();
-    (executable, companion, extracted)
+    fs::write(extracted.join(name), b"new current").unwrap();
+    (executable, extracted)
 }
 
 #[rstest]
-#[case(false, false)]
-#[case(false, true)]
-#[case(true, false)]
-#[case(true, true)]
-fn update_installs_both_entries_without_swapping_their_identity(
-    #[case] background: bool,
-    #[case] companion_exists: bool,
-) {
+fn update_installs_single_entry_without_touching_historical_sibling() {
     let root = tempfile::tempdir().unwrap();
-    let (executable, _, extracted) = update_fixture(root.path(), background, companion_exists);
-    install_pair_with(&executable, &extracted, |replacement| {
+    let (executable, extracted) = update_fixture(root.path());
+    let historical = root.path().join(format!(
+        "dcc-cua-background{}",
+        std::env::consts::EXE_SUFFIX
+    ));
+    fs::write(&historical, b"unowned historical bytes").unwrap();
+    install_single_with(&executable, &extracted, |replacement| {
         fs::rename(replacement, &executable)
     })
     .unwrap();
-    assert_eq!(
-        fs::read(root.path().join(binary_name(false))).unwrap(),
-        b"new terminal"
-    );
-    assert_eq!(
-        fs::read(root.path().join(binary_name(true))).unwrap(),
-        b"new background"
-    );
+    assert_eq!(fs::read(executable).unwrap(), b"new current");
+    assert_eq!(fs::read(historical).unwrap(), b"unowned historical bytes");
 }
 
 #[rstest]
 #[case(false)]
 #[case(true)]
-fn missing_archive_companion_does_not_change_either_installed_entry(#[case] background: bool) {
+fn invalid_archive_entry_does_not_change_installation(#[case] empty: bool) {
     let root = tempfile::tempdir().unwrap();
-    let (executable, companion, extracted) = update_fixture(root.path(), background, true);
-    fs::remove_file(extracted.join(binary_name(!background))).unwrap();
+    let (executable, extracted) = update_fixture(root.path());
+    let replacement = extracted.join(executable.file_name().unwrap());
+    if empty {
+        fs::write(replacement, b"").unwrap();
+    } else {
+        fs::remove_file(replacement).unwrap();
+    }
     assert!(
-        install_pair_with(&executable, &extracted, |_| {
-            panic!("must validate the complete pair before self-replacement")
-        })
-        .is_err()
+        install_single_with(&executable, &extracted, |_| panic!("must validate first")).is_err()
     );
     assert_eq!(fs::read(executable).unwrap(), b"old current");
-    assert_eq!(fs::read(companion).unwrap(), b"old companion");
 }
 
 #[rstest]
-#[case(false, false)]
-#[case(false, true)]
-#[case(true, false)]
-#[case(true, true)]
-fn failed_self_replacement_restores_previous_companion_state(
-    #[case] background: bool,
-    #[case] companion_exists: bool,
-) {
+#[case(false)]
+#[case(true)]
+fn failed_self_replacement_restores_missing_current(#[case] moved: bool) {
     let root = tempfile::tempdir().unwrap();
-    let (executable, companion, extracted) =
-        update_fixture(root.path(), background, companion_exists);
-    let error = install_pair_with(&executable, &extracted, |_| {
+    let (executable, extracted) = update_fixture(root.path());
+    let error = install_single_with(&executable, &extracted, |_| {
+        if moved {
+            fs::remove_file(&executable)?;
+        }
         Err(io::Error::other("injected self-replacement refusal"))
     })
     .unwrap_err();
     assert!(error.to_string().contains("injected"));
     assert_eq!(fs::read(executable).unwrap(), b"old current");
-    if companion_exists {
-        assert_eq!(fs::read(companion).unwrap(), b"old companion");
-    } else {
-        assert!(!companion.exists());
-    }
-}
-
-#[rstest]
-fn failed_self_replacement_that_moved_current_away_restores_both_paths() {
-    let root = tempfile::tempdir().unwrap();
-    let (executable, companion, extracted) = update_fixture(root.path(), false, true);
-    assert!(
-        install_pair_with(&executable, &extracted, |_| {
-            fs::remove_file(&executable)?;
-            Err(io::Error::other("injected post-rename failure"))
-        })
-        .is_err()
-    );
-    assert_eq!(fs::read(executable).unwrap(), b"old current");
-    assert_eq!(fs::read(companion).unwrap(), b"old companion");
 }
 
 #[rstest]
 fn renamed_entry_is_refused_instead_of_guessing_which_binary_to_replace() {
-    assert!(update_entry_names(Path::new("custom-cua")).is_err());
+    assert!(update_entry_name(Path::new("custom-cua")).is_err());
+    assert!(update_entry_name(Path::new("dcc-cua-background.exe")).is_err());
 }
 
 #[rstest]
 #[case("1.0.0", "1.1.0", true)]
 #[case("1.1.0", "1.1.0", true)]
 #[case("1.2.0", "1.1.0", false)]
-fn same_version_repairs_the_pair_but_a_newer_install_is_not_downgraded(
+fn same_version_repairs_executable_without_downgrade(
     #[case] current: &str,
     #[case] latest: &str,
     #[case] install: bool,
@@ -136,65 +88,48 @@ fn same_version_repairs_the_pair_but_a_newer_install_is_not_downgraded(
 }
 
 #[rstest]
-fn concurrent_updates_refuse_before_changing_either_entry() {
+fn concurrent_updates_refuse_before_self_replacement() {
     let root = tempfile::tempdir().unwrap();
-    let (executable, companion, extracted) = update_fixture(root.path(), false, true);
-    let first_update = lock_installation(root.path()).unwrap();
-    assert!(install_pair_with(&executable, &extracted, |_| panic!("must refuse")).is_err());
+    let (executable, extracted) = update_fixture(root.path());
+    let first = lock_installation(root.path()).unwrap();
+    assert!(install_single_with(&executable, &extracted, |_| panic!("must refuse")).is_err());
     assert_eq!(fs::read(executable).unwrap(), b"old current");
-    assert_eq!(fs::read(companion).unwrap(), b"old companion");
-    drop(first_update);
+    drop(first);
     assert!(lock_installation(root.path()).is_ok());
 }
 
 #[rstest]
-fn incomplete_rollback_preserves_recovery_bytes() {
+fn incomplete_rollback_retains_recovery_bytes() {
     let root = tempfile::tempdir().unwrap();
-    let (executable, companion, extracted) = update_fixture(root.path(), false, true);
-    let error = install_pair_with(&executable, &extracted, |_| {
-        fs::remove_file(&companion)?;
-        fs::create_dir(&companion)?;
+    let (executable, extracted) = update_fixture(root.path());
+    let error = install_single_with(&executable, &extracted, |_| {
+        fs::remove_file(&executable)?;
+        fs::create_dir(&executable)?;
         Err(io::Error::other("injected rollback obstruction"))
     })
     .unwrap_err();
     assert!(error.to_string().contains("rollback was incomplete"));
-    assert_eq!(fs::read(executable).unwrap(), b"old current");
     assert!(fs::read_dir(root.path()).unwrap().any(|entry| {
-        let path = entry.unwrap().path();
-        fs::read(path.join("companion")).ok().as_deref() == Some(b"old companion")
+        fs::read(entry.unwrap().path().join("current"))
+            .ok()
+            .as_deref()
+            == Some(b"old current")
     }));
 }
 
 #[cfg(unix)]
 #[rstest]
-fn symlinked_companion_is_refused_without_touching_its_target() {
+fn symlinked_replacement_is_refused_without_touching_its_target() {
     let root = tempfile::tempdir().unwrap();
-    let (executable, companion, extracted) = update_fixture(root.path(), false, false);
+    let (executable, extracted) = update_fixture(root.path());
+    let replacement = extracted.join(executable.file_name().unwrap());
+    fs::remove_file(&replacement).unwrap();
     let unrelated = root.path().join("unrelated");
     fs::write(&unrelated, b"unrelated bytes").unwrap();
-    std::os::unix::fs::symlink(&unrelated, &companion).unwrap();
-    assert!(install_pair_with(&executable, &extracted, |_| panic!("must refuse")).is_err());
+    std::os::unix::fs::symlink(&unrelated, replacement).unwrap();
+    assert!(install_single_with(&executable, &extracted, |_| panic!("must refuse")).is_err());
     assert_eq!(fs::read(executable).unwrap(), b"old current");
     assert_eq!(fs::read(unrelated).unwrap(), b"unrelated bytes");
-}
-
-#[cfg(windows)]
-#[rstest]
-fn locked_windows_companion_refuses_before_self_replacement() {
-    use std::os::windows::fs::OpenOptionsExt;
-
-    let root = tempfile::tempdir().unwrap();
-    let (executable, companion, extracted) = update_fixture(root.path(), false, true);
-    // Allow backup reads but deny delete/replace, as a resident image can do.
-    let locked = fs::OpenOptions::new()
-        .read(true)
-        .share_mode(1)
-        .open(&companion)
-        .unwrap();
-    assert!(install_pair_with(&executable, &extracted, |_| panic!("must refuse")).is_err());
-    assert_eq!(fs::read(executable).unwrap(), b"old current");
-    assert_eq!(fs::read(&companion).unwrap(), b"old companion");
-    drop(locked);
 }
 
 #[rstest]
