@@ -22,7 +22,7 @@ use crate::visible_capture::{
     RootBoundsClass, RootBoundsRole, VisibleWindowCaptureReason, classify_root_bounds,
     composited_root_entry, finish_bitmap_readback, physical_capture_rect,
     physical_rectangle_within_desktop, physical_root_bounds, root_is_composited,
-    root_z_order_entry, root_z_order_proof,
+    root_z_order_proof,
 };
 
 #[cfg(windows)]
@@ -1885,4 +1885,20 @@ fn root_z_order_proves_unobscured(
     roots: &[(u64, [i32; 4], bool)],
 ) -> bool {
     root_z_order_proof(target_window_handle, target_bounds, roots).is_ok()
+}
+
+#[cfg(windows)]
+fn root_z_order_entry<ReadBounds>(
+    window_handle: u64,
+    visible: bool,
+    read_visible_bounds: ReadBounds,
+) -> Option<(u64, [i32; 4], bool)>
+where
+    ReadBounds: FnOnce() -> Option<[i32; 4]>,
+{
+    if !visible {
+        return Some((window_handle, [0; 4], false));
+    }
+    let bounds = read_visible_bounds()?;
+    (bounds[2] > 0 && bounds[3] > 0).then_some((window_handle, bounds, true))
 }

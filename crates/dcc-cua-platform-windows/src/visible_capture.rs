@@ -685,22 +685,6 @@ unsafe extern "system" fn collect_root_z_order(window: HWND, context: LPARAM) ->
     }
 }
 
-#[cfg(test)]
-pub(crate) fn root_z_order_entry<ReadBounds>(
-    window_handle: u64,
-    visible: bool,
-    read_visible_bounds: ReadBounds,
-) -> Option<(u64, [i32; 4], bool)>
-where
-    ReadBounds: FnOnce() -> Option<[i32; 4]>,
-{
-    if !visible {
-        return Some((window_handle, [0; 4], false));
-    }
-    let bounds = read_visible_bounds()?;
-    (bounds[2] > 0 && bounds[3] > 0).then_some((window_handle, bounds, true))
-}
-
 pub(super) unsafe fn enumerate_target_root_proof(
     target: HWND,
     rect: RECT,
