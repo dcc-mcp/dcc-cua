@@ -559,7 +559,8 @@ fn root_bounds_diagnostic_classifies_original_edges_without_changing_refusal(
     };
     assert_eq!(classify_root_bounds(rect), expected);
     if expected != RootBoundsClass::Positive {
-        let error = composited_root_entry(91, 77, rect, true, Some(0), || Err(-5)).unwrap_err();
+        let error = composited_root_entry(91, 77, rect, true, Some(0), (|| Err(-5), || Err(-5)))
+            .unwrap_err();
         assert_eq!(
             error.diagnostic.reason,
             VisibleWindowCaptureReason::RootBoundsInvalid
@@ -591,8 +592,15 @@ fn root_bounds_diagnostic_role_uses_proof_root_not_granted_child(
         right: 10,
         bottom: 30,
     };
-    let error =
-        composited_root_entry(failed_root, 77, rect, true, Some(0), || Ok(rect)).unwrap_err();
+    let error = composited_root_entry(
+        failed_root,
+        77,
+        rect,
+        true,
+        Some(0),
+        (|| Ok(rect), || Err(-5)),
+    )
+    .unwrap_err();
     let proof = error.diagnostic.root_bounds_failure.unwrap();
     assert_eq!(proof.root_role, expected);
     assert_eq!(proof.proof_target_root_window_handle, 77);
@@ -626,15 +634,18 @@ fn root_bounds_diagnostic_followup_is_once_and_cannot_replace_original_error(
         },
         true,
         Some(0),
-        || {
-            reads.set(reads.get() + 1);
-            readback.map(|edges| WindowsRect {
-                left: edges[0],
-                top: edges[1],
-                right: edges[2],
-                bottom: edges[3],
-            })
-        },
+        (
+            || {
+                reads.set(reads.get() + 1);
+                readback.map(|edges| WindowsRect {
+                    left: edges[0],
+                    top: edges[1],
+                    right: edges[2],
+                    bottom: edges[3],
+                })
+            },
+            || Err(-5),
+        ),
     )
     .unwrap_err();
     assert_eq!(reads.get(), 1);
@@ -663,9 +674,13 @@ fn root_bounds_diagnostic_adds_no_read_to_positive_roots_and_keeps_one_pixel_occ
         },
         true,
         Some(0),
-        || panic!("a valid root must not acquire diagnostic-only Win32 metadata"),
+        (
+            || panic!("a valid root must not acquire diagnostic-only Win32 metadata"),
+            || panic!("a valid root must not acquire an empty-root confirmation"),
+        ),
     )
-    .unwrap();
+    .unwrap()
+    .z_order_entry();
     let error = root_z_order_proof(77, [0, 0, 100, 100], &[entry, (77, [0, 0, 100, 100], true)])
         .unwrap_err();
     assert_eq!(
@@ -673,6 +688,75 @@ fn root_bounds_diagnostic_adds_no_read_to_positive_roots_and_keeps_one_pixel_occ
         VisibleWindowCaptureReason::RootOverlap
     );
     assert!(error.diagnostic.root_bounds_failure.is_none());
+}
+
+#[cfg(windows)]
+#[rstest]
+fn confirmed_empty_above_root_retains_entry_and_cannot_hide_a_real_occluder() {
+    let empty = WindowsRect::default();
+    let decision = composited_root_entry(
+        1_312_534,
+        1_704_438,
+        empty,
+        true,
+        Some(0),
+        (|| Ok(empty), || Ok(empty)),
+    )
+    .unwrap();
+    let entry = decision.z_order_entry();
+    assert_eq!(entry, (1_312_534, [0; 4], false));
+    let target = (1_704_438, [0, 0, 100, 100], true);
+    let roots = [entry, target];
+    assert_eq!(
+        roots.len(),
+        2,
+        "empty roots still consume enumeration budget"
+    );
+    assert!(root_z_order_proof(1_704_438, target.1, &roots).is_ok());
+    let error = root_z_order_proof(
+        1_704_438,
+        target.1,
+        &[entry, (99, [1, 1, 1, 1], true), target],
+    )
+    .unwrap_err();
+    assert_eq!(
+        error.diagnostic.reason,
+        VisibleWindowCaptureReason::RootOverlap
+    );
+    assert_eq!(error.diagnostic.blocker_window_handle, Some(99));
+}
+
+#[cfg(windows)]
+#[rstest]
+fn empty_root_confirmation_failure_preserves_original_error_and_fresh_diagnostics() {
+    let empty = WindowsRect::default();
+    let positive = WindowsRect {
+        left: 0,
+        top: 0,
+        right: 1,
+        bottom: 1,
+    };
+    let error = composited_root_entry(
+        91,
+        77,
+        empty,
+        true,
+        Some(0),
+        (|| Ok(empty), || Ok(positive)),
+    )
+    .unwrap_err();
+    assert_eq!(
+        error.diagnostic.reason,
+        VisibleWindowCaptureReason::RootBoundsInvalid
+    );
+    let proof = error.diagnostic.root_bounds_failure.unwrap();
+    assert_eq!(proof.dwm_raw_rect_edges, [0; 4]);
+    assert_eq!(proof.win32_raw_rect_edges, Some([0; 4]));
+    assert_eq!(proof.dwm_confirmation_raw_rect_edges, Some([0, 0, 1, 1]));
+    assert_eq!(
+        proof.dwm_confirmation_classification,
+        Some(RootBoundsClass::Positive)
+    );
 }
 
 #[cfg(windows)]

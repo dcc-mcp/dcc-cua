@@ -24,6 +24,8 @@ mod physical_input_fence;
 mod snapshot;
 
 #[cfg(windows)]
+mod root_bounds;
+#[cfg(windows)]
 mod visible_capture;
 #[cfg(windows)]
 mod wgc;

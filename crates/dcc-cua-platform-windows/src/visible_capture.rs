@@ -1,5 +1,18 @@
 use crate::capture_identity::validate_exact_window_owner;
+pub use crate::root_bounds::RootBoundsClass;
+use crate::root_bounds::{self, EmptyRootProof, RootBoundsContext, RootBoundsDecision};
 use serde::Serialize;
+
+impl Serialize for RootBoundsClass {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(match self {
+            Self::Positive => "positive",
+            Self::ZeroArea => "zero_area",
+            Self::Inverted => "inverted",
+            Self::Overflow => "overflow",
+        })
+    }
+}
 use thiserror::Error;
 use windows::Win32::{
     Foundation::{BOOL, HWND, LPARAM, RECT},
@@ -97,15 +110,6 @@ pub enum RootBoundsRole {
     AboveTargetRoot,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RootBoundsClass {
-    Positive,
-    ZeroArea,
-    Inverted,
-    Overflow,
-}
-
 /// Failed proof metadata, never an authorization to ignore a root or capture it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub struct RootBoundsFailureDiagnostic {
@@ -124,6 +128,12 @@ pub struct RootBoundsFailureDiagnostic {
     /// Only compares zero-area status for monotone, representable rectangles.
     /// Ordinary Win32/DWM border differences are not a geometry failure.
     pub zero_area_status_mismatch: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dwm_confirmation_raw_rect_edges: Option<[i32; 4]>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dwm_confirmation_classification: Option<RootBoundsClass>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dwm_confirmation_os_error: Option<i32>,
 }
 
 impl VisibleWindowCaptureDiagnostic {
@@ -266,7 +276,7 @@ fn rectangles_intersect(left: [i32; 4], right: [i32; 4]) -> bool {
         && right_top < left_bottom
 }
 
-pub(super) fn physical_window_rect(window: HWND) -> Result<RECT, VisibleWindowCaptureError> {
+fn query_physical_window_rect(window: HWND) -> windows::core::Result<RECT> {
     let mut rect = RECT::default();
     unsafe {
         DwmGetWindowAttribute(
@@ -275,13 +285,16 @@ pub(super) fn physical_window_rect(window: HWND) -> Result<RECT, VisibleWindowCa
             (&raw mut rect).cast(),
             std::mem::size_of::<RECT>() as u32,
         )
-    }
-    .map_err(|error| {
+    }?;
+    Ok(rect)
+}
+
+pub(super) fn physical_window_rect(window: HWND) -> Result<RECT, VisibleWindowCaptureError> {
+    query_physical_window_rect(window).map_err(|error| {
         let mut failure = capture_error(format!("read exact physical DWM frame bounds: {error}"));
         failure.diagnostic.os_error = Some(error.code().0);
         failure
-    })?;
-    Ok(rect)
+    })
 }
 
 /// Root occluders may be smaller than a usable capture target. Keep every
@@ -296,46 +309,53 @@ pub(crate) fn physical_root_bounds(physical: RECT) -> Option<[i32; 4]> {
 }
 
 pub(crate) fn classify_root_bounds(physical: RECT) -> RootBoundsClass {
-    let (Some(width), Some(height)) = (
-        physical.right.checked_sub(physical.left),
-        physical.bottom.checked_sub(physical.top),
-    ) else {
-        return RootBoundsClass::Overflow;
-    };
-    if width < 0 || height < 0 {
-        RootBoundsClass::Inverted
-    } else if width == 0 || height == 0 {
-        RootBoundsClass::ZeroArea
-    } else {
-        RootBoundsClass::Positive
-    }
+    root_bounds::classify(rect_edges(physical))
 }
 
 fn rect_edges(rect: RECT) -> [i32; 4] {
     [rect.left, rect.top, rect.right, rect.bottom]
 }
 
-/// Keep the original strict proof outcome. Read one bounded follow-up only
-/// after successful DWM metadata has failed the existing geometric predicate.
+/// Native adapter for the pure geometry policy. Failed reads and inconsistent
+/// geometry remain refusals; successful empty proof is separate from diagnostics.
 pub(crate) fn composited_root_entry(
     window_handle: u64,
     proof_target_root_window_handle: u64,
     physical: RECT,
     visible: bool,
     cloaked: Option<u32>,
-    read_win32_after_failure: impl FnOnce() -> Result<RECT, i32>,
-) -> Result<(u64, [i32; 4], bool), VisibleWindowCaptureError> {
-    root_z_order_entry(window_handle, true, || physical_root_bounds(physical)).ok_or_else(|| {
+    reads: (
+        impl FnOnce() -> Result<RECT, i32>,
+        impl FnOnce() -> Result<RECT, i32>,
+    ),
+) -> Result<RootBoundsDecision, VisibleWindowCaptureError> {
+    let (read_win32_after_failure, confirm_dwm) = reads;
+    root_bounds::resolve(
+        RootBoundsContext {
+            window_handle,
+            target_root_window_handle: proof_target_root_window_handle,
+            visible,
+            cloaked,
+        },
+        rect_edges(physical),
+        || read_win32_after_failure().map(rect_edges),
+        || confirm_dwm().map(rect_edges),
+    )
+    .map_err(|rejection| {
         let dwm_classification = classify_root_bounds(physical);
-        let (win32_raw_rect_edges, win32_classification, win32_os_error) =
-            match read_win32_after_failure() {
-                Ok(rect) => (
-                    Some(rect_edges(rect)),
-                    Some(classify_root_bounds(rect)),
-                    None,
-                ),
-                Err(code) => (None, None, Some(code)),
-            };
+        let (win32_raw_rect_edges, win32_classification, win32_os_error) = match rejection.win32 {
+            Ok(edges) => (Some(edges), Some(root_bounds::classify(edges)), None),
+            Err(code) => (None, None, Some(code)),
+        };
+        let (
+            dwm_confirmation_raw_rect_edges,
+            dwm_confirmation_classification,
+            dwm_confirmation_os_error,
+        ) = match rejection.dwm_confirmation {
+            Some(Ok(edges)) => (Some(edges), Some(root_bounds::classify(edges)), None),
+            Some(Err(code)) => (None, None, Some(code)),
+            None => (None, None, None),
+        };
         let zero_area_status_mismatch = match (dwm_classification, win32_classification) {
             (
                 RootBoundsClass::Positive | RootBoundsClass::ZeroArea,
@@ -366,6 +386,9 @@ pub(crate) fn composited_root_entry(
             win32_classification,
             win32_os_error,
             zero_area_status_mismatch,
+            dwm_confirmation_raw_rect_edges,
+            dwm_confirmation_classification,
+            dwm_confirmation_os_error,
         });
         error
     })
@@ -381,9 +404,9 @@ pub(crate) fn root_z_order_proof(
     target_bounds: [i32; 4],
     roots: &[(u64, [i32; 4], bool)],
 ) -> Result<(), VisibleWindowCaptureError> {
-    for &(window_handle, bounds, visible) in roots {
+    for &(window_handle, bounds, contributes_pixels) in roots {
         if window_handle == target_window_handle {
-            if !visible {
+            if !contributes_pixels {
                 return Err(proof_error(
                     VisibleWindowCaptureReason::TargetNotVisible,
                     "the exact target is not composited on the visible desktop",
@@ -398,7 +421,7 @@ pub(crate) fn root_z_order_proof(
                 ))
             };
         }
-        if visible && rectangles_intersect(bounds, target_bounds) {
+        if contributes_pixels && rectangles_intersect(bounds, target_bounds) {
             let mut error = proof_error(
                 VisibleWindowCaptureReason::RootOverlap,
                 "a higher composited root window overlaps the exact target",
@@ -449,6 +472,26 @@ pub enum RootProofDecision {
     RejectCloakingQuery,
     RejectBoundsQuery,
     RejectBounds,
+    ConfirmedEmptyAboveTarget,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct RootEmptyBoundsProof {
+    pub proof_target_root_window_handle: u64,
+    pub dwm_initial_raw_rect_edges: [i32; 4],
+    pub win32_raw_rect_edges: [i32; 4],
+    pub dwm_confirmed_raw_rect_edges: [i32; 4],
+}
+
+impl From<EmptyRootProof> for RootEmptyBoundsProof {
+    fn from(proof: EmptyRootProof) -> Self {
+        Self {
+            proof_target_root_window_handle: proof.target_root_window_handle,
+            dwm_initial_raw_rect_edges: proof.dwm_initial,
+            win32_raw_rect_edges: proof.win32,
+            dwm_confirmed_raw_rect_edges: proof.dwm_confirmed,
+        }
+    }
 }
 
 /// Numeric metadata only. No title, class text, executable path or backend error text.
@@ -470,6 +513,8 @@ pub struct RootProofTraceEntry {
     pub dwm_bounds: Option<[i32; 4]>,
     pub dwm_bounds_error: Option<i32>,
     pub decision: RootProofDecision,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub empty_root_proof: Option<RootEmptyBoundsProof>,
 }
 
 impl RootProofTraceEntry {
@@ -501,6 +546,7 @@ impl RootProofTraceEntry {
             cloak_query_error: None,
             dwm_bounds: None,
             dwm_bounds_error: None,
+            empty_root_proof: None,
             decision: if visible {
                 RootProofDecision::Composited
             } else {
@@ -534,7 +580,7 @@ unsafe extern "system" fn collect_root_z_order(window: HWND, context: LPARAM) ->
         .trace
         .as_ref()
         .map(|_| unsafe { RootProofTraceEntry::read(window, visible) });
-    let measured = (|| {
+    let measured: Result<_, VisibleWindowCaptureError> = (|| {
         let mut measured_cloaked = None;
         let composited = root_is_composited(visible, || {
             let mut cloaked = 0_u32;
@@ -593,19 +639,29 @@ unsafe extern "system" fn collect_root_z_order(window: HWND, context: LPARAM) ->
                 Some(_) => RootProofDecision::Disjoint,
             };
         }
-        composited_root_entry(
+        let decision = composited_root_entry(
             window_handle,
             enumeration.target_window_handle,
             rect,
             visible,
             measured_cloaked,
-            || {
-                let mut win32 = RECT::default();
-                unsafe { GetWindowRect(window, &mut win32) }
-                    .map(|()| win32)
-                    .map_err(|error| error.code().0)
-            },
-        )
+            (
+                || {
+                    let mut win32 = RECT::default();
+                    unsafe { GetWindowRect(window, &mut win32) }
+                        .map(|()| win32)
+                        .map_err(|error| error.code().0)
+                },
+                || query_physical_window_rect(window).map_err(|error| error.code().0),
+            ),
+        )?;
+        if let (Some(trace), RootBoundsDecision::ConfirmedEmptyAboveTarget(proof)) =
+            (trace.as_mut(), decision)
+        {
+            trace.decision = RootProofDecision::ConfirmedEmptyAboveTarget;
+            trace.empty_root_proof = Some(proof.into());
+        }
+        Ok(decision.z_order_entry())
     })();
     if let (Some(entries), Some(trace)) = (enumeration.trace.as_mut(), trace) {
         entries.push(trace);
@@ -629,6 +685,7 @@ unsafe extern "system" fn collect_root_z_order(window: HWND, context: LPARAM) ->
     }
 }
 
+#[cfg(test)]
 pub(crate) fn root_z_order_entry<ReadBounds>(
     window_handle: u64,
     visible: bool,

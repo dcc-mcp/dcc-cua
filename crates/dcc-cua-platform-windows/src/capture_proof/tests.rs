@@ -95,6 +95,9 @@ fn capture_proof_error_payload_contains_only_closed_numeric_metadata() {
         win32_classification: Some(RootBoundsClass::Positive),
         win32_os_error: None,
         zero_area_status_mismatch: Some(true),
+        dwm_confirmation_raw_rect_edges: None,
+        dwm_confirmation_classification: None,
+        dwm_confirmation_os_error: None,
     });
     assert_eq!(
         serde_json::to_value(failure).unwrap()["root_bounds_failure"],
