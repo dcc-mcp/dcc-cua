@@ -684,6 +684,12 @@ pub struct ComputerUseRootBoundsFailureDiagnostic {
     pub win32_classification: Option<ComputerUseRootBoundsClass>,
     pub win32_os_error: Option<i32>,
     pub zero_area_status_mismatch: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dwm_confirmation_raw_rect_edges: Option<[i32; 4]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dwm_confirmation_classification: Option<ComputerUseRootBoundsClass>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dwm_confirmation_os_error: Option<i32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

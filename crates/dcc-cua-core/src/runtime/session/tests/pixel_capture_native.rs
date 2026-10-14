@@ -657,6 +657,9 @@ fn retained_visibility_failure(
                 win32_classification: Some(RootBoundsClass::Positive),
                 win32_os_error: None,
                 zero_area_status_mismatch: Some(true),
+                dwm_confirmation_raw_rect_edges: None,
+                dwm_confirmation_classification: None,
+                dwm_confirmation_os_error: Some(-7),
             },
         ),
     });
@@ -728,6 +731,7 @@ fn same_sample_visibility_reason_and_blocker_survive_outer_capture_failure() {
                             Some(ComputerUseRootBoundsClass::Positive)
                         );
                         assert_eq!(bounds.zero_area_status_mismatch, Some(true));
+                        assert_eq!(bounds.dwm_confirmation_os_error, Some(-7));
                     } else {
                         assert!(capture.root_bounds_failure.is_none());
                     }

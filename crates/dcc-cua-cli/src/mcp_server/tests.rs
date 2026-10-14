@@ -366,6 +366,8 @@ fn root_bounds_capture_fixture() -> Value {
             "visible":true, "cloaked":0, "win32_read_after_dwm_rejection":true,
             "win32_raw_rect_edges":[10,20,30,40], "win32_classification":"positive",
             "win32_os_error":null, "zero_area_status_mismatch":true,
+            "dwm_confirmation_raw_rect_edges":[10,20,30,40],
+            "dwm_confirmation_classification":"positive", "dwm_confirmation_os_error":null,
             "PRIVATE_ROOT_FIELD":"PRIVATE_ROOT_VALUE"
         }
     })
@@ -377,6 +379,8 @@ fn root_bounds_capture_fixture() -> Value {
 #[case("invalid_class")]
 #[case("invalid_rect")]
 #[case("invalid_reason")]
+#[case("invalid_confirmation_class")]
+#[case("invalid_confirmation_rect")]
 #[rstest]
 #[tokio::test]
 async fn root_bounds_failure_survives_actual_public_task_remote_error_adapter(
@@ -392,6 +396,13 @@ async fn root_bounds_failure_survives_actual_public_task_remote_error_adapter(
         }
         "invalid_rect" => capture["root_bounds_failure"]["dwm_raw_rect_edges"] = json!([0, 0, 0]),
         "invalid_reason" => capture["reason"] = json!("PRIVATE_ERROR"),
+        "invalid_confirmation_class" => {
+            capture["root_bounds_failure"]["dwm_confirmation_classification"] =
+                json!("PRIVATE_ERROR")
+        }
+        "invalid_confirmation_rect" => {
+            capture["root_bounds_failure"]["dwm_confirmation_raw_rect_edges"] = json!([0, 0, 0])
+        }
         "valid" => (),
         _ => unreachable!(),
     }

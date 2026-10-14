@@ -45,7 +45,9 @@ fn host_error_response_preserves_root_bounds_failure_without_minting_observation
             "dwm_raw_rect_edges":[10,20,10,30], "dwm_classification":"zero_area",
             "visible":true, "cloaked":0, "win32_read_after_dwm_rejection":true,
             "win32_raw_rect_edges":null, "win32_classification":null,
-            "win32_os_error":-5, "zero_area_status_mismatch":null
+            "win32_os_error":-5, "zero_area_status_mismatch":null,
+            "dwm_confirmation_raw_rect_edges":null,
+            "dwm_confirmation_classification":null, "dwm_confirmation_os_error":-7
         }
     }))
     .unwrap();

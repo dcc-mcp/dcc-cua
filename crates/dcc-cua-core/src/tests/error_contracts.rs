@@ -62,6 +62,9 @@ fn root_bounds_failure_native_to_public_mapping_is_lossless(
         win32_classification: Some(classification),
         win32_os_error: None,
         zero_area_status_mismatch: Some(true),
+        dwm_confirmation_raw_rect_edges: Some([10, 20, 30, 40]),
+        dwm_confirmation_classification: Some(classification),
+        dwm_confirmation_os_error: Some(-7),
     };
     let public = crate::runtime::map_root_bounds_failure(native);
     let encoded = serde_json::to_value(public).unwrap();
@@ -80,6 +83,9 @@ fn root_bounds_failure_native_to_public_mapping_is_lossless(
 #[case("dwm_raw_rect_edges", json!([0, 0, 1]))]
 #[case("win32_raw_rect_edges", json!([0, 0, 1, 2, 3]))]
 #[case("visible", json!("true"))]
+#[case("dwm_confirmation_raw_rect_edges", json!([0, 0, 1]))]
+#[case("dwm_confirmation_classification", json!("PRIVATE_ERROR"))]
+#[case("dwm_confirmation_os_error", json!("PRIVATE_ERROR"))]
 fn root_bounds_failure_contract_has_only_closed_types(
     #[case] field: &str,
     #[case] invalid: serde_json::Value,

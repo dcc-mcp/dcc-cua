@@ -25,6 +25,7 @@ fn exact_source_first_capture_instance_boundary() {
     let runtime = include_str!("../src/runtime/exact_capture.rs");
     let observation = include_str!("../src/runtime/session/observation.rs");
     let native = include_str!("../../dcc-cua-platform-windows/src/visible_capture.rs");
+    let root_bounds = include_str!("../../dcc-cua-platform-windows/src/root_bounds.rs");
     let gates = include_str!("../src/runtime/session/gates.rs");
     let mut selected = String::new();
     for marker in [
@@ -118,11 +119,18 @@ fn exact_source_first_capture_instance_boundary() {
     ] {
         native_types.push_str("#[derive(Clone, Copy, Debug, PartialEq, Eq)]\n");
         native_types.push_str(
-            &item(native, marker)
-                .lines()
-                .filter(|line| !line.trim_start().starts_with("#[serde("))
-                .collect::<Vec<_>>()
-                .join("\n"),
+            &item(
+                if marker == "pub enum RootBoundsClass" {
+                    root_bounds
+                } else {
+                    native
+                },
+                marker,
+            )
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("#[serde("))
+            .collect::<Vec<_>>()
+            .join("\n"),
         );
     }
     native_types.push_str(item(native, "pub struct VisibleWindowCaptureError"));

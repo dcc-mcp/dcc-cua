@@ -133,6 +133,11 @@ pub(crate) fn map_root_bounds_failure(
         win32_classification: failure.win32_classification.map(map_root_bounds_class),
         win32_os_error: failure.win32_os_error,
         zero_area_status_mismatch: failure.zero_area_status_mismatch,
+        dwm_confirmation_raw_rect_edges: failure.dwm_confirmation_raw_rect_edges,
+        dwm_confirmation_classification: failure
+            .dwm_confirmation_classification
+            .map(map_root_bounds_class),
+        dwm_confirmation_os_error: failure.dwm_confirmation_os_error,
     }
 }
 
