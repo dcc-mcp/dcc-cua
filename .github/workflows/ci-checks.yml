@@ -348,13 +348,22 @@ jobs:
         run: |
           $binary = if ($IsWindows) { "target/release/dcc-cua.exe" } else { "target/release/dcc-cua" }
           ./scripts/test-cli-e2e.ps1 -Binary $binary
+      - name: Prepare Windows controlled GUI fixtures
+        if: matrix.os == 'windows-latest'
+        timeout-minutes: 10
+        shell: pwsh
+        run: ./scripts/run-gui-e2e.ps1 -Binary target/release/dcc-cua.exe -PrepareOnly
+      - name: Compile Windows controlled GUI E2E
+        if: matrix.os == 'windows-latest'
+        timeout-minutes: 10
+        run: cargo nextest run --locked -p dcc-cua-e2e --features gui-e2e --no-run
       - name: Run Windows controlled GUI Host IPC E2E
         if: matrix.os == 'windows-latest'
         timeout-minutes: 10
         shell: pwsh
         env:
           DCC_CUA_E2E_CLIPBOARD_WRITE: "1"
-        run: ./scripts/run-gui-e2e.ps1 -Binary target/release/dcc-cua.exe
+        run: ./scripts/run-gui-e2e.ps1 -Binary target/release/dcc-cua.exe -SkipFixtureBuild
       - name: Run Linux controlled GUI Host IPC E2E
         if: matrix.os == 'ubuntu-latest'
         timeout-minutes: 10

@@ -39,7 +39,7 @@ RELEASE_PLEASE_ACTION = (
     "googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7"
 )
 CI_EXECUTABLE_SURFACE_SHA256 = (
-    "ae3625e60358772524bac5a140934f0c7b3547015fb00430994b236931f4f5c1"
+    "0042da769e1df9eac78ec27b163f89375efcb971b750e1d0b0da43feccd6be20"
 )
 
 
@@ -380,6 +380,25 @@ class ReleaseWorkflowTests(unittest.TestCase):
             workflow.count("if: startsWith(matrix.os, 'macos-')"), 3
         )
         self.assertNotIn("if: matrix.os == 'macos-latest'", workflow)
+
+    def test_windows_gui_runtime_budget_excludes_fixture_and_test_compilation(self):
+        workflow = CI_WORKFLOW.read_text(encoding="utf-8")
+        prepare = workflow.index("      - name: Prepare Windows controlled GUI fixtures")
+        compile_step = workflow.index("      - name: Compile Windows controlled GUI E2E")
+        run = workflow.index("      - name: Run Windows controlled GUI Host IPC E2E")
+        end = workflow.index("      - name: Run Linux controlled GUI Host IPC E2E", run)
+        self.assertLess(prepare, compile_step)
+        self.assertLess(compile_step, run)
+        self.assertIn("-PrepareOnly", workflow[prepare:compile_step])
+        self.assertIn("--features gui-e2e --no-run", workflow[compile_step:run])
+        runtime = workflow[run:end]
+        self.assertIn("timeout-minutes: 10", runtime)
+        self.assertIn("-SkipFixtureBuild", runtime)
+        self.assertNotIn("continue-on-error", runtime)
+        script = GUI_E2E_SCRIPT.read_text(encoding="utf-8")
+        self.assertIn("if ($PrepareOnly -and $SkipFixtureBuild)", script)
+        self.assertLess(script.index("if ($PrepareOnly) { return }"), script.index("cargo nextest run"))
+        self.assertIn("--features gui-e2e --no-capture", script)
 
     def test_macos_gui_fixture_is_rebuilt_for_the_exact_runner_architecture(self):
         script = GUI_E2E_SCRIPT.read_text(encoding="utf-8")
