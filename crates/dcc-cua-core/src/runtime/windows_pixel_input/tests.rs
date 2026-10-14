@@ -38,22 +38,30 @@ fn failed_input_preserves_partial_cursor_and_event_delivery(
         WindowsPhysicalInputFailureReason,
     };
     let attempted = cursor_move_attempted || inserted_events > 0;
-    let error = input_error(WindowsGuardedInputError {
-        reason: WindowsPhysicalInputFailureReason::Interrupted,
-        outcome: WindowsGuardedInputOutcome {
-            operation: WindowsGuardedInputOperation::Click,
-            mutation_attempted: attempted,
-            cursor_move_attempted,
-            cursor_move_succeeded,
-            requested_events: 2,
-            inserted_events,
-            cleanup_requested_events: 0,
-            cleanup_inserted_events: 0,
-            delivery_completed: false,
-            post_dispatch_validated: false,
-            fresh_observation_required: true,
+    let error = input_error(
+        WindowsGuardedInputError {
+            reason: WindowsPhysicalInputFailureReason::Interrupted,
+            stage: dcc_cua_platform_windows::WindowsGuardedInputStage::InputDispatch,
+            visibility_failure: None,
+            outcome: WindowsGuardedInputOutcome {
+                operation: WindowsGuardedInputOperation::Click,
+                mutation_attempted: attempted,
+                cursor_move_attempted,
+                cursor_move_succeeded,
+                requested_events: 2,
+                inserted_events,
+                cleanup_requested_events: 0,
+                cleanup_inserted_events: 0,
+                delivery_completed: false,
+                post_dispatch_validated: false,
+                fresh_observation_required: true,
+            },
         },
-    });
+        dcc_cua_platform_windows::UiaTarget {
+            process_id: 42,
+            window_handle: 99,
+        },
+    );
     let details = error.details.unwrap();
     assert_eq!(details.input_sent, Some(expected));
     assert_eq!(details.action_attempted, Some(attempted));
@@ -277,4 +285,60 @@ fn every_pixel_action_requires_trusted_unscaled_capture_geometry(#[case] name: &
             ComputerUseErrorCode::StaleObservation
         );
     }
+}
+
+#[cfg(windows)]
+#[rstest]
+fn input_occlusion_keeps_blocker_and_post_dispatch_outcome() {
+    use dcc_cua_platform_windows::*;
+    let error = input_error(
+        WindowsGuardedInputError {
+            reason: WindowsPhysicalInputFailureReason::TargetOccluded,
+            stage: WindowsGuardedInputStage::PostDispatchValidation,
+            visibility_failure: Some(Box::new(VisibleWindowCaptureDiagnostic {
+                reason: VisibleWindowCaptureReason::RootOverlap,
+                target_bounds: Some([80, 80, 3200, 2000]),
+                blocker_process_id: Some(18420),
+                blocker_window_handle: Some(393722),
+                blocker_bounds: Some([90, 90, 1, 1]),
+                cloaked: Some(0),
+                os_error: None,
+                root_bounds_failure: None,
+            })),
+            outcome: WindowsGuardedInputOutcome {
+                operation: WindowsGuardedInputOperation::Click,
+                mutation_attempted: true,
+                cursor_move_attempted: true,
+                cursor_move_succeeded: true,
+                requested_events: 3,
+                inserted_events: 3,
+                cleanup_requested_events: 0,
+                cleanup_inserted_events: 0,
+                delivery_completed: false,
+                post_dispatch_validated: false,
+                fresh_observation_required: true,
+            },
+        },
+        UiaTarget {
+            process_id: 78508,
+            window_handle: 1186326,
+        },
+    );
+    assert_eq!(error.code, ComputerUseErrorCode::TargetUnavailable);
+    let details = error.details.unwrap();
+    assert_eq!(
+        details.phase,
+        Some(ComputerUseErrorPhase::LocalMutationDispatch)
+    );
+    assert_eq!(details.input_sent, Some(ComputerUseInputState::Sent));
+    let capture = details.capture.unwrap();
+    assert_eq!(capture.target_window_handle, 1186326);
+    assert_eq!(capture.blocker_window_handle, Some(393722));
+    assert_eq!(capture.blocker_bounds, Some([90, 90, 1, 1]));
+    let input = details.guarded_input.unwrap();
+    assert_eq!(
+        input.stage,
+        ComputerUseGuardedInputStage::PostDispatchValidation
+    );
+    assert_eq!(input.outcome.inserted_events, 3);
 }

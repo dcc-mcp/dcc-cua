@@ -29,6 +29,7 @@ struct FakeBackend {
     locked: bool,
     check_count: usize,
     fail_check: Option<usize>,
+    occluded_at_check: Option<usize>,
     dwm_change_at_check: Option<usize>,
     partial_mutation: Option<(usize, u32)>,
     interrupt_after_mutation: bool,
@@ -68,6 +69,7 @@ impl FakeBackend {
             locked: false,
             check_count: 0,
             fail_check: None,
+            occluded_at_check: None,
             dwm_change_at_check: None,
             partial_mutation: None,
             interrupt_after_mutation: false,
@@ -79,6 +81,13 @@ impl FakeBackend {
 }
 
 impl InputBackend for FakeBackend {
+    fn visibility_failure(&self) -> Option<crate::VisibleWindowCaptureDiagnostic> {
+        if !self.evidence.unobscured {
+            self.evidence.visibility_failure
+        } else {
+            None
+        }
+    }
     fn check(
         &mut self,
         fence: WindowsPhysicalInputFence,
@@ -86,6 +95,9 @@ impl InputBackend for FakeBackend {
     ) -> Result<(), Reason> {
         self.trace.borrow_mut().push("check");
         self.check_count += 1;
+        if self.occluded_at_check == Some(self.check_count) {
+            self.evidence.unobscured = false;
+        }
         if self.dwm_change_at_check == Some(self.check_count) {
             self.evidence.visible_bounds[0] += 1;
         }
@@ -607,4 +619,49 @@ fn physical_input_fence_actual_query_sequence_rechecks_lock_after_proof_before_d
             ]
         );
     }
+}
+
+#[rstest]
+#[case(1, WindowsGuardedInputStage::CursorMove, 0, false)]
+#[case(2, WindowsGuardedInputStage::InputDispatch, 0, true)]
+#[case(3, WindowsGuardedInputStage::PostDispatchValidation, 3, true)]
+fn occlusion_refusal_retains_original_proof_and_actual_dispatch_stage(
+    #[case] check: usize,
+    #[case] stage: WindowsGuardedInputStage,
+    #[case] inserted: u32,
+    #[case] cursor_moved: bool,
+) {
+    let diagnostic = crate::VisibleWindowCaptureDiagnostic {
+        reason: crate::VisibleWindowCaptureReason::RootOverlap,
+        target_bounds: Some(fence().native_visible_bounds),
+        blocker_process_id: Some(18420),
+        blocker_window_handle: Some(393722),
+        blocker_bounds: Some([90, 90, 1, 1]),
+        cloaked: Some(0),
+        os_error: None,
+        root_bounds_failure: None,
+    };
+    let mut backend = FakeBackend::new();
+    backend.occluded_at_check = Some(check);
+    backend.evidence.visibility_failure = Some(diagnostic);
+    let failure = run_click(
+        &mut backend,
+        fence(),
+        (1247, 285),
+        1,
+        WindowsPointerButton::Left,
+        &[],
+    )
+    .unwrap_err();
+    assert_eq!(failure.reason, Reason::TargetOccluded);
+    assert_eq!(failure.stage, stage);
+    assert_eq!(failure.visibility_failure.as_deref(), Some(&diagnostic));
+    assert_eq!(failure.outcome.cursor_move_succeeded, cursor_moved);
+    assert_eq!(failure.outcome.inserted_events, inserted);
+    assert_eq!(
+        backend.check_count, check,
+        "no diagnostic retry after failed proof"
+    );
+    assert!(!failure.outcome.delivery_completed);
+    assert!(!failure.outcome.post_dispatch_validated);
 }

@@ -248,3 +248,42 @@ fn remote_host_failure_uses_a_local_allowlisted_identity() {
     assert!(value["error"].get("response").is_none());
     assert!(!value.to_string().contains("REVIEW_PRIVATE_"));
 }
+
+#[rstest]
+fn one_shot_guarded_input_failure_keeps_finite_delivery_metadata() {
+    let input: dcc_cua_core::ComputerUseGuardedInputDiagnostic = serde_json::from_value(
+        json!({"reason":"target_occluded","stage":"post_dispatch_validation",
+    "outcome":{"operation":"click","mutation_attempted":true,
+    "cursor_move_attempted":true,"cursor_move_succeeded":true,
+    "requested_events":3,"inserted_events":3,"cleanup_requested_events":0,
+    "cleanup_inserted_events":0,"delivery_completed":false,
+    "post_dispatch_validated":false,"fresh_observation_required":true}}),
+    )
+    .unwrap();
+    let error = dcc_cua_core::ComputerUseError::new(
+        dcc_cua_core::ComputerUseErrorCode::TargetUnavailable,
+        "PRIVATE_MESSAGE",
+    )
+    .with_details(dcc_cua_core::ComputerUseErrorDetails {
+        guarded_input: Some(input.clone()),
+        ..Default::default()
+    });
+    let direct = fatal_error_value(&error);
+    let remote = dcc_cua_client::HostClientError::Remote {
+        code: "target_unavailable".into(),
+        message: "PRIVATE_MESSAGE".into(),
+        response: json!({"details":{"guarded_input":input,"PRIVATE_FIELD":"PRIVATE_VALUE"}}),
+    };
+    let remote = fatal_error_value(&remote);
+    for value in [direct, remote] {
+        assert_eq!(
+            value["error"]["details"]["guarded_input"]["outcome"]["inserted_events"],
+            3
+        );
+        assert_eq!(
+            value["error"]["details"]["guarded_input"]["stage"],
+            "post_dispatch_validation"
+        );
+        assert!(!value.to_string().contains("PRIVATE_"));
+    }
+}

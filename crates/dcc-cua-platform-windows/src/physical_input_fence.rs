@@ -88,9 +88,22 @@ impl WindowsGuardedInputOutcome {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WindowsGuardedInputStage {
+    Setup,
+    CursorMove,
+    InputDispatch,
+    HoldValidation,
+    OwnedReleaseCleanup,
+    PostDispatchValidation,
+}
+
 #[derive(Clone, Debug, Error, Serialize)]
 #[error("guarded physical input failed: {reason:?}")]
 pub struct WindowsGuardedInputError {
+    pub stage: WindowsGuardedInputStage,
+    pub visibility_failure: Option<Box<crate::VisibleWindowCaptureDiagnostic>>,
     pub reason: WindowsPhysicalInputFailureReason,
     pub outcome: WindowsGuardedInputOutcome,
 }
@@ -228,6 +241,9 @@ fn final_physical_boundary<T>(
 }
 
 trait InputBackend {
+    fn visibility_failure(&self) -> Option<crate::VisibleWindowCaptureDiagnostic> {
+        None
+    }
     fn check(
         &mut self,
         fence: WindowsPhysicalInputFence,
@@ -250,6 +266,7 @@ struct NativeBackend<G, I> {
     gate: G,
     interrupted: I,
     started: Instant,
+    visibility_failure: Option<crate::VisibleWindowCaptureDiagnostic>,
 }
 
 fn check_physical_fence(
@@ -277,6 +294,9 @@ fn check_physical_fence(
 }
 
 impl<G: FnMut() -> Result<(), UiaError>, I: FnMut() -> bool> InputBackend for NativeBackend<G, I> {
+    fn visibility_failure(&self) -> Option<crate::VisibleWindowCaptureDiagnostic> {
+        self.visibility_failure
+    }
     fn check(
         &mut self,
         fence: WindowsPhysicalInputFence,
@@ -284,14 +304,20 @@ impl<G: FnMut() -> Result<(), UiaError>, I: FnMut() -> bool> InputBackend for Na
     ) -> Result<(), Reason> {
         // Shared strict production occlusion collector; never exclude a sibling,
         // allow a failed DWM query, follow a popup or capture pixels here.
-        check_physical_fence(
+        let mut visibility_failure = None;
+        let result = check_physical_fence(
             fence,
             point,
             &mut self.gate,
             &mut self.interrupted,
             || {
-                exact_window_pixel_evidence(fence.target.process_id, fence.target.window_handle)
-                    .map_err(|_| Reason::TargetUnavailable)
+                let evidence = exact_window_pixel_evidence(
+                    fence.target.process_id,
+                    fence.target.window_handle,
+                )
+                .map_err(|_| Reason::TargetUnavailable)?;
+                visibility_failure = evidence.visibility_failure;
+                Ok(evidence)
             },
             || unsafe {
                 [
@@ -305,7 +331,13 @@ impl<G: FnMut() -> Result<(), UiaError>, I: FnMut() -> bool> InputBackend for Na
                 exact_window_native_state(fence.target.process_id, fence.target.window_handle)
                     .map_err(|_| Reason::TargetUnavailable)
             },
-        )
+        );
+        self.visibility_failure = if result == Err(Reason::TargetOccluded) {
+            visibility_failure
+        } else {
+            None
+        };
+        result
     }
 
     fn mutate(
@@ -400,10 +432,16 @@ struct Transaction<'a, B> {
     point: Option<(i32, i32)>,
     outcome: WindowsGuardedInputOutcome,
     pending_releases: Vec<Event>,
+    stage: WindowsGuardedInputStage,
 }
 
 impl<B: InputBackend> Transaction<'_, B> {
     fn mutate(&mut self, events: &[Event], cursor: Option<(i32, i32)>) -> Result<(), Reason> {
+        self.stage = if cursor.is_some() {
+            WindowsGuardedInputStage::CursorMove
+        } else {
+            WindowsGuardedInputStage::InputDispatch
+        };
         let receipt = self
             .backend
             .mutate(self.fence, self.point, events, cursor, false)?;
@@ -459,10 +497,19 @@ impl<B: InputBackend> Transaction<'_, B> {
         mut self,
         result: Result<(), Reason>,
     ) -> Result<WindowsGuardedInputOutcome, WindowsGuardedInputError> {
+        // Freeze the original failed proof before release-only cleanup. Never
+        // retry a failed fence just to obtain diagnostic metadata.
+        let mut visibility_failure = self.backend.visibility_failure();
         let cleanup = self.cleanup();
-        let result = result
-            .and(cleanup)
-            .and_then(|()| self.backend.check(self.fence, self.point));
+        if result.is_ok() && cleanup.is_err() {
+            self.stage = WindowsGuardedInputStage::OwnedReleaseCleanup;
+        }
+        let result = result.and(cleanup).and_then(|()| {
+            self.stage = WindowsGuardedInputStage::PostDispatchValidation;
+            let result = self.backend.check(self.fence, self.point);
+            visibility_failure = self.backend.visibility_failure();
+            result
+        });
         match result {
             Ok(()) => {
                 self.outcome.delivery_completed = true;
@@ -470,6 +517,12 @@ impl<B: InputBackend> Transaction<'_, B> {
                 Ok(self.outcome)
             }
             Err(reason) => Err(WindowsGuardedInputError {
+                stage: self.stage,
+                visibility_failure: if reason == Reason::TargetOccluded {
+                    visibility_failure.map(Box::new)
+                } else {
+                    None
+                },
                 reason,
                 outcome: self.outcome,
             }),
@@ -508,6 +561,7 @@ fn run_click<B: InputBackend>(
         point: Some(point),
         outcome: WindowsGuardedInputOutcome::new(WindowsGuardedInputOperation::Click),
         pending_releases: Vec::new(),
+        stage: WindowsGuardedInputStage::Setup,
     };
     let result = (|| {
         if !(1..=2).contains(&count) {
@@ -552,6 +606,7 @@ fn run_keypress<B: InputBackend>(
         point: None,
         outcome: WindowsGuardedInputOutcome::new(WindowsGuardedInputOperation::Keypress),
         pending_releases: Vec::new(),
+        stage: WindowsGuardedInputStage::Setup,
     };
     let result = (|| {
         let keys = checked_keys(keys, false)?;
@@ -566,6 +621,7 @@ fn run_keypress<B: InputBackend>(
             transaction.mutate(&events, None)?;
             let deadline = transaction.backend.elapsed_ms().saturating_add(duration);
             while transaction.backend.elapsed_ms() < deadline {
+                transaction.stage = WindowsGuardedInputStage::HoldValidation;
                 if transaction.backend.interrupted() {
                     return Err(Reason::Interrupted);
                 }
@@ -619,6 +675,7 @@ fn run_text<B: InputBackend>(
         point: None,
         outcome: WindowsGuardedInputOutcome::new(WindowsGuardedInputOperation::Text),
         pending_releases: Vec::new(),
+        stage: WindowsGuardedInputStage::Setup,
     };
     let result = text_events(text).and_then(|events| transaction.mutate(&events, None));
     transaction.finish(result)
@@ -634,12 +691,15 @@ fn with_native_backend<G: FnMut() -> Result<(), UiaError>, I: FnMut() -> bool>(
 ) -> Result<WindowsGuardedInputOutcome, WindowsGuardedInputError> {
     let _dpi = ThreadDpiAwarenessGuard::per_monitor_v2().map_err(|_| WindowsGuardedInputError {
         reason: Reason::TargetUnavailable,
+        stage: WindowsGuardedInputStage::Setup,
+        visibility_failure: None,
         outcome: WindowsGuardedInputOutcome::new(operation),
     })?;
     let mut backend = NativeBackend {
         gate,
         interrupted,
         started: Instant::now(),
+        visibility_failure: None,
     };
     run(&mut backend)
 }

@@ -584,6 +584,8 @@ pub enum ComputerUseErrorCode {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ComputerUseErrorDetails {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guarded_input: Option<ComputerUseGuardedInputDiagnostic>,
     /// Content-free native capture proof. Never contains window titles, UI text,
     /// executable paths, arbitrary backend messages, or captured content.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -867,4 +869,64 @@ impl ComputerUseSessionStopResult {
         self.success &= !pending;
         self
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ComputerUsePhysicalInputFailureReason {
+    InvalidRequest,
+    TargetUnavailable,
+    InstanceChanged,
+    BoundsChanged,
+    DpiChanged,
+    TargetHidden,
+    TargetMinimized,
+    TargetNotForeground,
+    TargetOccluded,
+    PointOutsideTarget,
+    TargetOutsideDesktop,
+    DesktopUnavailable,
+    InjectionIncomplete,
+    Interrupted,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ComputerUseGuardedInputOperation {
+    Click,
+    Keypress,
+    Text,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ComputerUseGuardedInputStage {
+    Setup,
+    CursorMove,
+    InputDispatch,
+    HoldValidation,
+    OwnedReleaseCleanup,
+    PostDispatchValidation,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ComputerUseGuardedInputOutcome {
+    pub operation: ComputerUseGuardedInputOperation,
+    pub mutation_attempted: bool,
+    pub cursor_move_attempted: bool,
+    pub cursor_move_succeeded: bool,
+    pub requested_events: u32,
+    pub inserted_events: u32,
+    pub cleanup_requested_events: u32,
+    pub cleanup_inserted_events: u32,
+    pub delivery_completed: bool,
+    pub post_dispatch_validated: bool,
+    pub fresh_observation_required: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ComputerUseGuardedInputDiagnostic {
+    pub reason: ComputerUsePhysicalInputFailureReason,
+    pub stage: ComputerUseGuardedInputStage,
+    pub outcome: ComputerUseGuardedInputOutcome,
 }

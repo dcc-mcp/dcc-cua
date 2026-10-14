@@ -1693,3 +1693,155 @@ async fn capture_diagnostics_observation_only_stop_and_expiry_remain_closed() {
         .unwrap_err();
     assert!(error.contains("expired"), "{error}");
 }
+
+fn guarded_input_fixture() -> Value {
+    json!({"reason":"target_occluded","stage":"post_dispatch_validation",
+    "outcome":{"operation":"click","mutation_attempted":true,
+    "cursor_move_attempted":true,"cursor_move_succeeded":true,
+    "requested_events":3,"inserted_events":3,"cleanup_requested_events":0,
+    "cleanup_inserted_events":0,"delivery_completed":false,
+    "post_dispatch_validated":false,"fresh_observation_required":true}})
+}
+
+#[rstest]
+#[tokio::test]
+async fn guarded_input_survives_actual_public_task_remote_error_adapter() {
+    // Exercise the real framed Host client and task_call adapter. This fake
+    // server performs no driver, native capture, Host startup, or window call.
+    let capture = root_bounds_capture_fixture();
+    let input = guarded_input_fixture();
+    let (client_stream, mut host_stream) = tokio::io::duplex(32 * 1024);
+    let host_task = tokio::spawn(async move {
+        for step in 0..3 {
+            let bytes = dcc_cua_protocol::read_frame(
+                &mut host_stream,
+                dcc_cua_protocol::MAX_JSON_FRAME_BYTES,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            let request: Value = serde_json::from_slice(&bytes).unwrap();
+            let mut response = match step {
+                0 => {
+                    assert_eq!(request["method"], "hello");
+                    json!({"type":"hello", "capabilities":[]})
+                }
+                1 => {
+                    assert_eq!(request["method"], "open_session");
+                    json!({
+                        "type":"session_opened", "session_id":"fixture-session",
+                        "window_capability":"PRIVATE_CAPABILITY",
+                        "target":{"process_id":42,"window_handle":7,"window_title":"PRIVATE_TITLE"}
+                    })
+                }
+                2 => {
+                    assert_eq!(request["method"], "execute_action");
+                    assert_eq!(request["params"]["session_id"], "fixture-session");
+                    assert_eq!(request["params"]["task_grant_id"], "fixture-grant");
+                    assert_eq!(request["params"]["window_capability"], "PRIVATE_CAPABILITY");
+                    json!({
+                        "type":"error", "code":"invalid_target", "message":"original refusal",
+                        "details":{"capture":capture, "guarded_input":input, "PRIVATE_DETAILS":"PRIVATE_DETAIL_VALUE"},
+                        "task_context":{"target":{"process_id":999,"window_handle":888}},
+                        "PRIVATE_RESPONSE":"PRIVATE_RESPONSE_VALUE"
+                    })
+                }
+                _ => unreachable!(),
+            };
+            response["request_id"] = request["request_id"].clone();
+            dcc_cua_protocol::write_frame(
+                &mut host_stream,
+                response.to_string().as_bytes(),
+                dcc_cua_protocol::MAX_JSON_FRAME_BYTES,
+            )
+            .await
+            .unwrap();
+            host_stream.flush().await.unwrap();
+        }
+    });
+    let mut client = HostClient::from_stream(client_stream);
+    client.hello("pure-capture-error-fixture").await.unwrap();
+    let session = client
+        .open_logical_task_session(
+            "fixture-session",
+            json!({"task_grant_id":"fixture-grant"}),
+            DEFAULT_IDLE_TIMEOUT_MS,
+        )
+        .await
+        .unwrap();
+    let mut server = test_server();
+    let mut task = pixels_task();
+    task["allowed_methods"] = json!(["execute_action"]);
+    task["allowed_actions"] = json!([{"action":"click","input_kind":"raw_input",
+        "secret_input":false,"authorization_category":"raw_input"}]);
+    let prepared = server.prepare_task(task).unwrap();
+    let task_id = prepared["task_id"].as_str().unwrap().to_owned();
+    server.proposals.get_mut(&task_id).unwrap().session = Some(session);
+    let result = server
+        .call_tool(json!({
+            "name":"dcc_cua_task_call",
+            "arguments":{"task_id":task_id,"method":"execute_action","params":{"observation_id":"fixture-observation","action":{"action":"click","input_kind":"raw_input","intent":"ordinary_edit","x":1167,"y":205}}}
+        }))
+        .await
+        .unwrap();
+    host_task.await.unwrap();
+    assert_eq!(result["isError"], true);
+    let payload = &result["structuredContent"];
+    assert_eq!(payload["ok"], false);
+    assert_eq!(
+        payload["error"],
+        "host returned invalid_target: original refusal"
+    );
+    assert_eq!(payload["task_context"]["provider"], "dcc-cua");
+    assert_eq!(
+        payload["task_context"]["runtime_version"],
+        env!("CARGO_PKG_VERSION")
+    );
+    assert_eq!(payload["task_context"]["task_id"], task_id);
+    assert_eq!(
+        payload["task_context"]["target"],
+        json!({"process_id":42,"window_handle":7})
+    );
+    let expected: dcc_cua_core::ComputerUseGuardedInputDiagnostic =
+        serde_json::from_value(guarded_input_fixture()).unwrap();
+    assert_eq!(
+        payload["details"]["guarded_input"],
+        serde_json::to_value(expected).unwrap()
+    );
+    assert_eq!(payload["details"]["capture"]["blocker_window_handle"], 91);
+    assert!(!result.to_string().contains("PRIVATE_"));
+    assert!(payload.get("observation_id").is_none());
+    assert!(payload.get("image").is_none());
+    assert!(payload.get("window_capability").is_none());
+    let text: Value = serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(&text, payload);
+}
+
+#[rstest]
+#[case("valid")]
+#[case("invalid_stage")]
+#[case("invalid_reason")]
+#[case("invalid_count")]
+#[case("missing_outcome")]
+fn guarded_input_projection_rejects_malformed_fields_and_drops_private_metadata(
+    #[case] variant: &str,
+) {
+    let mut input = guarded_input_fixture();
+    match variant {
+        "invalid_stage" => input["stage"] = json!("PRIVATE_STAGE"),
+        "invalid_reason" => input["reason"] = json!("PRIVATE_REASON"),
+        "invalid_count" => input["outcome"]["inserted_events"] = json!(-1),
+        "missing_outcome" => {
+            input.as_object_mut().unwrap().remove("outcome");
+        }
+        _ => {}
+    }
+    input["PRIVATE_FIELD"] = json!("PRIVATE_VALUE");
+    let result = crate::failure_output::guarded_input_failure_details(&json!({
+        "guarded_input":input,"capture":root_bounds_capture_fixture(),"PRIVATE_KEY":"PRIVATE_VALUE"}));
+    if variant == "valid" {
+        assert!(!result.unwrap().to_string().contains("PRIVATE_"));
+    } else {
+        assert!(result.is_none());
+    }
+}

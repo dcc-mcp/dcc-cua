@@ -93,6 +93,16 @@ pub(super) fn fatal_error_value(error: &(dyn std::error::Error + 'static)) -> Va
                 }
             });
         }
+        if let Some(details) = error
+            .details
+            .as_ref()
+            .and_then(|details| serde_json::to_value(details).ok())
+            .as_ref()
+            .and_then(guarded_input_failure_details)
+        {
+            return json!({"success":false,"error":{"code":error.code,
+                "message":PUBLIC_FAILURE_MESSAGE,"details":details}});
+        }
         if let Some(capture) = error
             .details
             .as_ref()
@@ -124,6 +134,17 @@ pub(super) fn fatal_error_value(error: &(dyn std::error::Error + 'static)) -> Va
         ) {
             return overlay_exclusion_failure();
         }
+        if let HostClientError::Remote { code, response, .. } = error
+            && let Some(details) = response
+                .get("details")
+                .and_then(guarded_input_failure_details)
+        {
+            let code = serde_json::from_value::<ComputerUseErrorCode>(json!(code))
+                .map(|code| json!(code))
+                .unwrap_or_else(|_| json!("host_remote_failed"));
+            return json!({"success":false,"error":{"code":code,
+                "message":PUBLIC_FAILURE_MESSAGE,"details":details}});
+        }
         let code = match error {
             HostClientError::Io(_) => "host_transport_failed",
             HostClientError::Protocol(_) => "host_protocol_failed",
@@ -139,4 +160,19 @@ pub(super) fn fatal_error_value(error: &(dyn std::error::Error + 'static)) -> Va
         "success": false,
         "error": {"code": "command_failed", "message": PUBLIC_FAILURE_MESSAGE},
     })
+}
+
+/// Project finite, content-free guarded-input metadata across public boundaries.
+pub(super) fn guarded_input_failure_details(details: &Value) -> Option<Value> {
+    let input = serde_json::from_value::<dcc_cua_core::ComputerUseGuardedInputDiagnostic>(
+        details.get("guarded_input")?.clone(),
+    )
+    .ok()?;
+    let mut projected = json!({"guarded_input":input});
+    if let Some(capture) = details.get("capture").and_then(|value| {
+        serde_json::from_value::<dcc_cua_core::ComputerUseCaptureDiagnostic>(value.clone()).ok()
+    }) {
+        projected["capture"] = serde_json::to_value(capture).expect("finite capture metadata");
+    }
+    Some(projected)
 }

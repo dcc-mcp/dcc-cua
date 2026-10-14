@@ -172,7 +172,10 @@ fn physical_point(
 }
 
 #[cfg(windows)]
-fn input_error(failure: dcc_cua_platform_windows::WindowsGuardedInputError) -> ComputerUseError {
+fn input_error(
+    failure: dcc_cua_platform_windows::WindowsGuardedInputError,
+    target: dcc_cua_platform_windows::UiaTarget,
+) -> ComputerUseError {
     use dcc_cua_platform_windows::WindowsPhysicalInputFailureReason as Reason;
     let code = match failure.reason {
         Reason::InvalidRequest | Reason::PointOutsideTarget => ComputerUseErrorCode::InvalidAction,
@@ -189,8 +192,117 @@ fn input_error(failure: dcc_cua_platform_windows::WindowsGuardedInputError) -> C
         Reason::Interrupted => ComputerUseErrorCode::UserInterrupted,
         Reason::InjectionIncomplete => ComputerUseErrorCode::InputFailed,
     };
+    let reason = match failure.reason {
+        dcc_cua_platform_windows::WindowsPhysicalInputFailureReason::InvalidRequest => {
+            ComputerUsePhysicalInputFailureReason::InvalidRequest
+        }
+        dcc_cua_platform_windows::WindowsPhysicalInputFailureReason::TargetUnavailable => {
+            ComputerUsePhysicalInputFailureReason::TargetUnavailable
+        }
+        dcc_cua_platform_windows::WindowsPhysicalInputFailureReason::InstanceChanged => {
+            ComputerUsePhysicalInputFailureReason::InstanceChanged
+        }
+        dcc_cua_platform_windows::WindowsPhysicalInputFailureReason::BoundsChanged => {
+            ComputerUsePhysicalInputFailureReason::BoundsChanged
+        }
+        dcc_cua_platform_windows::WindowsPhysicalInputFailureReason::DpiChanged => {
+            ComputerUsePhysicalInputFailureReason::DpiChanged
+        }
+        dcc_cua_platform_windows::WindowsPhysicalInputFailureReason::TargetHidden => {
+            ComputerUsePhysicalInputFailureReason::TargetHidden
+        }
+        dcc_cua_platform_windows::WindowsPhysicalInputFailureReason::TargetMinimized => {
+            ComputerUsePhysicalInputFailureReason::TargetMinimized
+        }
+        dcc_cua_platform_windows::WindowsPhysicalInputFailureReason::TargetNotForeground => {
+            ComputerUsePhysicalInputFailureReason::TargetNotForeground
+        }
+        dcc_cua_platform_windows::WindowsPhysicalInputFailureReason::TargetOccluded => {
+            ComputerUsePhysicalInputFailureReason::TargetOccluded
+        }
+        dcc_cua_platform_windows::WindowsPhysicalInputFailureReason::PointOutsideTarget => {
+            ComputerUsePhysicalInputFailureReason::PointOutsideTarget
+        }
+        dcc_cua_platform_windows::WindowsPhysicalInputFailureReason::TargetOutsideDesktop => {
+            ComputerUsePhysicalInputFailureReason::TargetOutsideDesktop
+        }
+        dcc_cua_platform_windows::WindowsPhysicalInputFailureReason::DesktopUnavailable => {
+            ComputerUsePhysicalInputFailureReason::DesktopUnavailable
+        }
+        dcc_cua_platform_windows::WindowsPhysicalInputFailureReason::InjectionIncomplete => {
+            ComputerUsePhysicalInputFailureReason::InjectionIncomplete
+        }
+        dcc_cua_platform_windows::WindowsPhysicalInputFailureReason::Interrupted => {
+            ComputerUsePhysicalInputFailureReason::Interrupted
+        }
+    };
+    let stage = match failure.stage {
+        dcc_cua_platform_windows::WindowsGuardedInputStage::Setup => {
+            ComputerUseGuardedInputStage::Setup
+        }
+        dcc_cua_platform_windows::WindowsGuardedInputStage::CursorMove => {
+            ComputerUseGuardedInputStage::CursorMove
+        }
+        dcc_cua_platform_windows::WindowsGuardedInputStage::InputDispatch => {
+            ComputerUseGuardedInputStage::InputDispatch
+        }
+        dcc_cua_platform_windows::WindowsGuardedInputStage::HoldValidation => {
+            ComputerUseGuardedInputStage::HoldValidation
+        }
+        dcc_cua_platform_windows::WindowsGuardedInputStage::OwnedReleaseCleanup => {
+            ComputerUseGuardedInputStage::OwnedReleaseCleanup
+        }
+        dcc_cua_platform_windows::WindowsGuardedInputStage::PostDispatchValidation => {
+            ComputerUseGuardedInputStage::PostDispatchValidation
+        }
+    };
+    let operation = match failure.outcome.operation {
+        dcc_cua_platform_windows::WindowsGuardedInputOperation::Click => {
+            ComputerUseGuardedInputOperation::Click
+        }
+        dcc_cua_platform_windows::WindowsGuardedInputOperation::Keypress => {
+            ComputerUseGuardedInputOperation::Keypress
+        }
+        dcc_cua_platform_windows::WindowsGuardedInputOperation::Text => {
+            ComputerUseGuardedInputOperation::Text
+        }
+    };
+    let capture = failure
+        .visibility_failure
+        .as_deref()
+        .copied()
+        .and_then(|native| {
+            super::map_visible_capture_diagnostic(
+                code,
+                ComputerUseCaptureStage::VisibleDesktopProof,
+                target.process_id,
+                target.window_handle,
+                native,
+                "native input visibility proof refused",
+            )
+            .details
+            .and_then(|details| details.capture)
+        });
     let attempted = failure.outcome.mutation_attempted;
     ComputerUseError::new(code, failure.to_string()).with_details(ComputerUseErrorDetails {
+        capture,
+        guarded_input: Some(ComputerUseGuardedInputDiagnostic {
+            reason,
+            stage,
+            outcome: ComputerUseGuardedInputOutcome {
+                operation,
+                mutation_attempted: failure.outcome.mutation_attempted,
+                cursor_move_attempted: failure.outcome.cursor_move_attempted,
+                cursor_move_succeeded: failure.outcome.cursor_move_succeeded,
+                requested_events: failure.outcome.requested_events,
+                inserted_events: failure.outcome.inserted_events,
+                cleanup_requested_events: failure.outcome.cleanup_requested_events,
+                cleanup_inserted_events: failure.outcome.cleanup_inserted_events,
+                delivery_completed: failure.outcome.delivery_completed,
+                post_dispatch_validated: failure.outcome.post_dispatch_validated,
+                fresh_observation_required: failure.outcome.fresh_observation_required,
+            },
+        }),
         phase: Some(if attempted {
             ComputerUseErrorPhase::LocalMutationDispatch
         } else {
@@ -275,7 +387,7 @@ pub(super) async fn perform_exact_pixel_action(
             action_attempted: Some(true), input_sent: Some(ComputerUseInputState::Unknown),
             completion: Some(ComputerUseCompletionState::Unknown), effect_unknown: Some(true),
             blind_retry: Some(false), fresh_observation_required: Some(true), ..Default::default() }))?
-        .map_err(input_error)?;
+        .map_err(|failure| input_error(failure, fence.target))?;
     let delivered = outcome.delivery_completed && outcome.post_dispatch_validated;
     Ok(ComputerUseToolResult {
         status: if delivered { ComputerUseToolStatus::Succeeded } else { ComputerUseToolStatus::Rejected },

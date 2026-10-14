@@ -1601,6 +1601,14 @@ fn task_remote_error(
         // arbitrary remote response fields, titles, paths, or capabilities.
         payload["details"] = json!({"capture": capture});
     }
+    if method == "execute_action"
+        && let HostClientError::Remote { response, .. } = error
+        && let Some(details) = response
+            .get("details")
+            .and_then(crate::failure_output::guarded_input_failure_details)
+    {
+        payload["details"] = details;
+    }
     if method == "set_window_frame"
         && let HostClientError::Remote { response, .. } = error
         && let Some(details) = response

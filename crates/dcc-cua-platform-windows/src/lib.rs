@@ -71,8 +71,8 @@ pub use input::{
 #[cfg(windows)]
 pub use physical_input_fence::{
     WindowsGuardedInputError, WindowsGuardedInputOperation, WindowsGuardedInputOutcome,
-    WindowsPhysicalInputFailureReason, WindowsPhysicalInputFence, send_guarded_click,
-    send_guarded_keypress, send_guarded_text,
+    WindowsGuardedInputStage, WindowsPhysicalInputFailureReason, WindowsPhysicalInputFence,
+    send_guarded_click, send_guarded_keypress, send_guarded_text,
 };
 
 #[cfg(windows)]

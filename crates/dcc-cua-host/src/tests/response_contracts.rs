@@ -807,3 +807,34 @@ async fn raw_input_turn_remains_exclusive_through_post_action_capture() {
     first_turn.await.unwrap();
     waiting_turn.await.unwrap();
 }
+
+#[rstest]
+fn host_preserves_guarded_input_stage_and_partial_outcome() {
+    let input: dcc_cua_core::ComputerUseGuardedInputDiagnostic = serde_json::from_value(
+        json!({"reason":"target_occluded","stage":"post_dispatch_validation",
+    "outcome":{"operation":"click","mutation_attempted":true,
+    "cursor_move_attempted":true,"cursor_move_succeeded":true,
+    "requested_events":3,"inserted_events":3,"cleanup_requested_events":0,
+    "cleanup_inserted_events":0,"delivery_completed":false,
+    "post_dispatch_validated":false,"fresh_observation_required":true}}),
+    )
+    .unwrap();
+    let error = HostError::ComputerUse(
+        ComputerUseError::new(
+            ComputerUseErrorCode::TargetUnavailable,
+            "guarded physical input failed: TargetOccluded",
+        )
+        .with_details(dcc_cua_core::ComputerUseErrorDetails {
+            guarded_input: Some(input.clone()),
+            ..Default::default()
+        }),
+    );
+    let response = host_error_response(&error);
+    assert_eq!(response["code"], "target_unavailable");
+    assert_eq!(
+        response["details"]["guarded_input"],
+        serde_json::to_value(input).unwrap()
+    );
+    assert!(response.get("observation_id").is_none());
+    assert!(response.get("image").is_none());
+}
