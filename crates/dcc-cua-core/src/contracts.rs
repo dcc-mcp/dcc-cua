@@ -585,6 +585,8 @@ pub enum ComputerUseErrorCode {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ComputerUseErrorDetails {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activation: Option<ComputerUseActivationDiagnostic>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub guarded_input: Option<ComputerUseGuardedInputDiagnostic>,
     /// Content-free native capture proof. Never contains window titles, UI text,
     /// executable paths, arbitrary backend messages, or captured content.
@@ -929,4 +931,52 @@ pub struct ComputerUseGuardedInputDiagnostic {
     pub reason: ComputerUsePhysicalInputFailureReason,
     pub stage: ComputerUseGuardedInputStage,
     pub outcome: ComputerUseGuardedInputOutcome,
+}
+
+/// Finite metadata for an existing activation attempt; never a grant or retry.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ComputerUseActivationStage {
+    #[default]
+    AttemptsExhausted,
+    FinalValidation,
+    InputSynchronization,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ComputerUseActivationAttachCall {
+    pub succeeded: bool,
+    pub os_error: Option<u32>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ComputerUseActivationDiagnostic {
+    pub stage: ComputerUseActivationStage,
+    pub target_process_id: u32,
+    pub target_window_handle: u64,
+    pub caller_process_id: u32,
+    pub caller_thread_id: u32,
+    pub target_thread_id: u32,
+    pub foreground_thread_id: u32,
+    pub caller_is_gui_thread_before_attach: Option<bool>,
+    pub foreground_before: Option<ComputerUseActivationWindowIdentity>,
+    pub foreground_at_attach: Option<ComputerUseActivationWindowIdentity>,
+    pub foreground_after: Option<ComputerUseActivationWindowIdentity>,
+    pub direct_set_foreground_result: Option<bool>,
+    pub raise_window_result: Option<bool>,
+    pub raised_set_foreground_result: Option<bool>,
+    pub attached_set_foreground_result: Option<bool>,
+    pub bring_to_top_result: Option<bool>,
+    pub attach_foreground: Option<ComputerUseActivationAttachCall>,
+    pub attach_target: Option<ComputerUseActivationAttachCall>,
+    pub detach_foreground: Option<ComputerUseActivationAttachCall>,
+    pub detach_target: Option<ComputerUseActivationAttachCall>,
+    pub poll_observations: u32,
+    pub elapsed_micros: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ComputerUseActivationWindowIdentity {
+    pub window_handle: u64,
+    pub process_id: u32,
 }

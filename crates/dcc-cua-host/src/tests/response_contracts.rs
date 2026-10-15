@@ -838,3 +838,32 @@ fn host_preserves_guarded_input_stage_and_partial_outcome() {
     assert!(response.get("observation_id").is_none());
     assert!(response.get("image").is_none());
 }
+
+#[rstest]
+fn host_keeps_activation_refusal_receipts_without_observation_or_delivery() {
+    let activation:dcc_cua_core::ComputerUseActivationDiagnostic=serde_json::from_value(json!({"stage":"attempts_exhausted","target_process_id":42,"target_window_handle":7,
+ "caller_process_id":200,"caller_thread_id":10,"target_thread_id":11,"foreground_thread_id":12,
+ "foreground_before":{"window_handle":91,"process_id":100},
+ "foreground_at_attach":{"window_handle":92,"process_id":101},
+ "foreground_after":{"window_handle":93,"process_id":102},
+ "direct_set_foreground_result":false,"raise_window_result":true,
+ "raised_set_foreground_result":false,"attached_set_foreground_result":false,"bring_to_top_result":false,
+ "attach_foreground":{"succeeded":false,"os_error":87},
+ "attach_target":{"succeeded":false,"os_error":5},"detach_foreground":null,"detach_target":null,
+ "poll_observations":20,"elapsed_micros":101000})).unwrap();
+    let error = HostError::ComputerUse(
+        ComputerUseError::new(ComputerUseErrorCode::ForegroundActivationRefused, "refused")
+            .with_details(dcc_cua_core::ComputerUseErrorDetails {
+                activation: Some(activation.clone()),
+                ..Default::default()
+            }),
+    );
+    let response = host_error_response(&error);
+    assert_eq!(response["code"], "foreground_activation_refused");
+    assert_eq!(
+        response["details"]["activation"],
+        serde_json::to_value(activation).unwrap()
+    );
+    assert!(response.get("observation_id").is_none());
+    assert!(response.get("image").is_none());
+}

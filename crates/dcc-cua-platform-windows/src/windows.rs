@@ -3,28 +3,29 @@ use std::{
     process::{Child, ChildStdin, Command, Stdio},
     sync::mpsc::{self, Receiver, RecvTimeoutError},
     thread::{self, JoinHandle},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use base64::Engine as _;
 use serde_json::{Value, json};
 use windows_sys::Win32::{
-    Foundation::RECT,
-    System::Threading::{AttachThreadInput, GetCurrentThreadId},
+    Foundation::{GetLastError, RECT, SetLastError},
+    System::Threading::{AttachThreadInput, GetCurrentProcessId, GetCurrentThreadId},
     UI::{
         Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON, VK_MBUTTON, VK_RBUTTON},
         WindowsAndMessaging::{
             BringWindowToTop, GUITHREADINFO, GetForegroundWindow, GetGUIThreadInfo, GetWindowRect,
-            GetWindowThreadProcessId, HWND_TOP, IsIconic, IsWindow, IsWindowVisible, PostMessageW,
-            SMTO_ABORTIFHUNG, SW_RESTORE, SWP_ASYNCWINDOWPOS, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
-            SWP_SHOWWINDOW, SendMessageTimeoutW, SetForegroundWindow, SetWindowPos,
+            GetWindowThreadProcessId, HWND_TOP, IsGUIThread, IsIconic, IsWindow, IsWindowVisible,
+            PostMessageW, SMTO_ABORTIFHUNG, SW_RESTORE, SWP_ASYNCWINDOWPOS, SWP_NOMOVE, SWP_NOSIZE,
+            SWP_NOZORDER, SWP_SHOWWINDOW, SendMessageTimeoutW, SetForegroundWindow, SetWindowPos,
             ShowWindowAsync, WM_CLOSE, WM_NULL,
         },
     },
 };
 
 use crate::{
-    UiaAction, UiaError, UiaTarget, WindowsForegroundRelation, WindowsPointerButton,
+    UiaAction, UiaError, UiaTarget, WindowsActivationAttachCall, WindowsActivationDiagnostic,
+    WindowsActivationStage, WindowsForegroundRelation, WindowsPointerButton,
     WindowsRawInputSnapshot, WindowsWindowIdentity,
     snapshot::{ElementFence, SnapshotState, normalize, resolve_index},
 };
@@ -378,9 +379,59 @@ fn error_detail(error: &UiaError) -> &str {
     }
 }
 
-fn foreground_activation_refused(reason: impl Into<String>) -> UiaError {
+fn activation_window_identity(
+    hwnd: windows_sys::Win32::Foundation::HWND,
+) -> Option<WindowsWindowIdentity> {
+    if hwnd.is_null() {
+        return None;
+    }
+    let mut process_id = 0;
+    unsafe {
+        GetWindowThreadProcessId(hwnd, &mut process_id);
+    }
+    Some(WindowsWindowIdentity {
+        window_handle: hwnd as usize as u64,
+        process_id,
+    })
+}
+
+fn activation_diagnostic(
+    target: UiaTarget,
+    stage: WindowsActivationStage,
+) -> WindowsActivationDiagnostic {
+    WindowsActivationDiagnostic {
+        stage,
+        target_process_id: target.process_id,
+        target_window_handle: target.window_handle,
+        caller_process_id: unsafe { GetCurrentProcessId() },
+        caller_thread_id: unsafe { GetCurrentThreadId() },
+        target_thread_id: unsafe {
+            GetWindowThreadProcessId(
+                target.window_handle as windows_sys::Win32::Foundation::HWND,
+                std::ptr::null_mut(),
+            )
+        },
+        ..Default::default()
+    }
+}
+
+fn activation_final_diagnostic(
+    target: UiaTarget,
+    stage: WindowsActivationStage,
+    foreground: windows_sys::Win32::Foundation::HWND,
+) -> WindowsActivationDiagnostic {
+    let mut diagnostic = activation_diagnostic(target, stage);
+    diagnostic.foreground_after = activation_window_identity(foreground);
+    diagnostic
+}
+
+fn foreground_activation_refused(
+    reason: impl Into<String>,
+    diagnostic: WindowsActivationDiagnostic,
+) -> UiaError {
     UiaError::ForegroundActivationRefused {
         reason: reason.into(),
+        diagnostic: Some(Box::new(diagnostic)),
         background_delivery_viable: true,
         suggested_delivery_mode: Some("background".into()),
     }
@@ -448,10 +499,16 @@ pub fn activate_window(
     if let Some(frame) = frame_before_activation {
         restore_window_frame_after_activation(expected, frame)?;
     }
-    synchronize_activated_input_queue(expected)?;
-    if unsafe { GetForegroundWindow() } != expected {
+    synchronize_activated_input_queue(expected, target)?;
+    let foreground = unsafe { GetForegroundWindow() };
+    if foreground != expected {
         return Err(foreground_activation_refused(
             "the exact target was no longer foreground at activation final validation",
+            activation_final_diagnostic(
+                target,
+                WindowsActivationStage::FinalValidation,
+                foreground,
+            ),
         ));
     }
     Ok(())
@@ -531,6 +588,7 @@ fn restore_window_frame_after_activation(
 
 fn synchronize_activated_input_queue(
     expected: windows_sys::Win32::Foundation::HWND,
+    target: UiaTarget,
 ) -> Result<(), UiaError> {
     let mut message_result = 0;
     let synchronized = unsafe {
@@ -549,9 +607,15 @@ fn synchronize_activated_input_queue(
             "the exact target did not process its foreground activation before input".into(),
         ));
     }
-    if unsafe { GetForegroundWindow() } != expected {
+    let foreground = unsafe { GetForegroundWindow() };
+    if foreground != expected {
         return Err(foreground_activation_refused(
             "the exact target lost foreground while synchronizing activation input",
+            activation_final_diagnostic(
+                target,
+                WindowsActivationStage::InputSynchronization,
+                foreground,
+            ),
         ));
     }
     Ok(())
@@ -559,36 +623,44 @@ fn synchronize_activated_input_queue(
 
 fn activate_window_after_gate(target: UiaTarget) -> Result<(), UiaError> {
     let expected = require_available_window_handle(target, "activation")?;
+    let before = unsafe { GetForegroundWindow() };
+    if before == expected {
+        return Ok(());
+    }
+    let started = Instant::now();
+    let mut diagnostic = activation_diagnostic(target, WindowsActivationStage::AttemptsExhausted);
+    diagnostic.foreground_before = activation_window_identity(before);
+    // SetForegroundWindow documents a BOOL result, not a GetLastError contract.
+    diagnostic.direct_set_foreground_result = Some(unsafe { SetForegroundWindow(expected) } != 0);
     if unsafe { GetForegroundWindow() } == expected {
         return Ok(());
     }
-
-    unsafe { SetForegroundWindow(expected) };
-    if unsafe { GetForegroundWindow() } == expected {
-        return Ok(());
-    }
-
     let expected = require_available_window_handle(target, "fallback activation")?;
     let insert_after = match activation_raise_mode() {
         ActivationRaiseMode::NonTopMost => HWND_TOP,
     };
-    unsafe {
-        SetWindowPos(
-            expected,
-            insert_after,
-            0,
-            0,
-            0,
-            0,
-            SWP_ASYNCWINDOWPOS | SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
-        );
-        SetForegroundWindow(expected);
-    }
+    diagnostic.raise_window_result = Some(
+        unsafe {
+            SetWindowPos(
+                expected,
+                insert_after,
+                0,
+                0,
+                0,
+                0,
+                SWP_ASYNCWINDOWPOS | SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
+            )
+        } != 0,
+    );
+    diagnostic.raised_set_foreground_result = Some(unsafe { SetForegroundWindow(expected) } != 0);
     if unsafe { GetForegroundWindow() } != expected {
-        activate_with_attached_input(expected);
+        activate_with_attached_input(expected, &mut diagnostic);
     }
+    let mut foreground = std::ptr::null_mut();
     let activated = (0..20).any(|_| {
-        if unsafe { GetForegroundWindow() } == expected {
+        diagnostic.poll_observations += 1;
+        foreground = unsafe { GetForegroundWindow() };
+        if foreground == expected {
             return true;
         }
         thread::sleep(Duration::from_millis(5));
@@ -597,33 +669,86 @@ fn activate_window_after_gate(target: UiaTarget) -> Result<(), UiaError> {
     if activated {
         Ok(())
     } else {
+        diagnostic.foreground_after = activation_window_identity(foreground);
+        diagnostic.elapsed_micros = started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
         Err(foreground_activation_refused(
             "Windows could not make the exact target window foreground",
+            diagnostic,
         ))
     }
 }
 
-fn activate_with_attached_input(expected: windows_sys::Win32::Foundation::HWND) {
+fn attach_input_receipt(current: u32, other: u32, attach: bool) -> WindowsActivationAttachCall {
+    unsafe {
+        SetLastError(0);
+    }
+    let succeeded = unsafe { AttachThreadInput(current, other, i32::from(attach)) } != 0;
+    let os_error = if succeeded {
+        None
+    } else {
+        Some(unsafe { GetLastError() })
+    };
+    WindowsActivationAttachCall {
+        succeeded,
+        os_error,
+    }
+}
+
+fn activate_with_attached_input(
+    expected: windows_sys::Win32::Foundation::HWND,
+    diagnostic: &mut WindowsActivationDiagnostic,
+) {
     let current_thread = unsafe { GetCurrentThreadId() };
+    // FALSE is observational: do not convert/create a queue while diagnosing.
+    diagnostic.caller_is_gui_thread_before_attach = Some(unsafe { IsGUIThread(0) } != 0);
     let foreground = unsafe { GetForegroundWindow() };
-    let foreground_thread = unsafe { GetWindowThreadProcessId(foreground, std::ptr::null_mut()) };
+    let mut foreground_process_id = 0;
+    let foreground_thread =
+        unsafe { GetWindowThreadProcessId(foreground, &mut foreground_process_id) };
+    diagnostic.foreground_at_attach = if foreground.is_null() {
+        None
+    } else {
+        Some(WindowsWindowIdentity {
+            window_handle: foreground as usize as u64,
+            process_id: foreground_process_id,
+        })
+    };
     let expected_thread = unsafe { GetWindowThreadProcessId(expected, std::ptr::null_mut()) };
-    let attached_foreground = foreground_thread != 0
-        && foreground_thread != current_thread
-        && unsafe { AttachThreadInput(current_thread, foreground_thread, 1) } != 0;
-    let attached_expected = expected_thread != 0
+    diagnostic.foreground_thread_id = foreground_thread;
+    if foreground_thread != 0 && foreground_thread != current_thread {
+        diagnostic.attach_foreground = Some(attach_input_receipt(
+            current_thread,
+            foreground_thread,
+            true,
+        ));
+    }
+    if expected_thread != 0
         && expected_thread != current_thread
         && expected_thread != foreground_thread
-        && unsafe { AttachThreadInput(current_thread, expected_thread, 1) } != 0;
-    unsafe {
-        BringWindowToTop(expected);
-        SetForegroundWindow(expected);
-        if attached_expected {
-            AttachThreadInput(current_thread, expected_thread, 0);
-        }
-        if attached_foreground {
-            AttachThreadInput(current_thread, foreground_thread, 0);
-        }
+    {
+        diagnostic.attach_target =
+            Some(attach_input_receipt(current_thread, expected_thread, true));
+    }
+    diagnostic.bring_to_top_result = Some(unsafe { BringWindowToTop(expected) } != 0);
+    diagnostic.attached_set_foreground_result = Some(unsafe { SetForegroundWindow(expected) } != 0);
+    if diagnostic
+        .attach_target
+        .as_ref()
+        .is_some_and(|call| call.succeeded)
+    {
+        diagnostic.detach_target =
+            Some(attach_input_receipt(current_thread, expected_thread, false));
+    }
+    if diagnostic
+        .attach_foreground
+        .as_ref()
+        .is_some_and(|call| call.succeeded)
+    {
+        diagnostic.detach_foreground = Some(attach_input_receipt(
+            current_thread,
+            foreground_thread,
+            false,
+        ));
     }
 }
 

@@ -2086,3 +2086,34 @@ async fn cursor_move_preflight_rejection_preserves_session_and_evidence_without_
     assert_eq!(calls.load(AtomicOrdering::SeqCst), 0);
     assert!(names.lock().expect("read remote tool names").is_empty());
 }
+
+#[rstest]
+fn activation_attempt_wrapper_preserves_diagnostics_without_minting_input_delivery() {
+    let activation:ComputerUseActivationDiagnostic=serde_json::from_value(json!({"stage":"attempts_exhausted","target_process_id":42,"target_window_handle":7,
+ "caller_process_id":200,"caller_thread_id":10,"target_thread_id":11,"foreground_thread_id":12,
+ "foreground_before":{"window_handle":91,"process_id":100},
+ "foreground_at_attach":{"window_handle":92,"process_id":101},
+ "foreground_after":{"window_handle":93,"process_id":102},
+ "direct_set_foreground_result":false,"raise_window_result":true,
+ "raised_set_foreground_result":false,"attached_set_foreground_result":false,"bring_to_top_result":false,
+ "attach_foreground":{"succeeded":false,"os_error":87},
+ "attach_target":{"succeeded":false,"os_error":5},"detach_foreground":null,"detach_target":null,
+ "poll_observations":20,"elapsed_micros":101000})).unwrap();
+    let error = local_activation_attempt_failure(
+        ComputerUseError::new(ComputerUseErrorCode::ForegroundActivationRefused, "refused")
+            .with_details(ComputerUseErrorDetails {
+                activation: Some(activation.clone()),
+                ..Default::default()
+            }),
+    );
+    let details = error.details.unwrap();
+    assert_eq!(details.activation, Some(activation));
+    assert_eq!(
+        details.phase,
+        Some(ComputerUseErrorPhase::ActivationDispatch)
+    );
+    assert_eq!(details.focus_mutation_attempted, Some(true));
+    assert_eq!(details.action_attempted, Some(false));
+    assert_eq!(details.input_sent, Some(ComputerUseInputState::NotSent));
+    assert_eq!(details.blind_retry, Some(false));
+}

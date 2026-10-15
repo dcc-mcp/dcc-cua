@@ -37,7 +37,8 @@ pub use capture_geometry::{
     resolve_exact_wgc_geometry, validate_native_window_geometry, validate_wgc_frame_geometry,
 };
 pub use contracts::{
-    UiaAction, UiaError, UiaTarget, WindowsForegroundRelation, WindowsPointerButton,
+    UiaAction, UiaError, UiaTarget, WindowsActivationAttachCall, WindowsActivationDiagnostic,
+    WindowsActivationStage, WindowsForegroundRelation, WindowsPointerButton,
     WindowsRawInputSnapshot, WindowsWindowIdentity,
 };
 

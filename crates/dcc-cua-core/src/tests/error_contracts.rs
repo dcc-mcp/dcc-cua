@@ -168,6 +168,7 @@ fn foreground_activation_refusal_is_typed_and_suggests_safe_background_delivery(
         "activate exact target",
         dcc_cua_platform_windows::UiaError::ForegroundActivationRefused {
             reason: "Windows rejected foreground activation".into(),
+            diagnostic: None,
             background_delivery_viable: true,
             suggested_delivery_mode: Some("background".into()),
         },
@@ -336,4 +337,39 @@ fn exact_status_driver_markers_override_browser_and_uia_classification(
         .code,
         expected
     );
+}
+
+#[cfg(windows)]
+#[rstest]
+fn activation_refusal_keeps_exact_foreground_samples_and_native_api_receipts() {
+    let native: dcc_cua_platform_windows::WindowsActivationDiagnostic = serde_json::from_value(json!({"stage":"attempts_exhausted","target_process_id":42,"target_window_handle":7,
+ "caller_process_id":200,"caller_thread_id":10,"target_thread_id":11,"foreground_thread_id":12,
+ "foreground_before":{"window_handle":91,"process_id":100},
+ "foreground_at_attach":{"window_handle":92,"process_id":101},
+ "foreground_after":{"window_handle":93,"process_id":102},
+ "direct_set_foreground_result":false,"raise_window_result":true,
+ "raised_set_foreground_result":false,"attached_set_foreground_result":false,"bring_to_top_result":false,
+ "attach_foreground":{"succeeded":false,"os_error":87},
+ "attach_target":{"succeeded":false,"os_error":5},"detach_foreground":null,"detach_target":null,
+ "poll_observations":20,"elapsed_micros":101000})).unwrap();
+    let error = crate::runtime::map_windows_window_mutation_error(
+        "explicit activation",
+        dcc_cua_platform_windows::UiaError::ForegroundActivationRefused {
+            reason: "Windows could not make exact target foreground".into(),
+            diagnostic: Some(Box::new(native)),
+            background_delivery_viable: true,
+            suggested_delivery_mode: Some("background".into()),
+        },
+    );
+    assert_eq!(
+        error.code,
+        ComputerUseErrorCode::ForegroundActivationRefused
+    );
+    let activation = error.details.unwrap().activation.unwrap();
+    assert_eq!(activation.target_window_handle, 7);
+    assert_eq!(activation.foreground_after.unwrap().window_handle, 93);
+    assert_eq!(activation.foreground_at_attach.unwrap().process_id, 101);
+    assert_eq!(activation.attach_foreground.unwrap().os_error, Some(87));
+    assert_eq!(activation.direct_set_foreground_result, Some(false));
+    assert_eq!(activation.poll_observations, 20);
 }

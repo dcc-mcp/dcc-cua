@@ -145,6 +145,54 @@ impl ComputerUseSession {
 }
 
 #[cfg(windows)]
+fn map_windows_activation_diagnostic(
+    native: &dcc_cua_platform_windows::WindowsActivationDiagnostic,
+) -> ComputerUseActivationDiagnostic {
+    use dcc_cua_platform_windows::WindowsActivationStage as Native;
+    let stage = match native.stage {
+        Native::AttemptsExhausted => ComputerUseActivationStage::AttemptsExhausted,
+        Native::FinalValidation => ComputerUseActivationStage::FinalValidation,
+        Native::InputSynchronization => ComputerUseActivationStage::InputSynchronization,
+    };
+    let window = |identity: &dcc_cua_platform_windows::WindowsWindowIdentity| {
+        ComputerUseActivationWindowIdentity {
+            window_handle: identity.window_handle,
+            process_id: identity.process_id,
+        }
+    };
+    let call = |receipt: &dcc_cua_platform_windows::WindowsActivationAttachCall| {
+        ComputerUseActivationAttachCall {
+            succeeded: receipt.succeeded,
+            os_error: receipt.os_error,
+        }
+    };
+    ComputerUseActivationDiagnostic {
+        stage,
+        target_process_id: native.target_process_id,
+        target_window_handle: native.target_window_handle,
+        caller_process_id: native.caller_process_id,
+        caller_thread_id: native.caller_thread_id,
+        target_thread_id: native.target_thread_id,
+        foreground_thread_id: native.foreground_thread_id,
+        caller_is_gui_thread_before_attach: native.caller_is_gui_thread_before_attach,
+        direct_set_foreground_result: native.direct_set_foreground_result,
+        raise_window_result: native.raise_window_result,
+        raised_set_foreground_result: native.raised_set_foreground_result,
+        attached_set_foreground_result: native.attached_set_foreground_result,
+        bring_to_top_result: native.bring_to_top_result,
+        poll_observations: native.poll_observations,
+        elapsed_micros: native.elapsed_micros,
+        foreground_before: native.foreground_before.as_ref().map(window),
+        foreground_at_attach: native.foreground_at_attach.as_ref().map(window),
+        foreground_after: native.foreground_after.as_ref().map(window),
+        attach_foreground: native.attach_foreground.as_ref().map(call),
+        attach_target: native.attach_target.as_ref().map(call),
+        detach_foreground: native.detach_foreground.as_ref().map(call),
+        detach_target: native.detach_target.as_ref().map(call),
+    }
+}
+
+#[cfg(windows)]
 pub(crate) fn map_windows_window_mutation_error(
     context: &str,
     error: dcc_cua_platform_windows::UiaError,
@@ -153,8 +201,10 @@ pub(crate) fn map_windows_window_mutation_error(
         dcc_cua_platform_windows::UiaError::ForegroundActivationRefused {
             background_delivery_viable,
             suggested_delivery_mode,
+            diagnostic,
             ..
         } => Some(ComputerUseErrorDetails {
+            activation: diagnostic.as_deref().map(map_windows_activation_diagnostic),
             background_delivery_viable: Some(*background_delivery_viable),
             suggested_delivery_mode: suggested_delivery_mode.clone(),
             ..Default::default()

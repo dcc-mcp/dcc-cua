@@ -98,7 +98,7 @@ pub(super) fn fatal_error_value(error: &(dyn std::error::Error + 'static)) -> Va
             .as_ref()
             .and_then(|details| serde_json::to_value(details).ok())
             .as_ref()
-            .and_then(guarded_input_failure_details)
+            .and_then(native_mutation_failure_details)
         {
             return json!({"success":false,"error":{"code":error.code,
                 "message":PUBLIC_FAILURE_MESSAGE,"details":details}});
@@ -137,7 +137,7 @@ pub(super) fn fatal_error_value(error: &(dyn std::error::Error + 'static)) -> Va
         if let HostClientError::Remote { code, response, .. } = error
             && let Some(details) = response
                 .get("details")
-                .and_then(guarded_input_failure_details)
+                .and_then(native_mutation_failure_details)
         {
             let code = serde_json::from_value::<ComputerUseErrorCode>(json!(code))
                 .map(|code| json!(code))
@@ -162,13 +162,25 @@ pub(super) fn fatal_error_value(error: &(dyn std::error::Error + 'static)) -> Va
     })
 }
 
-/// Project finite, content-free guarded-input metadata across public boundaries.
-pub(super) fn guarded_input_failure_details(details: &Value) -> Option<Value> {
+/// Project finite, content-free native mutation metadata across public boundaries.
+pub(super) fn native_mutation_failure_details(details: &Value) -> Option<Value> {
     let input = serde_json::from_value::<dcc_cua_core::ComputerUseGuardedInputDiagnostic>(
-        details.get("guarded_input")?.clone(),
+        details.get("guarded_input").cloned().unwrap_or(Value::Null),
     )
-    .ok()?;
-    let mut projected = json!({"guarded_input":input});
+    .ok();
+    let activation = details.get("activation").and_then(|value| {
+        serde_json::from_value::<dcc_cua_core::ComputerUseActivationDiagnostic>(value.clone()).ok()
+    });
+    if input.is_none() && activation.is_none() {
+        return None;
+    }
+    let mut projected = json!({});
+    if let Some(input) = input {
+        projected["guarded_input"] = json!(input);
+    }
+    if let Some(activation) = activation {
+        projected["activation"] = json!(activation);
+    }
     if let Some(capture) = details.get("capture").and_then(|value| {
         serde_json::from_value::<dcc_cua_core::ComputerUseCaptureDiagnostic>(value.clone()).ok()
     }) {

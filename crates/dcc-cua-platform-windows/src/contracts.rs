@@ -94,7 +94,50 @@ pub enum UiaError {
     #[error("Windows refused exact-window foreground activation: {reason}")]
     ForegroundActivationRefused {
         reason: String,
+        diagnostic: Option<Box<WindowsActivationDiagnostic>>,
         background_delivery_viable: bool,
         suggested_delivery_mode: Option<String>,
     },
+}
+
+/// Finite metadata for an existing activation attempt; never a grant or retry.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WindowsActivationStage {
+    #[default]
+    AttemptsExhausted,
+    FinalValidation,
+    InputSynchronization,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WindowsActivationAttachCall {
+    pub succeeded: bool,
+    pub os_error: Option<u32>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WindowsActivationDiagnostic {
+    pub stage: WindowsActivationStage,
+    pub target_process_id: u32,
+    pub target_window_handle: u64,
+    pub caller_process_id: u32,
+    pub caller_thread_id: u32,
+    pub target_thread_id: u32,
+    pub foreground_thread_id: u32,
+    pub caller_is_gui_thread_before_attach: Option<bool>,
+    pub foreground_before: Option<WindowsWindowIdentity>,
+    pub foreground_at_attach: Option<WindowsWindowIdentity>,
+    pub foreground_after: Option<WindowsWindowIdentity>,
+    pub direct_set_foreground_result: Option<bool>,
+    pub raise_window_result: Option<bool>,
+    pub raised_set_foreground_result: Option<bool>,
+    pub attached_set_foreground_result: Option<bool>,
+    pub bring_to_top_result: Option<bool>,
+    pub attach_foreground: Option<WindowsActivationAttachCall>,
+    pub attach_target: Option<WindowsActivationAttachCall>,
+    pub detach_foreground: Option<WindowsActivationAttachCall>,
+    pub detach_target: Option<WindowsActivationAttachCall>,
+    pub poll_observations: u32,
+    pub elapsed_micros: u64,
 }

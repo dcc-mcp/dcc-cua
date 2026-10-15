@@ -1837,11 +1837,166 @@ fn guarded_input_projection_rejects_malformed_fields_and_drops_private_metadata(
         _ => {}
     }
     input["PRIVATE_FIELD"] = json!("PRIVATE_VALUE");
-    let result = crate::failure_output::guarded_input_failure_details(&json!({
+    let result = crate::failure_output::native_mutation_failure_details(&json!({
         "guarded_input":input,"capture":root_bounds_capture_fixture(),"PRIVATE_KEY":"PRIVATE_VALUE"}));
     if variant == "valid" {
         assert!(!result.unwrap().to_string().contains("PRIVATE_"));
     } else {
         assert!(result.is_none());
     }
+}
+
+fn activation_failure_fixture() -> Value {
+    json!({"stage":"attempts_exhausted","target_process_id":42,"target_window_handle":7,
+ "caller_process_id":200,"caller_thread_id":10,"target_thread_id":11,"foreground_thread_id":12,
+ "foreground_before":{"window_handle":91,"process_id":100},
+ "foreground_at_attach":{"window_handle":92,"process_id":101},
+ "foreground_after":{"window_handle":93,"process_id":102},
+ "direct_set_foreground_result":false,"raise_window_result":true,
+ "raised_set_foreground_result":false,"attached_set_foreground_result":false,"bring_to_top_result":false,
+ "attach_foreground":{"succeeded":false,"os_error":87},
+ "attach_target":{"succeeded":false,"os_error":5},"detach_foreground":null,"detach_target":null,
+ "poll_observations":20,"elapsed_micros":101000})
+}
+
+#[rstest]
+#[case("valid")]
+#[case("invalid_stage")]
+#[case("negative_count")]
+#[case("invalid_result")]
+fn native_activation_projection_is_finite_and_content_free(#[case] variant: &str) {
+    let mut activation = activation_failure_fixture();
+    match variant {
+        "invalid_stage" => activation["stage"] = json!("PRIVATE_STAGE"),
+        "negative_count" => activation["poll_observations"] = json!(-1),
+        "invalid_result" => activation["attach_foreground"]["succeeded"] = json!("PRIVATE_VALUE"),
+        _ => {}
+    }
+    activation["PRIVATE_FIELD"] = json!("PRIVATE_VALUE");
+    activation["foreground_after"]["PRIVATE_FIELD"] = json!("PRIVATE_VALUE");
+    let result = crate::failure_output::native_mutation_failure_details(&json!({
+        "activation":activation,"PRIVATE_DETAILS":"PRIVATE_VALUE"}));
+    if variant == "valid" {
+        let result = result.unwrap();
+        assert_eq!(
+            result["activation"]["foreground_after"]["window_handle"],
+            93
+        );
+        assert_eq!(result["activation"]["attach_foreground"]["os_error"], 87);
+        assert!(!result.to_string().contains("PRIVATE_"));
+    } else {
+        assert!(result.is_none());
+    }
+}
+
+#[rstest]
+#[tokio::test]
+async fn activation_refusal_survives_actual_public_task_remote_error_adapter() {
+    // Exercise the real framed Host client and task_call adapter. This fake
+    // server performs no driver, native capture, Host startup, or window call.
+    let input = activation_failure_fixture();
+    let (client_stream, mut host_stream) = tokio::io::duplex(32 * 1024);
+    let host_task = tokio::spawn(async move {
+        for step in 0..3 {
+            let bytes = dcc_cua_protocol::read_frame(
+                &mut host_stream,
+                dcc_cua_protocol::MAX_JSON_FRAME_BYTES,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            let request: Value = serde_json::from_slice(&bytes).unwrap();
+            let mut response = match step {
+                0 => {
+                    assert_eq!(request["method"], "hello");
+                    json!({"type":"hello", "capabilities":[]})
+                }
+                1 => {
+                    assert_eq!(request["method"], "open_session");
+                    json!({
+                        "type":"session_opened", "session_id":"fixture-session",
+                        "window_capability":"PRIVATE_CAPABILITY",
+                        "target":{"process_id":42,"window_handle":7,"window_title":"PRIVATE_TITLE"}
+                    })
+                }
+                2 => {
+                    assert_eq!(request["method"], "change_window_state");
+                    assert_eq!(request["params"]["session_id"], "fixture-session");
+                    assert_eq!(request["params"]["task_grant_id"], "fixture-grant");
+                    assert_eq!(request["params"]["window_capability"], "PRIVATE_CAPABILITY");
+                    json!({
+                        "type":"error", "code":"foreground_activation_refused", "message":"original refusal",
+                        "details":{"activation":input, "PRIVATE_DETAILS":"PRIVATE_DETAIL_VALUE"},
+                        "task_context":{"target":{"process_id":999,"window_handle":888}},
+                        "PRIVATE_RESPONSE":"PRIVATE_RESPONSE_VALUE"
+                    })
+                }
+                _ => unreachable!(),
+            };
+            response["request_id"] = request["request_id"].clone();
+            dcc_cua_protocol::write_frame(
+                &mut host_stream,
+                response.to_string().as_bytes(),
+                dcc_cua_protocol::MAX_JSON_FRAME_BYTES,
+            )
+            .await
+            .unwrap();
+            host_stream.flush().await.unwrap();
+        }
+    });
+    let mut client = HostClient::from_stream(client_stream);
+    client.hello("pure-capture-error-fixture").await.unwrap();
+    let session = client
+        .open_logical_task_session(
+            "fixture-session",
+            json!({"task_grant_id":"fixture-grant"}),
+            DEFAULT_IDLE_TIMEOUT_MS,
+        )
+        .await
+        .unwrap();
+    let mut server = test_server();
+    let mut task = pixels_task();
+    task["allowed_methods"] = json!(["change_window_state"]);
+    task["allowed_actions"] = json!([]);
+    let prepared = server.prepare_task(task).unwrap();
+    let task_id = prepared["task_id"].as_str().unwrap().to_owned();
+    server.proposals.get_mut(&task_id).unwrap().session = Some(session);
+    let result = server
+        .call_tool(json!({
+            "name":"dcc_cua_task_call",
+            "arguments":{"task_id":task_id,"method":"change_window_state","params":{"operation":"activate"}}
+        }))
+        .await
+        .unwrap();
+    host_task.await.unwrap();
+    assert_eq!(result["isError"], true);
+    let payload = &result["structuredContent"];
+    assert_eq!(payload["ok"], false);
+    assert_eq!(
+        payload["error"],
+        "host returned foreground_activation_refused: original refusal"
+    );
+    assert_eq!(payload["task_context"]["provider"], "dcc-cua");
+    assert_eq!(
+        payload["task_context"]["runtime_version"],
+        env!("CARGO_PKG_VERSION")
+    );
+    assert_eq!(payload["task_context"]["task_id"], task_id);
+    assert_eq!(
+        payload["task_context"]["target"],
+        json!({"process_id":42,"window_handle":7})
+    );
+    let expected: dcc_cua_core::ComputerUseActivationDiagnostic =
+        serde_json::from_value(activation_failure_fixture()).unwrap();
+    assert_eq!(
+        payload["details"]["activation"],
+        serde_json::to_value(expected).unwrap()
+    );
+    assert!(payload["details"].get("capture").is_none());
+    assert!(!result.to_string().contains("PRIVATE_"));
+    assert!(payload.get("observation_id").is_none());
+    assert!(payload.get("image").is_none());
+    assert!(payload.get("window_capability").is_none());
+    let text: Value = serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(&text, payload);
 }
