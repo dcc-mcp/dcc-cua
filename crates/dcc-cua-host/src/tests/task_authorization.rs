@@ -1632,6 +1632,91 @@ fn capture_preparation_registration(directory: &str) -> TrustedTaskAuthorization
 }
 
 #[rstest]
+#[case::revoked(false)]
+#[case::expired(true)]
+#[tokio::test]
+async fn ended_preparation_only_authorization_stops_its_host_session(#[case] expired: bool) {
+    let directory =
+        std::env::temp_dir().join(format!("capture-preparation-ended-{}", Uuid::new_v4()));
+    std::fs::create_dir(&directory).unwrap();
+    #[cfg(not(windows))]
+    let directory = directory.canonicalize().unwrap();
+    let (issuer, authority) = trusted_task_authorization_broker();
+    let receipt = issuer
+        .register(capture_preparation_registration(
+            directory.to_str().unwrap(),
+        ))
+        .unwrap();
+    let mut lease = issue_task_authorization(
+        Some(authority.as_ref()),
+        TaskAuthorizationBinding::window(
+            "connection-test",
+            &receipt.authorization_id,
+            "session-1",
+            "grant-1",
+            "Test DCC",
+            &receipt.window_capability,
+            ConfirmationWindowIdentity {
+                process_id: 42,
+                window_handle: 77,
+            },
+        ),
+    )
+    .await
+    .unwrap();
+    let channel = ObservationOnlyTestChannel::default();
+    let driver = ComputerUseDriver::from_test_remote_channel(Arc::new(channel.clone())).unwrap();
+    let mut host = cached_host_session(&driver);
+    host.latest_preparation_image =
+        Some(SharedImage::from_bytes(b"old prepared pixels", "image/png").unwrap());
+    host.session
+        .seed_test_active_window(dcc_cua_core::ComputerUseObservation {
+            observation_id: "preparation-observation".into(),
+            window_handle: 77,
+            process_id: 42,
+            window_title: "Synthetic preparation target".into(),
+            width: 800,
+            height: 600,
+            source_rect: [0, 0, 800, 600],
+            capture_backend: "synthetic-test".into(),
+            capture_provenance: json!({"source": "test-only"}),
+            session_id: "runtime-session-1".into(),
+        });
+    assert!(!host.allow_recording);
+    assert!(lease.capture_preparation.is_some());
+    if expired {
+        lease.expires_at_unix_ms = unix_time_millis().saturating_sub(1);
+    } else {
+        issuer.revoke(&receipt.authorization_id).unwrap();
+    }
+    host.task_authorization = Some(lease);
+    host.task_authorization_host = Some(authority);
+    let mut sessions = HashMap::from([("session-1".into(), host)]);
+
+    refresh_connection_session_states(&mut sessions).await;
+
+    let stopped = &sessions["session-1"];
+    assert!(
+        stopped.interrupted,
+        "ended preparation must stop without recording permission"
+    );
+    assert_eq!(stopped.session.status()["active"], false);
+    assert!(stopped.latest_observation_id.is_none());
+    assert!(stopped.latest_preparation_image.is_none());
+    // The remote stub receives only the cleanup attempt; it cannot operate a desktop.
+    assert_eq!(
+        channel.exchanges.load(std::sync::atomic::Ordering::Relaxed),
+        1
+    );
+    refresh_connection_session_states(&mut sessions).await;
+    assert_eq!(
+        channel.exchanges.load(std::sync::atomic::Ordering::Relaxed),
+        1
+    );
+    std::fs::remove_dir(directory).unwrap();
+}
+
+#[rstest]
 fn capture_preparation_registration_requires_closed_scope_complete_lifecycle_and_ordinary_journal()
 {
     let root = std::env::temp_dir().join(format!("capture-preparation-auth-{}", Uuid::new_v4()));

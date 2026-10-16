@@ -1550,10 +1550,16 @@ async fn refresh_connection_session_states(sessions: &mut HashMap<String, HostSe
         .is_err()
         {
             session.invalidate_observations();
-            if session.allow_recording && !session.interrupted {
+            if !session.interrupted
+                && (session.allow_recording
+                    || session
+                        .task_authorization
+                        .as_ref()
+                        .is_some_and(|lease| lease.capture_preparation.is_some()))
+            {
                 session.interrupted = true;
                 // Cleanup remains legal after authorization ends. Join the
-                // original capture/recorder owners and retain terminal evidence.
+                // original preparation/capture/recorder owners and retain evidence.
                 let _ = session.session.stop().await;
             }
             continue;
