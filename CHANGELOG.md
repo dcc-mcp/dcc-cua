@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.10.1](https://github.com/dcc-mcp/dcc-cua/compare/v1.10.0...v1.10.1) (2026-10-16)
+
+
+### Bug Fixes
+
+* **client:** diagnose unsupported URL endpoints before local IPC ([ed0c0d6](https://github.com/dcc-mcp/dcc-cua/commit/ed0c0d62a124f988939ef498af6d6b6e05e5b24b))
+* **release:** require packaged background entry in install manifests ([0ad9790](https://github.com/dcc-mcp/dcc-cua/commit/0ad9790c7a10ce2592f14a253ab1bbc8a4415a11))
+
 ## [1.10.0](https://github.com/dcc-mcp/dcc-cua/compare/v1.9.4...v1.10.0) (2026-10-13)
 
 
