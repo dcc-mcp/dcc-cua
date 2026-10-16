@@ -1,5 +1,8 @@
 use std::time::{Duration, Instant};
 
+use crate::capture_geometry::{
+    MAX_WGC_FRAME_PIXELS, WgcFrameGeometry, WgcGeometryError, validate_wgc_frame_geometry,
+};
 use thiserror::Error;
 use windows::{
     Graphics::{
@@ -34,11 +37,20 @@ use windows::{
 
 const PIXEL_FORMAT: DirectXPixelFormat = DirectXPixelFormat::B8G8R8A8UIntNormalized;
 const FRAME_POOL_SIZE: i32 = 2;
-const MAX_CAPTURE_PIXELS: usize = 64 * 1024 * 1024;
 
 #[derive(Debug, Error)]
-#[error("persistent WGC capture failed: {0}")]
-pub struct WgcCaptureError(String);
+#[error("persistent WGC capture failed: {message}")]
+pub struct WgcCaptureError {
+    message: String,
+    geometry_failure: Option<WgcGeometryError>,
+}
+
+impl WgcCaptureError {
+    /// Geometry/proof failure is not backend unavailability and must not trigger fallback.
+    pub const fn geometry_failure(&self) -> Option<WgcGeometryError> {
+        self.geometry_failure
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WgcCompositorTimingUnavailable {
@@ -169,6 +181,7 @@ pub struct PersistentWgcFrame {
     pub width: u32,
     pub height: u32,
     pub measurement: WgcFrameMeasurement,
+    pub geometry: WgcFrameGeometry,
 }
 
 fn performance_counter_time_100ns() -> Option<i64> {
@@ -190,11 +203,36 @@ fn performance_counter_time_100ns() -> Option<i64> {
 }
 
 fn capture_error(context: &str, error: impl std::fmt::Display) -> WgcCaptureError {
-    WgcCaptureError(format!("{context}: {error}"))
+    WgcCaptureError {
+        message: format!("{context}: {error}"),
+        geometry_failure: None,
+    }
 }
 
 fn invalid_target(message: impl Into<String>) -> WgcCaptureError {
-    WgcCaptureError(message.into())
+    WgcCaptureError {
+        message: message.into(),
+        geometry_failure: None,
+    }
+}
+
+fn geometry_error(reason: WgcGeometryError) -> WgcCaptureError {
+    WgcCaptureError {
+        message: reason.to_string(),
+        geometry_failure: Some(reason),
+    }
+}
+
+fn actual_size(size: SizeInt32) -> Result<[u32; 2], WgcCaptureError> {
+    if size.Width <= 0
+        || size.Height <= 0
+        || (size.Width as usize)
+            .checked_mul(size.Height as usize)
+            .is_none_or(|count| count > MAX_WGC_FRAME_PIXELS)
+    {
+        return Err(geometry_error(WgcGeometryError::InvalidFrameSize));
+    }
+    Ok([size.Width as u32, size.Height as u32])
 }
 
 /// One long-lived exact-window WGC session.
@@ -263,7 +301,7 @@ impl PersistentWgcCapture {
             .map_err(|error| capture_error("create WGC item for exact HWND", error))?;
         let pool_size = item
             .Size()
-            .map_err(|error| capture_error("read WGC item size", error))?;
+            .map_err(|_| geometry_error(WgcGeometryError::FrameMetadataUnavailable))?;
         Self::validate_size(pool_size)?;
         let pool = Direct3D11CaptureFramePool::CreateFreeThreaded(
             &direct3d_device,
@@ -316,12 +354,13 @@ impl PersistentWgcCapture {
                 "WGC target became minimized; restore the exact target first",
             ));
         }
-        self.resize_pool_if_needed()?;
+        let item_size_before = self.resize_pool_if_needed()?;
         let deadline = Instant::now() + timeout;
         let source_wait_started = Instant::now();
         loop {
             if let Some(frame) = self.take_latest_available_frame() {
-                let frame = self.read_frame(&frame, source_wait_started.elapsed())?;
+                let frame =
+                    self.read_frame(&frame, source_wait_started.elapsed(), item_size_before)?;
                 self.validate_owner()?;
                 return Ok(frame);
             }
@@ -341,29 +380,23 @@ impl PersistentWgcCapture {
     }
 
     fn validate_size(size: SizeInt32) -> Result<(), WgcCaptureError> {
-        if size.Width <= 0 || size.Height <= 0 {
-            return Err(invalid_target(format!(
-                "WGC target has invalid size {}x{}",
-                size.Width, size.Height
-            )));
-        }
-        Ok(())
+        actual_size(size).map(|_| ())
     }
 
-    fn resize_pool_if_needed(&mut self) -> Result<(), WgcCaptureError> {
+    fn resize_pool_if_needed(&mut self) -> Result<[u32; 2], WgcCaptureError> {
         let size = self
             .item
             .Size()
-            .map_err(|error| capture_error("refresh WGC item size", error))?;
+            .map_err(|_| geometry_error(WgcGeometryError::FrameMetadataUnavailable))?;
         Self::validate_size(size)?;
         if size != self.pool_size {
             self.pool
                 .Recreate(&self.direct3d_device, PIXEL_FORMAT, FRAME_POOL_SIZE, size)
-                .map_err(|error| capture_error("resize WGC frame pool", error))?;
+                .map_err(|_| geometry_error(WgcGeometryError::FrameMetadataUnavailable))?;
             self.pool_size = size;
             self.staging = None;
         }
-        Ok(())
+        actual_size(size)
     }
 
     fn take_latest_available_frame(&self) -> Option<Direct3D11CaptureFrame> {
@@ -378,6 +411,7 @@ impl PersistentWgcCapture {
         &mut self,
         frame: &Direct3D11CaptureFrame,
         source_wait: Duration,
+        item_size_before: [u32; 2],
     ) -> Result<PersistentWgcFrame, WgcCaptureError> {
         let readback_started = Instant::now();
         let compositor_system_relative_time_100ns = frame
@@ -387,7 +421,7 @@ impl PersistentWgcCapture {
             .filter(|timestamp| *timestamp >= 0);
         let content_size = frame
             .ContentSize()
-            .map_err(|error| capture_error("read WGC frame content size", error))?;
+            .map_err(|_| geometry_error(WgcGeometryError::FrameMetadataUnavailable))?;
         Self::validate_size(content_size)?;
         let surface = frame
             .Surface()
@@ -403,9 +437,22 @@ impl PersistentWgcCapture {
             .map_err(|error| capture_error("convert WGC width", error))?;
         let height = u32::try_from(content_size.Height)
             .map_err(|error| capture_error("convert WGC height", error))?;
-        if width > desc.Width || height > desc.Height {
-            return Err(invalid_target("WGC content exceeds its backing texture"));
+        if width != desc.Width
+            || height != desc.Height
+            || [width, height] != item_size_before
+            || [width, height] != actual_size(self.pool_size)?
+        {
+            return Err(geometry_error(WgcGeometryError::FrameSizeChanged));
         }
+        let width = width as usize;
+        let height = height as usize;
+        let pixel_count = width
+            .checked_mul(height)
+            .filter(|count| *count <= MAX_WGC_FRAME_PIXELS)
+            .ok_or_else(|| geometry_error(WgcGeometryError::InvalidFrameSize))?;
+        let row_bytes = width
+            .checked_mul(4)
+            .ok_or_else(|| geometry_error(WgcGeometryError::RawShapeMismatch))?;
         let recreate_staging =
             self.staging
                 .as_ref()
@@ -442,19 +489,10 @@ impl PersistentWgcCapture {
         .map_err(|error| capture_error("map WGC staging texture", error))?;
         let gpu_copy_map = gpu_copy_map_started.elapsed();
         let cpu_copy_started = Instant::now();
-        let width = width as usize;
-        let height = height as usize;
-        let pixel_count = width
-            .checked_mul(height)
-            .filter(|count| *count <= MAX_CAPTURE_PIXELS)
-            .ok_or_else(|| invalid_target("WGC frame exceeds the capture pixel limit"))?;
-        let row_bytes = width
-            .checked_mul(4)
-            .ok_or_else(|| invalid_target("WGC row byte count overflowed"))?;
         let stride = mapped.RowPitch as usize;
-        if stride < row_bytes {
+        if stride < row_bytes || mapped.pData.is_null() {
             unsafe { self.d3d_context.Unmap(staging, 0) };
-            return Err(invalid_target("WGC row pitch is smaller than its content"));
+            return Err(geometry_error(WgcGeometryError::RawShapeMismatch));
         }
         let mut bgra = vec![0_u8; pixel_count * 4];
         let source = mapped.pData as *const u8;
@@ -469,11 +507,26 @@ impl PersistentWgcCapture {
         }
         unsafe { self.d3d_context.Unmap(staging, 0) };
         let cpu_copy = cpu_copy_started.elapsed();
+        let item_size_after = actual_size(
+            self.item
+                .Size()
+                .map_err(|_| geometry_error(WgcGeometryError::FrameMetadataUnavailable))?,
+        )?;
+        let geometry = WgcFrameGeometry {
+            item_size_before,
+            item_size_after,
+            pool_size: actual_size(self.pool_size)?,
+            content_size: [width as u32, height as u32],
+            texture_size: [desc.Width, desc.Height],
+            row_pitch_bytes: mapped.RowPitch,
+        };
+        validate_wgc_frame_geometry(geometry, bgra.len()).map_err(geometry_error)?;
         let readback_total = readback_started.elapsed();
         Ok(PersistentWgcFrame {
             bgra,
             width: width as u32,
             height: height as u32,
+            geometry,
             measurement: WgcFrameMeasurement::new(
                 source_wait,
                 readback_total,
@@ -491,3 +544,6 @@ impl Drop for PersistentWgcCapture {
         let _ = self.pool.Close();
     }
 }
+
+#[cfg(test)]
+mod tests;

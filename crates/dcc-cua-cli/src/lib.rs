@@ -14,6 +14,7 @@ mod actions;
 mod async_runtime;
 mod authorization;
 mod browser_extension;
+mod capture_proof;
 mod cli_args;
 mod connection_diagnostics;
 mod failure_output;
@@ -286,6 +287,10 @@ async fn dispatch(arguments: Vec<String>) -> Result<(), Box<dyn std::error::Erro
             .await
             .map_err(|_| std::io::Error::other("update worker failed"))?
             .map_err(|error| -> Box<dyn std::error::Error> { error.to_string().into() })?;
+        return Ok(());
+    }
+    if command == "capture-proof" {
+        capture_proof::execute(&flags)?;
         return Ok(());
     }
     let driver = if command == "host" {

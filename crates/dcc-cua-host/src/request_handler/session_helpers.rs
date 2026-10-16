@@ -47,7 +47,16 @@ pub(crate) async fn start_granted_window_session(
         agent_name,
         runtime_session_id,
     )?;
-    let started = session.start_with_request(start_request).await?;
+    let started = if grant.observation_mode == TaskObservationMode::PixelsOnly {
+        if start_request.activate_before {
+            return Err(HostError::Protocol(
+                "pixels_only session startup cannot activate the target".into(),
+            ));
+        }
+        session.start_pixels_only().await?
+    } else {
+        session.start_with_request(start_request).await?
+    };
     Ok((session, started))
 }
 
@@ -59,6 +68,18 @@ pub(crate) async fn acquire_raw_input_turn(
     } else {
         None
     }
+}
+
+pub(crate) async fn revalidate_queued_window_mutation(
+    host: &mut HostSession,
+) -> Result<(), HostError> {
+    // A stop may arrive while another session owns the physical input queue.
+    ensure_session_not_interrupted(host).await?;
+    crate::task_authorization::validate_active_task_authorization(
+        host.task_authorization_host.as_deref(),
+        host.task_authorization.as_ref(),
+    )
+    .await
 }
 
 pub(crate) fn ensure_connection_session_capacity(
@@ -105,7 +126,7 @@ pub(crate) fn session_stopped_response(
     session_id: &str,
     result: ComputerUseSessionStopResult,
 ) -> Value {
-    json!({
+    let mut response = json!({
         "type": "session_stopped",
         "session_id": session_id,
         "success": result.success,
@@ -113,7 +134,14 @@ pub(crate) fn session_stopped_response(
         "cleanup_pending": result.cleanup_pending,
         "cleanup_issues": result.cleanup_issues,
         "marker": result.marker,
-    })
+    });
+    if let Some(video) = result.recording_video {
+        response["recording_video"] = json!(video);
+    }
+    if let Some(source) = result.live_observation {
+        response["live_observation"] = json!(source);
+    }
+    response
 }
 
 pub(crate) fn observed_window_state_response(

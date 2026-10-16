@@ -52,7 +52,12 @@ pub(crate) fn encode_bgra_to_png(
             ComputerUseError::new(ComputerUseErrorCode::CaptureFailed, error.to_string())
         })?;
         for source_row in bgra.chunks_exact(row_bytes) {
-            for (source, target) in source_row.chunks_exact(4).zip(rgba_row.chunks_exact_mut(4)) {
+            for (source, target) in source_row
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .zip(rgba_row.as_chunks_mut::<4>().0.iter_mut())
+            {
                 target.copy_from_slice(&[source[2], source[1], source[0], source[3]]);
             }
             stream.write_all(&rgba_row).map_err(|error| {

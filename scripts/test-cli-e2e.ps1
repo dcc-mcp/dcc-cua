@@ -376,7 +376,10 @@ if (-not $isWindowsHost -and
     $manifest.host.default_endpoint -ne (Join-Path $endpointRuntimeDir "dcc-cua-v1.sock")) {
     throw "manifest did not select the private XDG runtime endpoint"
 }
-if ($manifest.version -notmatch '^\d+\.\d+\.\d+$' -or
+$semVerPattern = '\A(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)' +
+    '(?:-(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?' +
+    '(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?\z'
+if ($manifest.version -isnot [string] -or $manifest.version -cnotmatch $semVerPattern -or
     $manifest.host.protocol_version -ne 1 -or
     $manifest.host.max_connections -ne 32 -or
     $manifest.host.hello_timeout_ms -ne 10000 -or

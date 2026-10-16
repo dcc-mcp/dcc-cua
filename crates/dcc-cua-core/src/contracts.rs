@@ -584,6 +584,10 @@ pub enum ComputerUseErrorCode {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ComputerUseErrorDetails {
+    /// Content-free native capture proof. Never contains window titles, UI text,
+    /// executable paths, arbitrary backend messages, or captured content.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capture: Option<ComputerUseCaptureDiagnostic>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timed_out: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -624,6 +628,88 @@ pub struct ComputerUseErrorDetails {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub enum ComputerUseCaptureStage {
+    NativeEvidence,
+    CaptureIdentity,
+    VisibleDesktopProof,
+    PublicationValidation,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ComputerUseCaptureReason {
+    NativeReadFailed,
+    CaptureIdentityUnavailable,
+    TargetUnavailable,
+    TargetNotVisible,
+    TargetMinimized,
+    TargetBoundsInvalid,
+    TargetOutsideDesktop,
+    RootCloakingUnavailable,
+    RootBoundsUnavailable,
+    RootBoundsInvalid,
+    RootEnumerationIncomplete,
+    TargetNotReached,
+    TargetBoundsChanged,
+    RootOverlap,
+    PixelEvidenceChanged,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ComputerUseRootBoundsRole {
+    TargetRoot,
+    AboveTargetRoot,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ComputerUseRootBoundsClass {
+    Positive,
+    ZeroArea,
+    Inverted,
+    Overflow,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ComputerUseRootBoundsFailureDiagnostic {
+    pub root_role: ComputerUseRootBoundsRole,
+    pub proof_target_root_window_handle: u64,
+    pub dwm_raw_rect_edges: [i32; 4],
+    pub dwm_classification: ComputerUseRootBoundsClass,
+    pub visible: bool,
+    pub cloaked: Option<u32>,
+    pub win32_read_after_dwm_rejection: bool,
+    pub win32_raw_rect_edges: Option<[i32; 4]>,
+    pub win32_classification: Option<ComputerUseRootBoundsClass>,
+    pub win32_os_error: Option<i32>,
+    pub zero_area_status_mismatch: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ComputerUseCaptureDiagnostic {
+    pub stage: ComputerUseCaptureStage,
+    pub reason: ComputerUseCaptureReason,
+    pub target_process_id: u32,
+    pub target_window_handle: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_bounds: Option<[i32; 4]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocker_process_id: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocker_window_handle: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocker_bounds: Option<[i32; 4]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cloaked: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub os_error: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_bounds_failure: Option<ComputerUseRootBoundsFailureDiagnostic>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ComputerUseErrorPhase {
     PreDispatch,
     ActionDispatch,
@@ -653,7 +739,7 @@ pub enum ComputerUseCompletionState {
 pub struct ComputerUseError {
     pub code: ComputerUseErrorCode,
     pub message: String,
-    pub details: Option<ComputerUseErrorDetails>,
+    pub details: Option<Box<ComputerUseErrorDetails>>,
 }
 
 impl ComputerUseError {
@@ -667,7 +753,7 @@ impl ComputerUseError {
 
     #[must_use]
     pub fn with_details(mut self, details: ComputerUseErrorDetails) -> Self {
-        self.details = Some(details);
+        self.details = Some(Box::new(details));
         self
     }
 }
@@ -686,6 +772,7 @@ pub struct ComputerUseMarker {
 #[serde(rename_all = "snake_case")]
 pub enum ComputerUseCleanupPhase {
     RecordingStop,
+    LiveObservationStop,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -706,12 +793,51 @@ impl ComputerUseCleanupIssue {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ComputerUseRecordingCleanupOutcome {
+    pub active: bool,
+    pub finalized: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub manifest_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_partial: Option<String>,
+    pub segment_paths: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub capture_sidecar: Option<ComputerUseRecordingSidecarOutcome>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_code: Option<ComputerUseErrorCode>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ComputerUseRecordingSidecarOutcome {
+    pub path: String,
+    pub sha256: String,
+    pub records: u64,
+    pub frames: u64,
+    pub finalized: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ComputerUseLiveObservationCleanupOutcome {
+    pub active: bool,
+    pub cleanup_complete: bool,
+    pub cleanup_pending: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stream_id: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ComputerUseSessionStopResult {
     pub success: bool,
     pub active: bool,
     pub cleanup_pending: bool,
     pub cleanup_issues: Vec<ComputerUseCleanupIssue>,
     pub marker: ComputerUseMarker,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recording_video: Option<ComputerUseRecordingCleanupOutcome>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub live_observation: Option<ComputerUseLiveObservationCleanupOutcome>,
 }
 
 impl ComputerUseSessionStopResult {
@@ -725,6 +851,14 @@ impl ComputerUseSessionStopResult {
             cleanup_pending: false,
             cleanup_issues,
             marker,
+            recording_video: None,
+            live_observation: None,
         }
+    }
+
+    pub(crate) fn with_cleanup_pending(mut self, pending: bool) -> Self {
+        self.cleanup_pending = pending;
+        self.success &= !pending;
+        self
     }
 }

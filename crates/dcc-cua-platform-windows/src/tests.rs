@@ -19,8 +19,58 @@ use super::{
 };
 #[cfg(windows)]
 use crate::visible_capture::{
-    physical_capture_rect, root_z_order_entry, root_z_order_proves_unobscured,
+    RootBoundsClass, RootBoundsRole, VisibleWindowCaptureReason, classify_root_bounds,
+    composited_root_entry, finish_bitmap_readback, physical_capture_rect,
+    physical_rectangle_within_desktop, physical_root_bounds, root_is_composited,
+    root_z_order_entry, root_z_order_proof,
 };
+
+#[cfg(windows)]
+#[rstest]
+#[case(Ok(()), true, 1400, true, true)]
+#[case(Ok(()), true, 1399, false, true)]
+#[case(Ok(()), true, 0, false, true)]
+#[case(Ok(()), true, -1, false, true)]
+#[case(Ok(()), false, 1400, false, false)]
+#[case(Err(-2147024891), true, 1400, false, false)]
+#[case(Err(-2147024891), false, 1400, false, false)]
+fn visible_crop_deselects_bitmap_before_complete_readback(
+    #[case] copied: Result<(), i32>,
+    #[case] restore_ok: bool,
+    #[case] rows: i32,
+    #[case] success: bool,
+    #[case] should_read: bool,
+) {
+    use std::cell::RefCell;
+    let events = RefCell::new(vec!["copy_attempted"]);
+    let readback = finish_bitmap_readback(
+        copied,
+        1400,
+        || {
+            events.borrow_mut().push("deselect");
+            restore_ok
+        },
+        || {
+            events.borrow_mut().push("read");
+            rows
+        },
+        || {
+            events
+                .borrow_mut()
+                .extend(["delete_memory_dc", "delete_bitmap", "release_screen_dc"]);
+        },
+    );
+    assert_eq!(readback.is_ok(), success);
+    let mut expected = vec!["copy_attempted", "deselect"];
+    if should_read {
+        expected.push("read");
+    }
+    expected.extend(["delete_memory_dc", "delete_bitmap", "release_screen_dc"]);
+    assert_eq!(*events.borrow(), expected);
+    if let Err(code) = copied {
+        assert_eq!(readback.unwrap_err().diagnostic.os_error, Some(code));
+    }
+}
 #[cfg(windows)]
 use crate::windows::{
     REQUEST_TIMEOUT, STARTUP_TIMEOUT, UIA_WORKER_PROTOCOL_VERSION, UiaWorker, ensure_ok,
@@ -293,15 +343,22 @@ fn evaluate_policy_fixture(
 #[rstest]
 #[case([1, 1, 8, 8], "unsampled corner overlap")]
 #[case([49, 49, 3, 3], "single center-sample overlap")]
+#[case([1, 1, 1, 1], "one-pixel overlap")]
+#[case([99, 99, 4, 1], "thin edge overlap")]
 fn visible_crop_rejects_every_foreign_root_intersection(
     #[case] covering_bounds: [i32; 4],
     #[case] _label: &str,
 ) {
     let target_bounds = [0, 0, 100, 100];
-    let roots = [
-        (91_u64, covering_bounds, true),
-        (77_u64, target_bounds, true),
-    ];
+    let covering_rect = WindowsRect {
+        left: covering_bounds[0],
+        top: covering_bounds[1],
+        right: covering_bounds[0] + covering_bounds[2],
+        bottom: covering_bounds[1] + covering_bounds[3],
+    };
+    let covering_entry = root_z_order_entry(91, true, || physical_root_bounds(covering_rect))
+        .expect("even a one-pixel root must remain an occluder");
+    let roots = [covering_entry, (77_u64, target_bounds, true)];
 
     assert!(
         !root_z_order_proves_unobscured(77, target_bounds, &roots),
@@ -338,6 +395,284 @@ fn invisible_roots_do_not_require_compositor_bounds_for_z_order_proof() {
     assert_eq!(entry, Some((91, [0; 4], false)));
 
     assert!(root_z_order_entry(92, true, || None).is_none());
+}
+
+#[cfg(windows)]
+#[rstest]
+#[case(1)]
+#[case(2)]
+#[case(4)]
+#[case(7)]
+fn exact_capture_proof_excludes_only_successfully_measured_cloaked_roots(#[case] cloaked: u32) {
+    assert!(!root_is_composited(true, || Ok(cloaked)).unwrap());
+    assert!(root_is_composited(true, || Ok(0)).unwrap());
+    assert!(!root_is_composited(false, || panic!("hidden roots need no DWM query")).unwrap());
+}
+
+#[cfg(windows)]
+#[rstest]
+fn exact_capture_proof_cloaking_failure_keeps_numeric_failure_and_refuses() {
+    let error = root_is_composited(true, || Err(-2_147_024_891)).unwrap_err();
+    assert_eq!(
+        error.diagnostic.reason,
+        VisibleWindowCaptureReason::RootCloakingUnavailable
+    );
+    assert_eq!(error.diagnostic.os_error, Some(-2_147_024_891));
+}
+
+#[cfg(windows)]
+#[rstest]
+fn exact_capture_proof_reports_the_first_actual_overlap_without_titles() {
+    let error = root_z_order_proof(
+        77,
+        [0, 0, 100, 100],
+        &[
+            (90, [0; 4], false), // successfully cloaked/hidden, no desktop contribution
+            (91, [1, 1, 1, 1], true),
+            (92, [1, 1, 20, 20], true),
+            (77, [0, 0, 100, 100], true),
+        ],
+    )
+    .unwrap_err();
+    assert_eq!(
+        error.diagnostic.reason,
+        VisibleWindowCaptureReason::RootOverlap
+    );
+    assert_eq!(error.diagnostic.blocker_window_handle, Some(91));
+    assert_eq!(error.diagnostic.blocker_bounds, Some([1, 1, 1, 1]));
+    assert_eq!(error.diagnostic.cloaked, Some(0));
+    // The proof has no PID/name shortcut: same-process and internal overlays
+    // remain blockers unless a successful exclusion made them non-composited.
+}
+
+#[cfg(windows)]
+#[rstest]
+fn exact_capture_proof_distinguishes_target_missing_hidden_and_geometry_drift() {
+    for (roots, reason) in [
+        (vec![], VisibleWindowCaptureReason::TargetNotReached),
+        (
+            vec![(77, [0; 4], false)],
+            VisibleWindowCaptureReason::TargetNotVisible,
+        ),
+        (
+            vec![(77, [0, 0, 99, 100], true)],
+            VisibleWindowCaptureReason::TargetBoundsChanged,
+        ),
+    ] {
+        assert_eq!(
+            root_z_order_proof(77, [0, 0, 100, 100], &roots)
+                .unwrap_err()
+                .diagnostic
+                .reason,
+            reason
+        );
+    }
+}
+
+#[cfg(windows)]
+#[rstest]
+#[case([0, 0, 3840, 2400], [0, 0, 3840, 2400], true)]
+#[case([662, 382, 2515, 1515], [0, 0, 3840, 2400], true)]
+#[case([0, 0, 3975, 2555], [0, 0, 3840, 2400], false)]
+#[case([1661, 348, 2515, 1515], [0, 0, 3840, 2400], false)]
+#[case([-100, 0, 100, 100], [0, 0, 3840, 2400], false)]
+#[case([-1920, -1080, 1920, 1080], [-1920, -1080, 5760, 3480], true)]
+#[case([0, 0, 100, 100], [0, 0, 0, 0], false)]
+fn exact_capture_proof_requires_the_whole_crop_inside_the_physical_desktop(
+    #[case] target: [i32; 4],
+    #[case] desktop: [i32; 4],
+    #[case] accepted: bool,
+) {
+    assert_eq!(physical_rectangle_within_desktop(target, desktop), accepted);
+}
+
+#[cfg(windows)]
+#[rstest]
+#[case([0, 0, 1, 1])]
+#[case([1_599, 227, 1, 1])]
+#[case([3_369, 227, 1, 1])]
+#[case([1_600, 1_927, 4, 1])]
+#[case([-10, -10, 1, 4])]
+fn visible_crop_proves_disjoint_small_root_bounds(#[case] bounds: [i32; 4]) {
+    let physical = WindowsRect {
+        left: bounds[0],
+        top: bounds[1],
+        right: bounds[0] + bounds[2],
+        bottom: bounds[1] + bounds[3],
+    };
+    let entry = root_z_order_entry(91, true, || physical_root_bounds(physical))
+        .expect("a measured positive-area root must participate in the overlap proof");
+    assert_eq!(entry, (91, bounds, true));
+    assert!(
+        physical_capture_rect(physical).is_err(),
+        "capture targets still require more than four pixels on each axis"
+    );
+
+    let target_bounds = [1_600, 227, 1_769, 1_700];
+    assert!(root_z_order_proves_unobscured(
+        77,
+        target_bounds,
+        &[entry, (77, target_bounds, true)],
+    ));
+}
+
+#[cfg(windows)]
+#[rstest]
+#[case([0, 0, 0, 1])]
+#[case([0, 0, 1, 0])]
+#[case([1, 0, 0, 1])]
+#[case([0, 1, 1, 0])]
+#[case([i32::MIN, 0, i32::MAX, 1])]
+#[case([0, i32::MIN, 1, i32::MAX])]
+fn visible_crop_rejects_empty_inverted_or_overflowing_root_bounds(#[case] edges: [i32; 4]) {
+    let physical = WindowsRect {
+        left: edges[0],
+        top: edges[1],
+        right: edges[2],
+        bottom: edges[3],
+    };
+    assert!(root_z_order_entry(91, true, || physical_root_bounds(physical)).is_none());
+    assert!(physical_capture_rect(physical).is_err());
+}
+
+#[cfg(windows)]
+#[rstest]
+#[case([-10, 20, -10, 35], RootBoundsClass::ZeroArea)]
+#[case([10, 20, 15, 20], RootBoundsClass::ZeroArea)]
+#[case([-10, -20, -10, -20], RootBoundsClass::ZeroArea)]
+#[case([1, 0, 0, 1], RootBoundsClass::Inverted)]
+#[case([0, 1, 1, 0], RootBoundsClass::Inverted)]
+#[case([i32::MIN, 0, i32::MAX, 1], RootBoundsClass::Overflow)]
+#[case([0, i32::MIN, 1, i32::MAX], RootBoundsClass::Overflow)]
+#[case([i32::MIN, 0, i32::MAX, 0], RootBoundsClass::Overflow)]
+#[case([1, 0, 0, 0], RootBoundsClass::Inverted)]
+#[case([-10, -20, -9, -19], RootBoundsClass::Positive)]
+fn root_bounds_diagnostic_classifies_original_edges_without_changing_refusal(
+    #[case] edges: [i32; 4],
+    #[case] expected: RootBoundsClass,
+) {
+    let rect = WindowsRect {
+        left: edges[0],
+        top: edges[1],
+        right: edges[2],
+        bottom: edges[3],
+    };
+    assert_eq!(classify_root_bounds(rect), expected);
+    if expected != RootBoundsClass::Positive {
+        let error = composited_root_entry(91, 77, rect, true, Some(0), || Err(-5)).unwrap_err();
+        assert_eq!(
+            error.diagnostic.reason,
+            VisibleWindowCaptureReason::RootBoundsInvalid
+        );
+        assert_eq!(
+            error.to_string(),
+            "visible exact-window capture failed: a composited root has empty, inverted, or overflowing physical bounds"
+        );
+        let proof = error.diagnostic.root_bounds_failure.unwrap();
+        assert_eq!(proof.dwm_raw_rect_edges, edges);
+        assert_eq!(proof.dwm_classification, expected);
+        assert!(physical_capture_rect(rect).is_err());
+    }
+}
+
+#[cfg(windows)]
+#[rstest]
+#[case(77, RootBoundsRole::TargetRoot)]
+#[case(91, RootBoundsRole::AboveTargetRoot)]
+fn root_bounds_diagnostic_role_uses_proof_root_not_granted_child(
+    #[case] failed_root: u64,
+    #[case] expected: RootBoundsRole,
+) {
+    // An exact child HWND may differ from the proof root (77). No ancestor
+    // query or automatic rebinding is needed to report this role.
+    let rect = WindowsRect {
+        left: 10,
+        top: 20,
+        right: 10,
+        bottom: 30,
+    };
+    let error =
+        composited_root_entry(failed_root, 77, rect, true, Some(0), || Ok(rect)).unwrap_err();
+    let proof = error.diagnostic.root_bounds_failure.unwrap();
+    assert_eq!(proof.root_role, expected);
+    assert_eq!(proof.proof_target_root_window_handle, 77);
+    assert!(proof.visible);
+    assert_eq!(proof.cloaked, Some(0));
+    assert!(proof.win32_read_after_dwm_rejection);
+    assert_eq!(proof.zero_area_status_mismatch, Some(false));
+}
+
+#[cfg(windows)]
+#[rstest]
+#[case(Ok([10, 20, 10, 30]), Some(RootBoundsClass::ZeroArea), Some(false))]
+#[case(Ok([10, 20, 30, 40]), Some(RootBoundsClass::Positive), Some(true))]
+#[case(Ok([30, 20, 10, 40]), Some(RootBoundsClass::Inverted), None)]
+#[case(Ok([i32::MIN, 20, i32::MAX, 40]), Some(RootBoundsClass::Overflow), None)]
+#[case(Err(-5), None, None)]
+fn root_bounds_diagnostic_followup_is_once_and_cannot_replace_original_error(
+    #[case] readback: Result<[i32; 4], i32>,
+    #[case] win32_class: Option<RootBoundsClass>,
+    #[case] mismatch: Option<bool>,
+) {
+    let reads = std::cell::Cell::new(0);
+    let error = composited_root_entry(
+        91,
+        77,
+        WindowsRect {
+            left: 10,
+            top: 20,
+            right: 10,
+            bottom: 30,
+        },
+        true,
+        Some(0),
+        || {
+            reads.set(reads.get() + 1);
+            readback.map(|edges| WindowsRect {
+                left: edges[0],
+                top: edges[1],
+                right: edges[2],
+                bottom: edges[3],
+            })
+        },
+    )
+    .unwrap_err();
+    assert_eq!(reads.get(), 1);
+    assert_eq!(
+        error.diagnostic.reason,
+        VisibleWindowCaptureReason::RootBoundsInvalid
+    );
+    let proof = error.diagnostic.root_bounds_failure.unwrap();
+    assert_eq!(proof.win32_raw_rect_edges, readback.ok());
+    assert_eq!(proof.win32_classification, win32_class);
+    assert_eq!(proof.win32_os_error, readback.err());
+    assert_eq!(proof.zero_area_status_mismatch, mismatch);
+}
+
+#[cfg(windows)]
+#[rstest]
+fn root_bounds_diagnostic_adds_no_read_to_positive_roots_and_keeps_one_pixel_occlusion() {
+    let entry = composited_root_entry(
+        91,
+        77,
+        WindowsRect {
+            left: 1,
+            top: 1,
+            right: 2,
+            bottom: 2,
+        },
+        true,
+        Some(0),
+        || panic!("a valid root must not acquire diagnostic-only Win32 metadata"),
+    )
+    .unwrap();
+    let error = root_z_order_proof(77, [0, 0, 100, 100], &[entry, (77, [0, 0, 100, 100], true)])
+        .unwrap_err();
+    assert_eq!(
+        error.diagnostic.reason,
+        VisibleWindowCaptureReason::RootOverlap
+    );
+    assert!(error.diagnostic.root_bounds_failure.is_none());
 }
 
 #[cfg(windows)]
@@ -1457,4 +1792,13 @@ fn persistent_wgc_captures_consecutive_real_frames() {
         first_elapsed.as_millis(),
         second_elapsed.as_millis()
     );
+}
+
+#[cfg(windows)]
+fn root_z_order_proves_unobscured(
+    target_window_handle: u64,
+    target_bounds: [i32; 4],
+    roots: &[(u64, [i32; 4], bool)],
+) -> bool {
+    root_z_order_proof(target_window_handle, target_bounds, roots).is_ok()
 }

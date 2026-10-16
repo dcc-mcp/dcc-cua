@@ -572,6 +572,24 @@ pub struct BannerCaptureExclusionGuard {
     _platform: platform::PlatformCaptureExclusionGuard,
 }
 
+/// Cloneable capture lease source; it does not own or extend a control session.
+#[derive(Clone)]
+pub struct BannerCaptureExclusionSource {
+    platform: platform::PlatformCaptureExclusionSource,
+}
+
+impl BannerCaptureExclusionSource {
+    pub fn validate_active(&self) -> Result<(), IndicatorError> {
+        self.platform.validate_active()
+    }
+
+    pub fn begin(&self) -> Result<BannerCaptureExclusionGuard, IndicatorError> {
+        Ok(BannerCaptureExclusionGuard {
+            _platform: self.platform.begin()?,
+        })
+    }
+}
+
 impl BannerActivityGuard {
     fn begin(activity: Arc<BannerActivitySignal>, next: BannerActivity) -> Self {
         let token = activity.set(next);
@@ -651,6 +669,13 @@ impl ControlBanner {
         BannerActivityGuard::begin(self.platform.activity_handle(), activity)
     }
 
+    #[must_use]
+    pub fn capture_exclusion_source(&self) -> BannerCaptureExclusionSource {
+        BannerCaptureExclusionSource {
+            platform: self.platform.capture_exclusion_source(),
+        }
+    }
+
     pub fn begin_capture_exclusion(&self) -> Result<BannerCaptureExclusionGuard, IndicatorError> {
         Ok(BannerCaptureExclusionGuard {
             _platform: self.platform.begin_capture_exclusion()?,
@@ -671,6 +696,19 @@ mod platform;
 
 #[cfg(not(windows))]
 mod platform {
+    #[derive(Clone)]
+    pub(super) struct PlatformCaptureExclusionSource;
+
+    impl PlatformCaptureExclusionSource {
+        pub(super) fn validate_active(&self) -> Result<(), crate::IndicatorError> {
+            Ok(())
+        }
+
+        pub(super) fn begin(&self) -> Result<PlatformCaptureExclusionGuard, crate::IndicatorError> {
+            Ok(PlatformCaptureExclusionGuard)
+        }
+    }
+
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -739,6 +777,10 @@ mod platform {
 
         pub(super) fn set_activity(&self, activity: BannerActivity) {
             self.activity.set(activity);
+        }
+
+        pub(super) fn capture_exclusion_source(&self) -> PlatformCaptureExclusionSource {
+            PlatformCaptureExclusionSource
         }
 
         pub(super) fn begin_capture_exclusion(

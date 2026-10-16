@@ -197,7 +197,7 @@ EXPECTED_POLICY_STEPS = (
         "uses": "dtolnay/rust-toolchain@stable",
         "with": {"toolchain": "1.95.0", "components": "rustfmt"},
     },
-    {"uses": "taiki-e/install-action@v2", "with": {"tool": "cargo-hakari"}},
+    {"uses": "taiki-e/install-action@v2", "with": {"tool": "cargo-hakari@0.9.39"}},
     {
         "name": "Reverify immutable source before policy execution",
         "shell": "bash",
@@ -230,7 +230,7 @@ EXPECTED_POLICY_ACTION_INPUTS = {
         "toolchain": "1.95.0",
         "components": "rustfmt",
     },
-    "taiki-e/install-action@v2": {"tool": "cargo-hakari"},
+    "taiki-e/install-action@v2": {"tool": "cargo-hakari@0.9.39"},
 }
 
 

@@ -28,6 +28,7 @@ pub(crate) fn window_evidence_epoch_route(request: &Request) -> Option<WindowEvi
         | Request::LiveObservationStop { session_id, .. }
         | Request::GetWindowState { session_id, .. }
         | Request::ChangeWindowState { session_id, .. }
+        | Request::MinimizeWindow { session_id, .. }
         | Request::SetWindowFrame { session_id, .. }
         | Request::InvokeMenu { session_id, .. }
         | Request::Snapshot { session_id, .. }

@@ -7,14 +7,14 @@ use std::path::PathBuf;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum CliUsageError {
     PixelsOnlyRequiresExactWindow,
-    PixelsOnlyConflictsWithActivation,
+    PixelsOnlyConflictsWithEscalation,
 }
 
 impl CliUsageError {
     pub(super) fn code(self) -> &'static str {
         match self {
             Self::PixelsOnlyRequiresExactWindow => "missing_required_arguments",
-            Self::PixelsOnlyConflictsWithActivation => "invalid_argument_combination",
+            Self::PixelsOnlyConflictsWithEscalation => "invalid_argument_combination",
         }
     }
 
@@ -23,8 +23,8 @@ impl CliUsageError {
             Self::PixelsOnlyRequiresExactWindow => {
                 "snapshot --pixels-only requires both --pid and --window-id"
             }
-            Self::PixelsOnlyConflictsWithActivation => {
-                "snapshot --pixels-only is read-only and cannot be combined with --activate or --escalate"
+            Self::PixelsOnlyConflictsWithEscalation => {
+                "snapshot --pixels-only skips accessibility and cannot be combined with --escalate"
             }
         }
     }
@@ -51,8 +51,8 @@ pub(super) fn snapshot_mode(flags: &[String]) -> Result<SnapshotMode, CliUsageEr
     if flag_value(flags, "--pid").is_none() || flag_value(flags, "--window-id").is_none() {
         return Err(CliUsageError::PixelsOnlyRequiresExactWindow);
     }
-    if has_flag(flags, "--activate") || has_flag(flags, "--escalate") {
-        return Err(CliUsageError::PixelsOnlyConflictsWithActivation);
+    if has_flag(flags, "--escalate") {
+        return Err(CliUsageError::PixelsOnlyConflictsWithEscalation);
     }
     Ok(SnapshotMode::PixelsOnly)
 }
@@ -321,6 +321,7 @@ pub(super) fn print_help() -> std::io::Result<()> {
   launch --name NAME|--bundle-id ID|--aumid ID|--path PATH|--launch-path PATH [--url URL] [--arg ARG] [--new-instance] [--start-minimized]
   terminate --app APP|--pid PID|--window-id ID|--title TITLE --confirm [--allow-external]
   snapshot --app APP|--pid PID|--window-id ID|--title TITLE [--pixels-only] [--activate] [--escalate --escalation-reason REASON] [--escalation-detail NOTE] [--output FILE]
+  capture-proof --pid PID --window-id ID (Windows; content-free native metadata only)
   restore-activate --pid PID --window-id ID
   set-window-frame --app APP|--pid PID --window-id ID --x N --y N --width N --height N
   invoke-menu --app APP|--pid PID --window-id ID --menu TOP [--menu CHILD ...]
@@ -335,7 +336,7 @@ pub(super) fn print_help() -> std::io::Result<()> {
 Host uses versioned big-endian JSON frames. Hello version 1 negotiates binary-frame or shared-memory snapshots and supports request_id correlation."#
     );
     stdoutln!(
-        "Profiles are built-in, installed from ~/.dcc-cua/profiles, or loaded explicitly from JSON; package installation copies declarative content only and never launches bundled code. snapshot --pid PID --window-id ID --pixels-only skips accessibility and captures only that exact native window; it never falls back to a whole-desktop screenshot. Window snapshots/actions accept --escalate --escalation-reason REASON for legacy visual fallback routes; --activate keeps custom-rendered foreground capture and actions in one session."
+        "Profiles are built-in, installed from ~/.dcc-cua/profiles, or loaded explicitly from JSON; package installation copies declarative content only and never launches bundled code. snapshot --pid PID --window-id ID --pixels-only skips accessibility and captures only that exact native window; it never falls back to a whole-desktop screenshot. Add --activate to activate and then capture the same exact PID/HWND in one session; native identity, geometry, overlay-exclusion and occlusion proofs still apply. --pixels-only cannot combine with --escalate. Window snapshots/actions accept --escalate --escalation-reason REASON for legacy visual fallback routes."
     );
     stdoutln!(
         "terminate defaults to runtime-owned processes. --allow-external is an explicit risk acknowledgement for terminating one externally launched exact target; it still requires --confirm and revalidates the live PID/window and process fingerprint immediately before termination."

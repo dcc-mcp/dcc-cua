@@ -22,7 +22,7 @@ fn item<'a>(source: &'a str, marker: &str) -> &'a str {
 #[rstest]
 fn exact_source_first_capture_instance_boundary() {
     let pixel = include_str!("../src/runtime/pixel_observation.rs");
-    let runtime = include_str!("../src/runtime.rs");
+    let runtime = include_str!("../src/runtime/exact_capture.rs");
     let observation = include_str!("../src/runtime/session/observation.rs");
     let native = include_str!("../../dcc-cua-platform-windows/src/visible_capture.rs");
     let gates = include_str!("../src/runtime/session/gates.rs");
@@ -38,20 +38,70 @@ fn exact_source_first_capture_instance_boundary() {
         selected.push_str(item(pixel, marker));
         selected.push('\n');
     }
+    let contracts = include_str!("../src/contracts.rs");
+    for marker in [
+        "pub enum ComputerUseCaptureStage",
+        "pub enum ComputerUseCaptureReason",
+        "pub enum ComputerUseRootBoundsRole",
+        "pub enum ComputerUseRootBoundsClass",
+        "pub struct ComputerUseRootBoundsFailureDiagnostic",
+        "pub struct ComputerUseCaptureDiagnostic",
+    ] {
+        selected.push_str("#[derive(Clone, Copy, Debug, PartialEq, Eq)]\n");
+        selected.push_str(
+            &item(contracts, marker)
+                .lines()
+                .filter(|line| !line.trim_start().starts_with("#[serde("))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+        selected.push('\n');
+    }
     for marker in [
         "impl PixelObservationRoute",
         "impl From<dcc_cua_platform_windows::ExactWindowPixelInstanceEvidence>",
         "impl ExactWindowPixelCaptureMode",
         "pub(super) fn validate_exact_window_pixel_target_state",
         "fn validate_final_exact_window_pixel_instance",
+        "fn validate_exact_window_pixel_source",
         "pub(super) fn validate_final_exact_window_pixel_publication",
         "pub(super) fn validate_native_exact_window_pixel_evidence",
     ] {
         selected.push_str(item(pixel, marker));
         selected.push('\n');
     }
-    selected.push_str(item(runtime, "struct ExactWindowCapture"));
+    selected.push_str(&item(runtime, "struct ExactWindowCapture").replace("pub(super) ", ""));
+    for marker in [
+        "fn exact_capture_diagnostic(",
+        "fn map_visible_capture_error(",
+        "fn map_visible_capture_diagnostic(",
+        "pub(crate) fn map_root_bounds_failure(",
+        "fn map_root_bounds_class(",
+        "fn map_capture_identity_error(",
+    ] {
+        selected.push_str(
+            &item(runtime, marker)
+                .replace("super::map_root_bounds_failure", "map_root_bounds_failure"),
+        );
+        selected.push('\n');
+    }
+    for marker in [
+        "pub(crate) struct VerifiedVisibleBgraFrame",
+        "pub(crate) fn next_exact_capture_generation(",
+        "pub(crate) fn live_native_evidence(",
+        "fn validate_live_final_native_state(",
+        "pub(crate) fn validate_live_native_evidence(",
+        "pub(crate) fn validate_exact_bgra_dimensions(",
+        "pub(crate) fn capture_verified_visible_bgra(",
+    ] {
+        selected.push_str(item(runtime, marker));
+        selected.push('\n');
+    }
     selected.push_str(item(runtime, "async fn capture_exact_window("));
+    selected.push_str(item(
+        runtime,
+        "async fn capture_exact_window_with_diagnostics(",
+    ));
     selected.push_str(item(
         gates,
         "pub(crate) async fn gated_exact_window_observation",
@@ -60,9 +110,58 @@ fn exact_source_first_capture_instance_boundary() {
     for marker in [
         "pub struct ExactWindowPixelInstanceEvidence",
         "pub struct ExactWindowPixelEvidence",
+        "pub enum VisibleWindowCaptureReason",
+        "pub enum RootBoundsRole",
+        "pub enum RootBoundsClass",
+        "pub struct RootBoundsFailureDiagnostic",
+        "pub struct VisibleWindowCaptureDiagnostic",
     ] {
         native_types.push_str("#[derive(Clone, Copy, Debug, PartialEq, Eq)]\n");
-        native_types.push_str(item(native, marker));
+        native_types.push_str(
+            &item(native, marker)
+                .lines()
+                .filter(|line| !line.trim_start().starts_with("#[serde("))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+    }
+    native_types.push_str(item(native, "pub struct VisibleWindowCaptureError"));
+    let state = include_str!("../../dcc-cua-platform-windows/src/exact_window_state.rs");
+    native_types.push_str("\n#[derive(Clone, Copy, Debug, PartialEq, Eq)]\n");
+    native_types.push_str(item(state, "pub struct ExactWindowNativeState"));
+    // Compile the actual shared geometry algorithm too. Only serialization and
+    // derive macros are omitted from this standalone, dependency-free harness.
+    let geometry = include_str!("../../dcc-cua-platform-windows/src/capture_geometry.rs");
+    native_types.push_str(
+        geometry
+            .lines()
+            .find(|line| line.starts_with("pub(crate) const MAX_WGC_FRAME_PIXELS"))
+            .unwrap(),
+    );
+    for marker in [
+        "pub struct NativeWindowGeometry",
+        "pub struct WgcFrameGeometry",
+        "pub enum WgcSourceOrigin",
+        "pub struct ResolvedWgcGeometry",
+        "pub enum WgcGeometryError",
+    ] {
+        native_types.push_str("\n#[derive(Clone, Copy, Debug, PartialEq, Eq)]\n");
+        native_types.push_str(
+            &item(geometry, marker)
+                .lines()
+                .filter(|line| !line.trim_start().starts_with("#[error("))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+    }
+    for marker in [
+        "pub fn validate_wgc_frame_geometry",
+        "fn valid_rectangle",
+        "pub fn validate_native_window_geometry",
+        "pub fn resolve_exact_wgc_geometry",
+    ] {
+        native_types.push('\n');
+        native_types.push_str(item(geometry, marker));
     }
     let mut methods = item(
         observation,
@@ -71,9 +170,10 @@ fn exact_source_first_capture_instance_boundary() {
     .to_owned();
     // Retain each real method through every native capture/final fence. Only
     // the successful serialization tail becomes a counted publication sink.
+    methods.push_str(item(observation, "async fn capture_window_pixels("));
     for (marker, tail) in [
         (
-            "async fn capture_window_pixels(",
+            "async fn capture_window_pixels_with_diagnostics(",
             "        let (width, height) = png_dimensions",
         ),
         (
@@ -89,7 +189,7 @@ fn exact_source_first_capture_instance_boundary() {
         .replace("use rstest::rstest;", "")
         .replace("#[rstest]", "#[test]");
     let source = format!(
-        "#![allow(dead_code, unused_variables)]\nmod actual {{ {model}\n{selected}\nimpl ComputerUseSession {{ {methods} }}\nmod dcc_cua_platform_windows {{ use super::*; {native_types} NATIVE_BOUNDARY }} }}"
+        "#![allow(dead_code, unused_variables)]\nuse actual::{{capture_diagnostics, ComputerUseRootBoundsRole, ComputerUseRootBoundsClass, ComputerUseRootBoundsFailureDiagnostic}};\nmod actual {{ {model}\n{selected}\nimpl ComputerUseSession {{ {methods} }}\nmod dcc_cua_platform_windows {{ use super::*; {native_types} NATIVE_BOUNDARY }} }}"
     ).replace("NATIVE_BOUNDARY", include_str!("../src/runtime/session/tests/pixel_capture_os.rs"))
         .replace("use rstest::rstest;", "")
         .replace("#[cfg(windows)]", "");

@@ -150,6 +150,7 @@ def verify_uploaded_artifact(
     version: str,
     extract_root: Path,
     install_root: Path,
+    allow_ci_build_metadata: bool = False,
     after_snapshot: Callable[[], None] | None = None,
 ) -> dict:
     _require_server_id(expected_artifact_id, "expected artifact")
@@ -223,6 +224,7 @@ def verify_uploaded_artifact(
             version=version,
             extract_root=extract_root,
             install_root=install_root,
+            allow_ci_build_metadata=allow_ci_build_metadata,
         )
         try:
             unchanged = (
@@ -270,6 +272,7 @@ def main() -> None:
     parser.add_argument("--version", required=True)
     parser.add_argument("--extract-root", type=Path, required=True)
     parser.add_argument("--install-root", type=Path, required=True)
+    parser.add_argument("--allow-ci-build-metadata", action="store_true")
     args = parser.parse_args()
     receipt = verify_uploaded_artifact(
         metadata_path=args.metadata,
@@ -290,6 +293,7 @@ def main() -> None:
         version=args.version,
         extract_root=args.extract_root,
         install_root=args.install_root,
+        allow_ci_build_metadata=args.allow_ci_build_metadata,
     )
     print(json.dumps(receipt, sort_keys=True))
 

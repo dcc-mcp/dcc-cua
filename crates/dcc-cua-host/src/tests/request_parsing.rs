@@ -3,6 +3,82 @@ use rstest::rstest;
 use super::*;
 
 #[rstest]
+fn native_frame_request_keeps_metadata_token_separate_from_observation_id() {
+    let value = json!({"method":"set_window_frame","params":{
+        "session_id":"session-1","task_grant_id":"grant-1","window_capability":"cap-1",
+        "window_state_id":"native-state-1","frame":{"x":50,"y":800,"width":926,"height":680}}});
+    assert!(matches!(serde_json::from_value::<Request>(value.clone()),
+        Ok(Request::SetWindowFrame{window_state_id:Some(id),frame,..}) if id=="native-state-1" && frame.x==50.0));
+    let mut invalid = value;
+    invalid["params"]
+        .as_object_mut()
+        .unwrap()
+        .remove("window_state_id");
+    invalid["params"]["observation_id"] = json!("snapshot-1");
+    assert!(matches!(
+        serde_json::from_value::<Request>(invalid.clone()),
+        Ok(Request::SetWindowFrame {
+            window_state_id: None,
+            ..
+        })
+    ));
+    invalid["params"]["window_state_id"] = json!(7);
+    assert!(serde_json::from_value::<Request>(invalid).is_err());
+}
+
+#[rstest]
+fn pixel_raw_request_does_not_need_an_accessibility_id() {
+    let request: Request = serde_json::from_value(json!({"method":"execute_action", "params":{
+        "session_id":"session-1", "task_grant_id":"grant-1", "window_capability":"cap-1",
+        "observation_id":"pixel-1", "action":{"action":"click", "input_kind":"raw_input", "intent":"ordinary_edit", "x":30,"y":40}
+    }})).unwrap();
+    assert!(
+        matches!(request, Request::ExecuteAction { accessibility_state_id, .. } if accessibility_state_id.is_empty())
+    );
+}
+
+#[rstest]
+fn minimize_is_a_separate_observation_bound_method() {
+    let mut request = json!({"method":"minimize_window", "params":{
+        "session_id":"session-1", "task_grant_id":"grant-1",
+        "window_capability":"cap-1", "observation_id":"obs-1"
+    }});
+    let parsed: Request = serde_json::from_value(request.clone()).unwrap();
+    assert!(
+        matches!(parsed, Request::MinimizeWindow { observation_id, .. } if observation_id == "obs-1")
+    );
+    request["params"]
+        .as_object_mut()
+        .unwrap()
+        .remove("observation_id");
+    assert!(serde_json::from_value::<Request>(request).is_err());
+    assert!(serde_json::from_value::<WindowOperation>(json!("minimize")).is_err());
+}
+
+#[rstest]
+fn observation_mode_defaults_to_semantic_and_pixels_only_requires_exact_window() {
+    let mut grant = json!({"task_grant_id":"grant-1", "application_label":"Test DCC"});
+    let parsed: TaskGrant = serde_json::from_value(grant.clone()).unwrap();
+    assert_eq!(parsed.observation_mode, TaskObservationMode::Semantic);
+    grant["observation_mode"] = json!("pixels_only");
+    let parsed: TaskGrant = serde_json::from_value(grant.clone()).unwrap();
+    assert!(parsed.validate_identity().is_err());
+    grant["process_id"] = json!(42);
+    grant["window_handle"] = json!(7);
+    let parsed: TaskGrant = serde_json::from_value(grant.clone()).unwrap();
+    parsed.validate_identity().unwrap();
+    grant["window_title"] = json!("another window");
+    assert!(
+        serde_json::from_value::<TaskGrant>(grant.clone())
+            .unwrap()
+            .validate_identity()
+            .is_err()
+    );
+    grant["observation_mode"] = json!("automatic_fallback");
+    assert!(serde_json::from_value::<TaskGrant>(grant).is_err());
+}
+
+#[rstest]
 fn session_health_policy_is_optional_for_older_clients() {
     let request = serde_json::from_value::<Request>(json!({
         "method": "session_health",
@@ -645,4 +721,28 @@ fn app_requests_parse_with_host_params_frames() {
         })),
         Ok(Request::BrowserDialog { .. })
     ));
+}
+
+#[rstest]
+#[case(None, Some(false))]
+#[case(Some(json!(false)), Some(false))]
+#[case(Some(json!(true)), Some(true))]
+#[case(Some(json!("true")), None)]
+#[case(Some(json!(null)), None)]
+#[case(Some(json!(1)), None)]
+fn capture_diagnostics_snapshot_request_defaults_and_boolean_schema(
+    #[case] value: Option<Value>,
+    #[case] expected: Option<bool>,
+) {
+    let mut params = json!({"session_id":"s", "task_grant_id":"g", "window_capability":"c"});
+    if let Some(value) = value {
+        params["capture_diagnostics"] = value;
+    }
+    let request = serde_json::from_value::<Request>(json!({"method":"snapshot", "params":params}));
+    match expected {
+        Some(expected) => assert!(
+            matches!(request, Ok(Request::Snapshot { capture_diagnostics, activate_before: false, .. }) if capture_diagnostics == expected)
+        ),
+        None => assert!(request.is_err()),
+    }
 }

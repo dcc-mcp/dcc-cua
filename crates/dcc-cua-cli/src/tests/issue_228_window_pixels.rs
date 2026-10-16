@@ -39,20 +39,54 @@ fn pixels_only_rejects_unbound_window_selection() {
 }
 
 #[rstest]
-#[case("--activate")]
-#[case("--escalate")]
-fn pixels_only_rejects_mutating_or_provider_starting_options(#[case] flag: &str) {
+fn pixels_only_rejects_provider_starting_escalation() {
     let error = snapshot_mode(&strings([
         "--pid",
         "42",
         "--window-id",
         "77",
         "--pixels-only",
-        flag,
+        "--escalate",
     ]))
-    .expect_err("pixels-only remains provider-free and read-only");
-    assert_eq!(error, CliUsageError::PixelsOnlyConflictsWithActivation);
-    assert!(error.to_string().contains("read-only"));
+    .expect_err("pixels-only remains provider-free");
+    assert_eq!(error, CliUsageError::PixelsOnlyConflictsWithEscalation);
+    assert!(error.to_string().contains("skips accessibility"));
+}
+
+#[rstest]
+fn pixels_only_accepts_explicit_activation_only_for_an_exact_pair() {
+    assert_eq!(
+        snapshot_mode(&strings([
+            "--pid",
+            "42",
+            "--window-id",
+            "77",
+            "--pixels-only",
+            "--activate",
+        ])),
+        Ok(SnapshotMode::PixelsOnly)
+    );
+    assert_eq!(
+        snapshot_mode(&strings([
+            "--window-id",
+            "77",
+            "--pixels-only",
+            "--activate",
+        ])),
+        Err(CliUsageError::PixelsOnlyRequiresExactWindow)
+    );
+    assert_eq!(
+        snapshot_mode(&strings([
+            "--pid",
+            "42",
+            "--window-id",
+            "77",
+            "--pixels-only",
+            "--activate",
+            "--escalate",
+        ])),
+        Err(CliUsageError::PixelsOnlyConflictsWithEscalation)
+    );
 }
 
 #[rstest]
@@ -75,6 +109,14 @@ fn manifest_advertises_the_provider_free_exact_window_contract() {
     assert_eq!(
         manifest["runtime"]["exact_window_pixels"]["whole_desktop_fallback"],
         false
+    );
+    assert_eq!(
+        manifest["runtime"]["exact_window_pixels"]["activation_flag"],
+        "--activate"
+    );
+    assert_eq!(
+        manifest["runtime"]["exact_window_pixels"]["activation_scope"],
+        "same_exact_pid_hwnd_session"
     );
 }
 

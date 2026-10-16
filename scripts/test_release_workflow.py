@@ -39,7 +39,7 @@ RELEASE_PLEASE_ACTION = (
     "googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7"
 )
 CI_EXECUTABLE_SURFACE_SHA256 = (
-    "2f399718d8c0909616d3bb034c8cad83cadb7aa2321bcde2ee6fad4081276395"
+    "eb84e9a07171c84c44becd21f201b0acf100501f2b924adf0a8b37e2f4c0b4f2"
 )
 
 
@@ -252,6 +252,14 @@ def _ci_executable_surface(workflow: str) -> str:
 
 
 class ReleaseWorkflowTests(unittest.TestCase):
+    def test_only_ci_artifact_readback_opts_in_to_build_metadata(self):
+        ci = CI_WORKFLOW.read_text(encoding="utf-8")
+        release = WORKFLOW.read_text(encoding="utf-8")
+        self.assertEqual(ci.count("--allow-ci-build-metadata"), 1)
+        readback = ci[ci.index("      - name: Verify downloaded immutable native artifact") :]
+        self.assertIn("--allow-ci-build-metadata", readback)
+        self.assertNotIn("--allow-ci-build-metadata", release)
+
     def test_release_cli_failure_stdout_contract_cannot_be_orphaned_from_ci(self):
         workflow = CI_WORKFLOW.read_text(encoding="utf-8")
         script = CLI_E2E_SCRIPT.read_text(encoding="utf-8")

@@ -27,8 +27,8 @@ use crate::interactive_desktop::{
 };
 use crate::live_observation::{
     CaptureFailureDisposition, LiveObservation, LiveObservationFence, LiveObservationFrame,
-    LiveObservationStatus, decode_png_to_bgra, live_capture_failure_disposition,
-    observation_sequence_fence, terminal_capture_error, wait_for_latest_frame,
+    LiveObservationStatus, decode_png_to_bgra, observation_sequence_fence, terminal_capture_error,
+    wait_for_latest_frame,
 };
 use crate::policy::*;
 
