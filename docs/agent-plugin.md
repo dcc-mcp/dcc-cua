@@ -49,36 +49,34 @@ codex plugin marketplace add .
 codex plugin add dcc-cua-computer-use@dcc-cua
 ```
 
-The package also includes `dcc-cua-background`, the entry point used by the
-MCP manifests. Install both executables from the same archive. On Windows the
-background executable uses the GUI PE subsystem, so starting the MCP bridge
-does not allocate a console before application code runs. It uses the same
-runtime, inherited stdio pipes, diagnostics, and exit codes as `dcc-cua`;
-it does not spawn a wrapper child or change task authorization. On macOS and
-Linux it is an equivalent automation entry point.
+The package contains one executable, `dcc-cua`, for interactive CLI and MCP
+commands. The MCP command is `dcc-cua mcp-server`; no wrapper child or separate
+background executable is shipped. Protocol, task authorization, EOF cleanup,
+diagnostics and exit handling remain in the same shared runtime.
 
-When migrating from a release that shipped only `dcc-cua`, install both
-executables from the new archive. The older updater can replace only its own
-executable. If you already used it, run the new `dcc-cua update --apply` again:
-the dual-entry updater also reapplies the current release to repair a missing
-or stale companion. Future updates install both entries from the same verified
-archive. Keep their original filenames in the same writable directory; no
-system-wide installation is required. Close MCP clients and resident Hosts
-before updating on Windows, where a loaded companion executable can refuse
-replacement. The updater never terminates those processes for you. If an
-update fails, close the clients and retry or reinstall both entries from one
-archive before reconnecting.
+Windows MSVC builds retain the Console PE subsystem and embed
+`consoleAllocationPolicy=detached`. Windows 11 24H2 (build 26100) and Windows
+Server 2025 or later honor this loader policy before application code starts,
+while the Console subsystem retains shell waiting semantics. Older Windows
+ignores this policy; those clients must supply `CREATE_NO_WINDOW` when creating
+the process. Non-MSVC Windows builds also require that launcher flag. Portable
+MCP command/args configuration does not itself set process creation flags.
+Support for that flag in every Codex/Agent Host launcher has not been established;
+do not advertise universal console-free launch on older systems. See
+[Microsoft console policy](https://learn.microsoft.com/en-us/windows/console/console-allocation-policy).
 
-For manual MCP configuration, use `dcc-cua-background` with arguments
-`["mcp-server"]`. Use `dcc-cua` for interactive terminal commands. Existing
-clients configured to launch `dcc-cua mcp-server` keep working, but on Windows
-their launcher must set `CREATE_NO_WINDOW` to avoid allocating a console.
-Changing the manifest only takes effect after the client reconnects; it does
-not stop existing bridges. This entry point does not address repeated client
-connections or consoles created by unrelated shell commands.
+Preserve inherited stdin/stdout/stderr pipes. MCP stdout is JSON-RPC only;
+diagnostics remain on stderr. Do not call FreeConsole or attach a console after
+startup to conceal a console allocation. A changed plugin entry takes effect
+only after normal client rediscovery; it does not close existing connections.
+
+The updater validates and replaces only the canonical `dcc-cua` executable,
+retaining its installation lock and recovery bytes on incomplete rollback.
+Historical sibling binaries are unowned and are never automatically deleted.
+Close affected resident clients before updating on Windows, then reconnect.
 
 The checkout also includes `.claude-plugin/marketplace.json` and a portable
-`.mcp.json`. Hosts without Codex plugin support may launch `dcc-cua-background mcp-server`
+`.mcp.json`. Hosts without Codex plugin support may launch `dcc-cua mcp-server`
 directly through their native MCP configuration.
 
 After installation, confirm that `tools/list` exposes exactly `start_task`,

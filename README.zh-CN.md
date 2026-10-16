@@ -188,12 +188,13 @@ dcc-cua update --apply
 stderr 状态文本污染。需要交互式安装完整发布包时，请显式执行 `dcc-cua update`；自动化
 环境可使用非交互式的 `dcc-cua update --apply`。
 
-发布包现在包含 `dcc-cua` 和 `dcc-cua-background` 两个入口，MCP 配置使用后者。
-请保留原始文件名，并将两者安装到同一个可写目录。新版 updater 会从同一份已校验归档
-更新两个入口；再次应用当前版本也会修复缺失或过旧的配套入口，但不会降级较新的 CLI。
-旧版单入口 updater 首次运行只能替换自身：请从新归档安装两个文件，或再次运行新版
-`dcc-cua update --apply`。Windows 更新前应关闭 MCP 客户端及常驻 Host；若配套入口
-仍被占用，更新会在替换当前程序前失败，不会自动终止这些进程。更新后重新连接客户端。
+发布包只提供 `dcc-cua` 一个可执行入口，CLI 与 MCP 共用运行时。
+Windows MSVC 构建保留 Console 子系统，并嵌入 detached 控制台分配清单；
+该无自动控制台分配策略要求 Windows 11 24H2（build 26100）或 Server 2025 及以上。
+旧版 Windows 或非 MSVC 构建需要客户端在创建进程时设置 `CREATE_NO_WINDOW`，
+不能依赖启动后隐藏窗口。此限制不影响原有 CLI 命令、STDIO 管道或任务授权。
+更新器只校验并替换 `dcc-cua`，保留并发锁及失败恢复文件，不终止客户端，
+也不自动删除历史配套文件。Windows 更新前关闭受影响客户端，更新后重新连接。
 
 `snapshot`、`act`、`verify`、`clipboard-read` 和 `clipboard-write` 接受同一组
 `--app`、`--pid`、`--window-id`、`--title` 窗口选择器。多个选择器按 AND 同时校验；
@@ -358,7 +359,7 @@ pwsh -NoProfile -File scripts/run-gui-e2e.ps1 -Binary target/debug/dcc-cua.exe
 ## CI/CD 与发布
 
 CI 在 Windows、Linux 和 macOS 上检查代码布局、格式、工作区测试、锁定 release
-构建和真实发布二进制 E2E。发布归档包含 `dcc-cua` 与 `dcc-cua-background`、assets、Skills、
+构建和真实发布二进制 E2E。发布归档包含 单个 `dcc-cua`、assets、Skills、
 英文/简体中文 README 以及项目和上游许可证。
 
 原生发布契约为每个支持的 Rust target 提供一份归档、SHA-256 sidecar 和安装 manifest：

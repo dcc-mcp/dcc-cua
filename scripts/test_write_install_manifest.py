@@ -17,12 +17,7 @@ class InstallManifestTests(unittest.TestCase):
         source = root / "target" / "release"
         source.mkdir(parents=True)
         binary = MODULE.SUPPORTED_TARGETS[target]
-        background = (
-            "dcc-cua-background.exe"
-            if binary.endswith(".exe")
-            else "dcc-cua-background"
-        )
-        for name in (binary, background, *MODULE.PACKAGE_FILES):
+        for name in (binary, *MODULE.PACKAGE_FILES):
             (source / name).write_text(name, encoding="utf-8")
         for name in MODULE.PACKAGE_DIRECTORIES:
             directory = source / name
@@ -91,11 +86,12 @@ class InstallManifestTests(unittest.TestCase):
             source = self._package_source(root, target)
             (source / "deps").mkdir()
             (source / "deps" / "unpublished-build-output").write_bytes(b"decoy")
+            (source / "dcc-cua-background").write_bytes(b"historical unowned binary")
             files, directories = MODULE.collect_install_plan(source, target)
         self.assertNotIn("deps/unpublished-build-output", files)
         self.assertNotIn("deps", directories)
         self.assertIn("dcc-cua", files)
-        self.assertIn("dcc-cua-background", files)
+        self.assertNotIn("dcc-cua-background", files)
         self.assertIn("skills/marker.txt", files)
 
     def test_url_must_name_exact_archive(self):
@@ -111,18 +107,13 @@ class InstallManifestTests(unittest.TestCase):
                     {"dcc-cua": "a" * 64},
                 )
 
-    def test_background_entry_is_required_on_every_target(self):
+    def test_single_entry_is_required_on_every_target(self):
         for target, binary in MODULE.SUPPORTED_TARGETS.items():
             with self.subTest(target=target), tempfile.TemporaryDirectory() as directory:
                 source = self._package_source(Path(directory), target)
-                background = (
-                    "dcc-cua-background.exe"
-                    if binary.endswith(".exe")
-                    else "dcc-cua-background"
-                )
                 files, _ = MODULE.collect_install_plan(source, target)
-                self.assertIn(background, files)
-                (source / background).unlink()
+                self.assertIn(binary, files)
+                (source / binary).unlink()
                 with self.assertRaisesRegex(ValueError, "missing a regular file"):
                     MODULE.collect_install_plan(source, target)
 
