@@ -1550,6 +1550,7 @@ async fn refresh_connection_session_states(sessions: &mut HashMap<String, HostSe
         .is_err()
         {
             session.invalidate_observations();
+            session.latest_preparation_image = None;
             if !session.interrupted
                 && (session.allow_recording
                     || session
