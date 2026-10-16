@@ -1003,13 +1003,50 @@ fn assert_exact_capture_luma_or_fail_closed(
                 "exact HWND returned unexpected center luma {luma}"
             );
         }
-        Err(error) => assert!(
-            error
-                .to_string()
-                .contains("complete root-window z-order could not be proven"),
-            "ambiguous pixels must fail closed: {error}"
-        ),
+        Err(error) => assert_exact_capture_fail_closed(error),
     }
+}
+
+#[cfg(windows)]
+fn assert_exact_capture_fail_closed(error: crate::visible_capture::VisibleWindowCaptureError) {
+    assert!(
+        matches!(
+            error.diagnostic.reason,
+            VisibleWindowCaptureReason::RootOverlap
+                | VisibleWindowCaptureReason::RootEnumerationIncomplete
+        ),
+        "ambiguous pixels must fail closed: {error}"
+    );
+}
+
+#[cfg(windows)]
+#[rstest]
+#[case(VisibleWindowCaptureReason::NativeReadFailed, false)]
+#[case(VisibleWindowCaptureReason::TargetUnavailable, false)]
+#[case(VisibleWindowCaptureReason::TargetNotVisible, false)]
+#[case(VisibleWindowCaptureReason::TargetMinimized, false)]
+#[case(VisibleWindowCaptureReason::TargetBoundsInvalid, false)]
+#[case(VisibleWindowCaptureReason::TargetOutsideDesktop, false)]
+#[case(VisibleWindowCaptureReason::RootCloakingUnavailable, false)]
+#[case(VisibleWindowCaptureReason::RootBoundsUnavailable, false)]
+#[case(VisibleWindowCaptureReason::RootBoundsInvalid, false)]
+#[case(VisibleWindowCaptureReason::RootEnumerationIncomplete, true)]
+#[case(VisibleWindowCaptureReason::TargetNotReached, false)]
+#[case(VisibleWindowCaptureReason::TargetBoundsChanged, false)]
+#[case(VisibleWindowCaptureReason::RootOverlap, true)]
+fn exact_capture_fail_closed_accepts_only_ambiguous_root_proof_errors(
+    #[case] reason: VisibleWindowCaptureReason,
+    #[case] accepted: bool,
+) {
+    let mut error = root_z_order_proof(
+        77,
+        [0, 0, 100, 100],
+        &[(91, [1, 1, 1, 1], true), (77, [0, 0, 100, 100], true)],
+    )
+    .unwrap_err();
+    error.diagnostic.reason = reason;
+    let assertion = std::panic::catch_unwind(|| assert_exact_capture_fail_closed(error));
+    assert_eq!(assertion.is_ok(), accepted);
 }
 
 #[rstest]
@@ -1792,6 +1829,86 @@ fn persistent_wgc_captures_consecutive_real_frames() {
         first_elapsed.as_millis(),
         second_elapsed.as_millis()
     );
+}
+
+#[rstest]
+#[case(0)]
+#[case(1)]
+#[case(-1)]
+fn foreground_activation_attempt_records_only_documented_failure_error(#[case] api_return: i32) {
+    use crate::contracts::{
+        WindowsForegroundActivationAttempt as Attempt, WindowsForegroundActivationPhase as Phase,
+    };
+    for (phase, documented) in [
+        (Phase::RestoreWindow, false),
+        (Phase::RestoreTargetFrame, true),
+        (Phase::InitialForegroundRequest, false),
+        (Phase::NonTopmostRaise, true),
+        (Phase::RaisedForegroundRequest, false),
+        (Phase::AttachForegroundInput, true),
+        (Phase::AttachTargetInput, true),
+        (Phase::BringTargetToTop, false),
+        (Phase::AttachedForegroundRequest, false),
+        (Phase::DetachTargetInput, true),
+        (Phase::DetachForegroundInput, true),
+    ] {
+        let attempt = Attempt::new(phase, api_return, Some(17), Some(5));
+        assert_eq!(attempt.api_return, api_return);
+        assert_eq!(
+            attempt.os_error,
+            (api_return == 0 && documented).then_some(5)
+        );
+    }
+}
+
+fn foreground_activation_platform_fixture() -> crate::WindowsForegroundActivationDiagnostic {
+    serde_json::from_value(json!({
+        "caller_process_id":101,"caller_thread_id":102,
+        "target":{"process_id":42,"window_handle":77},
+        "target_thread_id":43,"target_root_window_handle":77,"target_owner_window_handle":0,
+        "initial_foreground":{"process_id":99,"window_handle":100},
+        "final_foreground":{"process_id":99,"window_handle":100},
+        "attempts":[{"phase":"restore_window","api_return":1},
+            {"phase":"initial_foreground_request","api_return":0},
+            {"phase":"non_topmost_raise","api_return":0,"os_error":5},
+            {"phase":"detach_foreground_input","api_return":0,"related_thread_id":103,"os_error":87},
+            {"phase":"restore_target_frame","api_return":1}],
+        "foreground_poll_count":20
+    })).unwrap()
+}
+
+#[rstest]
+fn foreground_activation_platform_contract_roundtrips_final_detach_evidence() {
+    let fixture = foreground_activation_platform_fixture();
+    let value = serde_json::to_value(&fixture).unwrap();
+    let recovered: crate::WindowsForegroundActivationDiagnostic =
+        serde_json::from_value(value.clone()).unwrap();
+    assert_eq!(recovered, fixture);
+    assert_eq!(value["attempts"][0].get("os_error"), None);
+    assert_eq!(value["attempts"][0]["phase"], "restore_window");
+    assert_eq!(value["attempts"][3]["phase"], "detach_foreground_input");
+    assert_eq!(value["attempts"][3]["os_error"], 87);
+    assert_eq!(value["attempts"][4]["phase"], "restore_target_frame");
+    assert!(!value.to_string().contains("title"));
+}
+
+#[rstest]
+#[case("too_many_attempts")]
+#[case("too_many_polls")]
+#[case("unknown_phase")]
+#[case("foreign_content")]
+fn foreground_activation_platform_contract_refuses_unbounded_or_open_metadata(
+    #[case] variant: &str,
+) {
+    let mut value = serde_json::to_value(foreground_activation_platform_fixture()).unwrap();
+    match variant {
+        "too_many_attempts" => value["attempts"] = json!(vec![value["attempts"][0].clone(); 17]),
+        "too_many_polls" => value["foreground_poll_count"] = json!(21),
+        "unknown_phase" => value["attempts"][0]["phase"] = json!("PRIVATE_BACKEND_MESSAGE"),
+        "foreign_content" => value["window_title"] = json!("PRIVATE_TITLE"),
+        _ => unreachable!(),
+    }
+    assert!(serde_json::from_value::<crate::WindowsForegroundActivationDiagnostic>(value).is_err());
 }
 
 #[cfg(windows)]

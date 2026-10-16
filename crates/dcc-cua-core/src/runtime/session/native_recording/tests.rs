@@ -35,6 +35,7 @@ fn proof() -> NativeFrameProvenance {
         capture_generation: 1,
         stream_id: 9,
         wgc_geometry: None,
+        capture_preparation: None,
     }
 }
 
@@ -43,7 +44,7 @@ fn native_video_first_frame_requires_actual_fresh_exact_stream_provenance() {
     let now = Instant::now();
     let frame = |proof| {
         crate::live_observation::LiveObservationFrame::new(4, vec![0; 16 * 16 * 4], 16, 16, now)
-            .with_provenance(FrameCaptureProvenance::NativeExactWindow(proof))
+            .with_provenance(FrameCaptureProvenance::NativeExactWindow(Box::new(proof)))
     };
     assert!(validate_native_recording_frame(&frame(proof()), &target(), 9, now).is_ok());
     for change in 0..6 {

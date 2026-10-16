@@ -464,9 +464,9 @@ async fn live_observation_post_action_capture_skips_frames_available_at_action_c
 }
 
 #[rstest]
-#[tokio::test]
 #[case("input_resumed")]
 #[case("target_restored")]
+#[tokio::test]
 async fn live_observation_transition_fence_skips_frames_cached_before_safe_resume(
     #[case] _transition: &str,
 ) {

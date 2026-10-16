@@ -17,6 +17,104 @@ use crate::{
     ComputerUseToolStatus,
 };
 
+fn foreground_activation_core_fixture() -> crate::ComputerUseForegroundActivationDiagnostic {
+    serde_json::from_value(json!({
+        "caller_process_id":101,"caller_thread_id":102,
+        "target":{"process_id":42,"window_handle":77},
+        "target_thread_id":43,"target_root_window_handle":77,"target_owner_window_handle":0,
+        "initial_foreground":{"process_id":99,"window_handle":100},
+        "final_foreground":{"process_id":99,"window_handle":100},
+        "attempts":[{"phase":"restore_window","api_return":1},
+            {"phase":"initial_foreground_request","api_return":0},
+            {"phase":"non_topmost_raise","api_return":0,"os_error":5},
+            {"phase":"detach_target_input","api_return":0,"related_thread_id":43,"os_error":87},
+            {"phase":"detach_foreground_input","api_return":1,"related_thread_id":103},
+            {"phase":"restore_target_frame","api_return":0,"os_error":5}],
+        "foreground_poll_count":20
+    }))
+    .unwrap()
+}
+
+#[rstest]
+fn foreground_activation_core_details_roundtrip_and_legacy_none_omission() {
+    let diagnostic = foreground_activation_core_fixture();
+    let details = crate::ComputerUseErrorDetails {
+        foreground_activation: Some(diagnostic.clone()),
+        ..Default::default()
+    };
+    let value = serde_json::to_value(details).unwrap();
+    let recovered: crate::ComputerUseErrorDetails = serde_json::from_value(value.clone()).unwrap();
+    assert_eq!(recovered.foreground_activation, Some(diagnostic));
+    assert_eq!(
+        value["foreground_activation"]["attempts"][4].get("os_error"),
+        None
+    );
+    assert_eq!(
+        value["foreground_activation"]["attempts"][0]["phase"],
+        "restore_window"
+    );
+    assert_eq!(
+        value["foreground_activation"]["attempts"][5]["phase"],
+        "restore_target_frame"
+    );
+    let legacy: crate::ComputerUseErrorDetails = serde_json::from_value(json!({})).unwrap();
+    assert!(legacy.foreground_activation.is_none());
+    assert!(
+        serde_json::to_value(legacy)
+            .unwrap()
+            .get("foreground_activation")
+            .is_none()
+    );
+}
+
+#[rstest]
+#[case("too_many_attempts")]
+#[case("too_many_polls")]
+#[case("unknown_phase")]
+#[case("foreign_content")]
+fn foreground_activation_core_contract_refuses_unbounded_or_open_metadata(#[case] variant: &str) {
+    let mut value = serde_json::to_value(foreground_activation_core_fixture()).unwrap();
+    match variant {
+        "too_many_attempts" => value["attempts"] = json!(vec![value["attempts"][0].clone(); 17]),
+        "too_many_polls" => value["foreground_poll_count"] = json!(21),
+        "unknown_phase" => value["attempts"][0]["phase"] = json!("PRIVATE_BACKEND_MESSAGE"),
+        "foreign_content" => value["window_title"] = json!("PRIVATE_TITLE"),
+        _ => unreachable!(),
+    }
+    assert!(
+        serde_json::from_value::<crate::ComputerUseForegroundActivationDiagnostic>(value).is_err()
+    );
+}
+
+#[cfg(windows)]
+#[rstest]
+fn foreground_activation_native_error_mapping_preserves_exact_numeric_diagnostic() {
+    let expected = serde_json::to_value(foreground_activation_core_fixture()).unwrap();
+    let native = serde_json::from_value::<
+        dcc_cua_platform_windows::WindowsForegroundActivationDiagnostic,
+    >(expected.clone())
+    .unwrap();
+    let error = map_windows_window_mutation_error(
+        "activate exact target",
+        dcc_cua_platform_windows::UiaError::ForegroundActivationRefused {
+            reason: "actual foreground refusal".into(),
+            background_delivery_viable: true,
+            suggested_delivery_mode: Some("background".into()),
+            diagnostic: Some(Box::new(native)),
+        },
+    );
+    assert_eq!(
+        error.code,
+        ComputerUseErrorCode::ForegroundActivationRefused
+    );
+    let details = error.details.unwrap();
+    assert_eq!(
+        serde_json::to_value(details.foreground_activation.unwrap()).unwrap(),
+        expected
+    );
+    assert_eq!(details.background_delivery_viable, Some(true));
+}
+
 #[rstest]
 fn capture_diagnostic_contract_rejects_arbitrary_reason_and_stage_strings() {
     let mut value = json!({
@@ -164,6 +262,7 @@ fn foreground_activation_refusal_is_typed_and_suggests_safe_background_delivery(
             reason: "Windows rejected foreground activation".into(),
             background_delivery_viable: true,
             suggested_delivery_mode: Some("background".into()),
+            diagnostic: None,
         },
     );
 

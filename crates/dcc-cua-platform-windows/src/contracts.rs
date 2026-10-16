@@ -55,6 +55,110 @@ impl WindowsRawInputSnapshot {
     }
 }
 
+/// A finite phase in the existing exact-window activation sequence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WindowsForegroundActivationPhase {
+    RestoreWindow,
+    InitialForegroundRequest,
+    NonTopmostRaise,
+    RaisedForegroundRequest,
+    AttachForegroundInput,
+    AttachTargetInput,
+    BringTargetToTop,
+    AttachedForegroundRequest,
+    DetachTargetInput,
+    DetachForegroundInput,
+    RestoreTargetFrame,
+}
+
+/// The actual BOOL returned by one existing activation call, without UI content.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WindowsForegroundActivationAttempt {
+    pub phase: WindowsForegroundActivationPhase,
+    pub api_return: i32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub related_thread_id: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub os_error: Option<u32>,
+}
+
+#[cfg(any(windows, test))]
+impl WindowsForegroundActivationAttempt {
+    pub(crate) fn new(
+        phase: WindowsForegroundActivationPhase,
+        api_return: i32,
+        related_thread_id: Option<u32>,
+        documented_os_error: Option<u32>,
+    ) -> Self {
+        use WindowsForegroundActivationPhase as Phase;
+        let supports_last_error = matches!(
+            phase,
+            Phase::NonTopmostRaise
+                | Phase::RestoreTargetFrame
+                | Phase::AttachForegroundInput
+                | Phase::AttachTargetInput
+                | Phase::DetachTargetInput
+                | Phase::DetachForegroundInput
+        );
+        Self {
+            phase,
+            api_return,
+            related_thread_id,
+            os_error: (api_return == 0 && supports_last_error)
+                .then_some(documented_os_error)
+                .flatten(),
+        }
+    }
+}
+
+/// Content-free observations of activation attempts, not a root-cause claim.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WindowsForegroundActivationDiagnostic {
+    pub caller_process_id: u32,
+    pub caller_thread_id: u32,
+    pub target: WindowsWindowIdentity,
+    pub target_thread_id: u32,
+    pub target_root_window_handle: u64,
+    pub target_owner_window_handle: u64,
+    pub initial_foreground: Option<WindowsWindowIdentity>,
+    pub final_foreground: Option<WindowsWindowIdentity>,
+    #[serde(deserialize_with = "deserialize_activation_attempts")]
+    pub attempts: Vec<WindowsForegroundActivationAttempt>,
+    #[serde(deserialize_with = "deserialize_activation_poll_count")]
+    pub foreground_poll_count: u8,
+}
+
+fn deserialize_activation_attempts<'de, D>(
+    deserializer: D,
+) -> Result<Vec<WindowsForegroundActivationAttempt>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let attempts = Vec::<WindowsForegroundActivationAttempt>::deserialize(deserializer)?;
+    if attempts.len() > 16 {
+        return Err(serde::de::Error::custom(
+            "foreground activation has more than 16 API attempts",
+        ));
+    }
+    Ok(attempts)
+}
+
+fn deserialize_activation_poll_count<'de, D>(deserializer: D) -> Result<u8, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let count = u8::deserialize(deserializer)?;
+    if count > 20 {
+        return Err(serde::de::Error::custom(
+            "foreground activation has more than 20 polls",
+        ));
+    }
+    Ok(count)
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct UiaAction {
     pub action: String,
@@ -96,5 +200,6 @@ pub enum UiaError {
         reason: String,
         background_delivery_viable: bool,
         suggested_delivery_mode: Option<String>,
+        diagnostic: Option<Box<WindowsForegroundActivationDiagnostic>>,
     },
 }

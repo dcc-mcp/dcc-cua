@@ -132,6 +132,7 @@ static RAW_INPUT_QUEUE: AsyncMutex<()> = AsyncMutex::const_new(());
 pub const HOST_CAPABILITIES: &[&str] = &[
     "exact_window_capabilities",
     "exact_window_state",
+    "exact_window_capture_preparation_v1",
     "connection_scoped_sessions",
     "multi_agent_sessions",
     "isolated_runtime_sessions",
@@ -234,6 +235,7 @@ pub fn host_capabilities(cursor_controls_available: bool) -> Vec<&'static str> {
                 || cursor_controls_available)
                 && (*capability != "windows_background_uia_fallback" || cfg!(windows))
                 && (*capability != "exact_window_restore_activate" || cfg!(windows))
+                && (*capability != "exact_window_capture_preparation_v1" || cfg!(windows))
                 && (!capability.starts_with("input_backend:windows.") || cfg!(windows))
         })
         .collect()
@@ -261,6 +263,23 @@ enum PostSnapshotMode {
     #[default]
     Full,
     Semantic,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CapturePreparationBindings {
+    session_id: String,
+    task_grant_id: String,
+    window_capability: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CapturePreparationBeginParams {
+    session_id: String,
+    task_grant_id: String,
+    window_capability: String,
+    request: dcc_cua_protocol::capture_preparation::CapturePreparationBeginRequest,
 }
 
 #[derive(Debug, Deserialize)]
@@ -378,6 +397,10 @@ enum Request {
         window_capability: String,
         write: ComputerUseClipboardWriteRequest,
     },
+    CapturePreparationBegin(CapturePreparationBeginParams),
+    CapturePreparationState(CapturePreparationBindings),
+    CapturePreparationStop(CapturePreparationBindings),
+    CapturePreparationSnapshot(CapturePreparationBindings),
     RecordingStart {
         session_id: String,
         task_grant_id: String,

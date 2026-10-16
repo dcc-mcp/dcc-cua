@@ -1322,6 +1322,7 @@ version = "1.10.1"
 dependencies = [
  "base64 0.22.1",
  "cursor-overlay",
+ "dcc-cua-protocol",
  "dcc-cua-workspace-hack",
  "platform-windows",
  "rstest",

@@ -181,6 +181,8 @@ struct PrepareTaskInput {
     #[serde(default)]
     allow_recording: bool,
     #[serde(default)]
+    allow_capture_preparation: bool,
+    #[serde(default)]
     allowed_browser_origins: Vec<String>,
     #[serde(default = "default_ttl_minutes")]
     ttl_minutes: u64,
@@ -238,6 +240,7 @@ struct TaskAuthorizationServer {
     authority: TaskAuthorizationAuthority,
     proposals: BTreeMap<String, TaskProposal>,
     recording_output_root: Option<std::path::PathBuf>,
+    capture_preparation_journal_root: Option<std::path::PathBuf>,
     diagnostics: Option<ConnectionDiagnostics>,
 }
 
@@ -252,6 +255,10 @@ impl TaskAuthorizationServer {
             proposals: BTreeMap::new(),
             recording_output_root: std::env::var_os("DCC_CUA_RECORDING_OUTPUT_ROOT")
                 .map(Into::into),
+            capture_preparation_journal_root: std::env::var_os(
+                "DCC_CUA_CAPTURE_PREPARATION_JOURNAL_ROOT",
+            )
+            .map(Into::into),
             diagnostics: None,
         }
     }
@@ -397,6 +404,35 @@ impl TaskAuthorizationServer {
         }
         validate_allowed_methods(input.surface, &input.allowed_methods)?;
         validate_native_lifecycle_methods(&input.allowed_methods)?;
+        let preparation_requested = input
+            .allowed_methods
+            .iter()
+            .any(|method| method.starts_with("capture_preparation_"));
+        let preparation_action = input
+            .allowed_actions
+            .iter()
+            .any(TrustedTaskActionScope::is_capture_preparation);
+        if input.allow_capture_preparation != preparation_requested
+            || input.allow_capture_preparation != preparation_action
+            || (input.allow_capture_preparation
+                && (input.surface != TaskSurface::Window
+                    || input.observation_mode != TaskObservationMode::PixelsOnly
+                    || ![
+                        "get_window_state",
+                        "capture_preparation_begin",
+                        "capture_preparation_state",
+                        "capture_preparation_stop",
+                    ]
+                    .iter()
+                    .all(|required| {
+                        input
+                            .allowed_methods
+                            .iter()
+                            .any(|method| method == required)
+                    })))
+        {
+            return Err("capture preparation requires explicit allow_capture_preparation=true, pixels_only exact window, get_window_state, complete begin/state/stop and its closed action scope".into());
+        }
         let requested_recording = input
             .allowed_methods
             .iter()
@@ -434,6 +470,7 @@ impl TaskAuthorizationServer {
                 || input.allowed_actions.iter().any(|action| {
                     !action.is_window_minimize()
                         && !action.is_window_frame()
+                        && !action.is_capture_preparation()
                         && !action.is_pixels_input()
                 })
             {
@@ -542,6 +579,41 @@ impl TaskAuthorizationServer {
             return Err("too many live tasks".into());
         }
         let proposal_id = format!("task-{}", Uuid::new_v4());
+        let capture_preparation = if input.allow_capture_preparation {
+            let root = self.capture_preparation_journal_root.as_ref().ok_or_else(||
+                "capture preparation requires operator configuration DCC_CUA_CAPTURE_PREPARATION_JOURNAL_ROOT; callers cannot nominate a journal root".to_owned())?;
+            let directory = root
+                .to_str()
+                .ok_or_else(|| "capture preparation journal root must be Unicode".to_owned())?;
+            TrustedTaskAuthorizationRegistration::validate_capture_preparation_directory(directory)
+                .map_err(|error| error.to_string())?;
+            if self
+                .recording_output_root
+                .as_ref()
+                .is_some_and(|recording| {
+                    recording == root
+                        || std::fs::canonicalize(recording)
+                            .ok()
+                            .is_some_and(|canonical| {
+                                std::fs::canonicalize(root).ok().as_ref() == Some(&canonical)
+                            })
+                })
+            {
+                return Err(
+                    "capture preparation requires a journal root separate from recording output"
+                        .into(),
+                );
+            }
+            Some(
+                dcc_cua_protocol::capture_preparation::CapturePreparationAuthorization {
+                    journal_directory: directory.to_owned(),
+                    max_lifetime_ms:
+                        dcc_cua_protocol::capture_preparation::MAX_PREPARATION_LIFETIME_MS,
+                },
+            )
+        } else {
+            None
+        };
         let mut registration = TrustedTaskAuthorizationRegistration {
             connection_id: None,
             task_id: None,
@@ -553,6 +625,7 @@ impl TaskAuthorizationServer {
             allowed_browser_origins,
             browser_scope: None,
             recording_output_dir: None,
+            capture_preparation,
             expires_at_unix_ms: now.saturating_add(input.ttl_minutes * 60_000),
         };
         registration.validate().map_err(|error| error.to_string())?;
@@ -882,6 +955,7 @@ fn task_session_grant(proposal: &TaskProposal, receipt: &TrustedTaskAuthorizatio
         "allow_clipboard_write": allow_clipboard,
         "allow_live_observation": true,
         "allow_recording": proposal.registration.recording_output_dir.is_some(),
+        "allow_capture_preparation": proposal.registration.capture_preparation.is_some(),
         "recording_output_dir": proposal.registration.recording_output_dir,
         "allow_browser_input": browser,
         "allow_browser_prepare": proposal.authorizes_existing_profile_prepare(),
@@ -958,7 +1032,15 @@ fn method_allowed(surface: TaskSurface, method: &str) -> bool {
             | "recording_stop"
     );
     common
-        || (surface == TaskSurface::Window && method == "set_window_frame")
+        || (surface == TaskSurface::Window
+            && matches!(
+                method,
+                "set_window_frame"
+                    | "capture_preparation_begin"
+                    | "capture_preparation_state"
+                    | "capture_preparation_stop"
+                    | "capture_preparation_snapshot"
+            ))
         || matches!(
             (surface, method),
             (
@@ -977,6 +1059,25 @@ fn method_allowed(surface: TaskSurface, method: &str) -> bool {
 }
 
 fn validate_task_method_params(method: &str, params: &Value) -> Result<(), String> {
+    if method == "capture_preparation_begin" {
+        let object = params
+            .as_object()
+            .ok_or_else(|| "capture preparation params must be an object".to_owned())?;
+        if object.len() != 1 || !object.contains_key("request") {
+            return Err("capture preparation begin accepts only its window-state request; journal and target are constructor-owned".into());
+        }
+        let request: dcc_cua_protocol::capture_preparation::CapturePreparationBeginRequest =
+            serde_json::from_value(object["request"].clone())
+                .map_err(|error| format!("invalid capture preparation request: {error}"))?;
+        request.validate().map_err(|error| error.to_string())?;
+    }
+    if matches!(
+        method,
+        "capture_preparation_state" | "capture_preparation_stop" | "capture_preparation_snapshot"
+    ) && params.as_object().is_none_or(|params| !params.is_empty())
+    {
+        return Err("capture preparation state/stop/snapshot accept no caller parameters".into());
+    }
     if method == "set_window_frame" {
         validate_native_frame_params(params)?;
     }
@@ -1113,6 +1214,23 @@ fn validate_native_frame_params(params: &Value) -> Result<(), String> {
 }
 
 fn validate_native_lifecycle_methods(methods: &[String]) -> Result<(), String> {
+    if methods
+        .iter()
+        .any(|method| method.starts_with("capture_preparation_"))
+        && ![
+            "get_window_state",
+            "capture_preparation_begin",
+            "capture_preparation_state",
+            "capture_preparation_stop",
+        ]
+        .iter()
+        .all(|required| methods.iter().any(|method| method == required))
+    {
+        return Err(
+            "capture preparation requires get_window_state and complete begin/state/stop methods"
+                .into(),
+        );
+    }
     for group in [
         ["recording_start", "recording_state", "recording_stop"],
         [
@@ -1262,9 +1380,22 @@ fn native_frame_scope_schema() -> Value {
     })
 }
 
+fn capture_preparation_scope_schema() -> Value {
+    json!({
+        "title":"Temporary passive exact-root capture preparation",
+        "type":"object","additionalProperties":false,
+        "required":["action","input_kind","secret_input","authorization_category"],
+        "properties":{
+            "action":{"const":"capture_preparation_begin"},"input_kind":{"const":"window_state"},
+            "secret_input":{"const":false},"authorization_category":{"const":"window_state"},
+            "browser_origin":{"type":"null"}
+        }
+    })
+}
+
 fn pixels_action_scope_schema() -> Value {
     json!({
-        "oneOf": [native_minimize_scope_schema(), native_frame_scope_schema(), {
+        "oneOf": [native_minimize_scope_schema(), native_frame_scope_schema(), capture_preparation_scope_schema(), {
             "title": "Observation-bound foreground pixel input",
             "type": "object",
             "additionalProperties": false,
@@ -1291,6 +1422,7 @@ fn task_action_scope_schema() -> Value {
         "oneOf": [
             native_minimize_scope_schema(),
             native_frame_scope_schema(),
+            capture_preparation_scope_schema(),
             {
                 "title": "Semantic exact-window input",
                 "type": "object",
@@ -1396,10 +1528,24 @@ fn tool_definitions() -> Vec<Value> {
                                 "execute_action", "get_session_state", "get_input_state", "session_health", "poll_session_events",
                                 "live_observation_start", "live_observation_state", "live_observation_stop",
                                 "recording_start", "recording_state", "recording_stop"
+                                ,"capture_preparation_begin", "capture_preparation_state", "capture_preparation_stop", "capture_preparation_snapshot"
                             ]}},
                             "allowed_actions": {"items": pixels_action_scope_schema()}
                         }
                     }
+                }, {
+                    "if":{"anyOf":[
+                        {"required":["allow_capture_preparation"],"properties":{"allow_capture_preparation":{"const":true}}},
+                        {"properties":{"allowed_methods":{"contains":{"enum":["capture_preparation_begin","capture_preparation_state","capture_preparation_stop","capture_preparation_snapshot"]}}}},
+                        {"properties":{"allowed_actions":{"contains":capture_preparation_scope_schema()}}}
+                    ]},
+                    "then":{"required":["allow_capture_preparation","observation_mode"],"properties":{
+                        "allow_capture_preparation":{"const":true},"observation_mode":{"const":"pixels_only"},"surface":{"const":"window"},
+                        "allowed_methods":{"allOf":[
+                            {"contains":{"const":"get_window_state"}}, {"contains":{"const":"capture_preparation_begin"}},
+                            {"contains":{"const":"capture_preparation_state"}}, {"contains":{"const":"capture_preparation_stop"}}
+                        ]}, "allowed_actions":{"contains":capture_preparation_scope_schema()}
+                    }}
                 }, {
                     "if": {"required":["allow_recording"],"properties":{"allow_recording":{"const":true}}},
                     "then": {"required":["observation_mode"],"properties":{
@@ -1444,6 +1590,8 @@ fn tool_definitions() -> Vec<Value> {
                     "observation_mode": {"type": "string", "enum": ["semantic", "pixels_only"], "default": "semantic"},
                     "allow_recording": {"type":"boolean","default":false,
                         "description":"Explicit native pixels video-only permission. Requires recording_start/state/stop and an operator-configured DCC_CUA_RECORDING_OUTPUT_ROOT. The server allocates an immutable task directory; callers cannot configure its root."},
+                    "allow_capture_preparation":{"type":"boolean","default":false,
+                        "description":"Explicit bounded passive exact-root preparation. Requires pixels_only, get_window_state, begin/state/stop, its closed action, and operator-owned DCC_CUA_CAPTURE_PREPARATION_JOURNAL_ROOT. Does not grant input or caller-selected journal/target; prepared snapshots mint no observation/input token."},
                     "allowed_methods": {
                         "type": "array",
                         "minItems": 1,
@@ -1451,6 +1599,7 @@ fn tool_definitions() -> Vec<Value> {
                         "uniqueItems": true,
                         "items": {"type": "string", "enum": [
                             "get_window_state", "change_window_state", "minimize_window", "set_window_frame", "snapshot", "accessibility_snapshot", "verify_state",
+                            "capture_preparation_begin", "capture_preparation_state", "capture_preparation_stop", "capture_preparation_snapshot",
                             "find", "wait_for", "execute_action", "get_session_state",
                             "get_input_state", "session_health", "poll_session_events",
                             "clipboard_capture_secret", "browser_snapshot", "browser_prepare",
@@ -1507,6 +1656,19 @@ fn tool_definitions() -> Vec<Value> {
                     "params": {"type": "object"}
                 },
                 "allOf": [{
+                    "if":{"properties":{"method":{"const":"capture_preparation_begin"}}},
+                    "then":{"properties":{"params":{
+                        "type":"object","additionalProperties":false,"required":["request"],
+                        "properties":{"request":{"type":"object","additionalProperties":false,
+                            "required":["window_state_id","lifetime_ms"],"properties":{
+                                "window_state_id":{"type":"string","minLength":1,"maxLength":128},
+                                "lifetime_ms":{"type":"integer","minimum":1,"maximum":dcc_cua_protocol::capture_preparation::MAX_PREPARATION_LIFETIME_MS}
+                            }}}
+                    }}}
+                }, {
+                    "if":{"properties":{"method":{"enum":["capture_preparation_state","capture_preparation_stop","capture_preparation_snapshot"]}}},
+                    "then":{"properties":{"params":{"type":"object","maxProperties":0}}}
+                }, {
                     "if":{"properties":{"method":{"const":"set_window_frame"}}},
                     "then":{"properties":{"params":{
                         "type":"object","additionalProperties":false,"required":["window_state_id","frame"],
@@ -1588,27 +1750,13 @@ fn task_remote_error(
     task_id: &str,
     session: &LogicalTaskSession,
 ) -> Value {
-    let mut result = tool_error(error.to_string());
+    let Some(projected) = project_task_remote_error(error, method) else {
+        return tool_error(error.to_string());
+    };
+    let mut result = tool_result(
+        serde_json::to_value(projected).expect("typed remote error projection must serialize"),
+    );
     let payload = &mut result["structuredContent"];
-    if let HostClientError::Remote { response, .. } = error
-        && let Some(capture) = response
-            .get("details")
-            .and_then(|details| details.get("capture"))
-        && let Ok(capture) =
-            serde_json::from_value::<dcc_cua_core::ComputerUseCaptureDiagnostic>(capture.clone())
-    {
-        // Project only the finite, content-free capture contract. Never expose
-        // arbitrary remote response fields, titles, paths, or capabilities.
-        payload["details"] = json!({"capture": capture});
-    }
-    if method == "set_window_frame"
-        && let HostClientError::Remote { response, .. } = error
-        && let Some(details) = response
-            .get("details")
-            .and_then(native_frame_failure_projection)
-    {
-        payload["details"] = details;
-    }
     payload["task_context"] = json!({
         "provider": "dcc-cua",
         "runtime_version": env!("CARGO_PKG_VERSION"),
@@ -1621,6 +1769,172 @@ fn task_remote_error(
     });
     result["content"] = json!([{"type":"text", "text": result["structuredContent"].to_string()}]);
     result
+}
+
+#[derive(Debug, Clone, serde::Serialize, Deserialize)]
+struct TaskRemoteErrorProjection {
+    ok: bool,
+    error: String,
+    code: String,
+    error_code: String,
+    message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    reason: Option<TaskRemoteErrorReason>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    details: Option<TaskRemoteErrorDetails>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    diagnostic: Option<TaskRemoteErrorDiagnostics>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, Deserialize)]
+#[serde(untagged)]
+enum TaskRemoteErrorReason {
+    Capture(dcc_cua_core::ComputerUseCaptureReason),
+    CapturePreparation(dcc_cua_protocol::capture_preparation::PreparationFailure),
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, Deserialize)]
+struct TaskRemoteErrorDiagnostics {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    capture: Option<dcc_cua_core::ComputerUseCaptureDiagnostic>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    foreground_activation: Option<dcc_cua_core::ComputerUseForegroundActivationDiagnostic>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    capture_preparation: Option<dcc_cua_protocol::capture_preparation::PreparationError>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum TaskRemoteSuggestedDeliveryMode {
+    Foreground,
+    Background,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, Deserialize)]
+struct TaskRemoteErrorDetails {
+    #[serde(flatten)]
+    diagnostic: TaskRemoteErrorDiagnostics,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    timed_out: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    phase: Option<dcc_cua_core::ComputerUseErrorPhase>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    action_attempted: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    focus_mutation_attempted: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    input_sent: Option<dcc_cua_core::ComputerUseInputState>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    completion: Option<dcc_cua_core::ComputerUseCompletionState>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    effect_unknown: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    local_session_invalidated: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    session_remains_active: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    automatic_input: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    blind_retry: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    fresh_observation_required: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    exact_target_revalidation_required: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    automatic_rebind: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    explicit_rebind_required: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    background_delivery_viable: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    suggested_delivery_mode: Option<TaskRemoteSuggestedDeliveryMode>,
+}
+
+fn remote_error_field<T: serde::de::DeserializeOwned>(details: &Value, name: &str) -> Option<T> {
+    serde_json::from_value(details.get(name)?.clone()).ok()
+}
+
+fn project_task_remote_error(
+    error: &HostClientError,
+    method: &str,
+) -> Option<TaskRemoteErrorProjection> {
+    let HostClientError::Remote {
+        code,
+        message,
+        response,
+    } = error
+    else {
+        return None;
+    };
+    // The client already owns explicit code/message fields. Never recover an
+    // error identity by parsing the compatibility Display string.
+    let remote_details = response.get("details").unwrap_or(&Value::Null);
+    let diagnostic = TaskRemoteErrorDiagnostics {
+        capture: remote_error_field(remote_details, "capture"),
+        foreground_activation: remote_error_field(remote_details, "foreground_activation"),
+        capture_preparation: remote_error_field(remote_details, "capture_preparation"),
+    };
+    let mut details = TaskRemoteErrorDetails {
+        diagnostic: diagnostic.clone(),
+        timed_out: remote_error_field(remote_details, "timed_out"),
+        phase: remote_error_field(remote_details, "phase"),
+        action_attempted: remote_error_field(remote_details, "action_attempted"),
+        focus_mutation_attempted: remote_error_field(remote_details, "focus_mutation_attempted"),
+        input_sent: remote_error_field(remote_details, "input_sent"),
+        completion: remote_error_field(remote_details, "completion"),
+        effect_unknown: remote_error_field(remote_details, "effect_unknown"),
+        local_session_invalidated: remote_error_field(remote_details, "local_session_invalidated"),
+        session_remains_active: remote_error_field(remote_details, "session_remains_active"),
+        automatic_input: remote_error_field(remote_details, "automatic_input"),
+        blind_retry: remote_error_field(remote_details, "blind_retry"),
+        fresh_observation_required: remote_error_field(
+            remote_details,
+            "fresh_observation_required",
+        ),
+        exact_target_revalidation_required: remote_error_field(
+            remote_details,
+            "exact_target_revalidation_required",
+        ),
+        automatic_rebind: remote_error_field(remote_details, "automatic_rebind"),
+        explicit_rebind_required: remote_error_field(remote_details, "explicit_rebind_required"),
+        background_delivery_viable: remote_error_field(
+            remote_details,
+            "background_delivery_viable",
+        ),
+        suggested_delivery_mode: remote_error_field(remote_details, "suggested_delivery_mode"),
+    };
+    if method == "set_window_frame" {
+        // Preserve the original method-specific coherence fence; independent
+        // typed diagnostics survive even when its mutation flags are invalid.
+        details = native_frame_failure_projection(remote_details)
+            .and_then(|value| serde_json::from_value(value).ok())
+            .unwrap_or_default();
+        details.diagnostic = diagnostic.clone();
+    }
+    let reason = diagnostic
+        .capture
+        .as_ref()
+        .map(|capture| TaskRemoteErrorReason::Capture(capture.reason))
+        .or_else(|| {
+            diagnostic
+                .capture_preparation
+                .as_ref()
+                .map(|preparation| TaskRemoteErrorReason::CapturePreparation(preparation.reason))
+        });
+    let has_diagnostic = diagnostic.capture.is_some()
+        || diagnostic.foreground_activation.is_some()
+        || diagnostic.capture_preparation.is_some();
+    let has_details = !serde_json::to_value(&details).ok()?.as_object()?.is_empty();
+    Some(TaskRemoteErrorProjection {
+        ok: false,
+        error: error.to_string(),
+        code: code.clone(),
+        error_code: code.clone(),
+        message: message.clone(),
+        reason,
+        details: has_details.then_some(details),
+        diagnostic: has_diagnostic.then_some(diagnostic),
+    })
 }
 
 #[derive(serde::Serialize, Deserialize)]

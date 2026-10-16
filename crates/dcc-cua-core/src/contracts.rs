@@ -589,6 +589,11 @@ pub struct ComputerUseErrorDetails {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capture: Option<ComputerUseCaptureDiagnostic>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capture_preparation: Option<dcc_cua_protocol::capture_preparation::PreparationError>,
+    /// Numeric observations of existing foreground activation calls only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub foreground_activation: Option<ComputerUseForegroundActivationDiagnostic>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timed_out: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub phase: Option<ComputerUseErrorPhase>,
@@ -624,6 +629,86 @@ pub struct ComputerUseErrorDetails {
     pub background_delivery_viable: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub suggested_delivery_mode: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ComputerUseForegroundWindowIdentity {
+    pub window_handle: u64,
+    pub process_id: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ComputerUseForegroundActivationPhase {
+    RestoreWindow,
+    InitialForegroundRequest,
+    NonTopmostRaise,
+    RaisedForegroundRequest,
+    AttachForegroundInput,
+    AttachTargetInput,
+    BringTargetToTop,
+    AttachedForegroundRequest,
+    DetachTargetInput,
+    DetachForegroundInput,
+    RestoreTargetFrame,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ComputerUseForegroundActivationAttempt {
+    pub phase: ComputerUseForegroundActivationPhase,
+    pub api_return: i32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub related_thread_id: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub os_error: Option<u32>,
+}
+
+/// Content-free measurements, not a claim that Windows' refusal cause is known.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ComputerUseForegroundActivationDiagnostic {
+    pub caller_process_id: u32,
+    pub caller_thread_id: u32,
+    pub target: ComputerUseForegroundWindowIdentity,
+    pub target_thread_id: u32,
+    pub target_root_window_handle: u64,
+    pub target_owner_window_handle: u64,
+    pub initial_foreground: Option<ComputerUseForegroundWindowIdentity>,
+    pub final_foreground: Option<ComputerUseForegroundWindowIdentity>,
+    #[serde(deserialize_with = "deserialize_foreground_activation_attempts")]
+    pub attempts: Vec<ComputerUseForegroundActivationAttempt>,
+    #[serde(deserialize_with = "deserialize_foreground_activation_poll_count")]
+    pub foreground_poll_count: u8,
+}
+
+fn deserialize_foreground_activation_attempts<'de, D>(
+    deserializer: D,
+) -> Result<Vec<ComputerUseForegroundActivationAttempt>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let attempts = Vec::<ComputerUseForegroundActivationAttempt>::deserialize(deserializer)?;
+    if attempts.len() > 16 {
+        return Err(serde::de::Error::custom(
+            "foreground activation has more than 16 API attempts",
+        ));
+    }
+    Ok(attempts)
+}
+
+fn deserialize_foreground_activation_poll_count<'de, D>(deserializer: D) -> Result<u8, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let count = u8::deserialize(deserializer)?;
+    if count > 20 {
+        return Err(serde::de::Error::custom(
+            "foreground activation has more than 20 polls",
+        ));
+    }
+    Ok(count)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -838,6 +923,9 @@ pub struct ComputerUseSessionStopResult {
     pub recording_video: Option<ComputerUseRecordingCleanupOutcome>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub live_observation: Option<ComputerUseLiveObservationCleanupOutcome>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub capture_preparation:
+        Option<dcc_cua_protocol::capture_preparation::CapturePreparationStatus>,
 }
 
 impl ComputerUseSessionStopResult {
@@ -853,6 +941,7 @@ impl ComputerUseSessionStopResult {
             marker,
             recording_video: None,
             live_observation: None,
+            capture_preparation: None,
         }
     }
 

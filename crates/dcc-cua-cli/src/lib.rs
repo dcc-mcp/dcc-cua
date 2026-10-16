@@ -135,7 +135,14 @@ fn terminal_error_output(arguments: &[OsString]) -> TerminalErrorOutput {
         || profile_state_watch
         || matches!(
             first_text,
-            Some("doctor" | "host" | "host-jsonl" | "mcp-server" | "__private-worker")
+            Some(
+                "doctor"
+                    | "host"
+                    | "host-jsonl"
+                    | "mcp-server"
+                    | "__private-worker"
+                    | "__capture-preparation-supervisor-v1"
+            )
         )
     {
         TerminalErrorOutput::ProtocolNative
@@ -156,6 +163,17 @@ where
 }
 
 fn run_main() -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(windows)]
+    {
+        let arguments = env::args().skip(1).collect::<Vec<_>>();
+        if let Some(exit_code) =
+            dcc_cua_platform_windows::capture_preparation::dispatch_capture_preparation(&arguments)
+        {
+            // The authenticated supervisor owns its protocol and durable
+            // restoration receipt; never wrap it in ordinary CLI JSON output.
+            std::process::exit(exit_code);
+        }
+    }
     #[cfg(target_os = "macos")]
     {
         let arguments = env::args().skip(1).collect::<Vec<_>>();

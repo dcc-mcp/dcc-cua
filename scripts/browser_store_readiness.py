@@ -217,7 +217,7 @@ EXPECTED_POLICY_STEPS = (
     {"run": "python -B -m unittest scripts.test_release_workflow"},
     {"run": "python -B -m unittest scripts.test_refresh_release_please_prs"},
     {"run": CI_RECEIPT_COMMAND},
-    {"run": "python -B -m unittest scripts.test_sdk_dependency_contract"},
+    {"run": "python -B -m unittest scripts.test_sdk_dependency_contract scripts.test_rust_layout"},
     {"run": EXPECTED_HAKARI_COMMAND},
     {"run": "cargo fmt --all -- --check"},
 )

@@ -50,6 +50,8 @@ pub(crate) use recording::{
     aggregate_recording_state, call_recording_tool_without_refresh, probe_recording_state,
 };
 mod session;
+#[cfg(any(windows, test))]
+pub(crate) use session::map_capture_preparation_error;
 mod session_status;
 #[allow(unused_imports)]
 pub(crate) use session::{
@@ -153,10 +155,14 @@ pub(crate) fn map_windows_window_mutation_error(
         dcc_cua_platform_windows::UiaError::ForegroundActivationRefused {
             background_delivery_viable,
             suggested_delivery_mode,
+            diagnostic,
             ..
         } => Some(ComputerUseErrorDetails {
             background_delivery_viable: Some(*background_delivery_viable),
             suggested_delivery_mode: suggested_delivery_mode.clone(),
+            foreground_activation: diagnostic
+                .as_deref()
+                .map(map_foreground_activation_diagnostic),
             ..Default::default()
         }),
         _ => None,
@@ -180,6 +186,77 @@ pub(crate) fn map_windows_window_mutation_error(
     match details {
         Some(details) => error.with_details(details),
         None => error,
+    }
+}
+
+#[cfg(windows)]
+fn map_foreground_activation_diagnostic(
+    diagnostic: &dcc_cua_platform_windows::WindowsForegroundActivationDiagnostic,
+) -> ComputerUseForegroundActivationDiagnostic {
+    use dcc_cua_platform_windows::WindowsForegroundActivationPhase as NativePhase;
+    let identity = |value: dcc_cua_platform_windows::WindowsWindowIdentity| {
+        ComputerUseForegroundWindowIdentity {
+            window_handle: value.window_handle,
+            process_id: value.process_id,
+        }
+    };
+    ComputerUseForegroundActivationDiagnostic {
+        caller_process_id: diagnostic.caller_process_id,
+        caller_thread_id: diagnostic.caller_thread_id,
+        target: identity(diagnostic.target),
+        target_thread_id: diagnostic.target_thread_id,
+        target_root_window_handle: diagnostic.target_root_window_handle,
+        target_owner_window_handle: diagnostic.target_owner_window_handle,
+        initial_foreground: diagnostic.initial_foreground.map(identity),
+        final_foreground: diagnostic.final_foreground.map(identity),
+        attempts: diagnostic
+            .attempts
+            .iter()
+            .map(|attempt| {
+                let phase = match attempt.phase {
+                    NativePhase::RestoreWindow => {
+                        ComputerUseForegroundActivationPhase::RestoreWindow
+                    }
+                    NativePhase::InitialForegroundRequest => {
+                        ComputerUseForegroundActivationPhase::InitialForegroundRequest
+                    }
+                    NativePhase::NonTopmostRaise => {
+                        ComputerUseForegroundActivationPhase::NonTopmostRaise
+                    }
+                    NativePhase::RaisedForegroundRequest => {
+                        ComputerUseForegroundActivationPhase::RaisedForegroundRequest
+                    }
+                    NativePhase::AttachForegroundInput => {
+                        ComputerUseForegroundActivationPhase::AttachForegroundInput
+                    }
+                    NativePhase::AttachTargetInput => {
+                        ComputerUseForegroundActivationPhase::AttachTargetInput
+                    }
+                    NativePhase::BringTargetToTop => {
+                        ComputerUseForegroundActivationPhase::BringTargetToTop
+                    }
+                    NativePhase::AttachedForegroundRequest => {
+                        ComputerUseForegroundActivationPhase::AttachedForegroundRequest
+                    }
+                    NativePhase::DetachTargetInput => {
+                        ComputerUseForegroundActivationPhase::DetachTargetInput
+                    }
+                    NativePhase::DetachForegroundInput => {
+                        ComputerUseForegroundActivationPhase::DetachForegroundInput
+                    }
+                    NativePhase::RestoreTargetFrame => {
+                        ComputerUseForegroundActivationPhase::RestoreTargetFrame
+                    }
+                };
+                ComputerUseForegroundActivationAttempt {
+                    phase,
+                    api_return: attempt.api_return,
+                    related_thread_id: attempt.related_thread_id,
+                    os_error: attempt.os_error,
+                }
+            })
+            .collect(),
+        foreground_poll_count: diagnostic.foreground_poll_count,
     }
 }
 
@@ -1397,6 +1474,9 @@ pub struct ComputerUseSession {
     pub(crate) observation: Option<ComputerUseObservation>,
     #[cfg(windows)]
     native_frame_metadata: Option<window_commands::NativeWindowFrameMetadata>,
+    #[cfg(windows)]
+    capture_preparation:
+        Option<dcc_cua_platform_windows::capture_preparation::CapturePreparationHandle>,
     action_evidence_epoch: ActionEvidenceEpoch,
     live_observation: Option<LiveObservation>,
     post_action_live_sequence_fence: Option<LiveObservationFence>,

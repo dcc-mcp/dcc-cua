@@ -26,6 +26,7 @@ enum BannerActivity {
 }
 struct ComputerUseSession {
     target: Option<WindowTarget>,
+    capture_preparation_settled: bool,
     escalated: bool,
     windows_uia: Option<()>,
     live_observation: Option<()>,
@@ -41,6 +42,7 @@ impl ComputerUseSession {
                 pid: 42,
                 window_id: 77,
             }),
+            capture_preparation_settled: true,
             escalated: false,
             windows_uia: None,
             live_observation: None,
@@ -52,6 +54,13 @@ impl ComputerUseSession {
     }
     fn ensure_active(&self) -> ComputerUseResult<()> {
         Ok(())
+    }
+    fn require_capture_preparation_settled(&self) -> ComputerUseResult<()> {
+        if self.capture_preparation_settled {
+            Ok(())
+        } else {
+            Err("capture preparation is not settled")
+        }
     }
     fn begin_banner_activity(&self, _: BannerActivity) {}
     async fn refresh_upstream_session_before_observation_if_needed(
@@ -103,6 +112,29 @@ fn ready<T>(future: impl Future<Output = T>) -> T {
     {
         Poll::Ready(value) => value,
         Poll::Pending => panic!("provider sinks must complete without OS work"),
+    }
+}
+
+#[rstest]
+fn unsettled_capture_preparation_precedes_all_snapshot_routes() {
+    for route in 0..4 {
+        let mut session = ComputerUseSession::new();
+        session.capture_preparation_settled = false;
+        match route {
+            0 => {}
+            1 => {
+                session.windows_uia = Some(());
+                session.escalated = true;
+            }
+            2 => session.pixel_observation_route = Some(PixelObservationRoute::ExplicitPixelsOnly),
+            3 => session.live_observation = Some(()),
+            _ => unreachable!(),
+        }
+        assert_eq!(
+            ready(session.screenshot_with_bounds(50, 5)),
+            Err("capture preparation is not settled")
+        );
+        assert_eq!((session.semantic_calls, session.visual_calls), (0, 0));
     }
 }
 

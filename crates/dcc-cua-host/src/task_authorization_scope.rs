@@ -82,10 +82,18 @@ pub(crate) async fn finalize_task_session_authorization(
     Ok(Some(lease))
 }
 
-fn validate_grant_against_task_authorization(
+pub(crate) fn validate_grant_against_task_authorization(
     grant: &TaskGrant,
     lease: &TrustedTaskAuthorizationLease,
 ) -> Result<(), HostError> {
+    if grant.allow_capture_preparation != lease.capture_preparation.is_some()
+        || (lease.capture_preparation.is_some()
+            && grant.observation_mode != crate::TaskObservationMode::PixelsOnly)
+    {
+        return Err(browser_scope_denied(
+            "capture preparation must exactly derive from its trusted pixels_only lease permission",
+        ));
+    }
     if (grant.recording_output_dir.is_some() || lease.recording_output_dir.is_some())
         && grant.observation_mode != crate::TaskObservationMode::PixelsOnly
     {
@@ -100,7 +108,10 @@ fn validate_grant_against_task_authorization(
             .any(crate::TrustedTaskActionScope::is_pixels_input);
         if grant.allow_raw_input != trusted_raw_input
             || lease.allowed_actions.iter().any(|scope| {
-                !scope.is_window_minimize() && !scope.is_window_frame() && !scope.is_pixels_input()
+                !scope.is_window_minimize()
+                    && !scope.is_window_frame()
+                    && !scope.is_capture_preparation()
+                    && !scope.is_pixels_input()
             })
             || (lease
                 .allowed_host_methods
@@ -213,6 +224,10 @@ pub(crate) fn is_task_authorizable_host_method(method: &str) -> bool {
             | "recording_start"
             | "recording_stop"
             | "recording_state"
+            | "capture_preparation_begin"
+            | "capture_preparation_state"
+            | "capture_preparation_stop"
+            | "capture_preparation_snapshot"
             | "live_observation_start"
             | "live_observation_state"
             | "live_observation_stop"
@@ -391,6 +406,10 @@ fn enforce_task_authorized_browser_scope(
         | Request::RecordingStart { .. }
         | Request::RecordingStop { .. }
         | Request::RecordingState { .. }
+        | Request::CapturePreparationBegin(_)
+        | Request::CapturePreparationState(_)
+        | Request::CapturePreparationStop(_)
+        | Request::CapturePreparationSnapshot(_)
         | Request::LiveObservationStart { .. }
         | Request::LiveObservationState { .. }
         | Request::LiveObservationStop { .. }
@@ -427,8 +446,32 @@ fn browser_scope_denied(message: &str) -> HostError {
 }
 
 impl Request {
-    fn window_method_scope(&self) -> Option<(&str, &str, &str, &'static str)> {
+    pub(crate) fn window_method_scope(&self) -> Option<(&str, &str, &str, &'static str)> {
         let scope = match self {
+            Self::CapturePreparationBegin(params) => (
+                &params.session_id,
+                &params.task_grant_id,
+                &params.window_capability,
+                "capture_preparation_begin",
+            ),
+            Self::CapturePreparationState(params) => (
+                &params.session_id,
+                &params.task_grant_id,
+                &params.window_capability,
+                "capture_preparation_state",
+            ),
+            Self::CapturePreparationStop(params) => (
+                &params.session_id,
+                &params.task_grant_id,
+                &params.window_capability,
+                "capture_preparation_stop",
+            ),
+            Self::CapturePreparationSnapshot(params) => (
+                &params.session_id,
+                &params.task_grant_id,
+                &params.window_capability,
+                "capture_preparation_snapshot",
+            ),
             Self::TerminateApp {
                 session_id,
                 task_grant_id,

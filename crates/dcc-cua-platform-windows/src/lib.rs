@@ -7,6 +7,7 @@
 mod capture_geometry;
 #[cfg(windows)]
 mod capture_identity;
+pub mod capture_preparation;
 #[cfg(windows)]
 mod capture_proof;
 mod contracts;
@@ -35,8 +36,10 @@ pub use capture_geometry::{
     resolve_exact_wgc_geometry, validate_native_window_geometry, validate_wgc_frame_geometry,
 };
 pub use contracts::{
-    UiaAction, UiaError, UiaTarget, WindowsForegroundRelation, WindowsPointerButton,
-    WindowsRawInputSnapshot, WindowsWindowIdentity,
+    UiaAction, UiaError, UiaTarget, WindowsForegroundActivationAttempt,
+    WindowsForegroundActivationDiagnostic, WindowsForegroundActivationPhase,
+    WindowsForegroundRelation, WindowsPointerButton, WindowsRawInputSnapshot,
+    WindowsWindowIdentity,
 };
 
 #[cfg(windows)]

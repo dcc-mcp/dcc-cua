@@ -37,6 +37,10 @@ impl TaskObservationMode {
                     | "recording_start"
                     | "recording_state"
                     | "recording_stop"
+                    | "capture_preparation_begin"
+                    | "capture_preparation_state"
+                    | "capture_preparation_stop"
+                    | "capture_preparation_snapshot"
             )
     }
 }
@@ -70,6 +74,9 @@ pub(super) struct TaskGrant {
     pub(super) allow_clipboard_write: bool,
     #[serde(default)]
     pub(super) allow_recording: bool,
+    /// Permission only; the journal root is supplied by the trusted lease.
+    #[serde(default)]
+    pub(super) allow_capture_preparation: bool,
     #[serde(default)]
     pub(super) showcase_output_dir: Option<String>,
     /// Manual recording is closed to a constructor-authorized exact directory;
@@ -158,6 +165,14 @@ impl TaskGrant {
                     "owned_browser_launch requires trusted task authorization".into(),
                 ));
             }
+        }
+        if self.allow_capture_preparation
+            && (self.observation_mode != TaskObservationMode::PixelsOnly
+                || self.task_authorization_id.is_none())
+        {
+            return Err(HostError::Protocol(
+                "capture preparation requires a trusted pixels_only exact-window task".into(),
+            ));
         }
         if self.showcase_output_dir.is_some() && !self.allow_recording {
             return Err(HostError::Protocol(

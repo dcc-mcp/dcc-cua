@@ -100,6 +100,8 @@ impl LiveObservation {
                 task,
                 #[cfg(windows)]
                 publication: native_publication::channel(Arc::new(|| {})).0,
+                #[cfg(windows)]
+                preparation_id: None,
             },
             LiveObservationTestPublisher { sender },
         )
@@ -129,6 +131,8 @@ async fn stop_requests_shutdown_and_waits_for_worker_acknowledgement() {
         task,
         #[cfg(windows)]
         publication: native_publication::channel(Arc::new(|| {})).0,
+        #[cfg(windows)]
+        preparation_id: None,
     };
 
     let state = observation.stop().await;
@@ -400,7 +404,7 @@ async fn paused_stream_rejects_old_frame_until_fresh_sequence_and_retains_metric
 #[rstest]
 fn showcase_projection_preserves_immutable_native_provenance_and_shared_pixels() {
     use dcc_cua_showcase::{NativeFrameInstance, NativeFrameProvenance, NativeFrameSource};
-    let provenance = FrameCaptureProvenance::NativeExactWindow(NativeFrameProvenance {
+    let provenance = FrameCaptureProvenance::NativeExactWindow(Box::new(NativeFrameProvenance {
         source: NativeFrameSource::VerifiedVisible,
         process_id: 42,
         window_handle: 500,
@@ -417,7 +421,8 @@ fn showcase_projection_preserves_immutable_native_provenance_and_shared_pixels()
         capture_generation: 5,
         stream_id: 7,
         wgc_geometry: None,
-    });
+        capture_preparation: None,
+    }));
     let frame = LiveObservationFrame::new(9, vec![17; 4], 1, 1, Instant::now())
         .with_provenance(provenance.clone());
     let shared = frame.shared_bgra();
@@ -450,4 +455,25 @@ fn showcase_projection_retains_pause_fence_after_source_has_resumed() {
     assert!(projected.pause_reason().is_none());
     assert_eq!(projected.pause_sequence_fence(), Some(9));
     assert_eq!(projected.latest().unwrap().sequence(), 10);
+}
+
+#[rstest]
+#[case(dcc_cua_protocol::capture_preparation::PreparationFailure::Stopped)]
+#[case(dcc_cua_protocol::capture_preparation::PreparationFailure::IdentityChanged)]
+#[case(dcc_cua_protocol::capture_preparation::PreparationFailure::Expired)]
+fn revoked_preparation_is_terminal_without_retry_or_input_authority(
+    #[case] reason: dcc_cua_protocol::capture_preparation::PreparationFailure,
+) {
+    let error = crate::runtime::map_capture_preparation_error(
+        dcc_cua_protocol::capture_preparation::PreparationError::new(reason),
+    );
+    assert!(terminal_capture_error(&error));
+    let details = error.details.as_ref().unwrap();
+    assert_eq!(
+        details.input_sent,
+        Some(crate::ComputerUseInputState::NotSent)
+    );
+    assert_eq!(details.automatic_input, Some(false));
+    assert_eq!(details.blind_retry, Some(false));
+    assert_eq!(details.capture_preparation.as_ref().unwrap().reason, reason);
 }

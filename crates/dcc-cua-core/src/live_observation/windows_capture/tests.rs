@@ -2,6 +2,134 @@ use rstest::rstest;
 
 use super::*;
 
+#[rstest]
+fn source_publication_revalidates_after_recording_admission_wait() {
+    let lease_active = std::cell::Cell::new(true);
+    let validation_called = std::cell::Cell::new(false);
+    let result = admit_frame_publication(
+        || {
+            // The recording mutex waited behind an admitted encoder sample.
+            lease_active.set(false);
+            Ok(())
+        },
+        || {
+            validation_called.set(true);
+            assert!(!lease_active.get());
+            Err(ComputerUseError::new(
+                ComputerUseErrorCode::InvalidTarget,
+                "prepared source expired while waiting for recording admission",
+            ))
+        },
+    );
+    assert!(validation_called.get());
+    assert!(result.is_err());
+}
+
+#[rstest]
+fn refused_recording_admission_does_not_enter_source_validation() {
+    let result = admit_frame_publication(
+        || {
+            Err::<(), _>(ComputerUseError::new(
+                ComputerUseErrorCode::InvalidAction,
+                "expired",
+            ))
+        },
+        || panic!("expired recording admission validated the native source"),
+    );
+    assert!(result.is_err());
+}
+
+#[rstest]
+fn recording_admission_stays_held_through_source_validation_and_publication() {
+    let fence = std::sync::Mutex::new(());
+    let admission = admit_frame_publication(
+        || Ok(fence.lock().unwrap()),
+        || {
+            assert!(fence.try_lock().is_err());
+            Ok(())
+        },
+    )
+    .unwrap();
+    assert!(fence.try_lock().is_err());
+    drop(admission);
+    assert!(fence.try_lock().is_ok());
+}
+
+#[rstest]
+fn failed_source_validation_releases_recording_admission() {
+    let fence = std::sync::Mutex::new(());
+    let result = admit_frame_publication(
+        || Ok(fence.lock().unwrap()),
+        || {
+            Err(ComputerUseError::new(
+                ComputerUseErrorCode::InvalidTarget,
+                "prepared source expired",
+            ))
+        },
+    );
+    assert!(result.is_err());
+    assert!(fence.try_lock().is_ok());
+}
+
+#[rstest]
+#[case(None, None, true)]
+#[case(Some([7; 16]), Some([7; 16]), true)]
+#[case(Some([7; 16]), None, false)]
+#[case(None, Some([7; 16]), false)]
+#[case(Some([7; 16]), Some([8; 16]), false)]
+fn prepared_frame_publication_requires_matching_current_binding(
+    #[case] captured: Option<[u8; 16]>,
+    #[case] current: Option<[u8; 16]>,
+    #[case] accepted: bool,
+) {
+    let calls = std::cell::Cell::new(0);
+    let result = validate_prepared_frame_publication(captured, || {
+        calls.set(calls.get() + 1);
+        Ok(current)
+    });
+    assert_eq!(calls.get(), 1);
+    assert_eq!(result.is_ok(), accepted);
+    if let Err(error) = result {
+        assert!(terminal_capture_error(&error));
+        assert_eq!(
+            error.details.unwrap().capture_preparation.unwrap().reason,
+            dcc_cua_protocol::capture_preparation::PreparationFailure::InvalidBinding,
+        );
+    }
+}
+
+#[rstest]
+#[case(dcc_cua_protocol::capture_preparation::PreparationFailure::Expired)]
+#[case(dcc_cua_protocol::capture_preparation::PreparationFailure::Stopped)]
+#[case(dcc_cua_protocol::capture_preparation::PreparationFailure::IdentityChanged)]
+fn prepared_frame_publication_revalidates_after_indicator_fence(
+    #[case] failure: dcc_cua_protocol::capture_preparation::PreparationFailure,
+) {
+    // Capture validated successfully, then the slow indicator fence consumed
+    // the remaining lease or observed a revocation before publication.
+    let lease_active = std::cell::Cell::new(true);
+    let captured_preparation_id = Some([7; 16]);
+    let validation_called = std::cell::Cell::new(false);
+    lease_active.set(false);
+    let error = validate_prepared_frame_publication(captured_preparation_id, || {
+        validation_called.set(true);
+        assert!(!lease_active.get());
+        Err(prepared_capture_error(
+            dcc_cua_protocol::capture_preparation::PreparationError::new(failure),
+        ))
+    })
+    .unwrap_err();
+    assert!(validation_called.get());
+    assert!(terminal_capture_error(&error));
+    let details = error.details.unwrap();
+    assert_eq!(details.capture_preparation.unwrap().reason, failure);
+    assert_eq!(
+        details.input_sent,
+        Some(crate::ComputerUseInputState::NotSent)
+    );
+    assert_eq!(details.blind_retry, Some(false));
+}
+
 fn evidence() -> ExactWindowPixelEvidence {
     ExactWindowPixelEvidence {
         process_id: 42,

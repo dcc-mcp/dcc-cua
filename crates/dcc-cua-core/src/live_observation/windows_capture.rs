@@ -10,6 +10,38 @@ use dcc_cua_platform_windows::{
 };
 use dcc_cua_showcase::{NativeFrameInstance, NativeFrameProvenance, NativeFrameSource};
 
+fn prepared_capture_error(
+    error: dcc_cua_protocol::capture_preparation::PreparationError,
+) -> ComputerUseError {
+    crate::runtime::map_capture_preparation_error(error)
+}
+
+fn validate_prepared_frame_publication(
+    frame_preparation_id: Option<[u8; 16]>,
+    current_preparation_id: impl FnOnce() -> ComputerUseResult<Option<[u8; 16]>>,
+) -> ComputerUseResult<()> {
+    let current_preparation_id = current_preparation_id()?;
+    if frame_preparation_id != current_preparation_id {
+        return Err(prepared_capture_error(
+            dcc_cua_protocol::capture_preparation::PreparationError::new(
+                dcc_cua_protocol::capture_preparation::PreparationFailure::InvalidBinding,
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn admit_frame_publication<Admission>(
+    admit_recording: impl FnOnce() -> ComputerUseResult<Admission>,
+    validate_source: impl FnOnce() -> ComputerUseResult<()>,
+) -> ComputerUseResult<Admission> {
+    // Admission can block behind an encoder sample. Revalidate the prepared
+    // source after that wait, while keeping the recording fence until publish.
+    let admission = admit_recording()?;
+    validate_source()?;
+    Ok(admission)
+}
+
 #[derive(Clone, Copy)]
 pub(super) struct WindowsLiveTarget {
     process_id: u32,
@@ -20,6 +52,34 @@ pub(super) struct WindowsLiveTarget {
 }
 
 impl WindowsLiveTarget {
+    pub(super) fn new_prepared(
+        guard: &dcc_cua_platform_windows::capture_preparation::PreparedEvidenceGuard,
+        process_id: u32,
+        window_handle: u64,
+        stream_id: u64,
+    ) -> ComputerUseResult<Self> {
+        let state = guard.validate().map_err(prepared_capture_error)?;
+        if state.identity.process_id != process_id || state.identity.window_handle != window_handle
+        {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::InvalidTarget,
+                "capture preparation does not match the exact live observation target",
+            ));
+        }
+        let instance = state.identity.native_instance;
+        Ok(Self {
+            process_id: state.identity.process_id,
+            window_handle: state.identity.window_handle,
+            stream_id,
+            instance: ExactWindowPixelInstanceEvidence {
+                process_creation_time_100ns: instance.process_creation_time_100ns,
+                window_thread_id: instance.window_thread_id,
+                window_class_hash: instance.window_class_hash,
+                owner_window_handle: instance.owner_window_handle,
+            },
+            route: ExactWindowCaptureRoute::VerifiedVisible,
+        })
+    }
     pub(super) fn new(
         process_id: u32,
         window_handle: u64,
@@ -107,7 +167,7 @@ impl WindowsLiveTarget {
                 Some(native_wgc_frame_geometry(resolved)),
             ),
         };
-        FrameCaptureProvenance::NativeExactWindow(NativeFrameProvenance {
+        FrameCaptureProvenance::NativeExactWindow(Box::new(NativeFrameProvenance {
             source,
             process_id: self.process_id,
             window_handle: self.window_handle,
@@ -124,7 +184,8 @@ impl WindowsLiveTarget {
             capture_generation: generation,
             stream_id: self.stream_id,
             wgc_geometry,
-        })
+            capture_preparation: None,
+        }))
     }
 }
 
@@ -190,6 +251,7 @@ fn require_wgc_route(route: ExactWindowCaptureRoute) -> ComputerUseResult<()> {
 }
 
 enum WindowsLiveCapture {
+    Prepared(dcc_cua_platform_windows::capture_preparation::PreparedEvidenceGuard),
     Persistent(dcc_cua_platform_windows::PersistentWgcCapture),
     Uninitialized,
     VerifiedVisible,
@@ -242,6 +304,33 @@ impl WindowsLiveCapture {
 
     fn next_frame(&mut self, target: WindowsLiveTarget) -> ComputerUseResult<WindowsCapturedFrame> {
         crate::interactive_desktop::require_exact_window_observation_available()?;
+        if let Self::Prepared(guard) = self {
+            let frame = guard.capture_frame().map_err(prepared_capture_error)?;
+            validate_instance(target.instance, frame.evidence_after.instance)?;
+            validate_live_native_evidence(&frame.evidence_before, &frame.evidence_after, true)?;
+            let mut provenance = target.provenance(
+                frame.evidence_after,
+                WindowsFrameGeometry::VerifiedVisible,
+                next_exact_capture_generation(),
+            );
+            if let FrameCaptureProvenance::NativeExactWindow(proof) = &mut provenance {
+                proof.capture_preparation =
+                    Some(dcc_cua_showcase::PreparedCaptureFrameProvenance {
+                        preparation_id: frame.preparation_id,
+                        actual_foreground: frame.actual_foreground,
+                        captured_at_ms: frame.captured_at_ms,
+                    });
+            }
+            guard.validate().map_err(prepared_capture_error)?;
+            return Ok(WindowsCapturedFrame {
+                bgra: frame.capture.bgra,
+                width: frame.capture.width,
+                height: frame.capture.height,
+                capture_mode: "passive_prepared_visible",
+                provenance,
+                measurement: None,
+            });
+        }
         let before = target.evidence()?;
         if matches!(self, Self::VerifiedVisible) {
             let visible =
@@ -274,6 +363,7 @@ impl WindowsLiveCapture {
             },
             Self::Uninitialized => self.reinitialize(target, "persistent_wgc")?,
             Self::VerifiedVisible => unreachable!("visible producer returned above"),
+            Self::Prepared(_) => unreachable!("prepared producer returned above"),
         };
         target.require_wgc_route()?;
         let after = target.evidence()?;
@@ -320,20 +410,24 @@ impl WindowsLiveCapture {
     }
 }
 
-#[allow(clippy::too_many_arguments)] // Keep the fence on the existing worker; no second producer.
-pub(super) fn run_windows_capture_loop(
-    target: WindowsLiveTarget,
-    capture_exclusion: Option<dcc_cua_indicator::BannerCaptureExclusionSource>,
-    recording_authorization: Option<Arc<dcc_cua_showcase::RecordingAuthorization>>,
-    fps: u32,
-    started_interrupt_generation: u64,
-    sender: watch::Sender<LiveObservationStatus>,
-    shutdown: LiveObservationShutdown,
-    publications: PublicationInbox<NativePublicationCheck, ComputerUseResult<()>>,
-) {
+pub(super) fn run_windows_capture_loop(context: super::NativeCaptureLoop) {
+    let super::NativeCaptureLoop {
+        target,
+        preparation,
+        capture_exclusion,
+        recording_authorization,
+        fps,
+        started_interrupt_generation,
+        sender,
+        shutdown,
+        publications,
+    } = context;
     let interval = Duration::from_secs_f64(1.0 / f64::from(fps));
     let mut sequence = 0_u64;
-    let mut capture = WindowsLiveCapture::new(target);
+    let mut capture = preparation.as_ref().map_or_else(
+        || WindowsLiveCapture::new(target),
+        |guard| WindowsLiveCapture::Prepared(guard.clone()),
+    );
     loop {
         if shutdown.is_requested()
             || sender.is_closed()
@@ -358,6 +452,7 @@ pub(super) fn run_windows_capture_loop(
             service_native_publication(
                 work,
                 target,
+                preparation.as_ref(),
                 capture_exclusion.as_ref(),
                 None,
                 &sender,
@@ -375,15 +470,61 @@ pub(super) fn run_windows_capture_loop(
                     ComputerUseError::new(ComputerUseErrorCode::CaptureFailed, error.to_string())
                 })?;
             let frame = capture.next_frame(target)?;
-            if let Some(source) = capture_exclusion.as_ref() {
-                source.validate_active().map_err(|error| {
-                    ComputerUseError::new(ComputerUseErrorCode::InvalidTarget, error.to_string())
-                })?;
-            }
             Ok((frame, exclusion))
         })();
         match captured {
             Ok((frame, exclusion)) => {
+                if shutdown.is_requested()
+                    || interrupt_generation_changed(
+                        started_interrupt_generation,
+                        interrupt_generation(),
+                    )
+                {
+                    return;
+                }
+                let admission = admit_frame_publication(
+                    || {
+                        recording_authorization
+                            .as_ref()
+                            .map(|authorization| authorization.admit())
+                            .transpose()
+                            .map_err(|reason| {
+                                ComputerUseError::new(ComputerUseErrorCode::InvalidAction, reason)
+                            })
+                    },
+                    || {
+                        if let Some(source) = capture_exclusion.as_ref() {
+                            source.validate_active().map_err(|error| {
+                                ComputerUseError::new(
+                                    ComputerUseErrorCode::InvalidTarget,
+                                    error.to_string(),
+                                )
+                            })?;
+                        }
+                        // Recording admission and indicator validation may
+                        // outlive the earlier prepared capture fence.
+                        let frame_preparation_id = match &frame.provenance {
+                            FrameCaptureProvenance::NativeExactWindow(proof) => proof
+                                .capture_preparation
+                                .as_ref()
+                                .map(|prepared| prepared.preparation_id),
+                            FrameCaptureProvenance::Portable => None,
+                        };
+                        validate_prepared_frame_publication(frame_preparation_id, || {
+                            preparation
+                                .as_ref()
+                                .map(|guard| guard.preparation_id().map_err(prepared_capture_error))
+                                .transpose()
+                        })
+                    },
+                );
+                let admission = match admission {
+                    Ok(admission) => admission,
+                    Err(error) => {
+                        sender.send_modify(|status| status.record_terminal_error(&error));
+                        return;
+                    }
+                };
                 if shutdown.is_requested()
                     || interrupt_generation_changed(
                         started_interrupt_generation,
@@ -401,22 +542,6 @@ pub(super) fn run_windows_capture_loop(
                     },
                     |measurement| FrameCaptureMeasurement::from(measurement.at_publish()),
                 );
-                let admission = recording_authorization
-                    .as_ref()
-                    .map(|authorization| authorization.admit())
-                    .transpose();
-                let admission = match admission {
-                    Ok(admission) => admission,
-                    Err(reason) => {
-                        sender.send_modify(|status| {
-                            status.record_terminal_error(&ComputerUseError::new(
-                                ComputerUseErrorCode::InvalidAction,
-                                reason,
-                            ))
-                        });
-                        return;
-                    }
-                };
                 sender.send_modify(|status| {
                     status.publish_measured_frame(
                         LiveObservationFrame::new(
@@ -439,6 +564,7 @@ pub(super) fn run_windows_capture_loop(
                     service_native_publication(
                         work,
                         target,
+                        preparation.as_ref(),
                         capture_exclusion.as_ref(),
                         exclusion.as_ref(),
                         &sender,
@@ -475,6 +601,7 @@ pub(super) fn run_windows_capture_loop(
 fn service_native_publication(
     mut work: native_publication::PublicationWork<NativePublicationCheck, ComputerUseResult<()>>,
     target: WindowsLiveTarget,
+    preparation: Option<&dcc_cua_platform_windows::capture_preparation::PreparedEvidenceGuard>,
     capture_exclusion: Option<&dcc_cua_indicator::BannerCaptureExclusionSource>,
     held_exclusion: Option<&dcc_cua_indicator::BannerCaptureExclusionGuard>,
     sender: &watch::Sender<LiveObservationStatus>,
@@ -483,6 +610,24 @@ fn service_native_publication(
     let check = work.take_payload();
     let metadata = work.metadata();
     let require_live = || {
+        match (preparation, check.proof.capture_preparation.as_ref()) {
+            (Some(guard), Some(proof)) => {
+                guard.validate().map_err(prepared_capture_error)?;
+                if proof.preparation_id != guard.preparation_id().map_err(prepared_capture_error)? {
+                    return Err(ComputerUseError::new(
+                        ComputerUseErrorCode::InvalidTarget,
+                        "prepared recording frame has no preparation identity",
+                    ));
+                }
+            }
+            (None, None) => {}
+            _ => {
+                return Err(ComputerUseError::new(
+                    ComputerUseErrorCode::InvalidTarget,
+                    "recording frame and producer changed their preparation binding",
+                ));
+            }
+        }
         work.ensure_live(Instant::now())
             .map_err(native_publication_failure)?;
         if Instant::now() >= work.deadline()

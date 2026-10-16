@@ -7,6 +7,7 @@ impl ComputerUseSession {
     /// native activation gates. The PID/HWND binding is never widened.
     pub async fn start_pixels_only(&mut self) -> ComputerUseResult<Value> {
         self.ensure_local_cleanup_reusable()?;
+        self.require_capture_preparation_settled()?;
         #[cfg(not(windows))]
         return Err(ComputerUseError::new(
             ComputerUseErrorCode::BackendUnavailable,
