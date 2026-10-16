@@ -47,8 +47,67 @@ pub(crate) async fn start_granted_window_session(
         agent_name,
         runtime_session_id,
     )?;
-    let started = session.start_with_request(start_request).await?;
+    let started = if grant.observation_mode == TaskObservationMode::PixelsOnly {
+        if start_request.activate_before {
+            return Err(HostError::Protocol(
+                "pixels_only session startup cannot activate the target".into(),
+            ));
+        }
+        session.start_pixels_only().await?
+    } else {
+        session.start_with_request(start_request).await?
+    };
     Ok((session, started))
+}
+
+/// Bind the constructor-owned recording fence before any optional recorder
+/// starts. Refusal tears down the same opened session before returning.
+pub(crate) async fn prepare_granted_session_recording(
+    security_services: &HostSecurityServices,
+    grant: &TaskGrant,
+    task_authorization: Option<&TrustedTaskAuthorizationLease>,
+    session: &mut dcc_cua_core::ComputerUseSession,
+) -> Result<Option<Value>, HostError> {
+    if grant.allow_recording
+        && let Some(lease) = task_authorization
+    {
+        let authorization = security_services
+            .task_authorization_host
+            .as_ref()
+            .and_then(|host| host.recording_authorization(lease));
+        let Some(authorization) = authorization else {
+            let _ = session.stop().await;
+            return Err(HostError::coded_protocol(
+                HostProtocolErrorCode::TaskAuthorizationDenied,
+                "native recording requires a constructor-owned producer revocation fence",
+            ));
+        };
+        session.set_recording_authorization(authorization);
+    }
+    let showcase = if let Some(output_dir) = grant.showcase_output_dir.as_deref() {
+        if !grant.allow_recording {
+            let _ = session.stop().await;
+            return Err(HostError::Protocol(
+                "showcase recording requires allow_recording".into(),
+            ));
+        }
+        match session
+            .recording_start(&ComputerUseRecordingStartRequest {
+                output_dir: output_dir.to_owned(),
+                record_video: true,
+            })
+            .await
+        {
+            Ok(result) => Some(result),
+            Err(error) => {
+                let _ = session.stop().await;
+                return Err(error.into());
+            }
+        }
+    } else {
+        None
+    };
+    Ok(showcase)
 }
 
 pub(crate) async fn acquire_raw_input_turn(
@@ -59,6 +118,18 @@ pub(crate) async fn acquire_raw_input_turn(
     } else {
         None
     }
+}
+
+pub(crate) async fn revalidate_queued_window_mutation(
+    host: &mut HostSession,
+) -> Result<(), HostError> {
+    // A stop may arrive while another session owns the physical input queue.
+    ensure_session_not_interrupted(host).await?;
+    crate::task_authorization::validate_active_task_authorization(
+        host.task_authorization_host.as_deref(),
+        host.task_authorization.as_ref(),
+    )
+    .await
 }
 
 pub(crate) fn ensure_connection_session_capacity(
@@ -105,7 +176,7 @@ pub(crate) fn session_stopped_response(
     session_id: &str,
     result: ComputerUseSessionStopResult,
 ) -> Value {
-    json!({
+    let mut response = json!({
         "type": "session_stopped",
         "session_id": session_id,
         "success": result.success,
@@ -113,7 +184,17 @@ pub(crate) fn session_stopped_response(
         "cleanup_pending": result.cleanup_pending,
         "cleanup_issues": result.cleanup_issues,
         "marker": result.marker,
-    })
+    });
+    if let Some(video) = result.recording_video {
+        response["recording_video"] = json!(video);
+    }
+    if let Some(source) = result.live_observation {
+        response["live_observation"] = json!(source);
+    }
+    if let Some(preparation) = result.capture_preparation {
+        response["capture_preparation"] = json!(preparation);
+    }
+    response
 }
 
 pub(crate) fn observed_window_state_response(

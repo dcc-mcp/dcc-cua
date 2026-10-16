@@ -197,7 +197,7 @@ EXPECTED_POLICY_STEPS = (
         "uses": "dtolnay/rust-toolchain@stable",
         "with": {"toolchain": "1.95.0", "components": "rustfmt"},
     },
-    {"uses": "taiki-e/install-action@v2", "with": {"tool": "cargo-hakari"}},
+    {"uses": "taiki-e/install-action@v2", "with": {"tool": "cargo-hakari@0.9.39"}},
     {
         "name": "Reverify immutable source before policy execution",
         "shell": "bash",
@@ -217,7 +217,7 @@ EXPECTED_POLICY_STEPS = (
     {"run": "python -B -m unittest scripts.test_release_workflow"},
     {"run": "python -B -m unittest scripts.test_refresh_release_please_prs"},
     {"run": CI_RECEIPT_COMMAND},
-    {"run": "python -B -m unittest scripts.test_sdk_dependency_contract"},
+    {"run": "python -B -m unittest scripts.test_sdk_dependency_contract scripts.test_rust_layout"},
     {"run": EXPECTED_HAKARI_COMMAND},
     {"run": "cargo fmt --all -- --check"},
 )
@@ -230,7 +230,7 @@ EXPECTED_POLICY_ACTION_INPUTS = {
         "toolchain": "1.95.0",
         "components": "rustfmt",
     },
-    "taiki-e/install-action@v2": {"tool": "cargo-hakari"},
+    "taiki-e/install-action@v2": {"tool": "cargo-hakari@0.9.39"},
 }
 
 

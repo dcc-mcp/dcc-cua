@@ -1,5 +1,23 @@
 use super::*;
 
+fn require_actionable_native_frame(
+    preparation: Option<&dcc_cua_showcase::PreparedCaptureFrameProvenance>,
+) -> ComputerUseResult<()> {
+    if preparation.is_some() {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::InvalidAction,
+            "passive prepared pixels cannot become actionable observation evidence; start a fresh ordinary capture source",
+        )
+        .with_details(ComputerUseErrorDetails {
+            action_attempted: Some(false),
+            input_sent: Some(ComputerUseInputState::NotSent),
+            automatic_rebind: Some(false),
+            ..Default::default()
+        }));
+    }
+    Ok(())
+}
+
 impl ComputerUseSession {
     /// Report whether a user-confirmed action must renew its exact-target
     /// evidence before dispatch. The renewal itself remains read-only; callers
@@ -80,14 +98,27 @@ impl ComputerUseSession {
 
     /// Capture pixels for the exact PID/HWND without consulting accessibility.
     pub async fn screenshot_pixels_only(&mut self) -> ComputerUseResult<ComputerUseScreenshot> {
-        #[cfg(not(windows))]
+        self.screenshot_pixels_only_with_diagnostics(false).await
+    }
+
+    /// Explicit opt-in byte summaries; available only on the pixels-only route.
+    pub async fn screenshot_pixels_only_with_diagnostics(
+        &mut self,
+        capture_diagnostics: bool,
+    ) -> ComputerUseResult<ComputerUseScreenshot> {
+        #[cfg(not(any(windows, target_os = "linux")))]
+        let _ = capture_diagnostics;
+        #[cfg(not(any(windows, target_os = "linux")))]
         return Err(ComputerUseError::new(
             ComputerUseErrorCode::BackendUnavailable,
             "pixels-only exact native window capture is unavailable on this platform",
         ));
+        #[cfg(target_os = "linux")]
+        return self.screenshot_linux_pixels(capture_diagnostics).await;
         #[cfg(windows)]
         {
             self.ensure_active()?;
+            self.require_capture_preparation_settled()?;
             if self.pixel_observation_route != Some(PixelObservationRoute::ExplicitPixelsOnly) {
                 return Err(ComputerUseError::new(
                     ComputerUseErrorCode::InvalidAction,
@@ -95,8 +126,12 @@ impl ComputerUseSession {
                 ));
             }
             let target = self.require_observed_target_available().await?;
-            self.capture_window_pixels(&target, PixelObservationRoute::ExplicitPixelsOnly)
-                .await
+            self.capture_window_pixels_with_diagnostics(
+                &target,
+                PixelObservationRoute::ExplicitPixelsOnly,
+                capture_diagnostics,
+            )
+            .await
         }
     }
 
@@ -106,7 +141,12 @@ impl ComputerUseSession {
         max_elements: u32,
         max_depth: u32,
     ) -> ComputerUseResult<ComputerUseScreenshot> {
+        #[cfg(target_os = "linux")]
+        if self.pixel_observation_route == Some(PixelObservationRoute::ExplicitPixelsOnly) {
+            return self.screenshot_linux_pixels(false).await;
+        }
         self.ensure_active()?;
+        self.require_capture_preparation_settled()?;
         let _banner_activity = self.begin_banner_activity(BannerActivity::Observing);
         self.refresh_upstream_session_before_observation_if_needed()
             .await?;
@@ -355,6 +395,58 @@ impl ComputerUseSession {
         let target = self
             .revalidate_observed_exact_publication_target(&target)
             .await?;
+        self.live_observation
+            .as_ref()
+            .expect("live observation was checked")
+            .validate_frame_eligibility(frame.sequence())?;
+        // The recorded BGRA is immutable. Exclusion is only needed for the fresh
+        // final native proof, never while waiting for the capture worker.
+        let _banner_capture_exclusion = self
+            .control_banner
+            .as_ref()
+            .map(ControlBanner::begin_capture_exclusion)
+            .transpose()
+            .map_err(|error| map_indicator_error("validate final live frame source", error))?;
+        let (backend, source_rect, native_provenance) = match frame.provenance() {
+            dcc_cua_showcase::FrameCaptureProvenance::NativeExactWindow(proof) => {
+                require_actionable_native_frame(proof.capture_preparation.as_ref())?;
+                if proof.stream_id != stream_id {
+                    return Err(ComputerUseError::new(
+                        ComputerUseErrorCode::StaleObservation,
+                        "the live native frame belongs to a different stream",
+                    ));
+                }
+                #[cfg(windows)]
+                validate_native_live_publication(proof, &target)?;
+                (
+                    proof.source.backend(),
+                    proof.source_rect,
+                    serde_json::to_value(proof).map_err(|error| {
+                        ComputerUseError::new(
+                            ComputerUseErrorCode::CaptureFailed,
+                            error.to_string(),
+                        )
+                    })?,
+                )
+            }
+            dcc_cua_showcase::FrameCaptureProvenance::Portable => {
+                #[cfg(all(windows, not(test)))]
+                return Err(ComputerUseError::new(
+                    ComputerUseErrorCode::CaptureFailed,
+                    "a native live screenshot requires actual per-frame native provenance",
+                ));
+                #[cfg(any(not(windows), test))]
+                (
+                    "cua-live-portable-latest-frame",
+                    target.bounds,
+                    json!({"kind": "portable"}),
+                )
+            }
+        };
+        self.live_observation
+            .as_ref()
+            .expect("live observation was checked")
+            .validate_frame_eligibility(frame.sequence())?;
         let accessibility = json!({
             "degraded": true,
             "accessibility_available": false,
@@ -373,10 +465,18 @@ impl ComputerUseSession {
             window_title: target.title.clone(),
             width,
             height,
-            source_rect: target.bounds,
-            capture_backend: "cua-live-wgc-latest-frame".into(),
+            source_rect,
+            capture_backend: backend.into(),
             capture_provenance: json!({
-                "backend": "cua-live-wgc-latest-frame",
+                "backend": backend,
+                "whole_desktop_capture": false,
+                "native_capture": native_provenance,
+                "native_instance": native_provenance.get("native_instance"),
+                "native_window_bounds": native_provenance.get("native_window_bounds"),
+                "window_dpi": native_provenance.get("window_dpi"),
+                "capture_generation": native_provenance.get("capture_generation"),
+                "desktop_crop_bounds": source_rect,
+                "observation_mode": self.pixel_observation_route.map(PixelObservationRoute::observation_mode).unwrap_or("live_observation"),
                 "pixels_captured": true,
                 "scope": "window",
                 "process_id": target.pid,
@@ -424,8 +524,41 @@ impl ComputerUseSession {
         &mut self,
         request: &ComputerUseLiveObservationStartRequest,
     ) -> ComputerUseResult<LiveObservationStartOutcome> {
+        #[cfg(target_os = "linux")]
+        self.require_not_linux_pixels()?;
         self.ensure_active()?;
         request.validate()?;
+        self.ensure_local_cleanup_reusable()?;
+        #[cfg(windows)]
+        let prepared_guard = self
+            .capture_preparation
+            .as_ref()
+            .map(|handle| {
+                let status = handle.state().map_err(map_capture_preparation_error)?;
+                if status.cleanup_verified {
+                    Ok(None)
+                } else {
+                    handle
+                        .prepared_guard()
+                        .map(Some)
+                        .map_err(map_capture_preparation_error)
+                }
+            })
+            .transpose()?
+            .flatten();
+        #[cfg(windows)]
+        {
+            let preparation_id = prepared_guard.as_ref()
+                .map(dcc_cua_platform_windows::capture_preparation::PreparedEvidenceGuard::preparation_id)
+                .transpose().map_err(map_capture_preparation_error)?;
+            if self
+                .live_observation
+                .as_ref()
+                .is_some_and(|observation| observation.preparation_id() != preparation_id)
+            {
+                self.stop_live_observation_for_replacement().await?;
+            }
+        }
         let existing_state = self.live_observation.as_ref().map(LiveObservation::state);
         #[cfg(windows)]
         let observation_availability =
@@ -446,18 +579,51 @@ impl ComputerUseSession {
                 disposition,
             });
         }
-        if let Some(observation) = self.live_observation.take() {
-            let _ = observation.stop().await;
-            self.set_banner_live_observation(false);
+        if self.live_observation.is_some() {
+            self.stop_live_observation_for_replacement().await?;
         }
         self.begin_live_observation_replacement();
         let _banner_activity = self.begin_banner_activity(BannerActivity::Observing);
+        #[cfg(windows)]
+        let observation = if let Some(guard) = prepared_guard {
+            LiveObservation::start_prepared(
+                self.driver.clone(),
+                self.session_id.clone(),
+                target.pid,
+                target.window_id,
+                request,
+                self.control_banner
+                    .as_ref()
+                    .map(ControlBanner::capture_exclusion_source),
+                self.recording_authorization.clone(),
+                guard,
+            )
+            .await?
+        } else {
+            LiveObservation::start(
+                self.driver.clone(),
+                self.session_id.clone(),
+                target.pid,
+                target.window_id,
+                request,
+                self.control_banner
+                    .as_ref()
+                    .map(ControlBanner::capture_exclusion_source),
+                self.recording_authorization.clone(),
+            )
+            .await?
+        };
+        #[cfg(not(windows))]
         let observation = LiveObservation::start(
             self.driver.clone(),
             self.session_id.clone(),
             target.pid,
             target.window_id,
             request,
+            self.control_banner
+                .as_ref()
+                .map(ControlBanner::capture_exclusion_source),
+            self.recording_authorization.clone(),
         )
         .await?;
         let state = observation.state();
@@ -468,6 +634,13 @@ impl ComputerUseSession {
 
     pub(super) fn begin_live_observation_replacement(&mut self) {
         self.invalidate_action_observations();
+    }
+
+    pub(super) async fn stop_live_observation_for_replacement(&mut self) -> ComputerUseResult<()> {
+        // stop_live_observation records session-owned pending cleanup before
+        // its first await, so dropping this future cannot lose that obligation.
+        self.stop_live_observation().await;
+        self.ensure_local_cleanup_reusable()
     }
 
     #[must_use]
@@ -484,8 +657,34 @@ impl ComputerUseSession {
         self.post_action_live_sequence_fence = None;
         self.observation_transition_live_sequence_fence = None;
         let result = match self.live_observation.take() {
-            Some(observation) => observation.stop().await,
-            None => json!({"active": false}),
+            Some(observation) => {
+                self.local_cleanup.source_pending = true;
+                self.local_cleanup.last_source = Some(json!({"active":false,
+                    "stream_id":observation.stream_id(),
+                    "cleanup_complete":false,"cleanup_pending":true}));
+                let result = observation.stop().await;
+                self.local_cleanup.source_pending = result["cleanup_complete"] != true;
+                if self.local_cleanup.source_pending {
+                    self.local_cleanup.remember(
+                        ComputerUseCleanupPhase::LiveObservationStop,
+                        ComputerUseError::new(
+                            ComputerUseErrorCode::CompletionUnknown,
+                            result["cleanup_error"]
+                                .as_str()
+                                .unwrap_or("live observation shutdown has not been acknowledged"),
+                        ),
+                    );
+                }
+                self.local_cleanup.last_source = Some(result.clone());
+                result
+            }
+            None => self.local_cleanup.last_source.clone().unwrap_or_else(|| {
+                json!({
+                    "active":false,
+                    "cleanup_complete": !self.local_cleanup.source_pending,
+                    "cleanup_pending": self.local_cleanup.source_pending,
+                })
+            }),
         };
         self.set_banner_live_observation(false);
         self.set_banner_activity(BannerActivity::Ready);
@@ -605,6 +804,8 @@ impl ComputerUseSession {
                     generation: captured.generation,
                     mode: captured.mode,
                     instance: captured.native_evidence.instance.into(),
+                    native_visible_bounds: captured.native_evidence.visible_bounds,
+                    wgc_geometry: captured.wgc_geometry,
                 },
                 ExactWindowPixelPublicationFence {
                     geometry: ExactWindowPixelGeometry {
@@ -615,6 +816,8 @@ impl ComputerUseSession {
                     generation: final_capture.generation,
                     mode: final_capture.mode,
                     instance: final_capture.native_evidence.instance.into(),
+                    native_visible_bounds: final_capture.native_evidence.visible_bounds,
+                    wgc_geometry: final_capture.wgc_geometry,
                 },
                 final_capture.native_evidence.unobscured,
             )?;
@@ -627,6 +830,15 @@ impl ComputerUseSession {
             )
         })?;
         let capture_backend = final_capture.backend;
+        #[cfg(windows)]
+        if [final_capture.source_rect[2], final_capture.source_rect[3]]
+            != [width as i32, height as i32]
+        {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::StaleObservation,
+                "the PNG dimensions do not match the actual native physical source rectangle",
+            ));
+        }
         let mut capture_provenance = json!({
             "backend": capture_backend,
             "pixels_captured": true,
@@ -645,6 +857,14 @@ impl ComputerUseSession {
         {
             capture_provenance["capture_generation"] = json!(final_capture.generation);
             capture_provenance["window_dpi"] = json!(final_capture.dpi);
+            capture_provenance["native_window_bounds"] =
+                json!(final_capture.native_evidence.bounds);
+            capture_provenance["native_instance"] = json!(final_capture.native_evidence.instance);
+            capture_provenance["native_visible_bounds"] =
+                json!(final_capture.native_evidence.visible_bounds);
+            if let Some(geometry) = final_capture.wgc_geometry {
+                capture_provenance["wgc_geometry"] = json!(geometry);
+            }
             if final_capture.mode == ExactWindowPixelCaptureMode::VisibleDesktopCrop {
                 capture_provenance["desktop_crop_bounds"] = json!(final_capture.source_rect);
             }
@@ -685,6 +905,24 @@ impl ComputerUseSession {
         target: &WindowTarget,
         route: PixelObservationRoute,
     ) -> ComputerUseResult<ComputerUseScreenshot> {
+        self.capture_window_pixels_with_diagnostics(target, route, false)
+            .await
+    }
+
+    #[cfg(windows)]
+    async fn capture_window_pixels_with_diagnostics(
+        &mut self,
+        target: &WindowTarget,
+        route: PixelObservationRoute,
+        capture_diagnostics: bool,
+    ) -> ComputerUseResult<ComputerUseScreenshot> {
+        if capture_diagnostics && route != PixelObservationRoute::ExplicitPixelsOnly {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::InvalidAction,
+                "capture diagnostics require the explicit pixels_only observation route",
+            ));
+        }
+        let capture_operation_started = std::time::Instant::now();
         validate_exact_window_pixel_target_state(target, true)?;
         let _banner_capture_exclusion = self
             .control_banner
@@ -697,9 +935,16 @@ impl ComputerUseSession {
                     error,
                 )
             })?;
+        let exclusion_acknowledged = std::time::Instant::now();
         let capture = gated_exact_window_observation(
             interactive_desktop::require_exact_window_observation_available,
-            || capture_exact_window(target.pid, target.window_id),
+            || {
+                capture_exact_window_with_diagnostics(
+                    target.pid,
+                    target.window_id,
+                    capture_diagnostics,
+                )
+            },
         )
         .await;
         let capture = self.finish_observation_sensitive_attempt(capture)?;
@@ -715,7 +960,13 @@ impl ComputerUseSession {
             .await?;
         let final_capture = gated_exact_window_observation(
             interactive_desktop::require_exact_window_observation_available,
-            || capture_exact_window(after.pid, after.window_id),
+            || {
+                capture_exact_window_with_diagnostics(
+                    after.pid,
+                    after.window_id,
+                    capture_diagnostics,
+                )
+            },
         )
         .await;
         let final_capture = self.finish_observation_sensitive_attempt(final_capture)?;
@@ -736,6 +987,8 @@ impl ComputerUseSession {
                 generation: capture.generation,
                 mode: capture.mode,
                 instance: capture.native_evidence.instance.into(),
+                native_visible_bounds: capture.native_evidence.visible_bounds,
+                wgc_geometry: capture.wgc_geometry,
             },
             ExactWindowPixelPublicationFence {
                 geometry: ExactWindowPixelGeometry {
@@ -746,6 +999,8 @@ impl ComputerUseSession {
                 generation: final_capture.generation,
                 mode: final_capture.mode,
                 instance: final_capture.native_evidence.instance.into(),
+                native_visible_bounds: final_capture.native_evidence.visible_bounds,
+                wgc_geometry: final_capture.wgc_geometry,
             },
             final_capture.native_evidence.unobscured,
         )?;
@@ -763,8 +1018,61 @@ impl ComputerUseSession {
             final_capture.backend,
         );
         provenance["fallback"] = json!(final_capture.fallback);
+        provenance["native_window_bounds"] = json!(final_capture.native_evidence.bounds);
+        provenance["native_instance"] = json!(final_capture.native_evidence.instance);
+        if [final_capture.source_rect[2], final_capture.source_rect[3]]
+            != [width as i32, height as i32]
+        {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::StaleObservation,
+                "the PNG dimensions do not match the actual native physical source rectangle",
+            ));
+        }
+        provenance["native_visible_bounds"] = json!(final_capture.native_evidence.visible_bounds);
+        if let Some(geometry) = final_capture.wgc_geometry {
+            provenance["wgc_geometry"] = json!(geometry);
+        }
         if final_capture.mode == ExactWindowPixelCaptureMode::VisibleDesktopCrop {
             provenance["desktop_crop_bounds"] = json!(final_capture.source_rect);
+        }
+        if capture_diagnostics {
+            provenance["capture_diagnostics"] = json!({
+                "schema": "dcc-cua-exact-capture-byte-diagnostics-v1",
+                "diagnostic_only": true,
+                "channel_order": ["blue", "green", "red", "raw_high_byte"],
+                "canonical_rgba_mapping": "R=BGRA[2],G=BGRA[1],B=BGRA[0],A=BGRA[3]; no normalization",
+                "capture_count": 2,
+                "capture_operation_elapsed_micros": capture_operation_started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64,
+                "banner_exclusion_guard_present": _banner_capture_exclusion.is_some(),
+                "banner_exclusion_held_elapsed_micros": _banner_capture_exclusion.as_ref().map(|_| exclusion_acknowledged.elapsed().as_micros().min(u128::from(u64::MAX)) as u64),
+                "compositor_animation_completion_attested": false,
+                "first": {
+                    "generation": capture.generation,
+                    "process_id": capture.native_evidence.process_id,
+                    "window_handle": capture.native_evidence.window_handle,
+                    "native_instance": capture.native_evidence.instance,
+                    "native_window_bounds": capture.native_evidence.bounds,
+                    "native_visible_bounds": capture.native_evidence.visible_bounds,
+                    "wgc_geometry": capture.wgc_geometry,
+                    "source_rect": capture.source_rect,
+                    "window_dpi": capture.dpi,
+                    "capture_backend": capture.backend,
+                    "pixels": capture.diagnostics,
+                },
+                "final": {
+                    "generation": final_capture.generation,
+                    "process_id": final_capture.native_evidence.process_id,
+                    "window_handle": final_capture.native_evidence.window_handle,
+                    "native_instance": final_capture.native_evidence.instance,
+                    "native_window_bounds": final_capture.native_evidence.bounds,
+                    "native_visible_bounds": final_capture.native_evidence.visible_bounds,
+                    "wgc_geometry": final_capture.wgc_geometry,
+                    "source_rect": final_capture.source_rect,
+                    "window_dpi": final_capture.dpi,
+                    "capture_backend": final_capture.backend,
+                    "pixels": final_capture.diagnostics,
+                },
+            });
         }
         let accessibility = json!({
             "accessibility_available": false,
@@ -915,3 +1223,6 @@ impl ComputerUseSession {
         Ok(ComputerUseVerification { value, image })
     }
 }
+
+#[cfg(test)]
+mod tests;

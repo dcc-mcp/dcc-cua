@@ -1,5 +1,6 @@
 import hashlib
 import json
+import sys
 import tempfile
 import unittest
 import zipfile
@@ -54,7 +55,10 @@ class UploadedArtifactVerifierTests(unittest.TestCase):
         )
         return bundle, metadata, digest
 
-    def _verify(self, root, bundle, metadata, digest, after_snapshot=None):
+    def _verify(
+        self, root, bundle, metadata, digest, after_snapshot=None,
+        allow_ci_build_metadata=False,
+    ):
         with mock.patch.object(
             verifier,
             "verify_final_archive",
@@ -80,6 +84,7 @@ class UploadedArtifactVerifierTests(unittest.TestCase):
                 extract_root=root / "extract",
                 install_root=root / "install",
                 after_snapshot=after_snapshot,
+                allow_ci_build_metadata=allow_ci_build_metadata,
             )
         return receipt, final
 
@@ -93,11 +98,57 @@ class UploadedArtifactVerifierTests(unittest.TestCase):
             self.assertEqual(receipt["artifact_id"], self.artifact_id)
             self.assertEqual(receipt["artifact_digest"], digest)
             kwargs = final.call_args.kwargs
+            self.assertFalse(kwargs["allow_ci_build_metadata"])
             self.assertEqual(kwargs["archive"].name, self.archive_name)
             self.assertEqual(kwargs["manifest_path"].name, self.manifest_name)
             self.assertEqual(
                 kwargs["checksum_path"].name, f"{self.archive_name}.sha256"
             )
+
+    def test_ci_build_metadata_opt_in_is_explicitly_forwarded(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            bundle, metadata, digest = self._fixture(root)
+            _receipt, final = self._verify(
+                root, bundle, metadata, digest, allow_ci_build_metadata=True
+            )
+            self.assertTrue(final.call_args.kwargs["allow_ci_build_metadata"])
+
+    def test_cli_build_metadata_requires_an_explicit_flag(self):
+        arguments = ["verify_uploaded_artifact.py"]
+        for name in (
+            "metadata",
+            "repository-metadata",
+            "bundle",
+            "output-root",
+            "artifact-name",
+            "artifact-digest",
+            "head-sha",
+            "archive-name",
+            "manifest-name",
+            "source-root",
+            "target",
+            "version",
+            "extract-root",
+            "install-root",
+        ):
+            arguments.extend((f"--{name}", "fixture"))
+        for name in ("artifact-id", "run-id", "repository-id", "head-repository-id"):
+            arguments.extend((f"--{name}", "1"))
+        for flag in (False, True):
+            with (
+                self.subTest(flag=flag),
+                mock.patch.object(
+                    sys, "argv",
+                    arguments + (["--allow-ci-build-metadata"] if flag else []),
+                ),
+                mock.patch.object(
+                    verifier, "verify_uploaded_artifact", return_value={}
+                ) as run,
+                mock.patch("builtins.print"),
+            ):
+                verifier.main()
+                self.assertEqual(run.call_args.kwargs["allow_ci_build_metadata"], flag)
 
     def test_server_digest_mismatch_is_rejected(self):
         with tempfile.TemporaryDirectory() as temporary:

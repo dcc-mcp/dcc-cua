@@ -14,6 +14,7 @@ mod actions;
 mod async_runtime;
 mod authorization;
 mod browser_extension;
+mod capture_proof;
 mod cli_args;
 mod connection_diagnostics;
 mod failure_output;
@@ -134,7 +135,14 @@ fn terminal_error_output(arguments: &[OsString]) -> TerminalErrorOutput {
         || profile_state_watch
         || matches!(
             first_text,
-            Some("doctor" | "host" | "host-jsonl" | "mcp-server" | "__private-worker")
+            Some(
+                "doctor"
+                    | "host"
+                    | "host-jsonl"
+                    | "mcp-server"
+                    | "__private-worker"
+                    | "__capture-preparation-supervisor-v1"
+            )
         )
     {
         TerminalErrorOutput::ProtocolNative
@@ -155,6 +163,17 @@ where
 }
 
 fn run_main() -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(windows)]
+    {
+        let arguments = env::args().skip(1).collect::<Vec<_>>();
+        if let Some(exit_code) =
+            dcc_cua_platform_windows::capture_preparation::dispatch_capture_preparation(&arguments)
+        {
+            // The authenticated supervisor owns its protocol and durable
+            // restoration receipt; never wrap it in ordinary CLI JSON output.
+            std::process::exit(exit_code);
+        }
+    }
     #[cfg(target_os = "macos")]
     {
         let arguments = env::args().skip(1).collect::<Vec<_>>();
@@ -288,10 +307,16 @@ async fn dispatch(arguments: Vec<String>) -> Result<(), Box<dyn std::error::Erro
             .map_err(|error| -> Box<dyn std::error::Error> { error.to_string().into() })?;
         return Ok(());
     }
+    if command == "capture-proof" {
+        capture_proof::execute(&flags)?;
+        return Ok(());
+    }
     let driver = if command == "host" {
         host_driver(&flags)?
     } else if external_termination_runtime_requested(&command, &flags) {
         ComputerUseDriver::create_external_process_termination_with_acknowledged_risk()?
+    } else if read_only_pixels_runtime_requested(&command, &flags)? {
+        ComputerUseDriver::create_read_only_pixels()?
     } else {
         ComputerUseDriver::create()?
     };

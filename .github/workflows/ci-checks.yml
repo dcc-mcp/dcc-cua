@@ -135,7 +135,7 @@ jobs:
           components: rustfmt
       - uses: taiki-e/install-action@v2
         with:
-          tool: cargo-hakari
+          tool: cargo-hakari@0.9.39
       - name: Reverify immutable source before policy execution
         shell: bash
         env:
@@ -157,7 +157,7 @@ jobs:
       - run: python -B -m unittest scripts.test_release_workflow
       - run: python -B -m unittest scripts.test_refresh_release_please_prs
       - run: python -B -m unittest scripts.test_browser_store_readiness
-      - run: python -B -m unittest scripts.test_sdk_dependency_contract
+      - run: python -B -m unittest scripts.test_sdk_dependency_contract scripts.test_rust_layout
       - run: |
           cargo hakari generate --diff
           cargo hakari manage-deps --dry-run
@@ -233,7 +233,7 @@ jobs:
         with:
           shared-key: verify
       - if: matrix.os == 'ubuntu-latest'
-        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y libgtk-3-dev python3-gi gir1.2-gtk-3.0 libx11-dev libxi-dev libxtst-dev
+        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y xvfb xauth libgtk-3-dev python3-gi gir1.2-gtk-3.0 libx11-dev libxi-dev libxtst-dev
       - if: startsWith(matrix.os, 'macos-')
         shell: bash
         run: |
@@ -252,6 +252,13 @@ jobs:
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo nextest run --workspace --all-targets --locked
       - run: cargo test --workspace --doc --locked
+      - name: Run exact X11 window lifecycle tests
+        if: matrix.os == 'ubuntu-latest'
+        timeout-minutes: 3
+        shell: bash
+        run: |
+          env -u WAYLAND_DISPLAY XDG_SESSION_TYPE=x11 xvfb-run -a --server-args="-screen 0 640x480x24 -nolisten tcp" \
+            cargo test --locked -p dcc-cua-core linux_pixels_native -- --ignored --test-threads=1
       - if: matrix.os == 'windows-latest'
         run: python -B -m unittest scripts.test_indicator_acceptance_probe
       - name: Compile GUI E2E on every target
@@ -326,7 +333,7 @@ jobs:
         with:
           shared-key: release
       - if: matrix.os == 'ubuntu-latest'
-        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y xvfb dbus-x11 at-spi2-core openbox picom libgtk-3-dev python3-gi gir1.2-gtk-3.0 libx11-dev libxi-dev libxtst-dev
+        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y xvfb xauth dbus-x11 at-spi2-core openbox picom libgtk-3-dev python3-gi gir1.2-gtk-3.0 libx11-dev libxi-dev libxtst-dev
       - if: startsWith(matrix.os, 'macos-')
         shell: bash
         run: |
@@ -342,6 +349,14 @@ jobs:
           git show "$EXPECTED_SOURCE_SHA:scripts/verify_ci_source_integrity.py" |
             python -B - --repository . --expected "$EXPECTED_SOURCE_SHA"
       - run: cargo build --release --locked -p dcc-cua-cli
+      - name: Run read-only exact X11 release CLI positive and negative cases
+        if: matrix.os == 'ubuntu-latest'
+        timeout-minutes: 3
+        shell: bash
+        run: |
+          python -B -m unittest scripts.test_linux_pixels_fixture
+          env -u WAYLAND_DISPLAY XDG_SESSION_TYPE=x11 xvfb-run -a --server-args="-screen 0 640x480x24 -nolisten tcp" \
+            python -B scripts/test_linux_pixels_x11.py --binary target/release/dcc-cua
       - name: Run release CLI and Host IPC E2E
         timeout-minutes: 5
         shell: pwsh
@@ -395,12 +410,12 @@ jobs:
               archive="dist/dcc-cua-${version}-${host}.zip"
               (
                 cd target/release
-                7z a "../../$archive" dcc-cua.exe dcc-cua-background.exe LICENSE THIRD_PARTY_LICENSES.md README.md README.zh-CN.md assets skills plugins .claude-plugin .codex-plugin .mcp.json
+                7z a "../../$archive" dcc-cua.exe LICENSE THIRD_PARTY_LICENSES.md README.md README.zh-CN.md assets skills plugins .claude-plugin .codex-plugin .mcp.json
               )
               ;;
             x86_64-unknown-linux-gnu|aarch64-apple-darwin|x86_64-apple-darwin)
               archive="dist/dcc-cua-${version}-${host}.tar.gz"
-              tar -czf "$archive" -C target/release dcc-cua dcc-cua-background LICENSE THIRD_PARTY_LICENSES.md README.md README.zh-CN.md assets skills plugins .claude-plugin .codex-plugin .mcp.json
+              tar -czf "$archive" -C target/release dcc-cua LICENSE THIRD_PARTY_LICENSES.md README.md README.zh-CN.md assets skills plugins .claude-plugin .codex-plugin .mcp.json
               ;;
             *)
               echo "unsupported PR-CI release host: $host" >&2
@@ -485,4 +500,5 @@ jobs:
             --target "$host" \
             --version "$version" \
             --extract-root "$RUNNER_TEMP/dcc-cua-pr-final-extract-${host}-${GITHUB_RUN_ATTEMPT}" \
-            --install-root "$RUNNER_TEMP/dcc-cua-pr-final-install-${host}-${GITHUB_RUN_ATTEMPT}"
+            --install-root "$RUNNER_TEMP/dcc-cua-pr-final-install-${host}-${GITHUB_RUN_ATTEMPT}" \
+            --allow-ci-build-metadata

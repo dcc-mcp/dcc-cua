@@ -87,7 +87,7 @@ pub use task_authorization_broker::{
     TrustedTaskAuthorizationTarget, trusted_task_authorization_broker,
 };
 use task_grant::TaskGrant;
-pub use task_grant::{MAX_APPLICATION_LABEL_CHARS, MAX_TASK_GRANT_ID_CHARS};
+pub use task_grant::{MAX_APPLICATION_LABEL_CHARS, MAX_TASK_GRANT_ID_CHARS, TaskObservationMode};
 use wire::*;
 
 pub const HOST_HELLO_TIMEOUT_MS: u64 = 10_000;
@@ -132,6 +132,7 @@ static RAW_INPUT_QUEUE: AsyncMutex<()> = AsyncMutex::const_new(());
 pub const HOST_CAPABILITIES: &[&str] = &[
     "exact_window_capabilities",
     "exact_window_state",
+    "exact_window_capture_preparation_v1",
     "connection_scoped_sessions",
     "multi_agent_sessions",
     "isolated_runtime_sessions",
@@ -234,6 +235,7 @@ pub fn host_capabilities(cursor_controls_available: bool) -> Vec<&'static str> {
                 || cursor_controls_available)
                 && (*capability != "windows_background_uia_fallback" || cfg!(windows))
                 && (*capability != "exact_window_restore_activate" || cfg!(windows))
+                && (*capability != "exact_window_capture_preparation_v1" || cfg!(windows))
                 && (!capability.starts_with("input_backend:windows.") || cfg!(windows))
         })
         .collect()
@@ -261,6 +263,23 @@ enum PostSnapshotMode {
     #[default]
     Full,
     Semantic,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CapturePreparationBindings {
+    session_id: String,
+    task_grant_id: String,
+    window_capability: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CapturePreparationBeginParams {
+    session_id: String,
+    task_grant_id: String,
+    window_capability: String,
+    request: dcc_cua_protocol::capture_preparation::CapturePreparationBeginRequest,
 }
 
 #[derive(Debug, Deserialize)]
@@ -378,6 +397,10 @@ enum Request {
         window_capability: String,
         write: ComputerUseClipboardWriteRequest,
     },
+    CapturePreparationBegin(CapturePreparationBeginParams),
+    CapturePreparationState(CapturePreparationBindings),
+    CapturePreparationStop(CapturePreparationBindings),
+    CapturePreparationSnapshot(CapturePreparationBindings),
     RecordingStart {
         session_id: String,
         task_grant_id: String,
@@ -431,10 +454,18 @@ enum Request {
         window_capability: String,
         operation: WindowOperation,
     },
+    MinimizeWindow {
+        session_id: String,
+        task_grant_id: String,
+        window_capability: String,
+        observation_id: String,
+    },
     SetWindowFrame {
         session_id: String,
         task_grant_id: String,
         window_capability: String,
+        #[serde(default)]
+        window_state_id: Option<String>,
         frame: ComputerUseWindowFrameRequest,
     },
     InvokeMenu {
@@ -453,6 +484,8 @@ enum Request {
         max_nodes: u32,
         #[serde(default)]
         activate_before: bool,
+        #[serde(default)]
+        capture_diagnostics: bool,
     },
     Zoom {
         session_id: String,
@@ -567,6 +600,7 @@ enum Request {
         task_grant_id: String,
         window_capability: String,
         observation_id: String,
+        #[serde(default)]
         accessibility_state_id: String,
         action: HostAction,
         #[serde(default)]
@@ -1516,6 +1550,13 @@ async fn refresh_connection_session_states(sessions: &mut HashMap<String, HostSe
         .is_err()
         {
             session.invalidate_observations();
+            session.latest_preparation_image = None;
+            if !session.interrupted {
+                session.interrupted = true;
+                // Cleanup remains legal after authorization ends. Join the
+                // original preparation/capture/recorder owners and retain evidence.
+                let _ = session.session.stop().await;
+            }
             continue;
         }
         let availability = session.session.target_availability().await;
@@ -1830,12 +1871,12 @@ async fn authorized_session<'a>(
         )
         .into());
     }
-    ensure_session_not_interrupted(session).await?;
     crate::task_authorization::validate_active_task_authorization(
         session.task_authorization_host.as_deref(),
         session.task_authorization.as_ref(),
     )
     .await?;
+    ensure_session_not_interrupted(session).await?;
     session.mark_activity();
     Ok(session)
 }

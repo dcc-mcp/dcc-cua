@@ -53,12 +53,6 @@ class FinalArchiveVerifierTests(unittest.TestCase):
         source = root / "source"
         source.mkdir(parents=True)
         (source / binary_name).write_bytes(b"arbitrary but self-consistent bytes")
-        background = (
-            "dcc-cua-background.exe"
-            if binary_name.endswith(".exe")
-            else "dcc-cua-background"
-        )
-        (source / background).write_bytes(b"background entry")
         for name in MODULE.REQUIRED_FILES:
             (source / name).write_text(name, encoding="utf-8")
         for name in MODULE.REQUIRED_DIRECTORIES:
@@ -92,7 +86,7 @@ class FinalArchiveVerifierTests(unittest.TestCase):
             for name, content in entries.items():
                 entry = tarfile.TarInfo(name)
                 entry.size = len(content)
-                entry.mode = 0o755 if name in {"dcc-cua", "dcc-cua-background"} else 0o644
+                entry.mode = 0o755 if name in {"dcc-cua"} else 0o644
                 bundle.addfile(entry, io.BytesIO(content))
             for name in directories:
                 entry = tarfile.TarInfo(name.rstrip("/"))
@@ -179,6 +173,62 @@ class FinalArchiveVerifierTests(unittest.TestCase):
             release = self._release(Path(directory))
             with self.assertRaisesRegex(ValueError, "CLI smoke command"):
                 MODULE.verify_final_archive(**self._verify_args(release))
+
+    def test_public_release_still_rejects_build_metadata_by_default(self):
+        with tempfile.TemporaryDirectory() as directory:
+            release = self._release(Path(directory))
+            arguments = self._verify_args(release)
+            arguments["version"] = "1.9.4+unreal-capture.11"
+            with self.assertRaisesRegex(
+                ValueError, "release version must be stable semver"
+            ):
+                MODULE.verify_final_archive(**arguments)
+
+    def test_ci_build_metadata_opt_in_preserves_archive_and_cli_smoke_checks(self):
+        for version in ("1.9.4+unreal-capture.11", "1.2.3+001"):
+            with (
+                self.subTest(version=version),
+                tempfile.TemporaryDirectory() as directory,
+                mock.patch.object(self, "version", version),
+            ):
+                release = self._release(Path(directory))
+                with self.assertRaisesRegex(ValueError, "CLI smoke command"):
+                    MODULE.verify_final_archive(
+                        **self._verify_args(release), allow_ci_build_metadata=True
+                    )
+
+    def test_ci_opt_in_rejects_prereleases_and_malformed_versions(self):
+        invalid = (
+            "1.2.3-preview.1",
+            "1.2.3-preview.1+build",
+            "01.2.3+build",
+            "1.02.3+build",
+            "1.2.03+build",
+            "1.2.3+",
+            "1.2.3+one..two",
+            "1.2.3+.one",
+            "1.2.3+one.",
+            "1.2.3+one_two",
+            "1.2.3+build+more",
+            "1.2.3+构建",
+            "１.2.3+build",
+            " 1.2.3+build",
+            "1.2.3+build ",
+            "1.2.3+build\n",
+            "1.2.3+build\r\n",
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            release = self._release(Path(directory))
+            for version in invalid:
+                with self.subTest(version=version):
+                    arguments = self._verify_args(release)
+                    arguments["version"] = version
+                    with self.assertRaisesRegex(
+                        ValueError, "CI version must be stable semver"
+                    ):
+                        MODULE.verify_final_archive(
+                            **arguments, allow_ci_build_metadata=True
+                        )
 
     def test_missing_bundled_resource_is_rejected_before_smoke(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -343,7 +393,7 @@ class FinalArchiveVerifierTests(unittest.TestCase):
                     for name, content in entries.items():
                         entry = tarfile.TarInfo(name)
                         entry.size = len(content)
-                        entry.mode = 0o755 if name in {"dcc-cua", "dcc-cua-background"} else 0o644
+                        entry.mode = 0o755 if name in {"dcc-cua"} else 0o644
                         bundle.addfile(entry, io.BytesIO(content))
                     link = tarfile.TarInfo("skills/link")
                     link.type = tarfile.SYMTYPE

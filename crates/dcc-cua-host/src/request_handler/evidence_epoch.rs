@@ -12,6 +12,10 @@ pub(crate) fn window_evidence_epoch_route(request: &Request) -> Option<WindowEvi
         publication: HostEvidencePublication::None,
     };
     match request {
+        Request::CapturePreparationBegin(params) => Some(standard(&params.session_id)),
+        Request::CapturePreparationState(params)
+        | Request::CapturePreparationStop(params)
+        | Request::CapturePreparationSnapshot(params) => Some(standard(&params.session_id)),
         Request::BrowserSnapshot { session_id, .. } => Some(WindowEvidenceEpochRoute {
             session_id: session_id.clone(),
             publication: HostEvidencePublication::BrowserSnapshotAttempt,
@@ -28,6 +32,7 @@ pub(crate) fn window_evidence_epoch_route(request: &Request) -> Option<WindowEvi
         | Request::LiveObservationStop { session_id, .. }
         | Request::GetWindowState { session_id, .. }
         | Request::ChangeWindowState { session_id, .. }
+        | Request::MinimizeWindow { session_id, .. }
         | Request::SetWindowFrame { session_id, .. }
         | Request::InvokeMenu { session_id, .. }
         | Request::Snapshot { session_id, .. }

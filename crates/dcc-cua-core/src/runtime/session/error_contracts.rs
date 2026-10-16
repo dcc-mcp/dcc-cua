@@ -72,6 +72,7 @@ pub(super) fn local_mutation_attempt_failure(error: ComputerUseError) -> Compute
 
 #[cfg(any(windows, test))]
 pub(super) fn local_activation_attempt_failure(error: ComputerUseError) -> ComputerUseError {
+    let original_details = error.details.map(|details| *details).unwrap_or_default();
     ComputerUseError::new(error.code, error.message).with_details(ComputerUseErrorDetails {
         phase: Some(ComputerUseErrorPhase::ActivationDispatch),
         focus_mutation_attempted: Some(true),
@@ -84,7 +85,7 @@ pub(super) fn local_activation_attempt_failure(error: ComputerUseError) -> Compu
         automatic_input: Some(false),
         blind_retry: Some(false),
         fresh_observation_required: Some(true),
-        ..Default::default()
+        ..original_details
     })
 }
 

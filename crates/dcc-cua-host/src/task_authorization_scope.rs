@@ -82,10 +82,110 @@ pub(crate) async fn finalize_task_session_authorization(
     Ok(Some(lease))
 }
 
-fn validate_grant_against_task_authorization(
+pub(crate) fn validate_grant_against_task_authorization(
     grant: &TaskGrant,
     lease: &TrustedTaskAuthorizationLease,
 ) -> Result<(), HostError> {
+    if grant.allow_capture_preparation != lease.capture_preparation.is_some()
+        || (lease.capture_preparation.is_some()
+            && grant.observation_mode != crate::TaskObservationMode::PixelsOnly)
+    {
+        return Err(browser_scope_denied(
+            "capture preparation must exactly derive from its trusted pixels_only lease permission",
+        ));
+    }
+    if (grant.recording_output_dir.is_some() || lease.recording_output_dir.is_some())
+        && grant.observation_mode != crate::TaskObservationMode::PixelsOnly
+    {
+        return Err(browser_scope_denied(
+            "trusted native recording output cannot authorize a semantic trajectory session",
+        ));
+    }
+    if grant.observation_mode == crate::TaskObservationMode::PixelsOnly {
+        let trusted_raw_input = lease
+            .allowed_actions
+            .iter()
+            .any(crate::TrustedTaskActionScope::is_pixels_input);
+        if grant.allow_raw_input != trusted_raw_input
+            || lease.allowed_actions.iter().any(|scope| {
+                !scope.is_window_minimize()
+                    && !scope.is_window_frame()
+                    && !scope.is_capture_preparation()
+                    && !scope.is_pixels_input()
+            })
+            || (lease
+                .allowed_host_methods
+                .iter()
+                .any(|method| method == "execute_action")
+                && !trusted_raw_input)
+        {
+            return Err(browser_scope_denied(
+                "pixels_only grant must exactly derive supported raw input from its trusted action scopes",
+            ));
+        }
+        if lease
+            .allowed_host_methods
+            .iter()
+            .any(|method| method == "set_window_frame")
+            && (!lease
+                .allowed_actions
+                .iter()
+                .any(crate::TrustedTaskActionScope::is_window_frame)
+                || !lease
+                    .allowed_host_methods
+                    .iter()
+                    .any(|method| method == "get_window_state"))
+        {
+            return Err(browser_scope_denied(
+                "set_window_frame requires its closed action scope and explicit native state read method",
+            ));
+        }
+        if grant.allow_recording {
+            if grant.recording_output_dir != lease.recording_output_dir
+                || lease.recording_output_dir.is_none()
+                || !["recording_start", "recording_state", "recording_stop"]
+                    .iter()
+                    .all(|required| {
+                        lease
+                            .allowed_host_methods
+                            .iter()
+                            .any(|method| method == required)
+                    })
+            {
+                return Err(browser_scope_denied(
+                    "pixels_only recording output and lifecycle must exactly match trusted authorization",
+                ));
+            }
+        } else if grant.recording_output_dir.is_some() || lease.recording_output_dir.is_some() {
+            return Err(browser_scope_denied(
+                "manual recording output requires explicit recording permission",
+            ));
+        }
+        for group in [
+            ["recording_start", "recording_state", "recording_stop"],
+            [
+                "live_observation_start",
+                "live_observation_state",
+                "live_observation_stop",
+            ],
+        ] {
+            if lease
+                .allowed_host_methods
+                .iter()
+                .any(|method| method == group[0])
+                && !group.iter().all(|required| {
+                    lease
+                        .allowed_host_methods
+                        .iter()
+                        .any(|method| method == required)
+                })
+            {
+                return Err(browser_scope_denied(
+                    "native lifecycle start requires its state and stop methods",
+                ));
+            }
+        }
+    }
     let granted_origins = grant
         .allowed_browser_origins
         .iter()
@@ -124,11 +224,16 @@ pub(crate) fn is_task_authorizable_host_method(method: &str) -> bool {
             | "recording_start"
             | "recording_stop"
             | "recording_state"
+            | "capture_preparation_begin"
+            | "capture_preparation_state"
+            | "capture_preparation_stop"
+            | "capture_preparation_snapshot"
             | "live_observation_start"
             | "live_observation_state"
             | "live_observation_stop"
             | "get_window_state"
             | "change_window_state"
+            | "minimize_window"
             | "set_window_frame"
             | "invoke_menu"
             | "snapshot"
@@ -174,6 +279,41 @@ pub(crate) fn enforce_task_authorized_method(
         window_capability,
     )?;
     host.require_task_authorized_method(method)?;
+    if !host.observation_mode.permits_method(method) {
+        return Err(browser_scope_denied(
+            "Host method requires semantic observation and is unavailable in pixels_only sessions",
+        ));
+    }
+    if host.observation_mode == crate::TaskObservationMode::PixelsOnly
+        && let Request::ExecuteAction {
+            action,
+            observation_id,
+            ..
+        } = request
+    {
+        host.require_pixels_input_grant(session_id, action)?;
+        host.require_latest_observation(observation_id)?;
+    }
+    if host.observation_mode == crate::TaskObservationMode::PixelsOnly
+        && let Request::RecordingStart { request, .. } = request
+    {
+        let directory = host
+            .task_authorization
+            .as_ref()
+            .and_then(|lease| lease.recording_output_dir.as_deref())
+            .filter(|_| host.allow_recording)
+            .ok_or_else(|| {
+                browser_scope_denied(
+                    "native recording requires a trusted immutable output directory",
+                )
+            })?;
+        if !request.record_video || request.output_dir != directory {
+            return Err(browser_scope_denied(
+                "native recording requires video-only output in its exact authorized directory",
+            ));
+        }
+        crate::task_grant::validate_recording_output_location(directory)?;
+    }
     enforce_task_authorized_browser_scope(host, request)
 }
 
@@ -266,12 +406,17 @@ fn enforce_task_authorized_browser_scope(
         | Request::RecordingStart { .. }
         | Request::RecordingStop { .. }
         | Request::RecordingState { .. }
+        | Request::CapturePreparationBegin(_)
+        | Request::CapturePreparationState(_)
+        | Request::CapturePreparationStop(_)
+        | Request::CapturePreparationSnapshot(_)
         | Request::LiveObservationStart { .. }
         | Request::LiveObservationState { .. }
         | Request::LiveObservationStop { .. }
         | Request::OpenSession { .. }
         | Request::GetWindowState { .. }
         | Request::ChangeWindowState { .. }
+        | Request::MinimizeWindow { .. }
         | Request::SetWindowFrame { .. }
         | Request::InvokeMenu { .. }
         | Request::Snapshot { .. }
@@ -301,8 +446,32 @@ fn browser_scope_denied(message: &str) -> HostError {
 }
 
 impl Request {
-    fn window_method_scope(&self) -> Option<(&str, &str, &str, &'static str)> {
+    pub(crate) fn window_method_scope(&self) -> Option<(&str, &str, &str, &'static str)> {
         let scope = match self {
+            Self::CapturePreparationBegin(params) => (
+                &params.session_id,
+                &params.task_grant_id,
+                &params.window_capability,
+                "capture_preparation_begin",
+            ),
+            Self::CapturePreparationState(params) => (
+                &params.session_id,
+                &params.task_grant_id,
+                &params.window_capability,
+                "capture_preparation_state",
+            ),
+            Self::CapturePreparationStop(params) => (
+                &params.session_id,
+                &params.task_grant_id,
+                &params.window_capability,
+                "capture_preparation_stop",
+            ),
+            Self::CapturePreparationSnapshot(params) => (
+                &params.session_id,
+                &params.task_grant_id,
+                &params.window_capability,
+                "capture_preparation_snapshot",
+            ),
             Self::TerminateApp {
                 session_id,
                 task_grant_id,
@@ -428,6 +597,17 @@ impl Request {
                 task_grant_id,
                 window_capability,
                 "change_window_state",
+            ),
+            Self::MinimizeWindow {
+                session_id,
+                task_grant_id,
+                window_capability,
+                ..
+            } => (
+                session_id,
+                task_grant_id,
+                window_capability,
+                "minimize_window",
             ),
             Self::SetWindowFrame {
                 session_id,

@@ -313,7 +313,7 @@ responsible for reset and outcome evaluation.
 
 On Windows, `vx.toml` selects MSVC 14.44 with Spectre-mitigated libraries and
 injects its Windows SDK environment into Cargo. Release archives contain the
-`dcc-cua` and `dcc-cua-background` executables plus assets, Skills, and both
+single `dcc-cua` executable plus assets, Skills, and both
 project and upstream license notices.
 Each target also publishes a stable
 `dcc-cua-install-manifest-<target>.json` containing the exact HTTPS archive URL
@@ -364,17 +364,14 @@ cargo run -p dcc-cua-cli -- update --check
 cargo run -p dcc-cua-cli -- update --apply
 ```
 
-`update` downloads one exact platform archive, validates both replacement
-executables, and updates the terminal and background entries together while
-preserving each entry's identity. Keep their original filenames in the same
-writable directory. Applying the current release again repairs a missing or
-stale companion; the updater will not downgrade a newer installed CLI. Close
-resident MCP clients and Hosts before updating on Windows. If a loaded sibling
-cannot be replaced, the updater fails before replacing the current executable.
-An older single-entry updater cannot install the new companion on its first
-run: install both executables from the archive, or run the new updater again.
-Reconnect clients after updating to load the installed runtime. The SDK runtime
-is statically linked into each versioned executable. Release discovery uses the GitHub REST API first and
+`update` downloads one exact platform archive, validates the canonical executable,
+and replaces only `dcc-cua`. Keep its original filename in a writable directory.
+Applying the current release again repairs the executable without downgrading a
+newer installation. Updates retain the installation lock and recovery bytes on
+incomplete rollback; they never terminate resident clients or delete historical
+sibling binaries. Close affected clients before updating on Windows and reconnect
+afterwards. The SDK runtime is statically linked into the versioned executable.
+Release discovery uses the GitHub REST API first and
 falls back to the public `releases/latest` redirect when the API is rate limited
 (HTTP 403); set `GITHUB_TOKEN` or `GH_TOKEN` to raise the unauthenticated API
 quota of 60 requests per hour per IP address.
@@ -1342,7 +1339,7 @@ An additional lifecycle E2E uses Host IPC itself to launch an isolated native
 fixture (Calculator as a fresh instance on macOS), promote the launch into the
 same private runtime session, record a real mutation to `action.json`, stop the
 recording, terminate only that proven PID, and verify its windows disappear.
-The release workflow packages `dcc-cua`, `dcc-cua-background`, assets, Skills, and
+The release workflow packages `dcc-cua`, assets, Skills, and
 both MIT license notices. A newly created tag, its peeled commit, the checked-out
 HEAD, and the GitHub Release target must resolve to the same commit. Each native
 target is built once; a single workflow artifact then binds the complete asset

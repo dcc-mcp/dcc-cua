@@ -56,14 +56,6 @@ def _write_complete_release(release_dir: Path, version: str = "1.6.0") -> None:
                         "path": "dcc-cua.exe" if "windows" in target else "dcc-cua",
                         "sha256": "5" * 64,
                     },
-                    {
-                        "path": (
-                            "dcc-cua-background.exe"
-                            if "windows" in target
-                            else "dcc-cua-background"
-                        ),
-                        "sha256": "6" * 64,
-                    },
                 ],
             },
         }
@@ -85,7 +77,6 @@ class VerifyReleaseAssetsTests(unittest.TestCase):
                 suffix = ".exe" if "windows" in target else ""
                 for name in (
                     "dcc-cua" + suffix,
-                    "dcc-cua-background" + suffix,
                     *WRITER.PACKAGE_FILES,
                 ):
                     (source / name).write_bytes(name.encode("utf-8"))
@@ -113,10 +104,10 @@ class VerifyReleaseAssetsTests(unittest.TestCase):
                 )
             MODULE.verify_release_assets(release_dir, "1.10.0")
 
-    def test_both_entry_points_are_required_for_every_release_target(self):
+    def test_single_entry_point_is_required_for_every_release_target(self):
         for target, _ in MODULE.RELEASE_TARGETS:
             suffix = ".exe" if "windows" in target else ""
-            for binary in ("dcc-cua" + suffix, "dcc-cua-background" + suffix):
+            for binary in ("dcc-cua" + suffix,):
                 with self.subTest(target=target, missing=binary):
                     with tempfile.TemporaryDirectory() as directory:
                         release_dir = Path(directory)
@@ -133,14 +124,13 @@ class VerifyReleaseAssetsTests(unittest.TestCase):
                         with self.assertRaisesRegex(ValueError, "complete, unique, and sorted"):
                             MODULE.verify_release_assets(release_dir, "1.6.0")
 
-    def test_unexpected_background_entry_names_fail_closed(self):
+    def test_all_background_entry_names_fail_closed(self):
         for target, _ in MODULE.RELEASE_TARGETS:
-            other_platform = (
-                "dcc-cua-background"
-                if "windows" in target
-                else "dcc-cua-background.exe"
-            )
-            for unexpected in (other_platform, "dcc-cua-background-extra"):
+            for unexpected in (
+                "dcc-cua-background",
+                "dcc-cua-background.exe",
+                "dcc-cua-background-extra",
+            ):
                 with self.subTest(target=target, unexpected=unexpected):
                     with tempfile.TemporaryDirectory() as directory:
                         release_dir = Path(directory)

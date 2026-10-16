@@ -34,6 +34,13 @@ pub struct TrustedTaskAuthorizationRegistration {
     pub allowed_actions: Vec<TrustedTaskActionScope>,
     pub allowed_browser_origins: Vec<String>,
     pub browser_scope: Option<TrustedTaskAuthorizationBrowserScope>,
+    /// An exact pre-created directory owned by the authenticated embedding.
+    /// It is immutable for this registration and never nominated through Host IPC.
+    pub recording_output_dir: Option<String>,
+    /// Stable constructor-owned journal root; native code owns target indices
+    /// and UUID epochs so unresolved preparation cannot be bypassed by a task.
+    pub capture_preparation:
+        Option<dcc_cua_protocol::capture_preparation::CapturePreparationAuthorization>,
     pub expires_at_unix_ms: u64,
 }
 
@@ -58,6 +65,26 @@ pub struct TrustedTaskAuthorizationReceipt {
 }
 
 impl TrustedTaskAuthorizationRegistration {
+    /// Validate the operator-owned recording root before allocating a task
+    /// directory. This read-only check grants no task or filesystem authority.
+    pub fn validate_recording_directory(
+        directory: &str,
+    ) -> Result<(), TrustedTaskAuthorizationBrokerError> {
+        crate::task_grant::validate_recording_output_location(directory)
+            .map_err(|_| TrustedTaskAuthorizationBrokerError::InvalidRegistration {
+                reason: "recording output must be an existing ordinary absolute directory without reparse ancestors".into(),
+            })
+    }
+
+    pub fn validate_capture_preparation_directory(
+        directory: &str,
+    ) -> Result<(), TrustedTaskAuthorizationBrokerError> {
+        crate::task_grant::validate_recording_output_location(directory)
+            .map_err(|_| TrustedTaskAuthorizationBrokerError::InvalidRegistration {
+                reason: "capture preparation journal must be an existing ordinary absolute directory without reparse ancestors".into(),
+            })
+    }
+
     /// Validate a proposed exact task scope before presenting it to a user.
     pub fn validate(&self) -> Result<(), TrustedTaskAuthorizationBrokerError> {
         validate_registration(self)
@@ -113,6 +140,9 @@ impl TrustedTaskAuthorizationIssuer {
                 window_capability: window_capability.clone(),
                 binding: None,
                 revoked: false,
+                recording_authorization: Arc::new(dcc_cua_core::RecordingAuthorization::new(
+                    expires_at_unix_ms,
+                )),
             },
         );
         Ok(TrustedTaskAuthorizationReceipt {
@@ -135,6 +165,7 @@ impl TrustedTaskAuthorizationIssuer {
             .get_mut(authorization_id)
             .ok_or(TrustedTaskAuthorizationBrokerError::NotFound)?;
         record.revoked = true;
+        record.recording_authorization.revoke();
         Ok(())
     }
 }
@@ -166,6 +197,7 @@ struct BrokerRecord {
     window_capability: String,
     binding: Option<BrokerBinding>,
     revoked: bool,
+    recording_authorization: Arc<dcc_cua_core::RecordingAuthorization>,
 }
 
 struct BrokerBinding {
@@ -182,6 +214,30 @@ struct BrokerHost {
 
 #[async_trait]
 impl TrustedTaskAuthorizationHost for BrokerHost {
+    fn recording_authorization(
+        &self,
+        lease: &TrustedTaskAuthorizationLease,
+    ) -> Option<Arc<dcc_cua_core::RecordingAuthorization>> {
+        let state = self.state.lock().ok()?;
+        let record = state.authorizations.get(&lease.authorization_id)?;
+        let binding = record.binding.as_ref()?;
+        if record.revoked
+            || record.registration.expires_at_unix_ms != lease.expires_at_unix_ms
+            || binding.connection_id != lease.connection_id
+            || binding.session_id != lease.session_id
+            || binding.lease_request_digest != lease.request_digest
+            || binding.target_process_id != lease.target_process_id
+            || binding.target_window_handle != lease.target_window_handle
+            || record.window_capability != lease.window_capability
+            || record.registration.task_grant_id != lease.task_grant_id
+            || record.registration.application_label != lease.application_label
+        {
+            return None;
+        }
+        record.recording_authorization.with_active(|| ()).ok()?;
+        Some(Arc::clone(&record.recording_authorization))
+    }
+
     async fn authorize(
         &self,
         request: TrustedTaskAuthorizationRequest,
@@ -247,6 +303,8 @@ impl TrustedTaskAuthorizationHost for BrokerHost {
             allowed_host_methods: registration.allowed_host_methods.clone(),
             allowed_browser_origins: registration.allowed_browser_origins.clone(),
             browser_scope: registration.browser_scope.clone(),
+            recording_output_dir: registration.recording_output_dir.clone(),
+            capture_preparation: registration.capture_preparation.clone(),
             issued_at_unix_ms: now,
             expires_at_unix_ms: registration.expires_at_unix_ms,
             request_digest: request.request_digest,
@@ -365,12 +423,12 @@ fn validate_registration(
         .iter()
         .cloned()
         .collect::<BTreeSet<_>>();
-    if actions.is_empty()
-        || actions.len() != registration.allowed_actions.len()
+    // An empty set grants no actions; every action still requires explicit membership.
+    if actions.len() != registration.allowed_actions.len()
         || actions.len() > MAX_TASK_AUTHORIZATION_ACTIONS
         || !actions.iter().all(TrustedTaskActionScope::validate)
     {
-        return invalid("allowed actions must be unique, closed, and non-empty");
+        return invalid("allowed actions must be unique, closed, and bounded");
     }
     let methods = registration
         .allowed_host_methods
@@ -389,6 +447,72 @@ fn validate_registration(
         .allowed_browser_origins
         .iter()
         .collect::<BTreeSet<_>>();
+    let preparation_requested = registration
+        .allowed_host_methods
+        .iter()
+        .any(|method| method.starts_with("capture_preparation_"));
+    let preparation_action = registration
+        .allowed_actions
+        .iter()
+        .any(TrustedTaskActionScope::is_capture_preparation);
+    if preparation_requested != registration.capture_preparation.is_some()
+        || preparation_action != registration.capture_preparation.is_some()
+    {
+        return invalid(
+            "capture preparation requires its trusted journal permission and closed action scope",
+        );
+    }
+    if let Some(authorization) = registration.capture_preparation.as_ref()
+        && (!matches!(
+            registration.target,
+            TrustedTaskAuthorizationTarget::ExactWindow { .. }
+        ) || authorization.max_lifetime_ms == 0
+            || authorization.max_lifetime_ms
+                > dcc_cua_protocol::capture_preparation::MAX_PREPARATION_LIFETIME_MS
+            || TrustedTaskAuthorizationRegistration::validate_capture_preparation_directory(
+                &authorization.journal_directory,
+            )
+            .is_err()
+            || registration.recording_output_dir.as_deref()
+                == Some(authorization.journal_directory.as_str())
+            || registration.browser_scope.is_some()
+            || !registration.allowed_browser_origins.is_empty()
+            || ![
+                "get_window_state",
+                "capture_preparation_begin",
+                "capture_preparation_state",
+                "capture_preparation_stop",
+            ]
+            .iter()
+            .all(|required| {
+                registration
+                    .allowed_host_methods
+                    .iter()
+                    .any(|method| method == required)
+            }))
+    {
+        return invalid(
+            "capture preparation requires an exact window, separate ordinary stable journal root, bounded lifetime, native state read and complete begin/state/stop methods",
+        );
+    }
+    if let Some(directory) = registration.recording_output_dir.as_deref()
+        && (!matches!(
+            registration.target,
+            TrustedTaskAuthorizationTarget::ExactWindow { .. }
+        ) || crate::task_grant::validate_recording_output_location(directory).is_err()
+            || !["recording_start", "recording_state", "recording_stop"]
+                .iter()
+                .all(|required| {
+                    registration
+                        .allowed_host_methods
+                        .iter()
+                        .any(|method| method == required)
+                }))
+    {
+        return invalid(
+            "manual recording requires an exact window, a pre-created ordinary directory, and start/state/stop methods",
+        );
+    }
     if origins.len() != registration.allowed_browser_origins.len()
         || origins.len() > MAX_TASK_AUTHORIZATION_ACTIONS
         || origins

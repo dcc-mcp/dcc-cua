@@ -13,7 +13,6 @@ use crate::cli_args::has_flag;
 const OWNER: &str = "dcc-mcp";
 const REPOSITORY: &str = "dcc-cua";
 const BINARY: &str = "dcc-cua";
-const BACKGROUND_BINARY: &str = "dcc-cua-background";
 const MAX_ARCHIVE_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_BINARY_BYTES: u64 = 128 * 1024 * 1024;
 const RELEASE_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(30);
@@ -56,7 +55,7 @@ pub fn run(flags: &[String]) -> UpdateResult<()> {
     }
     install_release(&std::env::current_exe()?, &asset, &checksum)?;
     stdoutln!(
-        "dcc-cua and dcc-cua-background installed at v{}; reconnect MCP clients to load the installed runtime",
+        "dcc-cua installed at v{}; reconnect MCP clients to load the installed runtime",
         release.version
     );
     Ok(())
@@ -268,7 +267,7 @@ fn install_release(
     let install_root = executable
         .parent()
         .ok_or("current executable has no installation directory")?;
-    let (current_name, companion_name) = update_entry_names(executable)?;
+    let current_name = update_entry_name(executable)?;
     let transaction = self_update::TempDir::new_in(install_root)?;
     let checksum_path = transaction.path().join(&checksum_asset.name);
     let mut checksum_file = File::create(&checksum_path)?;
@@ -304,17 +303,15 @@ fn install_release(
 
     let extracted = transaction.path().join("extracted");
     fs::create_dir(&extracted)?;
-    for name in [&current_name, &companion_name] {
-        self_update::Extract::from_source(&archive_path).extract_file(&extracted, name)?;
-    }
-    install_pair_with(executable, &extracted, |replacement| {
+    self_update::Extract::from_source(&archive_path).extract_file(&extracted, &current_name)?;
+    install_single_with(executable, &extracted, |replacement| {
         self_update::self_replace::self_replace(replacement)
     })?;
     Ok(())
 }
 
 pub(crate) fn should_install_release(current: &str, latest: &str) -> UpdateResult<bool> {
-    // Reapplying the current release repairs a missing or stale companion.
+    // Reapplying the current release repairs the installed executable without downgrading.
     Ok(!self_update::version::bump_is_greater(latest, current)?)
 }
 
@@ -341,19 +338,14 @@ pub(crate) fn lock_installation(install_root: &Path) -> io::Result<File> {
     Ok(lock)
 }
 
-pub(crate) fn update_entry_names(executable: &Path) -> io::Result<(String, String)> {
-    let terminal = format!("{BINARY}{}", std::env::consts::EXE_SUFFIX);
-    let background = format!("{BACKGROUND_BINARY}{}", std::env::consts::EXE_SUFFIX);
-    let name = executable.file_name().and_then(|value| value.to_str());
-    if name == Some(terminal.as_str()) {
-        Ok((terminal, background))
-    } else if name == Some(background.as_str()) {
-        Ok((background, terminal))
-    } else {
-        Err(io::Error::other(
-            "self-update requires an unrenamed dcc-cua or dcc-cua-background executable",
-        ))
+pub(crate) fn update_entry_name(executable: &Path) -> io::Result<String> {
+    let name = format!("{BINARY}{}", std::env::consts::EXE_SUFFIX);
+    if executable.file_name().and_then(|value| value.to_str()) != Some(name.as_str()) {
+        return Err(io::Error::other(
+            "self-update requires an unrenamed dcc-cua executable",
+        ));
     }
+    Ok(name)
 }
 
 fn bounded_executable(path: &Path) -> io::Result<()> {
@@ -368,66 +360,36 @@ fn bounded_executable(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// Replace the sibling first, without moving or truncating a running image.
-/// Windows can refuse the atomic replacement while a client has it loaded;
-/// in that case the current executable is never replaced. Existing processes
-/// on platforms that permit replacement keep their old image until reconnect.
-pub(crate) fn install_pair_with(
+/// Replace only the canonical executable, preserving the installation lock and
+/// recovery bytes. Historical sibling binaries are never adopted or deleted.
+pub(crate) fn install_single_with(
     executable: &Path,
     extracted: &Path,
     replace_current: impl FnOnce(&Path) -> io::Result<()>,
 ) -> io::Result<()> {
-    let (current_name, companion_name) = update_entry_names(executable)?;
+    let name = update_entry_name(executable)?;
     let install_root = executable
         .parent()
         .ok_or_else(|| io::Error::other("executable has no installation directory"))?;
     let _lock = lock_installation(install_root)?;
-    let replacement = extracted.join(current_name);
-    let new_companion = extracted.join(&companion_name);
-    let companion = install_root.join(companion_name);
-    // Validate both archive entries and destinations before changing either.
+    let replacement = extracted.join(name);
     bounded_executable(&replacement)?;
-    bounded_executable(&new_companion)?;
     bounded_executable(executable)?;
-    let companion_exists = match fs::symlink_metadata(&companion) {
-        Ok(_) => {
-            bounded_executable(&companion)?;
-            true
-        }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => false,
-        Err(error) => return Err(error),
-    };
     let backup = self_update::TempDir::new_in(install_root)?;
     let old_current = backup.path().join("current");
-    let old_companion = backup.path().join("companion");
     fs::copy(executable, &old_current)?;
-    if companion_exists {
-        fs::copy(&companion, &old_companion)?;
-    }
-    // Do not rename the old sibling aside: that would bypass Windows' loaded
-    // image refusal and require terminating an unrelated resident bridge.
-    fs::rename(&new_companion, &companion)?;
     if let Err(error) = replace_current(&replacement) {
-        // self-replace can fail after moving the current image away on Windows.
-        // Restore a missing path from our own backup, never overwrite a live one.
-        let restore_current = match fs::symlink_metadata(executable) {
-            Ok(_) => Ok(()),
+        let restore = match fs::symlink_metadata(executable) {
+            Ok(_) => bounded_executable(executable),
             Err(missing) if missing.kind() == io::ErrorKind::NotFound => {
                 fs::rename(&old_current, executable)
             }
             Err(other) => Err(other),
         };
-        let restore_companion = if companion_exists {
-            fs::rename(&old_companion, &companion)
-        } else {
-            fs::remove_file(&companion)
-        };
-        if restore_current.is_err() || restore_companion.is_err() {
-            // A client may have opened the new sibling during the transaction.
-            // Retain recovery bytes rather than deleting the only old copy.
+        if restore.is_err() {
             let _recovery_directory = backup.keep();
             return Err(io::Error::other(
-                "update failed and rollback was incomplete; close clients and reinstall both executables from one archive",
+                "update failed and rollback was incomplete; recovery bytes retained; close clients and reinstall dcc-cua",
             ));
         }
         return Err(error);

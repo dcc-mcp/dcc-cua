@@ -27,8 +27,8 @@ use crate::interactive_desktop::{
 };
 use crate::live_observation::{
     CaptureFailureDisposition, LiveObservation, LiveObservationFence, LiveObservationFrame,
-    LiveObservationStatus, decode_png_to_bgra, live_capture_failure_disposition,
-    observation_sequence_fence, terminal_capture_error, wait_for_latest_frame,
+    LiveObservationStatus, decode_png_to_bgra, observation_sequence_fence, terminal_capture_error,
+    wait_for_latest_frame,
 };
 use crate::policy::*;
 
@@ -480,6 +480,9 @@ fn host_runtime_uses_the_upstream_cursor_renderer_only_where_it_can_run() {
     assert!(options.host_owns_permission_ux);
     assert!(options.prepare_desktop_environment);
 }
+
+#[cfg(target_os = "linux")]
+mod linux_pixels_driver;
 
 #[rstest]
 fn bundled_cursor_theme_matches_runtime_contract() {

@@ -19,6 +19,12 @@ impl ComputerUseSession {
         match &self.upstream_session_state {
             UpstreamSessionState::Inactive => json!({"state": "inactive", "degraded": false}),
             UpstreamSessionState::Active => json!({"state": "active", "degraded": false}),
+            #[cfg(target_os = "linux")]
+            UpstreamSessionState::LinuxPixelsOnly => json!({
+                "state": "pixels_only", "platform": "linux_x11", "read_only": true,
+                "degraded": false, "accessibility_provider_started": false,
+                "requires_explicit_escalation": false, "scope": "exact_window",
+            }),
             #[cfg(windows)]
             UpstreamSessionState::VisualOnly { reason } => json!({
                 "state": "visual_only",

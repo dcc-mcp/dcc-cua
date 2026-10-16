@@ -1022,8 +1022,22 @@ async fn live_key_revocation_refuses_the_next_observation_before_driver_access()
     )
     .await
     .unwrap();
-    let driver = ComputerUseDriver::create().unwrap();
+    let (driver, exchanges) = super::task_authorization::observation_only_test_driver();
     let mut session = cached_host_session(&driver);
+    session
+        .session
+        .seed_test_active_window(dcc_cua_core::ComputerUseObservation {
+            observation_id: "revoked-observation".into(),
+            window_handle: 77,
+            process_id: 42,
+            window_title: "Synthetic authorization target".into(),
+            width: 800,
+            height: 600,
+            source_rect: [0, 0, 800, 600],
+            capture_backend: "synthetic-test".into(),
+            capture_provenance: json!({"source": "test-only"}),
+            session_id: "runtime-session-1".into(),
+        });
     session.capability = opaque.window_capability.clone();
     session.task_authorization = Some(lease);
     session.task_authorization_host = Some(Arc::clone(&host));
@@ -1033,6 +1047,9 @@ async fn live_key_revocation_refuses_the_next_observation_before_driver_access()
 
     refresh_connection_session_states(&mut sessions).await;
     assert!(sessions["task-1"].latest_observation_id.is_none());
+    assert!(sessions["task-1"].interrupted);
+    assert_eq!(sessions["task-1"].session.status()["active"], false);
+    assert_eq!(exchanges.load(Ordering::Relaxed), 1);
 
     let error = match authorized_session(
         &mut sessions,
@@ -1045,13 +1062,17 @@ async fn live_key_revocation_refuses_the_next_observation_before_driver_access()
         Ok(_) => panic!("revocation must refuse observation access"),
         Err(error) => error,
     };
-    assert!(matches!(
-        error,
-        HostError::CodedProtocol {
-            code: HostProtocolErrorCode::TaskAuthorizationRevoked,
-            ..
-        }
-    ));
+    assert!(
+        matches!(
+            &error,
+            HostError::CodedProtocol {
+                code: HostProtocolErrorCode::TaskAuthorizationRevoked,
+                ..
+            }
+        ),
+        "expected a precise revocation error after cleanup, got {error:?}"
+    );
+    assert_eq!(exchanges.load(Ordering::Relaxed), 1);
 }
 
 #[rstest]

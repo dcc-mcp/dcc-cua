@@ -154,18 +154,62 @@ fn generic_error_boundary_does_not_publish_private_error_text() {
 }
 
 #[rstest]
-fn pixels_only_activation_conflict_publishes_safe_typed_guidance() {
-    let value = fatal_error_value(&CliUsageError::PixelsOnlyConflictsWithActivation);
+fn pixels_only_escalation_conflict_publishes_safe_typed_guidance() {
+    let value = fatal_error_value(&CliUsageError::PixelsOnlyConflictsWithEscalation);
 
     assert_eq!(value["error"]["code"], "invalid_argument_combination");
     assert_eq!(
         value["error"]["message"],
-        "snapshot --pixels-only is read-only and cannot be combined with --activate or --escalate"
+        "snapshot --pixels-only skips accessibility and cannot be combined with --escalate"
     );
     assert_eq!(
         value["error"]["details"]["incompatible_options"],
-        json!(["--activate", "--escalate"])
+        json!(["--escalate"])
     );
+}
+
+#[rstest]
+fn native_capture_failure_preserves_only_typed_content_free_proof() {
+    use dcc_cua_core::{
+        ComputerUseCaptureDiagnostic, ComputerUseCaptureReason, ComputerUseCaptureStage,
+    };
+    let error = ComputerUseError::new(
+        ComputerUseErrorCode::InvalidTarget,
+        "PRIVATE_FOREIGN_TITLE_AND_BACKEND_MESSAGE",
+    )
+    .with_details(dcc_cua_core::ComputerUseErrorDetails {
+        capture: Some(ComputerUseCaptureDiagnostic {
+            stage: ComputerUseCaptureStage::VisibleDesktopProof,
+            reason: ComputerUseCaptureReason::RootOverlap,
+            target_process_id: 42,
+            target_window_handle: 77,
+            target_bounds: Some([0, 0, 100, 100]),
+            blocker_process_id: Some(91),
+            blocker_window_handle: Some(92),
+            blocker_bounds: Some([1, 1, 1, 1]),
+            cloaked: Some(0),
+            os_error: None,
+            root_bounds_failure: None,
+        }),
+        suggested_delivery_mode: Some("PRIVATE_SECRET_DETAIL".into()),
+        ..Default::default()
+    });
+    let value = fatal_error_value(&error);
+    let capture = &value["error"]["details"]["capture"];
+    assert_eq!(
+        value["error"]["message"],
+        crate::failure_output::CAPTURE_PROOF_MESSAGE
+    );
+    assert_eq!(capture["stage"], "visible_desktop_proof");
+    assert_eq!(capture["reason"], "root_overlap");
+    assert_eq!(capture["target_process_id"], 42);
+    assert_eq!(capture["target_window_handle"], 77);
+    assert_eq!(capture["blocker_window_handle"], 92);
+    assert_eq!(capture["blocker_bounds"], json!([1, 1, 1, 1]));
+    assert_eq!(value["error"]["details"]["whole_desktop_fallback"], false);
+    assert!(!value.to_string().contains("PRIVATE_"));
+    assert!(capture.get("title").is_none());
+    assert!(capture.get("os_error").is_none());
 }
 
 #[rstest]

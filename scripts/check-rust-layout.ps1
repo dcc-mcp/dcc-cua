@@ -29,9 +29,26 @@ Get-ChildItem -Path (Join-Path $PSScriptRoot "..\crates") -Recurse -Filter *.rs 
                 if ($attribute -eq "#[test]") {
                     $violations.Add("$relative`:$($lineIndex + 1) must use rstest instead of #[test]")
                 }
-                if ($attribute -match '^#\[tokio::test(?:\([^]]*\))?\]$' -and
-                    ($lineIndex -eq 0 -or $sourceLines[$lineIndex - 1].Trim() -ne "#[rstest]")) {
-                    $violations.Add("$relative`:$($lineIndex + 1) must place #[rstest] directly before #[tokio::test]")
+                if ($attribute -match '^#\[tokio::test(?:\([^]]*\))?\]$') {
+                    $rstestIndex = $lineIndex - 1
+                    while ($rstestIndex -ge 0 -and
+                        $sourceLines[$rstestIndex].Trim() -match '^#\[case(?:::[A-Za-z_][A-Za-z0-9_]*)?\(.*\)\]$') {
+                        $rstestIndex--
+                    }
+                    $validOrder = $rstestIndex -ge 0 -and $sourceLines[$rstestIndex].Trim() -eq "#[rstest]"
+                    if ($rstestIndex -gt 0 -and
+                        $sourceLines[$rstestIndex - 1].Trim() -match '^#\[(?:rstest\]|case(?:\W|$))') {
+                        $validOrder = $false
+                    }
+                    for ($nextIndex = $lineIndex + 1; $nextIndex -lt $sourceLines.Count -and
+                        $sourceLines[$nextIndex].Trim().StartsWith("#["); $nextIndex++) {
+                        if ($sourceLines[$nextIndex].Trim() -match '^#\[case(?:\W|$)') {
+                            $validOrder = $false
+                        }
+                    }
+                    if (-not $validOrder) {
+                        $violations.Add("$relative`:$($lineIndex + 1) must place #[rstest], then any contiguous #[case(...)] rows, then #[tokio::test]")
+                    }
                 }
             }
         } else {

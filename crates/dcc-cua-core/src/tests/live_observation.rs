@@ -464,9 +464,9 @@ async fn live_observation_post_action_capture_skips_frames_available_at_action_c
 }
 
 #[rstest]
-#[tokio::test]
 #[case("input_resumed")]
 #[case("target_restored")]
+#[tokio::test]
 async fn live_observation_transition_fence_skips_frames_cached_before_safe_resume(
     #[case] _transition: &str,
 ) {
@@ -507,4 +507,14 @@ fn live_observation_restart_drops_fences_from_the_previous_stream() {
     );
 
     assert_eq!(after_sequence, None);
+}
+
+fn live_capture_failure_disposition(
+    capture_error: ComputerUseError,
+    observation_availability: ComputerUseResult<()>,
+) -> CaptureFailureDisposition {
+    if let Err(desktop_error) = observation_availability {
+        return crate::live_observation::capture_failure_disposition(desktop_error);
+    }
+    crate::live_observation::capture_failure_disposition(capture_error)
 }

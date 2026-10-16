@@ -53,14 +53,26 @@ fn configure_build_identity() {
 }
 
 fn configure_windows_linker() {
+    println!("cargo:rerun-if-changed=windows.manifest");
+    if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
+        let manifest = std::path::PathBuf::from(
+            std::env::var_os("CARGO_MANIFEST_DIR").expect("Cargo manifest directory"),
+        )
+        .join("windows.manifest");
+        // Loader policy applies before main; runtime FreeConsole cannot prevent a flash.
+        // Older Windows ignores this policy and needs CREATE_NO_WINDOW at the launcher.
+        println!("cargo:rustc-link-arg-bin=dcc-cua=/MANIFEST:EMBED");
+        println!(
+            "cargo:rustc-link-arg-bin=dcc-cua=/MANIFESTINPUT:{}",
+            manifest.display()
+        );
+    }
     let argument = match std::env::var("CARGO_CFG_TARGET_ENV").as_deref() {
         Ok("msvc") => "/STACK:8388608",
         Ok("gnu") => "-Wl,--stack,8388608",
         _ => return,
     };
-    for binary in ["dcc-cua", "dcc-cua-background"] {
-        println!("cargo:rustc-link-arg-bin={binary}={argument}");
-    }
+    println!("cargo:rustc-link-arg-bin=dcc-cua={argument}");
 }
 
 fn configure_macos_loader() {
@@ -70,8 +82,6 @@ fn configure_macos_loader() {
     // scrubbed environment. Give both the Host and its worker deterministic
     // system and colocated-runtime lookup paths instead of relying on DYLD_*.
     for runtime_path in ["/usr/lib/swift", "@executable_path"] {
-        for binary in ["dcc-cua", "dcc-cua-background"] {
-            println!("cargo:rustc-link-arg-bin={binary}=-Wl,-rpath,{runtime_path}");
-        }
+        println!("cargo:rustc-link-arg-bin=dcc-cua=-Wl,-rpath,{runtime_path}");
     }
 }

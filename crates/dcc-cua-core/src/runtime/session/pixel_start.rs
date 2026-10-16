@@ -2,14 +2,19 @@ use super::*;
 
 impl ComputerUseSession {
     /// Start an exact-window observation session without initializing an
-    /// accessibility provider. This route is read-only until a later explicit
-    /// semantic session is opened and never widens the PID/HWND binding.
+    /// accessibility provider. Observation is read-only by default; callers
+    /// may explicitly activate this same exact target through the existing
+    /// native activation gates. The PID/HWND binding is never widened.
     pub async fn start_pixels_only(&mut self) -> ComputerUseResult<Value> {
-        #[cfg(not(windows))]
+        self.ensure_local_cleanup_reusable()?;
+        self.require_capture_preparation_settled()?;
+        #[cfg(not(any(windows, target_os = "linux")))]
         return Err(ComputerUseError::new(
             ComputerUseErrorCode::BackendUnavailable,
             "pixels-only exact native window capture is unavailable on this platform",
         ));
+        #[cfg(target_os = "linux")]
+        return self.start_linux_pixels().await;
         #[cfg(windows)]
         {
             if self.active {
