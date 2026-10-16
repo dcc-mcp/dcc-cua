@@ -1551,13 +1551,7 @@ async fn refresh_connection_session_states(sessions: &mut HashMap<String, HostSe
         {
             session.invalidate_observations();
             session.latest_preparation_image = None;
-            if !session.interrupted
-                && (session.allow_recording
-                    || session
-                        .task_authorization
-                        .as_ref()
-                        .is_some_and(|lease| lease.capture_preparation.is_some()))
-            {
+            if !session.interrupted {
                 session.interrupted = true;
                 // Cleanup remains legal after authorization ends. Join the
                 // original preparation/capture/recorder owners and retain evidence.

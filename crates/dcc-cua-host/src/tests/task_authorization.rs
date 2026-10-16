@@ -1632,21 +1632,36 @@ fn capture_preparation_registration(directory: &str) -> TrustedTaskAuthorization
 }
 
 #[rstest]
-#[case::revoked(false)]
-#[case::expired(true)]
+#[case::revoked_preparation(false, true)]
+#[case::expired_preparation(true, true)]
+#[case::revoked_live_observation(false, false)]
+#[case::expired_live_observation(true, false)]
 #[tokio::test]
-async fn ended_preparation_only_authorization_stops_its_host_session(#[case] expired: bool) {
+async fn ended_task_authorization_stops_its_host_session(
+    #[case] expired: bool,
+    #[case] capture_preparation: bool,
+) {
     let directory =
         std::env::temp_dir().join(format!("capture-preparation-ended-{}", Uuid::new_v4()));
     std::fs::create_dir(&directory).unwrap();
     #[cfg(not(windows))]
     let directory = directory.canonicalize().unwrap();
     let (issuer, authority) = trusted_task_authorization_broker();
-    let receipt = issuer
-        .register(capture_preparation_registration(
-            directory.to_str().unwrap(),
-        ))
-        .unwrap();
+    let mut registration = capture_preparation_registration(directory.to_str().unwrap());
+    if !capture_preparation {
+        registration.capture_preparation = None;
+        registration.allowed_actions.clear();
+        registration.allowed_host_methods = [
+            "get_window_state",
+            "live_observation_start",
+            "live_observation_state",
+            "live_observation_stop",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+    }
+    let receipt = issuer.register(registration).unwrap();
     let mut lease = issue_task_authorization(
         Some(authority.as_ref()),
         TaskAuthorizationBinding::window(
@@ -1683,7 +1698,8 @@ async fn ended_preparation_only_authorization_stops_its_host_session(#[case] exp
             session_id: "runtime-session-1".into(),
         });
     assert!(!host.allow_recording);
-    assert!(lease.capture_preparation.is_some());
+    host.allow_live_observation = !capture_preparation;
+    assert_eq!(lease.capture_preparation.is_some(), capture_preparation);
     if expired {
         lease.expires_at_unix_ms = unix_time_millis().saturating_sub(1);
     } else {
@@ -1698,7 +1714,7 @@ async fn ended_preparation_only_authorization_stops_its_host_session(#[case] exp
     let stopped = &sessions["session-1"];
     assert!(
         stopped.interrupted,
-        "ended preparation must stop without recording permission"
+        "ended task must stop without recording permission"
     );
     assert_eq!(stopped.session.status()["active"], false);
     assert!(stopped.latest_observation_id.is_none());
@@ -1714,6 +1730,34 @@ async fn ended_preparation_only_authorization_stops_its_host_session(#[case] exp
         1
     );
     std::fs::remove_dir(directory).unwrap();
+}
+
+#[rstest]
+#[case::unbound(false)]
+#[case::valid_trusted_lease(true)]
+#[tokio::test]
+async fn unchanged_task_authority_does_not_interrupt_a_host_session(#[case] trusted: bool) {
+    let channel = ObservationOnlyTestChannel::default();
+    let driver = ComputerUseDriver::from_test_remote_channel(Arc::new(channel.clone())).unwrap();
+    let mut host = cached_host_session(&driver);
+    host.latest_preparation_image =
+        Some(SharedImage::from_bytes(b"retained prepared pixels", "image/png").unwrap());
+    if trusted {
+        let (_issuer, authority, lease) = observation_only_lease().await;
+        host.capability = lease.window_capability.clone();
+        host.task_authorization = Some(lease);
+        host.task_authorization_host = Some(authority);
+    }
+    let mut sessions = HashMap::from([("session-1".into(), host)]);
+
+    refresh_connection_session_states(&mut sessions).await;
+
+    assert!(!sessions["session-1"].interrupted);
+    assert!(sessions["session-1"].latest_preparation_image.is_some());
+    assert_eq!(
+        channel.exchanges.load(std::sync::atomic::Ordering::Relaxed),
+        0
+    );
 }
 
 #[rstest]
