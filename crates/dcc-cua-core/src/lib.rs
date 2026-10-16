@@ -5,6 +5,7 @@
 //! actions, stop semantics, and auditable provenance.
 
 mod contracts;
+mod diagnostics_only;
 mod driver_factory;
 mod input_state;
 mod interactive_desktop;
@@ -20,6 +21,7 @@ mod window_target;
 mod windows_uia_fallback;
 
 pub use contracts::*;
+pub use diagnostics_only::diagnostics_only;
 pub use input_state::*;
 pub use private_worker::run_private_worker;
 #[cfg(target_os = "macos")]

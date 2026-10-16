@@ -59,6 +59,27 @@ pub(crate) fn create_embedded() -> Result<(Arc<CuaDriver>, bool), DriverError> {
         .map(|driver| (driver, UPSTREAM_CURSOR_RENDERER_ENABLED))
 }
 
+pub(crate) fn diagnostics_only_host_options() -> DriverHostOptions {
+    DriverHostOptions {
+        cursor: CursorConfig {
+            enabled: false,
+            ..CursorConfig::default()
+        },
+        host_owns_permission_ux: true,
+        host_bundle_id: None,
+        claude_code_compatibility: false,
+        prepare_desktop_environment: false,
+        register_host_tools: None,
+        authorization_host: None,
+        activity_observer: None,
+    }
+}
+
+pub(crate) fn create_diagnostics_only() -> Result<Arc<CuaDriver>, DriverError> {
+    // Do not prepare the process, install a theme, or register a cursor renderer.
+    CuaDriver::try_create_for_host(diagnostics_only_host_options())
+}
+
 pub(crate) fn create_external_process_termination() -> Result<(Arc<CuaDriver>, bool), DriverError> {
     prepare_platform_process();
     CuaDriver::try_create_configured_for_host(

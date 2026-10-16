@@ -77,6 +77,7 @@ const KNOWN_FLAG_NAMES: &[&str] = &[
     "--delay-ms",
     "--delivery-mode",
     "--diagnostics-dir",
+    "--diagnostics-only",
     "--duration-ms",
     "--element-index",
     "--element-token",
@@ -178,6 +179,33 @@ pub(super) fn reject_unknown_flags(flags: &[String]) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+pub(super) fn diagnostics_only_requested(command: &str, flags: &[String]) -> Result<bool, String> {
+    let flag_name = "--diagnostics-only";
+    let matches = flags
+        .iter()
+        .filter(|flag| flag.split('=').next() == Some(flag_name))
+        .collect::<Vec<_>>();
+    if command.split('=').next() != Some(flag_name) && matches.is_empty() {
+        return Ok(false);
+    }
+    if command != "doctor" {
+        return Err("--diagnostics-only is supported only by local doctor".into());
+    }
+    if matches.len() != 1 || matches[0] != flag_name {
+        return Err("--diagnostics-only must appear once without a value".into());
+    }
+    if has_flag(flags, "--endpoint") || has_flag(flags, "--spawn") {
+        return Err("--diagnostics-only cannot be combined with --endpoint or --spawn".into());
+    }
+    if flags
+        .iter()
+        .any(|flag| !matches!(flag.as_str(), "--diagnostics-only" | "--help" | "-h"))
+    {
+        return Err("--diagnostics-only accepts no additional probe or route arguments".into());
+    }
+    Ok(true)
 }
 
 pub(super) fn flag_value(flags: &[String], name: &str) -> Option<String> {
@@ -330,6 +358,7 @@ pub(super) fn print_help() -> std::io::Result<()> {
   clipboard-read --app APP|--pid PID|--window-id ID|--title TITLE [--include-text]
   clipboard-write --app APP|--pid PID|--window-id ID|--title TITLE --text TEXT|--image-path FILE|--file-path FILE
   doctor [--route full|visual|semantic] [--endpoint PATH|--spawn BINARY]
+  doctor --diagnostics-only        # local read-only context/static inventory; no permission helper or input-readiness test
   host [--stdio|--endpoint PATH] [--grant existing-profile]
 
 Host uses versioned big-endian JSON frames. Hello version 1 negotiates binary-frame or shared-memory snapshots and supports request_id correlation."#
@@ -367,3 +396,6 @@ pub(super) fn escalation_reason_help() -> String {
         "Escalation reasons: {values}. Use --escalation-detail NOTE for an optional audit note of at most {MAX_ESCALATION_DETAIL_CHARS} characters."
     )
 }
+
+#[cfg(test)]
+mod tests;

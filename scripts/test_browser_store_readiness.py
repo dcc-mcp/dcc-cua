@@ -1703,6 +1703,44 @@ jobs:
         )
         self.assertTrue((ROOT / "scripts" / "test_browser_store_readiness.py").is_file())
 
+    def test_ci_receipt_contract_requires_reviewed_hakari_version(self) -> None:
+        workflow = (ROOT / ".github" / "workflows" / "ci-checks.yml").read_text(
+            encoding="utf-8"
+        )
+        pinned_tool = "          tool: cargo-hakari@0.9.39"
+        self.assertEqual(1, workflow.count(pinned_tool))
+        for unreviewed_tool in ("cargo-hakari", "cargo-hakari@0.9.38"):
+            with self.subTest(tool=unreviewed_tool):
+                mutated = workflow.replace(
+                    pinned_tool, "          tool: " + unreviewed_tool, 1
+                )
+                self.assertNotEqual(workflow, mutated)
+                self.assertFalse(READINESS.audit_ci_contract(mutated)["valid"])
+
+    def test_ci_receipt_contract_requires_ready_for_review_event(self) -> None:
+        workflow = (ROOT / ".github" / "workflows" / "ci-checks.yml").read_text(
+            encoding="utf-8"
+        )
+        trigger = "    types: [opened, synchronize, reopened, ready_for_review]"
+        self.assertEqual(1, workflow.count(trigger))
+        mutated = workflow.replace(trigger, trigger.replace(", ready_for_review", ""), 1)
+        self.assertNotEqual(workflow, mutated)
+        result = READINESS.audit_ci_contract(mutated)
+        self.assertFalse(result["valid"])
+        self.assertIn("workflow_trigger_invalid", result["reasons"])
+
+    def test_ci_receipt_contract_rejects_unreviewed_pull_request_events(self) -> None:
+        workflow = (ROOT / ".github" / "workflows" / "ci-checks.yml").read_text(
+            encoding="utf-8"
+        )
+        trigger = "    types: [opened, synchronize, reopened, ready_for_review]"
+        self.assertEqual(1, workflow.count(trigger))
+        mutated = workflow.replace(trigger, trigger.replace("]", ", closed]"), 1)
+        self.assertNotEqual(workflow, mutated)
+        result = READINESS.audit_ci_contract(mutated)
+        self.assertFalse(result["valid"])
+        self.assertIn("workflow_trigger_invalid", result["reasons"])
+
     def test_ci_receipt_contract_reports_branch_requirement_only_when_observed(self) -> None:
         workflow = (ROOT / ".github" / "workflows" / "ci-checks.yml").read_text(
             encoding="utf-8"

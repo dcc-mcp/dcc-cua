@@ -21,6 +21,25 @@ pub(crate) fn diagnostic() -> Value {
     platform_managed_diagnostic()
 }
 
+pub(crate) fn diagnostic_read_only() -> Value {
+    #[cfg(windows)]
+    {
+        // Desktop context alone is not input admission. Probe both cursor APIs
+        // independently so a successful fallback cannot hide the first error.
+        let mut context = WindowsDesktopProbe::read(false).diagnostic();
+        context["input_ready"] = json!(false);
+        context["input_surface_ready"] = json!(false);
+        context["input_message"] = json!("Input readiness is not tested in diagnostics-only mode");
+        context["cursor_probes"] = windows_read_only_cursor_probes();
+        context
+    }
+    #[cfg(not(windows))]
+    json!({
+        "status": "not_run", "reason": "windows_desktop_context_unavailable_on_this_platform",
+        "input_ready": false, "input_surface_ready": false,
+    })
+}
+
 #[cfg(not(windows))]
 pub(crate) fn platform_managed_diagnostic() -> Value {
     json!({
@@ -249,14 +268,14 @@ pub(crate) fn require_input_available_from(report: &Value) -> ComputerUseResult<
 fn windows_input_surface() -> Result<(), String> {
     use windows_sys::Win32::{
         Foundation::POINT,
-        UI::WindowsAndMessaging::{CURSORINFO, GetCursorInfo, GetCursorPos},
+        UI::WindowsAndMessaging::{GetCursorInfo, GetCursorPos},
     };
 
     let mut point = POINT { x: 0, y: 0 };
     // SAFETY: `point` is valid for one synchronous Win32 output write.
     if unsafe { GetCursorPos(&raw mut point) } == 0 {
         let cursor_pos_error = std::io::Error::last_os_error();
-        let mut cursor_info = CURSORINFO::default();
+        let mut cursor_info = cursor_info_for_probe();
         // SAFETY: `cursor_info` is initialized with the ABI-required cbSize and
         // is valid for one synchronous Win32 output write. GetCursorInfo is a
         // read-only input-surface probe; it does not relax the desktop checks.
@@ -269,6 +288,54 @@ fn windows_input_surface() -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+#[cfg(windows)]
+fn cursor_info_for_probe() -> windows_sys::Win32::UI::WindowsAndMessaging::CURSORINFO {
+    use windows_sys::Win32::UI::WindowsAndMessaging::CURSORINFO;
+    CURSORINFO {
+        cbSize: std::mem::size_of::<CURSORINFO>() as u32,
+        ..CURSORINFO::default()
+    }
+}
+
+#[cfg(any(windows, test))]
+fn cursor_probe_result(stage: &str, result: std::io::Result<()>) -> Value {
+    match result {
+        Ok(()) => json!({"success": true, "status": "ok", "stage": stage}),
+        Err(error) => json!({
+            "success": false, "status": "failed", "stage": stage,
+            "message": error.to_string(), "io_kind": format!("{:?}", error.kind()),
+            "os_error": error.raw_os_error(),
+        }),
+    }
+}
+
+#[cfg(windows)]
+fn windows_read_only_cursor_probes() -> Value {
+    use windows_sys::Win32::{
+        Foundation::POINT,
+        UI::WindowsAndMessaging::{GetCursorInfo, GetCursorPos},
+    };
+    let mut point = POINT { x: 0, y: 0 };
+    // SAFETY: this is a synchronous read into a valid POINT; no input is injected.
+    let position = if unsafe { GetCursorPos(&raw mut point) } != 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    };
+    let mut info = cursor_info_for_probe();
+    // SAFETY: cbSize is initialized for this valid output buffer. This call only
+    // reads cursor information and does not change desktop or permission state.
+    let information = if unsafe { GetCursorInfo(&raw mut info) } != 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    };
+    json!({
+        "get_cursor_pos": cursor_probe_result("GetCursorPos", position),
+        "get_cursor_info": cursor_probe_result("GetCursorInfo", information),
+    })
 }
 
 #[cfg(windows)]
@@ -562,3 +629,6 @@ pub(crate) fn windows_diagnostic_base(
     }
     report
 }
+
+#[cfg(test)]
+mod tests;
