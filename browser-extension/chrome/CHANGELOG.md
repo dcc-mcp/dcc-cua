@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.4](https://github.com/dcc-mcp/dcc-cua/compare/dcc-cua-browser-extension-v0.2.3...dcc-cua-browser-extension-v0.2.4) (2026-10-16)
+
+
+### Bug Fixes
+
+* **ci:** use public npm tarballs for browser extension ([8c5782e](https://github.com/dcc-mcp/dcc-cua/commit/8c5782e29be7f8254f63aef7ac7748bc9afc9b1b))
+
 ## [0.2.3](https://github.com/dcc-mcp/dcc-cua/compare/dcc-cua-browser-extension-v0.2.2...dcc-cua-browser-extension-v0.2.3) (2026-10-13)
 
 
