@@ -10,7 +10,11 @@ use dcc_cua_host::{
 use serde_json::{Value, json};
 
 pub(crate) fn document() -> Value {
-    document_for_platform(cfg!(windows))
+    let mut document = document_for_platform(cfg!(windows));
+    if cfg!(target_os = "linux") {
+        document["runtime"]["exact_window_pixels"] = linux_exact_window_pixels();
+    }
+    document
 }
 
 pub(crate) fn document_for_platform(exact_window_pixels_available: bool) -> Value {
@@ -278,4 +282,23 @@ pub(crate) fn document_for_platform(exact_window_pixels_available: bool) -> Valu
         runtime.remove("native_capture_proof");
     }
     document
+}
+
+/// Deliberately narrower than Windows native control and recording.
+pub(crate) fn linux_exact_window_pixels() -> Value {
+    json!({
+        "availability":"linux_local_x11_non_composited",
+        "cli_flag":"--pixels-only",
+        "required_selectors":["--pid","--window-id"],
+        "read_only":true,
+        "input_available":false,
+        "activation_available":false,
+        "recording_available":false,
+        "accessibility_provider_started":false,
+        "whole_desktop_fallback":false,
+        "wayland_supported":false,
+        "pixel_format":"rectangular_unobscured_24bit_truecolor",
+        "identity_trust":"trusted_local_x11_server_and_same_user_clients",
+        "publication_fences":["process_id","process_start_ticks","executable","window_lifecycle","bounds","visibility","occlusion","fresh_get_image"],
+    })
 }

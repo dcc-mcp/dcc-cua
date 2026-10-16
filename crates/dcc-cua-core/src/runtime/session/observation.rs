@@ -106,13 +106,15 @@ impl ComputerUseSession {
         &mut self,
         capture_diagnostics: bool,
     ) -> ComputerUseResult<ComputerUseScreenshot> {
-        #[cfg(not(windows))]
+        #[cfg(not(any(windows, target_os = "linux")))]
         let _ = capture_diagnostics;
-        #[cfg(not(windows))]
+        #[cfg(not(any(windows, target_os = "linux")))]
         return Err(ComputerUseError::new(
             ComputerUseErrorCode::BackendUnavailable,
             "pixels-only exact native window capture is unavailable on this platform",
         ));
+        #[cfg(target_os = "linux")]
+        return self.screenshot_linux_pixels(capture_diagnostics).await;
         #[cfg(windows)]
         {
             self.ensure_active()?;
@@ -139,6 +141,10 @@ impl ComputerUseSession {
         max_elements: u32,
         max_depth: u32,
     ) -> ComputerUseResult<ComputerUseScreenshot> {
+        #[cfg(target_os = "linux")]
+        if self.pixel_observation_route == Some(PixelObservationRoute::ExplicitPixelsOnly) {
+            return self.screenshot_linux_pixels(false).await;
+        }
         self.ensure_active()?;
         self.require_capture_preparation_settled()?;
         let _banner_activity = self.begin_banner_activity(BannerActivity::Observing);
@@ -518,6 +524,8 @@ impl ComputerUseSession {
         &mut self,
         request: &ComputerUseLiveObservationStartRequest,
     ) -> ComputerUseResult<LiveObservationStartOutcome> {
+        #[cfg(target_os = "linux")]
+        self.require_not_linux_pixels()?;
         self.ensure_active()?;
         request.validate()?;
         self.ensure_local_cleanup_reusable()?;

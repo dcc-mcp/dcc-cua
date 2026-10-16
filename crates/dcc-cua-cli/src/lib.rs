@@ -315,6 +315,8 @@ async fn dispatch(arguments: Vec<String>) -> Result<(), Box<dyn std::error::Erro
         host_driver(&flags)?
     } else if external_termination_runtime_requested(&command, &flags) {
         ComputerUseDriver::create_external_process_termination_with_acknowledged_risk()?
+    } else if read_only_pixels_runtime_requested(&command, &flags)? {
+        ComputerUseDriver::create_read_only_pixels()?
     } else {
         ComputerUseDriver::create()?
     };

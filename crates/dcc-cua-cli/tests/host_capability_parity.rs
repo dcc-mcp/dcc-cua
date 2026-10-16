@@ -21,6 +21,14 @@ fn executable_manifest_matches_public_host_capabilities() {
     );
     assert_eq!(
         manifest["runtime"].get("exact_window_pixels").is_some(),
-        cfg!(windows)
+        cfg!(any(windows, target_os = "linux"))
     );
+    if cfg!(target_os = "linux") {
+        let pixels = &manifest["runtime"]["exact_window_pixels"];
+        assert_eq!(pixels["availability"], "linux_local_x11_non_composited");
+        assert_eq!(pixels["read_only"], true);
+        assert_eq!(pixels["input_available"], false);
+        assert_eq!(pixels["activation_available"], false);
+        assert_eq!(pixels["recording_available"], false);
+    }
 }

@@ -214,7 +214,11 @@ fn exact_source_semantic_snapshot_routing() {
     let source = format!(
         "#![allow(dead_code, unused_variables)]\nmod actual {{ {model}\n#[derive(Clone, Copy, Debug, PartialEq, Eq)]\n{route}\nimpl ComputerUseSession {{ {prefix} self.semantic_snapshot(&target, max_elements, max_depth) }} }} }}"
     )
-    .replace("#[cfg(windows)]", "");
+    // This model exercises Windows UIA routing on every test host. Keep
+    // Linux's independent X11 route excluded just as it is on Windows;
+    // its real implementation is covered by the Linux session tests.
+    .replace("#[cfg(windows)]", "")
+    .replace("#[cfg(target_os = \"linux\")]", "#[cfg(any())]");
     run_boundary(&source);
 }
 

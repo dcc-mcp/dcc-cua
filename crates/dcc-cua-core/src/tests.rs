@@ -481,6 +481,9 @@ fn host_runtime_uses_the_upstream_cursor_renderer_only_where_it_can_run() {
     assert!(options.prepare_desktop_environment);
 }
 
+#[cfg(target_os = "linux")]
+mod linux_pixels_driver;
+
 #[rstest]
 fn bundled_cursor_theme_matches_runtime_contract() {
     let theme = cursor_overlay::decode_theme(BUNDLED_CURSOR_THEME).expect("valid bundled theme");

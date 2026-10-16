@@ -1240,13 +1240,16 @@ dependencies = [
  "platform-macos",
  "png 0.17.16",
  "rstest",
+ "rustix",
  "serde",
  "serde_json",
  "sha2",
+ "socket2",
  "thiserror 2.0.19",
  "tokio",
  "uuid",
  "windows-sys 0.61.2",
+ "x11rb",
 ]
 
 [[package]]

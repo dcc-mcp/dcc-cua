@@ -2,7 +2,7 @@ use super::*;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum PixelObservationRoute {
-    #[cfg(any(windows, test))]
+    #[cfg(any(windows, target_os = "linux", test))]
     ExplicitPixelsOnly,
     AccessibilityUnavailableDegraded,
     AccessibilityTimeoutDegraded,
@@ -11,7 +11,7 @@ pub(super) enum PixelObservationRoute {
 impl PixelObservationRoute {
     pub(super) const fn observation_mode(self) -> &'static str {
         match self {
-            #[cfg(any(windows, test))]
+            #[cfg(any(windows, target_os = "linux", test))]
             Self::ExplicitPixelsOnly => "pixels_only",
             Self::AccessibilityUnavailableDegraded => "accessibility_unavailable_degraded",
             Self::AccessibilityTimeoutDegraded => "accessibility_timeout_degraded",

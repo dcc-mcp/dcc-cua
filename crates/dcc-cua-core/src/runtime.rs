@@ -27,6 +27,8 @@ fn map_showcase_error(error: dcc_cua_showcase::ShowcaseError) -> ComputerUseErro
 
 mod action_result;
 mod exact_capture;
+#[cfg(target_os = "linux")]
+mod linux_pixels;
 use exact_capture::*;
 #[cfg(windows)]
 pub(crate) use exact_capture::{
@@ -529,6 +531,26 @@ impl ComputerUseDriver {
         crate::driver_factory::create_embedded()
             .map(Self::from_driver)
             .map_err(|error| map_driver_error("create CUA runtime", error))
+    }
+
+    /// Create a short-lived Linux pixels-only runtime without desktop
+    /// preparation, accessibility startup, cursor overlays or theme writes.
+    /// Its native SDK registry is empty: only start_pixels_only's local X11
+    /// adapter can observe a window, and upstream tools cannot be dispatched.
+    /// Use a dedicated process: mixing this with a general CUA runtime is
+    /// refused for the process lifetime, including after runtime shutdown.
+    pub fn create_read_only_pixels() -> ComputerUseResult<Self> {
+        #[cfg(target_os = "linux")]
+        {
+            crate::driver_factory::create_read_only_pixels()
+                .map(Self::from_driver)
+                .map_err(|error| map_driver_error("create read-only X11 runtime", error))
+        }
+        #[cfg(not(target_os = "linux"))]
+        Err(ComputerUseError::new(
+            ComputerUseErrorCode::BackendUnavailable,
+            "read-only X11 runtime is available only on Linux",
+        ))
     }
 
     /// Create a short-lived runtime for terminating one externally launched
@@ -1446,6 +1468,8 @@ struct LiveObservationStartOutcome {
 enum UpstreamSessionState {
     Inactive,
     Active,
+    #[cfg(target_os = "linux")]
+    LinuxPixelsOnly,
     #[cfg(windows)]
     VisualOnly {
         reason: String,
@@ -1497,6 +1521,8 @@ pub struct ComputerUseSession {
     escalated: bool,
     pub(crate) uia_timeout_escalated: bool,
     pixel_observation_route: Option<PixelObservationRoute>,
+    #[cfg(target_os = "linux")]
+    linux_pixels: Option<linux_pixels::Handle>,
     #[cfg(feature = "test-support")]
     synthetic_test_session: bool,
 }
