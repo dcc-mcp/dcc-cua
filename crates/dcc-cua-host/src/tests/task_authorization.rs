@@ -18,6 +18,13 @@ struct ObservationOnlyTestChannel {
     exchanges: Arc<std::sync::atomic::AtomicUsize>,
 }
 
+pub(super) fn observation_only_test_driver()
+-> (ComputerUseDriver, Arc<std::sync::atomic::AtomicUsize>) {
+    let channel = ObservationOnlyTestChannel::default();
+    let driver = ComputerUseDriver::from_test_remote_channel(Arc::new(channel.clone())).unwrap();
+    (driver, channel.exchanges)
+}
+
 #[async_trait::async_trait]
 impl cua_driver_sdk::remote::DriverEnvelopeChannel for ObservationOnlyTestChannel {
     async fn negotiate(&self) -> Result<cua_driver_sdk::remote::DriverChannelCapabilities, String> {
@@ -1700,6 +1707,7 @@ async fn ended_task_authorization_stops_its_host_session(
     assert!(!host.allow_recording);
     host.allow_live_observation = !capture_preparation;
     assert_eq!(lease.capture_preparation.is_some(), capture_preparation);
+    host.capability = lease.window_capability.clone();
     if expired {
         lease.expires_at_unix_ms = unix_time_millis().saturating_sub(1);
     } else {
@@ -1723,6 +1731,24 @@ async fn ended_task_authorization_stops_its_host_session(
     assert_eq!(
         channel.exchanges.load(std::sync::atomic::Ordering::Relaxed),
         1
+    );
+    let error = authorized_session(
+        &mut sessions,
+        "session-1",
+        "grant-1",
+        &receipt.window_capability,
+    )
+    .await
+    .err()
+    .expect("ended task must refuse access after cleanup");
+    let expected = if expired {
+        HostProtocolErrorCode::TaskAuthorizationExpired
+    } else {
+        HostProtocolErrorCode::TaskAuthorizationRevoked
+    };
+    assert!(
+        matches!(&error, HostError::CodedProtocol { code, .. } if *code == expected),
+        "expected {expected:?} after cleanup, got {error:?}"
     );
     refresh_connection_session_states(&mut sessions).await;
     assert_eq!(
@@ -1754,6 +1780,16 @@ async fn unchanged_task_authority_does_not_interrupt_a_host_session(#[case] trus
 
     assert!(!sessions["session-1"].interrupted);
     assert!(sessions["session-1"].latest_preparation_image.is_some());
+    let capability = sessions["session-1"].capability.clone();
+    sessions.get_mut("session-1").unwrap().interrupted = true;
+    let error = authorized_session(&mut sessions, "session-1", "grant-1", &capability)
+        .await
+        .err()
+        .expect("an interrupted session must refuse access");
+    assert!(
+        matches!(&error, HostError::ComputerUse(error) if error.code == ComputerUseErrorCode::UserInterrupted),
+        "unchanged authority must retain the interruption error, got {error:?}"
+    );
     assert_eq!(
         channel.exchanges.load(std::sync::atomic::Ordering::Relaxed),
         0

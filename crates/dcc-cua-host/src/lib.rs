@@ -1871,12 +1871,12 @@ async fn authorized_session<'a>(
         )
         .into());
     }
-    ensure_session_not_interrupted(session).await?;
     crate::task_authorization::validate_active_task_authorization(
         session.task_authorization_host.as_deref(),
         session.task_authorization.as_ref(),
     )
     .await?;
+    ensure_session_not_interrupted(session).await?;
     session.mark_activity();
     Ok(session)
 }
