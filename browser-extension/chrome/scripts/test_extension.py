@@ -8,6 +8,7 @@ import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from urllib.parse import urlsplit
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -26,6 +27,26 @@ def json_file(path: Path) -> dict[str, object]:
 
 
 class ExtensionContractTests(unittest.TestCase):
+    def test_locked_tarballs_use_the_public_registry_with_integrity(self) -> None:
+        lock = json_file(ROOT / "package-lock.json")
+        packages = lock["packages"]
+        assert isinstance(packages, dict)
+        resolved = {
+            name: package
+            for name, package in packages.items()
+            if "resolved" in package
+        }
+        self.assertTrue(resolved)
+        for name, package in resolved.items():
+            with self.subTest(package=name):
+                url = urlsplit(package["resolved"])
+                self.assertEqual("https", url.scheme)
+                self.assertEqual("registry.npmjs.org", url.netloc)
+                self.assertFalse(url.query)
+                self.assertFalse(url.fragment)
+                self.assertTrue(url.path.endswith(".tgz"))
+                self.assertTrue(package.get("integrity", "").startswith("sha512-"))
+
     def test_release_please_uses_independent_components(self) -> None:
         config = json_file(REPOSITORY_ROOT / "release-please-config.json")
         versions = json_file(REPOSITORY_ROOT / ".release-please-manifest.json")
