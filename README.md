@@ -1081,6 +1081,10 @@ and observed or inferred close reasons without starting a Host or touching UI.
 Older bridges and chat IDs not supplied by clients remain unknown. See
 [connection diagnostics and lifecycle boundaries](docs/design/mcp-connection-diagnostics.md).
 
+For local IPC versus stdio, native readiness, and the limits of remote SDK
+building blocks, see [desktop connections](docs/desktop-connections.md).
+`--endpoint` accepts a local pipe/socket path, not a remote service URL.
+
 Embeddings can construct that broker with
 `dcc_cua_host::trusted_task_authorization_broker`. It returns two separate
 capabilities: a move-only `TrustedTaskAuthorizationIssuer` retained by the

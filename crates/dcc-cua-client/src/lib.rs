@@ -611,7 +611,8 @@ impl HostClient {
             .await
     }
 
-    /// Connect to an endpoint and complete the mandatory Host handshake.
+    /// Connect to a local named-pipe or Unix-socket endpoint and complete the
+    /// mandatory Host handshake. Network URLs are not supported.
     pub async fn connect(
         endpoint: impl Into<String>,
         client_name: impl Into<String>,
@@ -1385,6 +1386,7 @@ fn frame_error(error: FrameError) -> HostClientError {
 }
 
 async fn connect_endpoint(endpoint: &str) -> HostClientResult<BoxedHostStream> {
+    validate_endpoint_transport(endpoint)?;
     #[cfg(windows)]
     {
         let stream = tokio::net::windows::named_pipe::ClientOptions::new().open(endpoint)?;
@@ -1402,6 +1404,30 @@ async fn connect_endpoint(endpoint: &str) -> HostClientResult<BoxedHostStream> {
             "local endpoint transport is unsupported on this platform".into(),
         ))
     }
+}
+
+fn validate_endpoint_transport(endpoint: &str) -> std::io::Result<()> {
+    let is_url = endpoint.split_once(':').is_some_and(|(scheme, rest)| {
+        // Keep drive paths and relative Unix names such as `dcc-cua:dev.sock`
+        // under the existing local-path handling. Hierarchical URLs also have
+        // single-slash forms, for example `file:/tmp/host.sock`.
+        let drive_path = scheme.len() == 1 && rest.starts_with(['/', '\\']);
+        !drive_path
+            && rest.starts_with('/')
+            && scheme.starts_with(|character: char| character.is_ascii_alphabetic())
+            && scheme.chars().all(|character| {
+                character.is_ascii_alphanumeric() || matches!(character, '+' | '-' | '.')
+            })
+    });
+    if is_url {
+        // Do not echo the endpoint: userinfo, query strings and paths may carry
+        // credentials. Reject before opening a local transport or sending hello.
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Host endpoint must be a local named-pipe or Unix-socket path; URL transports are not supported. Connecting a remote desktop requires a separately supported, authorized transport; changing the endpoint cannot grant desktop access.",
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(windows)]

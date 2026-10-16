@@ -27,6 +27,9 @@ Computer Use Automation 运行时和命令行工具，支持 Windows、Linux 和
 > 本文帮助中文用户完成安装、Profile 选择和常用控制。完整 CLI 参数、Host IPC
 > 方法和协议细节以[英文 README](README.md)为准；命令、字段名和稳定 ID 不翻译。
 
+本地 IPC、stdio、桌面权限与远程接入的边界见[桌面连接说明](docs/desktop-connections.md)。
+`--endpoint` 接受本地管道或 socket 路径，不接受远程服务 URL；MCP 握手成功不代表桌面已可控。
+
 ## 安全契约
 
 - 所有窗口操作必须绑定精确的 PID、窗口 ID 和标题范围，Agent 不能扩大目标。

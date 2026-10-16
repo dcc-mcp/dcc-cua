@@ -81,6 +81,61 @@ fn default_endpoint_uses_the_shared_protocol_contract() {
 }
 
 #[rstest]
+#[case("http://127.0.0.1:3211")]
+#[case("https://example.invalid/mcp")]
+#[case("WSS://example.invalid/desktop")]
+#[case("tcp://[::1]:3211")]
+#[case("ssh://example.invalid")]
+#[case("file:///tmp/dcc-cua.sock")]
+#[case("file:/tmp/dcc-cua.sock")]
+#[case("https:/example.invalid/mcp")]
+#[case("custom+v1.2-test://example.invalid")]
+fn url_endpoint_is_rejected_without_echoing_its_value(#[case] endpoint: &str) {
+    let error = validate_endpoint_transport(endpoint).unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+    assert!(
+        error
+            .to_string()
+            .contains("URL transports are not supported")
+    );
+    assert!(!error.to_string().contains(endpoint));
+}
+
+#[rstest]
+#[case("/tmp/dcc-cua.sock")]
+#[case("dcc-cua.sock")]
+#[case("/tmp/with space/dcc-cua.sock")]
+#[case("/tmp/https://literal.sock")]
+#[case(r"\\.\pipe\dcc-cua-test")]
+#[case(r"C:\local\dcc-cua.sock")]
+#[case("C:/local/dcc-cua.sock")]
+#[case("C://local/dcc-cua.sock")]
+#[case("C:relative.sock")]
+#[case("dcc-cua:dev.sock")]
+fn local_endpoint_paths_keep_the_existing_transport_validation(#[case] endpoint: &str) {
+    // Syntax acceptance is not a successful connection or a permission check.
+    assert!(validate_endpoint_transport(endpoint).is_ok());
+}
+
+#[rstest]
+#[tokio::test]
+async fn public_connect_rejects_url_before_transport_or_handshake() {
+    let endpoint = "https://fake-user:fake-secret@example.invalid/mcp?token=fake-token";
+    let error = HostClient::connect(endpoint, "endpoint-contract-test")
+        .await
+        .expect_err("URL must not reach a local socket or the Host handshake");
+    let HostClientError::Io(error) = error else {
+        panic!("expected an invalid-input transport error");
+    };
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+    let message = error.to_string();
+    assert!(message.contains("URL transports are not supported"));
+    for private_part in ["fake-user", "fake-secret", "example.invalid", "fake-token"] {
+        assert!(!message.contains(private_part));
+    }
+}
+
+#[rstest]
 fn live_observation_state_is_pipeline_safe() {
     assert!(is_pipeline_safe_method("live_observation_state"));
     assert!(!is_pipeline_safe_method("live_observation_start"));
