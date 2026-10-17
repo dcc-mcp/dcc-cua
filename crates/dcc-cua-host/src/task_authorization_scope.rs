@@ -101,6 +101,24 @@ pub(crate) fn validate_grant_against_task_authorization(
             "trusted native recording output cannot authorize a semantic trajectory session",
         ));
     }
+    if lease
+        .allowed_actions
+        .iter()
+        .any(crate::TrustedTaskActionScope::is_native_menu_dismiss)
+        && (grant.observation_mode != crate::TaskObservationMode::PixelsOnly
+            || !["get_window_state", "change_window_state"]
+                .iter()
+                .all(|required| {
+                    lease
+                        .allowed_host_methods
+                        .iter()
+                        .any(|method| method == required)
+                }))
+    {
+        return Err(browser_scope_denied(
+            "dismiss_menu requires explicit pixels_only and its native state read and change methods",
+        ));
+    }
     if grant.observation_mode == crate::TaskObservationMode::PixelsOnly {
         let trusted_raw_input = lease
             .allowed_actions
@@ -110,6 +128,7 @@ pub(crate) fn validate_grant_against_task_authorization(
             || lease.allowed_actions.iter().any(|scope| {
                 !scope.is_window_minimize()
                     && !scope.is_window_frame()
+                    && !scope.is_native_menu_dismiss()
                     && !scope.is_capture_preparation()
                     && !scope.is_pixels_input()
             })

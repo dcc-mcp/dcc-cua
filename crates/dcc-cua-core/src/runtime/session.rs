@@ -100,6 +100,8 @@ impl ComputerUseSession {
             #[cfg(windows)]
             native_frame_metadata: None,
             #[cfg(windows)]
+            native_menu_metadata: None,
+            #[cfg(windows)]
             capture_preparation: None,
             action_evidence_epoch: ActionEvidenceEpoch::default(),
             live_observation: None,
@@ -1050,6 +1052,7 @@ impl ComputerUseSession {
         #[cfg(windows)]
         {
             self.native_frame_metadata = None;
+            self.native_menu_metadata = None;
         }
         self.action_evidence_epoch = self.action_evidence_epoch.advanced();
         if let Some(fence) = self
@@ -1692,6 +1695,7 @@ impl ComputerUseSession {
         #[cfg(windows)]
         {
             self.native_frame_metadata = None;
+            self.native_menu_metadata = None;
             #[cfg(feature = "test-support")]
             if self.synthetic_test_session {
                 return Err(ComputerUseError::new(
@@ -1721,6 +1725,7 @@ impl ComputerUseSession {
         #[cfg(windows)]
         {
             self.native_frame_metadata = None;
+            self.native_menu_metadata = None;
         }
         self.ensure_active()?;
         #[cfg(all(windows, feature = "test-support"))]

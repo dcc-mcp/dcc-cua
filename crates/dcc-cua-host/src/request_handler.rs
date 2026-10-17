@@ -4,6 +4,7 @@ use zeroize::Zeroize;
 mod capture_preparation;
 mod confirmation_evidence;
 mod evidence_epoch;
+pub(crate) mod native_menu;
 mod session_helpers;
 pub(super) use capture_preparation::passive_preparation_snapshot_response;
 pub(crate) use confirmation_evidence::*;
@@ -939,7 +940,9 @@ async fn handle_request_inner(
             let host =
                 authorized_session(sessions, &session_id, &task_grant_id, &window_capability)
                     .await?;
-            let state = if host.observation_mode == crate::TaskObservationMode::PixelsOnly {
+            let state = if host.require_native_menu_dismiss_grant(&session_id).is_ok() {
+                host.session.native_window_state_for_menu_dismiss().await
+            } else if host.observation_mode == crate::TaskObservationMode::PixelsOnly {
                 host.session.native_window_state_for_frame().await
             } else {
                 host.session.window_state().await
@@ -955,10 +958,22 @@ async fn handle_request_inner(
             task_grant_id,
             window_capability,
             operation,
+            window_state_id,
         } => {
+            let mutation_generation = interrupt_generation();
             let host =
                 authorized_session(sessions, &session_id, &task_grant_id, &window_capability)
                     .await?;
+            if matches!(operation, WindowOperation::DismissMenu) {
+                return native_menu::dismiss_menu(
+                    host,
+                    &session_id,
+                    window_state_id.as_deref(),
+                    mutation_generation,
+                )
+                .await;
+            }
+            native_menu::validate_other_operation(host, &operation, window_state_id.as_deref())?;
             let _input_turn = RAW_INPUT_QUEUE.lock().await;
             let (operation, result) = match operation {
                 WindowOperation::Activate => {
@@ -1007,6 +1022,9 @@ async fn handle_request_inner(
                         ),
                         None,
                     ));
+                }
+                WindowOperation::DismissMenu => {
+                    unreachable!("dismiss_menu has its purpose-bound dispatch above")
                 }
             };
             let state = host.session.window_state().await;

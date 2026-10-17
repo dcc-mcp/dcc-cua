@@ -225,6 +225,16 @@ pub(crate) fn document_for_platform(exact_window_pixels_available: bool) -> Valu
         "runtime": {
             "backend": "cua-driver-sdk",
             "separate_driver_required": false,
+            "native_menu_dismiss": {
+                "availability":"windows", "host_method":"change_window_state", "operation":"dismiss_menu",
+                "observation_mode":"pixels_only", "action_scope":{"action":"dismiss_menu","input_kind":"window_state","secret_input":false,"authorization_category":"window_state"},
+                "state_method":"get_window_state", "token_field":"menu_dismiss_window_state_id", "request_token_field":"window_state_id",
+                "token_max_age_ms":5000, "one_use":true, "frame_token_accepted":false,
+                "native_target":"unique_active_standard_popup_menu_and_same_thread_menu_owner",
+                "dispatch":"single_bounded_WM_CANCELMODE", "activation":false, "input_sent":false,
+                "confirmation":["popup_hidden_or_gone","menu_inactive","owner_alive"],
+                "unconfirmed_after_dispatch":"completion_unknown_no_blind_retry", "fresh_observation_required":true,
+            },
             "native_capture_proof": {
                 "availability": "windows",
                 "cli_command": "capture-proof",
@@ -281,6 +291,7 @@ pub(crate) fn document_for_platform(exact_window_pixels_available: bool) -> Valu
             .expect("manifest runtime is an object");
         runtime.remove("exact_window_pixels");
         runtime.remove("native_capture_proof");
+        runtime.remove("native_menu_dismiss");
     }
     document
 }

@@ -137,6 +137,18 @@ pub(super) fn native_frame_lease_matches_binding(
 }
 
 impl HostSession {
+    pub(super) fn require_native_menu_dismiss_grant(
+        &self,
+        session_id: &str,
+    ) -> Result<u64, crate::HostError> {
+        self.bound_task_authorization(session_id, "change_window_state")
+            .filter(|lease| self.observation_mode == crate::TaskObservationMode::PixelsOnly
+                && lease.allowed_host_methods.iter().any(|method| method == "get_window_state")
+                && lease.allowed_actions.iter().any(crate::TrustedTaskActionScope::is_native_menu_dismiss))
+            .map(|lease| lease.expires_at_unix_ms)
+            .ok_or_else(|| crate::HostError::coded_protocol(crate::HostProtocolErrorCode::TaskAuthorizationDenied,
+                "dismiss_menu requires its exact trusted pixels_only window_state/dismiss_menu scope and native state read method"))
+    }
     pub(super) fn require_capture_preparation_grant(
         &self,
         session_id: &str,
@@ -507,6 +519,25 @@ impl HostSession {
     }
 
     pub(super) fn observe_target_state(&mut self, state: &Value) -> bool {
+        #[cfg(windows)]
+        if let Some(menu_id) = state
+            .get("menu_dismiss_window_state_id")
+            .and_then(Value::as_str)
+        {
+            let transitioned = crate::session_events::refresh_target_availability(
+                &mut self.input_events,
+                ComputerUseTargetAvailability::from_window_state(state),
+            );
+            if transitioned {
+                self.session
+                    .invalidate_action_observations_preserving_native_menu_state(
+                        menu_id,
+                        state.get("window_state_id").and_then(Value::as_str),
+                    );
+                self.synchronize_action_evidence_epoch();
+            }
+            return transitioned;
+        }
         #[cfg(windows)]
         if let Some(state_id) = state.get("window_state_id").and_then(Value::as_str) {
             let transitioned = crate::session_events::refresh_target_availability(

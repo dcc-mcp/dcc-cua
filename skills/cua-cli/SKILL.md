@@ -138,6 +138,39 @@ typed route cannot cover.
    target that cannot be represented by an exact window. Keep the scope and
    coordinate source explicit.
 
+For a Windows standard native popup menu (`#32768`) without accessible menu
+items, the public MCP task route can cancel that exact active popup without
+keyboard input or activation. Start an exact `window` / `pixels_only` task with
+`allowed_methods=["get_window_state","change_window_state"]` and the independent
+action scope
+`{"action":"dismiss_menu","input_kind":"window_state","secret_input":false,"authorization_category":"window_state"}`.
+This scope permits only `dismiss_menu` in `change_window_state`; it does not
+grant activation, restoration, application close, raw input, or frame movement.
+
+Call `get_window_state` with empty parameters, then copy the returned
+`state.menu_dismiss_window_state_id` into
+`change_window_state` parameters
+`{"operation":"dismiss_menu","window_state_id":"<menu token>"}`. The token
+is session-bound, purpose-bound, one-use, and expires after five seconds.
+Ordinary `window_state_id` frame tokens and snapshot observation IDs cannot
+authorize this operation. Reading an ordinary or inactive window cannot mint a
+menu token and sends no cancellation. Never guess another owner or target.
+
+The native proof requires one unique active standard popup and its exact
+same-process, same-thread menu owner from native GUI thread metadata. The
+operation sends at most one bounded standard `WM_CANCELMODE` to that owner,
+without selecting a menu item. A zero native message result can be normal;
+delivery alone is not confirmation. Confirmed success requires all three
+native readbacks: `popup_hidden_or_gone=true`, `menu_inactive=true`, and
+`owner_alive=true`. This never claims that the application closed.
+
+A pre-dispatch refusal reports `action_attempted=false` and known completion.
+Any failure after dispatch reports `action_attempted=true`,
+`completion=unknown`, and `effect_unknown=true`; do not blindly retry or call
+that success. Both cases report no keyboard/mouse input and consume prior
+metadata and action observations. Reobserve and explicitly rebind when the
+popup is gone; the route never follows a replacement popup or owner.
+
 For fast visual loops on Windows, keep one `host-jsonl` connection open, grant
 `allow_live_observation: true` in `open_session`, then send
 `live_observation_start` with a `params.request` payload of

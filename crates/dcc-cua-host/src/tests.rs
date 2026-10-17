@@ -1453,6 +1453,7 @@ fn restore_activate_is_an_explicit_exact_session_scoped_request() {
             task_grant_id,
             window_capability,
             operation: WindowOperation::RestoreActivate,
+            window_state_id: None,
         } if session_id == "session-1"
             && task_grant_id == "grant-1"
             && window_capability == "capability-1"
