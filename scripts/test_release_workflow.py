@@ -39,7 +39,7 @@ RELEASE_PLEASE_ACTION = (
     "googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7"
 )
 CI_EXECUTABLE_SURFACE_SHA256 = (
-    "4d7212f3aa3701891e900047d114b0d40e35b3bca236c6af02caa9bf7baf72ae"
+    "5dddd5215d5ab1933717d1b8455d8e7acb9f0cb8b54d06a3a1b61fffcc4bd443"
 )
 
 
@@ -347,7 +347,7 @@ class ReleaseWorkflowTests(unittest.TestCase):
         checkout = attach_assets.index(CHECKOUT_ACTION)
         download = attach_assets.index(DOWNLOAD_ACTION)
         verify = attach_assets.index("scripts/release_integrity.py verify-provenance")
-        upload = attach_assets.index("gh release upload")
+        upload = attach_assets.index("scripts/publish_verified_release.py")
         self.assertLess(checkout, download)
         self.assertLess(download, verify)
         self.assertLess(verify, upload)
@@ -1164,7 +1164,6 @@ class ReleaseWorkflowTests(unittest.TestCase):
             "steps.existing_release.outputs.extension_tag_name || steps.recovery.outputs.extension_tag_name",
             workflow,
         )
-        self.assertIn("IsNullOrWhiteSpace($env:EXTENSION_TAG)", workflow)
         for line in workflow.splitlines():
             if "EXPECTED_HEAD_SHA:" in line:
                 self.assertEqual(line.strip(), "EXPECTED_HEAD_SHA: ${{ github.sha }}")
@@ -1173,59 +1172,37 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertIn(
             "ref: ${{ needs.release-please.outputs.extension_source_sha }}", workflow
         )
-        self.assertEqual(workflow.count('--workflow-head-sha "$GITHUB_SHA"'), 3)
-        self.assertEqual(workflow.count("path: .release-tools"), 2)
+        self.assertEqual(workflow.count('--workflow-head-sha "$GITHUB_SHA"'), 4)
+        self.assertEqual(workflow.count("path: .release-tools"), 3)
 
-    def test_extension_release_cannot_replace_native_latest(self):
+    def test_only_verified_public_assets_can_become_stable_latest(self):
         workflow = WORKFLOW.read_text(encoding="utf-8")
-
+        config = json.loads((ROOT / "release-please-config.json").read_text(encoding="utf-8"))
+        self.assertIs(config["draft"], True)
+        self.assertIs(config["force-tag-creation"], True)
+        for package in config["packages"].values():
+            self.assertNotIn("draft", package)
+            self.assertNotIn("force-tag-creation", package)
         self.assertIn("group: release-${{ github.repository }}", workflow)
-        self.assertNotIn("group: release-${{ github.ref }}", workflow)
-        self.assertIn("Keep the native runtime release Latest", workflow)
-        self.assertIn(
-            "steps.release.outputs['browser-extension/chrome--release_created'] == 'true'",
-            workflow,
-        )
-        self.assertIn(
-            'gh release edit "$env:EXTENSION_TAG" --repo "$env:GITHUB_REPOSITORY" --latest=false',
-            workflow,
-        )
-        self.assertIn(
-            'gh release edit $nativeTag --repo "$env:GITHUB_REPOSITORY" --latest',
-            workflow,
-        )
-        self.assertIn("repository Latest release is not the native runtime", workflow)
-
-        release_job = workflow.index("  release-please:")
-        checkout = workflow.index(f"- uses: {CHECKOUT_ACTION}", release_job)
-        preexisting_guard = workflow.index(
-            "Refuse pre-existing release identities", checkout
-        )
-        release_action = workflow.index(RELEASE_PLEASE_ACTION, preexisting_guard)
-        protection = workflow.index("Keep the native runtime release Latest")
-        checkout_section = workflow[checkout:protection]
-        self.assertIn("ref: ${{ github.sha }}", checkout_section)
-
-        native_exists = workflow.index("gh release view $nativeTag", protection)
-        native_latest = workflow.index("gh release edit $nativeTag", native_exists)
-        extension_excluded = workflow.index(
-            'gh release edit "$env:EXTENSION_TAG"', native_latest
-        )
-        final_readback = workflow.index(
-            "$latestJson = gh release view", extension_excluded
-        )
-        final_assertion = workflow.index(
-            "$latest.tagName -ne $nativeTag", final_readback
-        )
-        self.assertLess(checkout, preexisting_guard)
-        self.assertLess(preexisting_guard, release_action)
-        self.assertLess(release_action, protection)
-        self.assertLess(native_exists, native_latest)
-        self.assertLess(native_latest, extension_excluded)
-        self.assertLess(extension_excluded, final_readback)
-        self.assertLess(final_readback, final_assertion)
-        protection_section = workflow[protection:final_assertion]
-        self.assertEqual(protection_section.count("$LASTEXITCODE -ne 0"), 4)
+        self.assertNotIn("gh release edit", workflow)
+        self.assertNotIn("gh release upload", workflow)
+        self.assertNotIn("--clobber", workflow)
+        for component, job, endjob in (
+            ("native", "attach-assets", "package-browser-extension"),
+            ("extension", "attach-browser-extension-assets", "publish-chrome-web-store"),
+        ):
+            section = workflow[workflow.index(f"  {job}:"):workflow.index(f"  {endjob}:")]
+            self.assertIn("--component " + component, section)
+            self.assertIn("--workflow-head-sha \"$GITHUB_SHA\"", section)
+            self.assertIn("ref: ${{ github.sha }}", section)
+            self.assertIn("path: .release-tools", section)
+            self.assertIn(".release-tools/scripts/publish_verified_release.py", section)
+            self.assertIn("--evidence", section)
+            self.assertIn("if: always()", section)
+            self.assertIn("if-no-files-found: ignore", section)
+            self.assertLess(section.index("verify-extract"), section.index("publish_verified_release.py"))
+        self.assertIn("scripts.test_publish_verified_release", workflow)
+        self.assertIn("scripts.test_publish_verified_release", CI_WORKFLOW.read_text(encoding="utf-8"))
 
     def test_release_reuses_identity_when_tag_and_release_match_current_sha(self):
         workflow = WORKFLOW.read_text(encoding="utf-8")

@@ -4,6 +4,8 @@
   "release-type": "simple",
   "include-component-in-tag": false,
   "separate-pull-requests": true,
+  "draft": true,
+  "force-tag-creation": true,
   "packages": {
     ".": {
       "release-type": "simple",

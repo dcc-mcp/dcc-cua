@@ -32,6 +32,7 @@ jobs:
           $config = Get-Content release-please-config.json -Raw | ConvertFrom-Json
           $manifest = Get-Content .release-please-manifest.json -Raw | ConvertFrom-Json
           if ($config.'release-type' -ne 'simple') { throw 'release-type must use the root release anchor' }
+          if ($config.draft -ne $true -or $config.'force-tag-creation' -ne $true) { throw 'releases must start as drafts with immutable tags' }
           if ($config.'separate-pull-requests' -ne $true) { throw 'release components must use separate pull requests' }
           if ($config.packages.'.'.component -ne 'dcc-cua') { throw 'unexpected release component' }
           if ($config.packages.'browser-extension/chrome'.component -ne 'dcc-cua-browser-extension') { throw 'unexpected browser extension component' }
@@ -49,7 +50,7 @@ jobs:
         with:
           toolchain: 1.95.0
       - run: cargo metadata --locked --no-deps --format-version 1
-      - run: python -B -m unittest scripts.test_release_workflow scripts.test_release_integrity scripts.test_verify_release_assets scripts.test_verify_final_archive scripts.test_verify_uploaded_artifact scripts.test_select_ci_source_sha scripts.test_refresh_release_please_prs scripts.test_resolve_release_recovery
+      - run: python -B -m unittest scripts.test_release_workflow scripts.test_release_integrity scripts.test_verify_release_assets scripts.test_verify_final_archive scripts.test_verify_uploaded_artifact scripts.test_select_ci_source_sha scripts.test_refresh_release_please_prs scripts.test_resolve_release_recovery scripts.test_publish_verified_release
 
   release-please:
     needs: validate
@@ -179,36 +180,6 @@ jobs:
           token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
-      - name: Keep the native runtime release Latest
-        if: steps.release.outputs['browser-extension/chrome--release_created'] == 'true' || steps.existing_release.outputs.extension_release_created == 'true' || steps.recovery.outputs.extension_release_created == 'true' || steps.recovery.outputs.release_created == 'true'
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          EXTENSION_CREATED: ${{ steps.release.outputs['browser-extension/chrome--release_created'] == 'true' || steps.existing_release.outputs.extension_release_created == 'true' || steps.recovery.outputs.extension_release_created == 'true' }}
-          EXTENSION_TAG: ${{ steps.release.outputs['browser-extension/chrome--tag_name'] || steps.existing_release.outputs.extension_tag_name || steps.recovery.outputs.extension_tag_name }}
-        run: |
-          if ($env:EXTENSION_CREATED -eq 'true' -and [string]::IsNullOrWhiteSpace($env:EXTENSION_TAG)) {
-            throw 'resolved extension release tag is missing'
-          }
-          $nativeVersion = (Get-Content version.txt -Raw).Trim()
-          if ($nativeVersion -notmatch '^\d+\.\d+\.\d+$') {
-            throw 'native runtime version is not valid semver'
-          }
-          $nativeTag = "v$nativeVersion"
-          gh release view $nativeTag --repo "$env:GITHUB_REPOSITORY" --json tagName | Out-Null
-          if ($LASTEXITCODE -ne 0) { throw "native runtime release $nativeTag does not exist" }
-          gh release edit $nativeTag --repo "$env:GITHUB_REPOSITORY" --latest
-          if ($LASTEXITCODE -ne 0) { throw "cannot mark native runtime release $nativeTag Latest" }
-          if ($env:EXTENSION_CREATED -eq 'true') {
-            gh release edit "$env:EXTENSION_TAG" --repo "$env:GITHUB_REPOSITORY" --latest=false
-            if ($LASTEXITCODE -ne 0) { throw 'cannot exclude extension release from Latest' }
-          }
-          $latestJson = gh release view --repo "$env:GITHUB_REPOSITORY" --json tagName
-          if ($LASTEXITCODE -ne 0) { throw 'cannot read repository Latest release' }
-          $latest = $latestJson | ConvertFrom-Json
-          if ($latest.tagName -ne $nativeTag) {
-            throw 'repository Latest release is not the native runtime'
-          }
       - name: Refresh independent release PRs from current main
         if: github.event_name != 'workflow_dispatch'
         shell: pwsh
@@ -561,24 +532,7 @@ jobs:
             --source-sha "$SOURCE_SHA" \
             --release-target-sha "$SOURCE_SHA" \
             --provenance dist/dcc-cua-release-provenance-v1.json
-      - name: Refuse existing native release assets
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG_NAME: ${{ needs.release-please.outputs.tag_name }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          asset_count="$(gh release view "$TAG_NAME" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets | length')"
-          if [ "$asset_count" -ne 0 ]; then
-            echo "native release already contains assets" >&2
-            exit 1
-          fi
-      - name: Attach release archives
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG_NAME: ${{ needs.release-please.outputs.tag_name }}
-        run: gh release upload "$TAG_NAME" dist/* --repo "$GITHUB_REPOSITORY"
-      - name: Verify published native release immutability
+      - name: Publish verified native assets before stable visibility
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SOURCE_SHA: ${{ needs.release-please.outputs.source_sha }}
@@ -586,22 +540,24 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          gh release view "$TAG_NAME" \
-            --repo "$GITHUB_REPOSITORY" \
-            --json tagName,targetCommitish,assets \
-            > "$RUNNER_TEMP/published-native-release.json"
-          latest_tag="$(
-            gh release view --repo "$GITHUB_REPOSITORY" \
-              --json tagName --jq .tagName
-          )"
-          python -B .release-tools/scripts/release_integrity.py verify-published-native \
-            --workflow-head-sha "$GITHUB_SHA" \
-            --metadata "$RUNNER_TEMP/published-native-release.json" \
+          python -B .release-tools/scripts/publish_verified_release.py \
+            --component native \
+            --repository "$GITHUB_REPOSITORY" \
             --directory dist \
             --version "${TAG_NAME#v}" \
             --tag "$TAG_NAME" \
             --source-sha "$SOURCE_SHA" \
-            --actual-latest-tag "$latest_tag"
+            --workflow-head-sha "$GITHUB_SHA" \
+            --native-tag "$TAG_NAME" \
+            --evidence "$RUNNER_TEMP/native-publication-${GITHUB_RUN_ATTEMPT}.jsonl"
+      - name: Retain native publication evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: native-publication-evidence-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/native-publication-${{ github.run_attempt }}.jsonl
+          if-no-files-found: ignore
+          retention-days: 7
 
   package-browser-extension:
     needs: release-please
@@ -693,6 +649,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ needs.release-please.outputs.extension_source_sha }}
+      - name: Checkout release verification tools
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          path: .release-tools
+          persist-credentials: false
       - name: Verify immutable browser extension artifact identity
         env:
           ARTIFACT_ID: ${{ needs.package-browser-extension.outputs.artifact_id }}
@@ -741,49 +703,33 @@ jobs:
           python -B scripts/release_integrity.py verify-extension-assets \
             --directory dist \
             --version "$EXTENSION_VERSION"
-      - name: Refuse existing browser extension release assets
+      - name: Publish verified extension assets before stable visibility
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG_NAME: ${{ needs.release-please.outputs.extension_tag_name }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          asset_count="$(gh release view "$TAG_NAME" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets | length')"
-          if [ "$asset_count" -ne 0 ]; then
-            echo "browser extension release already contains assets" >&2
-            exit 1
-          fi
-      - name: Attach browser extension review artifacts
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG_NAME: ${{ needs.release-please.outputs.extension_tag_name }}
-        run: gh release upload "$TAG_NAME" dist/* --repo "$GITHUB_REPOSITORY"
-      - name: Verify published browser extension release immutability
-        env:
-          EXTENSION_VERSION: ${{ needs.release-please.outputs.extension_version }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SOURCE_SHA: ${{ needs.release-please.outputs.extension_source_sha }}
           TAG_NAME: ${{ needs.release-please.outputs.extension_tag_name }}
+          EXTENSION_VERSION: ${{ needs.release-please.outputs.extension_version }}
         shell: bash
         run: |
           set -euo pipefail
-          gh release view "$TAG_NAME" \
-            --repo "$GITHUB_REPOSITORY" \
-            --json tagName,targetCommitish,assets \
-            > "$RUNNER_TEMP/published-extension-release.json"
-          latest_tag="$(
-            gh release view --repo "$GITHUB_REPOSITORY" \
-              --json tagName --jq .tagName
-          )"
-          native_tag="v$(tr -d '\r\n' < version.txt)"
-          python -B scripts/release_integrity.py verify-published-extension \
-            --metadata "$RUNNER_TEMP/published-extension-release.json" \
+          python -B .release-tools/scripts/publish_verified_release.py \
+            --component extension \
+            --repository "$GITHUB_REPOSITORY" \
             --directory dist \
             --version "$EXTENSION_VERSION" \
             --tag "$TAG_NAME" \
             --source-sha "$SOURCE_SHA" \
-            --expected-latest-tag "$native_tag" \
-            --actual-latest-tag "$latest_tag"
+            --workflow-head-sha "$GITHUB_SHA" \
+            --native-tag "v$(tr -d '\r\n' < version.txt)" \
+            --evidence "$RUNNER_TEMP/extension-publication-${GITHUB_RUN_ATTEMPT}.jsonl"
+      - name: Retain extension publication evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: extension-publication-evidence-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/extension-publication-${{ github.run_attempt }}.jsonl
+          if-no-files-found: ignore
+          retention-days: 7
 
   publish-chrome-web-store:
     needs: [release-please, package-browser-extension, attach-browser-extension-assets]

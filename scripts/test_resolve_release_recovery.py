@@ -18,12 +18,13 @@ class RecoveryTests(unittest.TestCase):
             isPrerelease=False,
         )
         recovery.validate_release(good, "v1.9.0", "a" * 40)
+        recovery.validate_release({**good, "isDraft": True}, "v1.9.0", "a" * 40)
         for key, value in (
             ("targetCommitish", "b" * 40),
             ("tagName", "v1.8.3"),
             ("assets", [{}]),
             ("assets", None),
-            ("isDraft", True),
+            ("isDraft", None),
             ("isPrerelease", True),
         ):
             with self.subTest(key=key), self.assertRaises(ValueError):
