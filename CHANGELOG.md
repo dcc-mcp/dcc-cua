@@ -1,5 +1,33 @@
 # Changelog
 
+## [1.11.0](https://github.com/dcc-mcp/dcc-cua/compare/v1.10.1...v1.11.0) (2026-10-17)
+
+
+### Features
+
+* add read-only local doctor context ([fdbf2bc](https://github.com/dcc-mcp/dcc-cua/commit/fdbf2bcad32a77a696d86cc2b1184f3420522b94))
+* add read-only local doctor diagnostics ([9b25773](https://github.com/dcc-mcp/dcc-cua/commit/9b25773d731602779e90958ae5b0e5246aeb6ba3))
+* integrate exact-window capture and single executable delivery ([#330](https://github.com/dcc-mcp/dcc-cua/issues/330)) ([7a3bc05](https://github.com/dcc-mcp/dcc-cua/commit/7a3bc05d135f90ecd892924b941a6525aadbddc9))
+
+
+### Bug Fixes
+
+* **cli:** preserve menu and diagnostics manifest contracts ([3168406](https://github.com/dcc-mcp/dcc-cua/commit/31684062329af7442c9c2c3e8441ef14451c2d3e))
+* **host:** discard prepared pixels after authority ends ([d7a5507](https://github.com/dcc-mcp/dcc-cua/commit/d7a55079e4c0f66a557a9597834443e8b085ed35))
+* **host:** drain every session with ended task authority ([301f2c0](https://github.com/dcc-mcp/dcc-cua/commit/301f2c08bd20b1caa88f2a6fab7493641d199772))
+* **host:** preserve task authorization errors after cleanup ([89ff00e](https://github.com/dcc-mcp/dcc-cua/commit/89ff00e48e2eef24459777e9cfb732a9d4d2cd58))
+* **host:** stop preparation when task authority ends ([0307fda](https://github.com/dcc-mcp/dcc-cua/commit/0307fdab395fd79c7aed77dcd6afb961fe1192db))
+* initialize Windows cursor info size ([13686ee](https://github.com/dcc-mcp/dcc-cua/commit/13686ee78b00ff45439ff6c2ef02476b00558592))
+* initialize Windows cursor info size ([1d3c93f](https://github.com/dcc-mcp/dcc-cua/commit/1d3c93f057761f39ffe92caba296713c69636c75))
+* **release:** verify single executable install manifests ([56200f2](https://github.com/dcc-mcp/dcc-cua/commit/56200f2d45348421b01517f3c8006b2fcf65ed51))
+* restore maximized windows before frame changes ([d2e8665](https://github.com/dcc-mcp/dcc-cua/commit/d2e86654481ab78c2bba2ba0ee16d5c2fba5c426))
+* restore maximized windows before frame changes ([b9d0e09](https://github.com/dcc-mcp/dcc-cua/commit/b9d0e09dd21555fb24231ac985c7f080835d9671))
+* suppress only owned indicators during pixel input ([ff5b548](https://github.com/dcc-mcp/dcc-cua/commit/ff5b548538c5d4f5ac17a36480c053d257f2a9c5))
+* suppress only owned indicators during pixel input ([1c02661](https://github.com/dcc-mcp/dcc-cua/commit/1c02661d3935df0df063d33190274b2f8f35c207))
+* **windows:** dismiss exact native popup menus safely ([7c927ad](https://github.com/dcc-mcp/dcc-cua/commit/7c927ad7154442322f8744dddbbba0db0c07ca9d))
+* **windows:** dismiss exact native popup menus safely ([1510e1d](https://github.com/dcc-mcp/dcc-cua/commit/1510e1da62f53cd0e4aa521ab4337524c867b550))
+* **windows:** harden native menu cancellation readback ([c7097a4](https://github.com/dcc-mcp/dcc-cua/commit/c7097a42f92e7eb8f01c4b7a18fd266c195308e2))
+
 ## [1.10.1](https://github.com/dcc-mcp/dcc-cua/compare/v1.10.0...v1.10.1) (2026-10-16)
 
 
