@@ -1,6 +1,121 @@
 use super::*;
 use rstest::rstest;
 
+#[path = "../../tests/fixtures/pixel_keypress.rs"]
+mod fixture_keypress;
+
+#[rstest]
+fn native_fixture_f8_request_passes_host_and_pixel_policy_without_held_key_bypass() {
+    let action = fixture_keypress::request("owned-native-observation".into());
+    validate_action(&action)
+        .expect("actual native fixture request must pass the Host action policy");
+    validate_pixel_action(&action)
+        .expect("actual native fixture request must pass the pixel route");
+    assert_eq!(action.keys, ["F8"]);
+    assert_eq!(action.duration_ms, None);
+    let previous_held_f8 = ComputerUseAction {
+        duration_ms: Some(80),
+        ..action
+    };
+    assert_eq!(
+        validate_action(&previous_held_f8).unwrap_err().code,
+        ComputerUseErrorCode::InvalidAction
+    );
+}
+
+#[rstest]
+#[tokio::test]
+async fn cancelled_async_waiter_keeps_worker_lease_until_release_and_postcheck() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    };
+    struct Lease(Arc<AtomicBool>);
+    impl Drop for Lease {
+        fn drop(&mut self) {
+            self.0.store(false, Ordering::Release);
+        }
+    }
+    let held = Arc::new(AtomicBool::new(false));
+    let postcheck = Arc::new(AtomicBool::new(false));
+    let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+    let (finish_tx, finish_rx) = mpsc::channel();
+    let (cleanup_tx, cleanup_rx) = tokio::sync::oneshot::channel();
+    let (acquire_held, dispatch_held, finished) = (held.clone(), held.clone(), postcheck.clone());
+    let waiter = tokio::spawn(run_owned_pixel_worker(
+        move || {
+            acquire_held.store(true, Ordering::Release);
+            Ok(Lease(acquire_held))
+        },
+        move || {
+            entered_tx.send(()).unwrap();
+            finish_rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap();
+            assert!(
+                dispatch_held.load(Ordering::Acquire),
+                "owned key release ran after restoration"
+            );
+            finished.store(true, Ordering::Release);
+            assert!(
+                dispatch_held.load(Ordering::Acquire),
+                "native postcheck ran after restoration"
+            );
+            cleanup_tx.send(()).unwrap();
+            Ok(())
+        },
+    ));
+    entered_rx.await.unwrap();
+    waiter.abort();
+    assert!(waiter.await.unwrap_err().is_cancelled());
+    let retained = held.load(Ordering::Acquire);
+    finish_tx.send(()).unwrap();
+    cleanup_rx.await.unwrap();
+    while held.load(Ordering::Acquire) {
+        tokio::task::yield_now().await;
+    }
+    assert!(
+        retained,
+        "cancelling the await restored the presenter while native input was active"
+    );
+    assert!(postcheck.load(Ordering::Acquire));
+}
+
+#[rstest]
+#[tokio::test]
+async fn failed_owned_presentation_acquisition_never_enters_native_dispatch() {
+    let result = run_owned_pixel_worker(
+        || -> ComputerUseResult<()> {
+            Err(ComputerUseError::new(
+                ComputerUseErrorCode::BackendUnavailable,
+                "renderer unavailable",
+            ))
+        },
+        || -> ComputerUseResult<()> { panic!("native dispatch must not begin") },
+    )
+    .await;
+    assert_eq!(
+        result.unwrap_err().code,
+        ComputerUseErrorCode::BackendUnavailable
+    );
+}
+
+#[cfg(windows)]
+#[rstest]
+fn unavailable_owned_renderer_reports_a_known_zero_input_refusal() {
+    let error = pixel_presentation_error(IndicatorError::Backend(
+        "renderer stopped before ack".into(),
+    ));
+    assert_eq!(error.code, ComputerUseErrorCode::BackendUnavailable);
+    let details = error.details.unwrap();
+    assert_eq!(details.phase, Some(ComputerUseErrorPhase::PreDispatch));
+    assert_eq!(details.action_attempted, Some(false));
+    assert_eq!(details.input_sent, Some(ComputerUseInputState::NotSent));
+    assert_eq!(details.effect_unknown, Some(false));
+    assert_eq!(details.blind_retry, Some(false));
+}
+
 #[rstest]
 #[case(7, 7, false, true)]
 #[case(7, 8, false, false)]

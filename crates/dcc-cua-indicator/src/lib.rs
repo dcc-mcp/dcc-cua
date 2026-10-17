@@ -572,6 +572,37 @@ pub struct BannerCaptureExclusionGuard {
     _platform: platform::PlatformCaptureExclusionGuard,
 }
 
+/// Opaque capability for this session's exact banner/frame renderer. Unlike
+/// capture exclusion, it cannot hide any peer presentation or shared cursor.
+#[cfg(windows)]
+#[derive(Clone)]
+pub struct BannerInputSuppressionSource {
+    platform: platform::PlatformInputSuppressionSource,
+}
+
+#[cfg(windows)]
+#[must_use = "the native worker must hold this until input cleanup and postcheck finish"]
+pub struct BannerInputSuppressionGuard {
+    _platform: platform::PlatformInputSuppressionGuard,
+}
+
+#[cfg(windows)]
+impl BannerInputSuppressionSource {
+    pub fn validate_active(&self) -> Result<(), IndicatorError> {
+        self.platform.validate_active()
+    }
+
+    pub fn begin(
+        &self,
+        process_id: u32,
+        window_handle: u64,
+    ) -> Result<BannerInputSuppressionGuard, IndicatorError> {
+        Ok(BannerInputSuppressionGuard {
+            _platform: self.platform.begin(process_id, window_handle)?,
+        })
+    }
+}
+
 /// Cloneable capture lease source; it does not own or extend a control session.
 #[derive(Clone)]
 pub struct BannerCaptureExclusionSource {
@@ -673,6 +704,14 @@ impl ControlBanner {
     pub fn capture_exclusion_source(&self) -> BannerCaptureExclusionSource {
         BannerCaptureExclusionSource {
             platform: self.platform.capture_exclusion_source(),
+        }
+    }
+
+    #[cfg(windows)]
+    #[must_use]
+    pub fn input_suppression_source(&self) -> BannerInputSuppressionSource {
+        BannerInputSuppressionSource {
+            platform: self.platform.input_suppression_source(),
         }
     }
 

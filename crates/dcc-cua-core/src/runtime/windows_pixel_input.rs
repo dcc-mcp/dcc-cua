@@ -220,15 +220,46 @@ fn input_error(failure: dcc_cua_platform_windows::WindowsGuardedInputError) -> C
 }
 
 #[cfg(windows)]
+pub(super) struct PixelInputOwner {
+    started_generation: u64,
+    session_interrupted: bool,
+    presentation: dcc_cua_indicator::BannerInputSuppressionSource,
+}
+
+#[cfg(windows)]
+impl ComputerUseSession {
+    pub(super) fn pixel_input_owner(
+        &self,
+        started_generation: u64,
+    ) -> ComputerUseResult<PixelInputOwner> {
+        let banner = self.control_banner.as_ref().ok_or_else(|| {
+            ComputerUseError::new(
+                ComputerUseErrorCode::BackendUnavailable,
+                "pixel input requires its owning control-banner renderer",
+            )
+        })?;
+        Ok(PixelInputOwner {
+            started_generation,
+            session_interrupted: self.control_banner_interrupted(),
+            presentation: banner.input_suppression_source(),
+        })
+    }
+}
+
+#[cfg(windows)]
 pub(super) async fn perform_exact_pixel_action(
     action: &ComputerUseAction,
     observation: &ComputerUseObservation,
     scope: &ComputerUseTargetScope,
     session_id: &str,
     target: &WindowTarget,
-    started_generation: u64,
-    session_interrupted: bool,
+    owner: PixelInputOwner,
 ) -> ComputerUseResult<ComputerUseToolResult> {
+    let PixelInputOwner {
+        started_generation,
+        session_interrupted,
+        presentation,
+    } = owner;
     validate_pixel_interrupt(
         started_generation,
         dcc_cua_interrupt::interrupt_generation(),
@@ -246,36 +277,74 @@ pub(super) async fn perform_exact_pixel_action(
         None
     };
     let action = action.clone();
-    let outcome = tokio::task::spawn_blocking(move || {
-        let gate = || windows_platform_input_gate("explicit_pixel_final_input");
-        let interrupted = || dcc_cua_interrupt::interrupt_generation_changed(
-            started_generation, dcc_cua_interrupt::interrupt_generation());
-        match action.action.as_str() {
-            "click" | "double_click" | "right_click" | "toggle" => {
-                let button = match action.button.as_deref().unwrap_or(if action.action == "right_click" { "right" } else { "left" }) {
-                    "left" => dcc_cua_platform_windows::WindowsPointerButton::Left,
-                    "right" => dcc_cua_platform_windows::WindowsPointerButton::Right,
-                    "middle" => dcc_cua_platform_windows::WindowsPointerButton::Middle,
-                    _ => unreachable!("validate_action checks button names"),
-                };
-                dcc_cua_platform_windows::send_guarded_click(fence, point.expect("click point was validated"),
-                    if action.action == "double_click" { 2 } else { 1 }, button, &action.modifiers, gate, interrupted)
+    let input_presentation = presentation.clone();
+    let outcome = run_owned_pixel_worker(
+        move || {
+            // The worker, not its cancellable async waiter, owns this capability
+            // through every final fence, native key-up cleanup and postcheck.
+            presentation
+                .begin(fence.target.process_id, fence.target.window_handle)
+                .map_err(pixel_presentation_error)
+        },
+        move || {
+            let gate = || windows_platform_input_gate("explicit_pixel_final_input");
+            let interrupted = || {
+                input_presentation.validate_active().is_err()
+                    || dcc_cua_interrupt::interrupt_generation_changed(
+                        started_generation,
+                        dcc_cua_interrupt::interrupt_generation(),
+                    )
+            };
+            match action.action.as_str() {
+                "click" | "double_click" | "right_click" | "toggle" => {
+                    let button = match action.button.as_deref().unwrap_or(
+                        if action.action == "right_click" {
+                            "right"
+                        } else {
+                            "left"
+                        },
+                    ) {
+                        "left" => dcc_cua_platform_windows::WindowsPointerButton::Left,
+                        "right" => dcc_cua_platform_windows::WindowsPointerButton::Right,
+                        "middle" => dcc_cua_platform_windows::WindowsPointerButton::Middle,
+                        _ => unreachable!("validate_action checks button names"),
+                    };
+                    dcc_cua_platform_windows::send_guarded_click(
+                        fence,
+                        point.expect("click point was validated"),
+                        if action.action == "double_click" {
+                            2
+                        } else {
+                            1
+                        },
+                        button,
+                        &action.modifiers,
+                        gate,
+                        interrupted,
+                    )
+                }
+                "keypress" | "keyboard_shortcut" => {
+                    let keys = keyboard_shortcut_keys(&action);
+                    dcc_cua_platform_windows::send_guarded_keypress(
+                        fence,
+                        &keys,
+                        action.duration_ms,
+                        gate,
+                        interrupted,
+                    )
+                }
+                "type" | "type_chars" => dcc_cua_platform_windows::send_guarded_text(
+                    fence,
+                    action.text.as_deref().unwrap_or_default(),
+                    gate,
+                    interrupted,
+                ),
+                _ => unreachable!("explicit pixel action names were validated"),
             }
-            "keypress" | "keyboard_shortcut" => {
-                let keys = keyboard_shortcut_keys(&action);
-                dcc_cua_platform_windows::send_guarded_keypress(fence, &keys, action.duration_ms, gate, interrupted)
-            }
-            "type" | "type_chars" => dcc_cua_platform_windows::send_guarded_text(
-                fence, action.text.as_deref().unwrap_or_default(), gate, interrupted),
-            _ => unreachable!("explicit pixel action names were validated"),
-        }
-    }).await.map_err(|_| ComputerUseError::new(ComputerUseErrorCode::CompletionUnknown,
-        "the guarded native input worker did not return; take a fresh observation before any further input")
-        .with_details(ComputerUseErrorDetails { phase: Some(ComputerUseErrorPhase::LocalMutationDispatch),
-            action_attempted: Some(true), input_sent: Some(ComputerUseInputState::Unknown),
-            completion: Some(ComputerUseCompletionState::Unknown), effect_unknown: Some(true),
-            blind_retry: Some(false), fresh_observation_required: Some(true), ..Default::default() }))?
-        .map_err(input_error)?;
+            .map_err(input_error)
+        },
+    )
+    .await?;
     let delivered = outcome.delivery_completed && outcome.post_dispatch_validated;
     Ok(ComputerUseToolResult {
         status: if delivered { ComputerUseToolStatus::Succeeded } else { ComputerUseToolStatus::Rejected },
@@ -286,6 +355,42 @@ pub(super) async fn perform_exact_pixel_action(
         text: "Submitted guarded exact-window input; verify the application's actual state separately.".into(),
         images: Vec::new(), degraded: false,
     })
+}
+
+#[cfg(any(windows, test))]
+async fn run_owned_pixel_worker<Lease, Outcome>(
+    acquire: impl FnOnce() -> ComputerUseResult<Lease> + Send + 'static,
+    dispatch: impl FnOnce() -> ComputerUseResult<Outcome> + Send + 'static,
+) -> ComputerUseResult<Outcome>
+where
+    Lease: Send + 'static,
+    Outcome: Send + 'static,
+{
+    tokio::task::spawn_blocking(move || {
+        let _presentation = acquire()?;
+        dispatch()
+    }).await.map_err(|_| ComputerUseError::new(ComputerUseErrorCode::CompletionUnknown,
+        "the guarded native input worker did not return; take a fresh observation before any further input")
+        .with_details(ComputerUseErrorDetails { phase: Some(ComputerUseErrorPhase::LocalMutationDispatch),
+            action_attempted: Some(true), input_sent: Some(ComputerUseInputState::Unknown),
+            completion: Some(ComputerUseCompletionState::Unknown), effect_unknown: Some(true),
+            blind_retry: Some(false), fresh_observation_required: Some(true), ..Default::default() }))?
+}
+
+#[cfg(windows)]
+fn pixel_presentation_error(error: IndicatorError) -> ComputerUseError {
+    map_indicator_error("owned indicator input suppression", error).with_details(
+        ComputerUseErrorDetails {
+            phase: Some(ComputerUseErrorPhase::PreDispatch),
+            action_attempted: Some(false),
+            input_sent: Some(ComputerUseInputState::NotSent),
+            completion: Some(ComputerUseCompletionState::Known),
+            effect_unknown: Some(false),
+            blind_retry: Some(false),
+            fresh_observation_required: Some(true),
+            ..Default::default()
+        },
+    )
 }
 
 #[cfg(test)]

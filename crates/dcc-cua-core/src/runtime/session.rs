@@ -763,8 +763,7 @@ impl ComputerUseSession {
                 &self.scope,
                 &self.session_id,
                 &target,
-                pixel_started_generation,
-                self.control_banner_interrupted(),
+                self.pixel_input_owner(pixel_started_generation)?,
             )
             .await;
             // A native dispatch or uncertain partial result must never reuse its token.
