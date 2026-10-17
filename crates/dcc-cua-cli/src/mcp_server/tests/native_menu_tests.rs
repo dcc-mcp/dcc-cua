@@ -104,6 +104,58 @@ fn native_menu_schema_exposes_purpose_and_closed_confirmation_contract() {
 }
 
 #[rstest]
+#[case::windows(true)]
+#[case::other_platform(false)]
+fn native_menu_manifest_preserves_independent_context_diagnostics(#[case] windows: bool) {
+    let manifest = crate::manifest::document_for_platform(windows);
+    let runtime = &manifest["runtime"];
+    let diagnostics = &runtime["local_diagnostics_only"];
+    assert_eq!(
+        diagnostics["cli_command"],
+        json!(["doctor", "--diagnostics-only"])
+    );
+    assert_eq!(diagnostics["scope"], "local_process_desktop_metadata");
+    assert_eq!(diagnostics["read_only"], true);
+    assert_eq!(diagnostics["additional_arguments_accepted"], false);
+    assert_eq!(diagnostics["sdk_initialized"], false);
+    for field in [
+        "sdk_inventory",
+        "permissions",
+        "health",
+        "window_inventory",
+        "native_acceptance",
+    ] {
+        assert_eq!(diagnostics[field], "not_run", "{field}");
+    }
+    assert_eq!(diagnostics["ready"], false);
+    assert_eq!(diagnostics["input_ready"], false);
+    if !windows {
+        assert!(runtime.get("native_menu_dismiss").is_none());
+        return;
+    }
+    let menu = &runtime["native_menu_dismiss"];
+    assert_eq!(
+        menu["action_scope"],
+        json!({"action":"dismiss_menu","input_kind":"window_state","secret_input":false,"authorization_category":"window_state"})
+    );
+    assert_eq!(menu["token_field"], "menu_dismiss_window_state_id");
+    assert_eq!(menu["token_max_age_ms"], 5000);
+    assert_eq!(menu["one_use"], true);
+    assert_eq!(menu["frame_token_accepted"], false);
+    assert_eq!(menu["dispatch"], "single_bounded_WM_CANCELMODE");
+    assert_eq!(menu["activation"], false);
+    assert_eq!(menu["input_sent"], false);
+    assert_eq!(
+        menu["confirmation"],
+        json!(["popup_hidden_or_gone", "menu_inactive", "owner_alive"])
+    );
+    assert_eq!(
+        menu["unconfirmed_after_dispatch"],
+        "completion_unknown_no_blind_retry"
+    );
+}
+
+#[rstest]
 #[tokio::test]
 async fn native_menu_scope_blocks_activation_without_changing_legacy_method_scope() {
     let mut server = test_server();

@@ -163,9 +163,36 @@ where
 }
 
 fn run_main() -> Result<(), Box<dyn std::error::Error>> {
+    run_with_arguments(env::args().skip(1).collect(), run_platform_command)
+}
+
+fn run_with_arguments<F>(arguments: Vec<String>, start: F) -> Result<(), Box<dyn std::error::Error>>
+where
+    F: FnOnce(Vec<String>) -> Result<(), Box<dyn std::error::Error>>,
+{
+    if local_diagnostics_only(&arguments)? {
+        return Ok(());
+    }
+    start(arguments)
+}
+
+fn local_diagnostics_only(arguments: &[String]) -> Result<bool, Box<dyn std::error::Error>> {
+    let Some((command, flags)) = arguments.split_first() else {
+        return Ok(false);
+    };
+    if !diagnostics_only_requested(command, flags)? {
+        return Ok(false);
+    }
+    stdoutln!(
+        "{}",
+        serde_json::to_string_pretty(&dcc_cua_core::diagnostics_only())?
+    );
+    Ok(true)
+}
+
+fn run_platform_command(arguments: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(windows)]
     {
-        let arguments = env::args().skip(1).collect::<Vec<_>>();
         if let Some(exit_code) =
             dcc_cua_platform_windows::capture_preparation::dispatch_capture_preparation(&arguments)
         {
@@ -176,14 +203,13 @@ fn run_main() -> Result<(), Box<dyn std::error::Error>> {
     }
     #[cfg(target_os = "macos")]
     {
-        let arguments = env::args().skip(1).collect::<Vec<_>>();
         if let Some(generation) = private_worker_generation_from(&arguments)? {
             dcc_cua_core::run_private_worker_with_appkit(generation)
                 .map_err(std::io::Error::other)?;
             return Ok(());
         }
     }
-    async_main(env::args().skip(1).collect())
+    async_main(arguments)
 }
 
 fn write_error_line(writer: &mut dyn Write, line: &str) -> std::io::Result<()> {
@@ -204,6 +230,9 @@ fn async_main(arguments: Vec<String>) -> Result<(), Box<dyn std::error::Error>> 
 }
 
 async fn dispatch(arguments: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
+    if local_diagnostics_only(&arguments)? {
+        return Ok(());
+    }
     if let Some(invocation_origin) = browser_extension::invocation_origin(&arguments) {
         browser_extension::run_native_host(invocation_origin).await?;
         return Ok(());

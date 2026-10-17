@@ -247,26 +247,34 @@ pub(crate) fn require_input_available_from(report: &Value) -> ComputerUseResult<
 
 #[cfg(windows)]
 fn windows_input_surface() -> Result<(), String> {
-    use windows_sys::Win32::{
-        Foundation::POINT,
-        UI::WindowsAndMessaging::{CURSORINFO, GetCursorInfo, GetCursorPos},
-    };
+    use windows_sys::Win32::{Foundation::POINT, UI::WindowsAndMessaging::GetCursorPos};
 
     let mut point = POINT { x: 0, y: 0 };
     // SAFETY: `point` is valid for one synchronous Win32 output write.
     if unsafe { GetCursorPos(&raw mut point) } == 0 {
         let cursor_pos_error = std::io::Error::last_os_error();
-        let mut cursor_info = CURSORINFO::default();
-        // SAFETY: `cursor_info` is initialized with the ABI-required cbSize and
-        // is valid for one synchronous Win32 output write. GetCursorInfo is a
-        // read-only input-surface probe; it does not relax the desktop checks.
-        if unsafe { GetCursorInfo(&raw mut cursor_info) } != 0 {
-            return Ok(());
-        }
-        return Err(format!(
-            "GetCursorPos failed: {cursor_pos_error}; GetCursorInfo failed: {}",
-            std::io::Error::last_os_error()
-        ));
+        return windows_cursor_info_input_surface().map_err(|cursor_info_error| {
+            format!(
+                "GetCursorPos failed: {cursor_pos_error}; GetCursorInfo failed: {cursor_info_error}"
+            )
+        });
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+pub(crate) fn windows_cursor_info_input_surface() -> Result<(), std::io::Error> {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{CURSORINFO, GetCursorInfo};
+
+    let mut cursor_info = CURSORINFO {
+        cbSize: std::mem::size_of::<CURSORINFO>() as u32,
+        ..Default::default()
+    };
+    // SAFETY: `cursor_info` has the ABI-required cbSize and is valid for one
+    // synchronous Win32 output write. This read-only probe does not relax the
+    // desktop checks or move the cursor.
+    if unsafe { GetCursorInfo(&raw mut cursor_info) } == 0 {
+        return Err(std::io::Error::last_os_error());
     }
     Ok(())
 }
