@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/dcc-mcp/dcc-cua/compare/dcc-cua-browser-extension-v0.2.4...dcc-cua-browser-extension-v0.3.0) (2026-10-17)
+
+
+### Features
+
+* integrate exact-window capture and single executable delivery ([#330](https://github.com/dcc-mcp/dcc-cua/issues/330)) ([7a3bc05](https://github.com/dcc-mcp/dcc-cua/commit/7a3bc05d135f90ecd892924b941a6525aadbddc9))
+
 ## [0.2.4](https://github.com/dcc-mcp/dcc-cua/compare/dcc-cua-browser-extension-v0.2.3...dcc-cua-browser-extension-v0.2.4) (2026-10-16)
 
 
