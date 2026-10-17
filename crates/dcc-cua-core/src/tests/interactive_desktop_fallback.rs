@@ -2,6 +2,31 @@ use super::*;
 use crate::interactive_desktop::windows_execution_context;
 use rstest::rstest;
 
+#[cfg(windows)]
+#[rstest]
+fn cursor_info_fallback_obeys_the_native_structure_size_contract() {
+    use crate::interactive_desktop::windows_cursor_info_input_surface;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{CURSORINFO, GetCursorInfo};
+
+    let mut missing_size = CURSORINFO::default();
+    // SAFETY: the writable buffer is a complete CURSORINFO. Intentionally
+    // leaving cbSize at zero exercises the native API's failure contract;
+    // neither this negative control nor the production probe injects input.
+    let invalid_result = unsafe { GetCursorInfo(&raw mut missing_size) };
+    let invalid_error = std::io::Error::last_os_error();
+    assert_eq!(
+        invalid_result, 0,
+        "Win32 accepted CURSORINFO without cbSize: {invalid_error}"
+    );
+
+    windows_cursor_info_input_surface().unwrap_or_else(|error| {
+        panic!(
+            "the production cursor-info fallback failed with the ABI-required size: {error}; \
+             this native metadata test requires an accessible Windows input surface"
+        )
+    });
+}
+
 #[rstest]
 fn execution_context_distinguishes_the_current_thread_from_the_input_desktop() {
     let context = windows_execution_context(
