@@ -52,6 +52,7 @@ mod native_frame_tests {
                 dpi: 240,
                 visible: true,
                 minimized: false,
+                maximized: false,
                 foreground: false,
                 instance: dcc_cua_platform_windows::ExactWindowPixelInstanceEvidence {
                     process_creation_time_100ns: 7,
@@ -203,6 +204,28 @@ mod native_frame_tests {
         assert_eq!(wire["window_state_id"], "consumed-native-state");
         assert_eq!(wire["success"], true);
         assert_eq!(wire["effect"], "confirmed");
+        assert_eq!(wire["state"]["maximized"], false);
+    }
+
+    #[cfg(windows)]
+    #[rstest]
+    fn maximized_native_state_is_readable_but_cannot_mint_frame_authority() {
+        let mut proof = metadata();
+        proof.state.maximized = true;
+        let scope = ComputerUseTargetScope {
+            process_id: Some(42),
+            window_handle: Some(99),
+            window_title: None,
+        };
+        let error = proof
+            .validate("native-state-1", &scope, "session-1", Duration::ZERO)
+            .unwrap_err();
+        assert_eq!(error.code, ComputerUseErrorCode::InvalidTarget);
+        assert!(error.message.contains("restore_activate"));
+        assert!(
+            retain_fresh_native_frame_metadata(Some(proof), "native-state-1", &scope, "session-1")
+                .is_none()
+        );
     }
 }
 

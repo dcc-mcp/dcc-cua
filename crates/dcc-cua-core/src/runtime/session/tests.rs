@@ -94,6 +94,7 @@ async fn fresh_native_state_transition_preserves_only_matching_metadata_and_clea
         dpi: 240,
         visible: true,
         minimized: false,
+        maximized: false,
         foreground: false,
         instance: dcc_cua_platform_windows::ExactWindowPixelInstanceEvidence {
             process_creation_time_100ns: 7,
@@ -132,6 +133,7 @@ async fn invalid_native_frame_attempt_consumes_metadata_and_pixels_before_any_na
             dpi: 240,
             visible: true,
             minimized: false,
+            maximized: false,
             foreground: false,
             instance: dcc_cua_platform_windows::ExactWindowPixelInstanceEvidence {
                 process_creation_time_100ns: 7,

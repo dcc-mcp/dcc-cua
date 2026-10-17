@@ -707,8 +707,7 @@ use super::PersistentWgcCapture;
 use super::windows::{
     ActivationRaiseMode, activation_raise_mode, completed_action_result,
     exact_window_available_for_activation, exact_window_ownership_matches,
-    foreground_restore_required, input_gated_window_mutation,
-    run_restore_activate_mutation_sequence, window_frame_matches,
+    foreground_restore_required, input_gated_window_mutation, window_frame_matches,
 };
 
 #[cfg(windows)]
@@ -1677,57 +1676,6 @@ fn locked_desktop_gate_prevents_each_platform_window_mutation() {
 
     assert_eq!(result, Err("desktop locked"));
     assert_eq!(mutations.get(), 0);
-}
-
-#[cfg(windows)]
-#[rstest]
-fn restore_activate_sequence_stops_at_each_failed_input_gate() {
-    let restore_calls = std::cell::Cell::new(0);
-    let activate_calls = std::cell::Cell::new(0);
-    let first_gate = run_restore_activate_mutation_sequence(
-        || Err::<(), _>("locked before restore"),
-        || {
-            restore_calls.set(restore_calls.get() + 1);
-            Ok(())
-        },
-        || Ok(()),
-        || {
-            activate_calls.set(activate_calls.get() + 1);
-            Ok(())
-        },
-    );
-    assert_eq!(first_gate, Err("locked before restore"));
-    assert_eq!((restore_calls.get(), activate_calls.get()), (0, 0));
-
-    let second_gate = run_restore_activate_mutation_sequence(
-        || Ok(()),
-        || {
-            restore_calls.set(restore_calls.get() + 1);
-            Ok(())
-        },
-        || Err("locked before activate"),
-        || {
-            activate_calls.set(activate_calls.get() + 1);
-            Ok(())
-        },
-    );
-    assert_eq!(second_gate, Err("locked before activate"));
-    assert_eq!((restore_calls.get(), activate_calls.get()), (1, 0));
-
-    let success = run_restore_activate_mutation_sequence(
-        || Ok::<(), &str>(()),
-        || {
-            restore_calls.set(restore_calls.get() + 1);
-            Ok(())
-        },
-        || Ok(()),
-        || {
-            activate_calls.set(activate_calls.get() + 1);
-            Ok(())
-        },
-    );
-    assert_eq!(success, Ok(()));
-    assert_eq!((restore_calls.get(), activate_calls.get()), (2, 1));
 }
 
 #[cfg(windows)]

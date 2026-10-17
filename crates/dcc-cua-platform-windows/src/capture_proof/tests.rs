@@ -2,6 +2,20 @@ use super::*;
 use crate::visible_capture::{RootBoundsClass, RootBoundsFailureDiagnostic, RootBoundsRole};
 use rstest::rstest;
 
+fn layout() -> NativeTargetLayoutProof {
+    NativeTargetLayoutProof {
+        maximized: false,
+        style: Some(0x16cf0000),
+        style_win32_error: None,
+        extended_style: Some(0),
+        extended_style_win32_error: None,
+        client_rect_edges: Some([0, 0, 1500, 1370]),
+        client_rect_hresult: None,
+        client_screen_rect_edges: Some([80, 110, 1580, 1480]),
+        client_screen_win32_error: None,
+    }
+}
+
 fn sample() -> NativeProofPhase {
     NativeProofPhase {
         elapsed_us: 1,
@@ -22,6 +36,8 @@ fn sample() -> NativeProofPhase {
             window_class_hash: 123,
             owner_window_handle: 0,
         }),
+        instance_stable_within_phase: true,
+        target_layout: Some(layout()),
         proof_passed: true,
         error: None,
         roots_above_through_target: Vec::new(),
@@ -43,6 +59,13 @@ fn sample() -> NativeProofPhase {
 #[case("visible", false)]
 #[case("minimized", false)]
 #[case("dpi_context", false)]
+#[case("in_phase_instance", false)]
+#[case("layout_missing", false)]
+#[case("maximized", false)]
+#[case("style", false)]
+#[case("extended_style", false)]
+#[case("client_size", false)]
+#[case("client_origin", false)]
 fn capture_proof_stability_detects_instance_and_coordinate_drift(
     #[case] mutation: &str,
     #[case] stable: bool,
@@ -64,9 +87,93 @@ fn capture_proof_stability_detects_instance_and_coordinate_drift(
         "visible" => after.target_visible = false,
         "minimized" => after.target_minimized = true,
         "dpi_context" => after.thread_dpi_context = NativeDpiContext::SystemAware,
+        "in_phase_instance" => after.instance_stable_within_phase = false,
+        "layout_missing" => after.target_layout = None,
+        "maximized" => after.target_layout.as_mut().unwrap().maximized = true,
+        "style" => after.target_layout.as_mut().unwrap().style = Some(0x17cf0000),
+        "extended_style" => after.target_layout.as_mut().unwrap().extended_style = Some(8),
+        "client_size" => {
+            after
+                .target_layout
+                .as_mut()
+                .unwrap()
+                .client_rect_edges
+                .as_mut()
+                .unwrap()[2] += 1
+        }
+        "client_origin" => {
+            after
+                .target_layout
+                .as_mut()
+                .unwrap()
+                .client_screen_rect_edges
+                .as_mut()
+                .unwrap()[0] += 1
+        }
         _ => unreachable!(),
     }
     assert_eq!(target_evidence_stable(&before, &after), stable);
+}
+
+#[rstest]
+#[case("style_unavailable")]
+#[case("style_error")]
+#[case("extended_style_unavailable")]
+#[case("extended_style_error")]
+#[case("client_unavailable")]
+#[case("client_error")]
+#[case("screen_unavailable")]
+#[case("screen_error")]
+#[case("inverted")]
+#[case("overflow")]
+#[case("mapping_extent_changed")]
+fn capture_proof_never_calls_repeated_incomplete_layout_stable(#[case] failure: &str) {
+    let mut phase = sample();
+    let layout = phase.target_layout.as_mut().unwrap();
+    match failure {
+        "style_unavailable" => layout.style = None,
+        "style_error" => layout.style_win32_error = Some(5),
+        "extended_style_unavailable" => layout.extended_style = None,
+        "extended_style_error" => layout.extended_style_win32_error = Some(5),
+        "client_unavailable" => layout.client_rect_edges = None,
+        "client_error" => layout.client_rect_hresult = Some(-2147024891),
+        "screen_unavailable" => layout.client_screen_rect_edges = None,
+        "screen_error" => layout.client_screen_win32_error = Some(0),
+        "inverted" => layout.client_rect_edges = Some([0, 0, -1, 1370]),
+        "overflow" => layout.client_rect_edges = Some([i32::MIN, 0, i32::MAX, 1370]),
+        "mapping_extent_changed" => layout.client_screen_rect_edges = Some([80, 110, 1581, 1480]),
+        _ => unreachable!(),
+    }
+    assert!(!target_evidence_stable(&phase, &phase));
+}
+
+#[rstest]
+#[case(0, 0, Ok(0))]
+#[case(0, 5, Err(5))]
+#[case(0x16cf0000, 5, Ok(0x16cf0000))]
+#[case(-1, 0, Ok(u32::MAX))]
+fn capture_proof_style_zero_requires_success_error_code(
+    #[case] value: isize,
+    #[case] error: u32,
+    #[case] expected: Result<u32, u32>,
+) {
+    assert_eq!(layout::style_read_result(value, error), expected);
+}
+
+#[rstest]
+fn capture_proof_layout_is_closed_numeric_metadata_and_preserves_zero_style() {
+    let mut proof = layout();
+    proof.style = Some(0);
+    assert!(proof.complete());
+    assert_eq!(
+        serde_json::to_value(proof).unwrap(),
+        serde_json::json!({
+            "maximized": false, "style": 0, "style_win32_error": null,
+            "extended_style": 0, "extended_style_win32_error": null,
+            "client_rect_edges": [0, 0, 1500, 1370], "client_rect_hresult": null,
+            "client_screen_rect_edges": [80, 110, 1580, 1480], "client_screen_win32_error": null,
+        })
+    );
 }
 
 #[rstest]

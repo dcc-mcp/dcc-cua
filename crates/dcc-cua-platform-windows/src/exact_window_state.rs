@@ -5,7 +5,9 @@ use windows::Win32::{
     Foundation::{HWND, RECT},
     UI::{
         HiDpi::GetDpiForWindow,
-        WindowsAndMessaging::{GetForegroundWindow, GetWindowRect, IsIconic, IsWindowVisible},
+        WindowsAndMessaging::{
+            GetForegroundWindow, GetWindowRect, IsIconic, IsWindowVisible, IsZoomed,
+        },
     },
 };
 
@@ -29,6 +31,7 @@ pub struct ExactWindowNativeState {
     pub dpi: u32,
     pub visible: bool,
     pub minimized: bool,
+    pub maximized: bool,
     pub foreground: bool,
     pub instance: ExactWindowPixelInstanceEvidence,
 }
@@ -66,6 +69,7 @@ pub fn exact_window_native_state(
         dpi,
         visible: unsafe { IsWindowVisible(hwnd) }.as_bool(),
         minimized: unsafe { IsIconic(hwnd) }.as_bool(),
+        maximized: unsafe { IsZoomed(hwnd) }.as_bool(),
         foreground: unsafe { GetForegroundWindow() } == hwnd,
         instance: before,
     };
@@ -91,7 +95,7 @@ pub enum ExactWindowMinimizeError {
     AfterDispatch(UiaError),
 }
 
-fn validate_instance(
+pub(crate) fn validate_instance(
     target: UiaTarget,
     expected: ExactWindowPixelInstanceEvidence,
     state: &ExactWindowNativeState,

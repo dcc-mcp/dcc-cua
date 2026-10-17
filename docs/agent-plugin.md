@@ -94,7 +94,7 @@ version, exact PID, and exact HWND returned by `start_task`. Use one persistent
 task for the exact target, take fresh observations, verify every mutation, and
 call `stop_task` on success, failure, interruption, or abandonment.
 
-For an exact PID/HWND target that is minimized, declare `change_window_state`
+For an exact PID/HWND target that is minimized or maximized, declare `change_window_state`
 in `start_task.allowed_methods` and call it through the same task:
 
 ```json
@@ -106,7 +106,12 @@ in `start_task.allowed_methods` and call it through the same task:
 ```
 
 Take a fresh observation after restoring. This operation restores only the
-bound window and verifies its identity and foreground state. The MCP bridge
+bound window, clears both minimized and maximized state, and verifies its
+native instance and foreground state. A minimized window that returns to its
+previous maximized state is normalized in a second bounded restore stage.
+`get_window_state` reports the native `maximized` fact. Restore a maximized
+target before `set_window_frame`, then read fresh native window state; an outer
+frame match alone cannot confirm that a maximized client resized. The MCP bridge
 also accepts `activate`, which does not restore a minimized window; it rejects
 `close` and other window state operations. An unavailable interactive desktop
 still blocks activation and input. Repair that environment before retrying.

@@ -486,6 +486,7 @@ fn live_native_final_metadata_refuses_post_proof_identity_geometry_and_visibilit
         dpi: evidence.dpi,
         visible: true,
         minimized: false,
+        maximized: false,
         foreground: false,
         instance: evidence.instance,
     };
