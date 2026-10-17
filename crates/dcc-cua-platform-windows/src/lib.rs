@@ -77,8 +77,8 @@ pub use input::{
 };
 #[cfg(windows)]
 pub use native_menu_dismiss::{
-    NativeMenuDismissError, NativeMenuDismissOutcome, NativeMenuProof, dismiss_exact_native_menu,
-    read_exact_native_menu,
+    NativeMenuDismissError, NativeMenuDismissOutcome, NativeMenuGatePhase, NativeMenuProof,
+    dismiss_exact_native_menu, read_exact_native_menu,
 };
 #[cfg(windows)]
 pub use physical_input_fence::{

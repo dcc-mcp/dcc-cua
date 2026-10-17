@@ -42,6 +42,14 @@ pub enum NativeMenuDismissError {
     AfterDispatch(UiaError),
 }
 
+/// Admission authority expires before sending. Read-only confirmation retains
+/// revocation and desktop fences without renewing or reusing that authority.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NativeMenuGatePhase {
+    PreDispatch,
+    PostDispatch,
+}
+
 pub(super) fn refused(reason: &str) -> UiaError {
     UiaError::InvalidTarget(format!("native_menu_inactive_or_unproven: {reason}"))
 }
@@ -95,9 +103,29 @@ pub fn read_exact_native_menu(target: UiaTarget) -> Result<NativeMenuProof, UiaE
     native::read(target)
 }
 
+pub(super) fn popup_hidden_or_gone(
+    expected: &ExactWindowNativeState,
+    mut exists: impl FnMut() -> bool,
+    read: impl FnOnce() -> Result<ExactWindowNativeState, UiaError>,
+) -> Result<bool, UiaError> {
+    if !exists() {
+        return Ok(true);
+    }
+    let actual = match read() {
+        Ok(actual) => actual,
+        // Successful cancellation may destroy the popup during the exact
+        // state read. A surviving HWND must retain the original read error.
+        Err(error) => return if exists() { Err(error) } else { Ok(true) },
+    };
+    if actual.instance != expected.instance {
+        return Err(refused("target popup HWND was reused after the message"));
+    }
+    Ok(!actual.visible)
+}
+
 pub(super) fn run_sequence(
     expected: &NativeMenuProof,
-    mut gate: impl FnMut() -> Result<(), UiaError>,
+    mut gate: impl FnMut(NativeMenuGatePhase) -> Result<(), UiaError>,
     read: impl FnOnce() -> Result<NativeMenuProof, UiaError>,
     dispatch: impl FnOnce(
         &mut dyn FnMut() -> Result<(), UiaError>,
@@ -105,15 +133,15 @@ pub(super) fn run_sequence(
     after: impl FnOnce(&mut dyn FnMut() -> Result<(), UiaError>) -> Result<(), UiaError>,
 ) -> Result<NativeMenuDismissOutcome, NativeMenuDismissError> {
     use NativeMenuDismissError::{AfterDispatch, BeforeDispatch};
-    gate().map_err(BeforeDispatch)?;
+    gate(NativeMenuGatePhase::PreDispatch).map_err(BeforeDispatch)?;
     let current = read().map_err(BeforeDispatch)?;
     if current != *expected {
         return Err(BeforeDispatch(refused("native menu authority changed")));
     }
-    gate().map_err(BeforeDispatch)?;
+    gate(NativeMenuGatePhase::PreDispatch).map_err(BeforeDispatch)?;
     // dispatch is FnOnce: failures and timeouts cannot cause a resend.
-    dispatch(&mut gate)?;
-    after(&mut gate).map_err(AfterDispatch)?;
+    dispatch(&mut || gate(NativeMenuGatePhase::PreDispatch))?;
+    after(&mut || gate(NativeMenuGatePhase::PostDispatch)).map_err(AfterDispatch)?;
     Ok(NativeMenuDismissOutcome {
         proof: current,
         message_attempted: true,
@@ -152,7 +180,7 @@ fn run_on_sender(
 /// closes an application, follows another popup, or retries the message.
 pub fn dismiss_exact_native_menu(
     expected: &NativeMenuProof,
-    gate: impl FnMut() -> Result<(), UiaError> + Send,
+    gate: impl FnMut(NativeMenuGatePhase) -> Result<(), UiaError> + Send,
 ) -> Result<NativeMenuDismissOutcome, NativeMenuDismissError> {
     if native::is_owner_thread(expected) {
         return Err(NativeMenuDismissError::BeforeDispatch(refused(

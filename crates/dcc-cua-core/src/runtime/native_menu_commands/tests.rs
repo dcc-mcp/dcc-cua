@@ -121,6 +121,63 @@ fn native_menu_authority_is_purpose_session_instance_and_freshness_bound() {
 }
 
 #[rstest]
+#[case("token_age", ComputerUseErrorCode::StaleObservation)]
+#[case("task_lease", ComputerUseErrorCode::SessionRefreshRequired)]
+fn native_menu_expiry_stops_new_dispatch_but_not_read_only_confirmation(
+    #[case] expiry: &str,
+    #[case] error_code: ComputerUseErrorCode,
+) {
+    use dcc_cua_platform_windows::NativeMenuGatePhase::{PostDispatch, PreDispatch};
+    let metadata = metadata();
+    let scope = ComputerUseTargetScope {
+        process_id: Some(42),
+        window_handle: Some(99),
+        window_title: None,
+    };
+    let admitted_at = metadata.read_at + Duration::from_secs(1);
+    let deadline =
+        metadata.read_at + Duration::from_secs(if expiry == "task_lease" { 2 } else { 10 });
+    metadata
+        .validate_gate_authority(
+            &metadata.id,
+            &scope,
+            &metadata.session_id,
+            PreDispatch,
+            admitted_at,
+            deadline,
+        )
+        .unwrap();
+    let confirmed_at = if expiry == "token_age" {
+        metadata.read_at + Duration::from_secs(5) + Duration::from_nanos(1)
+    } else {
+        deadline
+    };
+    let failure = metadata
+        .validate_gate_authority(
+            &metadata.id,
+            &scope,
+            &metadata.session_id,
+            PreDispatch,
+            confirmed_at,
+            deadline,
+        )
+        .unwrap_err();
+    assert_eq!(failure.code, error_code);
+    // This is only the authority-time gate. Production still applies its
+    // current stop/interrupt/desktop fences and exact native postconditions.
+    metadata
+        .validate_gate_authority(
+            &metadata.id,
+            &scope,
+            &metadata.session_id,
+            PostDispatch,
+            confirmed_at,
+            deadline,
+        )
+        .unwrap();
+}
+
+#[rstest]
 fn native_menu_dispatch_failure_never_claims_confirmation_or_input() {
     for attempted in [false, true] {
         let error = menu_attempt_error(

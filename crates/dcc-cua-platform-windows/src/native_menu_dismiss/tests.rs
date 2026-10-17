@@ -130,7 +130,7 @@ fn production_sequence_sends_once_and_never_turns_uncertainty_into_closed(
     let events = RefCell::new(Vec::new());
     let result = run_sequence(
         &expected,
-        || {
+        |_| {
             events.borrow_mut().push("gate");
             if interrupted.get() {
                 Err(refused("stopped or desktop unavailable"))
@@ -194,6 +194,129 @@ fn production_sequence_sends_once_and_never_turns_uncertainty_into_closed(
 }
 
 #[rstest]
+#[case("confirmed")]
+#[case("stop")]
+#[case("interrupt")]
+#[case("desktop")]
+fn production_sequence_preserves_current_fences_in_the_post_dispatch_phase(#[case] scenario: &str) {
+    use NativeMenuGatePhase::{PostDispatch, PreDispatch};
+    let sent = Cell::new(0);
+    let phases = RefCell::new(Vec::new());
+    let result = run_sequence(
+        &proof(),
+        |phase| {
+            phases.borrow_mut().push(phase);
+            if sent.get() == 0 {
+                assert_eq!(phase, PreDispatch);
+            } else {
+                assert_eq!(phase, PostDispatch);
+                if scenario != "confirmed" {
+                    return Err(refused(scenario));
+                }
+            }
+            Ok(())
+        },
+        || Ok(proof()),
+        |gate| {
+            gate().map_err(NativeMenuDismissError::BeforeDispatch)?;
+            sent.set(sent.get() + 1);
+            Ok(())
+        },
+        |gate| {
+            gate()?;
+            // Confirmation makes no additional mutation and retains a final
+            // fence after its native readback, as native::confirm does.
+            gate()
+        },
+    );
+    assert_eq!(sent.get(), 1);
+    if scenario == "confirmed" {
+        assert!(result.is_ok());
+        assert_eq!(
+            *phases.borrow(),
+            [
+                PreDispatch,
+                PreDispatch,
+                PreDispatch,
+                PostDispatch,
+                PostDispatch
+            ]
+        );
+    } else {
+        assert!(matches!(
+            result,
+            Err(NativeMenuDismissError::AfterDispatch(_))
+        ));
+        assert_eq!(
+            *phases.borrow(),
+            [PreDispatch, PreDispatch, PreDispatch, PostDispatch]
+        );
+    }
+}
+
+#[rstest]
+#[case("gone_before_read")]
+#[case("destroyed_during_read")]
+#[case("read_error_still_alive")]
+#[case("reused_instance")]
+#[case("still_visible")]
+#[case("hidden_same_instance")]
+fn popup_confirmation_distinguishes_destruction_from_live_errors_and_reuse(#[case] scenario: &str) {
+    let expected = proof().popup;
+    let calls = RefCell::new(Vec::new());
+    let exists_calls = Cell::new(0);
+    let result = popup_hidden_or_gone(
+        &expected,
+        || {
+            calls.borrow_mut().push("exists");
+            exists_calls.set(exists_calls.get() + 1);
+            scenario != "gone_before_read"
+                && (scenario != "destroyed_during_read" || exists_calls.get() == 1)
+        },
+        || {
+            calls.borrow_mut().push("read");
+            if matches!(scenario, "destroyed_during_read" | "read_error_still_alive") {
+                return Err(UiaError::OperationFailed("original read error 87".into()));
+            }
+            let mut actual = expected;
+            if scenario == "reused_instance" {
+                actual.instance.window_class_hash += 1;
+            }
+            if scenario == "hidden_same_instance" {
+                actual.visible = false;
+            }
+            Ok(actual)
+        },
+    );
+    match scenario {
+        "gone_before_read" => {
+            assert!(result.unwrap());
+            assert_eq!(*calls.borrow(), ["exists"]);
+        }
+        "destroyed_during_read" => {
+            assert!(result.unwrap());
+            assert_eq!(*calls.borrow(), ["exists", "read", "exists"]);
+        }
+        "read_error_still_alive" => {
+            assert!(
+                matches!(result, Err(UiaError::OperationFailed(ref detail)) if detail == "original read error 87")
+            );
+            assert_eq!(*calls.borrow(), ["exists", "read", "exists"]);
+        }
+        "reused_instance" => {
+            assert!(
+                matches!(result, Err(UiaError::InvalidTarget(ref detail)) if detail.contains("HWND was reused"))
+            );
+            assert_eq!(*calls.borrow(), ["exists", "read"]);
+        }
+        _ => {
+            assert_eq!(result.unwrap(), scenario == "hidden_same_instance");
+            assert_eq!(*calls.borrow(), ["exists", "read"]);
+        }
+    }
+}
+
+#[rstest]
 #[case("stop")]
 #[case("desktop")]
 #[case("owner_reuse")]
@@ -223,7 +346,7 @@ fn actual_sender_rechecks_authority_after_thread_scheduling(#[case] scenario: &'
         scheduled.wait();
         run_sequence(
             &expected,
-            || {
+            |_| {
                 if changed.load(Ordering::Acquire) && matches!(scenario, "stop" | "desktop") {
                     Err(refused("current lifecycle or desktop revoked"))
                 } else {

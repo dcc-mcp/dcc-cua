@@ -10,6 +10,36 @@ pub(super) struct NativeMenuMetadata {
 
 #[cfg(windows)]
 impl NativeMenuMetadata {
+    fn validate_gate_authority(
+        &self,
+        id: &str,
+        scope: &ComputerUseTargetScope,
+        session: &str,
+        phase: dcc_cua_platform_windows::NativeMenuGatePhase,
+        now: Instant,
+        authorization_deadline: Instant,
+    ) -> ComputerUseResult<()> {
+        match phase {
+            // The single mutation has already consumed this authority. Its
+            // bounded readback still applies current lifecycle/desktop fences.
+            dcc_cua_platform_windows::NativeMenuGatePhase::PostDispatch => return Ok(()),
+            dcc_cua_platform_windows::NativeMenuGatePhase::PreDispatch => {}
+        }
+        self.validate(
+            id,
+            scope,
+            session,
+            now.saturating_duration_since(self.read_at),
+        )?;
+        if now >= authorization_deadline {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::SessionRefreshRequired,
+                "native menu task authorization expired",
+            ));
+        }
+        Ok(())
+    }
+
     fn validate(
         &self,
         id: &str,
@@ -186,12 +216,9 @@ impl ComputerUseSession {
                 let scope = &self.scope;
                 let session_id = &self.session_id;
                 let mut gate_error = None;
-                let outcome = dcc_cua_platform_windows::dismiss_exact_native_menu(&metadata.proof, || {
+                let outcome = dcc_cua_platform_windows::dismiss_exact_native_menu(&metadata.proof, |phase| {
                     let result = (|| {
-                        metadata.validate(state_id, scope, session_id, metadata.read_at.elapsed())?;
-                        if Instant::now() >= authorization_deadline {
-                            return Err(ComputerUseError::new(ComputerUseErrorCode::SessionRefreshRequired, "native menu task authorization expired"));
-                        }
+                        metadata.validate_gate_authority(state_id, scope, session_id, phase, Instant::now(), authorization_deadline)?;
                         // This source is used only as a shared read-only lifecycle
                         // fence. No input-suppression lease is acquired.
                         lifecycle.validate_active().map_err(|_| ComputerUseError::new(ComputerUseErrorCode::UserInterrupted, "native menu control session stopped"))?;

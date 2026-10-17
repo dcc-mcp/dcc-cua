@@ -5,7 +5,7 @@ use windows_sys::Win32::{
     UI::WindowsAndMessaging::*,
 };
 
-use super::{NativeMenuProof, refused, validate_proof};
+use super::{NativeMenuProof, popup_hidden_or_gone, refused, validate_proof};
 use crate::{UiaError, UiaTarget, exact_window_native_state};
 
 fn hwnd(raw: u64) -> HWND {
@@ -181,16 +181,11 @@ pub(super) fn confirm(
         if owner.instance != proof.owner.instance {
             return Err(refused("menu owner instance changed after the message"));
         }
-        let popup_hidden_or_gone = if unsafe { IsWindow(hwnd(proof.popup.window_handle)) } == 0 {
-            true
-        } else {
-            let popup =
-                exact_window_native_state(proof.popup.process_id, proof.popup.window_handle)?;
-            if popup.instance != proof.popup.instance {
-                return Err(refused("target popup HWND was reused after the message"));
-            }
-            !popup.visible
-        };
+        let popup_hidden_or_gone = popup_hidden_or_gone(
+            &proof.popup,
+            || unsafe { IsWindow(hwnd(proof.popup.window_handle)) } != 0,
+            || exact_window_native_state(proof.popup.process_id, proof.popup.window_handle),
+        )?;
         let info = thread_info(owner.instance.window_thread_id)?;
         let inactive = info.flags & (GUI_INMENUMODE | GUI_POPUPMENUMODE | GUI_SYSTEMMENUMODE) == 0
             && info.hwndMenuOwner.is_null();
