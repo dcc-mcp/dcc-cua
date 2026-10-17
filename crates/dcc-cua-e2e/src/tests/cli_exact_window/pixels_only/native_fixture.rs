@@ -1,6 +1,7 @@
 //! Disposable custom windows only. No UIA/MSAA provider is implemented.
 #[allow(unused_imports)] // Required by the repository's separated-test-module gate.
 use rstest::rstest;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, mpsc};
 use std::thread::JoinHandle;
@@ -8,12 +9,14 @@ use std::thread::JoinHandle;
 use windows_sys::Win32::Foundation::*;
 use windows_sys::Win32::Graphics::Gdi::{GetStockObject, WHITE_BRUSH};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{SetActiveWindow, SetFocus};
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
 #[derive(Default)]
 pub(super) struct Probe {
     pub provider_requests: AtomicUsize,
     pub activation_or_input: AtomicUsize,
+    pub key_events: Mutex<Vec<(u64, u32, usize)>>,
 }
 
 unsafe extern "system" fn procedure(hwnd: HWND, message: u32, w: WPARAM, l: LPARAM) -> LRESULT {
@@ -24,6 +27,13 @@ unsafe extern "system" fn procedure(hwnd: HWND, message: u32, w: WPARAM, l: LPAR
     let probe = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) } as *const Probe;
     if !probe.is_null() {
         let probe = unsafe { &*probe };
+        if matches!(message, WM_KEYDOWN | WM_KEYUP) {
+            probe
+                .key_events
+                .lock()
+                .unwrap()
+                .push((hwnd as usize as u64, message, w));
+        }
         if message == WM_GETOBJECT {
             probe.provider_requests.fetch_add(1, Ordering::SeqCst);
             return 0; // Deliberately no provider, including no DefWindowProc proxy.
@@ -59,6 +69,32 @@ unsafe extern "system" fn procedure(hwnd: HWND, message: u32, w: WPARAM, l: LPAR
                         SWP_HIDEWINDOW
                     },
             );
+        }
+        return 0;
+    }
+    if message == WM_APP + 2 {
+        let rectangle = unsafe { &*(l as *const RECT) };
+        assert_ne!(
+            unsafe {
+                SetWindowPos(
+                    hwnd,
+                    HWND_TOPMOST,
+                    rectangle.left,
+                    rectangle.top,
+                    rectangle.right - rectangle.left,
+                    rectangle.bottom - rectangle.top,
+                    SWP_NOACTIVATE,
+                )
+            },
+            0
+        );
+        return 0;
+    }
+    if message == WM_APP + 3 {
+        unsafe {
+            SetForegroundWindow(hwnd);
+            SetActiveWindow(hwnd);
+            SetFocus(hwnd);
         }
         return 0;
     }
@@ -179,6 +215,36 @@ impl Fixture {
             self.probe.provider_requests.load(Ordering::SeqCst),
             self.probe.activation_or_input.load(Ordering::SeqCst),
         )
+    }
+
+    pub fn resize_input_roots(&self, rectangle: RECT) {
+        for raw in [self.target, self.blocker] {
+            unsafe {
+                SendMessageW(
+                    raw as usize as HWND,
+                    WM_APP + 2,
+                    0,
+                    &rectangle as *const RECT as isize,
+                )
+            };
+        }
+        // The existing decoy stays alive but cannot overlap the enlarged root.
+        unsafe { ShowWindow(self.decoy as usize as HWND, SW_HIDE) };
+    }
+
+    pub fn focus_target(&self) {
+        unsafe { SendMessageW(self.target as usize as HWND, WM_APP + 3, 0, 0) };
+    }
+
+    pub fn target_key_events(&self) -> Vec<(u32, usize)> {
+        self.probe
+            .key_events
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(hwnd, _, _)| *hwnd == self.target)
+            .map(|(_, message, key)| (*message, *key))
+            .collect()
     }
 }
 

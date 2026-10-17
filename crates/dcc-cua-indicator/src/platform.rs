@@ -47,6 +47,8 @@ pub(crate) mod capture_exclusion;
 pub(crate) mod cursor_registration;
 mod escape_hub_lifecycle;
 mod frame_wait;
+mod owned_input_suppression;
+pub(super) use owned_input_suppression::Guard as PlatformInputSuppressionGuard;
 mod presentation;
 mod rendering;
 use capture_exclusion::CaptureExclusionState;
@@ -78,6 +80,8 @@ const OVERLAY_RECORDING_PROP: PCWSTR = w!("DccCuaBannerRecording");
 const OVERLAY_LIVE_PROP: PCWSTR = w!("DccCuaBannerLiveObservation");
 const OVERLAY_ICON_PROP: PCWSTR = w!("DccCuaBannerIcon");
 const OVERLAY_THEME_PROP: PCWSTR = w!("DccCuaBannerTheme");
+const OVERLAY_INSTANCE_PROP: PCWSTR = w!("DccCuaOwnedPresenterInstance");
+static NEXT_OVERLAY_INSTANCE: AtomicUsize = AtomicUsize::new(1);
 const BANNER_ALPHA: u8 = 248;
 const FRAME_INTERVAL: Duration = Duration::from_millis(33);
 const ESCAPE_HOOK_WATCHDOG_INTERVAL_MS: u32 = 1_000;
@@ -162,7 +166,46 @@ impl PlatformCaptureExclusionSource {
     }
 }
 
+/// This capability comes only from one PlatformBanner, never from an HWND or
+/// request field. It neither enumerates nor suppresses another renderer/cursor.
+#[derive(Clone)]
+pub(super) struct PlatformInputSuppressionSource {
+    renderer: Arc<owned_input_suppression::RendererSuppression>,
+    active: Arc<AtomicBool>,
+    stop: Arc<AtomicBool>,
+    generation: u64,
+    target: (u32, u64),
+}
+
+impl PlatformInputSuppressionSource {
+    pub(super) fn validate_active(&self) -> Result<(), IndicatorError> {
+        if self.active.load(Ordering::Acquire)
+            && !self.stop.load(Ordering::Acquire)
+            && !interrupt_generation_changed(self.generation, interrupt_generation())
+        {
+            return Ok(());
+        }
+        Err(IndicatorError::Backend(
+            "the owning indicator session stopped or was interrupted".into(),
+        ))
+    }
+
+    pub(super) fn begin(
+        &self,
+        process_id: u32,
+        window_handle: u64,
+    ) -> Result<PlatformInputSuppressionGuard, IndicatorError> {
+        if self.target != (process_id, window_handle) {
+            return Err(IndicatorError::InvalidTarget(
+                "owned indicator input suppression belongs to another target".into(),
+            ));
+        }
+        self.renderer.acquire(|| self.validate_active().is_ok())
+    }
+}
+
 pub(super) struct PlatformBanner {
+    input_suppression: PlatformInputSuppressionSource,
     stop: Arc<AtomicBool>,
     active: Arc<AtomicBool>,
     interrupted: Arc<AtomicBool>,
@@ -198,6 +241,13 @@ impl PlatformBanner {
         let recording = Arc::new(AtomicBool::new(false));
         let live_observation = Arc::new(AtomicBool::new(false));
         let backend_failure = Arc::new(Mutex::new(None));
+        let input_suppression = PlatformInputSuppressionSource {
+            renderer: Arc::new(owned_input_suppression::RendererSuppression::default()),
+            active: Arc::clone(&active),
+            stop: Arc::clone(&stop),
+            generation,
+            target: (target.process_id, target.window_handle),
+        };
         let capture_exclusion = capture_exclusion::state();
         let cross_process_registration_gate = capture_exclusion::CrossProcessGate::acquire()?;
         let registration_gate = capture_exclusion::RegistrationGate::acquire()?;
@@ -218,6 +268,7 @@ impl PlatformBanner {
         let thread_inside_target = Arc::clone(&inside_target);
         let thread_backend_failure = Arc::clone(&backend_failure);
         let thread_escape_hub = escape_hub;
+        let thread_input_suppression = Arc::clone(&input_suppression.renderer);
         let thread = thread::Builder::new()
             .name("dcc-cua-control-banner".into())
             .spawn(move || {
@@ -236,14 +287,16 @@ impl PlatformBanner {
                     &ready_tx,
                     &thread_backend_failure,
                     capture_exclusion,
+                    &thread_input_suppression,
                 );
+                thread_active.store(false, Ordering::Release);
+                thread_input_suppression.stop();
                 if let Err(error) = result {
                     if let Ok(mut stored) = thread_backend_failure.lock() {
                         *stored = Some(BannerFailure::from(&error));
                     }
                     let _ = ready_tx.try_send(Err(error));
                 }
-                thread_active.store(false, Ordering::Release);
                 thread_visible.store(false, Ordering::Release);
                 thread_frame_visible.store(false, Ordering::Release);
             })
@@ -256,6 +309,7 @@ impl PlatformBanner {
 
         match ready {
             Ok(Ok(())) => Ok(Self {
+                input_suppression,
                 stop,
                 active,
                 interrupted,
@@ -342,6 +396,10 @@ impl PlatformBanner {
         }
     }
 
+    pub(super) fn input_suppression_source(&self) -> PlatformInputSuppressionSource {
+        self.input_suppression.clone()
+    }
+
     pub(super) fn begin_capture_exclusion(
         &self,
     ) -> Result<PlatformCaptureExclusionGuard, IndicatorError> {
@@ -362,16 +420,86 @@ impl Drop for PlatformBanner {
     fn drop(&mut self) {
         self.activity.set(BannerActivity::Stopping);
         self.stop.store(true, Ordering::Release);
+        self.input_suppression.renderer.stop();
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
     }
 }
 
-struct OverlayWindow(HWND);
+struct OverlayWindow(HWND, usize);
+
+impl OverlayWindow {
+    fn renderer_owns(window: HWND) -> bool {
+        let mut pid = 0;
+        let thread = unsafe { GetWindowThreadProcessId(window, Some(&mut pid)) };
+        thread == unsafe { GetCurrentThreadId() } && pid == std::process::id()
+    }
+
+    fn new(window: HWND) -> Result<Self, IndicatorError> {
+        if !Self::renderer_owns(window)
+            || !unsafe { GetPropW(window, OVERLAY_INSTANCE_PROP) }
+                .0
+                .is_null()
+        {
+            return Err(IndicatorError::Backend(
+                "new presenter instance is not owned by its renderer".into(),
+            ));
+        }
+        let instance = NEXT_OVERLAY_INSTANCE
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+                value.checked_add(1)
+            })
+            .map_err(|_| IndicatorError::Backend("presenter instance tokens exhausted".into()));
+        let allocated = instance.as_ref().ok().copied();
+        let result = instance.and_then(|instance| {
+            unsafe {
+                SetPropW(
+                    window,
+                    OVERLAY_INSTANCE_PROP,
+                    Some(HANDLE(instance as *mut _)),
+                )
+            }
+            .map_err(|error| {
+                IndicatorError::Backend(format!("bind owned presenter instance: {error}"))
+            })?;
+            Ok(Self(window, instance))
+        });
+        let current = unsafe { GetPropW(window, OVERLAY_INSTANCE_PROP) }.0 as usize;
+        if result.is_err()
+            && Self::renderer_owns(window)
+            && (current == 0 || allocated == Some(current))
+        {
+            // Clean only the still-owned new instance; never a replacement.
+            let _ = unsafe { DestroyWindow(window) };
+        }
+        result
+    }
+
+    fn still_owned(&self) -> bool {
+        Self::renderer_owns(self.0)
+            && unsafe { GetPropW(self.0, OVERLAY_INSTANCE_PROP) }.0 as usize == self.1
+    }
+}
+
+struct InputRendererLifetime<'a> {
+    active: &'a AtomicBool,
+    suppression: &'a owned_input_suppression::RendererSuppression,
+}
+
+impl Drop for InputRendererLifetime<'_> {
+    fn drop(&mut self) {
+        self.active.store(false, Ordering::Release);
+        self.suppression.stop();
+    }
+}
 
 impl Drop for OverlayWindow {
     fn drop(&mut self) {
+        if !self.still_owned() {
+            return;
+        }
+        let _ = unsafe { RemovePropW(self.0, OVERLAY_INSTANCE_PROP) };
         let _ = unsafe { RemovePropW(self.0, OVERLAY_ACTIVITY_PROP) };
         let _ = unsafe { RemovePropW(self.0, OVERLAY_RECORDING_PROP) };
         let _ = unsafe { RemovePropW(self.0, OVERLAY_LIVE_PROP) };
@@ -791,19 +919,26 @@ fn run_banner(
     ready: &std::sync::mpsc::SyncSender<Result<(), IndicatorError>>,
     rendering_failure: &Mutex<Option<BannerFailure>>,
     capture_exclusion: &CaptureExclusionState,
+    input_suppression: &owned_input_suppression::RendererSuppression,
 ) -> Result<(), IndicatorError> {
     let dpi_awareness = ThreadDpiAwareness::enter()?;
     let target_window = HWND(target.window_handle as *mut core::ffi::c_void);
     validate_target(target_window, target.process_id)?;
     let identity = target.identity();
-    let overlay = OverlayWindow(create_overlay(
+    let overlay = OverlayWindow::new(create_overlay(
         &identity,
         BannerActivity::Connecting,
         target_icon(target_window),
-    )?);
+    )?)?;
     let frames = (0..TARGET_FRAME_GRADIENT_STEPS)
-        .map(|_| create_frame_overlay().map(OverlayWindow))
+        .map(|_| create_frame_overlay().and_then(OverlayWindow::new))
         .collect::<Result<Vec<_>, _>>()?;
+    // Revoke capabilities before the owned HWNDs are destroyed on any exit,
+    // including backend failures; error reporting must not delay revocation.
+    let _input_lifetime = InputRendererLifetime {
+        active,
+        suppression: input_suppression,
+    };
     let dpi_probe = DpiProbeWindow::create(&dpi_awareness).ok();
     let target_geometry = read_target_geometry(target_window, dpi_probe.as_ref())?;
     let mut compact_hidden = compact_target(target_geometry);
@@ -853,7 +988,27 @@ fn run_banner(
             stop.store(true, Ordering::Release);
             break;
         }
-        if capture_exclusion::hide_and_acknowledge(
+        let owned_input_hidden = input_suppression.hide_if_requested(|| {
+            let mut surfaces = std::iter::once(&overlay).chain(frames.iter());
+            for surface in surfaces.clone() {
+                // Only the window-owning thread has these exact RAII handles.
+                if !surface.still_owned() {
+                    return false;
+                }
+                let _ = unsafe { ShowWindow(surface.0, SW_HIDE) };
+            }
+            let hidden = surfaces.all(|surface| {
+                surface.still_owned() && !unsafe { IsWindowVisible(surface.0) }.as_bool()
+            });
+            if hidden {
+                visible.store(false, Ordering::Release);
+                frame_visible.store(false, Ordering::Release);
+            }
+            hidden
+        })?;
+        // A held input lease must still service a simultaneous capture's
+        // acknowledgement; input acquisition itself never requests that lease.
+        let capture_hidden = capture_exclusion::hide_and_acknowledge(
             capture_exclusion,
             overlay.0,
             &frames,
@@ -861,7 +1016,8 @@ fn run_banner(
             frame_visible,
             &mut acknowledged_capture_request,
             &mut cursor_exclusion,
-        ) {
+        );
+        if owned_input_hidden || capture_hidden {
             frame_wait::wait_for_frame(stop, interrupted, runtime)?;
             continue;
         }

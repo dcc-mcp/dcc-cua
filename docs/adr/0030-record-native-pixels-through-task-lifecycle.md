@@ -145,3 +145,26 @@ frames, actual first encoded sample/sidecar correspondence, pause/terminal
 projection, and preservation of encoder failures. Native acceptance must still
 decode real output and independently attribute its markers to the exact owned
 window, including pause/resume and same-executable ambiguity cases.
+
+## Owned presentation during Windows pixel input
+
+Foreground `pixels_only` input obtains an opaque capability from its exact
+session's `ControlBanner`. The renderer's owning thread physically hides and
+confirms only its own banner/frame handles. This input lease does not request
+global capture exclusion, enumerate or hide peer renderers, suppress the shared
+SDK cursor, or change the strict native occlusion collector. A peer presenter,
+unfamiliar window or shared cursor that still overlaps remains a blocker.
+
+The blocking input worker owns the lease through final target fences, held-key
+release cleanup and post-dispatch validation. Cancelling its async waiter cannot
+restore presentation while native input is still active. Inactive, stopped or
+interrupted renderer sources reject acquisition; stop revokes the renderer
+before destroying its exact windows. Lease drop requests ordinary presentation
+only from a surviving renderer and cannot revive a stopped session. Existing
+capture requests continue to receive acknowledgements during held input.
+
+Protocol and cancellation tests use no desktop APIs. The controlled Windows CI
+fixture independently checks visible native frame overlap, actual target
+key-down/key-up records, peer/foreign rejection with no key events, scoped
+restoration and stop cleanup. These tests do not establish acceptance in a user
+application or update an installed runtime.

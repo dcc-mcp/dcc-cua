@@ -5,3 +5,9 @@ windows-uia-fixtures = { max-threads = 1 }
 filter = 'package(dcc-cua-platform-windows) & test(/powershell_.*_behaviorally_fixture_tested/)'
 test-group = 'windows-uia-fixtures'
 threads-required = "num-cpus"
+
+# This existing native fixture now verifies real foreground key delivery. It
+# must have the desktop to itself, including against unrelated GUI test cases.
+[[profile.default.overrides]]
+filter = 'package(dcc-cua-e2e) & test(external_pixels_only_cli_covers_provider_free_capture_failure_and_cleanup)'
+threads-required = "num-cpus"

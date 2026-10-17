@@ -17,7 +17,7 @@ fn exact_source_presenter_frame_wait_boundary() {
         .split_once("&mut cursor_exclusion,")
         .unwrap()
         .1
-        .split_once(") {")
+        .split_once("if owned_input_hidden || capture_hidden {")
         .unwrap()
         .1
         .split_once("continue;")
