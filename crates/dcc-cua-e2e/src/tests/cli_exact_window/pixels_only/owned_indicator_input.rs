@@ -10,7 +10,12 @@ use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
 use super::{ComputerUseErrorCode, Duration, Instant};
-use super::{bounded_session, inventory, native_fixture::Fixture};
+use super::{bounded_session, native_fixture::Fixture};
+
+#[path = "../../../../../dcc-cua-core/src/tests/fixtures/pixel_keypress.rs"]
+mod fixture_keypress;
+#[path = "owned_presenter.rs"]
+mod owned_presenter;
 
 async fn wait_for(mut predicate: impl FnMut() -> bool, reason: &str) {
     let deadline = Instant::now() + Duration::from_secs(5);
@@ -20,33 +25,16 @@ async fn wait_for(mut predicate: impl FnMut() -> bool, reason: &str) {
     }
 }
 
-fn family(label: &str) -> (Vec<u64>, Vec<u64>) {
-    let windows = inventory::read(std::process::id(), "owned-input-renderer-family");
-    let banner = windows
-        .iter()
-        .find(|window| {
-            window.identity.class == "DccCuaControlBanner" && window.identity.title == label
-        })
-        .expect("exact renderer banner");
-    let thread = banner.identity.thread;
-    let family: Vec<_> = windows
-        .iter()
-        .filter(|window| {
-            window.identity.thread == thread
-                && matches!(
-                    window.identity.class.as_str(),
-                    "DccCuaControlBanner" | "DccCuaControlFrame"
-                )
-        })
-        .collect();
-    (
-        family.iter().map(|window| window.identity.hwnd).collect(),
-        family
-            .iter()
-            .filter(|window| window.identity.class == "DccCuaControlFrame")
-            .map(|window| window.identity.hwnd)
-            .collect(),
+fn family(before: &[owned_presenter::Root]) -> (Vec<u64>, Vec<u64>) {
+    let pid = std::process::id();
+    let after = owned_presenter::snapshot(pid);
+    owned_presenter::new_family(
+        pid,
+        before,
+        &after,
+        dcc_cua_indicator::TARGET_FRAME_GRADIENT_STEPS,
     )
+    .expect("one complete, newly owned renderer instance")
 }
 
 fn any_visible(windows: &[u64]) -> bool {
@@ -123,6 +111,17 @@ pub(super) async fn verify(fixture: &Fixture, driver: &ComputerUseDriver) {
         env!("CARGO_PKG_VERSION"),
         fixture.target
     );
+    // The driver's shared cursor is outside this input lease's ownership. Prove
+    // the existing foreground fixture is initially unobscured rather than
+    // assuming the cursor's z-order or hiding it to obtain a positive result.
+    let initial =
+        dcc_cua_platform_windows::exact_window_pixel_evidence(pid, fixture.target).unwrap();
+    eprintln!("owned-input initial native evidence: {initial:?}");
+    assert!(
+        initial.unobscured,
+        "owned fixture starts with an unrelated blocking root: {:?}",
+        initial.visibility_failure
+    );
     let mut session = driver
         .session(
             ComputerUseTargetScope {
@@ -134,8 +133,9 @@ pub(super) async fn verify(fixture: &Fixture, driver: &ComputerUseDriver) {
             "owned-indicator-input",
         )
         .unwrap();
-    let started = bounded_session(session.start_pixels_only()).await.unwrap();
-    let (own_family, own_frames) = family(started["banner"]["label"].as_str().unwrap());
+    let before_own = owned_presenter::snapshot(pid);
+    bounded_session(session.start_pixels_only()).await.unwrap();
+    let (own_family, own_frames) = family(&before_own);
     assert!(
         own_family.len() > 1,
         "banner and physical frame bands must exist"
@@ -153,6 +153,7 @@ pub(super) async fn verify(fixture: &Fixture, driver: &ComputerUseDriver) {
 
     // This is another genuine renderer, even though it shares the runtime and
     // target. Names, PID/class and matching bounds grant no input exemption.
+    let before_peer = owned_presenter::snapshot(pid);
     let peer = ControlBanner::start(BannerTarget {
         process_id: pid,
         window_handle: fixture.target,
@@ -160,7 +161,7 @@ pub(super) async fn verify(fixture: &Fixture, driver: &ComputerUseDriver) {
         application_name: "owned native input fixture".into(),
     })
     .unwrap();
-    let (peer_family, peer_frames) = family(&peer.status().label);
+    let (peer_family, peer_frames) = family(&before_peer);
     wait_for(
         || any_visible(&peer_frames),
         "peer presenter never became visible",
@@ -214,13 +215,7 @@ pub(super) async fn verify(fixture: &Fixture, driver: &ComputerUseDriver) {
         .collect();
     assert_blocked_by(fixture.target, &both_families);
     let baseline = fixture.target_key_events();
-    let action = ComputerUseAction {
-        action: "keypress".into(),
-        keys: vec!["F8".into()],
-        duration_ms: Some(80),
-        observation_id: Some(screenshot.observation.observation_id),
-        ..Default::default()
-    };
+    let action = fixture_keypress::request(screenshot.observation.observation_id);
     let refused = bounded_session(session.perform_action(&action))
         .await
         .expect_err("peer must occlude physical input");

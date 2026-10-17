@@ -1,6 +1,28 @@
 use super::*;
 use rstest::rstest;
 
+#[path = "../../tests/fixtures/pixel_keypress.rs"]
+mod fixture_keypress;
+
+#[rstest]
+fn native_fixture_f8_request_passes_host_and_pixel_policy_without_held_key_bypass() {
+    let action = fixture_keypress::request("owned-native-observation".into());
+    validate_action(&action)
+        .expect("actual native fixture request must pass the Host action policy");
+    validate_pixel_action(&action)
+        .expect("actual native fixture request must pass the pixel route");
+    assert_eq!(action.keys, ["F8"]);
+    assert_eq!(action.duration_ms, None);
+    let previous_held_f8 = ComputerUseAction {
+        duration_ms: Some(80),
+        ..action
+    };
+    assert_eq!(
+        validate_action(&previous_held_f8).unwrap_err().code,
+        ComputerUseErrorCode::InvalidAction
+    );
+}
+
 #[rstest]
 #[tokio::test]
 async fn cancelled_async_waiter_keeps_worker_lease_until_release_and_postcheck() {
