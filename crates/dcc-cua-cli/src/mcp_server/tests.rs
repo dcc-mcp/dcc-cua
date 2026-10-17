@@ -1108,14 +1108,19 @@ fn public_tool_schema_advertises_closed_pixel_actions_and_exact_window_only() {
     let scopes = pixel["properties"]["allowed_actions"]["items"]["oneOf"]
         .as_array()
         .unwrap();
-    assert_eq!(scopes.len(), 4);
+    assert_eq!(scopes.len(), 5);
+    let window_actions: std::collections::BTreeSet<_> = scopes
+        .iter()
+        .filter_map(|scope| scope["properties"]["action"]["const"].as_str())
+        .collect();
     assert_eq!(
-        scopes[0]["properties"]["action"]["const"],
-        "minimize_window"
-    );
-    assert_eq!(
-        scopes[1]["properties"]["action"]["const"],
-        "set_window_frame"
+        window_actions,
+        std::collections::BTreeSet::from([
+            "minimize_window",
+            "set_window_frame",
+            "dismiss_menu",
+            "capture_preparation_begin"
+        ])
     );
     for scope in scopes {
         assert_eq!(scope["type"], "object");
@@ -1130,7 +1135,32 @@ fn public_tool_schema_advertises_closed_pixel_actions_and_exact_window_only() {
             ])
         );
     }
-    let preparation = &scopes[2]["properties"];
+    let find_window_scope = |action: &str| {
+        scopes
+            .iter()
+            .find(|scope| scope["properties"]["action"]["const"].as_str() == Some(action))
+            .expect("each closed native window action must have its own schema branch")
+    };
+    for action in &window_actions {
+        let properties = &find_window_scope(action)["properties"];
+        assert_eq!(properties["input_kind"]["const"], "window_state");
+        assert_eq!(properties["secret_input"]["const"], false);
+        assert_eq!(
+            properties["authorization_category"]["const"],
+            "window_state"
+        );
+        assert_eq!(properties["browser_origin"], json!({"type":"null"}));
+    }
+    let menu = &find_window_scope("dismiss_menu")["properties"];
+    assert_eq!(
+        menu,
+        &json!({
+            "action":{"const":"dismiss_menu"}, "input_kind":{"const":"window_state"},
+            "secret_input":{"const":false}, "authorization_category":{"const":"window_state"},
+            "browser_origin":{"type":"null"}
+        })
+    );
+    let preparation = &find_window_scope("capture_preparation_begin")["properties"];
     assert_eq!(
         preparation,
         &json!({
@@ -1157,7 +1187,10 @@ fn public_tool_schema_advertises_closed_pixel_actions_and_exact_window_only() {
     ] {
         assert!(methods.contains(&json!(method)));
     }
-    let input = &scopes[3]["properties"];
+    let input = &scopes
+        .iter()
+        .find(|scope| scope["properties"]["input_kind"]["const"] == "raw_input")
+        .expect("the original closed raw-input branch remains explicit")["properties"];
     assert_eq!(
         input["action"]["enum"],
         json!([
@@ -1174,6 +1207,13 @@ fn public_tool_schema_advertises_closed_pixel_actions_and_exact_window_only() {
     assert_eq!(input["input_kind"]["const"], "raw_input");
     assert_eq!(input["secret_input"]["const"], false);
     assert_eq!(input["authorization_category"]["const"], "raw_input");
+    assert_eq!(input["browser_origin"], json!({"type":"null"}));
+    assert!(
+        !input["action"]["enum"]
+            .as_array()
+            .unwrap()
+            .contains(&menu["action"]["const"])
+    );
     assert!(
         !input["action"]["enum"]
             .as_array()
@@ -1657,7 +1697,7 @@ fn start_task_has_no_confirmation_ui_or_secret_value_fields() {
 fn task_action_schema_matches_the_closed_runtime_contract() {
     let schema = task_action_scope_schema();
     let variants = schema["oneOf"].as_array().unwrap();
-    assert_eq!(variants.len(), 7);
+    assert_eq!(variants.len(), 8);
 
     let variant = |input_kind: &str| {
         variants
@@ -1670,6 +1710,7 @@ fn task_action_schema_matches_the_closed_runtime_contract() {
     for action in [
         "minimize_window",
         "set_window_frame",
+        "dismiss_menu",
         "capture_preparation_begin",
     ] {
         let mut matching = variants
@@ -1701,9 +1742,11 @@ fn task_action_schema_matches_the_closed_runtime_contract() {
     }
     for kind in ["semantic", "raw_input", "browser", "clipboard"] {
         let input = &variant(kind)["properties"];
-        assert_ne!(input["action"]["const"], "capture_preparation_begin");
-        if let Some(actions) = input["action"]["enum"].as_array() {
-            assert!(!actions.contains(&json!("capture_preparation_begin")));
+        for window_action in ["capture_preparation_begin", "dismiss_menu"] {
+            assert_ne!(input["action"]["const"], window_action);
+            if let Some(actions) = input["action"]["enum"].as_array() {
+                assert!(!actions.contains(&json!(window_action)));
+            }
         }
     }
     let semantic = variant("semantic");
