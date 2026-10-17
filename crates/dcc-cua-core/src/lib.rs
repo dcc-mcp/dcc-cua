@@ -7,6 +7,7 @@
 #[cfg(any(windows, test))]
 mod capture_diagnostics;
 mod contracts;
+mod diagnostics_only;
 mod driver_factory;
 mod input_state;
 mod interactive_desktop;
@@ -23,6 +24,7 @@ mod windows_uia_fallback;
 
 pub use contracts::*;
 pub use dcc_cua_showcase::RecordingAuthorization;
+pub use diagnostics_only::diagnostics_only;
 pub use input_state::*;
 pub use private_worker::run_private_worker;
 #[cfg(target_os = "macos")]

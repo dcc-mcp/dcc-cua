@@ -86,6 +86,7 @@ const KNOWN_FLAG_NAMES: &[&str] = &[
     "--delay-ms",
     "--delivery-mode",
     "--diagnostics-dir",
+    "--diagnostics-only",
     "--duration-ms",
     "--element-index",
     "--element-token",
@@ -187,6 +188,25 @@ pub(super) fn reject_unknown_flags(flags: &[String]) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+pub(super) fn diagnostics_only_requested(command: &str, flags: &[String]) -> Result<bool, String> {
+    let option = "--diagnostics-only";
+    let supplied =
+        |argument: &str| argument.split_once('=').map_or(argument, |(name, _)| name) == option;
+    if !supplied(command) && !flags.iter().any(|argument| supplied(argument)) {
+        return Ok(false);
+    }
+    if command != "doctor" {
+        return Err("--diagnostics-only is supported only by local doctor".into());
+    }
+    if flags.len() != 1 || flags[0] != option {
+        return Err(
+            "local doctor accepts --diagnostics-only once, without a value or other arguments"
+                .into(),
+        );
+    }
+    Ok(true)
 }
 
 pub(super) fn flag_value(flags: &[String], name: &str) -> Option<String> {
@@ -340,6 +360,7 @@ pub(super) fn print_help() -> std::io::Result<()> {
   clipboard-read --app APP|--pid PID|--window-id ID|--title TITLE [--include-text]
   clipboard-write --app APP|--pid PID|--window-id ID|--title TITLE --text TEXT|--image-path FILE|--file-path FILE
   doctor [--route full|visual|semantic] [--endpoint PATH|--spawn BINARY]
+  doctor --diagnostics-only        # local desktop metadata only; no SDK startup or readiness test
   host [--stdio|--endpoint PATH] [--grant existing-profile]
 
 Host uses versioned big-endian JSON frames. Hello version 1 negotiates binary-frame or shared-memory snapshots and supports request_id correlation."#
@@ -377,3 +398,6 @@ pub(super) fn escalation_reason_help() -> String {
         "Escalation reasons: {values}. Use --escalation-detail NOTE for an optional audit note of at most {MAX_ESCALATION_DETAIL_CHARS} characters."
     )
 }
+
+#[cfg(test)]
+mod tests;
