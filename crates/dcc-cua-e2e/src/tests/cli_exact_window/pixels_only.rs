@@ -11,6 +11,7 @@ use serde_json::{Value, json};
 mod inventory;
 mod native_fixture;
 mod owned_indicator_input;
+mod window_layout;
 use native_fixture::{Fixture, cursor_position, foreground, visible_windows_for};
 
 fn pixel_arguments(pid: u32, hwnd: u64, output: &Path) -> Vec<String> {
@@ -522,4 +523,5 @@ async fn external_pixels_only_cli_covers_provider_free_capture_failure_and_clean
     // Reuse this test's disposable roots and exclusive desktop allocation.
     // All earlier provider-free inventory checks have already completed.
     owned_indicator_input::verify(&fixture, &driver).await;
+    window_layout::verify(&fixture, &driver).await;
 }

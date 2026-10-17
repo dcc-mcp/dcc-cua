@@ -71,9 +71,19 @@ pub(crate) fn run_exact_window_frame_sequence(
         })?)
         .map_err(BeforeDispatch)?;
     }
+    if expected.maximized {
+        return Err(BeforeDispatch(UiaError::InvalidTarget(
+            "set_window_frame requires a restored target; issue explicit restore_activate, then read fresh native window state".into(),
+        )));
+    }
     gate().map_err(BeforeDispatch)?;
     let before = read().map_err(BeforeDispatch)?;
     validate_instance(target, expected.instance, &before).map_err(BeforeDispatch)?;
+    if before.maximized {
+        return Err(BeforeDispatch(UiaError::InvalidTarget(
+            "the exact target became maximized; issue explicit restore_activate before set_window_frame".into(),
+        )));
+    }
     if before.bounds.is_none()
         || before.bounds != expected.bounds
         || before.visible_bounds != expected.visible_bounds
@@ -99,9 +109,9 @@ pub(crate) fn run_exact_window_frame_sequence(
             })?)
             .map_err(AfterDispatch)?;
         }
-        if after.dpi != expected.dpi || !after.visible || after.minimized {
+        if after.dpi != expected.dpi || !after.visible || after.minimized || after.maximized {
             return Err(AfterDispatch(UiaError::InvalidTarget(
-                "native frame readback changed DPI or visibility".into(),
+                "native frame readback changed DPI or visibility, or became maximized".into(),
             )));
         }
         if after.bounds == Some(requested) {

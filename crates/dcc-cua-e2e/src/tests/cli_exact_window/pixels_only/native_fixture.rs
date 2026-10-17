@@ -98,6 +98,14 @@ unsafe extern "system" fn procedure(hwnd: HWND, message: u32, w: WPARAM, l: LPAR
         }
         return 0;
     }
+    if message == WM_APP + 4 {
+        unsafe { ShowWindow(hwnd, SW_MAXIMIZE) };
+        return 0;
+    }
+    if message == WM_APP + 5 {
+        unsafe { ShowWindow(hwnd, SW_SHOWMINNOACTIVE) };
+        return 0;
+    }
     if message == WM_CLOSE {
         unsafe { PostQuitMessage(0) };
         return 0;
@@ -234,6 +242,15 @@ impl Fixture {
 
     pub fn focus_target(&self) {
         unsafe { SendMessageW(self.target as usize as HWND, WM_APP + 3, 0, 0) };
+    }
+
+    pub fn maximize_target(&self) {
+        // Runs only on this disposable CI fixture's owning UI thread.
+        unsafe { SendMessageW(self.target as usize as HWND, WM_APP + 4, 0, 0) };
+    }
+
+    pub fn minimize_target(&self) {
+        unsafe { SendMessageW(self.target as usize as HWND, WM_APP + 5, 0, 0) };
     }
 
     pub fn target_key_events(&self) -> Vec<(u32, usize)> {

@@ -12,6 +12,7 @@ fn state() -> ExactWindowNativeState {
         dpi: 240,
         visible: true,
         minimized: false,
+        maximized: false,
         foreground: false,
         instance: ExactWindowPixelInstanceEvidence {
             process_creation_time_100ns: 7,
@@ -20,6 +21,77 @@ fn state() -> ExactWindowNativeState {
             owner_window_handle: 0,
         },
     }
+}
+
+#[rstest]
+#[case(true, true)]
+#[case(true, false)]
+#[case(false, true)]
+fn exact_frame_never_dispatches_against_maximized_metadata(
+    #[case] expected_maximized: bool,
+    #[case] actual_maximized: bool,
+) {
+    let mut expected = state();
+    expected.maximized = expected_maximized;
+    let mut actual = state();
+    actual.maximized = actual_maximized;
+    let dispatches = Cell::new(0);
+    let result = run_exact_window_frame_sequence(
+        UiaTarget {
+            process_id: 42,
+            window_handle: 99,
+        },
+        expected,
+        [50, 800, 926, 680],
+        || Ok(()),
+        || Ok(actual),
+        || {
+            dispatches.set(dispatches.get() + 1);
+            Ok(())
+        },
+        || {},
+    );
+    assert!(
+        matches!(result, Err(ExactWindowFrameError::BeforeDispatch(_))),
+        "maximized frame must require explicit restore_activate: {result:?}"
+    );
+    assert_eq!(dispatches.get(), 0);
+}
+
+#[rstest]
+fn exact_frame_never_confirms_matching_outer_bounds_after_maximize() {
+    let expected = state();
+    let reads = Cell::new(0);
+    let dispatches = Cell::new(0);
+    let requested = [50, 800, 926, 680];
+    let result = run_exact_window_frame_sequence(
+        UiaTarget {
+            process_id: 42,
+            window_handle: 99,
+        },
+        expected,
+        requested,
+        || Ok(()),
+        || {
+            reads.set(reads.get() + 1);
+            let mut actual = expected;
+            if reads.get() > 1 {
+                actual.bounds = Some(requested);
+                actual.maximized = true;
+            }
+            Ok(actual)
+        },
+        || {
+            dispatches.set(dispatches.get() + 1);
+            Ok(())
+        },
+        || panic!("maximized readback is an immediate failure"),
+    );
+    assert!(
+        matches!(result, Err(ExactWindowFrameError::AfterDispatch(_))),
+        "outer equality must not confirm a maximized client: {result:?}"
+    );
+    assert_eq!(dispatches.get(), 1);
 }
 
 #[rstest]

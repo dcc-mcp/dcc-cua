@@ -234,6 +234,7 @@ pub(crate) fn document_for_platform(exact_window_pixels_available: bool) -> Valu
                 "input_sent": false,
                 "host_or_uia_started": false,
                 "max_root_entries_per_phase": 4096,
+                "target_layout_facts": ["maximized", "style", "extended_style", "client_rect_edges", "client_screen_rect_edges"],
                 "authorizes_capture_or_input": false,
             },
             "exact_window_pixels": {

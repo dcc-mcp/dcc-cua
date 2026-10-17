@@ -11,6 +11,7 @@ fn state() -> ExactWindowNativeState {
         dpi: 240,
         visible: true,
         minimized: false,
+        maximized: false,
         foreground: false,
         instance: ExactWindowPixelInstanceEvidence {
             process_creation_time_100ns: 7,

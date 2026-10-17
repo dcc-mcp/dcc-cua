@@ -61,6 +61,7 @@ impl FakeBackend {
                 dpi: 240,
                 visible: true,
                 minimized: false,
+                maximized: false,
                 foreground: true,
                 instance: fence.native_instance,
             },

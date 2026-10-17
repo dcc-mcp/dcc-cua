@@ -33,6 +33,16 @@ fn capture_proof_manifest_is_windows_only_and_never_authorizes_input() {
         contract["required_selectors"],
         serde_json::json!(["--pid", "--window-id"])
     );
+    assert_eq!(
+        contract["target_layout_facts"],
+        serde_json::json!([
+            "maximized",
+            "style",
+            "extended_style",
+            "client_rect_edges",
+            "client_screen_rect_edges",
+        ])
+    );
     for field in [
         "pixels_read",
         "input_sent",

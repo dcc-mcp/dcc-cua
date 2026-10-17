@@ -22,6 +22,7 @@ mod observation;
 mod pixel_start;
 #[cfg(test)]
 mod tests;
+mod window_restore;
 use error_contracts::*;
 
 impl std::fmt::Debug for ComputerUseSession {
@@ -1747,6 +1748,7 @@ impl ComputerUseSession {
             let mut result = json!({
                 "process_id":state.process_id,"window_handle":state.window_handle,"exists":true,
                 "visible":state.visible && !state.minimized,"minimized":state.minimized,
+                "maximized":state.maximized,
                 "foreground":state.foreground,"bounds":state.bounds,"dpi":state.dpi,
                 "visible_bounds":state.visible_bounds,
                 "native_instance":state.instance,"backend":"windows-exact-native-state",
@@ -1992,83 +1994,6 @@ impl ComputerUseSession {
                 "cua": activation.value,
                 "text": activation.text,
                 "degraded": activation.degraded,
-            }))
-        }
-    }
-
-    /// Explicitly restore and activate only the exact PID/HWND bound to this
-    /// session. This operation never runs implicitly from an action retry.
-    pub async fn restore_activate(&mut self) -> ComputerUseResult<Value> {
-        self.ensure_active()?;
-        if self.scope.process_id.is_none() || self.scope.window_handle.is_none() {
-            return self.finish_observation_sensitive_attempt(Err(ComputerUseError::new(
-                ComputerUseErrorCode::InvalidTarget,
-                "restore_activate requires an exact process_id and window_handle grant binding",
-            )));
-        }
-        self.require_observed_input_available()?;
-        let _banner_activity = self.begin_banner_activity(BannerActivity::Navigating);
-        #[cfg(windows)]
-        let expected = self.revalidate_observed_target().await?;
-        #[cfg(windows)]
-        let mutation_gate =
-            self.finish_observed_input_gate(interactive_desktop::require_input_available());
-        #[cfg(windows)]
-        run_gated_preinvalidated_window_mutation(
-            || mutation_gate,
-            || {
-                self.invalidate_action_observations();
-            },
-            || {
-                dcc_cua_platform_windows::restore_and_activate_window(
-                    dcc_cua_platform_windows::UiaTarget {
-                        process_id: expected.pid,
-                        window_handle: expected.window_id,
-                    },
-                    || windows_platform_input_gate("restore_pre_mutation"),
-                    || windows_platform_input_gate("activate_pre_mutation"),
-                )
-                .map_err(|error| {
-                    let mut error = map_windows_window_mutation_error(
-                        "restore and activate the exact Windows target",
-                        error,
-                    );
-                    let details = error.details.get_or_insert_default();
-                    details.automatic_input = Some(false);
-                    details.blind_retry = Some(false);
-                    details.fresh_observation_required = Some(true);
-                    error
-                })
-            },
-        )?;
-        #[cfg(not(windows))]
-        return Err(ComputerUseError::new(
-            ComputerUseErrorCode::BackendUnavailable,
-            "restore_activate is currently available only for exact Windows PID/HWND targets",
-        ));
-
-        #[cfg(windows)]
-        {
-            let target = self.require_observed_target_available().await?;
-            self.require_observed_input_available()?;
-            if target.pid != expected.pid || target.window_id != expected.window_id {
-                return Err(local_activation_validation_failure(
-                    ComputerUseErrorCode::TargetUnavailable,
-                    "the exact target identity changed during restore_activate",
-                ));
-            }
-            if !target.is_foreground {
-                return Err(local_activation_validation_failure(
-                    ComputerUseErrorCode::InputFailed,
-                    "restore_activate did not leave the exact target restored, visible, and foreground",
-                ));
-            }
-            self.set_banner_activity(BannerActivity::Ready);
-            Ok(json!({
-                "success": true,
-                "automatic_input": false,
-                "target": target,
-                "fresh_observation_required": true,
             }))
         }
     }

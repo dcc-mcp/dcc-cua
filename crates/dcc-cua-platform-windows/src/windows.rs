@@ -16,8 +16,8 @@ use windows_sys::Win32::{
         WindowsAndMessaging::{
             BringWindowToTop, GA_ROOT, GUITHREADINFO, GW_OWNER, GetAncestor, GetForegroundWindow,
             GetGUIThreadInfo, GetWindow, GetWindowRect, GetWindowThreadProcessId, HWND_TOP,
-            IsIconic, IsWindow, IsWindowVisible, PostMessageW, SMTO_ABORTIFHUNG, SW_RESTORE,
-            SWP_ASYNCWINDOWPOS, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW,
+            IsIconic, IsWindow, IsWindowVisible, IsZoomed, PostMessageW, SMTO_ABORTIFHUNG,
+            SW_RESTORE, SWP_ASYNCWINDOWPOS, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW,
             SendMessageTimeoutW, SetForegroundWindow, SetWindowPos, ShowWindowAsync, WM_CLOSE,
             WM_NULL,
         },
@@ -63,6 +63,12 @@ pub fn set_window_frame(
 ) -> Result<[i32; 4], UiaError> {
     mutation_available()?;
     let expected = require_exact_window_handle(target, "window frame mutation")?;
+    if unsafe { IsZoomed(expected) } != 0 {
+        return Err(UiaError::InvalidTarget(
+            "set_window_frame requires a restored target; issue explicit restore_activate first"
+                .into(),
+        ));
+    }
     let [x, y, width, height] = requested;
     if width <= 0 || height <= 0 {
         return Err(UiaError::InvalidAction(
@@ -88,6 +94,11 @@ pub fn set_window_frame(
     }
     for _ in 0..40 {
         let expected = require_exact_window_handle(target, "window frame validation")?;
+        if unsafe { IsZoomed(expected) } != 0 {
+            return Err(UiaError::InvalidTarget(
+                "the exact target became maximized during frame readback".into(),
+            ));
+        }
         let mut rect = RECT::default();
         if unsafe { GetWindowRect(expected, &mut rect) } != 0 {
             let actual = [
@@ -826,59 +837,48 @@ pub(crate) fn input_gated_window_mutation<T, E>(
     mutation()
 }
 
-pub(crate) fn run_restore_activate_mutation_sequence<E>(
-    restore_input_available: impl FnOnce() -> Result<(), E>,
-    restore: impl FnOnce() -> Result<(), E>,
-    activate_input_available: impl FnOnce() -> Result<(), E>,
-    activate: impl FnOnce() -> Result<(), E>,
-) -> Result<(), E> {
-    input_gated_window_mutation(restore_input_available, restore)?;
-    input_gated_window_mutation(activate_input_available, activate)
-}
-
-/// Restore and foreground one exact PID/HWND target after an explicit Host
-/// request. No input is injected and no other process window is eligible.
+/// Restore minimized or maximized state, then foreground one exact native instance.
+/// No input is injected and no other process window is eligible.
 pub fn restore_and_activate_window(
     target: UiaTarget,
-    restore_input_available: impl FnOnce() -> Result<(), UiaError>,
-    activate_input_available: impl FnOnce() -> Result<(), UiaError>,
-) -> Result<(), UiaError> {
-    let expected = require_exact_window_handle(target, "restore")?;
+    restore_input_available: impl FnMut() -> Result<(), UiaError>,
+    activate_input_available: impl FnMut() -> Result<(), UiaError>,
+) -> Result<crate::ExactWindowRestoreOutcome, crate::ExactWindowRestoreError> {
+    use crate::exact_window_restore::{
+        classify_restore_result, run_exact_restore_activate_sequence,
+        run_restored_foreground_request,
+    };
+    let expected = require_exact_window_handle(target, "restore")
+        .map_err(crate::ExactWindowRestoreError::BeforeDispatch)?;
     let mut diagnostic = activation_diagnostic(target, expected);
-    // The two independently gated closures run in order. Retain the actual
-    // restore BOOL without giving both closures a mutable diagnostic borrow.
-    let restore_api_return = std::cell::Cell::new(None);
-    run_restore_activate_mutation_sequence(
+    let restore_api_returns = std::cell::RefCell::new(Vec::new());
+    let attempted = std::cell::Cell::new(false);
+    let native_instance = std::cell::Cell::new(None);
+    let activation_gate = std::cell::RefCell::new(activate_input_available);
+    let result = run_exact_restore_activate_sequence(
+        target,
         restore_input_available,
+        || (activation_gate.borrow_mut())(),
         || {
-            require_exact_window_handle(target, "restore")?;
-            if unsafe { IsIconic(expected) } != 0 {
-                let api_return = unsafe { ShowWindowAsync(expected, SW_RESTORE) };
-                restore_api_return.set(Some(api_return));
-                if api_return == 0 {
-                    return Err(UiaError::OperationFailed(
-                        "Windows refused to request restoration of the exact target".into(),
-                    ));
-                }
-                let restored = (0..40).any(|_| {
-                    if unsafe { IsIconic(expected) } == 0 {
-                        return true;
-                    }
-                    thread::sleep(Duration::from_millis(10));
-                    false
-                });
-                if !restored {
-                    return Err(UiaError::OperationFailed(
-                        "the exact target remained minimized after the explicit restore request"
-                            .into(),
-                    ));
-                }
+            let state = crate::exact_window_native_state(target.process_id, target.window_handle)?;
+            if native_instance.get().is_none() {
+                native_instance.set(Some(state.instance));
+            }
+            Ok(state)
+        },
+        || {
+            attempted.set(true);
+            let api_return = unsafe { ShowWindowAsync(expected, SW_RESTORE) };
+            restore_api_returns.borrow_mut().push(api_return);
+            if api_return == 0 {
+                return Err(UiaError::OperationFailed(
+                    "Windows refused to request restoration of the exact target".into(),
+                ));
             }
             Ok(())
         },
-        activate_input_available,
         || {
-            if let Some(api_return) = restore_api_return.get() {
+            for &api_return in restore_api_returns.borrow().iter() {
                 diagnostic
                     .attempts
                     .push(WindowsForegroundActivationAttempt::new(
@@ -888,24 +888,48 @@ pub fn restore_and_activate_window(
                         None,
                     ));
             }
-            activate_window_after_gate(target, &mut diagnostic)
+            let activation_reads = std::cell::Cell::new(0u8);
+            let activation_result = run_restored_foreground_request(
+                target,
+                native_instance
+                    .get()
+                    .expect("restore sequence bound its first native read"),
+                || (activation_gate.borrow_mut())(),
+                || {
+                    activation_reads.set(activation_reads.get().saturating_add(1));
+                    crate::exact_window_native_state(target.process_id, target.window_handle)
+                },
+                || {
+                    attempted.set(true);
+                    let api_return = unsafe { SetForegroundWindow(expected) };
+                    diagnostic
+                        .attempts
+                        .push(WindowsForegroundActivationAttempt::new(
+                            WindowsForegroundActivationPhase::InitialForegroundRequest,
+                            api_return,
+                            None,
+                            None,
+                        ));
+                    Ok(())
+                },
+                || thread::sleep(Duration::from_millis(5)),
+            );
+            diagnostic.foreground_poll_count += activation_reads.get().saturating_sub(1);
+            let activated = activation_result?;
+            if !activated {
+                return Err(foreground_activation_refused(
+                    "Windows refused the single explicit restored-target foreground request",
+                    diagnostic.clone(),
+                ));
+            }
+            synchronize_activated_input_queue(expected, &diagnostic)
         },
-    )?;
-    let mut final_process_id = 0;
-    let final_exists = unsafe { IsWindow(expected) } != 0;
-    if final_exists {
-        unsafe { GetWindowThreadProcessId(expected, &mut final_process_id) };
-    }
-    if !exact_window_ownership_matches(final_exists, target.process_id, final_process_id)
-        || unsafe { IsIconic(expected) } != 0
-        || unsafe { IsWindowVisible(expected) } == 0
-        || unsafe { GetForegroundWindow() } != expected
-    {
-        return Err(UiaError::OperationFailed(
-            "the exact target did not finish restored, visible, and foreground".into(),
-        ));
-    }
-    Ok(())
+        || thread::sleep(Duration::from_millis(10)),
+    );
+    classify_restore_result(result, attempted.get()).map(|state| crate::ExactWindowRestoreOutcome {
+        state,
+        window_mutation_attempted: attempted.get(),
+    })
 }
 
 fn foreground_restore_still_required(expected: usize, controlled_process_id: u32) -> bool {

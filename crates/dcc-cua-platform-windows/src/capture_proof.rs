@@ -1,4 +1,7 @@
 //! Explicit content-free metadata diagnostic. Never reads pixels or sends UI input.
+mod layout;
+
+use layout::{NativeTargetLayoutProof, target_layout};
 use serde::Serialize;
 use windows::Win32::{
     Foundation::{HWND, POINT, RECT, SIZE},
@@ -76,6 +79,8 @@ pub struct NativeProofPhase {
     pub target_minimized: bool,
     pub target_dpi: u32,
     pub instance: Option<ExactWindowPixelInstanceEvidence>,
+    pub instance_stable_within_phase: bool,
+    pub target_layout: Option<NativeTargetLayoutProof>,
     pub proof_passed: bool,
     pub error: Option<VisibleWindowCaptureDiagnostic>,
     pub roots_above_through_target: Vec<RootProofTraceEntry>,
@@ -156,6 +161,8 @@ fn phase(process_id: u32, hwnd: HWND, start: std::time::Instant) -> NativeProofP
         target_minimized: false,
         target_dpi: 0,
         instance: None,
+        instance_stable_within_phase: false,
+        target_layout: None,
         proof_passed: false,
         error: None,
         roots_above_through_target: Vec::new(),
@@ -164,10 +171,18 @@ fn phase(process_id: u32, hwnd: HWND, start: std::time::Instant) -> NativeProofP
         phase.error = Some(diagnostic(VisibleWindowCaptureReason::TargetUnavailable));
         return phase;
     }
+    match exact_window_instance_evidence(process_id, window_handle) {
+        Ok(instance) => phase.instance = Some(instance),
+        Err(error) => {
+            phase.error = Some(*error.diagnostic);
+            return phase;
+        }
+    }
     phase.target_root_window_handle = unsafe { root_or_self(hwnd) }.0 as usize as u64;
     phase.target_visible = unsafe { IsWindowVisible(hwnd) }.as_bool();
     phase.target_minimized = unsafe { IsIconic(hwnd) }.as_bool();
     phase.target_dpi = unsafe { GetDpiForWindow(hwnd) };
+    phase.target_layout = Some(target_layout(hwnd));
     let mut rect = RECT::default();
     match unsafe { GetWindowRect(hwnd, &mut rect) } {
         Ok(()) => phase.win32_bounds = physical_root_bounds(rect),
@@ -188,13 +203,6 @@ fn phase(process_id: u32, hwnd: HWND, start: std::time::Instant) -> NativeProofP
     } else {
         phase.error = Some(diagnostic(VisibleWindowCaptureReason::TargetBoundsInvalid));
         return phase;
-    }
-    match exact_window_instance_evidence(process_id, window_handle) {
-        Ok(instance) => phase.instance = Some(instance),
-        Err(error) => {
-            phase.error = Some(*error.diagnostic);
-            return phase;
-        }
     }
     let (proof, roots) = unsafe { enumerate_target_root_proof(hwnd, rect, true) };
     phase.roots_above_through_target = roots;
@@ -220,6 +228,14 @@ fn phase(process_id: u32, hwnd: HWND, start: std::time::Instant) -> NativeProofP
             phase.proof_passed = false;
             phase.error = Some(diagnostic(reason));
         }
+    }
+    let final_instance = exact_window_instance_evidence(process_id, window_handle);
+    phase.instance_stable_within_phase = validate_exact_window_owner(process_id, window_handle)
+        .is_ok()
+        && final_instance.ok() == phase.instance;
+    if !phase.instance_stable_within_phase {
+        phase.proof_passed = false;
+        phase.error = Some(diagnostic(VisibleWindowCaptureReason::TargetUnavailable));
     }
     phase
 }
@@ -272,7 +288,14 @@ fn desktop_dc() -> NativeDesktopDcProof {
 
 pub(crate) fn target_evidence_stable(before: &NativeProofPhase, after: &NativeProofPhase) -> bool {
     before.instance.is_some()
+        && before.instance_stable_within_phase
+        && after.instance_stable_within_phase
         && before.instance == after.instance
+        && before
+            .target_layout
+            .as_ref()
+            .is_some_and(|layout| layout.complete())
+        && before.target_layout == after.target_layout
         && before.target_root_window_handle == after.target_root_window_handle
         && before.win32_bounds.is_some()
         && before.win32_bounds == after.win32_bounds

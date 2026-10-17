@@ -87,6 +87,12 @@ impl NativeWindowFrameMetadata {
                 "set_window_frame requires the latest exact native window_state_id, at most five seconds old",
             ));
         }
+        if self.state.maximized {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::InvalidTarget,
+                "set_window_frame requires a restored target; issue explicit restore_activate, then read fresh native window state",
+            ));
+        }
         for frame in [self.state.bounds, self.state.visible_bounds] {
             if frame.is_none_or(|frame| {
                 dcc_cua_platform_windows::validate_exact_window_frame(frame).is_err()
@@ -122,7 +128,7 @@ fn native_frame_confirmed_result(
     state: dcc_cua_platform_windows::ExactWindowNativeState,
 ) -> Value {
     let actual = json!({"process_id":state.process_id,"window_handle":state.window_handle,"exists":true,
-        "visible":state.visible && !state.minimized,"minimized":state.minimized,"foreground":state.foreground,
+        "visible":state.visible && !state.minimized,"minimized":state.minimized,"maximized":state.maximized,"foreground":state.foreground,
         "bounds":state.bounds,"visible_bounds":state.visible_bounds,"dpi":state.dpi,
         "native_instance":state.instance,"backend":"windows-exact-native-state"});
     json!({"success":true,"effect":"confirmed","operation":"set_window_frame",

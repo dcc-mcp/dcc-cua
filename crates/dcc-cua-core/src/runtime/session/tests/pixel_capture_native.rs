@@ -623,6 +623,7 @@ fn native_state(
         dpi: evidence.dpi,
         visible: evidence.visible,
         minimized: evidence.minimized,
+        maximized: false,
         foreground: false,
         instance: evidence.instance,
     }

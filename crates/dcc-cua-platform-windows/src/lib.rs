@@ -16,6 +16,8 @@ mod display_color;
 #[cfg(windows)]
 mod exact_window_frame;
 #[cfg(windows)]
+mod exact_window_restore;
+#[cfg(windows)]
 mod exact_window_state;
 #[cfg(windows)]
 mod input;
@@ -52,6 +54,8 @@ pub use capture_proof::{NativeCaptureProof, native_capture_proof};
 pub use exact_window_frame::{
     ExactWindowFrameError, set_exact_window_frame, validate_exact_window_frame,
 };
+#[cfg(windows)]
+pub use exact_window_restore::{ExactWindowRestoreError, ExactWindowRestoreOutcome};
 #[cfg(windows)]
 pub use exact_window_state::{
     ExactWindowMinimizeError, ExactWindowNativeState, exact_window_native_state,
