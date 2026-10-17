@@ -453,6 +453,8 @@ enum Request {
         task_grant_id: String,
         window_capability: String,
         operation: WindowOperation,
+        #[serde(default)]
+        window_state_id: Option<String>,
     },
     MinimizeWindow {
         session_id: String,
@@ -717,6 +719,7 @@ enum WindowOperation {
     Activate,
     RestoreActivate,
     Close,
+    DismissMenu,
 }
 
 #[derive(Debug, Clone, Deserialize, serde::Serialize)]

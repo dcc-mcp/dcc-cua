@@ -22,6 +22,8 @@ mod exact_window_state;
 #[cfg(windows)]
 mod input;
 #[cfg(windows)]
+mod native_menu_dismiss;
+#[cfg(windows)]
 mod physical_input_fence;
 #[cfg(any(windows, test))]
 mod snapshot;
@@ -72,6 +74,11 @@ pub use input::{
     post_message_blocked_by_uipi, send_click_exact_foreground_mods,
     send_held_keys_exact_foreground, send_key_synthesized, send_overlay_command,
     snapshot_left_button_after_up,
+};
+#[cfg(windows)]
+pub use native_menu_dismiss::{
+    NativeMenuDismissError, NativeMenuDismissOutcome, NativeMenuGatePhase, NativeMenuProof,
+    dismiss_exact_native_menu, read_exact_native_menu,
 };
 #[cfg(windows)]
 pub use physical_input_fence::{

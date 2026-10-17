@@ -98,6 +98,15 @@ impl TrustedTaskActionScope {
             && self.browser_origin.is_none()
     }
 
+    /// Independent permission to cancel one freshly proven standard popup menu.
+    pub fn is_native_menu_dismiss(&self) -> bool {
+        self.action == "dismiss_menu"
+            && self.input_kind == "window_state"
+            && !self.secret_input
+            && self.authorization_category == "window_state"
+            && self.browser_origin.is_none()
+    }
+
     /// Closed permission for temporary exact-root passive capture preparation.
     pub fn is_capture_preparation(&self) -> bool {
         self.action == "capture_preparation_begin"
@@ -145,7 +154,10 @@ impl TrustedTaskActionScope {
     pub(crate) fn validate(&self) -> bool {
         match self.input_kind.as_str() {
             "window_state" => {
-                self.is_window_minimize() || self.is_window_frame() || self.is_capture_preparation()
+                self.is_window_minimize()
+                    || self.is_window_frame()
+                    || self.is_native_menu_dismiss()
+                    || self.is_capture_preparation()
             }
             "browser" => {
                 self.action == "browser_type"

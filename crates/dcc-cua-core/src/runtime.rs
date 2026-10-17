@@ -44,6 +44,7 @@ mod tests;
 pub(crate) use drag_sequences::*;
 pub(crate) mod application;
 mod menu_commands;
+mod native_menu_commands;
 mod pixel_observation;
 use pixel_observation::*;
 mod recording;
@@ -1499,6 +1500,8 @@ pub struct ComputerUseSession {
     #[cfg(windows)]
     native_frame_metadata: Option<window_commands::NativeWindowFrameMetadata>,
     #[cfg(windows)]
+    native_menu_metadata: Option<native_menu_commands::NativeMenuMetadata>,
+    #[cfg(windows)]
     capture_preparation:
         Option<dcc_cua_platform_windows::capture_preparation::CapturePreparationHandle>,
     action_evidence_epoch: ActionEvidenceEpoch,
@@ -1569,6 +1572,7 @@ impl ComputerUseSession {
         #[cfg(windows)]
         {
             self.native_frame_metadata = None;
+            self.native_menu_metadata = None;
         }
         self.app_name = resolved_application_name(&self.app_name, &target);
         self.marker.label = localized_control_label(&self.agent_name, &self.app_name);

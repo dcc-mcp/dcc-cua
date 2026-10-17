@@ -5,6 +5,7 @@ use dcc_cua_core::{ComputerUseTargetAvailability, ComputerUseTargetStatus};
 use rstest::rstest;
 
 use super::*;
+mod native_menu_tests;
 use crate::action_confirmation::ConfirmationBinding;
 use crate::task_authorization::{
     TaskAuthorizationBinding, TaskAuthorizationOutcome, authorize_task_scoped_action,
