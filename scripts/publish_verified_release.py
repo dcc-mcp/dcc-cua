@@ -151,6 +151,22 @@ def publish(
     release_id = initial.get("id")
     if type(release_id) is not int or release_id <= 0:
         raise ValueError("release must have an exact positive numeric identity")
+    frozen_assets = None
+
+    def asset_identities(metadata):
+        identities = []
+        for asset in metadata["assets"]:
+            asset_id = asset.get("id")
+            if type(asset_id) is not int or asset_id <= 0:
+                raise ValueError("uploaded asset must have a positive numeric identity")
+            url = (f"https://github.com/{gateway.repository}/releases/download/"
+                   f"{tag}/{asset['name']}")
+            if asset.get("browser_download_url") != url:
+                raise ValueError("release public asset URL does not match its immutable identity")
+            identities.append((asset_id, asset["name"], asset["size"], asset["digest"], url))
+        if len({entry[0] for entry in identities}) != len(identities):
+            raise ValueError("uploaded asset IDs must be unique")
+        return sorted(identities)
 
     def fresh(*, complete: bool) -> dict:
         metadata = gateway.release(tag)
@@ -164,6 +180,8 @@ def publish(
             raise ValueError("release visibility flags must be explicit booleans")
         if complete:
             content(metadata)
+            if frozen_assets is not None and asset_identities(metadata) != frozen_assets:
+                raise ValueError("uploaded asset identities changed during publication")
         return metadata
 
     def latest_guard():
@@ -180,6 +198,9 @@ def publish(
                 raise ValueError("browser extension must preserve native Latest")
         elif _version(latest_tag) > _version(tag):
             raise ValueError("refusing to replace a newer native Latest")
+        if latest_tag == tag and (latest.get("id") != release_id
+                                 or latest.get("targetCommitish") != source_sha):
+            raise ValueError("Latest does not identify this exact release/source")
         return latest
 
     metadata = fresh(complete=False)
@@ -190,6 +211,7 @@ def publish(
         metadata = fresh(complete=True)
     else:
         content(metadata)  # Complete exact set is reusable; partial sets fail closed.
+    frozen_assets = asset_identities(metadata)
 
     if metadata["isDraft"]:
         metadata = fresh(complete=True)
@@ -204,15 +226,12 @@ def publish(
     if metadata["isDraft"]:
         raise ValueError("public byte verification requires a public release")
     for asset in sorted(metadata["assets"], key=lambda asset: asset["name"]):
-        url = (f"https://github.com/{gateway.repository}/releases/download/"
-               f"{tag}/{asset['name']}")
-        if asset.get("browser_download_url") != url:
-            raise ValueError("release public asset URL does not match its immutable identity")
+        url = asset["browser_download_url"]
         actual = gateway.public_digest(url, asset["size"])
         if actual != (asset["size"], asset["digest"].removeprefix("sha256:")):
             raise ValueError("public release asset bytes differ from verified artifact")
         record(dict(phase="public_asset_verified", name=asset["name"],
-                    size=actual[0], sha256=actual[1]))
+                    asset_id=asset["id"], url=url, size=actual[0], sha256=actual[1]))
 
     metadata = fresh(complete=True)
     latest = latest_guard()

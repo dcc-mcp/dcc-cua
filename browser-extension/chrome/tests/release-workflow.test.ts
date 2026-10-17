@@ -32,6 +32,7 @@ type Step = {
 };
 
 type Job = {
+  if?: string;
   needs?: string | string[];
   outputs?: Record<string, unknown>;
   permissions?: Record<string, string>;
@@ -51,7 +52,7 @@ const STEP_ALLOWLIST: Record<string, string[]> = {
     "name:Validate release configuration",
     "uses:dtolnay/rust-toolchain",
     "run:cargo metadata --locked --no-deps --format-version 1",
-    "run:python -B -m unittest scripts.test_release_workflow scripts.test_release_integrity scripts.test_verify_release_assets scripts.test_verify_final_archive scripts.test_verify_uploaded_artifact scripts.test_select_ci_source_sha scripts.test_refresh_release_please_prs scripts.test_resolve_release_recovery",
+    "run:python -B -m unittest scripts.test_release_workflow scripts.test_release_integrity scripts.test_verify_release_assets scripts.test_verify_final_archive scripts.test_verify_uploaded_artifact scripts.test_select_ci_source_sha scripts.test_refresh_release_please_prs scripts.test_resolve_release_recovery scripts.test_publish_verified_release scripts.test_release_identity_preflight",
   ],
   "release-please": [
     "uses:actions/checkout",
@@ -59,7 +60,6 @@ const STEP_ALLOWLIST: Record<string, string[]> = {
     "name:Refuse pre-existing release identities",
     "name:Reuse already published release identities",
     "uses:googleapis/release-please-action",
-    "name:Keep the native runtime release Latest",
     "name:Refresh independent release PRs from current main",
   ],
   build: [
@@ -90,9 +90,8 @@ const STEP_ALLOWLIST: Record<string, string[]> = {
     "name:Audit immutable native artifact download",
     "name:Download and extract verified native artifact",
     "name:Verify native release asset completeness and provenance",
-    "name:Refuse existing native release assets",
-    "name:Attach release archives",
-    "name:Verify published native release immutability",
+    "name:Publish verified native assets before stable visibility",
+    "name:Retain native publication evidence",
   ],
   "package-browser-extension": [
     "uses:actions/checkout",
@@ -109,13 +108,13 @@ const STEP_ALLOWLIST: Record<string, string[]> = {
   ],
   "attach-browser-extension-assets": [
     "uses:actions/checkout",
+    "name:Checkout release verification tools",
     "name:Verify immutable browser extension artifact identity",
     "name:Audit immutable browser extension artifact download",
     "name:Download and extract verified browser extension artifact",
     "name:Verify browser extension asset set",
-    "name:Refuse existing browser extension release assets",
-    "name:Attach browser extension review artifacts",
-    "name:Verify published browser extension release immutability",
+    "name:Publish verified extension assets before stable visibility",
+    "name:Retain extension publication evidence",
   ],
   "publish-chrome-web-store": [
     "uses:actions/checkout",
@@ -213,55 +212,41 @@ const EXTENSION_ASSET_SET_STATEMENTS = [
   '--version "$EXTENSION_VERSION"',
 ];
 
-const NATIVE_PUBLISHED_READBACK_STATEMENTS = [
+const NATIVE_PUBLICATION_STATEMENTS = [
   "set -euo pipefail",
-  'gh release view "$TAG_NAME" \\',
-  '--repo "$GITHUB_REPOSITORY" \\',
-  "--json tagName,targetCommitish,assets \\",
-  '> "$RUNNER_TEMP/published-native-release.json"',
-  'latest_tag="$(' ,
-  'gh release view --repo "$GITHUB_REPOSITORY" \\',
-  "--json tagName --jq .tagName",
-  ')"',
-  "python -B .release-tools/scripts/release_integrity.py verify-published-native \\",
-  '--workflow-head-sha "$GITHUB_SHA" \\',
-  '--metadata "$RUNNER_TEMP/published-native-release.json" \\',
+  "python -B .release-tools/scripts/publish_verified_release.py \\",
+  "--component native \\",
+  "--repository \"$GITHUB_REPOSITORY\" \\",
   "--directory dist \\",
-  '--version "${TAG_NAME#v}" \\',
-  '--tag "$TAG_NAME" \\',
-  '--source-sha "$SOURCE_SHA" \\',
-  '--actual-latest-tag "$latest_tag"',
+  "--version \"${TAG_NAME#v}\" \\",
+  "--tag \"$TAG_NAME\" \\",
+  "--source-sha \"$SOURCE_SHA\" \\",
+  "--workflow-head-sha \"$GITHUB_SHA\" \\",
+  "--native-tag \"$TAG_NAME\" \\",
+  "--evidence \"$RUNNER_TEMP/native-publication-${GITHUB_RUN_ATTEMPT}.jsonl\""
 ];
 
-const EXTENSION_PUBLISHED_READBACK_STATEMENTS = [
+const EXTENSION_PUBLICATION_STATEMENTS = [
   "set -euo pipefail",
-  'gh release view "$TAG_NAME" \\',
-  '--repo "$GITHUB_REPOSITORY" \\',
-  "--json tagName,targetCommitish,assets \\",
-  '> "$RUNNER_TEMP/published-extension-release.json"',
-  'latest_tag="$(' ,
-  'gh release view --repo "$GITHUB_REPOSITORY" \\',
-  "--json tagName --jq .tagName",
-  ')"',
-  'native_tag="v$(tr -d \'\\r\\n\' < version.txt)"',
-  "python -B scripts/release_integrity.py verify-published-extension \\",
-  '--metadata "$RUNNER_TEMP/published-extension-release.json" \\',
+  "python -B .release-tools/scripts/publish_verified_release.py \\",
+  "--component extension \\",
+  "--repository \"$GITHUB_REPOSITORY\" \\",
   "--directory dist \\",
-  '--version "$EXTENSION_VERSION" \\',
-  '--tag "$TAG_NAME" \\',
-  '--source-sha "$SOURCE_SHA" \\',
-  '--expected-latest-tag "$native_tag" \\',
-  '--actual-latest-tag "$latest_tag"',
+  "--version \"$EXTENSION_VERSION\" \\",
+  "--tag \"$TAG_NAME\" \\",
+  "--source-sha \"$SOURCE_SHA\" \\",
+  "--workflow-head-sha \"$GITHUB_SHA\" \\",
+  "--native-tag \"v$(tr -d '\\r\\n' < version.txt)\" \\",
+  "--evidence \"$RUNNER_TEMP/extension-publication-${GITHUB_RUN_ATTEMPT}.jsonl\""
 ];
 
 const RUN_STATEMENT_DIGESTS: Record<string, string> = {
-  "validate|Validate release configuration": "8d3f02794bf7a97330d98fa4d70ce5cc7f62e474df31c860bc71c2a29d178cbd",
+  "validate|Validate release configuration": "419959fd2026fb048c91ad40765ae62a41c27b43bd08ea0733e5af5facc74a5e",
   "validate|#3": "007b41ff968a7d8b2e96752351831db1ab9ff3248cf5215b5fa2e6b19ed1234e",
-  "validate|#4": "22a575dfc6e06b71087e58e2c83cc0445740f2fa87f3d851ccc876cdd56ccedc",
+  "validate|#4": "bdedc6bb29cc065a0c831c0df9235409ca0f2f58630244c7ca2f1c257e6dc563",
   "release-please|Resolve immutable release recovery": "3f6abfb9d7ee8be152c7c8c89f0b4af58126dd4d57eafbb635b78c6ffb9a9650",
-  "release-please|Refuse pre-existing release identities": "ce3343e2d9ba02496d925d0c7ca384dea6dbe9c9215b4477cefe165a6865d9ec",
+  "release-please|Refuse pre-existing release identities": "a35d677f61b0df0e0489e4e5fe46b5f7caeed812bbe4273b280567e8f2ec2eb9",
   "release-please|Reuse already published release identities": "66451b7afa5be4d35678a7462e2a9ec5d98d4f055efa2ebad407e30c94285a00",
-  "release-please|Keep the native runtime release Latest": "fdcff61169c456f87933c68242b651981a1680b9dfc826e4d53dee0ec4f8ac29",
   "release-please|Refresh independent release PRs from current main": "2be98e30902d17319ab0347ce92c886e80573c2a50ce9d52f1aec56e213f8652",
   "build|Verify native release source binding": "c395d2eb87e998ccc88df9d8b441766c8ff3fdd3b2eed789b1eadcc0d20cf099",
   "build|#4": "0c9fd2bfc5153caf2f158fa8161b842aa52a3183cbb65d62b11be4f52b137204",
@@ -276,9 +261,7 @@ const RUN_STATEMENT_DIGESTS: Record<string, string> = {
   "attach-assets|Verify immutable native artifact identity": "1fe28f38c51eaf56ee0e658b5b87ac7edb44a427ffcaedd48ffdad2eeb699de8",
   "attach-assets|Download and extract verified native artifact": "a8990631fcad1483b8ab5f552e61624aa2699f88cf085d2ea4b58084823f6ee8",
   "attach-assets|Verify native release asset completeness and provenance": "e0c16c6167691faa6ecf40e881838f21cba912711ada1c74577e8041c9bc1b0c",
-  "attach-assets|Refuse existing native release assets": "cdf8ddf1f49d77393c4e4721b06381c577e2bda26d0f0b44bc1ba6c289cf5f7e",
-  "attach-assets|Attach release archives": "a12b9c4e3713e8000995688a2697f7cf9f7af2f4cf448f8f609f7455d30de5c2",
-  "attach-assets|Verify published native release immutability": "ee574c2039fbea4b7457dab286c4c39a9e002a5d785a50a5c93aae6fe0997205",
+  "attach-assets|Publish verified native assets before stable visibility": "07370503f2e519a47921a4ed40f8db754df84a1703cdd132804dce37fd4f8ea5",
   "package-browser-extension|Verify browser extension release source binding": "c395d2eb87e998ccc88df9d8b441766c8ff3fdd3b2eed789b1eadcc0d20cf099",
   "package-browser-extension|#3": "ea914f3855acfa08dce0988d9e918c5aee81b877d891d789a7ea6f668aedfd1a",
   "package-browser-extension|#4": "20e54c943b7b465505a2056e5b7e54e2df18e24d6c51c54692c56b99dc5df285",
@@ -290,9 +273,7 @@ const RUN_STATEMENT_DIGESTS: Record<string, string> = {
   "attach-browser-extension-assets|Verify immutable browser extension artifact identity": "dcfc8adc9cfe1836b7290a3d2100001f84fa68af97c51b5969e176985eca33ca",
   "attach-browser-extension-assets|Download and extract verified browser extension artifact": "1dda8d720c3ad3fc6fdc88d28c6ebf0ae9e8cc8fa6be77d3b361b38a3c236cb8",
   "attach-browser-extension-assets|Verify browser extension asset set": "f75d416f0b832a307b0820123f4eb8a9318561734b4249f56e8d36be9d56246b",
-  "attach-browser-extension-assets|Refuse existing browser extension release assets": "d280fe513ea5a8ac23f38cfa3a5c37a753ed3f7c1332bff40fa911c7d8a3278f",
-  "attach-browser-extension-assets|Attach browser extension review artifacts": "a12b9c4e3713e8000995688a2697f7cf9f7af2f4cf448f8f609f7455d30de5c2",
-  "attach-browser-extension-assets|Verify published browser extension release immutability": "1d32d5ed6ba7784aa9abde41b26875b6c827e076395283662c18da77a85c09a6",
+  "attach-browser-extension-assets|Publish verified extension assets before stable visibility": "557e33f6b5aeba265e3d4f34eeb1d5c33c39059956042d45ef06a463536f1e33",
   "publish-chrome-web-store|Verify immutable browser extension artifact identity": "dcfc8adc9cfe1836b7290a3d2100001f84fa68af97c51b5969e176985eca33ca",
   "publish-chrome-web-store|Download and extract verified browser extension artifact": "1dda8d720c3ad3fc6fdc88d28c6ebf0ae9e8cc8fa6be77d3b361b38a3c236cb8",
   "publish-chrome-web-store|Verify browser extension asset set": "f75d416f0b832a307b0820123f4eb8a9318561734b4249f56e8d36be9d56246b",
@@ -525,12 +506,7 @@ function validateReleaseWorkflow(source: string): void {
     "every executable release statement must match the reviewed allowlist",
   );
 
-  const allowedReleaseMutations = new Set([
-    'release-please|Keep the native runtime release Latest|gh release edit $nativeTag --repo "$env:GITHUB_REPOSITORY" --latest',
-    'release-please|Keep the native runtime release Latest|gh release edit "$env:EXTENSION_TAG" --repo "$env:GITHUB_REPOSITORY" --latest=false',
-    'attach-assets|Attach release archives|gh release upload "$TAG_NAME" dist/* --repo "$GITHUB_REPOSITORY"',
-    'attach-browser-extension-assets|Attach browser extension review artifacts|gh release upload "$TAG_NAME" dist/* --repo "$GITHUB_REPOSITORY"',
-  ]);
+  const allowedReleaseMutations = new Set<string>();
   for (const [jobName, job] of Object.entries(jobs)) {
     for (const step of steps(job)) {
       for (const line of executableLines(step.run)) {
@@ -565,7 +541,7 @@ function validateReleaseWorkflow(source: string): void {
   assert.equal(releaseCheckout.with?.["fetch-tags"], true);
   assert.match(existingIdentity.run ?? "", /release_integrity\.py changed-tags/);
   assert.match(existingIdentity.run ?? "", /git ls-remote --exit-code --tags/);
-  assert.match(existingIdentity.run ?? "", /gh release view/);
+  assert.match(existingIdentity.run ?? "", /release_identity_preflight\.py/);
   assertExecutableInvocation(
     existingIdentity,
     "python -B scripts/release_integrity.py changed-tags \\",
@@ -714,20 +690,14 @@ function validateReleaseWorkflow(source: string): void {
     namedStep(attach, "Download and extract verified native artifact"),
     NATIVE_ARTIFACT_EXTRACTION_STATEMENTS,
   );
-  namedStep(attach, "Refuse existing native release assets");
   namedStep(attach, "Verify native release asset completeness and provenance");
-  assert.equal(
-    namedStep(attach, "Attach release archives").run,
-    'gh release upload "$TAG_NAME" dist/* --repo "$GITHUB_REPOSITORY"',
-  );
-  assertExecutableInvocation(
-    namedStep(attach, "Verify published native release immutability"),
-    "python -B .release-tools/scripts/release_integrity.py verify-published-native \\",
-  );
   assertExecutableStatements(
-    namedStep(attach, "Verify published native release immutability"),
-    NATIVE_PUBLISHED_READBACK_STATEMENTS,
+    namedStep(attach, "Publish verified native assets before stable visibility"),
+    NATIVE_PUBLICATION_STATEMENTS,
   );
+  const nativeEvidence = namedStep(attach, "Retain native publication evidence");
+  assert.equal(nativeEvidence.if, "always()");
+  assert.equal(nativeEvidence.with?.["if-no-files-found"], "ignore");
 
   const extension = requiredJob(jobs, "package-browser-extension");
   assertNeeds(extension, ["release-please"]);
@@ -768,6 +738,7 @@ function validateReleaseWorkflow(source: string): void {
   assertNeeds(requiredJob(jobs, "attach-browser-extension-assets"), [
     "release-please",
     "package-browser-extension",
+    "attach-assets",
   ]);
   for (const jobName of extensionConsumers.slice(1)) {
     assertNeeds(requiredJob(jobs, jobName), [
@@ -828,34 +799,45 @@ function validateReleaseWorkflow(source: string): void {
     );
   }
   const extensionAttach = requiredJob(jobs, "attach-browser-extension-assets");
-  namedStep(
-    extensionAttach,
-    "Refuse existing browser extension release assets",
-  );
-  assert.equal(
-    namedStep(extensionAttach, "Attach browser extension review artifacts").run,
-    'gh release upload "$TAG_NAME" dist/* --repo "$GITHUB_REPOSITORY"',
-  );
-  assertExecutableInvocation(
-    namedStep(
-      extensionAttach,
-      "Verify published browser extension release immutability",
-    ),
-    "python -B scripts/release_integrity.py verify-published-extension \\",
-  );
+  assert.equal(extensionAttach.if,
+    "always() && !cancelled() && needs.release-please.result == 'success' && " +
+    "needs.package-browser-extension.result == 'success' && " +
+    "needs.release-please.outputs.extension_release_created == 'true' && " +
+    "(needs.release-please.outputs.release_created != 'true' || needs.attach-assets.result == 'success')");
+  assert.deepEqual(namedStep(extensionAttach, "Checkout release verification tools").with, {
+    ref: "${{ github.sha }}", path: ".release-tools", "persist-credentials": false,
+  });
   assertExecutableStatements(
-    namedStep(
-      extensionAttach,
-      "Verify published browser extension release immutability",
-    ),
-    EXTENSION_PUBLISHED_READBACK_STATEMENTS,
+    namedStep(extensionAttach, "Publish verified extension assets before stable visibility"),
+    EXTENSION_PUBLICATION_STATEMENTS,
   );
-
+  assert.equal(namedStep(extensionAttach, "Retain extension publication evidence").if, "always()");
   assert.equal(nativeDownload.with?.["merge-multiple"], true);
 }
 
 test("release workflow is immutable, least-privilege, and source-bound", () => {
   validateReleaseWorkflow(readFileSync(WORKFLOW_URL, "utf8"));
+});
+
+test("extension publication waits for native success and admits extension-only runs", () => {
+  const job = requiredJob(parseWorkflow(readFileSync(WORKFLOW_URL, "utf8")).jobs ?? {}, "attach-browser-extension-assets");
+  const expression = (job.if ?? "").replace(/needs\.([a-z-]+)/g, 'needs["$1"]');
+  const evaluate = new Function("needs", "always", "cancelled", `return (${expression});`);
+  for (const [nativeCreated, nativeResult, cancelled, expected] of [
+    ["true", "success", false, true],
+    ["true", "failure", false, false],
+    ["true", "cancelled", false, false],
+    ["true", "skipped", false, false],
+    ["false", "skipped", false, true],
+    ["false", "skipped", true, false],
+  ]) {
+    const needs = {
+      "release-please": {result: "success", outputs: {release_created: nativeCreated, extension_release_created: "true"}},
+      "package-browser-extension": {result: "success"},
+      "attach-assets": {result: nativeResult},
+    };
+    assert.equal(evaluate(needs, () => true, () => cancelled), expected);
+  }
 });
 
 function assertAdversarialMutations(source: string): void {
@@ -910,7 +892,7 @@ function assertAdversarialMutations(source: string): void {
   assert.throws(() => validateReleaseWorkflow(moved));
 
   const validateCommand =
-    "python -B -m unittest scripts.test_release_workflow scripts.test_release_integrity scripts.test_verify_release_assets scripts.test_verify_final_archive scripts.test_verify_uploaded_artifact scripts.test_select_ci_source_sha scripts.test_refresh_release_please_prs scripts.test_resolve_release_recovery";
+    "python -B -m unittest scripts.test_release_workflow scripts.test_release_integrity scripts.test_verify_release_assets scripts.test_verify_final_archive scripts.test_verify_uploaded_artifact scripts.test_select_ci_source_sha scripts.test_refresh_release_please_prs scripts.test_resolve_release_recovery scripts.test_publish_verified_release scripts.test_release_identity_preflight";
   const weakenedValidateCommand =
     "python -B -m unittest scripts.test_release_workflow scripts.test_release_integrity scripts.test_verify_release_assets scripts.test_verify_final_archive";
   assert.throws(() =>
@@ -1041,7 +1023,7 @@ function assertAdversarialMutations(source: string): void {
       (step) => step.name === "Verify browser extension asset set",
     );
     const upload = attachSteps.findIndex(
-      (step) => step.name === "Attach browser extension review artifacts",
+      (step) => step.name === "Publish verified extension assets before stable visibility",
     );
     assert.notEqual(verifier, -1);
     assert.notEqual(upload, -1);
@@ -1063,7 +1045,7 @@ function assertAdversarialMutations(source: string): void {
   const splitClobber = mutateWorkflow(source, (workflow) => {
     const upload = namedStep(
       requiredJob(workflow.jobs ?? {}, "attach-assets"),
-      "Attach release archives",
+      "Publish verified native assets before stable visibility",
     );
     upload.run = [
       "clobber_prefix='--clo'",

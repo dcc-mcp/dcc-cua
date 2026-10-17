@@ -39,7 +39,7 @@ RELEASE_PLEASE_ACTION = (
     "googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7"
 )
 CI_EXECUTABLE_SURFACE_SHA256 = (
-    "5dddd5215d5ab1933717d1b8455d8e7acb9f0cb8b54d06a3a1b61fffcc4bd443"
+    "ef2fedf603d776de9da5adec28a08c363a23a4c62d0a1323018bf6e22c6ff018"
 )
 
 
@@ -1223,7 +1223,7 @@ class ReleaseWorkflowTests(unittest.TestCase):
             workflow[preflight:existing],
         )
         self.assertIn(
-            'release_target="$(gh release view "$tag"',
+            'existing_release="$(python -B scripts/release_identity_preflight.py',
             workflow[preflight:existing],
         )
         self.assertIn('echo "already_released=true" >> "$GITHUB_OUTPUT"', workflow)

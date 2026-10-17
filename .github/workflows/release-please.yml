@@ -50,7 +50,7 @@ jobs:
         with:
           toolchain: 1.95.0
       - run: cargo metadata --locked --no-deps --format-version 1
-      - run: python -B -m unittest scripts.test_release_workflow scripts.test_release_integrity scripts.test_verify_release_assets scripts.test_verify_final_archive scripts.test_verify_uploaded_artifact scripts.test_select_ci_source_sha scripts.test_refresh_release_please_prs scripts.test_resolve_release_recovery scripts.test_publish_verified_release
+      - run: python -B -m unittest scripts.test_release_workflow scripts.test_release_integrity scripts.test_verify_release_assets scripts.test_verify_final_archive scripts.test_verify_uploaded_artifact scripts.test_select_ci_source_sha scripts.test_refresh_release_please_prs scripts.test_resolve_release_recovery scripts.test_publish_verified_release scripts.test_release_identity_preflight
 
   release-please:
     needs: validate
@@ -117,10 +117,10 @@ jobs:
                   echo "release tag $tag already exists at $remote_tag_sha, expected $GITHUB_SHA" >&2
                   exit 1
                 fi
-                release_target="$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json targetCommitish --jq .targetCommitish 2>/dev/null || true)"
-                if [ "$release_target" != "$GITHUB_SHA" ]; then
-                  echo "release $tag is missing or targets $release_target, expected $GITHUB_SHA" >&2
-                  exit 1
+                existing_release="$(python -B scripts/release_identity_preflight.py --repository "$GITHUB_REPOSITORY" --tag "$tag" --source-sha "$GITHUB_SHA")"
+                if [ "$existing_release" = missing ]; then
+                  all_existing=false
+                  continue
                 fi
                 case "$tag" in
                   v*)
@@ -638,8 +638,12 @@ jobs:
           retention-days: 7
 
   attach-browser-extension-assets:
-    needs: [release-please, package-browser-extension]
-    if: needs.release-please.outputs.extension_release_created == 'true'
+    needs: [release-please, package-browser-extension, attach-assets]
+    if: >-
+      always() && !cancelled() && needs.release-please.result == 'success' &&
+      needs.package-browser-extension.result == 'success' &&
+      needs.release-please.outputs.extension_release_created == 'true' &&
+      (needs.release-please.outputs.release_created != 'true' || needs.attach-assets.result == 'success')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:

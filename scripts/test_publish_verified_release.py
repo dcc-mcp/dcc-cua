@@ -43,7 +43,8 @@ class FakeGitHub:
     def upload(self, tag, paths):
         self.events.append("upload")
         self.document["assets"] = _published_release(self.directory, tag)["assets"]
-        for asset in self.document["assets"]:
+        for asset_id, asset in enumerate(self.document["assets"], start=101):
+            asset["id"] = asset_id
             asset["browser_download_url"] = (
                 f"https://github.com/{self.repository}/releases/download/{tag}/{asset['name']}"
             )
@@ -205,7 +206,56 @@ class PublicationTests(unittest.TestCase):
         self.gateway.document["assets"][0]["browser_download_url"] = "https://other.invalid/asset"
         with self.assertRaises(ValueError):
             self.publish()
+        self.assertEqual(len(self.patches()), 0)
+
+    def test_asset_replacement_after_public_readback_never_promotes(self):
+        original = self.gateway.public_digest
+        def replaced(url, size):
+            result = original(url, size)
+            self.gateway.document["assets"][0]["id"] += 1000
+            return result
+        self.gateway.public_digest = replaced
+        with self.assertRaisesRegex(ValueError, "asset identities changed"):
+            self.publish()
         self.assertEqual(len(self.patches()), 1)
+        self.assertTrue(self.gateway.document["isPrerelease"])
+
+    def test_recovery_keeps_workflow_source_distinct_and_rejects_wrong_workflow(self):
+        provenance_path = self.directory / MODULE.PROVENANCE_NAME
+        import json
+        provenance = json.loads(provenance_path.read_text())
+        workflow = "b" * 40
+        provenance["workflow_commit"] = workflow
+        for artifact in provenance["build_artifacts"]:
+            artifact["head_sha"] = workflow
+        MODULE.write_release_provenance(provenance_path, provenance)
+        with self.assertRaisesRegex(ValueError, "workflow commit"):
+            self.publish()
+        self.assertNotIn("upload", self.gateway.events)
+        self.kwargs["workflow_head_sha"] = workflow
+        self.assertEqual(self.publish()["latest"], TAG)
+
+    def test_applied_patch_unknown_outcome_resumes_explicitly_without_repeating(self):
+        for failed_patch in (1, 2):
+            with self.subTest(failed_patch=failed_patch):
+                self.gateway = FakeGitHub(self.directory, TAG)
+                original = self.gateway.patch
+                count = 0
+                def applied_then_failed(release_id, payload):
+                    nonlocal count
+                    original(release_id, payload)
+                    count += 1
+                    if count == failed_patch:
+                        raise TimeoutError("server applied PATCH; response lost")
+                self.gateway.patch = applied_then_failed
+                with self.assertRaises(TimeoutError):
+                    self.publish()
+                self.assertEqual(len(self.patches()), failed_patch)
+                self.gateway.patch = original
+                self.gateway.events.clear()
+                self.publish()
+                self.assertNotIn("upload", self.gateway.events)
+                self.assertEqual(len(self.patches()), 2 - failed_patch)
 
     def test_extension_preserves_native_latest_and_requires_it(self):
         with tempfile.TemporaryDirectory() as temp:
