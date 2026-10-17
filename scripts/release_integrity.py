@@ -491,14 +491,13 @@ def _verify_published_assets(
             raise ValueError("published release asset digest does not match")
 
 
-def verify_published_native_release(
+def verify_uploaded_native_release(
     metadata: object,
     directory: Path,
     *,
     version: str,
     tag: str,
     source_sha: str,
-    actual_latest_tag: str,
     workflow_head_sha: str | None = None,
 ) -> None:
     verify_release_provenance(
@@ -517,6 +516,38 @@ def verify_published_native_release(
         expected_tag=tag,
         expected_target_sha=source_sha,
     )
+def verify_uploaded_extension_release(
+    metadata: object,
+    directory: Path,
+    *,
+    version: str,
+    tag: str,
+    source_sha: str,
+) -> None:
+    verify_extension_asset_set(directory, version)
+    _verify_published_assets(
+        metadata,
+        directory,
+        expected_names=extension_asset_names(version),
+        expected_tag=tag,
+        expected_target_sha=source_sha,
+    )
+
+
+def verify_published_native_release(
+    metadata: object,
+    directory: Path,
+    *,
+    version: str,
+    tag: str,
+    source_sha: str,
+    actual_latest_tag: str,
+    workflow_head_sha: str | None = None,
+) -> None:
+    verify_uploaded_native_release(
+        metadata, directory, version=version, tag=tag, source_sha=source_sha,
+        workflow_head_sha=workflow_head_sha,
+    )
     if actual_latest_tag != tag:
         raise ValueError("native GitHub Release must remain Latest")
 
@@ -531,13 +562,8 @@ def verify_published_extension_release(
     expected_latest_tag: str,
     actual_latest_tag: str,
 ) -> None:
-    verify_extension_asset_set(directory, version)
-    _verify_published_assets(
-        metadata,
-        directory,
-        expected_names=extension_asset_names(version),
-        expected_tag=tag,
-        expected_target_sha=source_sha,
+    verify_uploaded_extension_release(
+        metadata, directory, version=version, tag=tag, source_sha=source_sha,
     )
     if actual_latest_tag != expected_latest_tag or actual_latest_tag == tag:
         raise ValueError("browser extension release must not replace native Latest")

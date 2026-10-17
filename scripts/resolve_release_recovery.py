@@ -1,4 +1,4 @@
-"""Resolve empty published releases without replacing their immutable identities."""
+"""Resolve empty draft or legacy stable releases without replacing identities."""
 
 import json
 import os
@@ -21,7 +21,7 @@ def validate_release(metadata, tag, source_sha):
     if (
         metadata.get("tagName") != tag
         or metadata.get("targetCommitish") != source_sha
-        or metadata.get("isDraft") is not False
+        or type(metadata.get("isDraft")) is not bool
         or metadata.get("isPrerelease") is not False
     ):
         raise ValueError("published release identity does not match the immutable tag")
