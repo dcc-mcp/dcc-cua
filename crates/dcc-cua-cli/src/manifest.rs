@@ -225,6 +225,20 @@ pub(crate) fn document_for_platform(exact_window_pixels_available: bool) -> Valu
         "runtime": {
             "backend": "cua-driver-sdk",
             "separate_driver_required": false,
+            "local_diagnostics_only": {
+                "cli_command": ["doctor", "--diagnostics-only"],
+                "scope": "local_process_desktop_metadata",
+                "read_only": true,
+                "additional_arguments_accepted": false,
+                "sdk_initialized": false,
+                "sdk_inventory": "not_run",
+                "permissions": "not_run",
+                "health": "not_run",
+                "window_inventory": "not_run",
+                "native_acceptance": "not_run",
+                "ready": false,
+                "input_ready": false,
+            },
             "native_capture_proof": {
                 "availability": "windows",
                 "cli_command": "capture-proof",
