@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.11.1](https://github.com/dcc-mcp/dcc-cua/compare/v1.11.0...v1.11.1) (2026-10-18)
+
+
+### Bug Fixes
+
+* **cli:** distinguish absent resident hosts from other transport failures ([e4e4eae](https://github.com/dcc-mcp/dcc-cua/commit/e4e4eaec237ab1feae37552f59bb690d26c1bc15))
+* **cli:** explain when the resident Host is not running ([6951545](https://github.com/dcc-mcp/dcc-cua/commit/6951545255de82da80a043d00e872cb04c38d1f2))
+* preserve occlusion diagnostics and verify partial native capture ([6cc7cce](https://github.com/dcc-mcp/dcc-cua/commit/6cc7cce001289c7ea5b308e3b3cddb8badf7bf42))
+* remove redundant unsafe capture proof block ([f099a5d](https://github.com/dcc-mcp/dcc-cua/commit/f099a5dd4a88851f27ba3ac5a9a7fb2ceda27bf7))
+* retain scoped pixel observations under partial occlusion ([b6b05b4](https://github.com/dcc-mcp/dcc-cua/commit/b6b05b4c0aa3667052992a29590c8f198b1ffb08))
+* retain scoped pixel observations under partial occlusion ([61c65ba](https://github.com/dcc-mcp/dcc-cua/commit/61c65ba0f4bd7e6083dd7229441f565acc04a1e4))
+
 ## [1.11.0](https://github.com/dcc-mcp/dcc-cua/compare/v1.10.1...v1.11.0) (2026-10-17)
 
 
