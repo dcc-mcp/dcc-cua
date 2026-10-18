@@ -1,3 +1,7 @@
+#[cfg(any(test, all(feature = "gui-e2e", windows)))]
+#[path = "support/standard_user_token.rs"]
+mod standard_user_token;
+
 #[cfg(feature = "gui-e2e")]
 use std::path::PathBuf;
 #[cfg(feature = "gui-e2e")]
@@ -221,41 +225,6 @@ fn wait_for_cli_window(binary: &std::path::Path, pid: u32) -> u64 {
     }
 }
 
-#[cfg(all(feature = "gui-e2e", windows))]
-fn assert_launched_app_is_not_elevated(pid: u32) {
-    use windows_sys::Win32::Foundation::CloseHandle;
-    use windows_sys::Win32::Security::{
-        GetTokenInformation, TOKEN_ELEVATION, TOKEN_QUERY, TokenElevation,
-    };
-    use windows_sys::Win32::System::Threading::{
-        OpenProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION,
-    };
-
-    // Read-only verification: the SDK must keep the launched fixture at the
-    // user's normal privilege level even when the CI Host itself is elevated.
-    let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
-    assert!(!process.is_null(), "open launched fixture process {pid}");
-    let mut token = std::ptr::null_mut();
-    let opened = unsafe { OpenProcessToken(process, TOKEN_QUERY, &mut token) };
-    unsafe { CloseHandle(process) };
-    assert_ne!(opened, 0, "read launched fixture token {pid}");
-    let mut elevation = TOKEN_ELEVATION::default();
-    let mut returned = 0;
-    let queried = unsafe {
-        GetTokenInformation(
-            token,
-            TokenElevation,
-            (&mut elevation as *mut TOKEN_ELEVATION).cast(),
-            std::mem::size_of::<TOKEN_ELEVATION>() as u32,
-            &mut returned,
-        )
-    };
-    unsafe { CloseHandle(token) };
-    assert_ne!(queried, 0, "query launched fixture elevation {pid}");
-    assert_eq!(returned as usize, std::mem::size_of::<TOKEN_ELEVATION>());
-    assert_eq!(elevation.TokenIsElevated, 0, "fixture {pid} was elevated");
-}
-
 #[cfg(feature = "gui-e2e")]
 async fn wait_for_process_exit(child: &mut std::process::Child) {
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -391,7 +360,7 @@ async fn host_launches_records_and_terminates_one_exact_application() {
         .unwrap_or_else(|| panic!("launch_app omitted a valid pid: {}", launched.value));
     let mut process_guard = ExactProcessGuard::new(pid);
     #[cfg(windows)]
-    assert_launched_app_is_not_elevated(pid);
+    standard_user_token::assert_standard_user(pid);
 
     let ready = host_request(
         &mut host,

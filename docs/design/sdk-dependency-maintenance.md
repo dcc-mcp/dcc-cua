@@ -81,8 +81,9 @@ unchanged. Upstream inventory growth does not grant a new DCC action route:
 pixels-only SDK inventory also rejects `parse_visual_regions`.
 
 Driver 0.36 defaults native `get_window_state` trees to Markdown. DCC explicitly
-requests `tree_format: "elements"` for semantic snapshots and screenshot-plus-
-semantics; exact PID/window/session and bounds remain unchanged. The Windows
+requests `tree_format: "both"` for semantic snapshots and screenshot-plus-
+semantics, preserving read-only status/dialog/menu text alongside actionable
+elements and their SDK tokens; exact PID/window/session and bounds remain unchanged. The Windows
 overlay adapter supplies `target: None` for its existing point-only movement
 request because DCC does not have element bounds to pass upstream.
 
@@ -106,7 +107,11 @@ launch helper before ordinary startup. This lets an elevated Host launch the
 fixture under the SDK's verified standard-user token; it does not remove the
 SDK's elevation refusal, token checks or helper timeout. Process tests cover
 malformed helper invocations without launching applications, and the native
-lifecycle test checks that the launched application is not elevated.
+lifecycle test reads the launched token's effective access-control facts:
+Medium-or-lower integrity, an absent or deny-only Administrators SID, and only
+standard-user privileges. SAFER tokens inherit `TokenElevation` from their
+source; the official SDK explicitly does not use that flag to verify a derived
+token. No security settings or SDK token-generation logic are changed.
 
 ## Verification and acceptance
 
@@ -153,6 +158,16 @@ position while reporting the user pointer unchanged. Native CI must qualify the
 final downstream candidate on Windows and both macOS architectures. Local Unix
 socket-dependent CLI tests remain blocked by the cloud sandbox's `EPERM`; they
 are not counted as passing local tests.
+
+The observation follow-up restores the official `both` projection. Format-sensitive
+red/green fixtures cover read-only status, menu and dialog text beside the actual
+qualified action token, including refusal to turn text-only row numbers into
+tokens. The final local library suite passes 1,530 tests; seven additional pure
+Windows privilege-policy cases cover safe and unsafe access facts. The GUI
+runner keeps failing on any error but runs all cases with `--no-fail-fast`.
+The effective-token assertion and full observation fix still require the final
+native Windows/macOS/Linux CI run; prior passing verification jobs are not a
+substitute for that candidate's GUI results.
 
 This is not a claim of whole-SDK CI success: the fork's attribution baseline
 gate remains tracked separately. The inherited docs container-image gate also

@@ -259,10 +259,13 @@ impl DriverEnvelopeChannel for CountingRemoteChannel {
                 }),
                 Some("get_window_state") => {
                     let args = request.arguments.as_ref().expect("snapshot arguments");
-                    assert_eq!(args["tree_format"], "elements");
+                    assert!(matches!(
+                        args["tree_format"].as_str(),
+                        Some("elements" | "both")
+                    ));
                     assert_eq!(args["window_id"], 77);
                     assert_eq!(args["pid"], 42);
-                    json!({"elements": [{"element_index": 1, "element_token": "sdk-snapshot:1", "label": "txt-input"}]})
+                    sdk_snapshot_format::native_snapshot_reply(args)
                 }
                 Some("get_recording_state" | "start_recording") => json!({
                     "enabled": true,

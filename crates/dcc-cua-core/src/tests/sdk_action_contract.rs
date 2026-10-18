@@ -124,3 +124,54 @@ fn unsupported_linux_character_delay_is_explicitly_refused() {
         );
     }
 }
+
+#[rstest]
+#[tokio::test]
+async fn native_sdk_advertises_bounded_full_observation_shape() {
+    let driver = ComputerUseDriver::create().unwrap();
+    let inventory = driver.list_tools().await.unwrap();
+    let schema = tool_schema_from_inventory(&inventory, "get_window_state").unwrap();
+    assert!(
+        schema["properties"]["tree_format"]["enum"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("both"))
+    );
+    for bound in [
+        "pid",
+        "window_id",
+        "include_screenshot",
+        "max_elements",
+        "max_depth",
+    ] {
+        assert!(schema["properties"].get(bound).is_some());
+    }
+}
+
+/// Adjacent native menu calls keep the public owner/path shape. The trusted
+/// `_session_id` is injected separately by the embedded SDK, not its public schema.
+#[rstest]
+#[tokio::test]
+async fn native_sdk_accepts_exact_menu_request_shape() {
+    let driver = ComputerUseDriver::create().unwrap();
+    let inventory = driver.list_tools().await.unwrap();
+    let schema = tool_schema_from_inventory(&inventory, "invoke_menu").unwrap();
+    let properties = schema["properties"].as_object().unwrap();
+    for key in ["pid", "window_id", "path"] {
+        assert!(
+            properties.contains_key(key),
+            "unsupported menu argument: {key}"
+        );
+    }
+    for required in schema["required"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+    {
+        assert!(
+            ["pid", "window_id", "path"].contains(&required),
+            "unmapped menu requirement: {required}"
+        );
+    }
+}
