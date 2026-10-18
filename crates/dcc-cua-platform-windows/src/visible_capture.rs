@@ -1102,10 +1102,14 @@ fn capture_desktop_window(
             let visible = crate::occlusion::redact_bgra(&mut bgra, bounds, &redacted_regions)
                 .map_err(capture_error)?;
             if !visible {
-                return Err(proof_error(
-                    VisibleWindowCaptureReason::RootOverlap,
-                    "the target has no independently visible desktop pixels",
-                ));
+                return Err(unsafe { prove_target_unobscured(hwnd, rect) }
+                    .err()
+                    .unwrap_or_else(|| {
+                        proof_error(
+                            VisibleWindowCaptureReason::RootOverlap,
+                            "the target has no independently visible desktop pixels",
+                        )
+                    }));
             }
         }
         Ok(VisibleWindowCapture {

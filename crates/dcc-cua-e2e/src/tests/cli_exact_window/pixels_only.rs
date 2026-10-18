@@ -123,7 +123,7 @@ fn validate_pixels(value: &Value, pid: u32, hwnd: u64) -> Result<(), &'static st
     Ok(())
 }
 
-fn validate_png(path: &Path, value: &Value) {
+fn validate_png(path: &Path, value: &Value, redacted: bool) {
     let data = std::fs::read(path).expect("published PNG");
     let mut reader = png::Decoder::new(data.as_slice())
         .read_info()
@@ -140,6 +140,14 @@ fn validate_png(path: &Path, value: &Value) {
         pixels[center..center + 3].iter().all(|value| *value >= 240),
         "custom target's white center must survive capture without an overlay"
     );
+    if redacted {
+        let covered = (10 * info.width as usize + 10) * channels;
+        assert_eq!(
+            &pixels[covered..covered + 3],
+            &[0, 0, 0],
+            "covered pixels must be opaque-black redactions"
+        );
+    }
 }
 
 async fn bounded_session<T>(future: impl std::future::Future<Output = T>) -> T {
@@ -298,7 +306,7 @@ async fn external_pixels_only_cli_covers_provider_free_capture_failure_and_clean
         value["observation"]["capture_provenance"]["desktop_crop_bounds"]
     );
     assert_eq!(value["output"], image_path.to_string_lossy().as_ref());
-    validate_png(&image_path, &value);
+    validate_png(&image_path, &value, false);
     assert_eq!(
         (fixture.counters(), foreground(), cursor_position()),
         before,
@@ -324,7 +332,7 @@ async fn external_pixels_only_cli_covers_provider_free_capture_failure_and_clean
     assert!(target_bounds[2] > 100 && target_bounds[3] > 100);
     // Target and blocker are frameless roots with the same fixture rectangle.
     let blocked_capture = json!({
-        "stage":"publication_validation", "reason":"root_overlap",
+        "stage":"visible_desktop_proof", "reason":"root_overlap",
         "target_process_id":pid, "target_window_handle":fixture.target,
         "target_bounds":target_bounds,
         "blocker_process_id":pid, "blocker_window_handle":fixture.blocker,
@@ -339,6 +347,31 @@ async fn external_pixels_only_cli_covers_provider_free_capture_failure_and_clean
             "details":{"capture":blocked_capture.clone(), "whole_desktop_fallback":false}
         }}),
     );
+    fixture.resize_blocker(windows_sys::Win32::Foundation::RECT {
+        left: target_bounds[0],
+        top: target_bounds[1],
+        right: target_bounds[0] + 40,
+        bottom: target_bounds[1] + 40,
+    });
+    let partial_path = directory.path().join("partial.png");
+    let partial = bounded_cli(
+        &binary,
+        &pixel_arguments(pid, fixture.target, &partial_path),
+    );
+    assert!(
+        partial.status.success(),
+        "partial target capture: {partial:?}"
+    );
+    let partial =
+        receipt(&partial.stdout, &partial.stderr).expect("single partial-capture receipt");
+    validate_pixels(&partial, pid, fixture.target).expect("exact target under partial occlusion");
+    let proof = &partial["observation"]["capture_provenance"];
+    assert_eq!(proof["capture_mode"], "redacted_desktop_crop");
+    assert_eq!(
+        proof["visibility"]["redacted_rectangles"],
+        json!([[target_bounds[0], target_bounds[1], 40, 40]])
+    );
+    validate_png(&partial_path, &partial, true);
     eprintln!("pixels-only external success, wrong-owner and occluded-capture receipts passed");
     fixture.block_capture(false);
     assert_eq!(
