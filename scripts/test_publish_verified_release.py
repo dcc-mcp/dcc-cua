@@ -2,6 +2,7 @@
 
 import copy
 import hashlib
+import json
 from pathlib import Path
 import subprocess
 import tempfile
@@ -68,6 +69,80 @@ class FakeGitHub:
         return self.bad_public or (len(body), hashlib.sha256(body).hexdigest())
 
 
+class GitHubReleaseLookupTests(unittest.TestCase):
+    repository = "dcc-mcp/dcc-cua"
+    api_url = "https://api.github.com/repos/dcc-mcp/dcc-cua/releases/42"
+
+    def document(self):
+        return dict(id=42, tag_name=TAG, target_commitish=SOURCE_SHA,
+                    draft=True, prerelease=False, assets=[])
+
+    def lookup(self, **changes):
+        value = dict(apiUrl=self.api_url, tagName=TAG)
+        value.update(changes)
+        return value
+
+    def test_draft_and_public_metadata_are_read_by_numeric_identity(self):
+        for draft, prerelease in ((True, False), (False, True), (False, False)):
+            with self.subTest(draft=draft, prerelease=prerelease):
+                document = self.document()
+                document.update(draft=draft, prerelease=prerelease)
+                with patch.object(publisher.subprocess, "check_output", side_effect=[
+                    json.dumps(self.lookup()).encode(), json.dumps(document).encode(),
+                ]) as command:
+                    result = publisher.GitHub(self.repository).release(TAG)
+                self.assertEqual(result, publisher.normalize_release(document))
+                self.assertEqual(command.call_args_list[0].args[0], [
+                    "gh", "release", "view", TAG, "--repo", self.repository,
+                    "--json", "apiUrl,tagName",
+                ])
+                self.assertEqual(command.call_args_list[1].args[0], [
+                    "gh", "api", f"repos/{self.repository}/releases/42",
+                ])
+
+    def test_invalid_lookup_does_not_request_an_arbitrary_api_resource(self):
+        invalid = [None, 42, self.api_url + "?other=1", self.api_url + "/assets",
+                   self.api_url.replace("/42", "/0"), self.api_url.replace("/42", "/042"),
+                   self.api_url.replace("api.github.com", "example.com"),
+                   self.api_url.replace("dcc-mcp/dcc-cua", "other/repository")]
+        for api_url in invalid:
+            with self.subTest(api_url=api_url):
+                with patch.object(publisher.subprocess, "check_output", return_value=
+                                  json.dumps(self.lookup(apiUrl=api_url)).encode()) as command:
+                    with self.assertRaises(ValueError):
+                        publisher.GitHub(self.repository).release(TAG)
+                self.assertEqual(command.call_count, 1)
+
+    def test_wrong_lookup_tag_is_rejected_before_api_read(self):
+        with patch.object(publisher.subprocess, "check_output", return_value=
+                          json.dumps(self.lookup(tagName="v9.9.9")).encode()) as command:
+            with self.assertRaises(ValueError):
+                publisher.GitHub(self.repository).release(TAG)
+        self.assertEqual(command.call_count, 1)
+
+    def test_rest_identity_must_match_the_authenticated_lookup(self):
+        for changes in (dict(id=43), dict(id=True), dict(tag_name="v9.9.9")):
+            with self.subTest(changes=changes):
+                document = self.document()
+                document.update(changes)
+                with patch.object(publisher.subprocess, "check_output", side_effect=[
+                    json.dumps(self.lookup()).encode(), json.dumps(document).encode(),
+                ]) as command:
+                    with self.assertRaises(ValueError):
+                        publisher.GitHub(self.repository).release(TAG)
+                self.assertEqual(command.call_count, 2)
+
+    def test_lookup_and_id_read_failures_are_not_retried(self):
+        error = subprocess.CalledProcessError(1, "gh", stderr=b"HTTP 404")
+        for replies in ([error], [json.dumps(self.lookup()).encode(), error]):
+            with self.subTest(request_count=len(replies)):
+                with patch.object(publisher.subprocess, "check_output", side_effect=replies) as command:
+                    with self.assertRaises(subprocess.CalledProcessError) as caught:
+                        publisher.GitHub(self.repository).release(TAG)
+                self.assertIs(caught.exception, error)
+                self.assertEqual(command.call_count, len(replies))
+
+
 class PublicationTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -91,6 +166,33 @@ class PublicationTests(unittest.TestCase):
 
     def patches(self):
         return [entry[1] for entry in self.gateway.events if isinstance(entry, tuple)]
+
+    def test_actual_metadata_gateway_supports_the_complete_draft_transition(self):
+        self.gateway.release = publisher.GitHub(self.gateway.repository).release
+        requests = []
+
+        def transport(args, input=None):
+            requests.append(args)
+            if args == ["gh", "release", "view", TAG, "--repo", self.gateway.repository,
+                        "--json", "apiUrl,tagName"]:
+                return json.dumps(dict(tagName=TAG, apiUrl=
+                    "https://api.github.com/repos/dcc-mcp/dcc-cua/releases/42")).encode()
+            if args == ["gh", "api", "repos/dcc-mcp/dcc-cua/releases/42"]:
+                value = self.gateway.document
+                return json.dumps(dict(id=value["id"], tag_name=value["tagName"],
+                    target_commitish=value["targetCommitish"], draft=value["isDraft"],
+                    prerelease=value["isPrerelease"], assets=value["assets"])).encode()
+            raise subprocess.CalledProcessError(1, args, stderr=b"HTTP 404")
+
+        with patch.object(publisher.subprocess, "check_output", side_effect=transport):
+            result = self.publish()
+        self.assertEqual(result["asset_count"], 13)
+        self.assertEqual(result["latest"], TAG)
+        self.assertFalse(any("releases/tags/" in argument for args in requests for argument in args))
+        self.assertEqual(self.patches(), [
+            dict(draft=False, prerelease=True, make_latest="false"),
+            dict(draft=False, prerelease=False, make_latest="true"),
+        ])
 
     def test_latest_changes_only_after_every_public_body_matches(self):
         result = self.publish()
