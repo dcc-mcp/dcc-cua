@@ -181,6 +181,27 @@ class ResumeTests(unittest.TestCase):
             replaced_before_first_read.release(TAG)
 
     def test_official_entrypoint_reuses_original_transport_and_publishes_all_thirteen(self):
+        self.exercise_official_entrypoint()
+
+    def test_official_entrypoint_resumes_public_prerelease_without_reupload(self):
+        self.exercise_official_entrypoint(staged=True)
+
+    def test_staged_resume_rejects_bad_public_bytes_before_stable_promotion(self):
+        self.exercise_official_entrypoint(staged=True, bad_public=(1, "0" * 64))
+
+    def test_resume_visibility_requires_exact_draft_or_staging_booleans(self):
+        for draft, prerelease in ((True, False), (False, True)):
+            resume.validate_resume_visibility(dict(isDraft=draft, isPrerelease=prerelease))
+        for draft, prerelease in ((False, False), (True, True), (1, False), (False, 1),
+                                  (True, 0), (0, True), (None, True), (True, None),
+                                  ("false", True), (False, "true")):
+            with self.subTest(draft=draft, prerelease=prerelease), self.assertRaises(ValueError):
+                resume.validate_resume_visibility(dict(isDraft=draft, isPrerelease=prerelease))
+        for metadata in ({}, dict(isDraft=True), dict(isPrerelease=True)):
+            with self.subTest(metadata=metadata), self.assertRaises(ValueError):
+                resume.validate_resume_visibility(metadata)
+
+    def exercise_official_entrypoint(self, *, staged=False, bad_public=None):
         # Separate source S, producer W, and current executing tool H throughout.
         producer_head = "b" * 40
         self.request["producer_head_sha"] = producer_head
@@ -203,6 +224,9 @@ class ResumeTests(unittest.TestCase):
         fake = FakeGitHub(self.directory, TAG)
         fake.draft_urls = True
         fake.upload(TAG, [])
+        if staged:
+            fake.patch(42, dict(draft=False, prerelease=True, make_latest="false"))
+        fake.bad_public = bad_public
         self.request["asset_identity_sha256"] = resume.asset_identity_sha256(
             [(asset["id"], asset["name"], asset["size"], asset["digest"]) for asset in fake.document["assets"]])
         fake.events.clear()
@@ -245,14 +269,25 @@ class ResumeTests(unittest.TestCase):
                 patch.object(resume.GitHub, "latest", side_effect=fake.latest), \
                 patch.object(resume.GitHub, "patch", side_effect=fake.patch), \
                 patch.object(resume.GitHub, "public_digest", side_effect=fake.public_digest):
-            resume.main()
+            if bad_public is None:
+                resume.main()
+            else:
+                with self.assertRaisesRegex(ValueError, "public release asset bytes differ"):
+                    resume.main()
         self.assertEqual(downloaded.call_count, 1)
         self.assertNotIn("upload", fake.events)
-        self.assertEqual(fake.events.count("public_get"), 13)
+        self.assertEqual(fake.events.count("public_get"), 13 if bad_public is None else 1)
+        mutations = [event[1] for event in fake.events if isinstance(event, tuple) and event[0] == "patch"]
+        if bad_public is not None:
+            self.assertEqual(mutations, [])
+            self.assertIs(fake.document["isPrerelease"], True)
+            self.assertEqual(fake.current_latest["tagName"], "v1.5.0")
+        elif staged:
+            self.assertEqual(mutations, [dict(draft=False, prerelease=False, make_latest="true")])
         records = [json.loads(line) for line in (self.root / "native-publication-resume-9999/publication.jsonl").read_text().splitlines()]
         self.assertEqual(records[0]["producer"]["producer_run_id"], RUN_ID)
         self.assertEqual(records[0]["execution"]["workflow_head_sha"], "c" * 40)
-        self.assertEqual(records[-1]["phase"], "published_and_verified")
+        self.assertEqual(records[-1]["phase"], "published_and_verified" if bad_public is None else "failed")
         self.assertEqual((self.root / "native-publication-resume-9999/dist" / MODULE.PROVENANCE_NAME).read_bytes(),
                          (self.directory / MODULE.PROVENANCE_NAME).read_bytes())
 

@@ -208,6 +208,13 @@ def command(*args):
     return subprocess.check_output(args, text=True).strip()
 
 
+def validate_resume_visibility(metadata):
+    draft, prerelease = metadata.get("isDraft"), metadata.get("isPrerelease")
+    if not ((draft is True and prerelease is False)
+            or (draft is False and prerelease is True)):
+        raise ValueError("publication-only admission requires the original draft or its public prerelease staging")
+
+
 def main():
     request = request_from_environment(os.environ)
     repository = os.environ["GITHUB_REPOSITORY"]
@@ -258,8 +265,7 @@ def main():
                 record(dict(phase="original_archive_verified", receipt=validate_archive_receipt(
                     log, fact, asset, request, repository_id)))
             initial = gateway.release(request["tag"])
-            if initial.get("isDraft") is not True or initial.get("isPrerelease") is not False:
-                raise ValueError("publication-only admission requires the complete original draft")
+            validate_resume_visibility(initial)
             integrity.verify_uploaded_native_release(initial, directory, version=request["tag"][1:],
                 tag=request["tag"], source_sha=request["source_sha"], workflow_head_sha=request["producer_head_sha"])
             (root / "release-before.json").write_text(json.dumps(initial, sort_keys=True) + "\n")
