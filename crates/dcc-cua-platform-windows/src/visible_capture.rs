@@ -1102,7 +1102,7 @@ fn capture_desktop_window(
             let visible = crate::occlusion::redact_bgra(&mut bgra, bounds, &redacted_regions)
                 .map_err(capture_error)?;
             if !visible {
-                return Err(unsafe { prove_target_unobscured(hwnd, rect) }
+                return Err(prove_target_unobscured(hwnd, rect)
                     .err()
                     .unwrap_or_else(|| {
                         proof_error(
