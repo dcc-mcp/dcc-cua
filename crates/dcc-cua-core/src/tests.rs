@@ -1187,7 +1187,15 @@ fn native_tool_boundary_rejects_reserved_and_dedicated_routes() {
 #[tokio::test]
 async fn every_unscoped_native_route_rejects_dedicated_tools() {
     let driver = ComputerUseDriver::create().unwrap();
-    for tool in ["launch_app", "kill_app", "start_session", "end_session"] {
+    // Driver 0.36 adds run_script to its inventory. Upstream feature growth
+    // must not grant access through DCC's explicitly bounded native routes.
+    for tool in [
+        "launch_app",
+        "kill_app",
+        "start_session",
+        "end_session",
+        "run_script",
+    ] {
         for result in [
             driver.call_tool(tool, json!({})).await,
             driver.call_global_tool(tool, json!({})).await,

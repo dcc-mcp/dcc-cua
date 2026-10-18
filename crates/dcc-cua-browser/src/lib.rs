@@ -904,6 +904,9 @@ impl BrowserResult {
             "readback_state": structured["readback_state"],
             "refs_invalidated": structured["refs_invalidated"],
         });
+        if structured["dispatch_state"] == "unknown" {
+            public["dispatch_state"] = json!("unknown");
+        }
         if succeeded && structured["delivery_mode"] == "foreground" {
             for key in [
                 "current_url",
@@ -1316,6 +1319,15 @@ fn navigation_response_is_success(
             "browser navigation receipt returned inconsistent target, tab, URL, or delivery mode",
         ));
     }
+    if structured.get("dispatch_state").is_some()
+        && (structured["status"] != "error"
+            || structured["error_code"] != "navigation_completion_unknown")
+    {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::BackendUnavailable,
+            "browser navigation returned inconsistent dispatch evidence",
+        ));
+    }
     match structured["status"].as_str() {
         Some("ok") => {
             let foreground = expected_delivery_mode == "foreground";
@@ -1353,6 +1365,26 @@ fn navigation_response_is_success(
             Ok(true)
         }
         Some("error") => {
+            // An untyped CDP failure can follow a delivered mutation whose
+            // reply was lost. Accept only the SDK's exact redacted unknown
+            // receipt, never manufacture a false "not dispatched" result.
+            if structured["error_code"] == "navigation_completion_unknown" {
+                let valid_unknown = structured.get("dispatched") == Some(&Value::Null)
+                    && structured["dispatch_state"] == "unknown"
+                    && structured["refs_invalidated"] == true
+                    && structured["activated"] == false
+                    && structured["activation_state"] == "not_started"
+                    && structured["readback_state"] == "not_started"
+                    && structured["error"]
+                        == "browser navigation completion is unknown; refresh browser state before retrying";
+                if valid_unknown {
+                    return Ok(false);
+                }
+                return Err(ComputerUseError::new(
+                    ComputerUseErrorCode::BackendUnavailable,
+                    "browser navigation returned a malformed unknown completion receipt",
+                ));
+            }
             let dispatched = structured["dispatched"].as_bool().ok_or_else(|| {
                 ComputerUseError::new(
                     ComputerUseErrorCode::BackendUnavailable,
