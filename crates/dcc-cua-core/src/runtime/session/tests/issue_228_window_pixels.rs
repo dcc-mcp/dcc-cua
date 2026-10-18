@@ -587,6 +587,29 @@ fn issue_228_visible_desktop_crop_publication_requires_complete_visibility() {
 }
 
 #[rstest]
+fn redacted_desktop_publication_requires_a_stable_mask_instead_of_full_visibility() {
+    let captured = target(42, 77, [100, 200, 800, 600]);
+    let mode = ExactWindowPixelCaptureMode::RedactedDesktopCrop;
+    assert!(
+        validate_final_exact_window_pixel_publication(
+            &captured,
+            &captured,
+            publication_fence(captured.bounds, 120, 7, mode),
+            publication_fence(captured.bounds, 120, 8, mode),
+            false,
+        )
+        .is_ok()
+    );
+    assert!(validate_redaction_fence(&[[100, 200, 20, 20]], &[[100, 200, 20, 20]]).is_ok());
+    assert_eq!(
+        validate_redaction_fence(&[[100, 200, 20, 20]], &[[120, 200, 20, 20]])
+            .unwrap_err()
+            .code,
+        ComputerUseErrorCode::StaleObservation
+    );
+}
+
+#[rstest]
 #[case(true, false, true, "minimized")]
 #[case(false, true, true, "hidden")]
 #[case(false, false, false, "occluded")]

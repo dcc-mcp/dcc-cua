@@ -541,7 +541,7 @@ impl RootProofTraceEntry {
 pub(super) struct RootZOrderEnumeration {
     target_window_handle: u64,
     target_bounds: [i32; 4],
-    roots: Vec<(u64, [i32; 4], bool)>,
+    roots: CompositedRoots,
     failure: Option<VisibleWindowCaptureError>,
     pub(super) trace: Option<Vec<RootProofTraceEntry>>,
 }
@@ -671,12 +671,14 @@ where
     (bounds[2] > 0 && bounds[3] > 0).then_some((window_handle, bounds, true))
 }
 
+type CompositedRoots = Vec<(u64, [i32; 4], bool)>;
+
 unsafe fn enumerate_target_roots(
     target: HWND,
     rect: RECT,
     trace: bool,
 ) -> (
-    Result<Vec<(u64, [i32; 4], bool)>, VisibleWindowCaptureError>,
+    Result<CompositedRoots, VisibleWindowCaptureError>,
     Vec<RootProofTraceEntry>,
 ) {
     let target_root = unsafe { root_or_self(target) };
