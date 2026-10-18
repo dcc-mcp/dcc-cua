@@ -1,0 +1,89 @@
+name: Resume native publication
+
+on:
+  workflow_dispatch:
+    inputs:
+      producer_run_id:
+        description: Original failed native recovery run ID
+        required: true
+        type: string
+      producer_head_sha:
+        description: Original producer workflow commit
+        required: true
+        type: string
+      artifact_id:
+        description: Original consolidated native artifact ID
+        required: true
+        type: string
+      artifact_digest:
+        description: Original immutable artifact sha256 digest including prefix
+        required: true
+        type: string
+      tag:
+        description: Existing stable native version tag
+        required: true
+        type: string
+      source_sha:
+        description: Original tagged native source commit
+        required: true
+        type: string
+      release_id:
+        description: Existing complete draft release ID
+        required: true
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: release-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && vars.DCC_CUA_RELEASE_READY == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify immutable publication tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          git show "$GITHUB_SHA:scripts/verify_ci_source_integrity.py" |
+            python -B - --repository . --expected "$GITHUB_SHA"
+      - name: Validate publication resume contracts
+        run: python -B -m unittest scripts.test_resume_native_publication scripts.test_publish_verified_release
+      - name: Resume original native artifact publication
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRODUCER_RUN_ID: ${{ inputs.producer_run_id }}
+          PRODUCER_HEAD_SHA: ${{ inputs.producer_head_sha }}
+          ARTIFACT_ID: ${{ inputs.artifact_id }}
+          ARTIFACT_DIGEST: ${{ inputs.artifact_digest }}
+          TAG: ${{ inputs.tag }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          RELEASE_ID: ${{ inputs.release_id }}
+        run: |
+          set -euo pipefail
+          git show "$GITHUB_SHA:scripts/verify_ci_source_integrity.py" |
+            python -B - --repository . --expected "$GITHUB_SHA"
+          python -B scripts/resume_native_publication.py
+      - name: Retain publication resume evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: native-publication-resume-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/native-publication-resume-${{ github.run_id }}/*.json
+            ${{ runner.temp }}/native-publication-resume-${{ github.run_id }}/*.jsonl
+            ${{ runner.temp }}/native-publication-resume-${{ github.run_id }}/*.log
+          if-no-files-found: ignore
+          retention-days: 7

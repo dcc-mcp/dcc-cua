@@ -32,6 +32,7 @@ class FakeGitHub:
         self.source = SOURCE_SHA
         self.bad_public = None
         self.patch_error = None
+        self.draft_urls = False
 
     def release(self, tag):
         self.events.append("metadata")
@@ -50,7 +51,8 @@ class FakeGitHub:
         for asset_id, asset in enumerate(self.document["assets"], start=101):
             asset["id"] = asset_id
             asset["browser_download_url"] = (
-                f"https://github.com/{self.repository}/releases/download/{tag}/{asset['name']}"
+                f"https://github.com/{self.repository}/releases/download/"
+                f"{'untagged-1f0677da8da14ed5f8ea' if self.draft_urls else tag}/{asset['name']}"
             )
 
     def patch(self, release_id, payload):
@@ -59,6 +61,11 @@ class FakeGitHub:
         if self.patch_error:
             raise self.patch_error
         self.document.update(isDraft=payload["draft"], isPrerelease=payload["prerelease"])
+        if self.draft_urls and payload["draft"] is False:
+            for asset in self.document["assets"]:
+                asset["browser_download_url"] = (
+                    f"https://github.com/{self.repository}/releases/download/{self.tag}/{asset['name']}"
+                )
         if payload["make_latest"] == "true":
             self.current_latest = copy.deepcopy(self.document)
 
@@ -284,6 +291,46 @@ class PublicationTests(unittest.TestCase):
             dict(draft=False, prerelease=True, make_latest="false"),
             dict(draft=False, prerelease=False, make_latest="true"),
         ])
+
+    def test_temporary_draft_urls_transition_without_reupload_or_identity_change(self):
+        for existing in (False, True):
+            with self.subTest(existing=existing):
+                self.gateway = FakeGitHub(self.directory, TAG)
+                self.gateway.draft_urls = True
+                if existing:
+                    self.gateway.upload(TAG, [])
+                    self.gateway.events.clear()
+                result = self.publish()
+                self.assertEqual(result["asset_count"], 13)
+                self.assertEqual(self.gateway.events.count("upload"), 0 if existing else 1)
+                self.assertEqual(self.gateway.events.count("public_get"), 13)
+                self.assertEqual(len(self.patches()), 2)
+
+    def test_temporary_urls_are_never_valid_after_public_staging(self):
+        self.gateway.draft_urls = True
+        self.gateway.upload(TAG, [])
+        self.gateway.draft_urls = False  # Simulate a server retaining temporary URLs.
+        with self.assertRaisesRegex(ValueError, "public asset URL"):
+            self.publish()
+        self.assertEqual(len(self.patches()), 1)
+        self.assertNotIn("public_get", self.gateway.events)
+
+    def test_draft_urls_require_the_same_repository_and_exact_asset_basename(self):
+        self.gateway.upload(TAG, [])
+        good = copy.deepcopy(self.gateway.document)
+        canonical = good["assets"][0]["browser_download_url"]
+        temporary = canonical.replace(f"/{TAG}/", "/untagged-abc123/")
+        for url in (temporary.replace("dcc-mcp/dcc-cua", "other/repo"),
+                    temporary + "?x=1", temporary + "/extra", temporary + "#fragment",
+                    canonical.replace(f"/{TAG}/", "/v9.9.9/"),
+                    temporary.replace("untagged-abc123", "untagged-../other")):
+            with self.subTest(url=url):
+                self.gateway.document = copy.deepcopy(good)
+                self.gateway.document["assets"][0]["browser_download_url"] = url
+                self.gateway.events.clear()
+                with self.assertRaisesRegex(ValueError, "public asset URL"):
+                    self.publish()
+                self.assertEqual(self.patches(), [])
 
     def test_latest_rate_limit_stops_publication_before_upload(self):
         self.gateway.latest = publisher.GitHub(self.gateway.repository).latest
