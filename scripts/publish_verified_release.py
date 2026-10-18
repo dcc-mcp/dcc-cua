@@ -182,7 +182,16 @@ def publish(
                 raise ValueError("uploaded asset must have a positive numeric identity")
             url = (f"https://github.com/{gateway.repository}/releases/download/"
                    f"{tag}/{asset['name']}")
-            if asset.get("browser_download_url") != url:
+            actual_url = asset.get("browser_download_url")
+            # GitHub gives draft uploads temporary untagged-* locations. Their
+            # permanent identity is ID/content plus the eventual canonical URL.
+            # Public releases must already expose that exact canonical URL.
+            draft_url = (re.fullmatch(
+                re.escape(f"https://github.com/{gateway.repository}/releases/download/")
+                + r"untagged-[A-Za-z0-9_-]{1,128}/" + re.escape(asset["name"]),
+                actual_url,
+            ) if isinstance(actual_url, str) and metadata.get("isDraft") is True else None)
+            if actual_url != url and draft_url is None:
                 raise ValueError("release public asset URL does not match its immutable identity")
             identities.append((asset_id, asset["name"], asset["size"], asset["digest"], url))
         if len({entry[0] for entry in identities}) != len(identities):
