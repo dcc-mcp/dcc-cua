@@ -62,6 +62,8 @@ jobs:
       contents: write
       pull-requests: write
     outputs:
+      native_release_target: ${{ steps.source_binding.outputs.native_release_target }}
+      extension_release_target: ${{ steps.source_binding.outputs.extension_release_target }}
       release_created: ${{ steps.release.outputs.release_created == 'true' || steps.existing_release.outputs.release_created == 'true' || steps.recovery.outputs.release_created == 'true' }}
       tag_name: ${{ steps.release.outputs.tag_name || steps.existing_release.outputs.tag_name || steps.recovery.outputs.tag_name }}
       source_sha: ${{ steps.release.outputs.sha || steps.existing_release.outputs.sha || steps.recovery.outputs.source_sha }}
@@ -189,6 +191,18 @@ jobs:
           ./scripts/refresh-release-please-prs.ps1
           -Repository $env:GITHUB_REPOSITORY
 
+      - name: Read active release source bindings
+        id: source_binding
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NATIVE_CREATED: ${{ steps.release.outputs.release_created == 'true' || steps.existing_release.outputs.release_created == 'true' || steps.recovery.outputs.release_created == 'true' }}
+          NATIVE_TAG: ${{ steps.release.outputs.tag_name || steps.existing_release.outputs.tag_name || steps.recovery.outputs.tag_name }}
+          NATIVE_SOURCE: ${{ steps.release.outputs.sha || steps.existing_release.outputs.sha || steps.recovery.outputs.source_sha }}
+          EXTENSION_CREATED: ${{ steps.release.outputs['browser-extension/chrome--release_created'] == 'true' || steps.existing_release.outputs.extension_release_created == 'true' || steps.recovery.outputs.extension_release_created == 'true' }}
+          EXTENSION_TAG: ${{ steps.release.outputs['browser-extension/chrome--tag_name'] || steps.existing_release.outputs.extension_tag_name || steps.recovery.outputs.extension_tag_name }}
+          EXTENSION_SOURCE: ${{ steps.release.outputs['browser-extension/chrome--sha'] || steps.existing_release.outputs.extension_source_sha || steps.recovery.outputs.extension_source_sha }}
+        run: python -B scripts/read_release_source_bindings.py
+
   build:
     needs: release-please
     if: needs.release-please.outputs.release_created == 'true'
@@ -229,13 +243,13 @@ jobs:
         shell: bash
         env:
           EXPECTED_SHA: ${{ needs.release-please.outputs.source_sha }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TARGET: ${{ needs.release-please.outputs.native_release_target }}
           TAG_NAME: ${{ needs.release-please.outputs.tag_name }}
         run: |
           set -euo pipefail
           head_sha="$(git rev-parse HEAD)"
           tag_sha="$(git rev-parse "${TAG_NAME}^{commit}")"
-          release_target="$(gh release view "$TAG_NAME" --repo "$GITHUB_REPOSITORY" --json targetCommitish --jq .targetCommitish)"
+          release_target="$RELEASE_TARGET"
           python -B scripts/release_integrity.py verify-source \
             --head-sha "$head_sha" \
             --tag-sha "$tag_sha" \
@@ -578,14 +592,14 @@ jobs:
       - name: Verify browser extension release source binding
         env:
           EXPECTED_SHA: ${{ needs.release-please.outputs.extension_source_sha }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TARGET: ${{ needs.release-please.outputs.extension_release_target }}
           TAG_NAME: ${{ needs.release-please.outputs.extension_tag_name }}
         shell: bash
         run: |
           set -euo pipefail
           head_sha="$(git rev-parse HEAD)"
           tag_sha="$(git rev-parse "${TAG_NAME}^{commit}")"
-          release_target="$(gh release view "$TAG_NAME" --repo "$GITHUB_REPOSITORY" --json targetCommitish --jq .targetCommitish)"
+          release_target="$RELEASE_TARGET"
           python -B scripts/release_integrity.py verify-source \
             --head-sha "$head_sha" \
             --tag-sha "$tag_sha" \
