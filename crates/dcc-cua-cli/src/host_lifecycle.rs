@@ -60,7 +60,9 @@ pub(super) enum HostProbeFailure {
 impl HostProbeFailure {
     pub(super) fn from_client_error(error: HostClientError) -> Self {
         match error {
-            HostClientError::Io(error) => Self::Io(SupervisorIoError::from_io(&error)),
+            HostClientError::Connect(error) | HostClientError::Io(error) => {
+                Self::Io(SupervisorIoError::from_io(&error))
+            }
             HostClientError::Protocol(_) => Self::Protocol,
             HostClientError::Timeout { .. } => Self::Timeout,
             HostClientError::Remote { .. } => Self::Remote,

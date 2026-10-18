@@ -679,6 +679,22 @@ permit multiple server instances; Unix keeps the existing socket bind as its
 singleton boundary. Independent Core bridges can therefore share one Host per
 interactive OS session while retaining connection-scoped agent sessions.
 
+`ping`, `host-call`, and `host-batch` require a resident Host unless `--spawn`
+is supplied. A missing or refused local endpoint returns `host_not_running`
+with the fixed recovery hint `dcc-cua host-ensure`. If the failed command used
+`--endpoint PATH`, pass the same `--endpoint PATH` to `host-ensure`; the error
+does not echo the path. These commands do not automatically start a Host or
+retry the request. Permission failures, handshake failures, and a missing
+`--spawn` executable are not classified as an absent resident Host.
+
+`doctor --spawn BINARY` and `ping --spawn BINARY` verify a separate, temporary
+stdio Host; their success does not establish that a resident endpoint exists.
+The `call --tool NAME` command uses the direct native-driver tool surface,
+not the Host method surface. To list Host windows, use
+`host-call --method list_windows --json '{}'` after `host-ensure`, or `list`
+for direct inventory. An `invalid_action` from `call` is not evidence that
+the resident Host is absent.
+
 When Core owns the Host lifecycle, use `HostProcess::spawn` to start the CLI
 with `host --stdio`, reuse the same negotiated `HostClient`, and call
 `shutdown` when the task ends. This keeps process supervision out of Core's

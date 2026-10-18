@@ -6,6 +6,40 @@ use crate::failure_output::{OVERLAY_EXCLUSION_MESSAGE, PUBLIC_FAILURE_MESSAGE, f
 use super::*;
 
 #[rstest]
+#[case(std::io::ErrorKind::NotFound, true)]
+#[case(std::io::ErrorKind::ConnectionRefused, true)]
+#[case(std::io::ErrorKind::PermissionDenied, false)]
+#[case(std::io::ErrorKind::TimedOut, false)]
+#[case(std::io::ErrorKind::WouldBlock, false)]
+#[case(std::io::ErrorKind::ConnectionReset, false)]
+#[case(std::io::ErrorKind::BrokenPipe, false)]
+#[case(std::io::ErrorKind::InvalidInput, false)]
+#[case(std::io::ErrorKind::Other, false)]
+fn missing_host_guidance_requires_an_absent_listener_at_connect_time(
+    #[case] kind: std::io::ErrorKind,
+    #[case] absent: bool,
+) {
+    for connecting in [false, true] {
+        let io = std::io::Error::new(kind, "REVIEW_PRIVATE_ENDPOINT_AND_OS_MESSAGE");
+        let error = if connecting {
+            HostClientError::Connect(io)
+        } else {
+            HostClientError::Io(io)
+        };
+        let value = fatal_error_value(&error);
+        if connecting && absent {
+            assert_eq!(value["error"]["code"], "host_not_running");
+            assert_eq!(value["error"]["hint"], "dcc-cua host-ensure");
+        } else {
+            assert_eq!(value["error"]["code"], "host_transport_failed");
+            assert_eq!(value["error"]["message"], PUBLIC_FAILURE_MESSAGE);
+            assert!(value["error"].get("hint").is_none());
+        }
+        assert!(!value.to_string().contains("REVIEW_PRIVATE_"));
+    }
+}
+
+#[rstest]
 fn doctor_failures_preserve_the_diagnostics_native_stdout_boundary() {
     assert!(
         terminal_error_output(&[OsString::from("doctor")]) == TerminalErrorOutput::ProtocolNative
