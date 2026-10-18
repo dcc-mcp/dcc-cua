@@ -260,7 +260,8 @@ def main():
             provenance = validate_bundle(directory, artifact, listing, request, repository_id)
             for name, fact, asset in zip(BUILD_JOBS, provenance["build_artifacts"], provenance["assets"], strict=True):
                 job_id = by_name[name]["id"]
-                log = command("gh", "api", f"repos/{repository}/actions/jobs/{job_id}/logs")
+                log = command("gh", "api", "--allow-escape-sequences",
+                              f"repos/{repository}/actions/jobs/{job_id}/logs")
                 (root / f"build-{job_id}.log").write_text(log, encoding="utf-8")
                 record(dict(phase="original_archive_verified", receipt=validate_archive_receipt(
                     log, fact, asset, request, repository_id)))
