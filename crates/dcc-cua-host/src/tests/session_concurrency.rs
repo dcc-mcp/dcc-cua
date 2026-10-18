@@ -23,3 +23,26 @@ fn connection_session_limit_rejects_additional_agent_work() {
     );
     assert_eq!(error_code(&error), "session_limit_reached");
 }
+
+#[rstest]
+fn absent_session_guidance_stays_scoped_to_this_connection() {
+    let mut sessions = std::collections::HashMap::new();
+    let error = session_with_capability(
+        &mut sessions,
+        "PRIVATE_SESSION",
+        "PRIVATE_GRANT",
+        "PRIVATE_CAPABILITY",
+    )
+    .err()
+    .unwrap();
+    let response = host_error_response(&error);
+    assert_eq!(response["code"], "session_not_found");
+    assert!(
+        response["message"]
+            .as_str()
+            .unwrap()
+            .contains("this Host connection")
+    );
+    assert!(!response.to_string().contains("PRIVATE_"));
+    assert!(sessions.is_empty());
+}

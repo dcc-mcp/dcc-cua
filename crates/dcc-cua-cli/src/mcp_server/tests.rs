@@ -4,6 +4,7 @@ use serde_json::{Value, json};
 use super::*;
 
 mod capture_preparation_tests;
+mod lifetime_tests;
 mod native_menu_tests;
 
 fn test_server() -> TaskAuthorizationServer {

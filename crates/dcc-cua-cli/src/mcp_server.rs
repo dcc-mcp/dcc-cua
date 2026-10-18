@@ -706,7 +706,7 @@ impl TaskAuthorizationServer {
         let proposal = self
             .proposals
             .get_mut(proposal_id)
-            .ok_or_else(|| "task was not found".to_owned())?;
+            .ok_or_else(|| crate::lifetime_diagnostics::TASK_NOT_FOUND.to_owned())?;
         if proposal.revoked {
             return Ok(proposal_payload(
                 proposal_id,
@@ -768,12 +768,12 @@ impl TaskAuthorizationServer {
         let proposal = self
             .proposals
             .get_mut(&proposal_id)
-            .ok_or_else(|| "task was not found".to_owned())?;
+            .ok_or_else(|| crate::lifetime_diagnostics::TASK_NOT_FOUND.to_owned())?;
         if proposal.revoked {
-            return Err("task was stopped".into());
+            return Err(crate::lifetime_diagnostics::TASK_STOPPED.into());
         }
         if proposal.registration.expires_at_unix_ms <= unix_time_millis() {
-            return Err("task expired".into());
+            return Err(crate::lifetime_diagnostics::TASK_EXPIRED.into());
         }
         if proposal.receipt.is_none() {
             return Err("task runtime lease was not issued".into());
@@ -809,7 +809,7 @@ impl TaskAuthorizationServer {
         let proposal = self
             .proposals
             .get(proposal_id)
-            .ok_or_else(|| "task was not found".to_owned())?;
+            .ok_or_else(|| crate::lifetime_diagnostics::TASK_NOT_FOUND.to_owned())?;
         let status = if proposal.revoked {
             stopped_task_status(proposal.cleanup.as_ref())
         } else if proposal.registration.expires_at_unix_ms <= unix_time_millis() {
@@ -836,12 +836,12 @@ impl TaskAuthorizationServer {
         let proposal = self
             .proposals
             .get_mut(&proposal_id)
-            .ok_or_else(|| "task was not found".to_owned())?;
+            .ok_or_else(|| crate::lifetime_diagnostics::TASK_NOT_FOUND.to_owned())?;
         if proposal.revoked {
-            return Err("task was stopped".into());
+            return Err(crate::lifetime_diagnostics::TASK_STOPPED.into());
         }
         if proposal.registration.expires_at_unix_ms <= unix_time_millis() {
-            return Err("task expired".into());
+            return Err(crate::lifetime_diagnostics::TASK_EXPIRED.into());
         }
         if proposal.receipt.is_none() {
             return Err("task runtime lease was not issued".into());
@@ -1547,7 +1547,7 @@ fn tool_definitions() -> Vec<Value> {
         json!({
             "name": "start_task",
             "title": "Start DCC-CUA task",
-            "description": "Start one exact bounded DCC-CUA task without a secondary confirmation step. The connected Agent Host owns user authorization. observation_mode defaults to semantic; explicitly choose pixels_only for an exact window snapshot without UIA or semantic selectors. Pixels-only tasks require complete exact-window capture proof and grant only closed native window_state methods or the advertised non-secret raw_input actions. Explicit set_window_frame requires get_window_state and its own action scope. Native dismiss_menu requires its independent window_state/dismiss_menu action scope plus get_window_state and change_window_state. These grant no raw input or recording. Each input requires the latest observation and a foreground, unchanged native instance. Pointer locations must be unredacted and natively reachable; keyboard and text require complete visibility. Explicit allow_recording=true grants native video-only recording_start/state/stop in an operator-owned task directory. Live observation and recording reuse the same native source, without an accessibility tree or trajectory.",
+            "description": "Start one exact bounded DCC-CUA task without a secondary confirmation step. Keep this mcp-server stdio connection open through stop_task: task IDs, observations and opaque refs are connection/session-scoped and cannot be resumed after reconnecting. The connected Agent Host owns user authorization. observation_mode defaults to semantic; explicitly choose pixels_only for an exact window snapshot without UIA or semantic selectors. Pixels-only tasks require complete exact-window capture proof and grant only closed native window_state methods or the advertised non-secret raw_input actions. Explicit set_window_frame requires get_window_state and its own action scope. Native dismiss_menu requires its independent window_state/dismiss_menu action scope plus get_window_state and change_window_state. These grant no raw input or recording. Each input requires the latest observation and a foreground, unchanged native instance. Pointer locations must be unredacted and natively reachable; keyboard and text require complete visibility. Explicit allow_recording=true grants native video-only recording_start/state/stop in an operator-owned task directory. Live observation and recording reuse the same native source, without an accessibility tree or trajectory.",
             "inputSchema": {
                 "type": "object",
                 "additionalProperties": false,
@@ -1690,7 +1690,7 @@ fn tool_definitions() -> Vec<Value> {
         json!({
             "name": "task_status",
             "title": "DCC-CUA task status",
-            "description": "Read the current state of an exact DCC-CUA task.",
+            "description": "Read the current state of an exact DCC-CUA task on the same MCP connection that started it. Task IDs are not portable across connections.",
             "inputSchema": task_id_schema(),
             "annotations": {"readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false}
         }),
@@ -1704,7 +1704,7 @@ fn tool_definitions() -> Vec<Value> {
         json!({
             "name": "dcc_cua_task_call",
             "title": "Run DCC-CUA task call",
-            "description": "Call one closed Host method after start_task returned its provider/runtime/PID/HWND binding. A pixels_only snapshot yields a formal observation_id and accessibility_available=false, without semantic element tokens. Its optional capture_diagnostics boolean defaults to false; true adds bounded byte hashes, histograms, timing, and native provenance for the existing two captures without changing pixels or input authority. Semantic snapshots reject this diagnostic opt-in. Its execute_action requires a granted supported raw_input action and that latest observation_id; omit accessibility_state_id, element selectors, secret handles, and input_backend_id. Delivery is foreground only, without implicit activation. Use capture_after for a fresh pixel post-action observation; semantic post snapshots are refused. minimize_window requires the latest observation and same native instance, consumes it after an attempt, and reports native minimized state. set_window_frame requires a one-use window_state_id from explicit get_window_state no more than five seconds old, and frame={x,y,width,height} in exact i32 physical pixels with checked extents. It moves the same full native instance without activation or z-order change and confirms only an exact bounded native readback; every attempt consumes metadata and prior pixel evidence. Its response state does not mint another token. change_window_state also accepts dismiss_menu only with its independent window_state/dismiss_menu action scope and a one-use window_state_id copied from get_window_state.menu_dismiss_window_state_id, at most five seconds old. Frame and snapshot tokens cannot authorize menu dismissal. It sends one bounded standard native cancellation without activation, keyboard input or application close. Confirmed requires popup_hidden_or_gone, menu_inactive and owner_alive; an unconfirmed attempt is never success and must not be blindly retried. Every attempt consumes metadata and prior observations. Take a fresh observation afterward. Out-of-scope, expired, stopped, changed, or stale targets fail without prompting. Recording requires explicit allow_recording and an immutable task output directory; call recording_start with an empty params object for video-only output. Granted live_observation_start/state/stop expose the same native source. Recording start validates the actual first encoded frame, state reports source pauses and failures, and stop awaits video/sidecar finalization. Never pass credential values; use secret handles in supported semantic/browser tasks.",
+            "description": "Call one closed Host method on the same MCP connection after start_task returned its provider/runtime/PID/HWND binding. Keep snapshot and action in that same task; observation IDs and opaque references are not reusable after reconnecting or in another CLI invocation. A pixels_only snapshot yields a formal observation_id and accessibility_available=false, without semantic element tokens. Its optional capture_diagnostics boolean defaults to false; true adds bounded byte hashes, histograms, timing, and native provenance for the existing two captures without changing pixels or input authority. Semantic snapshots reject this diagnostic opt-in. Its execute_action requires a granted supported raw_input action and that latest observation_id; omit accessibility_state_id, element selectors, secret handles, and input_backend_id. Delivery is foreground only, without implicit activation. Use capture_after for a fresh pixel post-action observation; semantic post snapshots are refused. minimize_window requires the latest observation and same native instance, consumes it after an attempt, and reports native minimized state. set_window_frame requires a one-use window_state_id from explicit get_window_state no more than five seconds old, and frame={x,y,width,height} in exact i32 physical pixels with checked extents. It moves the same full native instance without activation or z-order change and confirms only an exact bounded native readback; every attempt consumes metadata and prior pixel evidence. Its response state does not mint another token. change_window_state also accepts dismiss_menu only with its independent window_state/dismiss_menu action scope and a one-use window_state_id copied from get_window_state.menu_dismiss_window_state_id, at most five seconds old. Frame and snapshot tokens cannot authorize menu dismissal. It sends one bounded standard native cancellation without activation, keyboard input or application close. Confirmed requires popup_hidden_or_gone, menu_inactive and owner_alive; an unconfirmed attempt is never success and must not be blindly retried. Every attempt consumes metadata and prior observations. Take a fresh observation afterward. Out-of-scope, expired, stopped, changed, or stale targets fail without prompting. Recording requires explicit allow_recording and an immutable task output directory; call recording_start with an empty params object for video-only output. Granted live_observation_start/state/stop expose the same native source. Recording start validates the actual first encoded frame, state reports source pauses and failures, and stop awaits video/sidecar finalization. Never pass credential values; use secret handles in supported semantic/browser tasks.",
             "inputSchema": {
                 "type": "object",
                 "additionalProperties": false,
@@ -1804,7 +1804,8 @@ fn tool_result(payload: Value) -> Value {
 }
 
 fn tool_error(message: String) -> Value {
-    let payload = json!({"ok": false, "error": message});
+    let payload = crate::lifetime_diagnostics::task_failure(&message)
+        .unwrap_or_else(|| json!({"ok": false, "error": message}));
     json!({
         "content": [{"type": "text", "text": payload.to_string()}],
         "structuredContent": payload,

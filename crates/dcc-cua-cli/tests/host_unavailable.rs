@@ -140,3 +140,43 @@ fn failed_handshake_is_not_reported_as_an_absent_resident_host() {
     assert!(value["error"].get("hint").is_none());
     assert!(!value.to_string().contains("PRIVATE_ENDPOINT"));
 }
+
+#[rstest]
+#[case("start_session", r#"{"session":"PRIVATE_SESSION"}"#, "invalid_request")]
+#[case(
+    "get_window_state",
+    r#"{"pid":42,"window_id":7,"session":"PRIVATE_SESSION"}"#,
+    "invalid_request"
+)]
+#[case("get_window_state", r#"{"session_id":"PRIVATE_SESSION","task_grant_id":"PRIVATE_GRANT","window_capability":"PRIVATE_CAP"}"#, "session_not_found")]
+fn host_call_reports_namespace_and_session_errors_through_a_real_host_process(
+    #[case] method: &str,
+    #[case] params: &str,
+    #[case] code: &str,
+) {
+    let output = Command::new(env!("CARGO_BIN_EXE_dcc-cua"))
+        .args([
+            "host-call",
+            "--spawn",
+            env!("CARGO_BIN_EXE_dcc-cua"),
+            "--method",
+            method,
+            "--json",
+            params,
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stderr.is_empty());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert_eq!(stdout.lines().count(), 1);
+    let value: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(value["error"]["code"], code);
+    assert!(
+        value["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("connection")
+    );
+    assert!(!stdout.contains("PRIVATE_"));
+}

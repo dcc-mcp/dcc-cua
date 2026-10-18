@@ -363,6 +363,8 @@ pub(super) fn print_help() -> std::io::Result<()> {
   doctor --diagnostics-only        # local desktop metadata only; no SDK startup or readiness test
   host [--stdio|--endpoint PATH] [--grant existing-profile]
 
+Connection lifetime: keep one mcp-server stdio connection open from start_task through stop_task. Task IDs and opaque observation refs cannot resume after reconnecting. Separate CLI/host-call invocations do not share sessions; host-ensure does not issue task grants. See manifest.connection_lifetime.
+
 Host uses versioned big-endian JSON frames. Hello version 1 negotiates binary-frame or shared-memory snapshots and supports request_id correlation."#
     );
     stdoutln!(

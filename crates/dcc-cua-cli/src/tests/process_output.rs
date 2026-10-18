@@ -85,8 +85,13 @@ fn typed_one_shot_failures_keep_only_allowlisted_identity() {
     assert!(!line.contains('\n'));
     assert_eq!(value["success"], false);
     assert_eq!(value["error"]["code"], "stale_observation");
-    assert_eq!(value["error"]["message"], PUBLIC_FAILURE_MESSAGE);
-    assert!(value["error"].get("details").is_none());
+    assert!(
+        value["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("same live task")
+    );
+    assert!(value["error"]["details"].is_null());
     assert!(!line.contains("REVIEW_PRIVATE_"));
 }
 
@@ -281,4 +286,35 @@ fn remote_host_failure_uses_a_local_allowlisted_identity() {
     assert_eq!(value["error"]["message"], PUBLIC_FAILURE_MESSAGE);
     assert!(value["error"].get("response").is_none());
     assert!(!value.to_string().contains("REVIEW_PRIVATE_"));
+}
+
+#[rstest]
+#[case("stale_observation", "same live task")]
+#[case("session_not_found", "Host connection")]
+#[case("invalid_request", "start_session is not a Host IPC method")]
+#[case("task_authorization_required", "host-ensure only starts")]
+#[case("task_authorization_denied", "outside its task authorization")]
+#[case("task_authorization_expired", "expired")]
+#[case("task_authorization_revoked", "revoked")]
+fn remote_lifetime_failures_publish_only_fixed_local_guidance(
+    #[case] code: &str,
+    #[case] guidance: &str,
+) {
+    let error = HostClientError::Remote {
+        code: code.into(),
+        message: "PRIVATE_REMOTE_MESSAGE".into(),
+        response: json!({"code":code,"details":{"token":"PRIVATE_REMOTE_TOKEN"}}),
+    };
+    let value = fatal_error_value(&error);
+    assert_eq!(value["success"], false);
+    assert_eq!(value["error"]["code"], code);
+    assert!(
+        value["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains(guidance)
+    );
+    assert!(!value.to_string().contains("PRIVATE_"));
+    assert!(value["error"].get("response").is_none());
+    assert!(value["error"].get("details").is_none());
 }
