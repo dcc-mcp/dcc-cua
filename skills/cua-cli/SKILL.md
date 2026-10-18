@@ -25,6 +25,15 @@ Browser skill. Keep authoritative scene, asset, or engine operations on an
 available typed DCC-MCP route; use dcc-cua for the exact-window UI path that the
 typed route cannot cover.
 
+For resident-Host commands (`ping`, `host-call`, `host-batch`), a
+`host_not_running` error means the selected local endpoint was missing or
+refused the connection. Run `dcc-cua host-ensure` before retrying; preserve the
+same `--endpoint PATH` if one was supplied. A successful `--spawn` probe checks
+its temporary stdio Host, not the resident endpoint. `call --tool NAME` is the
+direct driver surface; use `list` or `host-call --method list_windows --json
+'{}'` for window inventory. Do not treat unrelated permission, handshake, or
+`invalid_action` failures as an absent Host.
+
 ## Control loop
 
 1. Discover the real target before acting:

@@ -94,3 +94,49 @@ fn missing_spawn_binary_is_not_reported_as_an_absent_resident_host() {
     assert!(value["error"].get("hint").is_none());
     assert!(!value.to_string().contains("PRIVATE_ENDPOINT"));
 }
+
+#[cfg(unix)]
+#[rstest]
+fn failed_handshake_is_not_reported_as_an_absent_resident_host() {
+    use std::os::unix::net::UnixListener;
+    use std::time::{Duration, Instant};
+
+    let directory = tempfile::Builder::new()
+        .prefix("cua-")
+        .tempdir_in("/tmp")
+        .unwrap();
+    let endpoint = directory.path().join("PRIVATE_ENDPOINT.sock");
+    let listener = UnixListener::bind(&endpoint).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let peer = std::thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            match listener.accept() {
+                Ok((stream, _)) => return drop(stream),
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    assert!(
+                        Instant::now() < deadline,
+                        "CLI did not connect to the fixture"
+                    );
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => panic!("fixture accept failed: {error}"),
+            }
+        }
+    });
+    let output = Command::new(env!("CARGO_BIN_EXE_dcc-cua"))
+        .args(["ping", "--endpoint"])
+        .arg(&endpoint)
+        .output()
+        .unwrap();
+    peer.join().unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stderr.is_empty());
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(matches!(
+        value["error"]["code"].as_str(),
+        Some("host_transport_failed" | "host_protocol_failed")
+    ));
+    assert!(value["error"].get("hint").is_none());
+    assert!(!value.to_string().contains("PRIVATE_ENDPOINT"));
+}

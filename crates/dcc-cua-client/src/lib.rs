@@ -46,6 +46,9 @@ pub struct HostResponse {
 
 #[derive(Debug, thiserror::Error)]
 pub enum HostClientError {
+    /// Opening the local endpoint failed before any handshake or request.
+    #[error("host endpoint connection failed: {0}")]
+    Connect(#[source] std::io::Error),
     #[error("host transport failed: {0}")]
     Io(#[from] std::io::Error),
     #[error("host protocol failed: {0}")]
@@ -1389,13 +1392,19 @@ async fn connect_endpoint(endpoint: &str) -> HostClientResult<BoxedHostStream> {
     validate_endpoint_transport(endpoint)?;
     #[cfg(windows)]
     {
-        let stream = tokio::net::windows::named_pipe::ClientOptions::new().open(endpoint)?;
+        let stream = tokio::net::windows::named_pipe::ClientOptions::new()
+            .open(endpoint)
+            .map_err(HostClientError::Connect)?;
         verify_named_pipe_server_identity(&stream)?;
         Ok(Box::new(stream))
     }
     #[cfg(unix)]
     {
-        Ok(Box::new(tokio::net::UnixStream::connect(endpoint).await?))
+        Ok(Box::new(
+            tokio::net::UnixStream::connect(endpoint)
+                .await
+                .map_err(HostClientError::Connect)?,
+        ))
     }
     #[cfg(not(any(windows, unix)))]
     {

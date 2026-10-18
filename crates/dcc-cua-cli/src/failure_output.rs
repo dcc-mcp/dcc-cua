@@ -8,6 +8,8 @@ use crate::cli_args::CliUsageError;
 use crate::host_lifecycle::HostEnsureError;
 
 pub(super) const PUBLIC_FAILURE_MESSAGE: &str = "dcc-cua could not complete the command";
+const HOST_NOT_RUNNING_MESSAGE: &str =
+    "No resident Host is listening at the selected endpoint. Run dcc-cua host-ensure first; if --endpoint was supplied, use the same --endpoint for host-ensure.";
 const NO_ACCESSIBILITY_PROVIDER_MESSAGE: &str =
     "The exact window has no usable accessibility provider.";
 pub(super) const OVERLAY_EXCLUSION_MESSAGE: &str =
@@ -124,8 +126,25 @@ pub(super) fn fatal_error_value(error: &(dyn std::error::Error + 'static)) -> Va
         ) {
             return overlay_exclusion_failure();
         }
+        if matches!(
+            error,
+            HostClientError::Connect(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+                )
+        ) {
+            return json!({
+                "success": false,
+                "error": {
+                    "code": "host_not_running",
+                    "message": HOST_NOT_RUNNING_MESSAGE,
+                    "hint": "dcc-cua host-ensure",
+                }
+            });
+        }
         let code = match error {
-            HostClientError::Io(_) => "host_transport_failed",
+            HostClientError::Connect(_) | HostClientError::Io(_) => "host_transport_failed",
             HostClientError::Protocol(_) => "host_protocol_failed",
             HostClientError::Timeout { .. } => "host_timeout",
             HostClientError::Remote { .. } => "host_remote_failed",

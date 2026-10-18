@@ -14,6 +14,24 @@ use crate::{CommandFailure, run_command_boundary};
 const PRIVATE_SENTINEL: &str = "REVIEW_PRIVATE_ENDPOINT_PATH_VERSION_SECRET\nsecond line";
 
 #[rstest]
+#[case(ErrorKind::NotFound)]
+#[case(ErrorKind::ConnectionRefused)]
+#[case(ErrorKind::PermissionDenied)]
+#[case(ErrorKind::TimedOut)]
+fn endpoint_connection_classification_preserves_supervisor_policy(#[case] kind: ErrorKind) {
+    let connect = HostProbeFailure::from_client_error(HostClientError::Connect(io::Error::new(
+        kind,
+        PRIVATE_SENTINEL,
+    )));
+    let transport = HostProbeFailure::from_client_error(HostClientError::Io(io::Error::new(
+        kind,
+        PRIVATE_SENTINEL,
+    )));
+    assert_eq!(connect, transport);
+    assert_safe_line(&HostEnsureError::InitialProbe(connect));
+}
+
+#[rstest]
 #[case(ErrorKind::NotFound, "not_found", true)]
 #[case(ErrorKind::ConnectionRefused, "connection_refused", true)]
 #[case(ErrorKind::TimedOut, "timed_out", true)]
