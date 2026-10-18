@@ -413,3 +413,36 @@ fn closed_response_pipe_records_observed_output_error() {
     let report = connections(directory.path());
     assert_observed_close(record_for_pid(&report, bridge.pid()), "output_error");
 }
+
+#[rstest]
+fn missing_tasks_are_actionable_over_real_stdio_without_breaking_the_connection() {
+    let directory = isolated_directory();
+    let mut bridge = Bridge::spawn(directory.path());
+    bridge.initialize("lifetime-test", "lifetime-chat");
+    for tool in ["task_status", "stop_task", "dcc_cua_task_call"] {
+        bridge.send(json!({"jsonrpc":"2.0", "id":20, "method":"tools/call", "params":{
+            "name":tool, "arguments":{"task_id":"PRIVATE_OTHER_CONNECTION_TASK", "method":"snapshot", "params":{}}
+        }}));
+        let response = bridge.response();
+        assert_eq!(response["id"], 20);
+        assert_eq!(response["result"]["isError"], true);
+        let payload = &response["result"]["structuredContent"];
+        assert_eq!(payload["code"], "task_not_found");
+        assert_eq!(payload["details"]["cross_connection_resume"], false);
+        assert!(
+            payload["message"]
+                .as_str()
+                .unwrap()
+                .contains("same mcp-server stdio connection")
+        );
+        assert!(
+            !response
+                .to_string()
+                .contains("PRIVATE_OTHER_CONNECTION_TASK")
+        );
+    }
+    let current = bridge.current();
+    assert_eq!(current["bridge"]["pid"], bridge.pid());
+    bridge.close_input();
+    assert!(bridge.finish().success());
+}

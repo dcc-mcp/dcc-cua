@@ -21,7 +21,7 @@ pub(super) fn take_connection_session<T>(
 ) -> Result<T, HostError> {
     sessions
         .remove(session_id)
-        .ok_or_else(|| HostError::Protocol("session not found".into()))
+        .ok_or_else(HostError::session_not_found)
 }
 
 pub(super) fn input_target_from_cua(

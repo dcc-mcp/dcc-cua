@@ -36,3 +36,21 @@ fn manifest_keeps_the_internal_task_lease_broker_private() {
     }
     assert!(authorization.get("cli_integration").is_none());
 }
+
+#[rstest]
+fn manifest_exposes_connection_lifetime_and_one_shot_limitations() {
+    let contract = &crate::manifest::document()["connection_lifetime"];
+    assert_eq!(contract["task_id_scope"], "mcp_stdio_connection");
+    assert_eq!(contract["host_session_scope"], "host_connection");
+    assert_eq!(contract["cross_connection_resume"], false);
+    assert_eq!(contract["opaque_references_portable"], false);
+    assert_eq!(
+        contract["one_shot_cli"]["act_captures_fresh_observation"],
+        true
+    );
+    assert_eq!(contract["one_shot_cli"]["invocations_share_session"], false);
+    assert_eq!(
+        contract["host_call"]["host_ensure_issues_task_grants"],
+        false
+    );
+}

@@ -61,6 +61,7 @@ pub enum HostProtocolErrorCode {
     MenuInvokeNotGranted,
     SessionEscalationNotGranted,
     SessionLimitReached,
+    SessionNotFound,
     RequestInProgress,
     RequestNotFound,
     Forbidden,
@@ -91,6 +92,7 @@ impl HostProtocolErrorCode {
             Self::MenuInvokeNotGranted => "menu_invoke_not_granted",
             Self::SessionEscalationNotGranted => "session_escalation_not_granted",
             Self::SessionLimitReached => "session_limit_reached",
+            Self::SessionNotFound => "session_not_found",
             Self::RequestInProgress => "request_in_progress",
             Self::RequestNotFound => "request_not_found",
             Self::Forbidden => "forbidden",
@@ -100,6 +102,13 @@ impl HostProtocolErrorCode {
 }
 
 impl HostError {
+    pub(crate) fn session_not_found() -> Self {
+        Self::coded_protocol(
+            HostProtocolErrorCode::SessionNotFound,
+            "session not found on this Host connection; keep the connection that opened the session alive, or open a new authorized session and take a fresh observation; session IDs and capabilities cannot resume another connection's session",
+        )
+    }
+
     pub(crate) fn coded_protocol(code: HostProtocolErrorCode, message: impl Into<String>) -> Self {
         Self::CodedProtocol {
             code,

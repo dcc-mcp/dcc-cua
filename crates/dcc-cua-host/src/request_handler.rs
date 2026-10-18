@@ -446,7 +446,7 @@ async fn handle_request_inner(
         Request::StopDesktopSession { session_id } => {
             let mut host = desktop_sessions
                 .remove(&session_id)
-                .ok_or_else(|| HostError::Protocol("desktop session not found".into()))?;
+                .ok_or_else(HostError::session_not_found)?;
             let result = host.session.stop().await?;
             Ok((
                 json!({"type":"desktop_session_stopped", "session_id":session_id, "result":result}),

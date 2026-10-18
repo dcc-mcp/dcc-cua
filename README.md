@@ -398,6 +398,56 @@ error strings, paths, arguments, tokens, and remote payloads are never copied
 into the one-shot envelope. Long-lived `host-jsonl`, native
 messaging, and MCP commands keep their protocol-specific stdout framing.
 
+### Connection, task and observation lifetimes
+
+Keep one `dcc-cua mcp-server` stdio connection open for the entire automation
+loop: `start_task` → `dcc_cua_task_call` (`snapshot`, then `execute_action`,
+then another observation as needed) → `stop_task`. Use the returned `task_id`
+only on that connection, and use observations/opaque references only in their
+owning task session while still current. Task expiry, stop, disconnect or a new
+connection does not permit replay. There is no cross-connection resume token;
+after reconnecting, start a new authorized task and take a fresh observation.
+`task_not_found` means the ID is unavailable on the current connection, not
+proof that it exists on some other connection. `task_stopped` and `task_expired`
+require a new task. `manifest.connection_lifetime` publishes this contract.
+
+Separate CLI invocations create separate runtime sessions, even with the same
+`--session` label, PID and window ID. A `snapshot` result is useful to inspect,
+but its opaque `element_token`, observation ID, browser ref or window-state
+token cannot authorize a later CLI invocation. Current one-shot `act` already
+captures a fresh observation internally, performs the action and returns a
+post-observation. An `element_index` is resolved against that new tree, so it
+can identify a different element if the UI changed; it is not a portable ref.
+Coordinates are similarly mapped against the new capture. Use the persistent
+MCP task loop when actions must consume the exact observations you inspected.
+On `stale_observation`, reobserve in the same live task and reassess the action;
+do not blindly replay input or widen the target.
+
+A resident Host is a process, not a shared task/session. Each `host-call`
+invocation opens and closes its own Host connection. `host-ensure` establishes
+Host availability only; it neither authorizes input nor creates a session or
+transfers grants. `host-jsonl`, `host-batch` and `LogicalTaskSession` keep one
+connection for their own lifetime, but still require the correct Host schema
+and any applicable trusted authorization. Closing it destroys its session state.
+
+`dcc-cua tools` lists **driver tools**, not Host IPC methods. In particular:
+
+- `start_session` is a driver tool, not a valid `host-call --method`.
+- Host IPC uses `open_session` with `session_id` and a `TaskGrant`; subsequent
+  `get_window_state` calls require `session_id`, `task_grant_id` and the returned
+  `window_capability` on that same connection, rather than `pid`, `window_id`
+  and a `session` label. Supplying an ID does not create or authorize a session.
+- Agent clients should normally use `mcp-server` and `start_task`, then
+  `dcc_cua_task_call` with `method="get_window_state"` and `params={}`. The
+  bridge injects its private session/grant/capability. Do not copy those private
+  credentials between connections or use another connection's task ID.
+
+One-shot Host failures retain only allowlisted error codes and fixed guidance.
+`invalid_request` indicates a method/schema or request-validation problem;
+`session_not_found` indicates no session on this connection;
+`task_authorization_required` indicates a missing trusted authorization.
+Starting another resident Host cannot repair these lifetime or authority errors.
+
 `list`, `apps`, `tools`, `desktop-snapshot`, `screen-size`, `cursor-position`, and
 `doctor` are read-only. `snapshot` and `act` require one exact
 target; if an application has multiple windows, pass `--pid` and
