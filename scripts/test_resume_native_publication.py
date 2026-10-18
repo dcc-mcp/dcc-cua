@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -189,6 +190,9 @@ class ResumeTests(unittest.TestCase):
     def test_staged_resume_rejects_bad_public_bytes_before_stable_promotion(self):
         self.exercise_official_entrypoint(staged=True, bad_public=(1, "0" * 64))
 
+    def test_build_log_transport_failure_stops_before_release_changes(self):
+        self.exercise_official_entrypoint(log_error=True)
+
     def test_resume_visibility_requires_exact_draft_or_staging_booleans(self):
         for draft, prerelease in ((True, False), (False, True)):
             resume.validate_resume_visibility(dict(isDraft=draft, isPrerelease=prerelease))
@@ -201,7 +205,7 @@ class ResumeTests(unittest.TestCase):
             with self.subTest(metadata=metadata), self.assertRaises(ValueError):
                 resume.validate_resume_visibility(metadata)
 
-    def exercise_official_entrypoint(self, *, staged=False, bad_public=None):
+    def exercise_official_entrypoint(self, *, staged=False, bad_public=None, log_error=False):
         # Separate source S, producer W, and current executing tool H throughout.
         producer_head = "b" * 40
         self.request["producer_head_sha"] = producer_head
@@ -243,12 +247,14 @@ class ResumeTests(unittest.TestCase):
             receipt["final_archive"].update(target=asset["target"],
                 archive=dict(name=asset["archive"], sha256=asset["sha256"]))
             receipts[f"repos/{self.repository}/actions/jobs/{job['id']}/logs"] = (
+                "2026-10-18T12:15:53.1768820Z \x1b[32mcompiler output\x1b[0m\n"
                 "2026-10-18T12:15:54.1768820Z " + json.dumps(receipt))
         env = {key.upper(): str(value) for key, value in self.request.items()}
         env.update(GITHUB_EVENT_NAME="workflow_dispatch", GITHUB_REF="refs/heads/main", GITHUB_RUN_ATTEMPT="1",
                    GITHUB_SHA="c" * 40, GITHUB_RUN_ID="9999", GITHUB_REPOSITORY=self.repository,
                    GITHUB_REPOSITORY_ID="123", RUNNER_TEMP=str(self.root))
-        def command(*args):
+        def command(args, *, text):
+            self.assertIs(text, True)
             if args[:3] == ("git", "rev-parse", "HEAD"):
                 return env["GITHUB_SHA"]
             if args[:2] == ("git", "merge-base"):
@@ -256,12 +262,15 @@ class ResumeTests(unittest.TestCase):
             if args[:2] == ("git", "show"):
                 return VERSION
             if args[:2] == ("gh", "api"):
-                return receipts[args[2]]
+                self.assertEqual(args[:3], ("gh", "api", "--allow-escape-sequences"))
+                if log_error:
+                    raise subprocess.CalledProcessError(1, args)
+                return receipts[args[3]]
             raise AssertionError(args)
         def download(args, stdout, check):
             self.assertEqual(args, ["gh", "api", f"repos/{self.repository}/actions/artifacts/991/zip"])
             stdout.write(body)
-        with patch.dict(os.environ, env), patch.object(resume, "command", side_effect=command), \
+        with patch.dict(os.environ, env), patch.object(resume.subprocess, "check_output", side_effect=command), \
                 patch.object(resume.subprocess, "run", side_effect=download) as downloaded, \
                 patch.object(resume.GitHub, "api", side_effect=lambda path: copy.deepcopy(transport[path])), \
                 patch.object(resume.GitHub, "release", side_effect=fake.release), \
@@ -269,16 +278,23 @@ class ResumeTests(unittest.TestCase):
                 patch.object(resume.GitHub, "latest", side_effect=fake.latest), \
                 patch.object(resume.GitHub, "patch", side_effect=fake.patch), \
                 patch.object(resume.GitHub, "public_digest", side_effect=fake.public_digest):
-            if bad_public is None:
+            if log_error:
+                with self.assertRaises(subprocess.CalledProcessError):
+                    resume.main()
+            elif bad_public is None:
                 resume.main()
             else:
                 with self.assertRaisesRegex(ValueError, "public release asset bytes differ"):
                     resume.main()
         self.assertEqual(downloaded.call_count, 1)
         self.assertNotIn("upload", fake.events)
-        self.assertEqual(fake.events.count("public_get"), 13 if bad_public is None else 1)
+        self.assertEqual(fake.events.count("public_get"), 0 if log_error else 13 if bad_public is None else 1)
         mutations = [event[1] for event in fake.events if isinstance(event, tuple) and event[0] == "patch"]
-        if bad_public is not None:
+        if log_error:
+            self.assertEqual(mutations, [])
+            self.assertIs(fake.document["isDraft"], True)
+            self.assertEqual(fake.current_latest["tagName"], "v1.5.0")
+        elif bad_public is not None:
             self.assertEqual(mutations, [])
             self.assertIs(fake.document["isPrerelease"], True)
             self.assertEqual(fake.current_latest["tagName"], "v1.5.0")
@@ -287,7 +303,10 @@ class ResumeTests(unittest.TestCase):
         records = [json.loads(line) for line in (self.root / "native-publication-resume-9999/publication.jsonl").read_text().splitlines()]
         self.assertEqual(records[0]["producer"]["producer_run_id"], RUN_ID)
         self.assertEqual(records[0]["execution"]["workflow_head_sha"], "c" * 40)
-        self.assertEqual(records[-1]["phase"], "published_and_verified" if bad_public is None else "failed")
+        self.assertEqual(records[-1]["phase"], "published_and_verified" if bad_public is None and not log_error else "failed")
+        if log_error:
+            self.assertEqual(records[-1]["error_type"], "CalledProcessError")
+            self.assertFalse(any(row["phase"] == "original_artifact_admitted" for row in records))
         self.assertEqual((self.root / "native-publication-resume-9999/dist" / MODULE.PROVENANCE_NAME).read_bytes(),
                          (self.directory / MODULE.PROVENANCE_NAME).read_bytes())
 
