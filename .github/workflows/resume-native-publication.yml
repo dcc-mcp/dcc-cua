@@ -31,6 +31,10 @@ on:
         description: Existing complete draft release ID
         required: true
         type: string
+      asset_identity_sha256:
+        description: SHA256 of original sorted ID name size digest tuples encoded as compact JSON
+        required: true
+        type: string
 
 permissions: {}
 
@@ -71,6 +75,7 @@ jobs:
           TAG: ${{ inputs.tag }}
           SOURCE_SHA: ${{ inputs.source_sha }}
           RELEASE_ID: ${{ inputs.release_id }}
+          ASSET_IDENTITY_SHA256: ${{ inputs.asset_identity_sha256 }}
         run: |
           set -euo pipefail
           git show "$GITHUB_SHA:scripts/verify_ci_source_integrity.py" |

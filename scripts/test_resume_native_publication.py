@@ -19,7 +19,7 @@ from scripts.test_publish_verified_release import FakeGitHub
 
 ROOT = Path(__file__).resolve().parent.parent
 WORKFLOW = ROOT / ".github/workflows/resume-native-publication.yml"
-SURFACE_SHA256 = "fca34997638a5dea169d202908a5d15eef3e32ef0d942c81a3f75fede07a19b3"
+SURFACE_SHA256 = "bdd8f1816b3e42e1f0990ed1f73abebaca57f8e3d91a4326f3a981644655ea5a"
 
 
 def workflow_surface(text):
@@ -40,7 +40,7 @@ class ResumeTests(unittest.TestCase):
         _write_complete_release(self.directory)
         self.request = dict(producer_run_id=RUN_ID, producer_head_sha=SOURCE_SHA,
                             artifact_id=991, artifact_digest="sha256:" + "a" * 64,
-                            tag=TAG, source_sha=SOURCE_SHA, release_id=42)
+                            tag=TAG, source_sha=SOURCE_SHA, release_id=42, asset_identity_sha256="a" * 64)
         self.repository_id = 123
         self.repository = "dcc-mcp/dcc-cua"
         self.provenance = MODULE.build_release_provenance(
@@ -76,6 +76,7 @@ class ResumeTests(unittest.TestCase):
         for key, value in (("GITHUB_REF", "refs/heads/other"), ("GITHUB_EVENT_NAME", "push"),
                            ("GITHUB_RUN_ATTEMPT", "2"), ("GITHUB_RUN_ID", str(RUN_ID)),
                            ("ARTIFACT_ID", "0991"), ("ARTIFACT_DIGEST", "a" * 64),
+                           ("ASSET_IDENTITY_SHA256", "unknown"),
                            ("TAG", "v9.0.0/other"), ("SOURCE_SHA", "main")):
             with self.subTest(key=key), self.assertRaises(ValueError):
                 resume.request_from_environment({**env, key: value})
@@ -162,8 +163,9 @@ class ResumeTests(unittest.TestCase):
             self.assertFalse(output.exists())
 
     def test_existing_asset_gateway_never_uploads_and_rejects_disappearance_or_replacement(self):
-        gateway = resume.ExistingAssetsGitHub(self.repository, 42)
         good = dict(id=42, assets=[dict(id=1, name="asset", size=1, digest="sha256:" + "a" * 64)])
+        expected = resume.asset_identity_sha256([(1, "asset", 1, "sha256:" + "a" * 64)])
+        gateway = resume.ExistingAssetsGitHub(self.repository, 42, expected)
         with patch.object(resume.GitHub, "release", return_value=good):
             self.assertEqual(gateway.release(TAG), good)
         for value in (dict(id=42, assets=[]), {**good, "id": 99},
@@ -172,6 +174,11 @@ class ResumeTests(unittest.TestCase):
                 gateway.release(TAG)
         with self.assertRaisesRegex(ValueError, "cannot upload"):
             gateway.upload(TAG, [])
+        replaced_before_first_read = resume.ExistingAssetsGitHub(self.repository, 42, expected)
+        replaced = dict(id=42, assets=[{**good["assets"][0], "id": 2}])
+        with patch.object(resume.GitHub, "release", return_value=replaced), self.assertRaisesRegex(
+                ValueError, "original failed publication snapshot"):
+            replaced_before_first_read.release(TAG)
 
     def test_official_entrypoint_reuses_original_transport_and_publishes_all_thirteen(self):
         # Separate source S, producer W, and current executing tool H throughout.
@@ -196,6 +203,8 @@ class ResumeTests(unittest.TestCase):
         fake = FakeGitHub(self.directory, TAG)
         fake.draft_urls = True
         fake.upload(TAG, [])
+        self.request["asset_identity_sha256"] = resume.asset_identity_sha256(
+            [(asset["id"], asset["name"], asset["size"], asset["digest"]) for asset in fake.document["assets"]])
         fake.events.clear()
         transport = {f"actions/runs/{RUN_ID}": self.run,
             f"actions/runs/{RUN_ID}/attempts/1/jobs?per_page=100": self.jobs,

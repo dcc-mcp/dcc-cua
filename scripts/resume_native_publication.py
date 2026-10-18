@@ -8,6 +8,7 @@ the new publication execution retain separate identities in the evidence.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -49,7 +50,7 @@ def request_from_environment(env):
         raise ValueError("publication resume requires a new main-only dispatch")
     request = {key: env[key.upper()] for key in (
         "producer_run_id", "producer_head_sha", "artifact_id", "artifact_digest",
-        "tag", "source_sha", "release_id",
+        "tag", "source_sha", "release_id", "asset_identity_sha256",
     )}
     for key in ("producer_run_id", "artifact_id", "release_id"):
         if not re.fullmatch(r"[1-9][0-9]*", request[key]):
@@ -62,6 +63,8 @@ def request_from_environment(env):
         raise ValueError("resume requires an exact stable native tag")
     if not re.fullmatch(r"sha256:[0-9a-f]{64}", request["artifact_digest"]):
         raise ValueError("resume requires the immutable transport digest")
+    if not re.fullmatch(r"[0-9a-f]{64}", request["asset_identity_sha256"]):
+        raise ValueError("resume requires the original uploaded asset identity digest")
     if int(env["GITHUB_RUN_ID"]) == request["producer_run_id"]:
         raise ValueError("publication execution must differ from the failed producer")
     return request
@@ -171,11 +174,17 @@ def validate_archive_receipt(log, fact, asset, request, repository_id):
     return receipt
 
 
+def asset_identity_sha256(identities):
+    """Hash sorted (ID, name, size, digest) tuples; draft locations are transient."""
+    return hashlib.sha256(json.dumps(sorted(identities), separators=(",", ":")).encode()).hexdigest()
+
+
 class ExistingAssetsGitHub(GitHub):
-    def __init__(self, repository, release_id):
+    def __init__(self, repository, release_id, expected_asset_identity_sha256):
         super().__init__(repository)
         self.release_id = release_id
         self.asset_identities = None
+        self.expected_asset_identity_sha256 = expected_asset_identity_sha256
 
     def release(self, tag):
         document = super().release(tag)
@@ -183,6 +192,8 @@ class ExistingAssetsGitHub(GitHub):
             raise ValueError("resume requires the exact existing complete release")
         identities = sorted((asset["id"], asset["name"], asset["size"], asset["digest"])
                             for asset in document["assets"])
+        if asset_identity_sha256(identities) != self.expected_asset_identity_sha256:
+            raise ValueError("uploaded assets differ from the original failed publication snapshot")
         if self.asset_identities is None:
             self.asset_identities = identities
         elif identities != self.asset_identities:
@@ -201,7 +212,7 @@ def main():
     request = request_from_environment(os.environ)
     repository = os.environ["GITHUB_REPOSITORY"]
     repository_id = positive_id(int(os.environ["GITHUB_REPOSITORY_ID"]))
-    gateway = ExistingAssetsGitHub(repository, request["release_id"])
+    gateway = ExistingAssetsGitHub(repository, request["release_id"], request["asset_identity_sha256"])
     root = Path(os.environ["RUNNER_TEMP"]) / f"native-publication-resume-{os.environ['GITHUB_RUN_ID']}"
     root.mkdir()  # Existing evidence or an uncertain earlier attempt cannot be reused.
     with (root / "publication.jsonl").open("x", encoding="utf-8") as stream:
