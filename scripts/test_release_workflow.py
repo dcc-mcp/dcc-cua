@@ -1287,5 +1287,81 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertLess(refresh, locked_validation)
 
 
+
+class DraftSourceBindingTests(unittest.TestCase):
+    def environment(self):
+        return dict(GITHUB_REPOSITORY="dcc-mcp/dcc-cua", NATIVE_CREATED="true",
+                    NATIVE_TAG="v1.11.1", NATIVE_SOURCE="a" * 40,
+                    EXTENSION_CREATED="false")
+
+    def metadata(self, repository, tag):
+        return dict(tagName=tag, targetCommitish="a" * 40,
+                    isDraft=True, isPrerelease=False)
+
+    def test_draft_binding_is_resolved_once_by_privileged_job(self):
+        from scripts.read_release_source_bindings import resolve
+        calls = []
+        def gateway(repository, tag):
+            calls.append((repository, tag))
+            return self.metadata(repository, tag)
+        self.assertEqual(resolve(self.environment(), gateway),
+                         {"native_release_target": "a" * 40})
+        self.assertEqual(calls, [("dcc-mcp/dcc-cua", "v1.11.1")])
+
+    def test_no_active_release_performs_no_lookup(self):
+        from scripts.read_release_source_bindings import resolve
+        environment = self.environment()
+        environment["NATIVE_CREATED"] = "false"
+        self.assertEqual(resolve(environment, lambda *_: self.fail("unexpected lookup")), {})
+
+    def test_both_component_bindings_preserve_independent_sources(self):
+        from scripts.read_release_source_bindings import resolve
+        environment = self.environment()
+        environment.update(EXTENSION_CREATED="true", EXTENSION_TAG="dcc-cua-browser-extension-v0.3.0",
+                           EXTENSION_SOURCE="b" * 40)
+        def gateway(repository, tag):
+            data = self.metadata(repository, tag)
+            if tag.startswith("dcc-cua-browser-extension"):
+                data["targetCommitish"] = "b" * 40
+            return data
+        self.assertEqual(resolve(environment, gateway),
+                         {"native_release_target": "a" * 40, "extension_release_target": "b" * 40})
+
+    def test_wrong_identity_and_visibility_fail_closed(self):
+        from scripts.read_release_source_bindings import resolve
+        for key, value in (("tagName", "v9.9.9"), ("targetCommitish", "b" * 40),
+                           ("targetCommitish", "main"), ("isDraft", 1), ("isPrerelease", True)):
+            with self.subTest(key=key, value=value):
+                metadata = self.metadata(None, "v1.11.1")
+                metadata[key] = value
+                with self.assertRaises(ValueError):
+                    resolve(self.environment(), lambda *_: metadata)
+
+    def test_metadata_transport_failure_is_not_retried_or_replaced(self):
+        from scripts.read_release_source_bindings import resolve
+        calls = []
+        def denied(*args):
+            calls.append(args)
+            raise PermissionError("release not found")
+        with self.assertRaises(PermissionError):
+            resolve(self.environment(), denied)
+        self.assertEqual(len(calls), 1)
+
+    def test_read_only_builders_receive_scalars_without_draft_api_calls(self):
+        parsed = _RestrictedWorkflowYamlParser(WORKFLOW.read_text(encoding="utf-8")).parse()
+        jobs = parsed["jobs"]
+        self.assertEqual(jobs["release-please"]["permissions"]["contents"], "write")
+        for job, label, target in (("build", "Verify native release source binding", "native"),
+                                   ("package-browser-extension", "Verify browser extension release source binding", "extension")):
+            self.assertEqual(jobs[job]["permissions"]["contents"], "read")
+            step = next(s for s in jobs[job]["steps"] if s.get("name") == label)
+            self.assertNotIn("GH_TOKEN", step["env"])
+            self.assertEqual(step["env"]["RELEASE_TARGET"],
+                             "${{ needs.release-please.outputs." + target + "_release_target }}")
+            script = step["run"]["text"]
+            self.assertNotIn("gh release view", script)
+            for proof in ('git rev-parse HEAD', '${TAG_NAME}^{commit}', '--release-target "$release_target"', '--expected-sha "$EXPECTED_SHA"'):
+                self.assertIn(proof, script)
+
 if __name__ == "__main__":
     unittest.main()

@@ -61,6 +61,7 @@ const STEP_ALLOWLIST: Record<string, string[]> = {
     "name:Reuse already published release identities",
     "uses:googleapis/release-please-action",
     "name:Refresh independent release PRs from current main",
+    "name:Read active release source bindings",
   ],
   build: [
     "uses:actions/checkout",
@@ -149,7 +150,7 @@ const SOURCE_BINDING_STATEMENTS = [
   "set -euo pipefail",
   'head_sha="$(git rev-parse HEAD)"',
   'tag_sha="$(git rev-parse "${TAG_NAME}^{commit}")"',
-  'release_target="$(gh release view "$TAG_NAME" --repo "$GITHUB_REPOSITORY" --json targetCommitish --jq .targetCommitish)"',
+  'release_target="$RELEASE_TARGET"',
   "python -B scripts/release_integrity.py verify-source \\",
   '--head-sha "$head_sha" \\',
   '--tag-sha "$tag_sha" \\',
@@ -248,7 +249,8 @@ const RUN_STATEMENT_DIGESTS: Record<string, string> = {
   "release-please|Refuse pre-existing release identities": "a35d677f61b0df0e0489e4e5fe46b5f7caeed812bbe4273b280567e8f2ec2eb9",
   "release-please|Reuse already published release identities": "66451b7afa5be4d35678a7462e2a9ec5d98d4f055efa2ebad407e30c94285a00",
   "release-please|Refresh independent release PRs from current main": "2be98e30902d17319ab0347ce92c886e80573c2a50ce9d52f1aec56e213f8652",
-  "build|Verify native release source binding": "c395d2eb87e998ccc88df9d8b441766c8ff3fdd3b2eed789b1eadcc0d20cf099",
+  "release-please|Read active release source bindings": "8e12d4ace21c0f9b422a107e617d73b6e2195d36513d5a075fa2adbbba63bbd7",
+  "build|Verify native release source binding": "f5b22c310112a3262860d60370d8ee7bc73f1b6c86dfd79453715bf51183fa27",
   "build|#4": "0c9fd2bfc5153caf2f158fa8161b842aa52a3183cbb65d62b11be4f52b137204",
   "build|#5": "4e76b39a502964fdbcae32ff23ab3ad042dda3cd73ac0a7852d44dda0605b231",
   "build|#6": "b90711ea4af19f26b51ca5d7ca11dcbf2c9597d75e26d06658253999a73567e8",
@@ -262,7 +264,7 @@ const RUN_STATEMENT_DIGESTS: Record<string, string> = {
   "attach-assets|Download and extract verified native artifact": "a8990631fcad1483b8ab5f552e61624aa2699f88cf085d2ea4b58084823f6ee8",
   "attach-assets|Verify native release asset completeness and provenance": "e0c16c6167691faa6ecf40e881838f21cba912711ada1c74577e8041c9bc1b0c",
   "attach-assets|Publish verified native assets before stable visibility": "07370503f2e519a47921a4ed40f8db754df84a1703cdd132804dce37fd4f8ea5",
-  "package-browser-extension|Verify browser extension release source binding": "c395d2eb87e998ccc88df9d8b441766c8ff3fdd3b2eed789b1eadcc0d20cf099",
+  "package-browser-extension|Verify browser extension release source binding": "f5b22c310112a3262860d60370d8ee7bc73f1b6c86dfd79453715bf51183fa27",
   "package-browser-extension|#3": "ea914f3855acfa08dce0988d9e918c5aee81b877d891d789a7ea6f668aedfd1a",
   "package-browser-extension|#4": "20e54c943b7b465505a2056e5b7e54e2df18e24d6c51c54692c56b99dc5df285",
   "package-browser-extension|#5": "ad3642d0e2d48d1a364750fae19b60f784cd61cba09d4307334190a6289097d6",
@@ -562,6 +564,37 @@ function validateReleaseWorkflow(source: string): void {
     release.outputs?.extension_source_sha,
     "${{ steps.release.outputs['browser-extension/chrome--sha'] || steps.existing_release.outputs.extension_source_sha || steps.recovery.outputs.extension_source_sha }}",
   );
+  assert.equal(
+    release.outputs?.extension_release_created,
+    "${{ steps.release.outputs['browser-extension/chrome--release_created'] == 'true' || steps.existing_release.outputs.extension_release_created == 'true' || steps.recovery.outputs.extension_release_created == 'true' }}",
+  );
+  assert.equal(
+    release.outputs?.extension_tag_name,
+    "${{ steps.release.outputs['browser-extension/chrome--tag_name'] || steps.existing_release.outputs.extension_tag_name || steps.recovery.outputs.extension_tag_name }}",
+  );
+
+  const sourceBinding = namedStep(release, "Read active release source bindings");
+  assert.equal(sourceBinding.id, "source_binding");
+  assertExecutableStatements(sourceBinding, [
+    "python -B scripts/read_release_source_bindings.py",
+  ]);
+  assert.deepEqual(sourceBinding.env, {
+    GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}",
+    NATIVE_CREATED: release.outputs?.release_created,
+    NATIVE_TAG: release.outputs?.tag_name,
+    NATIVE_SOURCE: release.outputs?.source_sha,
+    EXTENSION_CREATED: release.outputs?.extension_release_created,
+    EXTENSION_TAG: release.outputs?.extension_tag_name,
+    EXTENSION_SOURCE: release.outputs?.extension_source_sha,
+  });
+  assert.equal(
+    release.outputs?.native_release_target,
+    "${{ steps.source_binding.outputs.native_release_target }}",
+  );
+  assert.equal(
+    release.outputs?.extension_release_target,
+    "${{ steps.source_binding.outputs.extension_release_target }}",
+  );
 
   const build = requiredJob(jobs, "build");
   assertNeeds(build, ["release-please"]);
@@ -572,7 +605,11 @@ function validateReleaseWorkflow(source: string): void {
   const nativeSource = namedStep(build, "Verify native release source binding");
   assert.match(nativeSource.run ?? "", /git rev-parse HEAD/);
   assert.match(nativeSource.run ?? "", /\$\{TAG_NAME\}\^\{commit\}/);
-  assert.match(nativeSource.run ?? "", /targetCommitish/);
+  assert.deepEqual(nativeSource.env, {
+    EXPECTED_SHA: "${{ needs.release-please.outputs.source_sha }}",
+    RELEASE_TARGET: "${{ needs.release-please.outputs.native_release_target }}",
+    TAG_NAME: "${{ needs.release-please.outputs.tag_name }}",
+  });
   assertExecutableInvocation(
     nativeSource,
     "python -B scripts/release_integrity.py verify-source \\",
@@ -705,7 +742,14 @@ function validateReleaseWorkflow(source: string): void {
     actionStep(extension, "actions/checkout").with?.ref,
     "${{ needs.release-please.outputs.extension_source_sha }}",
   );
-  namedStep(extension, "Verify browser extension release source binding");
+  assert.deepEqual(
+    namedStep(extension, "Verify browser extension release source binding").env,
+    {
+      EXPECTED_SHA: "${{ needs.release-please.outputs.extension_source_sha }}",
+      RELEASE_TARGET: "${{ needs.release-please.outputs.extension_release_target }}",
+      TAG_NAME: "${{ needs.release-please.outputs.extension_tag_name }}",
+    },
+  );
   assertExecutableInvocation(
     namedStep(extension, "Verify browser extension release source binding"),
     "python -B scripts/release_integrity.py verify-source \\",
@@ -843,6 +887,37 @@ test("extension publication waits for native success and admits extension-only r
 function assertAdversarialMutations(source: string): void {
   validateReleaseWorkflow(source);
   const lineEnding = source.includes("\r\n") ? "\r\n" : "\n";
+
+  for (const [key, value] of [
+    ["NATIVE_CREATED", "true"],
+    ["NATIVE_SOURCE", "${{ github.sha }}"],
+    ["EXTENSION_SOURCE", "${{ steps.release.outputs.sha }}"],
+  ]) {
+    const incorrectBindingInput = mutateWorkflow(source, (workflow) => {
+      namedStep(requiredJob(workflow.jobs ?? {}, "release-please"),
+        "Read active release source bindings").env![key!] = value;
+    });
+    assert.throws(() => validateReleaseWorkflow(incorrectBindingInput));
+  }
+  for (const [jobName, stepName] of [
+    ["build", "Verify native release source binding"],
+    ["package-browser-extension", "Verify browser extension release source binding"],
+  ]) {
+    for (const replacement of ["${{ github.sha }}", "${{ needs.release-please.outputs.source_sha }}"]) {
+      const unverifiedTarget = mutateWorkflow(source, (workflow) => {
+        namedStep(requiredJob(workflow.jobs ?? {}, jobName!), stepName!).env!.RELEASE_TARGET = replacement;
+      });
+      assert.throws(() => validateReleaseWorkflow(unverifiedTarget));
+    }
+    const exposedWriteToken = mutateWorkflow(source, (workflow) => {
+      namedStep(requiredJob(workflow.jobs ?? {}, jobName!), stepName!).env!.GH_TOKEN = "${{ secrets.PERSONAL_ACCESS_TOKEN }}";
+    });
+    assert.throws(() => validateReleaseWorkflow(exposedWriteToken));
+  }
+  const bypassedBindingOutput = mutateWorkflow(source, (workflow) => {
+    requiredJob(workflow.jobs ?? {}, "release-please").outputs!.native_release_target = "${{ github.sha }}";
+  });
+  assert.throws(() => validateReleaseWorkflow(bypassedBindingOutput));
 
   const missingDispatchPermission = mutateWorkflow(source, (workflow) => {
     delete requiredJob(workflow.jobs ?? {}, "release-please").permissions?.actions;
