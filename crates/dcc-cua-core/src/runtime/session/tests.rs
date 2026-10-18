@@ -78,6 +78,8 @@ mod issue_228_window_pixels;
 mod linux_pixels;
 mod modal_takeover;
 mod recording;
+#[cfg(not(windows))]
+mod sdk_snapshot_format;
 mod visual_only;
 
 #[cfg(windows)]
@@ -255,6 +257,13 @@ impl DriverEnvelopeChannel for CountingRemoteChannel {
                         "is_on_screen": true
                     }]
                 }),
+                Some("get_window_state") => {
+                    let args = request.arguments.as_ref().expect("snapshot arguments");
+                    assert_eq!(args["tree_format"], "elements");
+                    assert_eq!(args["window_id"], 77);
+                    assert_eq!(args["pid"], 42);
+                    json!({"elements": [{"element_index": 1, "label": "txt-input"}]})
+                }
                 Some("get_recording_state" | "start_recording") => json!({
                     "enabled": true,
                     "owner": "refresh-boundary-session",
@@ -274,13 +283,25 @@ impl DriverEnvelopeChannel for CountingRemoteChannel {
                 }),
                 _ => json!({"success": true}),
             };
+            let mut content = vec![json!({"type": "text", "text": "ok"})];
+            if request.name.as_deref() == Some("get_window_state")
+                && request
+                    .arguments
+                    .as_ref()
+                    .is_some_and(|args| args["include_screenshot"] == true)
+            {
+                content.push(json!({
+                    "type": "image", "mimeType": "image/png",
+                    "data": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jD1sAAAAASUVORK5CYII="
+                }));
+            }
             Ok(DriverResponseEnvelope {
                 envelope_version: DRIVER_ENVELOPE_VERSION,
                 request_id: request.request_id,
                 ok: self.response_ok,
                 result: self.response_ok.then(|| {
                     json!({
-                        "content": [{"type": "text", "text": "ok"}],
+                        "content": content,
                         "structuredContent": structured,
                         "isError": self.tool_is_error
                     })

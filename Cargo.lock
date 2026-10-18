@@ -1028,7 +1028,7 @@ dependencies = [
 [[package]]
 name = "cua-cursor-motion"
 version = "0.36.0"
-source = "git+https://github.com/loonghao/cua.git?rev=bf6d7d56bdecc3005c5de083c894356dd363e469#bf6d7d56bdecc3005c5de083c894356dd363e469"
+source = "git+https://github.com/loonghao/cua.git?rev=55ab9c62fe23b87d015136f45c4e8995e9988615#55ab9c62fe23b87d015136f45c4e8995e9988615"
 dependencies = [
  "serde",
 ]
@@ -1036,7 +1036,7 @@ dependencies = [
 [[package]]
 name = "cua-driver-contract"
 version = "0.36.0"
-source = "git+https://github.com/loonghao/cua.git?rev=bf6d7d56bdecc3005c5de083c894356dd363e469#bf6d7d56bdecc3005c5de083c894356dd363e469"
+source = "git+https://github.com/loonghao/cua.git?rev=55ab9c62fe23b87d015136f45c4e8995e9988615#55ab9c62fe23b87d015136f45c4e8995e9988615"
 dependencies = [
  "schemars",
  "serde",
@@ -1047,7 +1047,7 @@ dependencies = [
 [[package]]
 name = "cua-driver-core"
 version = "0.36.0"
-source = "git+https://github.com/loonghao/cua.git?rev=bf6d7d56bdecc3005c5de083c894356dd363e469#bf6d7d56bdecc3005c5de083c894356dd363e469"
+source = "git+https://github.com/loonghao/cua.git?rev=55ab9c62fe23b87d015136f45c4e8995e9988615#55ab9c62fe23b87d015136f45c4e8995e9988615"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1087,7 +1087,7 @@ dependencies = [
 [[package]]
 name = "cua-driver-sdk"
 version = "0.36.0"
-source = "git+https://github.com/loonghao/cua.git?rev=bf6d7d56bdecc3005c5de083c894356dd363e469#bf6d7d56bdecc3005c5de083c894356dd363e469"
+source = "git+https://github.com/loonghao/cua.git?rev=55ab9c62fe23b87d015136f45c4e8995e9988615#55ab9c62fe23b87d015136f45c4e8995e9988615"
 dependencies = [
  "async-trait",
  "core-foundation",
@@ -1110,7 +1110,7 @@ dependencies = [
 [[package]]
 name = "cua-driver-testkit"
 version = "0.36.0"
-source = "git+https://github.com/loonghao/cua.git?rev=bf6d7d56bdecc3005c5de083c894356dd363e469#bf6d7d56bdecc3005c5de083c894356dd363e469"
+source = "git+https://github.com/loonghao/cua.git?rev=55ab9c62fe23b87d015136f45c4e8995e9988615#55ab9c62fe23b87d015136f45c4e8995e9988615"
 dependencies = [
  "arbitrary",
  "async-trait",
@@ -1132,7 +1132,7 @@ dependencies = [
 [[package]]
 name = "cursor-overlay"
 version = "0.36.0"
-source = "git+https://github.com/loonghao/cua.git?rev=bf6d7d56bdecc3005c5de083c894356dd363e469#bf6d7d56bdecc3005c5de083c894356dd363e469"
+source = "git+https://github.com/loonghao/cua.git?rev=55ab9c62fe23b87d015136f45c4e8995e9988615#55ab9c62fe23b87d015136f45c4e8995e9988615"
 dependencies = [
  "anyhow",
  "cua-cursor-motion",
@@ -3512,7 +3512,7 @@ checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
 [[package]]
 name = "pip-preview"
 version = "0.36.0"
-source = "git+https://github.com/loonghao/cua.git?rev=bf6d7d56bdecc3005c5de083c894356dd363e469#bf6d7d56bdecc3005c5de083c894356dd363e469"
+source = "git+https://github.com/loonghao/cua.git?rev=55ab9c62fe23b87d015136f45c4e8995e9988615#55ab9c62fe23b87d015136f45c4e8995e9988615"
 dependencies = [
  "serde_json",
 ]
@@ -3553,7 +3553,7 @@ checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 [[package]]
 name = "platform-linux"
 version = "0.36.0"
-source = "git+https://github.com/loonghao/cua.git?rev=bf6d7d56bdecc3005c5de083c894356dd363e469#bf6d7d56bdecc3005c5de083c894356dd363e469"
+source = "git+https://github.com/loonghao/cua.git?rev=55ab9c62fe23b87d015136f45c4e8995e9988615#55ab9c62fe23b87d015136f45c4e8995e9988615"
 dependencies = [
  "anyhow",
  "ashpd",
@@ -3600,7 +3600,7 @@ dependencies = [
 [[package]]
 name = "platform-macos"
 version = "0.36.0"
-source = "git+https://github.com/loonghao/cua.git?rev=bf6d7d56bdecc3005c5de083c894356dd363e469#bf6d7d56bdecc3005c5de083c894356dd363e469"
+source = "git+https://github.com/loonghao/cua.git?rev=55ab9c62fe23b87d015136f45c4e8995e9988615#55ab9c62fe23b87d015136f45c4e8995e9988615"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3639,7 +3639,7 @@ dependencies = [
 [[package]]
 name = "platform-windows"
 version = "0.36.0"
-source = "git+https://github.com/loonghao/cua.git?rev=bf6d7d56bdecc3005c5de083c894356dd363e469#bf6d7d56bdecc3005c5de083c894356dd363e469"
+source = "git+https://github.com/loonghao/cua.git?rev=55ab9c62fe23b87d015136f45c4e8995e9988615#55ab9c62fe23b87d015136f45c4e8995e9988615"
 dependencies = [
  "anyhow",
  "async-trait",

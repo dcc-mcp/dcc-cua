@@ -12,7 +12,7 @@ this contract with `scripts/test_sdk_dependency_contract.py`.
 - Updated SDK: Driver 0.36.0 plus the required DCC compatibility patch series.
 - Official release: [cua-driver-rs-v0.36.0](https://github.com/trycua/cua/releases/tag/cua-driver-rs-v0.36.0),
   commit `trycua/cua@6d6c734c127025fb39ad5d585a10382808b39dc1` (2026-10-16).
-- Published compatibility source: `loonghao/cua@bf6d7d56bdecc3005c5de083c894356dd363e469`
+- Published compatibility source: `loonghao/cua@55ab9c62fe23b87d015136f45c4e8995e9988615`
   ([compatibility PR #7](https://github.com/loonghao/cua/pull/7)). All six root
   declarations and ten resolved SDK packages use this immutable Git source.
   Its tree matches the tested local migration candidate, with original fork
@@ -53,6 +53,9 @@ necessary compatibility behavior on the official release base:
   `SharedSocketRelease::Close`; it must not remove another session's hold.
 - Exact Windows native consent-window ownership/topmost disambiguation.
 - Console-free construction of existing bounded Windows helpers.
+- Preserve an intentionally empty host registry. The upstream perception fallback
+  must not reintroduce a tool after the Linux pixels-only hook clears it; policy-
+  filtered visibility is not evidence that no definitions are registered.
 
 Upstream already contains the old fresh-socket consent retry and stronger
 repeated-prompt title/geometry deduplication. Preserve its newer cancellation
@@ -74,7 +77,14 @@ The dependency graph adds `cua-cursor-motion` at the same immutable SDK source.
 The only newly resolved registry packages are the new upstream scripting
 engine and its `relative-path` dependency; existing registry versions remain
 unchanged. Upstream inventory growth does not grant a new DCC action route:
-`run_script` is rejected by both unscoped native entry points.
+`run_script` is rejected by both unscoped native entry points. The real Linux
+pixels-only SDK inventory also rejects `parse_visual_regions`.
+
+Driver 0.36 defaults native `get_window_state` trees to Markdown. DCC explicitly
+requests `tree_format: "elements"` for semantic snapshots and screenshot-plus-
+semantics; exact PID/window/session and bounds remain unchanged. The Windows
+overlay adapter supplies `target: None` for its existing point-only movement
+request because DCC does not have element bounds to pass upstream.
 
 ## Verification and acceptance
 
@@ -89,11 +99,12 @@ passing desktop test. Windows Edge setup/cleanup and macOS input require their
 own exact-candidate native acceptance. Do not close those issues based on Linux
 compilation or pure matcher tests. The upgrade does not install a new binary.
 
-### Current candidate evidence (2026-10-18)
+### Candidate evidence (2026-10-18)
 
-With the published `bf6d7d56` Git source and no path overrides, Rust 1.95
-passed 1,507 downstream library tests (three explicit native opt-ins ignored),
-64 CLI/diagnostic/MCP/process tests, and strict workspace/all-target Clippy.
+With the published `55ab9c62` Git source and no path overrides, Rust 1.95
+passed 1,508 downstream library tests (three explicit native opt-ins ignored),
+64 CLI/diagnostic/MCP/process tests, the real Linux pixels-only SDK registry
+integration test, and strict workspace/all-target Clippy.
 The dependency, formatting, layout and generated Hakari gates also passed.
 
 Real Linux SDK acceptance discovered two owned X11 windows, captured the exact
@@ -103,8 +114,17 @@ cloud sandbox denies its Unix bus; the observation reports that degradation.
 The source follow-up passed 246 browser tests (one existing opt-in ignored)
 and the actual source-built Driver CLI direct-MCP protocol schema test.
 
+The `55ab9c62` source follow-up passes all nine real SDK registry/runtime tests,
+including a policy-file subprocess regression, and 16 documentation-generator
+checks against the source-built CLI. Native CI snapshots supply the generated
+Linux/macOS/Windows references. The downstream results and exact-window
+acceptance above were rerun against the published pin. The native fixture
+returns a degraded root-window node, not proof of AT-SPI child-control access.
+
 This is not a claim of whole-SDK CI success: the fork's attribution baseline
-gate remains tracked separately, and an additional standalone SDK-core strict
+gate remains tracked separately. The inherited docs container-image gate also
+lacks doctor-ledger entries in the fork; image references and baselines are
+unchanged. An additional standalone SDK-core strict
 Clippy check reports existing source warnings. Live browser, native Windows,
 native macOS and installed-client acceptance remain separate gates.
 
