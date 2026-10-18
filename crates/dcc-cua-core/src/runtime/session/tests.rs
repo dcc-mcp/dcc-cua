@@ -78,6 +78,7 @@ mod issue_228_window_pixels;
 mod linux_pixels;
 mod modal_takeover;
 mod recording;
+mod sdk_snapshot_fixture;
 #[cfg(not(windows))]
 mod sdk_snapshot_format;
 mod visual_only;
@@ -265,7 +266,7 @@ impl DriverEnvelopeChannel for CountingRemoteChannel {
                     ));
                     assert_eq!(args["window_id"], 77);
                     assert_eq!(args["pid"], 42);
-                    sdk_snapshot_format::native_snapshot_reply(args)
+                    sdk_snapshot_fixture::native_snapshot_reply(args)
                 }
                 Some("get_recording_state" | "start_recording") => json!({
                     "enabled": true,

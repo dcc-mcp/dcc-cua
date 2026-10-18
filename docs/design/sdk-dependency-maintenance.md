@@ -162,8 +162,13 @@ are not counted as passing local tests.
 The observation follow-up restores the official `both` projection. Format-sensitive
 red/green fixtures cover read-only status, menu and dialog text beside the actual
 qualified action token, including refusal to turn text-only row numbers into
-tokens. The final local library suite passes 1,530 tests; seven additional pure
-Windows privilege-policy cases cover safe and unsafe access facts. The GUI
+tokens. The final local library suite passes 1,534 tests; seven additional pure
+Windows privilege-policy cases cover safe and unsafe access facts. A real SDK launch-schema matrix covers selectors, URL/argument forwarding and
+session ownership; unsupported false launch defaults are omitted, while explicit
+unsupported opt-ins fail before dispatch. A real Linux CLI launch starts the
+owned, self-closing X11 fixture and returns its PID with both exact windows;
+both unsupported true flags are refused. Windows new-instance remains an
+accepted upstream no-op, not an isolation guarantee. The GUI
 runner keeps failing on any error but runs all cases with `--no-fail-fast`.
 The effective-token assertion and full observation fix still require the final
 native Windows/macOS/Linux CI run; prior passing verification jobs are not a
