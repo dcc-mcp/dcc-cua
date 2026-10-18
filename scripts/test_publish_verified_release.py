@@ -2,12 +2,15 @@
 
 import copy
 import hashlib
+import io
 import json
+import os
 from pathlib import Path
 import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
+from urllib.error import HTTPError, URLError
 
 from scripts import publish_verified_release as publisher
 from scripts.test_release_integrity import (
@@ -143,6 +146,65 @@ class GitHubReleaseLookupTests(unittest.TestCase):
                 self.assertEqual(command.call_count, len(replies))
 
 
+class GitHubLatestTransportTests(unittest.TestCase):
+    def test_latest_uses_the_existing_job_token_for_metadata(self):
+        document = dict(id=42, tag_name=TAG, target_commitish=SOURCE_SHA,
+                        draft=False, prerelease=False, assets=[])
+        with patch.dict(os.environ, {"GH_TOKEN": "test-job-token"}), \
+                patch.object(publisher, "urlopen", return_value=
+                             io.BytesIO(json.dumps(document).encode())) as request:
+            result = publisher.GitHub("dcc-mcp/dcc-cua").latest()
+        self.assertEqual(result, publisher.normalize_release(document))
+        argument = request.call_args.args[0]
+        self.assertEqual(argument.full_url,
+                         "https://api.github.com/repos/dcc-mcp/dcc-cua/releases/latest")
+        self.assertEqual(argument.get_header("Authorization"), "Bearer test-job-token")
+        self.assertEqual(argument.get_header("Cache-control"), "no-cache")
+        self.assertEqual(request.call_count, 1)
+
+    def test_only_explicit_latest_404_allows_bootstrap(self):
+        for status in (401, 403, 404, 429, 500):
+            with self.subTest(status=status):
+                error = HTTPError("https://api.github.com", status, "metadata failure", {}, None)
+                with patch.dict(os.environ, {"GH_TOKEN": "test-job-token"}), \
+                        patch.object(publisher, "urlopen", side_effect=error) as request:
+                    if status == 404:
+                        self.assertIsNone(publisher.GitHub("dcc-mcp/dcc-cua").latest())
+                    else:
+                        with self.assertRaises(HTTPError) as caught:
+                            publisher.GitHub("dcc-mcp/dcc-cua").latest()
+                        self.assertIs(caught.exception, error)
+                self.assertEqual(request.call_count, 1)
+
+    def test_latest_transport_failure_is_preserved_without_retry(self):
+        error = URLError("connection failed")
+        with patch.dict(os.environ, {"GH_TOKEN": "test-job-token"}), \
+                patch.object(publisher, "urlopen", side_effect=error) as request:
+            with self.assertRaises(URLError) as caught:
+                publisher.GitHub("dcc-mcp/dcc-cua").latest()
+        self.assertIs(caught.exception, error)
+        self.assertEqual(request.call_count, 1)
+
+    def test_missing_job_token_fails_before_network(self):
+        with patch.dict(os.environ, {}, clear=True), \
+                patch.object(publisher, "urlopen") as request:
+            with self.assertRaises(KeyError):
+                publisher.GitHub("dcc-mcp/dcc-cua").latest()
+        request.assert_not_called()
+
+    def test_public_asset_body_remains_anonymous_with_job_token_present(self):
+        body = io.BytesIO(b"public bytes")
+        body.status = 200
+        url = f"https://github.com/dcc-mcp/dcc-cua/releases/download/{TAG}/asset.zip"
+        with patch.dict(os.environ, {"GH_TOKEN": "test-job-token"}), \
+                patch.object(publisher, "urlopen", return_value=body) as request:
+            result = publisher.GitHub("dcc-mcp/dcc-cua").public_digest(url, 12)
+        self.assertEqual(result, (12, hashlib.sha256(b"public bytes").hexdigest()))
+        self.assertEqual(request.call_args.args[0].full_url, url)
+        self.assertIsNone(request.call_args.args[0].get_header("Authorization"))
+        self.assertEqual(request.call_count, 1)
+
+
 class PublicationTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -169,6 +231,7 @@ class PublicationTests(unittest.TestCase):
 
     def test_actual_metadata_gateway_supports_the_complete_draft_transition(self):
         self.gateway.release = publisher.GitHub(self.gateway.repository).release
+        self.gateway.latest = publisher.GitHub(self.gateway.repository).latest
         requests = []
 
         def transport(args, input=None):
@@ -184,8 +247,20 @@ class PublicationTests(unittest.TestCase):
                     prerelease=value["isPrerelease"], assets=value["assets"])).encode()
             raise subprocess.CalledProcessError(1, args, stderr=b"HTTP 404")
 
-        with patch.object(publisher.subprocess, "check_output", side_effect=transport):
+        def latest_transport(request, timeout):
+            self.assertEqual(request.get_header("Authorization"), "Bearer test-job-token")
+            self.assertEqual(request.full_url,
+                             "https://api.github.com/repos/dcc-mcp/dcc-cua/releases/latest")
+            value = self.gateway.current_latest
+            return io.BytesIO(json.dumps(dict(id=value.get("id", 43), tag_name=value["tagName"],
+                target_commitish=SOURCE_SHA, draft=value["isDraft"],
+                prerelease=value["isPrerelease"], assets=[])).encode())
+
+        with patch.dict(os.environ, {"GH_TOKEN": "test-job-token"}), \
+                patch.object(publisher.subprocess, "check_output", side_effect=transport), \
+                patch.object(publisher, "urlopen", side_effect=latest_transport) as latest:
             result = self.publish()
+        self.assertGreaterEqual(latest.call_count, 2)
         self.assertEqual(result["asset_count"], 13)
         self.assertEqual(result["latest"], TAG)
         self.assertFalse(any("releases/tags/" in argument for args in requests for argument in args))
@@ -209,6 +284,18 @@ class PublicationTests(unittest.TestCase):
             dict(draft=False, prerelease=True, make_latest="false"),
             dict(draft=False, prerelease=False, make_latest="true"),
         ])
+
+    def test_latest_rate_limit_stops_publication_before_upload(self):
+        self.gateway.latest = publisher.GitHub(self.gateway.repository).latest
+        error = HTTPError("https://api.github.com", 403, "rate limit exceeded", {}, None)
+        with patch.dict(os.environ, {"GH_TOKEN": "test-job-token"}), \
+                patch.object(publisher, "urlopen", side_effect=error) as request:
+            with self.assertRaises(HTTPError) as caught:
+                self.publish()
+        self.assertIs(caught.exception, error)
+        self.assertEqual(request.call_count, 1)
+        self.assertNotIn("upload", self.gateway.events)
+        self.assertEqual(self.patches(), [])
 
     def test_bootstrap_has_no_latest_until_verified(self):
         self.gateway.current_latest = None

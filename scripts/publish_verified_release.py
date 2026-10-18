@@ -13,6 +13,7 @@ import argparse
 from datetime import datetime, timezone
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -85,9 +86,12 @@ class GitHub:
         raise ValueError("release tag does not resolve to a bounded commit identity")
 
     def latest(self) -> dict | None:
+        # Metadata uses the same job token as the release identity preflight.
+        # Only public asset bodies must prove anonymous download availability.
         request = Request(
             f"https://api.github.com/repos/{self.repository}/releases/latest",
-            headers={"Cache-Control": "no-cache", "Accept": "application/vnd.github+json"},
+            headers={"Authorization": f"Bearer {os.environ['GH_TOKEN']}",
+                     "Cache-Control": "no-cache", "Accept": "application/vnd.github+json"},
         )
         try:
             with urlopen(request, timeout=30) as response:
