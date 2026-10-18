@@ -51,8 +51,15 @@ pub struct VisibleWindowCapture {
     pub width: u32,
     pub height: u32,
     pub bounds: [i32; 4],
+    pub redacted_regions: Vec<[i32; 4]>,
 }
 pub fn capture_visible_window(
+    pid: u32,
+    hwnd: u64,
+) -> Result<VisibleWindowCapture, VisibleWindowCaptureError> {
+    capture_redacted_visible_window(pid, hwnd)
+}
+pub fn capture_redacted_visible_window(
     pid: u32,
     hwnd: u64,
 ) -> Result<VisibleWindowCapture, VisibleWindowCaptureError> {
@@ -63,6 +70,14 @@ pub fn capture_visible_window(
         width: 800,
         height: 600,
         bounds: [0, 0, 800, 600],
+        redacted_regions: LAST_NATIVE_EVIDENCE.with_borrow(|sample| {
+            sample
+                .and_then(|e| e.visibility_failure)
+                .filter(|e| e.reason == VisibleWindowCaptureReason::RootOverlap)
+                .and_then(|e| e.blocker_bounds)
+                .into_iter()
+                .collect()
+        }),
     })
 }
 pub struct PersistentWgcCapture;

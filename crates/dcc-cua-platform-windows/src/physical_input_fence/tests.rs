@@ -22,11 +22,66 @@ fn fence() -> WindowsPhysicalInputFence {
 
 type RecordedMutation = (bool, Vec<Event>, Option<(i32, i32)>);
 
+#[rstest]
+#[case("uncovered", true)]
+#[case("covered", false)]
+#[case("unknown_proof", false)]
+#[case("changed_instance", false)]
+#[case("changed_bounds", false)]
+fn partial_occlusion_click_requires_an_observed_and_current_native_target(
+    #[case] scenario: &str,
+    #[case] allowed: bool,
+) {
+    let mut backend = FakeBackend::new();
+    backend.evidence.unobscured = false;
+    backend.evidence.visibility_failure = Some(crate::VisibleWindowCaptureDiagnostic {
+        reason: crate::VisibleWindowCaptureReason::RootOverlap,
+        target_bounds: Some(fence().native_window_bounds),
+        blocker_process_id: Some(123),
+        blocker_window_handle: Some(456),
+        blocker_bounds: Some([900, 900, 20, 20]),
+        cloaked: Some(0),
+        os_error: None,
+        root_bounds_failure: None,
+    });
+    match scenario {
+        "covered" => backend.point_visible = false,
+        "unknown_proof" => backend.evidence.visibility_failure = None,
+        "changed_instance" => backend.evidence.instance.process_creation_time_100ns += 1,
+        "changed_bounds" => backend.state.bounds.as_mut().unwrap()[0] += 1,
+        _ => {}
+    }
+    let result = run_click(
+        &mut backend,
+        fence(),
+        (100, 100),
+        1,
+        WindowsPointerButton::Left,
+        &[],
+    );
+    assert_eq!(result.is_ok(), allowed);
+    if !allowed {
+        assert!(backend.mutations.is_empty());
+    }
+    assert!(
+        validate_physical_metadata(
+            fence(),
+            backend.evidence,
+            backend.state,
+            backend.desktop,
+            None,
+            true
+        )
+        .is_err()
+    );
+}
+
 struct FakeBackend {
     evidence: ExactWindowPixelEvidence,
     state: ExactWindowNativeState,
     desktop: [i32; 4],
     locked: bool,
+    point_visible: bool,
     check_count: usize,
     fail_check: Option<usize>,
     dwm_change_at_check: Option<usize>,
@@ -67,6 +122,7 @@ impl FakeBackend {
             },
             desktop: [0, 0, 3840, 2400],
             locked: false,
+            point_visible: true,
             check_count: 0,
             fail_check: None,
             dwm_change_at_check: None,
@@ -96,7 +152,14 @@ impl InputBackend for FakeBackend {
         if self.fail_check == Some(self.check_count) {
             return Err(Reason::InstanceChanged);
         }
-        validate_physical_metadata(fence, self.evidence, self.state, self.desktop, point)
+        validate_physical_metadata(
+            fence,
+            self.evidence,
+            self.state,
+            self.desktop,
+            point,
+            self.point_visible,
+        )
     }
     fn mutate(
         &mut self,
@@ -329,7 +392,7 @@ fn physical_input_fence_final_dwm_read_after_slow_proof_refuses_motion_or_missin
                 || false,
                 || {
                     trace.borrow_mut().push("slow occlusion proof");
-                    Ok(backend.evidence)
+                    Ok((backend.evidence, true))
                 },
                 || backend.desktop,
                 || {
@@ -575,7 +638,7 @@ fn physical_input_fence_actual_query_sequence_rechecks_lock_after_proof_before_d
                 },
                 || {
                     trace.borrow_mut().push("proof");
-                    Ok(backend.evidence)
+                    Ok((backend.evidence, true))
                 },
                 || {
                     trace.borrow_mut().push("desktop");

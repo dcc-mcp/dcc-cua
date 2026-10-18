@@ -23,10 +23,30 @@ pub(super) struct ExactWindowCapture {
     pub(super) source_rect: [i32; 4],
     #[cfg(windows)]
     pub(super) native_evidence: dcc_cua_platform_windows::ExactWindowPixelEvidence,
+    #[cfg(windows)]
+    pub(super) redacted_regions: Vec<[i32; 4]>,
 }
 
 #[cfg(windows)]
 static EXACT_WINDOW_CAPTURE_GENERATION: AtomicU64 = AtomicU64::new(1);
+
+#[cfg(windows)]
+pub(super) fn attach_capture_visibility(
+    provenance: &mut Value,
+    mode: ExactWindowPixelCaptureMode,
+    evidence: dcc_cua_platform_windows::ExactWindowPixelEvidence,
+    redacted_regions: &[[i32; 4]],
+) {
+    provenance["capture_mode"] = json!(mode.as_str());
+    provenance["visibility"] = json!({
+        "desktop_unobscured": evidence.unobscured,
+        "desktop_proof_failure": evidence.visibility_failure,
+        "redacted_rectangles": redacted_regions,
+        "coordinate_space": "physical_desktop",
+        "redaction_fill": "opaque_black",
+        "input_requires_fresh_native_fence": true,
+    });
+}
 
 #[cfg(windows)]
 pub(super) fn exact_capture_diagnostic(
@@ -418,6 +438,7 @@ pub(crate) fn capture_verified_visible_bgra(
     process_id: u32,
     window_id: u64,
     before: dcc_cua_platform_windows::ExactWindowPixelEvidence,
+    allow_partial: bool,
 ) -> ComputerUseResult<VerifiedVisibleBgraFrame> {
     interactive_desktop::require_exact_window_observation_available()?;
     if before.process_id != process_id || before.window_handle != window_id {
@@ -426,22 +447,30 @@ pub(crate) fn capture_verified_visible_bgra(
             "the native capture fence belongs to a different exact target",
         ));
     }
-    validate_live_native_evidence(&before, &before, true)?;
+    let mode = if allow_partial {
+        ExactWindowPixelCaptureMode::RedactedDesktopCrop
+    } else {
+        ExactWindowPixelCaptureMode::VisibleDesktopCrop
+    };
+    validate_native_exact_window_pixel_evidence(&before, &before, mode)?;
     dcc_cua_platform_windows::exact_window_capture_route(process_id, window_id)
         .map_err(|error| map_capture_identity_error(process_id, window_id, error))?;
-    let capture = dcc_cua_platform_windows::capture_visible_window(process_id, window_id).map_err(
-        |error| {
-            map_visible_capture_error(
-                ComputerUseErrorCode::CaptureFailed,
-                ComputerUseCaptureStage::VisibleDesktopProof,
-                process_id,
-                window_id,
-                error,
-            )
-        },
-    )?;
+    let capture = if allow_partial {
+        dcc_cua_platform_windows::capture_redacted_visible_window(process_id, window_id)
+    } else {
+        dcc_cua_platform_windows::capture_visible_window(process_id, window_id)
+    }
+    .map_err(|error| {
+        map_visible_capture_error(
+            ComputerUseErrorCode::CaptureFailed,
+            ComputerUseCaptureStage::VisibleDesktopProof,
+            process_id,
+            window_id,
+            error,
+        )
+    })?;
     let after = live_native_evidence(process_id, window_id)?;
-    validate_live_native_evidence(&before, &after, true)?;
+    validate_native_exact_window_pixel_evidence(&before, &after, mode)?;
     dcc_cua_platform_windows::exact_window_capture_route(process_id, window_id)
         .map_err(|error| map_capture_identity_error(process_id, window_id, error))?;
     if capture.bounds != after.visible_bounds {
@@ -499,7 +528,7 @@ pub(super) async fn capture_exact_window_with_diagnostics(
                 map_capture_identity_error(process_id, window_id, error)
             })?;
         if route == dcc_cua_platform_windows::ExactWindowCaptureRoute::VerifiedVisible {
-            let visible = capture_verified_visible_bgra(process_id, window_id, before)?;
+            let visible = capture_verified_visible_bgra(process_id, window_id, before, true)?;
             let capture_to_raw_elapsed = capture_started.elapsed();
             let encoded = crate::capture_diagnostics::encode_exact_frame(
                 &visible.capture.bgra, visible.capture.width, visible.capture.height,
@@ -511,12 +540,13 @@ pub(super) async fn capture_exact_window_with_diagnostics(
                 wgc_geometry: None,
                 backend: "dcc-cua-visible-exact-window",
                 fallback: "same_executable_multi_window_exact_visible_proof",
-                mode: ExactWindowPixelCaptureMode::VisibleDesktopCrop,
+                mode: if visible.capture.redacted_regions.is_empty() { ExactWindowPixelCaptureMode::VisibleDesktopCrop } else { ExactWindowPixelCaptureMode::RedactedDesktopCrop },
                 generation: visible.generation,
                 dpi: visible.evidence.dpi,
                 bounds: visible.evidence.bounds,
                 source_rect: visible.capture.bounds,
                 native_evidence: visible.evidence,
+                redacted_regions: visible.capture.redacted_regions,
             });
         }
         let wgc_error =
@@ -578,6 +608,7 @@ pub(super) async fn capture_exact_window_with_diagnostics(
                         bounds: after.bounds,
                         source_rect: geometry.source_rect,
                         native_evidence: after,
+                        redacted_regions: Vec::new(),
                     });
                 }
                 Err(error) => {
@@ -594,7 +625,7 @@ pub(super) async fn capture_exact_window_with_diagnostics(
                 error.to_string()
             },
         };
-        let visible = capture_verified_visible_bgra(process_id, window_id, before)
+        let visible = capture_verified_visible_bgra(process_id, window_id, before, true)
             .map_err(|mut error| {
                 error.message = format!("exact WGC capture failed ({wgc_error}); {}", error.message);
                 error
@@ -610,12 +641,13 @@ pub(super) async fn capture_exact_window_with_diagnostics(
             wgc_geometry: None,
             backend: "dcc-cua-visible-exact-window",
             fallback: "verified_same_process_visible_window_crop",
-            mode: ExactWindowPixelCaptureMode::VisibleDesktopCrop,
+            mode: if visible.capture.redacted_regions.is_empty() { ExactWindowPixelCaptureMode::VisibleDesktopCrop } else { ExactWindowPixelCaptureMode::RedactedDesktopCrop },
             generation: visible.generation,
             dpi: visible.evidence.dpi,
             bounds: visible.evidence.bounds,
             source_rect: visible.capture.bounds,
             native_evidence: visible.evidence,
+            redacted_regions: visible.capture.redacted_regions,
         })
     })
     .await

@@ -165,10 +165,12 @@ fn physical_point(
         }
         Ok(physical.floor() as i32)
     };
-    Ok((
+    let position = (
         point(action.x, observation.width, observation.source_rect[0])?,
         point(action.y, observation.height, observation.source_rect[1])?,
-    ))
+    );
+    require_observed_pixel_point(&observation.capture_provenance, position)?;
+    Ok(position)
 }
 
 #[cfg(windows)]

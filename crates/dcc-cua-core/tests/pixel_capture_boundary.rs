@@ -62,6 +62,7 @@ fn exact_source_first_capture_instance_boundary() {
         "impl From<dcc_cua_platform_windows::ExactWindowPixelInstanceEvidence>",
         "impl ExactWindowPixelCaptureMode",
         "pub(super) fn validate_exact_window_pixel_target_state",
+        "pub(super) fn validate_redaction_fence",
         "fn validate_final_exact_window_pixel_instance",
         "fn validate_exact_window_pixel_source",
         "pub(super) fn validate_final_exact_window_pixel_publication",

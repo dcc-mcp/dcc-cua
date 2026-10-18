@@ -1,6 +1,33 @@
 use super::*;
 use rstest::rstest;
 
+#[rstest]
+fn pixel_actions_cannot_target_redacted_or_malformed_observation_regions() {
+    let provenance = json!({"visibility":{"redacted_rectangles":[[10,20,30,40]]}});
+    assert!(require_observed_pixel_point(&provenance, (9, 20)).is_ok());
+    assert_eq!(
+        require_observed_pixel_point(&provenance, (10, 20))
+            .unwrap_err()
+            .code,
+        ComputerUseErrorCode::InvalidAction
+    );
+    assert_eq!(
+        require_observed_pixel_point(&json!({"visibility":{}}), (0, 0))
+            .unwrap_err()
+            .code,
+        ComputerUseErrorCode::StaleObservation
+    );
+    assert_eq!(
+        require_observed_pixel_point(
+            &json!({"visibility":{"redacted_rectangles":[[i32::MAX,0,2,2]]}}),
+            (0, 0)
+        )
+        .unwrap_err()
+        .code,
+        ComputerUseErrorCode::StaleObservation
+    );
+}
+
 #[cfg(windows)]
 #[rstest]
 #[tokio::test]
