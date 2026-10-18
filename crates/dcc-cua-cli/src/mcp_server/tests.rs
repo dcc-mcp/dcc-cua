@@ -1482,6 +1482,31 @@ fn clipboard_capture_grants_read_and_clear_as_one_authorized_capability() {
 }
 
 #[rstest]
+fn browser_prepare_continuation_uses_the_public_browser_task_method() {
+    let start = tool_definitions()
+        .into_iter()
+        .find(|tool| tool["name"] == "start_task")
+        .unwrap();
+    let methods = start["inputSchema"]["properties"]["allowed_methods"]["items"]["enum"]
+        .as_array()
+        .unwrap();
+    for method in ["browser_prepare", "browser_snapshot"] {
+        assert!(method_allowed(TaskSurface::Browser, method));
+        assert!(!method_allowed(TaskSurface::Window, method));
+        assert!(methods.iter().any(|allowed| allowed == method));
+    }
+    assert!(!methods.iter().any(|method| method == "get_browser_state"));
+    assert!(!method_allowed(TaskSurface::Browser, "get_browser_state"));
+    assert!(!method_allowed(TaskSurface::Window, "get_browser_state"));
+
+    let mut task = browser_task();
+    task["allowed_methods"] = json!(["browser_prepare", "browser_snapshot"]);
+    assert!(test_server().prepare_task(task.clone()).is_ok());
+    task["allowed_methods"] = json!(["browser_prepare", "get_browser_state"]);
+    assert!(test_server().prepare_task(task).is_err());
+}
+
+#[rstest]
 fn browser_prepare_is_granted_only_when_the_task_includes_the_method() {
     let mut server = test_server();
     let prepared = server.prepare_task(browser_task()).unwrap();

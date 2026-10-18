@@ -1886,6 +1886,7 @@ fn protocol_wire_codes_are_explicit_and_never_inferred_from_prose() {
 mod action_confirmation;
 mod browser_extension;
 mod browser_navigation_receipts;
+mod browser_prepare_guidance;
 mod confirmation_latency;
 mod connection;
 mod cross_client_task_authorization;
