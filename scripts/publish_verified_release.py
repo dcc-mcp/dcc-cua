@@ -55,7 +55,24 @@ class GitHub:
         return json.loads(output)
 
     def release(self, tag: str) -> dict:
-        return normalize_release(self.api(f"releases/tags/{tag}"))
+        # The REST tag endpoint only returns published releases. Resolve the
+        # authenticated draft/public identity first, then read its REST assets.
+        lookup = json.loads(subprocess.check_output([
+            "gh", "release", "view", tag, "--repo", self.repository,
+            "--json", "apiUrl,tagName",
+        ]))
+        api_url = lookup.get("apiUrl")
+        prefix = f"https://api.github.com/repos/{self.repository}/releases/"
+        identity = (re.fullmatch(re.escape(prefix) + r"([1-9][0-9]*)", api_url)
+                    if isinstance(api_url, str) else None)
+        if lookup.get("tagName") != tag or identity is None:
+            raise ValueError("authenticated release lookup has an invalid identity")
+        release_id = int(identity.group(1))
+        metadata = normalize_release(self.api(f"releases/{release_id}"))
+        if (type(metadata.get("id")) is not int or metadata["id"] != release_id
+                or metadata.get("tagName") != tag):
+            raise ValueError("release metadata differs from its authenticated identity")
+        return metadata
 
     def tag_sha(self, tag: str) -> str:
         obj = self.api(f"git/ref/tags/{tag}")["object"]
