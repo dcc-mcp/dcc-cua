@@ -304,6 +304,7 @@ impl ComputerUseSession {
             }),
             session_id: self.session_id.clone(),
         };
+        self.remember_sdk_element_tokens(&accessibility, &observation);
         self.target = Some(target);
         self.observation = Some(observation.clone());
         self.set_banner_activity(BannerActivity::Ready);
@@ -1172,11 +1173,9 @@ impl ComputerUseSession {
         };
         self.require_observed_exact_window_observation_available()?;
         let target = self.require_observed_target_available().await?;
-        self.observation = Some(semantic_observation(
-            &self.session_id,
-            &target,
-            &accessibility,
-        ));
+        let observation = semantic_observation(&self.session_id, &target, &accessibility);
+        self.remember_sdk_element_tokens(&accessibility, &observation);
+        self.observation = Some(observation);
         self.target = Some(target);
         Ok(accessibility)
     }

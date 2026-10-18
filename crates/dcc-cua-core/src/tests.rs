@@ -1264,7 +1264,7 @@ fn png_dimensions_reads_the_png_header() {
 fn semantic_element_actions_replace_pixel_coordinates() {
     let action = ComputerUseAction {
         action: "click".into(),
-        element_index: Some(7),
+        element_token: Some("snapshot:7".into()),
         x: Some(12.0),
         y: Some(13.0),
         ..Default::default()
@@ -1286,7 +1286,8 @@ fn semantic_element_actions_replace_pixel_coordinates() {
     )
     .unwrap()
     .arguments;
-    assert_eq!(args["element_index"], 7);
+    assert_eq!(args["element_token"], "snapshot:7");
+    assert!(args.get("element_index").is_none());
     assert!(args.get("x").is_none());
     assert!(args.get("y").is_none());
 }
@@ -1558,7 +1559,7 @@ fn action_rejects_unknown_delivery_mode_and_unbounded_token() {
 fn semantic_value_actions_require_and_encode_element_values() {
     let action = ComputerUseAction {
         action: "set_text".into(),
-        element_index: Some(11),
+        element_token: Some("snapshot:11".into()),
         text: Some("Hero".into()),
         ..Default::default()
     };
@@ -1580,7 +1581,7 @@ fn semantic_value_actions_require_and_encode_element_values() {
     .unwrap();
     assert_eq!(command.tool, "set_value");
     let args = command.arguments;
-    assert_eq!(args["element_index"], 11);
+    assert_eq!(args["element_token"], "snapshot:11");
     assert_eq!(args["value"], "Hero");
     assert_eq!(
         validate_action(&ComputerUseAction {
@@ -1767,7 +1768,7 @@ fn scroll_rejects_diagonal_unbounded_and_unscoped_requests() {
 
     let element_scroll = ComputerUseAction {
         action: "scroll".into(),
-        element_index: Some(1),
+        element_token: Some("snapshot:1".into()),
         ..Default::default()
     };
     validate_action(&element_scroll).unwrap();
@@ -1782,14 +1783,14 @@ fn scroll_rejects_diagonal_unbounded_and_unscoped_requests() {
 fn semantic_type_uses_cua_canonical_type_text() {
     let action = ComputerUseAction {
         action: "type".into(),
-        element_index: Some(8),
+        element_token: Some("snapshot:8".into()),
         text: Some("hello".into()),
         ..Default::default()
     };
     let command = action_arguments(&action, "session", &test_window_target()).unwrap();
     assert_eq!(command.tool, "type_text");
     let arguments = command.arguments;
-    assert_eq!(arguments["element_index"], 8);
+    assert_eq!(arguments["element_token"], "snapshot:8");
     assert_eq!(arguments["text"], "hello");
 }
 
@@ -1832,9 +1833,9 @@ fn minimized_exact_target_pauses_every_action_before_any_input_path() {
 fn type_chars_forwards_delivery_mode_to_cua_character_input() {
     let action = ComputerUseAction {
         action: "type_chars".into(),
-        element_index: Some(4),
+        element_token: Some("snapshot:4".into()),
         text: Some("Fab".into()),
-        delay_ms: Some(20),
+        delay_ms: (!cfg!(target_os = "linux")).then_some(20),
         delivery_mode: Some("foreground".into()),
         ..Default::default()
     };
@@ -1858,8 +1859,12 @@ fn type_chars_forwards_delivery_mode_to_cua_character_input() {
     assert_eq!(command.tool, "type_text");
     let args = command.arguments;
     assert_eq!(args["text"], "Fab");
-    assert_eq!(args["delay_ms"], 20);
-    assert_eq!(args["element_index"], 4);
+    if cfg!(target_os = "linux") {
+        assert!(args.get("delay_ms").is_none());
+    } else {
+        assert_eq!(args["delay_ms"], 20);
+    }
+    assert_eq!(args["element_token"], "snapshot:4");
     assert_eq!(args["delivery_mode"], "foreground");
     assert!(args.get("type_chars_only").is_none());
 
@@ -1910,14 +1915,18 @@ fn desktop_actions_are_screen_scoped_and_observation_bound() {
     let type_chars = ComputerUseAction {
         action: "type_chars".into(),
         text: Some("Fab".into()),
-        delay_ms: Some(20),
+        delay_ms: (!cfg!(target_os = "linux")).then_some(20),
         type_chars_only: true,
         ..Default::default()
     };
     let type_command = desktop_action_arguments(&type_chars, "desktop-session").unwrap();
     assert_eq!(type_command.tool, "type_text");
     let type_args = type_command.arguments;
-    assert_eq!(type_args["delay_ms"], 20);
+    if cfg!(target_os = "linux") {
+        assert!(type_args.get("delay_ms").is_none());
+    } else {
+        assert_eq!(type_args["delay_ms"], 20);
+    }
     assert!(type_args.get("type_chars_only").is_none());
 }
 
@@ -1935,7 +1944,8 @@ fn window_visual_fallback_maps_capture_pixels_to_the_exact_target() {
         capture_provenance: json!({"desktop_crop_bounds": [20, 30, 1560, 992]}),
         session_id: "session".into(),
     };
-    let target = test_window_target();
+    let mut target = test_window_target();
+    target.bounds = observation.source_rect;
     let validated = action_for_window_visual_fallback(
         &ComputerUseAction {
             action: "move".into(),
@@ -1950,9 +1960,18 @@ fn window_visual_fallback_maps_capture_pixels_to_the_exact_target() {
     let args = action_arguments(&validated, "session", &target)
         .unwrap()
         .arguments;
-    assert_eq!(args["pid"], 42);
-    assert_eq!(args["window_id"], 7);
-    assert!(args.get("scope").is_none());
+    if cfg!(target_os = "macos") {
+        assert_eq!(
+            args["target"],
+            json!({"kind":"window", "pid":42, "window_id":7})
+        );
+    } else {
+        assert_eq!(args["scope"], "window");
+        assert_eq!(args["x"], 1561.0);
+        assert_eq!(args["y"], 241.0);
+    }
+    assert!(args.get("pid").is_none());
+    assert!(args.get("window_id").is_none());
     assert!(
         action_for_window_visual_fallback(
             &ComputerUseAction {
@@ -1991,3 +2010,5 @@ fn window_queries_require_a_selector_and_match_native_rows() {
     ));
     assert!(query.validate_selectors().is_ok());
 }
+
+mod sdk_action_contract;

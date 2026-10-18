@@ -1214,6 +1214,7 @@ dependencies = [
  "dcc-cua-workspace-hack",
  "keyring",
  "libc",
+ "platform-windows",
  "reqwest",
  "rstest",
  "self_update",

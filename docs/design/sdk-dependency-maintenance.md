@@ -86,6 +86,28 @@ semantics; exact PID/window/session and bounds remain unchanged. The Windows
 overlay adapter supplies `target: None` for its existing point-only movement
 request because DCC does not have element bounds to pass upstream.
 
+Native input mappings also follow the 0.36 tool inventory. macOS window cursor
+movement uses its typed window target and screenshot coordinates; Linux and
+Windows overlay movement converts those coordinates once to native window units
+and adds the revalidated window origin. A macOS live/resized observation already
+converted to native window units uses that same overlay-only route, avoiding a
+second SDK screenshot-scale conversion. The overlay retains window scope.
+macOS semantic `set_value` omits the unsupported delivery-mode field, and Linux
+explicitly refuses `type_chars` delays that its SDK cannot represent.
+
+DCC preserves `element_index` by retaining the actual SDK token returned in the
+same observation, bound to observation/session/PID/window identity. Missing or
+ambiguous rows fail closed, and action invalidation discards the mapping. Never
+invent a bare row token: two sessions can publish snapshots of the same window.
+Move and drag require coordinates rather than unsupported semantic selectors.
+
+On Windows, the CLI dispatches the official SDK's public standard-user shell
+launch helper before ordinary startup. This lets an elevated Host launch the
+fixture under the SDK's verified standard-user token; it does not remove the
+SDK's elevation refusal, token checks or helper timeout. Process tests cover
+malformed helper invocations without launching applications, and the native
+lifecycle test checks that the launched application is not elevated.
+
 ## Verification and acceptance
 
 Keep source check, executed tests, native acceptance, publication and installed
@@ -120,6 +142,17 @@ checks against the source-built CLI. Native CI snapshots supply the generated
 Linux/macOS/Windows references. The downstream results and exact-window
 acceptance above were rerun against the published pin. The native fixture
 returns a degraded root-window node, not proof of AT-SPI child-control access.
+
+The native-action follow-up passed 1,528 library tests (three explicit native
+opt-ins ignored), 64 CLI/process tests, the actual empty-registry SDK integration,
+strict workspace/all-target Clippy, and dependency/format/layout/Hakari gates.
+It adds a contract matrix against the real embedded
+SDK inventory, screenshot-scaling and observation-token isolation tests. A real
+Linux CLI overlay move placed the agent cursor at the target's window-relative
+position while reporting the user pointer unchanged. Native CI must qualify the
+final downstream candidate on Windows and both macOS architectures. Local Unix
+socket-dependent CLI tests remain blocked by the cloud sandbox's `EPERM`; they
+are not counted as passing local tests.
 
 This is not a claim of whole-SDK CI success: the fork's attribution baseline
 gate remains tracked separately. The inherited docs container-image gate also

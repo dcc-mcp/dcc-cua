@@ -262,7 +262,7 @@ impl DriverEnvelopeChannel for CountingRemoteChannel {
                     assert_eq!(args["tree_format"], "elements");
                     assert_eq!(args["window_id"], 77);
                     assert_eq!(args["pid"], 42);
-                    json!({"elements": [{"element_index": 1, "label": "txt-input"}]})
+                    json!({"elements": [{"element_index": 1, "element_token": "sdk-snapshot:1", "label": "txt-input"}]})
                 }
                 Some("get_recording_state" | "start_recording") => json!({
                     "enabled": true,
@@ -277,6 +277,11 @@ impl DriverEnvelopeChannel for CountingRemoteChannel {
                     "effect": "unverifiable",
                     "route": "dom"
                 }),
+                Some("click") => {
+                    let args = request.arguments.as_ref().expect("click arguments");
+                    assert!(args.get("element_index").is_none());
+                    json!({"effect":"unverifiable", "route":"accessibility"})
+                }
                 Some("move_cursor") => json!({
                     "effect": "unverifiable",
                     "route": "global_input"

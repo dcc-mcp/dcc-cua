@@ -29,6 +29,7 @@ mod action_result;
 mod exact_capture;
 #[cfg(target_os = "linux")]
 mod linux_pixels;
+mod sdk_action_compat;
 use exact_capture::*;
 #[cfg(windows)]
 pub(crate) use exact_capture::{
@@ -118,12 +119,15 @@ fn windows_platform_window_activation_gate(
 impl ComputerUseSession {
     #[cfg(windows)]
     fn action_uses_local_window_coordinates(action: &ComputerUseAction) -> bool {
-        action.input_backend_id.is_some() || uses_windows_local_foreground_path(action)
+        action.input_backend_id.is_some()
+            || action.action == "move"
+            || uses_windows_local_foreground_path(action)
     }
 
     #[cfg(not(windows))]
     fn action_uses_local_window_coordinates(_action: &ComputerUseAction) -> bool {
         _action.input_backend_id.is_some()
+            || (cfg!(not(target_os = "macos")) && _action.action == "move")
     }
 
     #[cfg(windows)]
@@ -1497,6 +1501,7 @@ pub struct ComputerUseSession {
     control_banner: Option<ControlBanner>,
     target: Option<WindowTarget>,
     pub(crate) observation: Option<ComputerUseObservation>,
+    sdk_element_tokens: Option<sdk_action_compat::ObservedSdkElementTokens>,
     #[cfg(windows)]
     native_frame_metadata: Option<window_commands::NativeWindowFrameMetadata>,
     #[cfg(windows)]
