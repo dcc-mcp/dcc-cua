@@ -85,12 +85,12 @@ fn typed_one_shot_failures_keep_only_allowlisted_identity() {
     assert!(!line.contains('\n'));
     assert_eq!(value["success"], false);
     assert_eq!(value["error"]["code"], "stale_observation");
-    assert!(
-        value["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("same live task")
-    );
+    let guidance = value["error"]["message"].as_str().unwrap();
+    assert!(guidance.contains("persistent MCP task"));
+    assert!(guidance.contains("same live task"));
+    assert!(guidance.contains("one-shot CLI"));
+    assert!(guidance.contains("without reusing the old opaque token"));
+    assert!(guidance.contains("separate snapshot invocation cannot renew it"));
     assert!(value["error"]["details"].is_null());
     assert!(!line.contains("REVIEW_PRIVATE_"));
 }

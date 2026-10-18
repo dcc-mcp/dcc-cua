@@ -4,7 +4,7 @@ use serde_json::{Value, json};
 
 pub(crate) const TASK_NOT_FOUND: &str = "Task not found on this MCP connection. Keep the same mcp-server stdio connection open from start_task through stop_task. Task IDs cannot be resumed on another connection; if the owning connection closed, start a new task and take a fresh observation.";
 pub(crate) const TASK_STOPPED: &str = "Task was stopped. Start a new task on this MCP connection and take a fresh observation; stopped task IDs and references cannot be reused.";
-pub(crate) const TASK_EXPIRED: &str = "Task expired. Start a new task on this MCP connection and take a fresh observation; expired task IDs and references cannot be reused.";
+pub(crate) const TASK_EXPIRED: &str = "Task expired. Call stop_task with this task ID on its owning MCP connection to clean up its session, then start a new task and take a fresh observation. Expired tasks cannot perform observations or actions, and their references cannot be reused.";
 
 pub(crate) fn task_failure(message: &str) -> Option<Value> {
     let code = match message {
@@ -28,7 +28,7 @@ pub(crate) fn one_shot_failure(code: &str) -> Option<Value> {
     let (code, message) = match code {
         "stale_observation" => (
             "stale_observation",
-            "The observation or reference is no longer valid for this session. Take a fresh snapshot in the same live task before acting. Opaque element tokens cannot be reused across CLI invocations or reconnected MCP sessions; do not blindly retry input.",
+            "The observation or reference is no longer valid for this session. In a persistent MCP task, take a fresh snapshot in the same live task before acting. For one-shot CLI use, reassess the action without reusing the old opaque token; a separate snapshot invocation cannot renew it. Opaque element tokens cannot be reused across CLI invocations or reconnected MCP sessions; do not blindly retry input.",
         ),
         "session_not_found" => (
             "session_not_found",

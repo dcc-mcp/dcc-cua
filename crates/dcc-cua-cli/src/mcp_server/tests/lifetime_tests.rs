@@ -73,12 +73,18 @@ async fn expired_task_guidance_does_not_renew_its_lease() {
         .unwrap();
     assert_eq!(result["isError"], true);
     assert_eq!(result["structuredContent"]["code"], "task_expired");
+    let guidance = result["structuredContent"]["message"].as_str().unwrap();
+    assert!(guidance.contains("stop_task with this task ID"));
+    assert!(guidance.contains("clean up its session, then start a new task"));
     assert_eq!(server.proposals[task_id].registration.expires_at_unix_ms, 0);
     assert!(server.proposals[task_id].session.is_none());
-    server
-        .revoke_task(json!({"task_id":task_id}))
+    let stopped = server
+        .call_tool(json!({"name":"stop_task", "arguments":{"task_id":task_id}}))
         .await
         .unwrap();
+    assert_eq!(stopped["structuredContent"]["status"], "stopped");
+    assert!(server.proposals[task_id].revoked);
+    assert_eq!(server.proposals[task_id].registration.expires_at_unix_ms, 0);
 }
 
 #[rstest]
