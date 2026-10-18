@@ -121,3 +121,45 @@ async fn accessibility_only_snapshot_binds_index_translation_without_pixels() {
     assert!(names.lock().unwrap().iter().any(|name| name == "click"));
     assert!(session.sdk_element_tokens.is_none());
 }
+
+#[rstest]
+#[case(false, false, ComputerUseErrorCode::InvalidAction)]
+#[case(true, false, ComputerUseErrorCode::StaleObservation)]
+#[case(false, true, ComputerUseErrorCode::StaleObservation)]
+#[tokio::test]
+async fn tokenless_visual_actions_keep_terminal_refusal_and_observation_fences(
+    #[case] accessibility_available: bool,
+    #[case] stale_observation: bool,
+    #[case] expected: ComputerUseErrorCode,
+) {
+    let (mut session, _, names) = counting_session_with_names();
+    session.live_observation = None;
+    session.screenshot_with_bounds(128, 16).await.unwrap();
+    session.sdk_element_tokens = None;
+    let observation = session.observation.as_mut().unwrap();
+    observation.capture_provenance = json!({
+        "accessibility_available": accessibility_available,
+        "pixels_captured": true,
+    });
+    let action = ComputerUseAction {
+        action: "click".into(),
+        element_index: Some(1),
+        observation_id: Some(if stale_observation {
+            "old-observation".into()
+        } else {
+            observation.observation_id.clone()
+        }),
+        ..Default::default()
+    };
+    let error = session.perform_action(&action).await.unwrap_err();
+    assert_eq!(error.code, expected);
+    if !accessibility_available && !stale_observation {
+        assert!(
+            error
+                .message
+                .contains("visual fallback does not support semantic")
+        );
+    }
+    assert!(!names.lock().unwrap().iter().any(|name| name == "click"));
+    assert!(session.observation.is_some(), "no mutation was dispatched");
+}

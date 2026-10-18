@@ -813,9 +813,13 @@ impl ComputerUseSession {
             return Ok(self.complete_mutating_action(result));
         }
         self.require_observed_input_available()?;
-        let resolved_action = self.resolve_sdk_element_action(action, &observation)?;
-        let sdk_action = resolved_action.as_ref().unwrap_or(action);
         let fallback = observation.capture_provenance["accessibility_available"] == false;
+        let resolved_action = if fallback {
+            None
+        } else {
+            self.resolve_sdk_element_action(action, &observation)?
+        };
+        let sdk_action = resolved_action.as_ref().unwrap_or(action);
         let local_coordinates = fallback || Self::action_uses_local_window_coordinates(sdk_action);
         let visual_action;
         let effective_action = if local_coordinates {

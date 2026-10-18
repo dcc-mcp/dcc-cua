@@ -109,8 +109,7 @@ fn launch_denies_command_interpreters_with_arguments() {
 #[rstest]
 #[tokio::test]
 async fn launch_mapping_matches_the_actual_native_sdk_schema() {
-    let driver = crate::runtime::ComputerUseDriver::create().unwrap();
-    let inventory = driver.list_tools().await.unwrap();
+    let inventory = super::sdk_action_contract::native_sdk_inventory().await;
     let schema = super::tool_schema_from_inventory(&inventory, "launch_app").unwrap();
     let properties = schema["properties"].as_object().unwrap();
     for selector in ["name", "bundle_id", "aumid", "path", "launch_path"] {

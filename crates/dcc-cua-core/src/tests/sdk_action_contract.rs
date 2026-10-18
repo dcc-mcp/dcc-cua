@@ -1,12 +1,39 @@
 use super::*;
 use rstest::rstest;
 
+/// Keep schema checks bound to the real SDK inventory. On Windows, inspect
+/// metadata without requiring an interactive desktop or starting an overlay.
+/// Other platforms retain the normal DCC runtime: Linux registry inspection
+/// itself configures process-global cursor state and must not disable it here.
+pub(super) async fn native_sdk_inventory() -> Value {
+    #[cfg(windows)]
+    {
+        cua_driver_sdk::CuaDriver::inspect_host_tools(cua_driver_sdk::DriverHostOptions {
+            cursor: cursor_overlay::CursorConfig {
+                enabled: false,
+                ..Default::default()
+            },
+            host_owns_permission_ux: true,
+            host_bundle_id: None,
+            claude_code_compatibility: false,
+            prepare_desktop_environment: false,
+            register_host_tools: None,
+            authorization_host: None,
+            activity_observer: None,
+        })
+    }
+    #[cfg(not(windows))]
+    {
+        let driver = ComputerUseDriver::create().unwrap();
+        driver.list_tools().await.unwrap()
+    }
+}
+
 /// Read the real embedded SDK registry. No native input is dispatched.
 #[rstest]
 #[tokio::test]
 async fn mapped_actions_use_only_actual_native_sdk_arguments() {
-    let driver = ComputerUseDriver::create().unwrap();
-    let inventory = driver.list_tools().await.unwrap();
+    let inventory = native_sdk_inventory().await;
     let target = test_window_target();
     let mut failures = Vec::new();
     for action_name in [
@@ -128,8 +155,7 @@ fn unsupported_linux_character_delay_is_explicitly_refused() {
 #[rstest]
 #[tokio::test]
 async fn native_sdk_advertises_bounded_full_observation_shape() {
-    let driver = ComputerUseDriver::create().unwrap();
-    let inventory = driver.list_tools().await.unwrap();
+    let inventory = native_sdk_inventory().await;
     let schema = tool_schema_from_inventory(&inventory, "get_window_state").unwrap();
     assert!(
         schema["properties"]["tree_format"]["enum"]
@@ -153,8 +179,7 @@ async fn native_sdk_advertises_bounded_full_observation_shape() {
 #[rstest]
 #[tokio::test]
 async fn native_sdk_accepts_exact_menu_request_shape() {
-    let driver = ComputerUseDriver::create().unwrap();
-    let inventory = driver.list_tools().await.unwrap();
+    let inventory = native_sdk_inventory().await;
     let schema = tool_schema_from_inventory(&inventory, "invoke_menu").unwrap();
     let properties = schema["properties"].as_object().unwrap();
     for key in ["pid", "window_id", "path"] {

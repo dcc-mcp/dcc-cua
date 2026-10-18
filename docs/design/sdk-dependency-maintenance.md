@@ -162,7 +162,7 @@ are not counted as passing local tests.
 The observation follow-up restores the official `both` projection. Format-sensitive
 red/green fixtures cover read-only status, menu and dialog text beside the actual
 qualified action token, including refusal to turn text-only row numbers into
-tokens. The final local library suite passes 1,534 tests; seven additional pure
+tokens. The reviewed local library suite passes 1,537 tests; seven additional pure
 Windows privilege-policy cases cover safe and unsafe access facts. A real SDK launch-schema matrix covers selectors, URL/argument forwarding and
 session ownership; unsupported false launch defaults are omitted, while explicit
 unsupported opt-ins fail before dispatch. A real Linux CLI launch starts the
@@ -170,9 +170,19 @@ owned, self-closing X11 fixture and returns its PID with both exact windows;
 both unsupported true flags are refused. Windows new-instance remains an
 accepted upstream no-op, not an isolation guarantee. The GUI
 runner keeps failing on any error but runs all cases with `--no-fail-fast`.
-The effective-token assertion and full observation fix still require the final
-native Windows/macOS/Linux CI run; prior passing verification jobs are not a
-substitute for that candidate's GUI results.
+The `dc63d4a` candidate passed all ten CI jobs, including native GUI, release IPC
+and immutable artifact verification on Linux, Windows and both macOS architectures.
+Its GUI suites passed 17 cases per Linux/macOS target and 52 Windows cases
+(including seven pure privilege-fact cases, not 52 distinct native actions).
+
+The review follow-up preserves terminal `InvalidAction` for indexed actions on
+pure visual observations, while stale observation IDs and tokenless semantic
+snapshots still fail with `StaleObservation`. Three red/green cases verify error
+precedence and no dispatch. Schema-only checks continue to inspect the real SDK:
+Windows uses its metadata-only inventory without interactive-desktop admission
+or cursor startup; Linux/macOS retain the existing runtime to avoid changing
+process-global cursor configuration during tests. These follow-up changes require
+a fresh exact-head native matrix; the prior candidate's results are not a substitute.
 
 This is not a claim of whole-SDK CI success: the fork's attribution baseline
 gate remains tracked separately. The inherited docs container-image gate also
