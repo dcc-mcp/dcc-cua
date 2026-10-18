@@ -145,6 +145,15 @@ window metadata cannot substitute for a screenshot. A successful pixel snapshot
 returns a formal `observation_id`, `accessibility_available=false`, and no
 `accessibility_state_id` or semantic element authorization.
 
+On Windows, independently verified window-content captures remain readable in
+the background, including when another window covers the target. A desktop-crop
+fallback may publish a partially visible target: every proven overlapping root
+rectangle is filled with opaque black, and provenance reports
+`capture_mode: "redacted_desktop_crop"` plus `visibility.redacted_rectangles`
+in physical desktop coordinates. Unknown occlusion geometry, changing masks,
+and a fully covered desktop crop still refuse publication. These masks exclude
+foreign-window pixels; they do not reconstruct the covered target content.
+
 Pixel tasks permit observation, native state reads, the explicit minimize
 operation, and these explicitly scoped foreground raw actions: `click`,
 `double_click`, `right_click`, `toggle`, `keypress`, `keyboard_shortcut`, `type`,
@@ -163,6 +172,12 @@ window or fall back to another backend. Any attempted action consumes the old
 observation. With `capture_after: true`, the post-action observation uses the
 same pixel route and cannot mint semantic element authorization. A failed post
 snapshot requires a fresh observation before another action.
+
+Pointer actions additionally require an unredacted point in that observation
+and a fresh native hit test on the exact target or its child. Other parts of the
+window may be covered. Keyboard and text actions retain the complete visibility
+requirement. A readable background capture alone never authorizes foreground
+input or click-through to another window.
 
 Semantic selectors, browser/clipboard input, secret input, drag, wheel, move,
 and recording are outside this pixel contract. It retains the existing

@@ -2,7 +2,7 @@ use crate::capture_identity::validate_exact_window_owner;
 use serde::Serialize;
 use thiserror::Error;
 use windows::Win32::{
-    Foundation::{BOOL, HWND, LPARAM, RECT},
+    Foundation::{BOOL, HWND, LPARAM, POINT, RECT},
     Graphics::{
         Dwm::{DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS, DwmFlush, DwmGetWindowAttribute},
         Gdi::{
@@ -15,8 +15,9 @@ use windows::Win32::{
         HiDpi::GetDpiForWindow,
         WindowsAndMessaging::{
             EnumWindows, GA_ROOT, GetAncestor, GetSystemMetrics, GetWindowRect,
-            GetWindowThreadProcessId, IsIconic, IsWindow, IsWindowVisible, SM_CXVIRTUALSCREEN,
-            SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
+            GetWindowThreadProcessId, IsChild, IsIconic, IsWindow, IsWindowVisible,
+            SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
+            WindowFromPoint,
         },
     },
 };
@@ -147,6 +148,8 @@ pub struct VisibleWindowCapture {
     pub width: u32,
     pub height: u32,
     pub bounds: [i32; 4],
+    /// Opaque-black redactions, in physical desktop coordinates.
+    pub redacted_regions: Vec<[i32; 4]>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -381,6 +384,30 @@ pub(crate) fn root_z_order_proof(
     target_bounds: [i32; 4],
     roots: &[(u64, [i32; 4], bool)],
 ) -> Result<(), VisibleWindowCaptureError> {
+    let regions = root_occlusion_regions(target_window_handle, target_bounds, roots)?;
+    if let Some(bounds) = regions.first() {
+        let mut error = proof_error(
+            VisibleWindowCaptureReason::RootOverlap,
+            "a higher composited root window overlaps the exact target",
+        );
+        if let Some((handle, rectangle, _)) = roots.iter().find(|(_, r, visible)| {
+            *visible && crate::occlusion::intersection(*r, target_bounds) == Some(*bounds)
+        }) {
+            error.diagnostic.blocker_bounds = Some(*rectangle);
+            error.diagnostic.blocker_window_handle = Some(*handle);
+        }
+        error.diagnostic.cloaked = Some(0);
+        return Err(error);
+    }
+    Ok(())
+}
+
+pub(crate) fn root_occlusion_regions(
+    target_window_handle: u64,
+    target_bounds: [i32; 4],
+    roots: &[(u64, [i32; 4], bool)],
+) -> Result<Vec<[i32; 4]>, VisibleWindowCaptureError> {
+    let mut regions = Vec::new();
     for &(window_handle, bounds, visible) in roots {
         if window_handle == target_window_handle {
             if !visible {
@@ -390,7 +417,7 @@ pub(crate) fn root_z_order_proof(
                 ));
             }
             return if bounds == target_bounds {
-                Ok(())
+                Ok(regions)
             } else {
                 Err(proof_error(
                     VisibleWindowCaptureReason::TargetBoundsChanged,
@@ -399,14 +426,14 @@ pub(crate) fn root_z_order_proof(
             };
         }
         if visible && rectangles_intersect(bounds, target_bounds) {
-            let mut error = proof_error(
-                VisibleWindowCaptureReason::RootOverlap,
-                "a higher composited root window overlaps the exact target",
+            regions.push(
+                crate::occlusion::intersection(bounds, target_bounds).ok_or_else(|| {
+                    proof_error(
+                        VisibleWindowCaptureReason::RootBoundsInvalid,
+                        "invalid occluder rectangle",
+                    )
+                })?,
             );
-            error.diagnostic.blocker_window_handle = Some(window_handle);
-            error.diagnostic.blocker_bounds = Some(bounds);
-            error.diagnostic.cloaked = Some(0);
-            return Err(error);
         }
     }
     Err(proof_error(
@@ -514,7 +541,7 @@ impl RootProofTraceEntry {
 pub(super) struct RootZOrderEnumeration {
     target_window_handle: u64,
     target_bounds: [i32; 4],
-    roots: Vec<(u64, [i32; 4], bool)>,
+    roots: CompositedRoots,
     failure: Option<VisibleWindowCaptureError>,
     pub(super) trace: Option<Vec<RootProofTraceEntry>>,
 }
@@ -644,12 +671,14 @@ where
     (bounds[2] > 0 && bounds[3] > 0).then_some((window_handle, bounds, true))
 }
 
-pub(super) unsafe fn enumerate_target_root_proof(
+type CompositedRoots = Vec<(u64, [i32; 4], bool)>;
+
+unsafe fn enumerate_target_roots(
     target: HWND,
     rect: RECT,
     trace: bool,
 ) -> (
-    Result<(), VisibleWindowCaptureError>,
+    Result<CompositedRoots, VisibleWindowCaptureError>,
     Vec<RootProofTraceEntry>,
 ) {
     let target_root = unsafe { root_or_self(target) };
@@ -682,16 +711,7 @@ pub(super) unsafe fn enumerate_target_root_proof(
         failure.diagnostic.os_error = Some(error.code().0);
         Err(failure)
     } else {
-        root_z_order_proof(
-            target_window_handle,
-            [
-                rect.left,
-                rect.top,
-                rect.right - rect.left,
-                rect.bottom - rect.top,
-            ],
-            &enumeration.roots,
-        )
+        Ok(enumeration.roots)
     };
     let proof = proof.map_err(|mut error| {
         error.diagnostic.target_bounds = physical_root_bounds(rect);
@@ -705,6 +725,82 @@ pub(super) unsafe fn enumerate_target_root_proof(
         error
     });
     (proof, enumeration.trace.unwrap_or_default())
+}
+
+pub(super) unsafe fn enumerate_target_root_proof(
+    target: HWND,
+    rect: RECT,
+    trace: bool,
+) -> (
+    Result<(), VisibleWindowCaptureError>,
+    Vec<RootProofTraceEntry>,
+) {
+    let (roots, trace) = unsafe { enumerate_target_roots(target, rect, trace) };
+    let bounds = physical_root_bounds(rect).unwrap_or_default();
+    let proof = roots
+        .and_then(|roots| {
+            root_z_order_proof(
+                unsafe { root_or_self(target) }.0 as usize as u64,
+                bounds,
+                &roots,
+            )
+        })
+        .map_err(|mut error| {
+            error.diagnostic.target_bounds = Some(bounds);
+            if let Some(blocker) = error.diagnostic.blocker_window_handle {
+                let mut pid = 0;
+                unsafe {
+                    GetWindowThreadProcessId(HWND(blocker as usize as *mut _), Some(&mut pid));
+                }
+                error.diagnostic.blocker_process_id = (pid != 0).then_some(pid);
+            }
+            error
+        });
+    (proof, trace)
+}
+
+unsafe fn target_redactions(
+    target: HWND,
+    rect: RECT,
+) -> Result<Vec<[i32; 4]>, VisibleWindowCaptureError> {
+    let (roots, _) = unsafe { enumerate_target_roots(target, rect, false) };
+    let mut regions = root_occlusion_regions(
+        unsafe { root_or_self(target) }.0 as usize as u64,
+        physical_root_bounds(rect).unwrap_or_default(),
+        &roots?,
+    )?;
+    regions.sort_unstable();
+    regions.dedup();
+    Ok(regions)
+}
+
+/// Metadata-only proof for the actual physical pointer location, not a PID-wide permission.
+pub fn exact_window_point_visible(
+    process_id: u32,
+    window_handle: u64,
+    point: (i32, i32),
+) -> Result<bool, VisibleWindowCaptureError> {
+    let _dpi_scope = ThreadDpiAwarenessGuard::per_monitor_v2()?;
+    validate_exact_window_owner(process_id, window_handle)
+        .map_err(|e| capture_error(e.to_string()))?;
+    let hwnd = HWND(window_handle as usize as *mut _);
+    let rect = physical_capture_rect(physical_window_rect(hwnd)?)?;
+    let regions = unsafe { target_redactions(hwnd, rect) }?;
+    let hit = unsafe {
+        WindowFromPoint(POINT {
+            x: point.0,
+            y: point.1,
+        })
+    };
+    let target_hit = hit == hwnd || unsafe { IsChild(hwnd, hit) }.as_bool();
+    validate_exact_window_owner(process_id, window_handle)
+        .map_err(|e| capture_error(e.to_string()))?;
+    Ok(target_hit
+        && crate::occlusion::point_visible(
+            point,
+            physical_root_bounds(rect).unwrap_or_default(),
+            &regions,
+        ))
 }
 
 unsafe fn prove_target_unobscured(
@@ -836,6 +932,22 @@ pub fn capture_visible_window(
     process_id: u32,
     window_handle: u64,
 ) -> Result<VisibleWindowCapture, VisibleWindowCaptureError> {
+    capture_desktop_window(process_id, window_handle, false)
+}
+
+/// Snapshot fallback: publish only target pixels, redacting every proven root occluder.
+pub fn capture_redacted_visible_window(
+    process_id: u32,
+    window_handle: u64,
+) -> Result<VisibleWindowCapture, VisibleWindowCaptureError> {
+    capture_desktop_window(process_id, window_handle, true)
+}
+
+fn capture_desktop_window(
+    process_id: u32,
+    window_handle: u64,
+    allow_partial: bool,
+) -> Result<VisibleWindowCapture, VisibleWindowCaptureError> {
     let _dpi_scope = ThreadDpiAwarenessGuard::per_monitor_v2()?;
     validate_exact_window_owner(process_id, window_handle)
         .map_err(|error| capture_error(error.to_string()))?;
@@ -887,7 +999,12 @@ pub fn capture_visible_window(
         error.diagnostic.target_bounds = Some(bounds);
         return Err(error);
     }
-    unsafe { prove_target_unobscured(hwnd, rect) }?;
+    let redacted_regions = if allow_partial {
+        unsafe { target_redactions(hwnd, rect) }?
+    } else {
+        unsafe { prove_target_unobscured(hwnd, rect) }?;
+        Vec::new()
+    };
 
     // DWM extended-frame bounds are physical desktop pixels and are not
     // virtualized for the caller's or target's DPI-awareness context. The
@@ -975,6 +1092,26 @@ pub fn capture_visible_window(
         readback?;
         validate_exact_window_owner(process_id, window_handle)
             .map_err(|error| capture_error(error.to_string()))?;
+        if allow_partial {
+            if target_redactions(hwnd, rect)? != redacted_regions {
+                return Err(proof_error(
+                    VisibleWindowCaptureReason::RootOverlap,
+                    "root occlusion changed during capture; pixels were discarded",
+                ));
+            }
+            let visible = crate::occlusion::redact_bgra(&mut bgra, bounds, &redacted_regions)
+                .map_err(capture_error)?;
+            if !visible {
+                return Err(prove_target_unobscured(hwnd, rect)
+                    .err()
+                    .unwrap_or_else(|| {
+                        proof_error(
+                            VisibleWindowCaptureReason::RootOverlap,
+                            "the target has no independently visible desktop pixels",
+                        )
+                    }));
+            }
+        }
         Ok(VisibleWindowCapture {
             bgra,
             width: physical_width as u32,
@@ -985,6 +1122,7 @@ pub fn capture_visible_window(
                 physical_width,
                 physical_height,
             ],
+            redacted_regions,
         })
     }
 }

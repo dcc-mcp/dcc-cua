@@ -333,8 +333,12 @@ impl WindowsLiveCapture {
         }
         let before = target.evidence()?;
         if matches!(self, Self::VerifiedVisible) {
-            let visible =
-                capture_verified_visible_bgra(target.process_id, target.window_handle, before)?;
+            let visible = capture_verified_visible_bgra(
+                target.process_id,
+                target.window_handle,
+                before,
+                false,
+            )?;
             let after = target.evidence()?;
             validate_live_native_evidence(&before, &after, true)?;
             validate_live_native_evidence(&visible.evidence, &after, true)?;

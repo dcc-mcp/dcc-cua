@@ -447,6 +447,21 @@ fn exact_capture_proof_reports_the_first_actual_overlap_without_titles() {
 
 #[cfg(windows)]
 #[rstest]
+fn partial_root_proof_retains_visible_target_pixels_without_accepting_unknown_targets() {
+    use crate::visible_capture::root_occlusion_regions;
+    let target = [0, 0, 3840, 2400];
+    let roots = [(91, [2005, -166, 333, 333], true), (77, target, true)];
+    assert_eq!(
+        root_occlusion_regions(77, target, &roots).unwrap(),
+        vec![[2005, 0, 333, 167]]
+    );
+    assert!(root_z_order_proof(77, target, &roots).is_err());
+    assert!(root_occlusion_regions(99, target, &roots).is_err());
+    assert!(root_occlusion_regions(77, [0, 0, 3839, 2400], &roots).is_err());
+}
+
+#[cfg(windows)]
+#[rstest]
 fn exact_capture_proof_distinguishes_target_missing_hidden_and_geometry_drift() {
     for (roots, reason) in [
         (vec![], VisibleWindowCaptureReason::TargetNotReached),

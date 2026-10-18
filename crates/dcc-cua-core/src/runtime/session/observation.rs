@@ -787,6 +787,7 @@ impl ComputerUseSession {
         let final_capture = self.finish_observation_sensitive_attempt(final_capture)?;
         #[cfg(windows)]
         {
+            validate_redaction_fence(&captured.redacted_regions, &final_capture.redacted_regions)?;
             validate_native_exact_window_pixel_evidence(
                 &captured.native_evidence,
                 &final_capture.native_evidence,
@@ -855,6 +856,12 @@ impl ComputerUseSession {
         }
         #[cfg(windows)]
         {
+            attach_capture_visibility(
+                &mut capture_provenance,
+                final_capture.mode,
+                final_capture.native_evidence,
+                &final_capture.redacted_regions,
+            );
             capture_provenance["capture_generation"] = json!(final_capture.generation);
             capture_provenance["window_dpi"] = json!(final_capture.dpi);
             capture_provenance["native_window_bounds"] =
@@ -865,7 +872,7 @@ impl ComputerUseSession {
             if let Some(geometry) = final_capture.wgc_geometry {
                 capture_provenance["wgc_geometry"] = json!(geometry);
             }
-            if final_capture.mode == ExactWindowPixelCaptureMode::VisibleDesktopCrop {
+            if final_capture.mode != ExactWindowPixelCaptureMode::WindowContent {
                 capture_provenance["desktop_crop_bounds"] = json!(final_capture.source_rect);
             }
         }
@@ -970,6 +977,7 @@ impl ComputerUseSession {
         )
         .await;
         let final_capture = self.finish_observation_sensitive_attempt(final_capture)?;
+        validate_redaction_fence(&capture.redacted_regions, &final_capture.redacted_regions)?;
         validate_native_exact_window_pixel_evidence(
             &capture.native_evidence,
             &final_capture.native_evidence,
@@ -1017,6 +1025,12 @@ impl ComputerUseSession {
             final_capture.dpi,
             final_capture.backend,
         );
+        attach_capture_visibility(
+            &mut provenance,
+            final_capture.mode,
+            final_capture.native_evidence,
+            &final_capture.redacted_regions,
+        );
         provenance["fallback"] = json!(final_capture.fallback);
         provenance["native_window_bounds"] = json!(final_capture.native_evidence.bounds);
         provenance["native_instance"] = json!(final_capture.native_evidence.instance);
@@ -1032,7 +1046,7 @@ impl ComputerUseSession {
         if let Some(geometry) = final_capture.wgc_geometry {
             provenance["wgc_geometry"] = json!(geometry);
         }
-        if final_capture.mode == ExactWindowPixelCaptureMode::VisibleDesktopCrop {
+        if final_capture.mode != ExactWindowPixelCaptureMode::WindowContent {
             provenance["desktop_crop_bounds"] = json!(final_capture.source_rect);
         }
         if capture_diagnostics {

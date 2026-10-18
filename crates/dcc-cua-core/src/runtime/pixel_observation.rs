@@ -91,6 +91,7 @@ pub(super) struct ExactWindowPixelGeometry {
 pub(super) enum ExactWindowPixelCaptureMode {
     WindowContent,
     VisibleDesktopCrop,
+    RedactedDesktopCrop,
 }
 
 #[cfg(any(windows, test))]
@@ -144,9 +145,66 @@ fn validate_final_exact_window_pixel_instance(
 
 #[cfg(any(windows, test))]
 impl ExactWindowPixelCaptureMode {
+    #[cfg(windows)]
+    pub(super) const fn as_str(self) -> &'static str {
+        match self {
+            Self::WindowContent => "window_content",
+            Self::VisibleDesktopCrop => "visible_desktop_crop",
+            Self::RedactedDesktopCrop => "redacted_desktop_crop",
+        }
+    }
+
     const fn requires_unobscured_desktop(self) -> bool {
         matches!(self, Self::VisibleDesktopCrop)
     }
+}
+
+#[cfg(any(windows, test))]
+pub(super) fn validate_redaction_fence(
+    first: &[[i32; 4]],
+    last: &[[i32; 4]],
+) -> ComputerUseResult<()> {
+    if first != last {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::StaleObservation,
+            "the target's redacted regions changed before publication",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(any(windows, test))]
+pub(super) fn require_observed_pixel_point(
+    provenance: &Value,
+    point: (i32, i32),
+) -> ComputerUseResult<()> {
+    let Some(visibility) = provenance.get("visibility") else {
+        return Ok(());
+    };
+    let regions: Vec<[i32; 4]> = serde_json::from_value(visibility["redacted_rectangles"].clone())
+        .map_err(|_| {
+            ComputerUseError::new(
+                ComputerUseErrorCode::StaleObservation,
+                "invalid pixel redaction evidence",
+            )
+        })?;
+    for [x, y, width, height] in regions {
+        let right = x.checked_add(width);
+        let bottom = y.checked_add(height);
+        if width <= 0 || height <= 0 || right.is_none() || bottom.is_none() {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::StaleObservation,
+                "invalid pixel redaction geometry",
+            ));
+        }
+        if point.0 >= x && point.0 < right.unwrap() && point.1 >= y && point.1 < bottom.unwrap() {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::InvalidAction,
+                "the requested point was redacted in the latest observation; take a fresh observation",
+            ));
+        }
+    }
+    Ok(())
 }
 
 #[cfg(any(windows, test))]
@@ -178,7 +236,8 @@ fn validate_exact_window_pixel_source(
                 return Err(invalid());
             }
         }
-        ExactWindowPixelCaptureMode::VisibleDesktopCrop => {
+        ExactWindowPixelCaptureMode::VisibleDesktopCrop
+        | ExactWindowPixelCaptureMode::RedactedDesktopCrop => {
             if fence.wgc_geometry.is_some() || fence.source_rect != fence.native_visible_bounds {
                 return Err(invalid());
             }
@@ -290,9 +349,20 @@ pub(super) fn validate_native_exact_window_pixel_evidence(
             "the exact pixel target became hidden during capture",
         ));
     }
-    if capture_mode.requires_unobscured_desktop() && (!before.unobscured || !after.unobscured) {
-        // Preserve the first failing sample's own proof, including a legacy None.
-        let failed = if !before.unobscured { before } else { after };
+    let unproven = |sample: &&dcc_cua_platform_windows::ExactWindowPixelEvidence| {
+        !sample.unobscured
+            && match capture_mode {
+                ExactWindowPixelCaptureMode::WindowContent => false,
+                ExactWindowPixelCaptureMode::VisibleDesktopCrop => true,
+                ExactWindowPixelCaptureMode::RedactedDesktopCrop => {
+                    sample.visibility_failure.is_none_or(|failure| {
+                        failure.reason
+                            != dcc_cua_platform_windows::VisibleWindowCaptureReason::RootOverlap
+                    })
+                }
+            }
+    };
+    if let Some(failed) = [before, after].into_iter().find(unproven) {
         if let Some(diagnostic) = failed.visibility_failure {
             return Err(map_visible_capture_diagnostic(
                 ComputerUseErrorCode::CaptureFailed,

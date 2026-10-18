@@ -23,6 +23,8 @@ mod exact_window_state;
 mod input;
 #[cfg(windows)]
 mod native_menu_dismiss;
+#[cfg(any(windows, test))]
+mod occlusion;
 #[cfg(windows)]
 mod physical_input_fence;
 #[cfg(any(windows, test))]
@@ -111,7 +113,8 @@ pub use visible_capture::{
     ExactWindowPixelEvidence, ExactWindowPixelInstanceEvidence, RootBoundsClass,
     RootBoundsFailureDiagnostic, RootBoundsRole, VisibleWindowCapture,
     VisibleWindowCaptureDiagnostic, VisibleWindowCaptureError, VisibleWindowCaptureReason,
-    capture_visible_window, exact_window_pixel_evidence,
+    capture_redacted_visible_window, capture_visible_window, exact_window_pixel_evidence,
+    exact_window_point_visible,
 };
 #[cfg(windows)]
 pub use wgc::{

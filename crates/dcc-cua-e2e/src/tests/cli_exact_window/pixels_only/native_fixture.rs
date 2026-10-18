@@ -225,6 +225,17 @@ impl Fixture {
         )
     }
 
+    pub fn resize_blocker(&self, rectangle: RECT) {
+        unsafe {
+            SendMessageW(
+                self.blocker as usize as HWND,
+                WM_APP + 2,
+                0,
+                &rectangle as *const RECT as isize,
+            )
+        };
+    }
+
     pub fn resize_input_roots(&self, rectangle: RECT) {
         for raw in [self.target, self.blocker] {
             unsafe {

@@ -120,6 +120,7 @@ fn validate_physical_metadata(
     state: ExactWindowNativeState,
     desktop: [i32; 4],
     point: Option<(i32, i32)>,
+    point_unobscured: bool,
 ) -> Result<(), Reason> {
     if fence.target.process_id == 0
         || fence.target.window_handle == 0
@@ -161,7 +162,16 @@ fn validate_physical_metadata(
     if !state.foreground {
         return Err(Reason::TargetNotForeground);
     }
-    if !evidence.unobscured {
+    let proven_point = point_unobscured
+        && evidence
+            .visibility_failure
+            .is_some_and(|proof| proof.reason == crate::VisibleWindowCaptureReason::RootOverlap);
+    let visible = if point.is_some() {
+        point_unobscured && (evidence.unobscured || proven_point)
+    } else {
+        evidence.unobscured
+    };
+    if !visible {
         return Err(Reason::TargetOccluded);
     }
     if !physical_rectangle_within_desktop(evidence.visible_bounds, desktop) {
@@ -257,7 +267,7 @@ fn check_physical_fence(
     point: Option<(i32, i32)>,
     mut gate: impl FnMut() -> Result<(), UiaError>,
     mut interrupted: impl FnMut() -> bool,
-    read_proof: impl FnOnce() -> Result<ExactWindowPixelEvidence, Reason>,
+    read_proof: impl FnOnce() -> Result<(ExactWindowPixelEvidence, bool), Reason>,
     read_desktop: impl FnOnce() -> [i32; 4],
     read_final_state: impl FnOnce() -> Result<ExactWindowNativeState, Reason>,
 ) -> Result<(), Reason> {
@@ -265,7 +275,7 @@ fn check_physical_fence(
         return Err(Reason::Interrupted);
     }
     gate().map_err(|_| Reason::DesktopUnavailable)?;
-    let evidence = read_proof()?;
+    let (evidence, point_unobscured) = read_proof()?;
     gate().map_err(|_| Reason::DesktopUnavailable)?;
     let desktop = read_desktop();
     // This full native identity/physical state read follows proof enumeration.
@@ -273,7 +283,7 @@ fn check_physical_fence(
     if interrupted() {
         return Err(Reason::Interrupted);
     }
-    validate_physical_metadata(fence, evidence, state, desktop, point)
+    validate_physical_metadata(fence, evidence, state, desktop, point, point_unobscured)
 }
 
 impl<G: FnMut() -> Result<(), UiaError>, I: FnMut() -> bool> InputBackend for NativeBackend<G, I> {
@@ -290,8 +300,28 @@ impl<G: FnMut() -> Result<(), UiaError>, I: FnMut() -> bool> InputBackend for Na
             &mut self.gate,
             &mut self.interrupted,
             || {
-                exact_window_pixel_evidence(fence.target.process_id, fence.target.window_handle)
-                    .map_err(|_| Reason::TargetUnavailable)
+                let evidence = exact_window_pixel_evidence(
+                    fence.target.process_id,
+                    fence.target.window_handle,
+                )
+                .map_err(|_| Reason::TargetUnavailable)?;
+                let point_unobscured = match point {
+                    Some(point)
+                        if evidence.unobscured
+                            || evidence.visibility_failure.is_some_and(|proof| {
+                                proof.reason == crate::VisibleWindowCaptureReason::RootOverlap
+                            }) =>
+                    {
+                        crate::exact_window_point_visible(
+                            fence.target.process_id,
+                            fence.target.window_handle,
+                            point,
+                        )
+                        .map_err(|_| Reason::TargetUnavailable)?
+                    }
+                    _ => false,
+                };
+                Ok((evidence, point_unobscured))
             },
             || unsafe {
                 [

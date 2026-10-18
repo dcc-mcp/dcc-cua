@@ -1,6 +1,33 @@
 use super::*;
 use rstest::rstest;
 
+#[rstest]
+fn pixel_actions_cannot_target_redacted_or_malformed_observation_regions() {
+    let provenance = json!({"visibility":{"redacted_rectangles":[[10,20,30,40]]}});
+    assert!(require_observed_pixel_point(&provenance, (9, 20)).is_ok());
+    assert_eq!(
+        require_observed_pixel_point(&provenance, (10, 20))
+            .unwrap_err()
+            .code,
+        ComputerUseErrorCode::InvalidAction
+    );
+    assert_eq!(
+        require_observed_pixel_point(&json!({"visibility":{}}), (0, 0))
+            .unwrap_err()
+            .code,
+        ComputerUseErrorCode::StaleObservation
+    );
+    assert_eq!(
+        require_observed_pixel_point(
+            &json!({"visibility":{"redacted_rectangles":[[i32::MAX,0,2,2]]}}),
+            (0, 0)
+        )
+        .unwrap_err()
+        .code,
+        ComputerUseErrorCode::StaleObservation
+    );
+}
+
 #[cfg(windows)]
 #[rstest]
 #[tokio::test]
@@ -557,6 +584,29 @@ fn issue_228_visible_desktop_crop_publication_requires_complete_visibility() {
     )
     .expect_err("desktop-crop pixels must not publish when any overlap is unproven");
     assert_eq!(error.code, ComputerUseErrorCode::CaptureFailed);
+}
+
+#[rstest]
+fn redacted_desktop_publication_requires_a_stable_mask_instead_of_full_visibility() {
+    let captured = target(42, 77, [100, 200, 800, 600]);
+    let mode = ExactWindowPixelCaptureMode::RedactedDesktopCrop;
+    assert!(
+        validate_final_exact_window_pixel_publication(
+            &captured,
+            &captured,
+            publication_fence(captured.bounds, 120, 7, mode),
+            publication_fence(captured.bounds, 120, 8, mode),
+            false,
+        )
+        .is_ok()
+    );
+    assert!(validate_redaction_fence(&[[100, 200, 20, 20]], &[[100, 200, 20, 20]]).is_ok());
+    assert_eq!(
+        validate_redaction_fence(&[[100, 200, 20, 20]], &[[120, 200, 20, 20]])
+            .unwrap_err()
+            .code,
+        ComputerUseErrorCode::StaleObservation
+    );
 }
 
 #[rstest]

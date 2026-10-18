@@ -669,10 +669,6 @@ fn same_sample_visibility_reason_and_blocker_survive_outer_capture_failure() {
     use dcc_cua_platform_windows::VisibleWindowCaptureReason as NativeReason;
     for (native, public) in [
         (
-            NativeReason::RootOverlap,
-            ComputerUseCaptureReason::RootOverlap,
-        ),
-        (
             NativeReason::RootBoundsUnavailable,
             ComputerUseCaptureReason::RootBoundsUnavailable,
         ),
@@ -853,4 +849,76 @@ fn wgc_window_content_still_does_not_require_unobscured_desktop() {
             assert!(!os.trace.contains(&"visible pixels"));
         });
     }
+}
+
+#[rstest]
+fn redacted_desktop_frames_require_known_coverage_and_unchanged_native_identity() {
+    use dcc_cua_platform_windows::VisibleWindowCaptureReason as NativeReason;
+    let covered = retained_visibility_failure(NativeReason::RootOverlap);
+    let unknown = retained_visibility_failure(NativeReason::RootBoundsInvalid);
+    let mode = ExactWindowPixelCaptureMode::RedactedDesktopCrop;
+    assert!(validate_native_exact_window_pixel_evidence(&covered, &covered, mode).is_ok());
+    assert!(validate_native_exact_window_pixel_evidence(&covered, &unknown, mode).is_err());
+    let mut changed = covered;
+    changed.instance.process_creation_time_100ns += 1;
+    assert_eq!(
+        validate_native_exact_window_pixel_evidence(&covered, &changed, mode)
+            .unwrap_err()
+            .code,
+        ComputerUseErrorCode::StaleObservation
+    );
+    assert!(validate_redaction_fence(&[[1, 1, 2, 2]], &[[1, 1, 2, 2]]).is_ok());
+    assert_eq!(
+        validate_redaction_fence(&[[1, 1, 2, 2]], &[[2, 1, 2, 2]])
+            .unwrap_err()
+            .code,
+        ComputerUseErrorCode::StaleObservation
+    );
+}
+
+#[rstest]
+fn partial_desktop_capture_publishes_stable_masks_but_live_capture_stays_strict() {
+    use dcc_cua_platform_windows::VisibleWindowCaptureReason as NativeReason;
+    let covered = retained_visibility_failure(NativeReason::RootOverlap);
+    for backend in [Backend::Visible, Backend::WgcFailure] {
+        for path in paths() {
+            OS.set(Native {
+                backend,
+                evidence: [covered; 4].into(),
+                trace: vec![],
+            });
+            let (mut candidate_session, target) = session();
+            let frame = publish(&mut candidate_session, &target, path).unwrap();
+            assert_eq!(candidate_session.publications, 1);
+            assert_eq!(frame.mode, ExactWindowPixelCaptureMode::RedactedDesktopCrop);
+            assert_eq!(frame.redacted_regions, vec![[100, 100, 20, 20]]);
+
+            let mut changed = covered;
+            changed.visibility_failure.as_mut().unwrap().blocker_bounds = Some([200, 100, 20, 20]);
+            OS.set(Native {
+                backend,
+                evidence: [covered, covered, changed, changed].into(),
+                trace: vec![],
+            });
+            let (mut candidate_session, target) = session();
+            assert_eq!(
+                publish(&mut candidate_session, &target, path).err().unwrap().code,
+                ComputerUseErrorCode::StaleObservation
+            );
+            assert_eq!(candidate_session.publications, 0);
+        }
+    }
+    OS.set(Native {
+        backend: Backend::Visible,
+        evidence: VecDeque::new(),
+        trace: vec![],
+    });
+    assert_eq!(
+        capture_verified_visible_bgra(42, 77, covered, false)
+            .err()
+            .unwrap()
+            .code,
+        ComputerUseErrorCode::CaptureFailed
+    );
+    OS.with_borrow(|os| assert!(!os.trace.contains(&"visible pixels")));
 }
