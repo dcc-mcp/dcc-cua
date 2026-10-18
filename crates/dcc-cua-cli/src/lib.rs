@@ -1440,7 +1440,7 @@ fn jsonl_response_value_with_metrics(
 
 fn host_error_value(error: &HostClientError) -> serde_json::Value {
     match error {
-        HostClientError::Io(error) => json!({
+        HostClientError::Connect(error) | HostClientError::Io(error) => json!({
             "type": "error",
             "code": "transport_error",
             "message": error.to_string(),
