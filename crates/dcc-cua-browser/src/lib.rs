@@ -372,7 +372,7 @@ impl BrowserSession {
             args["strategy"] = value;
         }
         self.begin_snapshot_sensitive_native_attempt();
-        BrowserResult::from_value(native.call_browser_tool("browser_prepare", args).await?)
+        BrowserResult::from_prepare_value(native.call_browser_tool("browser_prepare", args).await?)
     }
 
     pub async fn snapshot(
@@ -824,6 +824,22 @@ impl BrowserSession {
 }
 
 impl BrowserResult {
+    fn from_prepare_value(mut value: Value) -> ComputerUseResult<Self> {
+        // Translate SDK guidance at the public adapter boundary, not its tool
+        // routing. Binding still requires a separate authorized snapshot call.
+        let structured = &value["structuredContent"];
+        if value["isError"] != true
+            && structured["status"] == "ok"
+            && structured["prepared"] == true
+            && structured["refusal"].is_null()
+            && structured["attachment"]["kind"] == "existing_profile"
+            && structured["attachment"]["next_action"] == "get_browser_state"
+        {
+            value["structuredContent"]["attachment"]["next_action"] = json!("browser_snapshot");
+        }
+        Self::from_value(value)
+    }
+
     #[must_use]
     pub fn publishes_snapshot_evidence(&self) -> bool {
         structured_content(&self.value).is_ok_and(|structured| {

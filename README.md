@@ -996,6 +996,16 @@ Host process keep refusing it.
 `browser_snapshot` first binds the exact native window, then snapshots a
 specific CUA tab; `browser_click`, `browser_type`, and `browser_pointer` require
 the latest browser `snapshot_id`, exact binding, and an explicit input route.
+After successful existing-profile `browser_prepare`, `attachment.next_action`
+points to `browser_snapshot`, the public DCC method. Grant both methods in the
+browser task's `allowed_methods`. Follow the hint on the same task/connection
+with `dcc_cua_task_call` using `method: "browser_snapshot"` and
+`params: {"request": {}}`; the empty request selects binding, and Core supplies
+the authorized native PID/window ID. Use the returned `target_id` and a
+`tab_id` from `tabs` for a subsequent tab snapshot. Do not call the internal SDK method
+`get_browser_state` or supply SDK `mode`, `pid`, or `window_id` fields through
+the task bridge. Preparation does not bind automatically or grant additional
+methods; an omitted `browser_snapshot` permission still fails closed.
 Hosts advertising `nearest_ancestor_role_v1` accept `scope_ancestor_role` only
 for a `semantic_v2` tab snapshot with an exact `target_id`, `tab_id`,
 `scope_ref`, and `query`. CUA resolves the nearest same-frame ancestor with the

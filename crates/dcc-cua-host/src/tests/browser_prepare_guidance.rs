@@ -150,7 +150,7 @@ fn sdk_prepared_receipt() -> Value {
         "prepared": true,
         "action": "attached_existing_profile",
         "message": "Attached to the approved existing Chromium profile. Bind the native window again before using browser capabilities.",
-        "endpoint_ownership": "process_owned",
+        "endpoint_ownership": {"method": "listening_socket_pid", "owner_pid": 42, "detail": null},
         "prepared_pid": 42,
         "side_effects": {"opened_setup_page": true, "closed_setup_page": true},
         "attachment": {
@@ -260,7 +260,10 @@ async fn prepared_browser_hint_can_be_followed_through_the_same_host_bridge() {
         bound["result"]["structuredContent"]["binding_quality"],
         "exact"
     );
-    assert_eq!(bound["result"]["structuredContent"]["target_id"], "target-1");
+    assert_eq!(
+        bound["result"]["structuredContent"]["target_id"],
+        "target-1"
+    );
     assert_eq!(
         bound["result"]["structuredContent"]["tabs"][0]["tab_id"],
         "tab-1"

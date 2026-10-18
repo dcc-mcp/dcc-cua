@@ -1503,7 +1503,13 @@ fn browser_prepare_continuation_uses_the_public_browser_task_method() {
     task["allowed_methods"] = json!(["browser_prepare", "browser_snapshot"]);
     assert!(test_server().prepare_task(task.clone()).is_ok());
     task["allowed_methods"] = json!(["browser_prepare", "get_browser_state"]);
-    assert!(test_server().prepare_task(task).is_err());
+    assert!(test_server().prepare_task(task.clone()).is_err());
+
+    task["allowed_methods"] = json!(["browser_prepare"]);
+    let mut server = test_server();
+    let prepared = server.prepare_task(task).unwrap();
+    let proposal = &server.proposals[prepared["task_id"].as_str().unwrap()];
+    assert_eq!(proposal.allowed_methods, vec!["browser_prepare"]);
 }
 
 #[rstest]
