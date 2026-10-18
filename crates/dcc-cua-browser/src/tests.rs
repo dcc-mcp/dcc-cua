@@ -901,3 +901,59 @@ fn browser_type_validation_rejects_unbound_evidence_before_secret_resolution() {
             .is_err()
     );
 }
+
+fn prepared_browser_result() -> Value {
+    json!({
+        "isError": false,
+        "content": [{"type": "text", "text": "Bind the native window again."}],
+        "structuredContent": {
+            "status": "ok",
+            "prepared": true,
+            "refusal": null,
+            "action": "attached_existing_profile",
+            "prepared_pid": 42,
+            "side_effects": {"opened_setup_page": true, "closed_setup_page": true},
+            "attachment": {
+                "kind": "existing_profile",
+                "browser": "chromium",
+                "capabilities_invalidated": true,
+                "next_action": "get_browser_state"
+            }
+        }
+    })
+}
+
+#[rstest]
+fn prepared_browser_result_translates_only_the_public_continuation() {
+    let value = prepared_browser_result();
+    let mut expected = value.clone();
+    expected["structuredContent"]["attachment"]["next_action"] = json!("browser_snapshot");
+    let result = BrowserResult::from_prepare_value(value).unwrap();
+    assert_eq!(result.value, expected);
+    assert!(result.images.is_empty());
+    assert!(!result.publishes_snapshot_evidence());
+}
+
+#[rstest]
+#[case::unprepared("/structuredContent/prepared", json!(false))]
+#[case::error("/isError", json!(true))]
+#[case::refused_status("/structuredContent/status", json!("refused"))]
+#[case::error_status("/structuredContent/status", json!("error"))]
+#[case::refusal("/structuredContent/refusal", json!({"code": "browser_consent_required"}))]
+#[case::unknown_attachment("/structuredContent/attachment/kind", json!("unknown"))]
+#[case::unknown_action("/structuredContent/attachment/next_action", json!("manual_setup"))]
+#[case::public_action("/structuredContent/attachment/next_action", json!("browser_snapshot"))]
+#[case::null_action("/structuredContent/attachment/next_action", Value::Null)]
+#[case::missing_action("/structuredContent/attachment", json!({"kind": "existing_profile"}))]
+#[case::missing_attachment("/structuredContent/attachment", Value::Null)]
+#[case::missing_structure("/structuredContent", Value::Null)]
+fn prepare_guidance_preserves_nonmatching_receipts(
+    #[case] pointer: &str,
+    #[case] replacement: Value,
+) {
+    let mut value = prepared_browser_result();
+    *value.pointer_mut(pointer).unwrap() = replacement;
+    let result = BrowserResult::from_prepare_value(value.clone()).unwrap();
+    assert_eq!(result.value, value);
+    assert!(!result.publishes_snapshot_evidence());
+}
