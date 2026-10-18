@@ -8,8 +8,7 @@ use crate::cli_args::CliUsageError;
 use crate::host_lifecycle::HostEnsureError;
 
 pub(super) const PUBLIC_FAILURE_MESSAGE: &str = "dcc-cua could not complete the command";
-const HOST_NOT_RUNNING_MESSAGE: &str =
-    "No resident Host is listening at the selected endpoint. Run dcc-cua host-ensure first; if --endpoint was supplied, use the same --endpoint for host-ensure.";
+const HOST_NOT_RUNNING_MESSAGE: &str = "No resident Host is listening at the selected endpoint. Run dcc-cua host-ensure first; if --endpoint was supplied, use the same --endpoint for host-ensure.";
 const NO_ACCESSIBILITY_PROVIDER_MESSAGE: &str =
     "The exact window has no usable accessibility provider.";
 pub(super) const OVERLAY_EXCLUSION_MESSAGE: &str =
