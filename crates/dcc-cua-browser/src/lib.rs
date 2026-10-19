@@ -11,11 +11,17 @@ use dcc_cua_protocol::{
 };
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Value, json};
-use std::path::Path;
+use sha2::{Digest, Sha256};
+use std::io::Read;
+use std::path::{Component, Path, PathBuf};
+use url::Url;
 
 const MAX_URL_CHARS: usize = 4_096;
 const MAX_TEXT_CHARS: usize = 4_096;
 const MAX_UPLOAD_FILES: usize = 32;
+/// Leading bytes inspected to identify a stored download's media type by magic
+/// number. Bounds enrichment work regardless of the artifact's total size.
+const DOWNLOAD_MAGIC_SNIFF_BYTES: usize = 8_192;
 
 #[derive(Debug)]
 pub struct BrowserResult {
@@ -646,16 +652,22 @@ impl BrowserSession {
         validate_ref(&request.element_ref, "browser_download ref")?;
         let destination_root = validate_destination_root(&request.destination_root)?;
         self.begin_snapshot_sensitive_native_attempt();
-        let result = BrowserResult::from_value(
-            native
-                .call_browser_download_tool(json!({
-                    "target_id": request.target_id,
-                    "tab_id": request.tab_id,
-                    "ref": request.element_ref,
-                    "destination_root": destination_root,
-                }))
-                .await?,
-        )?;
+        let value = native
+            .call_browser_download_tool(json!({
+                "target_id": request.target_id,
+                "tab_id": request.tab_id,
+                "ref": request.element_ref,
+                "destination_root": destination_root,
+            }))
+            .await?;
+        let mut result = BrowserResult::from_value(value)?;
+        // The driver deliberately omits the stored location for safety; dcc-cua
+        // owns the already-validated destination root, so enrich the completion
+        // with task-scoped, boundary-checked artifact metadata. Purely additive:
+        // never turns a completed download into a failure. The enrichment reads
+        // and hashes the stored file, so it runs the blocking work off the async
+        // executor (see `enrich_download_completion`).
+        enrich_download_completion(&destination_root, &mut result.value).await;
         Ok(result)
     }
 
@@ -1502,6 +1514,278 @@ fn validate_destination_root(raw: &str) -> ComputerUseResult<String> {
     std::fs::canonicalize(path)
         .map(|path| path.to_string_lossy().into_owned())
         .map_err(|_| invalid("browser download destination_root could not be canonicalized"))
+}
+
+/// Normalize a browser download outcome into a small, stable lifecycle
+/// vocabulary that downstream consumers can branch on without parsing
+/// driver-specific refusal codes.
+///
+/// The synchronous driver currently reports `completed` or a refusal;
+/// `accepted`/`in_progress` are reserved for any future asynchronous completion
+/// and are passed through verbatim. Anything else (including refusals) is
+/// reported as `failed`.
+fn download_lifecycle_state(status: Option<&str>) -> &'static str {
+    match status {
+        Some("completed") => "completed",
+        Some("accepted") => "accepted",
+        Some("in_progress") => "in_progress",
+        _ => "failed",
+    }
+}
+
+/// True when an opaque download id is a single normal path component, mirroring
+/// the driver's own containment guard so dcc-cua never joins an id that could
+/// traverse out of the destination root.
+fn download_id_is_safe_component(download_id: &str) -> bool {
+    let mut components = Path::new(download_id).components();
+    matches!(components.next(), Some(Component::Normal(_))) && components.next().is_none()
+}
+
+/// A stored download proven to be a direct regular file whose canonical
+/// location stays inside the already-validated destination root.
+///
+/// Location and size are always available once the artifact is proven. The
+/// content digest and media type are best-effort: they require reading the
+/// artifact, so a transient read failure (for example an antivirus briefly
+/// locking a just-written file) must not hide the proven, boundary-checked
+/// location.
+struct ProvenDownload {
+    stored_filename: String,
+    file_path: String,
+    artifact_ref: String,
+    bytes: u64,
+    sha256: Option<String>,
+    mime_type: Option<String>,
+}
+
+/// Additively enrich a browser download completion with a lifecycle state and,
+/// for a completed artifact that is proven to live inside the validated
+/// destination root, task-scoped metadata (stored filename, resolved path,
+/// artifact reference, SHA-256, magic-detected media type).
+///
+/// Existing `status`, `download_id`, and `bytes` are preserved untouched, so
+/// this stays backward compatible. Artifact location/digest fields are only
+/// emitted after boundary proof, so a path or digest is never reported for a
+/// target that could escape the approved directory.
+///
+/// The boundary proof and content read perform blocking filesystem I/O and an
+/// unbounded full-file SHA-256. `BrowserSession::download` runs on the MCP
+/// server's single-threaded current-thread runtime, where doing that inline
+/// would monopolize the executor: freezing every concurrent session and
+/// starving the host's `select!`-based interrupt/cancel loop for the duration
+/// of the hash (unbounded for the large DCC assets this feature targets). The
+/// blocking work is therefore offloaded to `spawn_blocking` and stays strictly
+/// best-effort: a join failure or an unprovable target simply leaves the
+/// artifact fields absent.
+async fn enrich_download_completion(destination_root: &str, value: &mut Value) {
+    let Some(structured) = value
+        .get_mut("structuredContent")
+        .and_then(Value::as_object_mut)
+    else {
+        return;
+    };
+    let status = structured
+        .get("status")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    structured.insert(
+        "download_state".into(),
+        json!(download_lifecycle_state(status.as_deref())),
+    );
+
+    // Artifact metadata is reported only for a completion whose stored file can
+    // be proven inside the boundary. The synchronous driver only ever completes
+    // with a present, direct regular file, so this is the normal path.
+    if status.as_deref() != Some("completed") {
+        return;
+    }
+    let Some(download_id) = structured
+        .get("download_id")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+    else {
+        return;
+    };
+
+    // Offload the blocking boundary proof and full-file hash so a large
+    // download never stalls the current-thread executor or interrupt handling.
+    // Both a join failure and an unprovable target map to "no artifact", which
+    // preserves the completion's lifecycle state and proven fields.
+    let root = PathBuf::from(destination_root);
+    let artifact = tokio::task::spawn_blocking(move || {
+        prove_download_artifact(root.as_path(), download_id.as_str())
+    })
+    .await
+    .ok()
+    .flatten();
+
+    let Some(artifact) = artifact else {
+        return;
+    };
+    structured.insert("stored_filename".into(), json!(artifact.stored_filename));
+    structured.insert("file_path".into(), json!(artifact.file_path));
+    structured.insert("artifact_ref".into(), json!(artifact.artifact_ref));
+    // `bytes` already comes from the driver; only fill it if it was omitted so
+    // the reported size always refers to the proven in-bounds artifact.
+    if !structured.contains_key("bytes") {
+        structured.insert("bytes".into(), json!(artifact.bytes));
+    }
+    // SHA-256 and media type are best-effort content enrichments.
+    if let Some(sha256) = artifact.sha256 {
+        structured.insert("sha256".into(), json!(sha256));
+    }
+    if let Some(mime_type) = artifact.mime_type {
+        structured.insert("mime_type".into(), json!(mime_type));
+    }
+}
+
+/// Prove that a reported completed download exists as a direct regular file
+/// whose canonical location is a child of the validated destination root, then
+/// derive boundary-independent metadata from its contents.
+///
+/// Returns `None` when the artifact cannot be proven inside the boundary, so a
+/// claimed completion never leaks a path or digest for an out-of-bounds target.
+fn prove_download_artifact(canonical_root: &Path, download_id: &str) -> Option<ProvenDownload> {
+    // Defense in depth: re-check the opaque id is a single normal component
+    // before touching the filesystem, independent of the driver's own guard.
+    if !download_id_is_safe_component(download_id) {
+        return None;
+    }
+    let candidate = canonical_root.join(download_id);
+    let metadata = std::fs::symlink_metadata(&candidate).ok()?;
+    // Only a direct regular file is an artifact; never follow a link or accept
+    // a directory, which could otherwise point outside a single stored file.
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return None;
+    }
+    let canonical = std::fs::canonicalize(&candidate).ok()?;
+    // The canonical file must be a direct child of the canonical root, proving
+    // it did not escape the approved destination directory.
+    if canonical.parent() != Some(canonical_root) {
+        return None;
+    }
+
+    // Content digest and media type are best-effort: a transient read failure
+    // must not hide the proven, boundary-checked location and size.
+    let (sha256, mime_type) = match read_download_digest_and_type(&canonical) {
+        Ok((sha256, mime_type)) => (Some(sha256), Some(mime_type.to_owned())),
+        Err(_) => (None, None),
+    };
+
+    Some(ProvenDownload {
+        stored_filename: download_id.to_owned(),
+        file_path: canonical.to_string_lossy().into_owned(),
+        artifact_ref: download_artifact_ref(&canonical),
+        bytes: metadata.len(),
+        sha256,
+        mime_type,
+    })
+}
+
+/// Read a proven, boundary-contained artifact to compute its SHA-256 by
+/// streaming (so arbitrarily large downloads do not have to fit in memory) and
+/// identify its media type from a bounded leading-byte window.
+fn read_download_digest_and_type(path: &Path) -> ComputerUseResult<(String, &'static str)> {
+    let mut file = std::fs::File::open(path).map_err(|_| {
+        ComputerUseError::new(
+            ComputerUseErrorCode::BackendUnavailable,
+            "the completed download could not be opened for checksumming",
+        )
+    })?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 16 * 1024];
+    let mut head = Vec::with_capacity(DOWNLOAD_MAGIC_SNIFF_BYTES);
+    loop {
+        let read = file.read(&mut buffer).map_err(|_| {
+            ComputerUseError::new(
+                ComputerUseErrorCode::BackendUnavailable,
+                "the completed download could not be read for checksumming",
+            )
+        })?;
+        if read == 0 {
+            break;
+        }
+        if head.len() < DOWNLOAD_MAGIC_SNIFF_BYTES {
+            let remaining = DOWNLOAD_MAGIC_SNIFF_BYTES - head.len();
+            head.extend_from_slice(&buffer[..read.min(remaining)]);
+        }
+        hasher.update(&buffer[..read]);
+    }
+    let sha256 = format!("{:x}", hasher.finalize());
+    let mime_type = sniff_download_mime_type(&head);
+    Ok((sha256, mime_type))
+}
+
+/// Build a portable `file://` reference for a proven artifact. Falls back to the
+/// path string if the platform path cannot be represented as a URL, so
+/// enrichment never fails merely because a reference could not be formed.
+fn download_artifact_ref(canonical: &Path) -> String {
+    Url::from_file_path(canonical)
+        .map(|url| url.to_string())
+        .unwrap_or_else(|_| canonical.to_string_lossy().into_owned())
+}
+
+/// Identify a stored download's media type from a bounded leading-byte window
+/// using magic-number signatures. `browser_download` stores files under an
+/// opaque id without an extension, so content type is derived from bytes, never
+/// a filename. Unrecognized content falls back to `application/octet-stream`.
+fn sniff_download_mime_type(head: &[u8]) -> &'static str {
+    fn has(bytes: &[u8], offset: usize, signature: &[u8]) -> bool {
+        bytes
+            .get(offset..offset + signature.len())
+            .is_some_and(|window| window == signature)
+    }
+
+    if has(head, 0, b"PK\x03\x04") || has(head, 0, b"PK\x05\x06") || has(head, 0, b"PK\x07\x08") {
+        "application/zip"
+    } else if has(head, 0, b"\x1F\x8B\x08") {
+        "application/gzip"
+    } else if has(head, 0, b"7z\xBC\xAF\x27\x1C") {
+        "application/x-7z-compressed"
+    } else if has(head, 0, b"Rar!\x1A\x07") {
+        "application/vnd.rar"
+    } else if has(head, 257, b"ustar") {
+        "application/x-tar"
+    } else if has(head, 0, b"%PDF-") {
+        "application/pdf"
+    } else if has(head, 0, b"\x89PNG\r\n\x1a\n") {
+        "image/png"
+    } else if has(head, 0, b"\xFF\xD8\xFF") {
+        "image/jpeg"
+    } else if has(head, 0, b"GIF87a") || has(head, 0, b"GIF89a") {
+        "image/gif"
+    } else if has(head, 0, b"RIFF") && has(head, 8, b"WEBP") {
+        "image/webp"
+    } else if has(head, 0, b"II*\x00") || has(head, 0, b"MM\x00*") {
+        "image/tiff"
+    } else if has(head, 0, b"\x76\x2f\x31\x01") {
+        // OpenEXR magic (0x01312f76 little-endian).
+        "image/x-exr"
+    } else if has(head, 0, b"glTF") {
+        "model/gltf-binary"
+    } else if has(head, 0, b"OggS") {
+        "application/ogg"
+    } else if has(head, 4, b"ftyp") {
+        sniff_iso_bmff_mime_type(head)
+    } else if has(head, 0, b"\x7fELF") {
+        "application/x-executable"
+    } else {
+        "application/octet-stream"
+    }
+}
+
+/// Refine an ISO base media file format (`....ftyp....`) download by its major
+/// brand so common media downloads report a precise media type rather than a
+/// generic MP4 container type.
+fn sniff_iso_bmff_mime_type(head: &[u8]) -> &'static str {
+    match head.get(8..12) {
+        Some(b"qt  ") => "video/quicktime",
+        Some(b"avif") | Some(b"avis") => "image/avif",
+        Some(b"heic") | Some(b"heix") | Some(b"hevc") | Some(b"hevx") | Some(b"heim")
+        | Some(b"heis") | Some(b"hevm") | Some(b"hevs") => "image/heic",
+        Some(b"M4A ") | Some(b"M4B ") => "audio/mp4",
+        _ => "video/mp4",
+    }
 }
 
 fn validate_dialog_request(request: &BrowserDialogRequest) -> ComputerUseResult<()> {
