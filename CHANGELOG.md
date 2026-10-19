@@ -1,5 +1,27 @@
 # Changelog
 
+## [1.11.2](https://github.com/dcc-mcp/dcc-cua/compare/v1.11.1...v1.11.2) (2026-10-18)
+
+
+### Bug Fixes
+
+* **browser:** keep prepare continuation on the public task bridge ([442bc3a](https://github.com/dcc-mcp/dcc-cua/commit/442bc3ad0c8303062f46e4cc6500a758d0fd8184))
+* clarify connection-scoped task and observation lifetimes ([8c5a961](https://github.com/dcc-mcp/dcc-cua/commit/8c5a9611bc66fde701c7235b3b0d8d25bd37ad39))
+* explain connection-scoped task and observation lifetimes ([e4d5df9](https://github.com/dcc-mcp/dcc-cua/commit/e4d5df9014acee3111e4311a12b95f442f0472c3))
+* make lifetime recovery guidance executable ([58601f4](https://github.com/dcc-mcp/dcc-cua/commit/58601f4b022a62a0d6141435c6a878a062067494))
+* **release:** authenticate Latest metadata requests ([8268f9c](https://github.com/dcc-mcp/dcc-cua/commit/8268f9caed86f29026fcf8820872e6bd9cd5242a))
+* **release:** authenticate Latest metadata requests ([42257f3](https://github.com/dcc-mcp/dcc-cua/commit/42257f3b069316aac4a6d7b73fe37a4f5b62add4))
+* **release:** bind draft sources before read-only builds ([b0038fc](https://github.com/dcc-mcp/dcc-cua/commit/b0038fc1d1be182e6a0f6dd7a596d9cb844cddce))
+* **release:** bind resume to original uploaded asset identities ([a50c01f](https://github.com/dcc-mcp/dcc-cua/commit/a50c01fed580e216a693d7becf32264c70975be0))
+* **release:** read draft publication metadata by release ID ([e5312fc](https://github.com/dcc-mcp/dcc-cua/commit/e5312fc8512c988746bc0fde7df6a07076fc7af0))
+* **release:** read original build logs with terminal escapes ([e5defa0](https://github.com/dcc-mcp/dcc-cua/commit/e5defa04fc18bb523b15a749de242eb5be7db344))
+* **release:** read original build logs with terminal escapes ([072e065](https://github.com/dcc-mcp/dcc-cua/commit/072e065ab844c51c2833f2cc543be400766a715c))
+* **release:** resolve draft metadata by release identity ([92b3065](https://github.com/dcc-mcp/dcc-cua/commit/92b3065a2bb7803798803e714be519fcdbe6ce61))
+* **release:** resolve draft source bindings before read-only builds ([817bbc9](https://github.com/dcc-mcp/dcc-cua/commit/817bbc952ab198f3290cabde183b7061b65d636f))
+* **release:** resume from verified public prerelease staging ([d3bd6c8](https://github.com/dcc-mcp/dcc-cua/commit/d3bd6c89609f9933e029d2e7117073cf13945fb4))
+* **release:** resume publication from verified native artifacts ([6c3e0ff](https://github.com/dcc-mcp/dcc-cua/commit/6c3e0ffbeee32730077a6dd85506eaaceadc4f97))
+* **release:** resume publication from verified native artifacts ([65f3b1d](https://github.com/dcc-mcp/dcc-cua/commit/65f3b1d54e840cd704a2d2c9e0f34145701267d4))
+
 ## [1.11.1](https://github.com/dcc-mcp/dcc-cua/compare/v1.11.0...v1.11.1) (2026-10-18)
 
 
