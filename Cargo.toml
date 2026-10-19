@@ -41,9 +41,9 @@ rstest = "0.26.1"
 #
 # This revision is the fork-only delta replayed verbatim on top of the official
 # upstream release tag `cua-driver-rs-v0.28.2` (commit fc188250b4ca8549b8e61f937fdb1fb560770e86).
-cua-driver-contract = { git = "https://github.com/loonghao/cua.git", rev = "3d2bcf50089ea18aa5bedab328b1afb3f710ea00" }
-cua-driver-sdk = { git = "https://github.com/loonghao/cua.git", rev = "3d2bcf50089ea18aa5bedab328b1afb3f710ea00" }
-cua-driver-testkit = { git = "https://github.com/loonghao/cua.git", rev = "3d2bcf50089ea18aa5bedab328b1afb3f710ea00" }
-cursor-overlay = { git = "https://github.com/loonghao/cua.git", rev = "3d2bcf50089ea18aa5bedab328b1afb3f710ea00" }
-platform-macos = { git = "https://github.com/loonghao/cua.git", rev = "3d2bcf50089ea18aa5bedab328b1afb3f710ea00" }
-platform-windows = { git = "https://github.com/loonghao/cua.git", rev = "3d2bcf50089ea18aa5bedab328b1afb3f710ea00" }
+cua-driver-contract = { git = "https://github.com/loonghao/cua.git", rev = "fa80a8e3560641dd9e732a755afd467339cf6ba3" }
+cua-driver-sdk = { git = "https://github.com/loonghao/cua.git", rev = "fa80a8e3560641dd9e732a755afd467339cf6ba3" }
+cua-driver-testkit = { git = "https://github.com/loonghao/cua.git", rev = "fa80a8e3560641dd9e732a755afd467339cf6ba3" }
+cursor-overlay = { git = "https://github.com/loonghao/cua.git", rev = "fa80a8e3560641dd9e732a755afd467339cf6ba3" }
+platform-macos = { git = "https://github.com/loonghao/cua.git", rev = "fa80a8e3560641dd9e732a755afd467339cf6ba3" }
+platform-windows = { git = "https://github.com/loonghao/cua.git", rev = "fa80a8e3560641dd9e732a755afd467339cf6ba3" }
