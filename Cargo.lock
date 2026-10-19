@@ -1177,6 +1177,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "tempfile",
+ "tokio",
  "url",
 ]
 

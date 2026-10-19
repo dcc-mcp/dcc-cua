@@ -13,7 +13,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::io::Read;
-use std::path::{Component, Path};
+use std::path::{Component, Path, PathBuf};
 use url::Url;
 
 const MAX_URL_CHARS: usize = 4_096;
@@ -664,8 +664,10 @@ impl BrowserSession {
         // The driver deliberately omits the stored location for safety; dcc-cua
         // owns the already-validated destination root, so enrich the completion
         // with task-scoped, boundary-checked artifact metadata. Purely additive:
-        // never turns a completed download into a failure.
-        enrich_download_completion(&destination_root, &mut result.value);
+        // never turns a completed download into a failure. The enrichment reads
+        // and hashes the stored file, so it runs the blocking work off the async
+        // executor (see `enrich_download_completion`).
+        enrich_download_completion(&destination_root, &mut result.value).await;
         Ok(result)
     }
 
@@ -1565,7 +1567,17 @@ struct ProvenDownload {
 /// this stays backward compatible. Artifact location/digest fields are only
 /// emitted after boundary proof, so a path or digest is never reported for a
 /// target that could escape the approved directory.
-fn enrich_download_completion(destination_root: &str, value: &mut Value) {
+///
+/// The boundary proof and content read perform blocking filesystem I/O and an
+/// unbounded full-file SHA-256. `BrowserSession::download` runs on the MCP
+/// server's single-threaded current-thread runtime, where doing that inline
+/// would monopolize the executor: freezing every concurrent session and
+/// starving the host's `select!`-based interrupt/cancel loop for the duration
+/// of the hash (unbounded for the large DCC assets this feature targets). The
+/// blocking work is therefore offloaded to `spawn_blocking` and stays strictly
+/// best-effort: a join failure or an unprovable target simply leaves the
+/// artifact fields absent.
+async fn enrich_download_completion(destination_root: &str, value: &mut Value) {
     let Some(structured) = value
         .get_mut("structuredContent")
         .and_then(Value::as_object_mut)
@@ -1594,7 +1606,20 @@ fn enrich_download_completion(destination_root: &str, value: &mut Value) {
     else {
         return;
     };
-    let Some(artifact) = prove_download_artifact(Path::new(destination_root), &download_id) else {
+
+    // Offload the blocking boundary proof and full-file hash so a large
+    // download never stalls the current-thread executor or interrupt handling.
+    // Both a join failure and an unprovable target map to "no artifact", which
+    // preserves the completion's lifecycle state and proven fields.
+    let root = PathBuf::from(destination_root);
+    let artifact = tokio::task::spawn_blocking(move || {
+        prove_download_artifact(root.as_path(), download_id.as_str())
+    })
+    .await
+    .ok()
+    .flatten();
+
+    let Some(artifact) = artifact else {
         return;
     };
     structured.insert("stored_filename".into(), json!(artifact.stored_filename));

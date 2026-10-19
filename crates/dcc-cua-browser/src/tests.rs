@@ -1047,7 +1047,8 @@ fn tar_mime_type_is_detected_from_the_ustar_offset() {
 }
 
 #[rstest]
-fn completed_download_is_enriched_with_boundary_proven_artifact_metadata() {
+#[tokio::test]
+async fn completed_download_is_enriched_with_boundary_proven_artifact_metadata() {
     let (_dir, root) = canonical_temp_dir();
     let download_id = "3f2b1c4d-5e6f-7081";
     let contents = b"PK\x03\x04fake-zip-payload-for-unreal-import";
@@ -1055,7 +1056,7 @@ fn completed_download_is_enriched_with_boundary_proven_artifact_metadata() {
     std::fs::write(&file, contents).expect("write completed download");
 
     let mut value = completed_download_value(download_id, contents.len() as u64);
-    enrich_download_completion(&root, &mut value);
+    enrich_download_completion(&root, &mut value).await;
 
     let structured = &value["structuredContent"];
     assert_eq!(structured["status"], "completed");
@@ -1087,7 +1088,35 @@ fn completed_download_is_enriched_with_boundary_proven_artifact_metadata() {
 }
 
 #[rstest]
-fn refused_download_reports_failed_state_without_any_artifact_path() {
+#[tokio::test]
+async fn completed_download_hashes_a_multi_chunk_artifact_off_the_executor() {
+    let (_dir, root) = canonical_temp_dir();
+    let download_id = "multi-chunk-zip";
+    // Larger than the 16 KiB streaming buffer so the digest spans many reads.
+    // This runs on the current-thread test runtime (matching the MCP server
+    // flavor), proving the offloaded full-file hash completes and stays correct
+    // instead of stalling the executor.
+    let mut contents = b"PK\x03\x04".to_vec();
+    contents.resize(4 + 64 * 1024, 0x5a);
+    std::fs::write(Path::new(&root).join(download_id), &contents)
+        .expect("write multi-chunk download");
+
+    let mut value = completed_download_value(download_id, contents.len() as u64);
+    enrich_download_completion(&root, &mut value).await;
+
+    let structured = &value["structuredContent"];
+    assert_eq!(structured["download_state"], "completed");
+    assert_eq!(
+        structured["sha256"],
+        format!("{:x}", Sha256::digest(&contents))
+    );
+    assert_eq!(structured["mime_type"], "application/zip");
+    assert_eq!(structured["bytes"], contents.len() as u64);
+}
+
+#[rstest]
+#[tokio::test]
+async fn refused_download_reports_failed_state_without_any_artifact_path() {
     let (_dir, root) = canonical_temp_dir();
     let mut value = json!({
         "structuredContent": {
@@ -1095,7 +1124,7 @@ fn refused_download_reports_failed_state_without_any_artifact_path() {
             "refusal": {"code": "browser_action_unavailable", "message": "canceled"},
         }
     });
-    enrich_download_completion(&root, &mut value);
+    enrich_download_completion(&root, &mut value).await;
 
     let structured = &value["structuredContent"];
     assert_eq!(structured["download_state"], "failed");
@@ -1107,10 +1136,11 @@ fn refused_download_reports_failed_state_without_any_artifact_path() {
 }
 
 #[rstest]
-fn completed_download_with_missing_file_keeps_completed_state_but_omits_path() {
+#[tokio::test]
+async fn completed_download_with_missing_file_keeps_completed_state_but_omits_path() {
     let (_dir, root) = canonical_temp_dir();
     let mut value = completed_download_value("does-not-exist", 42);
-    enrich_download_completion(&root, &mut value);
+    enrich_download_completion(&root, &mut value).await;
 
     let structured = &value["structuredContent"];
     // The driver completion is preserved as the source of truth for state.
@@ -1121,33 +1151,34 @@ fn completed_download_with_missing_file_keeps_completed_state_but_omits_path() {
 }
 
 #[rstest]
-fn completed_download_never_follows_a_path_escaping_download_id() {
-    let (dir, root) = canonical_temp_dir();
-    // Plant a secret outside the destination root that an escaping id targets.
-    let outside = dir
-        .path()
-        .parent()
-        .expect("temp parent")
-        .join("outside-secret");
+#[tokio::test]
+async fn completed_download_never_follows_a_path_escaping_download_id() {
+    let (_dir, root) = canonical_temp_dir();
+    // Keep the out-of-bounds target in its own disposable directory rather than
+    // the shared system temp, so the test never writes a fixed name into a
+    // shared location. A traversal id is rejected by the id-component guard
+    // before any filesystem access, so this secret is never resolved or exposed.
+    let outside_dir = tempfile::tempdir().expect("create outside temp dir");
+    let outside = outside_dir.path().join("outside-secret");
     std::fs::write(&outside, b"top-secret").expect("write outside secret");
 
     let mut value = completed_download_value("../outside-secret", 10);
-    enrich_download_completion(&root, &mut value);
+    enrich_download_completion(&root, &mut value).await;
 
     let structured = &value["structuredContent"];
     assert!(structured.get("file_path").is_none());
     assert!(structured.get("sha256").is_none());
-    let _ = std::fs::remove_file(outside);
 }
 
 #[rstest]
-fn completed_download_rejects_a_directory_target() {
+#[tokio::test]
+async fn completed_download_rejects_a_directory_target() {
     let (_dir, root) = canonical_temp_dir();
     let download_id = "a-directory";
     std::fs::create_dir(Path::new(&root).join(download_id)).expect("create directory target");
 
     let mut value = completed_download_value(download_id, 0);
-    enrich_download_completion(&root, &mut value);
+    enrich_download_completion(&root, &mut value).await;
 
     let structured = &value["structuredContent"];
     assert!(structured.get("file_path").is_none());
@@ -1156,42 +1187,43 @@ fn completed_download_rejects_a_directory_target() {
 
 #[cfg(unix)]
 #[rstest]
-fn completed_download_rejects_a_symlink_target() {
-    let (dir, root) = canonical_temp_dir();
-    let target = dir
-        .path()
-        .parent()
-        .expect("temp parent")
-        .join("symlink-target");
+#[tokio::test]
+async fn completed_download_rejects_a_symlink_target() {
+    let (_dir, root) = canonical_temp_dir();
+    // Point the symlink at a target in a dedicated disposable directory instead
+    // of the shared system temp, so the test never writes a fixed shared name.
+    let outside_dir = tempfile::tempdir().expect("create outside temp dir");
+    let target = outside_dir.path().join("symlink-target");
     std::fs::write(&target, b"symlinked").expect("write symlink target");
     let download_id = "a-symlink";
     std::os::unix::fs::symlink(&target, Path::new(&root).join(download_id))
         .expect("create symlink");
 
     let mut value = completed_download_value(download_id, 8);
-    enrich_download_completion(&root, &mut value);
+    enrich_download_completion(&root, &mut value).await;
 
     let structured = &value["structuredContent"];
     assert!(structured.get("file_path").is_none());
     assert!(structured.get("sha256").is_none());
-    let _ = std::fs::remove_file(target);
 }
 
 #[rstest]
-fn completed_download_preserves_driver_bytes_when_present() {
+#[tokio::test]
+async fn completed_download_preserves_driver_bytes_when_present() {
     let (_dir, root) = canonical_temp_dir();
     let download_id = "with-driver-bytes";
     std::fs::write(Path::new(&root).join(download_id), b"abcd").expect("write download");
 
     // Driver reports a byte count; enrichment must not overwrite it.
     let mut value = completed_download_value(download_id, 999);
-    enrich_download_completion(&root, &mut value);
+    enrich_download_completion(&root, &mut value).await;
 
     assert_eq!(value["structuredContent"]["bytes"], 999);
 }
 
 #[rstest]
-fn completed_download_fills_missing_bytes_from_the_proven_artifact() {
+#[tokio::test]
+async fn completed_download_fills_missing_bytes_from_the_proven_artifact() {
     let (_dir, root) = canonical_temp_dir();
     let download_id = "no-driver-bytes";
     std::fs::write(Path::new(&root).join(download_id), b"abcdefg").expect("write download");
@@ -1199,17 +1231,18 @@ fn completed_download_fills_missing_bytes_from_the_proven_artifact() {
     let mut value = json!({
         "structuredContent": {"status": "completed", "download_id": download_id}
     });
-    enrich_download_completion(&root, &mut value);
+    enrich_download_completion(&root, &mut value).await;
 
     assert_eq!(value["structuredContent"]["bytes"], 7);
     assert_eq!(value["structuredContent"]["download_state"], "completed");
 }
 
 #[rstest]
-fn download_completion_without_structured_content_is_left_untouched() {
+#[tokio::test]
+async fn download_completion_without_structured_content_is_left_untouched() {
     let (_dir, root) = canonical_temp_dir();
     let mut value = json!({"content": [{"type": "text", "text": "x"}]});
     let before = value.clone();
-    enrich_download_completion(&root, &mut value);
+    enrich_download_completion(&root, &mut value).await;
     assert_eq!(value, before);
 }
