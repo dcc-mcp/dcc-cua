@@ -1167,6 +1167,8 @@ fn native_tool_boundary_rejects_reserved_and_dedicated_routes() {
     assert!(!native_tool_allowed_in_window_session("get_browser_state"));
     assert!(!native_tool_allowed_in_window_session("page"));
     assert!(!native_tool_allowed_in_window_session("get_session_state"));
+    assert!(!native_tool_allowed_in_window_session("run_script"));
+    assert!(!native_tool_allowed_in_window_session("run_steps"));
     assert!(!native_tool_allowed_in_window_session("browser_navigate"));
     assert!(native_tool_allowed_in_window_session("debug_window_info"));
     assert!(native_tool_allowed_globally("health_report"));
@@ -1195,6 +1197,7 @@ async fn every_unscoped_native_route_rejects_dedicated_tools() {
         "start_session",
         "end_session",
         "run_script",
+        "run_steps",
     ] {
         for result in [
             driver.call_tool(tool, json!({})).await,

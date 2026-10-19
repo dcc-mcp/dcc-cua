@@ -449,10 +449,9 @@ impl ComputerUseSession {
         if properties.contains_key("session") {
             object.insert("session".into(), json!(self.session_id));
         }
-        if !properties.contains_key("pid")
-            && !properties.contains_key("window_id")
-            && !properties.contains_key("session")
-        {
+        // SDK session labels route lifecycle state. They are added to every
+        // closed tool schema and do not prove that a tool is window-bound.
+        if !properties.contains_key("pid") && !properties.contains_key("window_id") {
             return self.finish_observation_sensitive_attempt(Err(ComputerUseError::new(
                 ComputerUseErrorCode::InvalidTarget,
                 format!("CUA tool {name:?} is not bindable to an exact window session"),

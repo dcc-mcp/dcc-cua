@@ -371,6 +371,10 @@ pub(crate) fn native_tool_allowed_in_window_session(name: &str) -> bool {
         "get_browser_state",
         "page",
         "get_session_state",
+        // Composite tools can choose targets inside their payloads, bypassing
+        // this route's top-level PID/window binding and typed action checks.
+        "run_script",
+        "run_steps",
     ];
     if DEDICATED_TOOLS.contains(&name)
         || name.starts_with("browser_")

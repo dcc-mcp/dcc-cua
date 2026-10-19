@@ -77,6 +77,8 @@ mod issue_228_window_pixels;
 #[cfg(target_os = "linux")]
 mod linux_pixels;
 mod modal_takeover;
+#[cfg(not(windows))]
+mod native_tool_boundaries;
 mod recording;
 mod sdk_snapshot_fixture;
 #[cfg(not(windows))]
@@ -277,6 +279,9 @@ impl DriverEnvelopeChannel for CountingRemoteChannel {
                     "owner": Value::Null,
                 }),
                 Some("get_session_state") => json!({"active": true}),
+                Some("debug_window_info" | "run_script") => {
+                    request.arguments.clone().expect("native tool arguments")
+                }
                 Some("browser_click") => json!({
                     "effect": "unverifiable",
                     "route": "dom"
