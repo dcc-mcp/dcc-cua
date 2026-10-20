@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.12.0](https://github.com/dcc-mcp/dcc-cua/compare/v1.11.2...v1.12.0) (2026-10-19)
+
+
+### Features
+
+* **browser:** enrich browser_download completion with proven artifact metadata ([8efbb7a](https://github.com/dcc-mcp/dcc-cua/commit/8efbb7a688bafebb02b5eae33538a24efe8b0337))
+* **browser:** enrich browser_download completion with proven artifact metadata ([7831d89](https://github.com/dcc-mcp/dcc-cua/commit/7831d8987b2d09da1e8bca91a322e3d20be7716a))
+
+
+### Bug Fixes
+
+* **browser:** offload download enrichment off the async executor ([4849803](https://github.com/dcc-mcp/dcc-cua/commit/4849803e19f0989afbf7d428f208f4b0bfccd496))
+
 ## [1.11.2](https://github.com/dcc-mcp/dcc-cua/compare/v1.11.1...v1.11.2) (2026-10-18)
 
 
