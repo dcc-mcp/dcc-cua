@@ -34,6 +34,12 @@ pub struct ProcessIdentity {
     pub creation_id: Option<String>,
 }
 
+impl ProcessIdentity {
+    pub(crate) fn is_live(&self) -> bool {
+        process_identity::status(self) == ProcessStatus::Live
+    }
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProcessStatus {

@@ -239,6 +239,7 @@ struct TaskAuthorizationAuthority {
 }
 
 struct TaskAuthorizationServer {
+    extension_transport: Option<crate::extension_transport::ProviderListener>,
     authority: TaskAuthorizationAuthority,
     proposals: BTreeMap<String, TaskProposal>,
     recording_output_root: Option<std::path::PathBuf>,
@@ -250,6 +251,7 @@ impl TaskAuthorizationServer {
     fn automatic() -> Self {
         let (issuer, authorization_host) = dcc_cua_host::trusted_task_authorization_broker();
         Self {
+            extension_transport: None,
             authority: TaskAuthorizationAuthority {
                 issuer,
                 authorization_host,
@@ -359,6 +361,7 @@ impl TaskAuthorizationServer {
                 ));
             }
         }
+        crate::extension_transport::append_diagnostics(&self.extension_transport, &mut hosts);
         diagnostics.set_tasks(counts, hosts);
     }
 
@@ -725,6 +728,10 @@ impl TaskAuthorizationServer {
             .revoke(&receipt.authorization_id)
             .map_err(|error| error.to_string())?;
         proposal.revoked = true;
+        crate::extension_transport::revoke(
+            &mut self.extension_transport,
+            &receipt.window_capability,
+        );
         proposal.cleanup = Some(match proposal.session.take() {
             Some(session) => stop_owned_task_session(session).await,
             None if !proposal.session_open_attempted => {
@@ -765,6 +772,8 @@ impl TaskAuthorizationServer {
     }
 
     async fn start_task(&mut self, arguments: Value) -> Result<Value, String> {
+        let connection_id = crate::extension_transport::connection_id(self.diagnostics.as_ref());
+        let extension_transport = &mut self.extension_transport;
         let authority = &self.authority;
         let proposal_id = required_string(&arguments, "task_id")?.to_owned();
         let proposal = self
@@ -783,8 +792,14 @@ impl TaskAuthorizationServer {
         if proposal.session.is_none() {
             proposal.session_open_attempted = true;
             proposal.session = Some(
-                open_task_session(&proposal_id, proposal, authority.authorization_host.clone())
-                    .await?,
+                open_task_session(
+                    &proposal_id,
+                    proposal,
+                    authority.authorization_host.clone(),
+                    connection_id.as_deref(),
+                    extension_transport,
+                )
+                .await?,
             );
         }
         let target = proposal
@@ -929,6 +944,8 @@ async fn open_task_session(
     proposal_id: &str,
     proposal: &TaskProposal,
     authorization_host: std::sync::Arc<dyn TrustedTaskAuthorizationHost>,
+    connection_id: Option<&str>,
+    extension_transport: &mut Option<crate::extension_transport::ProviderListener>,
 ) -> Result<LogicalTaskSession, String> {
     let receipt = proposal
         .receipt
@@ -942,6 +959,14 @@ async fn open_task_session(
     let security_services = HostSecurityServices::default()
         .with_task_authorization_host(authorization_host)
         .with_secret_vault(super::secret_vault::native_secret_vault());
+    crate::extension_transport::ensure(
+        extension_transport,
+        &driver,
+        connection_id,
+        &proposal.allowed_methods,
+        &receipt.window_capability,
+        &proposal.registration.target,
+    )?;
     tokio::spawn(async move {
         let _ =
             process_connection_with_security_services(driver, host_stream, security_services).await;
@@ -1102,11 +1127,15 @@ fn method_allowed(surface: TaskSurface, method: &str) -> bool {
 }
 
 fn validate_task_method_params(method: &str, params: &Value) -> Result<(), String> {
-    // Extension mutations do not yet use the ordinary browser action authorization path.
     if method == "browser_extension_call"
-        && params.get("method").and_then(Value::as_str) != Some("snapshot")
+        && !matches!(
+            params.get("method").and_then(Value::as_str),
+            Some("snapshot" | "click" | "type")
+        )
     {
-        return Err("the task bridge permits only read-only extension snapshots".into());
+        return Err(
+            "the task bridge permits only extension snapshot, click, and non-secret type".into(),
+        );
     }
     if method == "capture_preparation_begin" {
         let object = params
@@ -1674,7 +1703,7 @@ fn tool_definitions() -> Vec<Value> {
                         "description":"Explicit bounded passive exact-root preparation. Requires pixels_only, get_window_state, begin/state/stop, its closed action, and operator-owned DCC_CUA_CAPTURE_PREPARATION_JOURNAL_ROOT. Does not grant input or caller-selected journal/target; prepared snapshots mint no observation/input token."},
                     "allowed_methods": {
                         "type": "array",
-                        "description": "Closed Host methods. browser_extension_call accepts only snapshot with an exact task-authorized expected_origin; extension mutations remain unavailable.",
+                        "description": "Closed Host methods. Extension calls require an exact task-authorized expected_origin. Click requires semantic/external_effect scope; non-secret type requires semantic/content_change scope. Both require a fresh task-owned snapshot and foreground ready target.",
                         "minItems": 1,
                         "maxItems": MAX_ALLOWED_METHODS,
                         "uniqueItems": true,

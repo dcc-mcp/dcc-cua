@@ -3,6 +3,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use tokio::sync::{Mutex, mpsc, oneshot};
 use uuid::Uuid;
 
@@ -23,11 +24,13 @@ pub(super) struct BrowserExtensionRegistry {
 }
 
 struct Provider {
+    owner: Mutex<Option<String>>,
     secret: String,
     extension_id: String,
     extension_version: String,
     invocation_origin: String,
     browser_process_id: u32,
+    native_window: Option<u64>,
     pairing: ExtensionPairing,
     capabilities: Vec<String>,
     commands_tx: mpsc::Sender<Value>,
@@ -58,15 +61,34 @@ pub(super) enum RoutedBrowserExtensionRequest {
 pub(super) async fn route_host_request(
     request: Request,
     sessions: &mut HashMap<String, HostSession>,
+    services: &crate::HostSecurityServices,
 ) -> RoutedBrowserExtensionRequest {
     let result = match request {
+        Request::BrowserExtensionTransportBinding {} => services
+            .extension_window
+            .map(|(pid, hwnd)| json!({"process_id":pid,"window_handle":hwnd}))
+            .ok_or_else(|| HostError::Protocol("not a task-owned provider endpoint".into())),
         Request::RegisterBrowserExtension {
             hello,
             invocation_origin,
             browser_process_id,
+            browser_window_handle,
         } => {
+            if services.extension_window.is_some_and(|expected| {
+                Some(expected) != browser_window_handle.map(|window| (browser_process_id, window))
+            }) {
+                return RoutedBrowserExtensionRequest::Handled(Err(HostError::Protocol(
+                    "provider window does not match task endpoint".into(),
+                )));
+            }
             browser_extension_registry()
-                .register(&hello, &invocation_origin, browser_process_id)
+                .register_with_window(
+                    &hello,
+                    &invocation_origin,
+                    browser_process_id,
+                    browser_window_handle,
+                    services.extension_owner.as_deref(),
+                )
                 .await
         }
         Request::BrowserExtensionNext {
@@ -139,13 +161,83 @@ pub(super) async fn route_host_request(
             if let Err(error) = host.require_task_authorized_method("browser_extension_call") {
                 return RoutedBrowserExtensionRequest::Handled(Err(error));
             }
+            if let Err(error) = host.require_allowed_browser_origin(&expected_origin) {
+                return RoutedBrowserExtensionRequest::Handled(Err(error));
+            }
+            if !matches!(method.as_str(), "snapshot" | "click" | "type") {
+                return RoutedBrowserExtensionRequest::Handled(Err(HostError::Protocol(
+                    "unsupported task extension method".into(),
+                )));
+            }
             if matches!(method.as_str(), "click" | "type" | "unpair") && !host.allow_browser_input {
                 return RoutedBrowserExtensionRequest::Handled(Err(HostError::coded_protocol(
                     HostProtocolErrorCode::BrowserInputNotGranted,
                     "browser input is not granted for the logical task session",
                 )));
             }
-            let response = browser_extension_registry()
+            let registry = browser_extension_registry();
+            if let Err(error) = registry
+                .claim(
+                    &provider_id,
+                    host.target_process_id,
+                    host.target_window_handle,
+                    &expected_origin,
+                    &host.capability,
+                )
+                .await
+            {
+                return RoutedBrowserExtensionRequest::Handled(Err(error));
+            }
+            if method != "snapshot" {
+                let authorized = async {
+                    let state = host.session.window_state().await?;
+                    host.observe_target_state(&state);
+                    host.refresh_input_readiness();
+                    let available =
+                        dcc_cua_core::ComputerUseTargetAvailability::from_window_state(&state);
+                    if !available.foreground
+                        || available.status != dcc_cua_core::ComputerUseTargetStatus::Available
+                        || host.input_events.current().status
+                            != dcc_cua_core::ComputerUseInputStatus::Ready
+                    {
+                        return Err(HostError::Protocol(
+                            "extension input requires a foreground ready exact window".into(),
+                        ));
+                    }
+                    host.require_current_browser_evidence_epoch()?;
+                    let observation = host.extension_observation.as_ref().ok_or_else(|| {
+                        HostError::Protocol("take a fresh task-owned extension snapshot".into())
+                    })?;
+                    let action =
+                        observation.action(&provider_id, &expected_origin, &method, &params)?;
+                    crate::extension_input::authorize(
+                        host,
+                        services,
+                        &session_id,
+                        action,
+                        params["snapshot_id"].as_str().unwrap_or(""),
+                    )
+                    .await
+                }
+                .await;
+                if let Err(error) = authorized {
+                    host.invalidate_observations();
+                    return RoutedBrowserExtensionRequest::Handled(Err(error));
+                }
+            }
+            // Consume evidence even on timeout: a dispatched action may already have happened.
+            host.invalidate_observations();
+            let remaining = host
+                .task_authorization
+                .as_ref()
+                .map(|lease| {
+                    lease
+                        .expires_at_unix_ms
+                        .saturating_sub(crate::session_events::observed_at_millis())
+                })
+                .unwrap_or(timeout_ms);
+            let timeout_ms = timeout_ms.min(remaining);
+            let response = registry
                 .call(
                     &provider_id,
                     &expected_origin,
@@ -155,11 +247,20 @@ pub(super) async fn route_host_request(
                     timeout_ms,
                 )
                 .await;
-            if response.is_ok() {
+            if let Ok(value) = &response {
                 if method == "snapshot" {
+                    let observation = match crate::extension_input::ExtensionObservation::new(
+                        &provider_id,
+                        &expected_origin,
+                        value["result"].clone(),
+                    ) {
+                        Ok(observation) => observation,
+                        Err(error) => return RoutedBrowserExtensionRequest::Handled(Err(error)),
+                    };
                     host.synchronize_action_evidence_epoch_with(
                         HostEvidencePublication::BrowserSnapshot,
                     );
+                    host.extension_observation = Some(observation);
                 } else {
                     host.invalidate_observations();
                 }
@@ -172,17 +273,46 @@ pub(super) async fn route_host_request(
 }
 
 impl BrowserExtensionRegistry {
+    pub(super) async fn claim(
+        &self,
+        provider_id: &str,
+        pid: u32,
+        hwnd: u64,
+        origin: &str,
+        task_capability: &str,
+    ) -> Result<(), HostError> {
+        let provider = self.provider(provider_id).await?;
+        if provider.browser_process_id != pid
+            || provider.native_window != Some(hwnd)
+            || provider.pairing.origin != origin
+        {
+            return Err(HostError::Protocol(
+                "extension pairing target mismatch".into(),
+            ));
+        }
+        let mut owner = provider.owner.lock().await;
+        if owner.as_ref().is_some_and(|owner| owner != task_capability) {
+            return Err(HostError::Protocol(
+                "pairing is owned by another task; pair the tab again".into(),
+            ));
+        }
+        owner.get_or_insert_with(|| task_capability.to_owned());
+        Ok(())
+    }
+
     pub(super) fn new() -> Self {
         Self {
             providers: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
-    pub(super) async fn register(
+    pub(super) async fn register_with_window(
         &self,
         hello: &Value,
         invocation_origin: &str,
         browser_process_id: u32,
+        native_window: Option<u64>,
+        task_owner: Option<&str>,
     ) -> Result<Value, HostError> {
         if browser_process_id == 0 {
             return Err(HostError::Protocol(
@@ -196,11 +326,13 @@ impl BrowserExtensionRegistry {
         let provider_secret = Uuid::new_v4().to_string();
         let (commands_tx, commands_rx) = mpsc::channel(PROVIDER_QUEUE_CAPACITY);
         let provider = Arc::new(Provider {
+            owner: Mutex::new(task_owner.map(str::to_owned)),
             secret: provider_secret.clone(),
             extension_id,
             extension_version,
             invocation_origin: invocation_origin.to_owned(),
             browser_process_id,
+            native_window,
             pairing,
             capabilities,
             commands_tx,
@@ -349,7 +481,15 @@ impl BrowserExtensionRegistry {
         let mut command = params.as_object().cloned().ok_or_else(|| {
             HostError::Protocol("browser extension call params must be a JSON object".into())
         })?;
-        for forbidden in ["schema", "request_id", "method", "session_nonce", "tab_id"] {
+        for forbidden in [
+            "schema",
+            "request_id",
+            "method",
+            "session_nonce",
+            "tab_id",
+            "_dcc_task_owner",
+            "_dcc_deadline_unix_ms",
+        ] {
             if command.contains_key(forbidden) {
                 return Err(HostError::Protocol(format!(
                     "browser extension call params cannot override {forbidden}"
@@ -364,18 +504,30 @@ impl BrowserExtensionRegistry {
             Value::String(provider.pairing.session_nonce.clone()),
         );
         command.insert("tab_id".into(), Value::from(provider.pairing.tab_id));
+        command.insert(
+            "_dcc_deadline_unix_ms".into(),
+            Value::from(crate::session_events::observed_at_millis().saturating_add(timeout_ms)),
+        );
+        if let Some(owner) = provider.owner.lock().await.as_ref() {
+            command.insert(
+                "_dcc_task_owner".into(),
+                Value::String(format!("{:x}", Sha256::digest(owner.as_bytes()))),
+            );
+        }
         let (sender, receiver) = oneshot::channel();
         provider
             .pending
             .lock()
             .await
             .insert(request_id.clone(), sender);
-        if provider
-            .commands_tx
-            .send(Value::Object(command))
-            .await
-            .is_err()
-        {
+        if !matches!(
+            tokio::time::timeout(
+                Duration::from_millis(timeout_ms),
+                provider.commands_tx.send(Value::Object(command))
+            )
+            .await,
+            Ok(Ok(()))
+        ) {
             provider.pending.lock().await.remove(&request_id);
             return Err(HostError::Protocol(
                 "browser extension provider disconnected".into(),
@@ -410,6 +562,15 @@ impl BrowserExtensionRegistry {
                 .as_str()
                 .unwrap_or("browser extension call failed");
             return Err(HostError::Protocol(format!("{code}: {message}")));
+        }
+        if method == "snapshot"
+            && provider.owner.lock().await.is_some()
+            && response["result"]["document"]["id"].as_str()
+                != Some(provider.pairing.document_id.as_str())
+        {
+            return Err(HostError::Protocol(
+                "extension document changed; pair the tab again".into(),
+            ));
         }
         Ok(json!({
             "type": "browser_extension_result",

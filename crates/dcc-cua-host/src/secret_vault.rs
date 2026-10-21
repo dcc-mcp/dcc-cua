@@ -73,12 +73,56 @@ pub trait HostSecretVault: Send + Sync {
 /// a Host IPC request.
 #[derive(Clone, Default)]
 pub struct HostSecurityServices {
+    pub(crate) extension_transport_only: bool,
+    pub(crate) extension_owner: Option<String>,
+    pub(crate) extension_window: Option<(u32, u64)>,
     pub(crate) confirmation_host: Option<Arc<dyn TrustedActionConfirmationHost>>,
     pub(crate) task_authorization_host: Option<Arc<dyn crate::TrustedTaskAuthorizationHost>>,
     pub(crate) secret_vault: Option<Arc<dyn HostSecretVault>>,
 }
 
 impl HostSecurityServices {
+    pub(crate) fn require_provider_transport_request(
+        &self,
+        request: &crate::Request,
+    ) -> Result<(), HostError> {
+        if self.extension_transport_only
+            && !matches!(
+                request,
+                crate::Request::Hello(_)
+                    | crate::Request::Ping {}
+                    | crate::Request::BrowserExtensionTransportBinding {}
+                    | crate::Request::RegisterBrowserExtension { .. }
+                    | crate::Request::BrowserExtensionNext { .. }
+                    | crate::Request::CompleteBrowserExtension { .. }
+                    | crate::Request::UnregisterBrowserExtension { .. }
+            )
+        {
+            return Err(HostError::Protocol(
+                "provider transport does not accept session, UI, or authorization requests".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// A provider transport cannot open sessions, observe windows, or issue grants.
+    #[must_use]
+    pub fn browser_extension_transport() -> Self {
+        Self {
+            extension_transport_only: true,
+            ..Self::default()
+        }
+    }
+
+    #[must_use]
+    pub fn browser_extension_transport_for_window(pid: u32, window: u64, owner: &str) -> Self {
+        Self {
+            extension_owner: Some(owner.to_owned()),
+            extension_window: Some((pid, window)),
+            ..Self::browser_extension_transport()
+        }
+    }
+
     #[must_use]
     pub fn with_confirmation_host(mut self, host: Arc<dyn TrustedActionConfirmationHost>) -> Self {
         self.confirmation_host = Some(host);

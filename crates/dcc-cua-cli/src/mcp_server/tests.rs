@@ -9,7 +9,7 @@ mod lifetime_tests;
 mod native_menu_tests;
 
 #[rstest]
-fn extension_diagnostics_are_browser_only_and_read_only() {
+fn extension_methods_are_browser_only_and_closed() {
     let start = tool_definitions()
         .into_iter()
         .find(|tool| tool["name"] == "start_task")
@@ -30,10 +30,16 @@ fn extension_diagnostics_are_browser_only_and_read_only() {
         validate_task_method_params("browser_extension_call", &json!({"method":"snapshot"}))
             .is_ok()
     );
-    for method in ["click", "type", "unpair", "navigate", "unknown"] {
+    for method in ["unpair", "navigate", "unknown"] {
         assert!(
             validate_task_method_params("browser_extension_call", &json!({"method":method}))
                 .is_err()
+        );
+    }
+    for method in ["click", "type"] {
+        assert!(
+            validate_task_method_params("browser_extension_call", &json!({"method":method}))
+                .is_ok()
         );
     }
     assert!(validate_task_method_params("browser_extension_call", &json!({})).is_err());

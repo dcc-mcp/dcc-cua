@@ -623,6 +623,19 @@ impl HostClient {
         Self::connect_with_transport(endpoint, client_name, SnapshotTransport::BinaryFrame).await
     }
 
+    /// Verify the OS peer PID before sending a handshake to a discovered endpoint.
+    /// Callers must additionally fence PID reuse against the advertised full birth identity.
+    pub async fn connect_to_process(
+        endpoint: impl Into<String>,
+        client_name: impl Into<String>,
+        process_id: u32,
+    ) -> HostClientResult<Self> {
+        let stream = connect_endpoint_for_process(&endpoint.into(), Some(process_id)).await?;
+        let mut client = Self::from_stream(stream);
+        client.hello(client_name).await?;
+        Ok(client)
+    }
+
     /// Connect to an endpoint and select binary frames or shared memory for images.
     pub async fn connect_with_transport(
         endpoint: impl Into<String>,
@@ -1389,6 +1402,13 @@ fn frame_error(error: FrameError) -> HostClientError {
 }
 
 async fn connect_endpoint(endpoint: &str) -> HostClientResult<BoxedHostStream> {
+    connect_endpoint_for_process(endpoint, None).await
+}
+
+async fn connect_endpoint_for_process(
+    endpoint: &str,
+    expected_process_id: Option<u32>,
+) -> HostClientResult<BoxedHostStream> {
     validate_endpoint_transport(endpoint)?;
     #[cfg(windows)]
     {
@@ -1396,19 +1416,46 @@ async fn connect_endpoint(endpoint: &str) -> HostClientResult<BoxedHostStream> {
             .open(endpoint)
             .map_err(HostClientError::Connect)?;
         verify_named_pipe_server_identity(&stream)?;
+        if let Some(expected) = expected_process_id {
+            use std::os::windows::io::AsRawHandle;
+            let mut actual = 0;
+            // SAFETY: the connected pipe handle remains owned by stream.
+            if unsafe {
+                windows_sys::Win32::System::Pipes::GetNamedPipeServerProcessId(
+                    stream.as_raw_handle() as _,
+                    &mut actual,
+                )
+            } == 0
+                || actual != expected
+            {
+                return Err(HostClientError::Protocol(
+                    "provider endpoint peer process mismatch".into(),
+                ));
+            }
+        }
         Ok(Box::new(stream))
     }
     #[cfg(unix)]
     {
-        Ok(Box::new(
-            tokio::net::UnixStream::connect(endpoint)
-                .await
-                .map_err(HostClientError::Connect)?,
-        ))
+        let stream = tokio::net::UnixStream::connect(endpoint)
+            .await
+            .map_err(HostClientError::Connect)?;
+        if let Some(expected) = expected_process_id {
+            let peer = stream.peer_cred()?;
+            if peer.uid() != dcc_cua_protocol::effective_user_id()
+                || peer.pid().and_then(|pid| u32::try_from(pid).ok()) != Some(expected)
+            {
+                return Err(HostClientError::Protocol(
+                    "provider endpoint peer process mismatch".into(),
+                ));
+            }
+        }
+        Ok(Box::new(stream))
     }
     #[cfg(not(any(windows, unix)))]
     {
         let _ = endpoint;
+        let _ = expected_process_id;
         Err(HostClientError::Protocol(
             "local endpoint transport is unsupported on this platform".into(),
         ))

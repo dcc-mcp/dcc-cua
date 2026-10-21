@@ -1,4 +1,5 @@
 use rstest::rstest;
+mod extension_transport;
 
 use crate::browser_extension::{
     invocation_origin, native_hello_ack, read_native_message, validate_extension_id,

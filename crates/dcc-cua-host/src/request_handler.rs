@@ -73,6 +73,7 @@ async fn handle_request_inner(
     request: Request,
 ) -> Result<(Value, Option<Vec<u8>>), HostError> {
     let confirmation_host = security_services.confirmation_host.as_deref();
+    security_services.require_provider_transport_request(&request)?;
     if let Request::Hello(params) = &request {
         if snapshot_transport.is_some() {
             return Err(HostError::Protocol(
@@ -92,9 +93,9 @@ async fn handle_request_inner(
                     SnapshotTransport::SharedMemory => "shared_memory",
                     SnapshotTransport::BinaryFrame => "binary_frame",
                 },
-                "capabilities": host_capabilities(cursor_render_backend(
+                "capabilities": if security_services.extension_transport_only { vec!["browser_extension_native_messaging_v1", "browser_extension_mcp_transport_v1", "host_ping"] } else { host_capabilities(cursor_render_backend(
                     driver.upstream_cursor_renderer_enabled(),
-                ) != "unavailable"),
+                ) != "unavailable") },
             }),
             None,
         ));
@@ -110,15 +111,17 @@ async fn handle_request_inner(
         desktops: desktop_sessions,
         launches: launch_sessions,
     } = sessions;
-    let request = match browser_extension::route_host_request(request, sessions).await {
-        browser_extension::RoutedBrowserExtensionRequest::Unhandled(request) => *request,
-        browser_extension::RoutedBrowserExtensionRequest::Handled(result) => return result,
-    };
+    let request =
+        match browser_extension::route_host_request(request, sessions, security_services).await {
+            browser_extension::RoutedBrowserExtensionRequest::Unhandled(request) => *request,
+            browser_extension::RoutedBrowserExtensionRequest::Handled(result) => return result,
+        };
     match request {
         Request::Hello(_) => unreachable!(),
         Request::Ping {} => Ok((ping_response(), None)),
         Request::Doctor {} => Ok((driver.diagnostics().await, None)),
-        Request::RegisterBrowserExtension { .. }
+        Request::BrowserExtensionTransportBinding {}
+        | Request::RegisterBrowserExtension { .. }
         | Request::BrowserExtensionNext { .. }
         | Request::CompleteBrowserExtension { .. }
         | Request::UnregisterBrowserExtension { .. }
@@ -867,6 +870,7 @@ async fn handle_request_inner(
             sessions.insert(
                 session_id.clone(),
                 HostSession {
+                    extension_observation: None,
                     runtime_session_id,
                     target_process_id,
                     target_window_handle,

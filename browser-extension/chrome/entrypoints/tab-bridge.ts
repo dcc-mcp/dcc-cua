@@ -14,7 +14,7 @@ declare global {
   var __dccCuaContentBridgeV1: boolean | undefined;
 }
 
-type RefEntry = { element: HTMLElement; actions: Action[] };
+type RefEntry = { element: HTMLElement; actions: Action[]; name: string; role: string };
 
 type BridgeState = {
   sessionNonce: string | null;
@@ -156,13 +156,16 @@ export default defineUnlistedScript(() => {
       const visible = visibility(element);
       if (visible === null) continue;
       const ref = `p${state.generation}:${refs.length + 1}`;
-      state.refs.set(ref, { element, actions });
+      const name = elementName(element);
+      const role = elementRole(element);
+      state.refs.set(ref, { element, actions, name, role });
       refs.push({
         ref,
-        role: elementRole(element),
-        name: elementName(element),
+        role,
+        name,
         actions,
-        states: { disabled: false, focusable: element.tabIndex >= 0 },
+        states: { disabled: false, focusable: element.tabIndex >= 0,
+          sensitive: element instanceof HTMLInputElement && ["password", "file", "hidden"].includes(element.type) },
         visibility: visible,
         frame: "main",
       });
@@ -188,7 +191,9 @@ export default defineUnlistedScript(() => {
       });
     }
     const entry = state.refs.get(command.ref);
-    if (!entry || !entry.element.isConnected || !entry.actions.includes(action)) {
+    if (!entry || !entry.element.isConnected || !entry.actions.includes(action)
+      || !elementActions(entry.element).includes(action) || visibility(entry.element) !== "in_viewport"
+      || elementName(entry.element) !== entry.name || elementRole(entry.element) !== entry.role) {
       throw Object.assign(new Error("semantic ref is stale or does not allow this action"), {
         code: "stale_observation",
       });
@@ -211,7 +216,7 @@ export default defineUnlistedScript(() => {
 
   function replaceText(command: TypeCommand) {
     const element = resolveRef(command, "type");
-    if (element instanceof HTMLInputElement && element.type === "password") {
+    if (element instanceof HTMLInputElement && ["password", "file", "hidden"].includes(element.type)) {
       throw Object.assign(new Error("password fields remain a trusted human boundary"), {
         code: "trusted_human_required",
       });
