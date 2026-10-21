@@ -865,6 +865,19 @@ impl TaskAuthorizationServer {
         {
             return Err("the dismiss_menu action scope grants only dismiss_menu, without activation, restoration or close".into());
         }
+        if method == "browser_extension_call"
+            && !proposal
+                .registration
+                .allowed_browser_origins
+                .iter()
+                .any(|origin| {
+                    params.get("expected_origin").and_then(Value::as_str) == Some(origin.as_str())
+                })
+        {
+            return Err(
+                "extension snapshot requires an exact task-authorized expected_origin".into(),
+            );
+        }
         if proposal.session.is_none() {
             return Err(
                 "call start_task and report provider/runtime/PID/HWND before the first observation or input"
@@ -1074,6 +1087,8 @@ fn method_allowed(surface: TaskSurface, method: &str) -> bool {
             (
                 TaskSurface::Browser,
                 "browser_snapshot"
+                    | "browser_extension_status"
+                    | "browser_extension_call"
                     | "browser_prepare"
                     | "browser_navigate"
                     | "browser_click"
@@ -1087,6 +1102,12 @@ fn method_allowed(surface: TaskSurface, method: &str) -> bool {
 }
 
 fn validate_task_method_params(method: &str, params: &Value) -> Result<(), String> {
+    // Extension mutations do not yet use the ordinary browser action authorization path.
+    if method == "browser_extension_call"
+        && params.get("method").and_then(Value::as_str) != Some("snapshot")
+    {
+        return Err("the task bridge permits only read-only extension snapshots".into());
+    }
     if method == "capture_preparation_begin" {
         let object = params
             .as_object()
@@ -1653,6 +1674,7 @@ fn tool_definitions() -> Vec<Value> {
                         "description":"Explicit bounded passive exact-root preparation. Requires pixels_only, get_window_state, begin/state/stop, its closed action, and operator-owned DCC_CUA_CAPTURE_PREPARATION_JOURNAL_ROOT. Does not grant input or caller-selected journal/target; prepared snapshots mint no observation/input token."},
                     "allowed_methods": {
                         "type": "array",
+                        "description": "Closed Host methods. browser_extension_call accepts only snapshot with an exact task-authorized expected_origin; extension mutations remain unavailable.",
                         "minItems": 1,
                         "maxItems": MAX_ALLOWED_METHODS,
                         "uniqueItems": true,
@@ -1664,6 +1686,7 @@ fn tool_definitions() -> Vec<Value> {
                             "clipboard_capture_secret", "browser_snapshot", "browser_prepare",
                             "browser_navigate", "browser_click", "browser_type", "browser_pointer",
                             "browser_set_input_files", "browser_download", "browser_dialog",
+                            "browser_extension_status", "browser_extension_call",
                             "live_observation_start", "live_observation_state", "live_observation_stop",
                             "recording_start", "recording_state", "recording_stop"
                         ]}
