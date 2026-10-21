@@ -104,7 +104,7 @@ fn windows_platform_input_gate(
 }
 
 #[cfg(windows)]
-fn windows_platform_window_activation_gate(
+pub(crate) fn windows_platform_window_activation_gate(
     stage: &'static str,
 ) -> Result<(), dcc_cua_platform_windows::UiaError> {
     interactive_desktop::require_window_activation_available().map_err(|error| {
@@ -150,6 +150,37 @@ impl ComputerUseSession {
 }
 
 #[cfg(windows)]
+pub(crate) fn windows_activation_stop_gate(
+    started: u64,
+    mut generation: impl FnMut() -> u64,
+    gate: impl FnOnce() -> Result<(), dcc_cua_platform_windows::UiaError>,
+) -> Result<(), dcc_cua_platform_windows::UiaError> {
+    if generation() != started {
+        return Err(dcc_cua_platform_windows::UiaError::UserInterrupted);
+    }
+    let result = gate();
+    if generation() != started {
+        return Err(dcc_cua_platform_windows::UiaError::UserInterrupted);
+    }
+    result
+}
+
+#[cfg(windows)]
+pub(crate) fn activate_windows_with_interrupt_gate(
+    target: dcc_cua_platform_windows::UiaTarget,
+    mut gate: impl FnMut() -> Result<(), dcc_cua_platform_windows::UiaError>,
+) -> Result<(), dcc_cua_platform_windows::UiaError> {
+    let started = dcc_cua_interrupt::interrupt_generation();
+    let result = dcc_cua_platform_windows::activate_window(target, || {
+        windows_activation_stop_gate(started, dcc_cua_interrupt::interrupt_generation, &mut gate)
+    });
+    if dcc_cua_interrupt::interrupt_generation() != started {
+        return Err(dcc_cua_platform_windows::UiaError::UserInterrupted);
+    }
+    result
+}
+
+#[cfg(windows)]
 pub(crate) fn map_windows_window_mutation_error(
     context: &str,
     error: dcc_cua_platform_windows::UiaError,
@@ -171,6 +202,9 @@ pub(crate) fn map_windows_window_mutation_error(
         _ => None,
     };
     let code = match &error {
+        dcc_cua_platform_windows::UiaError::UserInterrupted => {
+            ComputerUseErrorCode::UserInterrupted
+        }
         dcc_cua_platform_windows::UiaError::ForegroundActivationRefused { .. } => {
             ComputerUseErrorCode::ForegroundActivationRefused
         }
@@ -247,6 +281,9 @@ fn map_foreground_activation_diagnostic(
                     NativePhase::DetachForegroundInput => {
                         ComputerUseForegroundActivationPhase::DetachForegroundInput
                     }
+                    NativePhase::QueuedShowWindowRequest => {
+                        ComputerUseForegroundActivationPhase::QueuedShowWindowRequest
+                    }
                     NativePhase::RestoreTargetFrame => {
                         ComputerUseForegroundActivationPhase::RestoreTargetFrame
                     }
@@ -260,6 +297,33 @@ fn map_foreground_activation_diagnostic(
             })
             .collect(),
         foreground_poll_count: diagnostic.foreground_poll_count,
+        semantic_root_focus: diagnostic.semantic_root_focus.as_ref().map(|focus| {
+            use ComputerUseSemanticRootFocusStatus as Public;
+            use dcc_cua_platform_windows::WindowsSemanticRootFocusStatus as Native;
+            ComputerUseSemanticRootFocusDiagnostic {
+                status: match focus.status {
+                    Native::UnavailableContext => Public::UnavailableContext,
+                    Native::StaleContext => Public::StaleContext,
+                    Native::PrerequisiteRejected => Public::PrerequisiteRejected,
+                    Native::NotFocusable => Public::NotFocusable,
+                    Native::ProviderRejected => Public::ProviderRejected,
+                    Native::DispatchUnknown => Public::DispatchUnknown,
+                    Native::ForegroundRefused => Public::ForegroundRefused,
+                    Native::PostconditionFailed => Public::PostconditionFailed,
+                    Native::Activated => Public::Activated,
+                },
+                focus_attempted: focus.focus_attempted,
+                provider_completed: focus.provider_completed,
+                foreground_observed: focus.foreground_observed,
+            }
+        }),
+        attached_focus: diagnostic
+            .attached_focus
+            .map(|focus| ComputerUseAttachedFocusDiagnostic {
+                previous_focus_window_handle: focus.previous_focus_window_handle,
+                last_error_on_null: focus.last_error_on_null,
+                foreground_observed: focus.foreground_observed,
+            }),
     }
 }
 

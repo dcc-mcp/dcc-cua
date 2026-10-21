@@ -4,6 +4,8 @@
 //! Windows-only semantic fallback used when an application's UIA provider is
 //! usable but CUA's combined window snapshot path is not.
 
+#[cfg(windows)]
+mod attached_focus;
 mod capture_geometry;
 #[cfg(windows)]
 mod capture_identity;
@@ -27,6 +29,8 @@ mod native_menu_dismiss;
 mod occlusion;
 #[cfg(windows)]
 mod physical_input_fence;
+#[cfg(windows)]
+mod queued_activation;
 #[cfg(any(windows, test))]
 mod snapshot;
 
@@ -42,10 +46,11 @@ pub use capture_geometry::{
     resolve_exact_wgc_geometry, validate_native_window_geometry, validate_wgc_frame_geometry,
 };
 pub use contracts::{
-    UiaAction, UiaError, UiaTarget, WindowsForegroundActivationAttempt,
-    WindowsForegroundActivationDiagnostic, WindowsForegroundActivationPhase,
-    WindowsForegroundRelation, WindowsPointerButton, WindowsRawInputSnapshot,
-    WindowsWindowIdentity,
+    UiaAction, UiaError, UiaTarget, WindowsAttachedFocusDiagnostic,
+    WindowsForegroundActivationAttempt, WindowsForegroundActivationDiagnostic,
+    WindowsForegroundActivationPhase, WindowsForegroundRelation, WindowsPointerButton,
+    WindowsRawInputSnapshot, WindowsSemanticRootFocusDiagnostic, WindowsSemanticRootFocusOutcome,
+    WindowsSemanticRootFocusStatus, WindowsWindowIdentity,
 };
 
 #[cfg(windows)]
