@@ -247,6 +247,9 @@ fn map_foreground_activation_diagnostic(
                     NativePhase::DetachForegroundInput => {
                         ComputerUseForegroundActivationPhase::DetachForegroundInput
                     }
+                    NativePhase::QueuedShowWindowRequest => {
+                        ComputerUseForegroundActivationPhase::QueuedShowWindowRequest
+                    }
                     NativePhase::RestoreTargetFrame => {
                         ComputerUseForegroundActivationPhase::RestoreTargetFrame
                     }

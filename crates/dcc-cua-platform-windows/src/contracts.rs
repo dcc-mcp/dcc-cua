@@ -69,6 +69,7 @@ pub enum WindowsForegroundActivationPhase {
     AttachedForegroundRequest,
     DetachTargetInput,
     DetachForegroundInput,
+    QueuedShowWindowRequest,
     RestoreTargetFrame,
 }
 

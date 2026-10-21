@@ -17,9 +17,9 @@ use windows_sys::Win32::{
             BringWindowToTop, GA_ROOT, GUITHREADINFO, GW_OWNER, GetAncestor, GetForegroundWindow,
             GetGUIThreadInfo, GetWindow, GetWindowRect, GetWindowThreadProcessId, HWND_TOP,
             IsIconic, IsWindow, IsWindowVisible, IsZoomed, PostMessageW, SMTO_ABORTIFHUNG,
-            SW_RESTORE, SWP_ASYNCWINDOWPOS, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW,
-            SendMessageTimeoutW, SetForegroundWindow, SetWindowPos, ShowWindowAsync, WM_CLOSE,
-            WM_NULL,
+            SW_RESTORE, SW_SHOW, SWP_ASYNCWINDOWPOS, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
+            SWP_SHOWWINDOW, SendMessageTimeoutW, SetForegroundWindow, SetWindowPos,
+            ShowWindowAsync, WM_CLOSE, WM_NULL,
         },
     },
 };
@@ -486,14 +486,21 @@ pub fn activate_window(
     let expected = require_available_window_handle(target, "activation frame capture")?;
     let mut diagnostic = activation_diagnostic(target, expected);
     let frame_before_activation = capture_visible_window_frame(expected);
-    input_gated_window_mutation(activation_available, || {
-        activate_window_after_gate(target, &mut diagnostic)
+    let instance = input_gated_window_mutation(activation_available, || {
+        let before = crate::exact_window_native_state(target.process_id, target.window_handle)?;
+        crate::exact_window_state::validate_instance(target, before.instance, &before)?;
+        activate_window_after_gate(target, before.instance, &mut diagnostic)?;
+        Ok::<_, UiaError>(before.instance)
     })?;
     let expected = require_available_window_handle(target, "activation final validation")?;
+    let state = crate::exact_window_native_state(target.process_id, target.window_handle)?;
+    crate::exact_window_state::validate_instance(target, instance, &state)?;
     if let Some(frame) = frame_before_activation {
         restore_window_frame_after_activation(expected, frame, &mut diagnostic)?;
     }
     synchronize_activated_input_queue(expected, &diagnostic)?;
+    let state = crate::exact_window_native_state(target.process_id, target.window_handle)?;
+    crate::exact_window_state::validate_instance(target, instance, &state)?;
     if unsafe { GetForegroundWindow() } != expected {
         return Err(foreground_activation_refused(
             "the exact target was no longer foreground at activation final validation",
@@ -617,6 +624,7 @@ fn synchronize_activated_input_queue(
 
 fn activate_window_after_gate(
     target: UiaTarget,
+    instance: crate::ExactWindowPixelInstanceEvidence,
     diagnostic: &mut WindowsForegroundActivationDiagnostic,
 ) -> Result<(), UiaError> {
     use WindowsForegroundActivationPhase as Phase;
@@ -674,14 +682,30 @@ fn activate_window_after_gate(
     if unsafe { GetForegroundWindow() } != expected {
         activate_with_attached_input(expected, diagnostic);
     }
-    let activated = (0..20).any(|_| {
-        diagnostic.foreground_poll_count += 1;
-        if unsafe { GetForegroundWindow() } == expected {
-            return true;
-        }
-        thread::sleep(Duration::from_millis(5));
-        false
-    });
+    let reads = std::cell::Cell::new(0u8);
+    let activation = crate::queued_activation::run_queued_activation(
+        target,
+        instance,
+        || {
+            reads.set(reads.get().saturating_add(1));
+            crate::exact_window_native_state(target.process_id, target.window_handle)
+        },
+        || {
+            let api_return = unsafe { ShowWindowAsync(expected, SW_SHOW) };
+            diagnostic
+                .attempts
+                .push(WindowsForegroundActivationAttempt::new(
+                    Phase::QueuedShowWindowRequest,
+                    api_return,
+                    None,
+                    None,
+                ));
+            api_return
+        },
+        || thread::sleep(Duration::from_millis(5)),
+    );
+    diagnostic.foreground_poll_count += reads.get().saturating_sub(1);
+    let activated = activation?;
     if activated {
         Ok(())
     } else {

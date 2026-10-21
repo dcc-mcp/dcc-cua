@@ -19,10 +19,11 @@ use super::{
 };
 #[cfg(windows)]
 use crate::visible_capture::{
-    RootBoundsClass, RootBoundsRole, VisibleWindowCaptureReason, classify_root_bounds,
-    composited_root_entry, finish_bitmap_readback, physical_capture_rect,
-    physical_rectangle_within_desktop, physical_root_bounds, root_is_composited,
-    root_z_order_entry, root_z_order_proof,
+    ExactWindowPixelInstanceEvidence, RootBoundsClass, RootBoundsRole, RootGeometrySample,
+    VisibleWindowCaptureReason, classify_root_bounds, composited_root_entry,
+    finish_bitmap_readback, physical_capture_rect, physical_rectangle_within_desktop,
+    physical_root_bounds, root_is_composited, root_z_order_entry, root_z_order_proof,
+    stable_empty_root_geometry,
 };
 
 #[cfg(windows)]
@@ -574,7 +575,8 @@ fn root_bounds_diagnostic_classifies_original_edges_without_changing_refusal(
     };
     assert_eq!(classify_root_bounds(rect), expected);
     if expected != RootBoundsClass::Positive {
-        let error = composited_root_entry(91, 77, rect, true, Some(0), || Err(-5)).unwrap_err();
+        let error =
+            composited_root_entry(91, 77, rect, true, Some(0), || Err(-5), || false).unwrap_err();
         assert_eq!(
             error.diagnostic.reason,
             VisibleWindowCaptureReason::RootBoundsInvalid
@@ -606,8 +608,8 @@ fn root_bounds_diagnostic_role_uses_proof_root_not_granted_child(
         right: 10,
         bottom: 30,
     };
-    let error =
-        composited_root_entry(failed_root, 77, rect, true, Some(0), || Ok(rect)).unwrap_err();
+    let error = composited_root_entry(failed_root, 77, rect, true, Some(0), || Ok(rect), || false)
+        .unwrap_err();
     let proof = error.diagnostic.root_bounds_failure.unwrap();
     assert_eq!(proof.root_role, expected);
     assert_eq!(proof.proof_target_root_window_handle, 77);
@@ -650,6 +652,7 @@ fn root_bounds_diagnostic_followup_is_once_and_cannot_replace_original_error(
                 bottom: edges[3],
             })
         },
+        || false,
     )
     .unwrap_err();
     assert_eq!(reads.get(), 1);
@@ -679,6 +682,7 @@ fn root_bounds_diagnostic_adds_no_read_to_positive_roots_and_keeps_one_pixel_occ
         true,
         Some(0),
         || panic!("a valid root must not acquire diagnostic-only Win32 metadata"),
+        || panic!("a positive root must not acquire empty-geometry confirmation"),
     )
     .unwrap();
     let error = root_z_order_proof(77, [0, 0, 100, 100], &[entry, (77, [0, 0, 100, 100], true)])
@@ -688,6 +692,221 @@ fn root_bounds_diagnostic_adds_no_read_to_positive_roots_and_keeps_one_pixel_occ
         VisibleWindowCaptureReason::RootOverlap
     );
     assert!(error.diagnostic.root_bounds_failure.is_none());
+}
+
+#[cfg(windows)]
+#[rstest]
+fn stable_zero_area_above_target_root_does_not_block_z_order_proof() {
+    let confirmed = std::cell::Cell::new(0);
+    let empty = composited_root_entry(
+        91,
+        77,
+        WindowsRect {
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 0,
+        },
+        true,
+        Some(0),
+        || Ok(WindowsRect::default()),
+        || {
+            confirmed.set(confirmed.get() + 1);
+            true
+        },
+    )
+    .expect("an independently confirmed empty foreign root contributes no pixels");
+    assert_eq!(confirmed.get(), 1);
+    assert_eq!(empty, (91, [0; 4], false));
+    assert!(
+        root_z_order_proof(77, [0, 0, 100, 100], &[empty, (77, [0, 0, 100, 100], true)]).is_ok()
+    );
+}
+
+#[cfg(windows)]
+fn empty_root_sample() -> RootGeometrySample {
+    RootGeometrySample {
+        process_id: 42,
+        instance: ExactWindowPixelInstanceEvidence {
+            process_creation_time_100ns: 100,
+            window_thread_id: 43,
+            window_class_hash: 44,
+            owner_window_handle: 45,
+        },
+        visible: true,
+        cloaked: 0,
+        dwm_edges: [0; 4],
+        win32_edges: [0; 4],
+    }
+}
+
+#[cfg(windows)]
+fn root_geometry_rect(edges: [i32; 4]) -> WindowsRect {
+    WindowsRect {
+        left: edges[0],
+        top: edges[1],
+        right: edges[2],
+        bottom: edges[3],
+    }
+}
+
+#[cfg(windows)]
+#[rstest]
+#[case([0, 0, 0, 0])]
+#[case([-10, 20, -10, 35])]
+#[case([10, -20, 35, -20])]
+fn stable_zero_area_root_requires_two_matching_complete_samples(#[case] edges: [i32; 4]) {
+    let reads = std::cell::Cell::new(0);
+    let mut sample = empty_root_sample();
+    sample.dwm_edges = edges;
+    sample.win32_edges = edges;
+    assert!(stable_empty_root_geometry(
+        root_geometry_rect(edges),
+        || {
+            reads.set(reads.get() + 1);
+            Some(sample)
+        }
+    ));
+    assert_eq!(reads.get(), 2);
+}
+
+#[cfg(windows)]
+#[rstest]
+#[case("pid")]
+#[case("birth")]
+#[case("thread")]
+#[case("class")]
+#[case("owner")]
+#[case("visible")]
+#[case("cloaked")]
+#[case("dwm_moved")]
+#[case("win32_moved")]
+#[case("dwm_one_pixel")]
+#[case("win32_one_pixel")]
+#[case("dwm_inverted")]
+#[case("win32_inverted")]
+#[case("dwm_overflow")]
+#[case("win32_overflow")]
+fn stable_zero_area_root_rejects_any_sample_drift(#[case] changed_field: &str) {
+    let first = empty_root_sample();
+    let mut second = first;
+    match changed_field {
+        "pid" => second.process_id += 1,
+        "birth" => second.instance.process_creation_time_100ns += 1,
+        "thread" => second.instance.window_thread_id += 1,
+        "class" => second.instance.window_class_hash += 1,
+        "owner" => second.instance.owner_window_handle += 1,
+        "visible" => second.visible = false,
+        "cloaked" => second.cloaked = 1,
+        "dwm_moved" => second.dwm_edges = [1, 1, 1, 1],
+        "win32_moved" => second.win32_edges = [1, 1, 1, 1],
+        "dwm_one_pixel" => second.dwm_edges = [0, 0, 1, 1],
+        "win32_one_pixel" => second.win32_edges = [0, 0, 1, 1],
+        "dwm_inverted" => second.dwm_edges = [1, 0, 0, 1],
+        "win32_inverted" => second.win32_edges = [1, 0, 0, 1],
+        "dwm_overflow" => second.dwm_edges = [i32::MIN, 0, i32::MAX, 1],
+        "win32_overflow" => second.win32_edges = [0, i32::MIN, 1, i32::MAX],
+        _ => unreachable!(),
+    }
+    for samples in [[first, second], [second, first]] {
+        let mut samples = samples.into_iter();
+        assert!(!stable_empty_root_geometry(WindowsRect::default(), || {
+            samples.next()
+        }));
+    }
+}
+
+#[cfg(windows)]
+#[rstest]
+#[case("hidden")]
+#[case("cloaked")]
+#[case("zero_pid")]
+#[case("different_dwm")]
+#[case("different_win32")]
+#[case("positive")]
+#[case("inverted")]
+#[case("overflow")]
+fn stable_zero_area_root_rejects_consistently_invalid_samples(#[case] invalid: &str) {
+    let mut sample = empty_root_sample();
+    match invalid {
+        "hidden" => sample.visible = false,
+        "cloaked" => sample.cloaked = 1,
+        "zero_pid" => sample.process_id = 0,
+        "different_dwm" => sample.dwm_edges = [10, 20, 10, 20],
+        "different_win32" => sample.win32_edges = [10, 20, 10, 20],
+        "positive" => {
+            sample.dwm_edges = [0, 0, 1, 1];
+            sample.win32_edges = [0, 0, 1, 1];
+        }
+        "inverted" => {
+            sample.dwm_edges = [1, 0, 0, 1];
+            sample.win32_edges = [1, 0, 0, 1];
+        }
+        "overflow" => {
+            sample.dwm_edges = [i32::MIN, 0, i32::MAX, 1];
+            sample.win32_edges = sample.dwm_edges;
+        }
+        _ => unreachable!(),
+    }
+    assert!(!stable_empty_root_geometry(
+        WindowsRect::default(),
+        || Some(sample)
+    ));
+}
+
+#[cfg(windows)]
+#[rstest]
+#[case(0)]
+#[case(1)]
+fn stable_zero_area_root_rejects_either_native_sample_failure(#[case] failed_read: usize) {
+    let mut reads = 0;
+    assert!(!stable_empty_root_geometry(WindowsRect::default(), || {
+        let result = (reads != failed_read).then(empty_root_sample);
+        reads += 1;
+        result
+    }));
+    assert_eq!(reads, failed_read + 1);
+}
+
+#[cfg(windows)]
+#[rstest]
+#[case([0, 0, 1, 1])]
+#[case([1, 0, 0, 1])]
+#[case([i32::MIN, 0, i32::MAX, 0])]
+fn stable_zero_area_root_does_not_sample_nonempty_or_malformed_initial_bounds(
+    #[case] edges: [i32; 4],
+) {
+    assert!(!stable_empty_root_geometry(
+        root_geometry_rect(edges),
+        || { panic!("only a valid zero-area DWM rectangle may request confirmation") }
+    ));
+}
+
+#[cfg(windows)]
+#[rstest]
+#[case(77, true, Some(0))]
+#[case(91, false, Some(0))]
+#[case(91, true, None)]
+#[case(91, true, Some(1))]
+fn stable_zero_area_root_never_relaxes_target_visibility_or_cloaking(
+    #[case] root: u64,
+    #[case] visible: bool,
+    #[case] cloaked: Option<u32>,
+) {
+    let error = composited_root_entry(
+        root,
+        77,
+        WindowsRect::default(),
+        visible,
+        cloaked,
+        || Ok(WindowsRect::default()),
+        || panic!("target or unavailable compositing evidence cannot request confirmation"),
+    )
+    .unwrap_err();
+    assert_eq!(
+        error.diagnostic.reason,
+        VisibleWindowCaptureReason::RootBoundsInvalid
+    );
 }
 
 #[cfg(windows)]

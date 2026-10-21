@@ -115,6 +115,36 @@ fn foreground_activation_native_error_mapping_preserves_exact_numeric_diagnostic
     assert_eq!(details.background_delivery_viable, Some(true));
 }
 
+#[cfg(windows)]
+#[rstest]
+fn queued_foreground_activation_phase_survives_native_mapping_and_core_roundtrip() {
+    let mut expected = serde_json::to_value(foreground_activation_core_fixture()).unwrap();
+    expected["attempts"].as_array_mut().unwrap().push(json!({
+        "phase": "queued_show_window_request", "api_return": 1
+    }));
+    let native = serde_json::from_value::<
+        dcc_cua_platform_windows::WindowsForegroundActivationDiagnostic,
+    >(expected.clone())
+    .expect("the native contract must admit the bounded queued activation phase");
+    let error = map_windows_window_mutation_error(
+        "activate exact target",
+        dcc_cua_platform_windows::UiaError::ForegroundActivationRefused {
+            reason: "queued request did not make the exact target foreground".into(),
+            background_delivery_viable: true,
+            suggested_delivery_mode: Some("background".into()),
+            diagnostic: Some(Box::new(native)),
+        },
+    );
+    let mapped = error.details.unwrap().foreground_activation.unwrap();
+    let encoded = serde_json::to_value(&mapped).unwrap();
+    assert_eq!(encoded, expected);
+    assert_eq!(
+        serde_json::from_value::<crate::ComputerUseForegroundActivationDiagnostic>(encoded)
+            .unwrap(),
+        mapped
+    );
+}
+
 #[rstest]
 fn capture_diagnostic_contract_rejects_arbitrary_reason_and_stage_strings() {
     let mut value = json!({

@@ -651,6 +651,7 @@ pub enum ComputerUseForegroundActivationPhase {
     AttachedForegroundRequest,
     DetachTargetInput,
     DetachForegroundInput,
+    QueuedShowWindowRequest,
     RestoreTargetFrame,
 }
 

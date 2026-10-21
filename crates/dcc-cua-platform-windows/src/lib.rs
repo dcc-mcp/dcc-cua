@@ -27,6 +27,8 @@ mod native_menu_dismiss;
 mod occlusion;
 #[cfg(windows)]
 mod physical_input_fence;
+#[cfg(windows)]
+mod queued_activation;
 #[cfg(any(windows, test))]
 mod snapshot;
 
