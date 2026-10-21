@@ -118,8 +118,17 @@ impl Drop for ProviderListener {
     }
 }
 
-pub(crate) fn candidates() -> Vec<ConnectionRecord> {
-    list_connections(None)
+pub(crate) fn candidates() -> Result<Vec<ConnectionRecord>, String> {
+    candidate_records(list_connections(None))
+}
+
+pub(crate) fn candidate_records(
+    report: crate::connection_diagnostics::ConnectionsReport,
+) -> Result<Vec<ConnectionRecord>, String> {
+    if !report.registry_available || report.scan_truncated {
+        return Err("complete provider discovery is unavailable; pair again after recovery".into());
+    }
+    let records: Vec<_> = report
         .connections
         .into_iter()
         .filter(|record| {
@@ -132,8 +141,11 @@ pub(crate) fn candidates() -> Vec<ConnectionRecord> {
                 && record.bridge.is_live()
                 && endpoint(&record.connection_id).is_some()
         })
-        .take(16)
-        .collect()
+        .collect();
+    if records.len() > 16 {
+        return Err("too many extension tasks; reduce tasks before pairing".into());
+    }
+    Ok(records)
 }
 
 pub(crate) async fn connect(record: &ConnectionRecord) -> Result<HostClient, String> {

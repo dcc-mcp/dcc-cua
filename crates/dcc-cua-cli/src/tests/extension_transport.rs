@@ -78,3 +78,11 @@ async fn private_provider_endpoint_checks_peer_and_rejects_task_requests() {
     drop(client);
     drop(listener);
 }
+
+#[rstest]
+fn incomplete_discovery_cannot_choose_a_pairing_owner() {
+    let root = tempfile::tempdir().unwrap();
+    let mut report = crate::connection_diagnostics::list_connections(Some(root.path().to_owned()));
+    report.scan_truncated = true;
+    assert!(crate::extension_transport::candidate_records(report).is_err());
+}

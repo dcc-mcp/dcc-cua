@@ -44,7 +44,7 @@ pub(super) async fn run(
                 _ = discover.tick() => {
                     if selected { continue; }
                     let mut endpoints = Vec::new();
-                    for record in crate::extension_transport::candidates() {
+                    for record in crate::extension_transport::candidates()? {
                         let connected = tokio::time::timeout(Duration::from_millis(500), async {
                             let mut client = crate::extension_transport::connect(&record).await?;
                             let binding = client.request("browser_extension_transport_binding", json!({})).await.map_err(|error| error.to_string())?;
