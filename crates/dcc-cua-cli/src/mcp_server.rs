@@ -1,3 +1,4 @@
+mod frame_recovery;
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::sync::{Arc, Mutex};
@@ -913,6 +914,7 @@ impl TaskAuthorizationServer {
             Err(error) => return Err(error.to_string()),
         };
         let mut host = response.value;
+        frame_recovery::annotate(&mut host, &proposal_id, &method, proposal);
         interaction_recovery::annotate(&mut host, &method, proposal);
         host["task_context"] = json!({
             "provider": "dcc-cua",

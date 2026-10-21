@@ -112,6 +112,14 @@ previous maximized state is normalized in a second bounded restore stage.
 `get_window_state` reports the native `maximized` fact. Restore a maximized
 target before `set_window_frame`, then read fresh native window state; an outer
 frame match alone cannot confirm that a maximized client resized. The MCP bridge
+returns `frame_recovery` when a pixels-only state read cannot mint a frame token
+because the target is minimized or maximized. Its `next_call` keeps the current
+task and requests `restore_activate` only when that task already grants
+`change_window_state` without a dismiss-menu-only scope. Otherwise it reports
+the missing method or the blocking `dismiss_menu` action scope and that a new
+task is needed. Omit `dismiss_menu` from a recovery task; it never restores implicitly.
+After a confirmed restore, read fresh window state before moving the frame.
+The MCP bridge
 also accepts `activate`, which does not restore a minimized window; it rejects
 `close` and other window state operations. An unavailable interactive desktop
 still blocks activation and input. Repair that environment before retrying.
@@ -280,4 +288,17 @@ snapshots reject the opt-in. The final observation's
 and canonical PNG RGBA bytes, four bounded 256-bin channel histograms, timings,
 and separate provenance for the existing first and final captures. The fourth
 native byte is reported as a raw high byte, without an alpha interpretation.
+Both raw captures and their publication fences remain required. Only the final
+frame is PNG-encoded; the discarded validation frame reports `png_encoded=false`
+and zero PNG encoding time while retaining its optional byte summaries.
 This adds no capture, normalization, retry, activation, or input permission.
+
+For repeatable Windows measurements, run the ignored
+`owned_window_snapshot_latency` test in `dcc-cua-e2e` with `--features gui-e2e`.
+Set `DCC_CUA_LATENCY_DIRECTORY` to an existing empty private directory. The test
+publishes `binding.json` and waits up to three minutes: report its exact
+provider/runtime/PID/HWND before creating the `begin` file in that directory.
+It measures default and diagnostic snapshots on disposable native windows,
+decodes their PNGs, verifies ownership and cleanup, and writes `results.json`.
+Keep other builds stopped while sampling. These SDK timings exclude MCP
+transport, perception, and input; encoding-only timings are a separate metric.
