@@ -190,6 +190,16 @@ starting another Host or borrowing a different connection's capability.
    target that cannot be represented by an exact window. Keep the scope and
    coordinate source explicit.
 
+For MCP pixel tasks, use `interaction_recovery` in verified native window-state
+or activation-refusal responses to separate observation from input. An authorized
+snapshot does not require foreground activation; fresh capture proof still
+applies. `foreground=true` does not certify input readiness. Native
+`background_delivery_viable` hints do not authorize background `execute_action`
+in the closed bridge. If activation is refused, retain diagnostics and stop the
+input chain; continue authorized passive observations if useful. Do not blindly
+retry activation or repeatedly ask the user to switch windows. Repair the native
+or Agent Host handoff before another input attempt.
+
 For a Windows standard native popup menu (`#32768`) without accessible menu
 items, the public MCP task route can cancel that exact active popup without
 keyboard input or activation. Start an exact `window` / `pixels_only` task with

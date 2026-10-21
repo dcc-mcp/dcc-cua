@@ -24,11 +24,7 @@ pub(crate) struct PixelBufferDiagnostics {
     pub png_encode_elapsed_micros: u64,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum FramePurpose {
-    Validation,
-    Publication,
-}
+pub(crate) use crate::contracts::FramePurpose;
 
 pub(crate) struct EncodedPixelFrame {
     pub data: Vec<u8>,

@@ -40,6 +40,7 @@ fn exact_source_first_capture_instance_boundary() {
     }
     let contracts = include_str!("../src/contracts.rs");
     for marker in [
+        "pub(crate) enum FramePurpose",
         "pub enum ComputerUseCaptureStage",
         "pub enum ComputerUseCaptureReason",
         "pub enum ComputerUseRootBoundsRole",
@@ -190,7 +191,7 @@ fn exact_source_first_capture_instance_boundary() {
         .replace("use rstest::rstest;", "")
         .replace("#[rstest]", "#[test]");
     let source = format!(
-        "#![allow(dead_code, unused_variables)]\nuse actual::{{capture_diagnostics, ComputerUseRootBoundsRole, ComputerUseRootBoundsClass, ComputerUseRootBoundsFailureDiagnostic}};\nmod actual {{ {model}\n{selected}\nimpl ComputerUseSession {{ {methods} }}\nmod dcc_cua_platform_windows {{ use super::*; {native_types} NATIVE_BOUNDARY }} }}"
+        "#![allow(dead_code, unused_variables)]\nuse actual::{{capture_diagnostics, FramePurpose, ComputerUseRootBoundsRole, ComputerUseRootBoundsClass, ComputerUseRootBoundsFailureDiagnostic}};\nmod actual {{ {model}\n{selected}\nimpl ComputerUseSession {{ {methods} }}\nmod dcc_cua_platform_windows {{ use super::*; {native_types} NATIVE_BOUNDARY }} }}"
     ).replace("NATIVE_BOUNDARY", include_str!("../src/runtime/session/tests/pixel_capture_os.rs"))
         .replace("use rstest::rstest;", "")
         .replace("#[cfg(windows)]", "");

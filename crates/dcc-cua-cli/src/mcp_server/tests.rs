@@ -5,6 +5,7 @@ use super::frame_recovery::add_frame_recovery_guidance;
 use super::*;
 
 mod capture_preparation_tests;
+mod interaction_recovery_tests;
 mod lifetime_tests;
 mod native_menu_tests;
 
@@ -87,7 +88,7 @@ fn native_frame_recovery_keeps_the_exact_task_and_a_valid_closed_call(
     #[case] reason: &str,
 ) {
     let mut response = json!({"type":"window_state", "state":{state_flag:true}});
-    add_frame_recovery_guidance(&mut response, "task-owned", true);
+    add_frame_recovery_guidance(&mut response, "task-owned", true, false);
     let recovery = &response["frame_recovery"];
     assert_eq!(recovery["reason"], reason);
     assert_eq!(recovery["automatic_input"], false);
@@ -109,7 +110,7 @@ fn native_frame_recovery_keeps_the_exact_task_and_a_valid_closed_call(
 #[rstest]
 fn native_frame_recovery_does_not_advertise_an_ungranted_restore() {
     let mut response = json!({"state":{"maximized":true}});
-    add_frame_recovery_guidance(&mut response, "task-owned", false);
+    add_frame_recovery_guidance(&mut response, "task-owned", false, false);
     assert!(response["frame_recovery"].get("next_call").is_none());
     assert_eq!(response["frame_recovery"]["requires_new_task"], true);
     assert_eq!(
@@ -125,7 +126,7 @@ fn native_frame_recovery_does_not_advertise_an_ungranted_restore() {
 fn native_frame_recovery_preserves_other_metadata(#[case] state: Value) {
     let mut response = json!({"state":state});
     let original = response.clone();
-    add_frame_recovery_guidance(&mut response, "task-owned", true);
+    add_frame_recovery_guidance(&mut response, "task-owned", true, false);
     assert_eq!(response, original);
 }
 

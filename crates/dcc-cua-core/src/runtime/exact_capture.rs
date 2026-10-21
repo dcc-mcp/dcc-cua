@@ -497,14 +497,9 @@ pub(crate) fn capture_verified_visible_bgra(
 pub(super) async fn capture_exact_window(
     process_id: u32,
     window_id: u64,
+    purpose: FramePurpose,
 ) -> ComputerUseResult<ExactWindowCapture> {
-    capture_exact_window_with_diagnostics(
-        process_id,
-        window_id,
-        false,
-        crate::capture_diagnostics::FramePurpose::Publication,
-    )
-    .await
+    capture_exact_window_with_diagnostics(process_id, window_id, false, purpose).await
 }
 
 #[cfg(windows)]
@@ -679,6 +674,7 @@ pub(super) async fn capture_exact_window_with_diagnostics(
 pub(super) async fn capture_exact_window(
     _process_id: u32,
     _window_id: u64,
+    _purpose: FramePurpose,
 ) -> ComputerUseResult<ExactWindowCapture> {
     Err(ComputerUseError::new(
         ComputerUseErrorCode::BackendUnavailable,

@@ -9,17 +9,22 @@ pub(super) fn annotate(response: &mut Value, task_id: &str, method: &str, propos
             proposal
                 .allowed_methods
                 .iter()
-                .any(|method| method == "change_window_state")
-                && !proposal
-                    .registration
-                    .allowed_actions
-                    .iter()
-                    .any(TrustedTaskActionScope::is_native_menu_dismiss),
+                .any(|method| method == "change_window_state"),
+            proposal
+                .registration
+                .allowed_actions
+                .iter()
+                .any(TrustedTaskActionScope::is_native_menu_dismiss),
         );
     }
 }
 
-pub(super) fn add_frame_recovery_guidance(response: &mut Value, task_id: &str, can_restore: bool) {
+pub(super) fn add_frame_recovery_guidance(
+    response: &mut Value,
+    task_id: &str,
+    has_restore_method: bool,
+    menu_only: bool,
+) {
     let state = &response["state"];
     if state.get("window_state_id").is_some() {
         return;
@@ -35,13 +40,19 @@ pub(super) fn add_frame_recovery_guidance(response: &mut Value, task_id: &str, c
         "reason":reason, "fresh_window_state_required_after_restore":true,
         "automatic_input":false,
     });
-    if can_restore {
+    if has_restore_method && !menu_only {
         recovery["next_call"] = json!({"tool":"dcc_cua_task_call", "arguments":{
             "task_id":task_id, "method":"change_window_state", "params":{"operation":"restore_activate"},
         }});
     } else {
         recovery["requires_new_task"] = json!(true);
-        recovery["required_method"] = json!("change_window_state");
+        if !has_restore_method {
+            recovery["required_method"] = json!("change_window_state");
+        }
+        if menu_only {
+            recovery["blocking_action_scope"] = json!("dismiss_menu");
+            recovery["omit_action_scope"] = json!("dismiss_menu");
+        }
     }
     response["frame_recovery"] = recovery;
 }
