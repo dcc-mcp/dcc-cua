@@ -35,6 +35,8 @@ const DEFAULT_IDLE_TIMEOUT_MS: u64 = 15 * 60 * 1_000;
 const MAX_ALLOWED_METHODS: usize = 32;
 const CUA_RUNTIME_SESSION_PREFIX: &str = "__cua_runtime_";
 
+mod interaction_recovery;
+
 struct TaskBrowserPrepareAuthorizationHost {
     expected_public_session: String,
     bound_driver_session: Mutex<Option<BoundDriverSession>>,
@@ -901,19 +903,17 @@ impl TaskAuthorizationServer {
         let response = match response {
             Ok(response) => response,
             Err(error @ HostClientError::Remote { .. }) => {
-                return Ok(task_remote_error(
+                return Ok(interaction_recovery::task_remote_error(
                     &error,
                     &method,
                     &proposal_id,
-                    proposal
-                        .session
-                        .as_ref()
-                        .expect("task session was initialized"),
+                    proposal,
                 ));
             }
             Err(error) => return Err(error.to_string()),
         };
         let mut host = response.value;
+        interaction_recovery::annotate(&mut host, &method, proposal);
         host["task_context"] = json!({
             "provider": "dcc-cua",
             "runtime_version": env!("CARGO_PKG_VERSION"),
@@ -1727,7 +1727,7 @@ fn tool_definitions() -> Vec<Value> {
         json!({
             "name": "dcc_cua_task_call",
             "title": "Run DCC-CUA task call",
-            "description": "Call one closed Host method on the same MCP connection after start_task returned its provider/runtime/PID/HWND binding. Keep snapshot and action in that same task; observation IDs and opaque references are not reusable after reconnecting or in another CLI invocation. A pixels_only snapshot yields a formal observation_id and accessibility_available=false, without semantic element tokens. Its optional capture_diagnostics boolean defaults to false; true adds bounded byte hashes, histograms, timing, and native provenance for the existing two captures without changing pixels or input authority. Semantic snapshots reject this diagnostic opt-in. Its execute_action requires a granted supported raw_input action and that latest observation_id; omit accessibility_state_id, element selectors, secret handles, and input_backend_id. Delivery is foreground only, without implicit activation. Use capture_after for a fresh pixel post-action observation; semantic post snapshots are refused. minimize_window requires the latest observation and same native instance, consumes it after an attempt, and reports native minimized state. set_window_frame requires a one-use window_state_id from explicit get_window_state no more than five seconds old, and frame={x,y,width,height} in exact i32 physical pixels with checked extents. It moves the same full native instance without activation or z-order change and confirms only an exact bounded native readback; every attempt consumes metadata and prior pixel evidence. Its response state does not mint another token. change_window_state also accepts dismiss_menu only with its independent window_state/dismiss_menu action scope and a one-use window_state_id copied from get_window_state.menu_dismiss_window_state_id, at most five seconds old. Frame and snapshot tokens cannot authorize menu dismissal. It sends one bounded standard native cancellation without activation, keyboard input or application close. Confirmed requires popup_hidden_or_gone, menu_inactive and owner_alive; an unconfirmed attempt is never success and must not be blindly retried. Every attempt consumes metadata and prior observations. Take a fresh observation afterward. Out-of-scope, expired, stopped, changed, or stale targets fail without prompting. Recording requires explicit allow_recording and an immutable task output directory; call recording_start with an empty params object for video-only output. Granted live_observation_start/state/stop expose the same native source. Recording start validates the actual first encoded frame, state reports source pauses and failures, and stop awaits video/sidecar finalization. Never pass credential values; use secret handles in supported semantic/browser tasks.",
+            "description": "Call one closed Host method on the same MCP connection after start_task returned its provider/runtime/PID/HWND binding. Keep snapshot and action in that same task; observation IDs and opaque references are not reusable after reconnecting or in another CLI invocation. A pixels_only snapshot yields a formal observation_id and accessibility_available=false, without semantic element tokens. Its optional capture_diagnostics boolean defaults to false; true adds bounded byte hashes, histograms, timing, and native provenance for the existing two captures without changing pixels or input authority. Semantic snapshots reject this diagnostic opt-in. Its execute_action requires a granted supported raw_input action and that latest observation_id; omit accessibility_state_id, element selectors, secret handles, and input_backend_id. Delivery is foreground only, without implicit activation. Pixels-only window state and typed activation refusals expose interaction_recovery: snapshot permission is independent of foreground input readiness. Native background viability hints never authorize closed-bridge background input. Do not blindly retry refused activation. Use capture_after for a fresh pixel post-action observation; semantic post snapshots are refused. minimize_window requires the latest observation and same native instance, consumes it after an attempt, and reports native minimized state. set_window_frame requires a one-use window_state_id from explicit get_window_state no more than five seconds old, and frame={x,y,width,height} in exact i32 physical pixels with checked extents. It moves the same full native instance without activation or z-order change and confirms only an exact bounded native readback; every attempt consumes metadata and prior pixel evidence. Its response state does not mint another token. change_window_state also accepts dismiss_menu only with its independent window_state/dismiss_menu action scope and a one-use window_state_id copied from get_window_state.menu_dismiss_window_state_id, at most five seconds old. Frame and snapshot tokens cannot authorize menu dismissal. It sends one bounded standard native cancellation without activation, keyboard input or application close. Confirmed requires popup_hidden_or_gone, menu_inactive and owner_alive; an unconfirmed attempt is never success and must not be blindly retried. Every attempt consumes metadata and prior observations. Take a fresh observation afterward. Out-of-scope, expired, stopped, changed, or stale targets fail without prompting. Recording requires explicit allow_recording and an immutable task output directory; call recording_start with an empty params object for video-only output. Granted live_observation_start/state/stop expose the same native source. Recording start validates the actual first encoded frame, state reports source pauses and failures, and stop awaits video/sidecar finalization. Never pass credential values; use secret handles in supported semantic/browser tasks.",
             "inputSchema": {
                 "type": "object",
                 "additionalProperties": false,
@@ -1834,33 +1834,6 @@ fn tool_error(message: String) -> Value {
         "structuredContent": payload,
         "isError": true,
     })
-}
-
-fn task_remote_error(
-    error: &HostClientError,
-    method: &str,
-    task_id: &str,
-    session: &LogicalTaskSession,
-) -> Value {
-    let Some(projected) = project_task_remote_error(error, method) else {
-        return tool_error(error.to_string());
-    };
-    let mut result = tool_result(
-        serde_json::to_value(projected).expect("typed remote error projection must serialize"),
-    );
-    let payload = &mut result["structuredContent"];
-    payload["task_context"] = json!({
-        "provider": "dcc-cua",
-        "runtime_version": env!("CARGO_PKG_VERSION"),
-        "task_id": task_id,
-        "target": {
-            "process_id": session.target()["process_id"],
-            "window_handle": session.target()["window_handle"],
-        },
-        "native_action_popups": false,
-    });
-    result["content"] = json!([{"type":"text", "text": result["structuredContent"].to_string()}]);
-    result
 }
 
 #[derive(Debug, Clone, serde::Serialize, Deserialize)]
