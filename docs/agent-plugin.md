@@ -184,6 +184,32 @@ and recording are outside this pixel contract. It retains the existing
 separately authorized `change_window_state` activate/restore route; pixel startup,
 snapshots, and raw input never implicitly activate a window.
 
+Pixels-only `get_window_state` and typed `foreground_activation_refused`
+responses include `interaction_recovery` when the exact native target can be
+verified. This separates method permission from readiness: an authorized
+`snapshot` may be attempted without foreground activation, but must still pass
+fresh exact-window capture proof. `foreground=true` alone never certifies input
+readiness; the latest observation, identity, visibility, grants, stop state and
+action confirmation still apply at dispatch.
+
+`interaction_recovery.input.background_delivery_supported` is always false for
+this closed pixel route. Preserved native `background_delivery_viable` and
+`suggested_delivery_mode` diagnostics describe lower-level possibilities, not
+permission or support for background `execute_action` in this bridge. The
+recovery projection never grants a missing method or action scope. In particular,
+menu-dismissal-only scope cannot authorize foreground activation.
+Native state reads do not track activation history: `status=history_unknown`
+and `prior_refusal_overridden=false` never clear an earlier refusal or authorize
+another activation attempt. Assess a separately authorized handoff explicitly.
+
+For a verified refusal, follow `activation.next_step=diagnose_native_refusal`:
+retain the native activation diagnostics, continue independent authorized
+observations if useful, and stop the input chain. Do not blindly retry activation,
+send input to the current foreign foreground window, or repeatedly ask the user
+to switch windows. Repair the native/Agent Host handoff before a fresh input
+attempt. No implicit activation or operating-system focus restriction bypass is
+introduced by this guidance.
+
 To minimize, call `dcc_cua_task_call` with `method: "minimize_window"` and
 `params: {"observation_id": "<latest snapshot observation_id>"}`. The retained
 task must grant both the method and the exact `window_state/minimize_window`
