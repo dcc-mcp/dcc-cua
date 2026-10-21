@@ -2,6 +2,100 @@ use super::*;
 use rstest::rstest;
 
 #[rstest]
+fn activation_frame_coordinates_are_physical_and_restore_unaware_caller() {
+    std::thread::spawn(|| {
+        use windows_sys::Win32::{
+            Foundation::{HINSTANCE, HWND},
+            UI::{
+                HiDpi::{
+                    AreDpiAwarenessContextsEqual, DPI_AWARENESS_CONTEXT,
+                    DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, DPI_AWARENESS_CONTEXT_UNAWARE,
+                    GetThreadDpiAwarenessContext, SetThreadDpiAwarenessContext,
+                },
+                WindowsAndMessaging::{CreateWindowExW, DestroyWindow, WS_OVERLAPPEDWINDOW},
+            },
+        };
+
+        struct RestoreDpiContext(DPI_AWARENESS_CONTEXT);
+        impl Drop for RestoreDpiContext {
+            fn drop(&mut self) {
+                unsafe { SetThreadDpiAwarenessContext(self.0) };
+            }
+        }
+        struct HiddenWindow(HWND);
+        impl Drop for HiddenWindow {
+            fn drop(&mut self) {
+                unsafe { DestroyWindow(self.0) };
+            }
+        }
+
+        let previous = unsafe { SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_UNAWARE) };
+        assert!(!previous.is_null(), "enter unaware caller context");
+        let _restore_context = RestoreDpiContext(previous);
+        let (window, physical_frame) = {
+            let _dpi = crate::visible_capture::ThreadDpiAwarenessGuard::per_monitor_v2()
+                .expect("enter physical fixture coordinate scope");
+            let class: Vec<u16> = "STATIC\0".encode_utf16().collect();
+            let window = HiddenWindow(unsafe {
+                CreateWindowExW(
+                    0,
+                    class.as_ptr(),
+                    class.as_ptr(),
+                    WS_OVERLAPPEDWINDOW,
+                    80,
+                    80,
+                    280,
+                    220,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    HINSTANCE::default(),
+                    std::ptr::null(),
+                )
+            });
+            assert!(!window.0.is_null(), "create hidden frame fixture");
+            let mut rect = RECT::default();
+            assert_ne!(unsafe { GetWindowRect(window.0, &mut rect) }, 0);
+            (window, [rect.left, rect.top, rect.right, rect.bottom])
+        };
+        let mut actual = RECT::default();
+        let mut physical_context = false;
+        with_activation_frame_coordinates(|| {
+            physical_context = unsafe {
+                AreDpiAwarenessContextsEqual(
+                    GetThreadDpiAwarenessContext(),
+                    DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+                ) != 0
+            };
+            assert_ne!(unsafe { GetWindowRect(window.0, &mut actual) }, 0);
+            Ok(())
+        })
+        .expect("read activation frame in physical coordinate scope");
+
+        assert_ne!(
+            unsafe {
+                AreDpiAwarenessContextsEqual(
+                    GetThreadDpiAwarenessContext(),
+                    DPI_AWARENESS_CONTEXT_UNAWARE,
+                )
+            },
+            0,
+            "restore the unaware caller after frame operations"
+        );
+        assert!(
+            physical_context,
+            "activation frame operations must use PMv2"
+        );
+        assert_eq!(
+            [actual.left, actual.top, actual.right, actual.bottom],
+            physical_frame,
+            "activation frame operations must read physical desktop pixels"
+        );
+    })
+    .join()
+    .expect("unaware activation frame worker");
+}
+
+#[rstest]
 #[case(false)]
 #[case(true)]
 fn semantic_root_activation_without_existing_worker_consumes_context_without_startup(
