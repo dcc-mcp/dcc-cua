@@ -7,6 +7,70 @@ mod capture_preparation_tests;
 mod lifetime_tests;
 mod native_menu_tests;
 
+#[rstest]
+fn extension_diagnostics_are_browser_only_and_read_only() {
+    let start = tool_definitions()
+        .into_iter()
+        .find(|tool| tool["name"] == "start_task")
+        .unwrap();
+    let methods = start["inputSchema"]["properties"]["allowed_methods"]["items"]["enum"]
+        .as_array()
+        .unwrap();
+    for method in ["browser_extension_status", "browser_extension_call"] {
+        assert!(method_allowed(TaskSurface::Browser, method));
+        assert!(!method_allowed(TaskSurface::Window, method));
+        assert!(methods.iter().any(|value| value == method));
+        let mut task = browser_task();
+        task["allowed_methods"] = json!([method]);
+        task["allowed_actions"] = json!([]);
+        assert!(test_server().prepare_task(task).is_ok());
+    }
+    assert!(
+        validate_task_method_params("browser_extension_call", &json!({"method":"snapshot"}))
+            .is_ok()
+    );
+    for method in ["click", "type", "unpair", "navigate", "unknown"] {
+        assert!(
+            validate_task_method_params("browser_extension_call", &json!({"method":method}))
+                .is_err()
+        );
+    }
+    assert!(validate_task_method_params("browser_extension_call", &json!({})).is_err());
+}
+
+#[rstest]
+#[tokio::test]
+async fn extension_snapshot_requires_the_task_origin_before_host_dispatch() {
+    let mut server = test_server();
+    let mut task = browser_task();
+    task["allowed_methods"] = json!(["browser_extension_call"]);
+    task["allowed_actions"] = json!([]);
+    task["allowed_browser_origins"] = json!(["https://pypi.org"]);
+    let prepared = server.prepare_task(task).unwrap();
+    for origin in [
+        json!(null),
+        json!("https://example.com"),
+        json!("https://pypi.org.evil.test"),
+    ] {
+        let error = server
+            .task_call(json!({
+                "task_id": prepared["task_id"], "method":"browser_extension_call",
+                "params":{"method":"snapshot","expected_origin":origin}
+            }))
+            .await
+            .unwrap_err();
+        assert!(error.contains("task-authorized expected_origin"), "{error}");
+    }
+    let error = server
+        .task_call(json!({
+            "task_id":prepared["task_id"], "method":"browser_extension_call",
+            "params":{"method":"snapshot","expected_origin":"https://pypi.org"}
+        }))
+        .await
+        .unwrap_err();
+    assert!(error.contains("provider/runtime/PID/HWND"), "{error}");
+}
+
 fn test_server() -> TaskAuthorizationServer {
     let mut server = TaskAuthorizationServer::automatic();
     server.recording_output_root = None;

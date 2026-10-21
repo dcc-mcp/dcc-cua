@@ -200,3 +200,18 @@ Separately required lifecycle work includes disconnect during an in-flight
 operation, cancellation, joined embedded Host teardown, and shared Host restart
 behavior. A passing idle EOF probe is not evidence for those cases. Published
 artifacts and installed-client acceptance remain separate from source tests.
+
+## Browser extension diagnostics
+
+Browser tasks may explicitly grant `browser_extension_status` and
+`browser_extension_call` through the ordinary `start_task` lifecycle. The latter
+accepts only `method: "snapshot"` and an `expected_origin` that exactly matches
+one of the task's `allowed_browser_origins`. Retain the provider ID returned by
+the Host; do not substitute a CDP target or another task's session credentials.
+
+Extension `click`, `type`, and `unpair` remain rejected by the MCP bridge until
+the extension action path enforces final action scopes and confirmation.
+Method admission does not establish pairing, provider availability, foreground
+readiness, or installed-browser acceptance. The task's Host must independently
+report the intended extension provider; an empty provider inventory is a blocker,
+not permission to switch providers or bypass the bridge.
