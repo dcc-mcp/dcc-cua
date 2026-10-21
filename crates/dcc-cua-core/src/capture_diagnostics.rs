@@ -20,7 +20,14 @@ pub(crate) struct PixelBufferDiagnostics {
     pub bgra_channel_histograms: [Vec<u64>; 4],
     pub capture_to_raw_elapsed_micros: u64,
     pub summary_elapsed_micros: u64,
+    pub png_encoded: bool,
     pub png_encode_elapsed_micros: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FramePurpose {
+    Validation,
+    Publication,
 }
 
 pub(crate) struct EncodedPixelFrame {
@@ -38,16 +45,6 @@ fn summarize_bgra(
     height: u32,
     capture_to_raw_elapsed: Duration,
 ) -> ComputerUseResult<PixelBufferDiagnostics> {
-    let expected = u64::from(width)
-        .checked_mul(u64::from(height))
-        .and_then(|pixels| pixels.checked_mul(4))
-        .and_then(|bytes| usize::try_from(bytes).ok());
-    if width == 0 || height == 0 || expected != Some(bgra.len()) {
-        return Err(ComputerUseError::new(
-            ComputerUseErrorCode::CaptureFailed,
-            "capture diagnostics require a complete, nonempty BGRA frame",
-        ));
-    }
     let started = Instant::now();
     let mut rgba_hash = Sha256::new();
     let mut histograms = std::array::from_fn(|_| vec![0_u64; 256]);
@@ -66,25 +63,43 @@ fn summarize_bgra(
         bgra_channel_histograms: histograms,
         capture_to_raw_elapsed_micros: micros(capture_to_raw_elapsed),
         summary_elapsed_micros: micros(started.elapsed()),
+        png_encoded: false,
         png_encode_elapsed_micros: 0,
     })
 }
 
-pub(crate) fn encode_exact_frame(
+pub(crate) fn prepare_exact_frame(
     bgra: &[u8],
     width: u32,
     height: u32,
     diagnostics_enabled: bool,
     capture_to_raw_elapsed: Duration,
+    purpose: FramePurpose,
 ) -> ComputerUseResult<EncodedPixelFrame> {
+    let expected = u64::from(width)
+        .checked_mul(u64::from(height))
+        .and_then(|pixels| pixels.checked_mul(4))
+        .and_then(|bytes| usize::try_from(bytes).ok());
+    if width == 0 || height == 0 || expected != Some(bgra.len()) {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::CaptureFailed,
+            "exact capture requires a complete, nonempty BGRA frame",
+        ));
+    }
     let mut diagnostics = diagnostics_enabled
         .then(|| summarize_bgra(bgra, width, height, capture_to_raw_elapsed))
         .transpose()?;
     let encode_started = Instant::now();
-    let data = encode_bgra_to_png(bgra, width, height)?;
-    if let Some(diagnostics) = &mut diagnostics {
-        diagnostics.png_encode_elapsed_micros = micros(encode_started.elapsed());
-    }
+    let data = if purpose == FramePurpose::Publication {
+        let data = encode_bgra_to_png(bgra, width, height)?;
+        if let Some(diagnostics) = &mut diagnostics {
+            diagnostics.png_encoded = true;
+            diagnostics.png_encode_elapsed_micros = micros(encode_started.elapsed());
+        }
+        data
+    } else {
+        Vec::new()
+    };
     Ok(EncodedPixelFrame { data, diagnostics })
 }
 

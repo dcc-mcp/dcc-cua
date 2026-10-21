@@ -1,6 +1,7 @@
 use rstest::rstest;
 use serde_json::{Value, json};
 
+use super::frame_recovery::add_frame_recovery_guidance;
 use super::*;
 
 mod capture_preparation_tests;
@@ -76,6 +77,56 @@ fn test_server() -> TaskAuthorizationServer {
     server.recording_output_root = None;
     server.capture_preparation_journal_root = None;
     server
+}
+
+#[rstest]
+#[case("maximized", "target_maximized")]
+#[case("minimized", "target_minimized")]
+fn native_frame_recovery_keeps_the_exact_task_and_a_valid_closed_call(
+    #[case] state_flag: &str,
+    #[case] reason: &str,
+) {
+    let mut response = json!({"type":"window_state", "state":{state_flag:true}});
+    add_frame_recovery_guidance(&mut response, "task-owned", true);
+    let recovery = &response["frame_recovery"];
+    assert_eq!(recovery["reason"], reason);
+    assert_eq!(recovery["automatic_input"], false);
+    assert_eq!(recovery["fresh_window_state_required_after_restore"], true);
+    let call = &recovery["next_call"];
+    assert_eq!(call["tool"], "dcc_cua_task_call");
+    assert_eq!(call["arguments"]["task_id"], "task-owned");
+    assert_eq!(
+        call["arguments"]["params"],
+        json!({"operation":"restore_activate"})
+    );
+    validate_task_method_params(
+        call["arguments"]["method"].as_str().unwrap(),
+        &call["arguments"]["params"],
+    )
+    .unwrap();
+}
+
+#[rstest]
+fn native_frame_recovery_does_not_advertise_an_ungranted_restore() {
+    let mut response = json!({"state":{"maximized":true}});
+    add_frame_recovery_guidance(&mut response, "task-owned", false);
+    assert!(response["frame_recovery"].get("next_call").is_none());
+    assert_eq!(response["frame_recovery"]["requires_new_task"], true);
+    assert_eq!(
+        response["frame_recovery"]["required_method"],
+        "change_window_state"
+    );
+}
+
+#[rstest]
+#[case(json!({"maximized":false,"minimized":false}))]
+#[case(json!({"maximized":true,"window_state_id":"native-state-owned"}))]
+#[case(json!({"visible":false}))]
+fn native_frame_recovery_preserves_other_metadata(#[case] state: Value) {
+    let mut response = json!({"state":state});
+    let original = response.clone();
+    add_frame_recovery_guidance(&mut response, "task-owned", true);
+    assert_eq!(response, original);
 }
 
 fn native_recording_task() -> Value {

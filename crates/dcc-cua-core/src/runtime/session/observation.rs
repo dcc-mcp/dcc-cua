@@ -950,6 +950,7 @@ impl ComputerUseSession {
                     target.pid,
                     target.window_id,
                     capture_diagnostics,
+                    crate::capture_diagnostics::FramePurpose::Validation,
                 )
             },
         )
@@ -972,6 +973,7 @@ impl ComputerUseSession {
                     after.pid,
                     after.window_id,
                     capture_diagnostics,
+                    crate::capture_diagnostics::FramePurpose::Publication,
                 )
             },
         )
