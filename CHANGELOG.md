@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.12.1](https://github.com/dcc-mcp/dcc-cua/compare/v1.12.0...v1.12.1) (2026-10-21)
+
+
+### Bug Fixes
+
+* admit read-only extension task diagnostics ([#360](https://github.com/dcc-mcp/dcc-cua/issues/360)) ([4f8613f](https://github.com/dcc-mcp/dcc-cua/commit/4f8613f184b998c9a61f03f6876047e9ba43181b))
+
 ## [1.12.0](https://github.com/dcc-mcp/dcc-cua/compare/v1.11.2...v1.12.0) (2026-10-19)
 
 
