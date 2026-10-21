@@ -206,6 +206,7 @@ impl ComputerUseSession {
 #[cfg(windows)]
 fn map_error(error: UiaError) -> ComputerUseError {
     let code = match error {
+        UiaError::UserInterrupted => ComputerUseErrorCode::UserInterrupted,
         UiaError::InvalidTarget(_) => ComputerUseErrorCode::InvalidTarget,
         UiaError::TargetMinimized(_) => ComputerUseErrorCode::TargetMinimized,
         UiaError::StaleSnapshot(_) => ComputerUseErrorCode::StaleObservation,

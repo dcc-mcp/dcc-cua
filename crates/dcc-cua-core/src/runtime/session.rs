@@ -197,7 +197,7 @@ impl ComputerUseSession {
         self.finish_observation_sensitive_attempt(availability)?;
         #[cfg(windows)]
         let activation = {
-            let activation = dcc_cua_platform_windows::activate_window(
+            let activation = activate_windows_with_interrupt_gate(
                 dcc_cua_platform_windows::UiaTarget {
                     process_id: expected.pid,
                     window_handle: expected.window_id,
@@ -848,7 +848,7 @@ impl ComputerUseSession {
         {
             let activation_preflight = self.require_observed_input_available();
             self.run_gated_implicit_activation_attempt(activation_preflight, || {
-                dcc_cua_platform_windows::activate_window(
+                activate_windows_with_interrupt_gate(
                     dcc_cua_platform_windows::UiaTarget {
                         process_id: target.pid,
                         window_handle: target.window_id,
@@ -924,7 +924,7 @@ impl ComputerUseSession {
             let y = point["y"].as_f64().expect("validated cursor y") as i32;
             let activation_preflight = self.require_observed_input_available();
             self.run_gated_implicit_activation_attempt(activation_preflight, || {
-                dcc_cua_platform_windows::activate_window(
+                activate_windows_with_interrupt_gate(
                     dcc_cua_platform_windows::UiaTarget {
                         process_id: target.pid,
                         window_handle: target.window_id,
@@ -1864,7 +1864,7 @@ impl ComputerUseSession {
             let mut target = target;
             let mut activation = activation;
             if !target.is_foreground {
-                dcc_cua_platform_windows::activate_window(
+                activate_windows_with_interrupt_gate(
                     dcc_cua_platform_windows::UiaTarget {
                         process_id: target.pid,
                         window_handle: target.window_id,

@@ -689,6 +689,15 @@ pub struct ComputerUseSemanticRootFocusDiagnostic {
     pub foreground_observed: Option<bool>,
 }
 
+/// A raw previous-focus HWND, including NULL, does not prove foreground activation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ComputerUseAttachedFocusDiagnostic {
+    pub previous_focus_window_handle: u64,
+    pub last_error_on_null: Option<u32>,
+    pub foreground_observed: bool,
+}
+
 /// Content-free measurements, not a claim that Windows' refusal cause is known.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -707,6 +716,8 @@ pub struct ComputerUseForegroundActivationDiagnostic {
     pub foreground_poll_count: u8,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub semantic_root_focus: Option<ComputerUseSemanticRootFocusDiagnostic>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attached_focus: Option<ComputerUseAttachedFocusDiagnostic>,
 }
 
 fn deserialize_foreground_activation_attempts<'de, D>(

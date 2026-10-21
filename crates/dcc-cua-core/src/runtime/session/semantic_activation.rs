@@ -30,7 +30,7 @@ impl ComputerUseSession {
         let pixels_only =
             self.pixel_observation_route == Some(PixelObservationRoute::ExplicitPixelsOnly);
         self.invalidate_action_observations();
-        let activation = dcc_cua_platform_windows::activate_window(
+        let activation = activate_windows_with_interrupt_gate(
             dcc_cua_platform_windows::UiaTarget {
                 process_id: expected_pid,
                 window_handle: expected_window,

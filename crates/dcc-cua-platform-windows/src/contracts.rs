@@ -114,6 +114,15 @@ impl WindowsForegroundActivationAttempt {
     }
 }
 
+/// The raw HWND returned by SetFocus is the previous focus, not a BOOL or success proof.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WindowsAttachedFocusDiagnostic {
+    pub previous_focus_window_handle: u64,
+    pub last_error_on_null: Option<u32>,
+    pub foreground_observed: bool,
+}
+
 /// Content-free observations of activation attempts, not a root-cause claim.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -162,6 +171,8 @@ pub struct WindowsForegroundActivationDiagnostic {
     pub foreground_poll_count: u8,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub semantic_root_focus: Option<WindowsSemanticRootFocusDiagnostic>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attached_focus: Option<WindowsAttachedFocusDiagnostic>,
 }
 
 fn deserialize_activation_attempts<'de, D>(
@@ -204,6 +215,8 @@ pub struct UiaAction {
 
 #[derive(Debug, thiserror::Error)]
 pub enum UiaError {
+    #[error("Windows window activation was interrupted")]
+    UserInterrupted,
     #[error("Windows UI Automation fallback is unavailable on this platform")]
     Unsupported,
     #[error("Windows UI Automation target is invalid: {0}")]
