@@ -115,6 +115,36 @@ impl WindowsForegroundActivationAttempt {
 }
 
 /// Content-free observations of activation attempts, not a root-cause claim.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WindowsSemanticRootFocusStatus {
+    UnavailableContext,
+    StaleContext,
+    PrerequisiteRejected,
+    NotFocusable,
+    ProviderRejected,
+    DispatchUnknown,
+    ForegroundRefused,
+    PostconditionFailed,
+    Activated,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WindowsSemanticRootFocusDiagnostic {
+    pub status: WindowsSemanticRootFocusStatus,
+    /// True at the worker request boundary; DispatchUnknown does not prove SetFocus completed.
+    pub focus_attempted: Option<bool>,
+    pub provider_completed: bool,
+    pub foreground_observed: Option<bool>,
+}
+
+#[derive(Debug)]
+pub struct WindowsSemanticRootFocusOutcome {
+    pub diagnostic: WindowsForegroundActivationDiagnostic,
+    pub prerequisite_error: Option<UiaError>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WindowsForegroundActivationDiagnostic {
@@ -130,6 +160,8 @@ pub struct WindowsForegroundActivationDiagnostic {
     pub attempts: Vec<WindowsForegroundActivationAttempt>,
     #[serde(deserialize_with = "deserialize_activation_poll_count")]
     pub foreground_poll_count: u8,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub semantic_root_focus: Option<WindowsSemanticRootFocusDiagnostic>,
 }
 
 fn deserialize_activation_attempts<'de, D>(

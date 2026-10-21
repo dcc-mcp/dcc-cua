@@ -2059,6 +2059,64 @@ fn foreground_activation_platform_fixture() -> crate::WindowsForegroundActivatio
     })).unwrap()
 }
 
+#[cfg(windows)]
+#[rstest]
+fn semantic_root_activation_backend_checks_root_identity_and_focusability() {
+    let _guard = policy_fixture_test_guard();
+    let mut worker = UiaWorker::start().expect("start existing policy fixture worker");
+    for (field, value, expected) in [
+        ("ready", json!(true), true),
+        ("process_id", json!(43), false),
+        ("window_handle", json!(78), false),
+        ("control_type", json!("ControlType.Pane"), false),
+        ("keyboard_focusable", json!(false), false),
+        ("enabled", json!(false), false),
+        ("visible", json!(false), false),
+        ("offscreen", json!(true), false),
+        ("minimized", json!(true), false),
+        ("same_root", json!(false), false),
+    ] {
+        let mut facts = json!({
+            "ready":true,"expected_process_id":42,"expected_window_handle":77,
+            "process_id":42,"window_handle":77,"control_type":"ControlType.Window",
+            "keyboard_focusable":true,"enabled":true,"visible":true,
+            "offscreen":false,"minimized":false,"same_root":true
+        });
+        facts[field] = value;
+        let response = evaluate_policy_fixture(
+            &mut worker,
+            json!({"operation":"exact_root_focus_allowed", "facts":facts}),
+        )
+        .expect("exact-root focus guard fixture response");
+        assert_eq!(response["ok"], true);
+        assert_eq!(response["result"], expected, "guard field {field}");
+    }
+}
+
+#[cfg(windows)]
+#[rstest]
+fn semantic_root_activation_high_bit_uia_handle_matches_only_its_native_low_bits() {
+    let _guard = policy_fixture_test_guard();
+    let mut worker = UiaWorker::start().expect("start existing policy fixture worker");
+    let native_handle = 0x8000_0001_i64;
+    let signed_uia_handle = i64::from(i32::MIN + 1);
+    for (uia_handle, expected) in [(signed_uia_handle, true), (signed_uia_handle + 1, false)] {
+        let facts = json!({
+            "ready":true,"expected_process_id":42,"expected_window_handle":native_handle,
+            "process_id":42,"window_handle":uia_handle,"control_type":"ControlType.Window",
+            "keyboard_focusable":true,"enabled":true,"visible":true,
+            "offscreen":false,"minimized":false,"same_root":true
+        });
+        let response = evaluate_policy_fixture(
+            &mut worker,
+            json!({"operation":"exact_root_focus_allowed", "facts":facts}),
+        )
+        .expect("signed UIA HWND fixture response");
+        assert_eq!(response["ok"], true);
+        assert_eq!(response["result"], expected, "UIA HWND {uia_handle}");
+    }
+}
+
 #[rstest]
 fn foreground_activation_platform_contract_roundtrips_final_detach_evidence() {
     let fixture = foreground_activation_platform_fixture();

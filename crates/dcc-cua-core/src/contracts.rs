@@ -666,6 +666,29 @@ pub struct ComputerUseForegroundActivationAttempt {
     pub os_error: Option<u32>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ComputerUseSemanticRootFocusStatus {
+    UnavailableContext,
+    StaleContext,
+    PrerequisiteRejected,
+    NotFocusable,
+    ProviderRejected,
+    DispatchUnknown,
+    ForegroundRefused,
+    PostconditionFailed,
+    Activated,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ComputerUseSemanticRootFocusDiagnostic {
+    pub status: ComputerUseSemanticRootFocusStatus,
+    pub focus_attempted: Option<bool>,
+    pub provider_completed: bool,
+    pub foreground_observed: Option<bool>,
+}
+
 /// Content-free measurements, not a claim that Windows' refusal cause is known.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -682,6 +705,8 @@ pub struct ComputerUseForegroundActivationDiagnostic {
     pub attempts: Vec<ComputerUseForegroundActivationAttempt>,
     #[serde(deserialize_with = "deserialize_foreground_activation_poll_count")]
     pub foreground_poll_count: u8,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub semantic_root_focus: Option<ComputerUseSemanticRootFocusDiagnostic>,
 }
 
 fn deserialize_foreground_activation_attempts<'de, D>(

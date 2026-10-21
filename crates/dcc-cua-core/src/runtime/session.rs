@@ -20,6 +20,8 @@ pub(crate) use capture_preparation::preparation_error as map_capture_preparation
 mod linux_pixels;
 mod observation;
 mod pixel_start;
+#[cfg(windows)]
+mod semantic_activation;
 #[cfg(test)]
 mod tests;
 mod window_restore;
@@ -1902,28 +1904,7 @@ impl ComputerUseSession {
         {
             let expected_pid = target.pid;
             let expected_window = target.window_id;
-            let mutation_gate = self.finish_observed_input_gate(
-                interactive_desktop::require_window_activation_available(),
-            );
-            run_gated_preinvalidated_window_mutation(
-                || mutation_gate,
-                || self.invalidate_action_observations(),
-                || {
-                    dcc_cua_platform_windows::activate_window(
-                        dcc_cua_platform_windows::UiaTarget {
-                            process_id: expected_pid,
-                            window_handle: expected_window,
-                        },
-                        || windows_platform_window_activation_gate("explicit_activation"),
-                    )
-                    .map_err(|error| {
-                        map_windows_window_mutation_error(
-                            "activate the exact Windows target",
-                            error,
-                        )
-                    })
-                },
-            )?;
+            let root_focus_diagnostic = self.activate_windows_with_semantic_root(&target).await?;
             let target = self.require_observed_target_available().await?;
             self.require_observed_window_activation_available()?;
             if target.pid != expected_pid || target.window_id != expected_window {
@@ -1953,10 +1934,14 @@ impl ComputerUseSession {
             }
             self.target = Some(target.clone());
             self.set_banner_activity(BannerActivity::Ready);
+            let mut activation_path = json!({"path":"windows_exact_foreground"});
+            if let Some(diagnostic) = root_focus_diagnostic {
+                activation_path["semantic_root_focus"] = json!(diagnostic);
+            }
             Ok(json!({
                 "success": true,
                 "target": target,
-                "cua": {"path": "windows_exact_foreground"},
+                "cua": activation_path,
                 "text": "Activated the exact Windows PID/HWND target.",
                 "degraded": false,
                 "automatic_input": false,

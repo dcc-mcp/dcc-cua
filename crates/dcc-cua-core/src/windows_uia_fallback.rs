@@ -101,6 +101,34 @@ impl WindowsUiaFallback {
             degraded: false,
         })
     }
+
+    pub(crate) async fn focus_root_after_activation_refusal(
+        &self,
+        before: dcc_cua_platform_windows::ExactWindowNativeState,
+        diagnostic: dcc_cua_platform_windows::WindowsForegroundActivationDiagnostic,
+        interrupt_generation: u64,
+    ) -> ComputerUseResult<dcc_cua_platform_windows::WindowsSemanticRootFocusOutcome> {
+        let session = Arc::clone(&self.session);
+        tokio::task::spawn_blocking(move || {
+            let mut session = session.lock().map_err(|_| {
+                backend_error("Windows UIA session lock was poisoned before root activation")
+            })?;
+            Ok(
+                session.focus_root_after_activation_refusal(before, diagnostic, || {
+                    if dcc_cua_interrupt::interrupt_generation() != interrupt_generation {
+                        return Err(UiaError::PermissionDenied(
+                            "root activation was interrupted".into(),
+                        ));
+                    }
+                    crate::runtime::windows_platform_window_activation_gate(
+                        "semantic_root_activation",
+                    )
+                }),
+            )
+        })
+        .await
+        .map_err(|_| backend_error("Windows UIA root activation worker completion is unknown"))?
+    }
 }
 
 impl ComputerUseSession {

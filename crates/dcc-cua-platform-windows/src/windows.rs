@@ -224,6 +224,7 @@ pub struct UiaSession {
     target: UiaTarget,
     worker: Option<UiaWorker>,
     snapshot: Option<SnapshotState>,
+    root_activation_snapshot: Option<(crate::ExactWindowPixelInstanceEvidence, std::time::Instant)>,
 }
 
 impl UiaSession {
@@ -232,6 +233,7 @@ impl UiaSession {
             target,
             worker: None,
             snapshot: None,
+            root_activation_snapshot: None,
         }
     }
 
@@ -241,6 +243,12 @@ impl UiaSession {
         max_depth: u32,
         allow_owned_standard_menu_popup: bool,
     ) -> Result<Value, UiaError> {
+        self.root_activation_snapshot = None;
+        let instance_before = crate::visible_capture::exact_window_instance_evidence(
+            self.target.process_id,
+            self.target.window_handle,
+        )
+        .ok();
         let payload = json!({
             "mode": "snapshot",
             "scope": self.scope(allow_owned_standard_menu_popup),
@@ -255,6 +263,14 @@ impl UiaSession {
         ensure_ok(&raw)?;
         let (value, state) = normalize(&raw)?;
         self.snapshot = Some(state);
+        self.root_activation_snapshot = instance_before.and_then(|before| {
+            let after = crate::visible_capture::exact_window_instance_evidence(
+                self.target.process_id,
+                self.target.window_handle,
+            )
+            .ok()?;
+            (before == after).then_some((before, std::time::Instant::now()))
+        });
         Ok(value)
     }
 
@@ -287,10 +303,169 @@ impl UiaSession {
         });
         let raw = self.request(&payload);
         self.snapshot = None;
+        self.root_activation_snapshot = None;
         let foreground =
             foreground.map(|(window, process_id)| restore_foreground(window, process_id));
         let raw = raw?;
         completed_action_result(&raw, foreground)
+    }
+
+    /// One existing-worker root request after explicit semantic activation failed.
+    /// The request retains the existing 15-second worker timeout and cleanup;
+    /// there is no startup, snapshot retry, or second SetFocus dispatch here.
+    pub fn focus_root_after_activation_refusal(
+        &mut self,
+        before: crate::ExactWindowNativeState,
+        mut diagnostic: WindowsForegroundActivationDiagnostic,
+        activation_available: impl FnOnce() -> Result<(), UiaError>,
+    ) -> crate::WindowsSemanticRootFocusOutcome {
+        use crate::{
+            WindowsSemanticRootFocusDiagnostic as Focus, WindowsSemanticRootFocusStatus as Status,
+        };
+        let mut focus = Focus {
+            status: Status::UnavailableContext,
+            focus_attempted: Some(false),
+            provider_completed: false,
+            foreground_observed: None,
+        };
+        let outcome = (|| -> Result<(), UiaError> {
+            let snapshot = self.snapshot.take();
+            let root_activation_snapshot = self.root_activation_snapshot.take();
+            let snapshot = snapshot.ok_or_else(|| {
+                UiaError::StaleSnapshot("root activation requires an existing UIA snapshot".into())
+            })?;
+            let (instance, observed_at) = root_activation_snapshot.ok_or_else(|| {
+                UiaError::StaleSnapshot(
+                    "root activation requires its original native instance".into(),
+                )
+            })?;
+            if self.worker.is_none() {
+                return Err(UiaError::BackendUnavailable(
+                    "root activation cannot start a UIA worker".into(),
+                ));
+            }
+            focus.status = Status::StaleContext;
+            if observed_at.elapsed() > Duration::from_secs(5) {
+                return Err(UiaError::StaleSnapshot(
+                    "root activation UIA snapshot expired".into(),
+                ));
+            }
+            focus.status = Status::PrerequisiteRejected;
+            crate::exact_window_state::validate_instance(self.target, instance, &before)?;
+            let frame = before.bounds.ok_or_else(|| {
+                UiaError::InvalidTarget("root activation requires the original native frame".into())
+            })?;
+            let root = snapshot.fences.first().ok_or_else(|| {
+                UiaError::StaleSnapshot("root activation snapshot has no root fence".into())
+            })?;
+            let payload = json!({
+                "mode":"focus_root", "scope":self.scope(false),
+                "expected_fence":fence_value(root),
+            });
+            activation_available()?;
+            let current = crate::exact_window_native_state(
+                self.target.process_id,
+                self.target.window_handle,
+            )?;
+            crate::exact_window_state::validate_instance(self.target, instance, &current)?;
+            let expected =
+                require_available_window_handle(self.target, "semantic root activation")?;
+            if observed_at.elapsed() > Duration::from_secs(5) {
+                focus.status = Status::StaleContext;
+                return Err(UiaError::StaleSnapshot(
+                    "root activation UIA snapshot expired before dispatch".into(),
+                ));
+            }
+            focus.status = Status::DispatchUnknown;
+            focus.focus_attempted = Some(true);
+            // Directly use the retained worker: request() must not cold-start one.
+            let raw = self
+                .worker
+                .as_mut()
+                .expect("worker checked above")
+                .request(&payload)?;
+            focus.focus_attempted = Some(
+                raw.get("focus_attempted")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(true),
+            );
+            focus.provider_completed =
+                raw.get("provider_completed").and_then(Value::as_bool) == Some(true);
+            match raw.get("root_focus_status").and_then(Value::as_str) {
+                Some("completed")
+                    if raw["ok"] == true
+                        && focus.focus_attempted == Some(true)
+                        && focus.provider_completed => {}
+                Some("not_focusable") if focus.focus_attempted == Some(false) => {
+                    focus.status = Status::NotFocusable;
+                    return Err(UiaError::InvalidTarget(
+                        "the exact UIA Window root is not keyboard focusable".into(),
+                    ));
+                }
+                Some("prerequisite_rejected") if focus.focus_attempted == Some(false) => {
+                    focus.status = Status::PrerequisiteRejected;
+                    return Err(UiaError::InvalidTarget(
+                        "the exact UIA Window root failed its action-time fence".into(),
+                    ));
+                }
+                Some("provider_rejected") if focus.focus_attempted == Some(true) => {
+                    focus.status = Status::ProviderRejected;
+                    return Err(UiaError::OperationFailed(
+                        "the UIA provider refused root focus".into(),
+                    ));
+                }
+                _ => {
+                    return Err(UiaError::BackendUnavailable(
+                        "root focus completion could not be established".into(),
+                    ));
+                }
+            }
+            focus.status = Status::PostconditionFailed;
+            let current = crate::exact_window_native_state(
+                self.target.process_id,
+                self.target.window_handle,
+            )?;
+            crate::exact_window_state::validate_instance(self.target, instance, &current)?;
+            focus.foreground_observed = Some(current.foreground);
+            if !current.foreground {
+                focus.status = Status::ForegroundRefused;
+                return Err(UiaError::OperationFailed(
+                    "UIA root focus did not acquire the exact native foreground".into(),
+                ));
+            }
+            require_available_window_handle(self.target, "semantic root activation completion")?;
+            restore_window_frame_after_activation(expected, frame, &mut diagnostic)?;
+            synchronize_activated_input_queue(expected, &diagnostic)?;
+            let after = crate::exact_window_native_state(
+                self.target.process_id,
+                self.target.window_handle,
+            )?;
+            crate::exact_window_state::validate_instance(self.target, instance, &after)?;
+            focus.foreground_observed = Some(after.foreground);
+            if !after.foreground
+                || !after.visible
+                || after.minimized
+                || after.maximized != before.maximized
+                || after.bounds != Some(frame)
+            {
+                return Err(UiaError::OperationFailed(
+                    "the exact native root activation postcondition changed".into(),
+                ));
+            }
+            focus.status = Status::Activated;
+            Ok(())
+        })();
+        let prerequisite_error = outcome.err().filter(|_| {
+            focus.status == Status::PrerequisiteRejected && focus.focus_attempted == Some(false)
+        });
+        if focus.focus_attempted == Some(true) {
+            diagnostic.final_foreground = live_window_identity(unsafe { GetForegroundWindow() });
+        }
+        diagnostic.semantic_root_focus = Some(focus);
+        crate::WindowsSemanticRootFocusOutcome {
+            diagnostic,
+            prerequisite_error,
+        }
     }
 
     fn scope(&self, allow_owned_standard_menu_popup: bool) -> Value {
@@ -425,6 +600,7 @@ fn activation_diagnostic(
         // attempts. Never truncate a final detach or frame restoration result.
         attempts: Vec::with_capacity(16),
         foreground_poll_count: 0,
+        semantic_root_focus: None,
     }
 }
 
@@ -1239,3 +1415,6 @@ fn read_bounded(reader: impl Read, limit: u64) -> Vec<u8> {
     let _ = reader.read_to_end(&mut output);
     output
 }
+
+#[cfg(test)]
+mod tests;

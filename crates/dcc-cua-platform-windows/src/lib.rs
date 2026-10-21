@@ -47,7 +47,8 @@ pub use contracts::{
     UiaAction, UiaError, UiaTarget, WindowsForegroundActivationAttempt,
     WindowsForegroundActivationDiagnostic, WindowsForegroundActivationPhase,
     WindowsForegroundRelation, WindowsPointerButton, WindowsRawInputSnapshot,
-    WindowsWindowIdentity,
+    WindowsSemanticRootFocusDiagnostic, WindowsSemanticRootFocusOutcome,
+    WindowsSemanticRootFocusStatus, WindowsWindowIdentity,
 };
 
 #[cfg(windows)]

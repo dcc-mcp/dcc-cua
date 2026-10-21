@@ -210,6 +210,27 @@ to switch windows. Repair the native/Agent Host handoff before a fresh input
 attempt. No implicit activation or operating-system focus restriction bypass is
 introduced by this guidance.
 
+An explicit semantic `activate` may continue a native foreground refusal with
+one exact UIA Window-root focus request. This internal continuation requires the
+same target's already-running UIA worker and its latest native-instance-bound
+root fence, no more than five seconds old. It consumes that private context;
+the old public observation IDs, element tokens, and epoch remain invalidated.
+It cannot redirect to an owned popup, focus a child control, or open another
+worker. The root must still match PID/HWND, be a visible, enabled, non-minimized
+Window, and report `IsKeyboardFocusable=true` at dispatch. No generic `focus`
+action is added to task authorization. Pixels-only, bootstrap, and implicit
+physical-input activation never use this UIA continuation.
+
+The continuation uses one existing-worker request with the existing 15-second
+timeout and cleanup, without another snapshot, cold startup, or retry. UIA's
+void `SetFocus` completion is reported separately as `semantic_root_focus`,
+never as a native BOOL. Success still requires the same complete native window
+instance, actual foreground, original frame, and `WM_NULL` synchronization.
+Worker timeout, disconnect, incomplete attempted focus, or failed postcondition
+retains the original native refusal and reports unknown focus effects; it grants
+no keyboard or pointer input and no automatic retry. Worker shutdown alone is not
+proof of quiescence.
+
 To minimize, call `dcc_cua_task_call` with `method: "minimize_window"` and
 `params: {"observation_id": "<latest snapshot observation_id>"}`. The retained
 task must grant both the method and the exact `window_state/minimize_window`

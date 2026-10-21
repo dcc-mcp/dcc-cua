@@ -104,7 +104,7 @@ fn windows_platform_input_gate(
 }
 
 #[cfg(windows)]
-fn windows_platform_window_activation_gate(
+pub(crate) fn windows_platform_window_activation_gate(
     stage: &'static str,
 ) -> Result<(), dcc_cua_platform_windows::UiaError> {
     interactive_desktop::require_window_activation_available().map_err(|error| {
@@ -263,6 +263,26 @@ fn map_foreground_activation_diagnostic(
             })
             .collect(),
         foreground_poll_count: diagnostic.foreground_poll_count,
+        semantic_root_focus: diagnostic.semantic_root_focus.as_ref().map(|focus| {
+            use ComputerUseSemanticRootFocusStatus as Public;
+            use dcc_cua_platform_windows::WindowsSemanticRootFocusStatus as Native;
+            ComputerUseSemanticRootFocusDiagnostic {
+                status: match focus.status {
+                    Native::UnavailableContext => Public::UnavailableContext,
+                    Native::StaleContext => Public::StaleContext,
+                    Native::PrerequisiteRejected => Public::PrerequisiteRejected,
+                    Native::NotFocusable => Public::NotFocusable,
+                    Native::ProviderRejected => Public::ProviderRejected,
+                    Native::DispatchUnknown => Public::DispatchUnknown,
+                    Native::ForegroundRefused => Public::ForegroundRefused,
+                    Native::PostconditionFailed => Public::PostconditionFailed,
+                    Native::Activated => Public::Activated,
+                },
+                focus_attempted: focus.focus_attempted,
+                provider_completed: focus.provider_completed,
+                foreground_observed: focus.foreground_observed,
+            }
+        }),
     }
 }
 

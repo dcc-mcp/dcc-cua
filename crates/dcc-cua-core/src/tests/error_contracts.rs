@@ -145,6 +145,50 @@ fn queued_foreground_activation_phase_survives_native_mapping_and_core_roundtrip
     );
 }
 
+#[cfg(windows)]
+#[rstest]
+#[case("unavailable_context")]
+#[case("stale_context")]
+#[case("prerequisite_rejected")]
+#[case("not_focusable")]
+#[case("provider_rejected")]
+#[case("dispatch_unknown")]
+#[case("foreground_refused")]
+#[case("postcondition_failed")]
+#[case("activated")]
+fn semantic_root_activation_diagnostic_is_lossless_without_a_fabricated_native_bool(
+    #[case] status: &str,
+) {
+    let mut expected = serde_json::to_value(foreground_activation_core_fixture()).unwrap();
+    let api_attempts = expected["attempts"].clone();
+    expected["semantic_root_focus"] = json!({
+        "status":status,"focus_attempted":true,"provider_completed":false,
+        "foreground_observed":null
+    });
+    let native = serde_json::from_value::<
+        dcc_cua_platform_windows::WindowsForegroundActivationDiagnostic,
+    >(expected.clone())
+    .unwrap();
+    let error = map_windows_window_mutation_error(
+        "activate exact target",
+        dcc_cua_platform_windows::UiaError::ForegroundActivationRefused {
+            reason: "original native refusal".into(),
+            background_delivery_viable: true,
+            suggested_delivery_mode: Some("background".into()),
+            diagnostic: Some(Box::new(native)),
+        },
+    );
+    let mapped = error.details.unwrap().foreground_activation.unwrap();
+    let value = serde_json::to_value(&mapped).unwrap();
+    assert_eq!(value, expected);
+    assert_eq!(value["attempts"], api_attempts);
+    assert_eq!(value["semantic_root_focus"].get("api_return"), None);
+    assert_eq!(
+        serde_json::from_value::<crate::ComputerUseForegroundActivationDiagnostic>(value).unwrap(),
+        mapped
+    );
+}
+
 #[rstest]
 fn capture_diagnostic_contract_rejects_arbitrary_reason_and_stage_strings() {
     let mut value = json!({
