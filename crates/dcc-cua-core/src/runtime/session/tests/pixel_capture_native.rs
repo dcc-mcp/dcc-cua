@@ -113,16 +113,18 @@ pub(crate) mod capture_diagnostics {
         pub data: Vec<u8>,
         pub diagnostics: Option<PixelBufferDiagnostics>,
     }
-    pub fn encode_exact_frame(
+    pub(crate) use super::FramePurpose;
+    pub fn prepare_exact_frame(
         bgra: &[u8],
         width: u32,
         height: u32,
         enabled: bool,
         _: Duration,
+        purpose: FramePurpose,
     ) -> ComputerUseResult<EncodedPixelFrame> {
         // Hashes/PNG correctness use the real pure module's separate tests.
         Ok(EncodedPixelFrame {
-            data: encode_bgra_to_png(bgra, width, height)?,
+            data: if purpose == FramePurpose::Publication { encode_bgra_to_png(bgra, width, height)? } else { Vec::new() },
             diagnostics: enabled.then_some(PixelBufferDiagnostics),
         })
     }
@@ -338,7 +340,7 @@ fn stable_instances_publish_on_all_shared_paths_and_capture_branches() {
             );
             OS.with_borrow(|os| {
                 assert!(os.evidence.is_empty());
-                assert_eq!(os.trace.iter().filter(|step| **step == "encode").count(), 2);
+                assert_eq!(os.trace.iter().filter(|step| **step == "encode").count(), 1);
                 assert_eq!(os.trace.contains(&"accessibility"), path.is_none());
             });
         }
@@ -366,10 +368,7 @@ fn late_instance_drift_remains_rejected_between_or_inside_final_capture() {
                     assert_eq!(session.publications, 0);
                     OS.with_borrow(|os| {
                         assert!(os.evidence.is_empty());
-                        assert!(
-                            os.trace.contains(&"encode"),
-                            "the stable first capture was actually reached"
-                        );
+                        assert_eq!(os.trace.iter().filter(|step| **step == "encode").count(), usize::from(sequence[2] == sequence[3]), "only the internally valid final capture may encode");
                     });
                 }
             }
@@ -398,7 +397,7 @@ fn opt_in_diagnostics_use_only_the_existing_two_fenced_captures() {
             assert_eq!(session.publications, 1);
             assert_eq!(
                 OS.with_borrow(|os| os.trace.iter().filter(|entry| **entry == "encode").count()),
-                2
+                1
             );
             assert!(OS.with_borrow(|os| os.evidence.is_empty()));
         }
@@ -511,7 +510,7 @@ fn actual_wgc_dimensions_publish_only_the_unique_dwm_origin() {
                     .count(),
                 2
             );
-            assert_eq!(os.trace.iter().filter(|step| **step == "encode").count(), 2);
+            assert_eq!(os.trace.iter().filter(|step| **step == "encode").count(), 1);
             assert!(!os.trace.contains(&"visible pixels"));
         });
     }
@@ -845,7 +844,7 @@ fn wgc_window_content_still_does_not_require_unobscured_desktop() {
                     .count(),
                 2
             );
-            assert_eq!(os.trace.iter().filter(|step| **step == "encode").count(), 2);
+            assert_eq!(os.trace.iter().filter(|step| **step == "encode").count(), 1);
             assert!(!os.trace.contains(&"visible pixels"));
         });
     }

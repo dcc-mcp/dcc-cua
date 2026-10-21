@@ -497,8 +497,9 @@ pub(crate) fn capture_verified_visible_bgra(
 pub(super) async fn capture_exact_window(
     process_id: u32,
     window_id: u64,
+    purpose: FramePurpose,
 ) -> ComputerUseResult<ExactWindowCapture> {
-    capture_exact_window_with_diagnostics(process_id, window_id, false).await
+    capture_exact_window_with_diagnostics(process_id, window_id, false, purpose).await
 }
 
 #[cfg(windows)]
@@ -506,6 +507,7 @@ pub(super) async fn capture_exact_window_with_diagnostics(
     process_id: u32,
     window_id: u64,
     diagnostics_enabled: bool,
+    purpose: crate::capture_diagnostics::FramePurpose,
 ) -> ComputerUseResult<ExactWindowCapture> {
     tokio::task::spawn_blocking(move || {
         let capture_started = std::time::Instant::now();
@@ -530,9 +532,9 @@ pub(super) async fn capture_exact_window_with_diagnostics(
         if route == dcc_cua_platform_windows::ExactWindowCaptureRoute::VerifiedVisible {
             let visible = capture_verified_visible_bgra(process_id, window_id, before, true)?;
             let capture_to_raw_elapsed = capture_started.elapsed();
-            let encoded = crate::capture_diagnostics::encode_exact_frame(
+            let encoded = crate::capture_diagnostics::prepare_exact_frame(
                 &visible.capture.bgra, visible.capture.width, visible.capture.height,
-                diagnostics_enabled, capture_to_raw_elapsed,
+                diagnostics_enabled, capture_to_raw_elapsed, purpose,
             )?;
             return Ok(ExactWindowCapture {
                 data: encoded.data,
@@ -593,8 +595,8 @@ pub(super) async fn capture_exact_window_with_diagnostics(
                         return Err(ComputerUseError::new(ComputerUseErrorCode::StaleObservation,
                             "the WGC raw frame dimensions differ from its actual content proof"));
                     }
-                    let encoded = crate::capture_diagnostics::encode_exact_frame(
-                        &frame.bgra, frame.width, frame.height, diagnostics_enabled, capture_to_raw_elapsed,
+                    let encoded = crate::capture_diagnostics::prepare_exact_frame(
+                        &frame.bgra, frame.width, frame.height, diagnostics_enabled, capture_to_raw_elapsed, purpose,
                     )?;
                     return Ok(ExactWindowCapture {
                         data: encoded.data,
@@ -631,9 +633,9 @@ pub(super) async fn capture_exact_window_with_diagnostics(
                 error
             })?;
         let capture_to_raw_elapsed = capture_started.elapsed();
-        let encoded = crate::capture_diagnostics::encode_exact_frame(
+        let encoded = crate::capture_diagnostics::prepare_exact_frame(
             &visible.capture.bgra, visible.capture.width, visible.capture.height,
-            diagnostics_enabled, capture_to_raw_elapsed,
+            diagnostics_enabled, capture_to_raw_elapsed, purpose,
         )?;
         Ok(ExactWindowCapture {
             data: encoded.data,
@@ -672,6 +674,7 @@ pub(super) async fn capture_exact_window_with_diagnostics(
 pub(super) async fn capture_exact_window(
     _process_id: u32,
     _window_id: u64,
+    _purpose: FramePurpose,
 ) -> ComputerUseResult<ExactWindowCapture> {
     Err(ComputerUseError::new(
         ComputerUseErrorCode::BackendUnavailable,

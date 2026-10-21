@@ -1,6 +1,12 @@
 // Public agent-facing contracts and the shared limits enforced by runtime policy.
 use std::sync::atomic::AtomicU64;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FramePurpose {
+    Validation,
+    Publication,
+}
+
 pub use cua_driver_sdk::{
     ConfiguredDriverOptions, DriverAuthorizationAction, DriverAuthorizationDecision,
     DriverAuthorizationHost, DriverAuthorizationHostError, DriverAuthorizationRequest,

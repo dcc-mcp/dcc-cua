@@ -768,7 +768,7 @@ impl ComputerUseSession {
             })?;
         let exact_capture = gated_exact_window_observation(
             interactive_desktop::require_exact_window_observation_available,
-            || capture_exact_window(target.pid, target.window_id),
+            || capture_exact_window(target.pid, target.window_id, FramePurpose::Validation),
         )
         .await;
         let captured = self.finish_observation_sensitive_attempt(exact_capture)?;
@@ -781,7 +781,13 @@ impl ComputerUseSession {
             .await?;
         let final_capture = gated_exact_window_observation(
             interactive_desktop::require_exact_window_observation_available,
-            || capture_exact_window(final_target.pid, final_target.window_id),
+            || {
+                capture_exact_window(
+                    final_target.pid,
+                    final_target.window_id,
+                    FramePurpose::Publication,
+                )
+            },
         )
         .await;
         let final_capture = self.finish_observation_sensitive_attempt(final_capture)?;
@@ -950,6 +956,7 @@ impl ComputerUseSession {
                     target.pid,
                     target.window_id,
                     capture_diagnostics,
+                    crate::capture_diagnostics::FramePurpose::Validation,
                 )
             },
         )
@@ -972,6 +979,7 @@ impl ComputerUseSession {
                     after.pid,
                     after.window_id,
                     capture_diagnostics,
+                    crate::capture_diagnostics::FramePurpose::Publication,
                 )
             },
         )

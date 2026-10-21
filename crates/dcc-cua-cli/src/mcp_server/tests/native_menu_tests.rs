@@ -14,6 +14,16 @@ fn native_menu_task_requires_independent_scope_and_exact_pixels_binding() {
     let prepared = server.prepare_task(task()).unwrap();
     let proposal = &server.proposals[prepared["task_id"].as_str().unwrap()];
     assert!(proposal.registration.allowed_actions[0].is_native_menu_dismiss());
+    let mut state = json!({"state":{"maximized":true}});
+    frame_recovery::annotate(&mut state, "menu-task", "get_window_state", proposal);
+    assert!(state["frame_recovery"].get("next_call").is_none());
+    assert_eq!(state["frame_recovery"]["requires_new_task"], true);
+    assert_eq!(
+        state["frame_recovery"]["blocking_action_scope"],
+        "dismiss_menu"
+    );
+    assert_eq!(state["frame_recovery"]["omit_action_scope"], "dismiss_menu");
+    assert!(state["frame_recovery"].get("required_method").is_none());
     let grant = task_session_grant(proposal, proposal.receipt.as_ref().unwrap());
     assert_eq!(grant["allow_raw_input"], false);
     assert_eq!(grant["allow_recording"], false);

@@ -12,6 +12,7 @@ mod inventory;
 mod native_fixture;
 mod native_menu_dismiss;
 mod owned_indicator_input;
+mod snapshot_latency;
 mod window_layout;
 use native_fixture::{Fixture, cursor_position, foreground, visible_windows_for};
 
