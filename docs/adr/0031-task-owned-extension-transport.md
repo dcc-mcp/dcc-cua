@@ -21,6 +21,9 @@ admitting extension methods also failed to enforce final action scopes.
   constructor-only admission accepts hello/ping/register/poll/complete/unregister;
   it exposes no session, UI or authorization entrypoint. Listener cancellation
   owns and cancels its connection workers.
+  Task startup waits for native endpoint binding and transport protection to
+  succeed; startup failure, timeout or caller cancellation cannot leave its
+  listener running or report a ready task.
 - Treat live connection diagnostics as bounded discovery hints, not authority.
   Derive endpoint names only from connection UUIDs, verify OS peer PID and current
   user, and recheck the full process birth before and after connecting. No caller
@@ -35,6 +38,9 @@ admitting extension methods also failed to enforce final action scopes.
   never migrates or reconnects to a different owner. Listener revocation closes
   its connections. Browser restart/disconnect clears pairing and requires a fresh
   user click. Task-owner hashes remain internal relay metadata.
+  Cancelling an in-flight provider poll makes its framed client unusable.
+  Unregistration uses a fresh connection to that same recorded owner, repeating
+  OS-peer and full-birth verification within the cleanup deadline.
 - Bind click/type to a task-retained snapshot, ref, provider, origin and current
   evidence epoch. Recheck foreground/desktop readiness and validate the exact
   final scope through the existing task-authorization broker before input.

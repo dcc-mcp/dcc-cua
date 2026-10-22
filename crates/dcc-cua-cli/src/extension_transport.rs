@@ -1,7 +1,8 @@
 //! Discovery records are hints, never task authority. Verify the OS peer and full birth.
 use dcc_cua_client::HostClient;
 use dcc_cua_core::ComputerUseDriver;
-use dcc_cua_host::{HostSecurityServices, HostTransport};
+use dcc_cua_host::HostSecurityServices;
+use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
@@ -46,11 +47,11 @@ pub(crate) fn unix_endpoint(base: &std::path::Path, id: Uuid) -> Option<String> 
 }
 
 pub(crate) struct ProviderListener {
-    handle: JoinHandle<()>,
+    handle: JoinHandle<Result<(), dcc_cua_host::HostError>>,
     owner: String,
 }
 
-pub(crate) fn ensure(
+pub(crate) async fn ensure(
     listener: &mut Option<ProviderListener>,
     driver: &ComputerUseDriver,
     connection_id: Option<&str>,
@@ -75,14 +76,14 @@ pub(crate) fn ensure(
             );
         }
         if listener.is_none() {
-            *listener = Some(ProviderListener::start(driver.clone(), id, owner, target)?);
+            *listener = Some(ProviderListener::start(driver.clone(), id, owner, target).await?);
         }
     }
     Ok(())
 }
 
 impl ProviderListener {
-    pub(crate) fn start(
+    pub(crate) async fn start(
         driver: ComputerUseDriver,
         connection_id: &str,
         owner: &str,
@@ -101,18 +102,42 @@ impl ProviderListener {
             window_handle,
             owner,
         );
+        let (ready, received) = oneshot::channel();
         let handle = tokio::spawn(async move {
-            let _ = dcc_cua_host::run_with_security_services(
-                driver,
-                HostTransport::Endpoint(endpoint),
-                services,
+            dcc_cua_host::run_endpoint_with_security_services_ready(
+                driver, endpoint, services, ready,
             )
-            .await;
+            .await
         });
-        Ok(Self {
+        // Own the task before awaiting so cancellation also aborts this server.
+        Self {
             handle,
             owner: owner.to_owned(),
-        })
+        }
+        .wait_ready(received, std::time::Duration::from_secs(5))
+        .await
+    }
+
+    async fn wait_ready(
+        mut self,
+        ready: oneshot::Receiver<()>,
+        timeout: std::time::Duration,
+    ) -> Result<Self, String> {
+        match tokio::time::timeout(timeout, ready).await {
+            Ok(Ok(())) if !self.handle.is_finished() => Ok(self),
+            Ok(_) => {
+                let result = (&mut self.handle).await;
+                Err(match result {
+                    Ok(Err(error)) => format!("provider transport startup failed: {error}"),
+                    _ => "provider transport ended during startup".into(),
+                })
+            }
+            Err(_) => {
+                self.handle.abort();
+                let _ = (&mut self.handle).await;
+                Err("provider transport startup timed out".into())
+            }
+        }
     }
 
     pub(crate) fn is_owned_by(&self, owner: &str) -> bool {
@@ -123,6 +148,9 @@ impl ProviderListener {
         self.handle.is_finished()
     }
 }
+
+#[cfg(test)]
+mod tests;
 
 impl Drop for ProviderListener {
     fn drop(&mut self) {

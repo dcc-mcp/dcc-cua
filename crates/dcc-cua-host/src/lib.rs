@@ -1163,6 +1163,17 @@ pub async fn run_with_security_services(
     run_internal(driver, transport, security_services).await
 }
 
+/// Serve a protected local endpoint and acknowledge its native bind exactly once.
+/// No client connection or task authorization is created by this notification.
+pub async fn run_endpoint_with_security_services_ready(
+    driver: ComputerUseDriver,
+    endpoint: String,
+    security_services: HostSecurityServices,
+    ready: tokio::sync::oneshot::Sender<()>,
+) -> Result<(), HostError> {
+    endpoint::serve_with_ready(driver, endpoint, security_services, Some(ready)).await
+}
+
 async fn run_internal(
     driver: ComputerUseDriver,
     transport: HostTransport,

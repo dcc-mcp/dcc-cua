@@ -1,4 +1,5 @@
 mod frame_recovery;
+mod interaction_recovery;
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::sync::{Arc, Mutex};
@@ -35,8 +36,6 @@ const DEFAULT_TTL_MINUTES: u64 = 60;
 const DEFAULT_IDLE_TIMEOUT_MS: u64 = 15 * 60 * 1_000;
 const MAX_ALLOWED_METHODS: usize = 32;
 const CUA_RUNTIME_SESSION_PREFIX: &str = "__cua_runtime_";
-
-mod interaction_recovery;
 
 struct TaskBrowserPrepareAuthorizationHost {
     expected_public_session: String,
@@ -968,7 +967,8 @@ async fn open_task_session(
         &proposal.allowed_methods,
         &receipt.window_capability,
         &proposal.registration.target,
-    )?;
+    )
+    .await?;
     tokio::spawn(async move {
         let _ =
             process_connection_with_security_services(driver, host_stream, security_services).await;
