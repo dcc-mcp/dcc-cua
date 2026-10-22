@@ -351,6 +351,17 @@ async fn dispatch(arguments: Vec<String>) -> Result<(), Box<dyn std::error::Erro
         capture_proof::execute(&flags)?;
         return Ok(());
     }
+    if command == "list" {
+        let query = window_selector_query_from_flags(&flags)?;
+        query.validate_selectors()?;
+        if let Some(mut windows) =
+            dcc_cua_core::native_window_inventory(query.process_id, query.on_screen_only)
+        {
+            windows.retain(|window| query.matches_window(window));
+            stdoutln!("{}", serde_json::to_string_pretty(&windows)?);
+            return Ok(());
+        }
+    }
     let driver = if command == "host" {
         host_driver(&flags)?
     } else if external_termination_runtime_requested(&command, &flags) {

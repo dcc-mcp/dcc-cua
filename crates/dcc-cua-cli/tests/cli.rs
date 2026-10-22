@@ -787,3 +787,32 @@ fn sdk_shell_launch_helper_owns_its_protocol_without_starting_an_app(
     assert_eq!(String::from_utf8(output.stdout).unwrap().trim(), expected);
     assert!(output.stderr.is_empty());
 }
+
+#[cfg(windows)]
+#[rstest]
+fn list_does_not_create_runtime_windows() {
+    use std::os::windows::process::CommandExt;
+
+    let child = Command::new(env!("CARGO_BIN_EXE_dcc-cua"))
+        .args(["list", "--app", "dcc-cua.exe"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .creation_flags(0x0800_0000)
+        .spawn()
+        .expect("native inventory should start");
+    let pid = child.id();
+    let output = child.wait_with_output().expect("inventory should finish");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let windows: Vec<serde_json::Value> =
+        serde_json::from_slice(&output.stdout).expect("window inventory JSON");
+    assert!(
+        windows
+            .iter()
+            .all(|window| window["pid"].as_u64() != Some(u64::from(pid))),
+        "read-only inventory must not create cursor or other runtime windows: {windows:?}"
+    );
+}
