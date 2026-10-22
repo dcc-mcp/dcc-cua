@@ -185,6 +185,7 @@ impl ComputerUseSession {
                         "window_id": target.window_id,
                         "pid": target.pid,
                         "include_screenshot": true,
+                        "tree_format": "both",
                         "max_elements": bounded_snapshot_elements(max_elements),
                         "max_depth": bounded_snapshot_depth(max_depth),
                         "session": self.session_id,
@@ -303,6 +304,7 @@ impl ComputerUseSession {
             }),
             session_id: self.session_id.clone(),
         };
+        self.remember_sdk_element_tokens(&accessibility, &observation);
         self.target = Some(target);
         self.observation = Some(observation.clone());
         self.set_banner_activity(BannerActivity::Ready);
@@ -1155,6 +1157,7 @@ impl ComputerUseSession {
                     "window_id": target.window_id,
                     "pid": target.pid,
                     "include_screenshot": false,
+                    "tree_format": "both",
                     "max_elements": bounded_snapshot_elements(max_elements),
                     "max_depth": bounded_snapshot_depth(max_depth),
                     "session": self.session_id,
@@ -1178,11 +1181,9 @@ impl ComputerUseSession {
         };
         self.require_observed_exact_window_observation_available()?;
         let target = self.require_observed_target_available().await?;
-        self.observation = Some(semantic_observation(
-            &self.session_id,
-            &target,
-            &accessibility,
-        ));
+        let observation = semantic_observation(&self.session_id, &target, &accessibility);
+        self.remember_sdk_element_tokens(&accessibility, &observation);
+        self.observation = Some(observation);
         self.target = Some(target);
         Ok(accessibility)
     }

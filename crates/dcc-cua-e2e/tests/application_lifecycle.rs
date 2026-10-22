@@ -1,3 +1,7 @@
+#[cfg(any(test, all(feature = "gui-e2e", windows)))]
+#[path = "support/standard_user_token.rs"]
+mod standard_user_token;
+
 #[cfg(feature = "gui-e2e")]
 use std::path::PathBuf;
 #[cfg(feature = "gui-e2e")]
@@ -355,6 +359,8 @@ async fn host_launches_records_and_terminates_one_exact_application() {
         .and_then(|pid| u32::try_from(pid).ok())
         .unwrap_or_else(|| panic!("launch_app omitted a valid pid: {}", launched.value));
     let mut process_guard = ExactProcessGuard::new(pid);
+    #[cfg(windows)]
+    standard_user_token::assert_standard_user(pid);
 
     let ready = host_request(
         &mut host,

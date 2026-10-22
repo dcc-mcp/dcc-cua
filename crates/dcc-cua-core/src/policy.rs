@@ -371,6 +371,10 @@ pub(crate) fn native_tool_allowed_in_window_session(name: &str) -> bool {
         "get_browser_state",
         "page",
         "get_session_state",
+        // Composite tools can choose targets inside their payloads, bypassing
+        // this route's top-level PID/window binding and typed action checks.
+        "run_script",
+        "run_steps",
     ];
     if DEDICATED_TOOLS.contains(&name)
         || name.starts_with("browser_")
@@ -883,15 +887,47 @@ fn driver_action_command(
             ));
         }
     };
+    if matches!(action.action.as_str(), "move" | "drag")
+        && (action.element_index.is_some() || action.element_token.is_some())
+    {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::InvalidAction,
+            "the configured CUA driver requires coordinates for move and drag",
+        ));
+    }
+    #[cfg(target_os = "linux")]
+    if action.action == "type_chars" && action.delay_ms.is_some() {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::InvalidAction,
+            "the Linux CUA driver does not support type_chars delay_ms; omit the delay or use a backend that supports it",
+        ));
+    }
     let mut object = serde_json::Map::from_iter([("session".into(), json!(session))]);
     match scope {
+        DriverActionScope::Window(target) if tool == "move_cursor" => {
+            // macOS implements window-local screenshot targeting. The other
+            // native adapters expose only a screen-coordinate agent overlay.
+            #[cfg(target_os = "macos")]
+            object.insert(
+                "target".into(),
+                json!({
+                    "kind": "window", "pid": target.pid, "window_id": target.window_id
+                }),
+            );
+            #[cfg(not(target_os = "macos"))]
+            let _ = target;
+        }
         DriverActionScope::Window(target) => {
             object.insert("pid".into(), json!(target.pid));
             object.insert("window_id".into(), json!(target.window_id));
-            object.insert(
-                "delivery_mode".into(),
-                json!(action.delivery_mode.as_deref().unwrap_or("background")),
-            );
+            // macOS set_value is a semantic setter, with no delivery-mode
+            // argument. Other input routes retain the explicit delivery choice.
+            if !(cfg!(target_os = "macos") && tool == "set_value") {
+                object.insert(
+                    "delivery_mode".into(),
+                    json!(action.delivery_mode.as_deref().unwrap_or("background")),
+                );
+            }
         }
         DriverActionScope::Desktop => {
             object.insert("scope".into(), json!("desktop"));
@@ -901,6 +937,12 @@ fn driver_action_command(
         "move" => {
             object.insert("x".into(), json!(action.x));
             object.insert("y".into(), json!(action.y));
+            #[cfg(not(target_os = "macos"))]
+            if let DriverActionScope::Window(target) = scope {
+                // perform_action already converts screenshot pixels to native
+                // window units before this bounded screen-offset translation.
+                map_window_cursor_move(&mut object, target)?;
+            }
         }
         "click" | "double_click" | "right_click" | "toggle" => {
             object.insert("x".into(), json!(action.x));
@@ -1011,10 +1053,11 @@ fn driver_action_command(
             object.remove("element_index");
             object.remove("x");
             object.remove("y");
-        } else if let Some(element_index) = action.element_index {
-            object.insert("element_index".into(), json!(element_index));
-            object.remove("x");
-            object.remove("y");
+        } else if action.element_index.is_some() {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::StaleObservation,
+                "resolve element_index against the current observation's SDK element_token before dispatch",
+            ));
         }
     }
     Ok(DriverActionCommand {
