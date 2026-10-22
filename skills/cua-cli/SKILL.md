@@ -368,6 +368,12 @@ If `ue/fab/download` is unavailable, its declared fallback is
 for the agent. Destructive downloads and trusted confirmations still require
 their explicit task grants.
 
+After `browser_download` completes, consume its verified `file_path` or
+`artifact_ref` directly. `stored_filename` identifies the actual artifact;
+`suggested_filename` is separate display metadata and may be `null` with an
+`unavailable` or `invalid` status. Never derive a destination path or rename a
+file from that suggestion. The reported MIME type comes from the stored bytes.
+
 ## Long tasks and safety boundaries
 
 Represent long work as checkpoints such as `discover → bind → act → verify →

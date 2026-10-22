@@ -1164,6 +1164,36 @@ async fn completed_download_is_enriched_with_boundary_proven_artifact_metadata()
 
 #[rstest]
 #[tokio::test]
+#[case::provided(Some("surface.zip"), "provided")]
+#[case::unavailable(None, "unavailable")]
+#[case::invalid(None, "invalid")]
+async fn completed_download_keeps_source_name_separate_from_stored_artifact(
+    #[case] suggested_filename: Option<&str>,
+    #[case] filename_status: &str,
+) {
+    let (_dir, root) = canonical_temp_dir();
+    let download_id = "opaque-download-id";
+    let contents = b"PK\x03\x04surface";
+    let stored = Path::new(&root).join(download_id);
+    std::fs::write(&stored, contents).unwrap();
+    let mut value = completed_download_value(download_id, contents.len() as u64);
+    value["structuredContent"]["suggested_filename"] = json!(suggested_filename);
+    value["structuredContent"]["suggested_filename_status"] = json!(filename_status);
+
+    enrich_download_completion(&root, &mut value).await;
+
+    let structured = &value["structuredContent"];
+    assert_eq!(structured["suggested_filename"], json!(suggested_filename));
+    assert_eq!(structured["suggested_filename_status"], filename_status);
+    assert_eq!(structured["stored_filename"], download_id);
+    assert_eq!(Path::new(structured["file_path"].as_str().unwrap()), stored);
+    assert_eq!(std::fs::read(&stored).unwrap(), contents);
+    assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
+    assert_eq!(structured["mime_type"], "application/zip");
+}
+
+#[rstest]
+#[tokio::test]
 async fn completed_download_hashes_a_multi_chunk_artifact_off_the_executor() {
     let (_dir, root) = canonical_temp_dir();
     let download_id = "multi-chunk-zip";
