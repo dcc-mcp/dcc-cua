@@ -157,9 +157,11 @@ record with unknown process status is not treated as an ended process for
 deletion. Retention runs during bridge publication, not during the read-only
 query.
 `scan_truncated` indicates incomplete directory enumeration. Windows uses
-FILETIME and Linux uses boot ID plus start ticks for PID reuse detection; the
-current macOS implementation reports unknown creation identity and process
-status. The registry is
+FILETIME, Linux uses boot ID plus start ticks, and macOS uses native process
+start seconds plus microseconds from `proc_pidinfo(PROC_PIDTBSDINFO)` for PID
+reuse detection. The creation identity retains the full native precision;
+the separate Unix-millisecond timestamp is for display. Unavailable, malformed,
+or unsupported creation probes retain unknown status. The registry is
 local diagnostic data, not a cryptographically authenticated client inventory.
 
 ## Future shared execution architecture

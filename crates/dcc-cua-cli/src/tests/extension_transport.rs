@@ -14,6 +14,36 @@ fn endpoint_is_derived_only_from_a_connection_uuid() {
 }
 
 #[rstest]
+fn distinct_connection_uuids_do_not_alias_under_case_folding() {
+    let first = endpoint("mcp-connection-00000000-0000-4000-8000-000000000000").unwrap();
+    let second = endpoint("mcp-connection-68000000-0000-4000-8000-000000000000").unwrap();
+    assert_ne!(first.to_ascii_lowercase(), second.to_ascii_lowercase());
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[rstest]
+fn unix_endpoint_preserves_uuid_and_refuses_native_path_overflow() {
+    use std::path::Path;
+
+    let id = uuid::Uuid::new_v4();
+    let endpoint =
+        crate::extension_transport::unix_endpoint(Path::new("/runtime/host.sock"), id).unwrap();
+    let filename = Path::new(&endpoint).file_name().unwrap().to_str().unwrap();
+    assert_eq!(filename, id.simple().to_string());
+    assert_eq!(uuid::Uuid::parse_str(filename).unwrap(), id);
+    let capacity = std::mem::size_of::<libc::sockaddr_un>()
+        - std::mem::offset_of!(libc::sockaddr_un, sun_path);
+    #[cfg(target_os = "macos")]
+    assert_eq!(capacity, 104);
+    let parent_component = "a".repeat(capacity - filename.len() - 3);
+    let base = format!("/{parent_component}/host.sock");
+    let allowed = crate::extension_transport::unix_endpoint(Path::new(&base), id).unwrap();
+    assert_eq!(allowed.len(), capacity - 1);
+    let too_long = format!("/{parent_component}a/host.sock");
+    assert!(crate::extension_transport::unix_endpoint(Path::new(&too_long), id).is_none());
+}
+
+#[rstest]
 #[tokio::test]
 async fn private_provider_endpoint_checks_peer_and_rejects_task_requests() {
     use dcc_cua_client::HostClient;
@@ -31,6 +61,11 @@ async fn private_provider_endpoint_checks_peer_and_rejects_task_requests() {
         Some(root.path().to_owned()),
     );
     let record = diagnostics.snapshot();
+    assert!(
+        record.bridge.creation_id.is_some(),
+        "native process birth missing"
+    );
+    assert!(record.bridge.is_live(), "native process birth must be live");
     let address = endpoint(&record.connection_id).unwrap();
     let listener = crate::extension_transport::ProviderListener::start(
         dcc_cua_core::ComputerUseDriver::create().unwrap(),
@@ -43,14 +78,18 @@ async fn private_provider_endpoint_checks_peer_and_rejects_task_requests() {
     )
     .unwrap();
     let mut client = None;
+    let mut last_error = String::new();
     for _ in 0..50 {
-        if let Ok(connected) = crate::extension_transport::connect(&record).await {
-            client = Some(connected);
-            break;
+        match crate::extension_transport::connect(&record).await {
+            Ok(connected) => {
+                client = Some(connected);
+                break;
+            }
+            Err(error) => last_error = error,
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    let mut client = client.expect("private listener ready");
+    let mut client = client.unwrap_or_else(|| panic!("private listener ready: {last_error}"));
     assert!(
         HostClient::connect_to_process(&address, "wrong-peer", u32::MAX)
             .await

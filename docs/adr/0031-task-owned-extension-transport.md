@@ -25,6 +25,9 @@ admitting extension methods also failed to enforce final action scopes.
   Derive endpoint names only from connection UUIDs, verify OS peer PID and current
   user, and recheck the full process birth before and after connecting. No caller
   can nominate an arbitrary endpoint through the task bridge.
+  Unix endpoint names retain all UUID bits as lowercase hexadecimal within
+  the same private runtime directory; paths that cannot fit the platform's
+  native socket address, including its terminating NUL, are refused.
 - At explicit pairing, Native Messaging captures its parent browser PID and the
   unique foreground native window. It registers only with one live endpoint whose
   constructor binding matches both. Ambiguous tasks fail closed. Each connection
