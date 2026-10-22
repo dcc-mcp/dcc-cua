@@ -1,5 +1,23 @@
 # Changelog
 
+## [1.12.2](https://github.com/dcc-mcp/dcc-cua/compare/v1.12.1...v1.12.2) (2026-10-21)
+
+
+### Bug Fixes
+
+* align capture boundary tests and recovery scopes ([e90beb4](https://github.com/dcc-mcp/dcc-cua/commit/e90beb461d5a3e150a65f30ce6ab393bc0667403))
+* focus exact native windows within guarded input attachments ([065ea57](https://github.com/dcc-mcp/dcc-cua/commit/065ea57b0315b169df16ad23811f6907473d391e))
+* integrate current capture behavior with foreground recovery ([4e68994](https://github.com/dcc-mcp/dcc-cua/commit/4e68994fca668bb5a0da50239debe6dac644339e))
+* preserve activation frames in physical DPI coordinates ([709aa88](https://github.com/dcc-mcp/dcc-cua/commit/709aa880fdd5fcb0d037aa95c61e4898820676f6))
+* recover explicit foreground activation with a fenced UIA root ([fa5bc8c](https://github.com/dcc-mcp/dcc-cua/commit/fa5bc8cccd05d9fdc6e0a7a31849efb82b8686d5))
+* recover Windows activation and empty occluders ([b81808b](https://github.com/dcc-mcp/dcc-cua/commit/b81808be09b6520d72ad82a6d6539af345abfd14))
+* recover Windows foreground and physical-frame validation ([#366](https://github.com/dcc-mcp/dcc-cua/issues/366)) ([52237c9](https://github.com/dcc-mcp/dcc-cua/commit/52237c9720a14a45036e817f5e882feaf76be705))
+* reduce pixel snapshot encoding and guide window recovery ([4c70a65](https://github.com/dcc-mcp/dcc-cua/commit/4c70a65a079f84b1551a418b8e01b978611e3b34))
+* reduce pixel snapshot encoding and guide window recovery ([54fe50b](https://github.com/dcc-mcp/dcc-cua/commit/54fe50b90c71fa2693b94083f64db1b393042ffe))
+* separate pixel observation and input recovery ([9c10a71](https://github.com/dcc-mcp/dcc-cua/commit/9c10a71a99a67b22ed256375bf1ff35fa41dbb88))
+* separate pixel observation and input recovery ([9c10a71](https://github.com/dcc-mcp/dcc-cua/commit/9c10a71a99a67b22ed256375bf1ff35fa41dbb88))
+* separate pixel observation and input recovery ([5583b1f](https://github.com/dcc-mcp/dcc-cua/commit/5583b1fce6208e4db4520de2f110d39d4b6f590c))
+
 ## [1.12.1](https://github.com/dcc-mcp/dcc-cua/compare/v1.12.0...v1.12.1) (2026-10-21)
 
 

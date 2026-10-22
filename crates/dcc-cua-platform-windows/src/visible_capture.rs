@@ -318,8 +318,75 @@ fn rect_edges(rect: RECT) -> [i32; 4] {
     [rect.left, rect.top, rect.right, rect.bottom]
 }
 
-/// Keep the original strict proof outcome. Read one bounded follow-up only
-/// after successful DWM metadata has failed the existing geometric predicate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct RootGeometrySample {
+    pub process_id: u32,
+    pub instance: ExactWindowPixelInstanceEvidence,
+    pub visible: bool,
+    pub cloaked: u32,
+    pub dwm_edges: [i32; 4],
+    pub win32_edges: [i32; 4],
+}
+
+pub(crate) fn stable_empty_root_geometry(
+    physical: RECT,
+    mut read_sample: impl FnMut() -> Option<RootGeometrySample>,
+) -> bool {
+    if classify_root_bounds(physical) != RootBoundsClass::ZeroArea {
+        return false;
+    }
+    let Some(first) = read_sample() else {
+        return false;
+    };
+    let Some(second) = read_sample() else {
+        return false;
+    };
+    first == second
+        && first.process_id != 0
+        && first.visible
+        && first.cloaked == 0
+        && first.dwm_edges == rect_edges(physical)
+        && first.win32_edges == rect_edges(physical)
+}
+
+fn read_root_geometry_sample(window: HWND) -> Option<RootGeometrySample> {
+    let window_handle = window.0 as usize as u64;
+    let mut process_id = 0;
+    if unsafe { GetWindowThreadProcessId(window, Some(&mut process_id)) } == 0 {
+        return None;
+    }
+    validate_exact_window_owner(process_id, window_handle).ok()?;
+    let instance = exact_window_instance_evidence(process_id, window_handle).ok()?;
+    let visible = unsafe { IsWindowVisible(window) }.as_bool();
+    let mut cloaked = 0_u32;
+    unsafe {
+        DwmGetWindowAttribute(
+            window,
+            DWMWA_CLOAKED,
+            (&raw mut cloaked).cast(),
+            std::mem::size_of::<u32>() as u32,
+        )
+    }
+    .ok()?;
+    let dwm = physical_window_rect(window).ok()?;
+    let mut win32 = RECT::default();
+    unsafe { GetWindowRect(window, &mut win32) }.ok()?;
+    if exact_window_instance_evidence(process_id, window_handle).ok()? != instance {
+        return None;
+    }
+    validate_exact_window_owner(process_id, window_handle).ok()?;
+    Some(RootGeometrySample {
+        process_id,
+        instance,
+        visible,
+        cloaked,
+        dwm_edges: rect_edges(dwm),
+        win32_edges: rect_edges(win32),
+    })
+}
+
+/// Only a stable empty foreign root can omit geometry from the overlap proof.
+/// All other invalid rectangles keep the original bounded failure diagnostic.
 pub(crate) fn composited_root_entry(
     window_handle: u64,
     proof_target_root_window_handle: u64,
@@ -327,7 +394,16 @@ pub(crate) fn composited_root_entry(
     visible: bool,
     cloaked: Option<u32>,
     read_win32_after_failure: impl FnOnce() -> Result<RECT, i32>,
+    confirm_empty_root: impl FnOnce() -> bool,
 ) -> Result<(u64, [i32; 4], bool), VisibleWindowCaptureError> {
+    if window_handle != proof_target_root_window_handle
+        && visible
+        && cloaked == Some(0)
+        && classify_root_bounds(physical) == RootBoundsClass::ZeroArea
+        && confirm_empty_root()
+    {
+        return Ok((window_handle, [0; 4], false));
+    }
     root_z_order_entry(window_handle, true, || physical_root_bounds(physical)).ok_or_else(|| {
         let dwm_classification = classify_root_bounds(physical);
         let (win32_raw_rect_edges, win32_classification, win32_os_error) =
@@ -471,6 +547,7 @@ pub enum RootProofDecision {
     Cloaked,
     Composited,
     Disjoint,
+    Empty,
     Overlap,
     TargetReached,
     RejectCloakingQuery,
@@ -561,7 +638,7 @@ unsafe extern "system" fn collect_root_z_order(window: HWND, context: LPARAM) ->
         .trace
         .as_ref()
         .map(|_| unsafe { RootProofTraceEntry::read(window, visible) });
-    let measured = (|| {
+    let measured: Result<_, VisibleWindowCaptureError> = (|| {
         let mut measured_cloaked = None;
         let composited = root_is_composited(visible, || {
             let mut cloaked = 0_u32;
@@ -620,7 +697,7 @@ unsafe extern "system" fn collect_root_z_order(window: HWND, context: LPARAM) ->
                 Some(_) => RootProofDecision::Disjoint,
             };
         }
-        composited_root_entry(
+        let entry = composited_root_entry(
             window_handle,
             enumeration.target_window_handle,
             rect,
@@ -632,7 +709,14 @@ unsafe extern "system" fn collect_root_z_order(window: HWND, context: LPARAM) ->
                     .map(|()| win32)
                     .map_err(|error| error.code().0)
             },
-        )
+            || stable_empty_root_geometry(rect, || read_root_geometry_sample(window)),
+        )?;
+        if !entry.2
+            && let Some(trace) = trace.as_mut()
+        {
+            trace.decision = RootProofDecision::Empty;
+        }
+        Ok(entry)
     })();
     if let (Some(entries), Some(trace)) = (enumeration.trace.as_mut(), trace) {
         entries.push(trace);

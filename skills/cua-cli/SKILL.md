@@ -56,6 +56,17 @@ grants. `dcc-cua tools` lists driver tools, not Host IPC methods: `start_session
 is not a Host IPC method. Host clients use `open_session` with a `TaskGrant`
 and keep the returned capability on that connection. Agent clients should use
 `start_task` then `dcc_cua_task_call`, which injects the private session binding.
+For a visual-only task, select `observation_mode: "pixels_only"` at startup
+to avoid unnecessary accessibility traversal. Keep capture diagnostics off
+except while measuring; their hashes and histograms add work.
+
+If `get_window_state` reports `frame_recovery`, follow its `next_call` on the
+same task, then obtain fresh native state before resizing or observing. A
+maximized or minimized window cannot mint a frame token. If recovery requires
+a new task, request its indicated method within the authorized scope; do not
+ask the user to restore the window until the exact native recovery route has
+failed. Never borrow tokens or infer permission from the recovery hint.
+
 `host-jsonl`/`host-batch` preserve their own connection, not authorization by
 themselves. Treat `invalid_request` as a schema/validation error and
 `session_not_found` as absence on the current connection; neither is fixed by
@@ -125,8 +136,8 @@ starting another Host or borrowing a different connection's capability.
    Add `--activate` when explicitly authorized to bring this exact target to
    the foreground. Activation and capture use the same PID/HWND session and
    skip UIA; capture still requires fresh native identity, geometry, overlay
-   hide/acknowledgement, and occlusion proof. This combination cannot make a
-   covered or partially off-desktop window safe to capture. Do not combine
+   hide/acknowledgement, and occlusion proof. Activation does not waive capture
+   or input checks. Do not combine
    `--pixels-only` with `--escalate`. A refused native capture reports typed,
    content-free `error.details.capture` metadata; raw backend errors and
    foreign window titles are never included in this diagnostic.
@@ -136,8 +147,12 @@ starting another Host or borrowing a different connection's capability.
    Windows may use the `VisibleDesktopCrop` fallback: it reads only the target's
    physical rectangle from the desktop DC, and only after complete z-order,
    visibility, PID/HWND, native instance, bounds, and DPI evidence is proven
-   before and after capture. Occlusion, ambiguity, or drift discards
-   the pixels. Treat this visible desktop-rectangle provenance separately from
+   before and after capture. Verified native window-content capture may remain
+   available behind an occluder. A partially occluded desktop crop masks proven
+   foreign rectangles with opaque black; only its visible target pixels are
+   published. Ambiguity or drift discards the pixels. Pointer input still needs
+   a reachable, unredacted point and keyboard input requires full visibility.
+   Treat this visible desktop-rectangle provenance separately from
    native window-content pixels, `pixels_only`,
    `accessibility_unavailable_degraded`, and
    `accessibility_timeout_degraded`.

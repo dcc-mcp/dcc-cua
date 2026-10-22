@@ -46,6 +46,10 @@ public static class DccMcpNativeUi {
 
   [DllImport("user32.dll")]
   [return: MarshalAs(UnmanagedType.Bool)]
+  public static extern bool IsIconic(IntPtr hWnd);
+
+  [DllImport("user32.dll")]
+  [return: MarshalAs(UnmanagedType.Bool)]
   private static extern bool GetGUIThreadInfo(uint threadId, ref GuiThreadInfo info);
 
   public static bool IsActiveOwnedStandardMenuPopup(

@@ -1410,7 +1410,7 @@ pub(crate) async fn perform_windows_foreground_fast_action(
         "click" | "double_click" | "right_click" | "toggle"
     );
     if !is_click {
-        dcc_cua_platform_windows::activate_window(
+        activate_windows_with_interrupt_gate(
             dcc_cua_platform_windows::UiaTarget {
                 process_id: target.pid,
                 window_handle: target.window_id,
@@ -1470,7 +1470,7 @@ pub(crate) async fn perform_windows_foreground_fast_action(
             });
             let hold_duration_ms = action.duration_ms;
             tokio::task::spawn_blocking(move || {
-                dcc_cua_platform_windows::activate_window(key_target, || {
+                activate_windows_with_interrupt_gate(key_target, || {
                     windows_platform_input_gate("foreground_keypress")
                 })
                 .map_err(|error| {
@@ -1535,7 +1535,7 @@ pub(crate) async fn perform_windows_foreground_fast_action(
             process_id: target.pid,
             window_handle: target.window_id,
         };
-        dcc_cua_platform_windows::activate_window(drag_target, || {
+        activate_windows_with_interrupt_gate(drag_target, || {
             windows_platform_input_gate("foreground_drag_after_cursor_glide")
         })
         .map_err(|error| {
@@ -1563,7 +1563,7 @@ pub(crate) async fn perform_windows_foreground_fast_action(
                 });
                 let result_target = target.clone();
                 tokio::task::spawn_blocking(move || {
-                    let input_gate = dcc_cua_platform_windows::activate_window(drag_target, || {
+                    let input_gate = activate_windows_with_interrupt_gate(drag_target, || {
                         windows_platform_input_gate("synthetic_touch_activation")
                     })
                     .map_err(|error| {
@@ -1606,7 +1606,7 @@ pub(crate) async fn perform_windows_foreground_fast_action(
             });
 
             tokio::task::spawn_blocking(move || {
-                dcc_cua_platform_windows::activate_window(drag_target, || {
+                activate_windows_with_interrupt_gate(drag_target, || {
                     windows_platform_input_gate("foreground_raw_drag_dispatch")
                 })
                 .map_err(|error| {
@@ -1748,7 +1748,7 @@ pub(crate) async fn perform_windows_foreground_fast_action(
                     &button,
                     &modifiers,
                     || {
-                        dcc_cua_platform_windows::activate_window(click_target, || {
+                        activate_windows_with_interrupt_gate(click_target, || {
                             windows_platform_input_gate("foreground_click_after_cursor_glide")
                         })
                     },
