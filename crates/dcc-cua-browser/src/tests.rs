@@ -1165,10 +1165,10 @@ async fn completed_download_is_enriched_with_boundary_proven_artifact_metadata()
 }
 
 #[rstest]
-#[tokio::test]
 #[case::provided(Some("surface.zip"), "provided")]
 #[case::unavailable(None, "unavailable")]
 #[case::invalid(None, "invalid")]
+#[tokio::test]
 async fn completed_download_keeps_source_name_separate_from_stored_artifact(
     #[case] suggested_filename: Option<&str>,
     #[case] filename_status: &str,
