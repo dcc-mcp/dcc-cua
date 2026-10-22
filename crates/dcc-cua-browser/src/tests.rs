@@ -958,6 +958,81 @@ fn prepare_guidance_preserves_nonmatching_receipts(
     assert!(!result.publishes_snapshot_evidence());
 }
 
+#[rstest]
+fn navigation_unknown_completion_is_preserved_without_claiming_dispatch() {
+    for delivery_mode in ["background", "foreground"] {
+        let receipt = json!({"structuredContent": {
+            "status": "error", "target_id": "target-1", "tab_id": "tab-1",
+            "url": "https://example.test/next", "delivery_mode": delivery_mode,
+            "dispatched": null, "dispatch_state": "unknown", "activated": false,
+            "activation_state": "not_started", "readback_state": "not_started",
+            "refs_invalidated": true, "error_code": "navigation_completion_unknown",
+            "error": "browser navigation completion is unknown; refresh browser state before retrying"
+        }});
+        assert!(
+            !navigation_response_is_success(
+                &receipt,
+                "target-1",
+                "tab-1",
+                "https://example.test/next",
+                delivery_mode
+            )
+            .unwrap()
+        );
+        let public = BrowserResult::from_value(receipt.clone())
+            .unwrap()
+            .into_public_navigation_receipt(false)
+            .unwrap();
+        assert!(public.value["structuredContent"]["dispatched"].is_null());
+        assert_eq!(
+            public.value["structuredContent"]["dispatch_state"],
+            "unknown"
+        );
+        assert_eq!(public.value["structuredContent"]["refs_invalidated"], true);
+        for (field, invalid_value) in [
+            ("dispatched", json!(false)),
+            ("dispatched", json!(true)),
+            ("dispatch_state", json!("failed")),
+            ("error_code", json!("navigation_dispatch_failed")),
+            ("status", json!("ok")),
+            ("refs_invalidated", json!(false)),
+            ("activated", json!(true)),
+            ("activation_state", json!("succeeded")),
+            ("readback_state", json!("succeeded")),
+            ("error", json!("untrusted transport message")),
+        ] {
+            let mut invalid = receipt.clone();
+            invalid["structuredContent"][field] = invalid_value;
+            assert!(
+                navigation_response_is_success(
+                    &invalid,
+                    "target-1",
+                    "tab-1",
+                    "https://example.test/next",
+                    delivery_mode
+                )
+                .is_err(),
+                "{invalid}"
+            );
+        }
+        let mut omitted = receipt.clone();
+        omitted["structuredContent"]
+            .as_object_mut()
+            .unwrap()
+            .remove("dispatched");
+        assert!(
+            navigation_response_is_success(
+                &omitted,
+                "target-1",
+                "tab-1",
+                "https://example.test/next",
+                delivery_mode
+            )
+            .is_err()
+        );
+    }
+}
+
 // --- browser_download completion contract enrichment (GitHub #357) ---
 
 fn canonical_temp_dir() -> (tempfile::TempDir, String) {

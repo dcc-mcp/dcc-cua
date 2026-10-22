@@ -794,7 +794,11 @@ pub enum WindowsOverlayCommand {
 }
 
 pub fn send_overlay_command(session_id: String, command: WindowsOverlayCommand) {
-    let command = match command {
+    platform_windows::overlay::send_command(session_id, upstream_overlay_command(command));
+}
+
+fn upstream_overlay_command(command: WindowsOverlayCommand) -> cursor_overlay::OverlayCommand {
+    match command {
         WindowsOverlayCommand::PinAbove(window_id) => {
             cursor_overlay::OverlayCommand::PinAbove(window_id)
         }
@@ -805,9 +809,10 @@ pub fn send_overlay_command(session_id: String, command: WindowsOverlayCommand) 
             x,
             y,
             end_heading_radians: heading,
+            // DCC's point-only overlay request does not carry element bounds.
+            target: None,
         },
-    };
-    platform_windows::overlay::send_command(session_id, command);
+    }
 }
 
 pub async fn animate_cursor_to(session_id: String, x: f64, y: f64) {
@@ -995,3 +1000,6 @@ fn key_is_extended(key: u16) -> bool {
             | VK_SNAPSHOT
     )
 }
+
+#[cfg(test)]
+mod tests;
