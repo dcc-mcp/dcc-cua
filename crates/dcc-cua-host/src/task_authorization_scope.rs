@@ -399,6 +399,7 @@ fn enforce_task_authorized_browser_scope(
         Request::Hello(_)
         | Request::Ping {}
         | Request::Doctor {}
+        | Request::BrowserExtensionTransportBinding {}
         | Request::RegisterBrowserExtension { .. }
         | Request::BrowserExtensionNext { .. }
         | Request::CompleteBrowserExtension { .. }
@@ -869,6 +870,7 @@ impl Request {
             Self::Hello(_)
             | Self::Ping {}
             | Self::Doctor {}
+            | Self::BrowserExtensionTransportBinding {}
             | Self::RegisterBrowserExtension { .. }
             | Self::BrowserExtensionNext { .. }
             | Self::CompleteBrowserExtension { .. }

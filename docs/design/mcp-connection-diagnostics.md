@@ -157,9 +157,11 @@ record with unknown process status is not treated as an ended process for
 deletion. Retention runs during bridge publication, not during the read-only
 query.
 `scan_truncated` indicates incomplete directory enumeration. Windows uses
-FILETIME and Linux uses boot ID plus start ticks for PID reuse detection; the
-current macOS implementation reports unknown creation identity and process
-status. The registry is
+FILETIME, Linux uses boot ID plus start ticks, and macOS uses native process
+start seconds plus microseconds from `proc_pidinfo(PROC_PIDTBSDINFO)` for PID
+reuse detection. The creation identity retains the full native precision;
+the separate Unix-millisecond timestamp is for display. Unavailable, malformed,
+or unsupported creation probes retain unknown status. The registry is
 local diagnostic data, not a cryptographically authenticated client inventory.
 
 ## Future shared execution architecture
@@ -205,13 +207,25 @@ artifacts and installed-client acceptance remain separate from source tests.
 
 Browser tasks may explicitly grant `browser_extension_status` and
 `browser_extension_call` through the ordinary `start_task` lifecycle. The latter
-accepts only `method: "snapshot"` and an `expected_origin` that exactly matches
+accepts `method: "snapshot"`, `"click"`, or `"type"` and an `expected_origin` that exactly matches
 one of the task's `allowed_browser_origins`. Retain the provider ID returned by
 the Host; do not substitute a CDP target or another task's session credentials.
 
-Extension `click`, `type`, and `unpair` remain rejected by the MCP bridge until
-the extension action path enforces final action scopes and confirmation.
+Extension clicks require the final `click/semantic/external_effect` task scope;
+non-secret typing requires `type/semantic/content_change`. Input uses the trusted
+task lease, current task-owned snapshot and ref, exact provider/origin, and a
+foreground ready target. Password/file controls, old plugins without explicit
+non-sensitive metadata, and `unpair` remain denied.
 Method admission does not establish pairing, provider availability, foreground
 readiness, or installed-browser acceptance. The task's Host must independently
 report the intended extension provider; an empty provider inventory is a blocker,
 not permission to switch providers or bypass the bridge.
+
+MCP processes with extension tasks advertise a provider-only listener as an
+associated Host. Diagnostic records are discovery hints, never service authority:
+the Native Messaging bridge derives a closed local endpoint from the connection
+UUID, verifies its OS peer PID and full process birth before/after connection,
+and uses the existing current-user pipe/socket protections. No task credentials
+cross this listener; session, UI, secret and authorization methods are rejected.
+The process-local registry remains shared only among that process's task Hosts.
+See [task-owned extension transport](../adr/0031-task-owned-extension-transport.md).

@@ -42,6 +42,7 @@ pub(super) fn evidence_epoch_sync_plan(
 }
 
 pub(super) struct HostSession {
+    pub(super) extension_observation: Option<crate::extension_input::ExtensionObservation>,
     pub(super) runtime_session_id: String,
     pub(super) target_process_id: u32,
     pub(super) target_window_handle: u64,
@@ -646,6 +647,7 @@ impl HostSession {
     }
 
     pub(super) fn discard_browser_evidence(&mut self) {
+        self.extension_observation = None;
         self.browser_evidence_epoch = None;
         self.browser.invalidate_snapshot();
     }

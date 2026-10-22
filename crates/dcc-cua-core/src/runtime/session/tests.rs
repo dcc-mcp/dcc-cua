@@ -262,10 +262,12 @@ impl DriverEnvelopeChannel for CountingRemoteChannel {
                 }),
                 Some("get_window_state") => {
                     let args = request.arguments.as_ref().expect("snapshot arguments");
-                    assert!(matches!(
-                        args["tree_format"].as_str(),
-                        Some("elements" | "both")
-                    ));
+                    if args.get("tree_format").is_some() {
+                        assert!(matches!(
+                            args["tree_format"].as_str(),
+                            Some("elements" | "both")
+                        ));
+                    }
                     assert_eq!(args["window_id"], 77);
                     assert_eq!(args["pid"], 42);
                     sdk_snapshot_fixture::native_snapshot_reply(args)

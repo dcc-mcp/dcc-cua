@@ -63,6 +63,7 @@ pub(crate) fn window_evidence_epoch_route(request: &Request) -> Option<WindowEvi
         Request::Hello(_)
         | Request::Ping {}
         | Request::Doctor {}
+        | Request::BrowserExtensionTransportBinding {}
         | Request::RegisterBrowserExtension { .. }
         | Request::BrowserExtensionNext { .. }
         | Request::CompleteBrowserExtension { .. }

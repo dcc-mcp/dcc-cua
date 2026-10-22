@@ -41,3 +41,4 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Securit
 cua-driver-sdk.workspace = true
 dcc-cua-core = { path = "../dcc-cua-core", features = ["test-support"] }
 rstest.workspace = true
+tempfile = "3"

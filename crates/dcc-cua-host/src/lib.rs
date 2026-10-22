@@ -12,6 +12,7 @@ mod browser_extension;
 mod cross_client_task_authorization;
 mod endpoint;
 mod error_contract;
+mod extension_input;
 mod request_contract;
 mod request_handler;
 mod secret_vault;
@@ -215,6 +216,8 @@ pub const HOST_CAPABILITIES: &[&str] = &[
     "browser_provider:cdp.v1",
     "browser_provider:extension.v1",
     "browser_extension_native_messaging_v1",
+    "browser_extension_task_input_v1",
+    "browser_extension_mcp_transport_v1",
     "logical_task_session_idle_timeout",
     "request_correlation",
     "request_cancellation",
@@ -292,7 +295,10 @@ enum Request {
         hello: Value,
         invocation_origin: String,
         browser_process_id: u32,
+        #[serde(default)]
+        browser_window_handle: Option<u64>,
     },
+    BrowserExtensionTransportBinding {},
     BrowserExtensionNext {
         provider_id: String,
         provider_secret: String,
@@ -1155,6 +1161,17 @@ pub async fn run_with_security_services(
     security_services: HostSecurityServices,
 ) -> Result<(), HostError> {
     run_internal(driver, transport, security_services).await
+}
+
+/// Serve a protected local endpoint and acknowledge its native bind exactly once.
+/// No client connection or task authorization is created by this notification.
+pub async fn run_endpoint_with_security_services_ready(
+    driver: ComputerUseDriver,
+    endpoint: String,
+    security_services: HostSecurityServices,
+    ready: tokio::sync::oneshot::Sender<()>,
+) -> Result<(), HostError> {
+    endpoint::serve_with_ready(driver, endpoint, security_services, Some(ready)).await
 }
 
 async fn run_internal(

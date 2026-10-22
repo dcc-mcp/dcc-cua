@@ -13,6 +13,7 @@ use crate::session_events::SessionInputEventQueue;
 use dcc_cua_browser::BrowserSession;
 use dcc_cua_shm::SharedImageReader;
 use rstest::rstest;
+mod extension_input;
 use serde_json::Value;
 
 async fn handle_request(
@@ -212,6 +213,7 @@ fn cached_host_session(driver: &ComputerUseDriver) -> HostSession {
         .unwrap();
     let synchronized_action_evidence_epoch = session.action_evidence_epoch();
     HostSession {
+        extension_observation: None,
         runtime_session_id: "runtime-session-1".into(),
         target_process_id: 42,
         target_window_handle: 77,

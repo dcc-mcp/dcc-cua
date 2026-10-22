@@ -17,6 +17,7 @@ mod browser_extension;
 mod capture_proof;
 mod cli_args;
 mod connection_diagnostics;
+mod extension_transport;
 mod failure_output;
 mod host_lifecycle;
 mod lifetime_diagnostics;

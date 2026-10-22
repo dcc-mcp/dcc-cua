@@ -23,7 +23,7 @@
       "schema": "dcc-cua.browser-extension.v1",
       "type": "hello_ack",
       "protocol": 1,
-      "capabilities": ["native_host_bridge_v1"]
+      "capabilities": ["native_host_bridge_v1", "task_owned_pairing_v1"]
     },
     {
       "schema": "dcc-cua.browser-extension.v1",
@@ -105,7 +105,7 @@
       "schema": "dcc-cua.browser-extension.v1",
       "type": "hello_ack",
       "protocol": 2,
-      "capabilities": ["native_host_bridge_v1"]
+      "capabilities": ["native_host_bridge_v1", "task_owned_pairing_v1"]
     },
     {
       "schema": "dcc-cua.browser-extension.v1",

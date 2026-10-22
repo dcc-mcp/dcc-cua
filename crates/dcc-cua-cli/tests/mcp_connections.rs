@@ -241,7 +241,7 @@ fn record_for_pid(report: &Value, pid: u32) -> &Value {
 }
 
 fn assert_process_status(record: &Value, supported_status: &str) {
-    let expected = if cfg!(any(windows, target_os = "linux")) {
+    let expected = if cfg!(any(windows, target_os = "linux", target_os = "macos")) {
         supported_status
     } else {
         "unknown"
@@ -370,7 +370,7 @@ fn abrupt_owned_bridge_exit_requires_creation_identity_before_inference() {
     let record = record_for_pid(&report, bridge.pid());
     assert_eq!(record["connection_id"], current["connection_id"]);
     assert_process_status(record, "ended");
-    if cfg!(any(windows, target_os = "linux")) {
+    if cfg!(any(windows, target_os = "linux", target_os = "macos")) {
         assert_eq!(record["state"], "closed");
         assert_eq!(record["close_reason"], "process_exited");
         assert_eq!(record["close_reason_source"], "inferred");
