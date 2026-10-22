@@ -60,10 +60,9 @@ pub(crate) fn validate_target_policy(target: &WindowTarget) -> ComputerUseResult
     validate_observed_application_identity(&target.app_name)
 }
 
-pub(crate) fn native_inventory(
-    process_id: Option<u32>,
-    on_screen_only: bool,
-) -> Option<Vec<Value>> {
+/// Enumerate native window metadata without starting capture, input, or cursor services.
+/// Returns `None` when the platform needs the regular SDK inventory route.
+pub fn native_inventory(process_id: Option<u32>, on_screen_only: bool) -> Option<Vec<Value>> {
     #[cfg(windows)]
     {
         Some(windows_inventory(process_id, on_screen_only))
