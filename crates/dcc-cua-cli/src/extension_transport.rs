@@ -19,18 +19,30 @@ pub(crate) fn endpoint(connection_id: &str) -> Option<String> {
     }
     #[cfg(unix)]
     {
-        Some(
-            std::path::Path::new(&base)
-                .with_file_name(format!("ext-{}.sock", id.simple()))
-                .to_string_lossy()
-                .into_owned(),
-        )
+        unix_endpoint(std::path::Path::new(&base), id)
     }
     #[cfg(not(any(windows, unix)))]
     {
         let _ = base;
         None
     }
+}
+
+#[cfg(unix)]
+pub(crate) fn unix_endpoint(base: &std::path::Path, id: Uuid) -> Option<String> {
+    use std::os::unix::ffi::OsStrExt;
+
+    // A complete lowercase UUID avoids case-folding aliases and unnecessary
+    // suffixes under macOS's shorter sockaddr_un path capacity.
+    let path = base.with_file_name(id.simple().to_string());
+    // SAFETY: sockaddr_un contains only integer/character fields; zero is valid.
+    // The value is never passed to the OS, only its native path capacity is read.
+    let address: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+    let bytes = path.as_os_str().as_bytes();
+    if !path.is_absolute() || bytes.contains(&0) || bytes.len() >= address.sun_path.len() {
+        return None;
+    }
+    path.to_str().map(str::to_owned)
 }
 
 pub(crate) struct ProviderListener {
