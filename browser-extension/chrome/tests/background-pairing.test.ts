@@ -19,17 +19,36 @@ function fixture() {
   const responses: any[] = [];
   let focused = true;
   let commands = 0;
+  let badge = "";
+  let nextRemove: Promise<void> | null = null;
+  let nextSet: Promise<void> | null = null;
   let stored: unknown = { session_nonce: "stale", tab_id: 1, window_id: 2, origin: "https://example.com", document_id: "old" };
+  function pauseStorage(kind: "remove" | "set") {
+    let resume!: () => void;
+    const gate = new Promise<void>(resolve => { resume = resolve; });
+    if (kind === "remove") nextRemove = gate;
+    else nextSet = gate;
+    return resume;
+  }
   const browser = {
-    action: { onClicked: clicked, setBadgeText: async () => {}, setBadgeBackgroundColor: async () => {} },
+    action: { onClicked: clicked, setBadgeText: async ({ text }: { text: string }) => { badge = text; }, setBadgeBackgroundColor: async () => {} },
     runtime: {
       id: "published-extension", lastError: null, getManifest: () => ({ version: "0.3.1" }),
       connectNative: () => {
-        const port = { onDisconnect: event(), onMessage: event(), postMessage: (value: unknown) => { responses.push(value); }, disconnect() { this.onDisconnect.fire(); } };
+        const port = {
+          onDisconnect: event(), onMessage: event(), disconnected: false,
+          postMessage(value: unknown) { if (this.disconnected) throw new Error("disconnected port"); responses.push(value); },
+          // Chrome fires onDisconnect at the other end, never at this local caller.
+          disconnect() { this.disconnected = true; },
+        };
         ports.push(port); return port;
       },
     },
-    storage: { session: { get: async () => ({ dcc_cua_pairing_v1: stored }), remove: async () => { stored = undefined; }, set: async (value: any) => { stored = value.dcc_cua_pairing_v1; } }, onChanged: event() },
+    storage: { session: {
+      get: async () => ({ dcc_cua_pairing_v1: stored }),
+      remove: async () => { const gate = nextRemove; nextRemove = null; if (gate) await gate; stored = undefined; },
+      set: async (value: any) => { const gate = nextSet; nextSet = null; if (gate) await gate; stored = value.dcc_cua_pairing_v1; },
+    }, onChanged: event() },
     scripting: { executeScript: async () => {} },
     windows: { get: async () => ({ focused }) },
     tabs: { get: async () => ({ active: true, windowId: 2 }), onUpdated: event(), onRemoved: event(), sendMessage: async () => { commands += 1; return { ok: true, result: { document: { origin: "https://example.com", id: "doc" } } }; } },
@@ -37,23 +56,72 @@ function fixture() {
   const source = readFileSync(new URL("../entrypoints/background.ts", import.meta.url), "utf8")
     .replace(/^import[\s\S]*?;\r?\n/gm, "").replace(/export default /g, "").replace(/export /g, "");
   runInNewContext(stripTypeScriptTypes(source), { ...protocol, ...content, PairingLifecycle, browser, defineBackground: (run: () => void) => run(), crypto: { randomUUID }, URL });
-  return { ports, responses, loseFocus: () => { focused = false; }, commands: () => commands, stored: () => stored, async pair() { clicked.fire({ id: 1, windowId: 2, url: "https://example.com" }); await flush(); } };
+  return { ports, responses, badge: () => badge, pauseClear: () => pauseStorage("remove"), pauseSave: () => pauseStorage("set"), loseFocus: () => { focused = false; }, commands: () => commands, stored: () => stored, async pair() { clicked.fire({ id: 1, windowId: 2, url: "https://example.com" }); await flush(); } };
 }
 
 test("background clears restored pairing and requires explicit pairing after disconnect", async () => {
   const f = fixture(); await flush();
   assert.equal(f.stored(), undefined); assert.equal(f.ports.length, 0);
   await f.pair(); assert.equal(f.ports.length, 1); assert.ok(f.stored());
-  f.ports[0].disconnect(); await flush();
+  f.ports[0].onDisconnect.fire(); await flush();
   assert.equal(f.stored(), undefined); assert.equal(f.ports.length, 1);
 });
 
 test("old native port cannot clear a replacement pairing and old hosts fail closed", async () => {
   const f = fixture(); await flush(); await f.pair(); await f.pair();
   assert.equal(f.ports.length, 2); assert.ok(f.stored());
-  f.ports[0].disconnect(); await flush(); assert.ok(f.stored());
+  f.ports[0].onDisconnect.fire(); await flush(); assert.ok(f.stored());
   f.ports[1].onMessage.fire({ schema: protocol.PROTOCOL_SCHEMA, type: "hello_ack", protocol: 1, capabilities: ["native_host_bridge_v1"] });
   await flush(); assert.equal(f.stored(), undefined);
+});
+
+test("a locally rejected native host clears pairing and badge without an onDisconnect event", async () => {
+  const f = fixture(); await flush(); await f.pair();
+  const port = f.ports[0];
+  port.onMessage.fire({ schema: protocol.PROTOCOL_SCHEMA, type: "hello_ack", protocol: 1, capabilities: ["native_host_bridge_v1"] });
+  await flush();
+  assert.equal(port.disconnected, true);
+  assert.equal(f.stored(), undefined);
+  assert.equal(f.badge(), "!");
+  const responses = f.responses.length;
+  port.onMessage.fire({ schema: protocol.PROTOCOL_SCHEMA, type: "hello_ack", protocol: 1, capabilities: ["task_owned_pairing_v1"] });
+  await flush();
+  assert.equal(f.badge(), "!");
+  assert.equal(f.responses.length, responses);
+});
+
+test("a pending failure clear cannot remove a replacement pairing", async () => {
+  const f = fixture(); await flush(); await f.pair();
+  const previous = f.ports[0];
+  const oldPairing = f.stored() as any;
+  const resume = f.pauseClear();
+  previous.onDisconnect.fire(); await flush();
+  await f.pair();
+  resume(); await flush();
+  assert.equal(f.ports.length, 2);
+  assert.ok(f.stored());
+  assert.notEqual((f.stored() as any).session_nonce, oldPairing.session_nonce);
+  const replacement = f.ports[1];
+  replacement.onMessage.fire({ schema: protocol.PROTOCOL_SCHEMA, type: "hello_ack", protocol: 1, capabilities: ["task_owned_pairing_v1"] });
+  await flush(); previous.onDisconnect.fire(); await flush();
+  assert.ok(f.stored());
+  assert.equal(f.badge(), "ON");
+});
+
+test("failure during a replacement save cannot clear the replacement generation", async () => {
+  const f = fixture(); await flush(); await f.pair();
+  const previous = f.ports[0];
+  const oldPairing = f.stored() as any;
+  const resume = f.pauseSave();
+  await f.pair();
+  previous.onDisconnect.fire(); await flush();
+  resume(); await flush();
+  assert.equal(f.ports.length, 2);
+  assert.notEqual((f.stored() as any).session_nonce, oldPairing.session_nonce);
+  f.ports[1].onMessage.fire({ schema: protocol.PROTOCOL_SCHEMA, type: "hello_ack", protocol: 1, capabilities: ["task_owned_pairing_v1"] });
+  await flush(); previous.onDisconnect.fire(); await flush();
+  assert.ok(f.stored());
+  assert.equal(f.badge(), "ON");
 });
 
 

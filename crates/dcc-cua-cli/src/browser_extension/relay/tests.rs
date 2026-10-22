@@ -1,5 +1,77 @@
 use super::*;
 use rstest::rstest;
+use std::future::Future;
+
+#[rstest]
+#[tokio::test]
+async fn cancelled_provider_poll_unregisters_on_a_fresh_verified_connection() {
+    use crate::connection_diagnostics::{ConnectionDiagnostics, RuntimeBuildIdentity};
+    let root = tempfile::tempdir().unwrap();
+    let diagnostics = ConnectionDiagnostics::new(
+        RuntimeBuildIdentity {
+            runtime_version: env!("CARGO_PKG_VERSION").into(),
+            source_revision: None,
+            source_dirty: None,
+            build_profile: None,
+            target: None,
+        },
+        Some(root.path().to_owned()),
+    );
+    let record = diagnostics.snapshot();
+    let listener = crate::extension_transport::ProviderListener::start(
+        dcc_cua_core::ComputerUseDriver::create().unwrap(),
+        &record.connection_id,
+        "cleanup-test",
+        &dcc_cua_host::TrustedTaskAuthorizationTarget::ExactWindow {
+            process_id: 42,
+            window_handle: 77,
+        },
+    )
+    .await
+    .unwrap();
+    let mut client = crate::extension_transport::connect(&record).await.unwrap();
+    let registered = client.request("register_browser_extension", json!({
+        "hello":{"schema":"dcc-cua.browser-extension.v1","type":"hello","protocol":{"min":1,"max":1},
+            "extension":{"id":"cleanup-extension","version":"0.3.1"},"capabilities":["explicit_tab_pairing_v1"],
+            "pairing":{"session_nonce":"cleanup-pair","tab_id":7,"window_id":9,"origin":"https://example.com","document_id":"doc-1"}},
+        "invocation_origin":"chrome-extension://cleanup-extension/", "browser_process_id":42,"browser_window_handle":77
+    })).await.unwrap().value;
+    let provider = registered["provider_id"].as_str().unwrap();
+    let secret = registered["provider_secret"].as_str().unwrap();
+    let poll = json!({"provider_id":provider,"provider_secret":secret,"timeout_ms":1000});
+    {
+        let request = client.request("browser_extension_next", poll);
+        tokio::pin!(request);
+        std::future::poll_fn(|context| {
+            assert!(request.as_mut().poll(context).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+        // Drop a request that has actually begun, rather than depending on a
+        // scheduling delay to cancel before its one-second poll completes.
+    }
+    let old_error = client
+        .request(
+            "unregister_browser_extension",
+            json!({"provider_id":provider,"provider_secret":secret}),
+        )
+        .await
+        .unwrap_err();
+    assert!(old_error.to_string().contains("unusable"));
+    unregister(&record, provider, secret).await.unwrap();
+    let mut fresh = crate::extension_transport::connect(&record).await.unwrap();
+    let removed = fresh
+        .request(
+            "browser_extension_next",
+            json!({"provider_id":provider,"provider_secret":secret,"timeout_ms":0}),
+        )
+        .await;
+    assert!(
+        removed.is_err(),
+        "cancelled poll must not leave its provider registered"
+    );
+    drop(listener);
+}
 
 #[rstest]
 #[tokio::test]

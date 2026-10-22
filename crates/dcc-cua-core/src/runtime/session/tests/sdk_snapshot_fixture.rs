@@ -31,3 +31,23 @@ fn both_projection_keeps_the_same_tokens_and_adds_display_only_text() {
             .contains("menu_action=none")
     );
 }
+
+#[cfg(not(windows))]
+#[rstest]
+#[tokio::test]
+async fn portable_screenshot_only_capture_does_not_require_a_tree_projection() {
+    let (session, calls, names) = counting_session_with_names();
+
+    let image = session
+        .driver
+        .capture_exact_window_png(42, 77, &session.session_id)
+        .await
+        .expect("screenshot-only native request");
+
+    assert!(image.starts_with(b"\x89PNG\r\n\x1a\n"));
+    assert_eq!(calls.load(AtomicOrdering::SeqCst), 3);
+    assert_eq!(
+        *names.lock().unwrap(),
+        ["list_windows", "get_window_state", "list_windows"]
+    );
+}
