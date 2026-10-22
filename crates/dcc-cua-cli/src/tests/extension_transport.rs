@@ -48,7 +48,6 @@ fn unix_endpoint_preserves_uuid_and_refuses_native_path_overflow() {
 async fn private_provider_endpoint_checks_peer_and_rejects_task_requests() {
     use dcc_cua_client::HostClient;
     use serde_json::json;
-    use std::time::Duration;
     let root = tempfile::tempdir().unwrap();
     let diagnostics = crate::connection_diagnostics::ConnectionDiagnostics::new(
         crate::connection_diagnostics::RuntimeBuildIdentity {
@@ -76,20 +75,20 @@ async fn private_provider_endpoint_checks_peer_and_rejects_task_requests() {
             window_handle: 77,
         },
     )
+    .await
     .unwrap();
-    let mut client = None;
-    let mut last_error = String::new();
-    for _ in 0..50 {
-        match crate::extension_transport::connect(&record).await {
-            Ok(connected) => {
-                client = Some(connected);
-                break;
-            }
-            Err(error) => last_error = error,
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-    let mut client = client.unwrap_or_else(|| panic!("private listener ready: {last_error}"));
+    let occupied = crate::extension_transport::ProviderListener::start(
+        dcc_cua_core::ComputerUseDriver::create().unwrap(),
+        &record.connection_id,
+        "other-owner",
+        &dcc_cua_host::TrustedTaskAuthorizationTarget::ExactWindow {
+            process_id: 42,
+            window_handle: 77,
+        },
+    )
+    .await;
+    assert!(occupied.is_err(), "occupied endpoint cannot report ready");
+    let mut client = crate::extension_transport::connect(&record).await.unwrap();
     assert!(
         HostClient::connect_to_process(&address, "wrong-peer", u32::MAX)
             .await

@@ -52,18 +52,18 @@ pub(super) async fn run(
                         }).await;
                         if let Ok(Ok((client, binding))) = connected
                             && binding["process_id"].as_u64() == Some(u64::from(browser_pid)) && binding["window_handle"].as_u64() == Some(browser_window) {
-                                endpoints.push((record.connection_id, client));
+                                endpoints.push((record, client));
                         }
                     }
                     if endpoints.len() > 1 {
                         return Err(std::io::Error::other("multiple matching extension tasks; revoke ambiguity and pair again").into());
                     }
-                    if let Some((owner, client)) = endpoints.pop() {
+                    if let Some((record, client)) = endpoints.pop() {
                         selected = true;
                         let (tx, hello, origin) = (tx.clone(), hello.clone(), origin.clone());
                         let stopped = shutdown.subscribe();
                         workers.spawn(async move {
-                            let _ = worker(client, &owner, hello, origin, (browser_pid, browser_window), tx, stopped).await;
+                            let _ = worker(client, &record, hello, origin, (browser_pid, browser_window), tx, stopped).await;
                         });
                     }
                 }
@@ -100,7 +100,7 @@ pub(super) async fn run(
 
 async fn worker(
     mut client: HostClient,
-    owner: &str,
+    record: &crate::connection_diagnostics::ConnectionRecord,
     hello: Value,
     origin: String,
     browser: (u32, u64),
@@ -145,7 +145,7 @@ async fn worker(
             .and_then(|body| body.remove("_dcc_deadline_unix_ms"))
             .and_then(|value| value.as_u64())
             .ok_or("missing command deadline")?;
-        let owner = format!("{owner}:{task_owner}");
+        let owner = format!("{}:{task_owner}", record.connection_id);
         let (reply, receive) = oneshot::channel();
         commands
             .send(Command {
@@ -167,15 +167,29 @@ async fn worker(
         Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
         } => result,
     };
-    let _ = tokio::time::timeout(
-        Duration::from_millis(500),
-        client.request(
-            "unregister_browser_extension",
-            json!({"provider_id":provider_id,"provider_secret":secret}),
-        ),
-    )
-    .await;
+    let _ = unregister(record, &provider_id, &secret).await;
     result
+}
+
+async fn unregister(
+    record: &crate::connection_diagnostics::ConnectionRecord,
+    provider_id: &str,
+    secret: &str,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    // Cancelling a poll invalidates its framed connection. Cleanup must prove
+    // the same endpoint's OS peer and full birth again on a fresh connection.
+    tokio::time::timeout(Duration::from_millis(500), async {
+        let mut cleanup = crate::extension_transport::connect(record).await?;
+        cleanup
+            .request(
+                "unregister_browser_extension",
+                json!({"provider_id":provider_id,"provider_secret":secret}),
+            )
+            .await?;
+        Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
+    })
+    .await??;
+    Ok(())
 }
 
 async fn dispatch<W: tokio::io::AsyncWrite + Unpin>(

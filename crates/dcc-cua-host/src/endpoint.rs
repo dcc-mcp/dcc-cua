@@ -20,18 +20,28 @@ pub(crate) async fn serve(
     endpoint: String,
     security_services: HostSecurityServices,
 ) -> Result<(), HostError> {
+    serve_with_ready(driver, endpoint, security_services, None).await
+}
+
+pub(crate) async fn serve_with_ready(
+    driver: ComputerUseDriver,
+    endpoint: String,
+    security_services: HostSecurityServices,
+    ready: Option<tokio::sync::oneshot::Sender<()>>,
+) -> Result<(), HostError> {
     #[cfg(windows)]
     {
-        serve_named_pipe(driver, endpoint, security_services).await
+        serve_named_pipe(driver, endpoint, security_services, ready).await
     }
     #[cfg(unix)]
     {
-        serve_unix_socket(driver, endpoint, security_services).await
+        serve_unix_socket(driver, endpoint, security_services, ready).await
     }
     #[cfg(not(any(windows, unix)))]
     {
         let _ = driver;
         let _ = endpoint;
+        let _ = ready;
         Err(HostError::Protocol(
             "local endpoint transport is unsupported on this platform".into(),
         ))
@@ -43,6 +53,7 @@ async fn serve_named_pipe(
     driver: ComputerUseDriver,
     endpoint: String,
     security_services: HostSecurityServices,
+    mut ready: Option<tokio::sync::oneshot::Sender<()>>,
 ) -> Result<(), HostError> {
     let _singleton = acquire_endpoint_singleton(&endpoint)?;
     let limiter = connection_limiter();
@@ -56,6 +67,9 @@ async fn serve_named_pipe(
             .map_err(|_| HostError::Protocol("Host connection limiter closed".into()))?;
         let server = create_secure_named_pipe(&endpoint, first_instance)?;
         first_instance = false;
+        if let Some(ready) = ready.take() {
+            let _ = ready.send(());
+        }
         server.connect().await?;
         let next_driver = driver.clone();
         let next_security_services = security_services.clone();
@@ -273,6 +287,7 @@ async fn serve_unix_socket(
     driver: ComputerUseDriver,
     endpoint: String,
     security_services: HostSecurityServices,
+    ready: Option<tokio::sync::oneshot::Sender<()>>,
 ) -> Result<(), HostError> {
     use tokio::net::{UnixListener, UnixStream};
 
@@ -303,6 +318,9 @@ async fn serve_unix_socket(
         inode: metadata.ino(),
     };
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    if let Some(ready) = ready {
+        let _ = ready.send(());
+    }
     let limiter = connection_limiter();
     let mut connections = tokio::task::JoinSet::new();
     loop {
