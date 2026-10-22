@@ -167,7 +167,59 @@ fn creation(pid: u32) -> std::io::Result<(Option<u64>, Option<String>)> {
     ))
 }
 
-#[cfg(all(not(windows), not(target_os = "linux")))]
+#[cfg(target_os = "macos")]
+fn creation(pid: u32) -> std::io::Result<(Option<u64>, Option<String>)> {
+    let native_pid = libc::pid_t::try_from(pid)
+        .ok()
+        .filter(|pid| *pid > 0)
+        .ok_or(std::io::ErrorKind::NotFound)?;
+    let mut info = std::mem::MaybeUninit::<libc::proc_bsdinfo>::uninit();
+    let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+    // SAFETY: libproc receives one correctly sized local buffer. Only a full
+    // PROC_PIDTBSDINFO result is assumed initialized, before reading its fields.
+    let read = unsafe {
+        libc::proc_pidinfo(
+            native_pid,
+            libc::PROC_PIDTBSDINFO,
+            0,
+            info.as_mut_ptr().cast(),
+            size,
+        )
+    };
+    if read <= 0 {
+        let error = std::io::Error::last_os_error();
+        return Err(if error.raw_os_error() == Some(libc::ESRCH) {
+            std::io::ErrorKind::NotFound.into()
+        } else {
+            error
+        });
+    }
+    if read != size {
+        return Err(std::io::ErrorKind::InvalidData.into());
+    }
+    // SAFETY: proc_pidinfo confirmed the full typed result above.
+    let info = unsafe { info.assume_init() };
+    if info.pbi_pid != pid || info.pbi_start_tvsec == 0 || info.pbi_start_tvusec >= 1_000_000 {
+        return Err(std::io::ErrorKind::InvalidData.into());
+    }
+    if info.pbi_status == libc::SZOMB {
+        return Err(std::io::ErrorKind::NotFound.into());
+    }
+    let unix_ms = info
+        .pbi_start_tvsec
+        .checked_mul(1000)
+        .and_then(|seconds| seconds.checked_add(info.pbi_start_tvusec / 1000))
+        .ok_or(std::io::ErrorKind::InvalidData)?;
+    Ok((
+        Some(unix_ms),
+        Some(format!(
+            "macos-start-time:{}:{}",
+            info.pbi_start_tvsec, info.pbi_start_tvusec
+        )),
+    ))
+}
+
+#[cfg(all(not(windows), not(target_os = "linux"), not(target_os = "macos")))]
 fn creation(_pid: u32) -> std::io::Result<(Option<u64>, Option<String>)> {
     // An unsupported creation-identity probe cannot certify liveness or PID reuse.
     Ok((None, None))

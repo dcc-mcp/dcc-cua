@@ -32,16 +32,47 @@ fn captures_actual_process_instance_and_embedded_host_identity() {
         record.runtime.source_revision.as_deref(),
         Some("0123456789abcdef")
     );
-    #[cfg(any(windows, target_os = "linux"))]
+    #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
     {
         assert!(record.bridge.creation_id.is_some());
         assert!(record.bridge.creation_time_unix_ms.is_some());
         assert_eq!(record.process_status, ProcessStatus::Live);
+        assert!(record.bridge.is_live());
     }
     assert_eq!(
         AssociatedHost::embedded(Some("connection-1".into())).process,
         record.bridge
     );
+}
+
+#[cfg(target_os = "macos")]
+#[rstest]
+fn macos_creation_identity_retains_native_microseconds() {
+    let process = process_identity::current_process();
+    let mut info = std::mem::MaybeUninit::<libc::proc_bsdinfo>::uninit();
+    let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+    // SAFETY: this reads current-process metadata into one correctly sized
+    // local buffer, whose full initialization is checked before use.
+    let read = unsafe {
+        libc::proc_pidinfo(
+            std::process::id() as libc::pid_t,
+            libc::PROC_PIDTBSDINFO,
+            0,
+            info.as_mut_ptr().cast(),
+            size,
+        )
+    };
+    assert_eq!(read, size);
+    // SAFETY: the native call returned the full typed result.
+    let info = unsafe { info.assume_init() };
+    assert_eq!(
+        process.creation_id,
+        Some(format!(
+            "macos-start-time:{}:{}",
+            info.pbi_start_tvsec, info.pbi_start_tvusec
+        ))
+    );
+    assert!(process.is_live());
 }
 
 #[rstest]
@@ -159,7 +190,7 @@ fn reused_pid_is_ended_without_fabricating_stdin_eof_or_exit_time() {
     record.bridge.creation_id = Some("previous-process-instance".into());
     registry::publish(&path, &record).unwrap();
     let observed = list_connections(Some(path)).connections.remove(0);
-    #[cfg(any(windows, target_os = "linux"))]
+    #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
     {
         assert_eq!(observed.process_status, ProcessStatus::Ended);
         assert_eq!(observed.state, ConnectionState::Closed);
@@ -167,7 +198,7 @@ fn reused_pid_is_ended_without_fabricating_stdin_eof_or_exit_time() {
         assert_eq!(observed.close_reason_source.as_deref(), Some("inferred"));
         assert!(observed.closed_at_unix_ms.is_none());
     }
-    #[cfg(not(any(windows, target_os = "linux")))]
+    #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
     assert_eq!(observed.process_status, ProcessStatus::Unknown);
 }
 
