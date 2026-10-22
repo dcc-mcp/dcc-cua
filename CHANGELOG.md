@@ -1,5 +1,31 @@
 # Changelog
 
+## [1.13.0](https://github.com/dcc-mcp/dcc-cua/compare/v1.12.2...v1.13.0) (2026-10-22)
+
+
+### Features
+
+* **browser:** pin trusted download filename metadata ([cbbceb6](https://github.com/dcc-mcp/dcc-cua/commit/cbbceb6a06d2e153f02a0391f1536ce0b166638b))
+* **browser:** preserve download names and recover owned setup tabs ([#371](https://github.com/dcc-mcp/dcc-cua/issues/371)) ([e1a449e](https://github.com/dcc-mcp/dcc-cua/commit/e1a449e56cf2ba36ff32a74cde81178fdd023757))
+* **browser:** request completed download filename metadata ([b272e6d](https://github.com/dcc-mcp/dcc-cua/commit/b272e6df08656be6bd4d1639ce7ae7c08fa31843))
+
+
+### Bug Fixes
+
+* attest macOS provider births and bound socket paths ([7144094](https://github.com/dcc-mcp/dcc-cua/commit/714409465285a5a1bc9047c7cea3f80dd1653122))
+* await provider readiness and reconnect cleanup ([89cb203](https://github.com/dcc-mcp/dcc-cua/commit/89cb2038037fe61351edbf85e27b6cf9e9b31f1b))
+* **browser:** clean up owned Windows setup tabs ([5c1e6a1](https://github.com/dcc-mcp/dcc-cua/commit/5c1e6a1b3b6a5eb520c433dbb194c14793c3c344))
+* **browser:** report manual existing-profile setup recovery ([d412d37](https://github.com/dcc-mcp/dcc-cua/commit/d412d374c51f738bd99dc2d9312a71323379cf78))
+* **ci:** separate GUI compilation from runtime timeout ([e764be8](https://github.com/dcc-mcp/dcc-cua/commit/e764be87f694a2f69f1415461036087ef5b31979))
+* declare host endpoint test dependency ([7c11700](https://github.com/dcc-mcp/dcc-cua/commit/7c11700cb53081790caad0ded0095d4bf6631ffe))
+* **extension:** bind browser input to authorized tasks ([#365](https://github.com/dcc-mcp/dcc-cua/issues/365)) ([ef46bf3](https://github.com/dcc-mcp/dcc-cua/commit/ef46bf3fe66570b0012b2c211f968eb6ccd3d84a))
+* integrate native macOS pairing identity ([7e166d7](https://github.com/dcc-mcp/dcc-cua/commit/7e166d7c3be7c7f2a505b0d0c430c3c31d0e9cc3))
+* integrate native macOS pairing identity ([a73ac44](https://github.com/dcc-mcp/dcc-cua/commit/a73ac44ba12d4141025989ba48d2eff2b5892bb6))
+* integrate provider startup and disconnect cleanup ([6b95e3d](https://github.com/dcc-mcp/dcc-cua/commit/6b95e3ddb861be087cf7fb9368e452d7cb8106ed))
+* integrate provider startup and disconnect cleanup ([0aa44d2](https://github.com/dcc-mcp/dcc-cua/commit/0aa44d2dd436229dd014bb80f89d3312abcdc9c4))
+* reconcile Driver SDK upgrade with main ([d5242f5](https://github.com/dcc-mcp/dcc-cua/commit/d5242f5b13f8db1820387512e8acbe819f8acfef))
+* update Driver SDK to 0.36.0 ([#356](https://github.com/dcc-mcp/dcc-cua/issues/356)) ([a9b3af1](https://github.com/dcc-mcp/dcc-cua/commit/a9b3af1f36c990ea25b9079d00356d055ed44fb2))
+
 ## [1.12.2](https://github.com/dcc-mcp/dcc-cua/compare/v1.12.1...v1.12.2) (2026-10-21)
 
 
