@@ -265,7 +265,7 @@ jobs:
         run: cargo nextest run --locked -p dcc-cua-e2e --features gui-e2e --no-run
 
   e2e:
-    timeout-minutes: 45
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -363,6 +363,9 @@ jobs:
         run: |
           $binary = if ($IsWindows) { "target/release/dcc-cua.exe" } else { "target/release/dcc-cua" }
           ./scripts/test-cli-e2e.ps1 -Binary $binary
+      - name: Compile controlled GUI E2E tests
+        timeout-minutes: 30
+        run: cargo nextest run --locked -p dcc-cua-e2e --features gui-e2e --no-run
       - name: Run Windows controlled GUI Host IPC E2E
         if: matrix.os == 'windows-latest'
         timeout-minutes: 10

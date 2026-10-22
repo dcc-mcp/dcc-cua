@@ -313,3 +313,69 @@ async fn browser_prepare_guidance_does_not_bypass_the_prepare_grant() {
     assert_eq!(error_code(&error), "browser_prepare_not_granted");
     assert!(calls.lock().unwrap().is_empty());
 }
+
+#[rstest]
+#[case("existing_profile", true)]
+#[case("isolated_new", false)]
+#[tokio::test]
+async fn refused_setup_reports_manual_recovery_without_followup_browser_calls(
+    #[case] strategy: &str,
+    #[case] expects_recovery: bool,
+) {
+    let receipt = json!({
+        "status": "refused",
+        "refusal": {
+            "code": "browser_wrong_target_refused",
+            "message": "the exact remote-debugging setup page did not become ready",
+            "detail": {"setup_side_effects": {
+                "opened_setup_page": true,
+                "closed_setup_page": false,
+                "enabled_remote_debugging": false
+            }}
+        }
+    });
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let driver = ComputerUseDriver::from_test_remote_channel(Arc::new(PrepareGuidanceChannel {
+        prepared: receipt.clone(),
+        calls: Arc::clone(&calls),
+    }))
+    .unwrap();
+    let mut sessions = prepare_sessions(&driver, true);
+    let (response, attachment) = handle_request(
+        &driver,
+        &mut sessions,
+        &mut Some(SnapshotTransport::BinaryFrame),
+        &mut None,
+        &CancellationRegistry::default(),
+        browser_request("browser_prepare", json!({"strategy": {"kind": strategy}})),
+    )
+    .await
+    .unwrap();
+    assert!(attachment.is_none());
+    let structured = &response["result"]["structuredContent"];
+    assert_eq!(structured["status"], "refused");
+    assert_eq!(structured["refusal"], receipt["refusal"]);
+    assert_eq!(structured.get("recovery").is_some(), expects_recovery);
+    if expects_recovery {
+        let recovery = &structured["recovery"];
+        assert_eq!(recovery["target"], json!({"pid": 42, "window_id": 77}));
+        assert_eq!(recovery["cleanup"]["status"], "manual_cleanup_required");
+        assert_eq!(recovery["automatic_cleanup"], false);
+        assert_eq!(recovery["automatic_retry"], false);
+        // The synthetic application is unknown; the adapter must not guess Edge.
+        assert!(recovery["setup"].get("url").is_none());
+    }
+    let host = &sessions.windows["session-1"];
+    assert_eq!(host.browser.target_id(), None);
+    assert_eq!(host.browser.latest_snapshot_id(), None);
+    assert_eq!(host.latest_observation_id, None);
+    let calls = calls.lock().unwrap();
+    let browser_calls: Vec<_> = calls
+        .iter()
+        .filter(|(name, _)| name != "list_windows")
+        .collect();
+    assert_eq!(browser_calls.len(), 1);
+    assert_eq!(browser_calls[0].0, "browser_prepare");
+    assert_eq!(browser_calls[0].1["pid"], 42);
+    assert_eq!(browser_calls[0].1["window_id"], 77);
+}

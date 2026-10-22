@@ -198,6 +198,10 @@ impl ComputerUseSession {
             "_cua_browser_download_mcp_host_approved".into(),
             Value::Bool(true),
         );
+        object.insert(
+            "_cua_browser_download_metadata_requested".into(),
+            Value::Bool(true),
+        );
         let context = "call CUA browser_download";
         let result = await_input_call(
             self.driver

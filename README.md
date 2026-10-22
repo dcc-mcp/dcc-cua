@@ -1056,6 +1056,22 @@ the authorized native PID/window ID. Use the returned `target_id` and a
 `get_browser_state` or supply SDK `mode`, `pid`, or `window_id` fields through
 the task bridge. Preparation does not bind automatically or grant additional
 methods; an omitted `browser_snapshot` permission still fails closed.
+If existing-profile setup is refused after the SDK reports setup-page side
+effects, `structuredContent.recovery.kind: "existing_profile_setup"` describes
+manual recovery for the last validated native PID/window ID. A recognized
+native browser name supplies its internal setup URL and the checkbox label
+`Allow remote debugging for this browser instance`; an unknown application
+does not receive a guessed URL. Verify that setting manually and review any
+leftover setup tab before retrying. `cleanup.status` distinguishes
+`manual_cleanup_required`, `closed_by_driver`, and `not_opened`. These are
+reported effects, not proof of current tab ownership or setting state. If the
+SDK reports `setup_tab_creation_unproven: true`, manually review the exact
+window for a possible leftover setup tab even when `opened_setup_page` is false.
+The recovery status remains `manual_cleanup_required` for this uncertain outcome.
+The adapter performs no extra navigation, input, tab closure, or automatic retry;
+the SDK exposes no reusable cleanup capability when its exact-tab proof fails.
+Keep the original refusal and obtain fresh authorized observations before
+continuing. Native automatic setup/cleanup acceptance remains a separate gate.
 Hosts advertising `nearest_ancestor_role_v1` accept `scope_ancestor_role` only
 for a `semantic_v2` tab snapshot with an exact `target_id`, `tab_id`,
 `scope_ref`, and `query`. CUA resolves the nearest same-frame ancestor with the
@@ -1079,6 +1095,13 @@ no delivery from a navigation that changed the page but failed verification. `br
 `browser_set_input_files`, and `browser_download` invalidate the tab snapshot.
 Upload uses `allow_browser_input`; download is a separate
 destructive grant (`allow_browser_download`) and CUA's host approval evidence.
+When the completed artifact is proven inside `destination_root`, the result
+includes a verified `file_path`/`artifact_ref`, the actual `stored_filename`, byte
+count and best-effort SHA-256/content-detected `mime_type`. Unproven artifacts
+leave location fields absent. `suggested_filename` separately records the browser's suggested
+name, or `null` with `suggested_filename_status: "unavailable" | "invalid"`.
+Treat the suggested name as display metadata; use the verified artifact location
+for extraction/import. No file is renamed and no source URL is returned.
 `browser_dialog` only resolves page-owned JavaScript dialogs and requires the
 exact current `dialog_id` for accept/dismiss.
 Attaching to a logged-in Chromium profile keeps CUA's R2 gate: launch the Host

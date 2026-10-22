@@ -12,11 +12,38 @@ this contract with `scripts/test_sdk_dependency_contract.py`.
 - Updated SDK: Driver 0.36.0 plus the required DCC compatibility patch series.
 - Official release: [cua-driver-rs-v0.36.0](https://github.com/trycua/cua/releases/tag/cua-driver-rs-v0.36.0),
   commit `trycua/cua@6d6c734c127025fb39ad5d585a10382808b39dc1` (2026-10-16).
-- Published compatibility source: `loonghao/cua@55ab9c62fe23b87d015136f45c4e8995e9988615`
-  ([compatibility PR #7](https://github.com/loonghao/cua/pull/7)). All six root
+- Published compatibility source: `loonghao/cua@be4bbd3eac57796804f43b291a2012dcd2d96896`
+  ([owned Windows setup cleanup #9](https://github.com/loonghao/cua/pull/9)), based
+  on `6219e5e498958cf951aad28f1ec84117625dc586` from
+  [download metadata follow-up #8](https://github.com/loonghao/cua/pull/8) and
+  `55ab9c62fe23b87d015136f45c4e8995e9988615` from
+  [compatibility PR #7](https://github.com/loonghao/cua/pull/7). All six root
   declarations and ten resolved SDK packages use this immutable Git source.
-  Its tree matches the tested local migration candidate, with original fork
-  histories retained as merge parents.
+  The original fork histories remain ancestors of this additive source update.
+
+The follow-up preserves the default SDK download privacy contract. Only a
+trusted, already-approved host request can opt into a bounded suggested filename
+from the first matching frame/GUID download event. Completion still proves the
+stored artifact before returning the name; missing/invalid names remain explicit
+and do not rename or change the destination. Public callers cannot forge this
+metadata request. DCC uses the existing download authorization boundary to opt in.
+The download-metadata parent at `6219e5e4` passed 1,007 SDK-core library tests;
+two existing explicit native opt-ins remained ignored. That result and the
+earlier 55ab validation below are historical evidence for those revisions.
+
+The Windows cleanup follow-up retains the original native window, baseline
+tabs, uniquely created tab and Close control through agile COM references.
+Full process birth, native identity and complete readback fence cleanup and
+checkbox rollback. Missing or reused identity refuses mutation, and a failed
+read cannot establish closure. Uncertain native new-tab dispatch is reported as
+`setup_tab_creation_unproven`; DCC preserves that receipt and requests manual
+review even when `opened_setup_page` is false.
+
+The final cleanup source passes 29 Windows setup tests and three strict native
+enumeration tests with independent exact-source review. Its source PR records
+the inherited strict-Clippy debt and validation boundaries; the change adds no
+lint exemptions. Cancellation before delivery of the blocking setup handle,
+reusable cleanup authorization and native Edge acceptance remain separate gates.
 
 This is the Rust **Driver SDK** under `libs/cua-driver/rust`, including
 `cua-driver-sdk` and `cua-driver-contract`. It is a separate component from
