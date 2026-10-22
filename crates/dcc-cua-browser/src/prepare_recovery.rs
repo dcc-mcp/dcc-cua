@@ -19,7 +19,12 @@ pub(super) fn annotate(value: &mut Value, existing_profile: bool, target: Option
     ) else {
         return;
     };
-    if closed && !opened {
+    let creation_unproven = match effects.get("setup_tab_creation_unproven") {
+        None => false,
+        Some(Value::Bool(unproven)) => *unproven,
+        Some(_) => return,
+    };
+    if closed && (!opened || creation_unproven) {
         return;
     }
     let Some(target) = target else {
@@ -43,7 +48,7 @@ pub(super) fn annotate(value: &mut Value, existing_profile: bool, target: Option
         setup["url"] = json!(url);
         setup["checkbox_label"] = json!("Allow remote debugging for this browser instance");
     }
-    let cleanup_status = if opened && !closed {
+    let cleanup_status = if creation_unproven || (opened && !closed) {
         "manual_cleanup_required"
     } else if closed {
         "closed_by_driver"

@@ -1064,8 +1064,11 @@ native browser name supplies its internal setup URL and the checkbox label
 does not receive a guessed URL. Verify that setting manually and review any
 leftover setup tab before retrying. `cleanup.status` distinguishes
 `manual_cleanup_required`, `closed_by_driver`, and `not_opened`. These are
-reported effects, not proof of current tab ownership or setting state. The
-adapter performs no extra navigation, input, tab closure, or automatic retry;
+reported effects, not proof of current tab ownership or setting state. If the
+SDK reports `setup_tab_creation_unproven: true`, manually review the exact
+window for a possible leftover setup tab even when `opened_setup_page` is false.
+The recovery status remains `manual_cleanup_required` for this uncertain outcome.
+The adapter performs no extra navigation, input, tab closure, or automatic retry;
 the SDK exposes no reusable cleanup capability when its exact-tab proof fails.
 Keep the original refusal and obtain fresh authorized observations before
 continuing. Native automatic setup/cleanup acceptance remains a separate gate.

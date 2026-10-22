@@ -293,7 +293,10 @@ applications receive no guessed URL. Do not retry preparation automatically.
 If `cleanup.status` is `manual_cleanup_required`, have the user identify and
 close any leftover setup tab; the SDK has not supplied reusable tab-cleanup
 authority. `closed_by_driver` and `not_opened` are reported prior effects, not
-fresh tab or setting evidence. Keep the original refusal, revalidate the exact
+fresh tab or setting evidence. A reported `setup_tab_creation_unproven: true`
+requires manual review of that exact window even if `opened_setup_page` is false;
+recovery reports `manual_cleanup_required` for this uncertain outcome.
+Keep the original refusal, revalidate the exact
 target and obtain fresh authorized observations before continuing. Recovery
 guidance never grants input, navigation, tab closure, or extra methods.
 

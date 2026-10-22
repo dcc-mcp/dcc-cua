@@ -105,9 +105,52 @@ fn reported_cleanup_states_remain_distinct(
     let effects = &mut value["structuredContent"]["refusal"]["detail"]["setup_side_effects"];
     effects["opened_setup_page"] = json!(opened);
     effects["closed_setup_page"] = json!(closed);
+    effects["setup_tab_creation_unproven"] = json!(false);
     annotate(&mut value, true, Some(&target("msedge.exe")));
     assert_eq!(
         value["structuredContent"]["recovery"]["cleanup"]["status"],
         status
     );
+}
+
+#[rstest]
+fn unproven_setup_tab_creation_requires_manual_review() {
+    let mut value = refusal();
+    let effects = &mut value["structuredContent"]["refusal"]["detail"]["setup_side_effects"];
+    effects["opened_setup_page"] = json!(false);
+    effects["setup_tab_creation_unproven"] = json!(true);
+    effects["setup_tab_cleanup_status"] = json!("creation_unproven");
+    let original = value.clone();
+
+    annotate(&mut value, true, Some(&target("msedge.exe")));
+
+    let recovery = &value["structuredContent"]["recovery"];
+    assert_eq!(recovery["cleanup"]["status"], "manual_cleanup_required");
+    assert_eq!(recovery["automatic_cleanup"], false);
+    assert_eq!(recovery["automatic_retry"], false);
+    assert_eq!(recovery["fresh_observation_required"], true);
+    value["structuredContent"]
+        .as_object_mut()
+        .unwrap()
+        .remove("recovery");
+    assert_eq!(value, original);
+}
+
+#[rstest]
+#[case(json!("true"), false)]
+#[case(Value::Null, false)]
+#[case(json!(true), true)]
+fn malformed_or_contradictory_creation_evidence_does_not_gain_recovery(
+    #[case] creation_unproven: Value,
+    #[case] closed: bool,
+) {
+    let mut value = refusal();
+    let effects = &mut value["structuredContent"]["refusal"]["detail"]["setup_side_effects"];
+    effects["setup_tab_creation_unproven"] = creation_unproven;
+    effects["closed_setup_page"] = json!(closed);
+    let original = value.clone();
+
+    annotate(&mut value, true, Some(&target("msedge.exe")));
+
+    assert_eq!(value, original);
 }
