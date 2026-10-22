@@ -12,11 +12,22 @@ this contract with `scripts/test_sdk_dependency_contract.py`.
 - Updated SDK: Driver 0.36.0 plus the required DCC compatibility patch series.
 - Official release: [cua-driver-rs-v0.36.0](https://github.com/trycua/cua/releases/tag/cua-driver-rs-v0.36.0),
   commit `trycua/cua@6d6c734c127025fb39ad5d585a10382808b39dc1` (2026-10-16).
-- Published compatibility source: `loonghao/cua@55ab9c62fe23b87d015136f45c4e8995e9988615`
-  ([compatibility PR #7](https://github.com/loonghao/cua/pull/7)). All six root
+- Published compatibility source: `loonghao/cua@6219e5e498958cf951aad28f1ec84117625dc586`
+  ([download metadata follow-up #8](https://github.com/loonghao/cua/pull/8)), based
+  on `55ab9c62fe23b87d015136f45c4e8995e9988615` from
+  [compatibility PR #7](https://github.com/loonghao/cua/pull/7). All six root
   declarations and ten resolved SDK packages use this immutable Git source.
-  Its tree matches the tested local migration candidate, with original fork
-  histories retained as merge parents.
+  The original fork histories remain ancestors of this additive source update.
+
+The follow-up preserves the default SDK download privacy contract. Only a
+trusted, already-approved host request can opt into a bounded suggested filename
+from the first matching frame/GUID download event. Completion still proves the
+stored artifact before returning the name; missing/invalid names remain explicit
+and do not rename or change the destination. Public callers cannot forge this
+metadata request. DCC uses the existing download authorization boundary to opt in.
+The exact source follow-up passes 1,007 SDK-core library tests; two existing
+explicit native opt-ins remain ignored. Earlier 55ab validation below is
+historical evidence for that parent, not a new qualification of this revision.
 
 This is the Rust **Driver SDK** under `libs/cua-driver/rust`, including
 `cua-driver-sdk` and `cua-driver-contract`. It is a separate component from

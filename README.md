@@ -1092,9 +1092,10 @@ no delivery from a navigation that changed the page but failed verification. `br
 `browser_set_input_files`, and `browser_download` invalidate the tab snapshot.
 Upload uses `allow_browser_input`; download is a separate
 destructive grant (`allow_browser_download`) and CUA's host approval evidence.
-Completed downloads return a boundary-verified `file_path`/`artifact_ref`, the
-actual `stored_filename`, byte count and best-effort SHA-256/content-detected
-`mime_type`. `suggested_filename` separately records the browser's suggested
+When the completed artifact is proven inside `destination_root`, the result
+includes a verified `file_path`/`artifact_ref`, the actual `stored_filename`, byte
+count and best-effort SHA-256/content-detected `mime_type`. Unproven artifacts
+leave location fields absent. `suggested_filename` separately records the browser's suggested
 name, or `null` with `suggested_filename_status: "unavailable" | "invalid"`.
 Treat the suggested name as display metadata; use the verified artifact location
 for extraction/import. No file is renamed and no source URL is returned.

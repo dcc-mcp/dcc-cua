@@ -384,7 +384,8 @@ for the agent. Destructive downloads and trusted confirmations still require
 their explicit task grants.
 
 After `browser_download` completes, consume its verified `file_path` or
-`artifact_ref` directly. `stored_filename` identifies the actual artifact;
+`artifact_ref` directly when present; completion alone does not prove a location.
+`stored_filename` identifies the actual artifact;
 `suggested_filename` is separate display metadata and may be `null` with an
 `unavailable` or `invalid` status. Never derive a destination path or rename a
 file from that suggestion. The reported MIME type comes from the stored bytes.
