@@ -1962,8 +1962,7 @@ fn project_task_remote_error(
     else {
         return None;
     };
-    // The client already owns explicit code/message fields. Never recover an
-    // error identity by parsing the compatibility Display string.
+    // Use the client's code/message fields; never parse the compatibility Display string.
     let remote_details = response.get("details").unwrap_or(&Value::Null);
     let diagnostic = TaskRemoteErrorDiagnostics {
         capture: remote_error_field(remote_details, "capture"),
