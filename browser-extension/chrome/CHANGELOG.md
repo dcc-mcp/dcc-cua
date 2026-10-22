@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.3.2](https://github.com/dcc-mcp/dcc-cua/compare/dcc-cua-browser-extension-v0.3.1...dcc-cua-browser-extension-v0.3.2) (2026-10-22)
+
+
+### Bug Fixes
+
+* bind extension pairing and input to authorized tasks ([ace0600](https://github.com/dcc-mcp/dcc-cua/commit/ace0600117840a2a31bb81e5050866eff77f6043))
+* clear rejected native browser pairings ([1d31a5e](https://github.com/dcc-mcp/dcc-cua/commit/1d31a5e365d7d8cf7a3ca14f9f51ad94e1ba645b))
+* **extension:** bind browser input to authorized tasks ([#365](https://github.com/dcc-mcp/dcc-cua/issues/365)) ([ef46bf3](https://github.com/dcc-mcp/dcc-cua/commit/ef46bf3fe66570b0012b2c211f968eb6ccd3d84a))
+* integrate provider startup and disconnect cleanup ([6b95e3d](https://github.com/dcc-mcp/dcc-cua/commit/6b95e3ddb861be087cf7fb9368e452d7cb8106ed))
+* integrate provider startup and disconnect cleanup ([0aa44d2](https://github.com/dcc-mcp/dcc-cua/commit/0aa44d2dd436229dd014bb80f89d3312abcdc9c4))
+* reconcile Driver SDK upgrade with main ([d5242f5](https://github.com/dcc-mcp/dcc-cua/commit/d5242f5b13f8db1820387512e8acbe819f8acfef))
+
 ## [0.3.1](https://github.com/dcc-mcp/dcc-cua/compare/dcc-cua-browser-extension-v0.3.0...dcc-cua-browser-extension-v0.3.1) (2026-10-19)
 
 
