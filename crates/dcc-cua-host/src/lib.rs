@@ -1892,7 +1892,7 @@ fn session_with_capability<'a>(
 ) -> Result<&'a mut HostSession, HostError> {
     let session = sessions
         .get_mut(session_id)
-        .ok_or_else(|| HostError::Protocol("session not found".into()))?;
+        .ok_or_else(HostError::session_not_found)?;
     if session.task_grant_id != grant_id || session.capability != capability {
         return Err(HostError::Protocol(
             "session grant or capability mismatch".into(),
@@ -1972,7 +1972,7 @@ async fn authorized_desktop_session<'a>(
 ) -> Result<&'a mut HostDesktopSession, HostError> {
     let session = sessions
         .get_mut(session_id)
-        .ok_or_else(|| HostError::Protocol("desktop session not found".into()))?;
+        .ok_or_else(HostError::session_not_found)?;
     if session.task_grant_id != grant_id || session.capability != capability {
         return Err(HostError::Protocol(
             "desktop session grant or capability mismatch".into(),

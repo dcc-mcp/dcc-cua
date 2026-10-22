@@ -9,17 +9,19 @@ use std::{
 use base64::Engine as _;
 use serde_json::{Value, json};
 use windows_sys::Win32::{
-    Foundation::{GetLastError, RECT},
+    Foundation::{GetLastError, RECT, SetLastError},
     System::Threading::{AttachThreadInput, GetCurrentProcessId, GetCurrentThreadId},
     UI::{
-        Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON, VK_MBUTTON, VK_RBUTTON},
+        Input::KeyboardAndMouse::{
+            GetAsyncKeyState, IsWindowEnabled, SetFocus, VK_LBUTTON, VK_MBUTTON, VK_RBUTTON,
+        },
         WindowsAndMessaging::{
             BringWindowToTop, GA_ROOT, GUITHREADINFO, GW_OWNER, GetAncestor, GetForegroundWindow,
             GetGUIThreadInfo, GetWindow, GetWindowRect, GetWindowThreadProcessId, HWND_TOP,
             IsIconic, IsWindow, IsWindowVisible, IsZoomed, PostMessageW, SMTO_ABORTIFHUNG,
-            SW_RESTORE, SWP_ASYNCWINDOWPOS, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW,
-            SendMessageTimeoutW, SetForegroundWindow, SetWindowPos, ShowWindowAsync, WM_CLOSE,
-            WM_NULL,
+            SW_RESTORE, SW_SHOW, SWP_ASYNCWINDOWPOS, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
+            SWP_SHOWWINDOW, SendMessageTimeoutW, SetForegroundWindow, SetWindowPos,
+            ShowWindowAsync, WM_CLOSE, WM_NULL,
         },
     },
 };
@@ -30,6 +32,7 @@ use crate::{
     WindowsForegroundRelation, WindowsPointerButton, WindowsRawInputSnapshot,
     WindowsWindowIdentity,
     snapshot::{ElementFence, SnapshotState, normalize, resolve_index},
+    visible_capture::ThreadDpiAwarenessGuard,
 };
 
 pub(crate) const STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
@@ -224,6 +227,7 @@ pub struct UiaSession {
     target: UiaTarget,
     worker: Option<UiaWorker>,
     snapshot: Option<SnapshotState>,
+    root_activation_snapshot: Option<(crate::ExactWindowPixelInstanceEvidence, std::time::Instant)>,
 }
 
 impl UiaSession {
@@ -232,6 +236,7 @@ impl UiaSession {
             target,
             worker: None,
             snapshot: None,
+            root_activation_snapshot: None,
         }
     }
 
@@ -241,6 +246,12 @@ impl UiaSession {
         max_depth: u32,
         allow_owned_standard_menu_popup: bool,
     ) -> Result<Value, UiaError> {
+        self.root_activation_snapshot = None;
+        let instance_before = crate::visible_capture::exact_window_instance_evidence(
+            self.target.process_id,
+            self.target.window_handle,
+        )
+        .ok();
         let payload = json!({
             "mode": "snapshot",
             "scope": self.scope(allow_owned_standard_menu_popup),
@@ -255,6 +266,14 @@ impl UiaSession {
         ensure_ok(&raw)?;
         let (value, state) = normalize(&raw)?;
         self.snapshot = Some(state);
+        self.root_activation_snapshot = instance_before.and_then(|before| {
+            let after = crate::visible_capture::exact_window_instance_evidence(
+                self.target.process_id,
+                self.target.window_handle,
+            )
+            .ok()?;
+            (before == after).then_some((before, std::time::Instant::now()))
+        });
         Ok(value)
     }
 
@@ -287,10 +306,169 @@ impl UiaSession {
         });
         let raw = self.request(&payload);
         self.snapshot = None;
+        self.root_activation_snapshot = None;
         let foreground =
             foreground.map(|(window, process_id)| restore_foreground(window, process_id));
         let raw = raw?;
         completed_action_result(&raw, foreground)
+    }
+
+    /// One existing-worker root request after explicit semantic activation failed.
+    /// The request retains the existing 15-second worker timeout and cleanup;
+    /// there is no startup, snapshot retry, or second SetFocus dispatch here.
+    pub fn focus_root_after_activation_refusal(
+        &mut self,
+        before: crate::ExactWindowNativeState,
+        mut diagnostic: WindowsForegroundActivationDiagnostic,
+        activation_available: impl FnOnce() -> Result<(), UiaError>,
+    ) -> crate::WindowsSemanticRootFocusOutcome {
+        use crate::{
+            WindowsSemanticRootFocusDiagnostic as Focus, WindowsSemanticRootFocusStatus as Status,
+        };
+        let mut focus = Focus {
+            status: Status::UnavailableContext,
+            focus_attempted: Some(false),
+            provider_completed: false,
+            foreground_observed: None,
+        };
+        let outcome = (|| -> Result<(), UiaError> {
+            let snapshot = self.snapshot.take();
+            let root_activation_snapshot = self.root_activation_snapshot.take();
+            let snapshot = snapshot.ok_or_else(|| {
+                UiaError::StaleSnapshot("root activation requires an existing UIA snapshot".into())
+            })?;
+            let (instance, observed_at) = root_activation_snapshot.ok_or_else(|| {
+                UiaError::StaleSnapshot(
+                    "root activation requires its original native instance".into(),
+                )
+            })?;
+            if self.worker.is_none() {
+                return Err(UiaError::BackendUnavailable(
+                    "root activation cannot start a UIA worker".into(),
+                ));
+            }
+            focus.status = Status::StaleContext;
+            if observed_at.elapsed() > Duration::from_secs(5) {
+                return Err(UiaError::StaleSnapshot(
+                    "root activation UIA snapshot expired".into(),
+                ));
+            }
+            focus.status = Status::PrerequisiteRejected;
+            crate::exact_window_state::validate_instance(self.target, instance, &before)?;
+            let frame = before.bounds.ok_or_else(|| {
+                UiaError::InvalidTarget("root activation requires the original native frame".into())
+            })?;
+            let root = snapshot.fences.first().ok_or_else(|| {
+                UiaError::StaleSnapshot("root activation snapshot has no root fence".into())
+            })?;
+            let payload = json!({
+                "mode":"focus_root", "scope":self.scope(false),
+                "expected_fence":fence_value(root),
+            });
+            activation_available()?;
+            let current = crate::exact_window_native_state(
+                self.target.process_id,
+                self.target.window_handle,
+            )?;
+            crate::exact_window_state::validate_instance(self.target, instance, &current)?;
+            let expected =
+                require_available_window_handle(self.target, "semantic root activation")?;
+            if observed_at.elapsed() > Duration::from_secs(5) {
+                focus.status = Status::StaleContext;
+                return Err(UiaError::StaleSnapshot(
+                    "root activation UIA snapshot expired before dispatch".into(),
+                ));
+            }
+            focus.status = Status::DispatchUnknown;
+            focus.focus_attempted = Some(true);
+            // Directly use the retained worker: request() must not cold-start one.
+            let raw = self
+                .worker
+                .as_mut()
+                .expect("worker checked above")
+                .request(&payload)?;
+            focus.focus_attempted = Some(
+                raw.get("focus_attempted")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(true),
+            );
+            focus.provider_completed =
+                raw.get("provider_completed").and_then(Value::as_bool) == Some(true);
+            match raw.get("root_focus_status").and_then(Value::as_str) {
+                Some("completed")
+                    if raw["ok"] == true
+                        && focus.focus_attempted == Some(true)
+                        && focus.provider_completed => {}
+                Some("not_focusable") if focus.focus_attempted == Some(false) => {
+                    focus.status = Status::NotFocusable;
+                    return Err(UiaError::InvalidTarget(
+                        "the exact UIA Window root is not keyboard focusable".into(),
+                    ));
+                }
+                Some("prerequisite_rejected") if focus.focus_attempted == Some(false) => {
+                    focus.status = Status::PrerequisiteRejected;
+                    return Err(UiaError::InvalidTarget(
+                        "the exact UIA Window root failed its action-time fence".into(),
+                    ));
+                }
+                Some("provider_rejected") if focus.focus_attempted == Some(true) => {
+                    focus.status = Status::ProviderRejected;
+                    return Err(UiaError::OperationFailed(
+                        "the UIA provider refused root focus".into(),
+                    ));
+                }
+                _ => {
+                    return Err(UiaError::BackendUnavailable(
+                        "root focus completion could not be established".into(),
+                    ));
+                }
+            }
+            focus.status = Status::PostconditionFailed;
+            let current = crate::exact_window_native_state(
+                self.target.process_id,
+                self.target.window_handle,
+            )?;
+            crate::exact_window_state::validate_instance(self.target, instance, &current)?;
+            focus.foreground_observed = Some(current.foreground);
+            if !current.foreground {
+                focus.status = Status::ForegroundRefused;
+                return Err(UiaError::OperationFailed(
+                    "UIA root focus did not acquire the exact native foreground".into(),
+                ));
+            }
+            require_available_window_handle(self.target, "semantic root activation completion")?;
+            restore_window_frame_after_activation(expected, frame, &mut diagnostic)?;
+            synchronize_activated_input_queue(expected, &diagnostic)?;
+            let after = crate::exact_window_native_state(
+                self.target.process_id,
+                self.target.window_handle,
+            )?;
+            crate::exact_window_state::validate_instance(self.target, instance, &after)?;
+            focus.foreground_observed = Some(after.foreground);
+            if !after.foreground
+                || !after.visible
+                || after.minimized
+                || after.maximized != before.maximized
+                || after.bounds != Some(frame)
+            {
+                return Err(UiaError::OperationFailed(
+                    "the exact native root activation postcondition changed".into(),
+                ));
+            }
+            focus.status = Status::Activated;
+            Ok(())
+        })();
+        let prerequisite_error = outcome.err().filter(|_| {
+            focus.status == Status::PrerequisiteRejected && focus.focus_attempted == Some(false)
+        });
+        if focus.focus_attempted == Some(true) {
+            diagnostic.final_foreground = live_window_identity(unsafe { GetForegroundWindow() });
+        }
+        diagnostic.semantic_root_focus = Some(focus);
+        crate::WindowsSemanticRootFocusOutcome {
+            diagnostic,
+            prerequisite_error,
+        }
     }
 
     fn scope(&self, allow_owned_standard_menu_popup: bool) -> Value {
@@ -388,6 +566,7 @@ fn error_detail(error: &UiaError) -> &str {
         UiaError::InteractiveDesktopUnavailable { reason, .. } => reason,
         UiaError::ForegroundActivationRefused { reason, .. } => reason,
         UiaError::ProtocolMismatch { .. } => "UIA worker protocol mismatch",
+        UiaError::UserInterrupted => "Windows window activation was interrupted",
         UiaError::Unsupported => "Windows UI Automation fallback is unavailable on this platform",
     }
 }
@@ -425,6 +604,8 @@ fn activation_diagnostic(
         // attempts. Never truncate a final detach or frame restoration result.
         attempts: Vec::with_capacity(16),
         foreground_poll_count: 0,
+        semantic_root_focus: None,
+        attached_focus: None,
     }
 }
 
@@ -481,19 +662,32 @@ fn restore_foreground(expected: usize, controlled_process_id: u32) -> Result<(),
 
 pub fn activate_window(
     target: UiaTarget,
-    activation_available: impl FnOnce() -> Result<(), UiaError>,
+    mut activation_available: impl FnMut() -> Result<(), UiaError>,
 ) -> Result<(), UiaError> {
     let expected = require_available_window_handle(target, "activation frame capture")?;
     let mut diagnostic = activation_diagnostic(target, expected);
-    let frame_before_activation = capture_visible_window_frame(expected);
-    input_gated_window_mutation(activation_available, || {
-        activate_window_after_gate(target, &mut diagnostic)
-    })?;
+    activation_available()?;
+    let before = crate::exact_window_native_state(target.process_id, target.window_handle)?;
+    crate::exact_window_state::validate_instance(target, before.instance, &before)?;
+    let frame_before_activation = before
+        .bounds
+        .filter(|_| before.visible && !before.minimized);
+    activate_window_after_gate(
+        target,
+        before.instance,
+        &mut diagnostic,
+        &mut activation_available,
+    )?;
+    let instance = before.instance;
     let expected = require_available_window_handle(target, "activation final validation")?;
+    let state = crate::exact_window_native_state(target.process_id, target.window_handle)?;
+    crate::exact_window_state::validate_instance(target, instance, &state)?;
     if let Some(frame) = frame_before_activation {
         restore_window_frame_after_activation(expected, frame, &mut diagnostic)?;
     }
     synchronize_activated_input_queue(expected, &diagnostic)?;
+    let state = crate::exact_window_native_state(target.process_id, target.window_handle)?;
+    crate::exact_window_state::validate_instance(target, instance, &state)?;
     if unsafe { GetForegroundWindow() } != expected {
         return Err(foreground_activation_refused(
             "the exact target was no longer foreground at activation final validation",
@@ -503,19 +697,13 @@ pub fn activate_window(
     Ok(())
 }
 
-fn capture_visible_window_frame(
-    expected: windows_sys::Win32::Foundation::HWND,
-) -> Option<[i32; 4]> {
-    if unsafe { IsWindowVisible(expected) } == 0 || unsafe { IsIconic(expected) } != 0 {
-        return None;
-    }
-    let mut rect = RECT::default();
-    (unsafe { GetWindowRect(expected, &mut rect) } != 0).then_some([
-        rect.left,
-        rect.top,
-        rect.right - rect.left,
-        rect.bottom - rect.top,
-    ])
+fn with_activation_frame_coordinates(
+    operation: impl FnOnce() -> Result<(), UiaError>,
+) -> Result<(), UiaError> {
+    let _dpi = ThreadDpiAwarenessGuard::per_monitor_v2().map_err(|_| {
+        UiaError::OperationFailed("native physical coordinate scope is unavailable".into())
+    })?;
+    operation()
 }
 
 fn restore_window_frame_after_activation(
@@ -523,71 +711,87 @@ fn restore_window_frame_after_activation(
     requested: [i32; 4],
     diagnostic: &mut WindowsForegroundActivationDiagnostic,
 ) -> Result<(), UiaError> {
-    let mut current = RECT::default();
-    if unsafe { GetWindowRect(expected, &mut current) } == 0 {
-        return Err(UiaError::OperationFailed(
-            "Windows could not read the exact target frame after activation".into(),
-        ));
-    }
-    let actual = [
-        current.left,
-        current.top,
-        current.right - current.left,
-        current.bottom - current.top,
-    ];
-    if window_frame_matches(actual, requested) {
-        return Ok(());
-    }
-    let [x, y, width, height] = requested;
-    let api_return = unsafe {
-        SetWindowPos(
-            expected,
-            std::ptr::null_mut(),
-            x,
-            y,
-            width,
-            height,
-            SWP_ASYNCWINDOWPOS | SWP_NOZORDER | SWP_SHOWWINDOW,
-        )
-    };
-    let os_error = (api_return == 0).then(|| unsafe { GetLastError() });
-    diagnostic
-        .attempts
-        .push(WindowsForegroundActivationAttempt::new(
-            WindowsForegroundActivationPhase::RestoreTargetFrame,
-            api_return,
-            None,
-            os_error,
-        ));
-    if let Some(os_error) = os_error {
-        return Err(UiaError::OperationFailed(format!(
-            "SetWindowPos failed while preserving the activation frame: {}",
-            std::io::Error::from_raw_os_error(os_error as i32)
-        )));
-    }
-    for _ in 0..40 {
-        let mut rect = RECT::default();
-        if unsafe { GetWindowRect(expected, &mut rect) } != 0 {
-            let actual = [
-                rect.left,
-                rect.top,
-                rect.right - rect.left,
-                rect.bottom - rect.top,
-            ];
-            if window_frame_matches(actual, requested) {
-                return Ok(());
-            }
+    with_activation_frame_coordinates(|| {
+        let mut current = RECT::default();
+        if unsafe { GetWindowRect(expected, &mut current) } == 0 {
+            return Err(UiaError::OperationFailed(
+                "Windows could not read the exact target frame after activation".into(),
+            ));
         }
-        thread::sleep(Duration::from_millis(5));
-    }
-    Err(UiaError::OperationFailed(
-        "the exact target frame changed during activation and could not be restored".into(),
-    ))
+        let actual = [
+            current.left,
+            current.top,
+            current.right - current.left,
+            current.bottom - current.top,
+        ];
+        if window_frame_matches(actual, requested) {
+            return Ok(());
+        }
+        let [x, y, width, height] = requested;
+        let api_return = unsafe {
+            SetWindowPos(
+                expected,
+                std::ptr::null_mut(),
+                x,
+                y,
+                width,
+                height,
+                SWP_ASYNCWINDOWPOS | SWP_NOZORDER | SWP_SHOWWINDOW,
+            )
+        };
+        let os_error = (api_return == 0).then(|| unsafe { GetLastError() });
+        diagnostic
+            .attempts
+            .push(WindowsForegroundActivationAttempt::new(
+                WindowsForegroundActivationPhase::RestoreTargetFrame,
+                api_return,
+                None,
+                os_error,
+            ));
+        if let Some(os_error) = os_error {
+            return Err(UiaError::OperationFailed(format!(
+                "SetWindowPos failed while preserving the activation frame: {}",
+                std::io::Error::from_raw_os_error(os_error as i32)
+            )));
+        }
+        for _ in 0..40 {
+            let mut rect = RECT::default();
+            if unsafe { GetWindowRect(expected, &mut rect) } != 0 {
+                let actual = [
+                    rect.left,
+                    rect.top,
+                    rect.right - rect.left,
+                    rect.bottom - rect.top,
+                ];
+                if window_frame_matches(actual, requested) {
+                    return Ok(());
+                }
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        Err(UiaError::OperationFailed(
+            "the exact target frame changed during activation and could not be restored".into(),
+        ))
+    })
 }
 
 fn synchronize_activated_input_queue(
     expected: windows_sys::Win32::Foundation::HWND,
     diagnostic: &WindowsForegroundActivationDiagnostic,
+) -> Result<(), UiaError> {
+    probe_activation_input_queue(expected)?;
+    if unsafe { GetForegroundWindow() } != expected {
+        return Err(foreground_activation_refused(
+            "the exact target lost foreground while synchronizing activation input",
+            diagnostic.clone(),
+        ));
+    }
+    Ok(())
+}
+
+/// Call before merging input queues. A responsive probe does not prevent a later OS hang.
+fn probe_activation_input_queue(
+    expected: windows_sys::Win32::Foundation::HWND,
 ) -> Result<(), UiaError> {
     let mut message_result = 0;
     let synchronized = unsafe {
@@ -603,13 +807,8 @@ fn synchronize_activated_input_queue(
     } != 0;
     if !synchronized {
         return Err(UiaError::OperationFailed(
-            "the exact target did not process its foreground activation before input".into(),
-        ));
-    }
-    if unsafe { GetForegroundWindow() } != expected {
-        return Err(foreground_activation_refused(
-            "the exact target lost foreground while synchronizing activation input",
-            diagnostic.clone(),
+            "a window input queue did not answer the bounded activation responsiveness probe"
+                .into(),
         ));
     }
     Ok(())
@@ -617,7 +816,9 @@ fn synchronize_activated_input_queue(
 
 fn activate_window_after_gate(
     target: UiaTarget,
+    instance: crate::ExactWindowPixelInstanceEvidence,
     diagnostic: &mut WindowsForegroundActivationDiagnostic,
+    activation_available: &mut impl FnMut() -> Result<(), UiaError>,
 ) -> Result<(), UiaError> {
     use WindowsForegroundActivationPhase as Phase;
     let expected = require_available_window_handle(target, "activation")?;
@@ -672,16 +873,32 @@ fn activate_window_after_gate(
             None,
         ));
     if unsafe { GetForegroundWindow() } != expected {
-        activate_with_attached_input(expected, diagnostic);
+        activate_with_attached_input(target, instance, expected, diagnostic, activation_available)?;
     }
-    let activated = (0..20).any(|_| {
-        diagnostic.foreground_poll_count += 1;
-        if unsafe { GetForegroundWindow() } == expected {
-            return true;
-        }
-        thread::sleep(Duration::from_millis(5));
-        false
-    });
+    let reads = std::cell::Cell::new(0u8);
+    let activation = crate::queued_activation::run_queued_activation(
+        target,
+        instance,
+        || {
+            reads.set(reads.get().saturating_add(1));
+            crate::exact_window_native_state(target.process_id, target.window_handle)
+        },
+        || {
+            let api_return = unsafe { ShowWindowAsync(expected, SW_SHOW) };
+            diagnostic
+                .attempts
+                .push(WindowsForegroundActivationAttempt::new(
+                    Phase::QueuedShowWindowRequest,
+                    api_return,
+                    None,
+                    None,
+                ));
+            api_return
+        },
+        || thread::sleep(Duration::from_millis(5)),
+    );
+    diagnostic.foreground_poll_count += reads.get().saturating_sub(1);
+    let activated = activation?;
     if activated {
         Ok(())
     } else {
@@ -693,34 +910,58 @@ fn activate_window_after_gate(
 }
 
 fn activate_with_attached_input(
+    target: UiaTarget,
+    instance: crate::ExactWindowPixelInstanceEvidence,
     expected: windows_sys::Win32::Foundation::HWND,
     diagnostic: &mut WindowsForegroundActivationDiagnostic,
-) {
+    activation_available: &mut impl FnMut() -> Result<(), UiaError>,
+) -> Result<(), UiaError> {
     use WindowsForegroundActivationPhase as Phase;
     let current_thread = unsafe { GetCurrentThreadId() };
     let foreground = unsafe { GetForegroundWindow() };
     let foreground_thread = unsafe { GetWindowThreadProcessId(foreground, std::ptr::null_mut()) };
     let expected_thread = unsafe { GetWindowThreadProcessId(expected, std::ptr::null_mut()) };
-    let mut attach = |phase, related_thread_id, enabled| {
-        let api_return = unsafe { AttachThreadInput(current_thread, related_thread_id, enabled) };
-        let os_error = (api_return == 0).then(|| unsafe { GetLastError() });
-        diagnostic
-            .attempts
-            .push(WindowsForegroundActivationAttempt::new(
-                phase,
-                api_return,
-                Some(related_thread_id),
-                os_error,
-            ));
-        api_return != 0
-    };
-    let attached_foreground = foreground_thread != 0
-        && foreground_thread != current_thread
-        && attach(Phase::AttachForegroundInput, foreground_thread, 1);
-    let attached_expected = expected_thread != 0
-        && expected_thread != current_thread
-        && expected_thread != foreground_thread
-        && attach(Phase::AttachTargetInput, expected_thread, 1);
+    let (attached_foreground, attached_expected) =
+        crate::attached_focus::run_responsive_attachment(
+            &mut *activation_available,
+            || {
+                // Probe while input queues are still independent.
+                if expected_thread != current_thread {
+                    probe_activation_input_queue(expected)?;
+                }
+                if !foreground.is_null()
+                    && foreground != expected
+                    && foreground_thread != current_thread
+                {
+                    probe_activation_input_queue(foreground)?;
+                }
+                Ok(())
+            },
+            || {
+                let mut attach = |phase, related_thread_id, enabled| {
+                    let api_return =
+                        unsafe { AttachThreadInput(current_thread, related_thread_id, enabled) };
+                    let os_error = (api_return == 0).then(|| unsafe { GetLastError() });
+                    diagnostic
+                        .attempts
+                        .push(WindowsForegroundActivationAttempt::new(
+                            phase,
+                            api_return,
+                            Some(related_thread_id),
+                            os_error,
+                        ));
+                    api_return != 0
+                };
+                let attached_foreground = foreground_thread != 0
+                    && foreground_thread != current_thread
+                    && attach(Phase::AttachForegroundInput, foreground_thread, 1);
+                let attached_expected = expected_thread != 0
+                    && expected_thread != current_thread
+                    && expected_thread != foreground_thread
+                    && attach(Phase::AttachTargetInput, expected_thread, 1);
+                Ok((attached_foreground, attached_expected))
+            },
+        )?;
     let api_return = unsafe { BringWindowToTop(expected) };
     diagnostic
         .attempts
@@ -739,27 +980,67 @@ fn activate_with_attached_input(
             None,
             None,
         ));
-    for (attached, related_thread_id, phase) in [
-        (attached_expected, expected_thread, Phase::DetachTargetInput),
-        (
+    let (focus, outcome) = crate::attached_focus::run_attached_focus(
+        target,
+        instance,
+        crate::attached_focus::AttachedInputQueues {
+            caller_thread_id: current_thread,
+            target_thread_id: expected_thread,
+            foreground_thread_id: foreground_thread,
+            attached_target: attached_expected,
             attached_foreground,
-            foreground_thread,
-            Phase::DetachForegroundInput,
-        ),
-    ] {
-        if attached {
-            let api_return = unsafe { AttachThreadInput(current_thread, related_thread_id, 0) };
-            let os_error = (api_return == 0).then(|| unsafe { GetLastError() });
-            diagnostic
-                .attempts
-                .push(WindowsForegroundActivationAttempt::new(
-                    phase,
-                    api_return,
-                    Some(related_thread_id),
-                    os_error,
+        },
+        || {
+            activation_available()?;
+            if unsafe { GetAncestor(expected, GA_ROOT) } != expected {
+                return Err(UiaError::InvalidTarget(
+                    "attached focus requires the exact top-level root".into(),
                 ));
-        }
-    }
+            }
+            if unsafe { IsWindowEnabled(expected) } == 0 {
+                return Err(UiaError::InvalidTarget(
+                    "attached focus requires an enabled exact target".into(),
+                ));
+            }
+            crate::exact_window_native_state(target.process_id, target.window_handle)
+        },
+        || {
+            unsafe { SetLastError(0) };
+            let previous = unsafe { SetFocus(expected) };
+            let last_error_on_null = previous.is_null().then(|| unsafe { GetLastError() });
+            Ok(crate::attached_focus::AttachedFocusCall {
+                previous_focus_window_handle: previous as usize as u64,
+                last_error_on_null,
+                foreground_observed: unsafe { GetForegroundWindow() } == expected,
+            })
+        },
+        || {
+            for (attached, related_thread_id, phase) in [
+                (attached_expected, expected_thread, Phase::DetachTargetInput),
+                (
+                    attached_foreground,
+                    foreground_thread,
+                    Phase::DetachForegroundInput,
+                ),
+            ] {
+                if attached {
+                    let api_return =
+                        unsafe { AttachThreadInput(current_thread, related_thread_id, 0) };
+                    let os_error = (api_return == 0).then(|| unsafe { GetLastError() });
+                    diagnostic
+                        .attempts
+                        .push(WindowsForegroundActivationAttempt::new(
+                            phase,
+                            api_return,
+                            Some(related_thread_id),
+                            os_error,
+                        ));
+                }
+            }
+        },
+    );
+    diagnostic.attached_focus = focus;
+    outcome
 }
 
 fn require_exact_window_handle(
@@ -1215,3 +1496,6 @@ fn read_bounded(reader: impl Read, limit: u64) -> Vec<u8> {
     let _ = reader.read_to_end(&mut output);
     output
 }
+
+#[cfg(test)]
+mod tests;

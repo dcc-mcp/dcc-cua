@@ -19,6 +19,7 @@ mod cli_args;
 mod connection_diagnostics;
 mod failure_output;
 mod host_lifecycle;
+mod lifetime_diagnostics;
 mod manifest;
 mod mcp_output;
 mod mcp_server;

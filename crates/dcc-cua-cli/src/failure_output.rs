@@ -110,6 +110,10 @@ pub(super) fn fatal_error_value(error: &(dyn std::error::Error + 'static)) -> Va
                 }
             });
         }
+        if error.code == ComputerUseErrorCode::StaleObservation {
+            return crate::lifetime_diagnostics::one_shot_failure("stale_observation")
+                .expect("stale observation has fixed guidance");
+        }
         return json!({
             "success": false,
             "error": {
@@ -119,6 +123,11 @@ pub(super) fn fatal_error_value(error: &(dyn std::error::Error + 'static)) -> Va
         });
     }
     if let Some(error) = error.downcast_ref::<HostClientError>() {
+        if let HostClientError::Remote { code, .. } = error
+            && let Some(value) = crate::lifetime_diagnostics::one_shot_failure(code)
+        {
+            return value;
+        }
         if matches!(
             error,
             HostClientError::Remote { code, .. } if code == "overlay_exclusion_unavailable"

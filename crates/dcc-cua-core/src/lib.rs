@@ -17,6 +17,8 @@ mod platform_process;
 mod policy;
 mod private_worker;
 mod runtime;
+#[cfg(any(windows, test))]
+mod semantic_root_activation;
 mod sensitive_target_policy;
 mod session_health;
 mod window_target;

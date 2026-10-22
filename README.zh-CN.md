@@ -30,6 +30,42 @@ Computer Use Automation 运行时和命令行工具，支持 Windows、Linux 和
 本地 IPC、stdio、桌面权限与远程接入的边界见[桌面连接说明](docs/desktop-connections.md)。
 `--endpoint` 接受本地管道或 socket 路径，不接受远程服务 URL；MCP 握手成功不代表桌面已可控。
 
+## 连接、任务与观察引用的生命周期
+
+自动化全程保持同一个 `dcc-cua mcp-server` stdio 连接：`start_task` →
+`dcc_cua_task_call`（先 `snapshot`，再 `execute_action`，按需重新观察）→
+`stop_task`。`task_id` 仅属于创建它的 MCP 连接；观察 ID、不透明元素 token、
+浏览器 ref 和窗口状态 token 只属于对应任务会话，并且必须仍然有效。
+任务停止、过期、断线或重连后都不能复用旧引用，也没有跨连接 resume token。
+重连后必须创建新授权任务并重新观察。`manifest.connection_lifetime` 提供机器可读契约。
+`task_not_found` 仅表示当前连接没有该任务，并不证明它存在于其他连接；
+`task_stopped` 和 `task_expired` 要求创建新任务。
+
+每次单独调用 CLI 都创建独立运行时会话，即使 `--session`、PID 和窗口 ID 相同。
+`snapshot` 返回的不透明 `element_token` 不能带到下次 `act` 使用。
+当前一次性 `act` 已经会在命令内部重新观察、执行动作并返回后续观察；
+`element_index` 针对新树重新解析，界面变化时可能对应不同元素，坐标也针对新截图映射。
+如果必须消费刚才查看的精确观察引用，请使用持续连接的 MCP 任务循环。
+收到 `stale_observation` 后在原活动任务内重新观察并判断，不要盲目重试输入或扩大目标。
+
+常驻 Host 进程不等于跨连接共享会话。每次 `host-call` 都会新建并关闭连接；
+`host-ensure` 只确保进程可用，不授予输入权限，也不创建或转移任务授权。
+`host-jsonl`、`host-batch` 和 `LogicalTaskSession` 可以维持各自的连接，
+仍须遵守 Host 请求格式及适用的可信授权要求。
+
+`dcc-cua tools` 列出的是驱动工具，不是 Host IPC 方法：
+
+- `start_session` 不是合法的 `host-call --method`。
+- Host 使用带 `session_id` 和 `TaskGrant` 的 `open_session`；后续
+  `get_window_state` 要求同一连接的 `session_id`、`task_grant_id` 和返回的
+  `window_capability`，不能用 `pid`、`window_id` 和 `session` 标签代替。
+- Agent 通常应在同一 `mcp-server` 连接调用 `start_task`，再通过
+  `dcc_cua_task_call` 传入 `method="get_window_state"`、`params={}`；桥接层负责绑定私有凭据。
+
+一次性 Host 错误仅输出白名单代码和固定指引：`invalid_request` 表示方法、参数或请求校验失败，
+`session_not_found` 表示当前连接没有该会话，`task_authorization_required` 表示缺少可信授权。
+再次启动 Host 不能修复这些生命周期或授权错误。
+
 ## 安全契约
 
 - 所有窗口操作必须绑定精确的 PID、窗口 ID 和标题范围，Agent 不能扩大目标。

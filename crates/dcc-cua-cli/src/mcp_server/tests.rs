@@ -1,16 +1,133 @@
 use rstest::rstest;
 use serde_json::{Value, json};
 
+use super::frame_recovery::add_frame_recovery_guidance;
 use super::*;
 
 mod capture_preparation_tests;
+mod interaction_recovery_tests;
+mod lifetime_tests;
 mod native_menu_tests;
+
+#[rstest]
+fn extension_diagnostics_are_browser_only_and_read_only() {
+    let start = tool_definitions()
+        .into_iter()
+        .find(|tool| tool["name"] == "start_task")
+        .unwrap();
+    let methods = start["inputSchema"]["properties"]["allowed_methods"]["items"]["enum"]
+        .as_array()
+        .unwrap();
+    for method in ["browser_extension_status", "browser_extension_call"] {
+        assert!(method_allowed(TaskSurface::Browser, method));
+        assert!(!method_allowed(TaskSurface::Window, method));
+        assert!(methods.iter().any(|value| value == method));
+        let mut task = browser_task();
+        task["allowed_methods"] = json!([method]);
+        task["allowed_actions"] = json!([]);
+        assert!(test_server().prepare_task(task).is_ok());
+    }
+    assert!(
+        validate_task_method_params("browser_extension_call", &json!({"method":"snapshot"}))
+            .is_ok()
+    );
+    for method in ["click", "type", "unpair", "navigate", "unknown"] {
+        assert!(
+            validate_task_method_params("browser_extension_call", &json!({"method":method}))
+                .is_err()
+        );
+    }
+    assert!(validate_task_method_params("browser_extension_call", &json!({})).is_err());
+}
+
+#[rstest]
+#[tokio::test]
+async fn extension_snapshot_requires_the_task_origin_before_host_dispatch() {
+    let mut server = test_server();
+    let mut task = browser_task();
+    task["allowed_methods"] = json!(["browser_extension_call"]);
+    task["allowed_actions"] = json!([]);
+    task["allowed_browser_origins"] = json!(["https://pypi.org"]);
+    let prepared = server.prepare_task(task).unwrap();
+    for origin in [
+        json!(null),
+        json!("https://example.com"),
+        json!("https://pypi.org.evil.test"),
+    ] {
+        let error = server
+            .task_call(json!({
+                "task_id": prepared["task_id"], "method":"browser_extension_call",
+                "params":{"method":"snapshot","expected_origin":origin}
+            }))
+            .await
+            .unwrap_err();
+        assert!(error.contains("task-authorized expected_origin"), "{error}");
+    }
+    let error = server
+        .task_call(json!({
+            "task_id":prepared["task_id"], "method":"browser_extension_call",
+            "params":{"method":"snapshot","expected_origin":"https://pypi.org"}
+        }))
+        .await
+        .unwrap_err();
+    assert!(error.contains("provider/runtime/PID/HWND"), "{error}");
+}
 
 fn test_server() -> TaskAuthorizationServer {
     let mut server = TaskAuthorizationServer::automatic();
     server.recording_output_root = None;
     server.capture_preparation_journal_root = None;
     server
+}
+
+#[rstest]
+#[case("maximized", "target_maximized")]
+#[case("minimized", "target_minimized")]
+fn native_frame_recovery_keeps_the_exact_task_and_a_valid_closed_call(
+    #[case] state_flag: &str,
+    #[case] reason: &str,
+) {
+    let mut response = json!({"type":"window_state", "state":{state_flag:true}});
+    add_frame_recovery_guidance(&mut response, "task-owned", true, false);
+    let recovery = &response["frame_recovery"];
+    assert_eq!(recovery["reason"], reason);
+    assert_eq!(recovery["automatic_input"], false);
+    assert_eq!(recovery["fresh_window_state_required_after_restore"], true);
+    let call = &recovery["next_call"];
+    assert_eq!(call["tool"], "dcc_cua_task_call");
+    assert_eq!(call["arguments"]["task_id"], "task-owned");
+    assert_eq!(
+        call["arguments"]["params"],
+        json!({"operation":"restore_activate"})
+    );
+    validate_task_method_params(
+        call["arguments"]["method"].as_str().unwrap(),
+        &call["arguments"]["params"],
+    )
+    .unwrap();
+}
+
+#[rstest]
+fn native_frame_recovery_does_not_advertise_an_ungranted_restore() {
+    let mut response = json!({"state":{"maximized":true}});
+    add_frame_recovery_guidance(&mut response, "task-owned", false, false);
+    assert!(response["frame_recovery"].get("next_call").is_none());
+    assert_eq!(response["frame_recovery"]["requires_new_task"], true);
+    assert_eq!(
+        response["frame_recovery"]["required_method"],
+        "change_window_state"
+    );
+}
+
+#[rstest]
+#[case(json!({"maximized":false,"minimized":false}))]
+#[case(json!({"maximized":true,"window_state_id":"native-state-owned"}))]
+#[case(json!({"visible":false}))]
+fn native_frame_recovery_preserves_other_metadata(#[case] state: Value) {
+    let mut response = json!({"state":state});
+    let original = response.clone();
+    add_frame_recovery_guidance(&mut response, "task-owned", true, false);
+    assert_eq!(response, original);
 }
 
 fn native_recording_task() -> Value {

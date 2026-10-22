@@ -115,6 +115,152 @@ fn foreground_activation_native_error_mapping_preserves_exact_numeric_diagnostic
     assert_eq!(details.background_delivery_viable, Some(true));
 }
 
+#[cfg(windows)]
+#[rstest]
+fn queued_foreground_activation_phase_survives_native_mapping_and_core_roundtrip() {
+    let mut expected = serde_json::to_value(foreground_activation_core_fixture()).unwrap();
+    expected["attempts"].as_array_mut().unwrap().push(json!({
+        "phase": "queued_show_window_request", "api_return": 1
+    }));
+    let native = serde_json::from_value::<
+        dcc_cua_platform_windows::WindowsForegroundActivationDiagnostic,
+    >(expected.clone())
+    .expect("the native contract must admit the bounded queued activation phase");
+    let error = map_windows_window_mutation_error(
+        "activate exact target",
+        dcc_cua_platform_windows::UiaError::ForegroundActivationRefused {
+            reason: "queued request did not make the exact target foreground".into(),
+            background_delivery_viable: true,
+            suggested_delivery_mode: Some("background".into()),
+            diagnostic: Some(Box::new(native)),
+        },
+    );
+    let mapped = error.details.unwrap().foreground_activation.unwrap();
+    let encoded = serde_json::to_value(&mapped).unwrap();
+    assert_eq!(encoded, expected);
+    assert_eq!(
+        serde_json::from_value::<crate::ComputerUseForegroundActivationDiagnostic>(encoded)
+            .unwrap(),
+        mapped
+    );
+}
+
+#[cfg(windows)]
+#[rstest]
+#[case("unavailable_context")]
+#[case("stale_context")]
+#[case("prerequisite_rejected")]
+#[case("not_focusable")]
+#[case("provider_rejected")]
+#[case("dispatch_unknown")]
+#[case("foreground_refused")]
+#[case("postcondition_failed")]
+#[case("activated")]
+fn semantic_root_activation_diagnostic_is_lossless_without_a_fabricated_native_bool(
+    #[case] status: &str,
+) {
+    let mut expected = serde_json::to_value(foreground_activation_core_fixture()).unwrap();
+    let api_attempts = expected["attempts"].clone();
+    expected["semantic_root_focus"] = json!({
+        "status":status,"focus_attempted":true,"provider_completed":false,
+        "foreground_observed":null
+    });
+    let native = serde_json::from_value::<
+        dcc_cua_platform_windows::WindowsForegroundActivationDiagnostic,
+    >(expected.clone())
+    .unwrap();
+    let error = map_windows_window_mutation_error(
+        "activate exact target",
+        dcc_cua_platform_windows::UiaError::ForegroundActivationRefused {
+            reason: "original native refusal".into(),
+            background_delivery_viable: true,
+            suggested_delivery_mode: Some("background".into()),
+            diagnostic: Some(Box::new(native)),
+        },
+    );
+    let mapped = error.details.unwrap().foreground_activation.unwrap();
+    let value = serde_json::to_value(&mapped).unwrap();
+    assert_eq!(value, expected);
+    assert_eq!(value["attempts"], api_attempts);
+    assert_eq!(value["semantic_root_focus"].get("api_return"), None);
+    assert_eq!(
+        serde_json::from_value::<crate::ComputerUseForegroundActivationDiagnostic>(value).unwrap(),
+        mapped
+    );
+}
+
+#[cfg(windows)]
+#[rstest]
+#[case(0_u64, Some(0_u32))]
+#[case(0_u64, Some(87_u32))]
+#[case(0x8000_0001_u64, None)]
+fn native_attached_focus_raw_hwnd_survives_mapping_without_a_bool(
+    #[case] previous: u64,
+    #[case] last_error: Option<u32>,
+) {
+    let mut expected = serde_json::to_value(foreground_activation_core_fixture()).unwrap();
+    let attempts = expected["attempts"].clone();
+    expected["attached_focus"] = json!({
+        "previous_focus_window_handle":previous,"last_error_on_null":last_error,
+        "foreground_observed":false
+    });
+    let native = serde_json::from_value::<
+        dcc_cua_platform_windows::WindowsForegroundActivationDiagnostic,
+    >(expected.clone())
+    .expect("native attached-focus HWND contract must be represented");
+    let error = map_windows_window_mutation_error(
+        "activate exact target",
+        dcc_cua_platform_windows::UiaError::ForegroundActivationRefused {
+            reason: "actual foreground refusal".into(),
+            background_delivery_viable: true,
+            suggested_delivery_mode: Some("background".into()),
+            diagnostic: Some(Box::new(native)),
+        },
+    );
+    assert_eq!(
+        error.code,
+        ComputerUseErrorCode::ForegroundActivationRefused
+    );
+    let diagnostic = error.details.unwrap().foreground_activation.unwrap();
+    let encoded = serde_json::to_value(&diagnostic).unwrap();
+    assert_eq!(encoded, expected);
+    assert_eq!(encoded["attempts"], attempts);
+    assert!(encoded["attached_focus"].get("api_return").is_none());
+    assert!(encoded["attached_focus"].get("success").is_none());
+    assert_eq!(
+        serde_json::from_value::<crate::ComputerUseForegroundActivationDiagnostic>(encoded)
+            .unwrap(),
+        diagnostic
+    );
+}
+
+#[cfg(windows)]
+#[rstest]
+fn native_attached_focus_stop_gate_preserves_typed_stop_without_dispatch() {
+    for variant in ["ready", "stopped_before", "stopped_during"] {
+        let generation = std::cell::Cell::new(if variant == "stopped_before" { 8 } else { 7 });
+        let calls = std::cell::Cell::new(0);
+        let result = crate::runtime::windows_activation_stop_gate(
+            7,
+            || generation.get(),
+            || {
+                calls.set(calls.get() + 1);
+                if variant == "stopped_during" {
+                    generation.set(8);
+                }
+                Ok(())
+            },
+        );
+        assert_eq!(calls.get(), if variant == "stopped_before" { 0 } else { 1 });
+        if variant == "ready" {
+            assert!(result.is_ok());
+        } else {
+            let error = map_windows_window_mutation_error("activation gate", result.unwrap_err());
+            assert_eq!(error.code, ComputerUseErrorCode::UserInterrupted);
+        }
+    }
+}
+
 #[rstest]
 fn capture_diagnostic_contract_rejects_arbitrary_reason_and_stage_strings() {
     let mut value = json!({

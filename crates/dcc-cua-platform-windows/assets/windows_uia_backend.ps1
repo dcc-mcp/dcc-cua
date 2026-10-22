@@ -520,6 +520,142 @@ function Invoke-ExpandCollapseClick($element) {
   return $null
 }
 
+function Exact-Root-Uia-Window-Handle([long]$windowHandle) {
+  # UIA exposes HWND as signed Int32; preserve its native low bits without changing the granted HWND.
+  if ($windowHandle -ge [int]::MinValue -and $windowHandle -lt 0) {
+    return ($windowHandle -band 4294967295L)
+  }
+  return $windowHandle
+}
+
+function Exact-Root-Focus-Allowed-From-Facts($facts) {
+  if ($null -eq $facts) { return $false }
+  foreach ($name in @(
+    "ready", "expected_process_id", "expected_window_handle", "process_id",
+    "window_handle", "control_type", "keyboard_focusable", "enabled",
+    "visible", "offscreen", "minimized", "same_root"
+  )) {
+    if ($null -eq $facts.PSObject.Properties[$name]) { return $false }
+  }
+  foreach ($name in @("ready", "keyboard_focusable", "enabled", "visible", "offscreen", "minimized", "same_root")) {
+    if ($facts.$name -isnot [bool]) { return $false }
+  }
+  foreach ($name in @("expected_process_id", "expected_window_handle", "process_id", "window_handle")) {
+    if ($facts.$name -isnot [int] -and $facts.$name -isnot [long]) { return $false }
+  }
+  if ($facts.control_type -isnot [string]) { return $false }
+  return (
+    $facts.ready -and
+    [long]$facts.expected_process_id -gt 0 -and
+    [long]$facts.expected_window_handle -gt 0 -and
+    $facts.process_id -eq $facts.expected_process_id -and
+    (Exact-Root-Uia-Window-Handle ([long]$facts.window_handle)) -eq [long]$facts.expected_window_handle -and
+    $facts.control_type -ceq "ControlType.Window" -and
+    $facts.keyboard_focusable -and
+    $facts.enabled -and
+    $facts.visible -and
+    -not $facts.offscreen -and
+    -not $facts.minimized -and
+    $facts.same_root
+  )
+}
+
+function Root-Focus-Result([bool]$ok, [string]$status, [string]$errorCode, [bool]$attempted) {
+  $result = @{
+    ok = $ok
+    root_focus_status = $status
+    focus_attempted = $attempted
+    provider_completed = $ok
+  }
+  if (-not $ok) {
+    $result.error = $errorCode
+    $result.message = "The exact root could not be focused."
+  }
+  return $result
+}
+
+function Exact-Root-Focus-Scope-Is-Valid($scope) {
+  if ($null -eq $scope -or $null -eq $scope.PSObject.Properties["process_ids"] -or
+      $null -eq $scope.PSObject.Properties["window_handles"] -or
+      $null -eq $scope.PSObject.Properties["allow_owned_standard_menu_popup"]) { return $false }
+  $processIds = As-Array $scope.process_ids
+  $windowHandles = As-Array $scope.window_handles
+  if ($processIds.Count -ne 1 -or $windowHandles.Count -ne 1) { return $false }
+  if (($processIds[0] -isnot [int] -and $processIds[0] -isnot [long]) -or
+      ($windowHandles[0] -isnot [int] -and $windowHandles[0] -isnot [long])) { return $false }
+  if ([long]$processIds[0] -le 0 -or [long]$windowHandles[0] -le 0) { return $false }
+  return (($scope.allow_owned_standard_menu_popup -is [bool]) -and -not $scope.allow_owned_standard_menu_popup)
+}
+
+function Exact-Root-Focus-Facts(
+  [System.Windows.Automation.AutomationElement]$root,
+  [long]$expectedProcessId,
+  [long]$expectedWindowHandle
+) {
+  $current = $root.Current
+  $currentHandle = [IntPtr]::new([long](Exact-Root-Uia-Window-Handle $current.NativeWindowHandle))
+  $expectedHandle = [IntPtr]::new($expectedWindowHandle)
+  $expectedRoot = [System.Windows.Automation.AutomationElement]::FromHandle($expectedHandle)
+  return [pscustomobject]@{
+    ready = $true
+    expected_process_id = $expectedProcessId
+    expected_window_handle = $expectedWindowHandle
+    process_id = [long]$current.ProcessId
+    window_handle = $currentHandle.ToInt64()
+    control_type = [string]$current.ControlType.ProgrammaticName
+    keyboard_focusable = [bool]$current.IsKeyboardFocusable
+    enabled = [bool]$current.IsEnabled
+    visible = [bool][DccMcpNativeUi]::IsWindowVisible($currentHandle)
+    offscreen = [bool]$current.IsOffscreen
+    minimized = [bool][DccMcpNativeUi]::IsIconic($currentHandle)
+    same_root = ($currentHandle -eq $expectedHandle) -and
+      [System.Windows.Automation.Automation]::Compare($root, $expectedRoot)
+  }
+}
+
+function Invoke-Exact-Root-Focus() {
+  if (-not (Exact-Root-Focus-Scope-Is-Valid $payload.scope)) {
+    return (Root-Focus-Result $false "prerequisite_rejected" "invalid_target" $false)
+  }
+  $processIds = As-Array $payload.scope.process_ids
+  $windowHandles = As-Array $payload.scope.window_handles
+  $expectedProcessId = [long]$processIds[0]
+  $expectedWindowHandle = [long]$windowHandles[0]
+  $root = Find-Scoped-Root
+  if ($null -eq $root) {
+    return (Root-Focus-Result $false "prerequisite_rejected" "invalid_target" $false)
+  }
+  $deniedTargetReason = Denied-Target-Reason $root
+  if ($null -ne $deniedTargetReason) {
+    return (Root-Focus-Result $false "prerequisite_rejected" "permission_denied" $false)
+  }
+  if (-not (Matches-Expected-Fence $root $payload.expected_fence)) {
+    return (Root-Focus-Result $false "prerequisite_rejected" "stale_observation" $false)
+  }
+  $deniedActionTargetReason = Denied-Action-Target-Reason $root $root
+  if ($null -ne $deniedActionTargetReason) {
+    return (Root-Focus-Result $false "prerequisite_rejected" "permission_denied" $false)
+  }
+  $facts = Exact-Root-Focus-Facts $root $expectedProcessId $expectedWindowHandle
+  if (-not (Exact-Root-Focus-Allowed-From-Facts $facts)) {
+    $identityMatches = $facts.ready -and
+      $facts.process_id -eq $facts.expected_process_id -and
+      $facts.window_handle -eq $facts.expected_window_handle -and
+      $facts.control_type -ceq "ControlType.Window" -and $facts.same_root
+    $notFocusable = $identityMatches -and -not $facts.keyboard_focusable
+    $status = if ($notFocusable) { "not_focusable" } else { "prerequisite_rejected" }
+    $errorCode = if ($notFocusable) { "not_focusable" } else { "invalid_target" }
+    return (Root-Focus-Result $false $status $errorCode $false)
+  }
+  $script:rootFocusAttempted = $true
+  try {
+    $root.SetFocus()
+    return (Root-Focus-Result $true "completed" "" $true)
+  } catch {
+    return (Root-Focus-Result $false "provider_rejected" "provider_rejected" $true)
+  }
+}
+
 function Invoke-Action($element) {
   $action = [string]$payload.action.action
   if ($action -eq "focus") {
@@ -591,14 +727,21 @@ function Invoke-Action($element) {
 
 function Invoke-UiaRequest($requestPayload) {
   $script:payload = $requestPayload
+  $script:rootFocusAttempted = $false
   try {
     if ([int]$requestPayload.protocol_version -ne $ProtocolVersion) {
+      if ([string]$requestPayload.mode -eq "focus_root") {
+        return (Root-Focus-Result $false "prerequisite_rejected" "protocol_mismatch" $false)
+      }
       return @{ok = $false; error = "protocol_mismatch"; message = "UIA worker protocol version mismatch."}
     }
     if ([string]$requestPayload.mode -eq "policy_fixture") {
       switch ([string]$requestPayload.operation) {
         "control_policy_tier" {
           return @{ok = $true; result = Control-Policy-Tier-From-Facts $requestPayload.facts}
+        }
+        "exact_root_focus_allowed" {
+          return @{ok = $true; result = Exact-Root-Focus-Allowed-From-Facts $requestPayload.facts}
         }
         "control_policy_category" {
           return @{ok = $true; result = Control-Policy-Category-From-Facts $requestPayload.facts}
@@ -619,6 +762,10 @@ function Invoke-UiaRequest($requestPayload) {
           return @{ok = $false; error = "unsupported_action"; message = "Unknown policy fixture operation."}
         }
       }
+    }
+    if ([string]$requestPayload.mode -eq "focus_root") {
+      $script:scopeError = $null
+      return Invoke-Exact-Root-Focus
     }
     $script:scopeError = $null
     $script:rootTraversalStarted = $false
@@ -709,6 +856,12 @@ function Invoke-UiaRequest($requestPayload) {
       node_count = $script:nodeCount
     }
   } catch {
+    if ([string]$requestPayload.mode -eq "focus_root") {
+      if ($script:rootFocusAttempted) {
+        return (Root-Focus-Result $false "provider_rejected" "provider_rejected" $true)
+      }
+      return (Root-Focus-Result $false "prerequisite_rejected" "invalid_target" $false)
+    }
     $errorCode = Accessibility-Failure-Code-From-Facts @{
       root_traversal_started = $script:rootTraversalStarted
       node_count = $script:nodeCount
@@ -723,6 +876,7 @@ function Invoke-UiaRequest($requestPayload) {
   } finally {
     $script:payload = $null
     $script:rootTraversalStarted = $false
+    $script:rootFocusAttempted = $false
   }
 }
 

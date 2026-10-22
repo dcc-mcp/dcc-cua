@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.1](https://github.com/dcc-mcp/dcc-cua/compare/dcc-cua-browser-extension-v0.3.0...dcc-cua-browser-extension-v0.3.1) (2026-10-19)
+
+
+### Bug Fixes
+
+* **release:** bind draft sources before read-only builds ([b0038fc](https://github.com/dcc-mcp/dcc-cua/commit/b0038fc1d1be182e6a0f6dd7a596d9cb844cddce))
+
 ## [0.3.0](https://github.com/dcc-mcp/dcc-cua/compare/dcc-cua-browser-extension-v0.2.4...dcc-cua-browser-extension-v0.3.0) (2026-10-17)
 
 

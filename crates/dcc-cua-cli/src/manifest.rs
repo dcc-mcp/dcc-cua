@@ -297,6 +297,7 @@ pub(crate) fn document_for_platform(exact_window_pixels_available: bool) -> Valu
             },
         },
     });
+    document["connection_lifetime"] = crate::lifetime_diagnostics::manifest_contract();
     document["host"]["task_authorization"]["authorization_owner"] = json!("connected_agent_host");
     document["host"]["task_authorization"]["ipc_can_mint_exact_retained_proposal"] = json!(true);
     if !exact_window_pixels_available {

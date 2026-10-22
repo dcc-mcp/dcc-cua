@@ -112,6 +112,14 @@ previous maximized state is normalized in a second bounded restore stage.
 `get_window_state` reports the native `maximized` fact. Restore a maximized
 target before `set_window_frame`, then read fresh native window state; an outer
 frame match alone cannot confirm that a maximized client resized. The MCP bridge
+returns `frame_recovery` when a pixels-only state read cannot mint a frame token
+because the target is minimized or maximized. Its `next_call` keeps the current
+task and requests `restore_activate` only when that task already grants
+`change_window_state` without a dismiss-menu-only scope. Otherwise it reports
+the missing method or the blocking `dismiss_menu` action scope and that a new
+task is needed. Omit `dismiss_menu` from a recovery task; it never restores implicitly.
+After a confirmed restore, read fresh window state before moving the frame.
+The MCP bridge
 also accepts `activate`, which does not restore a minimized window; it rejects
 `close` and other window state operations. An unavailable interactive desktop
 still blocks activation and input. Repair that environment before retrying.
@@ -184,6 +192,70 @@ and recording are outside this pixel contract. It retains the existing
 separately authorized `change_window_state` activate/restore route; pixel startup,
 snapshots, and raw input never implicitly activate a window.
 
+Pixels-only `get_window_state` and typed `foreground_activation_refused`
+responses include `interaction_recovery` when the exact native target can be
+verified. This separates method permission from readiness: an authorized
+`snapshot` may be attempted without foreground activation, but must still pass
+fresh exact-window capture proof. `foreground=true` alone never certifies input
+readiness; the latest observation, identity, visibility, grants, stop state and
+action confirmation still apply at dispatch.
+
+`interaction_recovery.input.background_delivery_supported` is always false for
+this closed pixel route. Preserved native `background_delivery_viable` and
+`suggested_delivery_mode` diagnostics describe lower-level possibilities, not
+permission or support for background `execute_action` in this bridge. The
+recovery projection never grants a missing method or action scope. In particular,
+menu-dismissal-only scope cannot authorize foreground activation.
+Native state reads do not track activation history: `status=history_unknown`
+and `prior_refusal_overridden=false` never clear an earlier refusal or authorize
+another activation attempt. Assess a separately authorized handoff explicitly.
+
+For a verified refusal, follow `activation.next_step=diagnose_native_refusal`:
+retain the native activation diagnostics, continue independent authorized
+observations if useful, and stop the input chain. Do not blindly retry activation,
+send input to the current foreign foreground window, or repeatedly ask the user
+to switch windows. Repair the native/Agent Host handoff before a fresh input
+attempt. No implicit activation or operating-system focus restriction bypass is
+introduced by this guidance.
+
+The existing native activation may request Win32 `SetFocus` once while its
+calling thread has a valid input-queue attachment to the exact target. Immediately
+before this request, it rechecks interruption, the native instance, enabled and
+visible state, and that the target is neither minimized nor already foreground.
+`attached_focus` retains the raw previous-focus HWND and, for NULL, the immediately
+read last-error value after clearing it before the call. Neither NULL with error
+zero nor a previous HWND proves activation. The native BOOL trace is unchanged;
+actual foreground, instance, frame and final `WM_NULL` verification remain required.
+
+Before attaching the queues, target and current-foreground responsiveness use the
+existing 250 ms `WM_NULL` probe. This reduces exposure to an already hung queue;
+the interruption/native gate runs again after the probes, before the first attach.
+Probes cannot bound synchronous `SetFocus` after a later OS race. Detaches run before
+propagating a returned guard or focus error. A request timeout or process shutdown
+does not itself establish that a blocked native call finished or detached. Do not
+retry or send input while its completion and cleanup are unknown.
+
+An explicit semantic `activate` may continue a native foreground refusal with
+one exact UIA Window-root focus request. This internal continuation requires the
+same target's already-running UIA worker and its latest native-instance-bound
+root fence, no more than five seconds old. It consumes that private context;
+the old public observation IDs, element tokens, and epoch remain invalidated.
+It cannot redirect to an owned popup, focus a child control, or open another
+worker. The root must still match PID/HWND, be a visible, enabled, non-minimized
+Window, and report `IsKeyboardFocusable=true` at dispatch. No generic `focus`
+action is added to task authorization. Pixels-only, bootstrap, and implicit
+physical-input activation never use this UIA continuation.
+
+The continuation uses one existing-worker request with the existing 15-second
+timeout and cleanup, without another snapshot, cold startup, or retry. UIA's
+void `SetFocus` completion is reported separately as `semantic_root_focus`,
+never as a native BOOL. Success still requires the same complete native window
+instance, actual foreground, original frame, and `WM_NULL` synchronization.
+Worker timeout, disconnect, incomplete attempted focus, or failed postcondition
+retains the original native refusal and reports unknown focus effects; it grants
+no keyboard or pointer input and no automatic retry. Worker shutdown alone is not
+proof of quiescence.
+
 To minimize, call `dcc_cua_task_call` with `method: "minimize_window"` and
 `params: {"observation_id": "<latest snapshot observation_id>"}`. The retained
 task must grant both the method and the exact `window_state/minimize_window`
@@ -216,4 +288,17 @@ snapshots reject the opt-in. The final observation's
 and canonical PNG RGBA bytes, four bounded 256-bin channel histograms, timings,
 and separate provenance for the existing first and final captures. The fourth
 native byte is reported as a raw high byte, without an alpha interpretation.
+Both raw captures and their publication fences remain required. Only the final
+frame is PNG-encoded; the discarded validation frame reports `png_encoded=false`
+and zero PNG encoding time while retaining its optional byte summaries.
 This adds no capture, normalization, retry, activation, or input permission.
+
+For repeatable Windows measurements, run the ignored
+`owned_window_snapshot_latency` test in `dcc-cua-e2e` with `--features gui-e2e`.
+Set `DCC_CUA_LATENCY_DIRECTORY` to an existing empty private directory. The test
+publishes `binding.json` and waits up to three minutes: report its exact
+provider/runtime/PID/HWND before creating the `begin` file in that directory.
+It measures default and diagnostic snapshots on disposable native windows,
+decodes their PNGs, verifies ownership and cleanup, and writes `results.json`.
+Keep other builds stopped while sampling. These SDK timings exclude MCP
+transport, perception, and input; encoding-only timings are a separate metric.

@@ -34,6 +34,44 @@ direct driver surface; use `list` or `host-call --method list_windows --json
 '{}'` for window inventory. Do not treat unrelated permission, handshake, or
 `invalid_action` failures as an absent Host.
 
+## Connection lifetime
+
+Keep one `mcp-server` stdio connection open from `start_task` through all
+`dcc_cua_task_call` observations/actions to `stop_task`. Task IDs belong to
+that MCP connection; opaque observation/element/browser/window-state refs
+belong to their owning session and must still be current. No cross-connection
+resume is supported. After disconnect, expiry or stop, start a new authorized
+task and take a fresh observation. Inspect `manifest.connection_lifetime`.
+
+Each one-shot CLI invocation creates a new session, even with the same
+`--session` label. Do not copy opaque element tokens from `snapshot` to a later
+`act`. One-shot `act` already captures fresh evidence internally; element
+indexes are re-resolved against that new tree and can drift. For exact token
+continuity use the persistent MCP task loop. On `stale_observation`, reobserve
+and reassess in the same live task rather than blindly replaying input.
+
+`host-call` also creates a new Host connection each time. A resident Host or
+`host-ensure` does not preserve the old connection's sessions or issue task
+grants. `dcc-cua tools` lists driver tools, not Host IPC methods: `start_session`
+is not a Host IPC method. Host clients use `open_session` with a `TaskGrant`
+and keep the returned capability on that connection. Agent clients should use
+`start_task` then `dcc_cua_task_call`, which injects the private session binding.
+For a visual-only task, select `observation_mode: "pixels_only"` at startup
+to avoid unnecessary accessibility traversal. Keep capture diagnostics off
+except while measuring; their hashes and histograms add work.
+
+If `get_window_state` reports `frame_recovery`, follow its `next_call` on the
+same task, then obtain fresh native state before resizing or observing. A
+maximized or minimized window cannot mint a frame token. If recovery requires
+a new task, request its indicated method within the authorized scope; do not
+ask the user to restore the window until the exact native recovery route has
+failed. Never borrow tokens or infer permission from the recovery hint.
+
+`host-jsonl`/`host-batch` preserve their own connection, not authorization by
+themselves. Treat `invalid_request` as a schema/validation error and
+`session_not_found` as absence on the current connection; neither is fixed by
+starting another Host or borrowing a different connection's capability.
+
 ## Control loop
 
 1. Discover the real target before acting:
@@ -62,7 +100,8 @@ direct driver surface; use `list` or `host-call --method list_windows --json
    dcc-cua clipboard-read --pid $pid --window-id $hwnd --include-text
    ```
 
-   Prefer an accessibility element index/token. Use coordinates only for a
+   Prefer an accessibility element token within the same persistent task. A
+   one-shot element index is resolved again against its new snapshot. Use coordinates only for a
    custom-drawn surface after a fresh pixel snapshot. A semantic action gets a
    fresh accessibility observation; do not reuse stale element indexes or mix
    tokens from pixel snapshots, other backends, windows, or sessions.
@@ -97,8 +136,8 @@ direct driver surface; use `list` or `host-call --method list_windows --json
    Add `--activate` when explicitly authorized to bring this exact target to
    the foreground. Activation and capture use the same PID/HWND session and
    skip UIA; capture still requires fresh native identity, geometry, overlay
-   hide/acknowledgement, and occlusion proof. This combination cannot make a
-   covered or partially off-desktop window safe to capture. Do not combine
+   hide/acknowledgement, and occlusion proof. Activation does not waive capture
+   or input checks. Do not combine
    `--pixels-only` with `--escalate`. A refused native capture reports typed,
    content-free `error.details.capture` metadata; raw backend errors and
    foreign window titles are never included in this diagnostic.
@@ -108,8 +147,12 @@ direct driver surface; use `list` or `host-call --method list_windows --json
    Windows may use the `VisibleDesktopCrop` fallback: it reads only the target's
    physical rectangle from the desktop DC, and only after complete z-order,
    visibility, PID/HWND, native instance, bounds, and DPI evidence is proven
-   before and after capture. Occlusion, ambiguity, or drift discards
-   the pixels. Treat this visible desktop-rectangle provenance separately from
+   before and after capture. Verified native window-content capture may remain
+   available behind an occluder. A partially occluded desktop crop masks proven
+   foreign rectangles with opaque black; only its visible target pixels are
+   published. Ambiguity or drift discards the pixels. Pointer input still needs
+   a reachable, unredacted point and keyboard input requires full visibility.
+   Treat this visible desktop-rectangle provenance separately from
    native window-content pixels, `pixels_only`,
    `accessibility_unavailable_degraded`, and
    `accessibility_timeout_degraded`.
@@ -146,6 +189,16 @@ direct driver surface; use `list` or `host-call --method list_windows --json
 5. Use `desktop-snapshot`/`desktop-act` only for a deliberately desktop-scoped
    target that cannot be represented by an exact window. Keep the scope and
    coordinate source explicit.
+
+For MCP pixel tasks, use `interaction_recovery` in verified native window-state
+or activation-refusal responses to separate observation from input. An authorized
+snapshot does not require foreground activation; fresh capture proof still
+applies. `foreground=true` does not certify input readiness. Native
+`background_delivery_viable` hints do not authorize background `execute_action`
+in the closed bridge. If activation is refused, retain diagnostics and stop the
+input chain; continue authorized passive observations if useful. Do not blindly
+retry activation or repeatedly ask the user to switch windows. Repair the native
+or Agent Host handoff before another input attempt.
 
 For a Windows standard native popup menu (`#32768`) without accessible menu
 items, the public MCP task route can cancel that exact active popup without
