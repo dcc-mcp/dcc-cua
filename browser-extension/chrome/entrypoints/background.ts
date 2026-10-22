@@ -188,55 +188,72 @@ export default defineBackground(() => {
   }
 
   function connectNative(pairing: Pairing): void {
-    nativePort?.disconnect();
-    nativePort = browser.runtime.connectNative(NATIVE_HOST);
+    const previous = nativePort;
+    const port = browser.runtime.connectNative(NATIVE_HOST);
+    nativePort = port;
+    previous?.disconnect();
     nativeHandshakeComplete = false;
     requestQueue = Promise.resolve();
-    nativePort.onMessage.addListener((message: unknown) => {
+    port.onMessage.addListener((message: unknown) => {
+      if (nativePort !== port) return;
       requestQueue = requestQueue
         .then(async () => {
+          if (nativePort !== port) return;
           if (!nativeHandshakeComplete) {
-            validateNativeHelloAck(message);
+            const ack = validateNativeHelloAck(message);
+            if (!ack.capabilities.includes("task_owned_pairing_v1")) {
+              throw new Error("native host upgrade required for task-owned pairing");
+            }
             nativeHandshakeComplete = true;
             await setBadge("ON", "#1f883d");
             return;
           }
-          await handleNativeMessage(message);
+          await handleNativeMessage(message, port);
         })
-        .catch(() => setBadge("!", "#cf222e"));
+        .catch(() => {
+          if (nativePort === port) port.disconnect();
+        });
     });
-    nativePort.onDisconnect.addListener(() => {
+    port.onDisconnect.addListener(() => {
+      if (nativePort !== port) return;
       void browser.runtime.lastError;
       nativePort = null;
       nativeHandshakeComplete = false;
-      void setBadge("!", "#cf222e");
+      void pairings.clear().then(() => setBadge("!", "#cf222e"));
     });
     const manifest = browser.runtime.getManifest();
-    nativePort.postMessage(
+    port.postMessage(
       buildHello(pairing, { id: browser.runtime.id, version: manifest.version }),
     );
   }
 
-  async function handleNativeMessage(message: unknown): Promise<void> {
+  async function handleNativeMessage(message: unknown, port: Browser.runtime.Port): Promise<void> {
     let requestId: unknown = isObject(message) ? message.request_id : undefined;
     try {
       const request = validateNativeRequest(message);
       requestId = request.request_id;
       if (request.method === "ping") {
-        nativePort?.postMessage(successResponse(request.request_id, { pong: true }));
+        port.postMessage(successResponse(request.request_id, { pong: true }));
         return;
       }
       const pairing = await pairings.requireMatch(request);
       if (request.method === "unpair") {
         await pairings.clear();
         await setBadge("", "#000000");
-        nativePort?.postMessage(successResponse(request.request_id, { unpaired: true }));
+        port.postMessage(successResponse(request.request_id, { unpaired: true }));
         return;
       }
+      if (request.method === "click" || request.method === "type") {
+        const [window, tab] = await Promise.all([browser.windows.get(pairing.window_id), browser.tabs.get(pairing.tab_id)]);
+        if (!window.focused || !tab.active || tab.windowId !== pairing.window_id) {
+          throw Object.assign(new Error("paired tab must be active in the focused browser window"), { code: "target_not_foreground" });
+        }
+      }
+      if (nativePort !== port) throw new Error("pairing replaced before dispatch");
       const result = await sendTabCommand(pairing.tab_id, contentCommandFromNative(request));
-      nativePort?.postMessage(successResponse(request.request_id, result));
+      port.postMessage(successResponse(request.request_id, result));
     } catch (error) {
-      nativePort?.postMessage(
+      port.postMessage(
         errorResponse(
           requestId,
           errorCode(error, "invalid_request"),
@@ -277,10 +294,5 @@ export default defineBackground(() => {
     }
   });
 
-  void pairings
-    .load()
-    .then((pairing) => {
-      if (pairing !== null) connectNative(pairing);
-    })
-    .catch(() => setBadge("!", "#cf222e"));
+  void pairings.clear().catch(() => setBadge("!", "#cf222e"));
 });

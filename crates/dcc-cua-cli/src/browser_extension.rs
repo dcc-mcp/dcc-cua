@@ -1,15 +1,13 @@
 use std::io;
 use std::path::Path;
-use std::time::Duration;
 
-use dcc_cua_client::HostClient;
 use dcc_cua_protocol::MAX_JSON_FRAME_BYTES;
 use serde_json::{Value, json};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::cli_args::flag_value;
 
-const EXTENSION_RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
+mod relay;
 const NATIVE_HOST_NAME: &str = "com.dcc_mcp.dcc_cua";
 
 pub(super) fn native_hello_ack() -> Value {
@@ -17,7 +15,7 @@ pub(super) fn native_hello_ack() -> Value {
         "schema": "dcc-cua.browser-extension.v1",
         "type": "hello_ack",
         "protocol": 1,
-        "capabilities": ["native_host_bridge_v1"],
+        "capabilities": ["native_host_bridge_v1", "task_owned_pairing_v1"],
     })
 }
 
@@ -340,76 +338,31 @@ pub(crate) async fn run_native_host(
     let mut input = tokio::io::stdin();
     let mut output = tokio::io::stdout();
     let hello = read_native_message(&mut input).await?;
-    let mut client = HostClient::connect_default("dcc-cua-browser-extension-native-host").await?;
-    let registration = client
-        .request(
-            "register_browser_extension",
-            json!({
-                "hello": hello,
-                "invocation_origin": invocation_origin,
-                "browser_process_id": browser_process_id()?,
-            }),
-        )
-        .await?;
-    let provider_id = required_string(&registration.value, "provider_id")?.to_owned();
-    let provider_secret = required_string(&registration.value, "provider_secret")?.to_owned();
-    let poll_timeout_ms = registration.value["poll_timeout_ms"]
-        .as_u64()
-        .unwrap_or(5_000);
     write_native_message(&mut output, &native_hello_ack()).await?;
+    let pid = browser_process_id()?;
+    let hwnd = current_browser_window(pid).await?;
+    relay::run(hello, invocation_origin, pid, hwnd).await
+}
 
-    let result = async {
-        loop {
-            let next = client
-                .request(
-                    "browser_extension_next",
-                    json!({
-                        "provider_id": provider_id,
-                        "provider_secret": provider_secret,
-                        "timeout_ms": poll_timeout_ms,
-                    }),
-                )
-                .await?;
-            let command = &next.value["command"];
-            if command.is_null() {
-                continue;
-            }
-            write_native_message(&mut output, command).await?;
-            let response =
-                tokio::time::timeout(EXTENSION_RESPONSE_TIMEOUT, read_native_message(&mut input))
-                    .await
-                    .map_err(|_| {
-                        io::Error::new(
-                            io::ErrorKind::TimedOut,
-                            "browser extension response timed out",
-                        )
-                    })??;
-            client
-                .request(
-                    "complete_browser_extension",
-                    json!({
-                        "provider_id": provider_id,
-                        "provider_secret": provider_secret,
-                        "response": response,
-                    }),
-                )
-                .await?;
-        }
-        #[allow(unreachable_code)]
-        Ok::<(), Box<dyn std::error::Error>>(())
+async fn current_browser_window(pid: u32) -> Result<u64, Box<dyn std::error::Error>> {
+    let windows = dcc_cua_core::ComputerUseDriver::create()?
+        .list_windows_filtered(Some(pid), true)
+        .await?;
+    Ok(paired_native_window(&windows, pid)?)
+}
+
+fn paired_native_window(windows: &[Value], pid: u32) -> Result<u64, io::Error> {
+    let mut matches = windows.iter().filter(|row| {
+        row["pid"].as_u64() == Some(u64::from(pid)) && row["is_foreground"].as_bool() == Some(true)
+    });
+    let hwnd = matches
+        .next()
+        .and_then(|row| row["window_id"].as_u64())
+        .filter(|id| *id != 0);
+    if matches.next().is_some() {
+        return Err(io::Error::other("ambiguous foreground browser window"));
     }
-    .await;
-
-    let _ = client
-        .request(
-            "unregister_browser_extension",
-            json!({
-                "provider_id": provider_id,
-                "provider_secret": provider_secret,
-            }),
-        )
-        .await;
-    result
+    hwnd.ok_or_else(|| io::Error::other("explicit pairing requires a foreground browser window"))
 }
 
 pub(super) async fn read_native_message<R>(
@@ -452,18 +405,6 @@ where
     writer.write_all(&body).await?;
     writer.flush().await?;
     Ok(())
-}
-
-fn required_string<'a>(value: &'a Value, field: &str) -> Result<&'a str, io::Error> {
-    value[field]
-        .as_str()
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("Host response omitted {field}"),
-            )
-        })
 }
 
 fn browser_process_id() -> Result<u32, io::Error> {

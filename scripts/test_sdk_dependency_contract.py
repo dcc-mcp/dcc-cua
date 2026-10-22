@@ -15,7 +15,7 @@ SDK_PACKAGES = {
     "platform-macos",
     "platform-windows",
 }
-RESOLVED_SDK_PACKAGES = SDK_PACKAGES | {"cua-driver-core", "pip-preview", "platform-linux"}
+RESOLVED_SDK_PACKAGES = SDK_PACKAGES | {"cua-driver-core", "cua-cursor-motion", "pip-preview", "platform-linux"}
 
 
 class SdkDependencyContractTests(unittest.TestCase):

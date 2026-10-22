@@ -104,3 +104,75 @@ fn launch_denies_command_interpreters_with_arguments() {
         crate::contracts::ComputerUseErrorCode::InvalidTarget
     );
 }
+
+/// Validate real SDK wire shapes without launching a process.
+#[rstest]
+#[tokio::test]
+async fn launch_mapping_matches_the_actual_native_sdk_schema() {
+    let inventory = super::sdk_action_contract::native_sdk_inventory().await;
+    let schema = super::tool_schema_from_inventory(&inventory, "launch_app").unwrap();
+    let properties = schema["properties"].as_object().unwrap();
+    for selector in ["name", "bundle_id", "aumid", "path", "launch_path"] {
+        if !properties.contains_key(selector) {
+            continue;
+        }
+        let mut value = serde_json::json!({
+            "urls":["https://example.com"],
+            "additional_arguments":["--test"],
+            "creates_new_application_instance":cfg!(any(windows, target_os = "macos")),
+            "start_minimized":cfg!(windows),
+        });
+        value[selector] = serde_json::json!("FixtureApp");
+        let request = serde_json::from_value(value).unwrap();
+        for session in [None, Some("launch-schema-session")] {
+            let arguments = launch_arguments(&request, session).unwrap();
+            for key in arguments
+                .as_object()
+                .unwrap()
+                .keys()
+                .filter(|key| *key != "session")
+            {
+                assert!(
+                    properties.contains_key(key),
+                    "unknown native launch argument: {key}"
+                );
+            }
+            assert_eq!(
+                arguments.get("session").and_then(serde_json::Value::as_str),
+                session
+            );
+            assert_eq!(arguments[selector], "FixtureApp");
+            assert_eq!(
+                arguments["additional_arguments"],
+                serde_json::json!(["--test"])
+            );
+            assert_eq!(
+                arguments["urls"],
+                serde_json::json!(["https://example.com"])
+            );
+        }
+    }
+}
+
+#[rstest]
+#[case("creates_new_application_instance", cfg!(any(windows, target_os = "macos")))]
+#[case("start_minimized", cfg!(windows))]
+fn launch_never_discards_an_explicit_unsupported_option(
+    #[case] key: &str,
+    #[case] supported: bool,
+) {
+    let mut value = serde_json::json!({"name":"FixtureApp"});
+    value[key] = serde_json::json!(true);
+    let request = serde_json::from_value(value).unwrap();
+    let result = launch_arguments(&request, None);
+    if supported {
+        assert_eq!(result.unwrap()[key], true);
+    } else {
+        let error = result.unwrap_err();
+        assert_eq!(
+            error.code,
+            crate::contracts::ComputerUseErrorCode::InvalidAction
+        );
+        assert!(error.message.contains(key));
+    }
+}

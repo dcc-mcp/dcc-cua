@@ -99,6 +99,7 @@ impl ComputerUseSession {
             control_banner: None,
             target: None,
             observation: None,
+            sdk_element_tokens: None,
             #[cfg(windows)]
             native_frame_metadata: None,
             #[cfg(windows)]
@@ -450,10 +451,9 @@ impl ComputerUseSession {
         if properties.contains_key("session") {
             object.insert("session".into(), json!(self.session_id));
         }
-        if !properties.contains_key("pid")
-            && !properties.contains_key("window_id")
-            && !properties.contains_key("session")
-        {
+        // SDK session labels route lifecycle state. They are added to every
+        // closed tool schema and do not prove that a tool is window-bound.
+        if !properties.contains_key("pid") && !properties.contains_key("window_id") {
             return self.finish_observation_sensitive_attempt(Err(ComputerUseError::new(
                 ComputerUseErrorCode::InvalidTarget,
                 format!("CUA tool {name:?} is not bindable to an exact window session"),
@@ -815,12 +815,19 @@ impl ComputerUseSession {
         }
         self.require_observed_input_available()?;
         let fallback = observation.capture_provenance["accessibility_available"] == false;
+        let resolved_action = if fallback {
+            None
+        } else {
+            self.resolve_sdk_element_action(action, &observation)?
+        };
+        let sdk_action = resolved_action.as_ref().unwrap_or(action);
+        let local_coordinates = fallback || Self::action_uses_local_window_coordinates(sdk_action);
         let visual_action;
-        let effective_action = if fallback || Self::action_uses_local_window_coordinates(action) {
-            visual_action = action_for_window_visual_fallback(action, &observation)?;
+        let effective_action = if local_coordinates {
+            visual_action = action_for_window_visual_fallback(sdk_action, &observation)?;
             &visual_action
         } else {
-            action
+            sdk_action
         };
         let held_click = held_coordinate_click_as_drag(effective_action);
         let effective_action = held_click.as_ref().unwrap_or(effective_action);
@@ -968,7 +975,12 @@ impl ComputerUseSession {
             }));
         }
         self.require_current_upstream_session_for_evidence()?;
-        let command = action_arguments(effective_action, &self.session_id, &target)?;
+        let command = Self::sdk_action_command(
+            effective_action,
+            &self.session_id,
+            &target,
+            local_coordinates,
+        )?;
         let name = command.tool;
         let result = await_input_call(
             self.driver
@@ -1056,6 +1068,7 @@ impl ComputerUseSession {
             self.native_frame_metadata = None;
             self.native_menu_metadata = None;
         }
+        self.sdk_element_tokens = None;
         self.action_evidence_epoch = self.action_evidence_epoch.advanced();
         if let Some(fence) = self
             .live_observation

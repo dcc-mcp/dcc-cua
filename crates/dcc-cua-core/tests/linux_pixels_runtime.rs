@@ -18,6 +18,8 @@ async fn linux_pixels_native_sdk_registry_has_no_dispatchable_tools() {
         "click",
         "clipboard_read",
         "start_recording",
+        "run_script",
+        "parse_visual_regions",
     ] {
         let result = driver
             .raw()

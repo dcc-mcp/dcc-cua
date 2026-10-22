@@ -7,52 +7,189 @@ this contract with `scripts/test_sdk_dependency_contract.py`.
 
 ## Current source
 
-- Previous SDK: 0.23.2 at `loonghao/cua@50f5d303e3b81c031ef67f1dfb7127e8aaabfff7`.
-- Updated SDK: 0.28.2 at `loonghao/cua@3d2bcf50089ea18aa5bedab328b1afb3f710ea00`.
-- Upstream base: official release tag `cua-driver-rs-v0.28.2`, commit
-  `trycua/cua@fc188250b4ca8549b8e61f937fdb1fb560770e86` (2026-09-15).
-- Upstream `main` at evaluation time: `trycua/cua@83f142c4290a0f7d9ed545ae8532858c6e4f8145`
-  (2026-09-18), 15 commits ahead of the release tag.
+- Previous SDK: Driver 0.28.2 at
+  `loonghao/cua@3d2bcf50089ea18aa5bedab328b1afb3f710ea00`.
+- Updated SDK: Driver 0.36.0 plus the required DCC compatibility patch series.
+- Official release: [cua-driver-rs-v0.36.0](https://github.com/trycua/cua/releases/tag/cua-driver-rs-v0.36.0),
+  commit `trycua/cua@6d6c734c127025fb39ad5d585a10382808b39dc1` (2026-10-16).
+- Published compatibility source: `loonghao/cua@55ab9c62fe23b87d015136f45c4e8995e9988615`
+  ([compatibility PR #7](https://github.com/loonghao/cua/pull/7)). All six root
+  declarations and ten resolved SDK packages use this immutable Git source.
+  Its tree matches the tested local migration candidate, with original fork
+  histories retained as merge parents.
 
-The updated revision replays the previous fork-only delta verbatim on top of
-the official upstream release tag, instead of merging upstream into the old
-compatibility branch. The delta is unchanged: 28 files, 4212 insertions and
-259 deletions. Because the base is an upstream release tag rather than a
-merge of two histories, the package version now identifies the tested SDK
-directly and the fork delta stays reviewable as a rebaseable patch series.
+This is the Rust **Driver SDK** under `libs/cua-driver/rust`, including
+`cua-driver-sdk` and `cua-driver-contract`. It is a separate component from
+`libs/cua` and the independently released `cua-sdk-v0.4.4`.
 
-Upstream commits between the previous base and this release bring the driver
-to 0.28.2; the replayed fork delta carries no upstream content of its own, so
-no upstream change is dropped or duplicated.
+The component-tagged release has native assets for Windows, Linux and macOS.
+Both current official installer entry points resolve Driver 0.36.0. GitHub's
+`prerelease` label keeps the monorepo-wide Latest pointer separate; the Driver
+release notes identify plain SemVer Driver releases as its stable channel.
+The integration pins source, not the repository-wide Latest release.
 
 ## Why the compatibility fork remains
 
-Twelve commits (thirteen on the old branch, minus one upstream-sync merge) are
-absent from the upstream history. They implement existing-profile consent and
-socket-liveness proofs, ancestor-scoped semantic snapshots, hidden file input
-associations, foreground tab activation and navigation completion receipts,
-along with related tests and subprocess handling. Do not replace the fork with
-upstream solely because upstream's package version is newer.
+Official Driver 0.36.0 still does not contain `scope_ancestor_role`,
+`scope_anchor` or `browser_scope_unavailable`. Replacing the source URL with
+upstream would silently remove a documented DCC capability. Retain only the
+necessary compatibility behavior on the official release base:
 
-The decisive check is the browser contract surface that dcc-cua depends on:
-`scope_ancestor_role` (a `get_browser_state` parameter), `scope_anchor`
-(snapshot result evidence) and the `browser_scope_unavailable` refusal code.
-Neither `cua-driver-rs-v0.28.2` nor upstream `main` mentions any of them, so
-moving the pin to upstream would silently remove a documented dcc-cua
-capability. Re-run that check before proposing a return to upstream.
+- Ancestor-scoped snapshots with fail-closed scope evidence. Generic direct
+  scopes and outlines retain same-process iframe descendants via renderer
+  identity, while ancestor proofs keep exact frame/document boundaries.
+  Advertised schemas remain Bedrock/Vertex-compatible; runtime ancestor and
+  semantic-continuation checks remain enforced.
+- Hidden file-input associations with unique explicit labels. Preserve valid
+  associations within shadow roots and same-process iframes while refusing
+  mixed labelable controls; an outer host cannot acquire an inner input.
+- Explicit foreground navigation, frame/loader-bound completion receipts,
+  live-target revalidation and partial/unknown completion reporting. DOM
+  readback is fenced on both sides by document identity. Lost CDP replies
+  invalidate refs and return an explicit unknown dispatch state; DCC preserves
+  that redacted receipt instead of claiming the navigation never happened.
+- Responsive existing-profile socket proof. Driver 0.36 now shares consented
+  sockets: a failed probe releases only its current grant with
+  `SharedSocketRelease::Close`; it must not remove another session's hold.
+- Exact Windows native consent-window ownership/topmost disambiguation.
+- Console-free construction of existing bounded Windows helpers.
+- Preserve an intentionally empty host registry. The upstream perception fallback
+  must not reintroduce a tool after the Linux pixels-only hook clears it; policy-
+  filtered visibility is not evidence that no definitions are registered.
 
-The replay hit two conflicts. One was textual, in the driver core module list.
-The other was semantic, in Windows native Chromium consent: upstream had
-refactored the structural action collector, so the fork's target-owned window
-proof was re-applied on top of upstream's shape. The result keeps
-target-owned duplicate-prompt selection for allow actions and upstream's
-structural cancel action for cleanup. Both use the same language-independent
-topology proof. Distinct cancel candidates fail closed. The result tests
-opaque Unicode, mirrored RTL, missing and contradictory focus, renderer
-lookalikes and repeated prompts.
+Upstream already contains the old fresh-socket consent retry and stronger
+repeated-prompt title/geometry deduplication. Preserve its newer cancellation
+settlement and `ConsentNodes` COM cleanup. Additional native-window trees use
+that same RAII cleanup. Drop the obsolete netstat subprocess hunk because
+upstream uses the native TCP listener API, and do not restore deleted website
+documentation paths. The current Driver skill retains the compatibility API
+reference. The compatibility branch records the per-patch migration decisions
+in `libs/cua-driver/docs/dcc-compatibility-0360.md`.
 
-Two fork commits that only added and then reverted a cua-repo CI diagnostic
-step were dropped; they cancel out and have no effect on the published crates.
+The migration also compares the unmerged fork candidates, not only the
+installed pin. Preserve PR #5's duplicate-ID file-input refusal and borrowed
+scroll COM ownership fix, and PR #4's exact launch-family resolution while
+retaining its public discovery API. Their existing branches are not rewritten.
+Windows console-visibility tests stay opt-in and explicitly selected by the
+canonical native runner; this is not evidence that they ran locally.
+
+The dependency graph adds `cua-cursor-motion` at the same immutable SDK source.
+The only newly resolved registry packages are the new upstream scripting
+engine and its `relative-path` dependency; existing registry versions remain
+unchanged. Upstream inventory growth does not grant a new DCC action route:
+`run_script` is rejected by both unscoped native entry points. The real Linux
+pixels-only SDK inventory also rejects `parse_visual_regions`.
+
+Driver 0.36 defaults native `get_window_state` trees to Markdown. DCC explicitly
+requests `tree_format: "both"` for semantic snapshots and screenshot-plus-
+semantics, preserving read-only status/dialog/menu text alongside actionable
+elements and their SDK tokens; exact PID/window/session and bounds remain unchanged. The Windows
+overlay adapter supplies `target: None` for its existing point-only movement
+request because DCC does not have element bounds to pass upstream.
+
+Native input mappings also follow the 0.36 tool inventory. macOS window cursor
+movement uses its typed window target and screenshot coordinates; Linux and
+Windows overlay movement converts those coordinates once to native window units
+and adds the revalidated window origin. A macOS live/resized observation already
+converted to native window units uses that same overlay-only route, avoiding a
+second SDK screenshot-scale conversion. The overlay retains window scope.
+macOS semantic `set_value` omits the unsupported delivery-mode field, and Linux
+explicitly refuses `type_chars` delays that its SDK cannot represent.
+
+DCC preserves `element_index` by retaining the actual SDK token returned in the
+same observation, bound to observation/session/PID/window identity. Missing or
+ambiguous rows fail closed, and action invalidation discards the mapping. Never
+invent a bare row token: two sessions can publish snapshots of the same window.
+Move and drag require coordinates rather than unsupported semantic selectors.
+
+On Windows, the CLI dispatches the official SDK's public standard-user shell
+launch helper before ordinary startup. This lets an elevated Host launch the
+fixture under the SDK's verified standard-user token; it does not remove the
+SDK's elevation refusal, token checks or helper timeout. Process tests cover
+malformed helper invocations without launching applications, and the native
+lifecycle test reads the launched token's effective access-control facts:
+Medium-or-lower integrity, an absent or deny-only Administrators SID, and only
+standard-user privileges. SAFER tokens inherit `TokenElevation` from their
+source; the official SDK explicitly does not use that flag to verify a derived
+token. No security settings or SDK token-generation logic are changed.
+
+## Verification and acceptance
+
+Keep source check, executed tests, native acceptance, publication and installed
+client switching separate. Linux integration must construct the real embedded
+SDK and exercise its live inventory and exact-window capture, not only mock
+CDP responses. Test socket liveness both with one holder and with a peer holder.
+Preserve ancestor-scope, hidden-upload, navigation and target-ownership tests.
+
+A missing local Unix socket/AT-SPI bus is an environment limitation, not a
+passing desktop test. Windows Edge setup/cleanup and macOS input require their
+own exact-candidate native acceptance. Do not close those issues based on Linux
+compilation or pure matcher tests. The upgrade does not install a new binary.
+
+### Candidate evidence (2026-10-18)
+
+With the published `55ab9c62` Git source and no path overrides, Rust 1.95
+passed 1,508 downstream library tests (three explicit native opt-ins ignored),
+64 CLI/diagnostic/MCP/process tests, the real Linux pixels-only SDK registry
+integration test, and strict workspace/all-target Clippy.
+The dependency, formatting, layout and generated Hakari gates also passed.
+
+Real Linux SDK acceptance discovered two owned X11 windows, captured the exact
+80-by-60 target changing red to blue, and refused a destroyed target with
+`missing_window` without writing an image. AT-SPI was unavailable because the
+cloud sandbox denies its Unix bus; the observation reports that degradation.
+The source follow-up passed 246 browser tests (one existing opt-in ignored)
+and the actual source-built Driver CLI direct-MCP protocol schema test.
+
+The `55ab9c62` source follow-up passes all nine real SDK registry/runtime tests,
+including a policy-file subprocess regression, and 16 documentation-generator
+checks against the source-built CLI. Native CI snapshots supply the generated
+Linux/macOS/Windows references. The downstream results and exact-window
+acceptance above were rerun against the published pin. The native fixture
+returns a degraded root-window node, not proof of AT-SPI child-control access.
+
+The native-action follow-up passed 1,528 library tests (three explicit native
+opt-ins ignored), 64 CLI/process tests, the actual empty-registry SDK integration,
+strict workspace/all-target Clippy, and dependency/format/layout/Hakari gates.
+It adds a contract matrix against the real embedded
+SDK inventory, screenshot-scaling and observation-token isolation tests. A real
+Linux CLI overlay move placed the agent cursor at the target's window-relative
+position while reporting the user pointer unchanged. Native CI must qualify the
+final downstream candidate on Windows and both macOS architectures. Local Unix
+socket-dependent CLI tests remain blocked by the cloud sandbox's `EPERM`; they
+are not counted as passing local tests.
+
+The observation follow-up restores the official `both` projection. Format-sensitive
+red/green fixtures cover read-only status, menu and dialog text beside the actual
+qualified action token, including refusal to turn text-only row numbers into
+tokens. The reviewed local library suite passes 1,537 tests; seven additional pure
+Windows privilege-policy cases cover safe and unsafe access facts. A real SDK launch-schema matrix covers selectors, URL/argument forwarding and
+session ownership; unsupported false launch defaults are omitted, while explicit
+unsupported opt-ins fail before dispatch. A real Linux CLI launch starts the
+owned, self-closing X11 fixture and returns its PID with both exact windows;
+both unsupported true flags are refused. Windows new-instance remains an
+accepted upstream no-op, not an isolation guarantee. The GUI
+runner keeps failing on any error but runs all cases with `--no-fail-fast`.
+The `dc63d4a` candidate passed all ten CI jobs, including native GUI, release IPC
+and immutable artifact verification on Linux, Windows and both macOS architectures.
+Its GUI suites passed 17 cases per Linux/macOS target and 52 Windows cases
+(including seven pure privilege-fact cases, not 52 distinct native actions).
+
+The review follow-up preserves terminal `InvalidAction` for indexed actions on
+pure visual observations, while stale observation IDs and tokenless semantic
+snapshots still fail with `StaleObservation`. Three red/green cases verify error
+precedence and no dispatch. Schema-only checks continue to inspect the real SDK:
+Windows uses its metadata-only inventory without interactive-desktop admission
+or cursor startup; Linux/macOS retain the existing runtime to avoid changing
+process-global cursor configuration during tests. These follow-up changes require
+a fresh exact-head native matrix; the prior candidate's results are not a substitute.
+
+This is not a claim of whole-SDK CI success: the fork's attribution baseline
+gate remains tracked separately. The inherited docs container-image gate also
+lacks doctor-ledger entries in the fork; image references and baselines are
+unchanged. An additional standalone SDK-core strict
+Clippy check reports existing source warnings. Live browser, native Windows,
+native macOS and installed-client acceptance remain separate gates.
 
 ## Updating again
 

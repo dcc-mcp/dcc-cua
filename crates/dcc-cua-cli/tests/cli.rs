@@ -769,3 +769,21 @@ fn linux_pixels_only_initialization_does_not_write_the_home_directory(#[case] ne
     );
     assert_eq!(std::fs::read_dir(home.path()).unwrap().count(), 0);
 }
+
+#[cfg(windows)]
+#[rstest]
+#[case(&[], "error the launch helper received malformed arguments")]
+#[case(&["invalid", "never-launch.exe", ""], "error the launch helper received an invalid show state")]
+fn sdk_shell_launch_helper_owns_its_protocol_without_starting_an_app(
+    #[case] arguments: &[&str],
+    #[case] expected: &str,
+) {
+    let output = Command::new(env!("CARGO_BIN_EXE_dcc-cua"))
+        .arg(platform_windows::standard_user_launch::SHELL_LAUNCH_HELPER_FLAG)
+        .args(arguments)
+        .output()
+        .expect("dcc-cua should start its SDK helper");
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(String::from_utf8(output.stdout).unwrap().trim(), expected);
+    assert!(output.stderr.is_empty());
+}

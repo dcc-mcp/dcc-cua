@@ -17,6 +17,7 @@ mod browser_extension;
 mod capture_proof;
 mod cli_args;
 mod connection_diagnostics;
+mod extension_transport;
 mod failure_output;
 mod host_lifecycle;
 mod lifetime_diagnostics;
@@ -87,6 +88,15 @@ enum CommandFailure {
 }
 
 pub fn run() {
+    // The official SDK launches from an elevated Host through this executable
+    // under its verified standard-user token. Dispatch before any CLI/runtime
+    // initialization so the helper owns its single-line result protocol.
+    #[cfg(windows)]
+    if let Some(code) =
+        platform_windows::standard_user_launch::run_shell_launch_helper_if_requested()
+    {
+        std::process::exit(code);
+    }
     std::panic::set_hook(Box::new(|_| {
         let _ = writeln!(std::io::stderr().lock(), "{INTERNAL_FAILURE_DIAGNOSTIC}");
     }));

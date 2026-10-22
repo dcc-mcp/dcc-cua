@@ -205,13 +205,25 @@ artifacts and installed-client acceptance remain separate from source tests.
 
 Browser tasks may explicitly grant `browser_extension_status` and
 `browser_extension_call` through the ordinary `start_task` lifecycle. The latter
-accepts only `method: "snapshot"` and an `expected_origin` that exactly matches
+accepts `method: "snapshot"`, `"click"`, or `"type"` and an `expected_origin` that exactly matches
 one of the task's `allowed_browser_origins`. Retain the provider ID returned by
 the Host; do not substitute a CDP target or another task's session credentials.
 
-Extension `click`, `type`, and `unpair` remain rejected by the MCP bridge until
-the extension action path enforces final action scopes and confirmation.
+Extension clicks require the final `click/semantic/external_effect` task scope;
+non-secret typing requires `type/semantic/content_change`. Input uses the trusted
+task lease, current task-owned snapshot and ref, exact provider/origin, and a
+foreground ready target. Password/file controls, old plugins without explicit
+non-sensitive metadata, and `unpair` remain denied.
 Method admission does not establish pairing, provider availability, foreground
 readiness, or installed-browser acceptance. The task's Host must independently
 report the intended extension provider; an empty provider inventory is a blocker,
 not permission to switch providers or bypass the bridge.
+
+MCP processes with extension tasks advertise a provider-only listener as an
+associated Host. Diagnostic records are discovery hints, never service authority:
+the Native Messaging bridge derives a closed local endpoint from the connection
+UUID, verifies its OS peer PID and full process birth before/after connection,
+and uses the existing current-user pipe/socket protections. No task credentials
+cross this listener; session, UI, secret and authorization methods are rejected.
+The process-local registry remains shared only among that process's task Hosts.
+See [task-owned extension transport](../adr/0031-task-owned-extension-transport.md).

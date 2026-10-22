@@ -1,5 +1,5 @@
 #[cfg(unix)]
-use std::os::unix::fs::{DirBuilderExt, FileTypeExt, PermissionsExt};
+use std::os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt, PermissionsExt};
 #[cfg(unix)]
 use std::path::Path;
 use std::sync::Arc;
@@ -46,6 +46,7 @@ async fn serve_named_pipe(
 ) -> Result<(), HostError> {
     let _singleton = acquire_endpoint_singleton(&endpoint)?;
     let limiter = connection_limiter();
+    let mut connections = tokio::task::JoinSet::new();
     let mut first_instance = true;
     loop {
         let permit = limiter
@@ -58,7 +59,8 @@ async fn serve_named_pipe(
         server.connect().await?;
         let next_driver = driver.clone();
         let next_security_services = security_services.clone();
-        tokio::spawn(async move {
+        while connections.try_join_next().is_some() {}
+        connections.spawn(async move {
             let _permit = permit;
             let _ = process_connection_with_security_services(
                 next_driver,
@@ -294,8 +296,15 @@ async fn serve_unix_socket(
         }
     }
     let listener = UnixListener::bind(path)?;
+    let metadata = std::fs::symlink_metadata(path)?;
+    let _owned_socket = OwnedSocket {
+        path: path.to_owned(),
+        device: metadata.dev(),
+        inode: metadata.ino(),
+    };
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
     let limiter = connection_limiter();
+    let mut connections = tokio::task::JoinSet::new();
     loop {
         let permit = limiter
             .clone()
@@ -305,7 +314,8 @@ async fn serve_unix_socket(
         let (stream, _) = listener.accept().await?;
         let next_driver = driver.clone();
         let next_security_services = security_services.clone();
-        tokio::spawn(async move {
+        while connections.try_join_next().is_some() {}
+        connections.spawn(async move {
             let _permit = permit;
             let _ = process_connection_with_security_services(
                 next_driver,
@@ -352,3 +362,26 @@ pub(crate) fn stale_unix_socket_error(error: &std::io::Error) -> bool {
         std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound
     )
 }
+
+#[cfg(unix)]
+struct OwnedSocket {
+    path: std::path::PathBuf,
+    device: u64,
+    inode: u64,
+}
+
+#[cfg(unix)]
+impl Drop for OwnedSocket {
+    fn drop(&mut self) {
+        if let Ok(metadata) = std::fs::symlink_metadata(&self.path)
+            && metadata.file_type().is_socket()
+            && metadata.dev() == self.device
+            && metadata.ino() == self.inode
+        {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests;

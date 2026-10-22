@@ -66,6 +66,25 @@ pub(crate) fn launch_arguments(
         .as_object()
         .cloned()
         .unwrap_or_else(Map::new);
+    // The public DCC request spans native platforms, but the SDK schemas do
+    // not. Omit unsupported false defaults; never silently drop an opt-in.
+    for (key, supported) in [
+        (
+            "creates_new_application_instance",
+            cfg!(any(windows, target_os = "macos")),
+        ),
+        ("start_minimized", cfg!(windows)),
+    ] {
+        if !supported {
+            if arguments.get(key).and_then(Value::as_bool) == Some(true) {
+                return Err(ComputerUseError::new(
+                    ComputerUseErrorCode::InvalidAction,
+                    format!("the native SDK does not support launch option {key} on this platform"),
+                ));
+            }
+            arguments.remove(key);
+        }
+    }
     if let Some(session_id) = session_id {
         arguments.insert("session".into(), json!(session_id));
     }

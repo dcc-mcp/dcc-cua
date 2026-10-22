@@ -22,6 +22,49 @@ fn hello() -> Value {
 
 #[rstest]
 #[tokio::test]
+async fn pairing_claim_never_transfers_between_tasks_or_targets() {
+    let registry = BrowserExtensionRegistry::new();
+    let registered = registry
+        .register(&hello(), "chrome-extension://published-extension/", 42)
+        .await
+        .unwrap();
+    let id = registered["provider_id"].as_str().unwrap();
+    assert!(
+        registry
+            .claim(id, 43, 77, "https://example.com", "bad-task")
+            .await
+            .is_err()
+    );
+    assert!(
+        registry
+            .claim(id, 42, 77, "https://evil.test", "bad-task")
+            .await
+            .is_err()
+    );
+    assert!(
+        registry
+            .claim(id, 42, 78, "https://example.com", "bad-task")
+            .await
+            .is_err()
+    );
+    registry
+        .claim(id, 42, 77, "https://example.com", "task-one")
+        .await
+        .unwrap();
+    registry
+        .claim(id, 42, 77, "https://example.com", "task-one")
+        .await
+        .unwrap();
+    assert!(
+        registry
+            .claim(id, 42, 77, "https://example.com", "task-two")
+            .await
+            .is_err()
+    );
+}
+
+#[rstest]
+#[tokio::test]
 async fn rust_host_accepts_the_shared_extension_hello_fixture() {
     let fixtures: Value = serde_json::from_str(include_str!(
         "../../../../browser-extension/chrome/protocol-v1.fixtures.json"
@@ -191,4 +234,43 @@ async fn status_exposes_only_providers_for_the_exact_window_process() {
         status["providers"][0]["extension"]["browser_process_id"],
         42
     );
+}
+
+impl BrowserExtensionRegistry {
+    pub(crate) async fn register(
+        &self,
+        hello: &Value,
+        invocation_origin: &str,
+        browser_process_id: u32,
+    ) -> Result<Value, crate::HostError> {
+        self.register_with_window(hello, invocation_origin, browser_process_id, Some(77), None)
+            .await
+    }
+}
+
+#[rstest]
+#[tokio::test]
+async fn listener_constructor_claims_pairing_before_any_task_can_race() {
+    let registry = BrowserExtensionRegistry::new();
+    let registered = registry
+        .register_with_window(
+            &hello(),
+            "chrome-extension://published-extension/",
+            42,
+            Some(77),
+            Some("constructor-owner"),
+        )
+        .await
+        .unwrap();
+    let id = registered["provider_id"].as_str().unwrap();
+    assert!(
+        registry
+            .claim(id, 42, 77, "https://example.com", "racing-task")
+            .await
+            .is_err()
+    );
+    registry
+        .claim(id, 42, 77, "https://example.com", "constructor-owner")
+        .await
+        .unwrap();
 }
