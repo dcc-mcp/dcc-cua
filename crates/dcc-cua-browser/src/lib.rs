@@ -16,6 +16,8 @@ use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 use url::Url;
 
+mod prepare_recovery;
+
 const MAX_URL_CHARS: usize = 4_096;
 const MAX_TEXT_CHARS: usize = 4_096;
 const MAX_UPLOAD_FILES: usize = 32;
@@ -377,8 +379,17 @@ impl BrowserSession {
         if let Some(value) = request.strategy {
             args["strategy"] = value;
         }
+        let existing_profile = args["strategy"]["kind"] == "existing_profile";
         self.begin_snapshot_sensitive_native_attempt();
-        BrowserResult::from_prepare_value(native.call_browser_tool("browser_prepare", args).await?)
+        let mut result = BrowserResult::from_prepare_value(
+            native.call_browser_tool("browser_prepare", args).await?,
+        )?;
+        prepare_recovery::annotate(
+            &mut result.value,
+            existing_profile,
+            native.target().as_ref(),
+        );
+        Ok(result)
     }
 
     pub async fn snapshot(

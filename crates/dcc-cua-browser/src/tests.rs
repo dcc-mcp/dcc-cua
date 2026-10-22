@@ -2,6 +2,8 @@ use rstest::rstest;
 
 use super::*;
 
+mod prepare_recovery;
+
 #[rstest]
 fn browser_urls_are_scheme_and_length_bounded() {
     assert!(validate_url("https://example.com").is_ok());

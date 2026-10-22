@@ -1056,6 +1056,19 @@ the authorized native PID/window ID. Use the returned `target_id` and a
 `get_browser_state` or supply SDK `mode`, `pid`, or `window_id` fields through
 the task bridge. Preparation does not bind automatically or grant additional
 methods; an omitted `browser_snapshot` permission still fails closed.
+If existing-profile setup is refused after the SDK reports setup-page side
+effects, `structuredContent.recovery.kind: "existing_profile_setup"` describes
+manual recovery for the last validated native PID/window ID. A recognized
+native browser name supplies its internal setup URL and the checkbox label
+`Allow remote debugging for this browser instance`; an unknown application
+does not receive a guessed URL. Verify that setting manually and review any
+leftover setup tab before retrying. `cleanup.status` distinguishes
+`manual_cleanup_required`, `closed_by_driver`, and `not_opened`. These are
+reported effects, not proof of current tab ownership or setting state. The
+adapter performs no extra navigation, input, tab closure, or automatic retry;
+the SDK exposes no reusable cleanup capability when its exact-tab proof fails.
+Keep the original refusal and obtain fresh authorized observations before
+continuing. Native automatic setup/cleanup acceptance remains a separate gate.
 Hosts advertising `nearest_ancestor_role_v1` accept `scope_ancestor_role` only
 for a `semantic_v2` tab snapshot with an exact `target_id`, `tab_id`,
 `scope_ref`, and `query`. CUA resolves the nearest same-frame ancestor with the

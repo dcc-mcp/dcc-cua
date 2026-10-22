@@ -282,6 +282,21 @@ held interval, take a fresh exact-window snapshot and verify the game state;
 prefer short intervals and stop or release input at a checkpoint rather than
 leaving a key logically held.
 
+## Existing-profile browser setup
+
+An existing-profile `browser_prepare` refusal with reported setup-page effects
+may include `structuredContent.recovery.kind: "existing_profile_setup"` for
+the last validated native PID/window ID. Follow its manual setup guidance;
+recognized Edge/Chrome applications include the internal setup URL and
+`Allow remote debugging for this browser instance` checkbox label. Unknown
+applications receive no guessed URL. Do not retry preparation automatically.
+If `cleanup.status` is `manual_cleanup_required`, have the user identify and
+close any leftover setup tab; the SDK has not supplied reusable tab-cleanup
+authority. `closed_by_driver` and `not_opened` are reported prior effects, not
+fresh tab or setting evidence. Keep the original refusal, revalidate the exact
+target and obtain fresh authorized observations before continuing. Recovery
+guidance never grants input, navigation, tab closure, or extra methods.
+
 ## Profile-guided routing
 
 A semantic profile is not an automation script. It describes how an agent
