@@ -423,6 +423,47 @@ fn presenter_ack_waits_for_queued_cursor_restore_without_resuming_surfaces() {
     assert_eq!(final_ack, 1, "the same request can acknowledge after restore and hide ACKs");
 }
 
+fn assert_first_capture_ack_keeps_foreign_surfaces_visible(foreign: bool) {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    setup(std::process::id());
+    WINDOWS.lock().unwrap().extend([
+        Window { raw: 77, pid: std::process::id(), class: "DccCuaControlBanner", title: "local-presenter".into(), visible: true },
+        Window { raw: 88, pid: std::process::id(), class: "DccCuaControlFrame", title: "local-frame".into(), visible: true },
+    ]);
+    if foreign {
+        WINDOWS.lock().unwrap().push(Window {
+            raw: 99, pid: std::process::id().wrapping_add(1), class: "DccCuaControlBanner",
+            title: "foreign-presenter".into(), visible: true,
+        });
+    }
+    state().requested.fetch_add(1, Ordering::AcqRel);
+    state().acknowledged.store(0, Ordering::Release);
+    state().suppressed.store(true, Ordering::Release);
+    let mut acknowledged = 0;
+    let mut cursors = CursorSuppression::default();
+    let remains_suppressed = hide_and_acknowledge(
+        state(), HWND(77 as *mut _), &[OverlayWindow(HWND(88 as *mut _))],
+        &AtomicBool::new(true), &AtomicBool::new(true), &mut acknowledged, &mut cursors,
+    );
+    let capture_ack = state().acknowledged.load(Ordering::Acquire);
+    let surfaces_hidden = !visible(77) && !visible(88) && !visible(55);
+    let foreign_unchanged = !foreign || visible(99);
+    state().suppressed.store(false, Ordering::Release);
+    drop(cursors);
+    assert!(remains_suppressed && surfaces_hidden && foreign_unchanged);
+    assert_eq!(capture_ack, usize::from(!foreign));
+}
+
+#[rstest]
+fn first_capture_ack_checks_cursor_only_after_hiding_its_own_surfaces() {
+    assert_first_capture_ack_keeps_foreign_surfaces_visible(false);
+}
+
+#[rstest]
+fn first_capture_ack_still_refuses_visible_foreign_presenters() {
+    assert_first_capture_ack_keeps_foreign_surfaces_visible(true);
+}
+
 #[rstest]
 fn failed_restore_post_retains_unposted_ownership_for_the_idle_watcher() {
     let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());

@@ -458,7 +458,6 @@ pub(super) fn hide_and_acknowledge(
     }
     // Each peer cooperates only on its own registered renderer. Enumeration
     // may find an unknown/visible peer; the capturing process then refuses.
-    let cursors_hidden = hide_cursor_overlays_and_confirm_all_hidden(&mut cursors.0);
     let requested = state.requested.load(Ordering::Acquire);
     let _ = unsafe { ShowWindow(overlay, SW_HIDE) };
     for frame in frames {
@@ -466,6 +465,7 @@ pub(super) fn hide_and_acknowledge(
     }
     visible.store(false, Ordering::Release);
     frame_visible.store(false, Ordering::Release);
+    let cursors_hidden = hide_cursor_overlays_and_confirm_all_hidden(&mut cursors.0);
     if cursors_hidden
         && !unsafe { IsWindowVisible(overlay) }.as_bool()
         && frames
