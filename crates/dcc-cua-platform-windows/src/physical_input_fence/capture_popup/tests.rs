@@ -34,6 +34,108 @@ fn fixture() -> (WindowsPhysicalInputFence, ExactWindowNativeState) {
     (fence, state)
 }
 
+struct GeometryTransitionBackend {
+    expected: NativeCapturePopupProof,
+    current: NativeCapturePopupProof,
+    after_delivery: NativeCapturePopupProof,
+    released: bool,
+    sent_events: usize,
+}
+
+impl InputBackend for GeometryTransitionBackend {
+    fn check(
+        &mut self,
+        fence: WindowsPhysicalInputFence,
+        _point: Option<(i32, i32)>,
+    ) -> Result<(), Reason> {
+        check_capture_popup_fence(
+            fence,
+            || Ok(()),
+            || false,
+            || validate_current_proof(&self.expected, &self.current, self.released),
+            || Ok(self.current.root),
+        )
+    }
+
+    fn mutate(
+        &mut self,
+        _fence: WindowsPhysicalInputFence,
+        _point: Option<(i32, i32)>,
+        events: &[Event],
+        _cursor: Option<(i32, i32)>,
+        cleanup_only: bool,
+    ) -> Result<MutationReceipt, Reason> {
+        // As in the production backend, even a previously completed delivery
+        // cannot use the relaxed postcheck to authorize another mutation.
+        validate_current_proof(&self.expected, &self.current, false)?;
+        let receipt = MutationReceipt {
+            requested: events.len() as u32,
+            inserted: events.len() as u32,
+            cursor_attempted: false,
+            cursor_succeeded: false,
+        };
+        self.sent_events += events.len();
+        self.current = self.after_delivery.clone();
+        self.released = keyboard_release_completed(events, receipt, cleanup_only);
+        Ok(receipt)
+    }
+
+    fn interrupted(&mut self) -> bool {
+        false
+    }
+    fn elapsed_ms(&self) -> u64 {
+        0
+    }
+    fn pause(&mut self, _milliseconds: u64) {}
+}
+
+#[rstest]
+#[case(false)]
+#[case(true)]
+fn completion_resizing_after_balanced_text_does_not_report_unsent_input(
+    #[case] changed_before_delivery: bool,
+) {
+    let (expected, current) = NativeCapturePopupProof::test_geometry_transition();
+    let root = expected.root;
+    let fence = WindowsPhysicalInputFence {
+        target: UiaTarget {
+            process_id: root.process_id,
+            window_handle: root.window_handle,
+        },
+        native_instance: root.instance,
+        native_window_bounds: root.bounds.unwrap(),
+        native_visible_bounds: root.visible_bounds.unwrap(),
+        window_dpi: root.dpi,
+    };
+    let mut backend = GeometryTransitionBackend {
+        current: if changed_before_delivery {
+            current.clone()
+        } else {
+            expected.clone()
+        },
+        expected,
+        after_delivery: current,
+        released: false,
+        sent_events: 0,
+    };
+    let result = run_text(&mut backend, fence, "NoOp");
+    if changed_before_delivery {
+        assert!(result.unwrap_err().is_pre_dispatch());
+        assert_eq!(backend.sent_events, 0);
+    } else {
+        assert!(backend.sent_events > 0);
+        let outcome = result.expect("fully delivered text may resize the same proven completion");
+        assert!(outcome.delivery_completed && outcome.post_dispatch_validated);
+        let sent = backend.sent_events;
+        assert!(
+            backend
+                .mutate(fence, None, &[Event::Key(65, false)], None, false)
+                .is_err()
+        );
+        assert_eq!(backend.sent_events, sent);
+    }
+}
+
 #[rstest]
 #[case("valid", true)]
 #[case("birth", false)]

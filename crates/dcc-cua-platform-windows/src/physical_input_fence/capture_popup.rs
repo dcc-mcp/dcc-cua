@@ -89,6 +89,20 @@ fn keyboard_release_completed(
     pending.is_empty()
 }
 
+fn validate_current_proof(
+    expected: &NativeCapturePopupProof,
+    current: &NativeCapturePopupProof,
+    completed_keyboard: bool,
+) -> Result<(), Reason> {
+    if current == expected
+        || (completed_keyboard && expected.matches_completed_keyboard_postcheck(current))
+    {
+        Ok(())
+    } else {
+        Err(Reason::InstanceChanged)
+    }
+}
+
 impl<G: FnMut() -> Result<(), UiaError>, I: FnMut() -> bool> CapturePopupBackend<'_, G, I> {
     fn check_mode(
         &mut self,
@@ -112,8 +126,9 @@ impl<G: FnMut() -> Result<(), UiaError>, I: FnMut() -> bool> CapturePopupBackend
                     fence.target.window_handle,
                     &selected,
                 ) {
-                    Ok(proof) if &proof == expected => Ok(()),
-                    Ok(_) => Err(Reason::InstanceChanged),
+                    // Only the final read-only check after balanced release can
+                    // accept resized geometry from the same fully proven episode.
+                    Ok(proof) => validate_current_proof(expected, &proof, allow_closed),
                     Err(_) if allow_closed => {
                         // Enter may normally close search. Only the fully released
                         // final postcheck may accept that transition; no next input

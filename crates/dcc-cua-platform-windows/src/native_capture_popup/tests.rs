@@ -87,6 +87,85 @@ fn sample() -> Sample {
     }
 }
 
+// Mint both opaque proofs through the real complete sample validator so the
+// final-boundary regression does not invent a different proof contract.
+impl NativeCapturePopupProof {
+    pub(crate) fn test_geometry_transition() -> (Self, Self) {
+        let before = sample();
+        let expected = validate_sample(42, 100, &[200, 300], &before).unwrap();
+        let mut after = sample();
+        for popup in &mut after.overlays {
+            popup.state.bounds.as_mut().unwrap()[2] += 10;
+            popup.state.visible_bounds = popup.state.bounds;
+        }
+        for (index, popup) in after.overlays.iter().enumerate() {
+            after.roots[index] = entry(popup.state);
+        }
+        let current = validate_sample(42, 100, &[200, 300], &after).unwrap();
+        assert_ne!(expected, current);
+        (expected, current)
+    }
+}
+
+#[rstest]
+fn completed_keyboard_postcheck_accepts_only_a_fresh_geometry_transition() {
+    let (expected, current) = NativeCapturePopupProof::test_geometry_transition();
+    assert!(expected.matches_completed_keyboard_postcheck(&current));
+}
+
+#[rstest]
+#[case("root")]
+#[case("root_dpi")]
+#[case("desktop")]
+#[case("capture_handle")]
+#[case("focus")]
+#[case("focus_birth")]
+#[case("gui_flags")]
+#[case("active")]
+#[case("foreground")]
+#[case("disabled_focus")]
+#[case("hidden_focus")]
+#[case("popup_birth")]
+#[case("popup_thread")]
+#[case("popup_class")]
+#[case("popup_owner")]
+#[case("popup_dpi")]
+#[case("popup_visibility")]
+#[case("selected_handle")]
+#[case("selected_order")]
+#[case("selected_count")]
+#[case("z_order")]
+fn geometry_postcheck_never_accepts_another_episode_or_native_state(#[case] case: &str) {
+    let (expected, mut current) = NativeCapturePopupProof::test_geometry_transition();
+    match case {
+        "root" => current.root.bounds.as_mut().unwrap()[0] += 1,
+        "root_dpi" => current.root.dpi += 1,
+        "desktop" => current.desktop[2] += 1,
+        "capture_handle" => current.focus.capture = 300,
+        "focus" => current.focus.focus += 1,
+        "focus_birth" => current.focus.focus_instance.process_creation_time_100ns += 1,
+        "gui_flags" => current.focus.flags = GUI_CARETBLINKING,
+        "active" => current.focus.active = 300,
+        "foreground" => current.focus.foreground = 300,
+        "disabled_focus" => current.focus.enabled = false,
+        "hidden_focus" => current.focus.visible = false,
+        "popup_birth" => current.overlays[0].instance.process_creation_time_100ns += 1,
+        "popup_thread" => current.overlays[0].instance.window_thread_id += 1,
+        "popup_class" => current.overlays[0].instance.window_class_hash += 1,
+        "popup_owner" => current.overlays[0].instance.owner_window_handle = 300,
+        "popup_dpi" => current.overlays[0].dpi += 1,
+        "popup_visibility" => current.overlays[0].visible = false,
+        "selected_handle" => current.overlays[0].window_handle += 1,
+        "selected_order" => current.overlays.swap(0, 1),
+        "selected_count" => {
+            current.overlays.pop();
+        }
+        "z_order" => current.ordered_occluders.swap(0, 1),
+        _ => unreachable!(),
+    }
+    assert!(!expected.matches_completed_keyboard_postcheck(&current));
+}
+
 #[rstest]
 fn only_explicit_capture_companions_can_prove_main_root_keyboard_observation() {
     let sample = sample();
@@ -235,4 +314,5 @@ fn proof_equality_pins_private_focus_and_the_full_ordered_occluder_instances() {
     let wire = serde_json::to_value(proof).unwrap();
     assert!(wire.get("focus").is_none());
     assert!(wire.get("ordered_occluders").is_none());
+    assert!(wire.get("desktop").is_none());
 }

@@ -348,6 +348,10 @@ root `observation_id`. A private, one-use composite receipt is valid for at most
 five seconds after completed capture. Every input attempt consumes it. The final
 native boundary rechecks full native births, GUI thread, focus, active/foreground
 root, exact capture window, geometry, selected occlusion, desktop and interruption.
-It never activates or retargets a window. A completed Enter may end capture;
-delivery and the resulting application effect remain separate outcomes. Take a
-fresh ordinary or explicitly selected snapshot after every action.
+It never activates or retargets a window. Only the final read-only check after
+fully balanced keyboard release may accept resized popup/redaction geometry,
+after a fresh complete native proof with the same root, native identities,
+selected HWND order, focus, GUI state, desktop and z-order. Every new input batch
+still requires strict equality with the observed proof. A completed Enter may
+end capture; delivery and the resulting application effect remain separate
+outcomes. Take a fresh ordinary or explicitly selected snapshot after every action.

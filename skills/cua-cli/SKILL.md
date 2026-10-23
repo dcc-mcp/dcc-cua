@@ -427,5 +427,7 @@ eight exact transient HWNDs with snapshot's
 overlay image. The root image remains redacted. Use only a granted keyboard
 action and the latest root observation within five seconds; every attempt
 consumes the private composite proof. Missing, foreign, changed or unselected
-occlusion is refused. The input target stays the main root and pointer rules
+occlusion is refused before input. Only the final read-only check after balanced
+release can accept resized geometry in the same fully proven popup episode.
+The input target stays the main root and pointer rules
 stay unchanged. See [the agent plugin contract](../../docs/agent-plugin.md#explicit-native-capture-popup-observations).

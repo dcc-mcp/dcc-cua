@@ -67,6 +67,38 @@ pub struct NativeCapturePopupProof {
     focus: FocusState,
     #[serde(skip)]
     ordered_occluders: Vec<ExactWindowNativeState>,
+    #[serde(skip)]
+    desktop: [i32; 4],
+}
+
+impl NativeCapturePopupProof {
+    // Both proofs must come from the complete native reader. This comparison
+    // is only for a read-only postcheck after all owned keyboard input is up.
+    pub(crate) fn matches_completed_keyboard_postcheck(&self, current: &Self) -> bool {
+        let mut permitted = self.clone();
+        let copy_geometry = |expected: &mut ExactWindowNativeState,
+                             observed: &ExactWindowNativeState| {
+            expected.bounds = observed.bounds;
+            expected.visible_bounds = observed.visible_bounds;
+        };
+        copy_geometry(&mut permitted.capture, &current.capture);
+        for (expected, observed) in permitted.overlays.iter_mut().zip(&current.overlays) {
+            copy_geometry(expected, observed);
+        }
+        for (expected, observed) in permitted
+            .ordered_occluders
+            .iter_mut()
+            .zip(&current.ordered_occluders)
+        {
+            copy_geometry(expected, observed);
+        }
+        permitted
+            .redacted_regions
+            .clone_from(&current.redacted_regions);
+        // Equality still pins root geometry/DPI/birth, focus and GUI state,
+        // desktop, selected IDs/order, z-order and every popup native identity.
+        permitted == *current
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -286,6 +318,7 @@ fn validate_sample(
         redacted_regions,
         focus: sample.focus,
         ordered_occluders,
+        desktop: sample.desktop,
     })
 }
 
