@@ -336,6 +336,42 @@ fn refused_native_sample_preserves_the_actual_blocker_without_reading_it_again()
 }
 
 #[rstest]
+#[case(NativeCapturePopupRefusal::FocusOutsideRoot)]
+#[case(NativeCapturePopupRefusal::GuiStateUnavailable)]
+#[case(NativeCapturePopupRefusal::EnumerationIncomplete)]
+#[case(NativeCapturePopupRefusal::NativeStateChanged)]
+#[case(NativeCapturePopupRefusal::InvalidSelection)]
+fn inventory_preserves_the_closed_native_refusal_without_exposing_source_text(
+    #[case] reason: NativeCapturePopupRefusal,
+) {
+    let mut error = refused(reason);
+    error.source = Box::new(UiaError::OperationFailed(
+        "private native error text".into(),
+    ));
+    let inventory = finish_inventory(
+        NativeCapturePopupInventory {
+            process_id: 42,
+            root_window_handle: 100,
+            authorizes_input: false,
+            complete: false,
+            capture_window_handle: None,
+            candidates: vec![],
+            refusal_reason: None,
+        },
+        Err(error),
+    );
+    assert_eq!(inventory.refusal_reason, Some(reason));
+    assert!(!inventory.complete && !inventory.authorizes_input);
+    assert!(inventory.candidates.is_empty() && inventory.capture_window_handle.is_none());
+    let serialized = serde_json::to_value(inventory).unwrap();
+    assert_eq!(
+        serialized["refusal_reason"],
+        serde_json::to_value(reason).unwrap()
+    );
+    assert!(!serialized.to_string().contains("private native error text"));
+}
+
+#[rstest]
 fn proof_equality_pins_private_focus_and_the_full_ordered_occluder_instances() {
     let before = sample();
     let proof = validate_sample(42, 100, &[200, 300], &before).unwrap();

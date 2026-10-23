@@ -59,6 +59,53 @@ fn coverage_preserves_holes_and_accepts_overlap_without_double_counting() {
 }
 
 #[rstest]
+#[case("window_content", vec![], true)]
+#[case("window_content", vec![[10, 10, 20, 20]], false)]
+#[case("visible_desktop_crop", vec![], false)]
+#[case("redacted_desktop_crop", vec![[10, 10, 20, 20]], true)]
+#[case("redacted_desktop_crop", vec![[10, 10, 19, 20]], false)]
+#[case("unknown", vec![[10, 10, 20, 20]], false)]
+fn root_capture_modes_preserve_window_content_and_exact_desktop_redactions(
+    #[case] mode: &str,
+    #[case] redactions: Vec<[i32; 4]>,
+    #[case] accepted: bool,
+) {
+    let provenance = json!({"capture_mode":mode,"visibility":{"redacted_rectangles":redactions}});
+    let native = [[10, 10, 20, 20]];
+    let frames = [([10, 10, 20, 20], vec![])];
+    let result = validate_root_capture_coverage(&provenance, &native, &frames);
+    assert_eq!(result.is_ok(), accepted);
+    if let Err(error) = result {
+        assert_eq!(error.code, ComputerUseErrorCode::StaleObservation);
+    }
+}
+
+#[rstest]
+fn window_content_still_requires_valid_popup_frame_coverage_metadata() {
+    let provenance =
+        json!({"capture_mode":"window_content","visibility":{"redacted_rectangles":[]}});
+    assert!(
+        validate_root_capture_coverage(
+            &provenance,
+            &[[10, 10, 20, 20]],
+            &[([10, 10, 0, 20], vec![])]
+        )
+        .is_err()
+    );
+    let desktop = json!({"capture_mode":"redacted_desktop_crop","visibility":{"redacted_rectangles":[[10,10,20,20]]}});
+    assert!(validate_root_capture_coverage(&desktop, &[[10, 10, 20, 20]], &[]).is_err());
+    assert!(validate_root_capture_coverage(&json!({}), &[], &[]).is_err());
+    assert!(
+        validate_root_capture_coverage(
+            &json!({"capture_mode":42,"visibility":{"redacted_rectangles":[]}}),
+            &[],
+            &[]
+        )
+        .is_err()
+    );
+}
+
+#[rstest]
 fn composite_keyboard_binding_rejects_expiry_cross_session_and_wrong_root_or_observation() {
     let observation = ComputerUseObservation {
         observation_id: "obs".into(),

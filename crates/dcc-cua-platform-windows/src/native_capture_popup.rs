@@ -566,7 +566,7 @@ pub(crate) fn read_native_capture_popup_proof_diagnostic(
 /// Bounded content-free candidate IDs. Never selects, follows, captures or
 /// authorizes a popup; a caller must explicitly request every chosen HWND.
 pub fn native_capture_popup_inventory(process_id: u32, root: u64) -> NativeCapturePopupInventory {
-    let mut result = NativeCapturePopupInventory {
+    let result = NativeCapturePopupInventory {
         process_id,
         root_window_handle: root,
         authorizes_input: false,
@@ -619,13 +619,20 @@ pub fn native_capture_popup_inventory(process_id: u32, root: u64) -> NativeCaptu
             .map(|window| window.window_handle);
         Ok((candidates, capture))
     };
-    match read() {
+    finish_inventory(result, read())
+}
+
+fn finish_inventory(
+    mut result: NativeCapturePopupInventory,
+    read: Result<(Vec<ExactWindowNativeState>, Option<u64>), NativeCapturePopupReadError>,
+) -> NativeCapturePopupInventory {
+    match read {
         Ok((candidates, capture)) => {
             result.candidates = candidates;
             result.capture_window_handle = capture;
             result.complete = true;
         }
-        Err(_) => result.refusal_reason = Some(NativeCapturePopupRefusal::NativeStateUnavailable),
+        Err(error) => result.refusal_reason = Some(error.reason),
     }
     result
 }

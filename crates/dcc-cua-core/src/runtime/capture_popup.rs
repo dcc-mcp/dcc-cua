@@ -118,6 +118,42 @@ fn require_complete_coverage(
     Ok(())
 }
 
+#[cfg(any(windows, test))]
+fn validate_root_capture_coverage(
+    provenance: &Value,
+    native_redactions: &[[i32; 4]],
+    frames: &[([i32; 4], Vec<[i32; 4]>)],
+) -> ComputerUseResult<()> {
+    let desktop_crop = match provenance["capture_mode"].as_str() {
+        Some("window_content") => false,
+        Some("visible_desktop_crop" | "redacted_desktop_crop") => true,
+        _ => {
+            return Err(stale(
+                "root capture mode metadata is unavailable or unsupported",
+            ));
+        }
+    };
+    let root_redactions: Vec<[i32; 4]> =
+        serde_json::from_value(provenance["visibility"]["redacted_rectangles"].clone())
+            .map_err(|_| stale("root redaction metadata is unavailable"))?;
+    if desktop_crop {
+        let mut expected = native_redactions.to_vec();
+        let mut observed = root_redactions.clone();
+        expected.sort_unstable();
+        observed.sort_unstable();
+        if expected != observed {
+            return Err(stale(
+                "root pixel redactions differ from the native popup proof",
+            ));
+        }
+    } else if !root_redactions.is_empty() {
+        return Err(stale(
+            "window-content root pixels cannot claim desktop redactions",
+        ));
+    }
+    require_complete_coverage(&root_redactions, frames)
+}
+
 #[cfg(windows)]
 pub(super) fn keyboard_context(
     metadata: Option<CapturePopupMetadata>,
@@ -413,20 +449,11 @@ impl ComputerUseSession {
                 accessibility: json!({"accessibility_available":false}),
             });
         }
-        let root_redactions: Vec<[i32; 4]> = serde_json::from_value(
-            root.observation.capture_provenance["visibility"]["redacted_rectangles"].clone(),
-        )
-        .map_err(|_| stale("root redaction metadata is unavailable"))?;
-        let mut expected_redactions = proof.redacted_regions.clone();
-        let mut observed_redactions = root_redactions.clone();
-        expected_redactions.sort_unstable();
-        observed_redactions.sort_unstable();
-        if expected_redactions != observed_redactions {
-            return Err(stale(
-                "root pixel redactions differ from the native popup proof",
-            ));
-        }
-        require_complete_coverage(&root_redactions, &coverage)?;
+        validate_root_capture_coverage(
+            &root.observation.capture_provenance,
+            &proof.redacted_regions,
+            &coverage,
+        )?;
         let after = dcc_cua_platform_windows::read_native_capture_popup_proof(
             proof.root.process_id,
             proof.root.window_handle,
