@@ -916,6 +916,7 @@ fn successful_native_snapshot_mint_survives_outer_epoch_reconciliation() {
         max_nodes: 100,
         activate_before: false,
         capture_diagnostics: false,
+        native_capture_popup_window_handles: Vec::new(),
     });
 
     request_handler::finish_window_evidence_request(

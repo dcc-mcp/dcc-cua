@@ -4,6 +4,7 @@ use serde_json::{Value, json};
 use super::frame_recovery::add_frame_recovery_guidance;
 use super::*;
 
+mod capture_popup_tests;
 mod capture_preparation_tests;
 mod interaction_recovery_tests;
 mod lifetime_tests;

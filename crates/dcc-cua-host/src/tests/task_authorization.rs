@@ -5,6 +5,7 @@ use dcc_cua_core::{ComputerUseTargetAvailability, ComputerUseTargetStatus};
 use rstest::rstest;
 
 use super::*;
+mod capture_popup_tests;
 mod native_menu_tests;
 mod pixel_drag_tests;
 use crate::action_confirmation::ConfirmationBinding;

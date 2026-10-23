@@ -319,3 +319,35 @@ It measures default and diagnostic snapshots on disposable native windows,
 decodes their PNGs, verifies ownership and cleanup, and writes `results.json`.
 Keep other builds stopped while sampling. These SDK timings exclude MCP
 transport, perception, and input; encoding-only timings are a separate metric.
+
+### Explicit native capture popup observations
+
+Some applications keep their exact main window foreground and focused while
+native transient roots hold mouse capture and obscure the main pixels. The
+owner may opt into `start_task.allow_native_capture_popup_keyboard=true` on an
+exact `pixels_only` task with `snapshot`, `get_window_state`, `execute_action`,
+and independently granted non-secret raw keyboard actions. The default is false.
+This secondary-observation ceiling grants no keyboard action or pointer exception.
+
+Read `get_window_state.native_capture_popup_inventory`, then explicitly pass
+one through eight unique positive HWNDs to
+`snapshot.native_capture_popup_window_handles`. Select the actual native capture
+root and every overlapping transient reported by the bounded native proof.
+An incomplete inventory, foreign root, changed instance, or unselected occluder
+refuses the composite observation. Ownership is not inferred for unowned Qt roots.
+
+The snapshot retains the exact main-root image and its honest redactions. Its
+`native_capture_popup_observation` contains separately labeled overlay frames,
+their complete native observations, and image attachment descriptors. Image
+order is main root first, then the requested HWND order. Independently visible
+pixels from the selected frames must cover every redacted main-root pixel.
+Black redactions never become evidence of hidden application content.
+
+Existing keyboard actions still target the exact main root using the latest
+root `observation_id`. A private, one-use composite receipt is valid for at most
+five seconds after completed capture. Every input attempt consumes it. The final
+native boundary rechecks full native births, GUI thread, focus, active/foreground
+root, exact capture window, geometry, selected occlusion, desktop and interruption.
+It never activates or retargets a window. A completed Enter may end capture;
+delivery and the resulting application effect remain separate outcomes. Take a
+fresh ordinary or explicitly selected snapshot after every action.

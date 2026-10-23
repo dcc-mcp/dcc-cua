@@ -494,6 +494,8 @@ enum Request {
         activate_before: bool,
         #[serde(default)]
         capture_diagnostics: bool,
+        #[serde(default)]
+        native_capture_popup_window_handles: Vec<u64>,
     },
     Zoom {
         session_id: String,

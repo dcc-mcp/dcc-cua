@@ -355,13 +355,14 @@ impl ComputerUseSession {
 }
 
 #[cfg(windows)]
-pub(super) async fn perform_exact_pixel_action(
+pub(super) async fn perform_exact_pixel_action_with_capture_popup(
     action: &ComputerUseAction,
     observation: &ComputerUseObservation,
     scope: &ComputerUseTargetScope,
     session_id: &str,
     target: &WindowTarget,
     owner: PixelInputOwner,
+    capture_popup: Option<super::capture_popup::CapturePopupMetadata>,
 ) -> ComputerUseResult<ComputerUseToolResult> {
     let PixelInputOwner {
         started_generation,
@@ -400,7 +401,17 @@ pub(super) async fn perform_exact_pixel_action(
                 .map_err(pixel_presentation_error)
         },
         move || {
-            let gate = || windows_platform_input_gate("explicit_pixel_final_input");
+            let gate = || {
+                if capture_popup.as_ref().is_some_and(|metadata| {
+                    metadata.read_at.elapsed() > Duration::from_secs(5)
+                        || Instant::now() >= metadata.authorization_deadline
+                }) {
+                    return Err(dcc_cua_platform_windows::UiaError::PermissionDenied(
+                        "composite popup observation expired".into(),
+                    ));
+                }
+                windows_platform_input_gate("explicit_pixel_final_input")
+            };
             let interrupted = || {
                 input_presentation.validate_active().is_err()
                     || dcc_cua_interrupt::interrupt_generation_changed(
@@ -454,20 +465,43 @@ pub(super) async fn perform_exact_pixel_action(
                 }
                 "keypress" | "keyboard_shortcut" => {
                     let keys = keyboard_shortcut_keys(&action);
-                    dcc_cua_platform_windows::send_guarded_keypress(
-                        fence,
-                        &keys,
-                        action.duration_ms,
-                        gate,
-                        interrupted,
-                    )
+                    if let Some(metadata) = &capture_popup {
+                        dcc_cua_platform_windows::send_guarded_capture_popup_keypress(
+                            fence,
+                            &metadata.proof,
+                            &keys,
+                            action.duration_ms,
+                            gate,
+                            interrupted,
+                        )
+                    } else {
+                        dcc_cua_platform_windows::send_guarded_keypress(
+                            fence,
+                            &keys,
+                            action.duration_ms,
+                            gate,
+                            interrupted,
+                        )
+                    }
                 }
-                "type" | "type_chars" => dcc_cua_platform_windows::send_guarded_text(
-                    fence,
-                    action.text.as_deref().unwrap_or_default(),
-                    gate,
-                    interrupted,
-                ),
+                "type" | "type_chars" => {
+                    if let Some(metadata) = &capture_popup {
+                        dcc_cua_platform_windows::send_guarded_capture_popup_text(
+                            fence,
+                            &metadata.proof,
+                            action.text.as_deref().unwrap_or_default(),
+                            gate,
+                            interrupted,
+                        )
+                    } else {
+                        dcc_cua_platform_windows::send_guarded_text(
+                            fence,
+                            action.text.as_deref().unwrap_or_default(),
+                            gate,
+                            interrupted,
+                        )
+                    }
+                }
                 _ => unreachable!("explicit pixel action names were validated"),
             }
             .map_err(input_error)

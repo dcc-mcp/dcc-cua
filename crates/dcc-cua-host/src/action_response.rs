@@ -1,4 +1,6 @@
 use super::*;
+#[cfg(test)]
+mod tests;
 
 pub(super) trait TransportImage {
     fn into_transport_parts(self) -> (Vec<u8>, String);
@@ -52,6 +54,61 @@ pub(super) fn prepare_image_transport<T: TransportImage>(
     shared_image: &mut Option<SharedImage>,
 ) -> Result<PreparedImageTransport, HostError> {
     prepare_image_transport_with_limit(images, mode, shared_image, MAX_BINARY_FRAME_BYTES)
+}
+
+pub(super) fn snapshot_image_transport(
+    root: Vec<u8>,
+    observation: &dcc_cua_core::ComputerUseObservation,
+    overlays: Vec<ComputerUseScreenshot>,
+    popup: &mut Value,
+    mode: SnapshotTransport,
+    shared_image: &mut Option<SharedImage>,
+) -> Result<PreparedImageTransport, HostError> {
+    if overlays.is_empty() {
+        let (primary, attachment) = match mode {
+            SnapshotTransport::SharedMemory => {
+                let shared = SharedImage::from_bytes(&root, "image/png")
+                    .map_err(|error| HostError::Protocol(error.to_string()))?;
+                let mut descriptor = serde_json::to_value(shared.descriptor())
+                    .map_err(|error| HostError::Protocol(error.to_string()))?;
+                descriptor["encoding"] = json!("shared_memory");
+                *shared_image = Some(shared);
+                (descriptor, None)
+            }
+            SnapshotTransport::BinaryFrame => (
+                json!({"name":"","id":observation.observation_id,"length":root.len(),
+                "mime_type":"image/png","encoding":"binary_frame"}),
+                Some(root),
+            ),
+        };
+        return Ok(PreparedImageTransport {
+            primary: Some(primary),
+            attachments: Vec::new(),
+            attachment,
+            use_shared_memory: mode == SnapshotTransport::SharedMemory,
+        });
+    }
+    let mut images = vec![ComputerUseImage {
+        data: root,
+        mime_type: "image/png".into(),
+    }];
+    images.extend(overlays.into_iter().map(|frame| ComputerUseImage {
+        data: frame.data,
+        mime_type: "image/png".into(),
+    }));
+    let prepared = prepare_image_transport(images, mode, shared_image)?;
+    let items = popup["overlays"]
+        .as_array_mut()
+        .ok_or_else(|| HostError::Protocol("selected popup metadata is missing".into()))?;
+    if items.len() + 1 != prepared.attachments.len() {
+        return Err(HostError::Protocol(
+            "selected popup images and metadata differ".into(),
+        ));
+    }
+    for (index, item) in items.iter_mut().enumerate() {
+        item["image"] = prepared.attachments[index + 1].clone();
+    }
+    Ok(prepared)
 }
 
 pub(super) fn prepare_image_transport_with_limit<T: TransportImage>(

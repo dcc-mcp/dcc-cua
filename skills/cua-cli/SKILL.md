@@ -417,3 +417,15 @@ the Host so users and agents can verify that control is active. Exact-window
 WGC frames intentionally contain only the target window; the external banner
 is not expected to appear in those PNG pixels. The banner remains owned by the
 Host and must not be painted into game content or synthesized by the client.
+
+For native capture overlays that obscure an otherwise exact foreground/focused
+main window, the owner can independently enable
+`allow_native_capture_popup_keyboard` on its pixels task. Read the bounded
+`get_window_state.native_capture_popup_inventory`, explicitly select at most
+eight exact transient HWNDs with snapshot's
+`native_capture_popup_window_handles`, and inspect every separately labeled
+overlay image. The root image remains redacted. Use only a granted keyboard
+action and the latest root observation within five seconds; every attempt
+consumes the private composite proof. Missing, foreign, changed or unselected
+occlusion is refused. The input target stays the main root and pointer rules
+stay unchanged. See [the agent plugin contract](../../docs/agent-plugin.md#explicit-native-capture-popup-observations).

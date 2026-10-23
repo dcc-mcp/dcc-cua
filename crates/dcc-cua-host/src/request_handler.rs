@@ -1,3 +1,4 @@
+mod capture_popup;
 use super::*;
 use crate::request_contract::*;
 use zeroize::Zeroize;
@@ -1170,6 +1171,7 @@ async fn handle_request_inner(
             max_nodes,
             activate_before,
             capture_diagnostics,
+            native_capture_popup_window_handles,
         } => {
             let host =
                 authorized_session(sessions, &session_id, &task_grant_id, &window_capability)
@@ -1186,16 +1188,15 @@ async fn handle_request_inner(
             } else {
                 None
             };
-            let screenshot = if host.observation_mode == TaskObservationMode::PixelsOnly {
-                host.session
-                    .screenshot_pixels_only_with_diagnostics(capture_diagnostics)
-                    .await
-            } else {
-                host.session
-                    .screenshot_with_bounds(max_nodes, max_depth)
-                    .await
-            };
-            let screenshot = host.finish_observation_sensitive_attempt(screenshot)?;
+            let (screenshot, overlays, mut popup_observation) = capture_popup::capture_snapshot(
+                host,
+                &session_id,
+                &native_capture_popup_window_handles,
+                capture_diagnostics,
+                max_nodes,
+                max_depth,
+            )
+            .await?;
             let observation_id = screenshot.observation.observation_id.clone();
             let accessibility = screenshot.accessibility;
             host.record_snapshot_observation(observation_id.clone(), &accessibility);
@@ -1205,28 +1206,21 @@ async fn handle_request_inner(
                 "window_handle": screenshot.observation.window_handle,
                 "window_title": screenshot.observation.window_title,
             });
-            let (image, attachment) = match mode {
-                SnapshotTransport::SharedMemory => {
-                    let shared = SharedImage::from_bytes(&screenshot.data, "image/png")
-                        .map_err(|error| HostError::Protocol(error.to_string()))?;
-                    let mut descriptor = serde_json::to_value(shared.descriptor())
-                        .map_err(|error| HostError::Protocol(error.to_string()))?;
-                    descriptor["encoding"] = Value::String("shared_memory".into());
-                    host.latest_shared_image = Some(shared);
-                    (descriptor, None)
+            let prepared = match action_response::snapshot_image_transport(
+                screenshot.data,
+                &screenshot.observation,
+                overlays,
+                &mut popup_observation,
+                mode,
+                &mut host.latest_shared_image,
+            ) {
+                Ok(prepared) => prepared,
+                Err(error) => {
+                    host.invalidate_observations();
+                    return Err(error);
                 }
-                SnapshotTransport::BinaryFrame => (
-                    json!({
-                        "name": "",
-                        "id": screenshot.observation.observation_id,
-                        "length": screenshot.data.len(),
-                        "mime_type": "image/png",
-                        "encoding": "binary_frame",
-                    }),
-                    Some(screenshot.data),
-                ),
             };
-            let response = json!({
+            let mut response = json!({
                 "type": "snapshot",
                 "observation_id": observation_id,
                 "accessibility_state_id": host.latest_accessibility_state_id,
@@ -1235,10 +1229,14 @@ async fn handle_request_inner(
                 "observation": screenshot.observation,
                 "root": accessibility,
                 "node_count": node_count,
-                "image": image,
+                "image": prepared.primary,
                 "activation": activation,
             });
-            Ok((response, attachment))
+            if !prepared.attachments.is_empty() {
+                response["attachments"] = json!(prepared.attachments);
+                response["native_capture_popup_observation"] = popup_observation;
+            }
+            Ok((response, prepared.attachment))
         }
         Request::Zoom {
             session_id,

@@ -105,6 +105,10 @@ impl ComputerUseSession {
             #[cfg(windows)]
             native_menu_metadata: None,
             #[cfg(windows)]
+            capture_popup_metadata: None,
+            #[cfg(windows)]
+            capture_popup_initial_root: None,
+            #[cfg(windows)]
             capture_preparation: None,
             action_evidence_epoch: ActionEvidenceEpoch::default(),
             live_observation: None,
@@ -717,6 +721,8 @@ impl ComputerUseSession {
         action: &ComputerUseAction,
     ) -> ComputerUseResult<ComputerUseToolResult> {
         #[cfg(windows)]
+        let capture_popup_metadata = self.capture_popup_metadata.take();
+        #[cfg(windows)]
         let pixel_started_generation = dcc_cua_interrupt::interrupt_generation();
         self.ensure_active()?;
         let _preparing_activity = self.begin_banner_activity(banner_activity_for_action_phase(
@@ -762,15 +768,24 @@ impl ComputerUseSession {
                     "synthetic sessions cannot dispatch native pixel input",
                 ));
             }
-            let outcome = super::windows_pixel_input::perform_exact_pixel_action(
+            let capture_popup = capture_popup::keyboard_context(
+                capture_popup_metadata,
                 action,
                 &observation,
                 &self.scope,
                 &self.session_id,
-                &target,
-                self.pixel_input_owner(pixel_started_generation)?,
-            )
-            .await;
+            )?;
+            let outcome =
+                super::windows_pixel_input::perform_exact_pixel_action_with_capture_popup(
+                    action,
+                    &observation,
+                    &self.scope,
+                    &self.session_id,
+                    &target,
+                    self.pixel_input_owner(pixel_started_generation)?,
+                    capture_popup,
+                )
+                .await;
             // A native dispatch or uncertain partial result must never reuse its token.
             self.invalidate_action_observations();
             let result = self.finish_observation_sensitive_attempt(outcome)?;
@@ -1067,6 +1082,7 @@ impl ComputerUseSession {
         {
             self.native_frame_metadata = None;
             self.native_menu_metadata = None;
+            self.capture_popup_metadata = None;
         }
         self.sdk_element_tokens = None;
         self.action_evidence_epoch = self.action_evidence_epoch.advanced();
@@ -1781,6 +1797,11 @@ impl ComputerUseSession {
                     json!(dcc_cua_platform_windows::native_focused_popup_diagnostic(
                         target.pid,
                         target.window_id,
+                    ));
+                result["native_capture_popup_inventory"] =
+                    json!(dcc_cua_platform_windows::native_capture_popup_inventory(
+                        target.pid,
+                        target.window_id
                     ));
             }
             return Ok(result);
