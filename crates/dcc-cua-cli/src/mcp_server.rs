@@ -809,7 +809,10 @@ impl TaskAuthorizationServer {
         }
         if proposal.session.is_none() {
             if proposal.host_task.is_some() {
-                return Err("previous Host startup did not finish; call stop_task, then start a new task".into());
+                return Err(
+                    "previous Host startup did not finish; call stop_task, then start a new task"
+                        .into(),
+                );
             }
             proposal.session_open_attempted = true;
             proposal.session = Some(

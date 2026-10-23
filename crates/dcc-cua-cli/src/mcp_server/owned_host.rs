@@ -88,7 +88,8 @@ pub(super) async fn finish_owned_host_task(proposal: &mut TaskProposal) {
     // Publish pending evidence before awaiting so cancelling this wait cannot
     // leave an earlier session acknowledgement looking like completed teardown.
     cleanup["host_connection_completion"] = json!({"completed":false,"success":false});
-    cleanup["host_connection_completion"] = host_task.finish(std::time::Duration::from_secs(5)).await;
+    cleanup["host_connection_completion"] =
+        host_task.finish(std::time::Duration::from_secs(5)).await;
 }
 
 pub(super) fn task_cleanup_payload(cleanup: Option<&Value>) -> Value {

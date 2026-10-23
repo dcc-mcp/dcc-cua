@@ -109,7 +109,10 @@ async fn host_completion_does_not_replace_a_missing_session_cleanup_acknowledgem
     proposal.host_task = Some(OwnedHostTask::spawn(async { Ok(()) }));
     let stopped = server.revoke_task(json!({"task_id":id})).await.unwrap();
     assert_eq!(stopped["status"], "cleanup_unknown");
-    assert_eq!(stopped["cleanup"]["host_connection_completion"]["success"], true);
+    assert_eq!(
+        stopped["cleanup"]["host_connection_completion"]["success"],
+        true
+    );
     assert_eq!(
         server.revoke_task(json!({"task_id":id})).await.unwrap(),
         stopped
@@ -132,7 +135,10 @@ async fn host_failure_overrides_a_successful_session_cleanup_acknowledgement() {
     assert_eq!(stopped["status"], "cleanup_failed");
     assert_eq!(stopped["cleanup"]["success"], false);
     assert_eq!(stopped["cleanup"]["session_cleanup"]["success"], true);
-    assert_eq!(stopped["cleanup"]["host_connection_completion"]["success"], false);
+    assert_eq!(
+        stopped["cleanup"]["host_connection_completion"]["success"],
+        false
+    );
 }
 
 #[rstest]
@@ -217,7 +223,10 @@ async fn shutdown_waits_for_retained_host_completion() {
     let mut shutdown = Box::pin(server.shutdown_tasks());
     let waker = std::task::Waker::noop();
     assert!(matches!(
-        std::future::Future::poll(shutdown.as_mut(), &mut std::task::Context::from_waker(waker)),
+        std::future::Future::poll(
+            shutdown.as_mut(),
+            &mut std::task::Context::from_waker(waker)
+        ),
         std::task::Poll::Pending
     ));
     release.send(()).unwrap();
@@ -244,7 +253,10 @@ async fn stopping_one_task_does_not_revoke_or_join_another_host() {
             wait.await.unwrap();
             Ok(())
         }));
-    let stopped = server.revoke_task(json!({"task_id":first_id})).await.unwrap();
+    let stopped = server
+        .revoke_task(json!({"task_id":first_id}))
+        .await
+        .unwrap();
     assert_eq!(
         stopped["cleanup"]["host_connection_completion"]["completed"],
         true
