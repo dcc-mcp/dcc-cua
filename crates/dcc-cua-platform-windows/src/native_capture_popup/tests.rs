@@ -87,6 +87,108 @@ fn sample() -> Sample {
     }
 }
 
+#[rstest]
+#[case(false)]
+#[case(true)]
+fn completed_sample_can_observe_only_original_capture_release(#[case] root_focus: bool) {
+    let mut before = sample();
+    let expected = validate_sample(42, 100, &[200, 300], &before).unwrap();
+    if root_focus {
+        before.focus.focus = before.root.window_handle;
+        before.focus.focus_instance = before.root.instance;
+    }
+    let mut after = before.focus;
+    after.capture = 0;
+    assert!(!sample_focus_reread_matches(&before, after, None));
+    assert!(sample_focus_reread_matches(&before, after, Some(&expected)));
+    // This permits only the existing read-only pending checks. It cannot mint
+    // a complete observation after capture has ended.
+    let mut ended = before.clone();
+    ended.focus = after;
+    assert!(validate_sample(42, 100, &[200, 300], &ended).is_err());
+}
+
+#[rstest]
+#[case("root_birth")]
+#[case("root_class")]
+#[case("root_thread")]
+#[case("root_owner")]
+#[case("root_pid")]
+#[case("root_handle")]
+#[case("root_bounds")]
+#[case("root_visible_bounds")]
+#[case("root_dpi")]
+#[case("root_foreground")]
+#[case("root_hidden")]
+#[case("root_disabled")]
+#[case("not_root")]
+#[case("desktop")]
+#[case("unknown_capture")]
+#[case("capture_regained")]
+#[case("focus_changed")]
+#[case("focus_instance")]
+#[case("old_focus_replaced")]
+#[case("old_focus_identity")]
+#[case("active")]
+#[case("foreground")]
+#[case("focus_root")]
+#[case("flags")]
+#[case("disabled")]
+#[case("hidden")]
+fn completed_sample_refuses_every_other_reread_change(#[case] case: &str) {
+    let mut before = sample();
+    let expected = validate_sample(42, 100, &[200, 300], &before).unwrap();
+    before.focus.focus = before.root.window_handle;
+    before.focus.focus_instance = before.root.instance;
+    let mut after = before.focus;
+    after.capture = 0;
+    assert!(sample_focus_reread_matches(&before, after, Some(&expected)));
+    match case {
+        "root_birth" => before.root.instance.process_creation_time_100ns += 1,
+        "root_class" => before.root.instance.window_class_hash += 1,
+        "root_thread" => before.root.instance.window_thread_id += 1,
+        "root_owner" => before.root.instance.owner_window_handle += 1,
+        "root_pid" => before.root.process_id += 1,
+        "root_handle" => before.root.window_handle += 1,
+        "root_bounds" => before.root.bounds.as_mut().unwrap()[0] += 1,
+        "root_visible_bounds" => before.root.visible_bounds.as_mut().unwrap()[0] += 1,
+        "root_dpi" => before.root.dpi += 1,
+        "root_foreground" => before.root.foreground = false,
+        "root_hidden" => before.root.visible = false,
+        "root_disabled" => before.root_enabled = false,
+        "not_root" => before.root_is_root = false,
+        "desktop" => before.desktop[0] += 1,
+        "unknown_capture" => before.focus.capture += 1,
+        "capture_regained" => {
+            before.focus.capture = 0;
+            after.capture = expected.capture.window_handle;
+        }
+        "focus_changed" => after.focus += 1,
+        "focus_instance" => after.focus_instance.window_class_hash += 1,
+        "old_focus_replaced" => {
+            before.focus.focus += 1;
+            after.focus = before.focus.focus;
+        }
+        "old_focus_identity" => {
+            before.focus.focus_instance.window_class_hash += 1;
+            after.focus_instance = before.focus.focus_instance;
+        }
+        "active" => after.active += 1,
+        "foreground" => after.foreground += 1,
+        "focus_root" => after.focus_root += 1,
+        "flags" => after.flags += 1,
+        "disabled" => after.enabled = false,
+        "hidden" => after.visible = false,
+        _ => unreachable!(),
+    }
+    assert!(!sample_focus_reread_matches(
+        &before,
+        after,
+        Some(&expected)
+    ));
+    assert!(!sample_focus_reread_matches(&before, after, None));
+}
+
 // Mint both opaque proofs through the real complete sample validator so the
 // final-boundary regression does not invent a different proof contract.
 impl NativeCapturePopupProof {

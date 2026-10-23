@@ -399,7 +399,12 @@ fn scoped_teardown_roots(sample: &Sample) -> impl Iterator<Item = &RootProofTrac
 
 pub(crate) fn native_capture_popup_teardown_pending(expected: &NativeCapturePopupProof) -> bool {
     let read = || -> Result<Sample, NativeCapturePopupReadError> {
-        let mut sample = read_sample(expected.root.process_id, expected.root.window_handle, &[])?;
+        let mut sample = read_sample(
+            expected.root.process_id,
+            expected.root.window_handle,
+            &[],
+            Some(expected),
+        )?;
         let mut selected = sample
             .roots
             .iter()
@@ -679,10 +684,44 @@ fn read_popup(process_id: u32, handle: u64) -> Result<PopupState, NativeCaptureP
     })
 }
 
+fn sample_focus_reread_matches(
+    sample: &Sample,
+    current: FocusState,
+    completed: Option<&NativeCapturePopupProof>,
+) -> bool {
+    if current == sample.focus {
+        return true;
+    }
+    let Some(expected) = completed else {
+        return false;
+    };
+    let mut released = sample.focus;
+    released.capture = 0;
+    if sample.focus.capture != expected.capture.window_handle || current != released {
+        return false;
+    }
+    let mut original_focus = sample.focus;
+    if original_focus.focus == expected.root.window_handle
+        && original_focus.focus_instance == expected.root.instance
+    {
+        original_focus.focus = expected.focus.focus;
+        original_focus.focus_instance = expected.focus.focus_instance;
+    }
+    // A completed operation may observe the original capture being released
+    // between reads. All other focus fields and the full root stay exact.
+    sample.root == expected.root
+        && sample.desktop == expected.desktop
+        && sample.root_is_root
+        && sample.root_enabled
+        && original_focus == expected.focus
+        && root_focus(&sample.root, sample.focus)
+}
+
 fn read_sample(
     process_id: u32,
     root_handle: u64,
     selected: &[u64],
+    completed: Option<&NativeCapturePopupProof>,
 ) -> Result<Sample, NativeCapturePopupReadError> {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         GetSystemMetrics, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
@@ -746,7 +785,7 @@ fn read_sample(
             },
         };
         if exact_window_native_state(process_id, root_handle)? != root
-            || read_focus(&root)? != focus
+            || !sample_focus_reread_matches(&sample, read_focus(&root)?, completed)
         {
             return Err(refused(NativeCapturePopupRefusal::NativeStateChanged));
         }
@@ -761,7 +800,7 @@ fn read_validated_sample(
     root: u64,
     selected: &[u64],
 ) -> Result<NativeCapturePopupProof, NativeCapturePopupReadError> {
-    let sample = read_sample(process_id, root, selected)?;
+    let sample = read_sample(process_id, root, selected, None)?;
     validate_sample(process_id, root, selected, &sample)
         .map_err(|error| error.with_target_bounds(sample.root.visible_bounds))
 }
@@ -811,7 +850,7 @@ pub fn native_capture_popup_inventory(process_id: u32, root: u64) -> NativeCaptu
     let read = || -> Result<_, NativeCapturePopupReadError> {
         let _dpi = ThreadDpiAwarenessGuard::per_monitor_v2()
             .map_err(|_| refused(NativeCapturePopupRefusal::RootUnavailable))?;
-        let sample = read_sample(process_id, root, &[])?;
+        let sample = read_sample(process_id, root, &[], None)?;
         let mut candidates = Vec::new();
         for entry in &sample.roots {
             if entry.window_handle == root
