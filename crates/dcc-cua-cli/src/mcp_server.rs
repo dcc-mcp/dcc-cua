@@ -827,6 +827,7 @@ impl TaskAuthorizationServer {
             "status": "started",
             "target": target,
             "report_before_first_observation_or_input": true,
+            "allow_native_capture_popup_keyboard": proposal.registration.allowed_actions.iter().any(TrustedTaskActionScope::is_native_capture_popup_keyboard),
             "native_action_popups": false,
             "recording_output_dir": proposal.registration.recording_output_dir,
         }))

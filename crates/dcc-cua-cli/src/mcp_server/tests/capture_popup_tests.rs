@@ -97,3 +97,43 @@ fn capture_popup_owner_flag_is_advertised_as_disabled_by_default() {
     assert_eq!(field["type"], "boolean");
     assert_eq!(field["default"], false);
 }
+
+#[rstest]
+#[case(true)]
+#[case(false)]
+#[tokio::test]
+async fn capture_popup_started_ack_attests_the_actual_independent_ceiling(#[case] enabled: bool) {
+    let mut server = test_server();
+    let mut input = task();
+    input["target_window_handle"] = json!(7);
+    input["allow_native_capture_popup_keyboard"] = json!(enabled);
+    let prepared = server.prepare_task(input).unwrap();
+    let id = prepared["task_id"].as_str().unwrap();
+    let (session, fake_host) = cleanup_mock_session(Some(json!({
+        "type":"session_stopped", "session_id":"cleanup-session", "success":true,
+        "active":false, "cleanup_pending":false
+    })))
+    .await;
+    server.proposals.get_mut(id).unwrap().session = Some(session);
+
+    // Exercise the final started producer and MCP envelope, not the ready/status payload.
+    let result = tool_result(server.start_task(json!({"task_id":id})).await.unwrap());
+    let started = &result["structuredContent"];
+    assert_eq!(started["ok"], true);
+    assert_eq!(started["provider"], "dcc-cua");
+    assert_eq!(started["runtime_version"], env!("CARGO_PKG_VERSION"));
+    assert_eq!(started["task_id"], id);
+    assert_eq!(started["status"], "started");
+    assert_eq!(started["target"]["process_id"], 42);
+    assert_eq!(started["target"]["window_handle"], 7);
+    assert_eq!(started["allow_native_capture_popup_keyboard"], enabled);
+    assert_eq!(
+        server.task_status(json!({"task_id":id})).unwrap()["allow_native_capture_popup_keyboard"],
+        enabled
+    );
+    assert_eq!(
+        server.revoke_task(json!({"task_id":id})).await.unwrap()["status"],
+        "stopped"
+    );
+    fake_host.await.unwrap();
+}
