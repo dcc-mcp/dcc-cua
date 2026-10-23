@@ -1724,7 +1724,7 @@ fn tool_definitions() -> Vec<Value> {
                     },
                     "allowed_actions": {
                         "type": "array",
-                        "description": "Closed final action scopes; use an empty array for observation-only tasks. pixels_only accepts minimize_window, set_window_frame or the independent dismiss_menu scope with input_kind=window_state, secret_input=false, authorization_category=window_state; these grant no raw input. Pixel input accepts click, double_click, right_click, toggle, keypress, keyboard_shortcut, type, type_chars with input_kind=raw_input, secret_input=false, authorization_category=raw_input. execute_action requires an actual supported raw scope. Other modes use click/type action names for browser input methods; only secret-handle browser typing uses browser_type.",
+                        "description": "Closed final action scopes; use an empty array for observation-only tasks. pixels_only accepts minimize_window, set_window_frame or the independent dismiss_menu scope with input_kind=window_state, secret_input=false, authorization_category=window_state; these grant no raw input. Pixel input accepts click, double_click, right_click, toggle, drag, keypress, keyboard_shortcut, type, type_chars with input_kind=raw_input, secret_input=false, authorization_category=raw_input. execute_action requires an actual supported raw scope. Other modes use click/type action names for browser input methods; only secret-handle browser typing uses browser_type.",
                         "minItems": 0,
                         "maxItems": 32,
                         "uniqueItems": true,

@@ -1776,6 +1776,13 @@ impl ComputerUseSession {
             if let Some(id) = metadata_id {
                 result["window_state_id"] = json!(id);
             }
+            if mint_metadata {
+                result["focused_popup_diagnostic"] =
+                    json!(dcc_cua_platform_windows::native_focused_popup_diagnostic(
+                        target.pid,
+                        target.window_id,
+                    ));
+            }
             return Ok(result);
         }
         let target = self.revalidate_observed_target().await?;
