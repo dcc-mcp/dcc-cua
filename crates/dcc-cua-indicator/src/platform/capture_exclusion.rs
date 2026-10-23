@@ -9,6 +9,7 @@ use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM};
 use windows::Win32::System::Threading::{CreateEventW, OpenEventW, SYNCHRONIZATION_SYNCHRONIZE};
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GetClassNameW, IsWindowVisible, SW_HIDE, SW_SHOWNOACTIVATE, ShowWindow,
+    ShowWindowAsync,
 };
 use windows::core::{BOOL, w};
 
@@ -129,8 +130,8 @@ unsafe extern "system" fn hide_registered_cursor(window: HWND, context: LPARAM) 
     if !hidden_cursor_windows.contains(&owned) {
         hidden_cursor_windows.push(owned);
     }
-    let _ = unsafe { ShowWindow(window, SW_HIDE) };
-    enumeration.failed |= unsafe { IsWindowVisible(window) }.as_bool();
+    let requested = unsafe { ShowWindowAsync(window, SW_HIDE) }.as_bool();
+    enumeration.failed |= !requested || unsafe { IsWindowVisible(window) }.as_bool();
     BOOL(1)
 }
 
@@ -207,7 +208,7 @@ unsafe extern "system" fn find_visible_overlay(window: HWND, context: LPARAM) ->
             if !hidden_cursor_windows.contains(&owned) {
                 hidden_cursor_windows.push(owned);
             }
-            let _ = unsafe { ShowWindow(window, SW_HIDE) };
+            let _ = unsafe { ShowWindowAsync(window, SW_HIDE) };
             if unsafe { IsWindowVisible(window) }.as_bool() {
                 enumeration.visible_overlay_found = true;
             }
@@ -398,20 +399,27 @@ pub(super) fn begin_input_cursor(active: &AtomicBool) -> Result<InputCursorGuard
         _registration_gate: registration_gate,
         _cross_process_gate: cross_process_gate,
     };
-    let hidden = {
-        let _cursor_gate = state
-            .cursor_gate
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        state.input_cursor_requested.store(true, Ordering::Release);
-        active.load(Ordering::Acquire)
-            && hide_registered_cursors(&mut guard.cursors.0)
-            && active.load(Ordering::Acquire)
-    };
-    if !hidden {
-        return Err(IndicatorError::CaptureExclusion(
-            "registered cursor input exclusion was not acknowledged".into(),
-        ));
+    let deadline = Instant::now() + CAPTURE_EXCLUSION_TIMEOUT;
+    loop {
+        let hidden = {
+            let _cursor_gate = state
+                .cursor_gate
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            state.input_cursor_requested.store(true, Ordering::Release);
+            active.load(Ordering::Acquire)
+                && hide_registered_cursors(&mut guard.cursors.0)
+                && active.load(Ordering::Acquire)
+        };
+        if hidden && Instant::now() < deadline {
+            break;
+        }
+        if !active.load(Ordering::Acquire) || Instant::now() >= deadline {
+            return Err(IndicatorError::CaptureExclusion(
+                "registered cursor input exclusion was not acknowledged".into(),
+            ));
+        }
+        thread::sleep(Duration::from_millis(1));
     }
     Ok(guard)
 }
@@ -455,7 +463,7 @@ pub(super) fn hide_and_acknowledge(
 fn restore_cursors(windows: &mut Vec<OwnedCursorWindow>) {
     for owned in windows.drain(..).rev() {
         if owned.still_registered() {
-            let _ = unsafe { ShowWindow(HWND(owned.raw as *mut _), SW_SHOWNOACTIVATE) };
+            let _ = unsafe { ShowWindowAsync(HWND(owned.raw as *mut _), SW_SHOWNOACTIVATE) };
         }
     }
 }
