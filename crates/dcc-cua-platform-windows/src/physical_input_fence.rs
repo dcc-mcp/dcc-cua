@@ -1,5 +1,7 @@
 //! Final physical mutation boundaries for an immutable, actually captured HWND.
 //! No activation, upstream input delegation, semantic provider or fallback.
+mod capture_popup;
+pub use capture_popup::{send_guarded_capture_popup_keypress, send_guarded_capture_popup_text};
 use serde::Serialize;
 use std::time::{Duration, Instant};
 use thiserror::Error;

@@ -26,6 +26,8 @@ mod focused_popup;
 #[cfg(windows)]
 mod input;
 #[cfg(windows)]
+mod native_capture_popup;
+#[cfg(windows)]
 mod native_menu_dismiss;
 #[cfg(any(windows, test))]
 mod occlusion;
@@ -87,6 +89,11 @@ pub use input::{
     snapshot_left_button_after_up,
 };
 #[cfg(windows)]
+pub use native_capture_popup::{
+    NativeCapturePopupInventory, NativeCapturePopupProof, NativeCapturePopupRefusal,
+    native_capture_popup_inventory, read_native_capture_popup_proof,
+};
+#[cfg(windows)]
 pub use native_menu_dismiss::{
     NativeMenuDismissError, NativeMenuDismissOutcome, NativeMenuGatePhase, NativeMenuProof,
     dismiss_exact_native_menu, read_exact_native_menu,
@@ -94,7 +101,8 @@ pub use native_menu_dismiss::{
 #[cfg(windows)]
 pub use physical_input_fence::{
     WindowsGuardedInputError, WindowsGuardedInputOperation, WindowsGuardedInputOutcome,
-    WindowsPhysicalInputFailureReason, WindowsPhysicalInputFence, send_guarded_click,
+    WindowsPhysicalInputFailureReason, WindowsPhysicalInputFence,
+    send_guarded_capture_popup_keypress, send_guarded_capture_popup_text, send_guarded_click,
     send_guarded_drag, send_guarded_keypress, send_guarded_text,
 };
 
