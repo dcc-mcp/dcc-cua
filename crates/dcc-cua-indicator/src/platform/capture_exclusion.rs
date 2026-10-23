@@ -114,6 +114,7 @@ struct VisibleOverlayEnumeration {
 
 struct OwnedCursorEnumeration {
     hidden_cursor_windows: *mut Vec<OwnedCursorWindow>,
+    failed: bool,
 }
 
 unsafe extern "system" fn hide_registered_cursor(window: HWND, context: LPARAM) -> BOOL {
@@ -129,24 +130,32 @@ unsafe extern "system" fn hide_registered_cursor(window: HWND, context: LPARAM) 
         hidden_cursor_windows.push(owned);
     }
     let _ = unsafe { ShowWindow(window, SW_HIDE) };
+    enumeration.failed |= unsafe { IsWindowVisible(window) }.as_bool();
     BOOL(1)
 }
 
-fn hide_registered_cursors(hidden_cursor_windows: &mut Vec<OwnedCursorWindow>) {
+fn hide_registered_cursors(hidden_cursor_windows: &mut Vec<OwnedCursorWindow>) -> bool {
     let mut enumeration = OwnedCursorEnumeration {
         hidden_cursor_windows,
+        failed: false,
     };
-    let _ = unsafe {
+    let result = unsafe {
         EnumWindows(
             Some(hide_registered_cursor),
             LPARAM(&mut enumeration as *mut OwnedCursorEnumeration as isize),
         )
     };
+    result.is_ok() && !enumeration.failed
 }
 
 fn synchronize_registered_cursors(requested: bool, cursors: &mut CursorSuppression) {
-    if requested {
-        hide_registered_cursors(&mut cursors.0);
+    let state = state();
+    let _cursor_gate = state
+        .cursor_gate
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    if requested || state.input_cursor_requested.load(Ordering::Acquire) {
+        let _ = hide_registered_cursors(&mut cursors.0);
     } else {
         restore_cursors(&mut cursors.0);
     }
@@ -166,11 +175,13 @@ pub(crate) fn ensure_cursor_watcher() {
                 loop {
                     let requested = cross_process_capture_requested();
                     synchronize_registered_cursors(requested, &mut cursors);
-                    thread::sleep(if requested {
-                        CURSOR_WATCH_ACTIVE_INTERVAL
-                    } else {
-                        CURSOR_WATCH_IDLE_INTERVAL
-                    });
+                    thread::sleep(
+                        if requested || state().input_cursor_requested.load(Ordering::Acquire) {
+                            CURSOR_WATCH_ACTIVE_INTERVAL
+                        } else {
+                            CURSOR_WATCH_IDLE_INTERVAL
+                        },
+                    );
                 }
             })
             .is_ok()
@@ -228,6 +239,8 @@ pub(super) struct CaptureExclusionState {
     registration_gate: AtomicBool,
     registered: AtomicUsize,
     suppressed: AtomicBool,
+    input_cursor_requested: AtomicBool,
+    cursor_gate: std::sync::Mutex<()>,
     requested: AtomicU64,
     acknowledged: AtomicUsize,
 }
@@ -238,6 +251,8 @@ impl CaptureExclusionState {
             registration_gate: AtomicBool::new(false),
             registered: AtomicUsize::new(0),
             suppressed: AtomicBool::new(false),
+            input_cursor_requested: AtomicBool::new(false),
+            cursor_gate: std::sync::Mutex::new(()),
             requested: AtomicU64::new(0),
             acknowledged: AtomicUsize::new(0),
         }
@@ -349,6 +364,58 @@ pub(super) fn begin(active: &AtomicBool) -> Result<Guard, IndicatorError> {
     Ok(guard)
 }
 
+// Input owns only this runtime's opaque registered cursor, never capture's
+// global presenter suppression or cross-process request. Reuse serialization
+// so a capture cannot restore the cursor during native release/postcheck.
+pub(crate) struct InputCursorGuard {
+    state: &'static CaptureExclusionState,
+    cursors: CursorSuppression,
+    _registration_gate: RegistrationGate,
+    _cross_process_gate: CrossProcessGate,
+}
+
+impl Drop for InputCursorGuard {
+    fn drop(&mut self) {
+        let _cursor_gate = self
+            .state
+            .cursor_gate
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        self.state
+            .input_cursor_requested
+            .store(false, Ordering::Release);
+        restore_cursors(&mut self.cursors.0);
+    }
+}
+
+pub(super) fn begin_input_cursor(active: &AtomicBool) -> Result<InputCursorGuard, IndicatorError> {
+    let cross_process_gate = CrossProcessGate::acquire()?;
+    let registration_gate = RegistrationGate::acquire()?;
+    let state = state();
+    let mut guard = InputCursorGuard {
+        state,
+        cursors: CursorSuppression::default(),
+        _registration_gate: registration_gate,
+        _cross_process_gate: cross_process_gate,
+    };
+    let hidden = {
+        let _cursor_gate = state
+            .cursor_gate
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        state.input_cursor_requested.store(true, Ordering::Release);
+        active.load(Ordering::Acquire)
+            && hide_registered_cursors(&mut guard.cursors.0)
+            && active.load(Ordering::Acquire)
+    };
+    if !hidden {
+        return Err(IndicatorError::CaptureExclusion(
+            "registered cursor input exclusion was not acknowledged".into(),
+        ));
+    }
+    Ok(guard)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn hide_and_acknowledge(
     state: &CaptureExclusionState,
@@ -360,7 +427,7 @@ pub(super) fn hide_and_acknowledge(
     cursors: &mut CursorSuppression,
 ) -> bool {
     if !state.suppressed.load(Ordering::Acquire) && !cross_process_capture_requested() {
-        restore_cursors(&mut cursors.0);
+        synchronize_registered_cursors(false, cursors);
         return false;
     }
     // Each peer cooperates only on its own registered renderer. Enumeration

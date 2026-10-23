@@ -460,10 +460,14 @@ pub(super) async fn perform_exact_pixel_action_with_capture_popup(
                 .begin(fence.target.process_id, fence.target.window_handle)
                 .map_err(pixel_presentation_error)
         },
-        // Reuse the acknowledged, registration-bound exclusion for our cursor
-        // and cooperating presenters. Foreign/unregistered windows stay visible
-        // to the unchanged native input proof.
-        move || overlays.begin().map_err(pixel_presentation_error),
+        // Only the opaque registered cursor belongs to this runtime. Capture's
+        // global exclusion would also hide peer presenters, which must remain
+        // visible to the unchanged native input proof.
+        move || {
+            overlays
+                .begin_input_cursor()
+                .map_err(pixel_presentation_error)
+        },
         move || {
             let gate = || {
                 if capture_popup.as_ref().is_some_and(|metadata| {

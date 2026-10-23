@@ -53,6 +53,7 @@ mod presentation;
 mod rendering;
 use capture_exclusion::CaptureExclusionState;
 pub(super) use capture_exclusion::Guard as PlatformCaptureExclusionGuard;
+pub(super) use capture_exclusion::InputCursorGuard as PlatformInputCursorGuard;
 pub(super) use escape_hub_lifecycle::{
     EscapeHubAcquireAction, EscapeHubReleaseAction, acquire_action as escape_hub_acquire_action,
     release_action as escape_hub_release_action,
@@ -163,6 +164,11 @@ impl PlatformCaptureExclusionSource {
     pub(super) fn begin(&self) -> Result<PlatformCaptureExclusionGuard, IndicatorError> {
         self.validate_active()?;
         capture_exclusion::begin(&self.active)
+    }
+
+    pub(super) fn begin_input_cursor(&self) -> Result<PlatformInputCursorGuard, IndicatorError> {
+        self.validate_active()?;
+        capture_exclusion::begin_input_cursor(&self.active)
     }
 }
 

@@ -50,6 +50,8 @@ pub(crate) static SERIAL: Mutex<()> = Mutex::new(());
 pub(crate) static ACTIVE: AtomicBool = AtomicBool::new(true);
 pub(crate) static STOP_AFTER_HIDE: AtomicBool = AtomicBool::new(false);
 pub(crate) static TITLE_UNRESPONSIVE: AtomicBool = AtomicBool::new(false);
+pub(crate) static HIDE_REFUSED: AtomicBool = AtomicBool::new(false);
+pub(crate) static CAPTURE_REQUESTS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 pub(crate) const SW_HIDE: i32 = 0;
 pub(crate) const SW_SHOWNOACTIVATE: i32 = 4;
 pub(crate) struct CrossProcessGate;
@@ -61,6 +63,7 @@ impl CrossProcessGate {
 pub(crate) struct CrossProcessCaptureRequest;
 impl CrossProcessCaptureRequest {
     pub(crate) fn begin() -> Result<Self, IndicatorError> {
+        CAPTURE_REQUESTS.fetch_add(1, Ordering::AcqRel);
         Ok(Self)
     }
 }
@@ -131,7 +134,9 @@ pub(crate) unsafe fn ShowWindow(hwnd: HWND, mode: i32) -> BOOL {
         .find(|w| w.raw == hwnd.0 as usize)
         .unwrap();
     let old = window.visible;
-    window.visible = mode != SW_HIDE;
+    if mode != SW_HIDE || !HIDE_REFUSED.load(Ordering::Acquire) {
+        window.visible = mode != SW_HIDE;
+    }
     if mode == SW_HIDE && STOP_AFTER_HIDE.load(Ordering::Acquire) {
         ACTIVE.store(false, Ordering::Release);
     }
@@ -161,6 +166,8 @@ fn setup(pid: u32) {
     ACTIVE.store(true, Ordering::Release);
     STOP_AFTER_HIDE.store(false, Ordering::Release);
     TITLE_UNRESPONSIVE.store(false, Ordering::Release);
+    HIDE_REFUSED.store(false, Ordering::Release);
+    CAPTURE_REQUESTS.store(0, Ordering::Release);
 }
 fn visible(raw: usize) -> bool {
     unsafe { IsWindowVisible(HWND(raw as *mut _)) }.as_bool()
@@ -174,6 +181,69 @@ fn owned_cursor_success_restores_on_guard_drop() {
     assert!(!visible(55));
     drop(guard);
     assert!(visible(55));
+}
+
+#[rstest]
+fn input_cursor_lease_preserves_peer_presenters_and_unregistered_cursors() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    setup(std::process::id());
+    WINDOWS.lock().unwrap().extend([
+        Window { raw: 66, pid: std::process::id(), class: "DccCuaControlBanner", title: "independent-peer".into(), visible: true },
+        Window { raw: 77, pid: std::process::id(), class: "Cua.AgentCursorOverlay", title: "Cua.AgentCursorOverlay.unregistered-peer".into(), visible: true },
+        Window { raw: 88, pid: std::process::id().wrapping_add(1), class: "Cua.AgentCursorOverlay", title: "Cua.AgentCursorOverlay.owned-test-runtime".into(), visible: true },
+    ]);
+    let guard = capture_exclusion::begin_input_cursor(&ACTIVE)
+        .expect("registered cursor exclusion must leave peers to the native input fence");
+    assert!(!visible(55));
+    assert!(visible(66) && visible(77) && visible(88));
+    assert!(!state().suppressed.load(Ordering::Acquire));
+    assert_eq!(CAPTURE_REQUESTS.load(Ordering::Acquire), 0);
+    assert!(state().input_cursor_requested.load(Ordering::Acquire));
+    let mut watcher = CursorSuppression::default();
+    synchronize_registered_cursors(false, &mut watcher);
+    assert!(!visible(55), "idle capture restoration cannot revive the input-owned cursor");
+    drop(guard);
+    assert!(visible(55) && visible(66) && visible(77) && visible(88));
+    assert!(!state().input_cursor_requested.load(Ordering::Acquire));
+}
+
+#[rstest]
+fn input_cursor_lease_retains_prior_capture_ownership_until_input_finishes() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    setup(std::process::id());
+    let mut watcher = CursorSuppression::default();
+    synchronize_registered_cursors(true, &mut watcher);
+    let guard = capture_exclusion::begin_input_cursor(&ACTIVE).unwrap();
+    synchronize_registered_cursors(false, &mut watcher);
+    assert!(!visible(55));
+    drop(guard);
+    synchronize_registered_cursors(false, &mut watcher);
+    assert!(visible(55));
+}
+
+#[rstest]
+fn stopped_input_cursor_acquisition_restores_owned_cursor_without_peer_suppression() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    setup(std::process::id());
+    STOP_AFTER_HIDE.store(true, Ordering::Release);
+    let result = capture_exclusion::begin_input_cursor(&ACTIVE);
+    assert!(!ACTIVE.load(Ordering::Acquire));
+    assert!(result.is_err());
+    assert!(visible(55));
+    assert!(!state().input_cursor_requested.load(Ordering::Acquire));
+    assert!(!state().suppressed.load(Ordering::Acquire));
+}
+
+#[rstest]
+fn input_cursor_native_hide_failure_never_acknowledges_the_lease() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    setup(std::process::id());
+    HIDE_REFUSED.store(true, Ordering::Release);
+    assert!(capture_exclusion::begin_input_cursor(&ACTIVE).is_err());
+    assert!(visible(55));
+    assert!(!state().input_cursor_requested.load(Ordering::Acquire));
+    assert!(!state().suppressed.load(Ordering::Acquire));
+    assert_eq!(CAPTURE_REQUESTS.load(Ordering::Acquire), 0);
 }
 
 #[rstest]

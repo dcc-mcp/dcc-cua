@@ -182,8 +182,10 @@ same pixel route and cannot mint semantic element authorization. A failed post
 snapshot requires a fresh observation before another action.
 
 The native worker holds the owning banner suppression and the existing
-acknowledged DCC-CUA overlay exclusion through input cleanup and the final
-postcheck. Registered cursor overlays cannot obscure their own input proof.
+acknowledged exclusion of only its configured, process-local registered cursor
+through input cleanup and the final postcheck. Input never requests capture's
+global overlay exclusion: peer presenters and foreign or unregistered cursor
+windows remain visible to the native fence.
 Acquisition failure sends no input. Foreign or unregistered windows remain
 subject to the unchanged native visibility and hit-test rules.
 
