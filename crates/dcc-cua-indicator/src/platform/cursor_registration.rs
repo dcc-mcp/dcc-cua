@@ -66,9 +66,3 @@ pub(super) fn registered_window(window: HWND) -> Option<OwnedCursorWindow> {
         title,
     })
 }
-
-impl OwnedCursorWindow {
-    pub(super) fn still_registered(&self) -> bool {
-        registered_window(HWND(self.raw as *mut _)).as_ref() == Some(self)
-    }
-}

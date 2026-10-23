@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM};
 use windows::Win32::System::Threading::{CreateEventW, OpenEventW, SYNCHRONIZATION_SYNCHRONIZE};
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GetClassNameW, IsWindowVisible, SW_HIDE, SW_SHOWNOACTIVATE, ShowWindow,
+    EnumWindows, GetClassNameW, IsWindow, IsWindowVisible, SW_HIDE, SW_SHOWNOACTIVATE, ShowWindow,
     ShowWindowAsync,
 };
 use windows::core::{BOOL, w};
@@ -151,14 +151,16 @@ fn hide_registered_cursors(hidden_cursor_windows: &mut Vec<OwnedCursorWindow>) -
 
 fn synchronize_registered_cursors(requested: bool, cursors: &mut CursorSuppression) {
     let state = state();
-    let _cursor_gate = state
+    let mut pending_restores = state
         .cursor_gate
         .lock()
         .unwrap_or_else(|error| error.into_inner());
     if requested || state.input_cursor_requested.load(Ordering::Acquire) {
-        let _ = hide_registered_cursors(&mut cursors.0);
+        if cursor_restores_acknowledged(&mut pending_restores.pending) {
+            let _ = hide_registered_cursors(&mut cursors.0);
+        }
     } else {
-        restore_cursors(&mut cursors.0);
+        restore_cursors_locked(&mut cursors.0, &mut pending_restores);
     }
 }
 
@@ -222,6 +224,13 @@ unsafe extern "system" fn find_visible_overlay(window: HWND, context: LPARAM) ->
 fn hide_cursor_overlays_and_confirm_all_hidden(
     hidden_cursor_windows: &mut Vec<OwnedCursorWindow>,
 ) -> bool {
+    let mut pending_restores = state()
+        .cursor_gate
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    if !cursor_restores_acknowledged(&mut pending_restores.pending) {
+        return false;
+    }
     let mut enumeration = VisibleOverlayEnumeration {
         visible_overlay_found: false,
         failed: false,
@@ -236,12 +245,17 @@ fn hide_cursor_overlays_and_confirm_all_hidden(
     !enumeration.failed && !enumeration.visible_overlay_found && result.is_ok()
 }
 
+struct CursorRestores {
+    pending: Vec<OwnedCursorWindow>,
+    deferred: Vec<OwnedCursorWindow>,
+}
+
 pub(super) struct CaptureExclusionState {
     registration_gate: AtomicBool,
     registered: AtomicUsize,
     suppressed: AtomicBool,
     input_cursor_requested: AtomicBool,
-    cursor_gate: std::sync::Mutex<()>,
+    cursor_gate: std::sync::Mutex<CursorRestores>,
     requested: AtomicU64,
     acknowledged: AtomicUsize,
 }
@@ -253,7 +267,10 @@ impl CaptureExclusionState {
             registered: AtomicUsize::new(0),
             suppressed: AtomicBool::new(false),
             input_cursor_requested: AtomicBool::new(false),
-            cursor_gate: std::sync::Mutex::new(()),
+            cursor_gate: std::sync::Mutex::new(CursorRestores {
+                pending: Vec::new(),
+                deferred: Vec::new(),
+            }),
             requested: AtomicU64::new(0),
             acknowledged: AtomicUsize::new(0),
         }
@@ -377,7 +394,7 @@ pub(crate) struct InputCursorGuard {
 
 impl Drop for InputCursorGuard {
     fn drop(&mut self) {
-        let _cursor_gate = self
+        let mut pending_restores = self
             .state
             .cursor_gate
             .lock()
@@ -385,7 +402,7 @@ impl Drop for InputCursorGuard {
         self.state
             .input_cursor_requested
             .store(false, Ordering::Release);
-        restore_cursors(&mut self.cursors.0);
+        restore_cursors_locked(&mut self.cursors.0, &mut pending_restores);
     }
 }
 
@@ -402,12 +419,13 @@ pub(super) fn begin_input_cursor(active: &AtomicBool) -> Result<InputCursorGuard
     let deadline = Instant::now() + CAPTURE_EXCLUSION_TIMEOUT;
     loop {
         let hidden = {
-            let _cursor_gate = state
+            let mut pending_restores = state
                 .cursor_gate
                 .lock()
                 .unwrap_or_else(|error| error.into_inner());
             state.input_cursor_requested.store(true, Ordering::Release);
             active.load(Ordering::Acquire)
+                && cursor_restores_acknowledged(&mut pending_restores.pending)
                 && hide_registered_cursors(&mut guard.cursors.0)
                 && active.load(Ordering::Acquire)
         };
@@ -461,9 +479,58 @@ pub(super) fn hide_and_acknowledge(
 }
 
 fn restore_cursors(windows: &mut Vec<OwnedCursorWindow>) {
-    for owned in windows.drain(..).rev() {
-        if owned.still_registered() {
-            let _ = unsafe { ShowWindowAsync(HWND(owned.raw as *mut _), SW_SHOWNOACTIVATE) };
+    let mut pending_restores = state()
+        .cursor_gate
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    restore_cursors_locked(windows, &mut pending_restores);
+}
+
+fn cursor_restores_acknowledged(pending_restores: &mut Vec<OwnedCursorWindow>) -> bool {
+    pending_restores.retain(|owned| {
+        let window = HWND(owned.raw as *mut _);
+        if !unsafe { IsWindow(Some(window)) }.as_bool() {
+            return false;
+        }
+        match registered_window(window) {
+            Some(current) if current != *owned => false,
+            Some(_) => !unsafe { IsWindowVisible(window) }.as_bool(),
+            // A timed-out identity query does not prove the old show has
+            // finished. Retain its lease until a positive ACK/invalidation.
+            None => true,
+        }
+    });
+    pending_restores.is_empty()
+}
+
+fn restore_cursors_locked(windows: &mut Vec<OwnedCursorWindow>, restores: &mut CursorRestores) {
+    cursor_restores_acknowledged(&mut restores.pending);
+    for owned in windows.drain(..) {
+        if !restores.deferred.contains(&owned) {
+            restores.deferred.push(owned);
+        }
+    }
+    if state().input_cursor_requested.load(Ordering::Acquire) {
+        return;
+    }
+    for owned in std::mem::take(&mut restores.deferred) {
+        let window = HWND(owned.raw as *mut _);
+        if !unsafe { IsWindow(Some(window)) }.as_bool() {
+            continue;
+        }
+        match registered_window(window) {
+            Some(current) if current == owned => {
+                if !unsafe { IsWindowVisible(window) }.as_bool()
+                    && !restores.pending.contains(&owned)
+                {
+                    // Async show can outlive this lease. Keep its exact
+                    // identity until visible ACK before another hide.
+                    restores.pending.push(owned);
+                    let _ = unsafe { ShowWindowAsync(window, SW_SHOWNOACTIVATE) };
+                }
+            }
+            Some(_) => {}
+            None => restores.deferred.push(owned),
         }
     }
 }
