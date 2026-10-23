@@ -32,6 +32,7 @@ fn validate_pixel_action(action: &ComputerUseAction) -> ComputerUseResult<()> {
             | "double_click"
             | "right_click"
             | "toggle"
+            | "drag"
             | "keypress"
             | "keyboard_shortcut"
             | "type"
@@ -43,29 +44,54 @@ fn validate_pixel_action(action: &ComputerUseAction) -> ComputerUseResult<()> {
             .delivery_mode
             .as_deref()
             .is_some_and(|mode| mode != "foreground")
-        || !action.path.is_empty()
+        || (action.action != "drag" && !action.path.is_empty())
         || action.scroll_x.is_some()
         || action.scroll_y.is_some()
         || action.scroll_by.is_some()
-        || action.steps.is_some()
+        || (action.action != "drag" && action.steps.is_some())
         || action.delay_ms.is_some_and(|delay| delay != 0)
     {
         return Err(ComputerUseError::new(
             ComputerUseErrorCode::InvalidAction,
-            "pixels_only requires a covered foreground click, keypress or text action without semantic selectors or alternate input backends",
+            "pixels_only requires a covered foreground pointer, keypress or text action without semantic selectors or alternate input backends",
         ));
     }
     let click = matches!(
         action.action.as_str(),
         "click" | "double_click" | "right_click" | "toggle"
     );
+    let drag = action.action == "drag";
+    if drag
+        && (action.path.len() != 2
+            || action.x.is_some()
+            || action.y.is_some()
+            || !action.keys.is_empty()
+            || !action.modifiers.is_empty()
+            || action.text.is_some()
+            || action.type_chars_only
+            || action
+                .duration_ms
+                .is_some_and(|duration| duration == 0 || duration > MAX_DRAG_DURATION_MS)
+            || action
+                .steps
+                .is_some_and(|steps| !(1..=MAX_DRAG_STEPS).contains(&steps))
+            || action
+                .path
+                .iter()
+                .any(|point| !point.x.is_finite() || !point.y.is_finite()))
+    {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::InvalidAction,
+            "pixels_only drag requires two endpoints, a bounded duration/steps, and no keyboard or semantic fields",
+        ));
+    }
     if click && (action.duration_ms.is_some() || action.x.is_none() || action.y.is_none()) {
         return Err(ComputerUseError::new(
             ComputerUseErrorCode::InvalidAction,
             "pixels_only clicks require screenshot coordinates and do not support held buttons",
         ));
     }
-    if !click && (action.x.is_some() || action.y.is_some() || action.button.is_some()) {
+    if !click && !drag && (action.x.is_some() || action.y.is_some() || action.button.is_some()) {
         return Err(ComputerUseError::new(
             ComputerUseErrorCode::InvalidAction,
             "pixels_only keypress and text actions use the existing exact foreground focus",
@@ -174,6 +200,86 @@ fn physical_point(
 }
 
 #[cfg(windows)]
+fn physical_drag_points(
+    action: &ComputerUseAction,
+    observation: &ComputerUseObservation,
+) -> ComputerUseResult<Vec<(i32, i32)>> {
+    validate_pixel_action(action)?;
+    let [start, end] = action.path.as_slice() else {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::InvalidAction,
+            "drag requires two endpoints",
+        ));
+    };
+    let steps = action.steps.unwrap_or(20);
+    let mut sample = action.clone();
+    let mut points = Vec::with_capacity(steps as usize + 1);
+    for index in 0..=steps {
+        let fraction = f64::from(index) / f64::from(steps);
+        sample.x = Some(start.x + (end.x - start.x) * fraction);
+        sample.y = Some(start.y + (end.y - start.y) * fraction);
+        points.push(physical_point(&sample, observation)?);
+    }
+    if points.first() == points.last() {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::InvalidAction,
+            "drag endpoints must be distinct physical pixels",
+        ));
+    }
+    // Also refuse a redacted rectangle between samples; a sparse caller path
+    // cannot jump across pixels that were excluded from its observation.
+    if let Some(visibility) = observation.capture_provenance.get("visibility") {
+        let regions: Vec<[i32; 4]> =
+            serde_json::from_value(visibility["redacted_rectangles"].clone()).map_err(|_| {
+                ComputerUseError::new(
+                    ComputerUseErrorCode::StaleObservation,
+                    "invalid pixel redaction evidence",
+                )
+            })?;
+        for pair in points.windows(2) {
+            for &[x, y, width, height] in &regions {
+                let mut lower = 0.0_f64;
+                let mut upper = 1.0_f64;
+                for (start, end, minimum, extent) in [
+                    (pair[0].0, pair[1].0, x, width),
+                    (pair[0].1, pair[1].1, y, height),
+                ] {
+                    let delta = f64::from(end) - f64::from(start);
+                    if delta == 0.0 {
+                        if start < minimum
+                            || i64::from(start) >= i64::from(minimum) + i64::from(extent)
+                        {
+                            upper = -1.0;
+                        }
+                    } else {
+                        let a = (f64::from(minimum) - f64::from(start)) / delta;
+                        let b = (f64::from(minimum) + f64::from(extent) - f64::from(start)) / delta;
+                        lower = lower.max(a.min(b));
+                        upper = upper.min(a.max(b));
+                    }
+                }
+                let intersection = (
+                    f64::from(pair[0].0) + (f64::from(pair[1].0) - f64::from(pair[0].0)) * lower,
+                    f64::from(pair[0].1) + (f64::from(pair[1].1) - f64::from(pair[0].1)) * lower,
+                );
+                let included_corner = lower == upper
+                    && intersection.0 >= f64::from(x)
+                    && intersection.0 < f64::from(x) + f64::from(width)
+                    && intersection.1 >= f64::from(y)
+                    && intersection.1 < f64::from(y) + f64::from(height);
+                if lower < upper || included_corner {
+                    return Err(ComputerUseError::new(
+                        ComputerUseErrorCode::InvalidAction,
+                        "drag path crosses a redacted region in the latest observation",
+                    ));
+                }
+            }
+        }
+    }
+    Ok(points)
+}
+
+#[cfg(windows)]
 fn input_error(failure: dcc_cua_platform_windows::WindowsGuardedInputError) -> ComputerUseError {
     use dcc_cua_platform_windows::WindowsPhysicalInputFailureReason as Reason;
     let code = match failure.reason {
@@ -279,6 +385,11 @@ pub(super) async fn perform_exact_pixel_action(
         None
     };
     let action = action.clone();
+    let drag_points = if action.action == "drag" {
+        physical_drag_points(&action, observation)?
+    } else {
+        Vec::new()
+    };
     let input_presentation = presentation.clone();
     let outcome = run_owned_pixel_worker(
         move || {
@@ -321,6 +432,22 @@ pub(super) async fn perform_exact_pixel_action(
                         },
                         button,
                         &action.modifiers,
+                        gate,
+                        interrupted,
+                    )
+                }
+                "drag" => {
+                    let button = match action.button.as_deref().unwrap_or("left") {
+                        "left" => dcc_cua_platform_windows::WindowsPointerButton::Left,
+                        "middle" => dcc_cua_platform_windows::WindowsPointerButton::Middle,
+                        "right" => dcc_cua_platform_windows::WindowsPointerButton::Right,
+                        _ => unreachable!("validate_action checks button names"),
+                    };
+                    dcc_cua_platform_windows::send_guarded_drag(
+                        fence,
+                        &drag_points,
+                        action.duration_ms.unwrap_or(500),
+                        button,
                         gate,
                         interrupted,
                     )

@@ -22,6 +22,8 @@ mod exact_window_restore;
 #[cfg(windows)]
 mod exact_window_state;
 #[cfg(windows)]
+mod focused_popup;
+#[cfg(windows)]
 mod input;
 #[cfg(windows)]
 mod native_menu_dismiss;
@@ -71,6 +73,8 @@ pub use exact_window_state::{
     minimize_exact_window,
 };
 #[cfg(windows)]
+pub use focused_popup::{NativeFocusedPopupDiagnostic, native_focused_popup_diagnostic};
+#[cfg(windows)]
 pub use input::{
     RelativeMoveInjection, WindowsForegroundClickError, WindowsForegroundClickOutcome,
     WindowsForegroundClickPreflightFailure, WindowsForegroundClickPreflightReason,
@@ -91,7 +95,7 @@ pub use native_menu_dismiss::{
 pub use physical_input_fence::{
     WindowsGuardedInputError, WindowsGuardedInputOperation, WindowsGuardedInputOutcome,
     WindowsPhysicalInputFailureReason, WindowsPhysicalInputFence, send_guarded_click,
-    send_guarded_keypress, send_guarded_text,
+    send_guarded_drag, send_guarded_keypress, send_guarded_text,
 };
 
 #[cfg(windows)]

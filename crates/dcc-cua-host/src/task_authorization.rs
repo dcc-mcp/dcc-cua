@@ -66,6 +66,7 @@ impl TrustedTaskActionScope {
         "double_click",
         "right_click",
         "toggle",
+        "drag",
         "keypress",
         "keyboard_shortcut",
         "type",

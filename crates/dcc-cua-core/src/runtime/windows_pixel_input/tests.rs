@@ -186,7 +186,7 @@ fn failed_input_preserves_partial_cursor_and_event_delivery(
 #[case("keyboard_shortcut", true)]
 #[case("type", true)]
 #[case("type_chars", true)]
-#[case("drag", false)]
+#[case("drag", true)]
 #[case("move", false)]
 #[case("scroll", false)]
 #[case("set_text", false)]
@@ -199,7 +199,104 @@ fn explicit_pixel_routes_are_closed(#[case] name: &str, #[case] accepted: bool) 
         action.x = Some(1.0);
         action.y = Some(2.0);
     }
+    if name == "drag" {
+        action.path = vec![
+            ComputerUsePoint { x: 1.0, y: 2.0 },
+            ComputerUsePoint { x: 3.0, y: 4.0 },
+        ];
+    }
     assert_eq!(validate_pixel_action(&action).is_ok(), accepted);
+}
+
+fn drag_action() -> ComputerUseAction {
+    ComputerUseAction {
+        action: "drag".into(),
+        path: vec![
+            ComputerUsePoint { x: 10.0, y: 20.0 },
+            ComputerUsePoint { x: 110.0, y: 60.0 },
+        ],
+        ..Default::default()
+    }
+}
+
+#[rstest]
+#[case("empty")]
+#[case("extra_point")]
+#[case("coordinates")]
+#[case("keys")]
+#[case("modifiers")]
+#[case("text")]
+#[case("zero_duration")]
+#[case("long_duration")]
+#[case("zero_steps")]
+#[case("many_steps")]
+#[case("nonfinite")]
+fn pixel_drag_rejects_unbounded_or_mixed_action_fields(#[case] variant: &str) {
+    let mut action = drag_action();
+    match variant {
+        "empty" => action.path.clear(),
+        "extra_point" => action.path.push(ComputerUsePoint { x: 2.0, y: 2.0 }),
+        "coordinates" => action.x = Some(1.0),
+        "keys" => action.keys.push("shift".into()),
+        "modifiers" => action.modifiers.push("shift".into()),
+        "text" => action.text = Some("NoOp".into()),
+        "zero_duration" => action.duration_ms = Some(0),
+        "long_duration" => action.duration_ms = Some(10_001),
+        "zero_steps" => action.steps = Some(0),
+        "many_steps" => action.steps = Some(201),
+        "nonfinite" => action.path[1].x = f64::INFINITY,
+        _ => unreachable!(),
+    }
+    assert_eq!(
+        validate_pixel_action(&action).unwrap_err().code,
+        ComputerUseErrorCode::InvalidAction
+    );
+}
+
+#[cfg(windows)]
+#[rstest]
+#[case("valid", true)]
+#[case("outside", false)]
+#[case("same_pixel", false)]
+#[case("redacted_sample", false)]
+#[case("redacted_between_samples", false)]
+#[case("redacted_elsewhere", true)]
+#[case("redacted_excluded_corner", true)]
+#[case("scaled", false)]
+fn pixel_drag_checks_physical_origin_and_the_entire_redaction_path(
+    #[case] variant: &str,
+    #[case] accepted: bool,
+) {
+    let mut action = drag_action();
+    action.steps = Some(1);
+    let mut observation = observed();
+    match variant {
+        "outside" => action.path[1].x = 400.0,
+        "same_pixel" => action.path[1] = ComputerUsePoint { x: 10.9, y: 20.1 },
+        "redacted_sample" => {
+            observation.capture_provenance["visibility"] =
+                json!({"redacted_rectangles":[[-290,100,2,2]]})
+        }
+        "redacted_between_samples" => {
+            observation.capture_provenance["visibility"] =
+                json!({"redacted_rectangles":[[-241,119,3,3]]})
+        }
+        "redacted_elsewhere" => {
+            observation.capture_provenance["visibility"] =
+                json!({"redacted_rectangles":[[-241,140,3,3]]})
+        }
+        "redacted_excluded_corner" => {
+            observation.capture_provenance["visibility"] =
+                json!({"redacted_rectangles":[[-300,80,10,20]]})
+        }
+        "scaled" => observation.width /= 2,
+        _ => {}
+    }
+    let result = physical_drag_points(&action, &observation);
+    assert_eq!(result.is_ok(), accepted);
+    if accepted {
+        assert_eq!(result.unwrap(), vec![(-290, 100), (-190, 140)]);
+    }
 }
 
 #[rstest]

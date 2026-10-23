@@ -6,6 +6,7 @@ use rstest::rstest;
 
 use super::*;
 mod native_menu_tests;
+mod pixel_drag_tests;
 use crate::action_confirmation::ConfirmationBinding;
 use crate::task_authorization::{
     TaskAuthorizationBinding, TaskAuthorizationOutcome, authorize_task_scoped_action,

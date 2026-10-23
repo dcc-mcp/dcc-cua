@@ -51,6 +51,7 @@ pub enum WindowsPhysicalInputFailureReason {
 #[serde(rename_all = "snake_case")]
 pub enum WindowsGuardedInputOperation {
     Click,
+    Drag,
     Keypress,
     Text,
 }
@@ -570,6 +571,55 @@ fn run_click<B: InputBackend>(
     transaction.finish(result)
 }
 
+fn run_drag<B: InputBackend>(
+    backend: &mut B,
+    fence: WindowsPhysicalInputFence,
+    points: &[(i32, i32)],
+    duration_ms: u64,
+    button: WindowsPointerButton,
+) -> Result<WindowsGuardedInputOutcome, WindowsGuardedInputError> {
+    let mut transaction = Transaction {
+        backend,
+        fence,
+        point: points.first().copied(),
+        outcome: WindowsGuardedInputOutcome::new(WindowsGuardedInputOperation::Drag),
+        pending_releases: Vec::new(),
+    };
+    let result = (|| {
+        if !(2..=201).contains(&points.len())
+            || !(1..=10_000).contains(&duration_ms)
+            || points.first() == points.last()
+        {
+            return Err(Reason::InvalidRequest);
+        }
+        // Prove the complete bounded path before even moving the cursor. These
+        // checks do not replace the final check before every actual mutation.
+        for &point in points {
+            transaction.backend.check(fence, Some(point))?;
+        }
+        let start = points[0];
+        transaction.mutate(&[], Some(start))?;
+        transaction.mutate(&[Event::Mouse(button, false)], None)?;
+        let started = transaction.backend.elapsed_ms();
+        for (index, &point) in points.iter().enumerate().skip(1) {
+            let deadline =
+                started.saturating_add(duration_ms * index as u64 / (points.len() - 1) as u64);
+            while transaction.backend.elapsed_ms() < deadline {
+                transaction.backend.check(fence, transaction.point)?;
+                transaction.backend.pause(
+                    deadline
+                        .saturating_sub(transaction.backend.elapsed_ms())
+                        .min(20),
+                );
+            }
+            transaction.point = Some(point);
+            transaction.mutate(&[Event::Move(point.0, point.1)], None)?;
+        }
+        transaction.mutate(&[Event::Mouse(button, true)], None)
+    })();
+    transaction.finish(result)
+}
+
 fn run_keypress<B: InputBackend>(
     backend: &mut B,
     fence: WindowsPhysicalInputFence,
@@ -690,6 +740,24 @@ pub fn send_guarded_click(
         input_available,
         interrupted,
         |backend| run_click(backend, fence, point, count, button, modifiers),
+    )
+}
+
+/// Delivers an already observed, bounded physical path without activation.
+/// Every point is preflighted and every move/down/up has a fresh native fence.
+pub fn send_guarded_drag(
+    fence: WindowsPhysicalInputFence,
+    points: &[(i32, i32)],
+    duration_ms: u64,
+    button: WindowsPointerButton,
+    input_available: impl FnMut() -> Result<(), UiaError>,
+    interrupted: impl FnMut() -> bool,
+) -> Result<WindowsGuardedInputOutcome, WindowsGuardedInputError> {
+    with_native_backend(
+        WindowsGuardedInputOperation::Drag,
+        input_available,
+        interrupted,
+        |backend| run_drag(backend, fence, points, duration_ms, button),
     )
 }
 

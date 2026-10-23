@@ -164,7 +164,7 @@ foreign-window pixels; they do not reconstruct the covered target content.
 
 Pixel tasks permit observation, native state reads, the explicit minimize
 operation, and these explicitly scoped foreground raw actions: `click`,
-`double_click`, `right_click`, `toggle`, `keypress`, `keyboard_shortcut`, `type`,
+`double_click`, `right_click`, `toggle`, `drag`, `keypress`, `keyboard_shortcut`, `type`,
 and `type_chars`. To use them, include `execute_action` in `allowed_methods` and
 grant each required action with `input_kind: "raw_input"`, `secret_input: false`,
 and `authorization_category: "raw_input"`. The Host derives raw-input permission
@@ -187,7 +187,24 @@ window may be covered. Keyboard and text actions retain the complete visibility
 requirement. A readable background capture alone never authorizes foreground
 input or click-through to another window.
 
-Semantic selectors, browser/clipboard input, secret input, drag, wheel, move,
+Windows pixel `drag` accepts exactly two screenshot-local `path` points and an
+optional `button` (`left`, `middle`, or `right`; default `left`). `duration_ms`
+is 1–10000 (default 500); `steps` is 1–200 (default 20). Do not supply x/y,
+modifiers, keys, text, semantic selectors, or backend overrides. The complete
+interpolated path must be observed and unredacted; every sampled point is
+natively preflighted before input and checked again before movement. Target
+identity, physical bounds, DPI, foreground and visibility remain fenced while
+the button is held. Failure or interruption releases only this operation's
+inserted button-down, once; it never resumes a failed drag. Delivery still needs
+a fresh snapshot or typed application-state readback to prove the intended move.
+
+For example, the `params` of a granted `execute_action` call can be:
+
+```json
+{"observation_id":"<latest>","capture_after":true,"action":{"action":"drag","input_kind":"raw_input","intent":"ordinary_edit","delivery_mode":"foreground","path":[{"x":100,"y":200},{"x":260,"y":240}],"duration_ms":500,"steps":20}}
+```
+
+Semantic selectors, browser/clipboard input, secret input, wheel, move,
 and recording are outside this pixel contract. It retains the existing
 separately authorized `change_window_state` activate/restore route; pixel startup,
 snapshots, and raw input never implicitly activate a window.

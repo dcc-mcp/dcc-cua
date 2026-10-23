@@ -85,8 +85,10 @@ struct FakeBackend {
     check_count: usize,
     fail_check: Option<usize>,
     dwm_change_at_check: Option<usize>,
+    foreground_loss_at_check: Option<usize>,
     partial_mutation: Option<(usize, u32)>,
     interrupt_after_mutation: bool,
+    interrupt_after_mutations: Option<usize>,
     mutations: Vec<RecordedMutation>,
     trace: Rc<RefCell<Vec<&'static str>>>,
     clock: u64,
@@ -126,8 +128,10 @@ impl FakeBackend {
             check_count: 0,
             fail_check: None,
             dwm_change_at_check: None,
+            foreground_loss_at_check: None,
             partial_mutation: None,
             interrupt_after_mutation: false,
+            interrupt_after_mutations: None,
             mutations: Vec::new(),
             trace: Rc::new(RefCell::new(Vec::new())),
             clock: 0,
@@ -143,8 +147,14 @@ impl InputBackend for FakeBackend {
     ) -> Result<(), Reason> {
         self.trace.borrow_mut().push("check");
         self.check_count += 1;
+        if self.interrupted() {
+            return Err(Reason::Interrupted);
+        }
         if self.dwm_change_at_check == Some(self.check_count) {
             self.evidence.visible_bounds[0] += 1;
+        }
+        if self.foreground_loss_at_check == Some(self.check_count) {
+            self.state.foreground = false;
         }
         if self.locked {
             return Err(Reason::DesktopUnavailable);
@@ -208,7 +218,10 @@ impl InputBackend for FakeBackend {
         result
     }
     fn interrupted(&mut self) -> bool {
-        self.interrupt_after_mutation && !self.mutations.is_empty()
+        (self.interrupt_after_mutation && !self.mutations.is_empty())
+            || self
+                .interrupt_after_mutations
+                .is_some_and(|count| self.mutations.len() >= count)
     }
     fn elapsed_ms(&self) -> u64 {
         self.clock
@@ -217,6 +230,157 @@ impl InputBackend for FakeBackend {
         self.trace.borrow_mut().push("pause");
         self.clock += milliseconds;
     }
+}
+
+#[rstest]
+fn physical_drag_preflights_the_whole_path_before_button_down_and_fences_each_move() {
+    let mut backend = FakeBackend::new();
+    let points = [(100, 100), (120, 110), (140, 120)];
+    let outcome = run_drag(
+        &mut backend,
+        fence(),
+        &points,
+        40,
+        WindowsPointerButton::Left,
+    )
+    .unwrap();
+    assert_eq!(outcome.operation, WindowsGuardedInputOperation::Drag);
+    assert!(outcome.delivery_completed && outcome.post_dispatch_validated);
+    assert_eq!(outcome.requested_events, 4);
+    assert_eq!(outcome.inserted_events, 4);
+    assert_eq!(outcome.cleanup_requested_events, 0);
+    assert_eq!(backend.mutations[0], (false, vec![], Some(points[0])));
+    assert_eq!(
+        backend.mutations[1].1,
+        vec![Event::Mouse(WindowsPointerButton::Left, false)]
+    );
+    assert_eq!(backend.mutations[2].1, vec![Event::Move(120, 110)]);
+    assert_eq!(backend.mutations[3].1, vec![Event::Move(140, 120)]);
+    assert_eq!(
+        backend.mutations[4].1,
+        vec![Event::Mouse(WindowsPointerButton::Left, true)]
+    );
+    assert!(
+        backend
+            .trace
+            .borrow()
+            .iter()
+            .take(points.len())
+            .all(|event| *event == "check")
+    );
+    assert_eq!(backend.clock, 40);
+}
+
+#[rstest]
+#[case("later_point")]
+#[case("outside")]
+#[case("too_many")]
+#[case("same_point")]
+#[case("duration")]
+fn physical_drag_invalid_or_unproven_path_never_moves_or_presses(#[case] variant: &str) {
+    let mut backend = FakeBackend::new();
+    let mut points = vec![(100, 100), (140, 120)];
+    let mut duration = 40;
+    match variant {
+        "later_point" => backend.fail_check = Some(2),
+        "outside" => points[1] = (3000, 120),
+        "too_many" => points = vec![(100, 100); 202],
+        "same_point" => points[1] = points[0],
+        "duration" => duration = 10_001,
+        _ => unreachable!(),
+    }
+    let error = run_drag(
+        &mut backend,
+        fence(),
+        &points,
+        duration,
+        WindowsPointerButton::Left,
+    )
+    .unwrap_err();
+    assert!(error.is_pre_dispatch());
+    assert!(backend.mutations.is_empty());
+}
+
+#[rstest]
+#[case("instance")]
+#[case("interrupt")]
+#[case("partial_move")]
+#[case("partial_up")]
+#[case("dwm_motion")]
+#[case("foreground_loss")]
+fn physical_drag_mid_hold_failure_sends_only_one_owned_button_release(#[case] variant: &str) {
+    let mut backend = FakeBackend::new();
+    match variant {
+        // Two path preflights, cursor move, button-down, then first motion fence.
+        "instance" => backend.fail_check = Some(5),
+        "interrupt" => backend.interrupt_after_mutations = Some(2),
+        "partial_move" => backend.partial_mutation = Some((2, 0)),
+        "partial_up" => backend.partial_mutation = Some((3, 0)),
+        "dwm_motion" => backend.dwm_change_at_check = Some(5),
+        "foreground_loss" => backend.foreground_loss_at_check = Some(5),
+        _ => unreachable!(),
+    }
+    let error = run_drag(
+        &mut backend,
+        fence(),
+        &[(100, 100), (140, 120)],
+        1,
+        WindowsPointerButton::Left,
+    )
+    .unwrap_err();
+    assert!(!error.outcome.delivery_completed);
+    assert_eq!(error.outcome.cleanup_requested_events, 1);
+    assert_eq!(error.outcome.cleanup_inserted_events, 1);
+    assert_eq!(
+        backend.mutations.last().unwrap(),
+        &(
+            true,
+            vec![Event::Mouse(WindowsPointerButton::Left, true)],
+            None
+        )
+    );
+    assert_eq!(
+        backend
+            .mutations
+            .iter()
+            .filter(|(cleanup, _, _)| *cleanup)
+            .count(),
+        1
+    );
+}
+
+#[rstest]
+fn physical_drag_failed_button_down_does_not_release_an_unowned_button() {
+    let mut backend = FakeBackend::new();
+    backend.partial_mutation = Some((1, 0));
+    let error = run_drag(
+        &mut backend,
+        fence(),
+        &[(100, 100), (140, 120)],
+        1,
+        WindowsPointerButton::Left,
+    )
+    .unwrap_err();
+    assert_eq!(error.outcome.cleanup_requested_events, 0);
+    assert_eq!(backend.mutations.len(), 2);
+}
+
+#[rstest]
+fn physical_drag_final_identity_drift_is_not_reported_as_completed() {
+    let mut backend = FakeBackend::new();
+    backend.fail_check = Some(8);
+    let error = run_drag(
+        &mut backend,
+        fence(),
+        &[(100, 100), (140, 120)],
+        1,
+        WindowsPointerButton::Left,
+    )
+    .unwrap_err();
+    assert_eq!(error.reason, Reason::InstanceChanged);
+    assert_eq!(error.outcome.inserted_events, 3);
+    assert!(!error.outcome.delivery_completed);
+    assert_eq!(error.outcome.cleanup_requested_events, 0);
 }
 
 #[rstest]

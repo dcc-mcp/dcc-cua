@@ -200,6 +200,16 @@ input chain; continue authorized passive observations if useful. Do not blindly
 retry activation or repeatedly ask the user to switch windows. Repair the native
 or Agent Host handoff before another input attempt.
 
+Windows pixels-only dragging requires an explicit raw-input `drag` action scope.
+Use two screenshot-local `path` endpoints, optional `button` (left by default),
+`duration_ms` from 1 to 10000 (default 500), and `steps` from 1 to 200 (default 20).
+Do not mix coordinates, modifiers, text, selectors or backend overrides into the
+drag. Take a fresh snapshot first: the whole line must be unredacted and each
+sampled point natively reachable on the unchanged foreground target. A failure
+releases the operation's held button and consumes the observation; never blindly
+resume or retry. Verify the actual node position or other intended result after
+delivery. Older runtimes whose closed action list omits `drag` cannot use it.
+
 For a Windows standard native popup menu (`#32768`) without accessible menu
 items, the public MCP task route can cancel that exact active popup without
 keyboard input or activation. Start an exact `window` / `pixels_only` task with
