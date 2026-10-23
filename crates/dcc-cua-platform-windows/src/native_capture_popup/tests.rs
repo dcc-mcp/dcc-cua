@@ -78,7 +78,7 @@ fn sample() -> Sample {
             .map(|state| PopupState {
                 root: state.window_handle,
                 state,
-                style: WS_POPUP,
+                style: WS_POPUP | WS_VISIBLE,
                 enabled: true,
                 owner_is_local_or_absent: true,
             })
@@ -139,6 +139,7 @@ fn completed_teardown_waits_only_for_the_original_exact_episode(
     match case {
         "hidden_capture" => {
             current.overlays[0].state.visible = false;
+            current.overlays[0].style &= !WS_VISIBLE;
             current.overlays[0].enabled = false;
             current.roots.remove(0);
         }
@@ -294,6 +295,211 @@ fn root_focus_return_is_not_a_matching_composite_or_new_input_proof() {
     let current = validate_sample(42, 100, &[200, 300], &after).unwrap();
     assert_ne!(expected, current);
     assert!(!expected.matches_completed_keyboard_postcheck(&current));
+}
+
+#[rstest]
+#[case("enum_then_hidden")]
+#[case("removed")]
+#[case("remaining_shadow")]
+#[case("focus_return")]
+#[case("disjoint_change")]
+#[case("hidden_only_original_trace")]
+#[case("unchanged")]
+fn completed_teardown_pair_accepts_only_forward_closure_progress(#[case] progress: &str) {
+    let mut before = sample();
+    if progress != "focus_return" {
+        before.focus.focus = before.root.window_handle;
+        before.focus.focus_instance = before.root.instance;
+    }
+    let expected = validate_sample(42, 100, &[200, 300], &before).unwrap();
+    let mut after = before.clone();
+    match progress {
+        "enum_then_hidden" => {
+            after.focus.capture = 0;
+            for popup in &mut after.overlays {
+                popup.state.visible = false;
+                popup.style &= !WS_VISIBLE;
+            }
+            // EnumWindows ran before the native popup reads: its two original
+            // overlap entries still say visible, with identical identity/bounds.
+            let mut disjoint = entry(state(900, [1500, 800, 10, 10]));
+            disjoint.process_id = 99;
+            disjoint.decision = RootProofDecision::Disjoint;
+            after.roots.insert(0, disjoint);
+        }
+        "removed" => {
+            after.focus.capture = 0;
+            after.overlays.clear();
+            after.roots.drain(..2);
+        }
+        "remaining_shadow" => {
+            after.focus.capture = 0;
+            after.overlays.remove(0);
+            after.roots.remove(0);
+        }
+        "focus_return" => {
+            after.focus.focus = before.root.window_handle;
+            after.focus.focus_instance = before.root.instance;
+        }
+        "disjoint_change" => {
+            let mut disjoint = entry(state(900, [1500, 800, 10, 10]));
+            disjoint.process_id = 99;
+            disjoint.decision = RootProofDecision::Disjoint;
+            after.roots.insert(0, disjoint);
+        }
+        "hidden_only_original_trace" => {
+            before.focus.capture = 0;
+            before.overlays.remove(0);
+            before.roots.remove(0);
+            after = before.clone();
+            let mut hidden = entry(expected.capture);
+            hidden.visible = false;
+            hidden.cloaked = None;
+            hidden.dwm_bounds = None;
+            hidden.decision = RootProofDecision::Hidden;
+            after.roots.insert(0, hidden);
+            assert!(validate_sample(42, 100, &[200, 300], &after).is_err());
+        }
+        "unchanged" => {}
+        _ => unreachable!(),
+    }
+    assert!(completed_teardown_progress(&expected, &before, &after));
+}
+
+#[rstest]
+#[case("visibility_reversed")]
+#[case("removed_reappears")]
+#[case("capture_regained")]
+#[case("focus_returned_to_child")]
+#[case("focus_unknown_child")]
+#[case("foreground")]
+#[case("gui_flags")]
+#[case("popup_birth")]
+#[case("popup_thread")]
+#[case("popup_class")]
+#[case("popup_owner")]
+#[case("popup_dpi")]
+#[case("popup_geometry")]
+#[case("popup_style")]
+#[case("visibility_style_only")]
+#[case("visibility_style_set")]
+#[case("visibility_style_not_cleared")]
+#[case("hidden_style_only")]
+#[case("popup_enabled")]
+#[case("popup_reenabled")]
+#[case("popup_foreground")]
+#[case("popup_maximized")]
+#[case("root_birth")]
+#[case("root_geometry")]
+#[case("root_dpi")]
+#[case("desktop")]
+#[case("new_same_process_overlap")]
+#[case("foreign_overlap")]
+#[case("unknown_bounds")]
+#[case("unknown_cloaking")]
+#[case("disjoint_query_error")]
+#[case("hidden_query_error")]
+#[case("popup_order")]
+#[case("trace_style")]
+#[case("root_trace_style")]
+fn completed_teardown_pair_never_accepts_reverse_unknown_or_other_state(#[case] changed: &str) {
+    let original = sample();
+    let expected = validate_sample(42, 100, &[200, 300], &original).unwrap();
+    let mut before = original.clone();
+    before.focus.focus = before.root.window_handle;
+    before.focus.focus_instance = before.root.instance;
+    let mut after = before.clone();
+    after.focus.capture = 0;
+    for popup in &mut after.overlays {
+        popup.state.visible = false;
+        popup.style &= !WS_VISIBLE;
+    }
+    assert!(completed_teardown_progress(&expected, &before, &after));
+    match changed {
+        "visibility_reversed" => {
+            before.overlays[0].state.visible = false;
+            before.overlays[0].style &= !WS_VISIBLE;
+            after.overlays[0].state.visible = true;
+            after.overlays[0].style |= WS_VISIBLE;
+        }
+        "removed_reappears" => {
+            before.focus.capture = 0;
+            before.overlays.remove(0);
+            before.roots.remove(0);
+        }
+        "capture_regained" => {
+            before.focus.capture = 0;
+            after.focus.capture = 200;
+        }
+        "focus_returned_to_child" => {
+            after.focus.focus = original.focus.focus;
+            after.focus.focus_instance = original.focus.focus_instance;
+        }
+        "focus_unknown_child" => {
+            after.focus.focus = 102;
+            after.focus.focus_instance = state(102, [101, 101, 10, 10]).instance;
+        }
+        "foreground" => after.focus.foreground = 300,
+        "gui_flags" => after.focus.flags = GUI_CARETBLINKING,
+        "popup_birth" => after.overlays[0].state.instance.process_creation_time_100ns += 1,
+        "popup_thread" => after.overlays[0].state.instance.window_thread_id += 1,
+        "popup_class" => after.overlays[0].state.instance.window_class_hash += 1,
+        "popup_owner" => after.overlays[0].state.instance.owner_window_handle += 1,
+        "popup_dpi" => after.overlays[0].state.dpi += 1,
+        "popup_geometry" => {
+            after.overlays[0].state.bounds.as_mut().unwrap()[2] += 1;
+            after.overlays[0].state.visible_bounds = after.overlays[0].state.bounds;
+            after.roots[0] = entry(after.overlays[0].state);
+        }
+        "popup_style" => after.overlays[0].style |= 1,
+        "visibility_style_only" => {
+            after = before.clone();
+            after.overlays[0].style &= !WS_VISIBLE;
+        }
+        "visibility_style_set" => {
+            before.overlays[0].state.visible = false;
+            before.overlays[0].style &= !WS_VISIBLE;
+            after.overlays[0].style |= WS_VISIBLE;
+        }
+        "visibility_style_not_cleared" => after.overlays[0].style |= WS_VISIBLE,
+        "hidden_style_only" => before.overlays[0].state.visible = false,
+        "popup_enabled" => after.overlays[0].enabled = false,
+        "popup_reenabled" => {
+            before.overlays[0].state.visible = false;
+            before.overlays[0].style &= !WS_VISIBLE;
+            before.overlays[0].enabled = false;
+        }
+        "popup_foreground" => after.overlays[0].state.foreground = true,
+        "popup_maximized" => after.overlays[0].state.maximized = true,
+        "root_birth" => after.root.instance.process_creation_time_100ns += 1,
+        "root_geometry" => after.root.bounds.as_mut().unwrap()[2] += 1,
+        "root_dpi" => after.root.dpi += 1,
+        "desktop" => after.desktop[2] += 1,
+        "new_same_process_overlap" | "foreign_overlap" => {
+            let mut blocker = entry(state(400, [120, 120, 10, 10]));
+            if changed == "foreign_overlap" {
+                blocker.process_id = 99;
+            }
+            after.roots.insert(0, blocker);
+        }
+        "unknown_bounds" => after.roots[0].dwm_bounds = None,
+        "unknown_cloaking" => after.roots[0].cloaked = None,
+        "disjoint_query_error" | "hidden_query_error" => {
+            let mut irrelevant = entry(state(900, [1500, 800, 10, 10]));
+            irrelevant.decision = RootProofDecision::Disjoint;
+            if changed == "hidden_query_error" {
+                irrelevant.visible = false;
+                irrelevant.decision = RootProofDecision::Hidden;
+            }
+            irrelevant.cloak_query_error = Some(5);
+            after.roots.insert(0, irrelevant);
+        }
+        "popup_order" => after.overlays.swap(0, 1),
+        "trace_style" => after.roots[0].extended_style += 1,
+        "root_trace_style" => after.roots.last_mut().unwrap().extended_style += 1,
+        _ => unreachable!(),
+    }
+    assert!(!completed_teardown_progress(&expected, &before, &after));
 }
 
 #[rstest]

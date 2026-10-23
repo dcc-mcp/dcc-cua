@@ -10,7 +10,7 @@ use windows_sys::Win32::{
         WindowsAndMessaging::{
             GA_ROOT, GUI_CARETBLINKING, GUITHREADINFO, GWL_STYLE, GetAncestor, GetForegroundWindow,
             GetGUIThreadInfo, GetWindowLongPtrW, GetWindowThreadProcessId, IsChild,
-            IsWindowVisible, WS_CHILD, WS_POPUP,
+            IsWindowVisible, WS_CHILD, WS_POPUP, WS_VISIBLE,
         },
     },
 };
@@ -236,6 +236,13 @@ fn completed_teardown_unchanged(expected: &NativeCapturePopupProof, sample: &Sam
     {
         return false;
     }
+    if sample.roots.iter().any(|entry| {
+        entry.win32_bounds_error.is_some()
+            || entry.cloak_query_error.is_some()
+            || entry.dwm_bounds_error.is_some()
+    }) {
+        return false;
+    }
     let Some(last) = sample.roots.last() else {
         return false;
     };
@@ -316,8 +323,9 @@ fn completed_teardown_unchanged(expected: &NativeCapturePopupProof, sample: &Sam
             return false;
         };
         let state = popup.state;
-        if !state.visible
-            || entry.decision != RootProofDecision::Overlap
+        // Enumeration may precede the same exact popup becoming hidden.
+        // Its native identity and both rectangles must still match the trace.
+        if entry.decision != RootProofDecision::Overlap
             || entry.minimized
             || entry.root_window_handle != state.window_handle
             || entry.process_id != state.process_id
@@ -331,6 +339,62 @@ fn completed_teardown_unchanged(expected: &NativeCapturePopupProof, sample: &Sam
         }
     }
     true
+}
+
+fn completed_teardown_progress(
+    expected: &NativeCapturePopupProof,
+    before: &Sample,
+    after: &Sample,
+) -> bool {
+    if !completed_teardown_unchanged(expected, before)
+        || !completed_teardown_unchanged(expected, after)
+        || (before.focus.capture == 0 && after.focus.capture != 0)
+        || (before.focus.focus == expected.root.window_handle
+            && after.focus.focus != expected.root.window_handle)
+    {
+        return false;
+    }
+    let mut previous = before.overlays.iter();
+    for current in &after.overlays {
+        let Some(prior) =
+            previous.find(|popup| popup.state.window_handle == current.state.window_handle)
+        else {
+            return false;
+        };
+        if !prior.state.visible && current.state.visible {
+            return false;
+        }
+        let mut permitted = prior.clone();
+        if prior.state.visible && !current.state.visible {
+            permitted.state.visible = false;
+            permitted.style &= !WS_VISIBLE;
+        }
+        if permitted != *current {
+            return false;
+        }
+    }
+    let mut previous = scoped_teardown_roots(before);
+    for current in scoped_teardown_roots(after) {
+        if previous.find(|entry| entry.window_handle == current.window_handle) != Some(current) {
+            return false;
+        }
+    }
+    true
+}
+
+// Called only after both complete samples validate all queried metadata.
+// Hidden/cloaked/disjoint roots cannot occlude this exact root; their unrelated
+// enumeration changes do not constitute an in-scope popup reappearance.
+fn scoped_teardown_roots(sample: &Sample) -> impl Iterator<Item = &RootProofTraceEntry> {
+    sample.roots.iter().filter(|entry| {
+        entry.window_handle == sample.root.window_handle
+            || (entry.visible
+                && entry.cloaked == Some(0)
+                && entry
+                    .dwm_bounds
+                    .zip(sample.root.visible_bounds)
+                    .is_some_and(|(a, b)| intersection(a, b).is_some()))
+    })
 }
 
 pub(crate) fn native_capture_popup_teardown_pending(expected: &NativeCapturePopupProof) -> bool {
@@ -373,8 +437,7 @@ pub(crate) fn native_capture_popup_teardown_pending(expected: &NativeCapturePopu
         return false;
     };
     completed_teardown_unchanged(expected, &before)
-        && read()
-            .is_ok_and(|after| after == before && completed_teardown_unchanged(expected, &after))
+        && read().is_ok_and(|after| completed_teardown_progress(expected, &before, &after))
 }
 
 fn refused(reason: NativeCapturePopupRefusal) -> NativeCapturePopupReadError {
