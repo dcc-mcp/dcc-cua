@@ -98,6 +98,7 @@ fn lifetime_guidance_is_discoverable_before_starting_a_task() {
     assert!(ordinary["structuredContent"].get("code").is_none());
 }
 
+#[rstest]
 #[tokio::test]
 async fn host_completion_does_not_replace_a_missing_session_cleanup_acknowledgement() {
     let mut server = test_server();
@@ -115,6 +116,7 @@ async fn host_completion_does_not_replace_a_missing_session_cleanup_acknowledgem
     );
 }
 
+#[rstest]
 #[tokio::test]
 async fn host_failure_overrides_a_successful_session_cleanup_acknowledgement() {
     let mut server = test_server();
@@ -133,7 +135,7 @@ async fn host_failure_overrides_a_successful_session_cleanup_acknowledgement() {
     assert_eq!(stopped["cleanup"]["host_connection_completion"]["success"], false);
 }
 
-#[test]
+#[rstest]
 fn pending_host_completion_cannot_claim_a_stopped_task() {
     let cleanup = json!({"success":true,"active":false,"cleanup_pending":false,
         "host_connection_completion":{"completed":false,"success":false}});
@@ -144,6 +146,7 @@ fn pending_host_completion_cannot_claim_a_stopped_task() {
     assert_eq!(payload["session_cleanup"]["success"], true);
 }
 
+#[rstest]
 #[tokio::test]
 async fn cancelling_completion_wait_keeps_pending_evidence_and_can_resume() {
     let mut server = test_server();
@@ -174,6 +177,7 @@ async fn cancelling_completion_wait_keeps_pending_evidence_and_can_resume() {
     assert_eq!(stopped["cleanup"]["success"], true);
 }
 
+#[rstest]
 #[tokio::test]
 async fn interrupted_startup_requires_a_new_task_without_replacing_its_host_owner() {
     let mut server = test_server();
@@ -196,6 +200,7 @@ async fn interrupted_startup_requires_a_new_task_without_replacing_its_host_owne
     assert!(server.proposals[id].revoked);
 }
 
+#[rstest]
 #[tokio::test]
 async fn shutdown_waits_for_retained_host_completion() {
     let mut server = test_server();
@@ -223,6 +228,7 @@ async fn shutdown_waits_for_retained_host_completion() {
     );
 }
 
+#[rstest]
 #[tokio::test]
 async fn stopping_one_task_does_not_revoke_or_join_another_host() {
     let mut server = test_server();

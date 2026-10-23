@@ -1,6 +1,9 @@
+use rstest::rstest;
+
 use super::*;
 use tokio::sync::oneshot;
 
+#[rstest]
 #[tokio::test]
 async fn timeout_retains_the_original_host_and_completion_is_idempotent() {
     let (release, wait) = oneshot::channel();
@@ -17,6 +20,7 @@ async fn timeout_retains_the_original_host_and_completion_is_idempotent() {
     assert_eq!(host.finish(Duration::ZERO).await, completion);
 }
 
+#[rstest]
 #[tokio::test]
 async fn cancelled_wait_does_not_abort_the_host() {
     let (release, wait) = oneshot::channel();
@@ -39,6 +43,7 @@ fn futures_poll<F: Future>(future: std::pin::Pin<&mut F>) -> std::task::Poll<F::
     future.poll(&mut std::task::Context::from_waker(waker))
 }
 
+#[rstest]
 #[tokio::test]
 async fn dropping_one_owner_does_not_abort_admitted_work_or_another_host() {
     let (release, wait) = oneshot::channel();
@@ -58,6 +63,7 @@ async fn dropping_one_owner_does_not_abort_admitted_work_or_another_host() {
         .unwrap();
 }
 
+#[rstest]
 #[tokio::test]
 async fn host_error_and_panic_are_not_successful_cleanup() {
     let mut failed = OwnedHostTask::spawn(async { Err("cleanup failed".into()) });
