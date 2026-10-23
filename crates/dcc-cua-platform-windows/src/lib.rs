@@ -90,8 +90,8 @@ pub use input::{
 };
 #[cfg(windows)]
 pub use native_capture_popup::{
-    NativeCapturePopupInventory, NativeCapturePopupProof, NativeCapturePopupRefusal,
-    native_capture_popup_inventory, read_native_capture_popup_proof,
+    NativeCapturePopupInputDiagnostic, NativeCapturePopupInventory, NativeCapturePopupProof,
+    NativeCapturePopupRefusal, native_capture_popup_inventory, read_native_capture_popup_proof,
 };
 #[cfg(windows)]
 pub use native_menu_dismiss::{

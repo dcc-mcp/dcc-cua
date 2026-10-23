@@ -163,6 +163,7 @@ fn a_composite_never_changes_the_exact_main_root_fence(#[case] case: &str, #[cas
 #[rstest]
 #[case("valid", true)]
 #[case("changed_proof", false)]
+#[case("refused_proof", false)]
 #[case("late_bounds", false)]
 #[case("late_interrupt", false)]
 #[case("late_desktop", false)]
@@ -194,7 +195,9 @@ fn dedicated_keyboard_checks_full_proof_then_final_state_before_any_mutation(
         },
         || {
             trace.borrow_mut().push("proof");
-            if case == "changed_proof" {
+            if case == "refused_proof" {
+                Err(Reason::TargetOccluded)
+            } else if case == "changed_proof" {
                 Err(Reason::InstanceChanged)
             } else {
                 Ok(())
@@ -209,6 +212,10 @@ fn dedicated_keyboard_checks_full_proof_then_final_state_before_any_mutation(
     let result = final_physical_boundary(false, false, || result, || mutated.set(true));
     assert_eq!(result.is_ok(), allowed);
     assert_eq!(mutated.get(), allowed);
+    if case == "refused_proof" {
+        assert_eq!(result, Err(Reason::TargetOccluded));
+        assert_eq!(*trace.borrow(), vec!["gate", "proof"]);
+    }
     if allowed {
         assert_eq!(
             *trace.borrow(),

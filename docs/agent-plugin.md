@@ -355,3 +355,10 @@ selected HWND order, focus, GUI state, desktop and z-order. Every new input batc
 still requires strict equality with the observed proof. A completed Enter may
 end capture; delivery and the resulting application effect remain separate
 outcomes. Take a fresh ordinary or explicitly selected snapshot after every action.
+
+A rejected native popup proof reports content-free `details.capture` with
+`stage: native_capture_popup_input`, a closed native refusal `reason`, and the
+bound target process, window and bounds. An actual unselected occluder also
+reports its process, window and bounds from the rejected sample. These diagnostics
+grant no authority; the existing phase and input-delivery fields still determine
+whether any input was sent.

@@ -280,6 +280,41 @@ fn physical_drag_points(
 }
 
 #[cfg(windows)]
+fn capture_popup_input_diagnostic(
+    diagnostic: &dcc_cua_platform_windows::NativeCapturePopupInputDiagnostic,
+) -> ComputerUseCaptureDiagnostic {
+    use dcc_cua_platform_windows::NativeCapturePopupRefusal as Native;
+    let reason = match diagnostic.reason {
+        Native::InvalidSelection => ComputerUseCaptureReason::InvalidSelection,
+        Native::RootUnavailable => ComputerUseCaptureReason::RootUnavailable,
+        Native::RootNotUsable => ComputerUseCaptureReason::RootNotUsable,
+        Native::GuiStateUnavailable => ComputerUseCaptureReason::GuiStateUnavailable,
+        Native::FocusOutsideRoot => ComputerUseCaptureReason::FocusOutsideRoot,
+        Native::CaptureNotSelected => ComputerUseCaptureReason::CaptureNotSelected,
+        Native::PopupUnavailable => ComputerUseCaptureReason::PopupUnavailable,
+        Native::PopupIdentityMismatch => ComputerUseCaptureReason::PopupIdentityMismatch,
+        Native::PopupNotUsable => ComputerUseCaptureReason::PopupNotUsable,
+        Native::EnumerationIncomplete => ComputerUseCaptureReason::EnumerationIncomplete,
+        Native::UnselectedOccluder => ComputerUseCaptureReason::UnselectedOccluder,
+        Native::NativeStateChanged => ComputerUseCaptureReason::NativeStateChanged,
+        Native::NativeStateUnavailable => ComputerUseCaptureReason::NativeStateUnavailable,
+    };
+    ComputerUseCaptureDiagnostic {
+        stage: ComputerUseCaptureStage::NativeCapturePopupInput,
+        reason,
+        target_process_id: diagnostic.target_process_id,
+        target_window_handle: diagnostic.target_window_handle,
+        target_bounds: diagnostic.target_bounds,
+        blocker_process_id: diagnostic.blocker_process_id,
+        blocker_window_handle: diagnostic.blocker_window_handle,
+        blocker_bounds: diagnostic.blocker_bounds,
+        cloaked: None,
+        os_error: None,
+        root_bounds_failure: None,
+    }
+}
+
+#[cfg(windows)]
 fn input_error(failure: dcc_cua_platform_windows::WindowsGuardedInputError) -> ComputerUseError {
     use dcc_cua_platform_windows::WindowsPhysicalInputFailureReason as Reason;
     let code = match failure.reason {
@@ -298,20 +333,26 @@ fn input_error(failure: dcc_cua_platform_windows::WindowsGuardedInputError) -> C
         Reason::InjectionIncomplete => ComputerUseErrorCode::InputFailed,
     };
     let attempted = failure.outcome.mutation_attempted;
-    let capture = failure.native_input_fence.as_ref().and_then(|sample| {
-        failure.visibility_failure.as_ref().and_then(|native| {
-            super::exact_capture::map_visible_capture_diagnostic(
-                code,
-                ComputerUseCaptureStage::VisibleDesktopProof,
-                sample.target_process_id,
-                sample.target_window_handle,
-                **native,
-                "native input visibility proof rejected",
-            )
-            .details
-            .and_then(|details| details.capture)
-        })
-    });
+    let capture = failure
+        .native_capture_popup
+        .as_deref()
+        .map(capture_popup_input_diagnostic)
+        .or_else(|| {
+            failure.native_input_fence.as_ref().and_then(|sample| {
+                failure.visibility_failure.as_ref().and_then(|native| {
+                    super::exact_capture::map_visible_capture_diagnostic(
+                        code,
+                        ComputerUseCaptureStage::VisibleDesktopProof,
+                        sample.target_process_id,
+                        sample.target_window_handle,
+                        **native,
+                        "native input visibility proof rejected",
+                    )
+                    .details
+                    .and_then(|details| details.capture)
+                })
+            })
+        });
     ComputerUseError::new(code, failure.to_string()).with_details(ComputerUseErrorDetails {
         native_input_fence: failure.native_input_fence.map(|sample| *sample),
         capture,

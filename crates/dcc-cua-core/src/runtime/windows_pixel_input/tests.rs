@@ -157,6 +157,7 @@ fn failed_input_preserves_partial_cursor_and_event_delivery(
         reason: WindowsPhysicalInputFailureReason::Interrupted,
         native_input_fence: None,
         visibility_failure: None,
+        native_capture_popup: None,
         outcome: WindowsGuardedInputOutcome {
             operation: WindowsGuardedInputOperation::Click,
             mutation_attempted: attempted,
@@ -210,6 +211,7 @@ fn rejected_fence_diagnostic_reaches_closed_error_details_with_original_refusal(
             fresh_observation_required: true,
         },
         native_input_fence: Some(sample),
+        native_capture_popup: None,
         visibility_failure: Some(Box::new(
             dcc_cua_platform_windows::VisibleWindowCaptureDiagnostic {
                 reason: dcc_cua_platform_windows::VisibleWindowCaptureReason::RootOverlap,
@@ -235,6 +237,77 @@ fn rejected_fence_diagnostic_reaches_closed_error_details_with_original_refusal(
         details.native_input_fence.unwrap().hit_process_id,
         Some(456)
     );
+}
+
+#[rstest]
+#[cfg(windows)]
+#[case(false)]
+#[case(true)]
+fn popup_proof_refusal_uses_existing_capture_details_and_preserves_zero_input(
+    #[case] has_blocker: bool,
+) {
+    use dcc_cua_platform_windows::{
+        NativeCapturePopupInputDiagnostic, NativeCapturePopupRefusal, WindowsGuardedInputError,
+        WindowsGuardedInputOperation, WindowsGuardedInputOutcome,
+        WindowsPhysicalInputFailureReason,
+    };
+    let failure = WindowsGuardedInputError {
+        reason: WindowsPhysicalInputFailureReason::TargetOccluded,
+        outcome: WindowsGuardedInputOutcome {
+            operation: WindowsGuardedInputOperation::Text,
+            mutation_attempted: false,
+            cursor_move_attempted: false,
+            cursor_move_succeeded: false,
+            requested_events: 0,
+            inserted_events: 0,
+            cleanup_requested_events: 0,
+            cleanup_inserted_events: 0,
+            delivery_completed: false,
+            post_dispatch_validated: false,
+            fresh_observation_required: true,
+        },
+        native_input_fence: None,
+        visibility_failure: None,
+        native_capture_popup: Some(Box::new(NativeCapturePopupInputDiagnostic {
+            reason: if has_blocker {
+                NativeCapturePopupRefusal::UnselectedOccluder
+            } else {
+                NativeCapturePopupRefusal::FocusOutsideRoot
+            },
+            target_process_id: 42,
+            target_window_handle: 100,
+            target_bounds: Some([100, 100, 800, 600]),
+            blocker_process_id: has_blocker.then_some(99),
+            blocker_window_handle: has_blocker.then_some(400),
+            blocker_bounds: has_blocker.then_some([120, 120, 10, 10]),
+        })),
+    };
+    assert!(
+        serde_json::to_value(&failure)
+            .unwrap()
+            .get("native_capture_popup")
+            .is_none()
+    );
+    let error = input_error(failure);
+    assert_eq!(error.code, ComputerUseErrorCode::TargetUnavailable);
+    let details = error.details.unwrap();
+    assert_eq!(details.phase, Some(ComputerUseErrorPhase::PreDispatch));
+    assert_eq!(details.action_attempted, Some(false));
+    assert_eq!(details.input_sent, Some(ComputerUseInputState::NotSent));
+    assert_eq!(details.effect_unknown, Some(false));
+    assert_eq!(details.blind_retry, Some(false));
+    let capture = serde_json::to_value(details.capture.unwrap()).unwrap();
+    let mut expected = serde_json::json!({
+        "stage":"native_capture_popup_input",
+        "reason": if has_blocker { "unselected_occluder" } else { "focus_outside_root" },
+        "target_process_id":42,"target_window_handle":100,"target_bounds":[100,100,800,600]
+    });
+    if has_blocker {
+        expected["blocker_process_id"] = 99.into();
+        expected["blocker_window_handle"] = 400.into();
+        expected["blocker_bounds"] = serde_json::json!([120, 120, 10, 10]);
+    }
+    assert_eq!(capture, expected);
 }
 
 #[rstest]

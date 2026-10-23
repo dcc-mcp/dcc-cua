@@ -45,6 +45,79 @@ pub enum NativeCapturePopupRefusal {
     NativeStateUnavailable,
 }
 
+/// Rejected native metadata only; this cannot authorize observation or input.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NativeCapturePopupInputDiagnostic {
+    pub reason: NativeCapturePopupRefusal,
+    pub target_process_id: u32,
+    pub target_window_handle: u64,
+    pub target_bounds: Option<[i32; 4]>,
+    pub blocker_process_id: Option<u32>,
+    pub blocker_window_handle: Option<u64>,
+    pub blocker_bounds: Option<[i32; 4]>,
+}
+
+#[derive(Debug)]
+pub(crate) struct NativeCapturePopupReadError {
+    source: Box<UiaError>,
+    reason: NativeCapturePopupRefusal,
+    target_bounds: Option<[i32; 4]>,
+    blocker: Option<(u32, u64, [i32; 4])>,
+}
+
+impl NativeCapturePopupReadError {
+    fn with_target_bounds(mut self, bounds: Option<[i32; 4]>) -> Self {
+        self.target_bounds = bounds;
+        self
+    }
+
+    fn with_blocker(mut self, blocker: &RootProofTraceEntry) -> Self {
+        self.blocker = blocker
+            .dwm_bounds
+            .map(|bounds| (blocker.process_id, blocker.window_handle, bounds));
+        self
+    }
+
+    pub(crate) fn diagnostic(
+        &self,
+        target: ExactWindowNativeState,
+    ) -> NativeCapturePopupInputDiagnostic {
+        NativeCapturePopupInputDiagnostic {
+            reason: self.reason,
+            target_process_id: target.process_id,
+            target_window_handle: target.window_handle,
+            target_bounds: self.target_bounds.or(target.visible_bounds),
+            blocker_process_id: self.blocker.map(|entry| entry.0),
+            blocker_window_handle: self.blocker.map(|entry| entry.1),
+            blocker_bounds: self.blocker.map(|entry| entry.2),
+        }
+    }
+}
+
+impl From<UiaError> for NativeCapturePopupReadError {
+    fn from(source: UiaError) -> Self {
+        Self {
+            source: Box::new(source),
+            reason: NativeCapturePopupRefusal::NativeStateUnavailable,
+            target_bounds: None,
+            blocker: None,
+        }
+    }
+}
+
+impl From<NativeCapturePopupRefusal> for NativeCapturePopupReadError {
+    fn from(reason: NativeCapturePopupRefusal) -> Self {
+        Self {
+            source: Box::new(UiaError::OperationFailed(format!(
+                "native capture popup proof refused: {reason:?}"
+            ))),
+            reason,
+            target_bounds: None,
+            blocker: None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct NativeCapturePopupInventory {
     pub process_id: u32,
@@ -134,8 +207,8 @@ struct Sample {
     desktop: [i32; 4],
 }
 
-fn refused(reason: NativeCapturePopupRefusal) -> UiaError {
-    UiaError::OperationFailed(format!("native capture popup proof refused: {reason:?}"))
+fn refused(reason: NativeCapturePopupRefusal) -> NativeCapturePopupReadError {
+    reason.into()
 }
 
 fn valid_selection(root: u64, selected: &[u64]) -> bool {
@@ -181,23 +254,23 @@ fn validate_sample(
     root_handle: u64,
     selected: &[u64],
     sample: &Sample,
-) -> Result<NativeCapturePopupProof, NativeCapturePopupRefusal> {
+) -> Result<NativeCapturePopupProof, NativeCapturePopupReadError> {
     use NativeCapturePopupRefusal::*;
     if !valid_selection(root_handle, selected) {
-        return Err(InvalidSelection);
+        return Err(InvalidSelection.into());
     }
     let root = sample.root;
     if root.process_id != process_id || root.window_handle != root_handle || !sample.root_is_root {
-        return Err(RootUnavailable);
+        return Err(RootUnavailable.into());
     }
     if !sample.root_enabled || !usable(&root, sample.desktop) {
-        return Err(RootNotUsable);
+        return Err(RootNotUsable.into());
     }
     if !root_focus(&root, sample.focus) {
-        return Err(FocusOutsideRoot);
+        return Err(FocusOutsideRoot.into());
     }
     if !selected.contains(&sample.focus.capture) {
-        return Err(CaptureNotSelected);
+        return Err(CaptureNotSelected.into());
     }
     if sample.overlays.len() != selected.len()
         || sample
@@ -205,7 +278,7 @@ fn validate_sample(
             .last()
             .is_none_or(|entry| entry.window_handle != root_handle)
     {
-        return Err(EnumerationIncomplete);
+        return Err(EnumerationIncomplete.into());
     }
     let root_entry = sample.roots.last().ok_or(EnumerationIncomplete)?;
     if root_entry.process_id != process_id
@@ -217,7 +290,7 @@ fn validate_sample(
         || root_entry.cloaked != Some(0)
         || root_entry.decision != RootProofDecision::TargetReached
     {
-        return Err(RootNotUsable);
+        return Err(RootNotUsable.into());
     }
     if sample.roots.iter().any(|entry| {
         entry.visible
@@ -226,7 +299,7 @@ fn validate_sample(
                     && entry.dwm_bounds.is_none()
                     && entry.decision != RootProofDecision::Empty))
     }) {
-        return Err(EnumerationIncomplete);
+        return Err(EnumerationIncomplete.into());
     }
     let bounds = root.visible_bounds.ok_or(RootNotUsable)?;
     let mut overlays = Vec::new();
@@ -238,7 +311,7 @@ fn validate_sample(
                 != root.instance.process_creation_time_100ns
             || state.instance.window_thread_id != root.instance.window_thread_id
         {
-            return Err(PopupIdentityMismatch);
+            return Err(PopupIdentityMismatch.into());
         }
         if popup.root != state.window_handle
             || popup.style & WS_POPUP == 0
@@ -247,7 +320,7 @@ fn validate_sample(
             || !popup.owner_is_local_or_absent
             || !usable(&state, sample.desktop)
         {
-            return Err(PopupNotUsable);
+            return Err(PopupNotUsable.into());
         }
         let position = sample
             .roots
@@ -269,7 +342,7 @@ fn validate_sample(
                 .and_then(|popup| intersection(bounds, popup))
                 .is_none()
         {
-            return Err(PopupNotUsable);
+            return Err(PopupNotUsable.into());
         }
         // Each selected popup's entire visible frame must also be free of every
         // foreign or unselected higher root, including pixels outside main.
@@ -282,7 +355,7 @@ fn validate_sample(
                     .is_some_and(|(a, b)| intersection(a, b).is_some())
                 && !selected.contains(&higher.window_handle)
             {
-                return Err(UnselectedOccluder);
+                return Err(refused(UnselectedOccluder).with_blocker(higher));
             }
         }
         overlays.push(state);
@@ -297,13 +370,13 @@ fn validate_sample(
             let state = overlays
                 .iter()
                 .find(|state| state.window_handle == entry.window_handle)
-                .ok_or(UnselectedOccluder)?;
+                .ok_or_else(|| refused(UnselectedOccluder).with_blocker(entry))?;
             ordered_occluders.push(*state);
             redacted_regions.push(region);
         }
     }
     if ordered_occluders.len() != selected.len() {
-        return Err(EnumerationIncomplete);
+        return Err(EnumerationIncomplete.into());
     }
     redacted_regions.sort_unstable();
     redacted_regions.dedup();
@@ -326,7 +399,7 @@ fn hwnd(handle: u64) -> HWND {
     handle as usize as HWND
 }
 
-fn read_focus(root: &ExactWindowNativeState) -> Result<FocusState, UiaError> {
+fn read_focus(root: &ExactWindowNativeState) -> Result<FocusState, NativeCapturePopupReadError> {
     let mut gui = GUITHREADINFO {
         cbSize: size_of::<GUITHREADINFO>() as u32,
         ..Default::default()
@@ -357,7 +430,7 @@ fn read_focus(root: &ExactWindowNativeState) -> Result<FocusState, UiaError> {
     })
 }
 
-fn read_popup(process_id: u32, handle: u64) -> Result<PopupState, UiaError> {
+fn read_popup(process_id: u32, handle: u64) -> Result<PopupState, NativeCapturePopupReadError> {
     let state = exact_window_native_state(process_id, handle)?;
     let owner = state.instance.owner_window_handle;
     let mut owner_pid = 0;
@@ -373,71 +446,91 @@ fn read_popup(process_id: u32, handle: u64) -> Result<PopupState, UiaError> {
     })
 }
 
-fn read_sample(process_id: u32, root_handle: u64, selected: &[u64]) -> Result<Sample, UiaError> {
+fn read_sample(
+    process_id: u32,
+    root_handle: u64,
+    selected: &[u64],
+) -> Result<Sample, NativeCapturePopupReadError> {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         GetSystemMetrics, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
         SM_YVIRTUALSCREEN,
     };
     let root = exact_window_native_state(process_id, root_handle)?;
-    let bounds = root
-        .visible_bounds
-        .ok_or_else(|| refused(NativeCapturePopupRefusal::RootUnavailable))?;
-    let right = bounds[0]
-        .checked_add(bounds[2])
-        .ok_or_else(|| refused(NativeCapturePopupRefusal::RootNotUsable))?;
-    let bottom = bounds[1]
-        .checked_add(bounds[3])
-        .ok_or_else(|| refused(NativeCapturePopupRefusal::RootNotUsable))?;
-    let focus = read_focus(&root)?;
-    let rect = RECT {
-        left: bounds[0],
-        top: bounds[1],
-        right,
-        bottom,
+    let read = || {
+        let bounds = root
+            .visible_bounds
+            .ok_or_else(|| refused(NativeCapturePopupRefusal::RootUnavailable))?;
+        let right = bounds[0]
+            .checked_add(bounds[2])
+            .ok_or_else(|| refused(NativeCapturePopupRefusal::RootNotUsable))?;
+        let bottom = bounds[1]
+            .checked_add(bounds[3])
+            .ok_or_else(|| refused(NativeCapturePopupRefusal::RootNotUsable))?;
+        let focus = read_focus(&root)?;
+        let rect = RECT {
+            left: bounds[0],
+            top: bounds[1],
+            right,
+            bottom,
+        };
+        let (result, roots) =
+            unsafe { enumerate_target_root_proof(CaptureHwnd(hwnd(root_handle)), rect, true) };
+        if result
+            .as_ref()
+            .is_err_and(|error| error.diagnostic.reason != VisibleWindowCaptureReason::RootOverlap)
+            || roots
+                .last()
+                .is_none_or(|entry| entry.window_handle != root_handle)
+            || roots.iter().any(|entry| {
+                matches!(
+                    entry.decision,
+                    RootProofDecision::RejectBounds
+                        | RootProofDecision::RejectBoundsQuery
+                        | RootProofDecision::RejectCloakingQuery
+                )
+            })
+        {
+            return Err(refused(NativeCapturePopupRefusal::EnumerationIncomplete));
+        }
+        let overlays = selected
+            .iter()
+            .map(|handle| read_popup(process_id, *handle))
+            .collect::<Result<Vec<_>, _>>()?;
+        let sample = Sample {
+            root,
+            root_is_root: unsafe { GetAncestor(hwnd(root_handle), GA_ROOT) } == hwnd(root_handle),
+            root_enabled: unsafe { IsWindowEnabled(hwnd(root_handle)) } != 0,
+            focus,
+            overlays,
+            roots,
+            desktop: unsafe {
+                [
+                    GetSystemMetrics(SM_XVIRTUALSCREEN),
+                    GetSystemMetrics(SM_YVIRTUALSCREEN),
+                    GetSystemMetrics(SM_CXVIRTUALSCREEN),
+                    GetSystemMetrics(SM_CYVIRTUALSCREEN),
+                ]
+            },
+        };
+        if exact_window_native_state(process_id, root_handle)? != root
+            || read_focus(&root)? != focus
+        {
+            return Err(refused(NativeCapturePopupRefusal::NativeStateChanged));
+        }
+        Ok(sample)
     };
-    let (result, roots) =
-        unsafe { enumerate_target_root_proof(CaptureHwnd(hwnd(root_handle)), rect, true) };
-    if result
-        .as_ref()
-        .is_err_and(|error| error.diagnostic.reason != VisibleWindowCaptureReason::RootOverlap)
-        || roots
-            .last()
-            .is_none_or(|entry| entry.window_handle != root_handle)
-        || roots.iter().any(|entry| {
-            matches!(
-                entry.decision,
-                RootProofDecision::RejectBounds
-                    | RootProofDecision::RejectBoundsQuery
-                    | RootProofDecision::RejectCloakingQuery
-            )
-        })
-    {
-        return Err(refused(NativeCapturePopupRefusal::EnumerationIncomplete));
-    }
-    let overlays = selected
-        .iter()
-        .map(|handle| read_popup(process_id, *handle))
-        .collect::<Result<Vec<_>, _>>()?;
-    let sample = Sample {
-        root,
-        root_is_root: unsafe { GetAncestor(hwnd(root_handle), GA_ROOT) } == hwnd(root_handle),
-        root_enabled: unsafe { IsWindowEnabled(hwnd(root_handle)) } != 0,
-        focus,
-        overlays,
-        roots,
-        desktop: unsafe {
-            [
-                GetSystemMetrics(SM_XVIRTUALSCREEN),
-                GetSystemMetrics(SM_YVIRTUALSCREEN),
-                GetSystemMetrics(SM_CXVIRTUALSCREEN),
-                GetSystemMetrics(SM_CYVIRTUALSCREEN),
-            ]
-        },
-    };
-    if exact_window_native_state(process_id, root_handle)? != root || read_focus(&root)? != focus {
-        return Err(refused(NativeCapturePopupRefusal::NativeStateChanged));
-    }
-    Ok(sample)
+    read()
+        .map_err(|error: NativeCapturePopupReadError| error.with_target_bounds(root.visible_bounds))
+}
+
+fn read_validated_sample(
+    process_id: u32,
+    root: u64,
+    selected: &[u64],
+) -> Result<NativeCapturePopupProof, NativeCapturePopupReadError> {
+    let sample = read_sample(process_id, root, selected)?;
+    validate_sample(process_id, root, selected, &sample)
+        .map_err(|error| error.with_target_bounds(sample.root.visible_bounds))
 }
 
 /// Metadata only. The caller must separately acquire and verify each actual
@@ -447,27 +540,25 @@ pub fn read_native_capture_popup_proof(
     root: u64,
     selected: &[u64],
 ) -> Result<NativeCapturePopupProof, UiaError> {
+    read_native_capture_popup_proof_diagnostic(process_id, root, selected)
+        .map_err(|error| *error.source)
+}
+
+pub(crate) fn read_native_capture_popup_proof_diagnostic(
+    process_id: u32,
+    root: u64,
+    selected: &[u64],
+) -> Result<NativeCapturePopupProof, NativeCapturePopupReadError> {
     if !valid_selection(root, selected) {
         return Err(refused(NativeCapturePopupRefusal::InvalidSelection));
     }
     let _dpi = ThreadDpiAwarenessGuard::per_monitor_v2()
         .map_err(|_| refused(NativeCapturePopupRefusal::RootUnavailable))?;
-    let before = validate_sample(
-        process_id,
-        root,
-        selected,
-        &read_sample(process_id, root, selected)?,
-    )
-    .map_err(refused)?;
-    let after = validate_sample(
-        process_id,
-        root,
-        selected,
-        &read_sample(process_id, root, selected)?,
-    )
-    .map_err(refused)?;
+    let before = read_validated_sample(process_id, root, selected)?;
+    let after = read_validated_sample(process_id, root, selected)?;
     if before != after {
-        return Err(refused(NativeCapturePopupRefusal::NativeStateChanged));
+        return Err(refused(NativeCapturePopupRefusal::NativeStateChanged)
+            .with_target_bounds(after.root.visible_bounds));
     }
     Ok(after)
 }
@@ -484,7 +575,7 @@ pub fn native_capture_popup_inventory(process_id: u32, root: u64) -> NativeCaptu
         candidates: Vec::new(),
         refusal_reason: None,
     };
-    let read = || -> Result<_, UiaError> {
+    let read = || -> Result<_, NativeCapturePopupReadError> {
         let _dpi = ThreadDpiAwarenessGuard::per_monitor_v2()
             .map_err(|_| refused(NativeCapturePopupRefusal::RootUnavailable))?;
         let sample = read_sample(process_id, root, &[])?;
@@ -544,11 +635,11 @@ pub(crate) fn native_capture_ended_with_root_focus(
     root: u64,
 ) -> Result<bool, UiaError> {
     let state = exact_window_native_state(process_id, root)?;
-    let focus = read_focus(&state)?;
+    let focus = read_focus(&state).map_err(|error| *error.source)?;
     Ok(focus.capture == 0
         && root_focus(&state, focus)
         && exact_window_native_state(process_id, root)? == state
-        && read_focus(&state)? == focus)
+        && read_focus(&state).map_err(|error| *error.source)? == focus)
 }
 
 #[cfg(test)]

@@ -198,7 +198,9 @@ fn selectors_are_exact_unique_and_bounded(#[case] case: &str) {
         _ => unreachable!(),
     };
     assert_eq!(
-        validate_sample(42, 100, &selected, &sample()).unwrap_err(),
+        validate_sample(42, 100, &selected, &sample())
+            .unwrap_err()
+            .reason,
         NativeCapturePopupRefusal::InvalidSelection
     );
 }
@@ -274,7 +276,9 @@ fn every_unselected_occluder_is_refused_even_same_process(#[case] foreign: bool)
     }
     sample.roots.insert(0, entry(blocker));
     assert_eq!(
-        validate_sample(42, 100, &[200, 300], &sample).unwrap_err(),
+        validate_sample(42, 100, &[200, 300], &sample)
+            .unwrap_err()
+            .reason,
         NativeCapturePopupRefusal::UnselectedOccluder
     );
 }
@@ -289,9 +293,46 @@ fn selected_popup_pixels_outside_the_main_root_also_need_complete_coverage() {
     blocker.process_id = 99;
     sample.roots.insert(0, entry(blocker));
     assert_eq!(
-        validate_sample(42, 100, &[200, 300], &sample).unwrap_err(),
+        validate_sample(42, 100, &[200, 300], &sample)
+            .unwrap_err()
+            .reason,
         NativeCapturePopupRefusal::UnselectedOccluder
     );
+}
+
+#[rstest]
+fn refused_native_sample_preserves_the_actual_blocker_without_reading_it_again() {
+    let mut sample = sample();
+    let mut blocker = state(400, [120, 120, 10, 10]);
+    blocker.process_id = 99;
+    sample.roots.insert(0, entry(blocker));
+    let rejected = validate_sample(42, 100, &[200, 300], &sample).unwrap_err();
+    let diagnostic = rejected.diagnostic(sample.root);
+    assert_eq!(
+        diagnostic.reason,
+        NativeCapturePopupRefusal::UnselectedOccluder
+    );
+    assert_eq!(diagnostic.target_process_id, 42);
+    assert_eq!(diagnostic.target_window_handle, 100);
+    assert_eq!(diagnostic.target_bounds, sample.root.visible_bounds);
+    assert_eq!(diagnostic.blocker_process_id, Some(99));
+    assert_eq!(diagnostic.blocker_window_handle, Some(400));
+    assert_eq!(diagnostic.blocker_bounds, blocker.visible_bounds);
+    assert_eq!(
+        rejected.source.to_string(),
+        refused(NativeCapturePopupRefusal::UnselectedOccluder)
+            .source
+            .to_string()
+    );
+    // A blocker does not conceal an earlier, higher-priority focus refusal.
+    sample.focus.foreground = 400;
+    let rejected = validate_sample(42, 100, &[200, 300], &sample).unwrap_err();
+    let diagnostic = rejected.diagnostic(sample.root);
+    assert_eq!(
+        diagnostic.reason,
+        NativeCapturePopupRefusal::FocusOutsideRoot
+    );
+    assert_eq!(diagnostic.blocker_window_handle, None);
 }
 
 #[rstest]

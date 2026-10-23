@@ -2,7 +2,8 @@
 //! The ordinary exact-root and all pointer boundaries remain unchanged.
 use super::*;
 use crate::native_capture_popup::{
-    NativeCapturePopupProof, native_capture_ended_with_root_focus, read_native_capture_popup_proof,
+    NativeCapturePopupProof, native_capture_ended_with_root_focus,
+    read_native_capture_popup_proof_diagnostic,
 };
 
 fn validate_root_fence(
@@ -63,6 +64,7 @@ struct CapturePopupBackend<'a, G, I> {
     interrupted: I,
     started: Instant,
     closed_postcheck_allowed: bool,
+    rejection: Option<crate::NativeCapturePopupInputDiagnostic>,
 }
 
 fn keyboard_release_completed(
@@ -111,7 +113,8 @@ impl<G: FnMut() -> Result<(), UiaError>, I: FnMut() -> bool> CapturePopupBackend
     ) -> Result<(), Reason> {
         let expected = self.proof;
         validate_root_fence(fence, expected.root)?;
-        check_capture_popup_fence(
+        let mut rejection = None;
+        let result = check_capture_popup_fence(
             fence,
             &mut self.gate,
             &mut self.interrupted,
@@ -121,7 +124,7 @@ impl<G: FnMut() -> Result<(), UiaError>, I: FnMut() -> bool> CapturePopupBackend
                     .iter()
                     .map(|state| state.window_handle)
                     .collect::<Vec<_>>();
-                match read_native_capture_popup_proof(
+                match read_native_capture_popup_proof_diagnostic(
                     fence.target.process_id,
                     fence.target.window_handle,
                     &selected,
@@ -129,7 +132,8 @@ impl<G: FnMut() -> Result<(), UiaError>, I: FnMut() -> bool> CapturePopupBackend
                     // Only the final read-only check after balanced release can
                     // accept resized geometry from the same fully proven episode.
                     Ok(proof) => validate_current_proof(expected, &proof, allow_closed),
-                    Err(_) if allow_closed => {
+                    Err(error) if allow_closed => {
+                        rejection = Some(error.diagnostic(expected.root));
                         // Enter may normally close search. Only the fully released
                         // final postcheck may accept that transition; no next input
                         // can use it. The strict original root proof must pass.
@@ -164,20 +168,33 @@ impl<G: FnMut() -> Result<(), UiaError>, I: FnMut() -> bool> CapturePopupBackend
                         };
                         validate_physical_metadata(fence, evidence, state, desktop, None, false)
                     }
-                    Err(_) => Err(Reason::TargetOccluded),
+                    Err(error) => {
+                        rejection = Some(error.diagnostic(expected.root));
+                        Err(Reason::TargetOccluded)
+                    }
                 }
             },
             || {
                 exact_window_native_state(fence.target.process_id, fence.target.window_handle)
                     .map_err(|_| Reason::TargetUnavailable)
             },
-        )
+        );
+        self.rejection = if result == Err(Reason::TargetOccluded) {
+            rejection
+        } else {
+            None
+        };
+        result
     }
 }
 
 impl<G: FnMut() -> Result<(), UiaError>, I: FnMut() -> bool> InputBackend
     for CapturePopupBackend<'_, G, I>
 {
+    fn capture_popup_rejection(&self) -> Option<crate::NativeCapturePopupInputDiagnostic> {
+        self.rejection.clone()
+    }
+
     fn check(
         &mut self,
         fence: WindowsPhysicalInputFence,
@@ -260,6 +277,7 @@ fn with_capture_popup_backend<G: FnMut() -> Result<(), UiaError>, I: FnMut() -> 
         outcome: WindowsGuardedInputOutcome::new(operation),
         native_input_fence: None,
         visibility_failure: None,
+        native_capture_popup: None,
     })?;
     run(&mut CapturePopupBackend {
         proof,
@@ -267,6 +285,7 @@ fn with_capture_popup_backend<G: FnMut() -> Result<(), UiaError>, I: FnMut() -> 
         interrupted,
         started: Instant::now(),
         closed_postcheck_allowed: false,
+        rejection: None,
     })
 }
 

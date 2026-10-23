@@ -103,6 +103,8 @@ pub struct WindowsGuardedInputError {
         Option<Box<dcc_cua_protocol::native_input_diagnostic::NativeInputFenceDiagnostic>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub visibility_failure: Option<Box<crate::VisibleWindowCaptureDiagnostic>>,
+    #[serde(skip)]
+    pub native_capture_popup: Option<Box<crate::NativeCapturePopupInputDiagnostic>>,
 }
 
 impl WindowsGuardedInputError {
@@ -248,6 +250,10 @@ fn final_physical_boundary<T>(
 }
 
 trait InputBackend {
+    fn capture_popup_rejection(&self) -> Option<crate::NativeCapturePopupInputDiagnostic> {
+        None
+    }
+
     fn rejection_diagnostic(&self) -> Option<RejectedFenceDiagnostic> {
         None
     }
@@ -538,6 +544,7 @@ impl<B: InputBackend> Transaction<'_, B> {
                     visibility_failure: diagnostic
                         .and_then(|diagnostic| diagnostic.visibility_failure)
                         .map(Box::new),
+                    native_capture_popup: self.backend.capture_popup_rejection().map(Box::new),
                 })
             }
         }
@@ -753,6 +760,7 @@ fn with_native_backend<G: FnMut() -> Result<(), UiaError>, I: FnMut() -> bool>(
         outcome: WindowsGuardedInputOutcome::new(operation),
         native_input_fence: None,
         visibility_failure: None,
+        native_capture_popup: None,
     })?;
     let mut backend = NativeBackend {
         gate,

@@ -765,6 +765,7 @@ pub enum ComputerUseCaptureStage {
     CaptureIdentity,
     VisibleDesktopProof,
     PublicationValidation,
+    NativeCapturePopupInput,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -785,6 +786,19 @@ pub enum ComputerUseCaptureReason {
     TargetBoundsChanged,
     RootOverlap,
     PixelEvidenceChanged,
+    InvalidSelection,
+    RootUnavailable,
+    RootNotUsable,
+    GuiStateUnavailable,
+    FocusOutsideRoot,
+    CaptureNotSelected,
+    PopupUnavailable,
+    PopupIdentityMismatch,
+    PopupNotUsable,
+    EnumerationIncomplete,
+    UnselectedOccluder,
+    NativeStateChanged,
+    NativeStateUnavailable,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
