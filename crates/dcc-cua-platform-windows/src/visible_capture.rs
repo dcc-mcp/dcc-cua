@@ -864,6 +864,23 @@ pub fn exact_window_point_visible(
     window_handle: u64,
     point: (i32, i32),
 ) -> Result<bool, VisibleWindowCaptureError> {
+    exact_window_point_evidence(process_id, window_handle, point).map(|sample| sample.visible)
+}
+
+pub(crate) struct ExactWindowPointEvidence {
+    pub visible: bool,
+    pub hit_window_handle: Option<u64>,
+    pub hit_process_id: Option<u32>,
+    pub hit_root_window_handle: Option<u64>,
+    pub hit_is_target_or_child: bool,
+    pub redacted_regions: Vec<[i32; 4]>,
+}
+
+pub(crate) fn exact_window_point_evidence(
+    process_id: u32,
+    window_handle: u64,
+    point: (i32, i32),
+) -> Result<ExactWindowPointEvidence, VisibleWindowCaptureError> {
     let _dpi_scope = ThreadDpiAwarenessGuard::per_monitor_v2()?;
     validate_exact_window_owner(process_id, window_handle)
         .map_err(|e| capture_error(e.to_string()))?;
@@ -877,14 +894,29 @@ pub fn exact_window_point_visible(
         })
     };
     let target_hit = hit == hwnd || unsafe { IsChild(hwnd, hit) }.as_bool();
+    let mut hit_pid = 0;
+    let hit_root = if hit.0.is_null() {
+        hit
+    } else {
+        unsafe { GetWindowThreadProcessId(hit, Some(&mut hit_pid)) };
+        unsafe { root_or_self(hit) }
+    };
     validate_exact_window_owner(process_id, window_handle)
         .map_err(|e| capture_error(e.to_string()))?;
-    Ok(target_hit
+    let visible = target_hit
         && crate::occlusion::point_visible(
             point,
             physical_root_bounds(rect).unwrap_or_default(),
             &regions,
-        ))
+        );
+    Ok(ExactWindowPointEvidence {
+        visible,
+        hit_window_handle: (!hit.0.is_null()).then_some(hit.0 as usize as u64),
+        hit_process_id: (hit_pid != 0).then_some(hit_pid),
+        hit_root_window_handle: (!hit_root.0.is_null()).then_some(hit_root.0 as usize as u64),
+        hit_is_target_or_child: target_hit,
+        redacted_regions: regions,
+    })
 }
 
 unsafe fn prove_target_unobscured(

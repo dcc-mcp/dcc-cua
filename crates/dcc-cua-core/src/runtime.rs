@@ -44,6 +44,7 @@ mod tests;
 #[cfg(any(windows, test))]
 pub(crate) use drag_sequences::*;
 pub(crate) mod application;
+mod capture_popup;
 mod menu_commands;
 mod native_menu_commands;
 mod pixel_observation;
@@ -1571,6 +1572,10 @@ pub struct ComputerUseSession {
     #[cfg(windows)]
     native_menu_metadata: Option<native_menu_commands::NativeMenuMetadata>,
     #[cfg(windows)]
+    capture_popup_metadata: Option<capture_popup::CapturePopupMetadata>,
+    #[cfg(windows)]
+    capture_popup_initial_root: Option<dcc_cua_platform_windows::ExactWindowPixelInstanceEvidence>,
+    #[cfg(windows)]
     capture_preparation:
         Option<dcc_cua_platform_windows::capture_preparation::CapturePreparationHandle>,
     action_evidence_epoch: ActionEvidenceEpoch,
@@ -1642,6 +1647,11 @@ impl ComputerUseSession {
         {
             self.native_frame_metadata = None;
             self.native_menu_metadata = None;
+            self.capture_popup_metadata = None;
+            self.capture_popup_initial_root =
+                dcc_cua_platform_windows::exact_window_native_state(target.pid, target.window_id)
+                    .ok()
+                    .map(|state| state.instance);
         }
         self.app_name = resolved_application_name(&self.app_name, &target);
         self.marker.label = localized_control_label(&self.agent_name, &self.app_name);

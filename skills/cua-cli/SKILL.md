@@ -200,6 +200,16 @@ input chain; continue authorized passive observations if useful. Do not blindly
 retry activation or repeatedly ask the user to switch windows. Repair the native
 or Agent Host handoff before another input attempt.
 
+Windows pixels-only dragging requires an explicit raw-input `drag` action scope.
+Use two screenshot-local `path` endpoints, optional `button` (left by default),
+`duration_ms` from 1 to 10000 (default 500), and `steps` from 1 to 200 (default 20).
+Do not mix coordinates, modifiers, text, selectors or backend overrides into the
+drag. Take a fresh snapshot first: the whole line must be unredacted and each
+sampled point natively reachable on the unchanged foreground target. A failure
+releases the operation's held button and consumes the observation; never blindly
+resume or retry. Verify the actual node position or other intended result after
+delivery. Older runtimes whose closed action list omits `drag` cannot use it.
+
 For a Windows standard native popup menu (`#32768`) without accessible menu
 items, the public MCP task route can cancel that exact active popup without
 keyboard input or activation. Start an exact `window` / `pixels_only` task with
@@ -407,3 +417,17 @@ the Host so users and agents can verify that control is active. Exact-window
 WGC frames intentionally contain only the target window; the external banner
 is not expected to appear in those PNG pixels. The banner remains owned by the
 Host and must not be painted into game content or synthesized by the client.
+
+For native capture overlays that obscure an otherwise exact foreground/focused
+main window, the owner can independently enable
+`allow_native_capture_popup_keyboard` on its pixels task. Read the bounded
+`get_window_state.native_capture_popup_inventory`, explicitly select at most
+eight exact transient HWNDs with snapshot's
+`native_capture_popup_window_handles`, and inspect every separately labeled
+overlay image. The root image remains redacted. Use only a granted keyboard
+action and the latest root observation within five seconds; every attempt
+consumes the private composite proof. Missing, foreign, changed or unselected
+occlusion is refused before input. Only the final read-only check after balanced
+release can accept resized geometry in the same fully proven popup episode.
+The input target stays the main root and pointer rules
+stay unchanged. See [the agent plugin contract](../../docs/agent-plugin.md#explicit-native-capture-popup-observations).

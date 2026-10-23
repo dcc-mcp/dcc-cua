@@ -138,6 +138,18 @@ pub(super) fn native_frame_lease_matches_binding(
 }
 
 impl HostSession {
+    pub(super) fn require_native_capture_popup_keyboard_grant(
+        &self,
+        session_id: &str,
+    ) -> Result<u64, crate::HostError> {
+        self.bound_task_authorization(session_id, "snapshot")
+            .filter(|lease| self.observation_mode == crate::TaskObservationMode::PixelsOnly
+                && lease.allowed_actions.iter().any(crate::TrustedTaskActionScope::is_native_capture_popup_keyboard))
+            .map(|lease| lease.expires_at_unix_ms)
+            .ok_or_else(|| crate::HostError::coded_protocol(crate::HostProtocolErrorCode::TaskAuthorizationDenied,
+                "selected native capture popup observations require the independent trusted owner ceiling"))
+    }
+
     pub(super) fn require_native_menu_dismiss_grant(
         &self,
         session_id: &str,

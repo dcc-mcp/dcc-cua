@@ -60,12 +60,22 @@ impl TrustedTaskAuthorizationBrowserScope {
 }
 
 impl TrustedTaskActionScope {
+    /// Independent secondary-observation ceiling; grants no keyboard action.
+    pub fn is_native_capture_popup_keyboard(&self) -> bool {
+        self.action == "native_capture_popup_keyboard"
+            && self.input_kind == "window_state"
+            && !self.secret_input
+            && self.authorization_category == "window_state"
+            && self.browser_origin.is_none()
+    }
+
     /// Pixel actions whose native dispatch has the complete observation fence.
     pub const PIXELS_INPUT_ACTIONS: &'static [&'static str] = &[
         "click",
         "double_click",
         "right_click",
         "toggle",
+        "drag",
         "keypress",
         "keyboard_shortcut",
         "type",
@@ -155,6 +165,7 @@ impl TrustedTaskActionScope {
         match self.input_kind.as_str() {
             "window_state" => {
                 self.is_window_minimize()
+                    || self.is_native_capture_popup_keyboard()
                     || self.is_window_frame()
                     || self.is_native_menu_dismiss()
                     || self.is_capture_preparation()

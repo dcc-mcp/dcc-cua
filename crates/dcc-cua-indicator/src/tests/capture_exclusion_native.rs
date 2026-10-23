@@ -50,6 +50,15 @@ pub(crate) static SERIAL: Mutex<()> = Mutex::new(());
 pub(crate) static ACTIVE: AtomicBool = AtomicBool::new(true);
 pub(crate) static STOP_AFTER_HIDE: AtomicBool = AtomicBool::new(false);
 pub(crate) static TITLE_UNRESPONSIVE: AtomicBool = AtomicBool::new(false);
+pub(crate) static HIDE_REFUSED: AtomicBool = AtomicBool::new(false);
+pub(crate) static CAPTURE_REQUESTS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+pub(crate) static SYNC_SHOW_CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+pub(crate) static ASYNC_UNACKNOWLEDGED: AtomicBool = AtomicBool::new(false);
+pub(crate) static ASYNC_HIDE_DELAY: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+pub(crate) static DEFER_ASYNC_RESTORE: AtomicBool = AtomicBool::new(false);
+pub(crate) static ASYNC_RESTORE_POST_REFUSED: AtomicBool = AtomicBool::new(false);
+pub(crate) static QUEUED_RESTORES: Mutex<Vec<usize>> = Mutex::new(Vec::new());
+pub(crate) static ASYNC_HIDE_REQUESTS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 pub(crate) const SW_HIDE: i32 = 0;
 pub(crate) const SW_SHOWNOACTIVATE: i32 = 4;
 pub(crate) struct CrossProcessGate;
@@ -61,6 +70,7 @@ impl CrossProcessGate {
 pub(crate) struct CrossProcessCaptureRequest;
 impl CrossProcessCaptureRequest {
     pub(crate) fn begin() -> Result<Self, IndicatorError> {
+        CAPTURE_REQUESTS.fetch_add(1, Ordering::AcqRel);
         Ok(Self)
     }
 }
@@ -84,6 +94,9 @@ pub(crate) unsafe fn IsWindowVisible(hwnd: HWND) -> BOOL {
             .iter()
             .any(|w| w.raw == hwnd.0 as usize && w.visible) as i32,
     )
+}
+pub(crate) unsafe fn IsWindow(hwnd: Option<HWND>) -> BOOL {
+    BOOL(hwnd.is_some_and(|hwnd| WINDOWS.lock().unwrap().iter().any(|w| w.raw == hwnd.0 as usize)) as i32)
 }
 pub(crate) unsafe fn GetWindowThreadProcessId(hwnd: HWND, pid: Option<*mut u32>) -> u32 {
     let windows = WINDOWS.lock().unwrap();
@@ -125,13 +138,38 @@ pub(crate) unsafe fn SendMessageTimeoutW(
     LRESULT(1)
 }
 pub(crate) unsafe fn ShowWindow(hwnd: HWND, mode: i32) -> BOOL {
+    SYNC_SHOW_CALLS.fetch_add(1, Ordering::AcqRel);
+    unsafe { apply_show(hwnd, mode) }
+}
+pub(crate) unsafe fn ShowWindowAsync(hwnd: HWND, mode: i32) -> BOOL {
+    if mode == SW_SHOWNOACTIVATE && ASYNC_RESTORE_POST_REFUSED.load(Ordering::Acquire) {
+        return BOOL(0);
+    }
+    if mode == SW_HIDE {
+        ASYNC_HIDE_REQUESTS.fetch_add(1, Ordering::AcqRel);
+    }
+    if mode == SW_SHOWNOACTIVATE && DEFER_ASYNC_RESTORE.load(Ordering::Acquire) {
+        QUEUED_RESTORES.lock().unwrap().push(hwnd.0 as usize);
+        return BOOL(1);
+    }
+    if mode == SW_HIDE && ASYNC_HIDE_DELAY.fetch_update(Ordering::AcqRel, Ordering::Acquire, |remaining| remaining.checked_sub(1)).is_ok() {
+        return BOOL(1);
+    }
+    if !ASYNC_UNACKNOWLEDGED.load(Ordering::Acquire) {
+        unsafe { apply_show(hwnd, mode); }
+    }
+    BOOL(1)
+}
+pub(crate) unsafe fn apply_show(hwnd: HWND, mode: i32) -> BOOL {
     let mut windows = WINDOWS.lock().unwrap();
     let window = windows
         .iter_mut()
         .find(|w| w.raw == hwnd.0 as usize)
         .unwrap();
     let old = window.visible;
-    window.visible = mode != SW_HIDE;
+    if mode != SW_HIDE || !HIDE_REFUSED.load(Ordering::Acquire) {
+        window.visible = mode != SW_HIDE;
+    }
     if mode == SW_HIDE && STOP_AFTER_HIDE.load(Ordering::Acquire) {
         ACTIVE.store(false, Ordering::Release);
     }
@@ -161,6 +199,24 @@ fn setup(pid: u32) {
     ACTIVE.store(true, Ordering::Release);
     STOP_AFTER_HIDE.store(false, Ordering::Release);
     TITLE_UNRESPONSIVE.store(false, Ordering::Release);
+    HIDE_REFUSED.store(false, Ordering::Release);
+    CAPTURE_REQUESTS.store(0, Ordering::Release);
+    SYNC_SHOW_CALLS.store(0, Ordering::Release);
+    ASYNC_UNACKNOWLEDGED.store(false, Ordering::Release);
+    ASYNC_HIDE_DELAY.store(0, Ordering::Release);
+    DEFER_ASYNC_RESTORE.store(false, Ordering::Release);
+    ASYNC_RESTORE_POST_REFUSED.store(false, Ordering::Release);
+    QUEUED_RESTORES.lock().unwrap().clear();
+    ASYNC_HIDE_REQUESTS.store(0, Ordering::Release);
+    let mut restores = state().cursor_gate.lock().unwrap_or_else(|e| e.into_inner());
+    restores.pending.clear();
+    restores.deferred.clear();
+}
+fn flush_queued_restores() {
+    let queued = std::mem::take(&mut *QUEUED_RESTORES.lock().unwrap());
+    for raw in queued {
+        unsafe { apply_show(HWND(raw as *mut _), SW_SHOWNOACTIVATE); }
+    }
 }
 fn visible(raw: usize) -> bool {
     unsafe { IsWindowVisible(HWND(raw as *mut _)) }.as_bool()
@@ -174,6 +230,317 @@ fn owned_cursor_success_restores_on_guard_drop() {
     assert!(!visible(55));
     drop(guard);
     assert!(visible(55));
+}
+
+#[rstest]
+fn input_cursor_lease_preserves_peer_presenters_and_unregistered_cursors() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    setup(std::process::id());
+    WINDOWS.lock().unwrap().extend([
+        Window { raw: 66, pid: std::process::id(), class: "DccCuaControlBanner", title: "independent-peer".into(), visible: true },
+        Window { raw: 77, pid: std::process::id(), class: "Cua.AgentCursorOverlay", title: "Cua.AgentCursorOverlay.unregistered-peer".into(), visible: true },
+        Window { raw: 88, pid: std::process::id().wrapping_add(1), class: "Cua.AgentCursorOverlay", title: "Cua.AgentCursorOverlay.owned-test-runtime".into(), visible: true },
+    ]);
+    let guard = capture_exclusion::begin_input_cursor(&ACTIVE)
+        .expect("registered cursor exclusion must leave peers to the native input fence");
+    assert!(!visible(55));
+    assert!(visible(66) && visible(77) && visible(88));
+    assert!(!state().suppressed.load(Ordering::Acquire));
+    assert_eq!(CAPTURE_REQUESTS.load(Ordering::Acquire), 0);
+    assert!(state().input_cursor_requested.load(Ordering::Acquire));
+    let mut watcher = CursorSuppression::default();
+    synchronize_registered_cursors(false, &mut watcher);
+    assert!(!visible(55), "idle capture restoration cannot revive the input-owned cursor");
+    drop(guard);
+    assert!(visible(55) && visible(66) && visible(77) && visible(88));
+    assert!(!state().input_cursor_requested.load(Ordering::Acquire));
+}
+
+#[rstest]
+fn input_cursor_lease_retains_prior_capture_ownership_until_input_finishes() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    setup(std::process::id());
+    let mut watcher = CursorSuppression::default();
+    synchronize_registered_cursors(true, &mut watcher);
+    let guard = capture_exclusion::begin_input_cursor(&ACTIVE).unwrap();
+    synchronize_registered_cursors(false, &mut watcher);
+    assert!(!visible(55));
+    drop(guard);
+    synchronize_registered_cursors(false, &mut watcher);
+    assert!(visible(55));
+}
+
+#[rstest]
+fn stopped_input_cursor_acquisition_restores_owned_cursor_without_peer_suppression() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    setup(std::process::id());
+    STOP_AFTER_HIDE.store(true, Ordering::Release);
+    let result = capture_exclusion::begin_input_cursor(&ACTIVE);
+    assert!(!ACTIVE.load(Ordering::Acquire));
+    assert!(result.is_err());
+    assert!(visible(55));
+    assert!(!state().input_cursor_requested.load(Ordering::Acquire));
+    assert!(!state().suppressed.load(Ordering::Acquire));
+}
+
+#[rstest]
+fn input_cursor_native_hide_failure_never_acknowledges_the_lease() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    setup(std::process::id());
+    HIDE_REFUSED.store(true, Ordering::Release);
+    assert!(capture_exclusion::begin_input_cursor(&ACTIVE).is_err());
+    assert!(visible(55));
+    assert!(!state().input_cursor_requested.load(Ordering::Acquire));
+    assert!(!state().suppressed.load(Ordering::Acquire));
+    assert_eq!(CAPTURE_REQUESTS.load(Ordering::Acquire), 0);
+}
+
+#[rstest]
+fn registered_cursor_input_never_calls_synchronous_cross_thread_show() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    setup(std::process::id());
+    let guard = capture_exclusion::begin_input_cursor(&ACTIVE).unwrap();
+    assert!(!visible(55));
+    drop(guard);
+    assert!(visible(55));
+    assert_eq!(SYNC_SHOW_CALLS.load(Ordering::Acquire), 0);
+}
+
+#[rstest]
+fn asynchronous_cursor_request_is_not_a_physical_hide_acknowledgement() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    setup(std::process::id());
+    ASYNC_UNACKNOWLEDGED.store(true, Ordering::Release);
+    assert!(capture_exclusion::begin_input_cursor(&ACTIVE).is_err());
+    assert!(visible(55));
+    assert!(!state().input_cursor_requested.load(Ordering::Acquire));
+}
+
+#[rstest]
+fn asynchronous_cursor_hide_waits_for_actual_visibility_ack() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    setup(std::process::id());
+    ASYNC_HIDE_DELAY.store(3, Ordering::Release);
+    let guard = capture_exclusion::begin_input_cursor(&ACTIVE).unwrap();
+    assert_eq!(ASYNC_HIDE_DELAY.load(Ordering::Acquire), 0);
+    assert!(!visible(55));
+    assert_eq!(SYNC_SHOW_CALLS.load(Ordering::Acquire), 0);
+    drop(guard);
+    assert!(visible(55));
+}
+
+#[rstest]
+fn input_cursor_waits_for_prior_queued_restore_before_hiding_again() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    setup(std::process::id());
+    DEFER_ASYNC_RESTORE.store(true, Ordering::Release);
+    drop(capture_exclusion::begin_input_cursor(&ACTIVE).unwrap());
+    assert!(!visible(55));
+    assert_eq!(QUEUED_RESTORES.lock().unwrap().len(), 1);
+    let (acquired_tx, acquired_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        let lease = capture_exclusion::begin_input_cursor(&ACTIVE);
+        acquired_tx.send(lease.is_ok()).unwrap();
+        release_rx.recv().unwrap();
+        drop(lease);
+    });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while !state().input_cursor_requested.load(Ordering::Acquire) && std::time::Instant::now() < deadline {
+        std::thread::yield_now();
+    }
+    let early = acquired_rx.recv_timeout(std::time::Duration::from_millis(20)).ok();
+    flush_queued_restores();
+    let acquired = early.unwrap_or_else(|| {
+        acquired_rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap()
+    });
+    let hidden_after_ack = !visible(55);
+    flush_queued_restores();
+    let stays_hidden = !visible(55);
+    release_tx.send(()).unwrap();
+    worker.join().unwrap();
+    flush_queued_restores();
+    assert!(early.is_none(), "an old queued show must finish before the next hide can be acknowledged");
+    assert!(acquired && hidden_after_ack && stays_hidden);
+    assert!(visible(55));
+}
+
+#[rstest]
+fn queued_restore_is_deduplicated_across_watcher_capture_and_guard_owners() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    setup(std::process::id());
+    let owned = registered_window(HWND(55 as *mut _)).unwrap();
+    DEFER_ASYNC_RESTORE.store(true, Ordering::Release);
+    drop(capture_exclusion::begin_input_cursor(&ACTIVE).unwrap());
+    let mut watcher = CursorSuppression(vec![owned.clone()]);
+    synchronize_registered_cursors(false, &mut watcher);
+    drop(CursorSuppression(vec![owned]));
+    assert_eq!(QUEUED_RESTORES.lock().unwrap().len(), 1, "restoration owners share one pending show");
+    let hide_requests = ASYNC_HIDE_REQUESTS.load(Ordering::Acquire);
+    synchronize_registered_cursors(true, &mut watcher);
+    assert!(!hide_cursor_overlays_and_confirm_all_hidden(&mut watcher.0));
+    assert_eq!(ASYNC_HIDE_REQUESTS.load(Ordering::Acquire), hide_requests, "no hide may overtake the pending show");
+    flush_queued_restores();
+    assert!(hide_cursor_overlays_and_confirm_all_hidden(&mut watcher.0));
+    assert!(!visible(55));
+    drop(watcher);
+    flush_queued_restores();
+    assert!(visible(55));
+}
+
+#[rstest]
+fn presenter_ack_waits_for_queued_cursor_restore_without_resuming_surfaces() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    setup(std::process::id());
+    DEFER_ASYNC_RESTORE.store(true, Ordering::Release);
+    drop(capture_exclusion::begin_input_cursor(&ACTIVE).unwrap());
+    WINDOWS.lock().unwrap().push(Window {
+        raw: 77, pid: std::process::id(), class: "DccCuaControlBanner",
+        title: "local-presenter".into(), visible: true,
+    });
+    state().requested.fetch_add(1, Ordering::AcqRel);
+    state().acknowledged.store(0, Ordering::Release);
+    state().suppressed.store(true, Ordering::Release);
+    let mut acknowledged = 0;
+    let mut cursors = CursorSuppression::default();
+    let remains_suppressed = hide_and_acknowledge(
+        state(), HWND(77 as *mut _), &[], &AtomicBool::new(true),
+        &AtomicBool::new(false), &mut acknowledged, &mut cursors,
+    );
+    let early_ack = state().acknowledged.load(Ordering::Acquire);
+    let presenter_hidden = !visible(77);
+    flush_queued_restores();
+    let remains_suppressed_after_restore = hide_and_acknowledge(
+        state(), HWND(77 as *mut _), &[], &AtomicBool::new(false),
+        &AtomicBool::new(false), &mut acknowledged, &mut cursors,
+    );
+    let final_ack = state().acknowledged.load(Ordering::Acquire);
+    state().suppressed.store(false, Ordering::Release);
+    drop(cursors);
+    flush_queued_restores();
+    assert!(remains_suppressed && remains_suppressed_after_restore && presenter_hidden);
+    assert_eq!(early_ack, 0, "a queued show cannot be acknowledged as excluded");
+    assert_eq!(final_ack, 1, "the same request can acknowledge after restore and hide ACKs");
+}
+
+fn assert_first_capture_ack_keeps_foreign_surfaces_visible(foreign: bool) {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    setup(std::process::id());
+    WINDOWS.lock().unwrap().extend([
+        Window { raw: 77, pid: std::process::id(), class: "DccCuaControlBanner", title: "local-presenter".into(), visible: true },
+        Window { raw: 88, pid: std::process::id(), class: "DccCuaControlFrame", title: "local-frame".into(), visible: true },
+    ]);
+    if foreign {
+        WINDOWS.lock().unwrap().push(Window {
+            raw: 99, pid: std::process::id().wrapping_add(1), class: "DccCuaControlBanner",
+            title: "foreign-presenter".into(), visible: true,
+        });
+    }
+    state().requested.fetch_add(1, Ordering::AcqRel);
+    state().acknowledged.store(0, Ordering::Release);
+    state().suppressed.store(true, Ordering::Release);
+    let mut acknowledged = 0;
+    let mut cursors = CursorSuppression::default();
+    let remains_suppressed = hide_and_acknowledge(
+        state(), HWND(77 as *mut _), &[OverlayWindow(HWND(88 as *mut _))],
+        &AtomicBool::new(true), &AtomicBool::new(true), &mut acknowledged, &mut cursors,
+    );
+    let capture_ack = state().acknowledged.load(Ordering::Acquire);
+    let surfaces_hidden = !visible(77) && !visible(88) && !visible(55);
+    let foreign_unchanged = !foreign || visible(99);
+    state().suppressed.store(false, Ordering::Release);
+    drop(cursors);
+    assert!(remains_suppressed && surfaces_hidden && foreign_unchanged);
+    assert_eq!(capture_ack, usize::from(!foreign));
+}
+
+#[rstest]
+fn first_capture_ack_checks_cursor_only_after_hiding_its_own_surfaces() {
+    assert_first_capture_ack_keeps_foreign_surfaces_visible(false);
+}
+
+#[rstest]
+fn first_capture_ack_still_refuses_visible_foreign_presenters() {
+    assert_first_capture_ack_keeps_foreign_surfaces_visible(true);
+}
+
+#[rstest]
+fn failed_restore_post_retains_unposted_ownership_for_the_idle_watcher() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    setup(std::process::id());
+    let guard = capture_exclusion::begin_input_cursor(&ACTIVE).unwrap();
+    ASYNC_RESTORE_POST_REFUSED.store(true, Ordering::Release);
+    drop(guard);
+    let (pending, deferred) = {
+        let restores = state().cursor_gate.lock().unwrap_or_else(|e| e.into_inner());
+        (restores.pending.len(), restores.deferred.len())
+    };
+    ASYNC_RESTORE_POST_REFUSED.store(false, Ordering::Release);
+    synchronize_registered_cursors(false, &mut CursorSuppression::default());
+    assert_eq!(pending, 0, "a refused post has no queued show to acknowledge");
+    assert_eq!(deferred, 1, "the exact unposted restoration responsibility remains owned");
+    assert!(visible(55), "the idle watcher retries the failed restore post");
+}
+
+#[rstest]
+fn unacknowledged_restore_refuses_the_next_input_lease_without_new_hide() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    setup(std::process::id());
+    DEFER_ASYNC_RESTORE.store(true, Ordering::Release);
+    drop(capture_exclusion::begin_input_cursor(&ACTIVE).unwrap());
+    let hide_requests = ASYNC_HIDE_REQUESTS.load(Ordering::Acquire);
+    let result = capture_exclusion::begin_input_cursor(&ACTIVE);
+    assert!(matches!(result, Err(IndicatorError::CaptureExclusion(_))));
+    assert_eq!(ASYNC_HIDE_REQUESTS.load(Ordering::Acquire), hide_requests);
+    assert_eq!(QUEUED_RESTORES.lock().unwrap().len(), 1);
+    assert!(!state().input_cursor_requested.load(Ordering::Acquire));
+    flush_queued_restores();
+}
+
+#[rstest]
+fn pending_restore_needs_positive_identity_evidence_or_a_destroyed_handle() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    setup(std::process::id());
+    DEFER_ASYNC_RESTORE.store(true, Ordering::Release);
+    drop(capture_exclusion::begin_input_cursor(&ACTIVE).unwrap());
+    let mut pending = state().cursor_gate.lock().unwrap_or_else(|e| e.into_inner());
+    TITLE_UNRESPONSIVE.store(true, Ordering::Release);
+    assert!(!cursor_restores_acknowledged(&mut pending.pending));
+    assert_eq!(pending.pending.len(), 1, "unknown identity cannot discharge an asynchronous restore");
+    WINDOWS.lock().unwrap().clear();
+    assert!(cursor_restores_acknowledged(&mut pending.pending));
+    QUEUED_RESTORES.lock().unwrap().clear();
+}
+
+#[rstest]
+fn prior_suppression_owner_drop_defers_its_restore_until_input_finishes() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    setup(std::process::id());
+    let mut watcher = CursorSuppression::default();
+    synchronize_registered_cursors(true, &mut watcher);
+    let guard = capture_exclusion::begin_input_cursor(&ACTIVE).unwrap();
+    DEFER_ASYNC_RESTORE.store(true, Ordering::Release);
+    drop(watcher);
+    assert!(QUEUED_RESTORES.lock().unwrap().is_empty(), "an old owner cannot post show while input owns suppression");
+    flush_queued_restores();
+    assert!(!visible(55));
+    drop(guard);
+    assert_eq!(QUEUED_RESTORES.lock().unwrap().len(), 1);
+    flush_queued_restores();
+    assert!(visible(55));
+}
+
+#[rstest]
+fn unposted_restore_survives_temporarily_unavailable_identity_at_drop() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    setup(std::process::id());
+    let guard = capture_exclusion::begin_input_cursor(&ACTIVE).unwrap();
+    TITLE_UNRESPONSIVE.store(true, Ordering::Release);
+    drop(guard);
+    assert!(!visible(55));
+    TITLE_UNRESPONSIVE.store(false, Ordering::Release);
+    synchronize_registered_cursors(false, &mut CursorSuppression::default());
+    assert!(visible(55), "temporary uncertainty must retain restoration ownership until exact identity returns");
 }
 
 #[rstest]

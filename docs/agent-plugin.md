@@ -164,7 +164,7 @@ foreign-window pixels; they do not reconstruct the covered target content.
 
 Pixel tasks permit observation, native state reads, the explicit minimize
 operation, and these explicitly scoped foreground raw actions: `click`,
-`double_click`, `right_click`, `toggle`, `keypress`, `keyboard_shortcut`, `type`,
+`double_click`, `right_click`, `toggle`, `drag`, `keypress`, `keyboard_shortcut`, `type`,
 and `type_chars`. To use them, include `execute_action` in `allowed_methods` and
 grant each required action with `input_kind: "raw_input"`, `secret_input: false`,
 and `authorization_category: "raw_input"`. The Host derives raw-input permission
@@ -181,13 +181,38 @@ observation. With `capture_after: true`, the post-action observation uses the
 same pixel route and cannot mint semantic element authorization. A failed post
 snapshot requires a fresh observation before another action.
 
+The native worker holds the owning banner suppression and the existing
+acknowledged exclusion of only its configured, process-local registered cursor
+through input cleanup and the final postcheck. Input never requests capture's
+global overlay exclusion: peer presenters and foreign or unregistered cursor
+windows remain visible to the native fence.
+Acquisition failure sends no input. Foreign or unregistered windows remain
+subject to the unchanged native visibility and hit-test rules.
+
 Pointer actions additionally require an unredacted point in that observation
 and a fresh native hit test on the exact target or its child. Other parts of the
 window may be covered. Keyboard and text actions retain the complete visibility
 requirement. A readable background capture alone never authorizes foreground
 input or click-through to another window.
 
-Semantic selectors, browser/clipboard input, secret input, drag, wheel, move,
+Windows pixel `drag` accepts exactly two screenshot-local `path` points and an
+optional `button` (`left`, `middle`, or `right`; default `left`). `duration_ms`
+is 1–10000 (default 500); `steps` is 1–200 (default 20). Do not supply x/y,
+modifiers, keys, text, semantic selectors, or backend overrides. The complete
+interpolated path must be observed and unredacted; every sampled point is
+natively preflighted before input and checked again before movement. Target
+identity, physical bounds, DPI, foreground and visibility remain fenced while
+the button is held. Failure or interruption releases only this operation's
+inserted button-down, once; it never resumes a failed drag. Delivery still needs
+a fresh snapshot or typed application-state readback to prove the intended move.
+
+For example, the `params` of a granted `execute_action` call can be:
+
+```json
+{"observation_id":"<latest>","capture_after":true,"action":{"action":"drag","input_kind":"raw_input","intent":"ordinary_edit","delivery_mode":"foreground","path":[{"x":100,"y":200},{"x":260,"y":240}],"duration_ms":500,"steps":20}}
+```
+
+Semantic selectors, browser/clipboard input, secret input, wheel, move,
 and recording are outside this pixel contract. It retains the existing
 separately authorized `change_window_state` activate/restore route; pixel startup,
 snapshots, and raw input never implicitly activate a window.
@@ -302,3 +327,53 @@ It measures default and diagnostic snapshots on disposable native windows,
 decodes their PNGs, verifies ownership and cleanup, and writes `results.json`.
 Keep other builds stopped while sampling. These SDK timings exclude MCP
 transport, perception, and input; encoding-only timings are a separate metric.
+
+### Explicit native capture popup observations
+
+Some applications keep their exact main window foreground and focused while
+native transient roots hold mouse capture and obscure the main pixels. The
+owner may opt into `start_task.allow_native_capture_popup_keyboard=true` on an
+exact `pixels_only` task with `snapshot`, `get_window_state`, `execute_action`,
+and independently granted non-secret raw keyboard actions. The default is false.
+This secondary-observation ceiling grants no keyboard action or pointer exception.
+
+Read `get_window_state.native_capture_popup_inventory`, then explicitly pass
+one through eight unique positive HWNDs to
+`snapshot.native_capture_popup_window_handles`. Select the actual native capture
+root and every overlapping transient reported by the bounded native proof.
+An incomplete inventory, foreign root, changed instance, or unselected occluder
+refuses the composite observation. Ownership is not inferred for unowned Qt roots.
+
+The snapshot retains the exact main-root image and its honest redactions. Its
+`native_capture_popup_observation` contains separately labeled overlay frames,
+their complete native observations, and image attachment descriptors. Image
+order is main root first, then the requested HWND order. Independently visible
+pixels from the selected frames must cover every redacted main-root pixel.
+Black redactions never become evidence of hidden application content.
+
+Existing keyboard actions still target the exact main root using the latest
+root `observation_id`. A private, one-use composite receipt is valid for at most
+five seconds after completed capture. Every input attempt consumes it. The final
+native boundary rechecks full native births, GUI thread, focus, active/foreground
+root, exact capture window, geometry, selected occlusion, desktop and interruption.
+It never activates or retargets a window. Only the final read-only check after
+fully balanced keyboard release may accept resized popup/redaction geometry,
+after a fresh complete native proof with the same root, native identities,
+selected HWND order, focus, GUI state, desktop and z-order. Every new input batch
+still requires strict equality with the observed proof. A completed Enter may
+end capture. After fully balanced delivery, a postcheck that finds a hidden or
+destroyed selected popup may wait read-only for at most 100 ms for that same
+episode to finish closing. Each read pins the original root, focus, native
+identities, desktop and selected
+occluder order; new or unknown occluders refuse immediately. Success still
+requires the complete original composite check or the unobscured, capture-free
+root check. No input is replayed. Delivery and the resulting application effect
+remain separate outcomes. Take a fresh ordinary or explicitly selected snapshot
+after every action.
+
+A rejected native popup proof reports content-free `details.capture` with
+`stage: native_capture_popup_input`, a closed native refusal `reason`, and the
+bound target process, window and bounds. An actual unselected occluder also
+reports its process, window and bounds from the rejected sample. These diagnostics
+grant no authority; the existing phase and input-delivery fields still determine
+whether any input was sent.
