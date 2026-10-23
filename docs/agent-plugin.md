@@ -359,8 +359,14 @@ fully balanced keyboard release may accept resized popup/redaction geometry,
 after a fresh complete native proof with the same root, native identities,
 selected HWND order, focus, GUI state, desktop and z-order. Every new input batch
 still requires strict equality with the observed proof. A completed Enter may
-end capture; delivery and the resulting application effect remain separate
-outcomes. Take a fresh ordinary or explicitly selected snapshot after every action.
+end capture. After fully balanced delivery, a `popup_not_usable` postcheck may
+wait read-only for at most 100 ms for that same episode to finish closing. Each
+read pins the original root, focus, native identities, desktop and selected
+occluder order; new or unknown occluders refuse immediately. Success still
+requires the complete original composite check or the unobscured, capture-free
+root check. No input is replayed. Delivery and the resulting application effect
+remain separate outcomes. Take a fresh ordinary or explicitly selected snapshot
+after every action.
 
 A rejected native popup proof reports content-free `details.capture` with
 `stage: native_capture_popup_input`, a closed native refusal `reason`, and the

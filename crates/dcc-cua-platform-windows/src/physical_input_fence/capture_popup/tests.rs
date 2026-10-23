@@ -2,6 +2,174 @@ use super::*;
 use rstest::rstest;
 use std::cell::{Cell, RefCell};
 
+struct ClosingEnterBackend {
+    balanced: bool,
+    batches: Vec<Vec<Event>>,
+    reads: usize,
+    now: Cell<Duration>,
+}
+
+impl InputBackend for ClosingEnterBackend {
+    fn check(
+        &mut self,
+        _fence: WindowsPhysicalInputFence,
+        _point: Option<(i32, i32)>,
+    ) -> Result<(), Reason> {
+        if !self.balanced {
+            return Ok(());
+        }
+        completed_popup_postcheck(
+            self.balanced,
+            |_settling| {
+                self.reads += 1;
+                // Popup hidden with old capture, capture zero with selected
+                // shadow, then the original unobscured-root postcheck succeeds.
+                if self.reads < 3 {
+                    (Err(Reason::TargetOccluded), true)
+                } else {
+                    (Ok(()), false)
+                }
+            },
+            |duration| self.now.set(self.now.get() + duration),
+            || self.now.get(),
+        )
+    }
+    fn mutate(
+        &mut self,
+        _fence: WindowsPhysicalInputFence,
+        _point: Option<(i32, i32)>,
+        events: &[Event],
+        _cursor: Option<(i32, i32)>,
+        cleanup_only: bool,
+    ) -> Result<MutationReceipt, Reason> {
+        let receipt = MutationReceipt {
+            requested: events.len() as u32,
+            inserted: events.len() as u32,
+            cursor_attempted: false,
+            cursor_succeeded: false,
+        };
+        self.batches.push(events.to_vec());
+        self.balanced = keyboard_release_completed(events, receipt, cleanup_only);
+        Ok(receipt)
+    }
+    fn interrupted(&mut self) -> bool {
+        false
+    }
+    fn elapsed_ms(&self) -> u64 {
+        0
+    }
+    fn pause(&mut self, _milliseconds: u64) {}
+}
+
+#[rstest]
+fn enter_balanced_batch_waits_read_only_for_the_same_popup_to_finish_closing() {
+    let mut backend = ClosingEnterBackend {
+        balanced: false,
+        batches: vec![],
+        reads: 0,
+        now: Cell::new(Duration::ZERO),
+    };
+    let outcome = run_keypress(&mut backend, fixture().0, &["Enter".into()], None)
+        .expect("balanced Enter may finish closing before the read-only root postcheck");
+    assert_eq!(
+        backend.batches,
+        vec![vec![
+            Event::Key(VK_RETURN, false),
+            Event::Key(VK_RETURN, true)
+        ]]
+    );
+    assert_eq!(backend.reads, 3);
+    assert_eq!(outcome.inserted_events, 2);
+    assert_eq!(outcome.cleanup_requested_events, 0);
+    assert!(outcome.delivery_completed && outcome.post_dispatch_validated);
+}
+
+#[rstest]
+#[case("not_balanced")]
+#[case("foreign")]
+#[case("desktop")]
+#[case("escape")]
+#[case("deadline")]
+#[case("slow_read")]
+#[case("pause_overrun")]
+fn completed_popup_wait_never_replays_input_or_restarts_its_budget(#[case] case: &str) {
+    let now = Cell::new(Duration::ZERO);
+    let reads = Cell::new(0);
+    let result = completed_popup_postcheck(
+        case != "not_balanced",
+        |_settling| {
+            reads.set(reads.get() + 1);
+            if case == "slow_read" {
+                now.set(now.get() + Duration::from_millis(60));
+                return if reads.get() == 1 {
+                    (Err(Reason::TargetOccluded), true)
+                } else {
+                    (Ok(()), false)
+                };
+            }
+            if reads.get() > 1 {
+                match case {
+                    "foreign" => return (Err(Reason::TargetOccluded), false),
+                    "desktop" => return (Err(Reason::DesktopUnavailable), false),
+                    "escape" => return (Err(Reason::Interrupted), false),
+                    _ => {}
+                }
+            }
+            (Err(Reason::TargetOccluded), true)
+        },
+        |duration| {
+            now.set(
+                now.get()
+                    + if case == "pause_overrun" {
+                        Duration::from_millis(105)
+                    } else {
+                        duration
+                    },
+            )
+        },
+        || now.get(),
+    );
+    assert!(result.is_err());
+    assert_eq!(
+        reads.get(),
+        if case == "not_balanced" || case == "pause_overrun" {
+            1
+        } else if case == "deadline" {
+            20
+        } else {
+            2
+        }
+    );
+    assert!(
+        now.get()
+            <= Duration::from_millis(if case == "slow_read" {
+                125
+            } else if case == "pause_overrun" {
+                105
+            } else {
+                100
+            })
+    );
+}
+
+#[rstest]
+#[case(NativeCapturePopupRefusal::PopupNotUsable, true, true)]
+#[case(NativeCapturePopupRefusal::CaptureNotSelected, false, true)]
+#[case(NativeCapturePopupRefusal::PopupUnavailable, false, true)]
+#[case(NativeCapturePopupRefusal::NativeStateUnavailable, false, true)]
+#[case(NativeCapturePopupRefusal::NativeStateChanged, false, false)]
+#[case(NativeCapturePopupRefusal::GuiStateUnavailable, false, false)]
+#[case(NativeCapturePopupRefusal::UnselectedOccluder, false, false)]
+fn only_known_closing_stages_can_share_the_completed_keyboard_budget(
+    #[case] reason: NativeCapturePopupRefusal,
+    #[case] starts: bool,
+    #[case] continues: bool,
+) {
+    assert_eq!(may_wait_for_completed_popup(false, Some(reason)), starts);
+    assert_eq!(may_wait_for_completed_popup(true, Some(reason)), continues);
+    assert!(!may_wait_for_completed_popup(true, None));
+}
+
 fn fixture() -> (WindowsPhysicalInputFence, ExactWindowNativeState) {
     let instance = ExactWindowPixelInstanceEvidence {
         process_creation_time_100ns: 7,

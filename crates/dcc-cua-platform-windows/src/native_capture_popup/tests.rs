@@ -108,6 +108,85 @@ impl NativeCapturePopupProof {
 }
 
 #[rstest]
+#[case("hidden_capture", true)]
+#[case("remaining_shadow", true)]
+#[case("gone", true)]
+#[case("foreign", false)]
+#[case("new_same_pid", false)]
+#[case("unknown_cloaking", false)]
+#[case("unknown_bounds", false)]
+#[case("changed_birth", false)]
+#[case("changed_class", false)]
+#[case("changed_thread", false)]
+#[case("changed_owner", false)]
+#[case("changed_dpi", false)]
+#[case("reordered", false)]
+#[case("focus", false)]
+#[case("focus_birth", false)]
+#[case("foreground", false)]
+#[case("gui_flags", false)]
+#[case("unknown_capture", false)]
+#[case("root_birth", false)]
+#[case("root_frame", false)]
+#[case("root_dpi", false)]
+#[case("desktop", false)]
+fn completed_teardown_waits_only_for_the_original_exact_episode(
+    #[case] case: &str,
+    #[case] allowed: bool,
+) {
+    let mut current = sample();
+    let expected = validate_sample(42, 100, &[200, 300], &current).unwrap();
+    match case {
+        "hidden_capture" => {
+            current.overlays[0].state.visible = false;
+            current.overlays[0].enabled = false;
+            current.roots.remove(0);
+        }
+        "remaining_shadow" => {
+            current.focus.capture = 0;
+            current.overlays.remove(0);
+            current.roots.remove(0);
+        }
+        "gone" => {
+            current.focus.capture = 0;
+            current.overlays.clear();
+            current.roots.drain(..2);
+        }
+        "foreign" | "new_same_pid" => {
+            let mut blocker = state(400, [120, 120, 10, 10]);
+            if case == "foreign" {
+                blocker.process_id += 1;
+            }
+            current.roots.insert(0, entry(blocker));
+        }
+        "unknown_cloaking" => current.roots[0].cloaked = None,
+        "unknown_bounds" => current.roots[0].dwm_bounds = None,
+        "changed_birth" => {
+            current.overlays[0]
+                .state
+                .instance
+                .process_creation_time_100ns += 1
+        }
+        "changed_class" => current.overlays[0].state.instance.window_class_hash += 1,
+        "changed_thread" => current.overlays[0].state.instance.window_thread_id += 1,
+        "changed_owner" => current.overlays[0].state.instance.owner_window_handle += 1,
+        "changed_dpi" => current.overlays[0].state.dpi += 1,
+        "reordered" => current.roots.swap(0, 1),
+        "focus" => current.focus.focus += 1,
+        "focus_birth" => current.focus.focus_instance.process_creation_time_100ns += 1,
+        "foreground" => current.focus.foreground = 300,
+        "gui_flags" => current.focus.flags = GUI_CARETBLINKING,
+        "unknown_capture" => current.focus.capture = 300,
+        "root_birth" => current.root.instance.process_creation_time_100ns += 1,
+        "root_frame" => current.root.bounds.as_mut().unwrap()[0] += 1,
+        "root_dpi" => current.root.dpi += 1,
+        "desktop" => current.desktop[2] += 1,
+        _ => unreachable!(),
+    }
+    assert_eq!(completed_teardown_unchanged(&expected, &current), allowed);
+}
+
+#[rstest]
 fn completed_keyboard_postcheck_accepts_only_a_fresh_geometry_transition() {
     let (expected, current) = NativeCapturePopupProof::test_geometry_transition();
     assert!(expected.matches_completed_keyboard_postcheck(&current));

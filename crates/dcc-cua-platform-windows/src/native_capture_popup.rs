@@ -196,7 +196,7 @@ struct PopupState {
     owner_is_local_or_absent: bool,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct Sample {
     root: ExactWindowNativeState,
     root_is_root: bool,
@@ -205,6 +205,169 @@ struct Sample {
     overlays: Vec<PopupState>,
     roots: Vec<RootProofTraceEntry>,
     desktop: [i32; 4],
+}
+
+// Waiting is not a proof or input authority. Only already observed companions
+// may remain over the unchanged root while a completed keyboard episode closes.
+fn completed_teardown_unchanged(expected: &NativeCapturePopupProof, sample: &Sample) -> bool {
+    let mut focus = sample.focus;
+    if focus.capture != 0 && focus.capture != expected.capture.window_handle {
+        return false;
+    }
+    focus.capture = expected.focus.capture;
+    if sample.root != expected.root
+        || sample.desktop != expected.desktop
+        || !sample.root_is_root
+        || !sample.root_enabled
+        || focus != expected.focus
+        || !root_focus(&sample.root, sample.focus)
+        || (sample.focus.capture != 0
+            && !sample
+                .overlays
+                .iter()
+                .any(|popup| popup.state.window_handle == sample.focus.capture))
+    {
+        return false;
+    }
+    let Some(last) = sample.roots.last() else {
+        return false;
+    };
+    if last.window_handle != sample.root.window_handle
+        || last.process_id != sample.root.process_id
+        || last.thread_id != sample.root.instance.window_thread_id
+        || last.root_window_handle != sample.root.window_handle
+        || last.owner_window_handle != sample.root.instance.owner_window_handle
+        || last.dwm_bounds != sample.root.visible_bounds
+        || last.win32_bounds != sample.root.bounds
+        || last.dpi != sample.root.dpi
+        || !last.visible
+        || last.minimized
+        || last.cloaked != Some(0)
+        || last.decision != RootProofDecision::TargetReached
+    {
+        return false;
+    }
+    for popup in &sample.overlays {
+        let Some(original) = expected
+            .overlays
+            .iter()
+            .find(|state| state.window_handle == popup.state.window_handle)
+        else {
+            return false;
+        };
+        if popup.state.process_id != original.process_id
+            || popup.state.instance != original.instance
+            || popup.state.dpi != original.dpi
+            || popup.state.minimized
+            || popup.state.maximized != original.maximized
+            || popup.state.foreground != original.foreground
+            || popup.root != popup.state.window_handle
+            || popup.style & WS_POPUP == 0
+            || popup.style & WS_CHILD != 0
+            || !popup.owner_is_local_or_absent
+            || (popup.state.visible && (!popup.enabled || !usable(&popup.state, sample.desktop)))
+        {
+            return false;
+        }
+    }
+    let mut previous = None;
+    for entry in &sample.roots[..sample.roots.len() - 1] {
+        if !entry.visible {
+            continue;
+        }
+        if entry.cloaked.is_none()
+            || (entry.cloaked == Some(0)
+                && entry.dwm_bounds.is_none()
+                && entry.decision != RootProofDecision::Empty)
+        {
+            return false;
+        }
+        if entry.cloaked != Some(0)
+            || entry
+                .dwm_bounds
+                .zip(sample.root.visible_bounds)
+                .is_none_or(|(a, b)| intersection(a, b).is_none())
+        {
+            continue;
+        }
+        let Some(index) = expected
+            .ordered_occluders
+            .iter()
+            .position(|state| state.window_handle == entry.window_handle)
+        else {
+            return false;
+        };
+        if previous.is_some_and(|previous| index <= previous) {
+            return false;
+        }
+        previous = Some(index);
+        let Some(popup) = sample
+            .overlays
+            .iter()
+            .find(|popup| popup.state.window_handle == entry.window_handle)
+        else {
+            return false;
+        };
+        let state = popup.state;
+        if !state.visible
+            || entry.decision != RootProofDecision::Overlap
+            || entry.minimized
+            || entry.root_window_handle != state.window_handle
+            || entry.process_id != state.process_id
+            || entry.thread_id != state.instance.window_thread_id
+            || entry.owner_window_handle != state.instance.owner_window_handle
+            || entry.dpi != state.dpi
+            || entry.dwm_bounds != state.visible_bounds
+            || entry.win32_bounds != state.bounds
+        {
+            return false;
+        }
+    }
+    true
+}
+
+pub(crate) fn native_capture_popup_teardown_pending(expected: &NativeCapturePopupProof) -> bool {
+    let read = || -> Result<Sample, NativeCapturePopupReadError> {
+        let mut sample = read_sample(expected.root.process_id, expected.root.window_handle, &[])?;
+        let mut selected = sample
+            .roots
+            .iter()
+            .filter(|entry| {
+                entry.visible
+                    && entry.cloaked == Some(0)
+                    && entry.window_handle != expected.root.window_handle
+                    && entry
+                        .dwm_bounds
+                        .zip(expected.root.visible_bounds)
+                        .is_some_and(|(a, b)| intersection(a, b).is_some())
+            })
+            .map(|entry| entry.window_handle)
+            .collect::<Vec<_>>();
+        if sample.focus.capture != 0 && !selected.contains(&sample.focus.capture) {
+            selected.push(sample.focus.capture);
+        }
+        if selected.len() > MAX_SELECTED
+            || selected.iter().any(|handle| {
+                !expected
+                    .overlays
+                    .iter()
+                    .any(|state| state.window_handle == *handle)
+            })
+        {
+            return Err(NativeCapturePopupRefusal::UnselectedOccluder.into());
+        }
+        sample.overlays = selected
+            .iter()
+            .map(|handle| read_popup(expected.root.process_id, *handle))
+            .collect::<Result<_, _>>()?;
+        Ok(sample)
+    };
+    let Ok(before) = read() else {
+        return false;
+    };
+    completed_teardown_unchanged(expected, &before)
+        && read()
+            .is_ok_and(|after| after == before && completed_teardown_unchanged(expected, &after))
 }
 
 fn refused(reason: NativeCapturePopupRefusal) -> NativeCapturePopupReadError {

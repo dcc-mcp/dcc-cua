@@ -2,8 +2,8 @@
 //! The ordinary exact-root and all pointer boundaries remain unchanged.
 use super::*;
 use crate::native_capture_popup::{
-    NativeCapturePopupProof, native_capture_ended_with_root_focus,
-    read_native_capture_popup_proof_diagnostic,
+    NativeCapturePopupProof, NativeCapturePopupRefusal, native_capture_ended_with_root_focus,
+    native_capture_popup_teardown_pending, read_native_capture_popup_proof_diagnostic,
 };
 
 fn validate_root_fence(
@@ -105,8 +105,103 @@ fn validate_current_proof(
     }
 }
 
+fn completed_popup_postcheck(
+    completed_keyboard: bool,
+    mut read: impl FnMut(bool) -> (Result<(), Reason>, bool),
+    mut pause: impl FnMut(Duration),
+    mut elapsed: impl FnMut() -> Duration,
+) -> Result<(), Reason> {
+    let started = elapsed();
+    let mut settling = false;
+    for attempt in 0..=20 {
+        if settling && elapsed().saturating_sub(started) >= Duration::from_millis(100) {
+            return Err(Reason::TargetOccluded);
+        }
+        let (result, unchanged_teardown) = read(settling);
+        let expired = elapsed().saturating_sub(started) >= Duration::from_millis(100);
+        if result.is_ok() && settling && expired {
+            return Err(Reason::TargetOccluded);
+        }
+        if !completed_keyboard
+            || result != Err(Reason::TargetOccluded)
+            || !unchanged_teardown
+            || expired
+            || attempt == 20
+        {
+            return result;
+        }
+        settling = true;
+        pause(
+            Duration::from_millis(5)
+                .min(Duration::from_millis(100).saturating_sub(elapsed().saturating_sub(started))),
+        );
+    }
+    unreachable!("bounded completed-popup postcheck returns on its final read")
+}
+
+fn may_wait_for_completed_popup(settling: bool, reason: Option<NativeCapturePopupRefusal>) -> bool {
+    use NativeCapturePopupRefusal::*;
+    matches!(reason, Some(PopupNotUsable))
+        || (settling
+            && matches!(
+                reason,
+                Some(CaptureNotSelected | PopupUnavailable | NativeStateUnavailable)
+            ))
+}
+
 impl<G: FnMut() -> Result<(), UiaError>, I: FnMut() -> bool> CapturePopupBackend<'_, G, I> {
     fn check_mode(
+        &mut self,
+        fence: WindowsPhysicalInputFence,
+        allow_closed: bool,
+    ) -> Result<(), Reason> {
+        let started = Instant::now();
+        completed_popup_postcheck(
+            allow_closed,
+            |settling| {
+                let result = self.check_mode_once(fence, allow_closed);
+                if !allow_closed
+                    || result != Err(Reason::TargetOccluded)
+                    || !may_wait_for_completed_popup(
+                        settling,
+                        self.rejection.as_ref().map(|rejection| rejection.reason),
+                    )
+                {
+                    return (result, false);
+                }
+                // Read-only waiting never mints a proof. Every new mutation
+                // still calls check_mode(false), and final success must come
+                // from the original complete composite or unobscured root.
+                let unchanged = check_capture_popup_fence(
+                    fence,
+                    &mut self.gate,
+                    &mut self.interrupted,
+                    || {
+                        if native_capture_popup_teardown_pending(self.proof) {
+                            Ok(())
+                        } else {
+                            Err(Reason::TargetOccluded)
+                        }
+                    },
+                    || {
+                        exact_window_native_state(
+                            fence.target.process_id,
+                            fence.target.window_handle,
+                        )
+                        .map_err(|_| Reason::TargetUnavailable)
+                    },
+                );
+                match unchanged {
+                    Ok(()) => (result, true),
+                    Err(reason) => (Err(reason), false),
+                }
+            },
+            std::thread::sleep,
+            || started.elapsed(),
+        )
+    }
+
+    fn check_mode_once(
         &mut self,
         fence: WindowsPhysicalInputFence,
         allow_closed: bool,
