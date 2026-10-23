@@ -458,7 +458,7 @@ pub(super) fn hide_and_acknowledge(
     }
     // Each peer cooperates only on its own registered renderer. Enumeration
     // may find an unknown/visible peer; the capturing process then refuses.
-    hide_cursor_overlays_and_confirm_all_hidden(&mut cursors.0);
+    let cursors_hidden = hide_cursor_overlays_and_confirm_all_hidden(&mut cursors.0);
     let requested = state.requested.load(Ordering::Acquire);
     let _ = unsafe { ShowWindow(overlay, SW_HIDE) };
     for frame in frames {
@@ -466,7 +466,8 @@ pub(super) fn hide_and_acknowledge(
     }
     visible.store(false, Ordering::Release);
     frame_visible.store(false, Ordering::Release);
-    if !unsafe { IsWindowVisible(overlay) }.as_bool()
+    if cursors_hidden
+        && !unsafe { IsWindowVisible(overlay) }.as_bool()
         && frames
             .iter()
             .all(|frame| !unsafe { IsWindowVisible(frame.0) }.as_bool())
@@ -525,8 +526,11 @@ fn restore_cursors_locked(windows: &mut Vec<OwnedCursorWindow>, restores: &mut C
                 {
                     // Async show can outlive this lease. Keep its exact
                     // identity until visible ACK before another hide.
-                    restores.pending.push(owned);
-                    let _ = unsafe { ShowWindowAsync(window, SW_SHOWNOACTIVATE) };
+                    if unsafe { ShowWindowAsync(window, SW_SHOWNOACTIVATE) }.as_bool() {
+                        restores.pending.push(owned);
+                    } else if !restores.deferred.contains(&owned) {
+                        restores.deferred.push(owned);
+                    }
                 }
             }
             Some(_) => {}

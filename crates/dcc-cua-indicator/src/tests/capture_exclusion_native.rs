@@ -56,6 +56,7 @@ pub(crate) static SYNC_SHOW_CALLS: std::sync::atomic::AtomicUsize = std::sync::a
 pub(crate) static ASYNC_UNACKNOWLEDGED: AtomicBool = AtomicBool::new(false);
 pub(crate) static ASYNC_HIDE_DELAY: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 pub(crate) static DEFER_ASYNC_RESTORE: AtomicBool = AtomicBool::new(false);
+pub(crate) static ASYNC_RESTORE_POST_REFUSED: AtomicBool = AtomicBool::new(false);
 pub(crate) static QUEUED_RESTORES: Mutex<Vec<usize>> = Mutex::new(Vec::new());
 pub(crate) static ASYNC_HIDE_REQUESTS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 pub(crate) const SW_HIDE: i32 = 0;
@@ -141,6 +142,9 @@ pub(crate) unsafe fn ShowWindow(hwnd: HWND, mode: i32) -> BOOL {
     unsafe { apply_show(hwnd, mode) }
 }
 pub(crate) unsafe fn ShowWindowAsync(hwnd: HWND, mode: i32) -> BOOL {
+    if mode == SW_SHOWNOACTIVATE && ASYNC_RESTORE_POST_REFUSED.load(Ordering::Acquire) {
+        return BOOL(0);
+    }
     if mode == SW_HIDE {
         ASYNC_HIDE_REQUESTS.fetch_add(1, Ordering::AcqRel);
     }
@@ -201,6 +205,7 @@ fn setup(pid: u32) {
     ASYNC_UNACKNOWLEDGED.store(false, Ordering::Release);
     ASYNC_HIDE_DELAY.store(0, Ordering::Release);
     DEFER_ASYNC_RESTORE.store(false, Ordering::Release);
+    ASYNC_RESTORE_POST_REFUSED.store(false, Ordering::Release);
     QUEUED_RESTORES.lock().unwrap().clear();
     ASYNC_HIDE_REQUESTS.store(0, Ordering::Release);
     let mut restores = state().cursor_gate.lock().unwrap_or_else(|e| e.into_inner());
@@ -381,6 +386,59 @@ fn queued_restore_is_deduplicated_across_watcher_capture_and_guard_owners() {
     drop(watcher);
     flush_queued_restores();
     assert!(visible(55));
+}
+
+#[rstest]
+fn presenter_ack_waits_for_queued_cursor_restore_without_resuming_surfaces() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    setup(std::process::id());
+    DEFER_ASYNC_RESTORE.store(true, Ordering::Release);
+    drop(capture_exclusion::begin_input_cursor(&ACTIVE).unwrap());
+    WINDOWS.lock().unwrap().push(Window {
+        raw: 77, pid: std::process::id(), class: "DccCuaControlBanner",
+        title: "local-presenter".into(), visible: true,
+    });
+    state().requested.fetch_add(1, Ordering::AcqRel);
+    state().acknowledged.store(0, Ordering::Release);
+    state().suppressed.store(true, Ordering::Release);
+    let mut acknowledged = 0;
+    let mut cursors = CursorSuppression::default();
+    let remains_suppressed = hide_and_acknowledge(
+        state(), HWND(77 as *mut _), &[], &AtomicBool::new(true),
+        &AtomicBool::new(false), &mut acknowledged, &mut cursors,
+    );
+    let early_ack = state().acknowledged.load(Ordering::Acquire);
+    let presenter_hidden = !visible(77);
+    flush_queued_restores();
+    let remains_suppressed_after_restore = hide_and_acknowledge(
+        state(), HWND(77 as *mut _), &[], &AtomicBool::new(false),
+        &AtomicBool::new(false), &mut acknowledged, &mut cursors,
+    );
+    let final_ack = state().acknowledged.load(Ordering::Acquire);
+    state().suppressed.store(false, Ordering::Release);
+    drop(cursors);
+    flush_queued_restores();
+    assert!(remains_suppressed && remains_suppressed_after_restore && presenter_hidden);
+    assert_eq!(early_ack, 0, "a queued show cannot be acknowledged as excluded");
+    assert_eq!(final_ack, 1, "the same request can acknowledge after restore and hide ACKs");
+}
+
+#[rstest]
+fn failed_restore_post_retains_unposted_ownership_for_the_idle_watcher() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    setup(std::process::id());
+    let guard = capture_exclusion::begin_input_cursor(&ACTIVE).unwrap();
+    ASYNC_RESTORE_POST_REFUSED.store(true, Ordering::Release);
+    drop(guard);
+    let (pending, deferred) = {
+        let restores = state().cursor_gate.lock().unwrap_or_else(|e| e.into_inner());
+        (restores.pending.len(), restores.deferred.len())
+    };
+    ASYNC_RESTORE_POST_REFUSED.store(false, Ordering::Release);
+    synchronize_registered_cursors(false, &mut CursorSuppression::default());
+    assert_eq!(pending, 0, "a refused post has no queued show to acknowledge");
+    assert_eq!(deferred, 1, "the exact unposted restoration responsibility remains owned");
+    assert!(visible(55), "the idle watcher retries the failed restore post");
 }
 
 #[rstest]
