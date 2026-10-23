@@ -77,6 +77,7 @@ fn partial_occlusion_click_requires_an_observed_and_current_native_target(
 }
 
 struct FakeBackend {
+    rejection: Option<RejectedFenceDiagnostic>,
     evidence: ExactWindowPixelEvidence,
     state: ExactWindowNativeState,
     desktop: [i32; 4],
@@ -98,6 +99,7 @@ impl FakeBackend {
     fn new() -> Self {
         let fence = fence();
         Self {
+            rejection: None,
             evidence: ExactWindowPixelEvidence {
                 process_id: 42,
                 window_handle: 99,
@@ -140,6 +142,10 @@ impl FakeBackend {
 }
 
 impl InputBackend for FakeBackend {
+    fn rejection_diagnostic(&self) -> Option<RejectedFenceDiagnostic> {
+        self.rejection.clone()
+    }
+
     fn check(
         &mut self,
         fence: WindowsPhysicalInputFence,
@@ -834,5 +840,42 @@ fn physical_input_fence_actual_query_sequence_rechecks_lock_after_proof_before_d
                 "SendInput"
             ]
         );
+    }
+}
+
+#[rstest]
+#[case(false)]
+#[case(true)]
+fn fence_diagnostic_is_reported_only_on_the_rejected_attempt(#[case] accepted: bool) {
+    let mut backend = FakeBackend::new();
+    backend.point_visible = accepted;
+    backend.rejection = Some(RejectedFenceDiagnostic::new(
+        fence(),
+        Some((100, 100)),
+        backend.evidence,
+    ));
+    let result = run_click(
+        &mut backend,
+        fence(),
+        (100, 100),
+        1,
+        WindowsPointerButton::Left,
+        &[],
+    );
+    if accepted {
+        assert!(
+            serde_json::to_value(result.unwrap())
+                .unwrap()
+                .get("native_input_fence")
+                .is_none()
+        );
+    } else {
+        let error = result.unwrap_err();
+        assert_eq!(error.reason, Reason::TargetOccluded);
+        assert!(!error.outcome.mutation_attempted);
+        assert!(backend.mutations.is_empty());
+        let diagnostic = error.native_input_fence.unwrap();
+        assert!(!diagnostic.authorizes_input);
+        assert_eq!(diagnostic.point, Some([100, 100]));
     }
 }

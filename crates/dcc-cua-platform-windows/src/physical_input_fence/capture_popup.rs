@@ -243,6 +243,8 @@ fn with_capture_popup_backend<G: FnMut() -> Result<(), UiaError>, I: FnMut() -> 
     let _dpi = ThreadDpiAwarenessGuard::per_monitor_v2().map_err(|_| WindowsGuardedInputError {
         reason: Reason::TargetUnavailable,
         outcome: WindowsGuardedInputOutcome::new(operation),
+        native_input_fence: None,
+        visibility_failure: None,
     })?;
     run(&mut CapturePopupBackend {
         proof,

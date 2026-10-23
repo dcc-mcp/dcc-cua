@@ -1,7 +1,9 @@
 //! Final physical mutation boundaries for an immutable, actually captured HWND.
 //! No activation, upstream input delegation, semantic provider or fallback.
 mod capture_popup;
+mod diagnostic;
 pub use capture_popup::{send_guarded_capture_popup_keypress, send_guarded_capture_popup_text};
+use diagnostic::RejectedFenceDiagnostic;
 use serde::Serialize;
 use std::time::{Duration, Instant};
 use thiserror::Error;
@@ -96,6 +98,11 @@ impl WindowsGuardedInputOutcome {
 pub struct WindowsGuardedInputError {
     pub reason: WindowsPhysicalInputFailureReason,
     pub outcome: WindowsGuardedInputOutcome,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub native_input_fence:
+        Option<Box<dcc_cua_protocol::native_input_diagnostic::NativeInputFenceDiagnostic>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub visibility_failure: Option<Box<crate::VisibleWindowCaptureDiagnostic>>,
 }
 
 impl WindowsGuardedInputError {
@@ -241,6 +248,9 @@ fn final_physical_boundary<T>(
 }
 
 trait InputBackend {
+    fn rejection_diagnostic(&self) -> Option<RejectedFenceDiagnostic> {
+        None
+    }
     fn check(
         &mut self,
         fence: WindowsPhysicalInputFence,
@@ -263,6 +273,7 @@ struct NativeBackend<G, I> {
     gate: G,
     interrupted: I,
     started: Instant,
+    rejection: Option<RejectedFenceDiagnostic>,
 }
 
 fn check_physical_fence(
@@ -290,6 +301,10 @@ fn check_physical_fence(
 }
 
 impl<G: FnMut() -> Result<(), UiaError>, I: FnMut() -> bool> InputBackend for NativeBackend<G, I> {
+    fn rejection_diagnostic(&self) -> Option<RejectedFenceDiagnostic> {
+        self.rejection.clone()
+    }
+
     fn check(
         &mut self,
         fence: WindowsPhysicalInputFence,
@@ -297,7 +312,8 @@ impl<G: FnMut() -> Result<(), UiaError>, I: FnMut() -> bool> InputBackend for Na
     ) -> Result<(), Reason> {
         // Shared strict production occlusion collector; never exclude a sibling,
         // allow a failed DWM query, follow a popup or capture pixels here.
-        check_physical_fence(
+        let mut diagnostic = None;
+        let result = check_physical_fence(
             fence,
             point,
             &mut self.gate,
@@ -308,23 +324,30 @@ impl<G: FnMut() -> Result<(), UiaError>, I: FnMut() -> bool> InputBackend for Na
                     fence.target.window_handle,
                 )
                 .map_err(|_| Reason::TargetUnavailable)?;
-                let point_unobscured = match point {
-                    Some(point)
-                        if evidence.unobscured
-                            || evidence.visibility_failure.is_some_and(|proof| {
-                                proof.reason == crate::VisibleWindowCaptureReason::RootOverlap
-                            }) =>
-                    {
-                        crate::exact_window_point_visible(
-                            fence.target.process_id,
-                            fence.target.window_handle,
-                            point,
-                        )
-                        .map_err(|_| Reason::TargetUnavailable)?
-                    }
-                    _ => false,
-                };
-                Ok((evidence, point_unobscured))
+                let mut sample = RejectedFenceDiagnostic::new(fence, point, evidence);
+                let point_unobscured = (|| {
+                    Ok(match point {
+                        Some(point)
+                            if evidence.unobscured
+                                || evidence.visibility_failure.is_some_and(|proof| {
+                                    proof.reason == crate::VisibleWindowCaptureReason::RootOverlap
+                                }) =>
+                        {
+                            let proof = crate::visible_capture::exact_window_point_evidence(
+                                fence.target.process_id,
+                                fence.target.window_handle,
+                                point,
+                            )
+                            .map_err(|_| Reason::TargetUnavailable)?;
+                            let visible = proof.visible;
+                            sample.attach_point(proof);
+                            visible
+                        }
+                        _ => false,
+                    })
+                })();
+                diagnostic = Some(sample);
+                point_unobscured.map(|visible| (evidence, visible))
             },
             || unsafe {
                 [
@@ -338,7 +361,9 @@ impl<G: FnMut() -> Result<(), UiaError>, I: FnMut() -> bool> InputBackend for Na
                 exact_window_native_state(fence.target.process_id, fence.target.window_handle)
                     .map_err(|_| Reason::TargetUnavailable)
             },
-        )
+        );
+        self.rejection = if result.is_err() { diagnostic } else { None };
+        result
     }
 
     fn mutate(
@@ -502,10 +527,19 @@ impl<B: InputBackend> Transaction<'_, B> {
                 self.outcome.post_dispatch_validated = true;
                 Ok(self.outcome)
             }
-            Err(reason) => Err(WindowsGuardedInputError {
-                reason,
-                outcome: self.outcome,
-            }),
+            Err(reason) => {
+                let diagnostic = self.backend.rejection_diagnostic();
+                Err(WindowsGuardedInputError {
+                    reason,
+                    outcome: self.outcome,
+                    native_input_fence: diagnostic
+                        .as_ref()
+                        .map(|diagnostic| Box::new(diagnostic.sample.clone())),
+                    visibility_failure: diagnostic
+                        .and_then(|diagnostic| diagnostic.visibility_failure)
+                        .map(Box::new),
+                })
+            }
         }
     }
 }
@@ -717,11 +751,14 @@ fn with_native_backend<G: FnMut() -> Result<(), UiaError>, I: FnMut() -> bool>(
     let _dpi = ThreadDpiAwarenessGuard::per_monitor_v2().map_err(|_| WindowsGuardedInputError {
         reason: Reason::TargetUnavailable,
         outcome: WindowsGuardedInputOutcome::new(operation),
+        native_input_fence: None,
+        visibility_failure: None,
     })?;
     let mut backend = NativeBackend {
         gate,
         interrupted,
         started: Instant::now(),
+        rejection: None,
     };
     run(&mut backend)
 }

@@ -155,6 +155,8 @@ fn failed_input_preserves_partial_cursor_and_event_delivery(
     let attempted = cursor_move_attempted || inserted_events > 0;
     let error = input_error(WindowsGuardedInputError {
         reason: WindowsPhysicalInputFailureReason::Interrupted,
+        native_input_fence: None,
+        visibility_failure: None,
         outcome: WindowsGuardedInputOutcome {
             operation: WindowsGuardedInputOperation::Click,
             mutation_attempted: attempted,
@@ -175,6 +177,64 @@ fn failed_input_preserves_partial_cursor_and_event_delivery(
     assert_eq!(details.effect_unknown, Some(attempted));
     assert_eq!(details.fresh_observation_required, Some(true));
     assert_eq!(details.blind_retry, Some(false));
+}
+
+#[cfg(windows)]
+#[rstest]
+fn rejected_fence_diagnostic_reaches_closed_error_details_with_original_refusal() {
+    use dcc_cua_platform_windows::{
+        WindowsGuardedInputError, WindowsGuardedInputOperation, WindowsGuardedInputOutcome,
+        WindowsPhysicalInputFailureReason,
+    };
+    let sample = serde_json::from_value(serde_json::json!({
+        "schema_version":1,"authorizes_input":false,"target_process_id":42,
+        "target_window_handle":99,"point":[1461,1060],"unobscured":false,
+        "point_proof_complete":true,"point_visible":false,"hit_window_handle":123,
+        "hit_process_id":456,"hit_root_window_handle":123,"hit_is_target_or_child":false,
+        "redacted_rectangles":[[1211,260,1778,1039]],"redaction_count":1,"redactions_complete":true
+    }))
+    .unwrap();
+    let error = input_error(WindowsGuardedInputError {
+        reason: WindowsPhysicalInputFailureReason::TargetOccluded,
+        outcome: WindowsGuardedInputOutcome {
+            operation: WindowsGuardedInputOperation::Click,
+            mutation_attempted: false,
+            cursor_move_attempted: false,
+            cursor_move_succeeded: false,
+            requested_events: 0,
+            inserted_events: 0,
+            cleanup_requested_events: 0,
+            cleanup_inserted_events: 0,
+            delivery_completed: false,
+            post_dispatch_validated: false,
+            fresh_observation_required: true,
+        },
+        native_input_fence: Some(sample),
+        visibility_failure: Some(Box::new(
+            dcc_cua_platform_windows::VisibleWindowCaptureDiagnostic {
+                reason: dcc_cua_platform_windows::VisibleWindowCaptureReason::RootOverlap,
+                target_bounds: Some([1211, 260, 1778, 1039]),
+                blocker_process_id: Some(456),
+                blocker_window_handle: Some(123),
+                blocker_bounds: Some([1211, 260, 1778, 1039]),
+                cloaked: Some(0),
+                os_error: None,
+                root_bounds_failure: None,
+            },
+        )),
+    });
+    assert_eq!(error.code, ComputerUseErrorCode::TargetUnavailable);
+    let details = error.details.unwrap();
+    assert_eq!(details.phase, Some(ComputerUseErrorPhase::PreDispatch));
+    assert_eq!(details.input_sent, Some(ComputerUseInputState::NotSent));
+    assert_eq!(
+        details.capture.unwrap().reason,
+        ComputerUseCaptureReason::RootOverlap
+    );
+    assert_eq!(
+        details.native_input_fence.unwrap().hit_process_id,
+        Some(456)
+    );
 }
 
 #[rstest]

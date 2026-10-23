@@ -298,7 +298,23 @@ fn input_error(failure: dcc_cua_platform_windows::WindowsGuardedInputError) -> C
         Reason::InjectionIncomplete => ComputerUseErrorCode::InputFailed,
     };
     let attempted = failure.outcome.mutation_attempted;
+    let capture = failure.native_input_fence.as_ref().and_then(|sample| {
+        failure.visibility_failure.as_ref().and_then(|native| {
+            super::exact_capture::map_visible_capture_diagnostic(
+                code,
+                ComputerUseCaptureStage::VisibleDesktopProof,
+                sample.target_process_id,
+                sample.target_window_handle,
+                **native,
+                "native input visibility proof rejected",
+            )
+            .details
+            .and_then(|details| details.capture)
+        })
+    });
     ComputerUseError::new(code, failure.to_string()).with_details(ComputerUseErrorDetails {
+        native_input_fence: failure.native_input_fence.map(|sample| *sample),
+        capture,
         phase: Some(if attempted {
             ComputerUseErrorPhase::LocalMutationDispatch
         } else {
