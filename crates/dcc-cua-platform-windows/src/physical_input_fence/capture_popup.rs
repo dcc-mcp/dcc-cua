@@ -141,12 +141,10 @@ fn completed_popup_postcheck(
 
 fn may_wait_for_completed_popup(settling: bool, reason: Option<NativeCapturePopupRefusal>) -> bool {
     use NativeCapturePopupRefusal::*;
-    matches!(reason, Some(PopupNotUsable))
-        || (settling
-            && matches!(
-                reason,
-                Some(CaptureNotSelected | PopupUnavailable | NativeStateUnavailable)
-            ))
+    matches!(
+        reason,
+        Some(PopupNotUsable | PopupUnavailable | NativeStateUnavailable)
+    ) || (settling && matches!(reason, Some(CaptureNotSelected)))
 }
 
 impl<G: FnMut() -> Result<(), UiaError>, I: FnMut() -> bool> CapturePopupBackend<'_, G, I> {

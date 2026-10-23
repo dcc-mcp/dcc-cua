@@ -3,6 +3,7 @@ use rstest::rstest;
 use std::cell::{Cell, RefCell};
 
 struct ClosingEnterBackend {
+    first_refusal: NativeCapturePopupRefusal,
     balanced: bool,
     batches: Vec<Vec<Event>>,
     reads: usize,
@@ -20,12 +21,22 @@ impl InputBackend for ClosingEnterBackend {
         }
         completed_popup_postcheck(
             self.balanced,
-            |_settling| {
+            |settling| {
                 self.reads += 1;
                 // Popup hidden with old capture, capture zero with selected
                 // shadow, then the original unobscured-root postcheck succeeds.
                 if self.reads < 3 {
-                    (Err(Reason::TargetOccluded), true)
+                    (
+                        Err(Reason::TargetOccluded),
+                        may_wait_for_completed_popup(
+                            settling,
+                            Some(if self.reads == 1 {
+                                self.first_refusal
+                            } else {
+                                NativeCapturePopupRefusal::CaptureNotSelected
+                            }),
+                        ),
+                    )
                 } else {
                     (Ok(()), false)
                 }
@@ -62,8 +73,14 @@ impl InputBackend for ClosingEnterBackend {
 }
 
 #[rstest]
-fn enter_balanced_batch_waits_read_only_for_the_same_popup_to_finish_closing() {
+#[case(NativeCapturePopupRefusal::PopupNotUsable)]
+#[case(NativeCapturePopupRefusal::PopupUnavailable)]
+#[case(NativeCapturePopupRefusal::NativeStateUnavailable)]
+fn enter_balanced_batch_waits_read_only_for_the_same_popup_to_finish_closing(
+    #[case] first_refusal: NativeCapturePopupRefusal,
+) {
     let mut backend = ClosingEnterBackend {
+        first_refusal,
         balanced: false,
         batches: vec![],
         reads: 0,
@@ -155,8 +172,8 @@ fn completed_popup_wait_never_replays_input_or_restarts_its_budget(#[case] case:
 #[rstest]
 #[case(NativeCapturePopupRefusal::PopupNotUsable, true, true)]
 #[case(NativeCapturePopupRefusal::CaptureNotSelected, false, true)]
-#[case(NativeCapturePopupRefusal::PopupUnavailable, false, true)]
-#[case(NativeCapturePopupRefusal::NativeStateUnavailable, false, true)]
+#[case(NativeCapturePopupRefusal::PopupUnavailable, true, true)]
+#[case(NativeCapturePopupRefusal::NativeStateUnavailable, true, true)]
 #[case(NativeCapturePopupRefusal::NativeStateChanged, false, false)]
 #[case(NativeCapturePopupRefusal::GuiStateUnavailable, false, false)]
 #[case(NativeCapturePopupRefusal::UnselectedOccluder, false, false)]
