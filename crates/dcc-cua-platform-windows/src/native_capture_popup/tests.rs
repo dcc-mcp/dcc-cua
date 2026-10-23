@@ -187,6 +187,116 @@ fn completed_teardown_waits_only_for_the_original_exact_episode(
 }
 
 #[rstest]
+#[case("original_capture")]
+#[case("remaining_shadow")]
+#[case("gone")]
+fn completed_teardown_returns_focus_only_to_the_original_proven_root(#[case] stage: &str) {
+    let before = sample();
+    let expected = validate_sample(42, 100, &[200, 300], &before).unwrap();
+    let mut current = before.clone();
+    current.focus.focus = before.root.window_handle;
+    current.focus.focus_instance = before.root.instance;
+    match stage {
+        "original_capture" => {
+            current.overlays.pop();
+            current.roots.remove(1);
+        }
+        "remaining_shadow" => {
+            current.focus.capture = 0;
+            current.overlays.remove(0);
+            current.roots.remove(0);
+        }
+        "gone" => {
+            current.focus.capture = 0;
+            current.overlays.clear();
+            current.roots.drain(..2);
+        }
+        _ => unreachable!(),
+    }
+    assert!(completed_teardown_unchanged(&expected, &current));
+}
+
+#[rstest]
+#[case("another_child")]
+#[case("old_child_instance")]
+#[case("focus_birth")]
+#[case("focus_thread")]
+#[case("focus_class")]
+#[case("focus_owner")]
+#[case("active")]
+#[case("foreground")]
+#[case("focus_root")]
+#[case("flags")]
+#[case("disabled")]
+#[case("hidden")]
+#[case("capture")]
+#[case("root_birth")]
+#[case("root_frame")]
+#[case("root_dpi")]
+#[case("desktop")]
+#[case("popup_birth")]
+#[case("new_same_process_occluder")]
+#[case("foreign_occluder")]
+#[case("reordered")]
+fn returned_root_focus_never_changes_the_completed_episode_contract(#[case] changed: &str) {
+    let before = sample();
+    let expected = validate_sample(42, 100, &[200, 300], &before).unwrap();
+    let mut current = before.clone();
+    current.focus.focus = before.root.window_handle;
+    current.focus.focus_instance = before.root.instance;
+    match changed {
+        "another_child" => {
+            current.focus.focus = 102;
+            current.focus.focus_instance = state(102, [101, 101, 10, 10]).instance;
+        }
+        "old_child_instance" => current.focus.focus_instance = before.focus.focus_instance,
+        "focus_birth" => current.focus.focus_instance.process_creation_time_100ns += 1,
+        "focus_thread" => current.focus.focus_instance.window_thread_id += 1,
+        "focus_class" => current.focus.focus_instance.window_class_hash += 1,
+        "focus_owner" => current.focus.focus_instance.owner_window_handle += 1,
+        "active" => current.focus.active = 300,
+        "foreground" => current.focus.foreground = 300,
+        "focus_root" => current.focus.focus_root = 300,
+        "flags" => current.focus.flags = GUI_CARETBLINKING,
+        "disabled" => current.focus.enabled = false,
+        "hidden" => current.focus.visible = false,
+        "capture" => current.focus.capture = 300,
+        "root_birth" => current.root.instance.process_creation_time_100ns += 1,
+        "root_frame" => current.root.bounds.as_mut().unwrap()[0] += 1,
+        "root_dpi" => current.root.dpi += 1,
+        "desktop" => current.desktop[2] += 1,
+        "popup_birth" => {
+            current.overlays[0]
+                .state
+                .instance
+                .process_creation_time_100ns += 1
+        }
+        "new_same_process_occluder" | "foreign_occluder" => {
+            let mut blocker = state(400, [120, 120, 10, 10]);
+            if changed == "foreign_occluder" {
+                blocker.process_id += 1;
+            }
+            current.roots.insert(0, entry(blocker));
+        }
+        "reordered" => current.roots.swap(0, 1),
+        _ => unreachable!(),
+    }
+    assert!(!completed_teardown_unchanged(&expected, &current));
+}
+
+#[rstest]
+fn root_focus_return_is_not_a_matching_composite_or_new_input_proof() {
+    let before = sample();
+    let expected = validate_sample(42, 100, &[200, 300], &before).unwrap();
+    let mut after = before.clone();
+    after.focus.focus = before.root.window_handle;
+    after.focus.focus_instance = before.root.instance;
+    let current = validate_sample(42, 100, &[200, 300], &after).unwrap();
+    assert_ne!(expected, current);
+    assert!(!expected.matches_completed_keyboard_postcheck(&current));
+}
+
+#[rstest]
 fn completed_keyboard_postcheck_accepts_only_a_fresh_geometry_transition() {
     let (expected, current) = NativeCapturePopupProof::test_geometry_transition();
     assert!(expected.matches_completed_keyboard_postcheck(&current));

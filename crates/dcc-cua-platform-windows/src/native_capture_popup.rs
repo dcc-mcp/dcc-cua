@@ -214,6 +214,13 @@ fn completed_teardown_unchanged(expected: &NativeCapturePopupProof, sample: &Sam
     if focus.capture != 0 && focus.capture != expected.capture.window_handle {
         return false;
     }
+    // Closing an already released keyboard episode may return focus to the
+    // original full root instance. No other child or focus field may change.
+    if focus.focus == expected.root.window_handle && focus.focus_instance == expected.root.instance
+    {
+        focus.focus = expected.focus.focus;
+        focus.focus_instance = expected.focus.focus_instance;
+    }
     focus.capture = expected.focus.capture;
     if sample.root != expected.root
         || sample.desktop != expected.desktop
