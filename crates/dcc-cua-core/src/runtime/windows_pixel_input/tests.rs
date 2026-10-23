@@ -38,15 +38,21 @@ async fn cancelled_async_waiter_keeps_worker_lease_until_release_and_postcheck()
         }
     }
     let held = Arc::new(AtomicBool::new(false));
+    let overlay_held = Arc::new(AtomicBool::new(false));
     let postcheck = Arc::new(AtomicBool::new(false));
     let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
     let (finish_tx, finish_rx) = mpsc::channel();
     let (cleanup_tx, cleanup_rx) = tokio::sync::oneshot::channel();
     let (acquire_held, dispatch_held, finished) = (held.clone(), held.clone(), postcheck.clone());
+    let (acquire_overlay, dispatch_overlay) = (overlay_held.clone(), overlay_held.clone());
     let waiter = tokio::spawn(run_owned_pixel_worker(
         move || {
             acquire_held.store(true, Ordering::Release);
             Ok(Lease(acquire_held))
+        },
+        move || {
+            acquire_overlay.store(true, Ordering::Release);
+            Ok(Lease(acquire_overlay))
         },
         move || {
             entered_tx.send(()).unwrap();
@@ -57,10 +63,18 @@ async fn cancelled_async_waiter_keeps_worker_lease_until_release_and_postcheck()
                 dispatch_held.load(Ordering::Acquire),
                 "owned key release ran after restoration"
             );
+            assert!(
+                dispatch_overlay.load(Ordering::Acquire),
+                "the registered cursor was restored before owned key release"
+            );
             finished.store(true, Ordering::Release);
             assert!(
                 dispatch_held.load(Ordering::Acquire),
                 "native postcheck ran after restoration"
+            );
+            assert!(
+                dispatch_overlay.load(Ordering::Acquire),
+                "the registered cursor was restored before the native postcheck"
             );
             cleanup_tx.send(()).unwrap();
             Ok(())
@@ -70,9 +84,10 @@ async fn cancelled_async_waiter_keeps_worker_lease_until_release_and_postcheck()
     waiter.abort();
     assert!(waiter.await.unwrap_err().is_cancelled());
     let retained = held.load(Ordering::Acquire);
+    let overlay_retained = overlay_held.load(Ordering::Acquire);
     finish_tx.send(()).unwrap();
     cleanup_rx.await.unwrap();
-    while held.load(Ordering::Acquire) {
+    while held.load(Ordering::Acquire) || overlay_held.load(Ordering::Acquire) {
         tokio::task::yield_now().await;
     }
     assert!(
@@ -80,6 +95,10 @@ async fn cancelled_async_waiter_keeps_worker_lease_until_release_and_postcheck()
         "cancelling the await restored the presenter while native input was active"
     );
     assert!(postcheck.load(Ordering::Acquire));
+    assert!(
+        overlay_retained,
+        "cancelling the waiter released the overlay lease"
+    );
 }
 
 #[rstest]
@@ -92,6 +111,9 @@ async fn failed_owned_presentation_acquisition_never_enters_native_dispatch() {
                 "renderer unavailable",
             ))
         },
+        || -> ComputerUseResult<()> {
+            panic!("overlay lease must not start after renderer failure")
+        },
         || -> ComputerUseResult<()> { panic!("native dispatch must not begin") },
     )
     .await;
@@ -99,6 +121,46 @@ async fn failed_owned_presentation_acquisition_never_enters_native_dispatch() {
         result.unwrap_err().code,
         ComputerUseErrorCode::BackendUnavailable
     );
+}
+
+#[cfg(windows)]
+#[rstest]
+#[tokio::test]
+async fn overlay_ack_failure_restores_the_banner_and_never_enters_native_input() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+    struct Banner(Arc<AtomicBool>);
+    impl Drop for Banner {
+        fn drop(&mut self) {
+            self.0.store(false, Ordering::Release);
+        }
+    }
+    let banner_hidden = Arc::new(AtomicBool::new(false));
+    let (acquire_banner, check_banner) = (banner_hidden.clone(), banner_hidden.clone());
+    let result = run_owned_pixel_worker(
+        move || {
+            acquire_banner.store(true, Ordering::Release);
+            Ok(Banner(acquire_banner))
+        },
+        move || -> ComputerUseResult<()> {
+            assert!(check_banner.load(Ordering::Acquire));
+            Err(pixel_presentation_error(IndicatorError::CaptureExclusion(
+                "registered cursor did not acknowledge suppression".into(),
+            )))
+        },
+        || -> ComputerUseResult<()> {
+            panic!("SendInput must not run with a visible owned cursor")
+        },
+    )
+    .await;
+    let details = result.unwrap_err().details.unwrap();
+    assert!(!banner_hidden.load(Ordering::Acquire));
+    assert_eq!(details.phase, Some(ComputerUseErrorPhase::PreDispatch));
+    assert_eq!(details.action_attempted, Some(false));
+    assert_eq!(details.input_sent, Some(ComputerUseInputState::NotSent));
+    assert_eq!(details.effect_unknown, Some(false));
 }
 
 #[cfg(windows)]

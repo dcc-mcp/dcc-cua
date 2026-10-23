@@ -181,6 +181,12 @@ observation. With `capture_after: true`, the post-action observation uses the
 same pixel route and cannot mint semantic element authorization. A failed post
 snapshot requires a fresh observation before another action.
 
+The native worker holds the owning banner suppression and the existing
+acknowledged DCC-CUA overlay exclusion through input cleanup and the final
+postcheck. Registered cursor overlays cannot obscure their own input proof.
+Acquisition failure sends no input. Foreign or unregistered windows remain
+subject to the unchanged native visibility and hit-test rules.
+
 Pointer actions additionally require an unredacted point in that observation
 and a fresh native hit test on the exact target or its child. Other parts of the
 window may be covered. Keyboard and text actions retain the complete visibility
