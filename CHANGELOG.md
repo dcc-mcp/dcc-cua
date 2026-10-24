@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.15.0](https://github.com/dcc-mcp/dcc-cua/compare/v1.14.0...v1.15.0) (2026-10-24)
+
+
+### Features
+
+* **cli:** add context-only executor diagnostics ([d02a092](https://github.com/dcc-mcp/dcc-cua/commit/d02a0927d6624f0ddca955d603836fc22d3b316b))
+* **cli:** add context-only executor diagnostics ([#378](https://github.com/dcc-mcp/dcc-cua/issues/378)) ([78b0654](https://github.com/dcc-mcp/dcc-cua/commit/78b0654e28fb70fb42c993194d9d8f25b5d840a4))
+
+
+### Bug Fixes
+
+* avoid cursor startup for native window discovery ([c264eba](https://github.com/dcc-mcp/dcc-cua/commit/c264ebab2d3ffb0e4cf6963de77cee493a8fa811))
+* **cli:** retain task-owned Host completion evidence ([d1e9aae](https://github.com/dcc-mcp/dcc-cua/commit/d1e9aae1af26e5112dc51d884bc219e1cb94329e))
+* **perf:** preserve failed latency probe receipts ([0e01dd1](https://github.com/dcc-mcp/dcc-cua/commit/0e01dd180dff0452f01d77e5ee1ab90d347799b1))
+* **perf:** preserve failed latency probe receipts ([450971f](https://github.com/dcc-mcp/dcc-cua/commit/450971f68a4e7aae20a6a7d42a6b3e2c95cba437))
+
 ## [1.14.0](https://github.com/dcc-mcp/dcc-cua/compare/v1.13.0...v1.14.0) (2026-10-23)
 
 
