@@ -929,17 +929,10 @@ impl ComputerUseDriver {
 
     /// Enumerate installed and currently running applications through CUA.
     pub async fn list_apps(&self) -> ComputerUseResult<Value> {
-        let value = self.call_tool_value("list_apps", json!({})).await?;
-        value["structuredContent"]
-            .as_object()
-            .cloned()
-            .map(Value::Object)
-            .ok_or_else(|| {
-                ComputerUseError::new(
-                    ComputerUseErrorCode::BackendUnavailable,
-                    "CUA list_apps omitted structuredContent",
-                )
-            })
+        let result =
+            call_driver_tool(&self.driver, "list_apps", "{}".into(), "call CUA list_apps").await?;
+        ensure_tool_ok("call CUA list_apps", &result)?;
+        tool_structured_content(&result, "list_apps")
     }
 
     /// Return the CUA tool inventory for adapter capability discovery.
@@ -1357,22 +1350,21 @@ fn tool_structured_content(
     result: &cua_driver_sdk::ToolResult,
     tool: &str,
 ) -> ComputerUseResult<Value> {
-    let value: Value = serde_json::from_str(&result.raw_json).map_err(|error| {
-        ComputerUseError::new(
-            ComputerUseErrorCode::BackendUnavailable,
-            format!("CUA {tool} returned invalid JSON: {error}"),
-        )
-    })?;
-    value["structuredContent"]
-        .as_object()
-        .cloned()
-        .map(Value::Object)
-        .ok_or_else(|| {
+    let value: Value = serde_json::from_str(result.structured_json.as_deref().unwrap_or("null"))
+        .map_err(|error| {
             ComputerUseError::new(
                 ComputerUseErrorCode::BackendUnavailable,
-                format!("CUA {tool} omitted structuredContent"),
+                format!("CUA {tool} returned invalid JSON: {error}"),
             )
-        })
+        })?;
+    if value.is_object() {
+        Ok(value)
+    } else {
+        Err(ComputerUseError::new(
+            ComputerUseErrorCode::BackendUnavailable,
+            format!("CUA {tool} omitted structuredContent"),
+        ))
+    }
 }
 
 pub(crate) fn diagnostic_tool_check(result: ComputerUseResult<ComputerUseToolResult>) -> Value {
@@ -1947,16 +1939,18 @@ async fn list_windows_with_driver(
     )
     .await?;
     ensure_tool_ok("list CUA windows", &result)?;
-    let value: Value = result.raw_json.parse::<Value>().map_err(|error| {
-        ComputerUseError::new(ComputerUseErrorCode::BackendUnavailable, error.to_string())
-    })?;
-    value["structuredContent"]["windows"]
-        .as_array()
-        .cloned()
-        .ok_or_else(|| {
-            ComputerUseError::new(
-                ComputerUseErrorCode::BackendUnavailable,
-                "CUA list_windows omitted structuredContent.windows",
-            )
-        })
+    sdk_window_entries(&result)
+}
+
+fn sdk_window_entries(result: &cua_driver_sdk::ToolResult) -> ComputerUseResult<Vec<Value>> {
+    let value: Value = serde_json::from_str(result.structured_json.as_deref().unwrap_or("null"))
+        .map_err(|error| {
+            ComputerUseError::new(ComputerUseErrorCode::BackendUnavailable, error.to_string())
+        })?;
+    value["windows"].as_array().cloned().ok_or_else(|| {
+        ComputerUseError::new(
+            ComputerUseErrorCode::BackendUnavailable,
+            "CUA list_windows omitted structuredContent.windows",
+        )
+    })
 }
