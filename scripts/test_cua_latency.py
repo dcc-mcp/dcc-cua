@@ -99,7 +99,8 @@ class StatisticsTests(unittest.TestCase):
 
     def test_native_requires_binding_and_does_not_pool_dimensions(self):
         binding = dict(provider="dcc-cua", runtime="1.14.0", pid=42, process_birth="2026-10-24T00:00:00Z",
-                       hwnd=123, observation_mode="pixels_only", width=1280, height=720)
+                       hwnd=123, observation_mode="pixels_only", width=1280, height=720,
+                       source_revision="a" * 40, binary_sha256="b" * 64)
         samples = [self.sample(10, stage="capture", binding=binding, scenario="capture", trial_id="one"),
                    self.sample(20, stage="capture", binding=dict(binding, width=1920), scenario="capture", trial_id="two")]
         self.assertEqual(len(summarize(self.report(samples, "native_task"))["groups"]), 2)
@@ -109,13 +110,27 @@ class StatisticsTests(unittest.TestCase):
 
     def test_native_scenarios_are_not_pooled(self):
         binding = dict(provider="dcc-cua", runtime="1.14.0", pid=42, process_birth="birth",
-                       hwnd=123, observation_mode="pixels_only", width=1280, height=720)
+                       hwnd=123, observation_mode="pixels_only", width=1280, height=720,
+                       source_revision="a" * 40, binary_sha256="b" * 64)
         samples = [self.sample(10, binding=binding, trial_id="one", scenario="click"),
                    self.sample(20, binding=binding, trial_id="two", scenario="drag")]
         self.assertEqual(len(summarize(self.report(samples, "native_task"))["groups"]), 2)
         del samples[0]["scenario"]
         with self.assertRaises(ValueError):
             summarize(self.report(samples, "native_task"))
+
+    def test_native_requires_exact_source_and_artifact_identity(self):
+        binding = dict(provider="dcc-cua", runtime="1.14.0", pid=42, process_birth="birth",
+                       hwnd=123, observation_mode="pixels_only", width=1280, height=720,
+                       source_revision="a" * 40, binary_sha256="b" * 64)
+        samples = [self.sample(10, binding=binding, trial_id="one", scenario="click"),
+                   self.sample(20, binding=dict(binding, binary_sha256="c" * 64), trial_id="two", scenario="click")]
+        self.assertEqual(len(summarize(self.report(samples, "native_task"))["groups"]), 2)
+        for key in ("source_revision", "binary_sha256"):
+            with self.subTest(key=key):
+                invalid = dict(binding, **{key: "short"})
+                with self.assertRaises(ValueError):
+                    summarize(self.report([self.sample(1, binding=invalid, trial_id="one", scenario="click")], "native_task"))
 
     def test_invalid_measurements_are_rejected(self):
         for duration in (-1, float("nan"), float("inf"), True, "1"):

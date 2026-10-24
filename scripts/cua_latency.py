@@ -12,6 +12,7 @@ import math
 from pathlib import Path
 import platform
 import queue
+import re
 import subprocess
 import threading
 import time
@@ -63,6 +64,9 @@ def summarize(report):
             for key in ("runtime", "process_birth", "observation_mode"):
                 if not isinstance(binding[key], str) or not binding[key].strip():
                     raise ValueError(f"native binding.{key} must be nonempty")
+            for key, length in (("source_revision", 40), ("binary_sha256", 64)):
+                if not re.fullmatch(f"[0-9a-f]{{{length}}}", str(binding.get(key, ""))):
+                    raise ValueError(f"native binding.{key} requires a full lowercase hash")
         else:
             binding = {}
             if stage not in ("startup", "end_to_end", "cleanup"):
