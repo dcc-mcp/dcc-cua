@@ -38,13 +38,17 @@ its own transport is responsible for its trust and lifecycle contracts.
    records without starting a Host or touching UI. An initialized connection and
    a tool list establish protocol availability only. See the
    [connection diagnostics contract](design/mcp-connection-diagnostics.md).
-3. **Native environment:** inspect the doctor report's health, permissions and
-   route readiness. Normal `doctor` constructs/probes a runtime; it is not a
-   side-effect-free environment-only check. The proposed
-   [`--diagnostics-only` mode](https://github.com/dcc-mcp/dcc-cua/pull/311) is a
-   separate, unmerged candidate at the time of this document, and intentionally
-   does not attest input readiness.
-4. **Task acceptance:** perform an authorized, bounded screenshot/input/readback
+3. **Executor metadata:** `dcc-cua doctor --context-only` reads current-process
+   identity and borrowed Windows station/thread-desktop metadata. It does not
+   open the input desktop, query cursor/foreground state, start SDK/Host/UIA or
+   attest readiness. It does not inspect an existing MCP process. See the
+   [context-only contract and missing launch evidence](context-only-diagnostics.md).
+4. **Native environment:** inspect the doctor report's health, permissions and
+   route readiness only within the authorized probe scope. Normal `doctor`
+   constructs/probes a runtime. `doctor --diagnostics-only` skips SDK startup
+   but still queries the input desktop, foreground and cursor surface on Windows;
+   it is not a substitute for `--context-only` after an input-surface refusal.
+5. **Task acceptance:** perform an authorized, bounded screenshot/input/readback
    task on the exact target. Record cancellation and cleanup separately. Static
    inventory, compilation and an idle stdio shutdown are not substitutes.
 

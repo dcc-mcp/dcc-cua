@@ -181,23 +181,24 @@ fn run_with_arguments<F>(arguments: Vec<String>, start: F) -> Result<(), Box<dyn
 where
     F: FnOnce(Vec<String>) -> Result<(), Box<dyn std::error::Error>>,
 {
-    if local_diagnostics_only(&arguments)? {
+    if local_doctor_report(&arguments)? {
         return Ok(());
     }
     start(arguments)
 }
 
-fn local_diagnostics_only(arguments: &[String]) -> Result<bool, Box<dyn std::error::Error>> {
+fn local_doctor_report(arguments: &[String]) -> Result<bool, Box<dyn std::error::Error>> {
     let Some((command, flags)) = arguments.split_first() else {
         return Ok(false);
     };
-    if !diagnostics_only_requested(command, flags)? {
+    let report = if context_only_requested(command, flags)? {
+        dcc_cua_core::context_only_diagnostics()
+    } else if diagnostics_only_requested(command, flags)? {
+        dcc_cua_core::diagnostics_only()
+    } else {
         return Ok(false);
-    }
-    stdoutln!(
-        "{}",
-        serde_json::to_string_pretty(&dcc_cua_core::diagnostics_only())?
-    );
+    };
+    stdoutln!("{}", serde_json::to_string_pretty(&report)?);
     Ok(true)
 }
 
@@ -241,7 +242,7 @@ fn async_main(arguments: Vec<String>) -> Result<(), Box<dyn std::error::Error>> 
 }
 
 async fn dispatch(arguments: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
-    if local_diagnostics_only(&arguments)? {
+    if local_doctor_report(&arguments)? {
         return Ok(());
     }
     if let Some(invocation_origin) = browser_extension::invocation_origin(&arguments) {

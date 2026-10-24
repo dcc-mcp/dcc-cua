@@ -6,7 +6,10 @@
 
 #[cfg(any(windows, test))]
 mod capture_diagnostics;
+mod context_only;
 mod contracts;
+#[cfg(windows)]
+mod desktop_context;
 mod diagnostics_only;
 mod driver_factory;
 mod input_state;
@@ -24,6 +27,7 @@ mod session_health;
 mod window_target;
 mod windows_uia_fallback;
 
+pub use context_only::context_only_diagnostics;
 pub use contracts::*;
 pub use dcc_cua_showcase::RecordingAuthorization;
 pub use diagnostics_only::diagnostics_only;

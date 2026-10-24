@@ -235,6 +235,18 @@ pub(crate) fn document_for_platform(exact_window_pixels_available: bool) -> Valu
                 "confirmation":["popup_hidden_or_gone","menu_inactive","owner_alive"],
                 "unconfirmed_after_dispatch":"completion_unknown_no_blind_retry", "fresh_observation_required":true,
             },
+            "local_context_only": {
+                "cli_command": ["doctor", "--context-only"],
+                "scope": "current_executor_borrowed_metadata",
+                "additional_arguments_accepted": false,
+                "input_desktop": "not_opened",
+                "input_surface": "not_read",
+                "foreground_window": "not_read",
+                "sdk_initialized": false,
+                "native_acceptance": "not_run",
+                "readiness_assessed": false,
+                "agent_host_launch_binding": "not_established",
+            },
             "local_diagnostics_only": {
                 "cli_command": ["doctor", "--diagnostics-only"],
                 "scope": "local_process_desktop_metadata",
