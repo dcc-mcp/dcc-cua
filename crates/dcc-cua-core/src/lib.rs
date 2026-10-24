@@ -37,6 +37,7 @@ pub use private_worker::run_private_worker;
 pub use private_worker::run_private_worker_with_appkit;
 pub use runtime::*;
 pub use session_health::*;
+pub use window_target::native_inventory as native_window_inventory;
 
 #[cfg(test)]
 mod tests;
