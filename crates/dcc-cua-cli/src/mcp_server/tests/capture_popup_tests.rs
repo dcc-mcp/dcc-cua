@@ -145,8 +145,10 @@ fn pending_host_cleanup_preserves_the_independent_popup_ceiling() {
     let id = prepared["task_id"].as_str().unwrap();
     let proposal = server.proposals.get_mut(id).unwrap();
     proposal.revoked = true;
-    proposal.cleanup = Some(json!({"success":true,"active":false,"cleanup_pending":false,
-        "host_connection_completion":{"completed":false,"success":false}}));
+    proposal.cleanup = Some(
+        json!({"success":true,"active":false,"cleanup_pending":false,
+        "host_connection_completion":{"completed":false,"success":false}}),
+    );
     let status = server.task_status(json!({"task_id":id})).unwrap();
     assert_eq!(status["allow_native_capture_popup_keyboard"], true);
     assert_eq!(status["allowed_actions"], prepared["allowed_actions"]);
