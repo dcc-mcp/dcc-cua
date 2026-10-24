@@ -38,15 +38,21 @@ async fn cancelled_async_waiter_keeps_worker_lease_until_release_and_postcheck()
         }
     }
     let held = Arc::new(AtomicBool::new(false));
+    let overlay_held = Arc::new(AtomicBool::new(false));
     let postcheck = Arc::new(AtomicBool::new(false));
     let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
     let (finish_tx, finish_rx) = mpsc::channel();
     let (cleanup_tx, cleanup_rx) = tokio::sync::oneshot::channel();
     let (acquire_held, dispatch_held, finished) = (held.clone(), held.clone(), postcheck.clone());
+    let (acquire_overlay, dispatch_overlay) = (overlay_held.clone(), overlay_held.clone());
     let waiter = tokio::spawn(run_owned_pixel_worker(
         move || {
             acquire_held.store(true, Ordering::Release);
             Ok(Lease(acquire_held))
+        },
+        move || {
+            acquire_overlay.store(true, Ordering::Release);
+            Ok(Lease(acquire_overlay))
         },
         move || {
             entered_tx.send(()).unwrap();
@@ -57,10 +63,18 @@ async fn cancelled_async_waiter_keeps_worker_lease_until_release_and_postcheck()
                 dispatch_held.load(Ordering::Acquire),
                 "owned key release ran after restoration"
             );
+            assert!(
+                dispatch_overlay.load(Ordering::Acquire),
+                "the registered cursor was restored before owned key release"
+            );
             finished.store(true, Ordering::Release);
             assert!(
                 dispatch_held.load(Ordering::Acquire),
                 "native postcheck ran after restoration"
+            );
+            assert!(
+                dispatch_overlay.load(Ordering::Acquire),
+                "the registered cursor was restored before the native postcheck"
             );
             cleanup_tx.send(()).unwrap();
             Ok(())
@@ -70,9 +84,10 @@ async fn cancelled_async_waiter_keeps_worker_lease_until_release_and_postcheck()
     waiter.abort();
     assert!(waiter.await.unwrap_err().is_cancelled());
     let retained = held.load(Ordering::Acquire);
+    let overlay_retained = overlay_held.load(Ordering::Acquire);
     finish_tx.send(()).unwrap();
     cleanup_rx.await.unwrap();
-    while held.load(Ordering::Acquire) {
+    while held.load(Ordering::Acquire) || overlay_held.load(Ordering::Acquire) {
         tokio::task::yield_now().await;
     }
     assert!(
@@ -80,6 +95,10 @@ async fn cancelled_async_waiter_keeps_worker_lease_until_release_and_postcheck()
         "cancelling the await restored the presenter while native input was active"
     );
     assert!(postcheck.load(Ordering::Acquire));
+    assert!(
+        overlay_retained,
+        "cancelling the waiter released the overlay lease"
+    );
 }
 
 #[rstest]
@@ -92,6 +111,9 @@ async fn failed_owned_presentation_acquisition_never_enters_native_dispatch() {
                 "renderer unavailable",
             ))
         },
+        || -> ComputerUseResult<()> {
+            panic!("overlay lease must not start after renderer failure")
+        },
         || -> ComputerUseResult<()> { panic!("native dispatch must not begin") },
     )
     .await;
@@ -99,6 +121,46 @@ async fn failed_owned_presentation_acquisition_never_enters_native_dispatch() {
         result.unwrap_err().code,
         ComputerUseErrorCode::BackendUnavailable
     );
+}
+
+#[cfg(windows)]
+#[rstest]
+#[tokio::test]
+async fn overlay_ack_failure_restores_the_banner_and_never_enters_native_input() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+    struct Banner(Arc<AtomicBool>);
+    impl Drop for Banner {
+        fn drop(&mut self) {
+            self.0.store(false, Ordering::Release);
+        }
+    }
+    let banner_hidden = Arc::new(AtomicBool::new(false));
+    let (acquire_banner, check_banner) = (banner_hidden.clone(), banner_hidden.clone());
+    let result = run_owned_pixel_worker(
+        move || {
+            acquire_banner.store(true, Ordering::Release);
+            Ok(Banner(acquire_banner))
+        },
+        move || -> ComputerUseResult<()> {
+            assert!(check_banner.load(Ordering::Acquire));
+            Err(pixel_presentation_error(IndicatorError::CaptureExclusion(
+                "registered cursor did not acknowledge suppression".into(),
+            )))
+        },
+        || -> ComputerUseResult<()> {
+            panic!("SendInput must not run with a visible owned cursor")
+        },
+    )
+    .await;
+    let details = result.unwrap_err().details.unwrap();
+    assert!(!banner_hidden.load(Ordering::Acquire));
+    assert_eq!(details.phase, Some(ComputerUseErrorPhase::PreDispatch));
+    assert_eq!(details.action_attempted, Some(false));
+    assert_eq!(details.input_sent, Some(ComputerUseInputState::NotSent));
+    assert_eq!(details.effect_unknown, Some(false));
 }
 
 #[cfg(windows)]
@@ -155,6 +217,9 @@ fn failed_input_preserves_partial_cursor_and_event_delivery(
     let attempted = cursor_move_attempted || inserted_events > 0;
     let error = input_error(WindowsGuardedInputError {
         reason: WindowsPhysicalInputFailureReason::Interrupted,
+        native_input_fence: None,
+        visibility_failure: None,
+        native_capture_popup: None,
         outcome: WindowsGuardedInputOutcome {
             operation: WindowsGuardedInputOperation::Click,
             mutation_attempted: attempted,
@@ -177,6 +242,136 @@ fn failed_input_preserves_partial_cursor_and_event_delivery(
     assert_eq!(details.blind_retry, Some(false));
 }
 
+#[cfg(windows)]
+#[rstest]
+fn rejected_fence_diagnostic_reaches_closed_error_details_with_original_refusal() {
+    use dcc_cua_platform_windows::{
+        WindowsGuardedInputError, WindowsGuardedInputOperation, WindowsGuardedInputOutcome,
+        WindowsPhysicalInputFailureReason,
+    };
+    let sample = serde_json::from_value(serde_json::json!({
+        "schema_version":1,"authorizes_input":false,"target_process_id":42,
+        "target_window_handle":99,"point":[1461,1060],"unobscured":false,
+        "point_proof_complete":true,"point_visible":false,"hit_window_handle":123,
+        "hit_process_id":456,"hit_root_window_handle":123,"hit_is_target_or_child":false,
+        "redacted_rectangles":[[1211,260,1778,1039]],"redaction_count":1,"redactions_complete":true
+    }))
+    .unwrap();
+    let error = input_error(WindowsGuardedInputError {
+        reason: WindowsPhysicalInputFailureReason::TargetOccluded,
+        outcome: WindowsGuardedInputOutcome {
+            operation: WindowsGuardedInputOperation::Click,
+            mutation_attempted: false,
+            cursor_move_attempted: false,
+            cursor_move_succeeded: false,
+            requested_events: 0,
+            inserted_events: 0,
+            cleanup_requested_events: 0,
+            cleanup_inserted_events: 0,
+            delivery_completed: false,
+            post_dispatch_validated: false,
+            fresh_observation_required: true,
+        },
+        native_input_fence: Some(sample),
+        native_capture_popup: None,
+        visibility_failure: Some(Box::new(
+            dcc_cua_platform_windows::VisibleWindowCaptureDiagnostic {
+                reason: dcc_cua_platform_windows::VisibleWindowCaptureReason::RootOverlap,
+                target_bounds: Some([1211, 260, 1778, 1039]),
+                blocker_process_id: Some(456),
+                blocker_window_handle: Some(123),
+                blocker_bounds: Some([1211, 260, 1778, 1039]),
+                cloaked: Some(0),
+                os_error: None,
+                root_bounds_failure: None,
+            },
+        )),
+    });
+    assert_eq!(error.code, ComputerUseErrorCode::TargetUnavailable);
+    let details = error.details.unwrap();
+    assert_eq!(details.phase, Some(ComputerUseErrorPhase::PreDispatch));
+    assert_eq!(details.input_sent, Some(ComputerUseInputState::NotSent));
+    assert_eq!(
+        details.capture.unwrap().reason,
+        ComputerUseCaptureReason::RootOverlap
+    );
+    assert_eq!(
+        details.native_input_fence.unwrap().hit_process_id,
+        Some(456)
+    );
+}
+
+#[rstest]
+#[cfg(windows)]
+#[case(false)]
+#[case(true)]
+fn popup_proof_refusal_uses_existing_capture_details_and_preserves_zero_input(
+    #[case] has_blocker: bool,
+) {
+    use dcc_cua_platform_windows::{
+        NativeCapturePopupInputDiagnostic, NativeCapturePopupRefusal, WindowsGuardedInputError,
+        WindowsGuardedInputOperation, WindowsGuardedInputOutcome,
+        WindowsPhysicalInputFailureReason,
+    };
+    let failure = WindowsGuardedInputError {
+        reason: WindowsPhysicalInputFailureReason::TargetOccluded,
+        outcome: WindowsGuardedInputOutcome {
+            operation: WindowsGuardedInputOperation::Text,
+            mutation_attempted: false,
+            cursor_move_attempted: false,
+            cursor_move_succeeded: false,
+            requested_events: 0,
+            inserted_events: 0,
+            cleanup_requested_events: 0,
+            cleanup_inserted_events: 0,
+            delivery_completed: false,
+            post_dispatch_validated: false,
+            fresh_observation_required: true,
+        },
+        native_input_fence: None,
+        visibility_failure: None,
+        native_capture_popup: Some(Box::new(NativeCapturePopupInputDiagnostic {
+            reason: if has_blocker {
+                NativeCapturePopupRefusal::UnselectedOccluder
+            } else {
+                NativeCapturePopupRefusal::FocusOutsideRoot
+            },
+            target_process_id: 42,
+            target_window_handle: 100,
+            target_bounds: Some([100, 100, 800, 600]),
+            blocker_process_id: has_blocker.then_some(99),
+            blocker_window_handle: has_blocker.then_some(400),
+            blocker_bounds: has_blocker.then_some([120, 120, 10, 10]),
+        })),
+    };
+    assert!(
+        serde_json::to_value(&failure)
+            .unwrap()
+            .get("native_capture_popup")
+            .is_none()
+    );
+    let error = input_error(failure);
+    assert_eq!(error.code, ComputerUseErrorCode::TargetUnavailable);
+    let details = error.details.unwrap();
+    assert_eq!(details.phase, Some(ComputerUseErrorPhase::PreDispatch));
+    assert_eq!(details.action_attempted, Some(false));
+    assert_eq!(details.input_sent, Some(ComputerUseInputState::NotSent));
+    assert_eq!(details.effect_unknown, Some(false));
+    assert_eq!(details.blind_retry, Some(false));
+    let capture = serde_json::to_value(details.capture.unwrap()).unwrap();
+    let mut expected = serde_json::json!({
+        "stage":"native_capture_popup_input",
+        "reason": if has_blocker { "unselected_occluder" } else { "focus_outside_root" },
+        "target_process_id":42,"target_window_handle":100,"target_bounds":[100,100,800,600]
+    });
+    if has_blocker {
+        expected["blocker_process_id"] = 99.into();
+        expected["blocker_window_handle"] = 400.into();
+        expected["blocker_bounds"] = serde_json::json!([120, 120, 10, 10]);
+    }
+    assert_eq!(capture, expected);
+}
+
 #[rstest]
 #[case("click", true)]
 #[case("double_click", true)]
@@ -186,7 +381,7 @@ fn failed_input_preserves_partial_cursor_and_event_delivery(
 #[case("keyboard_shortcut", true)]
 #[case("type", true)]
 #[case("type_chars", true)]
-#[case("drag", false)]
+#[case("drag", true)]
 #[case("move", false)]
 #[case("scroll", false)]
 #[case("set_text", false)]
@@ -199,7 +394,104 @@ fn explicit_pixel_routes_are_closed(#[case] name: &str, #[case] accepted: bool) 
         action.x = Some(1.0);
         action.y = Some(2.0);
     }
+    if name == "drag" {
+        action.path = vec![
+            ComputerUsePoint { x: 1.0, y: 2.0 },
+            ComputerUsePoint { x: 3.0, y: 4.0 },
+        ];
+    }
     assert_eq!(validate_pixel_action(&action).is_ok(), accepted);
+}
+
+fn drag_action() -> ComputerUseAction {
+    ComputerUseAction {
+        action: "drag".into(),
+        path: vec![
+            ComputerUsePoint { x: 10.0, y: 20.0 },
+            ComputerUsePoint { x: 110.0, y: 60.0 },
+        ],
+        ..Default::default()
+    }
+}
+
+#[rstest]
+#[case("empty")]
+#[case("extra_point")]
+#[case("coordinates")]
+#[case("keys")]
+#[case("modifiers")]
+#[case("text")]
+#[case("zero_duration")]
+#[case("long_duration")]
+#[case("zero_steps")]
+#[case("many_steps")]
+#[case("nonfinite")]
+fn pixel_drag_rejects_unbounded_or_mixed_action_fields(#[case] variant: &str) {
+    let mut action = drag_action();
+    match variant {
+        "empty" => action.path.clear(),
+        "extra_point" => action.path.push(ComputerUsePoint { x: 2.0, y: 2.0 }),
+        "coordinates" => action.x = Some(1.0),
+        "keys" => action.keys.push("shift".into()),
+        "modifiers" => action.modifiers.push("shift".into()),
+        "text" => action.text = Some("NoOp".into()),
+        "zero_duration" => action.duration_ms = Some(0),
+        "long_duration" => action.duration_ms = Some(10_001),
+        "zero_steps" => action.steps = Some(0),
+        "many_steps" => action.steps = Some(201),
+        "nonfinite" => action.path[1].x = f64::INFINITY,
+        _ => unreachable!(),
+    }
+    assert_eq!(
+        validate_pixel_action(&action).unwrap_err().code,
+        ComputerUseErrorCode::InvalidAction
+    );
+}
+
+#[cfg(windows)]
+#[rstest]
+#[case("valid", true)]
+#[case("outside", false)]
+#[case("same_pixel", false)]
+#[case("redacted_sample", false)]
+#[case("redacted_between_samples", false)]
+#[case("redacted_elsewhere", true)]
+#[case("redacted_excluded_corner", true)]
+#[case("scaled", false)]
+fn pixel_drag_checks_physical_origin_and_the_entire_redaction_path(
+    #[case] variant: &str,
+    #[case] accepted: bool,
+) {
+    let mut action = drag_action();
+    action.steps = Some(1);
+    let mut observation = observed();
+    match variant {
+        "outside" => action.path[1].x = 400.0,
+        "same_pixel" => action.path[1] = ComputerUsePoint { x: 10.9, y: 20.1 },
+        "redacted_sample" => {
+            observation.capture_provenance["visibility"] =
+                json!({"redacted_rectangles":[[-290,100,2,2]]})
+        }
+        "redacted_between_samples" => {
+            observation.capture_provenance["visibility"] =
+                json!({"redacted_rectangles":[[-241,119,3,3]]})
+        }
+        "redacted_elsewhere" => {
+            observation.capture_provenance["visibility"] =
+                json!({"redacted_rectangles":[[-241,140,3,3]]})
+        }
+        "redacted_excluded_corner" => {
+            observation.capture_provenance["visibility"] =
+                json!({"redacted_rectangles":[[-300,80,10,20]]})
+        }
+        "scaled" => observation.width /= 2,
+        _ => {}
+    }
+    let result = physical_drag_points(&action, &observation);
+    assert_eq!(result.is_ok(), accepted);
+    if accepted {
+        assert_eq!(result.unwrap(), vec![(-290, 100), (-190, 140)]);
+    }
 }
 
 #[rstest]

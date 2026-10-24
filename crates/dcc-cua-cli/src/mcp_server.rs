@@ -1,3 +1,6 @@
+mod task_payload;
+use task_payload::proposal_payload;
+mod capture_popup;
 mod frame_recovery;
 mod interaction_recovery;
 mod owned_host;
@@ -191,6 +194,8 @@ struct PrepareTaskInput {
     allow_recording: bool,
     #[serde(default)]
     allow_capture_preparation: bool,
+    #[serde(default)]
+    allow_native_capture_popup_keyboard: bool,
     #[serde(default)]
     allowed_browser_origins: Vec<String>,
     #[serde(default = "default_ttl_minutes")]
@@ -417,6 +422,7 @@ impl TaskAuthorizationServer {
         }
         validate_allowed_methods(input.surface, &input.allowed_methods)?;
         validate_native_lifecycle_methods(&input.allowed_methods)?;
+        capture_popup::validate_start(&input)?;
         let preparation_requested = input
             .allowed_methods
             .iter()
@@ -645,6 +651,11 @@ impl TaskAuthorizationServer {
         } else {
             None
         };
+        let mut allowed_actions = input.allowed_actions;
+        capture_popup::add_ceiling(
+            &mut allowed_actions,
+            input.allow_native_capture_popup_keyboard,
+        );
         let mut registration = TrustedTaskAuthorizationRegistration {
             connection_id: None,
             task_id: None,
@@ -652,7 +663,7 @@ impl TaskAuthorizationServer {
             application_label: input.application_label,
             target,
             allowed_host_methods: input.allowed_methods.clone(),
-            allowed_actions: input.allowed_actions,
+            allowed_actions,
             allowed_browser_origins,
             browser_scope: None,
             recording_output_dir: None,
@@ -840,6 +851,7 @@ impl TaskAuthorizationServer {
             "status": "started",
             "target": target,
             "report_before_first_observation_or_input": true,
+            "allow_native_capture_popup_keyboard": proposal.registration.allowed_actions.iter().any(TrustedTaskActionScope::is_native_capture_popup_keyboard),
             "native_action_popups": false,
             "recording_output_dir": proposal.registration.recording_output_dir,
         }))
@@ -908,6 +920,7 @@ impl TaskAuthorizationServer {
         {
             return Err("the dismiss_menu action scope grants only dismiss_menu, without activation, restoration or close".into());
         }
+        capture_popup::validate_call_ceiling(proposal, &params)?;
         if method == "browser_extension_call"
             && !proposal
                 .registration
@@ -1063,47 +1076,6 @@ fn task_session_grant(proposal: &TaskProposal, receipt: &TrustedTaskAuthorizatio
     })
 }
 
-fn proposal_payload(proposal_id: &str, proposal: &TaskProposal, status: &str) -> Value {
-    let target = match proposal.registration.target {
-        TrustedTaskAuthorizationTarget::ExactWindow {
-            process_id,
-            window_handle,
-        } => json!({
-            "kind": "exact_window",
-            "process_id": process_id,
-            "window_handle": window_handle,
-        }),
-        TrustedTaskAuthorizationTarget::OwnedBrowser(launch) => json!({
-            "kind": "owned_browser",
-            "browser": launch.browser,
-            "profile": launch.profile,
-            "process_id": Value::Null,
-            "window_handle": Value::Null,
-            "derived_on_start": true,
-        }),
-    };
-    json!({
-        "ok": !matches!(status, "cleanup_failed" | "cleanup_unknown"),
-        "provider": "dcc-cua",
-        "runtime_version": env!("CARGO_PKG_VERSION"),
-        "task_id": proposal_id,
-        "status": status,
-        "application_label": proposal.registration.application_label,
-        "surface": proposal.surface.as_str(),
-        "observation_mode": proposal.observation_mode,
-        "target": target,
-        "allowed_methods": proposal.allowed_methods,
-        "allowed_actions": proposal.registration.allowed_actions,
-        "allowed_browser_origins": proposal.registration.allowed_browser_origins,
-        "expires_at_unix_ms": proposal.registration.expires_at_unix_ms,
-        "confirmation_required": false,
-        "native_action_popups": false,
-        "secrets_accepted": false,
-        "recording_output_dir": proposal.registration.recording_output_dir,
-        "cleanup": task_cleanup_payload(proposal.cleanup.as_ref()),
-    })
-}
-
 fn method_allowed(surface: TaskSurface, method: &str) -> bool {
     let common = matches!(
         method,
@@ -1158,6 +1130,7 @@ fn method_allowed(surface: TaskSurface, method: &str) -> bool {
 }
 
 fn validate_task_method_params(method: &str, params: &Value) -> Result<(), String> {
+    capture_popup::validate_params(method, params)?;
     if method == "browser_extension_call"
         && !matches!(
             params.get("method").and_then(Value::as_str),
@@ -1583,7 +1556,7 @@ fn task_action_scope_schema() -> Value {
 
 fn tool_definitions() -> Vec<Value> {
     let action_scope = task_action_scope_schema();
-    vec![
+    let mut tools = vec![
         json!({
             "name": "start_task",
             "title": "Start DCC-CUA task",
@@ -1712,7 +1685,7 @@ fn tool_definitions() -> Vec<Value> {
                     },
                     "allowed_actions": {
                         "type": "array",
-                        "description": "Closed final action scopes; use an empty array for observation-only tasks. pixels_only accepts minimize_window, set_window_frame or the independent dismiss_menu scope with input_kind=window_state, secret_input=false, authorization_category=window_state; these grant no raw input. Pixel input accepts click, double_click, right_click, toggle, keypress, keyboard_shortcut, type, type_chars with input_kind=raw_input, secret_input=false, authorization_category=raw_input. execute_action requires an actual supported raw scope. Other modes use click/type action names for browser input methods; only secret-handle browser typing uses browser_type.",
+                        "description": "Closed final action scopes; use an empty array for observation-only tasks. pixels_only accepts minimize_window, set_window_frame or the independent dismiss_menu scope with input_kind=window_state, secret_input=false, authorization_category=window_state; these grant no raw input. Pixel input accepts click, double_click, right_click, toggle, drag, keypress, keyboard_shortcut, type, type_chars with input_kind=raw_input, secret_input=false, authorization_category=raw_input. execute_action requires an actual supported raw scope. Other modes use click/type action names for browser input methods; only secret-handle browser typing uses browser_type.",
                         "minItems": 0,
                         "maxItems": 32,
                         "uniqueItems": true,
@@ -1824,7 +1797,10 @@ fn tool_definitions() -> Vec<Value> {
             },
             "annotations": {"readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": true}
         }),
-    ]
+    ];
+    tools[0]["inputSchema"]["properties"]["allow_native_capture_popup_keyboard"] =
+        capture_popup::owner_schema();
+    tools
 }
 
 fn task_id_schema() -> Value {

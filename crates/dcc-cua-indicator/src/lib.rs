@@ -572,6 +572,14 @@ pub struct BannerCaptureExclusionGuard {
     _platform: platform::PlatformCaptureExclusionGuard,
 }
 
+/// Native input owns only the configured process-local cursor registration;
+/// peer presentations and foreign/unregistered cursor windows remain visible.
+#[cfg(windows)]
+#[must_use = "hold until native input cleanup and postcheck finish"]
+pub struct BannerInputCursorGuard {
+    _platform: platform::PlatformInputCursorGuard,
+}
+
 /// Opaque capability for this session's exact banner/frame renderer. Unlike
 /// capture exclusion, it cannot hide any peer presentation or shared cursor.
 #[cfg(windows)]
@@ -617,6 +625,13 @@ impl BannerCaptureExclusionSource {
     pub fn begin(&self) -> Result<BannerCaptureExclusionGuard, IndicatorError> {
         Ok(BannerCaptureExclusionGuard {
             _platform: self.platform.begin()?,
+        })
+    }
+
+    #[cfg(windows)]
+    pub fn begin_input_cursor(&self) -> Result<BannerInputCursorGuard, IndicatorError> {
+        Ok(BannerInputCursorGuard {
+            _platform: self.platform.begin_input_cursor()?,
         })
     }
 }

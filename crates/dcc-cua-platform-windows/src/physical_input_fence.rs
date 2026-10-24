@@ -1,5 +1,9 @@
 //! Final physical mutation boundaries for an immutable, actually captured HWND.
 //! No activation, upstream input delegation, semantic provider or fallback.
+mod capture_popup;
+mod diagnostic;
+pub use capture_popup::{send_guarded_capture_popup_keypress, send_guarded_capture_popup_text};
+use diagnostic::RejectedFenceDiagnostic;
 use serde::Serialize;
 use std::time::{Duration, Instant};
 use thiserror::Error;
@@ -51,6 +55,7 @@ pub enum WindowsPhysicalInputFailureReason {
 #[serde(rename_all = "snake_case")]
 pub enum WindowsGuardedInputOperation {
     Click,
+    Drag,
     Keypress,
     Text,
 }
@@ -93,6 +98,13 @@ impl WindowsGuardedInputOutcome {
 pub struct WindowsGuardedInputError {
     pub reason: WindowsPhysicalInputFailureReason,
     pub outcome: WindowsGuardedInputOutcome,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub native_input_fence:
+        Option<Box<dcc_cua_protocol::native_input_diagnostic::NativeInputFenceDiagnostic>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub visibility_failure: Option<Box<crate::VisibleWindowCaptureDiagnostic>>,
+    #[serde(skip)]
+    pub native_capture_popup: Option<Box<crate::NativeCapturePopupInputDiagnostic>>,
 }
 
 impl WindowsGuardedInputError {
@@ -238,6 +250,13 @@ fn final_physical_boundary<T>(
 }
 
 trait InputBackend {
+    fn capture_popup_rejection(&self) -> Option<crate::NativeCapturePopupInputDiagnostic> {
+        None
+    }
+
+    fn rejection_diagnostic(&self) -> Option<RejectedFenceDiagnostic> {
+        None
+    }
     fn check(
         &mut self,
         fence: WindowsPhysicalInputFence,
@@ -260,6 +279,7 @@ struct NativeBackend<G, I> {
     gate: G,
     interrupted: I,
     started: Instant,
+    rejection: Option<RejectedFenceDiagnostic>,
 }
 
 fn check_physical_fence(
@@ -287,6 +307,10 @@ fn check_physical_fence(
 }
 
 impl<G: FnMut() -> Result<(), UiaError>, I: FnMut() -> bool> InputBackend for NativeBackend<G, I> {
+    fn rejection_diagnostic(&self) -> Option<RejectedFenceDiagnostic> {
+        self.rejection.clone()
+    }
+
     fn check(
         &mut self,
         fence: WindowsPhysicalInputFence,
@@ -294,7 +318,8 @@ impl<G: FnMut() -> Result<(), UiaError>, I: FnMut() -> bool> InputBackend for Na
     ) -> Result<(), Reason> {
         // Shared strict production occlusion collector; never exclude a sibling,
         // allow a failed DWM query, follow a popup or capture pixels here.
-        check_physical_fence(
+        let mut diagnostic = None;
+        let result = check_physical_fence(
             fence,
             point,
             &mut self.gate,
@@ -305,23 +330,30 @@ impl<G: FnMut() -> Result<(), UiaError>, I: FnMut() -> bool> InputBackend for Na
                     fence.target.window_handle,
                 )
                 .map_err(|_| Reason::TargetUnavailable)?;
-                let point_unobscured = match point {
-                    Some(point)
-                        if evidence.unobscured
-                            || evidence.visibility_failure.is_some_and(|proof| {
-                                proof.reason == crate::VisibleWindowCaptureReason::RootOverlap
-                            }) =>
-                    {
-                        crate::exact_window_point_visible(
-                            fence.target.process_id,
-                            fence.target.window_handle,
-                            point,
-                        )
-                        .map_err(|_| Reason::TargetUnavailable)?
-                    }
-                    _ => false,
-                };
-                Ok((evidence, point_unobscured))
+                let mut sample = RejectedFenceDiagnostic::new(fence, point, evidence);
+                let point_unobscured = (|| {
+                    Ok(match point {
+                        Some(point)
+                            if evidence.unobscured
+                                || evidence.visibility_failure.is_some_and(|proof| {
+                                    proof.reason == crate::VisibleWindowCaptureReason::RootOverlap
+                                }) =>
+                        {
+                            let proof = crate::visible_capture::exact_window_point_evidence(
+                                fence.target.process_id,
+                                fence.target.window_handle,
+                                point,
+                            )
+                            .map_err(|_| Reason::TargetUnavailable)?;
+                            let visible = proof.visible;
+                            sample.attach_point(proof);
+                            visible
+                        }
+                        _ => false,
+                    })
+                })();
+                diagnostic = Some(sample);
+                point_unobscured.map(|visible| (evidence, visible))
             },
             || unsafe {
                 [
@@ -335,7 +367,9 @@ impl<G: FnMut() -> Result<(), UiaError>, I: FnMut() -> bool> InputBackend for Na
                 exact_window_native_state(fence.target.process_id, fence.target.window_handle)
                     .map_err(|_| Reason::TargetUnavailable)
             },
-        )
+        );
+        self.rejection = if result.is_err() { diagnostic } else { None };
+        result
     }
 
     fn mutate(
@@ -499,10 +533,20 @@ impl<B: InputBackend> Transaction<'_, B> {
                 self.outcome.post_dispatch_validated = true;
                 Ok(self.outcome)
             }
-            Err(reason) => Err(WindowsGuardedInputError {
-                reason,
-                outcome: self.outcome,
-            }),
+            Err(reason) => {
+                let diagnostic = self.backend.rejection_diagnostic();
+                Err(WindowsGuardedInputError {
+                    reason,
+                    outcome: self.outcome,
+                    native_input_fence: diagnostic
+                        .as_ref()
+                        .map(|diagnostic| Box::new(diagnostic.sample.clone())),
+                    visibility_failure: diagnostic
+                        .and_then(|diagnostic| diagnostic.visibility_failure)
+                        .map(Box::new),
+                    native_capture_popup: self.backend.capture_popup_rejection().map(Box::new),
+                })
+            }
         }
     }
 }
@@ -566,6 +610,55 @@ fn run_click<B: InputBackend>(
             }
         }
         Ok(())
+    })();
+    transaction.finish(result)
+}
+
+fn run_drag<B: InputBackend>(
+    backend: &mut B,
+    fence: WindowsPhysicalInputFence,
+    points: &[(i32, i32)],
+    duration_ms: u64,
+    button: WindowsPointerButton,
+) -> Result<WindowsGuardedInputOutcome, WindowsGuardedInputError> {
+    let mut transaction = Transaction {
+        backend,
+        fence,
+        point: points.first().copied(),
+        outcome: WindowsGuardedInputOutcome::new(WindowsGuardedInputOperation::Drag),
+        pending_releases: Vec::new(),
+    };
+    let result = (|| {
+        if !(2..=201).contains(&points.len())
+            || !(1..=10_000).contains(&duration_ms)
+            || points.first() == points.last()
+        {
+            return Err(Reason::InvalidRequest);
+        }
+        // Prove the complete bounded path before even moving the cursor. These
+        // checks do not replace the final check before every actual mutation.
+        for &point in points {
+            transaction.backend.check(fence, Some(point))?;
+        }
+        let start = points[0];
+        transaction.mutate(&[], Some(start))?;
+        transaction.mutate(&[Event::Mouse(button, false)], None)?;
+        let started = transaction.backend.elapsed_ms();
+        for (index, &point) in points.iter().enumerate().skip(1) {
+            let deadline =
+                started.saturating_add(duration_ms * index as u64 / (points.len() - 1) as u64);
+            while transaction.backend.elapsed_ms() < deadline {
+                transaction.backend.check(fence, transaction.point)?;
+                transaction.backend.pause(
+                    deadline
+                        .saturating_sub(transaction.backend.elapsed_ms())
+                        .min(20),
+                );
+            }
+            transaction.point = Some(point);
+            transaction.mutate(&[Event::Move(point.0, point.1)], None)?;
+        }
+        transaction.mutate(&[Event::Mouse(button, true)], None)
     })();
     transaction.finish(result)
 }
@@ -665,11 +758,15 @@ fn with_native_backend<G: FnMut() -> Result<(), UiaError>, I: FnMut() -> bool>(
     let _dpi = ThreadDpiAwarenessGuard::per_monitor_v2().map_err(|_| WindowsGuardedInputError {
         reason: Reason::TargetUnavailable,
         outcome: WindowsGuardedInputOutcome::new(operation),
+        native_input_fence: None,
+        visibility_failure: None,
+        native_capture_popup: None,
     })?;
     let mut backend = NativeBackend {
         gate,
         interrupted,
         started: Instant::now(),
+        rejection: None,
     };
     run(&mut backend)
 }
@@ -690,6 +787,24 @@ pub fn send_guarded_click(
         input_available,
         interrupted,
         |backend| run_click(backend, fence, point, count, button, modifiers),
+    )
+}
+
+/// Delivers an already observed, bounded physical path without activation.
+/// Every point is preflighted and every move/down/up has a fresh native fence.
+pub fn send_guarded_drag(
+    fence: WindowsPhysicalInputFence,
+    points: &[(i32, i32)],
+    duration_ms: u64,
+    button: WindowsPointerButton,
+    input_available: impl FnMut() -> Result<(), UiaError>,
+    interrupted: impl FnMut() -> bool,
+) -> Result<WindowsGuardedInputOutcome, WindowsGuardedInputError> {
+    with_native_backend(
+        WindowsGuardedInputOperation::Drag,
+        input_available,
+        interrupted,
+        |backend| run_drag(backend, fence, points, duration_ms, button),
     )
 }
 

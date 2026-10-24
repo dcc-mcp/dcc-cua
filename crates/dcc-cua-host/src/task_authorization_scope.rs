@@ -127,6 +127,7 @@ pub(crate) fn validate_grant_against_task_authorization(
         if grant.allow_raw_input != trusted_raw_input
             || lease.allowed_actions.iter().any(|scope| {
                 !scope.is_window_minimize()
+                    && !scope.is_native_capture_popup_keyboard()
                     && !scope.is_window_frame()
                     && !scope.is_native_menu_dismiss()
                     && !scope.is_capture_preparation()

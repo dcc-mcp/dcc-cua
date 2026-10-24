@@ -4,6 +4,7 @@ use serde_json::{Value, json};
 use super::frame_recovery::add_frame_recovery_guidance;
 use super::*;
 
+mod capture_popup_tests;
 mod capture_preparation_tests;
 mod interaction_recovery_tests;
 mod lifetime_tests;
@@ -1121,6 +1122,7 @@ fn public_pixels_mode_refuses_ambiguous_or_semantic_grants(
 #[case("double_click")]
 #[case("right_click")]
 #[case("toggle")]
+#[case("drag")]
 #[case("keypress")]
 #[case("keyboard_shortcut")]
 #[case("type")]
@@ -1142,7 +1144,6 @@ fn pixel_raw_input_permission_is_derived_from_a_real_supported_scope(#[case] act
 }
 
 #[rstest]
-#[case("action", json!("drag"))]
 #[case("action", json!("scroll"))]
 #[case("action", json!("move"))]
 #[case("action", json!("press"))]
@@ -1321,6 +1322,7 @@ fn public_tool_schema_advertises_closed_pixel_actions_and_exact_window_only() {
             "double_click",
             "right_click",
             "toggle",
+            "drag",
             "keypress",
             "keyboard_shortcut",
             "type",

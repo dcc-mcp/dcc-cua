@@ -1,5 +1,37 @@
 # Changelog
 
+## [1.14.0](https://github.com/dcc-mcp/dcc-cua/compare/v1.13.0...v1.14.0) (2026-10-23)
+
+
+### Features
+
+* add guarded exact pixel dragging ([41731f2](https://github.com/dcc-mcp/dcc-cua/commit/41731f2fb208139e67345cc519168a66b113f162))
+* add native focused popup diagnostics ([f541237](https://github.com/dcc-mcp/dcc-cua/commit/f5412374d40d9993a141460ab51cbda90e77fbe3))
+* expose bound native popup diagnostics ([1b79fd7](https://github.com/dcc-mcp/dcc-cua/commit/1b79fd757c7dccf8b54bccf3ecc59f56d95e33b9))
+* guard observed capture popup keyboard input ([ebe9f93](https://github.com/dcc-mcp/dcc-cua/commit/ebe9f93aac6053ef8ee47938dc5f5e71ec165c3a))
+* observe selected native capture popups for keyboard input ([edac0a9](https://github.com/dcc-mcp/dcc-cua/commit/edac0a977aab79b39ec4c2acd9376fb02d5a8cf6))
+* support bounded drags and observed Nuke search popups ([#374](https://github.com/dcc-mcp/dcc-cua/issues/374)) ([d61ba68](https://github.com/dcc-mcp/dcc-cua/commit/d61ba68d850ad9925cc3a28b08b127d68da74af8))
+
+
+### Bug Fixes
+
+* accept proven capture release during completed checks ([c23654f](https://github.com/dcc-mcp/dcc-cua/commit/c23654f668b31592d8dcb6b51652e363fc6792b0))
+* attest popup keyboard ceiling in started tasks ([e7b1432](https://github.com/dcc-mcp/dcc-cua/commit/e7b14329c15be64c072ef08d448c08db7f43b4fc))
+* await asynchronous registered cursor suppression ([df8de9c](https://github.com/dcc-mcp/dcc-cua/commit/df8de9ca1ff27b665c58bdfa978f09ebb6eb13d2))
+* await balanced popup keyboard closure ([9249c31](https://github.com/dcc-mcp/dcc-cua/commit/9249c31f7e5d7e0fd81389c712627e35ebad9b7d))
+* exclude registered overlays throughout native input ([42d413c](https://github.com/dcc-mcp/dcc-cua/commit/42d413c99dc0892f5445c4c6faa387f48d1619e4))
+* gate capture on cursor restoration acknowledgements ([ac9c60e](https://github.com/dcc-mcp/dcc-cua/commit/ac9c60e873c5534fd7646fbb86a110749445e8c3))
+* hide presenter before confirming cursor exclusion ([791d63c](https://github.com/dcc-mcp/dcc-cua/commit/791d63ca71c083d4c1fc828a11413f352b565da2))
+* preserve peer overlays during native input ([1d98ae3](https://github.com/dcc-mcp/dcc-cua/commit/1d98ae319b18bb32e3c9ed6a2ee2d833c9eb4efa))
+* recognize completed popup focus return to the exact root ([401bab8](https://github.com/dcc-mcp/dcc-cua/commit/401bab875a08eea92c9d1e46bae74440ece6db07))
+* recognize forward popup closure in final keyboard checks ([ff01c57](https://github.com/dcc-mcp/dcc-cua/commit/ff01c57de9dc052899f77e27115fb58c3cf94c26))
+* retain native input refusal diagnostics ([64dec14](https://github.com/dcc-mcp/dcc-cua/commit/64dec14d93a6258cf5a8edd3f90a341bdb4ccc08))
+* retain native popup input refusal diagnostics ([a81f93d](https://github.com/dcc-mcp/dcc-cua/commit/a81f93d4ede542f84891506a128dac3f74a1bf62))
+* serialize registered cursor restoration acknowledgements ([9a688bd](https://github.com/dcc-mcp/dcc-cua/commit/9a688bd5568ab4e1683e1a6bf6bfc73e56843bff))
+* settle already destroyed popup postchecks ([f43a55f](https://github.com/dcc-mcp/dcc-cua/commit/f43a55fbcfd58efec761ffeb2fb621fd840e3f3f))
+* validate popup captures by native capture mode ([46476bb](https://github.com/dcc-mcp/dcc-cua/commit/46476bb2e69597b9f5f03a1c9ad7f2e248c0bb4d))
+* validate popup geometry after completed keyboard input ([3cc71ff](https://github.com/dcc-mcp/dcc-cua/commit/3cc71ffc079a165e512e85ddfee17c0d9d77f039))
+
 ## [1.13.0](https://github.com/dcc-mcp/dcc-cua/compare/v1.12.2...v1.13.0) (2026-10-22)
 
 

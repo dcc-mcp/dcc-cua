@@ -590,6 +590,10 @@ pub enum ComputerUseErrorCode {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ComputerUseErrorDetails {
+    /// Measurements retained from the rejected native fence; never input authority.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_input_fence:
+        Option<dcc_cua_protocol::native_input_diagnostic::NativeInputFenceDiagnostic>,
     /// Content-free native capture proof. Never contains window titles, UI text,
     /// executable paths, arbitrary backend messages, or captured content.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -761,6 +765,7 @@ pub enum ComputerUseCaptureStage {
     CaptureIdentity,
     VisibleDesktopProof,
     PublicationValidation,
+    NativeCapturePopupInput,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -781,6 +786,19 @@ pub enum ComputerUseCaptureReason {
     TargetBoundsChanged,
     RootOverlap,
     PixelEvidenceChanged,
+    InvalidSelection,
+    RootUnavailable,
+    RootNotUsable,
+    GuiStateUnavailable,
+    FocusOutsideRoot,
+    CaptureNotSelected,
+    PopupUnavailable,
+    PopupIdentityMismatch,
+    PopupNotUsable,
+    EnumerationIncomplete,
+    UnselectedOccluder,
+    NativeStateChanged,
+    NativeStateUnavailable,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
