@@ -84,6 +84,8 @@ The summarizer accepts an already-collected, private native report in this shape
     "outcome": "success",
     "binding": {
       "provider": "dcc-cua", "runtime": "1.14.0",
+      "source_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "binary_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
       "pid": 42, "process_birth": "2026-10-24T00:00:00Z", "hwnd": 123,
       "observation_mode": "pixels_only", "width": 1280, "height": 720
     }
@@ -92,8 +94,8 @@ The summarizer accepts an already-collected, private native report in this shape
 ```
 
 This example is synthetic. The summarizer validates structure, not authenticity
-or authorization. Put source/hash/scenario details in binding when comparing runs;
-all binding fields participate in grouping. Never mix different input operations,
+or authorization. Full source and binary hashes are required; all binding fields
+and the scenario participate in grouping. Never mix different input operations,
 diagnostics settings or cleanup contracts in one distribution. The report can
 include additional private metadata; do not store screenshot content or tool args.
 
