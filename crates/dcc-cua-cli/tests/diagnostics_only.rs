@@ -5,6 +5,76 @@ use std::time::{Duration, Instant};
 
 use rstest::rstest;
 
+#[rstest]
+fn context_only_manifest_advertises_the_restricted_capability() {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_dcc-cua"));
+    command.arg("manifest");
+    let output = captured(command);
+    assert!(output.status.success(), "{output:?}");
+    let manifest: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let context = &manifest["runtime"]["local_context_only"];
+    assert_eq!(
+        context["cli_command"],
+        serde_json::json!(["doctor", "--context-only"])
+    );
+    assert_eq!(context["input_surface"], "not_read");
+    assert_eq!(context["input_desktop"], "not_opened");
+    assert_eq!(context["readiness_assessed"], false);
+    assert_eq!(context["agent_host_launch_binding"], "not_established");
+}
+
+#[rstest]
+fn context_only_exits_before_runtime_startup_or_home_writes() {
+    let home = tempfile::tempdir().unwrap();
+    let mut command = isolated_command(home.path());
+    command.args(["doctor", "--context-only"]).env(
+        "CUA_DRIVER_CURSOR_THEME_DIR",
+        "forbidden-relative-theme-store",
+    );
+    let output = captured(command);
+    assert!(output.status.success(), "{output:?}");
+    assert!(output.stderr.is_empty(), "{output:?}");
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["mode"], "context_only");
+    assert_eq!(report["readiness_assessed"], false);
+    assert_eq!(report["limits"]["input_desktop"], "not_opened");
+    assert_eq!(report["limits"]["input_surface"], "not_read");
+    assert_eq!(report["limits"]["foreground_window"], "not_read");
+    assert_eq!(report["limits"]["sdk"], "not_initialized");
+    assert_eq!(report["native_acceptance"], "not_run");
+    for check in [
+        "input_desktop",
+        "input_surface",
+        "foreground_window",
+        "sdk_constructor",
+        "capture",
+        "recording",
+    ] {
+        assert_eq!(report["checks"][check]["status"], "not_run");
+    }
+    assert!(std::fs::read_dir(home.path()).unwrap().next().is_none());
+}
+
+#[rstest]
+#[case(&["doctor", "--context-only=true"])]
+#[case(&["doctor", "--context-only", "--context-only"])]
+#[case(&["doctor", "--context-only", "--diagnostics-only"])]
+#[case(&["doctor", "--context-only", "--pid", "42"])]
+#[case(&["doctor", "--context-only", "--endpoint", "other"])]
+#[case(&["doctor", "--context-only", "--help"])]
+#[case(&["doctor", "--context-only", "extra"])]
+#[case(&["host", "--context-only"])]
+#[case(&["mcp-server", "--context-only"])]
+#[case(&["--context-only"])]
+fn context_only_rejects_mixed_or_remote_arguments_before_startup(#[case] arguments: &[&str]) {
+    let home = tempfile::tempdir().unwrap();
+    let mut command = isolated_command(home.path());
+    command.args(arguments);
+    let output = captured(command);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert!(std::fs::read_dir(home.path()).unwrap().next().is_none());
+}
+
 fn captured(mut command: Command) -> Output {
     let mut child = command
         .stdout(Stdio::piped())

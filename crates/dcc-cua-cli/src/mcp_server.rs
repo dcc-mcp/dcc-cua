@@ -3,6 +3,8 @@ use task_payload::proposal_payload;
 mod capture_popup;
 mod frame_recovery;
 mod interaction_recovery;
+mod owned_host;
+
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::sync::{Arc, Mutex};
@@ -26,6 +28,11 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader, BufWriter};
 use uuid::Uuid;
+
+use owned_host::{
+    OwnedHostTask, finish_owned_host_task, stop_owned_task_session, stopped_task_status,
+    task_cleanup_payload,
+};
 
 use super::connection_diagnostics::{
     AssociatedHost, CloseReason, ConnectionDiagnostics, RESOURCE_URI as CONNECTION_RESOURCE,
@@ -219,6 +226,7 @@ struct TaskProposal {
     receipt: Option<TrustedTaskAuthorizationReceipt>,
     session: Option<LogicalTaskSession>,
     session_open_attempted: bool,
+    host_task: Option<OwnedHostTask>,
     revoked: bool,
     cleanup: Option<Value>,
 }
@@ -689,6 +697,7 @@ impl TaskAuthorizationServer {
             receipt: Some(receipt),
             session: None,
             session_open_attempted: false,
+            host_task: None,
             revoked: false,
             cleanup: None,
         };
@@ -724,6 +733,7 @@ impl TaskAuthorizationServer {
             .get_mut(proposal_id)
             .ok_or_else(|| crate::lifetime_diagnostics::TASK_NOT_FOUND.to_owned())?;
         if proposal.revoked {
+            finish_owned_host_task(proposal).await;
             return Ok(proposal_payload(
                 proposal_id,
                 proposal,
@@ -751,6 +761,7 @@ impl TaskAuthorizationServer {
             None => json!({"success":false,"active":null,"cleanup_pending":true,
                 "error":"task session startup did not return an owned session cleanup acknowledgement"}),
         });
+        finish_owned_host_task(proposal).await;
         Ok(proposal_payload(
             proposal_id,
             proposal,
@@ -774,6 +785,13 @@ impl TaskAuthorizationServer {
                     {
                         Some(session) => stop_owned_task_session(session).await,
                         None => json!({"active":false,"cleanup_pending":false}),
+                    };
+                    let cleanup = if let Some(proposal) = self.proposals.get_mut(&id) {
+                        proposal.cleanup = Some(cleanup);
+                        finish_owned_host_task(proposal).await;
+                        task_cleanup_payload(proposal.cleanup.as_ref())
+                    } else {
+                        cleanup
                     };
                     failures.push(json!({"task_id":id,"error":error,"cleanup":cleanup}));
                 }
@@ -801,6 +819,12 @@ impl TaskAuthorizationServer {
             return Err("task runtime lease was not issued".into());
         }
         if proposal.session.is_none() {
+            if proposal.host_task.is_some() {
+                return Err(
+                    "previous Host startup did not finish; call stop_task, then start a new task"
+                        .into(),
+                );
+            }
             proposal.session_open_attempted = true;
             proposal.session = Some(
                 open_task_session(
@@ -845,6 +869,8 @@ impl TaskAuthorizationServer {
             "expired"
         } else if proposal.session.is_some() {
             "started"
+        } else if proposal.host_task.is_some() {
+            "cleanup_unknown"
         } else if proposal.receipt.is_some() {
             "ready"
         } else {
@@ -956,7 +982,7 @@ impl TaskAuthorizationServer {
 
 async fn open_task_session(
     proposal_id: &str,
-    proposal: &TaskProposal,
+    proposal: &mut TaskProposal,
     authorization_host: std::sync::Arc<dyn TrustedTaskAuthorizationHost>,
     connection_id: Option<&str>,
     extension_transport: &mut Option<crate::extension_transport::ProviderListener>,
@@ -965,6 +991,7 @@ async fn open_task_session(
         .receipt
         .as_ref()
         .ok_or_else(|| "task runtime lease was not issued".to_owned())?;
+    let grant = task_session_grant(proposal, receipt);
     let (client_stream, host_stream) = tokio::io::duplex(256 * 1024);
     let driver = match browser_prepare_authorization_host(proposal_id, proposal) {
         Some(host) => driver_with_browser_prepare_authorization(host)?,
@@ -982,17 +1009,19 @@ async fn open_task_session(
         &proposal.registration.target,
     )
     .await?;
-    tokio::spawn(async move {
-        let _ =
-            process_connection_with_security_services(driver, host_stream, security_services).await;
-    });
+    // Retain the owner before hello/open-session can fail or be cancelled.
+    // Closing the client transport requests cleanup; never abort admitted native work.
+    proposal.host_task = Some(OwnedHostTask::spawn(async move {
+        process_connection_with_security_services(driver, host_stream, security_services)
+            .await
+            .map_err(|error| error.to_string())
+    }));
     let mut client =
         HostClient::from_stream_with_transport(client_stream, SnapshotTransport::BinaryFrame);
     client
         .hello(SERVER_NAME)
         .await
         .map_err(|error| error.to_string())?;
-    let grant = task_session_grant(proposal, receipt);
     client
         .open_logical_task_session(task_session_id(proposal_id), grant, DEFAULT_IDLE_TIMEOUT_MS)
         .await
@@ -1335,47 +1364,6 @@ fn bind_recording_request(params: &mut Value, directory: Option<&str>) -> Result
     }
     params["request"] = json!({"output_dir":directory,"record_video":true});
     Ok(())
-}
-
-async fn stop_owned_task_session(session: LogicalTaskSession) -> Value {
-    let session_id = session.session_id().to_owned();
-    let mut client = session.into_client();
-    match client
-        .request_with_timeout(
-            "stop_session",
-            json!({"session_id":session_id}),
-            std::time::Duration::from_secs(60),
-        )
-        .await
-    {
-        Ok(response)
-            if response.value["type"] == "session_stopped"
-                && response.value["session_id"] == session_id
-                && response.value["success"].is_boolean()
-                && response.value["active"] == false
-                && response.value["cleanup_pending"] == false =>
-        {
-            response.value
-        }
-        Ok(response) => json!({"success":false,"active":null,"cleanup_pending":true,
-            "error":"Host did not acknowledge authoritative session cleanup",
-            "host_response":response.value}),
-        Err(error) => json!({"success":false,"active":null,"cleanup_pending":true,
-            "error":error.to_string()}),
-    }
-}
-
-fn stopped_task_status(cleanup: Option<&Value>) -> &'static str {
-    match cleanup {
-        Some(cleanup) if cleanup["cleanup_pending"] == false && cleanup["active"] == false => {
-            if cleanup["success"] == true {
-                "stopped"
-            } else {
-                "cleanup_failed"
-            }
-        }
-        _ => "cleanup_unknown",
-    }
 }
 
 fn validate_allowed_methods(surface: TaskSurface, methods: &[String]) -> Result<(), String> {
@@ -1724,7 +1712,7 @@ fn tool_definitions() -> Vec<Value> {
         json!({
             "name": "stop_task",
             "title": "Stop DCC-CUA task",
-            "description": "Revoke one exact task's runtime lease, then await Host session cleanup, including video and sidecar finalization. Cleanup errors or unknown acknowledgements remain visible; a dropped connection is not a successful stop.",
+            "description": "Revoke one exact task's runtime lease, then await Host session cleanup, including video and sidecar finalization, and bounded connection completion. Cleanup errors or unknown acknowledgements remain visible; a dropped connection is not a successful stop. Pending Host completion may be checked again with stop_task; it never restarts or replays the task.",
             "inputSchema": task_id_schema(),
             "annotations": {"readOnlyHint": false, "destructiveHint": true, "idempotentHint": true, "openWorldHint": false}
         }),
@@ -2072,7 +2060,7 @@ pub async fn run(diagnostics_dir: Option<std::path::PathBuf>) -> Result<(), Box<
     let mut reason = CloseReason::InputError;
     let result = run_transport(&mut server, &mut input, &mut output, &mut reason).await;
     // Preserve the last observed task/Host associations at disconnect. Dropping
-    // transports below does not attest that detached Host cleanup has finished.
+    // transports below does not attest that Host cleanup has finished.
     server.update_diagnostics();
     if let Some(diagnostics) = server.diagnostics.as_mut() {
         diagnostics.close(reason);

@@ -97,3 +97,175 @@ fn lifetime_guidance_is_discoverable_before_starting_a_task() {
     let ordinary = tool_error("PRIVATE_UNCLASSIFIED_ERROR".into());
     assert!(ordinary["structuredContent"].get("code").is_none());
 }
+
+#[rstest]
+#[tokio::test]
+async fn host_completion_does_not_replace_a_missing_session_cleanup_acknowledgement() {
+    let mut server = test_server();
+    let prepared = server.prepare_task(pixels_task()).unwrap();
+    let id = prepared["task_id"].as_str().unwrap();
+    let proposal = server.proposals.get_mut(id).unwrap();
+    proposal.session_open_attempted = true;
+    proposal.host_task = Some(OwnedHostTask::spawn(async { Ok(()) }));
+    let stopped = server.revoke_task(json!({"task_id":id})).await.unwrap();
+    assert_eq!(stopped["status"], "cleanup_unknown");
+    assert_eq!(
+        stopped["cleanup"]["host_connection_completion"]["success"],
+        true
+    );
+    assert_eq!(
+        server.revoke_task(json!({"task_id":id})).await.unwrap(),
+        stopped
+    );
+}
+
+#[rstest]
+#[tokio::test]
+async fn host_failure_overrides_a_successful_session_cleanup_acknowledgement() {
+    let mut server = test_server();
+    let prepared = server.prepare_task(pixels_task()).unwrap();
+    let id = prepared["task_id"].as_str().unwrap();
+    let proposal = server.proposals.get_mut(id).unwrap();
+    proposal.revoked = true;
+    proposal.cleanup = Some(json!({"success":true,"active":false,"cleanup_pending":false}));
+    proposal.host_task = Some(OwnedHostTask::spawn(async {
+        Err("Host finalization failed".into())
+    }));
+    let stopped = server.revoke_task(json!({"task_id":id})).await.unwrap();
+    assert_eq!(stopped["status"], "cleanup_failed");
+    assert_eq!(stopped["cleanup"]["success"], false);
+    assert_eq!(stopped["cleanup"]["session_cleanup"]["success"], true);
+    assert_eq!(
+        stopped["cleanup"]["host_connection_completion"]["success"],
+        false
+    );
+}
+
+#[rstest]
+fn pending_host_completion_cannot_claim_a_stopped_task() {
+    let cleanup = json!({"success":true,"active":false,"cleanup_pending":false,
+        "host_connection_completion":{"completed":false,"success":false}});
+    assert_eq!(stopped_task_status(Some(&cleanup)), "cleanup_unknown");
+    let payload = task_cleanup_payload(Some(&cleanup));
+    assert_eq!(payload["success"], false);
+    assert_eq!(payload["cleanup_pending"], true);
+    assert_eq!(payload["session_cleanup"]["success"], true);
+}
+
+#[rstest]
+#[tokio::test]
+async fn cancelling_completion_wait_keeps_pending_evidence_and_can_resume() {
+    let mut server = test_server();
+    let prepared = server.prepare_task(pixels_task()).unwrap();
+    let id = prepared["task_id"].as_str().unwrap();
+    let proposal = server.proposals.get_mut(id).unwrap();
+    let (release, wait) = tokio::sync::oneshot::channel();
+    proposal.revoked = true;
+    proposal.cleanup = Some(json!({"success":true,"active":false,"cleanup_pending":false}));
+    proposal.host_task = Some(OwnedHostTask::spawn(async move {
+        wait.await.unwrap();
+        Ok(())
+    }));
+    let mut finish = Box::pin(server.revoke_task(json!({"task_id":id})));
+    let waker = std::task::Waker::noop();
+    assert!(matches!(
+        std::future::Future::poll(finish.as_mut(), &mut std::task::Context::from_waker(waker)),
+        std::task::Poll::Pending
+    ));
+    drop(finish);
+    assert_eq!(
+        server.task_status(json!({"task_id":id})).unwrap()["status"],
+        "cleanup_unknown"
+    );
+    release.send(()).unwrap();
+    let stopped = server.revoke_task(json!({"task_id":id})).await.unwrap();
+    assert_eq!(stopped["status"], "stopped");
+    assert_eq!(stopped["cleanup"]["success"], true);
+}
+
+#[rstest]
+#[tokio::test]
+async fn interrupted_startup_requires_a_new_task_without_replacing_its_host_owner() {
+    let mut server = test_server();
+    let prepared = server.prepare_task(pixels_task()).unwrap();
+    let id = prepared["task_id"].as_str().unwrap();
+    let proposal = server.proposals.get_mut(id).unwrap();
+    proposal.session_open_attempted = true;
+    proposal.host_task = Some(OwnedHostTask::spawn(async { Ok(()) }));
+    let status = server.task_status(json!({"task_id":id})).unwrap();
+    assert_eq!(status["status"], "cleanup_unknown");
+    assert_eq!(status["ok"], false);
+    let error = server.start_task(json!({"task_id":id})).await.unwrap_err();
+    assert!(error.contains("call stop_task, then start a new task"));
+    assert!(server.proposals[id].host_task.is_some());
+    let stopped = server.revoke_task(json!({"task_id":id})).await.unwrap();
+    assert_eq!(
+        stopped["cleanup"]["host_connection_completion"]["completed"],
+        true
+    );
+    assert!(server.proposals[id].revoked);
+}
+
+#[rstest]
+#[tokio::test]
+async fn shutdown_waits_for_retained_host_completion() {
+    let mut server = test_server();
+    let prepared = server.prepare_task(pixels_task()).unwrap();
+    let id = prepared["task_id"].as_str().unwrap();
+    let proposal = server.proposals.get_mut(id).unwrap();
+    let (release, wait) = tokio::sync::oneshot::channel();
+    proposal.revoked = true;
+    proposal.cleanup = Some(json!({"success":true,"active":false,"cleanup_pending":false}));
+    proposal.host_task = Some(OwnedHostTask::spawn(async move {
+        wait.await.unwrap();
+        Ok(())
+    }));
+    let mut shutdown = Box::pin(server.shutdown_tasks());
+    let waker = std::task::Waker::noop();
+    assert!(matches!(
+        std::future::Future::poll(
+            shutdown.as_mut(),
+            &mut std::task::Context::from_waker(waker)
+        ),
+        std::task::Poll::Pending
+    ));
+    release.send(()).unwrap();
+    assert!(shutdown.await.is_empty());
+    assert_eq!(
+        server.task_status(json!({"task_id":id})).unwrap()["status"],
+        "stopped"
+    );
+}
+
+#[rstest]
+#[tokio::test]
+async fn stopping_one_task_does_not_revoke_or_join_another_host() {
+    let mut server = test_server();
+    let first = server.prepare_task(pixels_task()).unwrap();
+    let second = server.prepare_task(pixels_task()).unwrap();
+    let first_id = first["task_id"].as_str().unwrap();
+    let second_id = second["task_id"].as_str().unwrap();
+    let (release, wait) = tokio::sync::oneshot::channel();
+    server.proposals.get_mut(first_id).unwrap().host_task =
+        Some(OwnedHostTask::spawn(async { Ok(()) }));
+    server.proposals.get_mut(second_id).unwrap().host_task =
+        Some(OwnedHostTask::spawn(async move {
+            wait.await.unwrap();
+            Ok(())
+        }));
+    let stopped = server
+        .revoke_task(json!({"task_id":first_id}))
+        .await
+        .unwrap();
+    assert_eq!(
+        stopped["cleanup"]["host_connection_completion"]["completed"],
+        true
+    );
+    assert!(!server.proposals[second_id].revoked);
+    assert!(server.proposals[second_id].cleanup.is_none());
+    release.send(()).unwrap();
+    server
+        .revoke_task(json!({"task_id":second_id}))
+        .await
+        .unwrap();
+}
