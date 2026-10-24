@@ -1,4 +1,5 @@
 use super::*;
+mod discovery_reuse;
 use cua_driver_sdk::remote::{
     DRIVER_ENVELOPE_VERSION, DriverChannelCapabilities, DriverEnvelopeChannel,
     DriverRequestEnvelope, DriverResponseEnvelope,
