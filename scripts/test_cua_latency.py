@@ -1,10 +1,16 @@
 """Exercise real pipe/EOF handling with an owned fake MCP peer, plus trace statistics."""
+import contextlib
+import hashlib
+import io
 import json
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import Mock, patch
 
+from scripts import cua_latency as m
 from scripts.cua_latency import SCHEMA, probe, summarize
 
 
@@ -138,6 +144,126 @@ class StatisticsTests(unittest.TestCase):
                 summarize(self.report([self.sample(duration)]))
         with self.assertRaises(ValueError):
             summarize(self.report([self.sample(0, stage="capture")]))
+
+
+class ReceiptTests(unittest.TestCase):
+    def child(self, failure=None):
+        child = Mock()
+        child.process.pid = 123
+        child.request.side_effect = failure or [{'serverInfo': {'version': '1.14.0'}}, {}]
+        child.close.return_value = (True, 0.01, [], True)
+        return child
+
+    def run_main(self, factory):
+        with tempfile.TemporaryDirectory() as directory:
+            binary = Path(directory) / 'fixture-not-executed'
+            binary.write_bytes(b'fixture')
+            output = Path(directory) / 'report.json'
+            args = ['probe', 'protocol', '--binary', str(binary), '--expected-sha256',
+                    hashlib.sha256(b'fixture').hexdigest(), '--expected-version', '1.14.0',
+                    '--trials', '3', '--warm-samples', '1', '--output', str(output)]
+            with patch.object(m, 'ProtocolProcess', side_effect=factory) as constructor, \
+                    patch('sys.argv', args), contextlib.redirect_stdout(io.StringIO()):
+                status = m.main()
+            report = json.loads(output.read_text())
+            self.assertEqual(status, 1)
+            self.assertTrue(report['samples'])
+            return report, constructor.call_count
+
+    def test_initialize_eof_preserves_prior_trial_and_cleanup(self):
+        report, count = self.run_main([self.child(), self.child(EOFError()), self.child()])
+        self.assertEqual(count, 3)
+        self.assertEqual(len(report['children']), 3)
+        self.assertEqual(sum(s['reason'] == 'EOFError' for s in report['samples'] if 'reason' in s), 1)
+        self.assertEqual(sum(s['stage'] == 'cleanup' for s in report['samples']), 3)
+
+    def test_ping_eof_preserves_startup_and_cleanup(self):
+        bad = self.child([{'serverInfo': {'version': '1.14.0'}}, EOFError()])
+        report, _ = self.run_main([bad, self.child(), self.child()])
+        self.assertEqual(report['samples'][0]['outcome'], 'success')
+        self.assertEqual(report['samples'][1]['reason'], 'EOFError')
+        self.assertEqual(report['samples'][2]['stage'], 'cleanup')
+
+    def test_spawn_failure_preserves_prior_trial_without_fake_child(self):
+        report, count = self.run_main([self.child(), OSError(), self.child()])
+        self.assertEqual(count, 2)
+        self.assertEqual(len(report['children']), 1)
+        self.assertEqual(report['samples'][-1]['reason'], 'OSError')
+        self.assertTrue(report['run_aborted'])
+
+    def test_reader_start_failure_keeps_child_and_cleanup(self):
+        bad = self.child()
+        bad.start_reader.side_effect = RuntimeError('thread unavailable')
+        report, _ = self.run_main([bad, self.child(), self.child()])
+        self.assertEqual(report['samples'][0]['reason'], 'RuntimeError')
+        self.assertTrue(report['children'][0]['exit_confirmed'])
+        bad.close.assert_called_once_with()
+
+    def test_cleanup_exception_preserves_original_error_and_stops(self):
+        for error in (OSError(), subprocess.TimeoutExpired('fixture', 1)):
+            with self.subTest(error=type(error).__name__):
+                bad = self.child(ValueError())
+                bad.close.side_effect = error
+                report, count = self.run_main([self.child(), bad, self.child()])
+                self.assertEqual(count, 2)
+                self.assertEqual(report['samples'][-2]['reason'], 'ValueError')
+                self.assertEqual(report['samples'][-1]['errors'], [type(error).__name__])
+                self.assertFalse(report['children'][-1]['exit_confirmed'])
+
+
+class CleanupTests(unittest.TestCase):
+    def owned(self):
+        child = object.__new__(m.ProtocolProcess)
+        child.timeout = 1
+        child.process = Mock(returncode=0)
+        child.reader = Mock()
+        child.reader.is_alive.return_value = False
+        return child
+
+    def test_kill_failure_reports_unresolved_exit(self):
+        child = self.owned()
+        child.process.wait.side_effect = subprocess.TimeoutExpired('fixture', 1)
+        child.process.kill.side_effect = OSError()
+        clean, _, errors, exited = child.close()
+        self.assertFalse(clean)
+        self.assertFalse(exited)
+        self.assertEqual(errors, ['OSError'])
+        child.process.kill.assert_called_once_with()
+
+    def test_second_wait_timeout_reports_unresolved_exit(self):
+        child = self.owned()
+        child.process.wait.side_effect = subprocess.TimeoutExpired('fixture', 1)
+        clean, _, errors, exited = child.close()
+        self.assertFalse(clean)
+        self.assertFalse(exited)
+        self.assertEqual(errors, ['TimeoutExpired'])
+        self.assertEqual(child.process.wait.call_count, 2)
+
+    def test_stdout_close_failure_does_not_erase_exit_evidence(self):
+        child = self.owned()
+        child.process.stdout.close.side_effect = OSError()
+        clean, _, errors, exited = child.close()
+        self.assertFalse(clean)
+        self.assertTrue(exited)
+        self.assertEqual(errors, ['OSError'])
+
+    def test_unstarted_reader_is_not_joined(self):
+        child = self.owned()
+        child.reader.ident = None
+        clean, _, errors, exited = child.close()
+        self.assertTrue(clean)
+        self.assertTrue(exited)
+        self.assertEqual(errors, [])
+        child.reader.join.assert_not_called()
+
+    def test_live_reader_stream_is_not_closed(self):
+        child = self.owned()
+        child.reader.is_alive.return_value = True
+        clean, _, errors, _ = child.close()
+        self.assertFalse(clean)
+        self.assertEqual(errors, ['ReaderUnresolved'])
+        child.process.stdout.close.assert_not_called()
+
 
 
 if __name__ == "__main__":
