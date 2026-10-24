@@ -87,6 +87,7 @@ const KNOWN_FLAG_NAMES: &[&str] = &[
     "--delivery-mode",
     "--diagnostics-dir",
     "--diagnostics-only",
+    "--context-only",
     "--duration-ms",
     "--element-index",
     "--element-token",
@@ -191,20 +192,30 @@ pub(super) fn reject_unknown_flags(flags: &[String]) -> Result<(), String> {
 }
 
 pub(super) fn diagnostics_only_requested(command: &str, flags: &[String]) -> Result<bool, String> {
-    let option = "--diagnostics-only";
+    local_doctor_mode_requested(command, flags, "--diagnostics-only")
+}
+
+pub(super) fn context_only_requested(command: &str, flags: &[String]) -> Result<bool, String> {
+    local_doctor_mode_requested(command, flags, "--context-only")
+}
+
+fn local_doctor_mode_requested(
+    command: &str,
+    flags: &[String],
+    option: &str,
+) -> Result<bool, String> {
     let supplied =
         |argument: &str| argument.split_once('=').map_or(argument, |(name, _)| name) == option;
     if !supplied(command) && !flags.iter().any(|argument| supplied(argument)) {
         return Ok(false);
     }
     if command != "doctor" {
-        return Err("--diagnostics-only is supported only by local doctor".into());
+        return Err(format!("{option} is supported only by local doctor"));
     }
     if flags.len() != 1 || flags[0] != option {
-        return Err(
-            "local doctor accepts --diagnostics-only once, without a value or other arguments"
-                .into(),
-        );
+        return Err(format!(
+            "local doctor accepts {option} once, without a value or other arguments"
+        ));
     }
     Ok(true)
 }
@@ -360,7 +371,8 @@ pub(super) fn print_help() -> std::io::Result<()> {
   clipboard-read --app APP|--pid PID|--window-id ID|--title TITLE [--include-text]
   clipboard-write --app APP|--pid PID|--window-id ID|--title TITLE --text TEXT|--image-path FILE|--file-path FILE
   doctor [--route full|visual|semantic] [--endpoint PATH|--spawn BINARY]
-  doctor --diagnostics-only        # local desktop metadata only; no SDK startup or readiness test
+  doctor --context-only            # borrowed current-executor metadata; no input-desktop/cursor/foreground queries
+  doctor --diagnostics-only        # local diagnostics including cursor probes; no SDK startup
   host [--stdio|--endpoint PATH] [--grant existing-profile]
 
 Connection lifetime: keep one mcp-server stdio connection open from start_task through stop_task. Task IDs and opaque observation refs cannot resume after reconnecting. Separate CLI/host-call invocations do not share sessions; host-ensure does not issue task grants. See manifest.connection_lifetime.
