@@ -103,12 +103,14 @@ class ProtocolProcess:
 
     def __init__(self, command, timeout):
         self.timeout = timeout
-        self.process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                        stderr=subprocess.DEVNULL, bufsize=0)
         self.responses = queue.Queue()
         self.reader = threading.Thread(target=self._read, daemon=True)
-        self.reader.start()
         self.request_id = 0
+        self.process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                        stderr=subprocess.DEVNULL, bufsize=0)
+
+    def start_reader(self):
+        self.reader.start()
 
     def _read(self):
         try:
@@ -145,31 +147,48 @@ class ProtocolProcess:
 
     def close(self):
         started = time.perf_counter_ns()
+        errors = []
+        eof_exit = True
+        exit_confirmed = False
         try:
             self.process.stdin.close()
-        except OSError:
-            pass
-        eof_exit = True
+        except OSError as error:
+            errors.append(type(error).__name__)
         try:
             self.process.wait(timeout=self.timeout)
+            exit_confirmed = True
         except subprocess.TimeoutExpired:
             eof_exit = False
-            # No name-based kill, parent-wide kill, Host termination or runtime restart.
-            self.process.kill()
-            self.process.wait(timeout=self.timeout)
-        finally:
+            try:
+                # Only the exact child owned by this trial may be terminated.
+                self.process.kill()
+                self.process.wait(timeout=self.timeout)
+                exit_confirmed = True
+            except (OSError, subprocess.TimeoutExpired) as error:
+                errors.append(type(error).__name__)
+        except OSError as error:
+            errors.append(type(error).__name__)
+        # Do not close a stream underneath an unresolved reader or block on its lock.
+        if self.reader.ident is not None:
             self.reader.join(timeout=self.timeout)
-            self.process.stdout.close()
-        return eof_exit and self.process.returncode == 0, (time.perf_counter_ns() - started) / 1e6
+        if self.reader.is_alive():
+            errors.append("ReaderUnresolved")
+        else:
+            try:
+                self.process.stdout.close()
+            except OSError as error:
+                errors.append(type(error).__name__)
+        clean = eof_exit and exit_confirmed and self.process.returncode == 0 and not errors
+        return clean, (time.perf_counter_ns() - started) / 1e6, errors, exit_confirmed
 
 
 def probe(command, trials, warm_samples, timeout, expected_version):
     samples, children = [], []
+    aborted = False
     for trial in range(trials):
         started = time.perf_counter_ns()
-        child = ProtocolProcess(command, timeout)
         trial_id = str(uuid.uuid4())
-        children.append({"trial_id": trial_id, "pid": child.process.pid})
+        child = None
 
         def record(phase, stage, began, outcome="success", reason=None):
             samples.append({"trial_id": trial_id, "phase": phase, "stage": stage,
@@ -178,6 +197,9 @@ def probe(command, trials, warm_samples, timeout, expected_version):
 
         phase, stage = "cold", "startup"
         try:
+            child = ProtocolProcess(command, timeout)
+            children.append({"trial_id": trial_id, "pid": child.process.pid})
+            child.start_reader()
             result = child.request("initialize", {"protocolVersion": "2024-11-05", "capabilities": {},
                                                  "clientInfo": {"name": "dcc-cua-latency", "version": "1"}})
             info = result.get("serverInfo") if isinstance(result, dict) else None
@@ -191,16 +213,30 @@ def probe(command, trials, warm_samples, timeout, expected_version):
                 if child.request("ping") != {}:
                     raise ValueError("unexpected ping result")
                 record(phase, stage, started)
-        except (ValueError, OSError, TimeoutError) as error:
+        except (EOFError, ValueError, OSError, TimeoutError, RuntimeError) as error:
             record(phase, stage, started, "timeout" if isinstance(error, TimeoutError) else "error", type(error).__name__)
+            if child is None:
+                aborted = True
         finally:
-            clean, elapsed = child.close()
-            children[-1]["eof_exit"] = clean
-            samples.append({"trial_id": trial_id, "phase": "cold", "stage": "cleanup",
-                            "duration_ms": elapsed, "outcome": "success" if clean else "error"})
+            if child is not None:
+                cleanup_started = time.perf_counter_ns()
+                try:
+                    clean, elapsed, errors, exit_confirmed = child.close()
+                except (OSError, subprocess.TimeoutExpired) as error:
+                    clean, exit_confirmed = False, False
+                    elapsed = (time.perf_counter_ns() - cleanup_started) / 1e6
+                    errors = [type(error).__name__]
+                children[-1].update(eof_exit=clean, exit_confirmed=exit_confirmed)
+                samples.append({"trial_id": trial_id, "phase": "cold", "stage": "cleanup",
+                                "duration_ms": elapsed, "outcome": "success" if clean else "error",
+                                "errors": errors, "exit_confirmed": exit_confirmed})
+                if not exit_confirmed or errors:
+                    aborted = True
+        if aborted:
+            break
     return {"schema": SCHEMA, "boundary": "mcp_protocol", "samples": samples, "children": children,
             "runtime_version": expected_version, "host": platform.platform(),
-            "trials": trials,
+            "trials": trials, "run_aborted": aborted,
             "warm_samples_per_process": warm_samples,
             "measurement": "spawn-to-initialize response; warm ping round trip; EOF-to-exit",
             "excludes": ["model", "Agent Host", "native Host startup", "queue", "capture", "uia", "action", "verification"]}
