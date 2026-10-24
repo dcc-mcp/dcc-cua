@@ -137,3 +137,24 @@ async fn capture_popup_started_ack_attests_the_actual_independent_ceiling(#[case
     );
     fake_host.await.unwrap();
 }
+
+#[rstest]
+fn pending_host_cleanup_preserves_the_independent_popup_ceiling() {
+    let mut server = test_server();
+    let prepared = server.prepare_task(task()).unwrap();
+    let id = prepared["task_id"].as_str().unwrap();
+    let proposal = server.proposals.get_mut(id).unwrap();
+    proposal.revoked = true;
+    proposal.cleanup = Some(
+        json!({"success":true,"active":false,"cleanup_pending":false,
+        "host_connection_completion":{"completed":false,"success":false}}),
+    );
+    let status = server.task_status(json!({"task_id":id})).unwrap();
+    assert_eq!(status["allow_native_capture_popup_keyboard"], true);
+    assert_eq!(status["allowed_actions"], prepared["allowed_actions"]);
+    assert_eq!(status["status"], "cleanup_unknown");
+    assert_eq!(status["ok"], false);
+    assert_eq!(status["cleanup"]["success"], false);
+    assert_eq!(status["cleanup"]["cleanup_pending"], true);
+    assert_eq!(status["cleanup"]["session_cleanup"]["success"], true);
+}
