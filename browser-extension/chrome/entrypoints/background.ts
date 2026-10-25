@@ -21,6 +21,20 @@ import { defineBackground } from "wxt/utils/define-background";
 const NATIVE_HOST = "com.dcc_mcp.dcc_cua";
 const PAIRING_STORAGE_KEY = "dcc_cua_pairing_v1";
 
+const NATIVE_STATUS = {
+  unpaired: ["", "Select the exact tab and click to pair."],
+  native_connecting: ["...", "Waiting for the native host handshake."],
+  native_compatible: ["LINK", "Native host compatible; task binding not verified."],
+  native_incompatible: ["!", "Native host protocol or task-owned pairing capability is incompatible."],
+  native_host_unavailable: ["!", "Browser cannot find the registered native host."],
+  native_host_forbidden: ["!", "Browser refused native host access for this extension."],
+  native_disconnected: ["!", "Native host disconnected; check the task and pair the exact tab again."],
+  native_message_rejected: ["!", "Native message rejected; pair the exact tab again."],
+  pairing_failed: ["!", "Exact-tab pairing failed; check site access and the selected tab."],
+} as const;
+
+type NativeStatus = keyof typeof NATIVE_STATUS;
+
 type TabResponse =
   | { ok: true; result: unknown }
   | { ok: false; error: { code: string; message: string } };
@@ -138,10 +152,13 @@ export default defineBackground(() => {
     });
   });
 
-  async function setBadge(text: string, color: string): Promise<void> {
+  async function setStatus(status: NativeStatus): Promise<void> {
+    const [text, description] = NATIVE_STATUS[status];
+    // Never reflect page content, browser error text or protocol payloads here.
+    await browser.action.setTitle({ title: `DCC-CUA: ${status} — ${description}` });
     await browser.action.setBadgeText({ text });
     if (text) {
-      await browser.action.setBadgeBackgroundColor({ color });
+      await browser.action.setBadgeBackgroundColor({ color: text === "!" ? "#cf222e" : "#0969da" });
     }
   }
 
@@ -194,11 +211,12 @@ export default defineBackground(() => {
     };
     await updatePairing(async () => {
       await pairings.save(pairing);
+      await setStatus("native_connecting");
       connectNative(pairing);
     });
   }
 
-  function failCurrentPort(port: Browser.runtime.Port): void {
+  function failCurrentPort(port: Browser.runtime.Port, reason: NativeStatus): void {
     if (nativePort !== port) return;
     const generation = nativePortGeneration;
     nativePort = null;
@@ -208,7 +226,7 @@ export default defineBackground(() => {
       try {
         await pairings.clear();
       } finally {
-        if (nativePortGeneration === generation) await setBadge("!", "#cf222e");
+        if (nativePortGeneration === generation) await setStatus(reason);
       }
     }).catch(() => {});
   }
@@ -232,20 +250,25 @@ export default defineBackground(() => {
               throw new Error("native host upgrade required for task-owned pairing");
             }
             nativeHandshakeComplete = true;
-            await setBadge("ON", "#1f883d");
+            await setStatus("native_compatible");
             return;
           }
           await handleNativeMessage(message, port);
         })
         .catch(() => {
           if (nativePort !== port) return;
-          failCurrentPort(port);
+          failCurrentPort(port, nativeHandshakeComplete ? "native_message_rejected" : "native_incompatible");
           port.disconnect();
         });
     });
     port.onDisconnect.addListener(() => {
-      void browser.runtime.lastError;
-      failCurrentPort(port);
+      const message = browser.runtime.lastError?.message;
+      const reason = message === "Specified native messaging host not found."
+        ? "native_host_unavailable"
+        : message === "Access to the specified native messaging host is forbidden."
+          ? "native_host_forbidden"
+          : "native_disconnected";
+      failCurrentPort(port, reason);
     });
     const manifest = browser.runtime.getManifest();
     port.postMessage(
@@ -283,7 +306,7 @@ export default defineBackground(() => {
               if (nativePort !== port) throw new Error("pairing replaced");
               await pairings.requireMatch(request);
               await pairings.clear();
-              await setBadge("", "#000000");
+              await setStatus("unpaired");
             });
           },
           async updateTab(tabId, url) { await browser.tabs.update(tabId, { url }); },
@@ -293,7 +316,7 @@ export default defineBackground(() => {
       }
       if (request.method === "unpair") {
         await pairings.clear();
-        await setBadge("", "#000000");
+        await setStatus("unpaired");
         port.postMessage(successResponse(request.request_id, { unpaired: true }));
         return;
       }
@@ -318,7 +341,7 @@ export default defineBackground(() => {
   }
 
   browser.action.onClicked.addListener((tab) => {
-    void pairTab(tab).catch(() => setBadge("!", "#cf222e"));
+    void pairTab(tab).catch(() => setStatus("pairing_failed"));
   });
 
   browser.tabs.onUpdated.addListener((tabId, changeInfo) => {
@@ -326,7 +349,7 @@ export default defineBackground(() => {
     contentScripts.invalidate(tabId);
     void pairings.clearIfTab(tabId).then(async (cleared) => {
       if (cleared) {
-        await setBadge("", "#000000");
+        await setStatus("unpaired");
       }
     });
   });
@@ -335,7 +358,7 @@ export default defineBackground(() => {
     contentScripts.remove(tabId);
     void pairings.clearIfTab(tabId).then(async (cleared) => {
       if (cleared) {
-        await setBadge("", "#000000");
+        await setStatus("unpaired");
       }
     });
   });
@@ -348,5 +371,8 @@ export default defineBackground(() => {
     }
   });
 
-  void updatePairing(() => pairings.clear()).catch(() => setBadge("!", "#cf222e"));
+  void updatePairing(async () => {
+    await pairings.clear();
+    await setStatus("unpaired");
+  }).catch(() => setStatus("pairing_failed"));
 });
