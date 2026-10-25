@@ -190,6 +190,11 @@ pub(super) async fn route_host_request(
             {
                 return RoutedBrowserExtensionRequest::Handled(Err(error));
             }
+            if method == "navigate"
+                && let Err(error) = registry.require_navigation_capability(&provider_id).await
+            {
+                return RoutedBrowserExtensionRequest::Handled(Err(error));
+            }
             if method != "snapshot" {
                 let authorized = async {
                     let state = host.session.window_state().await?;
@@ -249,7 +254,7 @@ pub(super) async fn route_host_request(
                     timeout_ms,
                 )
                 .await;
-            if method == "navigate" {
+            if method == "navigate" && navigation_provider_must_revoke(&response) {
                 // The target document/pairing is no longer reusable, including
                 // when delivery or completion became unknown. Never remove a
                 // replacement provider created by a later explicit pairing.
@@ -280,7 +285,39 @@ pub(super) async fn route_host_request(
     RoutedBrowserExtensionRequest::Handled(result.map(|response| (response, None)))
 }
 
+pub(super) fn navigation_provider_must_revoke(result: &Result<Value, HostError>) -> bool {
+    if let Err(HostError::Protocol(message)) = result {
+        let code = message.split(':').next().unwrap_or("");
+        if matches!(
+            code,
+            "navigation_unsupported"
+                | "target_not_foreground"
+                | "stale_observation"
+                | "command_expired"
+                | "navigation_target_refused"
+                | "navigation_cancelled"
+        ) {
+            return false;
+        }
+    }
+    true
+}
+
 impl BrowserExtensionRegistry {
+    async fn require_navigation_capability(&self, provider_id: &str) -> Result<(), HostError> {
+        if !self
+            .provider(provider_id)
+            .await?
+            .capabilities
+            .iter()
+            .any(|capability| capability == "tab_navigation_v1")
+        {
+            return Err(HostError::Protocol(
+                "navigation_unsupported: paired extension lacks tab_navigation_v1".into(),
+            ));
+        }
+        Ok(())
+    }
     pub(super) async fn claim(
         &self,
         provider_id: &str,
@@ -488,15 +525,8 @@ impl BrowserExtensionRegistry {
                 "unsupported browser extension method: {method}"
             )));
         }
-        if method == "navigate"
-            && !provider
-                .capabilities
-                .iter()
-                .any(|capability| capability == "tab_navigation_v1")
-        {
-            return Err(HostError::Protocol(
-                "navigation_unsupported: paired extension lacks tab_navigation_v1".into(),
-            ));
+        if method == "navigate" {
+            self.require_navigation_capability(provider_id).await?;
         }
         let request_id = Uuid::new_v4().to_string();
         let mut command = params.as_object().cloned().ok_or_else(|| {
