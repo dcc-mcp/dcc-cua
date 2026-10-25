@@ -42,7 +42,40 @@ pub enum AudioWorkerEvent {
     Stopped {},
     Failed {
         code: AudioWorkerFailure,
+        #[serde(default)]
+        diagnostic: Option<AudioWorkerFailureDiagnostic>,
     },
+}
+
+/// Metadata only: no PCM, device selection, window title or executable path.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct AudioWorkerFailureDiagnostic {
+    pub stage: Option<AudioWorkerFailureStage>,
+    pub hresult: Option<i32>,
+    pub packet: Option<AudioWorkerPacketMetadata>,
+    pub stream_stop_succeeded: Option<bool>,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AudioWorkerFailureStage {
+    GetNextPacketSize,
+    GetBuffer,
+    PacketValidation,
+    ReleaseBuffer,
+    StopStream,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct AudioWorkerPacketMetadata {
+    pub frames: u32,
+    pub flags: u32,
+    pub qpc_100ns: u64,
+    pub device_position: u64,
+    pub expected_device_position: Option<u64>,
+    pub null_data: bool,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]

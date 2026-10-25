@@ -3,6 +3,7 @@ use dcc_cua_protocol::recording_audio::{
     MIN_PROCESS_LOOPBACK_WINDOWS_BUILD, ProcessAudioTarget,
     worker::{
         AUDIO_WORKER_PROTOCOL, AudioWorkerCommand, AudioWorkerEvent, AudioWorkerFailure as Failure,
+        AudioWorkerFailureDiagnostic, AudioWorkerFailureStage, AudioWorkerPacketMetadata,
         MAX_AUDIO_WORKER_SAMPLES, read_message, write_message,
     },
 };
@@ -220,18 +221,47 @@ unsafe fn copy_packet(
     Ok(unsafe { std::slice::from_raw_parts(data, count) }.to_vec())
 }
 
+/// SAFETY: identical acquired-buffer requirements to copy_packet.
+unsafe fn copy_packet_with_diagnostic(
+    data: *const i16,
+    packet: AudioWorkerPacketMetadata,
+    diagnostic: &mut AudioWorkerFailureDiagnostic,
+) -> Result<Vec<i16>, Failure> {
+    // SAFETY: caller retains the acquired buffer until ReleaseBuffer.
+    let result = unsafe {
+        copy_packet(
+            data,
+            packet.frames,
+            packet.flags,
+            packet.qpc_100ns,
+            packet.device_position,
+            packet.expected_device_position,
+        )
+    };
+    if result.is_err() {
+        diagnostic.stage = Some(AudioWorkerFailureStage::PacketValidation);
+        diagnostic.packet = Some(packet);
+    }
+    result
+}
+
 fn capture_packets(
     output: &mut impl io::Write,
     capture: &IAudioCaptureClient,
     target: &Target,
     state: &AtomicU8,
     deadline: u64,
+    diagnostic: &mut AudioWorkerFailureDiagnostic,
 ) -> Result<(), Failure> {
     let mut previous_end = None;
     while check_state(state, deadline)? {
         target.validate()?;
         // SAFETY: initialized capture client owned by this MTA thread.
-        let size = unsafe { capture.GetNextPacketSize() }.map_err(|_| Failure::StreamFailed)?;
+        let size = unsafe { capture.GetNextPacketSize() }.map_err(|error| {
+            diagnostic.stage = Some(AudioWorkerFailureStage::GetNextPacketSize);
+            diagnostic.hresult = Some(error.code().0);
+            Failure::StreamFailed
+        })?;
         if size == 0 {
             std::thread::sleep(Duration::from_millis(3));
             continue;
@@ -248,20 +278,32 @@ fn capture_packets(
                 Some(&mut timestamp),
             )
         }
-        .map_err(|_| Failure::StreamFailed)?;
+        .map_err(|error| {
+            diagnostic.stage = Some(AudioWorkerFailureStage::GetBuffer);
+            diagnostic.hresult = Some(error.code().0);
+            Failure::StreamFailed
+        })?;
         // SAFETY: acquired PCM16 stereo buffer is held until ReleaseBuffer below.
         let samples = unsafe {
-            copy_packet(
+            copy_packet_with_diagnostic(
                 data.cast(),
-                frames,
-                flags,
-                timestamp,
-                position,
-                previous_end,
+                AudioWorkerPacketMetadata {
+                    frames,
+                    flags,
+                    qpc_100ns: timestamp,
+                    device_position: position,
+                    expected_device_position: previous_end,
+                    null_data: data.is_null(),
+                },
+                diagnostic,
             )
         };
         // SAFETY: exactly the frames from the successful GetBuffer, including error paths.
-        unsafe { capture.ReleaseBuffer(frames) }.map_err(|_| Failure::StreamFailed)?;
+        unsafe { capture.ReleaseBuffer(frames) }.map_err(|error| {
+            diagnostic.stage = Some(AudioWorkerFailureStage::ReleaseBuffer);
+            diagnostic.hresult = Some(error.code().0);
+            Failure::StreamFailed
+        })?;
         let samples = samples?;
         target.validate()?;
         if !check_state(state, deadline)? {
@@ -289,7 +331,10 @@ fn capture_packets(
     Ok(())
 }
 
-fn run(output: &mut impl io::Write) -> Result<(), Failure> {
+fn run(
+    output: &mut impl io::Write,
+    diagnostic: &mut AudioWorkerFailureDiagnostic,
+) -> Result<(), Failure> {
     let request = {
         let mut input = io::stdin().lock();
         match read_message::<_, AudioWorkerCommand>(&mut input)
@@ -378,15 +423,21 @@ fn run(output: &mut impl io::Write) -> Result<(), Failure> {
                 &target,
                 &state,
                 request.deadline_qpc_100ns,
+                diagnostic,
             )
         });
     let stop = client.stop_stream().map_err(|_| Failure::StreamFailed);
+    diagnostic.stream_stop_succeeded = Some(stop.is_ok());
+    if result.is_ok() && stop.is_err() {
+        diagnostic.stage = Some(AudioWorkerFailureStage::StopStream);
+    }
     result.and(stop)
 }
 
 pub fn run_owned_worker() -> i32 {
     let mut output = io::stdout().lock();
-    match run(&mut output) {
+    let mut diagnostic = AudioWorkerFailureDiagnostic::default();
+    match run(&mut output, &mut diagnostic) {
         Ok(()) => {
             if write_message(&mut output, &AudioWorkerEvent::Stopped {}).is_ok() {
                 0
@@ -395,7 +446,13 @@ pub fn run_owned_worker() -> i32 {
             }
         }
         Err(code) => {
-            let _ = write_message(&mut output, &AudioWorkerEvent::Failed { code });
+            let _ = write_message(
+                &mut output,
+                &AudioWorkerEvent::Failed {
+                    code,
+                    diagnostic: Some(diagnostic),
+                },
+            );
             2
         }
     }

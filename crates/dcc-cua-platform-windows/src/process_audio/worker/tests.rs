@@ -60,3 +60,25 @@ fn first_discontinuity_preserves_pcm_but_later_gap_fails() {
     // SAFETY: owned buffer remains alive; discontinuity is refused before copying.
     assert!(unsafe { copy_packet(data.as_ptr(), 1, 1, 2, 1, Some(1)) }.is_err());
 }
+
+#[rstest]
+fn rejected_packet_retains_exact_metadata_without_changing_continuity_policy() {
+    let packet = AudioWorkerPacketMetadata {
+        frames: 1,
+        flags: 0,
+        qpc_100ns: 100,
+        device_position: 3,
+        expected_device_position: Some(2),
+        null_data: true,
+    };
+    let mut diagnostic = AudioWorkerFailureDiagnostic::default();
+    // SAFETY: metadata gap rejects before pointer access.
+    let result =
+        unsafe { copy_packet_with_diagnostic(std::ptr::null(), packet.clone(), &mut diagnostic) };
+    assert_eq!(result.unwrap_err(), Failure::ContinuityLost);
+    assert_eq!(
+        diagnostic.stage,
+        Some(AudioWorkerFailureStage::PacketValidation)
+    );
+    assert_eq!(diagnostic.packet, Some(packet));
+}

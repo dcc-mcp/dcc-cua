@@ -68,6 +68,8 @@ pub struct OwnedAudioWorkerEvidence {
     pub exit_code: Option<i32>,
     pub reader_joined: bool,
     pub failure: Option<dcc_cua_protocol::recording_audio::worker::AudioWorkerFailure>,
+    pub failure_diagnostic:
+        Option<dcc_cua_protocol::recording_audio::worker::AudioWorkerFailureDiagnostic>,
     pub media_epoch_qpc_100ns: Option<u64>,
     pub first_packet_qpc_100ns: Option<u64>,
     pub last_packet_qpc_100ns: Option<u64>,
@@ -453,9 +455,10 @@ impl ProcessAudioSource for NativeProcessAudioSource {
                                     }
                                     return Ok(());
                                 }
-                                Some(AudioWorkerEvent::Failed { code }) => {
+                                Some(AudioWorkerEvent::Failed { code, diagnostic }) => {
                                     if let Ok(mut e) = evidence.lock() {
                                         e.failure = Some(code);
+                                        e.failure_diagnostic = diagnostic;
                                     }
                                     return Err(AudioLifecycleError::Source);
                                 }
