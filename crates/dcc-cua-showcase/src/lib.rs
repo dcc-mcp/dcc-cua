@@ -16,6 +16,7 @@ use tokio::task::JoinHandle;
 
 mod capture_manifest;
 use capture_manifest::CaptureManifest;
+pub mod process_audio;
 mod recording_authorization;
 pub use recording_authorization::{RecordingAdmission, RecordingAuthorization};
 mod provenance;

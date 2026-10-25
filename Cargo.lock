@@ -1420,6 +1420,7 @@ dependencies = [
 name = "dcc-cua-showcase"
 version = "1.15.0"
 dependencies = [
+ "dcc-cua-protocol",
  "dcc-cua-workspace-hack",
  "mp4",
  "openh264",
