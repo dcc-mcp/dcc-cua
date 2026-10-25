@@ -83,3 +83,33 @@ fn audio_ceilings_and_target_are_derived_without_native_calls() {
     .unwrap();
     assert!(invalid.validate().is_err());
 }
+
+#[rstest]
+#[case(false)]
+#[case(true)]
+fn failed_registration_removes_only_its_empty_directory_and_preserves_contents(
+    #[case] populated: bool,
+) {
+    let root = tempfile::tempdir().unwrap();
+    let directory = root.path().join("new-task-owned");
+    std::fs::create_dir(&directory).unwrap();
+    let unrelated = root.path().join("other-task");
+    std::fs::write(&unrelated, b"keep sibling").unwrap();
+    let content = directory.join("recording-evidence");
+    if populated {
+        std::fs::write(&content, b"retain evidence").unwrap();
+    }
+    let error = with_owned_directory_cleanup_on_error::<()>(directory.to_str(), || {
+        Err("registration denied".into())
+    })
+    .unwrap_err();
+    assert!(error.starts_with("registration denied"));
+    assert_eq!(std::fs::read(&unrelated).unwrap(), b"keep sibling");
+    assert_eq!(directory.exists(), populated);
+    if populated {
+        assert_eq!(std::fs::read(&content).unwrap(), b"retain evidence");
+        assert!(error.contains("cleanup failed"));
+    } else {
+        assert_eq!(error, "registration denied");
+    }
+}

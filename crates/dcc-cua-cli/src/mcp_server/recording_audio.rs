@@ -123,5 +123,23 @@ pub(super) fn bind_recording_request(
     Ok(())
 }
 
+/// Only the unique empty directory just created by this preparation may be
+/// removed. Never recursively delete contents if ownership/state has changed.
+pub(super) fn with_owned_directory_cleanup_on_error<T>(
+    directory: Option<&str>,
+    register: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    register().map_err(|mut error| {
+        if let Some(directory) = directory
+            && let Err(cleanup) = std::fs::remove_dir(directory)
+        {
+            error.push_str(&format!(
+                "; empty owned recording directory cleanup failed: {cleanup}"
+            ));
+        }
+        error
+    })
+}
+
 #[cfg(test)]
 mod tests;

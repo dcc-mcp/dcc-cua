@@ -691,6 +691,10 @@ impl TaskAuthorizationServer {
             capture_preparation,
             expires_at_unix_ms: now.saturating_add(input.ttl_minutes * 60_000),
         };
+        if let Some(audio) = input.recording_audio {
+            registration.recording_audio_grant =
+                Some(audio.grant(recording_audio::resolve(&registration.target)?));
+        }
         if input.allow_recording {
             let root = self.recording_output_root.as_ref().ok_or_else(||
                 "recording requires operator configuration DCC_CUA_RECORDING_OUTPUT_ROOT; callers cannot nominate an output root".to_owned())?;
@@ -704,15 +708,16 @@ impl TaskAuthorizationServer {
                 .map_err(|error| format!("create owned recording task directory: {error}"))?;
             registration.recording_output_dir = Some(directory.to_string_lossy().into_owned());
         }
-        if let Some(audio) = input.recording_audio {
-            registration.recording_audio_grant =
-                Some(audio.grant(recording_audio::resolve(&registration.target)?));
-        }
-        registration.validate().map_err(|error| error.to_string())?;
-        let receipt = authority
-            .issuer
-            .register(registration.clone())
-            .map_err(|error| error.to_string())?;
+        let receipt = recording_audio::with_owned_directory_cleanup_on_error(
+            registration.recording_output_dir.as_deref(),
+            || {
+                registration.validate().map_err(|error| error.to_string())?;
+                authority
+                    .issuer
+                    .register(registration.clone())
+                    .map_err(|error| error.to_string())
+            },
+        )?;
         let proposal = TaskProposal {
             surface: input.surface,
             observation_mode: input.observation_mode,
