@@ -1875,7 +1875,7 @@ fn start_task_has_no_confirmation_ui_or_secret_value_fields() {
 fn task_action_schema_matches_the_closed_runtime_contract() {
     let schema = task_action_scope_schema();
     let variants = schema["oneOf"].as_array().unwrap();
-    assert_eq!(variants.len(), 8);
+    assert_eq!(variants.len(), 9);
 
     let variant = |input_kind: &str| {
         variants
@@ -1950,7 +1950,34 @@ fn task_action_schema_matches_the_closed_runtime_contract() {
             .contains(&json!("browser_click"))
     );
 
-    let browser = variant("browser");
+    let navigation = variants
+        .iter()
+        .find(|variant| variant["properties"]["action"]["const"] == "browser_extension_navigate")
+        .unwrap();
+    assert_eq!(navigation["additionalProperties"], false);
+    assert_eq!(
+        navigation["required"],
+        json!([
+            "action",
+            "input_kind",
+            "secret_input",
+            "authorization_category",
+            "browser_origin"
+        ])
+    );
+    assert_eq!(
+        navigation["properties"],
+        json!({
+            "action":{"const":"browser_extension_navigate"},
+            "input_kind":{"const":"browser"}, "secret_input":{"const":false},
+            "authorization_category":{"const":"external_effect"},
+            "browser_origin":{"type":"string", "minLength":1, "maxLength":2048, "pattern":"^https?://[^/?#@]+$"}
+        })
+    );
+    let browser = variants
+        .iter()
+        .find(|variant| variant["properties"]["action"]["const"] == "browser_type")
+        .unwrap();
     assert_eq!(browser["properties"]["action"]["const"], "browser_type");
     assert_eq!(browser["properties"]["secret_input"]["const"], true);
     assert_eq!(
