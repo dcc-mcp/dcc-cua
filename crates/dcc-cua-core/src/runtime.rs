@@ -1804,7 +1804,7 @@ impl ComputerUseDesktopSession {
                 "desktop session is not active",
             ));
         }
-        validate_action(action)?;
+        validate_action_route(action, false)?;
         if action.element_index.is_some()
             || action.element_token.is_some()
             || matches!(action.action.as_str(), "set_text" | "set_value")

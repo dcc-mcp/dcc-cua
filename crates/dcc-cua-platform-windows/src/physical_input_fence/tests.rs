@@ -705,6 +705,55 @@ fn physical_input_fence_keyhold_and_unicode_text_use_local_balanced_events() {
 }
 
 #[rstest]
+#[case("complete")]
+#[case("interrupt")]
+#[case("instance")]
+#[case("foreground")]
+#[case("occluded")]
+fn physical_input_fence_shift_movement_releases_every_owned_key(#[case] scenario: &str) {
+    let mut backend = FakeBackend::new();
+    match scenario {
+        "interrupt" => backend.interrupt_after_mutation = true,
+        "instance" => backend.fail_check = Some(2),
+        "foreground" => backend.foreground_loss_at_check = Some(2),
+        "occluded" => backend.evidence.unobscured = false,
+        _ => {}
+    }
+    let result = run_keypress(
+        &mut backend,
+        fence(),
+        &["Shift".into(), "W".into(), "A".into()],
+        Some(35),
+    );
+    assert_eq!(result.is_ok(), scenario == "complete");
+    if scenario == "occluded" {
+        assert!(backend.mutations.is_empty());
+        return;
+    }
+    assert_eq!(
+        backend.mutations[0].1,
+        vec![
+            Event::Key(0x10, false),
+            Event::Key(0x57, false),
+            Event::Key(0x41, false),
+        ]
+    );
+    let cleanup = backend.mutations.last().unwrap();
+    assert!(cleanup.0);
+    assert_eq!(
+        cleanup.1,
+        vec![
+            Event::Key(0x41, true),
+            Event::Key(0x57, true),
+            Event::Key(0x10, true),
+        ]
+    );
+    if scenario == "complete" {
+        assert_eq!(backend.clock, 35);
+    }
+}
+
+#[rstest]
 fn physical_input_fence_post_dispatch_drift_is_not_reported_as_completed() {
     let mut backend = FakeBackend::new();
     backend.fail_check = Some(2);

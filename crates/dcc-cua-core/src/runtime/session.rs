@@ -748,7 +748,12 @@ impl ComputerUseSession {
             action,
             ActionBannerPhase::Preparing,
         ));
-        validate_action(action)?;
+        #[cfg(windows)]
+        let exact_windows_pixels =
+            self.pixel_observation_route == Some(PixelObservationRoute::ExplicitPixelsOnly);
+        #[cfg(not(windows))]
+        let exact_windows_pixels = false;
+        validate_action_route(action, exact_windows_pixels)?;
         validate_window_action_coordinates(action)?;
         let observation = self.observation.clone().ok_or_else(|| {
             ComputerUseError::new(
