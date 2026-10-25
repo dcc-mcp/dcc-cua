@@ -751,3 +751,23 @@ async fn session_stop_reports_recording_finalize_failure_as_a_typed_cleanup_issu
 
     std::fs::remove_dir_all(directory).unwrap();
 }
+
+#[rstest]
+#[tokio::test]
+async fn audio_factory_resolution_failure_preserves_reusable_session_without_owned_resources() {
+    let (mut session, calls) = counting_session();
+    let error = session
+        .prepare_owned_native_recorder(|| {
+            Err(ComputerUseError::new(
+                ComputerUseErrorCode::BackendUnavailable,
+                "owned worker executable unavailable",
+            ))
+        })
+        .err()
+        .expect("constructor must fail");
+    assert_eq!(error.code, ComputerUseErrorCode::BackendUnavailable);
+    assert!(!session.local_cleanup.recorder_pending);
+    assert!(session.last_recording_video.is_none());
+    assert!(session.ensure_local_cleanup_reusable().is_ok());
+    assert_eq!(calls.load(AtomicOrdering::SeqCst), 0);
+}

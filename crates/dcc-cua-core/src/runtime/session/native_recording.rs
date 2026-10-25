@@ -191,46 +191,32 @@ impl ComputerUseSession {
         fps: u32,
         owns_live_observation: bool,
     ) -> ComputerUseResult<()> {
-        self.ensure_local_cleanup_reusable()?;
-        self.local_cleanup.recorder_pending = true;
-        if self.last_recording_video.is_none() {
-            self.last_recording_video = Some(RecordingVideoTerminalEvidence::from_failed_stop(
-                json!({}),
-                &ComputerUseError::new(
-                    ComputerUseErrorCode::CompletionUnknown,
-                    "native recorder startup has not acknowledged cleanup or transferred ownership",
-                ),
-            ));
-        }
-        let audio: Option<Box<dyn dcc_cua_showcase::recorder_audio::RecorderAudioFactory>> = {
+        #[cfg(windows)]
+        let grant = self.recording_audio_grant.clone();
+        let audio = self.prepare_owned_native_recorder(|| {
             #[cfg(windows)]
             {
-                match self.recording_audio_grant.clone() {
-                    None => None,
-                    Some(grant) => {
-                        let executable = std::env::current_exe().map_err(|error| {
-                            ComputerUseError::new(
-                                ComputerUseErrorCode::BackendUnavailable,
-                                format!("resolve owned audio worker: {error}"),
-                            )
-                        })?;
-                        Some(Box::new(
-                            dcc_cua_platform_windows::process_audio::NativeRecorderAudioFactory {
-                                executable,
-                                grant,
-                            },
-                        )
-                            as Box<
-                                dyn dcc_cua_showcase::recorder_audio::RecorderAudioFactory,
-                            >)
-                    }
-                }
+                let Some(grant) = grant else {
+                    return Ok(None);
+                };
+                let executable = std::env::current_exe().map_err(|error| {
+                    ComputerUseError::new(
+                        ComputerUseErrorCode::BackendUnavailable,
+                        format!("resolve owned audio worker: {error}"),
+                    )
+                })?;
+                Ok(Some(Box::new(
+                    dcc_cua_platform_windows::process_audio::NativeRecorderAudioFactory {
+                        executable,
+                        grant,
+                    },
+                )))
             }
             #[cfg(not(windows))]
             {
-                None
+                Ok(None)
             }
-        };
+        })?;
         match ShowcaseRecorder::start_with_audio_outcome(
             frames,
             output_dir,
@@ -260,6 +246,31 @@ impl ComputerUseSession {
                 Err(error)
             }
         }
+    }
+
+    /// Resolve constructors before claiming ownership. Failures here own no
+    /// recorder resources and must not poison cleanup/reuse diagnostics.
+    #[cfg(any(windows, test))]
+    pub(super) fn prepare_owned_native_recorder(
+        &mut self,
+        resolve: impl FnOnce() -> ComputerUseResult<
+            Option<Box<dyn dcc_cua_showcase::recorder_audio::RecorderAudioFactory>>,
+        >,
+    ) -> ComputerUseResult<Option<Box<dyn dcc_cua_showcase::recorder_audio::RecorderAudioFactory>>>
+    {
+        self.ensure_local_cleanup_reusable()?;
+        let audio = resolve()?;
+        self.local_cleanup.recorder_pending = true;
+        if self.last_recording_video.is_none() {
+            self.last_recording_video = Some(RecordingVideoTerminalEvidence::from_failed_stop(
+                json!({}),
+                &ComputerUseError::new(
+                    ComputerUseErrorCode::CompletionUnknown,
+                    "native recorder startup has not acknowledged cleanup or transferred ownership",
+                ),
+            ));
+        }
+        Ok(audio)
     }
 
     #[cfg(any(windows, test))]
