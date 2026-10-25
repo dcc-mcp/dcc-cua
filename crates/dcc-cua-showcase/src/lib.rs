@@ -2,6 +2,7 @@ use std::borrow::Cow;
 use std::fs::File;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use mp4::{AvcConfig, FourCC, Mp4Config, Mp4Sample, Mp4Writer};
@@ -593,17 +594,15 @@ impl ShowcaseRecorder {
         let encoder_finalization = Arc::clone(&finalization);
         let encoder_progress = Arc::clone(&progress);
         let audio_ended_sender = frame_sender.downgrade();
+        let audio_ended = Arc::new(AtomicBool::new(false));
         let audio_run = audio.map(|factory| AudioRun {
             factory,
             authorization: authorization
                 .as_ref()
                 .expect("audio authorization checked")
                 .clone(),
-            ended: Box::new(move || {
-                if let Some(sender) = audio_ended_sender.upgrade() {
-                    let _ = sender.try_send(ShowcaseProducerEvent::AudioEnded);
-                }
-            }),
+            ended: audio_ended_callback(audio_ended_sender, Arc::clone(&audio_ended)),
+            ended_flag: audio_ended,
         });
         let encoder = tokio::task::spawn_blocking(move || {
             let result = encode_frames_with_audio(
@@ -976,10 +975,24 @@ async fn send_pause_boundary(sender: &mpsc::Sender<ShowcaseProducerEvent>) -> bo
     matches!(acknowledgement.await, Ok(Ok(())))
 }
 
+fn audio_ended_callback(
+    sender: mpsc::WeakSender<ShowcaseProducerEvent>,
+    ended: Arc<AtomicBool>,
+) -> Box<dyn Fn() + Send> {
+    Box::new(move || {
+        ended.store(true, Ordering::Release);
+        if let Some(sender) = sender.upgrade() {
+            // The flag is authoritative; this event only wakes an idle encoder.
+            let _ = sender.try_send(ShowcaseProducerEvent::AudioEnded);
+        }
+    })
+}
+
 struct AudioRun {
     factory: Box<dyn RecorderAudioFactory>,
     authorization: Arc<RecordingAuthorization>,
     ended: Box<dyn Fn() + Send>,
+    ended_flag: Arc<AtomicBool>,
 }
 
 struct EncoderAuthorization<'a> {
@@ -1056,13 +1069,21 @@ fn encode_frames_with_audio(
         let _ = acknowledged.send(Ok(()));
     }
     drop(first_admission);
-    let mut audio_owner = audio
+    let audio_ended = audio.as_ref().map(|run| Arc::clone(&run.ended_flag));
+    let audio_start = audio
         .map(|run| {
             run.factory
                 .start(first.captured_at(), run.authorization, run.ended)
         })
         .transpose()
-        .map_err(audio_error)?;
+        .map_err(audio_error);
+    let mut audio_owner = match audio_start {
+        Ok(owner) => owner,
+        Err(error) => {
+            let _ = ready.send(Err(error.clone()));
+            return Err(error);
+        }
+    };
     let _ = ready.send(Ok(EncodedFirstFrameEvidence::from_frame(&first)));
 
     let mut frame_count = 1_u64;
@@ -1071,6 +1092,13 @@ fn encode_frames_with_audio(
     let mut media_anchor_ms = 0_u64;
     let mut media_duration_ms = 0_u64;
     while let Some(event) = frames.blocking_recv() {
+        if audio_ended
+            .as_ref()
+            .is_some_and(|ended| ended.load(Ordering::Acquire))
+        {
+            *lock_unpoisoned(terminal_reason) = Some(json!({"code":"recording_audio_ended"}));
+            break;
+        }
         // Reject queued frames at the encoder, not just at capture or Host polling.
         // Preserve the last admitted sample for ordinary drain/finalization below.
         let _admission = match authorization.map(RecordingAuthorization::admit).transpose() {
