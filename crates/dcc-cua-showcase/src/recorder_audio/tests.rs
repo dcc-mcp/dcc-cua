@@ -251,3 +251,76 @@ fn audio_end_is_observed_even_when_its_wakeup_cannot_enter_the_full_frame_queue(
     );
     std::fs::remove_dir_all(directory).unwrap();
 }
+
+#[rstest]
+#[case(false, false)]
+#[case(true, false)]
+#[case(true, true)]
+fn video_error_still_finishes_audio_and_preserves_unknown_cleanup(
+    #[case] cleanup_fails: bool,
+    #[case] cleanup_unknown: bool,
+) {
+    let directory = std::env::temp_dir().join(format!(
+        "dcc-cua-audio-video-error-{}",
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::create_dir(&directory).unwrap();
+    let (sender, receiver) = tokio::sync::mpsc::channel(2);
+    let frame = Arc::new(LiveObservationFrame::new(
+        1,
+        vec![80; 16 * 16 * 4],
+        16,
+        16,
+        Instant::now(),
+    ));
+    sender
+        .try_send(crate::ShowcaseProducerEvent::Frame(frame.clone()))
+        .unwrap();
+    let (ack, _acknowledged) = tokio::sync::oneshot::channel();
+    // A resume without a preceding pause is a deterministic video-path failure.
+    sender
+        .try_send(crate::ShowcaseProducerEvent::ResumedFrame(frame, ack))
+        .unwrap();
+    drop(sender);
+    let mut factory = generated_factory(None);
+    factory.fail = cleanup_fails;
+    factory.unknown = cleanup_unknown;
+    let stops = factory.stops.clone();
+    let authority = Arc::new(RecordingAuthorization::new(u64::MAX));
+    let progress = std::sync::Mutex::new(crate::ShowcaseProgress::default());
+    let (ready, _ready) = tokio::sync::oneshot::channel();
+    let error = crate::encode_frames_with_audio(
+        receiver,
+        &directory.join("showcase.mp4"),
+        10,
+        ready,
+        &progress,
+        crate::EncoderAuthorization {
+            video: Some(&authority),
+            audio: Some(crate::AudioRun {
+                factory: Box::new(factory),
+                authorization: authority.clone(),
+                ended: Box::new(|| {}),
+                ended_flag: Arc::new(crate::AtomicBool::new(false)),
+            }),
+        },
+        &std::sync::Mutex::new(None),
+    )
+    .unwrap_err();
+    assert_eq!(stops.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        error.code,
+        if cleanup_unknown {
+            crate::ShowcaseErrorCode::CleanupUnknown
+        } else {
+            crate::ShowcaseErrorCode::CaptureFailed
+        }
+    );
+    assert!(error.message.contains("resume frame before finalizing"));
+    assert_eq!(
+        progress.lock().unwrap().audio.as_ref().unwrap()["worker"]["native_capture"],
+        false
+    );
+    assert!(!directory.join("showcase.mp4").exists());
+    std::fs::remove_dir_all(directory).unwrap();
+}

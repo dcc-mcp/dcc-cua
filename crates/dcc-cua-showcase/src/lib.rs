@@ -1091,217 +1091,231 @@ fn encode_frames_with_audio(
     let mut capture_anchor = first.captured_at();
     let mut media_anchor_ms = 0_u64;
     let mut media_duration_ms = 0_u64;
-    while let Some(event) = frames.blocking_recv() {
-        if audio_ended
-            .as_ref()
-            .is_some_and(|ended| ended.load(Ordering::Acquire))
-        {
-            *lock_unpoisoned(terminal_reason) = Some(json!({"code":"recording_audio_ended"}));
-            break;
-        }
-        // Reject queued frames at the encoder, not just at capture or Host polling.
-        // Preserve the last admitted sample for ordinary drain/finalization below.
-        let _admission = match authorization.map(RecordingAuthorization::admit).transpose() {
-            Ok(admission) => admission,
-            Err(reason) => {
-                *lock_unpoisoned(terminal_reason) = Some(json!({
-                    "code": "recording_authorization_ended", "message": reason
-                }));
-                break;
-            }
-        };
-        match event {
-            ShowcaseProducerEvent::AudioEnded => {
+    let video_result = (|| -> ShowcaseResult<()> {
+        while let Some(event) = frames.blocking_recv() {
+            if audio_ended
+                .as_ref()
+                .is_some_and(|ended| ended.load(Ordering::Acquire))
+            {
                 *lock_unpoisoned(terminal_reason) = Some(json!({"code":"recording_audio_ended"}));
                 break;
             }
-            ShowcaseProducerEvent::Paused(acknowledged) => {
-                if audio_owner.is_some() {
-                    *lock_unpoisoned(terminal_reason) =
-                        Some(json!({"code":"recording_audio_video_paused"}));
-                    let _ = acknowledged.send(Ok(()));
+            // Reject queued frames at the encoder, not just at capture or Host polling.
+            // Preserve the last admitted sample for ordinary drain/finalization below.
+            let _admission = match authorization.map(RecordingAuthorization::admit).transpose() {
+                Ok(admission) => admission,
+                Err(reason) => {
+                    *lock_unpoisoned(terminal_reason) = Some(json!({
+                        "code": "recording_authorization_ended", "message": reason
+                    }));
                     break;
                 }
-                // Only an explicit producer pause removes wall-clock time.
-                // Real long frame intervals without this event retain their
-                // existing timestamps and five-minute roll behavior.
-                let result = {
-                    let mut current_progress = lock_unpoisoned(progress);
-                    active_segment
-                        .take()
-                        .map_or(Ok(media_duration_ms), |segment| {
-                            let tail_duration = pause_tail_duration(&segment, nominal_duration);
-                            finalize_active_segment(
-                                segment,
-                                tail_duration,
-                                video_format,
-                                &mut current_progress,
-                                None,
-                            )
-                        })
-                };
-                match result {
-                    Ok(duration_ms) => {
-                        media_duration_ms = duration_ms;
-                        capture_manifest.pause(media_duration_ms)?;
+            };
+            match event {
+                ShowcaseProducerEvent::AudioEnded => {
+                    *lock_unpoisoned(terminal_reason) =
+                        Some(json!({"code":"recording_audio_ended"}));
+                    break;
+                }
+                ShowcaseProducerEvent::Paused(acknowledged) => {
+                    if audio_owner.is_some() {
+                        *lock_unpoisoned(terminal_reason) =
+                            Some(json!({"code":"recording_audio_video_paused"}));
                         let _ = acknowledged.send(Ok(()));
+                        break;
                     }
-                    Err(error) => {
-                        let _ = acknowledged.send(Err(error.clone()));
-                        return Err(error);
+                    // Only an explicit producer pause removes wall-clock time.
+                    // Real long frame intervals without this event retain their
+                    // existing timestamps and five-minute roll behavior.
+                    let result = {
+                        let mut current_progress = lock_unpoisoned(progress);
+                        active_segment
+                            .take()
+                            .map_or(Ok(media_duration_ms), |segment| {
+                                let tail_duration = pause_tail_duration(&segment, nominal_duration);
+                                finalize_active_segment(
+                                    segment,
+                                    tail_duration,
+                                    video_format,
+                                    &mut current_progress,
+                                    None,
+                                )
+                            })
+                    };
+                    match result {
+                        Ok(duration_ms) => {
+                            media_duration_ms = duration_ms;
+                            capture_manifest.pause(media_duration_ms)?;
+                            let _ = acknowledged.send(Ok(()));
+                        }
+                        Err(error) => {
+                            let _ = acknowledged.send(Err(error.clone()));
+                            return Err(error);
+                        }
                     }
                 }
-            }
-            ShowcaseProducerEvent::ResumedFrame(frame, acknowledged) => {
-                let result = (|| {
-                    if active_segment.is_some() {
+                ShowcaseProducerEvent::ResumedFrame(frame, acknowledged) => {
+                    let result = (|| {
+                        if active_segment.is_some() {
+                            return Err(capture_error(
+                                "showcase received a resume frame before finalizing its paused segment",
+                            ));
+                        }
+                        capture_anchor = frame.captured_at();
+                        media_anchor_ms = media_duration_ms;
+                        active_segment = Some(begin_resumed_segment(
+                            &mut encoder,
+                            &frame,
+                            SegmentStart {
+                                path,
+                                index: next_segment_index,
+                                start_ms: media_duration_ms,
+                                format: video_format,
+                                nominal_duration,
+                            },
+                            progress,
+                        )?);
+                        capture_manifest.frame(
+                            &frame,
+                            frame_count,
+                            next_segment_index,
+                            media_duration_ms,
+                            width,
+                            height,
+                        )?;
+                        next_segment_index = next_segment_index.saturating_add(1);
+                        frame_count = frame_count.saturating_add(1);
+                        Ok(())
+                    })();
+                    match result {
+                        Ok(()) => {
+                            let _ = acknowledged.send(Ok(()));
+                        }
+                        Err(error) => {
+                            let _ = acknowledged.send(Err(error.clone()));
+                            return Err(error);
+                        }
+                    }
+                }
+                ShowcaseProducerEvent::Frame(frame) => {
+                    if active_segment.is_none() {
                         return Err(capture_error(
-                            "showcase received a resume frame before finalizing its paused segment",
+                            "showcase received an unacknowledged frame while paused",
                         ));
                     }
-                    capture_anchor = frame.captured_at();
-                    media_anchor_ms = media_duration_ms;
-                    active_segment = Some(begin_resumed_segment(
-                        &mut encoder,
-                        &frame,
-                        SegmentStart {
-                            path,
-                            index: next_segment_index,
-                            start_ms: media_duration_ms,
-                            format: video_format,
-                            nominal_duration,
-                        },
-                        progress,
-                    )?);
-                    capture_manifest.frame(
-                        &frame,
-                        frame_count,
-                        next_segment_index,
-                        media_duration_ms,
-                        width,
-                        height,
-                    )?;
-                    next_segment_index = next_segment_index.saturating_add(1);
-                    frame_count = frame_count.saturating_add(1);
-                    Ok(())
-                })();
-                match result {
-                    Ok(()) => {
-                        let _ = acknowledged.send(Ok(()));
+                    let (frame_width, frame_height) = frame.dimensions();
+                    let bgra = resize_bgra(frame.bgra(), frame_width, frame_height, width, height);
+                    let elapsed_ms = media_anchor_ms.saturating_add(
+                        u64::try_from(
+                            frame
+                                .captured_at()
+                                .saturating_duration_since(capture_anchor)
+                                .as_millis(),
+                        )
+                        .unwrap_or(u64::MAX),
+                    );
+                    if audio_duration_ms.is_some_and(|limit| elapsed_ms >= limit) {
+                        *lock_unpoisoned(terminal_reason) =
+                            Some(json!({"code":"recording_audio_duration_ended"}));
+                        break;
                     }
-                    Err(error) => {
-                        let _ = acknowledged.send(Err(error.clone()));
-                        return Err(error);
-                    }
-                }
-            }
-            ShowcaseProducerEvent::Frame(frame) => {
-                if active_segment.is_none() {
-                    return Err(capture_error(
-                        "showcase received an unacknowledged frame while paused",
-                    ));
-                }
-                let (frame_width, frame_height) = frame.dimensions();
-                let bgra = resize_bgra(frame.bgra(), frame_width, frame_height, width, height);
-                let elapsed_ms = media_anchor_ms.saturating_add(
-                    u64::try_from(
-                        frame
-                            .captured_at()
-                            .saturating_duration_since(capture_anchor)
-                            .as_millis(),
-                    )
-                    .unwrap_or(u64::MAX),
-                );
-                if audio_duration_ms.is_some_and(|limit| elapsed_ms >= limit) {
-                    *lock_unpoisoned(terminal_reason) =
-                        Some(json!({"code":"recording_audio_duration_ended"}));
-                    break;
-                }
-                let segment_start_ms = active_segment
-                    .as_ref()
-                    .expect("active segment checked above")
-                    .start_ms;
-                if elapsed_ms.saturating_sub(segment_start_ms) >= SEGMENT_DURATION_MS {
-                    let segment = active_segment.take().expect("active segment checked above");
-                    let tail_duration = u32::try_from(
-                        elapsed_ms
-                            .saturating_sub(segment.start_ms)
-                            .saturating_sub(segment.pending.start_time),
-                    )
-                    .unwrap_or(u32::MAX)
-                    .max(1);
-                    let mut current_progress = lock_unpoisoned(progress);
-                    media_duration_ms = finalize_active_segment(
-                        segment,
-                        tail_duration,
-                        video_format,
-                        &mut current_progress,
-                        None,
-                    )?;
-                    encoder.force_intra_frame();
-                    let stream = encode_bgra(&mut encoder, &bgra, width, height)?;
-                    active_segment = Some(begin_segment(
-                        &stream,
-                        path,
-                        next_segment_index,
-                        elapsed_ms,
-                        video_format,
-                        nominal_duration,
-                        &mut current_progress,
-                    )?);
-                    drop(current_progress);
-                    capture_manifest.frame(
-                        &frame,
-                        frame_count,
-                        next_segment_index,
-                        elapsed_ms,
-                        width,
-                        height,
-                    )?;
-                    next_segment_index = next_segment_index.saturating_add(1);
-                    frame_count = frame_count.saturating_add(1);
-                    continue;
-                }
-
-                let stream = encode_bgra(&mut encoder, &bgra, width, height)?;
-                let segment = active_segment
-                    .as_mut()
-                    .expect("active segment checked above");
-                let Some(mut current) =
-                    pending_sample(&stream, elapsed_ms.saturating_sub(segment.start_ms))?
-                else {
-                    continue;
-                };
-                current.start_time = current
-                    .start_time
-                    .max(segment.pending.start_time.saturating_add(1));
-                let sample_duration =
-                    u32::try_from(current.start_time - segment.pending.start_time)
+                    let segment_start_ms = active_segment
+                        .as_ref()
+                        .expect("active segment checked above")
+                        .start_ms;
+                    if elapsed_ms.saturating_sub(segment_start_ms) >= SEGMENT_DURATION_MS {
+                        let segment = active_segment.take().expect("active segment checked above");
+                        let tail_duration = u32::try_from(
+                            elapsed_ms
+                                .saturating_sub(segment.start_ms)
+                                .saturating_sub(segment.pending.start_time),
+                        )
                         .unwrap_or(u32::MAX)
                         .max(1);
-                capture_manifest.frame(
-                    &frame,
-                    frame_count,
-                    segment.index,
-                    segment.start_ms.saturating_add(current.start_time),
-                    width,
-                    height,
-                )?;
-                let pending = std::mem::replace(&mut segment.pending, current);
-                write_sample(&mut segment.writer, pending, sample_duration)?;
-                segment.final_duration = sample_duration;
-                segment.frame_count = segment.frame_count.saturating_add(1);
-                frame_count = frame_count.saturating_add(1);
+                        let mut current_progress = lock_unpoisoned(progress);
+                        media_duration_ms = finalize_active_segment(
+                            segment,
+                            tail_duration,
+                            video_format,
+                            &mut current_progress,
+                            None,
+                        )?;
+                        encoder.force_intra_frame();
+                        let stream = encode_bgra(&mut encoder, &bgra, width, height)?;
+                        active_segment = Some(begin_segment(
+                            &stream,
+                            path,
+                            next_segment_index,
+                            elapsed_ms,
+                            video_format,
+                            nominal_duration,
+                            &mut current_progress,
+                        )?);
+                        drop(current_progress);
+                        capture_manifest.frame(
+                            &frame,
+                            frame_count,
+                            next_segment_index,
+                            elapsed_ms,
+                            width,
+                            height,
+                        )?;
+                        next_segment_index = next_segment_index.saturating_add(1);
+                        frame_count = frame_count.saturating_add(1);
+                        continue;
+                    }
+
+                    let stream = encode_bgra(&mut encoder, &bgra, width, height)?;
+                    let segment = active_segment
+                        .as_mut()
+                        .expect("active segment checked above");
+                    let Some(mut current) =
+                        pending_sample(&stream, elapsed_ms.saturating_sub(segment.start_ms))?
+                    else {
+                        continue;
+                    };
+                    current.start_time = current
+                        .start_time
+                        .max(segment.pending.start_time.saturating_add(1));
+                    let sample_duration =
+                        u32::try_from(current.start_time - segment.pending.start_time)
+                            .unwrap_or(u32::MAX)
+                            .max(1);
+                    capture_manifest.frame(
+                        &frame,
+                        frame_count,
+                        segment.index,
+                        segment.start_ms.saturating_add(current.start_time),
+                        width,
+                        height,
+                    )?;
+                    let pending = std::mem::replace(&mut segment.pending, current);
+                    write_sample(&mut segment.writer, pending, sample_duration)?;
+                    segment.final_duration = sample_duration;
+                    segment.frame_count = segment.frame_count.saturating_add(1);
+                    frame_count = frame_count.saturating_add(1);
+                }
             }
         }
-    }
+        Ok(())
+    })();
     let audio_buffer = if let Some(owner) = audio_owner.as_mut() {
         let buffer = owner.finish();
         lock_unpoisoned(progress).audio =
             Some(json!({"mode":"target_process_tree","worker":owner.evidence()}));
-        Some(buffer.map_err(audio_error)?)
+        buffer.map(Some).map_err(audio_error)
     } else {
-        None
+        Ok(None)
+    };
+    let audio_buffer = match (video_result, audio_buffer) {
+        (Err(video), Err(mut cleanup)) => {
+            cleanup
+                .message
+                .push_str(&format!("; video encoder failed: {}", video.message));
+            return Err(cleanup);
+        }
+        (Err(video), Ok(_)) => return Err(video),
+        (Ok(()), buffer) => buffer?,
     };
     if let Some(segment) = active_segment {
         let tail_duration = segment.final_duration;
