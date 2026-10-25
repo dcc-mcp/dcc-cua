@@ -78,6 +78,19 @@ pub struct AacTrackBuffer {
     grant: ProcessAudioGrant,
     samples: Vec<i16>,
     nonzero_samples: u64,
+    captured_frames: u64,
+    gap_frames: u64,
+    gap_count: u64,
+    gap_examples: Vec<AudioTimelineGap>,
+}
+
+/// A non-sampled interval retained as generated zero PCM, never claimed as
+/// captured silence. Examples are bounded; totals always cover all intervals.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct AudioTimelineGap {
+    pub start_frame: u64,
+    pub frames: u64,
+    pub before_first_packet: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
@@ -87,6 +100,11 @@ pub struct AacTrackReceipt {
     pub encoded_samples: u64,
     pub encoded_bytes: u64,
     pub nonzero_input_samples: u64,
+    pub captured_input_frames: u64,
+    pub generated_timeline_gap_frames: u64,
+    pub timeline_gap_count: u64,
+    pub timeline_gap_examples: Vec<AudioTimelineGap>,
+    pub timeline_gap_examples_truncated: bool,
     /// AAC-LC filterbank priming; native marker alignment must measure this.
     pub codec_priming_samples: u32,
 }
@@ -98,6 +116,10 @@ impl AacTrackBuffer {
             grant,
             samples: Vec::new(),
             nonzero_samples: 0,
+            captured_frames: 0,
+            gap_frames: 0,
+            gap_count: 0,
+            gap_examples: Vec::new(),
         })
     }
 
@@ -131,6 +153,19 @@ impl AacTrackBuffer {
         self.samples
             .try_reserve_exact(length - self.samples.len())
             .map_err(|_| AudioLifecycleError::Budget)?;
+        let gap = start - current;
+        if gap != 0 {
+            self.gap_count += 1;
+            self.gap_frames += gap as u64;
+            if self.gap_examples.len() < 64 {
+                self.gap_examples.push(AudioTimelineGap {
+                    start_frame: current as u64,
+                    frames: gap as u64,
+                    before_first_packet: self.captured_frames == 0,
+                });
+            }
+        }
+        self.captured_frames += (samples.len() / PROCESS_AUDIO_CHANNELS) as u64;
         self.samples.resize(start * PROCESS_AUDIO_CHANNELS, 0);
         self.samples.extend_from_slice(samples);
         self.nonzero_samples += samples.iter().filter(|sample| **sample != 0).count() as u64;
@@ -207,6 +242,11 @@ impl AacTrackBuffer {
             encoded_samples,
             encoded_bytes,
             nonzero_input_samples: self.nonzero_samples,
+            captured_input_frames: self.captured_frames,
+            generated_timeline_gap_frames: self.gap_frames,
+            timeline_gap_count: self.gap_count,
+            timeline_gap_examples_truncated: self.gap_count > self.gap_examples.len() as u64,
+            timeline_gap_examples: self.gap_examples,
             codec_priming_samples: 1024,
         })
     }

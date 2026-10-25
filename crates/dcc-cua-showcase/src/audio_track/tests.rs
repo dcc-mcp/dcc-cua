@@ -101,6 +101,10 @@ fn generated_mp4_contains_decodable_aac_and_existing_h264_tracks() {
     }
     let receipt = audio.append_after_single_video_track(&mut writer).unwrap();
     assert!(receipt.nonzero_input_samples > 0);
+    assert_eq!(receipt.captured_input_frames, 9600);
+    assert_eq!(receipt.generated_timeline_gap_frames, 2400);
+    assert_eq!(receipt.timeline_gap_count, 1);
+    assert!(receipt.timeline_gap_examples[0].before_first_packet);
     writer.write_end().unwrap();
     let data = writer.into_writer().into_inner().into_inner();
     let mut reader =
@@ -142,4 +146,38 @@ fn generated_mp4_contains_decodable_aac_and_existing_h264_tracks() {
         duration_ms,
         energy
     );
+}
+
+#[rstest]
+fn forward_qpc_gap_is_retained_and_disclosed_without_splicing_captured_pcm() {
+    let mut audio = AacTrackBuffer::new(grant()).unwrap();
+    audio.push(0, &[12; 960]).unwrap();
+    audio.push(30_829, &[34; 960]).unwrap();
+    assert_eq!(audio.captured_frames, 960);
+    assert_eq!(audio.gap_frames, 999);
+    assert_eq!(audio.gap_count, 1);
+    assert_eq!(audio.samples.len() / 2, 1959);
+    assert!(audio.samples[..960].iter().all(|x| *x == 12));
+    assert!(audio.samples[960..2958].iter().all(|x| *x == 0));
+    assert!(audio.samples[2958..].iter().all(|x| *x == 34));
+    assert_eq!(
+        audio.gap_examples,
+        vec![AudioTimelineGap {
+            start_frame: 480,
+            frames: 999,
+            before_first_packet: false,
+        }]
+    );
+}
+
+#[rstest]
+fn gap_examples_are_bounded_while_totals_preserve_all_missing_intervals() {
+    let mut audio = AacTrackBuffer::new(grant()).unwrap();
+    for packet in 0..100 {
+        audio.push(packet * 1000, &[12, 12]).unwrap();
+    }
+    assert_eq!(audio.gap_examples.len(), 64);
+    assert_eq!(audio.gap_count, 99);
+    assert_eq!(audio.captured_frames, 100);
+    assert_eq!(audio.gap_frames, 99 * 47);
 }

@@ -52,11 +52,11 @@ fn first_discontinuity_preserves_pcm_but_later_gap_fails() {
 #[case(100_000, true)]
 #[case(100_208, true)]
 #[case(99_792, true)]
-#[case(100_209, false)]
+#[case(100_209, true)]
 #[case(99_791, false)]
-#[case(200_000, false)]
+#[case(200_000, true)]
 #[case(0, false)]
-fn qpc_clock_rejects_loss_overlap_and_rollback_beyond_one_pcm_frame(
+fn qpc_order_preserves_forward_gaps_but_rejects_overlap_and_rollback(
     #[case] delta: u64,
     #[case] accepted: bool,
 ) {
@@ -65,10 +65,13 @@ fn qpc_clock_rejects_loss_overlap_and_rollback_beyond_one_pcm_frame(
         frames: 480,
     };
     assert_eq!(
-        qpc_packet_is_contiguous(previous, previous.qpc_100ns + delta),
+        qpc_packet_has_valid_order(previous, previous.qpc_100ns + delta),
         accepted
     );
-    assert!(!qpc_packet_is_contiguous(previous, previous.qpc_100ns - 1));
+    assert!(!qpc_packet_has_valid_order(
+        previous,
+        previous.qpc_100ns - 1
+    ));
 }
 
 #[rstest]
@@ -76,7 +79,7 @@ fn rejected_packet_retains_exact_metadata_without_changing_continuity_policy() {
     let packet = AudioWorkerPacketMetadata {
         frames: 480,
         flags: 0,
-        qpc_100ns: 1_300_000,
+        qpc_100ns: 1_050_000,
         device_position: 0,
         expected_device_position: Some(480),
         previous_clock: Some(AudioWorkerPacketClock {
@@ -86,7 +89,7 @@ fn rejected_packet_retains_exact_metadata_without_changing_continuity_policy() {
         null_data: true,
     };
     let mut diagnostic = AudioWorkerFailureDiagnostic::default();
-    // SAFETY: QPC gap rejects before pointer access.
+    // SAFETY: QPC overlap rejects before pointer access.
     let result =
         unsafe { copy_packet_with_diagnostic(std::ptr::null(), packet.clone(), &mut diagnostic) };
     assert_eq!(result.unwrap_err(), Failure::ContinuityLost);

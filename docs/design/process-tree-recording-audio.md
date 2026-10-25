@@ -103,7 +103,7 @@ The existing encoder owns that audio controller and the existing MP4 writer.
 The complete file (video, audio, headers and seek patches) has the grant's byte
 ceiling. Packets are stereo PCM16 at 48 kHz, with a 4800-sample ceiling; silent
 buffers are tested before dereferencing. Unknown target metadata, timestamp
-error, packet discontinuity or a QPC/frame-count gap ends the source. Raw QPC is
+error, flagged packet discontinuity or QPC rollback/overlap ends the source. Raw QPC is
 mapped to the actual first encoded video frame's monotonic epoch, without
 speed changes. Audio mode requests 30 fps for a new live video source; actual
 source fps remains reported. A video pause ends combined capture rather than
@@ -137,10 +137,14 @@ advanced by exactly 100,000 units (10 ms). Treating that device counter as an
 advancing frame index falsely rejected the second packet. Device position remains
 in diagnostics; it is not the admission clock for this virtual source.
 
-Continuity uses strictly increasing first-sample QPC timestamps and the preceding
-packet frame count at 48 kHz. Compare the rational sample-duration difference with
-at most one PCM frame of quantization; do not insert, stretch, resample or drop
-packets to hide a gap. Later DATA_DISCONTINUITY, TIMESTAMP_ERROR, unknown flags,
+Packet ordering uses strictly increasing first-sample QPC timestamps and rejects
+overlap beyond one PCM frame of quantization at48kHz. A forward QPC interval is
+retained on the shared media epoch, not interpreted as a documented glitch by
+itself. The existing mux preserves non-sampled intervals as explicitly generated
+zero PCM rather than splicing subsequent audio earlier. Receipts distinguish
+captured frames from generated timeline-gap frames and retain bounded examples
+with complete aggregate counts; those intervals are not claimed as captured
+silence or proof that no unflagged loss occurred. Later DATA_DISCONTINUITY, TIMESTAMP_ERROR, unknown flags,
 invalid packet bounds and target/grant failures still terminate capture. Failure
 receipts retain the prior packet clock, current packet metadata, API stage/HRESULT
 and stream-stop result without retaining PCM or identifying unrelated devices.

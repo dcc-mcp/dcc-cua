@@ -188,16 +188,16 @@ fn check_state(state: &AtomicU8, deadline: u64) -> Result<bool, Failure> {
 }
 
 /// Virtual process loopback can report device_position=0 for every packet.
-/// Use its first-sample QPC timestamp and frame count as the continuity clock.
-/// Allow only the same one-PCM-frame quantization as the mux, without stretching.
-fn qpc_packet_is_contiguous(previous: AudioWorkerPacketClock, timestamp: u64) -> bool {
+/// Use first-sample QPC for ordering. Forward gaps remain on the media timeline
+/// and are explicitly disclosed by the mux; flags still identify capture glitches.
+/// Reject overlap beyond the same one-PCM-frame quantization as the mux.
+fn qpc_packet_has_valid_order(previous: AudioWorkerPacketClock, timestamp: u64) -> bool {
     let Some(delta) = timestamp.checked_sub(previous.qpc_100ns) else {
         return false;
     };
     delta != 0
         && previous.frames != 0
-        && (u128::from(delta) * 48_000).abs_diff(u128::from(previous.frames) * 10_000_000)
-            <= 10_000_000
+        && u128::from(delta) * 48_000 + 10_000_000 >= u128::from(previous.frames) * 10_000_000
 }
 
 /// Copy only an acquired WASAPI packet, after testing SILENT before dereferencing.
@@ -218,7 +218,7 @@ unsafe fn copy_packet(
         || count > MAX_AUDIO_WORKER_SAMPLES
         || timestamp == 0
         || flags & AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR.0 as u32 != 0
-        || previous.is_some_and(|clock| !qpc_packet_is_contiguous(clock, timestamp))
+        || previous.is_some_and(|clock| !qpc_packet_has_valid_order(clock, timestamp))
         || (previous.is_some() && flags & AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY.0 as u32 != 0)
     {
         return Err(Failure::ContinuityLost);
