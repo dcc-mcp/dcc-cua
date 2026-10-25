@@ -3,8 +3,8 @@ use dcc_cua_protocol::recording_audio::{
     MIN_PROCESS_LOOPBACK_WINDOWS_BUILD, ProcessAudioTarget,
     worker::{
         AUDIO_WORKER_PROTOCOL, AudioWorkerCommand, AudioWorkerEvent, AudioWorkerFailure as Failure,
-        AudioWorkerFailureDiagnostic, AudioWorkerFailureStage, AudioWorkerPacketMetadata,
-        MAX_AUDIO_WORKER_SAMPLES, read_message, write_message,
+        AudioWorkerFailureDiagnostic, AudioWorkerFailureStage, AudioWorkerPacketClock,
+        AudioWorkerPacketMetadata, MAX_AUDIO_WORKER_SAMPLES, read_message, write_message,
     },
 };
 use std::{
@@ -187,6 +187,19 @@ fn check_state(state: &AtomicU8, deadline: u64) -> Result<bool, Failure> {
     }
 }
 
+/// Virtual process loopback can report device_position=0 for every packet.
+/// Use its first-sample QPC timestamp and frame count as the continuity clock.
+/// Allow only the same one-PCM-frame quantization as the mux, without stretching.
+fn qpc_packet_is_contiguous(previous: AudioWorkerPacketClock, timestamp: u64) -> bool {
+    let Some(delta) = timestamp.checked_sub(previous.qpc_100ns) else {
+        return false;
+    };
+    delta != 0
+        && previous.frames != 0
+        && (u128::from(delta) * 48_000).abs_diff(u128::from(previous.frames) * 10_000_000)
+            <= 10_000_000
+}
+
 /// Copy only an acquired WASAPI packet, after testing SILENT before dereferencing.
 /// SAFETY: non-silent pointer must reference `frames * 2` initialized i16 samples
 /// until the matching ReleaseBuffer; silent packets may supply a null pointer.
@@ -195,8 +208,7 @@ unsafe fn copy_packet(
     frames: u32,
     flags: u32,
     timestamp: u64,
-    position: u64,
-    previous_end: Option<u64>,
+    previous: Option<AudioWorkerPacketClock>,
 ) -> Result<Vec<i16>, Failure> {
     let count = (frames as usize)
         .checked_mul(2)
@@ -206,8 +218,8 @@ unsafe fn copy_packet(
         || count > MAX_AUDIO_WORKER_SAMPLES
         || timestamp == 0
         || flags & AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR.0 as u32 != 0
-        || previous_end.is_some_and(|end| end != position)
-        || (previous_end.is_some() && flags & AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY.0 as u32 != 0)
+        || previous.is_some_and(|clock| !qpc_packet_is_contiguous(clock, timestamp))
+        || (previous.is_some() && flags & AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY.0 as u32 != 0)
     {
         return Err(Failure::ContinuityLost);
     }
@@ -234,8 +246,7 @@ unsafe fn copy_packet_with_diagnostic(
             packet.frames,
             packet.flags,
             packet.qpc_100ns,
-            packet.device_position,
-            packet.expected_device_position,
+            packet.previous_clock,
         )
     };
     if result.is_err() {
@@ -254,6 +265,7 @@ fn capture_packets(
     diagnostic: &mut AudioWorkerFailureDiagnostic,
 ) -> Result<(), Failure> {
     let mut previous_end = None;
+    let mut previous_clock = None;
     while check_state(state, deadline)? {
         target.validate()?;
         // SAFETY: initialized capture client owned by this MTA thread.
@@ -293,6 +305,7 @@ fn capture_packets(
                     qpc_100ns: timestamp,
                     device_position: position,
                     expected_device_position: previous_end,
+                    previous_clock,
                     null_data: data.is_null(),
                 },
                 diagnostic,
@@ -312,6 +325,10 @@ fn capture_packets(
         if timestamp >= deadline {
             return Err(Failure::BudgetExpired);
         }
+        previous_clock = Some(AudioWorkerPacketClock {
+            qpc_100ns: timestamp,
+            frames,
+        });
         previous_end = Some(
             position
                 .checked_add(u64::from(frames))

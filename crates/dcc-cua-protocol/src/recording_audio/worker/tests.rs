@@ -46,6 +46,10 @@ fn worker_failure_keeps_bounded_numeric_diagnostic_and_rejects_extra_fields() {
             qpc_100ns: 100,
             device_position: 500,
             expected_device_position: Some(480),
+            previous_clock: Some(AudioWorkerPacketClock {
+                qpc_100ns: 1,
+                frames: 480,
+            }),
             null_data: false,
         }),
         stream_stop_succeeded: Some(true),

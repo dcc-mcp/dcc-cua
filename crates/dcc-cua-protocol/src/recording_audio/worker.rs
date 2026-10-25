@@ -74,8 +74,17 @@ pub struct AudioWorkerPacketMetadata {
     pub flags: u32,
     pub qpc_100ns: u64,
     pub device_position: u64,
+    /// Raw-counter comparison for diagnostics only, not the virtual-source clock.
     pub expected_device_position: Option<u64>,
+    pub previous_clock: Option<AudioWorkerPacketClock>,
     pub null_data: bool,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct AudioWorkerPacketClock {
+    pub qpc_100ns: u64,
+    pub frames: u32,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]

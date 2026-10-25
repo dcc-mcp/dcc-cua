@@ -103,7 +103,7 @@ The existing encoder owns that audio controller and the existing MP4 writer.
 The complete file (video, audio, headers and seek patches) has the grant's byte
 ceiling. Packets are stereo PCM16 at 48 kHz, with a 4800-sample ceiling; silent
 buffers are tested before dereferencing. Unknown target metadata, timestamp
-error, packet discontinuity or device-position gap ends the source. Raw QPC is
+error, packet discontinuity or a QPC/frame-count gap ends the source. Raw QPC is
 mapped to the actual first encoded video frame's monotonic epoch, without
 speed changes. Audio mode requests 30 fps for a new live video source; actual
 source fps remains reported. A video pause ends combined capture rather than
@@ -127,3 +127,25 @@ is not proof of isolation or synchronization. No private audio, microphone,
 OS5 retry, parent-tree expansion, active Host interruption or permissions change
 is authorized by this implementation. Persistent/shared MCP changes remain a
 separate operator action. This PR remains draft and is not merged or released.
+
+
+### Virtual process-loopback packet clock
+
+The Windows process-loopback virtual client was observed returning device position
+zero for consecutive 480-frame packets while their first-sample QPC timestamps
+advanced by exactly 100,000 units (10 ms). Treating that device counter as an
+advancing frame index falsely rejected the second packet. Device position remains
+in diagnostics; it is not the admission clock for this virtual source.
+
+Continuity uses strictly increasing first-sample QPC timestamps and the preceding
+packet frame count at 48 kHz. Compare the rational sample-duration difference with
+at most one PCM frame of quantization; do not insert, stretch, resample or drop
+packets to hide a gap. Later DATA_DISCONTINUITY, TIMESTAMP_ERROR, unknown flags,
+invalid packet bounds and target/grant failures still terminate capture. Failure
+receipts retain the prior packet clock, current packet metadata, API stage/HRESULT
+and stream-stop result without retaining PCM or identifying unrelated devices.
+
+Microsoft's [GetBuffer contract](https://learn.microsoft.com/en-us/windows/win32/api/audioclient/nf-audioclient-iaudiocaptureclient-getbuffer)
+defines the first-sample QPC output in 100 ns units and makes the device-position
+output optional. The constant-zero behavior above is an observed qualification
+result, not a claim that the generic API documents it for every source.
