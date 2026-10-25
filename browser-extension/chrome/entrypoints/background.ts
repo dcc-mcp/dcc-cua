@@ -14,6 +14,7 @@ import {
   type ContentCommand,
 } from "../content-protocol.ts";
 import { PairingLifecycle } from "../pairing.ts";
+import { navigatePairedTab } from "../navigation.ts";
 import { browser, type Browser } from "wxt/browser";
 import { defineBackground } from "wxt/utils/define-background";
 
@@ -262,6 +263,34 @@ export default defineBackground(() => {
         return;
       }
       const pairing = await pairings.requireMatch(request);
+      if (request.method === "navigate") {
+        const result = await navigatePairedTab(request, pairing, {
+          isCurrent: () => nativePort === port && nativeHandshakeComplete,
+          now: () => Date.now(),
+          async requirePairing() { await pairings.requireMatch(request); },
+          async foreground() {
+            const [window, tab] = await Promise.all([browser.windows.get(pairing.window_id), browser.tabs.get(pairing.tab_id)]);
+            return window.focused === true && tab.active === true && tab.windowId === pairing.window_id;
+          },
+          async invalidateDocument() {
+            const value = await sendTabCommand(pairing.tab_id, contentCommandFromNative(request));
+            if (!isObject(value) || value.invalidated !== true) {
+              throw Object.assign(new Error("document invalidation was not confirmed"), { code: "stale_observation" });
+            }
+          },
+          async revokePairing() {
+            await updatePairing(async () => {
+              if (nativePort !== port) throw new Error("pairing replaced");
+              await pairings.requireMatch(request);
+              await pairings.clear();
+              await setBadge("", "#000000");
+            });
+          },
+          async updateTab(tabId, url) { await browser.tabs.update(tabId, { url }); },
+        });
+        port.postMessage(successResponse(request.request_id, result));
+        return;
+      }
       if (request.method === "unpair") {
         await pairings.clear();
         await setBadge("", "#000000");

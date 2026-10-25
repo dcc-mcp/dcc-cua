@@ -80,6 +80,28 @@ async fn extension_snapshot_requires_the_task_origin_before_host_dispatch() {
     assert!(error.contains("provider/runtime/PID/HWND"), "{error}");
 }
 
+#[rstest]
+fn extension_navigation_has_independent_origin_scope_and_closed_params() {
+    let mut task = browser_task();
+    task["allowed_methods"] = json!(["browser_extension_call"]);
+    task["allowed_browser_origins"] = json!(["https://example.com"]);
+    task["allowed_actions"] = json!([{"action":"browser_extension_navigate","input_kind":"browser","secret_input":false,"authorization_category":"external_effect","browser_origin":"https://example.com"}]);
+    assert!(test_server().prepare_task(task.clone()).is_ok());
+    task["allowed_actions"][0]["secret_input"] = json!(true);
+    assert!(test_server().prepare_task(task).is_err());
+    let params = json!({"method":"navigate","params":{"snapshot_id":"fresh","url":"https://example.com/next"}});
+    assert!(validate_task_method_params("browser_extension_call", &params).is_ok());
+    for change in [
+        json!({"snapshot_id":"fresh"}),
+        json!({"url":"https://example.com/next"}),
+        json!({"snapshot_id":"fresh","url":"https://example.com/next","deadline_unix_ms":u64::MAX}),
+    ] {
+        let mut invalid = params.clone();
+        invalid["params"] = change;
+        assert!(validate_task_method_params("browser_extension_call", &invalid).is_err());
+    }
+}
+
 fn test_server() -> TaskAuthorizationServer {
     let mut server = TaskAuthorizationServer::automatic();
     server.recording_output_root = None;
