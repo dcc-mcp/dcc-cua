@@ -1922,7 +1922,7 @@ async fn list_windows_with_driver(
     on_screen_only: bool,
 ) -> ComputerUseResult<Vec<Value>> {
     if let Some(windows) = crate::window_target::native_inventory(pid, on_screen_only) {
-        return Ok(windows);
+        return windows;
     }
     let mut arguments = json!({});
     if let Some(pid) = pid {

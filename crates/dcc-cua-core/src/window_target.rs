@@ -3,10 +3,125 @@ use serde_json::Value;
 #[cfg(windows)]
 use serde_json::json;
 
-#[cfg(windows)]
+#[cfg(any(windows, test))]
 use crate::contracts::{ComputerUseError, ComputerUseErrorCode};
 use crate::contracts::{ComputerUseResult, ComputerUseTargetScope};
 use crate::sensitive_target_policy::validate_observed_application_identity;
+
+#[cfg(any(windows, test))]
+fn finish_inventory(rows: Vec<Value>, failure: Option<String>) -> ComputerUseResult<Vec<Value>> {
+    match failure {
+        None => Ok(rows),
+        Some(reason) => Err(ComputerUseError::new(
+            ComputerUseErrorCode::TargetUnavailable,
+            format!("window discovery is unknown, not application absence: {reason}"),
+        )
+        .with_details(crate::ComputerUseErrorDetails {
+            window_inventory: Some(crate::ComputerUseWindowInventoryDiagnostic {
+                complete: false,
+                reason,
+                partial_candidates: rows
+                    .iter()
+                    .filter_map(|row| {
+                        Some(crate::ComputerUseWindowInventoryCandidate {
+                            process_id: row["pid"].as_u64().and_then(|pid| pid.try_into().ok()),
+                            window_handle: row["window_id"].as_u64()?,
+                        })
+                    })
+                    .collect(),
+            }),
+            ..Default::default()
+        })),
+    }
+}
+
+#[cfg(test)]
+mod inventory_outcome_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn failed_inventory_is_unknown_even_with_partial_candidates() {
+        for rows in [vec![], vec![json!({"pid":42,"window_id":7})]] {
+            let count = rows.len();
+            let result =
+                finish_inventory(rows, Some("EnumWindows: access denied (os error 5)".into()));
+            assert!(
+                result.is_err(),
+                "failure became a successful inventory: {result:?}"
+            );
+            let error = result.unwrap_err();
+            assert!(error.message.contains("os error 5"));
+            let inventory = error.details.unwrap().window_inventory.unwrap();
+            assert!(!inventory.complete);
+            assert_eq!(inventory.partial_candidates.len(), count);
+        }
+    }
+
+    #[test]
+    fn completed_inventory_can_be_empty() {
+        assert!(finish_inventory(vec![], None).unwrap().is_empty());
+    }
+
+    #[test]
+    fn metadata_failures_preserve_candidates_without_fabricating_identity_or_geometry() {
+        for api in [
+            "OpenProcess",
+            "QueryFullProcessImageNameW",
+            "GetWindowThreadProcessId",
+            "GetWindowRect",
+            "GetWindowTextW",
+        ] {
+            let row = json!({"pid":null,"window_id":7,"app_name":null,"bounds":null,"title":"private UI text"});
+            let error =
+                finish_inventory(vec![row], Some(format!("{api}: os error 5"))).unwrap_err();
+            let inventory = error.details.unwrap().window_inventory.unwrap();
+            assert!(inventory.reason.contains(api));
+            assert!(inventory.reason.contains("os error 5"));
+            assert_eq!(inventory.partial_candidates[0].process_id, None);
+            assert_eq!(inventory.partial_candidates[0].window_handle, 7);
+            assert!(
+                !serde_json::to_string(&inventory)
+                    .unwrap()
+                    .contains("private UI text")
+            );
+        }
+    }
+
+    #[test]
+    fn windows_discovery_accepts_only_the_exact_executable_or_its_stem() {
+        let row = json!({"app_name":"Figma.exe","backend":"windows-native-window-inventory","pid":42,"window_id":7});
+        for app in ["Figma", "figma.EXE"] {
+            let query = crate::contracts::ComputerUseWindowQuery {
+                app: Some(app.into()),
+                ..Default::default()
+            };
+            assert!(query.matches_window(&row), "{app} did not match");
+        }
+        for app in ["Fig", "Figma.exe.exe", "Figma.exe/other"] {
+            let query = crate::contracts::ComputerUseWindowQuery {
+                app: Some(app.into()),
+                ..Default::default()
+            };
+            assert!(!query.matches_window(&row));
+        }
+        let query = crate::contracts::ComputerUseWindowQuery {
+            app: Some("Figma".into()),
+            process_id: Some(43),
+            ..Default::default()
+        };
+        assert!(!query.matches_window(&row));
+        let query = crate::contracts::ComputerUseWindowQuery {
+            app: Some("Figma".into()),
+            ..Default::default()
+        };
+        assert!(!query.matches_window(&json!({"app_name":null})));
+        assert!(!query.matches_window(&json!({"app_name":"Figma.exe"})));
+        assert!(!query.matches_window(
+            &json!({"app_name":"Figma Helper.exe","backend":"windows-native-window-inventory"})
+        ));
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub(crate) struct WindowTarget {
@@ -62,7 +177,10 @@ pub(crate) fn validate_target_policy(target: &WindowTarget) -> ComputerUseResult
 
 /// Enumerate native window metadata without starting capture, input, or cursor services.
 /// Returns `None` when the platform needs the regular SDK inventory route.
-pub fn native_inventory(process_id: Option<u32>, on_screen_only: bool) -> Option<Vec<Value>> {
+pub fn native_inventory(
+    process_id: Option<u32>,
+    on_screen_only: bool,
+) -> Option<ComputerUseResult<Vec<Value>>> {
     #[cfg(windows)]
     {
         Some(windows_inventory(process_id, on_screen_only))
@@ -80,13 +198,21 @@ struct WindowsInventoryContext {
     on_screen_only: bool,
     foreground: usize,
     z_index: i32,
-    process_names: std::collections::HashMap<u32, String>,
+    process_names: std::collections::HashMap<u32, Result<String, String>>,
+    failures: Vec<String>,
     rows: Vec<Value>,
 }
 
 #[cfg(windows)]
-fn windows_inventory(process_id: Option<u32>, on_screen_only: bool) -> Vec<Value> {
+fn windows_inventory(
+    process_id: Option<u32>,
+    on_screen_only: bool,
+) -> ComputerUseResult<Vec<Value>> {
     use windows_sys::Win32::UI::WindowsAndMessaging::{EnumWindows, GetForegroundWindow};
+
+    if let Err(error) = crate::interactive_desktop::require_desktop_observation_available() {
+        return finish_inventory(vec![], Some(error.message));
+    }
 
     let mut context = WindowsInventoryContext {
         process_id,
@@ -94,23 +220,39 @@ fn windows_inventory(process_id: Option<u32>, on_screen_only: bool) -> Vec<Value
         foreground: unsafe { GetForegroundWindow() } as usize,
         z_index: 0,
         process_names: std::collections::HashMap::new(),
+        failures: Vec::new(),
         rows: Vec::new(),
     };
-    unsafe {
+    let completed = unsafe {
         EnumWindows(
             Some(enum_window),
             (&raw mut context).cast::<core::ffi::c_void>() as isize,
-        );
+        )
+    };
+    if completed == 0 {
+        context
+            .failures
+            .push(format!("EnumWindows: {}", std::io::Error::last_os_error()));
     }
-    context.rows
+    let failure = (!context.failures.is_empty()).then(|| context.failures.join("; "));
+    finish_inventory(context.rows, failure)
 }
 
 #[cfg(windows)]
-fn window_title(hwnd: windows_sys::Win32::Foundation::HWND) -> String {
+fn window_title(hwnd: windows_sys::Win32::Foundation::HWND) -> Result<String, String> {
+    use windows_sys::Win32::Foundation::{GetLastError, SetLastError};
     use windows_sys::Win32::UI::WindowsAndMessaging::{GetWindowTextLengthW, GetWindowTextW};
 
+    unsafe { SetLastError(0) };
     let length = unsafe { GetWindowTextLengthW(hwnd) }.max(0) as usize;
+    if length == 0 && unsafe { GetLastError() } != 0 {
+        return Err(format!(
+            "GetWindowTextLengthW: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
     let mut buffer = vec![0_u16; length.saturating_add(1)];
+    unsafe { SetLastError(0) };
     let copied = unsafe {
         GetWindowTextW(
             hwnd,
@@ -119,12 +261,18 @@ fn window_title(hwnd: windows_sys::Win32::Foundation::HWND) -> String {
         )
     }
     .max(0) as usize;
+    if copied == 0 && unsafe { GetLastError() } != 0 {
+        return Err(format!(
+            "GetWindowTextW: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
     buffer.truncate(copied.min(buffer.len()));
-    String::from_utf16_lossy(&buffer)
+    Ok(String::from_utf16_lossy(&buffer))
 }
 
 #[cfg(windows)]
-fn process_name(pid: u32) -> String {
+fn process_name(pid: u32) -> Result<String, String> {
     use windows_sys::Win32::Foundation::CloseHandle;
     use windows_sys::Win32::System::Threading::{
         OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
@@ -132,21 +280,30 @@ fn process_name(pid: u32) -> String {
 
     let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
     if process.is_null() {
-        return String::new();
+        return Err(format!(
+            "OpenProcess({pid}): {}",
+            std::io::Error::last_os_error()
+        ));
     }
     let mut buffer = vec![0_u16; 32_768];
     let mut length = buffer.len() as u32;
     let resolved =
         unsafe { QueryFullProcessImageNameW(process, 0, buffer.as_mut_ptr(), &mut length) != 0 };
+    let error = (!resolved).then(std::io::Error::last_os_error);
     unsafe { CloseHandle(process) };
     if !resolved {
-        return String::new();
+        return Err(format!(
+            "QueryFullProcessImageNameW({pid}): {}",
+            error.unwrap()
+        ));
     }
     buffer.truncate(length as usize);
     let path = String::from_utf16_lossy(&buffer);
     std::path::Path::new(&path)
         .file_name()
-        .map_or_else(String::new, |name| name.to_string_lossy().into_owned())
+        .map(|name| name.to_string_lossy().into_owned())
+        .filter(|name: &String| !name.is_empty())
+        .ok_or_else(|| format!("QueryFullProcessImageNameW({pid}): executable name unavailable"))
 }
 
 #[cfg(windows)]
@@ -163,18 +320,30 @@ unsafe extern "system" fn enum_window(
     let z_index = context.z_index;
     context.z_index = context.z_index.saturating_add(1);
     let mut pid = 0_u32;
-    unsafe { GetWindowThreadProcessId(hwnd, &mut pid) };
-    if pid == 0 || context.process_id.is_some_and(|expected| expected != pid) {
+    let thread = unsafe { GetWindowThreadProcessId(hwnd, &mut pid) };
+    if thread == 0 || pid == 0 {
+        context.failures.push(format!(
+            "GetWindowThreadProcessId: {}",
+            std::io::Error::last_os_error()
+        ));
+        context.rows.push(
+            json!({"window_id":hwnd as usize as u64,"pid":Value::Null,"metadata_complete":false}),
+        );
+        return 1;
+    }
+    if context.process_id.is_some_and(|expected| expected != pid) {
         return 1;
     }
     let minimized = unsafe { IsIconic(hwnd) } != 0;
     let visible = unsafe { IsWindowVisible(hwnd) } != 0;
     let mut rect = RECT::default();
-    unsafe { GetWindowRect(hwnd, &mut rect) };
+    let rect_ok = unsafe { GetWindowRect(hwnd, &mut rect) } != 0;
+    let rect_error =
+        (!rect_ok).then(|| format!("GetWindowRect: {}", std::io::Error::last_os_error()));
     let width = rect.right.saturating_sub(rect.left);
     let height = rect.bottom.saturating_sub(rect.top);
     let on_screen = visible && !minimized && width > 0 && height > 0;
-    if context.on_screen_only && !on_screen {
+    if context.on_screen_only && rect_ok && !on_screen {
         return 1;
     }
     let title = window_title(hwnd);
@@ -183,12 +352,23 @@ unsafe extern "system" fn enum_window(
         .entry(pid)
         .or_insert_with(|| process_name(pid))
         .clone();
+    let errors: Vec<String> = [
+        rect_error,
+        title.as_ref().err().cloned(),
+        app_name.as_ref().err().cloned(),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    context.failures.extend(errors.iter().cloned());
     context.rows.push(json!({
         "pid": pid,
         "window_id": hwnd as usize as u64,
-        "title": title,
-        "app_name": app_name,
-        "bounds": {"x":rect.left, "y":rect.top, "width":width, "height":height},
+        "title": title.ok(),
+        "app_name": app_name.ok(),
+        "bounds": rect_ok.then(|| json!({"x":rect.left, "y":rect.top, "width":width, "height":height})),
+        "metadata_complete": errors.is_empty(),
+        "metadata_errors": errors,
         "is_on_screen": on_screen,
         "minimized": minimized,
         "z_index": z_index,
@@ -245,7 +425,9 @@ fn resolve_windows_target(
         ));
     }
 
-    let title = window_title(hwnd);
+    let title = window_title(hwnd).map_err(|message| {
+        ComputerUseError::new(ComputerUseErrorCode::TargetUnavailable, message)
+    })?;
     if scope
         .window_title
         .as_deref()
@@ -258,7 +440,12 @@ fn resolve_windows_target(
     }
 
     let mut rect = RECT::default();
-    unsafe { GetWindowRect(hwnd, &mut rect) };
+    if unsafe { GetWindowRect(hwnd, &mut rect) } == 0 {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::TargetUnavailable,
+            format!("GetWindowRect: {}", std::io::Error::last_os_error()),
+        ));
+    }
     let width = rect.right - rect.left;
     let height = rect.bottom - rect.top;
     if width <= 0 || height <= 0 {
@@ -275,7 +462,9 @@ fn resolve_windows_target(
         pid,
         window_id,
         title,
-        app_name: process_name(pid),
+        app_name: process_name(pid).map_err(|message| {
+            ComputerUseError::new(ComputerUseErrorCode::TargetUnavailable, message)
+        })?,
         bounds: [rect.left, rect.top, width, height],
         is_on_screen: visible && !minimized,
         is_minimized: minimized,

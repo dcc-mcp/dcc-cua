@@ -228,7 +228,17 @@ impl ComputerUseWindowQuery {
         self.app.as_deref().is_none_or(|app| {
             window["app_name"]
                 .as_str()
-                .is_some_and(|name| name.eq_ignore_ascii_case(app))
+                .filter(|name| !name.is_empty())
+                .is_some_and(|name| {
+                    name.eq_ignore_ascii_case(app)
+                        || (window["backend"] == "windows-native-window-inventory"
+                            && name
+                                .to_ascii_lowercase()
+                                .strip_suffix(".exe")
+                                .is_some_and(|stem| {
+                                    !stem.is_empty() && stem.eq_ignore_ascii_case(app)
+                                }))
+                })
         }) && self
             .process_id
             .is_none_or(|pid| window["pid"] == json!(pid))
@@ -588,8 +598,25 @@ pub enum ComputerUseErrorCode {
     ForegroundActivationRefused,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ComputerUseWindowInventoryCandidate {
+    pub process_id: Option<u32>,
+    pub window_handle: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ComputerUseWindowInventoryDiagnostic {
+    pub complete: bool,
+    /// Native API/error context, without titles or executable paths.
+    pub reason: String,
+    pub partial_candidates: Vec<ComputerUseWindowInventoryCandidate>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ComputerUseErrorDetails {
+    /// Incomplete discovery candidates are diagnostic only, never target authority.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_inventory: Option<ComputerUseWindowInventoryDiagnostic>,
     /// Measurements retained from the rejected native fence; never input authority.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub native_input_fence:

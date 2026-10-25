@@ -2,6 +2,86 @@ use super::*;
 use crate::interactive_desktop::windows_execution_context;
 use rstest::rstest;
 
+#[rstest]
+#[case("IsolatedDesktop", Ok(false))]
+#[case("IsolatedDesktop", Ok(true))]
+#[case("Default", Ok(false))]
+#[case("Default", Err("UOI_IO: os error 5"))]
+fn discovery_context_refuses_unverified_or_mismatched_desktops(
+    #[case] thread: &str,
+    #[case] receives: Result<bool, &str>,
+) {
+    for surface in [Ok(()), Err("cursor: os error 5")] {
+        let mut report = windows_diagnostic_base(Ok(0), Ok(Some("Default")), surface, false);
+        crate::interactive_desktop::apply_execution_context(
+            &mut report,
+            windows_execution_context(
+                Ok(Some("WinSta0")),
+                Ok(Some(thread)),
+                receives,
+                Ok(Some("Default")),
+            ),
+        );
+        assert_eq!(report["success"], false);
+        assert_eq!(report["observation_ready"], false);
+        assert_eq!(report["input_ready"], false);
+        assert_eq!(report["retry_safe"], false);
+        assert_eq!(report["input_surface_error"], json!(surface.err()));
+        assert!(require_desktop_observation_from(&report).is_err());
+        assert!(require_exact_window_observation_from(&report).is_err());
+        assert!(require_window_activation_from(&report).is_err());
+        assert!(crate::interactive_desktop::require_input_available_from(&report).is_err());
+    }
+}
+
+#[rstest]
+fn verified_context_keeps_cursor_failure_separate_from_observation() {
+    let mut report =
+        windows_diagnostic_base(Ok(0), Ok(Some("Default")), Err("cursor: os error 5"), true);
+    crate::interactive_desktop::apply_execution_context(
+        &mut report,
+        windows_execution_context(
+            Ok(Some("WinSta0")),
+            Ok(Some("default")),
+            Ok(true),
+            Ok(Some("Default")),
+        ),
+    );
+    assert_eq!(report["observation_ready"], true);
+    assert_eq!(report["input_ready"], false);
+    assert!(require_exact_window_observation_from(&report).is_ok());
+}
+
+#[rstest]
+fn discovery_context_preserves_unknown_ownership_and_does_not_mask_session_failure() {
+    for (thread, station, receives) in [
+        (Err("thread: os error 5"), Ok(Some("WinSta0")), Ok(true)),
+        (Ok(None), Ok(Some("WinSta0")), Ok(true)),
+        (Ok(Some("Default")), Err("station: os error 5"), Ok(true)),
+    ] {
+        let mut report = windows_diagnostic_base(Ok(0), Ok(Some("Default")), Ok(()), true);
+        crate::interactive_desktop::apply_execution_context(
+            &mut report,
+            windows_execution_context(station, thread, receives, Ok(Some("Default"))),
+        );
+        assert_eq!(report["code"], "interactive_desktop_context_unverified");
+        assert_eq!(report["local_inventory_ready"], false);
+        assert_eq!(report["input_ready"], false);
+    }
+    let mut report = windows_diagnostic_base(Ok(4), Ok(Some("Default")), Ok(()), true);
+    crate::interactive_desktop::apply_execution_context(
+        &mut report,
+        windows_execution_context(
+            Ok(Some("WinSta0")),
+            Ok(Some("Default")),
+            Ok(true),
+            Ok(Some("Default")),
+        ),
+    );
+    assert_eq!(report["code"], "interactive_session_not_active");
+    assert_eq!(report["local_inventory_ready"], false);
+}
+
 #[cfg(windows)]
 #[rstest]
 fn cursor_info_fallback_obeys_the_native_structure_size_contract() {

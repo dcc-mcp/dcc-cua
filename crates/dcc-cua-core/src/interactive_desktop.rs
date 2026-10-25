@@ -141,6 +141,8 @@ struct WindowsDesktopProbe {
     thread_desktop: Result<Option<String>, String>,
     input_surface: Result<(), String>,
     foreground: bool,
+    receives_input: Result<bool, String>,
+    station: Result<Option<String>, String>,
 }
 
 #[cfg(windows)]
@@ -153,6 +155,8 @@ impl WindowsDesktopProbe {
                 .input_desktop_error
                 .map_or_else(|| Ok(desktop.input_desktop_name), Err),
             thread_desktop: thread_desktop_name(),
+            receives_input: thread_desktop_receives_input(),
+            station: process_window_station_name(),
             input_surface: if probe_input_surface {
                 windows_input_surface()
             } else {
@@ -162,39 +166,16 @@ impl WindowsDesktopProbe {
         }
     }
 
-    fn session_active(&self) -> bool {
-        matches!(self.state, Ok(WINDOWS_SESSION_ACTIVE))
-    }
-
-    fn default_desktop_or_verified_fallback(&self) -> bool {
-        match &self.input_desktop {
-            Ok(Some(name)) => name.eq_ignore_ascii_case("Default"),
-            Err(_) => {
-                self.foreground
-                    && matches!(
-                        &self.thread_desktop,
-                        Ok(Some(name)) if name.eq_ignore_ascii_case("Default")
-                    )
-            }
-            Ok(None) => false,
-        }
-    }
-
     fn desktop_ready(&self) -> bool {
-        self.session_active() && self.default_desktop_or_verified_fallback()
+        self.diagnostic()["success"] == true
     }
 
     fn observation_ready(&self) -> bool {
-        self.session_active()
-            && match &self.input_desktop {
-                Ok(Some(name)) => name.eq_ignore_ascii_case("Default"),
-                Err(_) => true,
-                Ok(None) => false,
-            }
+        self.diagnostic()["observation_ready"] == true
     }
 
     fn input_ready(&self) -> bool {
-        self.desktop_ready() && self.input_surface.is_ok()
+        self.diagnostic()["input_ready"] == true
     }
 
     fn diagnostic(&self) -> Value {
@@ -211,10 +192,8 @@ impl WindowsDesktopProbe {
             self.input_surface.as_ref().copied().map_err(String::as_str),
             self.foreground,
         );
-        let station = process_window_station_name();
-        let receives_input = thread_desktop_receives_input();
         let mut context = windows_execution_context(
-            station
+            self.station
                 .as_ref()
                 .map(|name| name.as_deref())
                 .map_err(String::as_str),
@@ -222,7 +201,10 @@ impl WindowsDesktopProbe {
                 .as_ref()
                 .map(|name| name.as_deref())
                 .map_err(String::as_str),
-            receives_input.as_ref().copied().map_err(String::as_str),
+            self.receives_input
+                .as_ref()
+                .copied()
+                .map_err(String::as_str),
             self.input_desktop
                 .as_ref()
                 .map(|name| name.as_deref())
@@ -232,7 +214,7 @@ impl WindowsDesktopProbe {
         // SAFETY: querying our current thread ID does not open or change a desktop.
         context["thread_id"] =
             Value::from(unsafe { windows_sys::Win32::System::Threading::GetCurrentThreadId() });
-        report["execution_context"] = context;
+        apply_execution_context(&mut report, context);
         report
     }
 }
@@ -307,6 +289,35 @@ pub(crate) fn windows_execution_context(
         "thread_desktop": thread,
         "input_desktop": name_probe(input_desktop),
     })
+}
+
+#[cfg(any(windows, test))]
+pub(crate) fn apply_execution_context(report: &mut Value, context: Value) {
+    let thread = context["thread_desktop"]["name"].as_str();
+    let input = context["input_desktop"]["name"].as_str();
+    let mismatch = matches!((thread, input), (Some(thread), Some(input)) if !thread.eq_ignore_ascii_case(input));
+    let owned = context["thread_desktop"]["receives_input"] == true;
+    let station = context["window_station"]["name"].as_str();
+    let known = owned
+        && thread.is_some_and(|name| name.eq_ignore_ascii_case("Default"))
+        && station.is_some_and(|name| name.eq_ignore_ascii_case("WinSta0"))
+        && !mismatch;
+    report["local_inventory_ready"] = Value::Bool(known && report["success"] == true);
+    if !known {
+        report["success"] = Value::Bool(false);
+        report["code"] = Value::from(if mismatch {
+            "interactive_desktop_context_mismatch"
+        } else {
+            "interactive_desktop_context_unverified"
+        });
+        report["message"] = Value::from(
+            "Current executor desktop ownership is incompatible or unverified; window discovery is unknown, not application absence. Exact-window capture requires independent native proof; activation or relaunch cannot repair this execution boundary.",
+        );
+        report["observation_ready"] = Value::Bool(false);
+        report["input_ready"] = Value::Bool(false);
+        report["retry_safe"] = Value::Bool(false);
+    }
+    report["execution_context"] = context;
 }
 
 #[cfg(windows)]

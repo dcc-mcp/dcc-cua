@@ -355,9 +355,10 @@ async fn dispatch(arguments: Vec<String>) -> Result<(), Box<dyn std::error::Erro
     if command == "list" {
         let query = window_selector_query_from_flags(&flags)?;
         query.validate_selectors()?;
-        if let Some(mut windows) =
+        if let Some(windows) =
             dcc_cua_core::native_window_inventory(query.process_id, query.on_screen_only)
         {
+            let mut windows = windows?;
             windows.retain(|window| query.matches_window(window));
             stdoutln!("{}", serde_json::to_string_pretty(&windows)?);
             return Ok(());
