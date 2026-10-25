@@ -9,6 +9,7 @@ mod capture_preparation_tests;
 mod interaction_recovery_tests;
 mod lifetime_tests;
 mod native_menu_tests;
+mod transport_tests;
 
 #[rstest]
 fn extension_methods_are_browser_only_and_closed() {
