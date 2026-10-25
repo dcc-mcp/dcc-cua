@@ -39,9 +39,14 @@ export async function navigatePairedTab(
   // Revoke the document even for same-document/fragment navigation or a failed
   // browser API call. No stale ref may survive an admitted navigation attempt.
   await operations.invalidateDocument();
-  beforeDispatch();
-  await operations.revokePairing();
-  beforeDispatch();
+  try {
+    beforeDispatch();
+    await operations.revokePairing();
+    beforeDispatch();
+  } catch {
+    // No navigation was issued, but the old document evidence is gone.
+    throw refused("navigation_pairing_required");
+  }
   try {
     await operations.updateTab(pairing.tab_id, url.href);
   } catch {

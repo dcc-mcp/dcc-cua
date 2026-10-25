@@ -61,7 +61,7 @@ test("expiration, cancellation and focus loss before admission never update a ta
 });
 test("cancellation during document invalidation cannot revoke a replacement pairing or navigate", async () => {
   const f = fixture(); f.ops.invalidateDocument = async () => { f.cancel(); };
-  await assert.rejects(navigatePairedTab(request, pairing, f.ops), /navigation_cancelled/);
+  await assert.rejects(navigatePairedTab(request, pairing, f.ops), /navigation_pairing_required/);
   assert.deepEqual(f.events, []);
 });
 test("a stale document refusal prevents navigation and preserves pairing", async () => {

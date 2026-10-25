@@ -3,6 +3,35 @@ use serde_json::{Value, json};
 
 use crate::browser_extension::{BrowserExtensionRegistry, validate_extension_response};
 
+#[rstest]
+fn navigation_only_revokes_the_provider_after_evidence_consumption_or_unknown_delivery() {
+    use crate::browser_extension::navigation_provider_must_revoke;
+    for code in [
+        "navigation_unsupported",
+        "target_not_foreground",
+        "stale_observation",
+        "command_expired",
+        "navigation_target_refused",
+        "navigation_cancelled",
+    ] {
+        assert!(!navigation_provider_must_revoke(&Err(
+            crate::HostError::Protocol(format!("{code}: refused"))
+        )));
+    }
+    for code in [
+        "navigation_pairing_required",
+        "navigation_outcome_unknown",
+        "provider disconnected",
+    ] {
+        assert!(navigation_provider_must_revoke(&Err(
+            crate::HostError::Protocol(code.into())
+        )));
+    }
+    assert!(navigation_provider_must_revoke(&Ok(
+        json!({"result":{"phase":"dispatched"}})
+    )));
+}
+
 fn hello() -> Value {
     json!({
         "schema": "dcc-cua.browser-extension.v1",

@@ -63,7 +63,9 @@ validates the current document URL and snapshot, then clears document identity,
 nonce, snapshot and refs. The background removes its pairing before calling
 `tabs.update` for that single tab. Fragment and same-URL navigations follow the
 same revocation rule. The Host removes only that provider after the admitted
-attempt; a subsequent explicit pairing gets a new provider identity.
+attempt; a subsequent explicit pairing gets a new provider identity. Known
+pre-dispatch refusals retain the provider. Once document evidence was consumed,
+`navigation_pairing_required` requires re-pairing even if no navigation was issued.
 
 The result reports dispatch, not successful loading or destination acceptance:
 
