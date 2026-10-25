@@ -171,9 +171,12 @@ impl TrustedTaskActionScope {
                     || self.is_capture_preparation()
             }
             "browser" => {
-                self.action == "browser_type"
+                (self.action == "browser_type"
                     && self.secret_input
                     && self.authorization_category == "credential"
+                    || self.action == "browser_extension_navigate"
+                        && !self.secret_input
+                        && self.authorization_category == "external_effect")
                     && self
                         .browser_origin
                         .as_deref()
@@ -220,6 +223,15 @@ impl TrustedTaskActionScope {
             });
         }
         let action = request.action.get("action")?.as_str()?;
+        if action == "browser_extension_navigate" {
+            return Some(Self {
+                action: action.into(),
+                input_kind: "browser".into(),
+                secret_input: false,
+                authorization_category: "external_effect".into(),
+                browser_origin: Some(request.action.get("browser_origin")?.as_str()?.into()),
+            });
+        }
         if action == "clipboard_capture_secret" {
             return Some(Self {
                 action: action.to_owned(),

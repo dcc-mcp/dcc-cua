@@ -1134,12 +1134,28 @@ fn validate_task_method_params(method: &str, params: &Value) -> Result<(), Strin
     if method == "browser_extension_call"
         && !matches!(
             params.get("method").and_then(Value::as_str),
-            Some("snapshot" | "click" | "type")
+            Some("snapshot" | "click" | "type" | "navigate")
         )
     {
         return Err(
-            "the task bridge permits only extension snapshot, click, and non-secret type".into(),
+            "the task bridge permits only extension snapshot, click, non-secret type, and granted navigation".into(),
         );
+    }
+    if method == "browser_extension_call" && params["method"] == "navigate" {
+        let valid = params["params"].as_object().is_some_and(|object| {
+            object.len() == 2
+                && object
+                    .get("snapshot_id")
+                    .and_then(Value::as_str)
+                    .is_some_and(|id| !id.is_empty() && id.len() <= 128)
+                && object
+                    .get("url")
+                    .and_then(Value::as_str)
+                    .is_some_and(|url| !url.is_empty() && url.len() <= 2048)
+        });
+        if !valid {
+            return Err("extension navigation accepts only bounded snapshot_id and url".into());
+        }
     }
     if method == "capture_preparation_begin" {
         let object = params
@@ -1489,6 +1505,17 @@ fn task_action_scope_schema() -> Value {
             native_frame_scope_schema(),
             native_menu_dismiss_scope_schema(),
             capture_preparation_scope_schema(),
+            {
+                "title": "Exact-origin paired extension navigation",
+                "type": "object", "additionalProperties": false,
+                "required": ["action", "input_kind", "secret_input", "authorization_category", "browser_origin"],
+                "properties": {
+                    "action": {"const": "browser_extension_navigate"},
+                    "input_kind": {"const": "browser"}, "secret_input": {"const": false},
+                    "authorization_category": {"const": "external_effect"},
+                    "browser_origin": {"type":"string", "minLength":1, "maxLength":2048, "pattern":"^https?://[^/?#@]+$"}
+                }
+            },
             {
                 "title": "Semantic exact-window input",
                 "type": "object",

@@ -68,6 +68,36 @@ impl ExtensionObservation {
                 "stale extension observation; take a fresh snapshot".into(),
             ));
         }
+        if method == "navigate" {
+            let object = params
+                .as_object()
+                .filter(|object| object.len() == 2)
+                .ok_or_else(|| {
+                    HostError::Protocol("navigation accepts only snapshot_id and url".into())
+                })?;
+            let target = object
+                .get("url")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty() && value.len() <= 2048)
+                .ok_or_else(|| HostError::Protocol("navigation requires a bounded URL".into()))?;
+            let url = url::Url::parse(target)
+                .map_err(|_| HostError::Protocol("navigation requires an absolute URL".into()))?;
+            if !matches!(url.scheme(), "http" | "https")
+                || !url.username().is_empty()
+                || url.password().is_some()
+                || url.origin().ascii_serialization() != origin
+            {
+                return Err(HostError::Protocol(
+                    "navigation must remain in the exact allowed origin without credentials".into(),
+                ));
+            }
+            return Ok(
+                json!({"action":"browser_extension_navigate","input_kind":"browser",
+                "authorization_category":"external_effect","browser_origin":origin,
+                "snapshot_id":params["snapshot_id"],"provider_id":provider,
+                "target_url_sha256":format!("{:x}",Sha256::digest(target.as_bytes()))}),
+            );
+        }
         let node = self.snapshot["refs"]
             .as_array()
             .and_then(|refs| refs.iter().find(|node| node["ref"] == params["ref"]))

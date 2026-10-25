@@ -27,18 +27,20 @@ export type EvidenceCommand = {
 };
 export type ClickCommand = EvidenceCommand & { method: "click" };
 export type TypeCommand = EvidenceCommand & { method: "type"; text: string; replace: true };
-export type ContentCommand = PairCommand | SnapshotCommand | ClickCommand | TypeCommand;
+export type PrepareNavigationCommand = { schema: typeof PROTOCOL_SCHEMA; method: "prepare_navigation"; session_nonce: string; snapshot_id: string };
+export type ContentCommand = PairCommand | SnapshotCommand | ClickCommand | TypeCommand | PrepareNavigationCommand;
 
 type ForwardedNativeRequest = Exclude<NativeRequest, { method: "ping" | "unpair" }>;
 type ContentMethod = ContentCommand["method"];
 
-const METHODS = new Set<ContentMethod>(["pair", "snapshot", "click", "type"]);
+const METHODS = new Set<ContentMethod>(["pair", "snapshot", "click", "type", "prepare_navigation"]);
 const COMMON_KEYS = new Set(["schema", "method", "session_nonce"]);
 const METHOD_KEYS: Record<ContentMethod, ReadonlySet<string>> = {
   pair: new Set(),
   snapshot: new Set(["max_nodes"]),
   click: new Set(["snapshot_id", "ref"]),
   type: new Set(["snapshot_id", "ref", "text", "replace"]),
+  prepare_navigation: new Set(["snapshot_id"]),
 };
 
 function parseContentCommand(value: unknown): ContentCommand {
@@ -73,6 +75,10 @@ function parseContentCommand(value: unknown): ContentCommand {
       session_nonce: sessionNonce,
       max_nodes: value.max_nodes as number,
     };
+  }
+  if (method === "prepare_navigation") {
+    return { schema: PROTOCOL_SCHEMA, method, session_nonce: sessionNonce,
+      snapshot_id: boundedString(value.snapshot_id, "snapshot_id", 128) };
   }
   const evidence: EvidenceCommand = {
     schema: PROTOCOL_SCHEMA,
@@ -110,6 +116,10 @@ export function buildPairCommand(sessionNonce: string): PairCommand {
 }
 
 export function contentCommandFromNative(request: ForwardedNativeRequest): ContentCommand {
+  if (request.method === "navigate") {
+    return validateContentCommand({ schema: PROTOCOL_SCHEMA, method: "prepare_navigation",
+      session_nonce: request.session_nonce, snapshot_id: request.snapshot_id });
+  }
   if (request.method === "snapshot") {
     return validateContentCommand({
       schema: PROTOCOL_SCHEMA,
