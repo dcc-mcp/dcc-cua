@@ -3,7 +3,7 @@ use serde_json::json;
 
 use crate::failure_output::{OVERLAY_EXCLUSION_MESSAGE, PUBLIC_FAILURE_MESSAGE, fatal_error_value};
 
-#[test]
+#[rstest]
 fn incomplete_window_discovery_has_a_structured_non_absence_failure() {
     let error = dcc_cua_core::ComputerUseError::new(
         dcc_cua_core::ComputerUseErrorCode::TargetUnavailable,
