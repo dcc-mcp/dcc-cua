@@ -768,6 +768,7 @@ impl TrustedTaskAuthorizationHost for TaskAuthorizationHost {
             allowed_browser_origins: Vec::new(),
             browser_scope: None,
             recording_output_dir: None,
+            recording_audio_grant: None,
             capture_preparation: None,
             issued_at_unix_ms: now,
             expires_at_unix_ms: now + 60_000,
@@ -1113,6 +1114,7 @@ fn browser_credential_registration(
         allowed_browser_origins: vec!["https://chromewebstore.google.com".into()],
         browser_scope: None,
         recording_output_dir: None,
+        recording_audio_grant: None,
         capture_preparation: None,
         expires_at_unix_ms,
     }
@@ -1284,6 +1286,7 @@ async fn broker_binds_a_task_owned_browser_to_the_host_derived_target_once() {
             allowed_browser_origins: vec!["https://addons.mozilla.org".into()],
             browser_scope: None,
             recording_output_dir: None,
+            recording_audio_grant: None,
             capture_preparation: None,
             expires_at_unix_ms: unix_time_millis() + 60_000,
         })

@@ -1,5 +1,6 @@
 //! Independent playback-audio ceiling. This is not a capture backend or a video grant.
 use serde::{Deserialize, Serialize};
+pub mod worker;
 
 pub const MIN_PROCESS_LOOPBACK_WINDOWS_BUILD: u32 = 20_348;
 pub const MAX_PROCESS_AUDIO_DURATION_MS: u64 = 300_000;
@@ -12,6 +13,12 @@ pub enum RecordingAudioMode {
     #[default]
     None,
     TargetProcessTree,
+}
+
+impl RecordingAudioMode {
+    pub fn is_none(&self) -> bool {
+        *self == Self::None
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

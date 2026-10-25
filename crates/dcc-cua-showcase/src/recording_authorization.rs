@@ -13,9 +13,28 @@ pub struct RecordingAuthorization {
 
 pub struct RecordingAdmission<'a> {
     _revoked: MutexGuard<'a, bool>,
+    authorization: &'a RecordingAuthorization,
+}
+
+impl RecordingAdmission<'_> {
+    /// Recheck expiry after a bounded native preparation while retaining the
+    /// revocation fence; reacquiring the same mutex here would deadlock.
+    pub fn validate_current(&self) -> Result<(), &'static str> {
+        if *self._revoked || self.authorization.remaining_lifetime().is_zero() {
+            Err("recording task authorization expired or was revoked")
+        } else {
+            Ok(())
+        }
+    }
 }
 
 impl RecordingAuthorization {
+    pub fn remaining_lifetime(&self) -> Duration {
+        let wall = Duration::from_millis(self.expires_at_unix_ms.saturating_sub((self.clock)()));
+        self.monotonic_deadline.map_or(wall, |deadline| {
+            wall.min(deadline.saturating_duration_since(Instant::now()))
+        })
+    }
     #[must_use]
     pub fn new(expires_at_unix_ms: u64) -> Self {
         let mut authorization = Self::with_clock(
@@ -68,7 +87,10 @@ impl RecordingAuthorization {
             *revoked = true;
             return Err("recording task authorization expired or was revoked");
         }
-        Ok(RecordingAdmission { _revoked: revoked })
+        Ok(RecordingAdmission {
+            _revoked: revoked,
+            authorization: self,
+        })
     }
 
     pub fn with_active<T>(&self, work: impl FnOnce() -> T) -> Result<T, &'static str> {

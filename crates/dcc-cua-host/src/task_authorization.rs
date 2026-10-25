@@ -126,6 +126,14 @@ impl TrustedTaskActionScope {
             && self.browser_origin.is_none()
     }
 
+    pub fn is_recording_audio(&self) -> bool {
+        self.action == "recording_audio"
+            && self.input_kind == "playback_audio"
+            && !self.secret_input
+            && self.authorization_category == "recording_audio"
+            && self.browser_origin.is_none()
+    }
+
     /// Final window-input action names accepted by trusted task authorization.
     ///
     /// These are action identities, not Host method names such as `browser_click`.
@@ -163,6 +171,7 @@ impl TrustedTaskActionScope {
 
     pub(crate) fn validate(&self) -> bool {
         match self.input_kind.as_str() {
+            "playback_audio" => self.is_recording_audio(),
             "window_state" => {
                 self.is_window_minimize()
                     || self.is_native_capture_popup_keyboard()
@@ -290,6 +299,8 @@ pub struct TrustedTaskAuthorizationLease {
     pub browser_scope: Option<TrustedTaskAuthorizationBrowserScope>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recording_output_dir: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recording_audio_grant: Option<dcc_cua_protocol::recording_audio::ProcessAudioGrant>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capture_preparation:
         Option<dcc_cua_protocol::capture_preparation::CapturePreparationAuthorization>,
@@ -799,6 +810,14 @@ fn validate_lease(
         || !valid_origins
         || !valid_browser_scope
         || !valid_recording_scope
+        || !crate::recording_audio::valid_scope(
+            lease.recording_audio_grant.as_ref(),
+            lease.target_process_id,
+            lease.target_window_handle,
+            lease.recording_output_dir.as_deref(),
+            &lease.allowed_actions,
+            &lease.allowed_host_methods,
+        )
         || !valid_preparation_scope
     {
         return Err(task_authorization_required(

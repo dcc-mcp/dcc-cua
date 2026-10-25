@@ -27,6 +27,8 @@ pub enum AudioLifecycleError {
     Budget,
     #[error("process audio source failed or lost continuity")]
     Source,
+    #[error("owned process audio cleanup has not been acknowledged")]
+    CleanupUnknown,
     #[error("process audio writer failed")]
     Writer,
 }
@@ -137,23 +139,22 @@ impl<S: ProcessAudioSource, M: ProcessAudioMux> ProcessAudioSession<S, M> {
         .map(|_| ())
         .map_err(AudioLifecycleError::Policy);
         let prepared = validated.and_then(|()| {
-            authorization
-                .with_active(|| {
-                    if clock_us() >= grant.max_duration_ms * 1000 {
-                        return Err(AudioLifecycleError::Budget);
-                    }
-                    if source.prepare(grant.target)?
-                        != EffectiveAudioSource::ProcessTree(grant.target)
-                    {
-                        return Err(AudioLifecycleError::Identity);
-                    }
-                    if clock_us() >= grant.max_duration_ms * 1000 {
-                        return Err(AudioLifecycleError::Budget);
-                    }
-                    source.start()
-                })
-                .map_err(|_| AudioLifecycleError::Authorization)
-                .and_then(|result| result)
+            let admission = authorization
+                .admit()
+                .map_err(|_| AudioLifecycleError::Authorization)?;
+            if clock_us() >= grant.max_duration_ms * 1000 {
+                return Err(AudioLifecycleError::Budget);
+            }
+            if source.prepare(grant.target)? != EffectiveAudioSource::ProcessTree(grant.target) {
+                return Err(AudioLifecycleError::Identity);
+            }
+            admission
+                .validate_current()
+                .map_err(|_| AudioLifecycleError::Authorization)?;
+            if clock_us() >= grant.max_duration_ms * 1000 {
+                return Err(AudioLifecycleError::Budget);
+            }
+            source.start()
         });
         if let Err(error) = prepared {
             authorization.revoke();
@@ -230,7 +231,11 @@ impl<S: ProcessAudioSource, M: ProcessAudioMux> ProcessAudioSession<S, M> {
         let end = pts_us
             .checked_add(duration_us)
             .ok_or(AudioLifecycleError::Packet)?;
-        if now < self.last_clock_us || self.last_packet_end_us.is_some_and(|last| pts_us < last) {
+        if now < self.last_clock_us
+            || self
+                .last_packet_end_us
+                .is_some_and(|last| pts_us.saturating_add(21) < last)
+        {
             return Err(AudioLifecycleError::Packet);
         }
         let ceiling = self.grant.max_duration_ms * 1000;

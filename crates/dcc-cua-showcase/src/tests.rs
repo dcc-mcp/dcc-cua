@@ -2094,3 +2094,26 @@ fn encode_frames_with_progress(
 ) -> ShowcaseResult<Value> {
     encode_frames_with_authorization(frames, path, fps, ready, progress, None, &Mutex::new(None))
 }
+
+fn encode_frames_with_authorization(
+    frames: mpsc::Receiver<ShowcaseProducerEvent>,
+    path: &Path,
+    fps: u32,
+    ready: oneshot::Sender<ShowcaseResult<EncodedFirstFrameEvidence>>,
+    progress: &Mutex<ShowcaseProgress>,
+    authorization: Option<&RecordingAuthorization>,
+    terminal_reason: &Mutex<Option<Value>>,
+) -> ShowcaseResult<Value> {
+    encode_frames_with_audio(
+        frames,
+        path,
+        fps,
+        ready,
+        progress,
+        EncoderAuthorization {
+            video: authorization,
+            audio: None,
+        },
+        terminal_reason,
+    )
+}

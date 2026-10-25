@@ -151,6 +151,7 @@ async fn native_video_rejects_trajectory_only_before_any_driver_or_capture_call(
     session.pixel_observation_route = Some(PixelObservationRoute::ExplicitPixelsOnly);
     let error = session
         .recording_start(&ComputerUseRecordingStartRequest {
+            recording_audio: Default::default(),
             output_dir: "not-created".into(),
             record_video: false,
         })
@@ -647,6 +648,7 @@ async fn an_accepted_next_recording_clears_previous_terminal_video_evidence() {
 
     session
         .recording_start_after_target_validation(&ComputerUseRecordingStartRequest {
+            recording_audio: Default::default(),
             output_dir: directory.to_string_lossy().into_owned(),
             record_video: false,
         })
@@ -683,6 +685,7 @@ async fn a_failed_video_restart_preserves_previous_terminal_video_evidence() {
 
     let restart_error = session
         .recording_start_after_target_validation(&ComputerUseRecordingStartRequest {
+            recording_audio: Default::default(),
             output_dir: directory.to_string_lossy().into_owned(),
             record_video: true,
         })

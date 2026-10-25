@@ -61,21 +61,64 @@ Primary sources:
 - https://docs.rs/crate/rusty_aac/1.1.0
 - https://learn.microsoft.com/en-us/windows/win32/api/audioclientactivationparams/ns-audioclientactivationparams-audioclient_process_loopback_params
 
-## Remaining integration and native gates
+## Connected route and remaining native gates
 
-The trusted broker/action scope and client permission presentation still need
-wiring to the prepared exact target; the old video permission cannot authorize
-audio. The existing producer/MP4 track writer must own the native adapter and
-audio track through the same stop/finalize result. No capability may advertise
-sound before this route is connected and qualified.
+The independent closed action is `recording_audio` / `playback_audio` /
+`secret_input=false` / `authorization_category=recording_audio`, without a
+browser origin. `start_task` additionally requires `allow_recording=true`,
+`observation_mode=pixels_only`, an exact window, the complete recording
+start/state/stop methods and:
 
-Portable tests establish contract and lifecycle behavior only. Generated-file
-tests must encode/decode real audio in MP4 with timing/duration checks. Native
-acceptance then uses two owned processes: the authorized sound/visual-marker
-window and an unrelated owned sound source. It must show a real target audio
-track, exclusion of the unrelated marker, bounded A/V offset, cancellation,
-disconnect and failure cleanup. Record PID/fullbirth/two HWND identities before
-any UI operation and keep explicit cleanup readbacks. Never sample private sound
-or rerun a denied OS5 route. This fixture intent is authorized; actual persistent
-MCP configuration/output-root changes, permission expansion and interruption of
-active tasks/Hosts still need their exact objects and impact confirmed first.
+```json
+"recording_audio": {
+  "mode": "target_process_tree",
+  "max_duration_ms": 20000,
+  "max_output_bytes": 33554432
+}
+```
+
+The operator supplies the pre-created `DCC_CUA_RECORDING_OUTPUT_ROOT` when
+starting a new task-local MCP process. The task caller cannot choose a root,
+audio PID, device or microphone. The issuer reads only the specified window's
+PID/birth/thread/class identity, copies that immutable grant through the broker
+and Host lease, and derives `recording_start.request.recording_audio`. Silent
+video grants retain their existing default; either direction of mode override
+is refused. Alternate platforms refuse process audio.
+
+The Windows adapter uses one hidden helper of the same executable, with private
+bounded framed pipes, immutable grant, QPC deadline and a kill-on-close job.
+The parent retains its actual `Child` process handle and birth. This isolation
+is necessary because the selected WASAPI library's asynchronous activation can
+wait without a cancellation bound. Stop never searches numeric PIDs: it requests
+normal stream shutdown, then terminates only that owned child if necessary,
+and reads its exit and reader join. Forced or unknown cleanup cannot publish a
+successful audio recording. No global device/source or desktop mix is selected.
+
+The existing encoder owns that audio controller and the existing MP4 writer.
+The complete file (video, audio, headers and seek patches) has the grant's byte
+ceiling. Packets are stereo PCM16 at 48 kHz, with a 4800-sample ceiling; silent
+buffers are tested before dereferencing. Unknown target metadata, timestamp
+error, packet discontinuity or device-position gap ends the source. Raw QPC is
+mapped to the actual first encoded video frame's monotonic epoch, without
+speed changes. Audio mode requests 30 fps for a new live video source; actual
+source fps remains reported. A video pause ends combined capture rather than
+resuming on a different media clock. Bounded PCM is AAC-encoded into track 2
+of the existing writer after source stop; source errors preserve the partial
+and do not become a successful silent file. Content-free worker evidence and
+codec priming are retained separately in the recording manifest.
+
+Portable/generated-file tests establish contract, mux and lifecycle behavior
+only. The independent generated-file decode showed about 20 ms additional onset
+from AAC priming (1024 samples at 48 kHz), not a measured native A/V offset.
+No trim, pad, stretch or marker redefinition may hide that delay.
+
+Native acceptance still requires two newly owned processes: the authorized
+sound/visual-marker window and an unrelated owned sound source. Before starting,
+record PID/fullbirth/HWND and cleanup ownership, define raw decoded audio onset
+minus decoded video marker PTS and a separate clock/codec error budget. Verify
+target-tone presence, unrelated-tone exclusion, natural speed, normal stop,
+cancel/disconnect/fault and exact owned-resource exit. A valid source/container
+is not proof of isolation or synchronization. No private audio, microphone,
+OS5 retry, parent-tree expansion, active Host interruption or permissions change
+is authorized by this implementation. Persistent/shared MCP changes remain a
+separate operator action. This PR remains draft and is not merged or released.

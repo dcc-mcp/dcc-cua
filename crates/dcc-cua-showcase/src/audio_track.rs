@@ -80,7 +80,7 @@ pub struct AacTrackBuffer {
     nonzero_samples: u64,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct AacTrackReceipt {
     pub track_id: u32,
     pub input_frames: u64,

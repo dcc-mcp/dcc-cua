@@ -57,7 +57,11 @@ impl ComputerUseSession {
             let _banner_activity = self.begin_banner_activity(BannerActivity::Recording);
             let outcome = self
                 .ensure_live_observation(&ComputerUseLiveObservationStartRequest {
-                    fps: 10,
+                    fps: if self.recording_audio_grant.is_some() {
+                        30
+                    } else {
+                        10
+                    },
                     ..Default::default()
                 })
                 .await?;
@@ -198,11 +202,41 @@ impl ComputerUseSession {
                 ),
             ));
         }
-        match ShowcaseRecorder::start_authorized_with_outcome(
+        let audio: Option<Box<dyn dcc_cua_showcase::recorder_audio::RecorderAudioFactory>> = {
+            #[cfg(windows)]
+            {
+                match self.recording_audio_grant.clone() {
+                    None => None,
+                    Some(grant) => {
+                        let executable = std::env::current_exe().map_err(|error| {
+                            ComputerUseError::new(
+                                ComputerUseErrorCode::BackendUnavailable,
+                                format!("resolve owned audio worker: {error}"),
+                            )
+                        })?;
+                        Some(Box::new(
+                            dcc_cua_platform_windows::process_audio::NativeRecorderAudioFactory {
+                                executable,
+                                grant,
+                            },
+                        )
+                            as Box<
+                                dyn dcc_cua_showcase::recorder_audio::RecorderAudioFactory,
+                            >)
+                    }
+                }
+            }
+            #[cfg(not(windows))]
+            {
+                None
+            }
+        };
+        match ShowcaseRecorder::start_with_audio_outcome(
             frames,
             output_dir,
             fps,
             self.recording_authorization.clone(),
+            audio,
         )
         .await
         {
@@ -220,8 +254,9 @@ impl ComputerUseSession {
                     RecordingVideoTerminalEvidence::from_failed_stop(outcome, &error);
                 evidence.record_startup_error(&error);
                 self.last_recording_video = Some(evidence);
-                // The failed start API joins both tasks before returning.
-                self.local_cleanup.recorder_pending = false;
+                // Joined threads do not prove an unknown native child was reaped.
+                self.local_cleanup.recorder_pending =
+                    error.code == ComputerUseErrorCode::CompletionUnknown;
                 Err(error)
             }
         }
@@ -344,7 +379,9 @@ impl ComputerUseSession {
             Some(showcase) => {
                 let owns_live = showcase.owns_live_observation;
                 let (result, outcome) = showcase.recorder.stop_with_outcome().await;
-                self.local_cleanup.recorder_pending = false;
+                self.local_cleanup.recorder_pending = result.as_ref().is_err_and(|error| {
+                    error.code == dcc_cua_showcase::ShowcaseErrorCode::CleanupUnknown
+                });
                 (result.map_err(map_showcase_error), outcome, owns_live)
             }
             None => {

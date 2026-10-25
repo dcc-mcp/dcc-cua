@@ -267,3 +267,16 @@ fn process_audio_nonmonotonic_or_oversized_packets_cannot_reach_mux() {
     );
     assert_eq!(c.lock().unwrap().packets, 0);
 }
+
+#[rstest]
+fn process_audio_allows_only_one_pcm_frame_of_timestamp_quantization() {
+    let (s, m, c) = ports();
+    let mut session = start(s, m, grant(), auth(), Arc::new(AtomicU64::new(0))).unwrap();
+    session.ingest(target(), 0, &[1; 960]).unwrap();
+    session.ingest(target(), 9_980, &[1; 960]).unwrap();
+    assert_eq!(c.lock().unwrap().packets, 2);
+    assert_eq!(
+        session.ingest(target(), 19_950, &[1; 960]),
+        Err(AudioLifecycleError::Packet)
+    );
+}

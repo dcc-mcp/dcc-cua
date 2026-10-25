@@ -79,6 +79,7 @@ async fn extension_input_checks_exact_action_lease_and_revocation_without_driver
             allowed_browser_origins: vec!["https://example.com".into()],
             browser_scope: None,
             recording_output_dir: None,
+            recording_audio_grant: None,
             capture_preparation: None,
             expires_at_unix_ms: expires,
         })

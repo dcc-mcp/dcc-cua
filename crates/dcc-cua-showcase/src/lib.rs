@@ -18,6 +18,9 @@ mod capture_manifest;
 use capture_manifest::CaptureManifest;
 pub mod audio_track;
 pub mod process_audio;
+pub mod recorder_audio;
+use audio_track::BoundedRecordingOutput;
+use recorder_audio::RecorderAudioFactory;
 mod recording_authorization;
 pub use recording_authorization::{RecordingAdmission, RecordingAuthorization};
 mod provenance;
@@ -198,6 +201,7 @@ impl LiveObservationStatus {
 #[serde(rename_all = "snake_case")]
 pub enum ShowcaseErrorCode {
     CaptureFailed,
+    CleanupUnknown,
     InteractiveDesktopUnavailable,
     MissingWindow,
 }
@@ -248,6 +252,7 @@ struct FirstShowcaseFrame {
 }
 
 enum ShowcaseProducerEvent {
+    AudioEnded,
     Frame(Arc<LiveObservationFrame>),
     /// A first frame after a pause. The encoder acknowledges only after the
     /// forced-IDR segment and its partial file are ready.
@@ -439,7 +444,7 @@ struct ActiveSegment {
     start_ms: u64,
     frame_count: u64,
     final_duration: u32,
-    writer: Mp4Writer<File>,
+    writer: Mp4Writer<BoundedRecordingOutput<File>>,
     pending: PendingSample,
 }
 
@@ -460,6 +465,7 @@ struct ShowcaseSegment {
 struct ShowcaseProgress {
     segments: Vec<ShowcaseSegment>,
     current_partial: Option<PathBuf>,
+    audio: Option<Value>,
 }
 
 /// Evidence acknowledged by the encoder for its actual first media sample.
@@ -542,6 +548,22 @@ impl ShowcaseRecorder {
         fps: u32,
         authorization: Option<Arc<RecordingAuthorization>>,
     ) -> Result<Self, (ShowcaseError, Value)> {
+        Self::start_with_audio_outcome(frames, output_dir, fps, authorization, None).await
+    }
+
+    pub async fn start_with_audio_outcome(
+        frames: watch::Receiver<LiveObservationStatus>,
+        output_dir: &str,
+        fps: u32,
+        authorization: Option<Arc<RecordingAuthorization>>,
+        audio: Option<Box<dyn RecorderAudioFactory>>,
+    ) -> Result<Self, (ShowcaseError, Value)> {
+        if audio.is_some() && authorization.is_none() {
+            return Err((
+                capture_error("audio requires a trusted recording authorization"),
+                json!({"active":false,"finalized":false}),
+            ));
+        }
         {
             let initial_status = frames.borrow();
             if initial_status.latest().is_none() && initial_status.pause_reason().is_some() {
@@ -569,14 +591,30 @@ impl ShowcaseRecorder {
         let encoder_outcome = Arc::clone(&outcome);
         let encoder_finalization = Arc::clone(&finalization);
         let encoder_progress = Arc::clone(&progress);
+        let audio_ended_sender = frame_sender.downgrade();
+        let audio_run = audio.map(|factory| AudioRun {
+            factory,
+            authorization: authorization
+                .as_ref()
+                .expect("audio authorization checked")
+                .clone(),
+            ended: Box::new(move || {
+                if let Some(sender) = audio_ended_sender.upgrade() {
+                    let _ = sender.try_send(ShowcaseProducerEvent::AudioEnded);
+                }
+            }),
+        });
         let encoder = tokio::task::spawn_blocking(move || {
-            let result = encode_frames_with_authorization(
+            let result = encode_frames_with_audio(
                 frame_receiver,
                 &encoder_path,
                 fps,
                 ready_sender,
                 &encoder_progress,
-                authorization.as_deref(),
+                EncoderAuthorization {
+                    video: authorization.as_deref(),
+                    audio: audio_run,
+                },
                 &encoder_terminal_reason,
             );
             let terminal_reason = lock_unpoisoned(&encoder_terminal_reason).clone();
@@ -591,6 +629,7 @@ impl ShowcaseRecorder {
                     "finalized": false,
                     "segments": progress.segments,
                     "current_partial": progress.current_partial,
+                    "audio": progress.audio,
                     "error": {
                         "code": error.code,
                         "message": error.message,
@@ -936,15 +975,30 @@ async fn send_pause_boundary(sender: &mpsc::Sender<ShowcaseProducerEvent>) -> bo
     matches!(acknowledgement.await, Ok(Ok(())))
 }
 
-fn encode_frames_with_authorization(
+struct AudioRun {
+    factory: Box<dyn RecorderAudioFactory>,
+    authorization: Arc<RecordingAuthorization>,
+    ended: Box<dyn Fn() + Send>,
+}
+
+struct EncoderAuthorization<'a> {
+    video: Option<&'a RecordingAuthorization>,
+    audio: Option<AudioRun>,
+}
+
+fn encode_frames_with_audio(
     mut frames: mpsc::Receiver<ShowcaseProducerEvent>,
     path: &Path,
     fps: u32,
     ready: oneshot::Sender<ShowcaseResult<EncodedFirstFrameEvidence>>,
     progress: &Mutex<ShowcaseProgress>,
-    authorization: Option<&RecordingAuthorization>,
+    security: EncoderAuthorization<'_>,
     terminal_reason: &Mutex<Option<Value>>,
 ) -> ShowcaseResult<Value> {
+    let EncoderAuthorization {
+        video: authorization,
+        audio,
+    } = security;
     let FirstShowcaseFrame {
         frame: first,
         resumed_acknowledgement: first_frame_acknowledgement,
@@ -974,16 +1028,25 @@ fn encode_frames_with_authorization(
         )))
         .map_err(capture_error)?;
     let nominal_duration = (1000 / fps).max(1);
+    let audio_limit = audio
+        .as_ref()
+        .map(|run| run.factory.grant().max_output_bytes);
+    let audio_duration_ms = audio
+        .as_ref()
+        .map(|run| run.factory.grant().max_duration_ms);
     let mut active_segment = Some({
         let mut current_progress = lock_unpoisoned(progress);
-        begin_segment(
+        begin_segment_with_limit(
             &first_stream,
-            path,
-            0,
-            0,
-            video_format,
-            nominal_duration,
+            SegmentStart {
+                path,
+                index: 0,
+                start_ms: 0,
+                format: video_format,
+                nominal_duration,
+            },
             &mut current_progress,
+            audio_limit.unwrap_or(u64::MAX),
         )?
     });
     let mut capture_manifest = CaptureManifest::create(path)?;
@@ -991,8 +1054,15 @@ fn encode_frames_with_authorization(
     if let Some(acknowledged) = first_frame_acknowledgement {
         let _ = acknowledged.send(Ok(()));
     }
-    let _ = ready.send(Ok(EncodedFirstFrameEvidence::from_frame(&first)));
     drop(first_admission);
+    let mut audio_owner = audio
+        .map(|run| {
+            run.factory
+                .start(first.captured_at(), run.authorization, run.ended)
+        })
+        .transpose()
+        .map_err(audio_error)?;
+    let _ = ready.send(Ok(EncodedFirstFrameEvidence::from_frame(&first)));
 
     let mut frame_count = 1_u64;
     let mut next_segment_index = 1_u32;
@@ -1012,7 +1082,17 @@ fn encode_frames_with_authorization(
             }
         };
         match event {
+            ShowcaseProducerEvent::AudioEnded => {
+                *lock_unpoisoned(terminal_reason) = Some(json!({"code":"recording_audio_ended"}));
+                break;
+            }
             ShowcaseProducerEvent::Paused(acknowledged) => {
+                if audio_owner.is_some() {
+                    *lock_unpoisoned(terminal_reason) =
+                        Some(json!({"code":"recording_audio_video_paused"}));
+                    let _ = acknowledged.send(Ok(()));
+                    break;
+                }
                 // Only an explicit producer pause removes wall-clock time.
                 // Real long frame intervals without this event retain their
                 // existing timestamps and five-minute roll behavior.
@@ -1027,6 +1107,7 @@ fn encode_frames_with_authorization(
                                 tail_duration,
                                 video_format,
                                 &mut current_progress,
+                                None,
                             )
                         })
                 };
@@ -1102,6 +1183,11 @@ fn encode_frames_with_authorization(
                     )
                     .unwrap_or(u64::MAX),
                 );
+                if audio_duration_ms.is_some_and(|limit| elapsed_ms >= limit) {
+                    *lock_unpoisoned(terminal_reason) =
+                        Some(json!({"code":"recording_audio_duration_ended"}));
+                    break;
+                }
                 let segment_start_ms = active_segment
                     .as_ref()
                     .expect("active segment checked above")
@@ -1121,6 +1207,7 @@ fn encode_frames_with_authorization(
                         tail_duration,
                         video_format,
                         &mut current_progress,
+                        None,
                     )?;
                     encoder.force_intra_frame();
                     let stream = encode_bgra(&mut encoder, &bgra, width, height)?;
@@ -1179,11 +1266,24 @@ fn encode_frames_with_authorization(
             }
         }
     }
+    let audio_buffer = if let Some(owner) = audio_owner.as_mut() {
+        let buffer = owner.finish();
+        lock_unpoisoned(progress).audio =
+            Some(json!({"mode":"target_process_tree","worker":owner.evidence()}));
+        Some(buffer.map_err(audio_error)?)
+    } else {
+        None
+    };
     if let Some(segment) = active_segment {
         let tail_duration = segment.final_duration;
         let mut current_progress = lock_unpoisoned(progress);
-        media_duration_ms =
-            finalize_active_segment(segment, tail_duration, video_format, &mut current_progress)?;
+        media_duration_ms = finalize_active_segment(
+            segment,
+            tail_duration,
+            video_format,
+            &mut current_progress,
+            audio_buffer,
+        )?;
     }
     let current_progress = lock_unpoisoned(progress);
     let segments = current_progress.segments.clone();
@@ -1204,9 +1304,21 @@ fn encode_frames_with_authorization(
         "segments": segments,
         "current_partial": Value::Null,
         "capture_provenance": capture_provenance,
+        "audio": lock_unpoisoned(progress).audio,
     });
     write_manifest(&manifest_path, &state)?;
     Ok(state)
+}
+
+fn audio_error(error: process_audio::AudioLifecycleError) -> ShowcaseError {
+    ShowcaseError::new(
+        if error == process_audio::AudioLifecycleError::CleanupUnknown {
+            ShowcaseErrorCode::CleanupUnknown
+        } else {
+            ShowcaseErrorCode::CaptureFailed
+        },
+        error.to_string(),
+    )
 }
 
 fn receive_first_frame(
@@ -1214,6 +1326,9 @@ fn receive_first_frame(
 ) -> ShowcaseResult<FirstShowcaseFrame> {
     while let Some(event) = frames.blocking_recv() {
         match event {
+            ShowcaseProducerEvent::AudioEnded => {
+                return Err(capture_error("audio ended before first video frame"));
+            }
             ShowcaseProducerEvent::Frame(frame) => {
                 return Ok(FirstShowcaseFrame {
                     frame,
@@ -1257,13 +1372,47 @@ fn begin_segment(
     nominal_duration: u32,
     progress: &mut ShowcaseProgress,
 ) -> ShowcaseResult<ActiveSegment> {
+    begin_segment_with_limit(
+        stream,
+        SegmentStart {
+            path,
+            index,
+            start_ms,
+            format,
+            nominal_duration,
+        },
+        progress,
+        u64::MAX,
+    )
+}
+
+fn begin_segment_with_limit(
+    stream: &openh264::encoder::EncodedBitStream<'_>,
+    start: SegmentStart<'_>,
+    progress: &mut ShowcaseProgress,
+    output_limit: u64,
+) -> ShowcaseResult<ActiveSegment> {
+    let SegmentStart {
+        path,
+        index,
+        start_ms,
+        format,
+        nominal_duration,
+    } = start;
     let segment_path = segment_output_path(path, index);
     let partial_path = partial_segment_path(&segment_path);
     let (sps, pps) = parameter_sets(stream)?;
     let pending = pending_sample(stream, 0)?
         .ok_or_else(|| capture_error("OpenH264 omitted a segment's first video sample"))?;
     ensure_final_path_available(&segment_path)?;
-    let writer = start_segment_writer(&partial_path, format.width, format.height, sps, pps)?;
+    let writer = start_segment_writer(
+        &partial_path,
+        format.width,
+        format.height,
+        sps,
+        pps,
+        output_limit,
+    )?;
     progress.current_partial = Some(partial_path.clone());
     Ok(ActiveSegment {
         index,
@@ -1310,12 +1459,21 @@ fn finalize_active_segment(
     tail_duration: u32,
     format: VideoFormat,
     progress: &mut ShowcaseProgress,
+    audio: Option<audio_track::AacTrackBuffer>,
 ) -> ShowcaseResult<u64> {
     let segment_duration_ms = segment
         .pending
         .start_time
         .saturating_add(u64::from(tail_duration));
     write_sample(&mut segment.writer, segment.pending, tail_duration)?;
+    if let Some(audio) = audio {
+        let receipt = audio
+            .append_after_single_video_track(&mut segment.writer)
+            .map_err(capture_error)?;
+        if let Some(state) = progress.audio.as_mut() {
+            state["codec"] = json!(receipt);
+        }
+    }
     finalize_segment(segment.writer, &segment.partial_path, &segment.path)?;
     let end_ms = segment.start_ms.saturating_add(segment_duration_ms);
     progress.current_partial = None;
@@ -1345,10 +1503,11 @@ fn start_segment_writer(
     height: u32,
     sps: Vec<u8>,
     pps: Vec<u8>,
-) -> ShowcaseResult<Mp4Writer<File>> {
+    output_limit: u64,
+) -> ShowcaseResult<Mp4Writer<BoundedRecordingOutput<File>>> {
     create_partial_file(path, |file| {
         let mut writer = Mp4Writer::write_start(
-            file,
+            BoundedRecordingOutput::new(file, output_limit).map_err(capture_error)?,
             &Mp4Config {
                 major_brand: fourcc("isom")?,
                 minor_version: 512,
@@ -1401,12 +1560,12 @@ fn create_partial_file<T>(
 }
 
 fn finalize_segment(
-    mut writer: Mp4Writer<File>,
+    mut writer: Mp4Writer<BoundedRecordingOutput<File>>,
     partial_path: &Path,
     final_path: &Path,
 ) -> ShowcaseResult<()> {
     writer.write_end().map_err(capture_error)?;
-    let file = writer.into_writer();
+    let file = writer.into_writer().into_inner();
     file.sync_all().map_err(capture_error)?;
     drop(file);
     publish_without_overwrite(partial_path, final_path)
@@ -1521,8 +1680,8 @@ fn pending_sample(
     }))
 }
 
-fn write_sample(
-    writer: &mut Mp4Writer<File>,
+fn write_sample<W: std::io::Write + std::io::Seek>(
+    writer: &mut Mp4Writer<W>,
     sample: PendingSample,
     duration: u32,
 ) -> ShowcaseResult<()> {

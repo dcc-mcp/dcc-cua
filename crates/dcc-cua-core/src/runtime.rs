@@ -22,7 +22,14 @@ use crate::windows_uia_fallback::WindowsUiaFallback;
 use dcc_cua_showcase::{ShowcaseRecorder, fit_dimensions_with_bounds, resize_bgra_if_needed};
 
 fn map_showcase_error(error: dcc_cua_showcase::ShowcaseError) -> ComputerUseError {
-    ComputerUseError::new(ComputerUseErrorCode::CaptureFailed, error.message)
+    ComputerUseError::new(
+        if error.code == dcc_cua_showcase::ShowcaseErrorCode::CleanupUnknown {
+            ComputerUseErrorCode::CompletionUnknown
+        } else {
+            ComputerUseErrorCode::CaptureFailed
+        },
+        error.message,
+    )
 }
 
 mod action_result;
@@ -1582,6 +1589,7 @@ pub struct ComputerUseSession {
     recording_health: Option<RecordingHealth>,
     recording_keepalive: Option<RecordingKeepalive>,
     recording_authorization: Option<Arc<dcc_cua_showcase::RecordingAuthorization>>,
+    recording_audio_grant: Option<dcc_cua_protocol::recording_audio::ProcessAudioGrant>,
     #[cfg(windows)]
     pub(crate) windows_uia: Option<WindowsUiaFallback>,
     upstream_session_state: UpstreamSessionState,

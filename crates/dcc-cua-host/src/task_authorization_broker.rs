@@ -37,6 +37,7 @@ pub struct TrustedTaskAuthorizationRegistration {
     /// An exact pre-created directory owned by the authenticated embedding.
     /// It is immutable for this registration and never nominated through Host IPC.
     pub recording_output_dir: Option<String>,
+    pub recording_audio_grant: Option<dcc_cua_protocol::recording_audio::ProcessAudioGrant>,
     /// Stable constructor-owned journal root; native code owns target indices
     /// and UUID epochs so unresolved preparation cannot be bypassed by a task.
     pub capture_preparation:
@@ -304,6 +305,7 @@ impl TrustedTaskAuthorizationHost for BrokerHost {
             allowed_browser_origins: registration.allowed_browser_origins.clone(),
             browser_scope: registration.browser_scope.clone(),
             recording_output_dir: registration.recording_output_dir.clone(),
+            recording_audio_grant: registration.recording_audio_grant.clone(),
             capture_preparation: registration.capture_preparation.clone(),
             issued_at_unix_ms: now,
             expires_at_unix_ms: registration.expires_at_unix_ms,
@@ -411,6 +413,25 @@ fn validate_registration(
             }
     ) {
         return invalid("the exact target PID and window handle must be non-zero");
+    }
+    let audio_target = match registration.target {
+        TrustedTaskAuthorizationTarget::ExactWindow {
+            process_id,
+            window_handle,
+        } => (process_id, window_handle),
+        _ => (0, 0),
+    };
+    if !crate::recording_audio::valid_scope(
+        registration.recording_audio_grant.as_ref(),
+        audio_target.0,
+        audio_target.1,
+        registration.recording_output_dir.as_deref(),
+        &registration.allowed_actions,
+        &registration.allowed_host_methods,
+    ) {
+        return invalid(
+            "recording audio requires its independent exact-window grant, action and recording lifecycle",
+        );
     }
     let now = crate::task_authorization::unix_time_millis();
     if registration.expires_at_unix_ms <= now

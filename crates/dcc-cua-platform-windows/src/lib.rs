@@ -34,6 +34,8 @@ mod occlusion;
 #[cfg(windows)]
 mod physical_input_fence;
 #[cfg(windows)]
+pub mod process_audio;
+#[cfg(windows)]
 mod queued_activation;
 #[cfg(any(windows, test))]
 mod snapshot;

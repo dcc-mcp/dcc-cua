@@ -152,6 +152,7 @@ fn terminal_error_output(arguments: &[OsString]) -> TerminalErrorOutput {
                     | "host-jsonl"
                     | "mcp-server"
                     | "__private-worker"
+                    | "__process-audio-worker"
                     | "__capture-preparation-supervisor-v1"
             )
         )
@@ -205,6 +206,17 @@ fn local_doctor_report(arguments: &[String]) -> Result<bool, Box<dyn std::error:
 fn run_platform_command(arguments: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(windows)]
     {
+        if arguments
+            .first()
+            .is_some_and(|arg| arg == "__process-audio-worker")
+        {
+            let code = if arguments.len() == 1 {
+                dcc_cua_platform_windows::process_audio::run_owned_worker()
+            } else {
+                2
+            };
+            std::process::exit(code);
+        }
         if let Some(exit_code) =
             dcc_cua_platform_windows::capture_preparation::dispatch_capture_preparation(&arguments)
         {

@@ -69,3 +69,14 @@ fn revocation_serializes_with_inflight_work_and_refuses_next_admission() {
             .is_err()
     );
 }
+
+#[rstest]
+fn held_admission_rechecks_expiry_before_starting_prepared_source() {
+    let clock = Arc::new(AtomicU64::new(1));
+    let read = clock.clone();
+    let authority =
+        RecordingAuthorization::with_clock(2, Arc::new(move || read.load(Ordering::SeqCst)));
+    let guard = authority.admit().unwrap();
+    clock.store(2, Ordering::SeqCst);
+    assert!(guard.validate_current().is_err());
+}
