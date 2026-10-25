@@ -27,6 +27,7 @@ fn discovery_context_refuses_unverified_or_mismatched_desktops(
         assert_eq!(report["input_ready"], false);
         assert_eq!(report["retry_safe"], false);
         assert_eq!(report["input_surface_error"], json!(surface.err()));
+        assert_eq!(report["input_message"], report["message"]);
         assert!(require_desktop_observation_from(&report).is_err());
         assert!(require_exact_window_observation_from(&report).is_err());
         assert!(require_window_activation_from(&report).is_err());

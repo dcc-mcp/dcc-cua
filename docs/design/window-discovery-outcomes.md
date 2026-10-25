@@ -9,9 +9,15 @@ an unrelated existing instance.
 On Windows the native inventory boundary returns an optional result: `None`
 selects the existing SDK route on other platforms; a Windows error must propagate
 through both runtime discovery and the early CLI list path without an SDK retry.
-Successful `list` output retains its existing array shape. Failed enumeration,
-unresolved window metadata, or incompatible/unverified executor desktop context
-returns a failure, never a successful empty/partial array.
+Successful `list` output retains its existing array shape. Failed enumeration
+or incompatible/unverified executor desktop context returns a failure, never a
+successful empty/partial array. A completed unfiltered inventory can contain
+explicitly incomplete rows (`metadata_complete=false` and `metadata_errors`).
+Metadata failure in an unrelated window does not hide fully resolved matches.
+Queries reject unknown metadata only when that candidate could still match all
+known selectors; they do not silently filter it into absence or disregard a
+potential ambiguity. PID/HWND/title/name and on-screen filtering use this same
+query reducer in CLI listing/selection, bounded waits and session resolution.
 
 The CLI failure code is `window_discovery_unknown`. Its typed
 `details.window_inventory` records `complete=false`, native API/error context

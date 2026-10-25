@@ -3,12 +3,10 @@ use serde_json::Value;
 #[cfg(windows)]
 use serde_json::json;
 
-#[cfg(any(windows, test))]
 use crate::contracts::{ComputerUseError, ComputerUseErrorCode};
 use crate::contracts::{ComputerUseResult, ComputerUseTargetScope};
 use crate::sensitive_target_policy::validate_observed_application_identity;
 
-#[cfg(any(windows, test))]
 fn finish_inventory(rows: Vec<Value>, failure: Option<String>) -> ComputerUseResult<Vec<Value>> {
     match failure {
         None => Ok(rows),
@@ -33,6 +31,62 @@ fn finish_inventory(rows: Vec<Value>, failure: Option<String>) -> ComputerUseRes
             ..Default::default()
         })),
     }
+}
+
+pub(crate) fn filter_inventory(
+    query: &crate::ComputerUseWindowQuery,
+    rows: Vec<Value>,
+) -> ComputerUseResult<Vec<Value>> {
+    let selective = query.app.is_some()
+        || query.process_id.is_some()
+        || query.window_handle.is_some()
+        || query.window_title.is_some()
+        || query.on_screen_only;
+    if selective {
+        let mut failures = Vec::new();
+        for row in rows.iter().filter(|row| row["metadata_complete"] == false) {
+            // Unknown fields remain unknown; a known conflicting selector alone
+            // can exclude this candidate without fabricating identity evidence.
+            let could_match = (row["app_name"].as_str().is_none() || query.matches_window_app(row))
+                && query.process_id.is_none_or(|expected| {
+                    row["pid"]
+                        .as_u64()
+                        .is_none_or(|pid| pid == u64::from(expected))
+                })
+                && query.window_handle.is_none_or(|expected| {
+                    row["window_id"]
+                        .as_u64()
+                        .is_none_or(|handle| handle == expected)
+                })
+                && query.window_title.as_deref().is_none_or(|expected| {
+                    row["title"].as_str().is_none_or(|title| title == expected)
+                })
+                && (!query.on_screen_only || row["is_on_screen"].as_bool() != Some(false));
+            if could_match {
+                let errors = row["metadata_errors"].as_array().map(|errors| {
+                    errors
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                });
+                failures.push(
+                    errors
+                        .filter(|errors| !errors.is_empty())
+                        .unwrap_or_else(|| "native window metadata unresolved".into()),
+                );
+            }
+        }
+        if !failures.is_empty() {
+            return finish_inventory(rows, Some(failures.join("; ")));
+        }
+    }
+    Ok(rows
+        .into_iter()
+        .filter(|row| {
+            query.matches_window(row) && (!query.on_screen_only || row["is_on_screen"] == true)
+        })
+        .collect())
 }
 
 #[cfg(test)]
@@ -61,6 +115,59 @@ mod inventory_outcome_tests {
     #[test]
     fn completed_inventory_can_be_empty() {
         assert!(finish_inventory(vec![], None).unwrap().is_empty());
+    }
+
+    #[test]
+    fn metadata_failures_are_scoped_to_candidates_that_could_match_the_query() {
+        let good = json!({"pid":42,"window_id":7,"title":"Figma A","app_name":"Figma.exe","is_on_screen":true,"backend":"windows-native-window-inventory","metadata_complete":true});
+        let bad = json!({"pid":99,"window_id":8,"title":null,"app_name":"Other.exe","metadata_complete":false,"metadata_errors":["GetWindowTextW: os error 5"]});
+        let app = crate::ComputerUseWindowQuery {
+            app: Some("Figma".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            app.filter_inventory(vec![good.clone(), bad.clone()])
+                .unwrap(),
+            vec![good.clone()]
+        );
+        let pid = crate::ComputerUseWindowQuery {
+            process_id: Some(42),
+            ..Default::default()
+        };
+        assert_eq!(
+            pid.filter_inventory(vec![good.clone(), bad.clone()])
+                .unwrap(),
+            vec![good.clone()]
+        );
+        let unknown_app = json!({"pid":99,"window_id":8,"app_name":null,"metadata_complete":false,"metadata_errors":["OpenProcess: os error 5"]});
+        assert!(
+            app.filter_inventory(vec![good.clone(), unknown_app.clone()])
+                .is_err()
+        );
+        let exact = crate::ComputerUseWindowQuery {
+            window_handle: Some(7),
+            ..Default::default()
+        };
+        assert_eq!(
+            exact
+                .filter_inventory(vec![good.clone(), unknown_app])
+                .unwrap(),
+            vec![good]
+        );
+        assert!(
+            crate::ComputerUseWindowQuery::default()
+                .filter_inventory(vec![bad.clone()])
+                .unwrap()
+                .len()
+                == 1
+        );
+        let unknown = crate::ComputerUseWindowQuery {
+            process_id: Some(99),
+            ..Default::default()
+        }
+        .filter_inventory(vec![bad])
+        .unwrap_err();
+        assert!(unknown.message.contains("os error 5"));
     }
 
     #[test]
@@ -142,6 +249,9 @@ pub(crate) struct WindowTarget {
 
 impl WindowTarget {
     pub(crate) fn from_value(value: &Value) -> Option<Self> {
+        if value["metadata_complete"] == false {
+            return None;
+        }
         Some(Self {
             pid: value["pid"].as_u64()?.try_into().ok()?,
             window_id: value["window_id"].as_u64()?,
@@ -322,12 +432,12 @@ unsafe extern "system" fn enum_window(
     let mut pid = 0_u32;
     let thread = unsafe { GetWindowThreadProcessId(hwnd, &mut pid) };
     if thread == 0 || pid == 0 {
-        context.failures.push(format!(
+        let error = format!(
             "GetWindowThreadProcessId: {}",
             std::io::Error::last_os_error()
-        ));
+        );
         context.rows.push(
-            json!({"window_id":hwnd as usize as u64,"pid":Value::Null,"metadata_complete":false}),
+            json!({"window_id":hwnd as usize as u64,"pid":Value::Null,"metadata_complete":false,"metadata_errors":[error],"backend":"windows-native-window-inventory"}),
         );
         return 1;
     }
@@ -360,7 +470,6 @@ unsafe extern "system" fn enum_window(
     .into_iter()
     .flatten()
     .collect();
-    context.failures.extend(errors.iter().cloned());
     context.rows.push(json!({
         "pid": pid,
         "window_id": hwnd as usize as u64,
@@ -369,7 +478,7 @@ unsafe extern "system" fn enum_window(
         "bounds": rect_ok.then(|| json!({"x":rect.left, "y":rect.top, "width":width, "height":height})),
         "metadata_complete": errors.is_empty(),
         "metadata_errors": errors,
-        "is_on_screen": on_screen,
+        "is_on_screen": (rect_ok || !visible || minimized).then_some(on_screen),
         "minimized": minimized,
         "z_index": z_index,
         "is_foreground": hwnd as usize == context.foreground,

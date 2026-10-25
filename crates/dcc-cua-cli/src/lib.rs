@@ -358,8 +358,7 @@ async fn dispatch(arguments: Vec<String>) -> Result<(), Box<dyn std::error::Erro
         if let Some(windows) =
             dcc_cua_core::native_window_inventory(query.process_id, query.on_screen_only)
         {
-            let mut windows = windows?;
-            windows.retain(|window| query.matches_window(window));
+            let windows = query.filter_inventory(windows?)?;
             stdoutln!("{}", serde_json::to_string_pretty(&windows)?);
             return Ok(());
         }
@@ -450,10 +449,10 @@ async fn list_windows(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let query = window_selector_query_from_flags(flags)?;
     query.validate_selectors()?;
-    let mut windows = driver
+    let windows = driver
         .list_windows_filtered(query.process_id, query.on_screen_only)
         .await?;
-    windows.retain(|window| query.matches_window(window));
+    let windows = query.filter_inventory(windows)?;
     stdoutln!("{}", serde_json::to_string_pretty(&windows)?);
     Ok(())
 }
@@ -2010,6 +2009,9 @@ fn resolve_window_selector_from_inventory(
         .ok_or("window selector requires --app")?;
     let exact_selector =
         query.process_id.is_some() || query.window_handle.is_some() || query.window_title.is_some();
+    let mut effective_query = query.clone();
+    effective_query.on_screen_only |= !exact_selector;
+    let rows = effective_query.filter_inventory(rows.to_vec())?;
     let matches = rows
         .iter()
         .filter(|row| query.matches_window(row) && (exact_selector || row["is_on_screen"] == true))

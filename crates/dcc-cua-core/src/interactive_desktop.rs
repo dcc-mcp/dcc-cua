@@ -315,6 +315,9 @@ pub(crate) fn apply_execution_context(report: &mut Value, context: Value) {
         );
         report["observation_ready"] = Value::Bool(false);
         report["input_ready"] = Value::Bool(false);
+        report["input_code"] = report["code"].clone();
+        report["input_message"] = report["message"].clone();
+        report["input_attempted"] = Value::Bool(false);
         report["retry_safe"] = Value::Bool(false);
     }
     report["execution_context"] = context;

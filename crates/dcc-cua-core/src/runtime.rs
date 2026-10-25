@@ -897,7 +897,7 @@ impl ComputerUseDriver {
         let started = Instant::now();
         let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
         loop {
-            let mut windows = match wait_for_window_probe_until(
+            let windows = match wait_for_window_probe_until(
                 deadline,
                 self.list_windows_filtered(request.query.process_id, request.query.on_screen_only),
             )
@@ -906,7 +906,7 @@ impl ComputerUseDriver {
                 WindowWaitProbeOutcome::TimedOut => return Err(window_wait_timeout()),
                 WindowWaitProbeOutcome::Completed(result) => result?,
             };
-            windows.retain(|window| request.query.matches_window(window));
+            let windows = request.query.filter_inventory(windows)?;
             if !windows.is_empty() {
                 return Ok(json!({
                     "windows": windows,

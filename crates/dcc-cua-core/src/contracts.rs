@@ -182,6 +182,10 @@ pub struct ComputerUseWindowQuery {
 }
 
 impl ComputerUseWindowQuery {
+    /// Apply selectors without treating unresolved potentially matching metadata as absence.
+    pub fn filter_inventory(&self, rows: Vec<Value>) -> ComputerUseResult<Vec<Value>> {
+        crate::window_target::filter_inventory(self, rows)
+    }
     pub fn validate_selectors(&self) -> ComputerUseResult<()> {
         if self.app.as_deref().is_some_and(|value| value.is_empty())
             || self
@@ -225,6 +229,20 @@ impl ComputerUseWindowQuery {
 
     #[must_use]
     pub fn matches_window(&self, window: &Value) -> bool {
+        self.matches_window_app(window)
+            && self
+                .process_id
+                .is_none_or(|pid| window["pid"] == json!(pid))
+            && self
+                .window_handle
+                .is_none_or(|handle| window["window_id"] == json!(handle))
+            && self
+                .window_title
+                .as_deref()
+                .is_none_or(|title| window["title"].as_str() == Some(title))
+    }
+
+    pub(crate) fn matches_window_app(&self, window: &Value) -> bool {
         self.app.as_deref().is_none_or(|app| {
             window["app_name"]
                 .as_str()
@@ -239,16 +257,7 @@ impl ComputerUseWindowQuery {
                                     !stem.is_empty() && stem.eq_ignore_ascii_case(app)
                                 }))
                 })
-        }) && self
-            .process_id
-            .is_none_or(|pid| window["pid"] == json!(pid))
-            && self
-                .window_handle
-                .is_none_or(|handle| window["window_id"] == json!(handle))
-            && self
-                .window_title
-                .as_deref()
-                .is_none_or(|title| window["title"].as_str() == Some(title))
+        })
     }
 }
 
