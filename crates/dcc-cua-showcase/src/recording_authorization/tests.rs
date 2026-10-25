@@ -80,3 +80,31 @@ fn held_admission_rechecks_expiry_before_starting_prepared_source() {
     clock.store(2, Ordering::SeqCst);
     assert!(guard.validate_current().is_err());
 }
+
+#[rstest]
+fn recording_stop_or_failure_does_not_revoke_task_or_next_recording() {
+    let task = Arc::new(RecordingAuthorization::with_clock(100, Arc::new(|| 1)));
+    let first = RecordingAuthorization::recording_local(task.clone());
+    first.admit().unwrap();
+    first.revoke();
+    assert!(first.admit().is_err());
+    assert!(task.admit().is_ok());
+    let second = RecordingAuthorization::recording_local(task.clone());
+    assert!(second.admit().is_ok());
+    task.revoke();
+    assert!(second.admit().is_err());
+}
+
+#[rstest]
+fn recording_admission_rechecks_shared_task_expiry_after_prepare() {
+    let clock = Arc::new(AtomicU64::new(1));
+    let read = clock.clone();
+    let task = Arc::new(RecordingAuthorization::with_clock(
+        2,
+        Arc::new(move || read.load(Ordering::SeqCst)),
+    ));
+    let local = RecordingAuthorization::recording_local(task);
+    let guard = local.admit().unwrap();
+    clock.store(2, Ordering::SeqCst);
+    assert!(guard.validate_current().is_err());
+}

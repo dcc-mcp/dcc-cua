@@ -1,8 +1,9 @@
 # Bounded target-process playback audio
 
-This draft first adds the shared grant contract and a recorder-side admission/
-cleanup owner. It does not yet expose audio through MCP, install a native source,
-or claim that the shipped video-only recording route has acquired sound.
+This draft exposes an independent `recording_audio` option on `start_task`,
+adds the closed `playback_audio` action scope, and connects a Windows WASAPI
+worker to the existing recorder and MP4 writer. Native acceptance remains
+unqualified; no installed runtime or shipped recording route is changed.
 
 `RecordingAudioMode` defaults to `none`; the only positive mode is
 `target_process_tree`. It accepts no caller PID/device, microphone, desktop mix,
@@ -94,6 +95,10 @@ normal stream shutdown, then terminates only that owned child if necessary,
 and reads its exit and reader join. Forced or unknown cleanup cannot publish a
 successful audio recording. No global device/source or desktop mix is selected.
 
+Every recorder has a local revocation fence that also holds the task fence.
+Stopping/failing one recording revokes only the local fence; task revocation
+still rejects all local admissions. Another explicitly requested recording can
+reuse a valid task without inheriting the previous recording's revoked state.
 The existing encoder owns that audio controller and the existing MP4 writer.
 The complete file (video, audio, headers and seek patches) has the grant's byte
 ceiling. Packets are stereo PCM16 at 48 kHz, with a 4800-sample ceiling; silent

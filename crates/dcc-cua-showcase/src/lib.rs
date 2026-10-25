@@ -558,6 +558,7 @@ impl ShowcaseRecorder {
         authorization: Option<Arc<RecordingAuthorization>>,
         audio: Option<Box<dyn RecorderAudioFactory>>,
     ) -> Result<Self, (ShowcaseError, Value)> {
+        let authorization = authorization.map(RecordingAuthorization::recording_local);
         if audio.is_some() && authorization.is_none() {
             return Err((
                 capture_error("audio requires a trusted recording authorization"),

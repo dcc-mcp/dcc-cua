@@ -48,14 +48,15 @@ impl RecorderAudioOwner for Owner {
         let evidence = self
             .evidence
             .lock()
-            .map_err(|_| AudioLifecycleError::Source)?;
-        if !evidence.reaped || !evidence.reader_joined {
+            .map_err(|_| AudioLifecycleError::CleanupUnknown)?;
+        if !evidence.cleanup_known() {
             return Err(AudioLifecycleError::CleanupUnknown);
         }
-        if !evidence.stop_acknowledged
-            || evidence.forced_termination
-            || evidence.exit_code != Some(0)
-            || evidence.failure.is_some()
+        if evidence.spawned
+            && (!evidence.stop_acknowledged
+                || evidence.forced_termination
+                || evidence.exit_code != Some(0)
+                || evidence.failure.is_some())
         {
             return Err(AudioLifecycleError::Source);
         }

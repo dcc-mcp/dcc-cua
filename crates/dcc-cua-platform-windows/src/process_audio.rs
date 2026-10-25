@@ -57,6 +57,7 @@ const REAP_TIMEOUT: Duration = Duration::from_secs(1);
 
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct OwnedAudioWorkerEvidence {
+    pub spawned: bool,
     pub process_id: Option<u32>,
     pub process_creation_time_100ns: Option<u64>,
     pub job_bound: bool,
@@ -72,6 +73,12 @@ pub struct OwnedAudioWorkerEvidence {
     pub last_packet_qpc_100ns: Option<u64>,
     pub received_packets: u64,
     pub first_packet_flags: Option<u32>,
+}
+
+impl OwnedAudioWorkerEvidence {
+    fn cleanup_known(&self) -> bool {
+        (!self.spawned || self.reaped) && self.reader_joined
+    }
 }
 
 pub struct CapturedProcessAudioPacket {
@@ -144,30 +151,49 @@ pub fn qpc_for_media_epoch(epoch: Instant) -> Result<u64, AudioLifecycleError> {
     use windows_audio::Win32::System::Performance::{
         QueryPerformanceCounter, QueryPerformanceFrequency,
     };
-    let before = Instant::now();
-    let mut ticks = 0_i64;
     let mut frequency = 0_i64;
-    // SAFETY: valid integer outputs, no desktop or audio device query.
+    // SAFETY: valid integer output; no desktop, audio activation or input query.
     unsafe {
         QueryPerformanceFrequency(&mut frequency).map_err(|_| AudioLifecycleError::Source)?;
-        QueryPerformanceCounter(&mut ticks).map_err(|_| AudioLifecycleError::Source)?;
     }
-    let after = Instant::now();
-    if ticks < 0 || frequency <= 0 || after.duration_since(before) > Duration::from_millis(2) {
-        return Err(AudioLifecycleError::Source);
+    calibrate_epoch(epoch, || {
+        let before = Instant::now();
+        let mut ticks = 0_i64;
+        // SAFETY: one QPC sample; API errors are never retried.
+        unsafe {
+            QueryPerformanceCounter(&mut ticks).map_err(|_| AudioLifecycleError::Source)?;
+        }
+        Ok((before, Instant::now(), ticks, frequency))
+    })
+}
+
+fn calibrate_epoch(
+    epoch: Instant,
+    mut sample: impl FnMut() -> Result<(Instant, Instant, i64, i64), AudioLifecycleError>,
+) -> Result<u64, AudioLifecycleError> {
+    for _ in 0..3 {
+        let (before, after, ticks, frequency) = sample()?;
+        if ticks < 0 || frequency <= 0 || after < before {
+            return Err(AudioLifecycleError::Source);
+        }
+        let bracket = after.duration_since(before);
+        if bracket > Duration::from_millis(2) {
+            continue;
+        }
+        let midpoint = before + bracket / 2;
+        let elapsed = midpoint
+            .checked_duration_since(epoch)
+            .ok_or(AudioLifecycleError::Packet)?
+            .as_nanos()
+            / 100;
+        let qpc = ticks as u128 * 10_000_000 / frequency as u128;
+        return u64::try_from(
+            qpc.checked_sub(elapsed)
+                .ok_or(AudioLifecycleError::Packet)?,
+        )
+        .map_err(|_| AudioLifecycleError::Packet);
     }
-    let midpoint = before + after.duration_since(before) / 2;
-    let elapsed = midpoint
-        .checked_duration_since(epoch)
-        .ok_or(AudioLifecycleError::Packet)?
-        .as_nanos()
-        / 100;
-    let qpc = ticks as u128 * 10_000_000 / frequency as u128;
-    u64::try_from(
-        qpc.checked_sub(elapsed)
-            .ok_or(AudioLifecycleError::Packet)?,
-    )
-    .map_err(|_| AudioLifecycleError::Packet)
+    Err(AudioLifecycleError::Source)
 }
 
 pub struct NativeProcessAudioSource {
@@ -331,6 +357,9 @@ impl ProcessAudioSource for NativeProcessAudioSource {
             command.env("SystemRoot", root);
         }
         self.child = Some(command.spawn().map_err(|_| AudioLifecycleError::Source)?);
+        if let Ok(mut evidence) = self.evidence.lock() {
+            evidence.spawned = true;
+        }
         let child = self.child.as_mut().ok_or(AudioLifecycleError::Source)?;
         let pid = child.id();
         let birth = child_birth(child).map_err(|_| AudioLifecycleError::Source)?;
@@ -525,3 +554,6 @@ impl Drop for NativeProcessAudioSource {
         let _ = self.stop_owned();
     }
 }
+
+#[cfg(test)]
+mod tests;
