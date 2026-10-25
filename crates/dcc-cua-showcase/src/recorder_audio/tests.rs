@@ -112,6 +112,7 @@ async fn existing_recorder_muxes_audio_and_never_publishes_failed_source_as_sile
     .await
     .map_err(|(e, _)| e)
     .unwrap();
+    let active = recorder.state();
     let (result, outcome) = tokio::time::timeout(
         std::time::Duration::from_secs(3),
         recorder.stop_with_outcome(),
@@ -119,6 +120,7 @@ async fn existing_recorder_muxes_audio_and_never_publishes_failed_source_as_sile
     .await
     .expect("audio callback must not retain producer channel and deadlock stop");
     assert_eq!(stops.load(Ordering::SeqCst), 1);
+    assert_eq!(active["audio"]["worker"]["synthetic"], true);
     if fail {
         assert!(result.is_err());
         assert_eq!(

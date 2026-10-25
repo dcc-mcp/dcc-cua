@@ -731,34 +731,40 @@ impl ShowcaseRecorder {
         }
         let progress = lock_unpoisoned(&self.progress).clone();
         let manifest_path = manifest_output_path(&self.path);
-        if let Some(terminal_reason) = lock_unpoisoned(&self.terminal_reason).clone() {
-            return json!({
-                "active": false,
+        let mut state =
+            if let Some(terminal_reason) = lock_unpoisoned(&self.terminal_reason).clone() {
+                json!({
+                    "active": false,
+                    "backend": "embedded-openh264",
+                    "path": self.path.to_string_lossy(),
+                    "manifest_path": manifest_path.to_string_lossy(),
+                    "finalized": false,
+                    "segments": progress.segments,
+                    "current_partial": progress.current_partial,
+                    "paused": false,
+                    "pause_reason": Value::Null,
+                    "terminal_reason": terminal_reason,
+                })
+            } else {
+                let active = !self.encoder.is_finished();
+                let pause_reason = lock_unpoisoned(&self.pause_reason).clone();
+                let paused = active && pause_reason.is_some();
+                json!({
+                "active": active,
                 "backend": "embedded-openh264",
                 "path": self.path.to_string_lossy(),
                 "manifest_path": manifest_path.to_string_lossy(),
-                "finalized": false,
                 "segments": progress.segments,
                 "current_partial": progress.current_partial,
-                "paused": false,
-                "pause_reason": Value::Null,
-                "terminal_reason": terminal_reason,
-            });
+                "paused": paused,
+                "pause_reason": pause_reason,
+                "terminal_reason": Value::Null,
+                })
+            };
+        if let Some(audio) = progress.audio {
+            state["audio"] = audio;
         }
-        let active = !self.encoder.is_finished();
-        let pause_reason = lock_unpoisoned(&self.pause_reason).clone();
-        let paused = active && pause_reason.is_some();
-        json!({
-            "active": active,
-            "backend": "embedded-openh264",
-            "path": self.path.to_string_lossy(),
-            "manifest_path": manifest_path.to_string_lossy(),
-            "segments": progress.segments,
-            "current_partial": progress.current_partial,
-            "paused": paused,
-            "pause_reason": pause_reason,
-            "terminal_reason": Value::Null,
-        })
+        state
     }
 
     /// Waits for the encoder to publish its terminal state without consuming the recorder.
@@ -1084,6 +1090,12 @@ fn encode_frames_with_audio(
             return Err(error);
         }
     };
+    if let Some(owner) = audio_owner.as_ref() {
+        // The source has acknowledged startup. Publish its existing identity
+        // before returning recording_start; final cleanup evidence replaces it.
+        lock_unpoisoned(progress).audio =
+            Some(json!({"mode":"target_process_tree","worker":owner.evidence()}));
+    }
     let _ = ready.send(Ok(EncodedFirstFrameEvidence::from_frame(&first)));
 
     let mut frame_count = 1_u64;
