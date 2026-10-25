@@ -1224,6 +1224,13 @@ fn encode_frames_with_audio(
                         .expect("active segment checked above")
                         .start_ms;
                     if elapsed_ms.saturating_sub(segment_start_ms) >= SEGMENT_DURATION_MS {
+                        // One audio epoch belongs to the first video segment. Keep
+                        // this invariant local even if grant policy later expands.
+                        if audio_owner.is_some() {
+                            *lock_unpoisoned(terminal_reason) =
+                                Some(json!({"code":"recording_audio_segment_ended"}));
+                            break;
+                        }
                         let segment = active_segment.take().expect("active segment checked above");
                         let tail_duration = u32::try_from(
                             elapsed_ms

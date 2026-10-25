@@ -324,3 +324,91 @@ fn video_error_still_finishes_audio_and_preserves_unknown_cleanup(
     assert!(!directory.join("showcase.mp4").exists());
     std::fs::remove_dir_all(directory).unwrap();
 }
+
+/// Simulates a future platform advertising a longer valid capture lifetime.
+/// Its actual generated PCM still obeys today's bounded buffer contract.
+struct ExtendedDurationFactory {
+    advertised: ProcessAudioGrant,
+    inner: Factory,
+}
+impl RecorderAudioFactory for ExtendedDurationFactory {
+    fn grant(&self) -> &ProcessAudioGrant {
+        &self.advertised
+    }
+    fn start(
+        self: Box<Self>,
+        epoch: Instant,
+        authorization: Arc<RecordingAuthorization>,
+        ended: Box<dyn Fn() + Send>,
+    ) -> Result<Box<dyn RecorderAudioOwner>, AudioLifecycleError> {
+        Box::new(self.inner).start(epoch, authorization, ended)
+    }
+}
+
+#[rstest]
+fn audio_epoch_cannot_roll_into_a_later_video_segment_even_if_factory_lifetime_expands() {
+    let directory =
+        std::env::temp_dir().join(format!("dcc-cua-audio-segment-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir(&directory).unwrap();
+    let (sender, receiver) = tokio::sync::mpsc::channel(2);
+    let epoch = Instant::now();
+    for (sequence, elapsed) in [(1, 0), (2, crate::SEGMENT_DURATION_MS)] {
+        sender
+            .try_send(crate::ShowcaseProducerEvent::Frame(Arc::new(
+                LiveObservationFrame::new(
+                    sequence,
+                    vec![80; 16 * 16 * 4],
+                    16,
+                    16,
+                    epoch + std::time::Duration::from_millis(elapsed),
+                ),
+            )))
+            .unwrap();
+    }
+    drop(sender);
+    let factory = generated_factory(None);
+    let stops = factory.stops.clone();
+    let mut advertised = factory.grant.clone();
+    advertised.max_duration_ms = crate::SEGMENT_DURATION_MS * 2;
+    let authority = Arc::new(RecordingAuthorization::new(u64::MAX));
+    let terminal = std::sync::Mutex::new(None);
+    let (ready, _ready) = tokio::sync::oneshot::channel();
+    let state = crate::encode_frames_with_audio(
+        receiver,
+        &directory.join("showcase.mp4"),
+        10,
+        ready,
+        &std::sync::Mutex::new(crate::ShowcaseProgress::default()),
+        crate::EncoderAuthorization {
+            video: Some(&authority),
+            audio: Some(crate::AudioRun {
+                factory: Box::new(ExtendedDurationFactory {
+                    advertised,
+                    inner: factory,
+                }),
+                authorization: authority.clone(),
+                ended: Box::new(|| {}),
+                ended_flag: Arc::new(crate::AtomicBool::new(false)),
+            }),
+        },
+        &terminal,
+    )
+    .unwrap();
+    assert_eq!(state["frames"], 1);
+    assert_eq!(state["segments"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        terminal.lock().unwrap().as_ref().unwrap()["code"],
+        "recording_audio_segment_ended"
+    );
+    assert_eq!(stops.load(Ordering::SeqCst), 1);
+    let file = std::fs::File::open(directory.join("showcase.mp4")).unwrap();
+    let size = file.metadata().unwrap().len();
+    assert_eq!(
+        mp4::Mp4Reader::read_header(file, size)
+            .unwrap()
+            .tracks()
+            .len(),
+        2
+    );
+    std::fs::remove_dir_all(directory).unwrap();
+}
