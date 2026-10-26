@@ -180,6 +180,14 @@ a video pause with audio still ends that recording prefix rather than silently
 splicing out wall time. A finalized prefix is not complete gameplay acceptance,
 and interrupted audio/video tail differences must remain visible in evidence.
 
+### Controlled audio duration stop
+
+The audio receive loop checks duration before waiting and after either a packet
+or timeout. Normal duration exhaustion requests controlled `session.stop()`;
+authorization loss and explicit source faults remain failures. Existing PCM
+duration/byte limits and worker stop/exit checks still apply: an elapsed budget
+cannot turn missing acknowledgement or a real worker failure into success.
+
 ### WGC source time and publication cost
 
 WGC video uses the compositor's actual `SystemRelativeTime`, mapped to the

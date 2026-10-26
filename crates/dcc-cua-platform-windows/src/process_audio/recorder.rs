@@ -6,6 +6,45 @@ use dcc_cua_showcase::{
     recorder_audio::{RecorderAudioFactory, RecorderAudioOwner},
 };
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PacketLoopEnd {
+    Stopped,
+    SourceFailed,
+}
+
+fn run_packet_loop<T>(
+    max_duration: Duration,
+    mut cancelled: impl FnMut() -> bool,
+    mut receive: impl FnMut() -> Result<T, mpsc::RecvTimeoutError>,
+    mut authorized: impl FnMut() -> bool,
+    mut elapsed: impl FnMut() -> Duration,
+    mut ingest: impl FnMut(T) -> Result<(), AudioLifecycleError>,
+) -> PacketLoopEnd {
+    while !cancelled() {
+        if !authorized() {
+            return PacketLoopEnd::SourceFailed;
+        }
+        if elapsed() >= max_duration {
+            return PacketLoopEnd::Stopped;
+        }
+        let received = receive();
+        // Explicit source errors and authorization loss must not be hidden by
+        // a simultaneous normal duration boundary.
+        if matches!(received, Err(mpsc::RecvTimeoutError::Disconnected)) || !authorized() {
+            return PacketLoopEnd::SourceFailed;
+        }
+        if elapsed() >= max_duration {
+            return PacketLoopEnd::Stopped;
+        }
+        if let Ok(packet) = received
+            && ingest(packet).is_err()
+        {
+            return PacketLoopEnd::SourceFailed;
+        }
+    }
+    PacketLoopEnd::Stopped
+}
+
 pub struct NativeRecorderAudioFactory {
     pub executable: PathBuf,
     pub grant: ProcessAudioGrant,
@@ -129,34 +168,15 @@ impl RecorderAudioFactory for NativeRecorderAudioFactory {
                         return Err(error);
                     }
                 };
-                let mut failed = false;
-                while !cancel.load(Ordering::Acquire) {
-                    match packets.recv_timeout(Duration::from_millis(10)) {
-                        Ok(packet) => {
-                            if session
-                                .ingest(packet.target, packet.pts_us, &packet.samples)
-                                .is_err()
-                            {
-                                failed = true;
-                                break;
-                            }
-                        }
-                        Err(mpsc::RecvTimeoutError::Disconnected) => {
-                            failed = true;
-                            break;
-                        }
-                        Err(mpsc::RecvTimeoutError::Timeout) => {
-                            if authorization.admit().is_err()
-                                || epoch.elapsed()
-                                    >= Duration::from_millis(self.grant.max_duration_ms)
-                            {
-                                failed = true;
-                                break;
-                            }
-                        }
-                    }
-                }
-                let receipt = if failed {
+                let outcome = run_packet_loop(
+                    Duration::from_millis(self.grant.max_duration_ms),
+                    || cancel.load(Ordering::Acquire),
+                    || packets.recv_timeout(Duration::from_millis(10)),
+                    || authorization.admit().is_ok(),
+                    || epoch.elapsed(),
+                    |packet| session.ingest(packet.target, packet.pts_us, &packet.samples),
+                );
+                let receipt = if outcome == PacketLoopEnd::SourceFailed {
                     session.source_failed()
                 } else {
                     session.stop()
@@ -200,3 +220,6 @@ impl RecorderAudioFactory for NativeRecorderAudioFactory {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;
