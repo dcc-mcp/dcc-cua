@@ -138,7 +138,7 @@ advancing frame index falsely rejected the second packet. Device position remain
 in diagnostics; it is not the admission clock for this virtual source.
 
 Packet ordering uses strictly increasing first-sample QPC timestamps and rejects
-overlap beyond one PCM frame of quantization at48kHz. A forward QPC interval is
+overlap beyond one PCM frame of quantization at 48 kHz. A forward QPC interval is
 retained on the shared media epoch, not interpreted as a documented glitch by
 itself. The existing mux preserves non-sampled intervals as explicitly generated
 zero PCM rather than splicing subsequent audio earlier. Receipts distinguish
@@ -163,13 +163,13 @@ those same guards without reacquiring the cross-process exclusive file gate.
 Borrowing performs no presenter suppression or cursor mutation: all overlays must
 already be hidden, and live publication revalidates that condition after readback.
 A visible peer fails closed. The process/tree/window grant and physical input
-fence remain unchanged, including the maximum20ms sleep interval between held-key checks.
+fence remain unchanged, including the maximum 20 ms sleep interval between held-key checks.
 
 An explicit snapshot may share only a capture epoch, whose ordinary global
 exclusion guard remains alive. It cannot borrow an input epoch. The live producer
 and explicit snapshot can share a capture epoch without waiting for each other's
 readback. Pools come only from the same private banner capability; another task
-or process still waits on the original cross-process gate and unchanged1s budget.
+or process still waits on the original cross-process gate and unchanged 1 s budget.
 No request field can supply a pool or borrow another task's guards.
 
 Closing an epoch owner stops new borrowing. Existing capture work retains the
