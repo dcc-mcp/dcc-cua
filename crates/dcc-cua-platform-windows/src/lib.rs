@@ -137,8 +137,9 @@ pub use visible_capture::{
 };
 #[cfg(windows)]
 pub use wgc::{
-    PersistentWgcCapture, PersistentWgcFrame, WgcCaptureError, WgcCompositorTiming,
-    WgcCompositorTimingUnavailable, WgcFrameMeasurement, WgcPublishedFrameMeasurement,
+    PersistentWgcCapture, PersistentWgcFrame, WgcCaptureClock, WgcCaptureError,
+    WgcCompositorTiming, WgcCompositorTimingUnavailable, WgcFrameMeasurement,
+    WgcPublishedFrameMeasurement,
 };
 #[cfg(windows)]
 pub use windows::{

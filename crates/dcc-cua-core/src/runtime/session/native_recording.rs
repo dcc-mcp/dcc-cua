@@ -498,13 +498,16 @@ fn validate_native_recording_metadata<'a>(
             "native video requires actual exact-window capture provenance",
         ));
     };
+    let earliest_capture = proof.wgc_timing.map_or(Some(captured_at), |timing| {
+        captured_at.checked_sub(timing.capture_uncertainty())
+    });
     if proof.process_id != target.pid
         || proof.window_handle != target.window_id
         || proof.stream_id != stream_id
         || proof.capture_generation == 0
         || proof.native_instance.process_creation_time_100ns == 0
         || proof.native_instance.window_thread_id == 0
-        || captured_at < requested_at
+        || earliest_capture.is_none_or(|earliest| earliest < requested_at)
     {
         return Err(ComputerUseError::new(
             ComputerUseErrorCode::StaleObservation,

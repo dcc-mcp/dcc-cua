@@ -179,3 +179,33 @@ blocking input worker's guard. Real capture failure still pauses eligibility;
 a video pause with audio still ends that recording prefix rather than silently
 splicing out wall time. A finalized prefix is not complete gameplay acceptance,
 and interrupted audio/video tail differences must remain visible in evidence.
+
+### WGC source time and publication cost
+
+WGC video uses the compositor's actual `SystemRelativeTime`, mapped to the
+process monotonic clock through a QPC sample bracket of at most 2 ms. The raw
+source QPC, publication QPC, publication UTC time and full calibration bracket
+travel with each frame into its recorded sidecar and first-frame acknowledgement.
+The mapping uncertainty is at most half the bracket plus 100 ns quantization;
+UTC is a diagnostic projection, not the admission clock. Freshness and startup
+use the earliest possible source time within that uncertainty bound; an
+estimated midpoint cannot admit pixels that may predate the request. Publication after
+validation cannot refresh old pixels. Missing/future/unreliably calibrated source
+time pauses eligibility; repeated or backwards source QPC cannot become a new
+sample. Startup still requires source capture time at or after its request.
+Verified-visible and prepared routes do not invent a compositor clock.
+
+Each admitted WGC frame also carries disjoint wall-clock phase costs in
+microseconds: the initial recording-authorization precheck, exclusion acquisition, backend capture (including source wait,
+readback and recovery), surrounding source validation, recording-authorization
+admission and final publication validation. Exclusion acquisition includes its
+presenter work; admission includes both parent and recording-local fences.
+These are phase durations, not CPU utilization or isolated mutex wait times.
+The precheck precedes the existing capture-cycle metric; owner handoffs,
+scheduling between cycles, clock mapping and status serialization are outside
+those phases. Live status exposes
+the latest phase record; immutable sidecars retain the full admitted history.
+All identity, visibility, authorization, cancellation and key-release checks keep
+their existing order and protections. A shared source epoch alone does not prove
+content-level A/V sync or matching end boundaries; retain real gaps, codec
+priming and track-duration differences for acceptance.

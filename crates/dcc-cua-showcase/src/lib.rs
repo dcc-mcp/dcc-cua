@@ -26,8 +26,9 @@ mod recording_authorization;
 pub use recording_authorization::{RecordingAdmission, RecordingAuthorization};
 mod provenance;
 pub use provenance::{
-    FrameCaptureProvenance, NativeFrameInstance, NativeFrameProvenance, NativeFrameSource,
-    NativeWgcFrameGeometry, PreparedCaptureFrameProvenance,
+    FrameCaptureProvenance, NativeCapturePipelineTiming, NativeFrameInstance,
+    NativeFrameProvenance, NativeFrameSource, NativeWgcFrameGeometry, NativeWgcFrameTiming,
+    PreparedCaptureFrameProvenance,
 };
 
 #[derive(Debug)]

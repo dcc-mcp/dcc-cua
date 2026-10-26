@@ -2,6 +2,88 @@ use rstest::rstest;
 
 use super::*;
 
+#[rstest]
+fn source_age_survives_frame_construction_and_showcase_projection() {
+    let source = Instant::now() - Duration::from_millis(750);
+    let before = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis();
+    let frame = LiveObservationFrame::new(1, vec![0; 4], 1, 1, source);
+    assert!(
+        frame.captured_at_ms() <= before - 700,
+        "publication must not refresh the source pixel timestamp"
+    );
+    let mut status = LiveObservationStatus::default();
+    status.publish_frame(frame, Duration::ZERO, "test");
+    let projected = project_showcase_status(&status).latest().unwrap();
+    assert_eq!(projected.captured_at(), source);
+    assert!(projected.captured_at_ms() <= before - 700);
+}
+
+#[rstest]
+#[case(99, false)]
+#[case(100, false)]
+#[case(101, true)]
+fn wgc_publication_requires_advancing_source_time_and_exposes_phase_costs(
+    #[case] next_qpc: i64,
+    #[case] accepted: bool,
+) {
+    use dcc_cua_showcase::{
+        NativeCapturePipelineTiming, NativeFrameInstance, NativeFrameProvenance, NativeFrameSource,
+        NativeWgcFrameTiming,
+    };
+    let frame = |sequence, qpc| {
+        LiveObservationFrame::new(sequence, vec![0; 4], 1, 1, Instant::now()).with_provenance(
+            FrameCaptureProvenance::NativeExactWindow(Box::new(NativeFrameProvenance {
+                source: NativeFrameSource::Wgc,
+                process_id: 42,
+                window_handle: 500,
+                native_instance: NativeFrameInstance {
+                    process_creation_time_100ns: 1,
+                    window_thread_id: 2,
+                    window_class_hash: 3,
+                    owner_window_handle: 0,
+                },
+                native_window_bounds: [0, 0, 1, 1],
+                native_visible_bounds: [0, 0, 1, 1],
+                source_rect: [0, 0, 1, 1],
+                window_dpi: 96,
+                capture_generation: sequence,
+                stream_id: 7,
+                wgc_geometry: None,
+                capture_preparation: None,
+                wgc_timing: Some(NativeWgcFrameTiming {
+                    compositor_time_100ns: qpc,
+                    published_qpc_100ns: qpc + 750,
+                    published_at_unix_ms: 100_000,
+                    calibration_bracket_ns: 50_000,
+                    pipeline: NativeCapturePipelineTiming {
+                        recording_admission_us: 41,
+                        publication_validation_us: 17,
+                        ..Default::default()
+                    },
+                }),
+            })),
+        )
+    };
+    let mut status = LiveObservationStatus::default();
+    status.publish_frame(frame(1, 100), Duration::ZERO, "persistent_wgc");
+    status.publish_frame(frame(2, next_qpc), Duration::ZERO, "persistent_wgc");
+    assert_eq!(
+        status.latest().unwrap().sequence(),
+        if accepted { 2 } else { 1 }
+    );
+    assert_eq!(status.pause_reason().is_none(), accepted);
+    assert_eq!(
+        status.as_json(true, 30)["last_capture_pipeline"]["recording_admission_us"],
+        41
+    );
+    if !accepted {
+        assert_eq!(status.pause_sequence_fence, Some(1));
+    }
+}
+
 pub(crate) struct LiveObservationTestPublisher {
     sender: watch::Sender<LiveObservationStatus>,
 }
@@ -421,6 +503,7 @@ fn showcase_projection_preserves_immutable_native_provenance_and_shared_pixels()
         capture_generation: 5,
         stream_id: 7,
         wgc_geometry: None,
+        wgc_timing: None,
         capture_preparation: None,
     }));
     let frame = LiveObservationFrame::new(9, vec![17; 4], 1, 1, Instant::now())

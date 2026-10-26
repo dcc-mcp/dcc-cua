@@ -58,6 +58,7 @@ pub enum WgcCompositorTimingUnavailable {
     PerformanceCounterUnavailable,
     TimestampAfterPublish,
     LatencyOverflow,
+    CalibrationBracketTooWide,
 }
 
 impl WgcCompositorTimingUnavailable {
@@ -67,6 +68,7 @@ impl WgcCompositorTimingUnavailable {
             Self::PerformanceCounterUnavailable => "performance_counter_unavailable",
             Self::TimestampAfterPublish => "timestamp_after_publish",
             Self::LatencyOverflow => "latency_overflow",
+            Self::CalibrationBracketTooWide => "calibration_bracket_too_wide",
         }
     }
 }
@@ -86,7 +88,8 @@ pub(crate) fn compositor_timing_from_100ns(
     system_relative_time_100ns: Option<i64>,
     publish_time_100ns: Option<i64>,
 ) -> WgcCompositorTiming {
-    let Some(system_relative_time_100ns) = system_relative_time_100ns else {
+    let Some(system_relative_time_100ns) = system_relative_time_100ns.filter(|time| *time >= 0)
+    else {
         return WgcCompositorTiming::Unavailable {
             reason: WgcCompositorTimingUnavailable::FrameTimestampUnavailable,
         };
@@ -158,12 +161,57 @@ impl WgcFrameMeasurement {
                 self.compositor_system_relative_time_100ns,
                 publish_time_100ns,
             ),
+            capture_clock: Err(WgcCompositorTimingUnavailable::PerformanceCounterUnavailable),
         }
     }
 
     pub fn at_publish(self) -> WgcPublishedFrameMeasurement {
-        self.at_publish_time_100ns(performance_counter_time_100ns())
+        let before = Instant::now();
+        let qpc = performance_counter_time_100ns();
+        let after = Instant::now();
+        let mut measurement = self.at_publish_time_100ns(qpc);
+        measurement.capture_clock =
+            map_compositor_clock(measurement.compositor, qpc, before, after);
+        measurement
     }
+}
+
+/// A bounded mapping of the real compositor QPC timestamp, never a new capture.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WgcCaptureClock {
+    pub captured_at: Instant,
+    pub published_at: Instant,
+    pub published_qpc_100ns: i64,
+    pub calibration_bracket: Duration,
+}
+
+fn map_compositor_clock(
+    timing: WgcCompositorTiming,
+    qpc: Option<i64>,
+    before: Instant,
+    after: Instant,
+) -> Result<WgcCaptureClock, WgcCompositorTimingUnavailable> {
+    let latency = match timing {
+        WgcCompositorTiming::Available {
+            compositor_to_publish,
+            ..
+        } => compositor_to_publish,
+        WgcCompositorTiming::Unavailable { reason } => return Err(reason),
+    };
+    let bracket = after
+        .checked_duration_since(before)
+        .filter(|bracket| *bracket <= Duration::from_millis(2))
+        .ok_or(WgcCompositorTimingUnavailable::CalibrationBracketTooWide)?;
+    let midpoint = before + bracket / 2;
+    Ok(WgcCaptureClock {
+        captured_at: midpoint
+            .checked_sub(latency)
+            .ok_or(WgcCompositorTimingUnavailable::LatencyOverflow)?,
+        published_at: after,
+        published_qpc_100ns: qpc
+            .ok_or(WgcCompositorTimingUnavailable::PerformanceCounterUnavailable)?,
+        calibration_bracket: bracket,
+    })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -173,6 +221,7 @@ pub struct WgcPublishedFrameMeasurement {
     pub gpu_copy_map: Duration,
     pub cpu_copy: Duration,
     pub compositor: WgcCompositorTiming,
+    pub capture_clock: Result<WgcCaptureClock, WgcCompositorTimingUnavailable>,
 }
 
 #[derive(Debug)]

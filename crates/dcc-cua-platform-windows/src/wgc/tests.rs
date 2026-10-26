@@ -3,6 +3,83 @@ use rstest::rstest;
 use super::*;
 
 #[rstest]
+fn compositor_clock_retains_source_age_through_delayed_publication() {
+    let before = Instant::now();
+    let after = before + Duration::from_micros(100);
+    let timing = compositor_timing_from_100ns(Some(10_000_000), Some(17_500_000));
+    let clock = map_compositor_clock(timing, Some(17_500_000), before, after).unwrap();
+    assert_eq!(
+        clock.captured_at,
+        before + Duration::from_micros(50) - Duration::from_millis(750)
+    );
+    assert_eq!(clock.published_at, after);
+    assert_eq!(clock.calibration_bracket, Duration::from_micros(100));
+    assert_eq!(clock.published_qpc_100ns, 17_500_000);
+}
+
+#[rstest]
+#[case(
+    None,
+    Some(20_000),
+    WgcCompositorTimingUnavailable::FrameTimestampUnavailable
+)]
+#[case(
+    Some(10_000),
+    None,
+    WgcCompositorTimingUnavailable::PerformanceCounterUnavailable
+)]
+#[case(
+    Some(-1),
+    Some(20_000),
+    WgcCompositorTimingUnavailable::FrameTimestampUnavailable
+)]
+#[case(
+    Some(30_000),
+    Some(20_000),
+    WgcCompositorTimingUnavailable::TimestampAfterPublish
+)]
+fn invalid_compositor_clock_never_substitutes_publication_time(
+    #[case] source: Option<i64>,
+    #[case] published: Option<i64>,
+    #[case] reason: WgcCompositorTimingUnavailable,
+) {
+    let now = Instant::now();
+    assert_eq!(
+        map_compositor_clock(
+            compositor_timing_from_100ns(source, published),
+            published,
+            now,
+            now
+        ),
+        Err(reason)
+    );
+}
+
+#[rstest]
+#[case(2, true)]
+#[case(3, false)]
+fn compositor_clock_calibration_has_a_bounded_uncertainty(
+    #[case] bracket_ms: u64,
+    #[case] admitted: bool,
+) {
+    let now = Instant::now();
+    let timing = compositor_timing_from_100ns(Some(10_000), Some(20_000));
+    let result = map_compositor_clock(
+        timing,
+        Some(20_000),
+        now,
+        now + Duration::from_millis(bracket_ms),
+    );
+    assert_eq!(result.is_ok(), admitted);
+    if !admitted {
+        assert_eq!(
+            result.unwrap_err(),
+            WgcCompositorTimingUnavailable::CalibrationBracketTooWide
+        );
+    }
+}
+
+#[rstest]
 fn native_wgc_geometry_failure_is_distinct_from_backend_unavailability() {
     for reason in [
         WgcGeometryError::FrameMetadataUnavailable,
