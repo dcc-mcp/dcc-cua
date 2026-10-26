@@ -5,6 +5,9 @@
 
 mod process_identity;
 mod registry;
+mod shutdown;
+
+use shutdown::{CleanupStatus, ShutdownDiagnostics};
 
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -129,6 +132,9 @@ pub struct ConnectionRecord {
     pub tasks: TaskCounts,
     pub associated_hosts: Vec<AssociatedHost>,
     pub registry_available: bool,
+    /// Older records cannot attest shutdown completion.
+    #[serde(default)]
+    pub shutdown: ShutdownDiagnostics,
 }
 
 #[derive(Debug, Serialize)]
@@ -177,6 +183,7 @@ impl ConnectionDiagnostics {
                 tasks: TaskCounts::default(),
                 associated_hosts: Vec::new(),
                 registry_available: false,
+                shutdown: ShutdownDiagnostics::default(),
             },
             directory: diagnostics_dir.or_else(registry::default_directory),
         };
@@ -257,10 +264,29 @@ impl ConnectionDiagnostics {
         self.record.request_in_flight = false;
         self.record.close_reason = Some(reason);
         self.record.close_reason_source = Some("observed".into());
+        self.record.shutdown.cleanup_status = CleanupStatus::Pending;
         self.publish();
         if let Some(directory) = self.directory.as_deref() {
             registry::retain_recent_terminal_records(directory);
         }
+    }
+
+    pub fn cleanup_finished(&mut self, failed_tasks: usize) {
+        if self.record.state != ConnectionState::Closed
+            || self.record.shutdown.cleanup_status != CleanupStatus::Pending
+        {
+            return;
+        }
+        self.record.shutdown = ShutdownDiagnostics {
+            cleanup_status: if failed_tasks == 0 {
+                CleanupStatus::Completed
+            } else {
+                CleanupStatus::Failed
+            },
+            failed_tasks: Some(failed_tasks),
+            cleanup_finished_at_unix_ms: Some(unix_time_millis()),
+        };
+        self.publish();
     }
 
     fn publish(&mut self) {
@@ -282,6 +308,10 @@ impl Drop for ConnectionDiagnostics {
         } else {
             CloseReason::ServerDropped
         });
+        if self.record.shutdown.cleanup_status == CleanupStatus::Pending {
+            self.record.shutdown.cleanup_status = CleanupStatus::Unknown;
+            self.publish();
+        }
     }
 }
 
@@ -296,6 +326,13 @@ pub fn list_connections(diagnostics_dir: Option<PathBuf>) -> ConnectionsReport {
         .unwrap_or_default();
     for record in &mut connections {
         record.process_status = process_identity::status(&record.bridge);
+        if record.process_status == ProcessStatus::Ended
+            && record.shutdown.cleanup_status == CleanupStatus::Pending
+        {
+            // An ended writer cannot finish this pending receipt. Keep its
+            // transport reason, without inventing native cleanup or exit time.
+            record.shutdown.cleanup_status = CleanupStatus::Unknown;
+        }
         if record.state != ConnectionState::Closed && record.process_status == ProcessStatus::Ended
         {
             record.close_reason = Some(CloseReason::ProcessExited);
@@ -319,6 +356,7 @@ pub fn list_connections(diagnostics_dir: Option<PathBuf>) -> ConnectionsReport {
             "An idle initialized connection may remain valid; process count does not establish a leak.",
             "Process exit is inferred from OS creation identity and does not establish stdin EOF.",
             "Where OS creation identity is unavailable, process_status remains unknown.",
+            "Transport close, owned-task cleanup, and OS process exit are separate evidence; older records have unknown cleanup.",
         ],
     }
 }

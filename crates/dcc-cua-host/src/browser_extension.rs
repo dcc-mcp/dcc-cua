@@ -164,12 +164,14 @@ pub(super) async fn route_host_request(
             if let Err(error) = host.require_allowed_browser_origin(&expected_origin) {
                 return RoutedBrowserExtensionRequest::Handled(Err(error));
             }
-            if !matches!(method.as_str(), "snapshot" | "click" | "type") {
+            if !matches!(method.as_str(), "snapshot" | "click" | "type" | "navigate") {
                 return RoutedBrowserExtensionRequest::Handled(Err(HostError::Protocol(
                     "unsupported task extension method".into(),
                 )));
             }
-            if matches!(method.as_str(), "click" | "type" | "unpair") && !host.allow_browser_input {
+            if matches!(method.as_str(), "click" | "type" | "navigate" | "unpair")
+                && !host.allow_browser_input
+            {
                 return RoutedBrowserExtensionRequest::Handled(Err(HostError::coded_protocol(
                     HostProtocolErrorCode::BrowserInputNotGranted,
                     "browser input is not granted for the logical task session",
@@ -185,6 +187,11 @@ pub(super) async fn route_host_request(
                     &host.capability,
                 )
                 .await
+            {
+                return RoutedBrowserExtensionRequest::Handled(Err(error));
+            }
+            if method == "navigate"
+                && let Err(error) = registry.require_navigation_capability(&provider_id).await
             {
                 return RoutedBrowserExtensionRequest::Handled(Err(error));
             }
@@ -247,6 +254,12 @@ pub(super) async fn route_host_request(
                     timeout_ms,
                 )
                 .await;
+            if method == "navigate" && navigation_provider_must_revoke(&response) {
+                // The target document/pairing is no longer reusable, including
+                // when delivery or completion became unknown. Never remove a
+                // replacement provider created by a later explicit pairing.
+                registry.providers.lock().await.remove(&provider_id);
+            }
             if let Ok(value) = &response {
                 if method == "snapshot" {
                     let observation = match crate::extension_input::ExtensionObservation::new(
@@ -272,7 +285,39 @@ pub(super) async fn route_host_request(
     RoutedBrowserExtensionRequest::Handled(result.map(|response| (response, None)))
 }
 
+pub(super) fn navigation_provider_must_revoke(result: &Result<Value, HostError>) -> bool {
+    if let Err(HostError::Protocol(message)) = result {
+        let code = message.split(':').next().unwrap_or("");
+        if matches!(
+            code,
+            "navigation_unsupported"
+                | "target_not_foreground"
+                | "stale_observation"
+                | "command_expired"
+                | "navigation_target_refused"
+                | "navigation_cancelled"
+        ) {
+            return false;
+        }
+    }
+    true
+}
+
 impl BrowserExtensionRegistry {
+    async fn require_navigation_capability(&self, provider_id: &str) -> Result<(), HostError> {
+        if !self
+            .provider(provider_id)
+            .await?
+            .capabilities
+            .iter()
+            .any(|capability| capability == "tab_navigation_v1")
+        {
+            return Err(HostError::Protocol(
+                "navigation_unsupported: paired extension lacks tab_navigation_v1".into(),
+            ));
+        }
+        Ok(())
+    }
     pub(super) async fn claim(
         &self,
         provider_id: &str,
@@ -472,10 +517,16 @@ impl BrowserExtensionRegistry {
                 "browser extension provider origin does not match the requested origin".into(),
             ));
         }
-        if !matches!(method, "snapshot" | "click" | "type" | "unpair") {
+        if !matches!(
+            method,
+            "snapshot" | "click" | "type" | "navigate" | "unpair"
+        ) {
             return Err(HostError::Protocol(format!(
                 "unsupported browser extension method: {method}"
             )));
+        }
+        if method == "navigate" {
+            self.require_navigation_capability(provider_id).await?;
         }
         let request_id = Uuid::new_v4().to_string();
         let mut command = params.as_object().cloned().ok_or_else(|| {
@@ -489,6 +540,7 @@ impl BrowserExtensionRegistry {
             "tab_id",
             "_dcc_task_owner",
             "_dcc_deadline_unix_ms",
+            "deadline_unix_ms",
         ] {
             if command.contains_key(forbidden) {
                 return Err(HostError::Protocol(format!(
@@ -508,6 +560,12 @@ impl BrowserExtensionRegistry {
             "_dcc_deadline_unix_ms".into(),
             Value::from(crate::session_events::observed_at_millis().saturating_add(timeout_ms)),
         );
+        if method == "navigate" {
+            command.insert(
+                "deadline_unix_ms".into(),
+                command["_dcc_deadline_unix_ms"].clone(),
+            );
+        }
         if let Some(owner) = provider.owner.lock().await.as_ref() {
             command.insert(
                 "_dcc_task_owner".into(),
@@ -545,7 +603,7 @@ impl BrowserExtensionRegistry {
             Err(_) => {
                 provider.pending.lock().await.remove(&request_id);
                 return Err(HostError::Protocol(
-                    "browser extension call timed out".into(),
+                    if method == "navigate" { "navigation_outcome_unknown: navigation may have been dispatched; re-pair before further work" } else { "browser extension call timed out" }.into(),
                 ));
             }
         };
@@ -570,6 +628,18 @@ impl BrowserExtensionRegistry {
         {
             return Err(HostError::Protocol(
                 "extension document changed; pair the tab again".into(),
+            ));
+        }
+        if method == "navigate"
+            && (response["result"]["phase"] != "dispatched"
+                || response["result"]["navigation_requested"] != true
+                || response["result"]["completion_known"] != false
+                || response["result"]["effect"] != "unverified"
+                || response["result"]["pairing_required"] != true
+                || response["result"]["fresh_observation_required"] != true)
+        {
+            return Err(HostError::Protocol(
+                "navigation_outcome_unknown: invalid navigation receipt".into(),
             ));
         }
         Ok(json!({

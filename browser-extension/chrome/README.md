@@ -23,6 +23,9 @@ the dcc-cua repository but versioned and released independently as
 
 ## Development
 
+The candidate [paired-tab navigation contract](../../docs/design/paired-tab-navigation.md)
+describes its independent task scope, capability gate and one-shot re-pairing rule.
+
 ```bash
 npm ci
 npm run check

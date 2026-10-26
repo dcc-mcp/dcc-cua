@@ -48,8 +48,13 @@ fn extension_evidence_refuses_foreign_provider_origin_snapshot_and_sensitive_typ
 }
 
 #[rstest]
+#[case("click", "semantic")]
+#[case("browser_extension_navigate", "browser")]
 #[tokio::test]
-async fn extension_input_checks_exact_action_lease_and_revocation_without_driver_calls() {
+async fn extension_input_checks_exact_action_lease_and_revocation_without_driver_calls(
+    #[case] action_name: &str,
+    #[case] input_kind: &str,
+) {
     let (driver, exchanges) = task_authorization::observation_only_test_driver();
     let mut host = cached_host_session(&driver);
     let (issuer, authority) = trusted_task_authorization_broker();
@@ -70,11 +75,11 @@ async fn extension_input_checks_exact_action_lease_and_revocation_without_driver
             },
             allowed_host_methods: vec!["browser_extension_call".into()],
             allowed_actions: vec![TrustedTaskActionScope {
-                action: "click".into(),
-                input_kind: "semantic".into(),
+                action: action_name.into(),
+                input_kind: input_kind.into(),
                 secret_input: false,
                 authorization_category: "external_effect".into(),
-                browser_origin: None,
+                browser_origin: (input_kind == "browser").then(|| "https://example.com".into()),
             }],
             allowed_browser_origins: vec!["https://example.com".into()],
             browser_scope: None,
@@ -106,15 +111,54 @@ async fn extension_input_checks_exact_action_lease_and_revocation_without_driver
     let services = HostSecurityServices::default().with_task_authorization_host(authority);
     let evidence =
         ExtensionObservation::new("provider-1", "https://example.com", snapshot()).unwrap();
-    let params = json!({"snapshot_id":"snapshot-1","ref":"p1:1","text":"public","replace":true});
+    let params = if input_kind == "browser" {
+        json!({"snapshot_id":"snapshot-1","url":"https://example.com/next"})
+    } else {
+        json!({"snapshot_id":"snapshot-1","ref":"p1:1","text":"public","replace":true})
+    };
     let click = evidence
-        .action("provider-1", "https://example.com", "click", &params)
+        .action(
+            "provider-1",
+            "https://example.com",
+            if input_kind == "browser" {
+                "navigate"
+            } else {
+                "click"
+            },
+            &params,
+        )
         .unwrap();
     crate::extension_input::authorize(&host, &services, "session-1", click.clone(), "snapshot-1")
         .await
         .unwrap();
+    if input_kind == "semantic" {
+        let navigation = evidence
+            .action(
+                "provider-1",
+                "https://example.com",
+                "navigate",
+                &json!({"snapshot_id":"snapshot-1","url":"https://example.com/next"}),
+            )
+            .unwrap();
+        assert!(
+            crate::extension_input::authorize(
+                &host,
+                &services,
+                "session-1",
+                navigation,
+                "snapshot-1"
+            )
+            .await
+            .is_err()
+        );
+    }
     let typing = evidence
-        .action("provider-1", "https://example.com", "type", &params)
+        .action(
+            "provider-1",
+            "https://example.com",
+            "type",
+            &json!({"snapshot_id":"snapshot-1","ref":"p1:1","text":"public","replace":true}),
+        )
         .unwrap();
     assert!(
         crate::extension_input::authorize(&host, &services, "session-1", typing, "snapshot-1")
@@ -139,6 +183,36 @@ async fn extension_input_checks_exact_action_lease_and_revocation_without_driver
             .is_err()
     );
     assert_eq!(exchanges.load(std::sync::atomic::Ordering::Relaxed), 0);
+}
+
+#[rstest]
+fn extension_navigation_requires_fresh_same_origin_non_secret_url_without_a_dom_ref() {
+    let evidence =
+        ExtensionObservation::new("provider-1", "https://example.com", snapshot()).unwrap();
+    let params = json!({"snapshot_id":"snapshot-1","url":"https://example.com/next?public=1"});
+    let action = evidence
+        .action("provider-1", "https://example.com", "navigate", &params)
+        .unwrap();
+    assert_eq!(action["action"], "browser_extension_navigate");
+    assert!(!action.to_string().contains("public=1"));
+    for value in [
+        json!({"snapshot_id":"old","url":"https://example.com/next"}),
+        json!({"snapshot_id":"snapshot-1","url":"https://other.test/"}),
+        json!({"snapshot_id":"snapshot-1","url":"https://user:secret@example.com/"}),
+        json!({"snapshot_id":"snapshot-1","url":"file:///private"}),
+        json!({"snapshot_id":"snapshot-1","url":"https://example.com/","deadline_unix_ms":999999}),
+    ] {
+        assert!(
+            evidence
+                .action("provider-1", "https://example.com", "navigate", &value)
+                .is_err()
+        );
+    }
+    assert!(
+        evidence
+            .action("foreign", "https://example.com", "navigate", &params)
+            .is_err()
+    );
 }
 
 #[rstest]

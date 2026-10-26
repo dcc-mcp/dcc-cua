@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.16.0](https://github.com/dcc-mcp/dcc-cua/compare/v1.15.0...v1.16.0) (2026-10-26)
+
+
+### Features
+
+* **extension:** add scoped same-origin tab navigation ([c106421](https://github.com/dcc-mcp/dcc-cua/commit/c1064212bb6b726ae9836837712b4345393edd24))
+
+
+### Bug Fixes
+
+* **extension:** retain providers after navigation preflight refusals ([b71aef0](https://github.com/dcc-mcp/dcc-cua/commit/b71aef0083aba08f2ab076453fc28991eaac42dd))
+
 ## [1.15.0](https://github.com/dcc-mcp/dcc-cua/compare/v1.14.0...v1.15.0) (2026-10-24)
 
 

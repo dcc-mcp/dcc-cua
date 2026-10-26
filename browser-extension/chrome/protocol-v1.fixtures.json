@@ -60,6 +60,16 @@
     },
     {
       "schema": "dcc-cua.browser-extension.v1",
+      "request_id": "navigate-1",
+      "method": "navigate",
+      "session_nonce": "nonce-1",
+      "tab_id": 42,
+      "snapshot_id": "snapshot-1",
+      "url": "https://example.test/next",
+      "deadline_unix_ms": 123456789
+    },
+    {
+      "schema": "dcc-cua.browser-extension.v1",
       "request_id": "unpair-1",
       "method": "unpair",
       "session_nonce": "nonce-1",
@@ -81,6 +91,16 @@
     }
   ],
   "invalid": [
+    {
+      "schema": "dcc-cua.browser-extension.v1",
+      "request_id": "expired-navigation",
+      "method": "navigate",
+      "session_nonce": "nonce-1",
+      "tab_id": 42,
+      "snapshot_id": "snapshot-1",
+      "url": "https://example.test/next",
+      "deadline_unix_ms": 0
+    },
     {
       "schema": "dcc-cua.browser-extension.v1",
       "type": "hello",

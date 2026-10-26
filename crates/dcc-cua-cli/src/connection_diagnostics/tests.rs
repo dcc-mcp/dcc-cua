@@ -137,6 +137,60 @@ fn malformed_metadata_stays_unknown_and_does_not_copy_urls_or_controls() {
 }
 
 #[rstest]
+fn transport_close_cannot_attest_cleanup_and_legacy_records_remain_unknown() {
+    let (_temporary, path) = directory();
+    let mut diagnostics = ConnectionDiagnostics::new(build(), Some(path.clone()));
+    diagnostics.close(CloseReason::StdinEof);
+    assert_eq!(
+        diagnostics.snapshot().shutdown.cleanup_status,
+        CleanupStatus::Pending
+    );
+    let mut old = serde_json::to_value(diagnostics.snapshot()).unwrap();
+    old.as_object_mut().unwrap().remove("shutdown");
+    let legacy: ConnectionRecord = serde_json::from_value(old).unwrap();
+    assert_eq!(legacy.shutdown.cleanup_status, CleanupStatus::Unknown);
+    assert!(legacy.shutdown.cleanup_finished_at_unix_ms.is_none());
+    diagnostics.cleanup_finished(0);
+    assert_eq!(
+        diagnostics.snapshot().shutdown.cleanup_status,
+        CleanupStatus::Completed
+    );
+    drop(diagnostics);
+    let record = list_connections(Some(path)).connections.remove(0);
+    assert_eq!(record.shutdown.cleanup_status, CleanupStatus::Completed);
+    assert_eq!(record.close_reason, Some(CloseReason::StdinEof));
+}
+
+#[rstest]
+fn interrupted_cleanup_stays_unknown_even_after_transport_eof() {
+    let (_temporary, path) = directory();
+    let mut diagnostics = ConnectionDiagnostics::new(build(), Some(path.clone()));
+    diagnostics.close(CloseReason::StdinEof);
+    drop(diagnostics);
+    let record = list_connections(Some(path)).connections.remove(0);
+    assert_eq!(record.close_reason, Some(CloseReason::StdinEof));
+    assert_eq!(record.shutdown.cleanup_status, CleanupStatus::Unknown);
+    assert!(record.shutdown.failed_tasks.is_none());
+    assert!(record.shutdown.cleanup_finished_at_unix_ms.is_none());
+}
+
+#[rstest]
+fn ended_writer_cannot_leave_cleanup_looking_in_progress() {
+    let (_temporary, path) = directory();
+    let mut diagnostics = ConnectionDiagnostics::new(build(), Some(path.clone()));
+    diagnostics.close(CloseReason::StdinEof);
+    let mut record = diagnostics.snapshot();
+    record.bridge.creation_id = Some("previous-process-instance".into());
+    registry::publish(&path, &record).unwrap();
+    let observed = list_connections(Some(path)).connections.remove(0);
+    if observed.process_status == ProcessStatus::Ended {
+        assert_eq!(observed.shutdown.cleanup_status, CleanupStatus::Unknown);
+        assert_eq!(observed.close_reason, Some(CloseReason::StdinEof));
+        assert!(observed.shutdown.cleanup_finished_at_unix_ms.is_none());
+    }
+}
+
+#[rstest]
 fn unavailable_registry_preserves_current_resource_without_touching_transport() {
     let temporary = tempfile::tempdir().unwrap();
     let file = temporary.path().join("not-a-directory");

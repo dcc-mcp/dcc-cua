@@ -3,6 +3,35 @@ use serde_json::{Value, json};
 
 use crate::browser_extension::{BrowserExtensionRegistry, validate_extension_response};
 
+#[rstest]
+fn navigation_only_revokes_the_provider_after_evidence_consumption_or_unknown_delivery() {
+    use crate::browser_extension::navigation_provider_must_revoke;
+    for code in [
+        "navigation_unsupported",
+        "target_not_foreground",
+        "stale_observation",
+        "command_expired",
+        "navigation_target_refused",
+        "navigation_cancelled",
+    ] {
+        assert!(!navigation_provider_must_revoke(&Err(
+            crate::HostError::Protocol(format!("{code}: refused"))
+        )));
+    }
+    for code in [
+        "navigation_pairing_required",
+        "navigation_outcome_unknown",
+        "provider disconnected",
+    ] {
+        assert!(navigation_provider_must_revoke(&Err(
+            crate::HostError::Protocol(code.into())
+        )));
+    }
+    assert!(navigation_provider_must_revoke(&Ok(
+        json!({"result":{"phase":"dispatched"}})
+    )));
+}
+
 fn hello() -> Value {
     json!({
         "schema": "dcc-cua.browser-extension.v1",
@@ -179,6 +208,72 @@ async fn registered_provider_round_trips_one_extension_call() {
         .unwrap();
     bridge.await.unwrap();
     assert_eq!(result["result"]["snapshot_id"], "snapshot-1");
+}
+
+#[rstest]
+#[case(true)]
+#[case(false)]
+#[tokio::test]
+async fn extension_navigation_requires_provider_capability_and_host_owned_deadline(
+    #[case] valid_receipt: bool,
+) {
+    let registry = BrowserExtensionRegistry::new();
+    let legacy = registry
+        .register(&hello(), "chrome-extension://published-extension/", 42)
+        .await
+        .unwrap();
+    let params = json!({"snapshot_id":"snapshot-1","url":"https://example.com/next"});
+    let error = registry
+        .call(
+            legacy["provider_id"].as_str().unwrap(),
+            "https://example.com",
+            42,
+            "navigate",
+            &params,
+            1000,
+        )
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("navigation_unsupported"));
+    let mut supported = hello();
+    supported["capabilities"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!("tab_navigation_v1"));
+    let registered = registry
+        .register(&supported, "chrome-extension://published-extension/", 42)
+        .await
+        .unwrap();
+    let id = registered["provider_id"].as_str().unwrap().to_owned();
+    let secret = registered["provider_secret"].as_str().unwrap().to_owned();
+    let mut forged = params.clone();
+    forged["deadline_unix_ms"] = json!(u64::MAX);
+    assert!(
+        registry
+            .call(&id, "https://example.com", 42, "navigate", &forged, 1000)
+            .await
+            .is_err()
+    );
+    let worker_registry = registry.clone();
+    let worker_id = id.clone();
+    let worker = tokio::spawn(async move {
+        let command = worker_registry
+            .next_command(&worker_id, &secret, 1000)
+            .await
+            .unwrap()["command"]
+            .clone();
+        assert!(command["deadline_unix_ms"].as_u64().unwrap() > 0);
+        assert_eq!(
+            command["deadline_unix_ms"],
+            command["_dcc_deadline_unix_ms"]
+        );
+        worker_registry.complete(&worker_id, &secret, json!({"schema":"dcc-cua.browser-extension.v1","type":"response","request_id":command["request_id"],"ok":true,"result":{"phase":"dispatched","navigation_requested":true,"effect":"unverified","completion_known":!valid_receipt,"pairing_required":true,"fresh_observation_required":true}})).await.unwrap();
+    });
+    let result = registry
+        .call(&id, "https://example.com", 42, "navigate", &params, 1000)
+        .await;
+    assert_eq!(result.is_ok(), valid_receipt);
+    worker.await.unwrap();
 }
 
 #[rstest]

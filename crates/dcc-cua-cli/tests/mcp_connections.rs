@@ -255,6 +255,33 @@ fn assert_observed_close(record: &Value, reason: &str) {
     assert_eq!(record["close_reason_source"], "observed");
     assert_process_status(record, "ended");
     assert!(record["closed_at_unix_ms"].is_u64());
+    assert_eq!(record["shutdown"]["cleanup_status"], "completed");
+    assert_eq!(record["shutdown"]["failed_tasks"], 0);
+}
+
+#[rstest]
+fn repeated_owned_stdio_disconnects_are_reaped_without_sharing_connections() {
+    let directory = isolated_directory();
+    let mut identities = Vec::new();
+    for round in 0..6 {
+        let mut bridge = Bridge::spawn(directory.path());
+        bridge.initialize("owned-lifecycle-regression", &format!("owned-chat-{round}"));
+        let current = bridge.current();
+        identities.push((current["bridge"].clone(), current["connection_id"].clone()));
+        bridge.close_input();
+        assert!(bridge.finish().success());
+    }
+    let report = connections(directory.path());
+    for (process, connection) in identities {
+        let record = report["connections"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|record| record["connection_id"] == connection)
+            .unwrap();
+        assert_eq!(record["bridge"], process);
+        assert_observed_close(record, "stdin_eof");
+    }
 }
 
 #[rstest]

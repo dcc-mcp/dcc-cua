@@ -9,6 +9,7 @@
     { "$ref": "#/$defs/snapshot" },
     { "$ref": "#/$defs/click" },
     { "$ref": "#/$defs/type" },
+    { "$ref": "#/$defs/navigate" },
     { "$ref": "#/$defs/unpair" },
     { "$ref": "#/$defs/success_response" },
     { "$ref": "#/$defs/error_response" }
@@ -131,6 +132,20 @@
         "replace": { "const": true }
       },
       "required": ["schema", "request_id", "method", "session_nonce", "tab_id", "snapshot_id", "ref", "text", "replace"]
+    },
+    "navigate": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "schema": { "$ref": "#/$defs/schema" },
+        "request_id": { "$ref": "#/$defs/request_id" },
+        "method": { "const": "navigate" },
+        "session_nonce": { "$ref": "#/$defs/session_nonce" },
+        "tab_id": { "$ref": "#/$defs/tab_id" },
+        "snapshot_id": { "$ref": "#/$defs/evidence_id" },
+        "url": { "type": "string", "minLength": 1, "maxLength": 2048, "pattern": "^https?://" },
+        "deadline_unix_ms": { "type": "integer", "minimum": 1 }
+      },
+      "required": ["schema", "request_id", "method", "session_nonce", "tab_id", "snapshot_id", "url", "deadline_unix_ms"]
     },
     "unpair": {
       "type": "object",

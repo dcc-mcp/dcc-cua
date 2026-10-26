@@ -1,5 +1,6 @@
 use rstest::rstest;
 use serde_json::{Value, json};
+use tokio::io::AsyncWriteExt;
 
 use super::frame_recovery::add_frame_recovery_guidance;
 use super::*;
@@ -9,6 +10,7 @@ mod capture_preparation_tests;
 mod interaction_recovery_tests;
 mod lifetime_tests;
 mod native_menu_tests;
+mod transport_tests;
 
 #[rstest]
 fn extension_methods_are_browser_only_and_closed() {
@@ -78,6 +80,28 @@ async fn extension_snapshot_requires_the_task_origin_before_host_dispatch() {
         .await
         .unwrap_err();
     assert!(error.contains("provider/runtime/PID/HWND"), "{error}");
+}
+
+#[rstest]
+fn extension_navigation_has_independent_origin_scope_and_closed_params() {
+    let mut task = browser_task();
+    task["allowed_methods"] = json!(["browser_extension_call"]);
+    task["allowed_browser_origins"] = json!(["https://example.com"]);
+    task["allowed_actions"] = json!([{"action":"browser_extension_navigate","input_kind":"browser","secret_input":false,"authorization_category":"external_effect","browser_origin":"https://example.com"}]);
+    assert!(test_server().prepare_task(task.clone()).is_ok());
+    task["allowed_actions"][0]["secret_input"] = json!(true);
+    assert!(test_server().prepare_task(task).is_err());
+    let params = json!({"method":"navigate","params":{"snapshot_id":"fresh","url":"https://example.com/next"}});
+    assert!(validate_task_method_params("browser_extension_call", &params).is_ok());
+    for change in [
+        json!({"snapshot_id":"fresh"}),
+        json!({"url":"https://example.com/next"}),
+        json!({"snapshot_id":"fresh","url":"https://example.com/next","deadline_unix_ms":u64::MAX}),
+    ] {
+        let mut invalid = params.clone();
+        invalid["params"] = change;
+        assert!(validate_task_method_params("browser_extension_call", &invalid).is_err());
+    }
 }
 
 fn test_server() -> TaskAuthorizationServer {
@@ -1854,7 +1878,12 @@ fn start_task_has_no_confirmation_ui_or_secret_value_fields() {
 fn task_action_schema_matches_the_closed_runtime_contract() {
     let schema = task_action_scope_schema();
     let variants = schema["oneOf"].as_array().unwrap();
-    assert_eq!(variants.len(), 9);
+    assert_eq!(variants.len(), 10);
+    let audio = variants
+        .iter()
+        .filter(|scope| scope["properties"]["input_kind"]["const"] == "playback_audio")
+        .collect::<Vec<_>>();
+    assert_eq!(audio, vec![&recording_audio::scope_schema()]);
 
     let variant = |input_kind: &str| {
         variants
@@ -1929,7 +1958,34 @@ fn task_action_schema_matches_the_closed_runtime_contract() {
             .contains(&json!("browser_click"))
     );
 
-    let browser = variant("browser");
+    let navigation = variants
+        .iter()
+        .find(|variant| variant["properties"]["action"]["const"] == "browser_extension_navigate")
+        .unwrap();
+    assert_eq!(navigation["additionalProperties"], false);
+    assert_eq!(
+        navigation["required"],
+        json!([
+            "action",
+            "input_kind",
+            "secret_input",
+            "authorization_category",
+            "browser_origin"
+        ])
+    );
+    assert_eq!(
+        navigation["properties"],
+        json!({
+            "action":{"const":"browser_extension_navigate"},
+            "input_kind":{"const":"browser"}, "secret_input":{"const":false},
+            "authorization_category":{"const":"external_effect"},
+            "browser_origin":{"type":"string", "minLength":1, "maxLength":2048, "pattern":"^https?://[^/?#@]+$"}
+        })
+    );
+    let browser = variants
+        .iter()
+        .find(|variant| variant["properties"]["action"]["const"] == "browser_type")
+        .unwrap();
     assert_eq!(browser["properties"]["action"]["const"], "browser_type");
     assert_eq!(browser["properties"]["secret_input"]["const"], true);
     assert_eq!(
