@@ -60,7 +60,7 @@ function fixture() {
   const source = readFileSync(new URL("../entrypoints/background.ts", import.meta.url), "utf8")
     .replace(/^import[\s\S]*?;\r?\n/gm, "").replace(/export default /g, "").replace(/export /g, "");
   runInNewContext(stripTypeScriptTypes(source), { ...protocol, ...content, PairingLifecycle, navigatePairedTab, browser, defineBackground: (run: () => void) => run(), crypto: { randomUUID }, URL });
-  return { ports, responses, navigations, pauseNavigation() { let resume!: () => void; navigationGate = new Promise<void>(resolve => { resume = resolve; }); return resume; }, badge: () => badge, title: () => title, disconnectError(message: string) { (browser.runtime as any).lastError = { message }; }, pauseClear: () => pauseStorage("remove"), pauseSave: () => pauseStorage("set"), loseFocus: () => { focused = false; }, commands: () => commands, stored: () => stored, async pair() { clicked.fire({ id: 1, windowId: 2, url: "https://example.com" }); await flush(); } };
+  return { ports, responses, navigations, pauseNavigation() { let resume!: () => void; navigationGate = new Promise<void>(resolve => { resume = resolve; }); return resume; }, badge: () => badge, title: () => title, disconnectError(message: string, source: "runtime" | "port") { if (source === "port") { ports.at(-1).error = { message }; (browser.runtime as any).lastError = { message: "different runtime error" }; } else { (browser.runtime as any).lastError = { message }; } }, pauseClear: () => pauseStorage("remove"), pauseSave: () => pauseStorage("set"), loseFocus: () => { focused = false; }, commands: () => commands, stored: () => stored, async pair() { clicked.fire({ id: 1, windowId: 2, url: "https://example.com" }); await flush(); } };
 }
 
 test("background clears restored pairing and requires explicit pairing after disconnect", async () => {
@@ -208,13 +208,15 @@ for (const [message, code] of [
   ["Access to the specified native messaging host is forbidden.", "native_host_forbidden"],
   ["PRIVATE_SENTINEL https://example.test/?token=secret", "native_disconnected"],
 ] as const) {
-  test(`native disconnect reports ${code} without reflecting browser error text`, async () => {
-    const f = fixture(); await flush(); await f.pair();
-    f.disconnectError(message);
-    f.ports[0].onDisconnect.fire(); await flush();
-    assert.match(f.title(), new RegExp(code));
-    assert.doesNotMatch(f.title(), /PRIVATE_SENTINEL|example\.test|token=|secret/);
-    assert.equal(f.stored(), undefined);
-    assert.equal(f.badge(), "!");
-  });
+  for (const source of ["runtime", "port"] as const) {
+    test(`native disconnect reports ${code} from ${source} without reflecting browser error text`, async () => {
+      const f = fixture(); await flush(); await f.pair();
+      f.disconnectError(message, source);
+      f.ports[0].onDisconnect.fire(); await flush();
+      assert.match(f.title(), new RegExp(code));
+      assert.doesNotMatch(f.title(), /PRIVATE_SENTINEL|example\.test|token=|secret/);
+      assert.equal(f.stored(), undefined);
+      assert.equal(f.badge(), "!");
+    });
+  }
 }

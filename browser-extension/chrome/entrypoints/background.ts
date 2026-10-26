@@ -262,7 +262,8 @@ export default defineBackground(() => {
         });
     });
     port.onDisconnect.addListener(() => {
-      const message = browser.runtime.lastError?.message;
+      const portError = "error" in port && isObject(port.error) ? port.error.message : undefined;
+      const message = typeof portError === "string" ? portError : browser.runtime.lastError?.message;
       const reason = message === "Specified native messaging host not found."
         ? "native_host_unavailable"
         : message === "Access to the specified native messaging host is forbidden."
