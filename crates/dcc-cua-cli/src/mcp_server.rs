@@ -4,6 +4,8 @@ mod capture_popup;
 mod frame_recovery;
 mod interaction_recovery;
 mod owned_host;
+mod transport;
+use transport::run_transport;
 
 use std::collections::BTreeMap;
 use std::error::Error;
@@ -26,7 +28,7 @@ use dcc_cua_host::{
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader, BufWriter};
+use tokio::io::{AsyncBufRead, AsyncWrite, BufReader, BufWriter};
 use uuid::Uuid;
 
 use owned_host::{
@@ -2084,8 +2086,16 @@ pub async fn run(diagnostics_dir: Option<std::path::PathBuf>) -> Result<(), Box<
     server.diagnostics = Some(ConnectionDiagnostics::new(runtime_build(), diagnostics_dir));
     let mut input = BufReader::new(tokio::io::stdin());
     let mut output = BufWriter::new(tokio::io::stdout());
+    run_connection(server, &mut input, &mut output).await
+}
+
+async fn run_connection<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin>(
+    mut server: TaskAuthorizationServer,
+    input: &mut R,
+    output: &mut W,
+) -> Result<(), Box<dyn Error>> {
     let mut reason = CloseReason::InputError;
-    let result = run_transport(&mut server, &mut input, &mut output, &mut reason).await;
+    let result = run_transport(&mut server, input, output, &mut reason).await;
     // Preserve the last observed task/Host associations at disconnect. Dropping
     // transports below does not attest that Host cleanup has finished.
     server.update_diagnostics();
@@ -2095,6 +2105,9 @@ pub async fn run(diagnostics_dir: Option<std::path::PathBuf>) -> Result<(), Box<
     // Finalize only this connection's owned task sessions before dropping their
     // transports. Read-only diagnostics retain the last observed associations.
     let cleanup_failures = server.shutdown_tasks().await;
+    if let Some(diagnostics) = server.diagnostics.as_mut() {
+        diagnostics.cleanup_finished(cleanup_failures.len());
+    }
     server.proposals.clear();
     if cleanup_failures.is_empty() {
         result
@@ -2109,82 +2122,6 @@ pub async fn run(diagnostics_dir: Option<std::path::PathBuf>) -> Result<(), Box<
         ))
         .into())
     }
-}
-
-async fn run_transport(
-    server: &mut TaskAuthorizationServer,
-    input: &mut BufReader<tokio::io::Stdin>,
-    output: &mut BufWriter<tokio::io::Stdout>,
-    reason: &mut CloseReason,
-) -> Result<(), Box<dyn Error>> {
-    loop {
-        *reason = CloseReason::InputError;
-        let mut line = Vec::new();
-        let count = (&mut *input)
-            .take(dcc_cua_protocol::MAX_JSON_FRAME_BYTES as u64 + 1)
-            .read_until(b'\n', &mut line)
-            .await?;
-        if count == 0 {
-            *reason = CloseReason::StdinEof;
-            break;
-        }
-        if let Some(diagnostics) = server.diagnostics.as_mut() {
-            diagnostics.activity();
-        }
-        if count > dcc_cua_protocol::MAX_JSON_FRAME_BYTES {
-            *reason = CloseReason::FrameLimit;
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "MCP request exceeds frame limit",
-            )
-            .into());
-        }
-        if line.iter().all(u8::is_ascii_whitespace) {
-            continue;
-        }
-        let decoded: Value = match serde_json::from_slice(&line) {
-            Ok(value) => value,
-            Err(_) => {
-                *reason = CloseReason::OutputError;
-                output
-                    .write_all(
-                        format!("{}\n", rpc_error(Value::Null, -32700, "Parse error")).as_bytes(),
-                    )
-                    .await?;
-                output.flush().await?;
-                continue;
-            }
-        };
-        if let Some(diagnostics) = server.diagnostics.as_mut() {
-            diagnostics.set_request_in_flight(true);
-        }
-        let mut responses = Vec::new();
-        if let Some(batch) = decoded.as_array() {
-            for message in batch {
-                if let Some(response) = server.handle_rpc(message.clone()).await {
-                    responses.push(response);
-                }
-            }
-        } else if let Some(response) = server.handle_rpc(decoded).await {
-            responses.push(response);
-        }
-        server.update_diagnostics();
-        if let Some(diagnostics) = server.diagnostics.as_mut() {
-            diagnostics.set_request_in_flight(false);
-        }
-        if responses.is_empty() {
-            continue;
-        }
-        let response = if responses.len() == 1 {
-            responses.remove(0)
-        } else {
-            Value::Array(responses)
-        };
-        *reason = CloseReason::OutputError;
-        output.write_all(format!("{response}\n").as_bytes()).await?;
-        output.flush().await?;
-    }
-    Ok(())
 }
 
 #[cfg(test)]
