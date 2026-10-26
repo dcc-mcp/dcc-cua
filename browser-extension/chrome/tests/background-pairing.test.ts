@@ -154,6 +154,8 @@ test("real background navigates only its paired tab and consumes pairing before 
   port.onMessage.fire(request); await flush();
   assert.deepEqual(f.navigations, [request.url]);
   assert.equal(f.stored(), undefined);
+  assert.equal(f.badge(), "");
+  assert.match(f.title(), /unpaired/);
   assert.equal(f.responses.at(-1).result.completion_known, false);
   port.onMessage.fire(request); await flush();
   assert.equal(f.responses.at(-1).ok, false);
