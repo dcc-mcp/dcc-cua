@@ -182,6 +182,7 @@ fn source_rejects_wrong_target_or_dead_owner_before_requesting_hide(#[case] vari
         generation: dcc_cua_interrupt::interrupt_generation()
             .wrapping_add(u64::from(variant == "generation_changed")),
         target: (42, 99),
+        input_capture: Arc::default(),
     };
     let pid = if variant == "wrong_pid" { 43 } else { 42 };
     let hwnd = if variant == "wrong_hwnd" { 100 } else { 99 };

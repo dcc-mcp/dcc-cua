@@ -754,6 +754,33 @@ fn physical_input_fence_shift_movement_releases_every_owned_key(#[case] scenario
 }
 
 #[rstest]
+#[case(1600)]
+#[case(2400)]
+fn physical_input_fence_long_shift_hold_keeps_twenty_ms_checks_and_key_release(
+    #[case] duration: u64,
+) {
+    let mut backend = FakeBackend::new();
+    let outcome = run_keypress(
+        &mut backend,
+        fence(),
+        &["Shift".into(), "W".into()],
+        Some(duration),
+    )
+    .unwrap();
+    assert!(outcome.delivery_completed);
+    assert_eq!(backend.clock, duration);
+    assert!(backend.check_count >= duration as usize / 20);
+    assert_eq!(
+        backend.mutations[0].1,
+        vec![Event::Key(0x10, false), Event::Key(0x57, false)]
+    );
+    assert_eq!(
+        backend.mutations.last().unwrap().1,
+        vec![Event::Key(0x57, true), Event::Key(0x10, true)]
+    );
+}
+
+#[rstest]
 fn physical_input_fence_post_dispatch_drift_is_not_reported_as_completed() {
     let mut backend = FakeBackend::new();
     backend.fail_check = Some(2);

@@ -153,3 +153,29 @@ Microsoft's [GetBuffer contract](https://learn.microsoft.com/en-us/windows/win32
 defines the first-sample QPC output in 100 ns units and makes the device-position
 output optional. The constant-zero behavior above is an observed qualification
 result, not a claim that the generic API documents it for every source.
+
+### Capture during owned native input
+
+The control banner keeps a capability-local pool of exclusion epochs. A native
+input epoch owns its exact renderer suppression and registered-cursor exclusion
+through key release and final input postcheck. Its live capture source may borrow
+those same guards without reacquiring the cross-process exclusive file gate.
+Borrowing performs no presenter suppression or cursor mutation: all overlays must
+already be hidden, and live publication revalidates that condition after readback.
+A visible peer fails closed. The process/tree/window grant and physical input
+fence remain unchanged, including the maximum20ms sleep interval between held-key checks.
+
+An explicit snapshot may share only a capture epoch, whose ordinary global
+exclusion guard remains alive. It cannot borrow an input epoch. The live producer
+and explicit snapshot can share a capture epoch without waiting for each other's
+readback. Pools come only from the same private banner capability; another task
+or process still waits on the original cross-process gate and unchanged1s budget.
+No request field can supply a pool or borrow another task's guards.
+
+Closing an epoch owner stops new borrowing. Existing capture work retains the
+actual guards until publication drains, then cursor/presenter restoration and
+gate release occur once. Cancellation of the async input waiter does not end the
+blocking input worker's guard. Real capture failure still pauses eligibility;
+a video pause with audio still ends that recording prefix rather than silently
+splicing out wall time. A finalized prefix is not complete gameplay acceptance,
+and interrupted audio/video tail differences must remain visible in evidence.
