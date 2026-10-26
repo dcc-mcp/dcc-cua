@@ -1229,7 +1229,7 @@ fn validate_task_method_params(method: &str, params: &Value) -> Result<(), Strin
                         .get("output_dir")
                         .is_some_and(|value| !value.is_string())
                 {
-                    return Err("native recording is video-only and cannot override its authorized output directory".into());
+                    return Err("native recording requires video, accepts optional authorized recording_audio, and cannot override its authorized output directory".into());
                 }
             } else if request
                 .keys()
