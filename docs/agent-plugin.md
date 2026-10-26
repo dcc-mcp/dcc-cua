@@ -94,8 +94,20 @@ version, exact PID, and exact HWND returned by `start_task`. Use one persistent
 task for the exact target, take fresh observations, verify every mutation, and
 call `stop_task` on success, failure, interruption, or abandonment.
 
-For an exact PID/HWND target that is minimized or maximized, declare `change_window_state`
-in `start_task.allowed_methods` and call it through the same task:
+Start with a passive `snapshot`; capture does not require foreground activation.
+In an explicitly granted semantic task, supported Windows UIA `click`, `toggle`,
+`set_text` and `set_value` operations may use `delivery_mode: "background"` on
+fresh same-task UIA elements. Supply the latest `observation_id` and
+`accessibility_state_id`, and verify the actual post-action state. A generic
+semantic action, `type`, `double_click`, coordinates or keyboard input does not
+inherit this UIA capability. Physical input retains its separate foreground,
+visibility and authorization checks. A refused activation does not authorize
+switching task modes to bypass the refusal.
+
+If the requested operation requires restoring the exact PID/HWND target,
+declare `change_window_state` in `start_task.allowed_methods` and call it
+through the same task. A maximized window does not require restoration merely
+to observe it or use a supported UIA control:
 
 ```json
 {
