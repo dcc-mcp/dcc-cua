@@ -3,7 +3,7 @@ use super::{ProcessAudioGrant, ProcessAudioTarget};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::io::{self, Read, Write};
 
-pub const AUDIO_WORKER_PROTOCOL: u32 = 1;
+pub const AUDIO_WORKER_PROTOCOL: u32 = 2;
 pub const MAX_AUDIO_WORKER_MESSAGE: usize = 64 * 1024;
 pub const MAX_AUDIO_WORKER_SAMPLES: usize = 4800;
 
@@ -13,6 +13,7 @@ pub struct AudioWorkerInitialization {
     pub protocol: u32,
     pub grant: ProcessAudioGrant,
     pub deadline_qpc_100ns: u64,
+    pub duration_limited: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -39,7 +40,9 @@ pub enum AudioWorkerEvent {
         flags: u32,
         samples: Vec<i16>,
     },
-    Stopped {},
+    Stopped {
+        duration_exhausted: bool,
+    },
     Failed {
         code: AudioWorkerFailure,
         #[serde(default)]
@@ -98,6 +101,7 @@ pub enum AudioWorkerFailure {
     StreamFailed,
     ContinuityLost,
     BudgetExpired,
+    AuthorizationExpired,
     ProtocolFailed,
 }
 

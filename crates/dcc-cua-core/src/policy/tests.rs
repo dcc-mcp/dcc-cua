@@ -2,6 +2,22 @@ use super::*;
 use rstest::rstest;
 
 #[rstest]
+#[case(false)]
+#[case(true)]
+fn modifier_drag_keeps_its_existing_route_contract(#[case] exact_pixels: bool) {
+    let action = ComputerUseAction {
+        action: "drag".into(),
+        x: Some(1.0),
+        y: Some(2.0),
+        path: vec![ComputerUsePoint { x: 3.0, y: 4.0 }],
+        modifiers: vec!["Shift".into()],
+        duration_ms: Some(100),
+        ..Default::default()
+    };
+    assert!(validate_action_route(&action, exact_pixels).is_ok());
+}
+
+#[rstest]
 #[case(vec!["W"], vec!["Shift"], 100, true)]
 #[case(vec!["up", "left"], vec!["shift"], 10_000, true)]
 #[case(vec!["W", "a"], vec![], 1, true)]

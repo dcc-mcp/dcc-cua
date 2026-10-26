@@ -2,6 +2,49 @@ use super::*;
 use rstest::rstest;
 
 #[rstest]
+fn temporary_backpressure_delivers_without_dropping_or_holding_the_revocation_fence() {
+    let authorization = RecordingAuthorization::new(u64::MAX);
+    let cancelled = AtomicBool::new(false);
+    let (sender, receiver) = mpsc::sync_channel(0);
+    let consumer = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(2));
+        receiver.recv().unwrap()
+    });
+    assert_eq!(
+        deliver_packet(
+            &sender,
+            42,
+            &authorization,
+            &cancelled,
+            Duration::from_secs(1)
+        ),
+        Ok(true)
+    );
+    assert_eq!(consumer.join().unwrap(), 42);
+}
+
+#[rstest]
+fn queue_stall_disconnect_and_revocation_remain_distinct_bounded_outcomes() {
+    let authorization = RecordingAuthorization::new(u64::MAX);
+    let cancelled = AtomicBool::new(false);
+    let (sender, receiver) = mpsc::sync_channel(0);
+    assert_eq!(
+        deliver_packet(&sender, 42, &authorization, &cancelled, Duration::ZERO),
+        Err(AudioLifecycleError::Source)
+    );
+    drop(receiver);
+    assert_eq!(
+        deliver_packet(&sender, 42, &authorization, &cancelled, Duration::ZERO),
+        Err(AudioLifecycleError::Source)
+    );
+    authorization.revoke();
+    assert_eq!(
+        deliver_packet(&sender, 42, &authorization, &cancelled, Duration::ZERO),
+        Ok(false)
+    );
+}
+
+#[rstest]
 #[case(false, false, true, true)]
 #[case(true, false, true, false)]
 #[case(true, true, true, true)]

@@ -55,6 +55,35 @@ const START_TIMEOUT: Duration = Duration::from_secs(3);
 const STOP_GRACE: Duration = Duration::from_millis(500);
 const REAP_TIMEOUT: Duration = Duration::from_secs(1);
 
+fn deliver_packet<T>(
+    packets: &mpsc::SyncSender<T>,
+    mut packet: T,
+    authorization: &RecordingAuthorization,
+    cancelled: &AtomicBool,
+    wait: Duration,
+) -> Result<bool, AudioLifecycleError> {
+    let started = Instant::now();
+    loop {
+        if cancelled.load(Ordering::Acquire) {
+            return Ok(false);
+        }
+        match authorization.with_active(|| packets.try_send(packet)) {
+            Err(_) => return Ok(false),
+            Ok(Ok(())) => return Ok(true),
+            Ok(Err(mpsc::TrySendError::Disconnected(_))) => {
+                return Err(AudioLifecycleError::Source);
+            }
+            Ok(Err(mpsc::TrySendError::Full(pending))) => packet = pending,
+        }
+        if started.elapsed() >= wait {
+            return Err(AudioLifecycleError::Source);
+        }
+        // Never sleep while holding the authorization fence: revocation wins
+        // the next admission and the reader remains bounded for stop ACKs.
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct OwnedAudioWorkerEvidence {
     pub spawned: bool,
@@ -63,6 +92,7 @@ pub struct OwnedAudioWorkerEvidence {
     pub job_bound: bool,
     pub started: bool,
     pub stop_acknowledged: bool,
+    pub duration_exhausted: bool,
     pub forced_termination: bool,
     pub reaped: bool,
     pub exit_code: Option<i32>,
@@ -437,21 +467,24 @@ impl ProcessAudioSource for NativeProcessAudioSource {
                                         samples,
                                         flags,
                                     };
-                                    match authorization.with_active(|| {
-                                        packets
-                                            .try_send(event)
-                                            .map_err(|_| AudioLifecycleError::Source)
-                                    }) {
-                                        Ok(result) => result?,
+                                    match deliver_packet(
+                                        &packets,
+                                        event,
+                                        &authorization,
+                                        &cancelled,
+                                        Duration::from_millis(20),
+                                    )? {
+                                        true => (),
                                         // Refuse samples on revocation, but drain the final control ack.
-                                        Err(_) => {
+                                        false => {
                                             fault.store(true, Ordering::Release);
                                         }
                                     }
                                 }
-                                Some(AudioWorkerEvent::Stopped {}) => {
+                                Some(AudioWorkerEvent::Stopped { duration_exhausted }) => {
                                     if let Ok(mut e) = evidence.lock() {
                                         e.stop_acknowledged = true;
+                                        e.duration_exhausted = duration_exhausted;
                                     }
                                     return Ok(());
                                 }
@@ -493,16 +526,17 @@ impl ProcessAudioSource for NativeProcessAudioSource {
         let lease_deadline = qpc_for_media_epoch(lease_epoch)?
             .checked_add(lease_ticks)
             .ok_or(AudioLifecycleError::Budget)?;
+        let duration_deadline = epoch
+            .checked_add(self.grant.max_duration_ms * 10_000)
+            .ok_or(AudioLifecycleError::Budget)?;
         write_message(
             &mut input,
             &AudioWorkerCommand::Initialize {
                 request: AudioWorkerInitialization {
                     protocol: AUDIO_WORKER_PROTOCOL,
                     grant: self.grant.clone(),
-                    deadline_qpc_100ns: epoch
-                        .checked_add(self.grant.max_duration_ms * 10_000)
-                        .ok_or(AudioLifecycleError::Budget)?
-                        .min(lease_deadline),
+                    deadline_qpc_100ns: duration_deadline.min(lease_deadline),
+                    duration_limited: duration_deadline < lease_deadline,
                 },
             },
         )

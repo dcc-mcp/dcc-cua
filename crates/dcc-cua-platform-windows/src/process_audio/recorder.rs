@@ -19,6 +19,7 @@ fn run_packet_loop<T>(
     mut authorized: impl FnMut() -> bool,
     mut elapsed: impl FnMut() -> Duration,
     mut ingest: impl FnMut(T) -> Result<(), AudioLifecycleError>,
+    mut duration_stop_attested: impl FnMut() -> bool,
 ) -> PacketLoopEnd {
     while !cancelled() {
         if !authorized() {
@@ -30,8 +31,15 @@ fn run_packet_loop<T>(
         let received = receive();
         // Explicit source errors and authorization loss must not be hidden by
         // a simultaneous normal duration boundary.
-        if matches!(received, Err(mpsc::RecvTimeoutError::Disconnected)) || !authorized() {
+        if !authorized() {
             return PacketLoopEnd::SourceFailed;
+        }
+        if matches!(received, Err(mpsc::RecvTimeoutError::Disconnected)) {
+            return if elapsed() >= max_duration && duration_stop_attested() {
+                PacketLoopEnd::Stopped
+            } else {
+                PacketLoopEnd::SourceFailed
+            };
         }
         if elapsed() >= max_duration {
             return PacketLoopEnd::Stopped;
@@ -141,6 +149,7 @@ impl RecorderAudioFactory for NativeRecorderAudioFactory {
             epoch,
             cancel.clone(),
         );
+        let packet_evidence = evidence.clone();
         let handle = std::thread::Builder::new()
             .name("dcc-cua-recording-audio".into())
             .spawn(move || {
@@ -175,6 +184,11 @@ impl RecorderAudioFactory for NativeRecorderAudioFactory {
                     || authorization.admit().is_ok(),
                     || epoch.elapsed(),
                     |packet| session.ingest(packet.target, packet.pts_us, &packet.samples),
+                    || {
+                        packet_evidence.lock().is_ok_and(|e| {
+                            e.duration_exhausted && e.stop_acknowledged && e.failure.is_none()
+                        })
+                    },
                 );
                 let receipt = if outcome == PacketLoopEnd::SourceFailed {
                     session.source_failed()

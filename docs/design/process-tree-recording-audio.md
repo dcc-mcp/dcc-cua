@@ -103,8 +103,9 @@ The existing encoder owns that audio controller and the existing MP4 writer.
 The complete file (video, audio, headers and seek patches) has the grant's byte
 ceiling. Packets are stereo PCM16 at 48 kHz, with a 4800-sample ceiling; silent
 buffers are tested before dereferencing. Unknown target metadata, timestamp
-error, flagged packet discontinuity or QPC rollback/overlap ends the source. Raw QPC is
-mapped to the actual first encoded video frame's monotonic epoch, without
+error, flagged packet discontinuity or QPC rollback/overlap ends the source. WASAPI QPC
+position (100-nanosecond units) is converted once into the actual first encoded
+video frame's monotonic epoch, without a second frequency conversion or
 speed changes. Audio mode requests 30 fps for a new live video source; actual
 source fps remains reported. A video pause ends combined capture rather than
 resuming on a different media clock. Bounded PCM is AAC-encoded into track 2
@@ -187,6 +188,16 @@ or timeout. Normal duration exhaustion requests controlled `session.stop()`;
 authorization loss and explicit source faults remain failures. Existing PCM
 duration/byte limits and worker stop/exit checks still apply: an elapsed budget
 cannot turn missing acknowledgement or a real worker failure into success.
+The private same-executable worker protocol distinguishes a normal duration
+deadline from an earlier authorization deadline, without extending either.
+At normal duration exhaustion the worker stops sampling and reports an explicit
+duration-stop result after successful stream shutdown. A closed packet channel
+counts as normal exhaustion only with that attestation, a still-valid grant and
+the parent's elapsed-duration check; final acknowledgement, exit and cleanup
+checks remain mandatory. Authorization expiry and real stream faults still fail.
+The bounded packet queue tolerates at most 20 ms of backpressure, releasing the
+authorization fence between attempts. Persistent stalls and disconnects fail;
+revocation prevents subsequent admission while the reader drains the stop result.
 
 ### WGC source time and publication cost
 

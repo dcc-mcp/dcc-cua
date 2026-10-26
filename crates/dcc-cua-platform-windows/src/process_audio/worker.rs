@@ -178,11 +178,26 @@ fn control(state: Arc<AtomicU8>) {
     }
 }
 
-fn check_state(state: &AtomicU8, deadline: u64) -> Result<bool, Failure> {
-    match state.load(Ordering::Acquire) {
+fn check_state(state: &AtomicU8, deadline: u64, duration_limited: bool) -> Result<bool, Failure> {
+    check_state_at(
+        state.load(Ordering::Acquire),
+        qpc()?,
+        deadline,
+        duration_limited,
+    )
+}
+
+fn check_state_at(
+    state: u8,
+    now: u64,
+    deadline: u64,
+    duration_limited: bool,
+) -> Result<bool, Failure> {
+    match state {
         INVALID => Err(Failure::ProtocolFailed),
         STOP => Ok(false),
-        _ if qpc()? >= deadline => Err(Failure::BudgetExpired),
+        _ if now >= deadline && duration_limited => Ok(false),
+        _ if now >= deadline => Err(Failure::AuthorizationExpired),
         _ => Ok(true),
     }
 }
@@ -262,11 +277,12 @@ fn capture_packets(
     target: &Target,
     state: &AtomicU8,
     deadline: u64,
+    duration_limited: bool,
     diagnostic: &mut AudioWorkerFailureDiagnostic,
 ) -> Result<(), Failure> {
     let mut previous_end = None;
     let mut previous_clock = None;
-    while check_state(state, deadline)? {
+    while check_state(state, deadline, duration_limited)? {
         target.validate()?;
         // SAFETY: initialized capture client owned by this MTA thread.
         let size = unsafe { capture.GetNextPacketSize() }.map_err(|error| {
@@ -319,11 +335,15 @@ fn capture_packets(
         })?;
         let samples = samples?;
         target.validate()?;
-        if !check_state(state, deadline)? {
+        if !check_state(state, deadline, duration_limited)? {
             break;
         }
         if timestamp >= deadline {
-            return Err(Failure::BudgetExpired);
+            return if duration_limited {
+                Ok(())
+            } else {
+                Err(Failure::AuthorizationExpired)
+            };
         }
         previous_clock = Some(AudioWorkerPacketClock {
             qpc_100ns: timestamp,
@@ -351,7 +371,7 @@ fn capture_packets(
 fn run(
     output: &mut impl io::Write,
     diagnostic: &mut AudioWorkerFailureDiagnostic,
-) -> Result<(), Failure> {
+) -> Result<bool, Failure> {
     let request = {
         let mut input = io::stdin().lock();
         match read_message::<_, AudioWorkerCommand>(&mut input)
@@ -389,8 +409,8 @@ fn run(
     let mut client =
         wasapi::AudioClient::new_application_loopback_client(request.grant.target.process_id, true)
             .map_err(|_| Failure::ActivationFailed)?;
-    if !check_state(&state, request.deadline_qpc_100ns)? {
-        return Ok(());
+    if !check_state(&state, request.deadline_qpc_100ns, request.duration_limited)? {
+        return Ok(false);
     }
     target.validate()?;
     let format = wasapi::WaveFormat::new(16, 16, &wasapi::SampleType::Int, 48_000, 2, None);
@@ -421,13 +441,13 @@ fn run(
     )
     .map_err(|_| Failure::ProtocolFailed)?;
     while state.load(Ordering::Acquire) == WAITING {
-        if !check_state(&state, request.deadline_qpc_100ns)? {
-            return Ok(());
+        if !check_state(&state, request.deadline_qpc_100ns, request.duration_limited)? {
+            return Ok(false);
         }
         std::thread::sleep(Duration::from_millis(3));
     }
-    if !check_state(&state, request.deadline_qpc_100ns)? {
-        return Ok(());
+    if !check_state(&state, request.deadline_qpc_100ns, request.duration_limited)? {
+        return Ok(false);
     }
     target.validate()?;
     client.start_stream().map_err(|_| Failure::StreamFailed)?;
@@ -440,6 +460,7 @@ fn run(
                 &target,
                 &state,
                 request.deadline_qpc_100ns,
+                request.duration_limited,
                 diagnostic,
             )
         });
@@ -448,15 +469,23 @@ fn run(
     if result.is_ok() && stop.is_err() {
         diagnostic.stage = Some(AudioWorkerFailureStage::StopStream);
     }
-    result.and(stop)
+    result.and(stop)?;
+    Ok(request.duration_limited
+        && state.load(Ordering::Acquire) != STOP
+        && qpc()? >= request.deadline_qpc_100ns)
 }
 
 pub fn run_owned_worker() -> i32 {
     let mut output = io::stdout().lock();
     let mut diagnostic = AudioWorkerFailureDiagnostic::default();
     match run(&mut output, &mut diagnostic) {
-        Ok(()) => {
-            if write_message(&mut output, &AudioWorkerEvent::Stopped {}).is_ok() {
+        Ok(duration_exhausted) => {
+            if write_message(
+                &mut output,
+                &AudioWorkerEvent::Stopped { duration_exhausted },
+            )
+            .is_ok()
+            {
                 0
             } else {
                 2

@@ -794,7 +794,11 @@ pub(crate) fn validate_action_route(
     exact_windows_pixels: bool,
 ) -> ComputerUseResult<()> {
     validate_action(action)?;
-    if action.duration_ms.is_some() && !action.modifiers.is_empty() && !exact_windows_pixels {
+    if action.action == "keypress"
+        && action.duration_ms.is_some()
+        && !action.modifiers.is_empty()
+        && !exact_windows_pixels
+    {
         return Err(ComputerUseError::new(
             ComputerUseErrorCode::InvalidAction,
             "held modifiers require the Windows explicit pixels-only input route",

@@ -166,13 +166,30 @@ impl WgcFrameMeasurement {
     }
 
     pub fn at_publish(self) -> WgcPublishedFrameMeasurement {
-        let before = Instant::now();
-        let qpc = performance_counter_time_100ns();
-        let after = Instant::now();
-        let mut measurement = self.at_publish_time_100ns(qpc);
-        measurement.capture_clock =
-            map_compositor_clock(measurement.compositor, qpc, before, after);
-        measurement
+        self.at_publish_with_sample(|| {
+            let before = Instant::now();
+            let qpc = performance_counter_time_100ns();
+            (before, qpc, Instant::now())
+        })
+    }
+
+    fn at_publish_with_sample(
+        self,
+        mut sample: impl FnMut() -> (Instant, Option<i64>, Instant),
+    ) -> WgcPublishedFrameMeasurement {
+        for attempt in 0..3 {
+            let (before, qpc, after) = sample();
+            let mut measurement = self.at_publish_time_100ns(qpc);
+            measurement.capture_clock =
+                map_compositor_clock(measurement.compositor, qpc, before, after);
+            if attempt == 2
+                || measurement.capture_clock
+                    != Err(WgcCompositorTimingUnavailable::CalibrationBracketTooWide)
+            {
+                return measurement;
+            }
+        }
+        unreachable!("the third calibration sample always returns")
     }
 }
 

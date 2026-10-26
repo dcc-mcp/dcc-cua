@@ -3,6 +3,20 @@ use rstest::rstest;
 use std::io::Cursor;
 
 #[rstest]
+fn worker_duration_stop_requires_explicit_attestation() {
+    assert_eq!(AUDIO_WORKER_PROTOCOL, 2);
+    assert!(serde_json::from_str::<AudioWorkerEvent>(r#"{"type":"stopped"}"#).is_err());
+    let event: AudioWorkerEvent =
+        serde_json::from_str(r#"{"type":"stopped","duration_exhausted":true}"#).unwrap();
+    assert!(matches!(
+        event,
+        AudioWorkerEvent::Stopped {
+            duration_exhausted: true
+        }
+    ));
+}
+
+#[rstest]
 fn audio_worker_protocol_bounds_before_allocating_payload() {
     let data = (MAX_AUDIO_WORKER_MESSAGE as u32 + 1).to_le_bytes();
     assert!(read_message::<_, AudioWorkerCommand>(&mut Cursor::new(data)).is_err());

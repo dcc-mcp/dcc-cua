@@ -2,6 +2,21 @@ use super::*;
 use rstest::rstest;
 
 #[rstest]
+#[case(START, 9, false, Ok(true))]
+#[case(START, 10, true, Ok(false))]
+#[case(START, 11, false, Err(Failure::AuthorizationExpired))]
+#[case(INVALID, 11, true, Err(Failure::ProtocolFailed))]
+#[case(STOP, 11, true, Ok(false))]
+fn deadline_stop_never_extends_sampling_or_masks_a_protocol_fault(
+    #[case] state: u8,
+    #[case] now: u64,
+    #[case] duration_limited: bool,
+    #[case] expected: Result<bool, Failure>,
+) {
+    assert_eq!(check_state_at(state, now, 10, duration_limited), expected);
+}
+
+#[rstest]
 fn silent_null_is_never_dereferenced() {
     // SAFETY: SILENT explicitly permits null data; no OS source is started.
     let copied = unsafe {

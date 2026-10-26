@@ -3,6 +3,33 @@ use rstest::rstest;
 use std::cell::Cell;
 
 #[rstest]
+#[case(true, true, PacketLoopEnd::Stopped)]
+#[case(false, true, PacketLoopEnd::SourceFailed)]
+#[case(true, false, PacketLoopEnd::SourceFailed)]
+fn only_attested_duration_stop_can_close_the_packet_channel_normally(
+    #[case] attested: bool,
+    #[case] authorized: bool,
+    #[case] expected: PacketLoopEnd,
+) {
+    let clock = Cell::new(Duration::ZERO);
+    assert_eq!(
+        run_packet_loop::<()>(
+            Duration::from_millis(10),
+            || false,
+            || {
+                clock.set(Duration::from_millis(10));
+                Err(mpsc::RecvTimeoutError::Disconnected)
+            },
+            || authorized,
+            || clock.get(),
+            |_| panic!("no packet"),
+            || attested,
+        ),
+        expected
+    );
+}
+
+#[rstest]
 fn duration_timeout_is_a_controlled_stop_not_a_source_fault() {
     let clock = Cell::new(Duration::ZERO);
     let outcome = run_packet_loop::<()>(
@@ -15,6 +42,7 @@ fn duration_timeout_is_a_controlled_stop_not_a_source_fault() {
         || true,
         || clock.get(),
         |_| panic!("timeout has no PCM"),
+        || false,
     );
     assert_eq!(outcome, PacketLoopEnd::Stopped);
 }
@@ -38,6 +66,7 @@ fn continuous_packets_cannot_avoid_the_duration_stop_or_be_admitted_after_it() {
             ingested.set(ingested.get() + 1);
             Ok(())
         },
+        || false,
     );
     assert_eq!(outcome, PacketLoopEnd::Stopped);
     assert_eq!(ingested.get(), 0);
@@ -65,6 +94,7 @@ fn authorization_loss_is_a_fault_even_at_the_duration_boundary(#[case] packet: b
         || authorized.get(),
         || clock.get(),
         |_| panic!("revoked PCM cannot be admitted"),
+        || false,
     );
     assert_eq!(outcome, PacketLoopEnd::SourceFailed);
 }
@@ -82,6 +112,7 @@ fn source_disconnect_is_not_reclassified_as_a_duration_stop() {
         || true,
         || clock.get(),
         |_| panic!("disconnected source has no PCM"),
+        || false,
     );
     assert_eq!(outcome, PacketLoopEnd::SourceFailed);
 }
@@ -97,6 +128,7 @@ fn genuine_ingest_faults_remain_failures(#[case] error: AudioLifecycleError) {
         || true,
         || Duration::ZERO,
         |_| Err(error),
+        || false,
     );
     assert_eq!(outcome, PacketLoopEnd::SourceFailed);
 }
@@ -111,6 +143,7 @@ fn stopped_or_already_expired_owner_does_not_enter_receive() {
             || true,
             || Duration::from_millis(10),
             |_| panic!("stopped owner must not ingest"),
+            || false,
         );
         assert_eq!(outcome, PacketLoopEnd::Stopped);
     }
