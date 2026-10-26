@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.16.1](https://github.com/dcc-mcp/dcc-cua/compare/v1.16.0...v1.16.1) (2026-10-26)
+
+
+### Bug Fixes
+
+* clarify passive capture and background UIA routing ([1872d02](https://github.com/dcc-mcp/dcc-cua/commit/1872d0210ecf21db3ffad2c4c7cfa4c161d6de88))
+* **cli:** distinguish MCP cleanup outcomes from transport closure ([7c7f6cf](https://github.com/dcc-mcp/dcc-cua/commit/7c7f6cfe329a0f93071de048b73155e84e670d2b))
+* **cli:** record MCP cleanup outcomes independently of EOF ([382fb92](https://github.com/dcc-mcp/dcc-cua/commit/382fb9237c6e004219b976df0e83602d5d50db28))
+
 ## [1.16.0](https://github.com/dcc-mcp/dcc-cua/compare/v1.15.0...v1.16.0) (2026-10-26)
 
 
