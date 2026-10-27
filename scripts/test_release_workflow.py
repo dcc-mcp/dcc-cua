@@ -1,7 +1,11 @@
 import contextlib
 import hashlib
 import json
+import os
 import re
+import shutil
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -39,7 +43,7 @@ RELEASE_PLEASE_ACTION = (
     "googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7"
 )
 CI_EXECUTABLE_SURFACE_SHA256 = (
-    "b52a952160b83e9a086749d0e02bd59600f4419a32aabe6bbd694df0f3cfdcf0"
+    "3d83b22a4e1557511dcc61ac8c4843c515d3fe64625d4a68422a2452a06bb6a1"
 )
 
 
@@ -252,6 +256,61 @@ def _ci_executable_surface(workflow: str) -> str:
 
 
 class ReleaseWorkflowTests(unittest.TestCase):
+    def intel_check_diagnostics(self):
+        workflow = _RestrictedWorkflowYamlParser(
+            CI_WORKFLOW.read_text(encoding="utf-8")
+        ).parse()
+        verify = workflow["jobs"]["verify"]
+        steps = verify["steps"]
+        diagnostic = next(step for step in steps if step.get("id") == "intel-check")
+        return verify, steps, diagnostic
+
+    def test_intel_check_leaves_time_to_upload_failure_diagnostics(self):
+        verify, steps, diagnostic = self.intel_check_diagnostics()
+        self.assertEqual(verify["timeout-minutes"], "45")
+        self.assertEqual(diagnostic["if"], "matrix.platform == 'macos-x86_64'")
+        self.assertEqual(diagnostic["timeout-minutes"], "35")
+        self.assertNotIn("continue-on-error", diagnostic)
+        upload = steps[steps.index(diagnostic) + 1]
+        self.assertEqual(upload["uses"], UPLOAD_ACTION)
+        self.assertEqual(upload["if"], "always() && matrix.platform == 'macos-x86_64'")
+        self.assertEqual(upload["with"]["retention-days"], "1")
+        self.assertIn("artifacts/ci-diagnostics/intel-check/", upload["with"]["path"]["text"])
+        self.assertIn("/artifacts/", (ROOT / ".gitignore").read_text().splitlines())
+        runs = [step.get("run", "") for step in steps]
+        for command in (
+            "cargo clippy --workspace --all-targets --locked -- -D warnings",
+            "cargo nextest run --workspace --all-targets --locked",
+            "cargo test --workspace --doc --locked",
+        ):
+            self.assertIn(command, runs)
+
+    def test_intel_check_pipeline_retains_output_and_actual_cargo_failure(self):
+        _, _, diagnostic = self.intel_check_diagnostics()
+        # Windows' system32 bash is WSL, not the CI shell. Never invoke it.
+        bash = (
+            shutil.which("bash", path=str(Path(
+                os.environ.get("ProgramFiles", "C:/Program Files"), "Git/bin"
+            )))
+            if os.name == "nt" else shutil.which("bash")
+        )
+        if bash is None:
+            self.skipTest("bash is required to exercise the CI shell pipeline")
+        for code in (0, 17):
+            with self.subTest(exit_code=code), tempfile.TemporaryDirectory() as directory:
+                # A shell function stands in for Cargo; no compiler, Host or UI starts.
+                fake = f'cargo() {{ echo compiler-progress; echo compiler-error >&2; return {code}; }}\n'
+                result = subprocess.run(
+                    [bash, "--noprofile", "--norc", "-c", fake + diagnostic["run"]["text"]],
+                    cwd=directory, capture_output=True, text=True, timeout=10,
+                )
+                self.assertEqual(result.returncode, code, result.stderr)
+                saved = Path(directory, "artifacts/ci-diagnostics/intel-check/cargo-check.log").read_text()
+                self.assertIn("compiler-progress", saved)
+                self.assertIn("compiler-error", saved)
+                status = Path(directory, "artifacts/ci-diagnostics/intel-check/exit.txt").read_text()
+                self.assertIn(f"exit_code={code} ", status)
+
     def test_only_ci_artifact_readback_opts_in_to_build_metadata(self):
         ci = CI_WORKFLOW.read_text(encoding="utf-8")
         release = WORKFLOW.read_text(encoding="utf-8")
