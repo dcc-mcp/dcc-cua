@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.4.0](https://github.com/dcc-mcp/dcc-cua/compare/dcc-cua-browser-extension-v0.3.2...dcc-cua-browser-extension-v0.4.0) (2026-10-27)
+
+
+### Features
+
+* **extension:** add scoped same-origin tab navigation ([c106421](https://github.com/dcc-mcp/dcc-cua/commit/c1064212bb6b726ae9836837712b4345393edd24))
+
+
+### Bug Fixes
+
+* **extension:** retain providers after navigation preflight refusals ([b71aef0](https://github.com/dcc-mcp/dcc-cua/commit/b71aef0083aba08f2ab076453fc28991eaac42dd))
+
 ## [0.3.2](https://github.com/dcc-mcp/dcc-cua/compare/dcc-cua-browser-extension-v0.3.1...dcc-cua-browser-extension-v0.3.2) (2026-10-22)
 
 
