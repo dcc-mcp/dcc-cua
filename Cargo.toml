@@ -36,15 +36,15 @@ rstest = "0.26.1"
 # The compatibility fork retains browser contracts that upstream trycua/cua has
 # not merged: `scope_ancestor_role` / `scope_anchor` ancestor-scoped semantic
 # snapshots and the `browser_scope_unavailable` refusal code. Upstream
-# cua-driver-rs-v0.36.0 does not contain them, so the pin
+# cua-driver-rs-v0.38.0 does not contain them, so the pin
 # cannot move back to upstream until those contracts land there.
 #
-# This revision retains the required fork contracts on the official Driver 0.36.0
-# release (6d6c734c127025fb39ad5d585a10382808b39dc1), including unmerged fixes.
+# This revision retains the required fork contracts on the official Driver 0.38.0
+# release (85e2b1318bd77ccf3cfa88ccdf875a4bb7eaed19), including unmerged fixes.
 # See docs/design/sdk-dependency-maintenance.md for migration and acceptance.
-cua-driver-contract = { git = "https://github.com/loonghao/cua.git", rev = "be4bbd3eac57796804f43b291a2012dcd2d96896" }
-cua-driver-sdk = { git = "https://github.com/loonghao/cua.git", rev = "be4bbd3eac57796804f43b291a2012dcd2d96896" }
-cua-driver-testkit = { git = "https://github.com/loonghao/cua.git", rev = "be4bbd3eac57796804f43b291a2012dcd2d96896" }
-cursor-overlay = { git = "https://github.com/loonghao/cua.git", rev = "be4bbd3eac57796804f43b291a2012dcd2d96896" }
-platform-macos = { git = "https://github.com/loonghao/cua.git", rev = "be4bbd3eac57796804f43b291a2012dcd2d96896" }
-platform-windows = { git = "https://github.com/loonghao/cua.git", rev = "be4bbd3eac57796804f43b291a2012dcd2d96896" }
+cua-driver-contract = { git = "https://github.com/loonghao/cua.git", rev = "fbb47840a8980a11a0532ebe224de257ba09a1ca" }
+cua-driver-sdk = { git = "https://github.com/loonghao/cua.git", rev = "fbb47840a8980a11a0532ebe224de257ba09a1ca" }
+cua-driver-testkit = { git = "https://github.com/loonghao/cua.git", rev = "fbb47840a8980a11a0532ebe224de257ba09a1ca" }
+cursor-overlay = { git = "https://github.com/loonghao/cua.git", rev = "fbb47840a8980a11a0532ebe224de257ba09a1ca" }
+platform-macos = { git = "https://github.com/loonghao/cua.git", rev = "fbb47840a8980a11a0532ebe224de257ba09a1ca" }
+platform-windows = { git = "https://github.com/loonghao/cua.git", rev = "fbb47840a8980a11a0532ebe224de257ba09a1ca" }
