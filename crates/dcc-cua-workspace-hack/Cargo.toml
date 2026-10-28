@@ -23,7 +23,7 @@ aho-corasick = { version = "1" }
 bytemuck = { version = "1", default-features = false, features = ["aarch64_simd", "extern_crate_alloc"] }
 camino = { version = "1", default-features = false, features = ["serde1"] }
 chacha20 = { version = "0.10", default-features = false, features = ["rng", "xchacha", "zeroize"] }
-cua-driver-core = { git = "https://github.com/loonghao/cua.git", rev = "be4bbd3eac57796804f43b291a2012dcd2d96896" }
+cua-driver-core = { git = "https://github.com/loonghao/cua.git", rev = "fbb47840a8980a11a0532ebe224de257ba09a1ca" }
 digest = { version = "0.10", features = ["mac", "std"] }
 flate2 = { version = "1", features = ["zlib-rs"] }
 futures-core = { version = "0.3" }

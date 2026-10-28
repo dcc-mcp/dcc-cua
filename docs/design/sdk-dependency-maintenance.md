@@ -5,21 +5,68 @@ adapters and GUI fixtures inherit those declarations. `Cargo.lock` must resolve
 all upstream CUA crates to the same immutable Git source. The policy CI checks
 this contract with `scripts/test_sdk_dependency_contract.py`.
 
-## Current source
+## Current source candidate
 
-- Previous SDK: Driver 0.28.2 at
-  `loonghao/cua@3d2bcf50089ea18aa5bedab328b1afb3f710ea00`.
-- Updated SDK: Driver 0.36.0 plus the required DCC compatibility patch series.
-- Official release: [cua-driver-rs-v0.36.0](https://github.com/trycua/cua/releases/tag/cua-driver-rs-v0.36.0),
-  commit `trycua/cua@6d6c734c127025fb39ad5d585a10382808b39dc1` (2026-10-16).
-- Published compatibility source: `loonghao/cua@be4bbd3eac57796804f43b291a2012dcd2d96896`
-  ([owned Windows setup cleanup #9](https://github.com/loonghao/cua/pull/9)), based
-  on `6219e5e498958cf951aad28f1ec84117625dc586` from
-  [download metadata follow-up #8](https://github.com/loonghao/cua/pull/8) and
-  `55ab9c62fe23b87d015136f45c4e8995e9988615` from
-  [compatibility PR #7](https://github.com/loonghao/cua/pull/7). All six root
-  declarations and ten resolved SDK packages use this immutable Git source.
-  The original fork histories remain ancestors of this additive source update.
+- Official Driver release: [cua-driver-rs-v0.38.0](https://github.com/trycua/cua/releases/tag/cua-driver-rs-v0.38.0),
+  immutable commit `trycua/cua@85e2b1318bd77ccf3cfa88ccdf875a4bb7eaed19`.
+- Compatibility source: `loonghao/cua@fbb47840a8980a11a0532ebe224de257ba09a1ca`,
+  integrating that release with the prior DCC source
+  `be4bbd3eac57796804f43b291a2012dcd2d96896`. Both contributor histories remain
+  ancestors. All six workspace declarations must resolve the same ten SDK
+  packages to this one immutable revision.
+- The compatibility diff against the official release spans 44 files. It
+  retains ancestor scopes, hidden file-input association, navigation readback,
+  bounded download metadata and owned Windows browser setup/cleanup contracts.
+  Upstream's process-family selection replaces the old name-prefix widening;
+  pre-launch PID baseline pruning remains intact.
+- Source licensing remains MIT in the official root `LICENSE.md` and Driver
+  package metadata. No dependency or runtime is installed by changing a pin.
+
+The merge candidate passed 141 selected mock, launch-selection, synthetic UIA and semantic tests.
+Its first complete 43-file review identified three issues, fixed in the pinned
+revision: single fully-proven consent selection, rollback on a pre-existing
+setup page without claiming tab ownership, and the suggested-filename opt-in
+API description. The affected 73 selected tests pass on the consent/rollback fixes. A later
+44-file review identified COM cleanup disposal order; the final source keeps
+owned-tab proof through rollback and disposes its handle before the outer COM
+scope ends. Its directly extracted production helper passes success, error and
+unwind ordering cases. The suggested relaxation of foreground visibility was
+not adopted: hidden documents cannot prove visible foreground readback.
+The subsequent URL comparison finding is fixed with parsed URL equality for
+the request/commit comparison and raw fallback on parse failure, while the DOM,
+frame, loader and visibility fences stay exact. Its directly extracted pure
+regression covers seven canonical and non-equivalent URL cases. Exact final review,
+downstream compilation, dependency/Hakari gates and platform CI are separate
+candidate requirements; prior revisions' green checks do not qualify this pin.
+Standalone SDK strict Clippy currently fails on six existing warnings, including
+a nine-argument navigation error helper inherited from the prior compatibility
+source. No lint exemptions or unrelated lint edits were added.
+
+Git-source manifest discovery also requires the SDK to explicitly bind its
+workspace root. Without that binding, the offline consumer skipped the SDK
+manifest while scanning standalone compatibility fixtures. The same consumer
+resolves it with the binding. All direct and generated Hakari SDK references
+must agree before compilation qualifies the candidate.
+
+For the pinned SDK source, downstream `cargo clippy --workspace --all-targets
+--locked --offline -- -D warnings`, formatting, dependency/layout tests and both
+Hakari drift checks pass. The lock audit retains all 614 registry package
+identities and checksums; only the ten SDK packages move to Driver 0.38.0 at
+one source revision. These local checks do not replace the exact downstream
+commit's full review and platform CI, or establish native acceptance.
+
+The separately reported console flash and Max capture refusal remain unproven
+runtime issues. See [process roles and console launch limits](windows-console-launch-assessment.md)
+and [the Max coordinate audit](max-capture-coordinate-audit.md). No provider,
+Host, browser, application window, permission or desktop binding was changed.
+
+## Previous source and validation history
+
+Driver 0.36.0 compatibility source `be4bbd3eac57796804f43b291a2012dcd2d96896`
+followed [owned Windows setup cleanup #9](https://github.com/loonghao/cua/pull/9),
+[download metadata #8](https://github.com/loonghao/cua/pull/8) and
+[compatibility #7](https://github.com/loonghao/cua/pull/7). The following results
+refer to those historical candidates, not the 0.38.0 pin.
 
 The follow-up preserves the default SDK download privacy contract. Only a
 trusted, already-approved host request can opt into a bounded suggested filename
@@ -50,14 +97,14 @@ This is the Rust **Driver SDK** under `libs/cua-driver/rust`, including
 `libs/cua` and the independently released `cua-sdk-v0.4.4`.
 
 The component-tagged release has native assets for Windows, Linux and macOS.
-Both current official installer entry points resolve Driver 0.36.0. GitHub's
+The selected release is Driver 0.38.0; source adoption does not run its installers. GitHub's
 `prerelease` label keeps the monorepo-wide Latest pointer separate; the Driver
 release notes identify plain SemVer Driver releases as its stable channel.
 The integration pins source, not the repository-wide Latest release.
 
 ## Why the compatibility fork remains
 
-Official Driver 0.36.0 still does not contain `scope_ancestor_role`,
+The selected official Driver 0.38.0 does not contain `scope_ancestor_role`,
 `scope_anchor` or `browser_scope_unavailable`. Replacing the source URL with
 upstream would silently remove a documented DCC capability. Retain only the
 necessary compatibility behavior on the official release base:
