@@ -9,12 +9,12 @@ this contract with `scripts/test_sdk_dependency_contract.py`.
 
 - Official Driver release: [cua-driver-rs-v0.38.0](https://github.com/trycua/cua/releases/tag/cua-driver-rs-v0.38.0),
   immutable commit `trycua/cua@85e2b1318bd77ccf3cfa88ccdf875a4bb7eaed19`.
-- Compatibility source: `loonghao/cua@fbb47840a8980a11a0532ebe224de257ba09a1ca`,
+- Compatibility source: `loonghao/cua@47913033049cb648606128fd81e5ec562d80b005`,
   integrating that release with the prior DCC source
   `be4bbd3eac57796804f43b291a2012dcd2d96896`. Both contributor histories remain
   ancestors. All six workspace declarations must resolve the same ten SDK
   packages to this one immutable revision.
-- The compatibility diff against the official release spans 44 files. It
+- The compatibility diff against the official release spans 49 files. It
   retains ancestor scopes, hidden file-input association, navigation readback,
   bounded download metadata and owned Windows browser setup/cleanup contracts.
   Upstream's process-family selection replaces the old name-prefix widening;
@@ -38,9 +38,26 @@ frame, loader and visibility fences stay exact. Its directly extracted pure
 regression covers seven canonical and non-equivalent URL cases. Exact final review,
 downstream compilation, dependency/Hakari gates and platform CI are separate
 candidate requirements; prior revisions' green checks do not qualify this pin.
-Standalone SDK strict Clippy currently fails on six existing warnings, including
-a nine-argument navigation error helper inherited from the prior compatibility
-source. No lint exemptions or unrelated lint edits were added.
+The prior candidate exposed six SDK core Clippy diagnostics under Rust 1.95.
+The current candidate resolves those without lint exemptions; strict SDK core
+`--lib` Clippy and 17 targeted regression cases pass. A full SDK workspace
+Clippy attempt is still blocked offline by an uncached `webpki-roots v1.0.10`;
+the core-only result does not establish workspace-wide strict lint success.
+A strict Windows platform attempt also stops in the unchanged cursor-overlay
+crate on two inherited lints before reaching the platform crate.
+
+Pending Windows setup now retains a process-wide MTA usage token for agile UIA
+identities while keeping thread-bound COM scopes local. Pure tests verify that
+identities drop before the token on a different thread and on cleanup-scope
+refusal; actual COM and browser behavior remain untested locally. A successful
+new-tab invocation is recorded as an attempted action until a unique owned-tab
+identity is captured; incomplete ownership reports creation as unproven. The prior
+Windows reference drift was corrected using the exact-head CI-generated files;
+the related Python formatting failure was fixed only in its one reported file.
+The current SDK revision's complete 49-file review finished with zero findings;
+the returned file set matches the full compatibility diff. Its fork CI remains
+unqualified: current-head logs retain attribution, first-run version and missing
+image-doctor ledger failures. Passing review does not waive those gates.
 
 Git-source manifest discovery also requires the SDK to explicitly bind its
 workspace root. Without that binding, the offline consumer skipped the SDK
@@ -48,9 +65,9 @@ manifest while scanning standalone compatibility fixtures. The same consumer
 resolves it with the binding. All direct and generated Hakari SDK references
 must agree before compilation qualifies the candidate.
 
-For the pinned SDK source, downstream `cargo clippy --workspace --all-targets
---locked --offline -- -D warnings`, formatting, dependency/layout tests and both
-Hakari drift checks pass. The lock audit retains all 614 registry package
+The current SDK source `4791303` passes downstream `cargo clippy --workspace
+--all-targets --locked --offline -- -D warnings`, formatting, dependency/layout
+tests and both Hakari drift checks. The lock audit retains all 614 registry package
 identities and checksums; only the ten SDK packages move to Driver 0.38.0 at
 one source revision. These local checks do not replace the exact downstream
 commit's full review and platform CI, or establish native acceptance.
