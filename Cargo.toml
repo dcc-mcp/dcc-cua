@@ -42,9 +42,9 @@ rstest = "0.26.1"
 # This revision retains the required fork contracts on the official Driver 0.38.0
 # release (85e2b1318bd77ccf3cfa88ccdf875a4bb7eaed19), including unmerged fixes.
 # See docs/design/sdk-dependency-maintenance.md for migration and acceptance.
-cua-driver-contract = { git = "https://github.com/loonghao/cua.git", rev = "47913033049cb648606128fd81e5ec562d80b005" }
-cua-driver-sdk = { git = "https://github.com/loonghao/cua.git", rev = "47913033049cb648606128fd81e5ec562d80b005" }
-cua-driver-testkit = { git = "https://github.com/loonghao/cua.git", rev = "47913033049cb648606128fd81e5ec562d80b005" }
-cursor-overlay = { git = "https://github.com/loonghao/cua.git", rev = "47913033049cb648606128fd81e5ec562d80b005" }
-platform-macos = { git = "https://github.com/loonghao/cua.git", rev = "47913033049cb648606128fd81e5ec562d80b005" }
-platform-windows = { git = "https://github.com/loonghao/cua.git", rev = "47913033049cb648606128fd81e5ec562d80b005" }
+cua-driver-contract = { git = "https://github.com/loonghao/cua.git", rev = "4fae640e8572dc588686f039d98be906887e50e7" }
+cua-driver-sdk = { git = "https://github.com/loonghao/cua.git", rev = "4fae640e8572dc588686f039d98be906887e50e7" }
+cua-driver-testkit = { git = "https://github.com/loonghao/cua.git", rev = "4fae640e8572dc588686f039d98be906887e50e7" }
+cursor-overlay = { git = "https://github.com/loonghao/cua.git", rev = "4fae640e8572dc588686f039d98be906887e50e7" }
+platform-macos = { git = "https://github.com/loonghao/cua.git", rev = "4fae640e8572dc588686f039d98be906887e50e7" }
+platform-windows = { git = "https://github.com/loonghao/cua.git", rev = "4fae640e8572dc588686f039d98be906887e50e7" }
