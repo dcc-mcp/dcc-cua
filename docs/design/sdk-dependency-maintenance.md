@@ -148,7 +148,7 @@ necessary compatibility behavior on the official release base:
   readback is fenced on both sides by document identity. Lost CDP replies
   invalidate refs and return an explicit unknown dispatch state; DCC preserves
   that redacted receipt instead of claiming the navigation never happened.
-- Responsive existing-profile socket proof. Driver 0.36 now shares consented
+- Responsive existing-profile socket proof. Driver 0.38 shares consented
   sockets: a failed probe releases only its current grant with
   `SharedSocketRelease::Close`; it must not remove another session's hold.
 - Exact Windows native consent-window ownership/topmost disambiguation.
@@ -164,7 +164,7 @@ that same RAII cleanup. Drop the obsolete netstat subprocess hunk because
 upstream uses the native TCP listener API, and do not restore deleted website
 documentation paths. The current Driver skill retains the compatibility API
 reference. The compatibility branch records the per-patch migration decisions
-in `libs/cua-driver/docs/dcc-compatibility-0360.md`.
+in `libs/cua-driver/docs/dcc-compatibility-0380.md`.
 
 The migration also compares the unmerged fork candidates, not only the
 installed pin. Preserve PR #5's duplicate-ID file-input refusal and borrowed
@@ -180,14 +180,14 @@ unchanged. Upstream inventory growth does not grant a new DCC action route:
 `run_script` is rejected by both unscoped native entry points. The real Linux
 pixels-only SDK inventory also rejects `parse_visual_regions`.
 
-Driver 0.36 defaults native `get_window_state` trees to Markdown. DCC explicitly
+Driver 0.38 defaults native `get_window_state` trees to Markdown. DCC explicitly
 requests `tree_format: "both"` for semantic snapshots and screenshot-plus-
 semantics, preserving read-only status/dialog/menu text alongside actionable
 elements and their SDK tokens; exact PID/window/session and bounds remain unchanged. The Windows
 overlay adapter supplies `target: None` for its existing point-only movement
 request because DCC does not have element bounds to pass upstream.
 
-Native input mappings also follow the 0.36 tool inventory. macOS window cursor
+Native input mappings also follow the 0.38 tool inventory. macOS window cursor
 movement uses its typed window target and screenshot coordinates; Linux and
 Windows overlay movement converts those coordinates once to native window units
 and adds the revalidated window origin. A macOS live/resized observation already
