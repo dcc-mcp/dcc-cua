@@ -9,7 +9,7 @@ this contract with `scripts/test_sdk_dependency_contract.py`.
 
 - Official Driver release: [cua-driver-rs-v0.38.0](https://github.com/trycua/cua/releases/tag/cua-driver-rs-v0.38.0),
   immutable commit `trycua/cua@85e2b1318bd77ccf3cfa88ccdf875a4bb7eaed19`.
-- Compatibility source: `loonghao/cua@103aa357d3aa10f45e88d5d69a1bf677a3c72349`,
+- Compatibility source: `loonghao/cua@05f43bda479d01aee512a0c092fb064ce1a330bd`,
   integrating that release with the prior DCC source
   `be4bbd3eac57796804f43b291a2012dcd2d96896`. Both contributor histories remain
   ancestors. All six workspace declarations must resolve the same ten SDK
@@ -61,7 +61,7 @@ published 0.38.0 installer artifacts, fixes the compatibility fork's missing
 image-doctor ledger source, fences URL fragments during foreground readback,
 moves native consent inspection off the async executor, and limits DOM upload
 supplementation to explicit chooser elements. The prior SDK head `4fae640` passed first-run and image-doctor CI. The current
-`103aa357` revision refreshes Linux/macOS generated download descriptions from
+`05f43bda` revision refreshes Linux/macOS generated download descriptions from
 digest-verified exact-head CI artifacts. Its full 54-file detailed review passed
 with zero findings; its fresh CI remains a separate qualification gate.
 The trusted-base contributor attribution check still needs a repository-aware
@@ -74,7 +74,7 @@ manifest while scanning standalone compatibility fixtures. The same consumer
 resolves it with the binding. All direct and generated Hakari SDK references
 must agree before compilation qualifies the candidate.
 
-The current SDK source `103aa357` passed downstream `cargo clippy --workspace
+The current SDK source `05f43bda` passed downstream `cargo clippy --workspace
 --all-targets --locked --offline -- -D warnings`, formatting, dependency/layout
 tests and both Hakari drift checks. The lock audit retains all 614 registry package
 identities and checksums; only the ten SDK packages move to Driver 0.38.0 at
