@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.17.0](https://github.com/dcc-mcp/dcc-cua/compare/v1.16.1...v1.17.0) (2026-10-30)
+
+
+### Features
+
+* **sdk:** adopt Driver 0.38.0 compatibility source ([a0235a8](https://github.com/dcc-mcp/dcc-cua/commit/a0235a860e8b40cc0335068499a54d79f6cb9ca1))
+
+
+### Bug Fixes
+
+* **sdk:** pin reviewed Driver 0.38 ownership fixes ([42650e2](https://github.com/dcc-mcp/dcc-cua/commit/42650e2c5be3bbb8d398d2e8977f8503cf29a3c5))
+
 ## [1.16.1](https://github.com/dcc-mcp/dcc-cua/compare/v1.16.0...v1.16.1) (2026-10-26)
 
 
