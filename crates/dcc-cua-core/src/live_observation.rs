@@ -217,7 +217,9 @@ impl LiveObservationFrame {
             height,
             captured_at_ms: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
-                .map_or(0, |duration| duration.as_millis()),
+                .map_or(0, |duration| {
+                    duration.saturating_sub(captured_at.elapsed()).as_millis()
+                }),
             captured_at,
             provenance: FrameCaptureProvenance::Portable,
         }
@@ -274,7 +276,20 @@ impl LiveObservationFrame {
     }
 
     pub(crate) fn age_ms(&self) -> u128 {
-        self.captured_at.elapsed().as_millis()
+        self.captured_at
+            .elapsed()
+            .saturating_add(
+                self.wgc_timing()
+                    .map_or(Duration::ZERO, |timing| timing.capture_uncertainty()),
+            )
+            .as_millis()
+    }
+
+    fn wgc_timing(&self) -> Option<dcc_cua_showcase::NativeWgcFrameTiming> {
+        match &self.provenance {
+            FrameCaptureProvenance::NativeExactWindow(proof) => proof.wgc_timing,
+            FrameCaptureProvenance::Portable => None,
+        }
     }
 }
 
@@ -485,6 +500,21 @@ impl LiveObservationStatus {
             self.record_error("a stale live frame cannot cross the pause or publication fence");
             return;
         }
+        if let Some(current) = frame.wgc_timing()
+            && self
+                .latest
+                .as_ref()
+                .and_then(|previous| previous.wgc_timing())
+                .is_some_and(|previous| {
+                    current.compositor_time_100ns <= previous.compositor_time_100ns
+                })
+        {
+            self.record_paused_error(&ComputerUseError::new(
+                ComputerUseErrorCode::StaleObservation,
+                "WGC compositor time did not advance; refusing to retime source pixels",
+            ));
+            return;
+        }
         self.first_captured_at.get_or_insert(frame.captured_at);
         if let Some(previous) = self.previous_captured_at {
             let interval_ms = frame
@@ -636,6 +666,8 @@ impl LiveObservationStatus {
             "max_cpu_copy_ms": self.max_cpu_copy_ms,
             "last_compositor_timing": last_compositor_timing,
             "max_compositor_to_publish_ms": self.max_compositor_to_publish_ms,
+            "last_capture_pipeline": self.latest.as_ref().and_then(|frame| frame.wgc_timing()).map(|timing| timing.pipeline),
+            "capture_pipeline_semantics": "disjoint_wall_microseconds_recording_precheck_exclusion_acquire_source_capture_source_validation_recording_admission_publication_validation; precheck_precedes_capture_cycle; source_capture_includes_wait_and_readback; excludes_clock_mapping_owner_handoffs_scheduling_between_cycles_and_status_serialization",
             "capture_mode": self.capture_mode.unwrap_or("initializing"),
             "latest_sequence": self.latest.as_ref().map(|frame| frame.sequence()),
             "latest_frame_age_ms": self.latest.as_ref().map(|frame| frame.age_ms()),

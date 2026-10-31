@@ -9,13 +9,45 @@ pub struct RecordingAuthorization {
     expires_at_unix_ms: u64,
     clock: Arc<dyn Fn() -> u64 + Send + Sync>,
     monotonic_deadline: Option<Instant>,
+    parent: Option<Arc<RecordingAuthorization>>,
 }
 
 pub struct RecordingAdmission<'a> {
     _revoked: MutexGuard<'a, bool>,
+    authorization: &'a RecordingAuthorization,
+    _parent: Option<Box<RecordingAdmission<'a>>>,
+}
+
+impl RecordingAdmission<'_> {
+    /// Recheck expiry after a bounded native preparation while retaining the
+    /// revocation fence; reacquiring the same mutex here would deadlock.
+    pub fn validate_current(&self) -> Result<(), &'static str> {
+        if *self._revoked || self.authorization.remaining_lifetime().is_zero() {
+            Err("recording task authorization expired or was revoked")
+        } else {
+            Ok(())
+        }
+    }
 }
 
 impl RecordingAuthorization {
+    /// A recorder can revoke its own stream without revoking the whole task.
+    /// Admission always holds both fences, so task revocation still wins.
+    pub fn recording_local(parent: Arc<Self>) -> Arc<Self> {
+        Arc::new(Self {
+            revoked: Mutex::new(false),
+            expires_at_unix_ms: parent.expires_at_unix_ms,
+            clock: parent.clock.clone(),
+            monotonic_deadline: parent.monotonic_deadline,
+            parent: Some(parent),
+        })
+    }
+    pub fn remaining_lifetime(&self) -> Duration {
+        let wall = Duration::from_millis(self.expires_at_unix_ms.saturating_sub((self.clock)()));
+        self.monotonic_deadline.map_or(wall, |deadline| {
+            wall.min(deadline.saturating_duration_since(Instant::now()))
+        })
+    }
     #[must_use]
     pub fn new(expires_at_unix_ms: u64) -> Self {
         let mut authorization = Self::with_clock(
@@ -43,6 +75,7 @@ impl RecordingAuthorization {
             expires_at_unix_ms,
             clock,
             monotonic_deadline: None,
+            parent: None,
         }
     }
 
@@ -55,6 +88,11 @@ impl RecordingAuthorization {
     }
 
     pub fn admit(&self) -> Result<RecordingAdmission<'_>, &'static str> {
+        let parent = self
+            .parent
+            .as_ref()
+            .map(|parent| parent.admit())
+            .transpose()?;
         let mut revoked = self
             .revoked
             .lock()
@@ -68,7 +106,11 @@ impl RecordingAuthorization {
             *revoked = true;
             return Err("recording task authorization expired or was revoked");
         }
-        Ok(RecordingAdmission { _revoked: revoked })
+        Ok(RecordingAdmission {
+            _revoked: revoked,
+            authorization: self,
+            _parent: parent.map(Box::new),
+        })
     }
 
     pub fn with_active<T>(&self, work: impl FnOnce() -> T) -> Result<T, &'static str> {

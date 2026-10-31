@@ -1256,9 +1256,10 @@ fn public_tool_schema_advertises_closed_pixel_actions_and_exact_window_only() {
     let scopes = pixel["properties"]["allowed_actions"]["items"]["oneOf"]
         .as_array()
         .unwrap();
-    assert_eq!(scopes.len(), 5);
+    assert_eq!(scopes.len(), 6);
     let window_actions: std::collections::BTreeSet<_> = scopes
         .iter()
+        .filter(|scope| scope["properties"]["input_kind"]["const"] == "window_state")
         .filter_map(|scope| scope["properties"]["action"]["const"].as_str())
         .collect();
     assert_eq!(
@@ -1877,7 +1878,12 @@ fn start_task_has_no_confirmation_ui_or_secret_value_fields() {
 fn task_action_schema_matches_the_closed_runtime_contract() {
     let schema = task_action_scope_schema();
     let variants = schema["oneOf"].as_array().unwrap();
-    assert_eq!(variants.len(), 9);
+    assert_eq!(variants.len(), 10);
+    let audio = variants
+        .iter()
+        .filter(|scope| scope["properties"]["input_kind"]["const"] == "playback_audio")
+        .collect::<Vec<_>>();
+    assert_eq!(audio, vec![&recording_audio::scope_schema()]);
 
     let variant = |input_kind: &str| {
         variants

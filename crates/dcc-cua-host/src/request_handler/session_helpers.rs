@@ -83,6 +83,9 @@ pub(crate) async fn prepare_granted_session_recording(
             ));
         };
         session.set_recording_authorization(authorization);
+        if let Some(audio) = lease.recording_audio_grant.clone() {
+            session.set_recording_audio_grant(audio);
+        }
     }
     let showcase = if let Some(output_dir) = grant.showcase_output_dir.as_deref() {
         if !grant.allow_recording {
@@ -93,6 +96,7 @@ pub(crate) async fn prepare_granted_session_recording(
         }
         match session
             .recording_start(&ComputerUseRecordingStartRequest {
+                recording_audio: Default::default(),
                 output_dir: output_dir.to_owned(),
                 record_video: true,
             })

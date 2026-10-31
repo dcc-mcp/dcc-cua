@@ -1,3 +1,5 @@
+mod recording_audio;
+use recording_audio::bind_recording_request;
 mod task_payload;
 use task_payload::proposal_payload;
 mod capture_popup;
@@ -194,6 +196,8 @@ struct PrepareTaskInput {
     allowed_actions: Vec<TrustedTaskActionScope>,
     #[serde(default)]
     allow_recording: bool,
+    #[serde(default)]
+    recording_audio: Option<recording_audio::AudioRequest>,
     #[serde(default)]
     allow_capture_preparation: bool,
     #[serde(default)]
@@ -493,6 +497,7 @@ impl TaskAuthorizationServer {
                         && !action.is_window_frame()
                         && !action.is_native_menu_dismiss()
                         && !action.is_capture_preparation()
+                        && !action.is_recording_audio()
                         && !action.is_pixels_input()
                 })
             {
@@ -610,6 +615,21 @@ impl TaskAuthorizationServer {
                 );
             }
         };
+        let audio_action = input
+            .allowed_actions
+            .iter()
+            .any(TrustedTaskActionScope::is_recording_audio);
+        if input.recording_audio.is_some() != audio_action
+            || (audio_action
+                && (!input.allow_recording
+                    || input.observation_mode != TaskObservationMode::PixelsOnly
+                    || input.surface != TaskSurface::Window))
+        {
+            return Err("audio requires an independent playback_audio action on a pixels_only recording window task".into());
+        }
+        if let Some(audio) = &input.recording_audio {
+            audio.validate()?;
+        }
         let now = unix_time_millis();
         self.proposals.retain(|_, proposal| {
             proposal.session.is_some() || proposal.registration.expires_at_unix_ms > now
@@ -669,10 +689,14 @@ impl TaskAuthorizationServer {
             allowed_browser_origins,
             browser_scope: None,
             recording_output_dir: None,
+            recording_audio_grant: None,
             capture_preparation,
             expires_at_unix_ms: now.saturating_add(input.ttl_minutes * 60_000),
         };
-        registration.validate().map_err(|error| error.to_string())?;
+        if let Some(audio) = input.recording_audio {
+            registration.recording_audio_grant =
+                Some(audio.grant(recording_audio::resolve(&registration.target)?));
+        }
         if input.allow_recording {
             let root = self.recording_output_root.as_ref().ok_or_else(||
                 "recording requires operator configuration DCC_CUA_RECORDING_OUTPUT_ROOT; callers cannot nominate an output root".to_owned())?;
@@ -685,12 +709,17 @@ impl TaskAuthorizationServer {
             std::fs::create_dir(&directory)
                 .map_err(|error| format!("create owned recording task directory: {error}"))?;
             registration.recording_output_dir = Some(directory.to_string_lossy().into_owned());
-            registration.validate().map_err(|error| error.to_string())?;
         }
-        let receipt = authority
-            .issuer
-            .register(registration.clone())
-            .map_err(|error| error.to_string())?;
+        let receipt = recording_audio::with_owned_directory_cleanup_on_error(
+            registration.recording_output_dir.as_deref(),
+            || {
+                registration.validate().map_err(|error| error.to_string())?;
+                authority
+                    .issuer
+                    .register(registration.clone())
+                    .map_err(|error| error.to_string())
+            },
+        )?;
         let proposal = TaskProposal {
             surface: input.surface,
             observation_mode: input.observation_mode,
@@ -856,6 +885,7 @@ impl TaskAuthorizationServer {
             "allow_native_capture_popup_keyboard": proposal.registration.allowed_actions.iter().any(TrustedTaskActionScope::is_native_capture_popup_keyboard),
             "native_action_popups": false,
             "recording_output_dir": proposal.registration.recording_output_dir,
+            "recording_audio_grant": proposal.registration.recording_audio_grant,
         }))
     }
 
@@ -943,6 +973,10 @@ impl TaskAuthorizationServer {
             );
         }
         if method == "recording_start" {
+            recording_audio::bind(
+                &mut params,
+                proposal.registration.recording_audio_grant.as_ref(),
+            )?;
             bind_recording_request(
                 &mut params,
                 proposal.registration.recording_output_dir.as_deref(),
@@ -1069,6 +1103,7 @@ fn task_session_grant(proposal: &TaskProposal, receipt: &TrustedTaskAuthorizatio
         "allow_recording": proposal.registration.recording_output_dir.is_some(),
         "allow_capture_preparation": proposal.registration.capture_preparation.is_some(),
         "recording_output_dir": proposal.registration.recording_output_dir,
+        "recording_audio_grant": proposal.registration.recording_audio_grant,
         "allow_browser_input": browser,
         "allow_browser_prepare": proposal.authorizes_existing_profile_prepare(),
         "allow_browser_download": allow_browser_download,
@@ -1200,17 +1235,19 @@ fn validate_task_method_params(method: &str, params: &Value) -> Result<(), Strin
                 .as_object()
                 .ok_or_else(|| "lifecycle request must be an object".to_owned())?;
             if method == "recording_start" {
-                if request
-                    .keys()
-                    .any(|key| !matches!(key.as_str(), "output_dir" | "record_video"))
-                    || request
-                        .get("record_video")
-                        .is_some_and(|value| value != &json!(true))
+                if request.keys().any(|key| {
+                    !matches!(
+                        key.as_str(),
+                        "output_dir" | "record_video" | "recording_audio"
+                    )
+                }) || request
+                    .get("record_video")
+                    .is_some_and(|value| value != &json!(true))
                     || request
                         .get("output_dir")
                         .is_some_and(|value| !value.is_string())
                 {
-                    return Err("native recording is video-only and cannot override its authorized output directory".into());
+                    return Err("native recording requires video, accepts optional authorized recording_audio, and cannot override its authorized output directory".into());
                 }
             } else if request
                 .keys()
@@ -1367,23 +1404,6 @@ fn validate_native_lifecycle_methods(methods: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-fn bind_recording_request(params: &mut Value, directory: Option<&str>) -> Result<(), String> {
-    let directory =
-        directory.ok_or_else(|| "native recording output was not authorized".to_owned())?;
-    validate_task_method_params("recording_start", params)?;
-    if params
-        .get("request")
-        .and_then(|request| request.get("output_dir"))
-        .is_some_and(|value| value.as_str() != Some(directory))
-    {
-        return Err(
-            "recording output directory does not match the immutable task authorization".into(),
-        );
-    }
-    params["request"] = json!({"output_dir":directory,"record_video":true});
-    Ok(())
-}
-
 fn validate_allowed_methods(surface: TaskSurface, methods: &[String]) -> Result<(), String> {
     if methods.is_empty() || methods.len() > MAX_ALLOWED_METHODS {
         return Err(format!(
@@ -1478,7 +1498,7 @@ fn capture_preparation_scope_schema() -> Value {
 
 fn pixels_action_scope_schema() -> Value {
     json!({
-        "oneOf": [native_minimize_scope_schema(), native_frame_scope_schema(), native_menu_dismiss_scope_schema(), capture_preparation_scope_schema(), {
+        "oneOf": [native_minimize_scope_schema(), native_frame_scope_schema(), native_menu_dismiss_scope_schema(), capture_preparation_scope_schema(), recording_audio::scope_schema(), {
             "title": "Observation-bound foreground pixel input",
             "type": "object",
             "additionalProperties": false,
@@ -1507,6 +1527,7 @@ fn task_action_scope_schema() -> Value {
             native_frame_scope_schema(),
             native_menu_dismiss_scope_schema(),
             capture_preparation_scope_schema(),
+            recording_audio::scope_schema(),
             {
                 "title": "Exact-origin paired extension navigation",
                 "type": "object", "additionalProperties": false,
@@ -1589,7 +1610,7 @@ fn tool_definitions() -> Vec<Value> {
         json!({
             "name": "start_task",
             "title": "Start DCC-CUA task",
-            "description": "Start one exact bounded DCC-CUA task without a secondary confirmation step. Keep this mcp-server stdio connection open through stop_task: task IDs, observations and opaque refs are connection/session-scoped and cannot be resumed after reconnecting. The connected Agent Host owns user authorization. observation_mode defaults to semantic; explicitly choose pixels_only for an exact window snapshot without UIA or semantic selectors. Pixels-only tasks require complete exact-window capture proof and grant only closed native window_state methods or the advertised non-secret raw_input actions. Explicit set_window_frame requires get_window_state and its own action scope. Native dismiss_menu requires its independent window_state/dismiss_menu action scope plus get_window_state and change_window_state. These grant no raw input or recording. Capture does not require foreground activation. Every action requires the latest observation and an unchanged native instance. Explicitly granted semantic tasks may use background Windows UIA click, toggle, set_text or set_value on supported fresh same-task UIA elements; other semantic actions do not imply background support. Physical input requires the exact target in the foreground. Pointer locations must be unredacted and natively reachable; physical keyboard and text input require complete visibility. Explicit allow_recording=true grants native video-only recording_start/state/stop in an operator-owned task directory. Live observation and recording reuse the same native source, without an accessibility tree or trajectory.",
+            "description": "Start one exact bounded DCC-CUA task without a secondary confirmation step. Keep this mcp-server stdio connection open through stop_task: task IDs, observations and opaque refs are connection/session-scoped and cannot be resumed after reconnecting. The connected Agent Host owns user authorization. observation_mode defaults to semantic; explicitly choose pixels_only for an exact window snapshot without UIA or semantic selectors. Pixels-only tasks require complete exact-window capture proof and grant only closed native window_state methods or the advertised non-secret raw_input actions. Explicit set_window_frame requires get_window_state and its own action scope. Native dismiss_menu requires its independent window_state/dismiss_menu action scope plus get_window_state and change_window_state. These grant no raw input or recording. Capture does not require foreground activation. Every action requires the latest observation and an unchanged native instance. Explicitly granted semantic tasks may use background Windows UIA click, toggle, set_text or set_value on supported fresh same-task UIA elements; other semantic actions do not imply background support. Physical input requires the exact target in the foreground. Pointer locations must be unredacted and natively reachable; physical keyboard and text input require complete visibility. Explicit allow_recording=true grants native video recording_start/state/stop in an operator-owned task directory. Target playback audio additionally requires recording_audio mode/ceilings and its independent playback_audio action; silent video permission never enables sound. Live observation and recording reuse the same native source, without an accessibility tree or trajectory.",
             "inputSchema": {
                 "type": "object",
                 "additionalProperties": false,
@@ -1809,7 +1830,7 @@ fn tool_definitions() -> Vec<Value> {
                     "if":{"properties":{"method":{"const":"recording_start"}}},
                     "then":{"properties":{"params":{"type":"object","additionalProperties":false,
                         "properties":{"request":{"type":"object","additionalProperties":false,
-                            "properties":{"record_video":{"const":true},"output_dir":{"type":"string",
+                            "properties":{"recording_audio":{"enum":["none","target_process_tree"]},"record_video":{"const":true},"output_dir":{"type":"string",
                                 "description":"Optional exact task-authorized directory. The server supplies its immutable path and rejects a different value."}}}}
                     }}}
                 }, {
@@ -1827,6 +1848,7 @@ fn tool_definitions() -> Vec<Value> {
             "annotations": {"readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": true}
         }),
     ];
+    recording_audio::configure_schema(&mut tools[0]);
     tools[0]["inputSchema"]["properties"]["allow_native_capture_popup_keyboard"] =
         capture_popup::owner_schema();
     tools

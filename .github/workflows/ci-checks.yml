@@ -249,7 +249,30 @@ jobs:
           set -euo pipefail
           git show "$EXPECTED_SOURCE_SHA:scripts/verify_ci_source_integrity.py" |
             python -B - --repository . --expected "$EXPECTED_SOURCE_SHA"
+      - name: Check Intel workspace with retained build diagnostics
+        id: intel-check
+        if: matrix.platform == 'macos-x86_64'
+        # Leave time inside the unchanged 45-minute job limit to save evidence.
+        timeout-minutes: 35
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/ci-diagnostics/intel-check
+          trap 'status=$?; printf "exit_code=%s elapsed_seconds=%s\n" "$status" "$SECONDS" > artifacts/ci-diagnostics/intel-check/exit.txt' EXIT
+          cargo check --workspace --all-targets --locked --verbose --timings 2>&1 | tee artifacts/ci-diagnostics/intel-check/cargo-check.log
+      - name: Retain Intel check evidence even after failure
+        if: always() && matrix.platform == 'macos-x86_64'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: intel-check-${{ steps.ci-source.outputs.sha }}-${{ github.run_attempt }}
+          path: |
+            artifacts/ci-diagnostics/intel-check/
+            target/cargo-timings/
+          if-no-files-found: error
+          retention-days: 1
+          overwrite: false
       - run: cargo check --workspace --all-targets --locked
+        if: matrix.platform != 'macos-x86_64'
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo nextest run --workspace --all-targets --locked
       - run: cargo test --workspace --doc --locked

@@ -64,6 +64,14 @@ impl ComputerUseSession {
         self.recording_authorization = Some(authorization);
     }
 
+    /// Only a constructor-validated task lease supplies this immutable source.
+    pub fn set_recording_audio_grant(
+        &mut self,
+        grant: dcc_cua_protocol::recording_audio::ProcessAudioGrant,
+    ) {
+        self.recording_audio_grant = Some(grant);
+    }
+
     /// Return the monotonic receipt for all action-scoped evidence.
     #[must_use]
     pub const fn action_evidence_epoch(&self) -> ActionEvidenceEpoch {
@@ -122,6 +130,7 @@ impl ComputerUseSession {
             recording_health: None,
             recording_keepalive: None,
             recording_authorization: None,
+            recording_audio_grant: None,
             #[cfg(windows)]
             windows_uia: None,
             upstream_session_state: UpstreamSessionState::Inactive,
@@ -511,6 +520,16 @@ impl ComputerUseSession {
         &mut self,
         request: &ComputerUseRecordingStartRequest,
     ) -> ComputerUseResult<Value> {
+        let wants_audio = request.recording_audio
+            == dcc_cua_protocol::recording_audio::RecordingAudioMode::TargetProcessTree;
+        if wants_audio != self.recording_audio_grant.is_some()
+            || (wants_audio && (!self.uses_native_video_recording() || !request.record_video))
+        {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::InvalidAction,
+                "recording audio requires the independent trusted exact-window grant and native video",
+            ));
+        }
         validate_recording_start_request(request)?;
         self.ensure_active()?;
         if self.uses_native_video_recording() {
@@ -729,7 +748,12 @@ impl ComputerUseSession {
             action,
             ActionBannerPhase::Preparing,
         ));
-        validate_action(action)?;
+        #[cfg(windows)]
+        let exact_windows_pixels =
+            self.pixel_observation_route == Some(PixelObservationRoute::ExplicitPixelsOnly);
+        #[cfg(not(windows))]
+        let exact_windows_pixels = false;
+        validate_action_route(action, exact_windows_pixels)?;
         validate_window_action_coordinates(action)?;
         let observation = self.observation.clone().ok_or_else(|| {
             ComputerUseError::new(

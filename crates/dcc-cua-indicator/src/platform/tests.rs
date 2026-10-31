@@ -9,6 +9,7 @@ mod capture_source_tests {
         let active = Arc::new(AtomicBool::new(false));
         let source = PlatformCaptureExclusionSource {
             active: Arc::clone(&active),
+            input_capture: Arc::default(),
         };
         let cloned = source.clone();
         assert!(source.begin().is_err());

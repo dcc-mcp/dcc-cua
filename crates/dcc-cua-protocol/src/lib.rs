@@ -23,6 +23,7 @@ pub const MAX_SESSION_IDLE_TIMEOUT_MS: u64 = 24 * 60 * 60 * 1_000;
 pub mod capture_preparation;
 pub mod continuity;
 pub mod native_input_diagnostic;
+pub mod recording_audio;
 
 #[derive(Debug, thiserror::Error, Clone, Copy, PartialEq, Eq)]
 pub enum SecretHandleError {

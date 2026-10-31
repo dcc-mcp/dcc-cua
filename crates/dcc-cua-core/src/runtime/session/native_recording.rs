@@ -57,7 +57,11 @@ impl ComputerUseSession {
             let _banner_activity = self.begin_banner_activity(BannerActivity::Recording);
             let outcome = self
                 .ensure_live_observation(&ComputerUseLiveObservationStartRequest {
-                    fps: 10,
+                    fps: if self.recording_audio_grant.is_some() {
+                        30
+                    } else {
+                        10
+                    },
                     ..Default::default()
                 })
                 .await?;
@@ -187,22 +191,38 @@ impl ComputerUseSession {
         fps: u32,
         owns_live_observation: bool,
     ) -> ComputerUseResult<()> {
-        self.ensure_local_cleanup_reusable()?;
-        self.local_cleanup.recorder_pending = true;
-        if self.last_recording_video.is_none() {
-            self.last_recording_video = Some(RecordingVideoTerminalEvidence::from_failed_stop(
-                json!({}),
-                &ComputerUseError::new(
-                    ComputerUseErrorCode::CompletionUnknown,
-                    "native recorder startup has not acknowledged cleanup or transferred ownership",
-                ),
-            ));
-        }
-        match ShowcaseRecorder::start_authorized_with_outcome(
+        #[cfg(windows)]
+        let grant = self.recording_audio_grant.clone();
+        let audio = self.prepare_owned_native_recorder(|| {
+            #[cfg(windows)]
+            {
+                let Some(grant) = grant else {
+                    return Ok(None);
+                };
+                let executable = std::env::current_exe().map_err(|error| {
+                    ComputerUseError::new(
+                        ComputerUseErrorCode::BackendUnavailable,
+                        format!("resolve owned audio worker: {error}"),
+                    )
+                })?;
+                Ok(Some(Box::new(
+                    dcc_cua_platform_windows::process_audio::NativeRecorderAudioFactory {
+                        executable,
+                        grant,
+                    },
+                )))
+            }
+            #[cfg(not(windows))]
+            {
+                Ok(None)
+            }
+        })?;
+        match ShowcaseRecorder::start_with_audio_outcome(
             frames,
             output_dir,
             fps,
             self.recording_authorization.clone(),
+            audio,
         )
         .await
         {
@@ -220,11 +240,37 @@ impl ComputerUseSession {
                     RecordingVideoTerminalEvidence::from_failed_stop(outcome, &error);
                 evidence.record_startup_error(&error);
                 self.last_recording_video = Some(evidence);
-                // The failed start API joins both tasks before returning.
-                self.local_cleanup.recorder_pending = false;
+                // Joined threads do not prove an unknown native child was reaped.
+                self.local_cleanup.recorder_pending =
+                    error.code == ComputerUseErrorCode::CompletionUnknown;
                 Err(error)
             }
         }
+    }
+
+    /// Resolve constructors before claiming ownership. Failures here own no
+    /// recorder resources and must not poison cleanup/reuse diagnostics.
+    #[cfg(any(windows, test))]
+    pub(super) fn prepare_owned_native_recorder(
+        &mut self,
+        resolve: impl FnOnce() -> ComputerUseResult<
+            Option<Box<dyn dcc_cua_showcase::recorder_audio::RecorderAudioFactory>>,
+        >,
+    ) -> ComputerUseResult<Option<Box<dyn dcc_cua_showcase::recorder_audio::RecorderAudioFactory>>>
+    {
+        self.ensure_local_cleanup_reusable()?;
+        let audio = resolve()?;
+        self.local_cleanup.recorder_pending = true;
+        if self.last_recording_video.is_none() {
+            self.last_recording_video = Some(RecordingVideoTerminalEvidence::from_failed_stop(
+                json!({}),
+                &ComputerUseError::new(
+                    ComputerUseErrorCode::CompletionUnknown,
+                    "native recorder startup has not acknowledged cleanup or transferred ownership",
+                ),
+            ));
+        }
+        Ok(audio)
     }
 
     #[cfg(any(windows, test))]
@@ -344,7 +390,9 @@ impl ComputerUseSession {
             Some(showcase) => {
                 let owns_live = showcase.owns_live_observation;
                 let (result, outcome) = showcase.recorder.stop_with_outcome().await;
-                self.local_cleanup.recorder_pending = false;
+                self.local_cleanup.recorder_pending = result.as_ref().is_err_and(|error| {
+                    error.code == dcc_cua_showcase::ShowcaseErrorCode::CleanupUnknown
+                });
                 (result.map_err(map_showcase_error), outcome, owns_live)
             }
             None => {
@@ -450,13 +498,16 @@ fn validate_native_recording_metadata<'a>(
             "native video requires actual exact-window capture provenance",
         ));
     };
+    let earliest_capture = proof.wgc_timing.map_or(Some(captured_at), |timing| {
+        captured_at.checked_sub(timing.capture_uncertainty())
+    });
     if proof.process_id != target.pid
         || proof.window_handle != target.window_id
         || proof.stream_id != stream_id
         || proof.capture_generation == 0
         || proof.native_instance.process_creation_time_100ns == 0
         || proof.native_instance.window_thread_id == 0
-        || captured_at < requested_at
+        || earliest_capture.is_none_or(|earliest| earliest < requested_at)
     {
         return Err(ComputerUseError::new(
             ComputerUseErrorCode::StaleObservation,

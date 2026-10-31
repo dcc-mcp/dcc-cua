@@ -463,6 +463,11 @@ pub struct ComputerUseClipboardWriteRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ComputerUseRecordingStartRequest {
     pub output_dir: String,
+    #[serde(
+        default,
+        skip_serializing_if = "dcc_cua_protocol::recording_audio::RecordingAudioMode::is_none"
+    )]
+    pub recording_audio: dcc_cua_protocol::recording_audio::RecordingAudioMode,
     #[serde(default)]
     pub record_video: bool,
 }

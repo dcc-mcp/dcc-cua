@@ -184,6 +184,7 @@ impl WindowsLiveTarget {
             capture_generation: generation,
             stream_id: self.stream_id,
             wgc_geometry,
+            wgc_timing: None,
             capture_preparation: None,
         }))
     }
@@ -263,7 +264,52 @@ struct WindowsCapturedFrame {
     height: u32,
     capture_mode: &'static str,
     provenance: FrameCaptureProvenance,
-    measurement: Option<dcc_cua_platform_windows::WgcFrameMeasurement>,
+    measurement: Option<WindowsFrameMeasurement>,
+}
+
+struct WindowsFrameMeasurement {
+    source: dcc_cua_platform_windows::WgcFrameMeasurement,
+    capture: Duration,
+    validation: Duration,
+}
+
+fn bind_wgc_source_clock(
+    provenance: &mut FrameCaptureProvenance,
+    measurement: dcc_cua_platform_windows::WgcPublishedFrameMeasurement,
+    pipeline: dcc_cua_showcase::NativeCapturePipelineTiming,
+    published_at_unix_ms: u128,
+) -> ComputerUseResult<Instant> {
+    let fail = |reason: &str| {
+        ComputerUseError::new(
+            ComputerUseErrorCode::StaleObservation,
+            format!("WGC source clock unavailable: {reason}; publication time is not capture time"),
+        )
+    };
+    let clock = measurement
+        .capture_clock
+        .map_err(|reason| fail(reason.as_str()))?;
+    let dcc_cua_platform_windows::WgcCompositorTiming::Available {
+        system_relative_time_100ns,
+        ..
+    } = measurement.compositor
+    else {
+        return Err(fail("compositor_timestamp_unavailable"));
+    };
+    let FrameCaptureProvenance::NativeExactWindow(proof) = provenance else {
+        return Err(fail("native_provenance_unavailable"));
+    };
+    if proof.source != NativeFrameSource::Wgc {
+        return Err(fail("source_route_changed"));
+    }
+    proof.wgc_timing = Some(dcc_cua_showcase::NativeWgcFrameTiming {
+        compositor_time_100ns: system_relative_time_100ns,
+        published_qpc_100ns: clock.published_qpc_100ns,
+        published_at_unix_ms,
+        calibration_bracket_ns: u64::try_from(clock.calibration_bracket.as_nanos())
+            .unwrap_or(u64::MAX),
+        pipeline,
+    });
+    Ok(clock.captured_at)
 }
 
 #[cfg(windows)]
@@ -303,6 +349,7 @@ impl WindowsLiveCapture {
     }
 
     fn next_frame(&mut self, target: WindowsLiveTarget) -> ComputerUseResult<WindowsCapturedFrame> {
+        let validation_started = Instant::now();
         crate::interactive_desktop::require_exact_window_observation_available()?;
         if let Self::Prepared(guard) = self {
             let frame = guard.capture_frame().map_err(prepared_capture_error)?;
@@ -357,6 +404,7 @@ impl WindowsLiveCapture {
         }
         target.require_wgc_route()?;
         validate_live_native_evidence(&before, &before, false)?;
+        let source_started = Instant::now();
         let (frame, capture_mode) = match self {
             Self::Persistent(capture) => match capture.next_measured_frame(FIRST_FRAME_TIMEOUT) {
                 Ok(frame) => (frame, "persistent_wgc"),
@@ -369,6 +417,7 @@ impl WindowsLiveCapture {
             Self::VerifiedVisible => unreachable!("visible producer returned above"),
             Self::Prepared(_) => unreachable!("prepared producer returned above"),
         };
+        let source_capture_duration = source_started.elapsed();
         target.require_wgc_route()?;
         let after = target.evidence()?;
         validate_live_native_evidence(&before, &after, false)?;
@@ -391,7 +440,13 @@ impl WindowsLiveCapture {
                 WindowsFrameGeometry::Wgc(geometry),
                 next_exact_capture_generation(),
             ),
-            measurement: Some(frame.measurement),
+            measurement: Some(WindowsFrameMeasurement {
+                source: frame.measurement,
+                capture: source_capture_duration,
+                validation: validation_started
+                    .elapsed()
+                    .saturating_sub(source_capture_duration),
+            }),
         })
     }
 
@@ -439,6 +494,7 @@ pub(super) fn run_windows_capture_loop(context: super::NativeCaptureLoop) {
         {
             return;
         }
+        let precheck_started = Instant::now();
         if let Some(authorization) = &recording_authorization
             && let Err(reason) = authorization.with_active(|| ())
         {
@@ -450,6 +506,7 @@ pub(super) fn run_windows_capture_loop(context: super::NativeCaptureLoop) {
             });
             return;
         }
+        let recording_precheck = precheck_started.elapsed();
         // The producer services its single outstanding control request before
         // starting another frame, so it never races itself for exclusion.
         if let Some(work) = publications.take() {
@@ -473,11 +530,12 @@ pub(super) fn run_windows_capture_loop(context: super::NativeCaptureLoop) {
                 .map_err(|error| {
                     ComputerUseError::new(ComputerUseErrorCode::CaptureFailed, error.to_string())
                 })?;
+            let exclusion_acquire = capture_started.elapsed();
             let frame = capture.next_frame(target)?;
-            Ok((frame, exclusion))
+            Ok((frame, exclusion, exclusion_acquire))
         })();
         match captured {
-            Ok((frame, exclusion)) => {
+            Ok((mut frame, exclusion, exclusion_acquire)) => {
                 if shutdown.is_requested()
                     || interrupt_generation_changed(
                         started_interrupt_generation,
@@ -486,40 +544,52 @@ pub(super) fn run_windows_capture_loop(context: super::NativeCaptureLoop) {
                 {
                     return;
                 }
+                let mut admission_duration = Duration::ZERO;
+                let mut publication_validation_duration = Duration::ZERO;
                 let admission = admit_frame_publication(
                     || {
-                        recording_authorization
+                        let started = Instant::now();
+                        let result = recording_authorization
                             .as_ref()
                             .map(|authorization| authorization.admit())
                             .transpose()
                             .map_err(|reason| {
                                 ComputerUseError::new(ComputerUseErrorCode::InvalidAction, reason)
-                            })
+                            });
+                        admission_duration = started.elapsed();
+                        result
                     },
                     || {
-                        if let Some(source) = capture_exclusion.as_ref() {
-                            source.validate_active().map_err(|error| {
-                                ComputerUseError::new(
-                                    ComputerUseErrorCode::InvalidTarget,
-                                    error.to_string(),
-                                )
-                            })?;
-                        }
-                        // Recording admission and indicator validation may
-                        // outlive the earlier prepared capture fence.
-                        let frame_preparation_id = match &frame.provenance {
-                            FrameCaptureProvenance::NativeExactWindow(proof) => proof
-                                .capture_preparation
-                                .as_ref()
-                                .map(|prepared| prepared.preparation_id),
-                            FrameCaptureProvenance::Portable => None,
-                        };
-                        validate_prepared_frame_publication(frame_preparation_id, || {
-                            preparation
-                                .as_ref()
-                                .map(|guard| guard.preparation_id().map_err(prepared_capture_error))
-                                .transpose()
-                        })
+                        let started = Instant::now();
+                        let result = (|| {
+                            if let Some(source) = capture_exclusion.as_ref() {
+                                source.validate_active().map_err(|error| {
+                                    ComputerUseError::new(
+                                        ComputerUseErrorCode::InvalidTarget,
+                                        error.to_string(),
+                                    )
+                                })?;
+                            }
+                            // Recording admission and indicator validation may
+                            // outlive the earlier prepared capture fence.
+                            let frame_preparation_id = match &frame.provenance {
+                                FrameCaptureProvenance::NativeExactWindow(proof) => proof
+                                    .capture_preparation
+                                    .as_ref()
+                                    .map(|prepared| prepared.preparation_id),
+                                FrameCaptureProvenance::Portable => None,
+                            };
+                            validate_prepared_frame_publication(frame_preparation_id, || {
+                                preparation
+                                    .as_ref()
+                                    .map(|guard| {
+                                        guard.preparation_id().map_err(prepared_capture_error)
+                                    })
+                                    .transpose()
+                            })
+                        })();
+                        publication_validation_duration = started.elapsed();
+                        result
                     },
                 );
                 let admission = match admission {
@@ -537,15 +607,58 @@ pub(super) fn run_windows_capture_loop(context: super::NativeCaptureLoop) {
                 {
                     return;
                 }
-                sequence = sequence.saturating_add(1);
-                let measurement = frame.measurement.map_or_else(
-                    || {
+                let (captured_at, measurement) = if let Some(measurement) = frame.measurement {
+                    let measured = measurement.source.at_publish();
+                    let micros = |duration: Duration| {
+                        u64::try_from(duration.as_micros()).unwrap_or(u64::MAX)
+                    };
+                    let pipeline = dcc_cua_showcase::NativeCapturePipelineTiming {
+                        recording_precheck_us: micros(recording_precheck),
+                        exclusion_acquire_us: micros(exclusion_acquire),
+                        source_capture_us: micros(measurement.capture),
+                        source_validation_us: micros(measurement.validation),
+                        recording_admission_us: micros(admission_duration),
+                        publication_validation_us: micros(publication_validation_duration),
+                    };
+                    let published_at_unix_ms =
+                        SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .map_or(0, |wall| {
+                                wall.saturating_sub(
+                                    measured.capture_clock.map_or(Duration::ZERO, |clock| {
+                                        clock.published_at.elapsed()
+                                    }),
+                                )
+                                .as_millis()
+                            });
+                    match bind_wgc_source_clock(
+                        &mut frame.provenance,
+                        measured,
+                        pipeline,
+                        published_at_unix_ms,
+                    ) {
+                        Ok(captured_at) => (captured_at, FrameCaptureMeasurement::from(measured)),
+                        Err(error) => {
+                            drop(admission);
+                            drop(exclusion);
+                            sender.send_modify(|status| status.record_paused_error(&error));
+                            if shutdown.wait_timeout_or_work(PAUSE_RETRY_INTERVAL, || {
+                                publications.has_pending()
+                            }) {
+                                return;
+                            }
+                            continue;
+                        }
+                    }
+                } else {
+                    (
+                        Instant::now(),
                         FrameCaptureMeasurement::unavailable(
                             "verified_visible_has_no_compositor_or_split_timing",
-                        )
-                    },
-                    |measurement| FrameCaptureMeasurement::from(measurement.at_publish()),
-                );
+                        ),
+                    )
+                };
+                sequence = sequence.saturating_add(1);
                 sender.send_modify(|status| {
                     status.publish_measured_frame(
                         LiveObservationFrame::new(
@@ -553,7 +666,7 @@ pub(super) fn run_windows_capture_loop(context: super::NativeCaptureLoop) {
                             frame.bgra,
                             frame.width,
                             frame.height,
-                            Instant::now(),
+                            captured_at,
                         )
                         .with_provenance(frame.provenance),
                         capture_started.elapsed(),

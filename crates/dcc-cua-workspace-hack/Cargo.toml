@@ -175,6 +175,7 @@ hyper-rustls = { version = "0.27", default-features = false, features = ["aws-lc
 ipnet = { version = "2" }
 keyring = { version = "4" }
 miniz_oxide = { version = "0.8", features = ["simd"] }
+num-integer = { version = "0.1", features = ["i128"] }
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "http2", "json", "rustls", "rustls-no-provider"] }
 simd-adler32 = { version = "0.3" }
 slab = { version = "0.4" }
