@@ -84,3 +84,14 @@ fn only_explicit_normal_login_identity_authorization_relaxes_default_policy() {
     authorization.revoke();
     assert!(policy(&target, "session-1", Some(&authorization)).is_err());
 }
+
+#[rstest]
+fn native_identity_and_capture_share_one_constructor_owned_lifetime() {
+    let lifetime = std::sync::Arc::new(RecordingAuthorization::new(future()));
+    let authorization = NativeTaskAuthorization::with_shared_lifetime(42, 7, lifetime.clone());
+    authorization.bind_session("session-1", 42, 7).unwrap();
+    lifetime.with_active(|| ()).unwrap();
+    lifetime.revoke();
+    assert!(authorization.validate("session-1", 42, 7).is_err());
+    assert!(lifetime.with_active(|| ()).is_err());
+}

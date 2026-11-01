@@ -200,6 +200,19 @@ impl WorkflowManager {
         Ok(())
     }
 
+    pub(crate) fn gui_recipe_authorizes(
+        &self,
+        id: &str,
+        methods: &[String],
+        actions: &[TrustedTaskActionScope],
+    ) -> Result<(), String> {
+        self.recipe_authorizes(id, methods, actions)?;
+        if !self.recipe(id)?.gui {
+            return Err("MCP owned window tasks require a GUI recipe".into());
+        }
+        Ok(())
+    }
+
     fn recipe(&self, id: &str) -> Result<&Recipe, String> {
         let policy = self
             .policy
@@ -245,7 +258,7 @@ impl WorkflowManager {
         }) {
             return Err("workflow recipe already has an active run".into());
         }
-        let directories = Arc::new(pin_workflow_directories(&recipe, false)?);
+        let directories = Arc::new(pin_workflow_directories(&recipe)?);
         let executable = pin_executable(&recipe)?;
         validate_result_location(&recipe)?;
         let mut command = Command::new(&recipe.executable);
@@ -352,6 +365,21 @@ impl WorkflowManager {
             return Err("workflow process is not active".into());
         }
         Ok(state.child.id())
+    }
+
+    pub(crate) fn authorization_deadline(&mut self, id: &str) -> Result<Instant, String> {
+        self.process_id(id)?;
+        let run = self
+            .runs
+            .get(id)
+            .ok_or("workflow is not owned by this connection")?
+            .lock()
+            .map_err(|_| "workflow state is unavailable")?;
+        let deadline = run.deadline.min(run.policy_deadline);
+        if Instant::now() >= deadline {
+            return Err("workflow authorization deadline has expired".into());
+        }
+        Ok(deadline)
     }
 
     pub(crate) fn owns_process(&self, process_id: u32) -> bool {
@@ -806,7 +834,11 @@ fn validate_result_location(recipe: &Recipe) -> Result<(), String> {
 }
 
 fn verify_result(recipe: &Recipe) -> Result<bool, String> {
-    let _directories = pin_workflow_directories(recipe, true)?;
+    let mut directories = pin_workflow_directories(recipe)?;
+    if !pin_result_parents(recipe, &mut directories)? {
+        // Absence is decided at the first missing component under pinned ancestors.
+        return Ok(!recipe.result.present);
+    }
     validate_result_location(recipe)?;
     let path = recipe.artifact_root.join(&recipe.result.relative_path);
     let metadata = match fs::symlink_metadata(&path) {
@@ -937,39 +969,23 @@ fn is_reparse(metadata: &fs::Metadata) -> bool {
 }
 
 #[cfg(windows)]
-fn pin_workflow_directories(
-    recipe: &Recipe,
-    pin_result_descendants: bool,
-) -> Result<Vec<File>, String> {
+fn pin_workflow_directories(recipe: &Recipe) -> Result<Vec<File>, String> {
     use std::os::windows::fs::OpenOptionsExt;
     let mut guards = Vec::new();
     let executable_parent = recipe
         .executable
         .parent()
         .ok_or("workflow executable parent is unavailable")?;
-    let result_parent = recipe.artifact_root.join(
-        recipe
-            .result
-            .relative_path
-            .parent()
-            .unwrap_or(Path::new("")),
-    );
-    let mut paths = vec![
-        (executable_parent, false),
-        (&recipe.artifact_root, false),
-        (&recipe.working_directory, false),
+    let paths = [
+        executable_parent,
+        &recipe.artifact_root,
+        &recipe.working_directory,
     ];
-    if pin_result_descendants {
-        paths.push((result_parent.as_path(), true));
-    }
-    for (path, allow_missing) in paths {
+    for path in paths {
         let ancestors = path.ancestors().collect::<Vec<_>>();
         for ancestor in ancestors.into_iter().rev() {
             let metadata = match fs::symlink_metadata(ancestor) {
                 Ok(metadata) => metadata,
-                Err(error) if allow_missing && error.kind() == std::io::ErrorKind::NotFound => {
-                    break;
-                }
                 Err(_) => return Err("workflow directory ancestor is unavailable".into()),
             };
             if !metadata.is_dir() || is_reparse(&metadata) {
@@ -994,10 +1010,45 @@ fn pin_workflow_directories(
 }
 
 #[cfg(not(windows))]
-fn pin_workflow_directories(
-    _recipe: &Recipe,
-    _pin_result_descendants: bool,
-) -> Result<Vec<File>, String> {
+fn pin_workflow_directories(_recipe: &Recipe) -> Result<Vec<File>, String> {
+    Err("pinned native workflow launch is unsupported on this platform".into())
+}
+
+#[cfg(windows)]
+fn pin_result_parents(recipe: &Recipe, guards: &mut Vec<File>) -> Result<bool, String> {
+    use std::os::windows::fs::OpenOptionsExt;
+    let mut path = recipe.artifact_root.clone();
+    for component in recipe
+        .result
+        .relative_path
+        .parent()
+        .unwrap_or(Path::new(""))
+        .components()
+    {
+        path.push(component.as_os_str());
+        let guard = match fs::OpenOptions::new()
+            .access_mode(0x81)
+            .share_mode(1)
+            .custom_flags(0x0200_0000 | 0x0020_0000)
+            .open(&path)
+        {
+            Ok(guard) => guard,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(_) => return Err("workflow result parent could not be pinned".into()),
+        };
+        let metadata = guard
+            .metadata()
+            .map_err(|_| "workflow result parent metadata is unavailable")?;
+        if !metadata.is_dir() || is_reparse(&metadata) {
+            return Err("workflow result parents must be ordinary pinned directories".into());
+        }
+        guards.push(guard);
+    }
+    Ok(true)
+}
+
+#[cfg(not(windows))]
+fn pin_result_parents(_recipe: &Recipe, _guards: &mut Vec<File>) -> Result<bool, String> {
     Err("pinned native workflow launch is unsupported on this platform".into())
 }
 

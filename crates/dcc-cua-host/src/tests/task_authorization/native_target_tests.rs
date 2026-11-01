@@ -10,12 +10,28 @@ async fn lease_for(
     Arc<dyn TrustedTaskAuthorizationHost>,
     TrustedTaskAuthorizationLease,
 ) {
+    lease_for_deadline(methods, action, None).await
+}
+
+async fn lease_for_deadline(
+    methods: Vec<String>,
+    action: TrustedTaskActionScope,
+    deadline: Option<std::time::Instant>,
+) -> (
+    TrustedTaskAuthorizationIssuer,
+    Arc<dyn TrustedTaskAuthorizationHost>,
+    TrustedTaskAuthorizationLease,
+) {
     let (issuer, host) = trusted_task_authorization_broker();
     let mut registration = browser_credential_registration(unix_time_millis() + 60_000);
     registration.allowed_host_methods = methods;
     registration.allowed_browser_origins = action.browser_origin.iter().cloned().collect();
     registration.allowed_actions = vec![action];
-    let receipt = issuer.register(registration).unwrap();
+    let receipt = match deadline {
+        Some(deadline) => issuer.register_with_monotonic_deadline(registration, deadline),
+        None => issuer.register(registration),
+    }
+    .unwrap();
     let binding = TaskAuthorizationBinding::window(
         "connection-test",
         &receipt.authorization_id,
@@ -373,4 +389,52 @@ async fn live_observation_without_recording_requires_and_shares_the_task_produce
     assert_eq!(admitted_frames.get(), 1);
     assert!(authority.recording_authorization(&lease).is_none());
     assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 0);
+}
+
+#[rstest]
+#[tokio::test]
+async fn retained_run_deadline_stops_an_existing_producer_and_queued_actions() {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(400);
+    let (issuer, host, lease) = lease_for_deadline(
+        vec![
+            "execute_action".into(),
+            "live_observation_start".into(),
+            "live_observation_state".into(),
+            "live_observation_stop".into(),
+        ],
+        native_scope("credential"),
+        Some(deadline),
+    )
+    .await;
+    let producer = host.recording_authorization(&lease).unwrap();
+    let identity = host.native_target_authorization(&lease).unwrap();
+    let mut frames = 0;
+    producer.with_active(|| frames += 1).unwrap();
+    assert!(lease.expires_at_unix_ms > unix_time_millis() + 10_000);
+    tokio::time::sleep_until(tokio::time::Instant::from_std(
+        deadline + std::time::Duration::from_millis(10),
+    ))
+    .await;
+    assert!(producer.with_active(|| frames += 1).is_err());
+    assert_eq!(frames, 1);
+    assert!(host.recording_authorization(&lease).is_none());
+    assert!(host.native_target_authorization(&lease).is_none());
+    assert!(
+        crate::task_authorization::validate_active_task_authorization(
+            Some(host.as_ref()),
+            Some(&lease)
+        )
+        .await
+        .is_err()
+    );
+    identity.revoke();
+    let mut registration = browser_credential_registration(unix_time_millis() + 60_000);
+    registration.allowed_host_methods = vec!["execute_action".into()];
+    registration.allowed_actions = vec![native_scope("credential")];
+    registration.allowed_browser_origins.clear();
+    assert!(
+        issuer
+            .register_with_monotonic_deadline(registration, deadline)
+            .is_err()
+    );
 }

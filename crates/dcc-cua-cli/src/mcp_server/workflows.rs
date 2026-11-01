@@ -42,15 +42,9 @@ impl TaskAuthorizationServer {
         {
             return Err("owned workflow requires the window surface without caller targets, browser, recording or secondary capture permissions".into());
         }
-        validate_allowed_methods(request.surface, &request.allowed_methods)?;
-        validate_native_lifecycle_methods(&request.allowed_methods)?;
-        if request.application_label.trim().is_empty()
-            || request.application_label.chars().count() > dcc_cua_host::MAX_APPLICATION_LABEL_CHARS
-            || request.application_label.chars().any(char::is_control)
-        {
-            return Err("workflow application label is invalid".into());
-        }
-        self.workflows.recipe_authorizes(
+        start_contract::validate_task_start(&request, true)?;
+        self.ensure_task_capacity()?;
+        self.workflows.gui_recipe_authorizes(
             &recipe,
             &request.allowed_methods,
             &request.allowed_actions,
@@ -67,29 +61,6 @@ impl TaskAuthorizationServer {
                 .proposals
                 .get_mut(&task_id)
                 .ok_or("workflow task was not retained")?;
-            let expiry = self
-                .workflows
-                .expires_at_unix_ms()
-                .ok_or("workflow policy is not configured")?;
-            if proposal.registration.expires_at_unix_ms > expiry {
-                self.authority
-                    .issuer
-                    .revoke(
-                        &proposal
-                            .receipt
-                            .as_ref()
-                            .ok_or("task runtime lease missing")?
-                            .authorization_id,
-                    )
-                    .map_err(|_| "workflow lease rotation failed")?;
-                proposal.registration.expires_at_unix_ms = expiry;
-                proposal.receipt = Some(
-                    self.authority
-                        .issuer
-                        .register(proposal.registration.clone())
-                        .map_err(|_| "workflow lease could not be issued")?,
-                );
-            }
             proposal.workflow_id = Some(workflow_id.clone());
             let mut started = match self.start_task(json!({"task_id":task_id})).await {
                 Ok(started) => started,
@@ -197,19 +168,21 @@ impl TaskAuthorizationServer {
                 }
                 // Close the old exact-window lease before issuing a new capability.
                 proposal.workflow_id = None;
-                let stopped = self.revoke_task(json!({"task_id":id})).await?;
+                let stopped = self.revoke_task(json!({"task_id":id})).await;
+                self.proposals
+                    .get_mut(&id)
+                    .ok_or("workflow task not found")?
+                    .workflow_id = Some(workflow.clone());
+                let stopped = stopped?;
                 if stopped["status"] != "stopped" {
-                    self.proposals
-                        .get_mut(&id)
-                        .ok_or("workflow task not found")?
-                        .workflow_id = Some(workflow);
                     return Err("previous workflow window cleanup is unconfirmed".into());
                 }
+                self.workflows.authorizes_process(&workflow, pid)?;
+                let deadline = self.workflows.authorization_deadline(&workflow)?;
                 let proposal = self
                     .proposals
                     .get_mut(&id)
                     .ok_or("workflow task not found")?;
-                proposal.workflow_id = Some(workflow);
                 proposal.registration.target = TrustedTaskAuthorizationTarget::ExactWindow {
                     process_id: pid,
                     window_handle: hwnd,
@@ -217,7 +190,7 @@ impl TaskAuthorizationServer {
                 proposal.receipt = Some(
                     self.authority
                         .issuer
-                        .register(proposal.registration.clone())
+                        .register_with_monotonic_deadline(proposal.registration.clone(), deadline)
                         .map_err(|_| "workflow target lease could not be issued")?,
                 );
                 proposal.revoked = false;

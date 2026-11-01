@@ -22,6 +22,10 @@ impl OwnedHostTask {
         }
     }
 
+    pub(super) fn is_pending(&self) -> bool {
+        self.completion.is_none()
+    }
+
     pub(super) async fn finish(&mut self, timeout: Duration) -> Value {
         if let Some(completion) = &self.completion {
             return completion.clone();

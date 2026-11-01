@@ -1,5 +1,5 @@
 //! Constructor-owned permission for one normal application login window.
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use crate::{ComputerUseError, ComputerUseErrorCode, ComputerUseResult, RecordingAuthorization};
 
@@ -10,17 +10,31 @@ pub struct NativeTaskAuthorization {
     process_id: u32,
     window_handle: u64,
     runtime_session: Mutex<Option<String>>,
-    lifetime: RecordingAuthorization,
+    lifetime: Arc<RecordingAuthorization>,
 }
 
 impl NativeTaskAuthorization {
     #[must_use]
     pub fn new(process_id: u32, window_handle: u64, expires_at_unix_ms: u64) -> Self {
+        Self::with_shared_lifetime(
+            process_id,
+            window_handle,
+            Arc::new(RecordingAuthorization::new(expires_at_unix_ms)),
+        )
+    }
+
+    /// Shares the issuer's retained deadline and revocation; this is never IPC input.
+    #[must_use]
+    pub fn with_shared_lifetime(
+        process_id: u32,
+        window_handle: u64,
+        lifetime: Arc<RecordingAuthorization>,
+    ) -> Self {
         Self {
             process_id,
             window_handle,
             runtime_session: Mutex::new(None),
-            lifetime: RecordingAuthorization::new(expires_at_unix_ms),
+            lifetime,
         }
     }
 
