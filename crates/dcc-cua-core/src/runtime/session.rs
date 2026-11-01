@@ -56,6 +56,27 @@ fn windows_fast_preflight_rejection(
 }
 
 impl ComputerUseSession {
+    /// Bind one constructor-owned normal login-application permission before
+    /// startup. The capability cannot be reused by a different runtime session.
+    pub fn set_native_task_authorization(
+        &mut self,
+        authorization: Arc<crate::NativeTaskAuthorization>,
+    ) -> ComputerUseResult<()> {
+        if self.active || self.target.is_some() || self.native_task_authorization.is_some() {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::InvalidTarget,
+                "normal application authorization must be bound once before session startup",
+            ));
+        }
+        authorization.bind_session(
+            &self.session_id,
+            self.scope.process_id.unwrap_or_default(),
+            self.scope.window_handle.unwrap_or_default(),
+        )?;
+        self.native_task_authorization = Some(authorization);
+        Ok(())
+    }
+
     /// Constructor-owned task fence; never accepted from Host request payloads.
     pub fn set_recording_authorization(
         &mut self,
@@ -122,6 +143,7 @@ impl ComputerUseSession {
             recording_health: None,
             recording_keepalive: None,
             recording_authorization: None,
+            native_task_authorization: None,
             #[cfg(windows)]
             windows_uia: None,
             upstream_session_state: UpstreamSessionState::Inactive,
@@ -2067,7 +2089,7 @@ impl ComputerUseSession {
                     "exact native window resolution is unavailable on this platform",
                 )
             })?;
-            validate_target_policy(&target)?;
+            self.validate_target_policy(&target)?;
             return Ok(target);
         }
         #[cfg(target_os = "linux")]
@@ -2093,7 +2115,7 @@ impl ComputerUseSession {
             ));
         }
         let target = matches.into_iter().next().expect("one match");
-        validate_target_policy(&target)?;
+        self.validate_target_policy(&target)?;
         Ok(target)
     }
 
@@ -2126,6 +2148,13 @@ impl ComputerUseSession {
     }
 
     pub(super) fn ensure_active(&self) -> ComputerUseResult<()> {
+        if let Some(authorization) = &self.native_task_authorization {
+            authorization.validate(
+                &self.session_id,
+                self.scope.process_id.unwrap_or_default(),
+                self.scope.window_handle.unwrap_or_default(),
+            )?;
+        }
         if self.active {
             Ok(())
         } else {
@@ -2134,6 +2163,14 @@ impl ComputerUseSession {
                 "Computer Use session is not active",
             ))
         }
+    }
+
+    fn validate_target_policy(&self, target: &WindowTarget) -> ComputerUseResult<()> {
+        crate::window_target::validate_target_policy_with_authorization(
+            target,
+            &self.session_id,
+            self.native_task_authorization.as_deref(),
+        )
     }
 }
 

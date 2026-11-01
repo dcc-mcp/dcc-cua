@@ -16,7 +16,7 @@ use crate::interactive_desktop;
 use crate::live_observation::{LiveObservation, LiveObservationFence, observation_sequence_fence};
 use crate::observation::semantic_observation;
 use crate::policy::*;
-use crate::window_target::{WindowTarget, validate_target_policy};
+use crate::window_target::WindowTarget;
 #[cfg(windows)]
 use crate::windows_uia_fallback::WindowsUiaFallback;
 use dcc_cua_showcase::{ShowcaseRecorder, fit_dimensions_with_bounds, resize_bgra_if_needed};
@@ -1582,6 +1582,7 @@ pub struct ComputerUseSession {
     recording_health: Option<RecordingHealth>,
     recording_keepalive: Option<RecordingKeepalive>,
     recording_authorization: Option<Arc<dcc_cua_showcase::RecordingAuthorization>>,
+    native_task_authorization: Option<Arc<crate::NativeTaskAuthorization>>,
     #[cfg(windows)]
     pub(crate) windows_uia: Option<WindowsUiaFallback>,
     upstream_session_state: UpstreamSessionState,

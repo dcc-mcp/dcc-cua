@@ -798,6 +798,12 @@ async fn handle_request_inner(
                 &agent_name,
                 &runtime_session_id,
                 &start_request,
+                preauthorized.as_ref().and_then(|lease| {
+                    security_services
+                        .task_authorization_host
+                        .as_ref()?
+                        .native_target_authorization(lease)
+                }),
             )
             .await?;
             let Some(target) = session.target() else {
@@ -1756,7 +1762,7 @@ async fn handle_request_inner(
                     None,
                 ));
             }
-            if safety_tier.requires_confirmation() {
+            if safety_tier.requires_confirmation() || host.task_authorization.is_some() {
                 let confirmation_observation =
                     host.session.latest_observation().cloned().ok_or_else(|| {
                         HostError::ComputerUse(ComputerUseError::new(
@@ -1789,7 +1795,8 @@ async fn handle_request_inner(
                 if outcome != ActionConfirmationOutcome::Allowed {
                     return Ok(action_confirmation_refusal(outcome));
                 }
-                if host.observation_mode == TaskObservationMode::Semantic
+                if safety_tier.requires_confirmation()
+                    && host.observation_mode == TaskObservationMode::Semantic
                     && confirmed_action_evidence_refresh(
                         &action,
                         host.session.confirmed_action_evidence_refresh_due(),
@@ -1843,13 +1850,7 @@ async fn handle_request_inner(
             let raw_input = action.input_kind == "raw_input" || action.uses_physical_keyboard();
             let mut action = action.into_computer_use(observation_id)?;
             let input_turn = acquire_raw_input_turn(raw_input).await;
-            if host.observation_mode == TaskObservationMode::PixelsOnly {
-                let authorization = revalidate_queued_window_mutation(host).await;
-                if let Err(error) = authorization {
-                    action.text.zeroize();
-                    return Err(error);
-                }
-            }
+            revalidate_queued_action(host, &mut action).await?;
             let result = host.session.perform_action(&action).await;
             action.text.zeroize();
             let result = host.finish_observation_sensitive_attempt(result);

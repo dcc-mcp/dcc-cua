@@ -5,6 +5,7 @@ mod frame_recovery;
 mod interaction_recovery;
 mod owned_host;
 mod transport;
+mod workflows;
 use transport::run_transport;
 
 use std::collections::BTreeMap;
@@ -221,6 +222,8 @@ impl TaskSurface {
 }
 
 struct TaskProposal {
+    workflow_id: Option<String>,
+    user_action_required: Option<String>,
     surface: TaskSurface,
     observation_mode: TaskObservationMode,
     allowed_methods: Vec<String>,
@@ -254,6 +257,7 @@ struct TaskAuthorizationAuthority {
 }
 
 struct TaskAuthorizationServer {
+    workflows: crate::workflow::WorkflowManager,
     extension_transport: Option<crate::extension_transport::ProviderListener>,
     authority: TaskAuthorizationAuthority,
     proposals: BTreeMap<String, TaskProposal>,
@@ -266,6 +270,7 @@ impl TaskAuthorizationServer {
     fn automatic() -> Self {
         let (issuer, authorization_host) = dcc_cua_host::trusted_task_authorization_broker();
         Self {
+            workflows: crate::workflow::WorkflowManager::disabled(),
             extension_transport: None,
             authority: TaskAuthorizationAuthority {
                 issuer,
@@ -414,9 +419,26 @@ impl TaskAuthorizationServer {
     }
 
     fn prepare_task(&mut self, arguments: Value) -> Result<Value, String> {
+        self.prepare_scoped_task(arguments, None)
+    }
+
+    fn prepare_scoped_task(
+        &mut self,
+        arguments: Value,
+        owned_workflow: Option<&str>,
+    ) -> Result<Value, String> {
         let authority = &self.authority;
         let input: PrepareTaskInput = serde_json::from_value(arguments)
             .map_err(|error| format!("invalid task request: {error}"))?;
+        if let Some(pid) = input.target_process_id {
+            if let Some(workflow) = owned_workflow {
+                self.workflows.authorizes_process(workflow, pid)?;
+            } else if self.workflows.owns_process(pid) {
+                return Err(
+                    "an owned workflow process requires its recipe-bound task scope".into(),
+                );
+            }
+        }
         if !(1..=MAX_TTL_MINUTES).contains(&input.ttl_minutes) {
             return Err(format!(
                 "ttl_minutes must be between 1 and {MAX_TTL_MINUTES}"
@@ -692,6 +714,8 @@ impl TaskAuthorizationServer {
             .register(registration.clone())
             .map_err(|error| error.to_string())?;
         let proposal = TaskProposal {
+            workflow_id: None,
+            user_action_required: None,
             surface: input.surface,
             observation_mode: input.observation_mode,
             allowed_methods: input.allowed_methods,
@@ -709,6 +733,13 @@ impl TaskAuthorizationServer {
     }
 
     async fn start_automatic_task(&mut self, arguments: Value) -> Result<Value, String> {
+        if arguments.get("workflow_recipe_id").is_some() {
+            return self.start_workflow_task(arguments).await;
+        }
+        self.start_exact_task(arguments).await
+    }
+
+    async fn start_exact_task(&mut self, arguments: Value) -> Result<Value, String> {
         let prepared = self.prepare_task(arguments)?;
         let proposal_id = prepared["task_id"]
             .as_str()
@@ -728,6 +759,7 @@ impl TaskAuthorizationServer {
     }
 
     async fn revoke_task(&mut self, arguments: Value) -> Result<Value, String> {
+        let workflow_cleanup = self.stop_task_workflow(&arguments);
         let authority = &self.authority;
         let proposal_id = required_string(&arguments, "task_id")?;
         let proposal = self
@@ -736,11 +768,15 @@ impl TaskAuthorizationServer {
             .ok_or_else(|| crate::lifetime_diagnostics::TASK_NOT_FOUND.to_owned())?;
         if proposal.revoked {
             finish_owned_host_task(proposal).await;
-            return Ok(proposal_payload(
+            let mut payload = proposal_payload(
                 proposal_id,
                 proposal,
                 stopped_task_status(proposal.cleanup.as_ref()),
-            ));
+            );
+            if let Some(cleanup) = workflow_cleanup {
+                payload["workflow"] = cleanup;
+            }
+            return Ok(payload);
         }
         let receipt = proposal
             .receipt
@@ -764,11 +800,15 @@ impl TaskAuthorizationServer {
                 "error":"task session startup did not return an owned session cleanup acknowledgement"}),
         });
         finish_owned_host_task(proposal).await;
-        Ok(proposal_payload(
+        let mut payload = proposal_payload(
             proposal_id,
             proposal,
             stopped_task_status(proposal.cleanup.as_ref()),
-        ))
+        );
+        if let Some(cleanup) = workflow_cleanup {
+            payload["workflow"] = cleanup;
+        }
+        Ok(payload)
     }
 
     async fn shutdown_tasks(&mut self) -> Vec<Value> {
@@ -813,6 +853,9 @@ impl TaskAuthorizationServer {
             .ok_or_else(|| crate::lifetime_diagnostics::TASK_NOT_FOUND.to_owned())?;
         if proposal.revoked {
             return Err(crate::lifetime_diagnostics::TASK_STOPPED.into());
+        }
+        if proposal.user_action_required.is_some() {
+            return Err("task requires user action; stop it and obtain a fresh Agent Host task authorization".into());
         }
         if proposal.registration.expires_at_unix_ms <= unix_time_millis() {
             return Err(crate::lifetime_diagnostics::TASK_EXPIRED.into());
@@ -859,13 +902,15 @@ impl TaskAuthorizationServer {
         }))
     }
 
-    fn task_status(&self, arguments: Value) -> Result<Value, String> {
+    fn task_status(&mut self, arguments: Value) -> Result<Value, String> {
         let proposal_id = required_string(&arguments, "task_id")?;
         let proposal = self
             .proposals
             .get(proposal_id)
             .ok_or_else(|| crate::lifetime_diagnostics::TASK_NOT_FOUND.to_owned())?;
-        let status = if proposal.revoked {
+        let status = if proposal.user_action_required.is_some() && !proposal.revoked {
+            "needs_user_action"
+        } else if proposal.revoked {
             stopped_task_status(proposal.cleanup.as_ref())
         } else if proposal.registration.expires_at_unix_ms <= unix_time_millis() {
             "expired"
@@ -878,10 +923,25 @@ impl TaskAuthorizationServer {
         } else {
             "initializing"
         };
-        Ok(proposal_payload(proposal_id, proposal, status))
+        let mut payload = proposal_payload(proposal_id, proposal, status);
+        payload["user_action_reason"] = json!(proposal.user_action_required);
+        if let Some(id) = proposal.workflow_id.as_deref() {
+            payload["workflow"] = self.workflows.status(id)?;
+        }
+        Ok(payload)
     }
 
     async fn task_call(&mut self, arguments: Value) -> Result<Value, String> {
+        if arguments.get("method").and_then(Value::as_str) == Some("require_user_action") {
+            return self.require_user_action(arguments).map(tool_result);
+        }
+        if arguments
+            .get("method")
+            .and_then(Value::as_str)
+            .is_some_and(|method| method.starts_with("workflow_"))
+        {
+            return self.workflow_call(arguments).await.map(tool_result);
+        }
         let proposal_id = required_string(&arguments, "task_id")?.to_owned();
         let method = required_string(&arguments, "method")?.to_owned();
         let mut params = arguments
@@ -890,12 +950,16 @@ impl TaskAuthorizationServer {
             .cloned()
             .ok_or_else(|| "task call params must be an object".to_owned())?;
         validate_task_method_params(&method, &params)?;
+        self.validate_workflow_process(&proposal_id).await?;
         let proposal = self
             .proposals
             .get_mut(&proposal_id)
             .ok_or_else(|| crate::lifetime_diagnostics::TASK_NOT_FOUND.to_owned())?;
         if proposal.revoked {
             return Err(crate::lifetime_diagnostics::TASK_STOPPED.into());
+        }
+        if proposal.user_action_required.is_some() {
+            return Err("task requires user action; no automatic retry is authorized".into());
         }
         if proposal.registration.expires_at_unix_ms <= unix_time_millis() {
             return Err(crate::lifetime_diagnostics::TASK_EXPIRED.into());
@@ -1829,6 +1893,7 @@ fn tool_definitions() -> Vec<Value> {
     ];
     tools[0]["inputSchema"]["properties"]["allow_native_capture_popup_keyboard"] =
         capture_popup::owner_schema();
+    workflows::extend_tool_schema(&mut tools);
     tools
 }
 
@@ -2083,6 +2148,7 @@ fn runtime_build() -> RuntimeBuildIdentity {
 
 pub async fn run(diagnostics_dir: Option<std::path::PathBuf>) -> Result<(), Box<dyn Error>> {
     let mut server = TaskAuthorizationServer::automatic();
+    server.workflows = workflows::startup_policy()?;
     server.diagnostics = Some(ConnectionDiagnostics::new(runtime_build(), diagnostics_dir));
     let mut input = BufReader::new(tokio::io::stdin());
     let mut output = BufWriter::new(tokio::io::stdout());
@@ -2105,11 +2171,12 @@ async fn run_connection<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin>(
     // Finalize only this connection's owned task sessions before dropping their
     // transports. Read-only diagnostics retain the last observed associations.
     let cleanup_failures = server.shutdown_tasks().await;
+    let workflow_cleanup = server.workflows.stop_all();
     if let Some(diagnostics) = server.diagnostics.as_mut() {
         diagnostics.cleanup_finished(cleanup_failures.len());
     }
     server.proposals.clear();
-    if cleanup_failures.is_empty() {
+    if cleanup_failures.is_empty() && workflow_cleanup["success"] != false {
         result
     } else {
         Err(std::io::Error::other(format!(

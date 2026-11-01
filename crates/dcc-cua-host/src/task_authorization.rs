@@ -130,6 +130,8 @@ impl TrustedTaskActionScope {
     ///
     /// These are action identities, not Host method names such as `browser_click`.
     pub const NATIVE_ACTIONS: &'static [&'static str] = &[
+        "move",
+        "scroll",
         "click",
         "double_click",
         "right_click",
@@ -150,6 +152,7 @@ impl TrustedTaskActionScope {
     pub const RAW_INPUT_CATEGORIES: &'static [&'static str] = &["raw_input", "credential"];
     /// Authorization categories accepted for semantic exact-window input.
     pub const SEMANTIC_CATEGORIES: &'static [&'static str] = &[
+        "task_grant",
         "account_access",
         "account_security",
         "content_change",
@@ -196,6 +199,7 @@ impl TrustedTaskActionScope {
             "semantic" => {
                 Self::NATIVE_ACTIONS.contains(&self.action.as_str())
                     && Self::SEMANTIC_CATEGORIES.contains(&self.authorization_category.as_str())
+                    && (self.authorization_category != "task_grant" || !self.secret_input)
                     && self.browser_origin.is_none()
             }
             _ => false,
@@ -400,6 +404,15 @@ pub enum TrustedTaskAuthorizationHostError {
 
 #[async_trait]
 pub trait TrustedTaskAuthorizationHost: Send + Sync {
+    /// Optional constructor-owned permission for a normal login application.
+    /// It never authorizes protected system processes or widens action scope.
+    fn native_target_authorization(
+        &self,
+        _lease: &TrustedTaskAuthorizationLease,
+    ) -> Option<std::sync::Arc<dcc_cua_core::NativeTaskAuthorization>> {
+        None
+    }
+
     /// Optional constructor-owned synchronous admission fence for native video.
     /// Embeddings without a revocation-aware producer fence fail closed for
     /// recording while retaining their existing non-recording task contracts.
