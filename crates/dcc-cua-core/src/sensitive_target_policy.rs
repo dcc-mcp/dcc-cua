@@ -24,9 +24,15 @@ const RESTRICTED_EXECUTABLE_STEMS: &[&str] = &[
     "credentialuibroker",
     "cscript",
     "fish",
+    "gdm",
+    "gdm-password",
+    "gdm-session-worker",
     "gnome-terminal",
     "gnome-terminal-server",
     "konsole",
+    "lightdm",
+    "login",
+    "loginwindow",
     "logonui",
     "lsass",
     "mintty",
@@ -38,6 +44,7 @@ const RESTRICTED_EXECUTABLE_STEMS: &[&str] = &[
     "regsvr32",
     "rundll32",
     "sh",
+    "sddm",
     "terminal",
     "wezterm",
     "winlogon",
@@ -68,19 +75,41 @@ pub(crate) fn validate_launch_application_identity(identity: &str) -> ComputerUs
 }
 
 fn validate_sensitive_application_identity(identity: &str) -> ComputerUseResult<()> {
+    validate_application_identity(identity, false)
+}
+
+pub(crate) fn validate_authorized_application_identity(identity: &str) -> ComputerUseResult<()> {
+    let identity = identity.trim();
+    if identity.is_empty() || identity.eq_ignore_ascii_case("native-window") {
+        return Err(invalid_target(
+            "target application identity could not be verified",
+        ));
+    }
+    validate_application_identity(identity, true)
+}
+
+fn validate_application_identity(
+    identity: &str,
+    normal_login_authorized: bool,
+) -> ComputerUseResult<()> {
     let lowercase = identity.to_ascii_lowercase();
     let stem = executable_stem(&lowercase);
     let compact = lowercase
         .chars()
         .filter(|value| value.is_ascii_alphanumeric())
         .collect::<String>();
-    if SENSITIVE_IDENTITY_MARKERS
-        .iter()
-        .any(|marker| lowercase.contains(marker))
-        || RESTRICTED_EXECUTABLE_STEMS.contains(&stem)
+    if RESTRICTED_EXECUTABLE_STEMS.contains(&stem)
         || compact.contains("windowsterminal")
         || compact.contains("credentialuibroker")
+        || compact.contains("loginwindow")
         || is_python_interpreter(stem)
+        || ["security", "consent", "authentication"]
+            .iter()
+            .any(|marker| lowercase.contains(marker))
+        || (!normal_login_authorized
+            && SENSITIVE_IDENTITY_MARKERS
+                .iter()
+                .any(|marker| lowercase.contains(marker)))
     {
         return Err(invalid_target(
             "system, terminal, command interpreter, authentication, password, and security applications are not allowed",

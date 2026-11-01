@@ -1240,8 +1240,11 @@ fn public_tool_schema_advertises_closed_pixel_actions_and_exact_window_only() {
     );
     let pixel = &pixel_condition["then"];
     assert_eq!(
-        pixel["required"],
-        json!(["target_process_id", "target_window_handle"])
+        pixel["anyOf"],
+        json!([
+            {"required":["target_process_id", "target_window_handle"]},
+            {"required":["workflow_recipe_id"]}
+        ])
     );
     assert_eq!(pixel["properties"]["surface"]["const"], "window");
     assert_eq!(

@@ -883,8 +883,8 @@ impl HostAction {
         if self.input_kind == "raw_input" || self.uses_physical_keyboard() {
             return "raw_input".into();
         }
-        accessibility_root
-            .and_then(|root| self.semantic_element(root))
+        let element = accessibility_root.and_then(|root| self.semantic_element(root));
+        element
             .and_then(|element| element["policy_category"].as_str())
             .filter(|category| {
                 matches!(
@@ -900,7 +900,15 @@ impl HostAction {
                         | "publishing"
                 )
             })
-            .unwrap_or("unclassified_sensitive")
+            .unwrap_or_else(|| {
+                if element
+                    .is_some_and(|element| element["policy_tier"].as_str() == Some("task_grant"))
+                {
+                    "task_grant"
+                } else {
+                    "unclassified_sensitive"
+                }
+            })
             .to_owned()
     }
 

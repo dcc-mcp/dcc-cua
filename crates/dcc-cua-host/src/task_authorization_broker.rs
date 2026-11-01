@@ -140,6 +140,7 @@ impl TrustedTaskAuthorizationIssuer {
                 window_capability: window_capability.clone(),
                 binding: None,
                 revoked: false,
+                native_target_authorization: None,
                 recording_authorization: Arc::new(dcc_cua_core::RecordingAuthorization::new(
                     expires_at_unix_ms,
                 )),
@@ -166,6 +167,9 @@ impl TrustedTaskAuthorizationIssuer {
             .ok_or(TrustedTaskAuthorizationBrokerError::NotFound)?;
         record.revoked = true;
         record.recording_authorization.revoke();
+        if let Some(authorization) = &record.native_target_authorization {
+            authorization.revoke();
+        }
         Ok(())
     }
 }
@@ -198,6 +202,7 @@ struct BrokerRecord {
     binding: Option<BrokerBinding>,
     revoked: bool,
     recording_authorization: Arc<dcc_cua_core::RecordingAuthorization>,
+    native_target_authorization: Option<Arc<dcc_cua_core::NativeTaskAuthorization>>,
 }
 
 struct BrokerBinding {
@@ -214,6 +219,37 @@ struct BrokerHost {
 
 #[async_trait]
 impl TrustedTaskAuthorizationHost for BrokerHost {
+    fn native_target_authorization(
+        &self,
+        lease: &TrustedTaskAuthorizationLease,
+    ) -> Option<Arc<dcc_cua_core::NativeTaskAuthorization>> {
+        let state = self.state.lock().ok()?;
+        let record = state.authorizations.get(&lease.authorization_id)?;
+        let binding = record.binding.as_ref()?;
+        if record.revoked
+            || record.registration.expires_at_unix_ms != lease.expires_at_unix_ms
+            || record.registration.expires_at_unix_ms
+                <= crate::task_authorization::unix_time_millis()
+            || binding.connection_id != lease.connection_id
+            || binding.session_id != lease.session_id
+            || binding.lease_request_digest != lease.request_digest
+            || binding.target_process_id != lease.target_process_id
+            || binding.target_window_handle != lease.target_window_handle
+            || record.window_capability != lease.window_capability
+            || record.registration.task_grant_id != lease.task_grant_id
+            || record.registration.application_label != lease.application_label
+            || record.registration.allowed_actions != lease.allowed_actions
+            || record.registration.allowed_host_methods != lease.allowed_host_methods
+            || record.registration.allowed_browser_origins != lease.allowed_browser_origins
+            || record.registration.browser_scope != lease.browser_scope
+            || record.registration.recording_output_dir != lease.recording_output_dir
+            || record.registration.capture_preparation != lease.capture_preparation
+        {
+            return None;
+        }
+        record.native_target_authorization.as_ref().map(Arc::clone)
+    }
+
     fn recording_authorization(
         &self,
         lease: &TrustedTaskAuthorizationLease,
@@ -290,6 +326,33 @@ impl TrustedTaskAuthorizationHost for BrokerHost {
             target_process_id: request.target_process_id,
             target_window_handle: request.target_window_handle,
         });
+        if registration.allowed_actions.iter().any(|action| {
+            matches!(
+                action.authorization_category.as_str(),
+                "credential" | "account_access"
+            ) && match action.input_kind.as_str() {
+                "semantic" | "raw_input" => registration
+                    .allowed_host_methods
+                    .iter()
+                    .any(|method| method == "execute_action"),
+                "browser" => {
+                    action.action == "browser_type"
+                        && action.secret_input
+                        && registration
+                            .allowed_host_methods
+                            .iter()
+                            .any(|method| method == "browser_type")
+                }
+                _ => false,
+            }
+        }) {
+            record.native_target_authorization =
+                Some(Arc::new(dcc_cua_core::NativeTaskAuthorization::new(
+                    request.target_process_id,
+                    request.target_window_handle,
+                    registration.expires_at_unix_ms,
+                )));
+        }
         Ok(TrustedTaskAuthorizationLease {
             connection_id: request.connection_id,
             authorization_id: request.authorization_id,

@@ -44,6 +44,7 @@ pub(super) struct LinuxPixels {
     process: ProcessIdentity,
     generation: u64,
     usable: bool,
+    native_task_authorization: Option<(String, Arc<crate::NativeTaskAuthorization>)>,
 }
 
 pub(super) type Handle = Arc<Mutex<LinuxPixels>>;
@@ -76,7 +77,10 @@ fn process_identity(pid: u32) -> ComputerUseResult<ProcessIdentity> {
 }
 
 impl LinuxPixels {
-    pub(super) fn bind(scope: ComputerUseTargetScope) -> ComputerUseResult<(Handle, WindowTarget)> {
+    pub(super) fn bind(
+        scope: ComputerUseTargetScope,
+        native_task_authorization: Option<(String, Arc<crate::NativeTaskAuthorization>)>,
+    ) -> ComputerUseResult<(Handle, WindowTarget)> {
         let pid = scope.process_id.filter(|pid| *pid != 0).ok_or_else(|| {
             refused(
                 ComputerUseErrorCode::InvalidTarget,
@@ -159,10 +163,21 @@ impl LinuxPixels {
             process,
             generation: 0,
             usable: true,
+            native_task_authorization,
         };
         let evidence = bound.evidence()?;
         bound.drain_events(false)?;
-        validate_target_policy(&evidence.target)?;
+        crate::window_target::validate_target_policy_with_authorization(
+            &evidence.target,
+            bound
+                .native_task_authorization
+                .as_ref()
+                .map_or("", |(session, _)| session.as_str()),
+            bound
+                .native_task_authorization
+                .as_ref()
+                .map(|(_, authorization)| authorization.as_ref()),
+        )?;
         Ok((Arc::new(Mutex::new(bound)), evidence.target))
     }
 
@@ -503,6 +518,9 @@ impl LinuxPixels {
     }
 
     fn begin(&self) -> ComputerUseResult<()> {
+        if let Some((session, authorization)) = &self.native_task_authorization {
+            authorization.validate(session, self.pid, u64::from(self.window))?;
+        }
         if !self.usable {
             return Err(refused(
                 ComputerUseErrorCode::InvalidTarget,
