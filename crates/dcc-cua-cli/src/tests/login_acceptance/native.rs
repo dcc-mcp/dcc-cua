@@ -256,20 +256,104 @@ async fn request(
     if params.to_string().contains(SECRET) {
         return Err("plaintext secret crossed request IPC");
     }
-    let response = session
-        .request(method, params)
-        .await
-        .map_err(|_| "native browser operation refused")?
-        .value;
+    let response = match session.request(method, params).await {
+        Ok(response) => response.value,
+        Err(HostClientError::Remote { code, response, .. }) => {
+            if response.to_string().contains(SECRET) {
+                return Err("secret leaked in Host error response");
+            }
+            diagnose(method, "host_remote", &code, &response);
+            return Err("native browser operation refused");
+        }
+        Err(error) => {
+            let code = match error {
+                HostClientError::Connect(_) => "connect",
+                HostClientError::Io(_) => "io",
+                HostClientError::Protocol(_) => "protocol",
+                HostClientError::Timeout { .. } => "timeout",
+                HostClientError::Remote { .. } => unreachable!(),
+            };
+            diagnose(method, "transport", code, &json!({"code":code}));
+            return Err("native browser operation refused");
+        }
+    };
     if response.to_string().contains(SECRET) {
         return Err("secret leaked in Host response");
     }
     if response["result"]["isError"] == true
         || response["result"]["structuredContent"]["status"] == "error"
     {
+        let code = provider_code(&response);
+        diagnose(method, "provider_refusal", code, &response);
         return Err("native browser returned a typed refusal");
     }
     Ok(response)
+}
+
+fn provider_code(response: &Value) -> &str {
+    [
+        "/result/structuredContent/refusal/code",
+        "/result/structuredContent/refusal/reason",
+        "/result/structuredContent/refusal",
+        "/result/structuredContent/error/code",
+        "/result/structuredContent/error_code",
+        "/result/structuredContent/code",
+        "/result/structuredContent/reason",
+        "/code",
+    ]
+    .iter()
+    .find_map(|path| response.pointer(path).and_then(Value::as_str))
+    .unwrap_or("unclassified_provider_refusal")
+}
+
+fn diagnose(method: &str, phase: &str, code: &str, response: &Value) {
+    let code = if !code.is_empty()
+        && code.len() <= 96
+        && code
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
+    {
+        code
+    } else {
+        "non_token_code"
+    };
+    eprintln!("login_acceptance method={method} phase={phase} code={code}");
+    let encoded =
+        json!({"method":method,"phase":phase,"code":code,"response":response}).to_string();
+    if encoded.contains(SECRET) || encoded.len() > 1024 * 1024 {
+        return;
+    }
+    // Only the test runner can choose this output. create_new prevents replacing
+    // another task's file; a retained handle owns subsequent diagnostic rows.
+    static DIAGNOSTICS: std::sync::OnceLock<Option<std::sync::Mutex<std::fs::File>>> =
+        std::sync::OnceLock::new();
+    let file = DIAGNOSTICS.get_or_init(|| {
+        let path = std::path::PathBuf::from(std::env::var_os("DCC_CUA_LOGIN_DIAGNOSTICS")?);
+        if !path.is_absolute() {
+            return None;
+        }
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(3)?
+            .canonicalize()
+            .ok()?;
+        let parent = path.parent()?.canonicalize().ok()?;
+        if !parent.starts_with(root) {
+            return None;
+        }
+        std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(path)
+            .ok()
+            .map(std::sync::Mutex::new)
+    });
+    if let Some(file) = file
+        && let Ok(mut file) = file.lock()
+    {
+        use std::io::Write;
+        let _ = writeln!(file, "{encoded}");
+    }
 }
 
 async fn navigate(
