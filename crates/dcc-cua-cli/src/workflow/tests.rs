@@ -208,7 +208,7 @@ fn pinned_ancestors_prevent_directory_replacement_and_reparse_writes() {
         json!(hash_reader(&mut File::open(&executable).unwrap()).unwrap());
     let host = manager(&root, &value_policy).unwrap();
     let recipe = host.recipe("fixture").unwrap();
-    let directory_guards = pin_workflow_directories(recipe, false).unwrap();
+    let directory_guards = pin_workflow_directories(recipe).unwrap();
     let executable_guard = pin_executable(recipe).unwrap();
     assert!(fs::rename(&stage, directory.path().join("stage-moved")).is_err());
     assert!(fs::rename(&root, directory.path().join("root-moved")).is_err());
@@ -477,16 +477,33 @@ fn policy_expiry_stops_owned_process_and_cross_connection_replay_fails() {
 
 #[cfg(windows)]
 #[rstest]
-fn no_cancel_deadline_reports_live_unknown_and_preserves_ownership() {
+#[case(100, None)]
+#[case(60_000, Some(10_000))]
+fn no_cancel_deadline_reports_live_unknown_and_preserves_ownership(
+    #[case] timeout_ms: u64,
+    #[case] policy_ms: Option<u64>,
+) {
     let (_directory, root) = fixture_root("hang");
-    let value_policy = policy(&root, "install", 100, false);
+    let value_policy = policy(&root, "install", timeout_ms, false);
     let mut host = manager(&root, &value_policy).unwrap();
+    if let Some(policy_ms) = policy_ms {
+        host.policy_deadline = Some(Instant::now() + Duration::from_millis(policy_ms));
+    }
     let Some(started) = start_or_verify_elevation_denial(&mut host) else {
         return;
     };
     let id = started["workflow_id"].as_str().unwrap();
     let pid = started["process_id"].as_u64().unwrap() as u32;
-    std::thread::sleep(Duration::from_millis(300));
+    let retained = host.authorization_deadline(id).unwrap();
+    {
+        let run = host.runs.get(id).unwrap().lock().unwrap();
+        assert_eq!(retained, run.deadline.min(run.policy_deadline));
+        assert_eq!(retained == run.policy_deadline, policy_ms.is_some());
+    }
+    std::thread::sleep(
+        retained.saturating_duration_since(Instant::now()) + Duration::from_millis(200),
+    );
+    assert!(host.authorization_deadline(id).is_err());
     let state = host.status(id).unwrap();
     assert_eq!(state["state"], "outcome_unknown", "{state}");
     assert_eq!(state["process_exited"], false);
@@ -505,4 +522,62 @@ fn unpinned_platform_launch_fails_closed() {
     let value_policy = policy(&root, "install", 1000, true);
     let mut host = manager(&root, &value_policy).unwrap();
     assert!(host.start("fixture").unwrap_err().contains("unsupported"));
+}
+
+#[cfg(windows)]
+#[rstest]
+#[case("install", false)]
+#[case("uninstall", true)]
+fn missing_result_parents_are_final_absence_without_leaf_traversal(
+    #[case] kind: &str,
+    #[case] expected: bool,
+) {
+    let (_directory, root) = fixture_root(kind);
+    let mut value = policy(&root, kind, 1000, true);
+    value["recipes"][0]["result"]["relative_path"] = json!("missing/child/result.txt");
+    let host = manager(&root, &value).unwrap();
+    let recipe = host.recipe("fixture").unwrap();
+    let mut guards = pin_workflow_directories(recipe).unwrap();
+    assert!(!pin_result_parents(recipe, &mut guards).unwrap());
+    assert_eq!(verify_result(recipe).unwrap(), expected);
+    assert!(!root.join("missing").exists());
+}
+
+#[cfg(windows)]
+#[rstest]
+fn result_parent_junction_cannot_redirect_verification_outside_the_artifact_root() {
+    let (directory, root) = fixture_root("install");
+    let outside = directory.path().join("outside");
+    std::fs::create_dir(&outside).unwrap();
+    std::fs::write(outside.join("result.txt"), b"external synthetic data").unwrap();
+    let mut value = policy(&root, "install", 1000, true);
+    value["recipes"][0]["result"]["relative_path"] = json!("sub/result.txt");
+    let host = manager(&root, &value).unwrap();
+    let recipe = host.recipe("fixture").unwrap();
+    let mut guards = pin_workflow_directories(recipe).unwrap();
+    assert!(!pin_result_parents(recipe, &mut guards).unwrap());
+    let script = directory.path().join("junction.ps1");
+    std::fs::write(
+        &script,
+        "param([string]$Link,[string]$Target)
+New-Item -ItemType Junction -Path $Link -Target $Target | Out-Null
+",
+    )
+    .unwrap();
+    let result = Command::new("pwsh")
+        .args(["-NoProfile", "-NonInteractive", "-File"])
+        .arg(&script)
+        .arg("-Link")
+        .arg(root.join("sub"))
+        .arg("-Target")
+        .arg(&outside)
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "synthetic junction creation failed"
+    );
+    assert!(pin_result_parents(recipe, &mut guards).is_err());
+    assert!(verify_result(recipe).is_err());
+    std::fs::remove_dir(root.join("sub")).unwrap();
 }
