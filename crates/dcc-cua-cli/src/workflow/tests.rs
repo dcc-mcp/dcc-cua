@@ -290,7 +290,7 @@ fn owned_install_and_normal_uninstall_verify_real_artifacts() {
 
 #[cfg(windows)]
 #[rstest]
-fn terminal_result_releases_file_guards_while_retaining_audit_state() {
+fn terminal_result_releases_owned_guards_while_retaining_audit_state() {
     let (directory, root) = fixture_root("install");
     let stage = directory.path().join("stage");
     fs::create_dir(&stage).unwrap();
@@ -305,14 +305,41 @@ fn terminal_result_releases_file_guards_while_retaining_audit_state() {
     let id = started["workflow_id"].as_str().unwrap();
     let result = wait_terminal(&mut host, id);
     assert_eq!(result["state"], "succeeded", "{result}");
-    fs::write(
-        &executable,
-        b"staged executable can be cleaned after completion",
-    )
-    .unwrap();
+    {
+        let run = host.runs.get(id).unwrap().lock().unwrap();
+        assert!(
+            run._executable.is_none(),
+            "owned executable pin was retained"
+        );
+        assert!(
+            run._directories.is_none(),
+            "owned directory pins were retained"
+        );
+        assert!(run.exit_observed);
+        assert!(run.verification.is_none());
+    }
     fs::rename(&root, directory.path().join("completed-root-moved")).unwrap();
     assert_eq!(host.status(id).unwrap(), result);
     assert_eq!(host.stop_all()["success"], true);
+    drop(host);
+    // Windows may keep the mapped image busy while the retained audit process
+    // object or a scanner still references it; this is separate from owned pins.
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        match fs::write(
+            &executable,
+            b"staged executable can be cleaned after audit release",
+        ) {
+            Ok(()) => break,
+            Err(error) if error.raw_os_error() == Some(32) && Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Err(error) => panic!(
+                "staged executable cleanup failed after audit release: os={:?}",
+                error.raw_os_error()
+            ),
+        }
+    }
 }
 
 #[cfg(windows)]
