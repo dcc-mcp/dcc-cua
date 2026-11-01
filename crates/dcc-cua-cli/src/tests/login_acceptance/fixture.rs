@@ -43,10 +43,22 @@ impl LoginFixture {
         let worker_state = state.clone();
         let worker_stop = stop.clone();
         let worker = std::thread::spawn(move || {
+            let mut connections: Vec<std::thread::JoinHandle<()>> = Vec::new();
             while !worker_stop.load(Ordering::Relaxed) {
+                let mut index = 0;
+                while index < connections.len() {
+                    if connections[index].is_finished() {
+                        connections.swap_remove(index).join().unwrap();
+                    } else {
+                        index += 1;
+                    }
+                }
                 match listener.accept() {
-                    Ok((stream, peer)) if peer.ip().is_loopback() => {
-                        let _ = serve(stream, &worker_state);
+                    Ok((stream, peer)) if peer.ip().is_loopback() && connections.len() < 16 => {
+                        let state = Arc::clone(&worker_state);
+                        connections.push(std::thread::spawn(move || {
+                            let _ = serve(stream, &state);
+                        }));
                     }
                     Ok(_) => {}
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
@@ -54,6 +66,9 @@ impl LoginFixture {
                     }
                     Err(_) => break,
                 }
+            }
+            for connection in connections {
+                connection.join().unwrap();
             }
         });
         Self {
@@ -72,6 +87,10 @@ impl LoginFixture {
     pub fn page_url(&self) -> String {
         format!("{}/fixture", self.origin())
     }
+    pub fn idle_connection(&self) -> TcpStream {
+        TcpStream::connect(self.address).unwrap()
+    }
+
     pub fn counts(&self) -> Counts {
         self.state.lock().unwrap().counts
     }
@@ -112,6 +131,8 @@ impl Drop for LoginFixture {
 }
 
 fn serve(mut stream: TcpStream, state: &Mutex<State>) -> std::io::Result<()> {
+    // Winsock accepted sockets inherit the listener's nonblocking mode.
+    stream.set_nonblocking(false)?;
     stream.set_read_timeout(Some(Duration::from_secs(2)))?;
     stream.set_write_timeout(Some(Duration::from_secs(2)))?;
     let mut bytes = Vec::new();
@@ -162,42 +183,44 @@ fn serve(mut stream: TcpStream, state: &Mutex<State>) -> std::io::Result<()> {
             return Ok(());
         }
     }
-    let mut state = state.lock().unwrap();
-    let (status, extra, page) = match (method.as_str(), path.as_str()) {
-        ("GET", "/fixture") => {
-            let content = if let Some(reason) = state.boundary {
-                format!("<p data-cua-id=challenge-state>needs_user_action:{reason}</p>")
-            } else if authenticated && state.counts.accepted_logins != 0 {
-                state.counts.authenticated_requests += 1;
-                "<p data-cua-id=session-state>fixture-authenticated</p>".to_owned()
-            } else {
-                "<form action=/login method=post><label for=user>fixture-user</label><input name=user id=user autocomplete=off><label for=password>fixture-password</label><input type=password name=password id=password autocomplete=off><button type=submit>fixture-submit</button></form><p data-cua-id=session-state>fixture-signed-out</p>".to_owned()
-            };
-            ("200 OK", "", html(&content))
-        }
-        ("POST", "/login") => {
-            state.counts.submissions += 1;
-            if state.boundary.is_some() {
-                state.counts.boundary_submissions += 1;
-                (
-                    "409 Conflict",
-                    "",
-                    html("human boundary remains unresolved"),
-                )
-            } else if bytes[header_end..header_end + content_length]
-                == format!("user=fixture-user&password={SECRET}").as_bytes()[..]
-            {
-                state.counts.accepted_logins += 1;
-                (
-                    "303 See Other",
-                    "Location: /fixture\r\nSet-Cookie: dcc_fixture_session=authenticated-v1; HttpOnly; SameSite=Strict; Path=/\r\n",
-                    String::new(),
-                )
-            } else {
-                ("403 Forbidden", "", html("fixture-credentials-rejected"))
+    let (status, extra, page) = {
+        let mut state = state.lock().unwrap();
+        match (method.as_str(), path.as_str()) {
+            ("GET", "/fixture") => {
+                let content = if let Some(reason) = state.boundary {
+                    format!("<p data-cua-id=challenge-state>needs_user_action:{reason}</p>")
+                } else if authenticated && state.counts.accepted_logins != 0 {
+                    state.counts.authenticated_requests += 1;
+                    "<p data-cua-id=session-state>fixture-authenticated</p>".to_owned()
+                } else {
+                    "<form action=/login method=post><label for=user>fixture-user</label><input name=user id=user autocomplete=off><label for=password>fixture-password</label><input type=password name=password id=password autocomplete=off><button type=submit>fixture-submit</button></form><p data-cua-id=session-state>fixture-signed-out</p>".to_owned()
+                };
+                ("200 OK", "", html(&content))
             }
+            ("POST", "/login") => {
+                state.counts.submissions += 1;
+                if state.boundary.is_some() {
+                    state.counts.boundary_submissions += 1;
+                    (
+                        "409 Conflict",
+                        "",
+                        html("human boundary remains unresolved"),
+                    )
+                } else if bytes[header_end..header_end + content_length]
+                    == format!("user=fixture-user&password={SECRET}").as_bytes()[..]
+                {
+                    state.counts.accepted_logins += 1;
+                    (
+                        "303 See Other",
+                        "Location: /fixture\r\nSet-Cookie: dcc_fixture_session=authenticated-v1; HttpOnly; SameSite=Strict; Path=/\r\n",
+                        String::new(),
+                    )
+                } else {
+                    ("403 Forbidden", "", html("fixture-credentials-rejected"))
+                }
+            }
+            _ => ("404 Not Found", "", html("fixture-not-found")),
         }
-        _ => ("404 Not Found", "", html("fixture-not-found")),
     };
     // Submitted bytes are never retained in the oracle, journal, or response.
     bytes.fill(0);

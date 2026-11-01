@@ -68,3 +68,37 @@ fn login_fixture_boundaries_never_complete_credential_submission(#[case] reason:
 
 #[cfg(windows)]
 mod native;
+
+#[rstest]
+fn login_fixture_serves_requests_while_browser_preconnect_is_idle() {
+    let fixture = LoginFixture::new();
+    let idle = fixture.idle_connection();
+    let started = std::time::Instant::now();
+    let response = fixture.request("GET", "/fixture", "", None);
+    assert!(response.contains("fixture-signed-out"));
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(1),
+        "idle preconnect serialized a real browser request"
+    );
+    drop(idle);
+}
+
+#[rstest]
+fn login_fixture_does_not_close_a_connection_before_delayed_headers_arrive() {
+    use std::io::{Read, Write};
+    let fixture = LoginFixture::new();
+    let mut connection = fixture.idle_connection();
+    connection
+        .set_read_timeout(Some(std::time::Duration::from_secs(3)))
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(60));
+    connection
+        .write_all(b"GET /fixture HTTP/1.1\r\nHost: fixture\r\nConnection: close\r\n\r\n")
+        .unwrap();
+    let mut response = String::new();
+    connection.read_to_string(&mut response).unwrap();
+    assert!(
+        response.contains("fixture-signed-out"),
+        "accepted connection was closed before request headers"
+    );
+}
