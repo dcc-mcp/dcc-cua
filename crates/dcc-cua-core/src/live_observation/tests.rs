@@ -2,6 +2,87 @@ use rstest::rstest;
 
 use super::*;
 
+#[rstest]
+#[case::expired(true)]
+#[case::revoked(false)]
+fn portable_capture_ended_authority_refuses_work_and_clears_previous_pixels(#[case] expired: bool) {
+    let expires = if expired { 0 } else { u64::MAX };
+    let authorization = dcc_cua_showcase::RecordingAuthorization::new(expires);
+    if !expired {
+        authorization.revoke();
+    }
+    let mut status = LiveObservationStatus::default();
+    status.publish_frame(
+        LiveObservationFrame::new(1, vec![9; 4], 1, 1, Instant::now()),
+        Duration::ZERO,
+        "previously_admitted_frame",
+    );
+    let (sender, receiver) = watch::channel(status);
+    let admitted = with_portable_capture_authorization(Some(&authorization), &sender, || {
+        panic!("expired or revoked authority must never admit capture/publication")
+    });
+    assert!(admitted.is_none());
+    let status = receiver.borrow();
+    assert!(status.latest().is_none());
+    assert_eq!(
+        status.terminal_error().unwrap().code,
+        ComputerUseErrorCode::InvalidAction
+    );
+    assert_eq!(
+        status.terminal_error().unwrap().message,
+        "live capture task authorization expired or was revoked"
+    );
+}
+
+#[rstest]
+#[tokio::test]
+async fn portable_capture_inflight_revocation_drops_frame_before_publication() {
+    let authorization = Arc::new(dcc_cua_showcase::RecordingAuthorization::new(u64::MAX));
+    let (sender, receiver) = watch::channel(LiveObservationStatus::default());
+    let (capturing, started) = tokio::sync::oneshot::channel();
+    let (release, captured) = tokio::sync::oneshot::channel();
+    let worker_authorization = Arc::clone(&authorization);
+    let worker = tokio::spawn(async move {
+        assert!(
+            with_portable_capture_authorization(Some(&worker_authorization), &sender, || ())
+                .is_some()
+        );
+        capturing.send(()).unwrap();
+        captured.await.unwrap();
+        let mut published = false;
+        let admission =
+            with_portable_capture_authorization(Some(&worker_authorization), &sender, || {
+                published = true;
+                sender.send_modify(|status| {
+                    status.publish_frame(
+                        LiveObservationFrame::new(1, vec![9; 4], 1, 1, Instant::now()),
+                        Duration::ZERO,
+                        "inflight_capture",
+                    )
+                });
+            });
+        (admission.is_some(), published)
+    });
+    started.await.unwrap();
+    authorization.revoke();
+    release.send(()).unwrap();
+    assert_eq!(worker.await.unwrap(), (false, false));
+    assert!(receiver.borrow().latest().is_none());
+    assert_eq!(
+        receiver.borrow().terminal_error().unwrap().code,
+        ComputerUseErrorCode::InvalidAction
+    );
+}
+
+#[rstest]
+fn portable_capture_without_task_authority_retains_ordinary_admission() {
+    let (sender, _) = watch::channel(LiveObservationStatus::default());
+    assert_eq!(
+        with_portable_capture_authorization(None, &sender, || 42),
+        Some(42)
+    );
+}
+
 pub(crate) struct LiveObservationTestPublisher {
     sender: watch::Sender<LiveObservationStatus>,
 }

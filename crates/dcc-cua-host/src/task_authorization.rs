@@ -413,9 +413,9 @@ pub trait TrustedTaskAuthorizationHost: Send + Sync {
         None
     }
 
-    /// Optional constructor-owned synchronous admission fence for native video.
+    /// Optional constructor-owned synchronous admission fence for native capture.
     /// Embeddings without a revocation-aware producer fence fail closed for
-    /// recording while retaining their existing non-recording task contracts.
+    /// recording and live observation while retaining ordinary snapshot contracts.
     fn recording_authorization(
         &self,
         _lease: &TrustedTaskAuthorizationLease,
