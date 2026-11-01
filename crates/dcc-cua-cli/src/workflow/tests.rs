@@ -37,6 +37,28 @@ fn manager(root: &Path, policy: &Value) -> Result<WorkflowManager, String> {
     WorkflowManager::from_policy_file(&file, "synthetic-windows", "fixture-session")
 }
 
+// Nine positive fixture cases exercise real processes on standard-user hosts.
+// Elevated CI instead proves the exact launch denial; it supplies no process
+// E2E evidence. Acceptance still requires real standard-user PC8 execution.
+#[cfg(windows)]
+fn start_or_verify_elevation_denial(manager: &mut WorkflowManager) -> Option<Value> {
+    const ELEVATION_DENIAL: &str =
+        "workflow launch requires a standard-user Host; elevation is not delegated";
+    let previous_runs = manager.runs.len();
+    match manager.start("fixture") {
+        Ok(started) => Some(started),
+        Err(error) if error == ELEVATION_DENIAL => {
+            assert_eq!(require_standard_user().unwrap_err(), ELEVATION_DENIAL);
+            assert_eq!(manager.runs.len(), previous_runs);
+            eprintln!(
+                "workflow_fixture_context=elevated_host result=expected_launch_denial process_e2e=not_executed"
+            );
+            None
+        }
+        Err(error) => panic!("workflow fixture start failed: {error}"),
+    }
+}
+
 #[cfg(windows)]
 fn wait_terminal(manager: &mut WorkflowManager, id: &str) -> Value {
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -233,7 +255,9 @@ fn owned_install_and_normal_uninstall_verify_real_artifacts() {
     let (_directory, install_root) = fixture_root("install");
     let value_policy = policy(&install_root, "install", 5_000, true);
     let mut host = manager(&install_root, &value_policy).unwrap();
-    let started = host.start("fixture").unwrap();
+    let Some(started) = start_or_verify_elevation_denial(&mut host) else {
+        return;
+    };
     let id = started["workflow_id"].as_str().unwrap();
     let result = wait_terminal(&mut host, id);
     assert_eq!(result["state"], "succeeded", "{result}");
@@ -254,7 +278,9 @@ fn owned_install_and_normal_uninstall_verify_real_artifacts() {
     .unwrap();
     let value_policy = policy(&uninstall_root, "uninstall", 5_000, true);
     let mut host = manager(&uninstall_root, &value_policy).unwrap();
-    let started = host.start("fixture").unwrap();
+    let Some(started) = start_or_verify_elevation_denial(&mut host) else {
+        return;
+    };
     let id = started["workflow_id"].as_str().unwrap();
     let result = wait_terminal(&mut host, id);
     assert_eq!(result["state"], "succeeded", "{result}");
@@ -273,7 +299,9 @@ fn terminal_result_releases_file_guards_while_retaining_audit_state() {
     let mut value_policy = policy(&root, "install", 5_000, true);
     value_policy["recipes"][0]["executable"] = json!(executable);
     let mut host = manager(&root, &value_policy).unwrap();
-    let started = host.start("fixture").unwrap();
+    let Some(started) = start_or_verify_elevation_denial(&mut host) else {
+        return;
+    };
     let id = started["workflow_id"].as_str().unwrap();
     let result = wait_terminal(&mut host, id);
     assert_eq!(result["state"], "succeeded", "{result}");
@@ -293,7 +321,9 @@ fn late_verification_only_confirms_cleanup_without_changing_unknown_outcome() {
     let (_directory, root) = fixture_root("install");
     let value_policy = policy(&root, "install", 5000, true);
     let mut host = manager(&root, &value_policy).unwrap();
-    let started = host.start("fixture").unwrap();
+    let Some(started) = start_or_verify_elevation_denial(&mut host) else {
+        return;
+    };
     let id = started["workflow_id"].as_str().unwrap();
     assert_eq!(wait_terminal(&mut host, id)["state"], "succeeded");
     let (sender, receiver) = std::sync::mpsc::sync_channel(1);
@@ -327,7 +357,9 @@ fn exit_and_result_are_independent_checks(#[case] mode: &str, #[case] reason: &s
     let (_directory, root) = fixture_root(mode);
     let value_policy = policy(&root, "install", 5_000, true);
     let mut host = manager(&root, &value_policy).unwrap();
-    let started = host.start("fixture").unwrap();
+    let Some(started) = start_or_verify_elevation_denial(&mut host) else {
+        return;
+    };
     let result = wait_terminal(&mut host, started["workflow_id"].as_str().unwrap());
     assert_eq!(result["state"], "failed", "{result}");
     assert_eq!(result["reason"], reason);
@@ -340,8 +372,8 @@ fn verifies_digest_again_before_each_launch_without_outputting_paths() {
     let (_directory, root) = fixture_root("install");
     let mut value_policy = policy(&root, "install", 1000, true);
     value_policy["recipes"][0]["executable_sha256"] = json!("0".repeat(64));
-    let mut host = manager(&root, &value_policy).unwrap();
-    let error = host.start("fixture").unwrap_err();
+    let host = manager(&root, &value_policy).unwrap();
+    let error = pin_executable(host.recipe("fixture").unwrap()).unwrap_err();
     assert_eq!(error, "workflow executable digest changed");
     assert!(!root.join("result.txt").exists());
 }
@@ -352,7 +384,9 @@ fn deadline_is_enforced_without_status_polling() {
     let (_directory, root) = fixture_root("hang");
     let value_policy = policy(&root, "install", 100, true);
     let mut host = manager(&root, &value_policy).unwrap();
-    let started = host.start("fixture").unwrap();
+    let Some(started) = start_or_verify_elevation_denial(&mut host) else {
+        return;
+    };
     let id = started["workflow_id"].as_str().unwrap();
     std::thread::sleep(Duration::from_millis(500));
     let result = wait_terminal(&mut host, id);
@@ -367,7 +401,9 @@ fn cancellation_is_owned_scoped_and_requires_recipe_permission() {
     let (_directory, root) = fixture_root("hang");
     let value_policy = policy(&root, "install", 5_000, true);
     let mut host = manager(&root, &value_policy).unwrap();
-    let started = host.start("fixture").unwrap();
+    let Some(started) = start_or_verify_elevation_denial(&mut host) else {
+        return;
+    };
     let id = started["workflow_id"].as_str().unwrap();
     assert!(host.process_id(id).unwrap() > 0);
     let process_id = host.process_id(id).unwrap();
@@ -383,7 +419,9 @@ fn cancellation_is_owned_scoped_and_requires_recipe_permission() {
     let mut no_cancel = value_policy;
     no_cancel["recipes"][0]["allow_cancel"] = json!(false);
     let mut host = manager(&root, &no_cancel).unwrap();
-    let started = host.start("fixture").unwrap();
+    let Some(started) = start_or_verify_elevation_denial(&mut host) else {
+        return;
+    };
     let id = started["workflow_id"].as_str().unwrap();
     assert!(host.cancel(id).unwrap_err().contains("not authorized"));
     // Explicit test cleanup owns this fixture; production never gains this override.
@@ -399,7 +437,9 @@ fn policy_expiry_stops_owned_process_and_cross_connection_replay_fails() {
     let (_directory, root) = fixture_root("hang");
     let value_policy = policy(&root, "install", 5000, true);
     let mut host = manager(&root, &value_policy).unwrap();
-    let started = host.start("fixture").unwrap();
+    let Some(started) = start_or_verify_elevation_denial(&mut host) else {
+        return;
+    };
     let id = started["workflow_id"].as_str().unwrap();
     let mut second = manager(&root, &value_policy).unwrap();
     assert!(second.status(id).is_err());
@@ -414,7 +454,9 @@ fn no_cancel_deadline_reports_live_unknown_and_preserves_ownership() {
     let (_directory, root) = fixture_root("hang");
     let value_policy = policy(&root, "install", 100, false);
     let mut host = manager(&root, &value_policy).unwrap();
-    let started = host.start("fixture").unwrap();
+    let Some(started) = start_or_verify_elevation_denial(&mut host) else {
+        return;
+    };
     let id = started["workflow_id"].as_str().unwrap();
     let pid = started["process_id"].as_u64().unwrap() as u32;
     std::thread::sleep(Duration::from_millis(300));

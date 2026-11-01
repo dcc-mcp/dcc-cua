@@ -439,18 +439,17 @@ fn refresh(run: &mut RunState) {
 }
 
 fn refresh_state(run: &mut RunState) {
-    if run.state != "verifying" {
-        if let Some(verification) = run.verification.as_ref() {
-            if matches!(
-                verification.receiver.try_recv(),
-                Err(std::sync::mpsc::TryRecvError::Empty)
-            ) {
-                return;
-            }
-            // A late result only confirms worker cleanup; it cannot turn a timed-out
-            // verification into success or change its already reported unknown outcome.
-            run.verification = None;
+    if run.state != "verifying"
+        && let Some(verification) = run.verification.as_ref()
+    {
+        if matches!(
+            verification.receiver.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ) {
+            return;
         }
+        // A late result confirms cleanup without changing the unknown outcome.
+        run.verification = None;
     }
     if run.state == "verifying" {
         let Some(verification) = run.verification.as_ref() else {

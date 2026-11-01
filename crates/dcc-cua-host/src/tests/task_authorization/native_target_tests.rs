@@ -291,3 +291,86 @@ async fn semantic_session_raw_input_revalidates_revocation_after_waiting_for_its
     ));
     assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 0);
 }
+
+#[rstest]
+#[tokio::test]
+async fn live_observation_without_recording_requires_and_shares_the_task_producer_fence() {
+    let (issuer, authority, lease) = lease_for(
+        [
+            "snapshot",
+            "live_observation_start",
+            "live_observation_state",
+            "live_observation_stop",
+        ]
+        .map(str::to_owned)
+        .to_vec(),
+        native_scope("content_change"),
+    )
+    .await;
+    let grant: TaskGrant = serde_json::from_value(json!({
+        "task_grant_id":"grant-1", "application_label":"Chrome Web Store upload",
+        "process_id":42, "window_handle":7, "allow_live_observation":true,
+        "allow_recording":false, "task_authorization_id":lease.authorization_id,
+        "task_authorization_window_capability":lease.window_capability
+    }))
+    .unwrap();
+    let (driver, calls) = observation_only_test_driver();
+    let scope = ComputerUseTargetScope {
+        process_id: Some(42),
+        window_handle: Some(7),
+        window_title: None,
+    };
+    let mut refused = driver
+        .session(scope.clone(), "Synthetic capture", "runtime-refused")
+        .unwrap();
+    let missing_fence = HostSecurityServices::default()
+        .with_task_authorization_host(Arc::new(DenyingTaskAuthorizationHost));
+    let error = crate::request_handler::prepare_granted_session_recording(
+        &missing_fence,
+        &grant,
+        Some(&lease),
+        &mut refused,
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(
+        error,
+        HostError::CodedProtocol {
+            code: HostProtocolErrorCode::TaskAuthorizationDenied,
+            ..
+        }
+    ));
+
+    let mut session = driver
+        .session(scope, "Synthetic capture", "runtime-live")
+        .unwrap();
+    let security =
+        HostSecurityServices::default().with_task_authorization_host(Arc::clone(&authority));
+    assert!(
+        crate::request_handler::prepare_granted_session_recording(
+            &security,
+            &grant,
+            Some(&lease),
+            &mut session,
+        )
+        .await
+        .unwrap()
+        .is_none()
+    );
+    assert!(!grant.allow_recording);
+    assert!(lease.recording_output_dir.is_none());
+    let producer = authority.recording_authorization(&lease).unwrap();
+    let admitted_frames = std::cell::Cell::new(0);
+    producer
+        .with_active(|| admitted_frames.set(admitted_frames.get() + 1))
+        .unwrap();
+    issuer.revoke(&lease.authorization_id).unwrap();
+    assert!(
+        producer
+            .with_active(|| admitted_frames.set(admitted_frames.get() + 1))
+            .is_err()
+    );
+    assert_eq!(admitted_frames.get(), 1);
+    assert!(authority.recording_authorization(&lease).is_none());
+    assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 0);
+}

@@ -72,7 +72,7 @@ pub(crate) async fn prepare_granted_session_recording(
     task_authorization: Option<&TrustedTaskAuthorizationLease>,
     session: &mut dcc_cua_core::ComputerUseSession,
 ) -> Result<Option<Value>, HostError> {
-    if grant.allow_recording
+    if (grant.allow_recording || grant.allow_live_observation)
         && let Some(lease) = task_authorization
     {
         let authorization = security_services
@@ -83,7 +83,7 @@ pub(crate) async fn prepare_granted_session_recording(
             let _ = session.stop().await;
             return Err(HostError::coded_protocol(
                 HostProtocolErrorCode::TaskAuthorizationDenied,
-                "native recording requires a constructor-owned producer revocation fence",
+                "native capture requires a constructor-owned producer revocation fence",
             ));
         };
         session.set_recording_authorization(authorization);
