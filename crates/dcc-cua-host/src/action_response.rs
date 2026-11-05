@@ -199,15 +199,18 @@ pub(super) fn native_tool_response_with_transport(
     value["success"] = Value::Bool(success);
     let prepared = prepare_image_transport(result.images, mode, shared_image)?;
     prepared.annotate_content(&mut value);
+    // Insert owned payloads after json! builds the envelope to avoid reserializing them.
     let mut response = json!({
         "type": "tool_result",
         "session_id": session_id,
         "tool": tool,
         "status": result.status,
-        "result": value,
-        "text": result.text,
+        "result": null,
+        "text": null,
         "degraded": result.degraded,
     });
+    response["result"] = value;
+    response["text"] = Value::String(result.text);
     if let Some(session_id) = session_id {
         response["session_id"] = Value::String(session_id.to_owned());
     }
@@ -229,7 +232,7 @@ pub(super) fn action_completed_response(
     shared_image: &mut Option<SharedImage>,
 ) -> Result<(Value, Option<Vec<u8>>), HostError> {
     let success = result.status == ComputerUseToolStatus::Succeeded;
-    let (tool_response, attachment) = native_tool_response_with_transport(
+    let (mut tool_response, attachment) = native_tool_response_with_transport(
         Some(session_id),
         "action",
         result,
@@ -239,18 +242,21 @@ pub(super) fn action_completed_response(
     let mut response = json!({
         "type": "action_completed",
         "success": success,
-        "status": tool_response["status"].clone(),
+        "status": null,
         "action_id": action_id,
         "target_closed": false,
         "policy_tier": "task_grant",
         "message": message,
-        "result": tool_response["result"].clone(),
-        "text": tool_response["text"].clone(),
-        "degraded": tool_response["degraded"].clone(),
+        "result": null,
+        "text": null,
+        "degraded": null,
     });
+    for field in ["status", "result", "text", "degraded"] {
+        response[field] = tool_response[field].take();
+    }
     for field in ["image", "attachments"] {
         if !tool_response[field].is_null() {
-            response[field] = tool_response[field].clone();
+            response[field] = tool_response[field].take();
         }
     }
     Ok((response, attachment))
