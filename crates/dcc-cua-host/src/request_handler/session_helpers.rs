@@ -118,7 +118,7 @@ pub(crate) async fn acquire_raw_input_turn(
     enabled: bool,
 ) -> Option<tokio::sync::MutexGuard<'static, ()>> {
     if enabled {
-        Some(RAW_INPUT_QUEUE.lock().await)
+        Some(timed(Phase::RawInputQueue, RAW_INPUT_QUEUE.lock()).await)
     } else {
         None
     }
