@@ -23,6 +23,7 @@ function fixture() {
   const navigations: string[] = [];
   let navigationGate: Promise<void> | null = null;
   let badge = "";
+  let title = "";
   let nextRemove: Promise<void> | null = null;
   let nextSet: Promise<void> | null = null;
   let stored: unknown = { session_nonce: "stale", tab_id: 1, window_id: 2, origin: "https://example.com", document_id: "old" };
@@ -34,7 +35,7 @@ function fixture() {
     return resume;
   }
   const browser = {
-    action: { onClicked: clicked, setBadgeText: async ({ text }: { text: string }) => { badge = text; }, setBadgeBackgroundColor: async () => {} },
+    action: { onClicked: clicked, setBadgeText: async ({ text }: { text: string }) => { badge = text; }, setBadgeBackgroundColor: async () => {}, setTitle: async (value: { title: string }) => { title = value.title; } },
     runtime: {
       id: "published-extension", lastError: null, getManifest: () => ({ version: "0.3.1" }),
       connectNative: () => {
@@ -59,7 +60,7 @@ function fixture() {
   const source = readFileSync(new URL("../entrypoints/background.ts", import.meta.url), "utf8")
     .replace(/^import[\s\S]*?;\r?\n/gm, "").replace(/export default /g, "").replace(/export /g, "");
   runInNewContext(stripTypeScriptTypes(source), { ...protocol, ...content, PairingLifecycle, navigatePairedTab, browser, defineBackground: (run: () => void) => run(), crypto: { randomUUID }, URL });
-  return { ports, responses, navigations, pauseNavigation() { let resume!: () => void; navigationGate = new Promise<void>(resolve => { resume = resolve; }); return resume; }, badge: () => badge, pauseClear: () => pauseStorage("remove"), pauseSave: () => pauseStorage("set"), loseFocus: () => { focused = false; }, commands: () => commands, stored: () => stored, async pair() { clicked.fire({ id: 1, windowId: 2, url: "https://example.com" }); await flush(); } };
+  return { ports, responses, navigations, pauseNavigation() { let resume!: () => void; navigationGate = new Promise<void>(resolve => { resume = resolve; }); return resume; }, badge: () => badge, title: () => title, disconnectError(message: string, source: "runtime" | "port") { if (source === "port") { ports.at(-1).error = { message }; (browser.runtime as any).lastError = { message: "different runtime error" }; } else { (browser.runtime as any).lastError = { message }; } }, pauseClear: () => pauseStorage("remove"), pauseSave: () => pauseStorage("set"), loseFocus: () => { focused = false; }, commands: () => commands, stored: () => stored, async pair() { clicked.fire({ id: 1, windowId: 2, url: "https://example.com" }); await flush(); } };
 }
 
 test("background clears restored pairing and requires explicit pairing after disconnect", async () => {
@@ -108,7 +109,8 @@ test("a pending failure clear cannot remove a replacement pairing", async () => 
   replacement.onMessage.fire({ schema: protocol.PROTOCOL_SCHEMA, type: "hello_ack", protocol: 1, capabilities: ["task_owned_pairing_v1"] });
   await flush(); previous.onDisconnect.fire(); await flush();
   assert.ok(f.stored());
-  assert.equal(f.badge(), "ON");
+  assert.equal(f.badge(), "LINK");
+  assert.match(f.title(), /native_compatible/);
 });
 
 test("failure during a replacement save cannot clear the replacement generation", async () => {
@@ -124,7 +126,8 @@ test("failure during a replacement save cannot clear the replacement generation"
   f.ports[1].onMessage.fire({ schema: protocol.PROTOCOL_SCHEMA, type: "hello_ack", protocol: 1, capabilities: ["task_owned_pairing_v1"] });
   await flush(); previous.onDisconnect.fire(); await flush();
   assert.ok(f.stored());
-  assert.equal(f.badge(), "ON");
+  assert.equal(f.badge(), "LINK");
+  assert.match(f.title(), /native_compatible/);
 });
 
 
@@ -151,6 +154,8 @@ test("real background navigates only its paired tab and consumes pairing before 
   port.onMessage.fire(request); await flush();
   assert.deepEqual(f.navigations, [request.url]);
   assert.equal(f.stored(), undefined);
+  assert.equal(f.badge(), "");
+  assert.match(f.title(), /unpaired/);
   assert.equal(f.responses.at(-1).result.completion_known, false);
   port.onMessage.fire(request); await flush();
   assert.equal(f.responses.at(-1).ok, false);
@@ -176,3 +181,42 @@ test("late navigation completion cannot clear or report success for a replacemen
   assert.equal(f.stored(), replacement);
   assert.equal(f.responses.some((value: any) => value.request_id === "old-navigation" && value.ok), false);
 });
+
+test("compatible native handshake reports transport only, never task readiness", async () => {
+  const f = fixture(); await flush(); await f.pair();
+  assert.match(f.title(), /native_connecting/);
+  const commands = f.commands();
+  f.ports[0].onMessage.fire({ schema: protocol.PROTOCOL_SCHEMA, type: "hello_ack", protocol: 1, capabilities: ["task_owned_pairing_v1"] });
+  await flush();
+  assert.equal(f.badge(), "LINK");
+  assert.match(f.title(), /native_compatible.*task binding not verified/i);
+  assert.equal(f.commands(), commands);
+});
+
+test("legacy native handshake exposes a bounded compatibility reason and fails closed", async () => {
+  const f = fixture(); await flush(); await f.pair();
+  const port = f.ports[0];
+  port.onMessage.fire({ schema: protocol.PROTOCOL_SCHEMA, type: "hello_ack", protocol: 1, capabilities: ["native_host_bridge_v1"] });
+  await flush();
+  assert.match(f.title(), /native_incompatible/);
+  assert.equal(port.disconnected, true);
+  assert.equal(f.stored(), undefined);
+});
+
+for (const [message, code] of [
+  ["Specified native messaging host not found.", "native_host_unavailable"],
+  ["Access to the specified native messaging host is forbidden.", "native_host_forbidden"],
+  ["PRIVATE_SENTINEL https://example.test/?token=secret", "native_disconnected"],
+] as const) {
+  for (const source of ["runtime", "port"] as const) {
+    test(`native disconnect reports ${code} from ${source} without reflecting browser error text`, async () => {
+      const f = fixture(); await flush(); await f.pair();
+      f.disconnectError(message, source);
+      f.ports[0].onDisconnect.fire(); await flush();
+      assert.match(f.title(), new RegExp(code));
+      assert.doesNotMatch(f.title(), /PRIVATE_SENTINEL|example\.test|token=|secret/);
+      assert.equal(f.stored(), undefined);
+      assert.equal(f.badge(), "!");
+    });
+  }
+}
