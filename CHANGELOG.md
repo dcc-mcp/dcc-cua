@@ -1,5 +1,23 @@
 # Changelog
 
+## [1.18.0](https://github.com/dcc-mcp/dcc-cua/compare/v1.17.0...v1.18.0) (2026-11-06)
+
+
+### Features
+
+* **host:** support trusted native task workflows ([49acf15](https://github.com/dcc-mcp/dcc-cua/commit/49acf1547fe30bf1025ada6be06c8c8015575fe7))
+
+
+### Bug Fixes
+
+* **host:** fence task capture producers through lease expiry ([6a6ea6d](https://github.com/dcc-mcp/dcc-cua/commit/6a6ea6dd819a5cf3300e640f4bac465b7c5bd91c))
+* **workflows:** retain authority deadlines and validate before launch ([d3bdc9b](https://github.com/dcc-mcp/dcc-cua/commit/d3bdc9b51b5902b2353f36f87c7e17755a52e543))
+
+
+### Performance Improvements
+
+* **host:** move owned response payloads ([4c95fa6](https://github.com/dcc-mcp/dcc-cua/commit/4c95fa6f53d903ddb08c25a83a9cb140ddb7a964))
+
 ## [1.17.0](https://github.com/dcc-mcp/dcc-cua/compare/v1.16.1...v1.17.0) (2026-10-30)
 
 
