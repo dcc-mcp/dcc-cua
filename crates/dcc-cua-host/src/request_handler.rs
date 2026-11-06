@@ -6,10 +6,14 @@ mod capture_preparation;
 mod confirmation_evidence;
 mod evidence_epoch;
 pub(crate) mod native_menu;
+mod request_timing;
 mod session_helpers;
+mod verification;
+use crate::timing::{HostTimingPhase as Phase, measure_phase as timed};
 pub(super) use capture_preparation::passive_preparation_snapshot_response;
 pub(crate) use confirmation_evidence::*;
 pub(super) use evidence_epoch::*;
+pub(super) use request_timing::handle_request_with_security_services;
 pub(crate) use session_helpers::*;
 pub(super) fn validate_snapshot_capture_diagnostics(
     mode: TaskObservationMode,
@@ -41,29 +45,6 @@ pub(super) fn native_frame_pre_dispatch_failure(error: HostError) -> HostError {
     HostError::ComputerUse(error)
 }
 
-pub(super) async fn handle_request_with_security_services(
-    driver: &ComputerUseDriver,
-    security_services: &HostSecurityServices,
-    sessions: &mut ConnectionSessions,
-    snapshot_transport: &mut Option<SnapshotTransport>,
-    desktop_shared_image: &mut Option<SharedImage>,
-    cancellation_registry: &CancellationRegistry,
-    request: Request,
-) -> Result<(Value, Option<Vec<u8>>), HostError> {
-    let evidence_route = window_evidence_epoch_route(&request);
-    prepare_window_evidence_request(sessions, evidence_route.as_ref());
-    let result = handle_request_inner(
-        driver,
-        security_services,
-        sessions,
-        snapshot_transport,
-        desktop_shared_image,
-        cancellation_registry,
-        request,
-    )
-    .await;
-    finish_window_evidence_request(sessions, evidence_route, result)
-}
 async fn handle_request_inner(
     driver: &ComputerUseDriver,
     security_services: &HostSecurityServices,
@@ -187,7 +168,7 @@ async fn handle_request_inner(
             None,
         )),
         Request::WaitForWindow(request) => Ok((
-            json!({"type":"window_ready", "result":driver.wait_for_window(&request).await?}),
+            json!({"type":"window_ready", "result":timed(Phase::ConditionWait, driver.wait_for_window(&request)).await?}),
             None,
         )),
         Request::DesktopSnapshot {} => {
@@ -376,13 +357,16 @@ async fn handle_request_inner(
             }
             let mut action = action.into_computer_use(observation_id)?;
             let input_turn = acquire_raw_input_turn(true).await;
-            let result = host.session.perform_action(&action).await;
+            let result = timed(Phase::NativeAction, host.session.perform_action(&action)).await;
             action.text.zeroize();
             let result = result?;
             let action_id = format!("cua-desktop-action-{}", Uuid::new_v4());
             if capture_after {
-                if let Err(error) =
-                    wait_for_desktop_post_snapshot_delay(host, post_snapshot_delay).await
+                if let Err(error) = timed(
+                    Phase::PostActionWait,
+                    wait_for_desktop_post_snapshot_delay(host, post_snapshot_delay),
+                )
+                .await
                 {
                     drop(input_turn);
                     let failure = host_error_response(&error);
@@ -403,7 +387,7 @@ async fn handle_request_inner(
                     response["observation_required"] = Value::Bool(true);
                     return Ok((response, attachment));
                 }
-                let snapshot = host.session.screenshot().await;
+                let snapshot = timed(Phase::PostObservation, host.session.screenshot()).await;
                 drop(input_turn);
                 return match snapshot {
                     Ok(snapshot) => desktop_action_completed_with_snapshot_response(
@@ -791,19 +775,22 @@ async fn handle_request_inner(
                 activate_before,
                 indicator_motion,
             };
-            let (mut session, started) = start_granted_window_session(
-                driver,
-                &grant,
-                launched.as_ref(),
-                &agent_name,
-                &runtime_session_id,
-                &start_request,
-                preauthorized.as_ref().and_then(|lease| {
-                    security_services
-                        .task_authorization_host
-                        .as_ref()?
-                        .native_target_authorization(lease)
-                }),
+            let (mut session, started) = timed(
+                Phase::SessionPreparation,
+                start_granted_window_session(
+                    driver,
+                    &grant,
+                    launched.as_ref(),
+                    &agent_name,
+                    &runtime_session_id,
+                    &start_request,
+                    preauthorized.as_ref().and_then(|lease| {
+                        security_services
+                            .task_authorization_host
+                            .as_ref()?
+                            .native_target_authorization(lease)
+                    }),
+                ),
             )
             .await?;
             let Some(target) = session.target() else {
@@ -1277,10 +1264,11 @@ async fn handle_request_inner(
             let host =
                 authorized_session(sessions, &session_id, &task_grant_id, &window_capability)
                     .await?;
-            let root = host
-                .session
-                .accessibility_snapshot(max_nodes, max_depth)
-                .await;
+            let root = timed(
+                Phase::Snapshot,
+                host.session.accessibility_snapshot(max_nodes, max_depth),
+            )
+            .await;
             let root = host.finish_observation_sensitive_attempt(root)?;
             let observation_id = host
                 .session
@@ -1321,27 +1309,16 @@ async fn handle_request_inner(
             let host =
                 authorized_session(sessions, &session_id, &task_grant_id, &window_capability)
                     .await?;
-            let verification = host
-                .session
-                .verify_state(expect, timeout_ms, stable_samples, include_screenshot)
-                .await;
-            let verification = host.finish_observation_sensitive_attempt(verification)?;
-            let image_transport = verification
-                .image
-                .map(|image| image_response(image, mode, &mut host.latest_shared_image))
-                .transpose()?;
-            let mut response = json!({
-                "type": "state_verified",
-                "session_id": session_id,
-                "result": verification.value,
-            });
-            let attachment = if let Some((descriptor, attachment)) = image_transport {
-                response["image"] = descriptor;
-                attachment
-            } else {
-                None
-            };
-            Ok((response, attachment))
+            verification::verify(
+                host,
+                &session_id,
+                mode,
+                expect,
+                timeout_ms,
+                stable_samples,
+                include_screenshot,
+            )
+            .await
         }
         Request::CallTool {
             session_id,
@@ -1693,13 +1670,16 @@ async fn handle_request_inner(
             let host =
                 authorized_session(sessions, &session_id, &task_grant_id, &window_capability)
                     .await?;
-            crate::wait::handle_wait_for(
-                host,
-                &cancellation.handle,
-                &session_id,
-                &condition,
-                timeout_ms,
-                interval_ms,
+            timed(
+                Phase::ConditionWait,
+                crate::wait::handle_wait_for(
+                    host,
+                    &cancellation.handle,
+                    &session_id,
+                    &condition,
+                    timeout_ms,
+                    interval_ms,
+                ),
             )
             .await
         }
@@ -1851,7 +1831,7 @@ async fn handle_request_inner(
             let mut action = action.into_computer_use(observation_id)?;
             let input_turn = acquire_raw_input_turn(raw_input).await;
             revalidate_queued_action(host, &mut action).await?;
-            let result = host.session.perform_action(&action).await;
+            let result = timed(Phase::NativeAction, host.session.perform_action(&action)).await;
             action.text.zeroize();
             let result = host.finish_observation_sensitive_attempt(result);
             let result = if host.observation_mode == TaskObservationMode::PixelsOnly {
@@ -1861,8 +1841,11 @@ async fn handle_request_inner(
             }?;
             let action_id = format!("cua-action-{}", Uuid::new_v4());
             if capture_after {
-                if let Err(error) =
-                    wait_for_window_post_snapshot_delay(host, post_snapshot_delay).await
+                if let Err(error) = timed(
+                    Phase::PostActionWait,
+                    wait_for_window_post_snapshot_delay(host, post_snapshot_delay),
+                )
+                .await
                 {
                     drop(input_turn);
                     host.latest_observation_id = None;
@@ -1887,10 +1870,14 @@ async fn handle_request_inner(
                     return Ok((response, attachment));
                 }
                 if post_snapshot_mode == PostSnapshotMode::Semantic {
-                    let accessibility = host
-                        .session
-                        .accessibility_snapshot(post_snapshot_max_nodes, post_snapshot_max_depth)
-                        .await;
+                    let accessibility = timed(
+                        Phase::PostObservation,
+                        host.session.accessibility_snapshot(
+                            post_snapshot_max_nodes,
+                            post_snapshot_max_depth,
+                        ),
+                    )
+                    .await;
                     let accessibility = host.finish_observation_sensitive_attempt(accessibility);
                     drop(input_turn);
                     return match accessibility {
@@ -1940,13 +1927,19 @@ async fn handle_request_inner(
                         }
                     };
                 }
-                let screenshot = if host.observation_mode == TaskObservationMode::PixelsOnly {
-                    host.session.screenshot_pixels_only().await
-                } else {
-                    host.session
-                        .screenshot_with_bounds(post_snapshot_max_nodes, post_snapshot_max_depth)
-                        .await
-                };
+                let screenshot = timed(Phase::PostObservation, async {
+                    if host.observation_mode == TaskObservationMode::PixelsOnly {
+                        host.session.screenshot_pixels_only().await
+                    } else {
+                        host.session
+                            .screenshot_with_bounds(
+                                post_snapshot_max_nodes,
+                                post_snapshot_max_depth,
+                            )
+                            .await
+                    }
+                })
+                .await;
                 let screenshot = host.finish_observation_sensitive_attempt(screenshot);
                 drop(input_turn);
                 return match screenshot {
@@ -2192,7 +2185,7 @@ async fn handle_request_inner(
         }
         Request::StopSession { session_id } => {
             let mut host = take_connection_session(sessions, &session_id)?;
-            let result = host.session.stop().await?;
+            let result = timed(Phase::SessionCleanup, host.session.stop()).await?;
             Ok((session_stopped_response(&session_id, result), None))
         }
     }
