@@ -3,6 +3,37 @@ use serde_json::json;
 
 use crate::failure_output::{OVERLAY_EXCLUSION_MESSAGE, PUBLIC_FAILURE_MESSAGE, fatal_error_value};
 
+#[rstest]
+fn incomplete_window_discovery_has_a_structured_non_absence_failure() {
+    let error = dcc_cua_core::ComputerUseError::new(
+        dcc_cua_core::ComputerUseErrorCode::TargetUnavailable,
+        "private arbitrary error",
+    )
+    .with_details(dcc_cua_core::ComputerUseErrorDetails {
+        window_inventory: Some(dcc_cua_core::ComputerUseWindowInventoryDiagnostic {
+            complete: false,
+            reason: "EnumWindows: os error 5".into(),
+            partial_candidates: vec![dcc_cua_core::ComputerUseWindowInventoryCandidate {
+                process_id: Some(42),
+                window_handle: 7,
+            }],
+        }),
+        ..Default::default()
+    });
+    let value = fatal_error_value(&error);
+    assert_eq!(value["error"]["code"], "window_discovery_unknown");
+    assert_eq!(
+        value["error"]["details"]["window_inventory"]["complete"],
+        false
+    );
+    assert_eq!(
+        value["error"]["details"]["window_inventory"]["partial_candidates"][0]["process_id"],
+        42
+    );
+    assert_eq!(value["error"]["details"]["automatic_relaunch"], false);
+    assert!(!value.to_string().contains("private arbitrary error"));
+}
+
 use super::*;
 
 #[rstest]

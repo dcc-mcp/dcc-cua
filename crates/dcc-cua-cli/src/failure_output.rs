@@ -76,6 +76,17 @@ pub(super) fn fatal_error_value(error: &(dyn std::error::Error + 'static)) -> Va
         });
     }
     if let Some(error) = error.downcast_ref::<ComputerUseError>() {
+        if let Some(inventory) = error
+            .details
+            .as_ref()
+            .and_then(|details| details.window_inventory.as_ref())
+        {
+            return json!({"success":false,"error":{
+                "code":"window_discovery_unknown",
+                "message":"Window discovery is incomplete or incompatible with the executor desktop; an empty result does not prove application absence.",
+                "details":{"window_inventory":inventory,"automatic_relaunch":false,"retry_safe":false}
+            }});
+        }
         if error.code == ComputerUseErrorCode::OverlayExclusionUnavailable {
             return overlay_exclusion_failure();
         }

@@ -182,6 +182,10 @@ pub struct ComputerUseWindowQuery {
 }
 
 impl ComputerUseWindowQuery {
+    /// Apply selectors without treating unresolved potentially matching metadata as absence.
+    pub fn filter_inventory(&self, rows: Vec<Value>) -> ComputerUseResult<Vec<Value>> {
+        crate::window_target::filter_inventory(self, rows)
+    }
     pub fn validate_selectors(&self) -> ComputerUseResult<()> {
         if self.app.as_deref().is_some_and(|value| value.is_empty())
             || self
@@ -225,13 +229,10 @@ impl ComputerUseWindowQuery {
 
     #[must_use]
     pub fn matches_window(&self, window: &Value) -> bool {
-        self.app.as_deref().is_none_or(|app| {
-            window["app_name"]
-                .as_str()
-                .is_some_and(|name| name.eq_ignore_ascii_case(app))
-        }) && self
-            .process_id
-            .is_none_or(|pid| window["pid"] == json!(pid))
+        self.matches_window_app(window)
+            && self
+                .process_id
+                .is_none_or(|pid| window["pid"] == json!(pid))
             && self
                 .window_handle
                 .is_none_or(|handle| window["window_id"] == json!(handle))
@@ -239,6 +240,24 @@ impl ComputerUseWindowQuery {
                 .window_title
                 .as_deref()
                 .is_none_or(|title| window["title"].as_str() == Some(title))
+    }
+
+    pub(crate) fn matches_window_app(&self, window: &Value) -> bool {
+        self.app.as_deref().is_none_or(|app| {
+            window["app_name"]
+                .as_str()
+                .filter(|name| !name.is_empty())
+                .is_some_and(|name| {
+                    name.eq_ignore_ascii_case(app)
+                        || (window["backend"] == "windows-native-window-inventory"
+                            && name
+                                .to_ascii_lowercase()
+                                .strip_suffix(".exe")
+                                .is_some_and(|stem| {
+                                    !stem.is_empty() && stem.eq_ignore_ascii_case(app)
+                                }))
+                })
+        })
     }
 }
 
@@ -588,8 +607,25 @@ pub enum ComputerUseErrorCode {
     ForegroundActivationRefused,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ComputerUseWindowInventoryCandidate {
+    pub process_id: Option<u32>,
+    pub window_handle: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ComputerUseWindowInventoryDiagnostic {
+    pub complete: bool,
+    /// Native API/error context, without titles or executable paths.
+    pub reason: String,
+    pub partial_candidates: Vec<ComputerUseWindowInventoryCandidate>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ComputerUseErrorDetails {
+    /// Incomplete discovery candidates are diagnostic only, never target authority.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_inventory: Option<ComputerUseWindowInventoryDiagnostic>,
     /// Measurements retained from the rejected native fence; never input authority.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub native_input_fence:
