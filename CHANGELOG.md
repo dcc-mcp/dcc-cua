@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.19.0](https://github.com/dcc-mcp/dcc-cua/compare/v1.18.0...v1.19.0) (2026-11-08)
+
+
+### Features
+
+* **host:** add opt-in request phase timing ([dd23e0d](https://github.com/dcc-mcp/dcc-cua/commit/dd23e0dc3de8edab9c2354cf5d4db5393a7d0313))
+
 ## [1.18.0](https://github.com/dcc-mcp/dcc-cua/compare/v1.17.0...v1.18.0) (2026-11-06)
 
 
