@@ -128,6 +128,7 @@ function tabResponse(value: unknown): TabResponse {
 
 export default defineBackground(() => {
   let nativePort: Browser.runtime.Port | null = null;
+  let nativePortTabId: number | null = null;
   let nativePortGeneration = 0;
   let nativeHandshakeComplete = false;
   let requestQueue: Promise<void> = Promise.resolve();
@@ -220,6 +221,7 @@ export default defineBackground(() => {
     if (nativePort !== port) return;
     const generation = nativePortGeneration;
     nativePort = null;
+    nativePortTabId = null;
     nativeHandshakeComplete = false;
     void updatePairing(async () => {
       if (nativePortGeneration !== generation) return;
@@ -235,6 +237,7 @@ export default defineBackground(() => {
     const previous = nativePort;
     const port = browser.runtime.connectNative(NATIVE_HOST);
     nativePort = port;
+    nativePortTabId = pairing.tab_id;
     nativePortGeneration += 1;
     previous?.disconnect();
     nativeHandshakeComplete = false;
@@ -249,8 +252,11 @@ export default defineBackground(() => {
             if (!ack.capabilities.includes("task_owned_pairing_v1")) {
               throw new Error("native host upgrade required for task-owned pairing");
             }
-            nativeHandshakeComplete = true;
-            await setStatus("native_compatible");
+            await updatePairing(async () => {
+              if (nativePort !== port) return;
+              nativeHandshakeComplete = true;
+              await setStatus("native_compatible");
+            });
             return;
           }
           await handleNativeMessage(message, port);
@@ -307,6 +313,7 @@ export default defineBackground(() => {
               if (nativePort !== port) throw new Error("pairing replaced");
               await pairings.requireMatch(request);
               await pairings.clear();
+              nativePortTabId = null;
               await setStatus("unpaired");
             });
           },
@@ -345,23 +352,41 @@ export default defineBackground(() => {
     void pairTab(tab).catch(() => setStatus("pairing_failed"));
   });
 
+  function invalidateNativePortForTab(tabId: number): void {
+    if (nativePortTabId === tabId) {
+      const port = nativePort;
+      nativePort = null;
+      nativePortTabId = null;
+      nativeHandshakeComplete = false;
+      nativePortGeneration += 1;
+      try {
+        port?.disconnect();
+      } catch {
+        // Pairing cleanup must still run if the native port is already closed.
+      }
+    }
+  }
+
+  function clearTabPairing(tabId: number): void {
+    invalidateNativePortForTab(tabId);
+    void updatePairing(async () => {
+      if (await pairings.clearIfTab(tabId)) {
+        // A pairing may have been saved while this cleanup was queued.
+        invalidateNativePortForTab(tabId);
+        await setStatus("unpaired");
+      }
+    }).catch(() => {});
+  }
+
   browser.tabs.onUpdated.addListener((tabId, changeInfo) => {
     if (changeInfo.status !== "loading") return;
     contentScripts.invalidate(tabId);
-    void pairings.clearIfTab(tabId).then(async (cleared) => {
-      if (cleared) {
-        await setStatus("unpaired");
-      }
-    });
+    clearTabPairing(tabId);
   });
 
   browser.tabs.onRemoved.addListener((tabId) => {
     contentScripts.remove(tabId);
-    void pairings.clearIfTab(tabId).then(async (cleared) => {
-      if (cleared) {
-        await setStatus("unpaired");
-      }
-    });
+    clearTabPairing(tabId);
   });
 
   browser.storage.onChanged.addListener((changes, areaName) => {
