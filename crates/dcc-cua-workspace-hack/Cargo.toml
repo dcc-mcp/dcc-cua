@@ -23,12 +23,12 @@ aho-corasick = { version = "1" }
 bytemuck = { version = "1", default-features = false, features = ["aarch64_simd", "extern_crate_alloc"] }
 camino = { version = "1", default-features = false, features = ["serde1"] }
 chacha20 = { version = "0.10", default-features = false, features = ["rng", "xchacha", "zeroize"] }
-cua-driver-core = { git = "https://github.com/loonghao/cua.git", rev = "05f43bda479d01aee512a0c092fb064ce1a330bd" }
+cua-driver-core = { git = "https://github.com/loonghao/cua.git", rev = "28ddc93bc84ef8d91e591af625adc9ed2d0d608b" }
 digest = { version = "0.10", features = ["mac", "std"] }
 flate2 = { version = "1", features = ["zlib-rs"] }
 futures-core = { version = "0.3" }
 futures-util = { version = "0.3", features = ["io", "sink"] }
-getrandom-9fbad63c4bcf4a8f = { package = "getrandom", version = "0.4", default-features = false, features = ["std", "sys_rng"] }
+getrandom = { version = "0.4", default-features = false, features = ["std", "sys_rng"] }
 hashbrown = { version = "0.17" }
 idna = { version = "1" }
 indexmap = { version = "2", features = ["serde"] }
@@ -73,24 +73,20 @@ toml_parser = { version = "1" }
 winnow = { version = "1" }
 
 [target.x86_64-unknown-linux-gnu.dependencies]
-byteorder = { version = "1" }
 crossbeam-utils = { version = "0.8", default-features = false, features = ["std"] }
-crypto-common = { version = "0.2", default-features = false, features = ["getrandom"] }
+cua-driver-core = { git = "https://github.com/loonghao/cua.git", rev = "28ddc93bc84ef8d91e591af625adc9ed2d0d608b", default-features = false, features = ["keyring"] }
 futures-io = { version = "0.3" }
 futures-sink = { version = "0.3" }
-getrandom-6f8ce4dd05d13bba = { package = "getrandom", version = "0.2", default-features = false, features = ["std"] }
 hyper-rustls = { version = "0.27", default-features = false, features = ["aws-lc-rs", "http1", "http2", "tls12"] }
 ipnet = { version = "2" }
 keyring = { version = "4" }
 libc = { version = "0.2", features = ["extra_traits"] }
 linux-raw-sys = { version = "0.12", default-features = false, features = ["auxvec", "elf", "errno", "general", "if_ether", "ioctl", "net", "netlink", "no_std", "prctl", "system", "xdp"] }
-miniz_oxide = { version = "0.8", features = ["simd"] }
 num = { version = "0.4" }
 proc-macro2 = { version = "1" }
 quote = { version = "1" }
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "http2", "json", "rustls", "rustls-no-provider"] }
 rustix = { version = "1", features = ["event", "fs", "net", "pipe", "process", "system", "time"] }
-simd-adler32 = { version = "0.3" }
 slab = { version = "0.4" }
 smallvec = { version = "1", default-features = false, features = ["const_new", "union"] }
 syn-f595c2ba2a3f28df = { package = "syn", version = "2", features = ["extra-traits", "full"] }
@@ -186,7 +182,7 @@ windows-sys = { version = "0.61", features = ["Wdk_Foundation", "Wdk_Storage_Fil
 zeroize = { version = "1", features = ["derive"] }
 
 [target.x86_64-pc-windows-msvc.build-dependencies]
-getrandom-9fbad63c4bcf4a8f = { package = "getrandom", version = "0.4", default-features = false, features = ["std"] }
+getrandom = { version = "0.4", default-features = false, features = ["std"] }
 windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem", "Win32_System_Console", "Win32_System_SystemInformation"] }
 
 ### END HAKARI SECTION

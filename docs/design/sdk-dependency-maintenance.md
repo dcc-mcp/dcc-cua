@@ -7,6 +7,27 @@ this contract with `scripts/test_sdk_dependency_contract.py`.
 
 ## Current source candidate
 
+The Driver 0.47.11 compatibility candidate is
+`loonghao/cua@28ddc93bc84ef8d91e591af625adc9ed2d0d608b`, proposed in
+`loonghao/cua#13`. It merges the existing 0.38 compatibility source below,
+official Try CUA main `f9a2768c3d7eda97dc9a6e462415759e84d8a61e`, and the
+fork's main `c8207ad57b067b9bec2fb2905b85e6330cbd74b0`. Its upstream Driver
+workspace declares 0.47.11; its installer bookkeeping remains 0.47.10.
+
+The targeted lock update retains the 614 existing registry package identities
+and checksums and adds `wayland-protocols-plasma`, `xkbcommon`, and `xkeysym`.
+All ten SDK packages resolve to the single candidate revision. The preceding
+candidate `0648502320b473f4a9bd5d75cc3942120db6adcf` passed a Windows
+workspace/all-targets compile check with Rust 1.97.1; its SDK browser mock,
+Windows setup, consent and process-selection tests also passed. The current
+revision passed Windows workspace/all-targets strict Clippy, ten pure browser
+boundary cases, formatting, dependency/layout tests, and Hakari drift checks.
+These checks do not
+establish macOS behavior, complete upstream CI, an independent review, native
+acceptance, or a fix for the Intel macOS GUI E2E failure in DCC-CUA #400.
+
+## Previous Driver 0.38 source and validation
+
 - Official Driver release: [cua-driver-rs-v0.38.0](https://github.com/trycua/cua/releases/tag/cua-driver-rs-v0.38.0),
   immutable commit `trycua/cua@85e2b1318bd77ccf3cfa88ccdf875a4bb7eaed19`.
 - Compatibility source: `loonghao/cua@05f43bda479d01aee512a0c092fb064ce1a330bd`,
