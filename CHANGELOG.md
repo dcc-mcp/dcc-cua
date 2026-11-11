@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.19.1](https://github.com/dcc-mcp/dcc-cua/compare/v1.19.0...v1.19.1) (2026-11-11)
+
+
+### Bug Fixes
+
+* **cli:** guide recovery for unknown command completion ([9986a55](https://github.com/dcc-mcp/dcc-cua/commit/9986a55ac36016b5e207a6db8565c84d7edb8fc1))
+
 ## [1.19.0](https://github.com/dcc-mcp/dcc-cua/compare/v1.18.0...v1.19.0) (2026-11-08)
 
 
