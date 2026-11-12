@@ -8,6 +8,22 @@ use crate::live_observation::{NativePublicationCheck, NativePublicationPhase};
 use dcc_cua_showcase::{FrameCaptureProvenance, NativeFrameProvenance};
 
 impl ComputerUseSession {
+    /// Constructor-owned task fence; never accepted from Host request payloads.
+    pub fn set_recording_authorization(
+        &mut self,
+        authorization: Arc<dcc_cua_showcase::RecordingAuthorization>,
+    ) {
+        self.recording_authorization = Some(authorization);
+    }
+
+    /// Only a constructor-validated task lease supplies this immutable source.
+    pub fn set_recording_audio_grant(
+        &mut self,
+        grant: dcc_cua_protocol::recording_audio::ProcessAudioGrant,
+    ) {
+        self.recording_audio_grant = Some(grant);
+    }
+
     pub(super) fn uses_native_video_recording(&self) -> bool {
         #[cfg(any(windows, test))]
         return self.pixel_observation_route == Some(PixelObservationRoute::ExplicitPixelsOnly);
