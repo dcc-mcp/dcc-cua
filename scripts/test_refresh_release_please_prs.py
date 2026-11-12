@@ -338,14 +338,23 @@ raise SystemExit(64)
 
     def test_mismatched_fetched_main_fails_closed_before_release_mutation(self) -> None:
         self._shallow_detached_checkout(self.base_commit)
-        advanced_main = self._advance_main()
+        orphan = self.root / "orphan"
+        self._git(self.root, "init", "--initial-branch=main", str(orphan))
+        self._git(orphan, "config", "user.name", "Fixture Author")
+        self._git(orphan, "config", "user.email", "fixture@example.invalid")
+        (orphan / "divergent.txt").write_text("unrelated\n", encoding="utf-8")
+        self._git(orphan, "add", "divergent.txt")
+        self._git(orphan, "commit", "-m", "test: unrelated main")
+        divergent_main = self._git(orphan, "rev-parse", "HEAD").stdout.strip()
+        self._git(orphan, "remote", "add", "origin", self.origin.as_uri())
+        self._git(orphan, "push", "--force", "origin", "HEAD:main")
 
         result = self._run_refresh(self._release_pull_request())
 
         self.assertNotEqual(result.returncode, 0)
         combined = _normalize_diagnostic(result.stdout + result.stderr)
         self.assertIn(self.base_commit, combined)
-        self.assertIn(advanced_main, combined)
+        self.assertIn(divergent_main, combined)
         self.assertIn("does not match expected base", combined)
         self.assertEqual(self._remote_release_head(), self.release_head)
         commands = self._traced_git_commands()
@@ -359,6 +368,59 @@ raise SystemExit(64)
         pushes = [
             command for command in commands if len(command) > 1 and command[1] == "push"
         ]
+        self.assertEqual(release_fetches, [])
+        self.assertEqual(pushes, [])
+
+    def test_shallow_history_is_completed_before_ancestry_decision(self) -> None:
+        self._shallow_detached_checkout(self.base_commit)
+        advanced_main = self._advance_main()
+        self._git(
+            self.checkout,
+            "fetch",
+            "--no-tags",
+            "--depth=1",
+            "origin",
+            f"+refs/heads/main:{advanced_main}",
+        )
+        shallow = self._git(
+            self.checkout, "rev-parse", "--is-shallow-repository"
+        ).stdout.strip()
+        self.assertEqual(shallow, "true")
+        ancestors = self._git(
+            self.checkout, "merge-base", "--is-ancestor", self.base_commit, advanced_main,
+            check=False,
+        )
+        self.assertEqual(ancestors.returncode, 1)
+        self._git(
+            self.checkout, "fetch", "--no-tags", "--deepen=2147483647", "origin", self.base_commit
+        )
+        ancestors = self._git(
+            self.checkout, "merge-base", "--is-ancestor", self.base_commit, advanced_main,
+            check=False,
+        )
+        self.assertEqual(ancestors.returncode, 0)
+
+    def test_advanced_main_descendant_skips_refresh_without_release_mutation(self) -> None:
+        self._shallow_detached_checkout(self.base_commit)
+        advanced_main = self._advance_main()
+
+        result = self._run_refresh(self._release_pull_request())
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        combined = _normalize_diagnostic(result.stdout + result.stderr)
+        self.assertIn(self.base_commit, combined)
+        self.assertIn(advanced_main, combined)
+        self.assertIn("skipping dcc-cua-browser-extension release refresh", combined)
+        self.assertEqual(self._remote_release_head(), self.release_head)
+        commands = self._traced_git_commands()
+        release_fetches = [
+            command
+            for command in commands
+            if len(command) > 1
+            and command[1] == "fetch"
+            and any(EXTENSION_BRANCH in argument for argument in command[2:])
+        ]
+        pushes = [command for command in commands if len(command) > 1 and command[1] == "push"]
         self.assertEqual(release_fetches, [])
         self.assertEqual(pushes, [])
 

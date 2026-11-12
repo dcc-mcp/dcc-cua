@@ -52,7 +52,7 @@ const STEP_ALLOWLIST: Record<string, string[]> = {
     "name:Validate release configuration",
     "uses:dtolnay/rust-toolchain",
     "run:cargo metadata --locked --no-deps --format-version 1",
-    "run:python -B -m unittest scripts.test_release_workflow scripts.test_release_integrity scripts.test_verify_release_assets scripts.test_verify_final_archive scripts.test_verify_uploaded_artifact scripts.test_select_ci_source_sha scripts.test_refresh_release_please_prs scripts.test_resolve_release_recovery scripts.test_publish_verified_release scripts.test_release_identity_preflight",
+    "run:python -B -m unittest scripts.test_release_workflow scripts.test_release_integrity scripts.test_verify_release_assets scripts.test_verify_final_archive scripts.test_verify_uploaded_artifact scripts.test_download_uploaded_artifact scripts.test_select_ci_source_sha scripts.test_refresh_release_please_prs scripts.test_resolve_release_recovery scripts.test_publish_verified_release scripts.test_release_identity_preflight",
   ],
   "release-please": [
     "uses:actions/checkout",
@@ -244,7 +244,7 @@ const EXTENSION_PUBLICATION_STATEMENTS = [
 const RUN_STATEMENT_DIGESTS: Record<string, string> = {
   "validate|Validate release configuration": "419959fd2026fb048c91ad40765ae62a41c27b43bd08ea0733e5af5facc74a5e",
   "validate|#3": "007b41ff968a7d8b2e96752351831db1ab9ff3248cf5215b5fa2e6b19ed1234e",
-  "validate|#4": "bdedc6bb29cc065a0c831c0df9235409ca0f2f58630244c7ca2f1c257e6dc563",
+  "validate|#4": "caf85c5e10307da4fbc6cae0086c222bb51081c5b81b64f8400b15ac173bf0c8",
   "release-please|Resolve immutable release recovery": "3f6abfb9d7ee8be152c7c8c89f0b4af58126dd4d57eafbb635b78c6ffb9a9650",
   "release-please|Refuse pre-existing release identities": "a35d677f61b0df0e0489e4e5fe46b5f7caeed812bbe4273b280567e8f2ec2eb9",
   "release-please|Reuse already published release identities": "66451b7afa5be4d35678a7462e2a9ec5d98d4f055efa2ebad407e30c94285a00",
@@ -255,7 +255,7 @@ const RUN_STATEMENT_DIGESTS: Record<string, string> = {
   "build|#5": "4e76b39a502964fdbcae32ff23ab3ad042dda3cd73ac0a7852d44dda0605b231",
   "build|#6": "b90711ea4af19f26b51ca5d7ca11dcbf2c9597d75e26d06658253999a73567e8",
   "build|Package dcc-cua": "d0be86de777d9e05f0503cf14ef50ece1bc92bc6d69a52a9a4cfb6edcece0d25",
-  "build|Download exact native artifact by ID": "79dbc3bff6bd9bdc05cb84145af809f49373898cd92ac375504596c735b2d97b",
+  "build|Download exact native artifact by ID": "d40f6e023fc4abbe98b497cd076ec4b0b6c7d455cf6bee9f655b9d5862d4c89c",
   "build|Verify downloaded immutable native artifact": "e9d378c66d4f3241118c5c5a2b4d6bbf49bd86befa724e65c4142291c8ce0805",
   "consolidate-native|Verify native build artifact set": "3b6fc5ffceca3e1a606ee43bb9ab338a356a0a2c0f62242ffe259c63db5cf5b6",
   "consolidate-native|Download and verify native build artifacts": "68ac24904ac71c8f7f6044ac7abea1ec7468b4ee3656227a49078be748db3721",
@@ -640,14 +640,23 @@ function validateReleaseWorkflow(source: string): void {
     nativeExactDownload.run ?? "",
     /mkdir -p "\$artifact_download_root"/,
   );
-  assert.match(
-    nativeExactDownload.run ?? "",
-    /actions\/artifacts\/\$\{ARTIFACT_ID\}"/,
+  assertExecutableInvocation(
+    nativeExactDownload,
+    "python -B scripts/download_uploaded_artifact.py \\",
   );
-  assert.match(
-    nativeExactDownload.run ?? "",
-    /actions\/artifacts\/\$\{ARTIFACT_ID\}\/zip"/,
-  );
+  for (const argument of [
+    '--artifact-id "$ARTIFACT_ID"',
+    '--artifact-digest "$ARTIFACT_DIGEST"',
+    '--run-id "$GITHUB_RUN_ID"',
+    '--head-sha "$EXPECTED_HEAD_SHA"',
+    '--repository-id "$EXPECTED_REPOSITORY_ID"',
+    '--head-repository-id "$EXPECTED_HEAD_REPOSITORY_ID"',
+  ]) {
+    assert.ok((nativeExactDownload.run ?? "").includes(argument));
+  }
+  assert.equal(nativeExactDownload.env?.EXPECTED_HEAD_SHA, "${{ github.sha }}");
+  assert.equal(nativeExactDownload.env?.EXPECTED_REPOSITORY_ID, "${{ github.repository_id }}");
+  assert.equal(nativeExactDownload.env?.EXPECTED_HEAD_REPOSITORY_ID, "${{ github.repository_id }}");
   const nativeExactVerify = namedStep(
     build,
     "Verify downloaded immutable native artifact",
@@ -967,7 +976,7 @@ function assertAdversarialMutations(source: string): void {
   assert.throws(() => validateReleaseWorkflow(moved));
 
   const validateCommand =
-    "python -B -m unittest scripts.test_release_workflow scripts.test_release_integrity scripts.test_verify_release_assets scripts.test_verify_final_archive scripts.test_verify_uploaded_artifact scripts.test_select_ci_source_sha scripts.test_refresh_release_please_prs scripts.test_resolve_release_recovery scripts.test_publish_verified_release scripts.test_release_identity_preflight";
+    "python -B -m unittest scripts.test_release_workflow scripts.test_release_integrity scripts.test_verify_release_assets scripts.test_verify_final_archive scripts.test_verify_uploaded_artifact scripts.test_download_uploaded_artifact scripts.test_select_ci_source_sha scripts.test_refresh_release_please_prs scripts.test_resolve_release_recovery scripts.test_publish_verified_release scripts.test_release_identity_preflight";
   const weakenedValidateCommand =
     "python -B -m unittest scripts.test_release_workflow scripts.test_release_integrity scripts.test_verify_release_assets scripts.test_verify_final_archive";
   assert.throws(() =>

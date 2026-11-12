@@ -211,6 +211,7 @@ EXPECTED_POLICY_STEPS = (
     {"run": "python -B -m unittest scripts.test_verify_release_assets"},
     {"run": "python -B -m unittest scripts.test_verify_final_archive"},
     {"run": "python -B -m unittest scripts.test_verify_uploaded_artifact"},
+    {"run": "python -B -m unittest scripts.test_download_uploaded_artifact"},
     {"run": "python -B -m unittest scripts.test_select_ci_source_sha"},
     {"run": "python -B -m unittest scripts.test_verify_ci_source_integrity"},
     {"run": "python -B -m unittest scripts.test_release_integrity scripts.test_resolve_release_recovery scripts.test_publish_verified_release scripts.test_release_identity_preflight scripts.test_resume_native_publication"},
