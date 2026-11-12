@@ -308,11 +308,16 @@ async fn owned_browser_start_failure_reports_only_exact_session_cleanup_acknowle
 }
 
 #[rstest]
+#[case("browser_consent_required")]
+#[case("browser_binding_ambiguous")]
+#[case("browser_wrong_target_refused")]
 #[tokio::test(start_paused = true)]
-async fn owned_browser_state_refusal_preserves_reason_without_retry_or_private_content() {
+async fn owned_browser_state_refusal_preserves_reason_without_retry_or_private_content(
+    #[case] code: &str,
+) {
     let channel = OwnedBrowserRemoteChannel {
         browser_state: Some(json!({"status":"refused", "refusal":{
-            "code":"browser_consent_required", "message":"PRIVATE_PROFILE_PATH"
+            "code":code, "message":"PRIVATE_PROFILE_PATH"
         }})),
         ..Default::default()
     };
@@ -334,7 +339,7 @@ async fn owned_browser_state_refusal_preserves_reason_without_retry_or_private_c
     .err()
     .expect("a refusal cannot bind the browser");
     assert_eq!(error.code, ComputerUseErrorCode::BrowserRefused);
-    assert_eq!(error.message, "browser_consent_required");
+    assert_eq!(error.message, code);
     assert_eq!(
         calls
             .lock()

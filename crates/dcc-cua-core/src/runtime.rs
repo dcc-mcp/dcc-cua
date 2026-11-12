@@ -1284,6 +1284,8 @@ fn owned_browser_binding_failure(state: &Value) -> Option<&'static str> {
             Some("browser_consent_revoked") => "browser_consent_revoked",
             Some("browser_route_unavailable") => "browser_route_unavailable",
             Some("browser_endpoint_owner_mismatch") => "browser_endpoint_owner_mismatch",
+            Some("browser_binding_ambiguous") => "browser_binding_ambiguous",
+            Some("browser_wrong_target_refused") => "browser_wrong_target_refused",
             Some("browser_requires_setup") => "browser_requires_setup",
             _ => "browser_state_refused",
         });
