@@ -39,7 +39,7 @@ RELEASE_PLEASE_ACTION = (
     "googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7"
 )
 CI_EXECUTABLE_SURFACE_SHA256 = (
-    "b52a952160b83e9a086749d0e02bd59600f4419a32aabe6bbd694df0f3cfdcf0"
+    "49f9a8a477c28d865c4e71678148259c2f326947c83681cc858c27944b36c340"
 )
 
 
@@ -895,8 +895,8 @@ class ReleaseWorkflowTests(unittest.TestCase):
     def test_pr_ci_final_archive_contract_rejects_name_lookup(self):
         ci = CI_WORKFLOW.read_text(encoding="utf-8")
         mutated = ci.replace(
-            'actions/artifacts/${ARTIFACT_ID}/zip"',
-            'actions/artifacts?name=dcc-cua-pr-native/zip"',
+            '--artifact-id "$ARTIFACT_ID"',
+            '--artifact-name-search "dcc-cua-pr-native"',
             1,
         )
         with self.assertRaises(AssertionError):
@@ -972,18 +972,24 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertIn(
             'artifact_bundle="$artifact_download_root/artifact.zip"', download_step
         )
-        self.assertIn(
-            'gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${ARTIFACT_ID}"',
-            download_step,
-        )
-        self.assertIn(
-            'gh api "repos/${GITHUB_REPOSITORY}" > "$artifact_repository_metadata"',
-            download_step,
-        )
-        self.assertIn(
-            'gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${ARTIFACT_ID}/zip"',
-            download_step,
-        )
+        self.assertIn("python -B scripts/download_uploaded_artifact.py \\", download_step)
+        for argument in (
+            '--repository "$GITHUB_REPOSITORY"',
+            '--root "$artifact_download_root"',
+            '--artifact-id "$ARTIFACT_ID"',
+            '--artifact-digest "$ARTIFACT_DIGEST"',
+            '--run-id "$GITHUB_RUN_ID"',
+            '--repository-id "$EXPECTED_REPOSITORY_ID"',
+            '--head-repository-id "$EXPECTED_HEAD_REPOSITORY_ID"',
+        ):
+            self.assertIn(argument, download_step)
+        name_prefix = "dcc-cua-native" if expected_head_sha else "dcc-cua-pr-native"
+        self.assertIn(f'--artifact-name "{name_prefix}-${{{{ matrix.platform }}}}"', download_step)
+        head_var = "EXPECTED_HEAD_SHA" if expected_head_sha else "EXPECTED_SOURCE_SHA"
+        self.assertIn(f'--head-sha "${head_var}"', download_step)
+        expected_head = expected_head_sha or "${{ steps.ci-source.outputs.sha }}"
+        self.assertIn(f"{head_var}: {expected_head}", download_step)
+        self.assertNotIn("gh api", download_step)
         self.assertNotIn("actions/download-artifact", download_step)
         self.assertNotIn("?name=", download_step)
 
@@ -1050,6 +1056,10 @@ class ReleaseWorkflowTests(unittest.TestCase):
             "upload-pr-native",
             None,
         )
+
+    def test_shared_artifact_readback_regressions_run_in_both_pipelines(self):
+        for workflow in (CI_WORKFLOW, WORKFLOW):
+            self.assertIn("scripts.test_download_uploaded_artifact", workflow.read_text(encoding="utf-8"))
 
     def test_marketplace_uses_a_bounded_installable_plugin_directory(self):
         marketplace = json.loads(MARKETPLACE.read_text(encoding="utf-8"))

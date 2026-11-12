@@ -151,6 +151,7 @@ jobs:
       - run: python -B -m unittest scripts.test_verify_release_assets
       - run: python -B -m unittest scripts.test_verify_final_archive
       - run: python -B -m unittest scripts.test_verify_uploaded_artifact
+      - run: python -B -m unittest scripts.test_download_uploaded_artifact
       - run: python -B -m unittest scripts.test_select_ci_source_sha
       - run: python -B -m unittest scripts.test_verify_ci_source_integrity
       - run: python -B -m unittest scripts.test_release_integrity scripts.test_resolve_release_recovery scripts.test_publish_verified_release scripts.test_release_identity_preflight scripts.test_resume_native_publication
@@ -450,6 +451,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           ARTIFACT_ID: ${{ steps.upload-pr-native.outputs.artifact-id }}
           ARTIFACT_DIGEST: ${{ steps.upload-pr-native.outputs.artifact-digest }}
+          EXPECTED_SOURCE_SHA: ${{ steps.ci-source.outputs.sha }}
+          EXPECTED_REPOSITORY_ID: ${{ github.repository_id }}
+          EXPECTED_HEAD_REPOSITORY_ID: ${{ github.event.pull_request.head.repo.id || github.repository_id }}
         run: |
           set -euo pipefail
           case "$ARTIFACT_ID" in
@@ -463,9 +467,16 @@ jobs:
           artifact_metadata="$artifact_download_root/metadata.json"
           artifact_repository_metadata="$artifact_download_root/repository.json"
           artifact_bundle="$artifact_download_root/artifact.zip"
-          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${ARTIFACT_ID}" > "$artifact_metadata"
-          gh api "repos/${GITHUB_REPOSITORY}" > "$artifact_repository_metadata"
-          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${ARTIFACT_ID}/zip" > "$artifact_bundle"
+          python -B scripts/download_uploaded_artifact.py \
+            --repository "$GITHUB_REPOSITORY" \
+            --root "$artifact_download_root" \
+            --artifact-id "$ARTIFACT_ID" \
+            --artifact-name "dcc-cua-pr-native-${{ matrix.platform }}" \
+            --artifact-digest "$ARTIFACT_DIGEST" \
+            --run-id "$GITHUB_RUN_ID" \
+            --head-sha "$EXPECTED_SOURCE_SHA" \
+            --repository-id "$EXPECTED_REPOSITORY_ID" \
+            --head-repository-id "$EXPECTED_HEAD_REPOSITORY_ID"
           printf 'ARTIFACT_METADATA=%s\nARTIFACT_REPOSITORY_METADATA=%s\nARTIFACT_BUNDLE=%s\n' \
             "$artifact_metadata" "$artifact_repository_metadata" "$artifact_bundle" >> "$GITHUB_ENV"
       - name: Verify downloaded immutable native artifact
