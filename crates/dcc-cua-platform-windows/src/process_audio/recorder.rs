@@ -35,7 +35,12 @@ fn run_packet_loop<T>(
             return PacketLoopEnd::SourceFailed;
         }
         if matches!(received, Err(mpsc::RecvTimeoutError::Disconnected)) {
-            return if elapsed() >= max_duration && duration_stop_attested() {
+            // Only successful duration-stop attestation may account for the
+            // midpoint calibration's half-bracket plus 100ns quantization.
+            // No capture deadline is extended; ACK/exit/cleanup still gate finish.
+            let calibrated_elapsed = elapsed()
+                .saturating_add(MAX_EPOCH_CALIBRATION_BRACKET / 2 + Duration::from_nanos(100));
+            return if calibrated_elapsed >= max_duration && duration_stop_attested() {
                 PacketLoopEnd::Stopped
             } else {
                 PacketLoopEnd::SourceFailed
@@ -44,10 +49,12 @@ fn run_packet_loop<T>(
         if elapsed() >= max_duration {
             return PacketLoopEnd::Stopped;
         }
-        if let Ok(packet) = received
-            && ingest(packet).is_err()
-        {
-            return PacketLoopEnd::SourceFailed;
+        if let Ok(packet) = received {
+            match ingest(packet) {
+                Ok(()) => {}
+                Err(AudioLifecycleError::DurationExhausted) => return PacketLoopEnd::Stopped,
+                Err(_) => return PacketLoopEnd::SourceFailed,
+            }
         }
     }
     PacketLoopEnd::Stopped

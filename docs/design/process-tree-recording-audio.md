@@ -139,7 +139,12 @@ advancing frame index falsely rejected the second packet. Device position remain
 in diagnostics; it is not the admission clock for this virtual source.
 
 Packet ordering uses strictly increasing first-sample QPC timestamps and rejects
-overlap beyond one PCM frame of quantization at 48 kHz. A forward QPC interval is
+overlap beyond one PCM frame of quantization at 48 kHz.
+The session and AAC mux retain the same adjacent-packet tolerance in microseconds
+(one frame rounded up to 21 us), before converting to integer PCM indices. The
+mux clamps admitted overlapping indices forward without accumulating that clamp
+into a stricter source-timestamp fence; all captured frames remain bounded by the
+original duration/output ceilings. A forward QPC interval is
 retained on the shared media epoch, not interpreted as a documented glitch by
 itself. The existing mux preserves non-sampled intervals as explicitly generated
 zero PCM rather than splicing subsequent audio earlier. Receipts distinguish
@@ -149,6 +154,11 @@ silence or proof that no unflagged loss occurred. Later DATA_DISCONTINUITY, TIME
 invalid packet bounds and target/grant failures still terminate capture. Failure
 receipts retain the prior packet clock, current packet metadata, API stage/HRESULT
 and stream-stop result without retaining PCM or identifying unrelated devices.
+
+A successfully stopped source that delivered no packets finalizes the existing
+video without adding an AAC track or inventing PCM. Its codec receipt explicitly
+has `track_id=null`, zero captured/encoded frames and zero priming. Source faults,
+failed stop acknowledgements and unknown cleanup still prevent publication.
 
 Microsoft's [GetBuffer contract](https://learn.microsoft.com/en-us/windows/win32/api/audioclient/nf-audioclient-iaudiocaptureclient-getbuffer)
 defines the first-sample QPC output in 100 ns units and makes the device-position
@@ -193,11 +203,21 @@ deadline from an earlier authorization deadline, without extending either.
 At normal duration exhaustion the worker stops sampling and reports an explicit
 duration-stop result after successful stream shutdown. A closed packet channel
 counts as normal exhaustion only with that attestation, a still-valid grant and
-the parent's elapsed-duration check; final acknowledgement, exit and cleanup
+the parent's elapsed-duration check, allowing only the calibration half-bracket
+(at most 1 ms) plus 100 ns quantization. This does not extend sampling or grant
+deadlines; final acknowledgement, exit and cleanup
 checks remain mandatory. Authorization expiry and real stream faults still fail.
+If the parent clock expires while waiting for packet admission, the session
+returns a distinct normal-duration result without admitting more PCM. Invalid
+packets, output ceilings, identity failures and authorization loss remain errors.
 The bounded packet queue tolerates at most 20 ms of backpressure, releasing the
 authorization fence between attempts. Persistent stalls and disconnects fail;
 revocation prevents subsequent admission while the reader drains the stop result.
+
+Each new owned recording attempt starts with unknown-startup evidence after
+constructor resolution succeeds. It cannot reuse an earlier finalized receipt
+while cleanup is pending; previous completed artifacts stay at their original
+output paths. Constructor failure before ownership preserves the prior state.
 
 ### WGC source time and publication cost
 

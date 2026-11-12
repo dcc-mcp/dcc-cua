@@ -12,6 +12,9 @@ use crate::RecordingAuthorization;
 pub const PROCESS_AUDIO_SAMPLE_RATE: u32 = 48_000;
 pub const PROCESS_AUDIO_CHANNELS: usize = 2;
 pub const MAX_PROCESS_AUDIO_PACKET_SAMPLES: usize = 4_800;
+/// One PCM frame, rounded up only for the worker's microsecond timestamps.
+pub const PROCESS_AUDIO_TIMESTAMP_TOLERANCE_US: u64 =
+    1_000_000_u64.div_ceil(PROCESS_AUDIO_SAMPLE_RATE as u64);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum AudioLifecycleError {
@@ -25,6 +28,8 @@ pub enum AudioLifecycleError {
     Packet,
     #[error("process audio duration or output ceiling exhausted")]
     Budget,
+    #[error("process audio duration exhausted normally")]
+    DurationExhausted,
     #[error("process audio source failed or lost continuity")]
     Source,
     #[error("owned process audio cleanup has not been acknowledged")]
@@ -199,7 +204,7 @@ impl<S: ProcessAudioSource, M: ProcessAudioMux> ProcessAudioSession<S, M> {
         }
         let result = self.admit_packet(observed, pts_us, samples);
         if let Err(error) = result {
-            self.finish(Some(error));
+            self.finish((error != AudioLifecycleError::DurationExhausted).then_some(error));
         }
         result
     }
@@ -232,15 +237,18 @@ impl<S: ProcessAudioSource, M: ProcessAudioMux> ProcessAudioSession<S, M> {
             .checked_add(duration_us)
             .ok_or(AudioLifecycleError::Packet)?;
         if now < self.last_clock_us
-            || self
-                .last_packet_end_us
-                .is_some_and(|last| pts_us.saturating_add(21) < last)
+            || self.last_packet_end_us.is_some_and(|last| {
+                pts_us.saturating_add(PROCESS_AUDIO_TIMESTAMP_TOLERANCE_US) < last
+            })
         {
             return Err(AudioLifecycleError::Packet);
         }
         let ceiling = self.grant.max_duration_ms * 1000;
-        if now >= ceiling || end > ceiling {
+        if end > ceiling {
             return Err(AudioLifecycleError::Budget);
+        }
+        if now >= ceiling {
+            return Err(AudioLifecycleError::DurationExhausted);
         }
         let remaining = self
             .grant

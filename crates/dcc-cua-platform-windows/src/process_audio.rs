@@ -54,6 +54,7 @@ pub fn observe_process_audio_target(
 const START_TIMEOUT: Duration = Duration::from_secs(3);
 const STOP_GRACE: Duration = Duration::from_millis(500);
 const REAP_TIMEOUT: Duration = Duration::from_secs(1);
+const MAX_EPOCH_CALIBRATION_BRACKET: Duration = Duration::from_millis(2);
 
 fn deliver_packet<T>(
     packets: &mpsc::SyncSender<T>,
@@ -209,7 +210,7 @@ fn calibrate_epoch(
             return Err(AudioLifecycleError::Source);
         }
         let bracket = after.duration_since(before);
-        if bracket > Duration::from_millis(2) {
+        if bracket > MAX_EPOCH_CALIBRATION_BRACKET {
             continue;
         }
         let midpoint = before + bracket / 2;

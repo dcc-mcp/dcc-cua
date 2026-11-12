@@ -7,7 +7,7 @@ use rusty_aac::{AacEncoder, AacEncoderConfig};
 
 use crate::process_audio::{
     AudioLifecycleError, MAX_PROCESS_AUDIO_PACKET_SAMPLES, PROCESS_AUDIO_CHANNELS,
-    PROCESS_AUDIO_SAMPLE_RATE,
+    PROCESS_AUDIO_SAMPLE_RATE, PROCESS_AUDIO_TIMESTAMP_TOLERANCE_US,
 };
 
 /// Bounds the complete existing recording, including video, audio and MP4 headers.
@@ -82,6 +82,7 @@ pub struct AacTrackBuffer {
     gap_frames: u64,
     gap_count: u64,
     gap_examples: Vec<AudioTimelineGap>,
+    last_packet_end_us: Option<u64>,
 }
 
 /// A non-sampled interval retained as generated zero PCM, never claimed as
@@ -93,9 +94,10 @@ pub struct AudioTimelineGap {
     pub before_first_packet: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize)]
 pub struct AacTrackReceipt {
-    pub track_id: u32,
+    /// No AAC track is created when the successful source delivered no frames.
+    pub track_id: Option<u32>,
     pub input_frames: u64,
     pub encoded_samples: u64,
     pub encoded_bytes: u64,
@@ -120,6 +122,7 @@ impl AacTrackBuffer {
             gap_frames: 0,
             gap_count: 0,
             gap_examples: Vec::new(),
+            last_packet_end_us: None,
         })
     }
 
@@ -135,10 +138,20 @@ impl AacTrackBuffer {
         let start = u128::from(pts_us) * u128::from(PROCESS_AUDIO_SAMPLE_RATE) / 1_000_000;
         let current = self.samples.len() / PROCESS_AUDIO_CHANNELS;
         let start = usize::try_from(start).map_err(|_| AudioLifecycleError::Budget)?;
-        // Microsecond timestamp quantization may differ by one PCM frame.
-        if start.saturating_add(1) < current {
+        // Validate adjacent source times before rounding to PCM indices. The
+        // destination clamp must not accumulate into a stricter timestamp fence.
+        if self
+            .last_packet_end_us
+            .is_some_and(|last| pts_us.saturating_add(PROCESS_AUDIO_TIMESTAMP_TOLERANCE_US) < last)
+        {
             return Err(AudioLifecycleError::Packet);
         }
+        let packet_end_us = pts_us
+            .checked_add(
+                (samples.len() / PROCESS_AUDIO_CHANNELS) as u64 * 1_000_000
+                    / u64::from(PROCESS_AUDIO_SAMPLE_RATE),
+            )
+            .ok_or(AudioLifecycleError::Budget)?;
         let start = start.max(current);
         let end = start
             .checked_add(samples.len() / PROCESS_AUDIO_CHANNELS)
@@ -169,6 +182,7 @@ impl AacTrackBuffer {
         self.samples.resize(start * PROCESS_AUDIO_CHANNELS, 0);
         self.samples.extend_from_slice(samples);
         self.nonzero_samples += samples.iter().filter(|sample| **sample != 0).count() as u64;
+        self.last_packet_end_us = Some(packet_end_us);
         Ok(())
     }
 
@@ -179,7 +193,10 @@ impl AacTrackBuffer {
         writer: &mut Mp4Writer<BoundedRecordingOutput<W>>,
     ) -> Result<AacTrackReceipt, AudioLifecycleError> {
         if self.samples.is_empty() {
-            return Err(AudioLifecycleError::Packet);
+            // Normal zero-packet shutdown is evidence of no captured PCM,
+            // not fabricated silence or a source fault. The caller still ends
+            // and publishes its existing video track through the ordinary mux.
+            return Ok(AacTrackReceipt::default());
         }
         let input_frames = (self.samples.len() / PROCESS_AUDIO_CHANNELS) as u64;
         let mut encoder = AacEncoder::new(AacEncoderConfig::default());
@@ -237,7 +254,7 @@ impl AacTrackBuffer {
                 .map_err(|_| AudioLifecycleError::Writer)?;
         }
         Ok(AacTrackReceipt {
-            track_id: 2,
+            track_id: Some(2),
             input_frames,
             encoded_samples,
             encoded_bytes,

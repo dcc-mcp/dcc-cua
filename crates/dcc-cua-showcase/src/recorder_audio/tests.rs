@@ -10,6 +10,7 @@ struct Factory {
     fail: bool,
     unknown: bool,
     startup_error: Option<AudioLifecycleError>,
+    silent: bool,
 }
 struct Owner {
     ended: Option<Box<dyn Fn() + Send>>,
@@ -54,7 +55,9 @@ impl RecorderAudioFactory for Factory {
         let samples: Vec<i16> = (0..1920)
             .map(|index| if index % 48 < 24 { 12000 } else { -12000 })
             .collect();
-        buffer.push(50_000, &samples)?;
+        if !self.silent {
+            buffer.push(50_000, &samples)?;
+        }
         Ok(Box::new(Owner {
             ended: Some(ended),
             buffer: Some(buffer),
@@ -66,13 +69,16 @@ impl RecorderAudioFactory for Factory {
 }
 
 #[rstest]
-#[case(false, false)]
-#[case(true, false)]
-#[case(true, true)]
+#[case(false, false, false)]
+#[case(true, false, false)]
+#[case(true, true, false)]
+#[case(false, false, true)]
+#[case(true, false, true)]
 #[tokio::test]
 async fn existing_recorder_muxes_audio_and_never_publishes_failed_source_as_silent(
     #[case] fail: bool,
     #[case] unknown: bool,
+    #[case] silent: bool,
 ) {
     let directory =
         std::env::temp_dir().join(format!("dcc-cua-owned-audio-mux-{}", uuid::Uuid::new_v4()));
@@ -100,6 +106,7 @@ async fn existing_recorder_muxes_audio_and_never_publishes_failed_source_as_sile
         fail,
         unknown,
         startup_error: None,
+        silent,
     };
     let authority = Arc::new(RecordingAuthorization::new(u64::MAX));
     let recorder = ShowcaseRecorder::start_with_audio_outcome(
@@ -137,16 +144,21 @@ async fn existing_recorder_muxes_audio_and_never_publishes_failed_source_as_sile
         let state = result.unwrap();
         assert_eq!(state["finalized"], true);
         assert_eq!(state["audio"]["worker"]["native_capture"], false);
-        assert!(
-            state["audio"]["codec"]["nonzero_input_samples"]
-                .as_u64()
-                .unwrap()
-                > 0
-        );
+        if silent {
+            assert_eq!(state["audio"]["codec"]["input_frames"], 0);
+            assert_eq!(state["audio"]["codec"]["track_id"], serde_json::Value::Null);
+        } else {
+            assert!(
+                state["audio"]["codec"]["nonzero_input_samples"]
+                    .as_u64()
+                    .unwrap()
+                    > 0
+            );
+        }
         let file = std::fs::File::open(directory.join("showcase.mp4")).unwrap();
         let size = file.metadata().unwrap().len();
         let reader = mp4::Mp4Reader::read_header(file, size).unwrap();
-        assert_eq!(reader.tracks().len(), 2);
+        assert_eq!(reader.tracks().len(), if silent { 1 } else { 2 });
     }
     // Only this freshly UUID-created generated-file directory; no OS fixtures.
     std::fs::remove_dir_all(directory).unwrap();
@@ -169,6 +181,7 @@ fn generated_factory(startup_error: Option<AudioLifecycleError>) -> Factory {
         fail: false,
         unknown: false,
         startup_error,
+        silent: false,
     }
 }
 

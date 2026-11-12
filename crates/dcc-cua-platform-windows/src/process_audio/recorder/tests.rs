@@ -48,6 +48,36 @@ fn duration_timeout_is_a_controlled_stop_not_a_source_fault() {
 }
 
 #[rstest]
+#[case(9_000, true, true, PacketLoopEnd::Stopped)]
+#[case(9_999, true, true, PacketLoopEnd::Stopped)]
+#[case(8_999, true, true, PacketLoopEnd::SourceFailed)]
+#[case(9_999, false, true, PacketLoopEnd::SourceFailed)]
+#[case(9_999, true, false, PacketLoopEnd::SourceFailed)]
+fn attested_stop_accounts_only_for_the_bounded_epoch_calibration_skew(
+    #[case] elapsed_us: u64,
+    #[case] attested: bool,
+    #[case] authorized: bool,
+    #[case] expected: PacketLoopEnd,
+) {
+    let clock = Cell::new(Duration::ZERO);
+    assert_eq!(
+        run_packet_loop::<()>(
+            Duration::from_millis(10),
+            || false,
+            || {
+                clock.set(Duration::from_micros(elapsed_us));
+                Err(mpsc::RecvTimeoutError::Disconnected)
+            },
+            || authorized,
+            || clock.get(),
+            |_| panic!("no packet"),
+            || attested,
+        ),
+        expected
+    );
+}
+
+#[rstest]
 fn continuous_packets_cannot_avoid_the_duration_stop_or_be_admitted_after_it() {
     let calls = Cell::new(0);
     let ingested = Cell::new(0);
@@ -120,6 +150,9 @@ fn source_disconnect_is_not_reclassified_as_a_duration_stop() {
 #[rstest]
 #[case(AudioLifecycleError::Packet)]
 #[case(AudioLifecycleError::Source)]
+#[case(AudioLifecycleError::Budget)]
+#[case(AudioLifecycleError::Writer)]
+#[case(AudioLifecycleError::Authorization)]
 fn genuine_ingest_faults_remain_failures(#[case] error: AudioLifecycleError) {
     let outcome = run_packet_loop(
         Duration::from_millis(10),
@@ -131,6 +164,25 @@ fn genuine_ingest_faults_remain_failures(#[case] error: AudioLifecycleError) {
         || false,
     );
     assert_eq!(outcome, PacketLoopEnd::SourceFailed);
+}
+
+#[rstest]
+fn duration_exhausted_inside_ingest_stops_without_reading_another_packet() {
+    let reads = Cell::new(0);
+    let outcome = run_packet_loop(
+        Duration::from_millis(10),
+        || false,
+        || {
+            reads.set(reads.get() + 1);
+            Ok(())
+        },
+        || true,
+        || Duration::ZERO,
+        |_| Err(AudioLifecycleError::DurationExhausted),
+        || false,
+    );
+    assert_eq!(outcome, PacketLoopEnd::Stopped);
+    assert_eq!(reads.get(), 1);
 }
 
 #[rstest]

@@ -152,6 +152,82 @@ fn process_audio_normal_stop_joins_source_and_mux_exactly_once() {
 }
 
 #[rstest]
+fn elapsed_duration_during_packet_admission_is_a_normal_stop_without_a_mux_write() {
+    let (s, m, c) = ports();
+    let clock = Arc::new(AtomicU64::new(0));
+    let mut session = start(s, m, grant(), auth(), clock.clone()).unwrap();
+    clock.store(1_000_000, Ordering::SeqCst);
+    let error = session.ingest(target(), 990_000, &[1; 960]).unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "process audio duration exhausted normally"
+    );
+    let receipt = session.stop();
+    assert_eq!(receipt.terminal_error, None);
+    assert!(!receipt.cleanup_pending);
+    assert_eq!(c.lock().unwrap().packets, 0);
+    assert_eq!(c.lock().unwrap().stop, 1);
+}
+
+#[rstest]
+#[case(true, false, AudioLifecycleError::Authorization)]
+#[case(false, true, AudioLifecycleError::Packet)]
+#[case(false, false, AudioLifecycleError::Budget)]
+fn elapsed_duration_cannot_hide_revocation_bad_packets_or_packet_budget_overrun(
+    #[case] revoked: bool,
+    #[case] bad_packet: bool,
+    #[case] expected: AudioLifecycleError,
+) {
+    let (s, m, c) = ports();
+    let clock = Arc::new(AtomicU64::new(0));
+    let authorization = auth();
+    let mut session = start(s, m, grant(), authorization.clone(), clock.clone()).unwrap();
+    clock.store(1_000_000, Ordering::SeqCst);
+    if revoked {
+        authorization.revoke();
+    }
+    let samples = if bad_packet { &[][..] } else { &[1; 960][..] };
+    assert_eq!(session.ingest(target(), 999_999, samples), Err(expected));
+    assert_eq!(session.stop().terminal_error, Some(expected));
+    assert_eq!(c.lock().unwrap().packets, 0);
+}
+
+#[rstest]
+fn worker_timestamp_tolerance_is_preserved_through_session_and_aac_mux() {
+    struct TrackMux(crate::audio_track::AacTrackBuffer);
+    impl ProcessAudioMux for TrackMux {
+        fn write_pcm(
+            &mut self,
+            pts: u64,
+            samples: &[i16],
+            _: u64,
+        ) -> Result<u64, AudioLifecycleError> {
+            self.0.push(pts, samples)?;
+            Ok(0)
+        }
+        fn finalize(&mut self) -> Result<(), AudioLifecycleError> {
+            Ok(())
+        }
+    }
+    let (source, _, _) = ports();
+    let g = grant();
+    let mut session = ProcessAudioSession::start_with_clock(
+        source,
+        TrackMux(crate::audio_track::AacTrackBuffer::new(g.clone()).unwrap()),
+        g,
+        target(),
+        Some(20348),
+        auth(),
+        Arc::new(|| 110_000),
+    )
+    .unwrap();
+    session.ingest(target(), 100_000, &[1; 960]).unwrap();
+    session.ingest(target(), 109_979, &[2; 960]).unwrap();
+    session.ingest(target(), 119_958, &[3; 960]).unwrap();
+    assert_eq!(session.stop().packets_accepted, 3);
+}
+
+#[rstest]
 fn process_audio_refuses_other_sources_before_starting_streams() {
     let (mut s, m, c) = ports();
     s.effective = EffectiveAudioSource::Other;
@@ -191,7 +267,7 @@ fn process_audio_expiry_and_byte_budget_stop_both_owners() {
     clock.store(1_000_000, Ordering::SeqCst);
     assert_eq!(
         session.ingest(target(), 0, &[0; 960]),
-        Err(AudioLifecycleError::Budget)
+        Err(AudioLifecycleError::DurationExhausted)
     );
     assert_eq!(c.lock().unwrap().packets, 0);
     assert!(!session.stop().cleanup_pending);

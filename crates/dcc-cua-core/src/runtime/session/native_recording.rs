@@ -277,15 +277,15 @@ impl ComputerUseSession {
         self.ensure_local_cleanup_reusable()?;
         let audio = resolve()?;
         self.local_cleanup.recorder_pending = true;
-        if self.last_recording_video.is_none() {
-            self.last_recording_video = Some(RecordingVideoTerminalEvidence::from_failed_stop(
-                json!({}),
-                &ComputerUseError::new(
-                    ComputerUseErrorCode::CompletionUnknown,
-                    "native recorder startup has not acknowledged cleanup or transferred ownership",
-                ),
-            ));
-        }
+        // A new owned attempt cannot inherit another recording's finalized
+        // receipt. Historical artifacts remain in their original output paths.
+        self.last_recording_video = Some(RecordingVideoTerminalEvidence::from_failed_stop(
+            json!({}),
+            &ComputerUseError::new(
+                ComputerUseErrorCode::CompletionUnknown,
+                "native recorder startup has not acknowledged cleanup or transferred ownership",
+            ),
+        ));
         Ok(audio)
     }
 

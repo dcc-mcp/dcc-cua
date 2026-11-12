@@ -771,3 +771,30 @@ async fn audio_factory_resolution_failure_preserves_reusable_session_without_own
     assert!(session.ensure_local_cleanup_reusable().is_ok());
     assert_eq!(calls.load(AtomicOrdering::SeqCst), 0);
 }
+
+#[rstest]
+#[tokio::test]
+async fn new_owned_recording_attempt_cannot_reuse_a_previous_finalized_video_receipt() {
+    let directory =
+        std::env::temp_dir().join(format!("dcc-cua-recording-retry-{}", uuid::Uuid::new_v4()));
+    let (mut session, calls) = counting_session();
+    session.pixel_observation_route = Some(PixelObservationRoute::ExplicitPixelsOnly);
+    let _sender = attach_test_showcase(&mut session, &directory).await;
+    session.recording_stop().await.unwrap();
+    assert_eq!(
+        session.last_recording_video.as_ref().unwrap().state()["finalized"],
+        true
+    );
+    let previous_bytes = std::fs::read(directory.join("showcase.mp4")).unwrap();
+    session.prepare_owned_native_recorder(|| Ok(None)).unwrap();
+    let state = session.recording_state().await.unwrap();
+    assert_ne!(state["status"], "stopped");
+    assert_ne!(state["video"]["finalized"], true);
+    assert!(session.local_cleanup.recorder_pending);
+    assert_eq!(
+        std::fs::read(directory.join("showcase.mp4")).unwrap(),
+        previous_bytes
+    );
+    assert_eq!(calls.load(AtomicOrdering::SeqCst), 0);
+    std::fs::remove_dir_all(directory).unwrap();
+}

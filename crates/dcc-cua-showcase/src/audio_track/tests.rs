@@ -43,7 +43,9 @@ fn audio_track_refuses_overlapping_or_unbounded_pcm_before_growth() {
 }
 
 #[rstest]
-fn generated_mp4_contains_decodable_aac_and_existing_h264_tracks() {
+#[case(true)]
+#[case(false)]
+fn generated_mp4_contains_decodable_aac_and_existing_h264_tracks(#[case] has_audio: bool) {
     // All pixels and samples are generated locally; no capture or audio device.
     let mut encoder = crate::Encoder::with_api_config(
         crate::OpenH264API::from_source(),
@@ -89,7 +91,7 @@ fn generated_mp4_contains_decodable_aac_and_existing_h264_tracks() {
         )
         .unwrap();
     let mut audio = AacTrackBuffer::new(grant()).unwrap();
-    for block in 0..20 {
+    for block in 0..if has_audio { 20 } else { 0 } {
         let samples: Vec<i16> = (0..480)
             .flat_map(|i| {
                 let t = (block * 480 + i) as f32 / 48000.0;
@@ -100,6 +102,24 @@ fn generated_mp4_contains_decodable_aac_and_existing_h264_tracks() {
         audio.push(50_000 + block * 10_000, &samples).unwrap();
     }
     let receipt = audio.append_after_single_video_track(&mut writer).unwrap();
+    if !has_audio {
+        assert_eq!(
+            serde_json::to_value(&receipt).unwrap()["track_id"],
+            serde_json::Value::Null
+        );
+        assert_eq!(receipt.input_frames, 0);
+        assert_eq!(receipt.encoded_samples, 0);
+        assert_eq!(receipt.encoded_bytes, 0);
+        assert_eq!(receipt.captured_input_frames, 0);
+        assert_eq!(receipt.generated_timeline_gap_frames, 0);
+        assert_eq!(receipt.codec_priming_samples, 0);
+        writer.write_end().unwrap();
+        let data = writer.into_writer().into_inner().into_inner();
+        let reader = mp4::Mp4Reader::read_header(Cursor::new(&data), data.len() as u64).unwrap();
+        assert_eq!(reader.tracks().len(), 1);
+        assert_eq!(reader.sample_count(1).unwrap(), 1);
+        return;
+    }
     assert!(receipt.nonzero_input_samples > 0);
     assert_eq!(receipt.captured_input_frames, 9600);
     assert_eq!(receipt.generated_timeline_gap_frames, 2400);
@@ -145,6 +165,27 @@ fn generated_mp4_contains_decodable_aac_and_existing_h264_tracks() {
         data.len(),
         duration_ms,
         energy
+    );
+}
+
+#[rstest]
+fn worker_accepted_timestamp_quantization_reaches_the_mux_without_dropping_pcm() {
+    let mut buffer = AacTrackBuffer::new(grant()).unwrap();
+    buffer.push(100_000, &[1; 960]).unwrap();
+    // Worker accepts 99_792 100ns units between 480-frame packets. The
+    // microsecond conversion loses another fractional microsecond.
+    buffer.push(109_979, &[2; 960]).unwrap();
+    buffer.push(119_958, &[3; 960]).unwrap();
+    assert_eq!(buffer.captured_frames, 1440);
+    assert_eq!(buffer.gap_frames, 4800);
+    assert_eq!(buffer.samples.len() / 2, 6240);
+    assert_eq!(&buffer.samples[10_560..11_520], &[2; 960]);
+    assert_eq!(&buffer.samples[11_520..], &[3; 960]);
+    let mut beyond_tolerance = AacTrackBuffer::new(grant()).unwrap();
+    beyond_tolerance.push(100_000, &[1; 960]).unwrap();
+    assert_eq!(
+        beyond_tolerance.push(109_978, &[2; 960]),
+        Err(AudioLifecycleError::Packet)
     );
 }
 
