@@ -46,11 +46,19 @@ impl ComputerUseSession {
         let request = ComputerUseSessionStartRequest::default();
         request.validate_for_scope(&self.scope)?;
         let scope = self.scope.clone();
-        let (handle, target) = tokio::task::spawn_blocking(move || LinuxPixels::bind(scope))
-            .await
-            .map_err(|error| {
-                ComputerUseError::new(ComputerUseErrorCode::BackendUnavailable, error.to_string())
-            })??;
+        let authorization = self
+            .native_task_authorization
+            .as_ref()
+            .map(|authorization| (self.session_id.clone(), Arc::clone(authorization)));
+        let (handle, target) =
+            tokio::task::spawn_blocking(move || LinuxPixels::bind(scope, authorization))
+                .await
+                .map_err(|error| {
+                    ComputerUseError::new(
+                        ComputerUseErrorCode::BackendUnavailable,
+                        error.to_string(),
+                    )
+                })??;
         self.upstream_session_state = UpstreamSessionState::LinuxPixelsOnly;
         self.last_upstream_session_refresh = None;
         self.pixel_observation_route = Some(PixelObservationRoute::ExplicitPixelsOnly);

@@ -9,6 +9,28 @@ pub(super) async fn capture_snapshot(
     max_nodes: u32,
     max_depth: u32,
 ) -> Result<(ComputerUseScreenshot, Vec<ComputerUseScreenshot>, Value), HostError> {
+    timed(
+        Phase::Snapshot,
+        capture_snapshot_inner(
+            host,
+            session_id,
+            selected,
+            capture_diagnostics,
+            max_nodes,
+            max_depth,
+        ),
+    )
+    .await
+}
+
+async fn capture_snapshot_inner(
+    host: &mut HostSession,
+    session_id: &str,
+    selected: &[u64],
+    capture_diagnostics: bool,
+    max_nodes: u32,
+    max_depth: u32,
+) -> Result<(ComputerUseScreenshot, Vec<ComputerUseScreenshot>, Value), HostError> {
     let screenshots = if !selected.is_empty() {
         let expires = host.require_native_capture_popup_keyboard_grant(session_id)?;
         let deadline = std::time::Instant::now()

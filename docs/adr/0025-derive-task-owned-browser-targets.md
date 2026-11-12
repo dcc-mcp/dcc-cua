@@ -60,8 +60,15 @@ boundaries that the pre-task card did not establish.
 
 - Launch outcome is missing or ambiguous: stop the upstream session and return
   a typed refusal.
-- No exact native/CDP binding appears within 20 seconds: stop the session and
-  do not expose a partial target.
+- No exact native/CDP binding appears within the existing 60-second browser
+  evidence budget: stop the session and do not expose a partial target. A native
+  proof may use the SDK's bounded 32-second reconnect. Propagate transport/tool
+  failures immediately; preserve closed binding failure reasons without copying
+  page content, profile paths or arbitrary backend diagnostics.
+- Failed startup reports whether `end_session` acknowledged the same session
+  as inactive. MCP retains this receipt separately from Host connection
+  completion; a missing, refused, mismatched or failed acknowledgement remains
+  `cleanup_unknown` and never becomes a successful stop.
 - The client supplies PID/HWND, launch details, or `browser_prepare` together
   with an owned target: reject the grant before launch.
 - Navigation or mutation crosses an unlisted origin: reject it in Host without

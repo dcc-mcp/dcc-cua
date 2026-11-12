@@ -6,7 +6,9 @@ mod capture_popup;
 mod frame_recovery;
 mod interaction_recovery;
 mod owned_host;
+mod start_contract;
 mod transport;
+mod workflows;
 use transport::run_transport;
 
 use std::collections::BTreeMap;
@@ -225,6 +227,8 @@ impl TaskSurface {
 }
 
 struct TaskProposal {
+    workflow_id: Option<String>,
+    user_action_required: Option<String>,
     surface: TaskSurface,
     observation_mode: TaskObservationMode,
     allowed_methods: Vec<String>,
@@ -258,6 +262,7 @@ struct TaskAuthorizationAuthority {
 }
 
 struct TaskAuthorizationServer {
+    workflows: crate::workflow::WorkflowManager,
     extension_transport: Option<crate::extension_transport::ProviderListener>,
     authority: TaskAuthorizationAuthority,
     proposals: BTreeMap<String, TaskProposal>,
@@ -270,6 +275,7 @@ impl TaskAuthorizationServer {
     fn automatic() -> Self {
         let (issuer, authorization_host) = dcc_cua_host::trusted_task_authorization_broker();
         Self {
+            workflows: crate::workflow::WorkflowManager::disabled(),
             extension_transport: None,
             authority: TaskAuthorizationAuthority {
                 issuer,
@@ -418,166 +424,26 @@ impl TaskAuthorizationServer {
     }
 
     fn prepare_task(&mut self, arguments: Value) -> Result<Value, String> {
-        let authority = &self.authority;
+        self.prepare_scoped_task(arguments, None)
+    }
+
+    fn prepare_scoped_task(
+        &mut self,
+        arguments: Value,
+        owned_workflow: Option<&str>,
+    ) -> Result<Value, String> {
         let input: PrepareTaskInput = serde_json::from_value(arguments)
             .map_err(|error| format!("invalid task request: {error}"))?;
-        if !(1..=MAX_TTL_MINUTES).contains(&input.ttl_minutes) {
-            return Err(format!(
-                "ttl_minutes must be between 1 and {MAX_TTL_MINUTES}"
-            ));
-        }
-        validate_allowed_methods(input.surface, &input.allowed_methods)?;
-        validate_native_lifecycle_methods(&input.allowed_methods)?;
-        capture_popup::validate_start(&input)?;
-        let preparation_requested = input
-            .allowed_methods
-            .iter()
-            .any(|method| method.starts_with("capture_preparation_"));
-        let preparation_action = input
-            .allowed_actions
-            .iter()
-            .any(TrustedTaskActionScope::is_capture_preparation);
-        if input.allow_capture_preparation != preparation_requested
-            || input.allow_capture_preparation != preparation_action
-            || (input.allow_capture_preparation
-                && (input.surface != TaskSurface::Window
-                    || input.observation_mode != TaskObservationMode::PixelsOnly
-                    || ![
-                        "get_window_state",
-                        "capture_preparation_begin",
-                        "capture_preparation_state",
-                        "capture_preparation_stop",
-                    ]
-                    .iter()
-                    .all(|required| {
-                        input
-                            .allowed_methods
-                            .iter()
-                            .any(|method| method == required)
-                    })))
-        {
-            return Err("capture preparation requires explicit allow_capture_preparation=true, pixels_only exact window, get_window_state, complete begin/state/stop and its closed action scope".into());
-        }
-        let requested_recording = input
-            .allowed_methods
-            .iter()
-            .any(|method| method.starts_with("recording_"));
-        if input.allow_recording != requested_recording
-            || (input.allow_recording
-                && (input.observation_mode != TaskObservationMode::PixelsOnly
-                    || input.surface != TaskSurface::Window
-                    || !["recording_start", "recording_state", "recording_stop"]
-                        .iter()
-                        .all(|required| {
-                            input
-                                .allowed_methods
-                                .iter()
-                                .any(|method| method == required)
-                        })))
-        {
-            return Err("recording methods require explicit allow_recording=true on a pixels_only window task".into());
-        }
-        if input.observation_mode == TaskObservationMode::PixelsOnly {
-            if input.surface != TaskSurface::Window
-                || !matches!(input.target_process_id, Some(pid) if pid != 0)
-                || !matches!(input.target_window_handle, Some(hwnd) if hwnd != 0)
-                || input.owned_browser_launch.is_some()
-                || !input.allowed_browser_origins.is_empty()
-            {
+        if let Some(pid) = input.target_process_id {
+            if let Some(workflow) = owned_workflow {
+                self.workflows.authorizes_process(workflow, pid)?;
+            } else if self.workflows.owns_process(pid) {
                 return Err(
-                    "pixels_only requires the window surface with an exact PID/HWND".into(),
+                    "an owned workflow process requires its recipe-bound task scope".into(),
                 );
             }
-            if input
-                .allowed_methods
-                .iter()
-                .any(|method| !input.observation_mode.permits_method(method))
-                || input.allowed_actions.iter().any(|action| {
-                    !action.is_window_minimize()
-                        && !action.is_window_frame()
-                        && !action.is_native_menu_dismiss()
-                        && !action.is_capture_preparation()
-                        && !action.is_recording_audio()
-                        && !action.is_pixels_input()
-                })
-            {
-                return Err(
-                    "pixels_only permits only closed native window_state or covered raw_input scopes, without semantic/browser methods or secrets"
-                        .into(),
-                );
-            }
-            if input
-                .allowed_methods
-                .iter()
-                .any(|method| method == "execute_action")
-                && !input
-                    .allowed_actions
-                    .iter()
-                    .any(TrustedTaskActionScope::is_pixels_input)
-            {
-                return Err("pixels_only execute_action requires an actual supported raw_input action scope".into());
-            }
         }
-        if input
-            .allowed_actions
-            .iter()
-            .any(TrustedTaskActionScope::is_native_menu_dismiss)
-            && (input.observation_mode != TaskObservationMode::PixelsOnly
-                || input.surface != TaskSurface::Window
-                || !["get_window_state", "change_window_state"]
-                    .iter()
-                    .all(|required| {
-                        input
-                            .allowed_methods
-                            .iter()
-                            .any(|method| method == required)
-                    }))
-        {
-            return Err("dismiss_menu requires explicit pixels_only exact window, get_window_state, change_window_state and its independent window_state action scope".into());
-        }
-        if input
-            .allowed_methods
-            .iter()
-            .any(|method| method == "set_window_frame")
-            && (input.observation_mode != TaskObservationMode::PixelsOnly
-                || !input
-                    .allowed_actions
-                    .iter()
-                    .any(TrustedTaskActionScope::is_window_frame)
-                || !input
-                    .allowed_methods
-                    .iter()
-                    .any(|method| method == "get_window_state"))
-        {
-            return Err("set_window_frame requires explicit pixels_only, get_window_state, and its closed window_state action scope".into());
-        }
-        if input
-            .allowed_methods
-            .iter()
-            .any(|method| method == "minimize_window")
-            && !input
-                .allowed_actions
-                .iter()
-                .any(TrustedTaskActionScope::is_window_minimize)
-        {
-            return Err(
-                "minimize_window requires the closed window_state/minimize_window action scope"
-                    .into(),
-            );
-        }
-        let allowed_browser_origins = input
-            .allowed_browser_origins
-            .iter()
-            .cloned()
-            .chain(
-                input
-                    .allowed_actions
-                    .iter()
-                    .filter_map(|action| action.browser_origin.clone()),
-            )
-            .collect::<std::collections::BTreeSet<_>>()
-            .into_iter()
-            .collect::<Vec<_>>();
+        let allowed_browser_origins = start_contract::validate_task_start(&input, false)?;
         let target = match (
             input.target_process_id,
             input.target_window_handle,
@@ -615,28 +481,8 @@ impl TaskAuthorizationServer {
                 );
             }
         };
-        let audio_action = input
-            .allowed_actions
-            .iter()
-            .any(TrustedTaskActionScope::is_recording_audio);
-        if input.recording_audio.is_some() != audio_action
-            || (audio_action
-                && (!input.allow_recording
-                    || input.observation_mode != TaskObservationMode::PixelsOnly
-                    || input.surface != TaskSurface::Window))
-        {
-            return Err("audio requires an independent playback_audio action on a pixels_only recording window task".into());
-        }
-        if let Some(audio) = &input.recording_audio {
-            audio.validate()?;
-        }
         let now = unix_time_millis();
-        self.proposals.retain(|_, proposal| {
-            proposal.session.is_some() || proposal.registration.expires_at_unix_ms > now
-        });
-        if self.proposals.len() >= MAX_PENDING_TASKS {
-            return Err("too many live tasks".into());
-        }
+        self.ensure_task_capacity()?;
         let proposal_id = format!("task-{}", Uuid::new_v4());
         let capture_preparation = if input.allow_capture_preparation {
             let root = self.capture_preparation_journal_root.as_ref().ok_or_else(||
@@ -697,6 +543,16 @@ impl TaskAuthorizationServer {
             registration.recording_audio_grant =
                 Some(audio.grant(recording_audio::resolve(&registration.target)?));
         }
+        let retained_deadline = owned_workflow
+            .map(|id| self.workflows.authorization_deadline(id))
+            .transpose()?;
+        if owned_workflow.is_some() {
+            registration.expires_at_unix_ms = registration.expires_at_unix_ms.min(
+                self.workflows
+                    .expires_at_unix_ms()
+                    .ok_or("workflow policy is unavailable")?,
+            );
+        }
         if input.allow_recording {
             let root = self.recording_output_root.as_ref().ok_or_else(||
                 "recording requires operator configuration DCC_CUA_RECORDING_OUTPUT_ROOT; callers cannot nominate an output root".to_owned())?;
@@ -714,13 +570,19 @@ impl TaskAuthorizationServer {
             registration.recording_output_dir.as_deref(),
             || {
                 registration.validate().map_err(|error| error.to_string())?;
-                authority
-                    .issuer
-                    .register(registration.clone())
-                    .map_err(|error| error.to_string())
+                match retained_deadline {
+                    Some(deadline) => self
+                        .authority
+                        .issuer
+                        .register_with_monotonic_deadline(registration.clone(), deadline),
+                    None => self.authority.issuer.register(registration.clone()),
+                }
+                .map_err(|error| error.to_string())
             },
         )?;
         let proposal = TaskProposal {
+            workflow_id: None,
+            user_action_required: None,
             surface: input.surface,
             observation_mode: input.observation_mode,
             allowed_methods: input.allowed_methods,
@@ -738,6 +600,13 @@ impl TaskAuthorizationServer {
     }
 
     async fn start_automatic_task(&mut self, arguments: Value) -> Result<Value, String> {
+        if arguments.get("workflow_recipe_id").is_some() {
+            return self.start_workflow_task(arguments).await;
+        }
+        self.start_exact_task(arguments).await
+    }
+
+    async fn start_exact_task(&mut self, arguments: Value) -> Result<Value, String> {
         let prepared = self.prepare_task(arguments)?;
         let proposal_id = prepared["task_id"]
             .as_str()
@@ -757,6 +626,7 @@ impl TaskAuthorizationServer {
     }
 
     async fn revoke_task(&mut self, arguments: Value) -> Result<Value, String> {
+        let workflow_cleanup = self.stop_task_workflow(&arguments);
         let authority = &self.authority;
         let proposal_id = required_string(&arguments, "task_id")?;
         let proposal = self
@@ -765,11 +635,15 @@ impl TaskAuthorizationServer {
             .ok_or_else(|| crate::lifetime_diagnostics::TASK_NOT_FOUND.to_owned())?;
         if proposal.revoked {
             finish_owned_host_task(proposal).await;
-            return Ok(proposal_payload(
+            let mut payload = proposal_payload(
                 proposal_id,
                 proposal,
                 stopped_task_status(proposal.cleanup.as_ref()),
-            ));
+            );
+            if let Some(cleanup) = workflow_cleanup {
+                payload["workflow"] = cleanup;
+            }
+            return Ok(payload);
         }
         let receipt = proposal
             .receipt
@@ -786,18 +660,25 @@ impl TaskAuthorizationServer {
         );
         proposal.cleanup = Some(match proposal.session.take() {
             Some(session) => stop_owned_task_session(session).await,
-            None if !proposal.session_open_attempted => {
-                json!({"success":true,"active":false,"cleanup_pending":false,"cleanup_issues":[]})
-            }
-            None => json!({"success":false,"active":null,"cleanup_pending":true,
-                "error":"task session startup did not return an owned session cleanup acknowledgement"}),
+            None => proposal.cleanup.clone().unwrap_or_else(|| {
+                if proposal.session_open_attempted {
+                    json!({"success":false,"active":null,"cleanup_pending":true,
+                        "error":"task session startup did not return an owned session cleanup acknowledgement"})
+                } else {
+                    json!({"success":true,"active":false,"cleanup_pending":false,"cleanup_issues":[]})
+                }
+            }),
         });
         finish_owned_host_task(proposal).await;
-        Ok(proposal_payload(
+        let mut payload = proposal_payload(
             proposal_id,
             proposal,
             stopped_task_status(proposal.cleanup.as_ref()),
-        ))
+        );
+        if let Some(cleanup) = workflow_cleanup {
+            payload["workflow"] = cleanup;
+        }
+        Ok(payload)
     }
 
     async fn shutdown_tasks(&mut self) -> Vec<Value> {
@@ -842,6 +723,9 @@ impl TaskAuthorizationServer {
             .ok_or_else(|| crate::lifetime_diagnostics::TASK_NOT_FOUND.to_owned())?;
         if proposal.revoked {
             return Err(crate::lifetime_diagnostics::TASK_STOPPED.into());
+        }
+        if proposal.user_action_required.is_some() {
+            return Err("task requires user action; stop it and obtain a fresh Agent Host task authorization".into());
         }
         if proposal.registration.expires_at_unix_ms <= unix_time_millis() {
             return Err(crate::lifetime_diagnostics::TASK_EXPIRED.into());
@@ -889,13 +773,15 @@ impl TaskAuthorizationServer {
         }))
     }
 
-    fn task_status(&self, arguments: Value) -> Result<Value, String> {
+    fn task_status(&mut self, arguments: Value) -> Result<Value, String> {
         let proposal_id = required_string(&arguments, "task_id")?;
         let proposal = self
             .proposals
             .get(proposal_id)
             .ok_or_else(|| crate::lifetime_diagnostics::TASK_NOT_FOUND.to_owned())?;
-        let status = if proposal.revoked {
+        let status = if proposal.user_action_required.is_some() && !proposal.revoked {
+            "needs_user_action"
+        } else if proposal.revoked {
             stopped_task_status(proposal.cleanup.as_ref())
         } else if proposal.registration.expires_at_unix_ms <= unix_time_millis() {
             "expired"
@@ -908,10 +794,25 @@ impl TaskAuthorizationServer {
         } else {
             "initializing"
         };
-        Ok(proposal_payload(proposal_id, proposal, status))
+        let mut payload = proposal_payload(proposal_id, proposal, status);
+        payload["user_action_reason"] = json!(proposal.user_action_required);
+        if let Some(id) = proposal.workflow_id.as_deref() {
+            payload["workflow"] = self.workflows.status(id)?;
+        }
+        Ok(payload)
     }
 
     async fn task_call(&mut self, arguments: Value) -> Result<Value, String> {
+        if arguments.get("method").and_then(Value::as_str) == Some("require_user_action") {
+            return self.require_user_action(arguments).map(tool_result);
+        }
+        if arguments
+            .get("method")
+            .and_then(Value::as_str)
+            .is_some_and(|method| method.starts_with("workflow_"))
+        {
+            return self.workflow_call(arguments).await.map(tool_result);
+        }
         let proposal_id = required_string(&arguments, "task_id")?.to_owned();
         let method = required_string(&arguments, "method")?.to_owned();
         let mut params = arguments
@@ -920,12 +821,16 @@ impl TaskAuthorizationServer {
             .cloned()
             .ok_or_else(|| "task call params must be an object".to_owned())?;
         validate_task_method_params(&method, &params)?;
+        self.validate_workflow_process(&proposal_id).await?;
         let proposal = self
             .proposals
             .get_mut(&proposal_id)
             .ok_or_else(|| crate::lifetime_diagnostics::TASK_NOT_FOUND.to_owned())?;
         if proposal.revoked {
             return Err(crate::lifetime_diagnostics::TASK_STOPPED.into());
+        }
+        if proposal.user_action_required.is_some() {
+            return Err("task requires user action; no automatic retry is authorized".into());
         }
         if proposal.registration.expires_at_unix_ms <= unix_time_millis() {
             return Err(crate::lifetime_diagnostics::TASK_EXPIRED.into());
@@ -1061,7 +966,21 @@ async fn open_task_session(
     client
         .open_logical_task_session(task_session_id(proposal_id), grant, DEFAULT_IDLE_TIMEOUT_MS)
         .await
-        .map_err(|error| error.to_string())
+        .map_err(|error| {
+            if let HostClientError::Remote { response, .. } = &error {
+                proposal.cleanup = startup_cleanup_receipt(response);
+            }
+            error.to_string()
+        })
+}
+
+fn startup_cleanup_receipt(response: &Value) -> Option<Value> {
+    response["details"]["startup_cleanup_confirmed"]
+        .as_bool()
+        .map(|confirmed| {
+            json!({"success":confirmed, "active":if confirmed {Some(false)} else {None},
+            "cleanup_pending":!confirmed, "cleanup_issues":[]})
+        })
 }
 
 fn task_session_grant(proposal: &TaskProposal, receipt: &TrustedTaskAuthorizationReceipt) -> Value {
@@ -1851,6 +1770,7 @@ fn tool_definitions() -> Vec<Value> {
     recording_audio::configure_schema(&mut tools[0]);
     tools[0]["inputSchema"]["properties"]["allow_native_capture_popup_keyboard"] =
         capture_popup::owner_schema();
+    workflows::extend_tool_schema(&mut tools);
     tools
 }
 
@@ -2105,6 +2025,7 @@ fn runtime_build() -> RuntimeBuildIdentity {
 
 pub async fn run(diagnostics_dir: Option<std::path::PathBuf>) -> Result<(), Box<dyn Error>> {
     let mut server = TaskAuthorizationServer::automatic();
+    server.workflows = workflows::startup_policy()?;
     server.diagnostics = Some(ConnectionDiagnostics::new(runtime_build(), diagnostics_dir));
     let mut input = BufReader::new(tokio::io::stdin());
     let mut output = BufWriter::new(tokio::io::stdout());
@@ -2127,11 +2048,12 @@ async fn run_connection<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin>(
     // Finalize only this connection's owned task sessions before dropping their
     // transports. Read-only diagnostics retain the last observed associations.
     let cleanup_failures = server.shutdown_tasks().await;
+    let workflow_cleanup = server.workflows.stop_all();
     if let Some(diagnostics) = server.diagnostics.as_mut() {
         diagnostics.cleanup_finished(cleanup_failures.len());
     }
     server.proposals.clear();
-    if cleanup_failures.is_empty() {
+    if cleanup_failures.is_empty() && workflow_cleanup["success"] != false {
         result
     } else {
         Err(std::io::Error::other(format!(

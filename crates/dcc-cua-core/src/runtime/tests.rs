@@ -12,6 +12,10 @@ use std::sync::{Arc, Mutex};
 struct OwnedBrowserRemoteChannel {
     calls: Arc<Mutex<Vec<(String, Value)>>>,
     prepare_result: Option<Value>,
+    browser_state: Option<Value>,
+    browser_state_delay: Duration,
+    end_session_result: Option<Value>,
+    end_session_tool_error: bool,
 }
 
 #[async_trait::async_trait]
@@ -33,7 +37,7 @@ impl DriverEnvelopeChannel for OwnedBrowserRemoteChannel {
         self.calls
             .lock()
             .expect("record owned-browser request")
-            .push((name.clone(), arguments));
+            .push((name.clone(), arguments.clone()));
         let structured = match name.as_str() {
             "browser_prepare" => self.prepare_result.clone().unwrap_or_else(|| {
                 json!({
@@ -55,12 +59,21 @@ impl DriverEnvelopeChannel for OwnedBrowserRemoteChannel {
                     "is_on_screen": true
                 }]
             }),
-            "get_browser_state" => json!({
-                "binding_quality": "exact",
-                "mutation_allowed": true,
-                "target_id": "owned-target-1",
-                "tabs": [{"tab_id": "tab-1", "active": true}]
-            }),
+            "get_browser_state" => {
+                tokio::time::sleep(self.browser_state_delay).await;
+                self.browser_state.clone().unwrap_or_else(|| {
+                    json!({
+                        "binding_quality": "exact",
+                        "mutation_allowed": true,
+                        "target_id": "owned-target-1",
+                        "tabs": [{"tab_id": "tab-1", "active": true}]
+                    })
+                })
+            }
+            "end_session" => self
+                .end_session_result
+                .clone()
+                .unwrap_or_else(|| json!({"session": arguments["session"], "active":false})),
             _ => json!({"success": true}),
         };
         Ok(DriverResponseEnvelope {
@@ -70,7 +83,7 @@ impl DriverEnvelopeChannel for OwnedBrowserRemoteChannel {
             result: Some(json!({
                 "content": [{"type": "text", "text": "ok"}],
                 "structuredContent": structured,
-                "isError": false
+                "isError": name == "end_session" && self.end_session_tool_error
             })),
             error: None,
             error_code: None,
@@ -150,6 +163,192 @@ async fn owned_browser_bootstrap_derives_exact_identity_without_caller_nominated
     ] {
         assert!(prepare.get(forbidden).is_none());
     }
+}
+
+#[rstest]
+#[tokio::test(start_paused = true)]
+async fn owned_browser_bootstrap_allows_the_existing_bounded_native_reconnect() {
+    let channel = OwnedBrowserRemoteChannel {
+        browser_state_delay: Duration::from_secs(33),
+        ..Default::default()
+    };
+    let calls = Arc::clone(&channel.calls);
+    let driver = ComputerUseDriver::from_driver((
+        CuaDriver::connect_remote(Arc::new(channel)).unwrap(),
+        false,
+    ));
+    let binding = launch_owned_browser_target(
+        &driver,
+        ComputerUseOwnedBrowserLaunchSpec {
+            browser: ComputerUseOwnedBrowserFamily::Chromium,
+            profile: ComputerUseOwnedBrowserProfile::IsolatedNew,
+        },
+        "owned-session",
+        "Agent controls task browser",
+    )
+    .await
+    .expect("a valid 33-second native proof must finish without cancellation");
+    assert_eq!(binding.process_id, 9081);
+    assert_eq!(
+        calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(name, _)| name == "get_browser_state")
+            .count(),
+        1
+    );
+}
+
+#[rstest]
+#[tokio::test(start_paused = true)]
+async fn owned_browser_state_timeout_is_not_silently_retried() {
+    let channel = OwnedBrowserRemoteChannel {
+        browser_state_delay: Duration::from_secs(61),
+        ..Default::default()
+    };
+    let calls = Arc::clone(&channel.calls);
+    let driver = ComputerUseDriver::from_driver((
+        CuaDriver::connect_remote(Arc::new(channel)).unwrap(),
+        false,
+    ));
+    let error = launch_owned_browser_target(
+        &driver,
+        ComputerUseOwnedBrowserLaunchSpec {
+            browser: ComputerUseOwnedBrowserFamily::Chromium,
+            profile: ComputerUseOwnedBrowserProfile::IsolatedNew,
+        },
+        "owned-session",
+        "Agent controls task browser",
+    )
+    .await
+    .err()
+    .expect("the total browser evidence budget must remain bounded");
+    assert_eq!(error.details.unwrap().timed_out, Some(true));
+    assert_eq!(
+        calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(name, _)| name == "get_browser_state")
+            .count(),
+        1
+    );
+}
+
+#[rstest]
+#[case(json!({}), "binding_not_exact")]
+#[case(json!({"binding_quality":"approximate"}), "binding_not_exact")]
+#[case(json!({"binding_quality":"exact","mutation_allowed":false}), "mutation_not_allowed")]
+#[case(json!({"binding_quality":"exact","mutation_allowed":true,"target_id":" "}), "target_id_missing")]
+#[case(json!({"binding_quality":"exact","mutation_allowed":true,"target_id":"t","tabs":[]}), "active_tab_not_unique")]
+#[case(json!({"binding_quality":"exact","mutation_allowed":true,"target_id":"t","tabs":[{"active":true},{"active":true}]}), "active_tab_not_unique")]
+#[case(json!({"status":"refused","refusal":{"code":"browser_consent_required"}}), "browser_consent_required")]
+#[case(json!({"status":"refused","refusal":{"code":"PRIVATE_UNTRUSTED_VALUE"}}), "browser_state_refused")]
+fn owned_browser_binding_rejects_incomplete_evidence_with_closed_reasons(
+    #[case] state: Value,
+    #[case] expected: &str,
+) {
+    assert_eq!(owned_browser_binding_failure(&state), Some(expected));
+}
+
+#[rstest]
+#[case(None, false, true)]
+#[case(None, true, false)]
+#[case(Some(json!({"session":"owned-session", "active":true})), false, false)]
+#[case(Some(json!({"session":"another-session", "active":false})), false, false)]
+#[case(Some(json!({"status":"refused", "refusal":{"code":"PRIVATE"}})), false, false)]
+#[case(Some(json!({"success":true})), false, false)]
+#[tokio::test]
+async fn owned_browser_start_failure_reports_only_exact_session_cleanup_acknowledgement(
+    #[case] end_session_result: Option<Value>,
+    #[case] end_session_tool_error: bool,
+    #[case] expected: bool,
+) {
+    let channel = OwnedBrowserRemoteChannel {
+        prepare_result: Some(
+            json!({"status":"refused", "refusal":{"code":"browser_consent_required"}}),
+        ),
+        end_session_result,
+        end_session_tool_error,
+        ..Default::default()
+    };
+    let calls = Arc::clone(&channel.calls);
+    let driver = ComputerUseDriver::from_driver((
+        CuaDriver::connect_remote(Arc::new(channel)).unwrap(),
+        false,
+    ));
+    let error = driver
+        .owned_browser_session_with_agent(
+            ComputerUseOwnedBrowserLaunchSpec {
+                browser: ComputerUseOwnedBrowserFamily::Chromium,
+                profile: ComputerUseOwnedBrowserProfile::IsolatedNew,
+            },
+            "Task browser",
+            "Agent",
+            "owned-session",
+            &ComputerUseSessionStartRequest::default(),
+        )
+        .await
+        .expect_err("refused startup must fail");
+    assert_eq!(error.code, ComputerUseErrorCode::BrowserRefused);
+    assert_eq!(
+        error.details.unwrap().startup_cleanup_confirmed,
+        Some(expected)
+    );
+    assert_eq!(
+        calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(name, _)| name == "end_session")
+            .count(),
+        1
+    );
+}
+
+#[rstest]
+#[case("browser_consent_required")]
+#[case("browser_binding_ambiguous")]
+#[case("browser_wrong_target_refused")]
+#[tokio::test(start_paused = true)]
+async fn owned_browser_state_refusal_preserves_reason_without_retry_or_private_content(
+    #[case] code: &str,
+) {
+    let channel = OwnedBrowserRemoteChannel {
+        browser_state: Some(json!({"status":"refused", "refusal":{
+            "code":code, "message":"PRIVATE_PROFILE_PATH"
+        }})),
+        ..Default::default()
+    };
+    let calls = Arc::clone(&channel.calls);
+    let driver = ComputerUseDriver::from_driver((
+        CuaDriver::connect_remote(Arc::new(channel)).unwrap(),
+        false,
+    ));
+    let error = launch_owned_browser_target(
+        &driver,
+        ComputerUseOwnedBrowserLaunchSpec {
+            browser: ComputerUseOwnedBrowserFamily::Chromium,
+            profile: ComputerUseOwnedBrowserProfile::IsolatedNew,
+        },
+        "owned-session",
+        "Agent controls task browser",
+    )
+    .await
+    .err()
+    .expect("a refusal cannot bind the browser");
+    assert_eq!(error.code, ComputerUseErrorCode::BrowserRefused);
+    assert_eq!(error.message, code);
+    assert_eq!(
+        calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(name, _)| name == "get_browser_state")
+            .count(),
+        1
+    );
 }
 
 #[rstest]

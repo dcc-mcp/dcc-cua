@@ -18,6 +18,7 @@ pub(crate) async fn start_granted_window_session(
     agent_name: &str,
     runtime_session_id: &str,
     start_request: &ComputerUseSessionStartRequest,
+    native_target_authorization: Option<Arc<dcc_cua_core::NativeTaskAuthorization>>,
 ) -> Result<(dcc_cua_core::ComputerUseSession, Value), HostError> {
     if let Some(launch) = grant.owned_browser_launch {
         if launched.is_some() {
@@ -47,6 +48,9 @@ pub(crate) async fn start_granted_window_session(
         agent_name,
         runtime_session_id,
     )?;
+    if let Some(authorization) = native_target_authorization {
+        session.set_native_task_authorization(authorization)?;
+    }
     let started = if grant.observation_mode == TaskObservationMode::PixelsOnly {
         if start_request.activate_before {
             return Err(HostError::Protocol(
@@ -68,7 +72,7 @@ pub(crate) async fn prepare_granted_session_recording(
     task_authorization: Option<&TrustedTaskAuthorizationLease>,
     session: &mut dcc_cua_core::ComputerUseSession,
 ) -> Result<Option<Value>, HostError> {
-    if grant.allow_recording
+    if (grant.allow_recording || grant.allow_live_observation)
         && let Some(lease) = task_authorization
     {
         let authorization = security_services
@@ -79,7 +83,7 @@ pub(crate) async fn prepare_granted_session_recording(
             let _ = session.stop().await;
             return Err(HostError::coded_protocol(
                 HostProtocolErrorCode::TaskAuthorizationDenied,
-                "native recording requires a constructor-owned producer revocation fence",
+                "native capture requires a constructor-owned producer revocation fence",
             ));
         };
         session.set_recording_authorization(authorization);
@@ -118,7 +122,7 @@ pub(crate) async fn acquire_raw_input_turn(
     enabled: bool,
 ) -> Option<tokio::sync::MutexGuard<'static, ()>> {
     if enabled {
-        Some(RAW_INPUT_QUEUE.lock().await)
+        Some(timed(Phase::RawInputQueue, RAW_INPUT_QUEUE.lock()).await)
     } else {
         None
     }
@@ -134,6 +138,20 @@ pub(crate) async fn revalidate_queued_window_mutation(
         host.task_authorization.as_ref(),
     )
     .await
+}
+
+pub(crate) async fn revalidate_queued_action(
+    host: &mut HostSession,
+    action: &mut dcc_cua_core::ComputerUseAction,
+) -> Result<(), HostError> {
+    if (host.observation_mode == TaskObservationMode::PixelsOnly
+        || host.task_authorization.is_some())
+        && let Err(error) = revalidate_queued_window_mutation(host).await
+    {
+        action.text.zeroize();
+        return Err(error);
+    }
+    Ok(())
 }
 
 pub(crate) fn ensure_connection_session_capacity(

@@ -66,6 +66,18 @@ impl RecordingAuthorization {
         authorization
     }
 
+    /// Preserve an earlier constructor-owned deadline across later lease issuance.
+    #[must_use]
+    pub fn with_monotonic_deadline(expires_at_unix_ms: u64, deadline: Instant) -> Self {
+        let mut authorization = Self::new(expires_at_unix_ms);
+        authorization.monotonic_deadline = Some(
+            authorization
+                .monotonic_deadline
+                .map_or(deadline, |existing| existing.min(deadline)),
+        );
+        authorization
+    }
+
     pub(crate) fn with_clock(
         expires_at_unix_ms: u64,
         clock: Arc<dyn Fn() -> u64 + Send + Sync>,

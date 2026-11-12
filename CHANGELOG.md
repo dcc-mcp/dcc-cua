@@ -1,5 +1,58 @@
 # Changelog
 
+## [1.19.1](https://github.com/dcc-mcp/dcc-cua/compare/v1.19.0...v1.19.1) (2026-11-11)
+
+
+### Bug Fixes
+
+* **cli:** guide recovery for unknown command completion ([9986a55](https://github.com/dcc-mcp/dcc-cua/commit/9986a55ac36016b5e207a6db8565c84d7edb8fc1))
+
+## [1.19.0](https://github.com/dcc-mcp/dcc-cua/compare/v1.18.0...v1.19.0) (2026-11-08)
+
+
+### Features
+
+* **host:** add opt-in request phase timing ([dd23e0d](https://github.com/dcc-mcp/dcc-cua/commit/dd23e0dc3de8edab9c2354cf5d4db5393a7d0313))
+
+## [1.18.0](https://github.com/dcc-mcp/dcc-cua/compare/v1.17.0...v1.18.0) (2026-11-06)
+
+
+### Features
+
+* **host:** support trusted native task workflows ([49acf15](https://github.com/dcc-mcp/dcc-cua/commit/49acf1547fe30bf1025ada6be06c8c8015575fe7))
+
+
+### Bug Fixes
+
+* **host:** fence task capture producers through lease expiry ([6a6ea6d](https://github.com/dcc-mcp/dcc-cua/commit/6a6ea6dd819a5cf3300e640f4bac465b7c5bd91c))
+* **workflows:** retain authority deadlines and validate before launch ([d3bdc9b](https://github.com/dcc-mcp/dcc-cua/commit/d3bdc9b51b5902b2353f36f87c7e17755a52e543))
+
+
+### Performance Improvements
+
+* **host:** move owned response payloads ([4c95fa6](https://github.com/dcc-mcp/dcc-cua/commit/4c95fa6f53d903ddb08c25a83a9cb140ddb7a964))
+
+## [1.17.0](https://github.com/dcc-mcp/dcc-cua/compare/v1.16.1...v1.17.0) (2026-10-30)
+
+
+### Features
+
+* **sdk:** adopt Driver 0.38.0 compatibility source ([a0235a8](https://github.com/dcc-mcp/dcc-cua/commit/a0235a860e8b40cc0335068499a54d79f6cb9ca1))
+
+
+### Bug Fixes
+
+* **sdk:** pin reviewed Driver 0.38 ownership fixes ([42650e2](https://github.com/dcc-mcp/dcc-cua/commit/42650e2c5be3bbb8d398d2e8977f8503cf29a3c5))
+
+## [1.16.1](https://github.com/dcc-mcp/dcc-cua/compare/v1.16.0...v1.16.1) (2026-10-26)
+
+
+### Bug Fixes
+
+* clarify passive capture and background UIA routing ([1872d02](https://github.com/dcc-mcp/dcc-cua/commit/1872d0210ecf21db3ffad2c4c7cfa4c161d6de88))
+* **cli:** distinguish MCP cleanup outcomes from transport closure ([7c7f6cf](https://github.com/dcc-mcp/dcc-cua/commit/7c7f6cfe329a0f93071de048b73155e84e670d2b))
+* **cli:** record MCP cleanup outcomes independently of EOF ([382fb92](https://github.com/dcc-mcp/dcc-cua/commit/382fb9237c6e004219b976df0e83602d5d50db28))
+
 ## [1.16.0](https://github.com/dcc-mcp/dcc-cua/compare/v1.15.0...v1.16.0) (2026-10-26)
 
 

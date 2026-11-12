@@ -33,6 +33,7 @@ mod profile_state;
 mod secret_vault;
 mod semantic_profile;
 mod update;
+mod workflow;
 
 use actions::{
     act, action_result_value, activate_window, desktop_act, friendly_action, invoke_menu,

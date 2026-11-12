@@ -21,6 +21,23 @@ the dcc-cua repository but versioned and released independently as
 - Firefox declares the website activity and content transferred to the local
   native host as required primary-function data.
 
+## Connection diagnostics
+
+Hover over the extension action to read its current bounded diagnostic code.
+`...` means the native handshake is pending. `LINK` means the native host
+acknowledged the required protocol and task-owned pairing capability; it does
+not prove that an authorized MCP task is bound or that page input is ready.
+Use `browser_extension_status` inside the same authorized exact-window task
+to verify the provider and tab binding before taking a fresh observation.
+
+`!` reports a fixed reason such as `native_incompatible`,
+`native_host_unavailable`, `native_host_forbidden`, `native_disconnected`, or
+`pairing_failed`. Raw browser errors, URLs, page content and protocol payloads
+are never copied into the diagnostic title. An unrecognized browser error is
+reported as `native_disconnected`; localized errors may use that generic code.
+Diagnosis does not install or update a host, reconnect a task automatically,
+change site permissions, or authorize input across a Windows desktop boundary.
+
 ## Development
 
 The candidate [paired-tab navigation contract](../../docs/design/paired-tab-navigation.md)

@@ -50,6 +50,13 @@ indexes are re-resolved against that new tree and can drift. For exact token
 continuity use the persistent MCP task loop. On `stale_observation`, reobserve
 and reassess in the same live task rather than blindly replaying input.
 
+On `completion_unknown`, do not blindly retry input. The code or a timeout
+alone does not prove whether input was sent or the action completed. Preserve
+any typed input/effect facts, take a fresh observation, revalidate the same exact
+process/window target, and inspect the actual result before deciding whether
+further authorized action is needed. If the owning session ended, start a new
+authorized task before observing; do not reuse stale observations or references.
+
 `host-call` also creates a new Host connection each time. A resident Host or
 `host-ensure` does not preserve the old connection's sessions or issue task
 grants. `dcc-cua tools` lists driver tools, not Host IPC methods: `start_session`

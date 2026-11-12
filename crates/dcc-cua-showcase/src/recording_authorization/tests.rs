@@ -108,3 +108,46 @@ fn recording_admission_rechecks_shared_task_expiry_after_prepare() {
     clock.store(2, Ordering::SeqCst);
     assert!(guard.validate_current().is_err());
 }
+
+#[rstest]
+fn retained_parent_deadline_survives_late_issuance_and_clock_rollback() {
+    let expires = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64
+        + 60_000;
+    let original = Instant::now() + Duration::from_millis(60);
+    let mut authority = RecordingAuthorization::with_monotonic_deadline(expires, original);
+    // Simulates a wall clock rolled backwards after the original policy admission.
+    authority.clock = Arc::new(|| 0);
+    let mut frames = 0;
+    authority.with_active(|| frames += 1).unwrap();
+    std::thread::sleep(
+        original.saturating_duration_since(Instant::now()) + Duration::from_millis(5),
+    );
+    assert!(authority.with_active(|| frames += 1).is_err());
+    assert_eq!(frames, 1);
+    let mut rebound = RecordingAuthorization::with_monotonic_deadline(expires, original);
+    rebound.clock = Arc::new(|| 0);
+    assert!(
+        rebound
+            .with_active(|| panic!("rebind extended original deadline"))
+            .is_err()
+    );
+}
+
+#[rstest]
+fn retained_deadline_cannot_extend_a_shorter_epoch_lease() {
+    let expires = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64
+        + 50;
+    let mut authority = RecordingAuthorization::with_monotonic_deadline(
+        expires,
+        Instant::now() + Duration::from_secs(60),
+    );
+    authority.clock = Arc::new(|| 0);
+    std::thread::sleep(Duration::from_millis(70));
+    assert!(authority.with_active(|| ()).is_err());
+}

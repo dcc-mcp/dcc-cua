@@ -16,7 +16,7 @@ use crate::interactive_desktop;
 use crate::live_observation::{LiveObservation, LiveObservationFence, observation_sequence_fence};
 use crate::observation::semantic_observation;
 use crate::policy::*;
-use crate::window_target::{WindowTarget, validate_target_policy};
+use crate::window_target::WindowTarget;
 #[cfg(windows)]
 use crate::windows_uia_fallback::WindowsUiaFallback;
 use dcc_cua_showcase::{ShowcaseRecorder, fit_dimensions_with_bounds, resize_bgra_if_needed};
@@ -757,52 +757,48 @@ impl ComputerUseDriver {
         let app_name = app_name.into();
         let agent_name = agent_name.into();
         let label = localized_control_label(&agent_name, &app_name);
-        let binding = match launch_owned_browser_target(self, launch, &session_id, &label).await {
-            Ok(binding) => binding,
-            Err(error) => {
-                cleanup_started_session(self, &session_id).await;
-                return Err(error);
+        let result: ComputerUseResult<(ComputerUseSession, Value)> = async {
+            let binding = launch_owned_browser_target(self, launch, &session_id, &label).await?;
+            let scope = ComputerUseTargetScope {
+                process_id: Some(binding.process_id),
+                window_handle: Some(binding.window_handle),
+                window_title: None,
+            };
+            let mut session = ComputerUseSession::new(
+                self.clone(),
+                scope,
+                app_name,
+                agent_name,
+                session_id.clone(),
+            )?;
+            let target = session.resolve_target().await?;
+            session.upstream_session_state = UpstreamSessionState::Active;
+            session.last_upstream_session_refresh = Some(Instant::now());
+            enable_session_marker(self, &session_id, "start owned-browser CUA session").await?;
+            let mut started = session
+                .finish_started_session(target, start_request, None)
+                .await?;
+            started["owned_browser"] = json!({
+                "browser": launch.browser,
+                "profile": launch.profile,
+                "ownership": "task",
+                "target_id": binding.target_id,
+                "derived": true,
+            });
+            Ok((session, started))
+        }
+        .await;
+        match result {
+            Ok(started) => Ok(started),
+            Err(mut error) => {
+                let confirmed = cleanup_started_session(self, &session_id).await;
+                error
+                    .details
+                    .get_or_insert_default()
+                    .startup_cleanup_confirmed = Some(confirmed);
+                Err(error)
             }
-        };
-        let scope = ComputerUseTargetScope {
-            process_id: Some(binding.process_id),
-            window_handle: Some(binding.window_handle),
-            window_title: None,
-        };
-        let mut session = match ComputerUseSession::new(
-            self.clone(),
-            scope,
-            app_name,
-            agent_name,
-            session_id.clone(),
-        ) {
-            Ok(session) => session,
-            Err(error) => {
-                cleanup_started_session(self, &session_id).await;
-                return Err(error);
-            }
-        };
-        let target = match session.resolve_target().await {
-            Ok(target) => target,
-            Err(error) => {
-                cleanup_started_session(self, &session_id).await;
-                return Err(error);
-            }
-        };
-        session.upstream_session_state = UpstreamSessionState::Active;
-        session.last_upstream_session_refresh = Some(Instant::now());
-        enable_session_marker(self, &session_id, "start owned-browser CUA session").await?;
-        let mut started = session
-            .finish_started_session(target, start_request, None)
-            .await?;
-        started["owned_browser"] = json!({
-            "browser": launch.browser,
-            "profile": launch.profile,
-            "ownership": "task",
-            "target_id": binding.target_id,
-            "derived": true,
-        });
-        Ok((session, started))
+        }
     }
 
     pub fn desktop_session(
@@ -1210,14 +1206,17 @@ async fn launch_owned_browser_target(
     let prepared = tool_structured_content(&prepared, "browser_prepare")?;
     let process_id = owned_browser_prepare_pid(&prepared)?;
 
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
-    loop {
+    // Native/CDP proof can spend 32 seconds on the SDK's bounded reconnect.
+    let deadline = tokio::time::Instant::now() + session::BROWSER_TOOL_CALL_TIMEOUT;
+    let mut last_binding_failure = "no_visible_window";
+    while tokio::time::Instant::now() < deadline {
         let windows = call_driver_tool_with_timeout(
             &driver.driver,
             "list_windows",
             json!({"pid": process_id, "on_screen_only": true}).to_string(),
             "list task-owned browser windows",
-            Duration::from_secs(10),
+            Duration::from_secs(10)
+                .min(deadline.saturating_duration_since(tokio::time::Instant::now())),
         )
         .await?;
         ensure_tool_ok("list task-owned browser windows", &windows)?;
@@ -1247,48 +1246,73 @@ async fn launch_owned_browser_target(
                 })
                 .to_string(),
                 "derive task-owned browser target",
-                Duration::from_secs(10),
+                deadline.saturating_duration_since(tokio::time::Instant::now()),
             )
             .await;
-            let Ok(state) = state else {
-                continue;
-            };
-            if ensure_tool_ok("derive task-owned browser target", &state).is_err() {
+            let state = state.map_err(|error| ComputerUseError {
+                message: format!("task-owned browser state request failed: {:?}", error.code),
+                ..error
+            })?;
+            ensure_tool_ok("derive task-owned browser target", &state).map_err(|error| {
+                ComputerUseError::new(error.code, "task-owned browser state tool failed")
+            })?;
+            let state = tool_structured_content(&state, "get_browser_state")?;
+            if let Some(reason) = owned_browser_binding_failure(&state) {
+                if state["status"] == "refused" {
+                    return Err(ComputerUseError::new(
+                        ComputerUseErrorCode::BrowserRefused,
+                        reason,
+                    ));
+                }
+                last_binding_failure = reason;
                 continue;
             }
-            let Ok(state) = tool_structured_content(&state, "get_browser_state") else {
-                continue;
-            };
-            let active_tabs = state["tabs"].as_array().map_or(0, |tabs| {
-                tabs.iter().filter(|tab| tab["active"] == true).count()
+            return Ok(OwnedBrowserBinding {
+                process_id,
+                window_handle: target.window_id,
+                target_id: state["target_id"].as_str().unwrap().to_owned(),
             });
-            let Some(target_id) = state["target_id"]
-                .as_str()
-                .filter(|value| !value.trim().is_empty())
-            else {
-                continue;
-            };
-            if state["binding_quality"] == "exact"
-                && state["mutation_allowed"] == true
-                && active_tabs == 1
-            {
-                return Ok(OwnedBrowserBinding {
-                    process_id,
-                    window_handle: target.window_id,
-                    target_id: target_id.to_owned(),
-                });
-            }
-        }
-        if tokio::time::Instant::now() >= deadline {
-            return Err(ComputerUseError::new(
-                ComputerUseErrorCode::BackendUnavailable,
-                format!(
-                    "the task-owned {browser} browser did not expose one exact PID/window/CDP binding within 20 seconds"
-                ),
-            ));
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
+    Err(ComputerUseError::new(
+        ComputerUseErrorCode::BackendUnavailable,
+        format!(
+            "the task-owned {browser} browser did not expose one exact PID/window/CDP binding within {} seconds; last_binding_failure={last_binding_failure}",
+            session::BROWSER_TOOL_CALL_TIMEOUT.as_secs()
+        ),
+    ))
+}
+
+fn owned_browser_binding_failure(state: &Value) -> Option<&'static str> {
+    if state["status"] == "refused" {
+        return Some(match state["refusal"]["code"].as_str() {
+            Some("browser_consent_required") => "browser_consent_required",
+            Some("browser_consent_revoked") => "browser_consent_revoked",
+            Some("browser_route_unavailable") => "browser_route_unavailable",
+            Some("browser_endpoint_owner_mismatch") => "browser_endpoint_owner_mismatch",
+            Some("browser_binding_ambiguous") => "browser_binding_ambiguous",
+            Some("browser_wrong_target_refused") => "browser_wrong_target_refused",
+            Some("browser_requires_setup") => "browser_requires_setup",
+            _ => "browser_state_refused",
+        });
+    }
+    if state["binding_quality"] != "exact" {
+        return Some("binding_not_exact");
+    }
+    if state["mutation_allowed"] != true {
+        return Some("mutation_not_allowed");
+    }
+    if state["target_id"]
+        .as_str()
+        .is_none_or(|value| value.trim().is_empty())
+    {
+        return Some("target_id_missing");
+    }
+    let active_tabs = state["tabs"].as_array().map_or(0, |tabs| {
+        tabs.iter().filter(|tab| tab["active"] == true).count()
+    });
+    (active_tabs != 1).then_some("active_tab_not_unique")
 }
 
 fn owned_browser_prepare_pid(prepared: &Value) -> ComputerUseResult<u32> {
@@ -1512,14 +1536,24 @@ async fn enable_session_marker(
     Ok(())
 }
 
-async fn cleanup_started_session(driver: &ComputerUseDriver, session_id: &str) {
-    let _ = call_driver_tool(
+async fn cleanup_started_session(driver: &ComputerUseDriver, session_id: &str) -> bool {
+    call_driver_tool(
         &driver.driver,
         "end_session",
         json!({"session": session_id}).to_string(),
         "cleanup CUA session",
     )
-    .await;
+    .await
+    .and_then(|result| {
+        ensure_tool_ok("cleanup CUA session", &result)?;
+        tool_structured_content(&result, "end_session")
+    })
+    .is_ok_and(|state| {
+        state["session"] == session_id
+            && state["active"] == false
+            && state["status"] != "refused"
+            && state.get("refusal").is_none()
+    })
 }
 
 /// A long-lived, exact-window Computer Use session.
@@ -1590,6 +1624,7 @@ pub struct ComputerUseSession {
     recording_keepalive: Option<RecordingKeepalive>,
     recording_authorization: Option<Arc<dcc_cua_showcase::RecordingAuthorization>>,
     recording_audio_grant: Option<dcc_cua_protocol::recording_audio::ProcessAudioGrant>,
+    native_task_authorization: Option<Arc<crate::NativeTaskAuthorization>>,
     #[cfg(windows)]
     pub(crate) windows_uia: Option<WindowsUiaFallback>,
     upstream_session_state: UpstreamSessionState,

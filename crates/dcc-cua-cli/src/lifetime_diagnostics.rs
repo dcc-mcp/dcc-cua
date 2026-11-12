@@ -1,4 +1,4 @@
-//! Fixed, content-free lifetime guidance; never infer ownership on another connection.
+//! Fixed, content-free recovery guidance; never infer ownership on another connection.
 
 use serde_json::{Value, json};
 
@@ -26,6 +26,10 @@ pub(crate) fn task_failure(message: &str) -> Option<Value> {
 /// Match only closed codes and replace all remote text/details with local guidance.
 pub(crate) fn one_shot_failure(code: &str) -> Option<Value> {
     let (code, message) = match code {
+        "completion_unknown" => (
+            "completion_unknown",
+            "Command completion is unknown. This code alone does not establish whether input was sent or the action completed. Do not blindly retry input. Take a fresh observation, revalidate the same exact process/window target, and inspect the actual result before deciding whether further authorized action is needed. Do not reuse stale observations or opaque references. If the owning session ended, start a new authorized task before observing. A timeout alone does not prove that input was not sent or that the action failed.",
+        ),
         "stale_observation" => (
             "stale_observation",
             "The observation or reference is no longer valid for this session. In a persistent MCP task, take a fresh snapshot in the same live task before acting. For one-shot CLI use, reassess the action without reusing the old opaque token; a separate snapshot invocation cannot renew it. Opaque element tokens cannot be reused across CLI invocations or reconnected MCP sessions; do not blindly retry input.",
