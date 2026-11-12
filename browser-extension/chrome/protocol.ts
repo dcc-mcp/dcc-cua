@@ -5,7 +5,7 @@ export const MAX_REQUEST_ID_CHARS = 128;
 export const MAX_TEXT_CHARS = 4096;
 export const MAX_SNAPSHOT_NODES = 300;
 
-export type NativeMethod = "ping" | "snapshot" | "click" | "type" | "unpair";
+export type NativeMethod = "ping" | "snapshot" | "click" | "type" | "navigate" | "unpair";
 
 export type NativeHelloAck = {
   schema: typeof PROTOCOL_SCHEMA;
@@ -25,6 +25,7 @@ export type NativeRequest =
   | { schema: typeof PROTOCOL_SCHEMA; request_id: string; method: "ping" }
   | (PairedRequestBase & { method: "snapshot"; max_nodes: number })
   | (PairedRequestBase & { method: "click"; snapshot_id: string; ref: string })
+  | (PairedRequestBase & { method: "navigate"; snapshot_id: string; url: string; deadline_unix_ms: number })
   | (PairedRequestBase & {
       method: "type";
       snapshot_id: string;
@@ -42,13 +43,14 @@ export type Pairing = {
   document_id: string;
 };
 
-const METHODS = new Set<NativeMethod>(["ping", "snapshot", "click", "type", "unpair"]);
+const METHODS = new Set<NativeMethod>(["ping", "snapshot", "click", "type", "navigate", "unpair"]);
 const COMMON_KEYS = new Set(["schema", "request_id", "method", "session_nonce", "tab_id"]);
 const METHOD_KEYS: Record<NativeMethod, ReadonlySet<string>> = {
   ping: new Set(),
   snapshot: new Set(["max_nodes"]),
   click: new Set(["snapshot_id", "ref"]),
   type: new Set(["snapshot_id", "ref", "text", "replace"]),
+  navigate: new Set(["snapshot_id", "url", "deadline_unix_ms"]),
   unpair: new Set(),
 };
 
@@ -150,6 +152,15 @@ export function validateNativeRequest(message: unknown): NativeRequest {
   if (method === "unpair") {
     return { ...base, method };
   }
+  if (method === "navigate") {
+    const url = new URL(boundedString(message.url, "url", 2048));
+    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) {
+      throw new Error("navigation requires an HTTP(S) URL without credentials");
+    }
+    return { ...base, method, url: url.href,
+      snapshot_id: boundedString(message.snapshot_id, "snapshot_id", 128),
+      deadline_unix_ms: positiveInteger(message.deadline_unix_ms, "deadline_unix_ms") };
+  }
   const evidence = {
     snapshot_id: boundedString(message.snapshot_id, "snapshot_id", 128),
     ref: boundedString(message.ref, "ref", 128),
@@ -180,6 +191,7 @@ export function buildHello(pairing: Pairing, extension: { id: string; version: s
       "semantic_snapshot_v1",
       "dom_click_v1",
       "dom_replace_text_v1",
+      "tab_navigation_v1",
     ],
     pairing,
   };

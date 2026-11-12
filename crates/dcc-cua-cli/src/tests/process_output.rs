@@ -320,6 +320,7 @@ fn remote_host_failure_uses_a_local_allowlisted_identity() {
 }
 
 #[rstest]
+#[case("completion_unknown", "Do not blindly retry input")]
 #[case("stale_observation", "same live task")]
 #[case("session_not_found", "Host connection")]
 #[case("invalid_request", "start_session is not a Host IPC method")]
@@ -348,4 +349,195 @@ fn remote_lifetime_failures_publish_only_fixed_local_guidance(
     assert!(!value.to_string().contains("PRIVATE_"));
     assert!(value["error"].get("response").is_none());
     assert!(value["error"].get("details").is_none());
+}
+
+#[rstest]
+#[case(dcc_cua_core::ComputerUseInputState::NotSent, "not_sent")]
+#[case(dcc_cua_core::ComputerUseInputState::Sent, "sent")]
+#[case(dcc_cua_core::ComputerUseInputState::Unknown, "unknown")]
+fn completion_unknown_preserves_only_closed_typed_facts(
+    #[case] input: dcc_cua_core::ComputerUseInputState,
+    #[case] serialized: &str,
+) {
+    use dcc_cua_core::{
+        ComputerUseCompletionState, ComputerUseErrorDetails, ComputerUseErrorPhase,
+    };
+    let error = ComputerUseError::new(
+        ComputerUseErrorCode::CompletionUnknown,
+        "PRIVATE_COMPLETION_MESSAGE\nPRIVATE_SECOND_LINE",
+    )
+    .with_details(ComputerUseErrorDetails {
+        phase: Some(ComputerUseErrorPhase::ActionDispatch),
+        action_attempted: Some(true),
+        focus_mutation_attempted: Some(false),
+        input_sent: Some(input),
+        completion: Some(ComputerUseCompletionState::Unknown),
+        effect_unknown: Some(true),
+        suggested_delivery_mode: Some("PRIVATE_COMPLETION_DETAIL".into()),
+        session_remains_active: Some(true),
+        ..Default::default()
+    });
+    let failure = run_command_boundary(|| Err(error.into())).unwrap_err();
+    let CommandFailure::Command(line) = failure else {
+        panic!("expected command failure")
+    };
+    let mut output = Vec::new();
+    write_error_line(&mut output, &line).unwrap();
+    assert_eq!(output.iter().filter(|byte| **byte == b'\n').count(), 1);
+    let value: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    assert_completion_unknown_guidance(&value);
+    assert_eq!(
+        value["error"]["details"],
+        json!({
+            "phase":"action_dispatch", "action_attempted":true,
+            "focus_mutation_attempted":false, "input_sent":serialized,
+            "completion":"unknown", "effect_unknown":true
+        })
+    );
+    assert!(!line.contains("PRIVATE_"));
+}
+
+fn assert_completion_unknown_guidance(value: &serde_json::Value) {
+    assert_eq!(value["success"], false);
+    assert_eq!(value["error"]["code"], "completion_unknown");
+    let guidance = value["error"]["message"].as_str().unwrap();
+    for required in [
+        "Do not blindly retry input",
+        "fresh observation",
+        "same exact",
+        "actual result",
+        "authorized",
+        "stale observations",
+        "timeout alone",
+    ] {
+        assert!(
+            guidance.contains(required),
+            "missing recovery guidance: {required}"
+        );
+    }
+}
+
+#[rstest]
+fn completion_unknown_without_facts_matches_remote_guidance_without_invented_state() {
+    let typed = ComputerUseError::new(ComputerUseErrorCode::CompletionUnknown, "PRIVATE_TYPED");
+    let remote = HostClientError::Remote {
+        code: "completion_unknown".into(),
+        message: "PRIVATE_REMOTE".into(),
+        response: json!({"success":true, "message":"PRIVATE_RESPONSE", "details":{
+            "input_sent":"not_sent", "completion":"known", "blind_retry":true,
+            "session_remains_active":true, "private":"PRIVATE_DETAIL"
+        }}),
+    };
+    let value = fatal_error_value(&typed);
+    assert_completion_unknown_guidance(&value);
+    assert_eq!(value, fatal_error_value(&remote));
+    assert_eq!(value.as_object().unwrap().len(), 2);
+    assert_eq!(value["error"].as_object().unwrap().len(), 2);
+    assert!(value["error"].get("details").is_none());
+    assert!(!value.to_string().contains("PRIVATE_"));
+}
+
+#[rstest]
+fn completion_unknown_ignores_unrelated_typed_details_without_filling_missing_facts() {
+    let error = ComputerUseError::new(ComputerUseErrorCode::CompletionUnknown, "PRIVATE_TYPED")
+        .with_details(dcc_cua_core::ComputerUseErrorDetails {
+            suggested_delivery_mode: Some("PRIVATE_DETAIL".into()),
+            timed_out: Some(true),
+            session_remains_active: Some(false),
+            ..Default::default()
+        });
+    let value = fatal_error_value(&error);
+    assert_completion_unknown_guidance(&value);
+    assert!(value["error"].get("details").is_none());
+    assert!(!value.to_string().contains("PRIVATE_"));
+}
+
+#[rstest]
+#[case("CompletionUnknown")]
+#[case("completion_unknown.extra")]
+#[case("completion_unknown\nPRIVATE_CODE")]
+fn near_match_completion_codes_remain_generic_remote_failures(#[case] code: &str) {
+    let error = HostClientError::Remote {
+        code: code.into(),
+        message: "PRIVATE_MESSAGE".into(),
+        response: json!({"code":"completion_unknown","details":"PRIVATE_DETAIL"}),
+    };
+    let value = fatal_error_value(&error);
+    assert_eq!(
+        value,
+        json!({"success":false,"error":{"code":"host_remote_failed","message":PUBLIC_FAILURE_MESSAGE}})
+    );
+}
+
+#[rstest]
+fn transport_timeout_and_known_input_failure_are_not_completion_unknown() {
+    let remote = HostClientError::Timeout { timeout_ms: 1 };
+    assert_eq!(fatal_error_value(&remote)["error"]["code"], "host_timeout");
+    let typed = ComputerUseError::new(ComputerUseErrorCode::InputFailed, "PRIVATE_MESSAGE")
+        .with_details(dcc_cua_core::ComputerUseErrorDetails {
+            phase: Some(dcc_cua_core::ComputerUseErrorPhase::PreDispatch),
+            input_sent: Some(dcc_cua_core::ComputerUseInputState::NotSent),
+            timed_out: Some(true),
+            ..Default::default()
+        });
+    assert_eq!(
+        fatal_error_value(&typed),
+        json!({"success":false,"error":{"code":"input_failed","message":PUBLIC_FAILURE_MESSAGE}})
+    );
+}
+
+#[rstest]
+#[case("mcp-server")]
+#[case("host-jsonl")]
+#[case("host")]
+fn completion_guidance_does_not_change_persistent_protocol_output_boundaries(
+    #[case] command: &str,
+) {
+    assert!(
+        terminal_error_output(&[OsString::from(command)]) == TerminalErrorOutput::ProtocolNative
+    );
+}
+
+#[rstest]
+fn completion_unknown_guidance_precedes_unrelated_capture_proof() {
+    use dcc_cua_core::{
+        ComputerUseCaptureDiagnostic, ComputerUseCaptureReason, ComputerUseCaptureStage,
+        ComputerUseCompletionState, ComputerUseErrorDetails, ComputerUseErrorPhase,
+        ComputerUseInputState,
+    };
+    let error = ComputerUseError::new(ComputerUseErrorCode::CompletionUnknown, "PRIVATE_MESSAGE")
+        .with_details(ComputerUseErrorDetails {
+            phase: Some(ComputerUseErrorPhase::ActivationDispatch),
+            action_attempted: Some(false),
+            focus_mutation_attempted: Some(true),
+            input_sent: Some(ComputerUseInputState::NotSent),
+            completion: Some(ComputerUseCompletionState::Unknown),
+            effect_unknown: Some(true),
+            capture: Some(ComputerUseCaptureDiagnostic {
+                stage: ComputerUseCaptureStage::VisibleDesktopProof,
+                reason: ComputerUseCaptureReason::RootOverlap,
+                target_process_id: 42,
+                target_window_handle: 77,
+                target_bounds: None,
+                blocker_process_id: None,
+                blocker_window_handle: None,
+                blocker_bounds: None,
+                cloaked: None,
+                os_error: None,
+                root_bounds_failure: None,
+            }),
+            suggested_delivery_mode: Some("PRIVATE_DETAIL".into()),
+            ..Default::default()
+        });
+    let value = fatal_error_value(&error);
+    assert_completion_unknown_guidance(&value);
+    assert_eq!(
+        value["error"]["details"],
+        json!({
+            "phase":"activation_dispatch", "action_attempted":false,
+            "focus_mutation_attempted":true, "input_sent":"not_sent",
+            "completion":"unknown", "effect_unknown":true
+        })
+    );
+    assert!(!value.to_string().contains("PRIVATE_"));
 }

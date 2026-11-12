@@ -1027,16 +1027,16 @@ dependencies = [
 
 [[package]]
 name = "cua-cursor-motion"
-version = "0.36.0"
-source = "git+https://github.com/loonghao/cua.git?rev=be4bbd3eac57796804f43b291a2012dcd2d96896#be4bbd3eac57796804f43b291a2012dcd2d96896"
+version = "0.38.0"
+source = "git+https://github.com/loonghao/cua.git?rev=05f43bda479d01aee512a0c092fb064ce1a330bd#05f43bda479d01aee512a0c092fb064ce1a330bd"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "cua-driver-contract"
-version = "0.36.0"
-source = "git+https://github.com/loonghao/cua.git?rev=be4bbd3eac57796804f43b291a2012dcd2d96896#be4bbd3eac57796804f43b291a2012dcd2d96896"
+version = "0.38.0"
+source = "git+https://github.com/loonghao/cua.git?rev=05f43bda479d01aee512a0c092fb064ce1a330bd#05f43bda479d01aee512a0c092fb064ce1a330bd"
 dependencies = [
  "schemars",
  "serde",
@@ -1046,8 +1046,8 @@ dependencies = [
 
 [[package]]
 name = "cua-driver-core"
-version = "0.36.0"
-source = "git+https://github.com/loonghao/cua.git?rev=be4bbd3eac57796804f43b291a2012dcd2d96896#be4bbd3eac57796804f43b291a2012dcd2d96896"
+version = "0.38.0"
+source = "git+https://github.com/loonghao/cua.git?rev=05f43bda479d01aee512a0c092fb064ce1a330bd#05f43bda479d01aee512a0c092fb064ce1a330bd"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1086,8 +1086,8 @@ dependencies = [
 
 [[package]]
 name = "cua-driver-sdk"
-version = "0.36.0"
-source = "git+https://github.com/loonghao/cua.git?rev=be4bbd3eac57796804f43b291a2012dcd2d96896#be4bbd3eac57796804f43b291a2012dcd2d96896"
+version = "0.38.0"
+source = "git+https://github.com/loonghao/cua.git?rev=05f43bda479d01aee512a0c092fb064ce1a330bd#05f43bda479d01aee512a0c092fb064ce1a330bd"
 dependencies = [
  "async-trait",
  "core-foundation",
@@ -1109,8 +1109,8 @@ dependencies = [
 
 [[package]]
 name = "cua-driver-testkit"
-version = "0.36.0"
-source = "git+https://github.com/loonghao/cua.git?rev=be4bbd3eac57796804f43b291a2012dcd2d96896#be4bbd3eac57796804f43b291a2012dcd2d96896"
+version = "0.38.0"
+source = "git+https://github.com/loonghao/cua.git?rev=05f43bda479d01aee512a0c092fb064ce1a330bd#05f43bda479d01aee512a0c092fb064ce1a330bd"
 dependencies = [
  "arbitrary",
  "async-trait",
@@ -1131,8 +1131,8 @@ dependencies = [
 
 [[package]]
 name = "cursor-overlay"
-version = "0.36.0"
-source = "git+https://github.com/loonghao/cua.git?rev=be4bbd3eac57796804f43b291a2012dcd2d96896#be4bbd3eac57796804f43b291a2012dcd2d96896"
+version = "0.38.0"
+source = "git+https://github.com/loonghao/cua.git?rev=05f43bda479d01aee512a0c092fb064ce1a330bd#05f43bda479d01aee512a0c092fb064ce1a330bd"
 dependencies = [
  "anyhow",
  "cua-cursor-motion",
@@ -1185,7 +1185,7 @@ checksum = "4583a4551df46e2792f82ceeac45e850d2e2d5debba0b91f102385cda5b11f06"
 
 [[package]]
 name = "dcc-cua-browser"
-version = "1.15.0"
+version = "1.19.1"
 dependencies = [
  "base64 0.22.1",
  "dcc-cua-core",
@@ -1202,7 +1202,7 @@ dependencies = [
 
 [[package]]
 name = "dcc-cua-cli"
-version = "1.15.0"
+version = "1.19.1"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -1233,7 +1233,7 @@ dependencies = [
 
 [[package]]
 name = "dcc-cua-client"
-version = "1.15.0"
+version = "1.19.1"
 dependencies = [
  "dcc-cua-protocol",
  "dcc-cua-workspace-hack",
@@ -1247,7 +1247,7 @@ dependencies = [
 
 [[package]]
 name = "dcc-cua-core"
-version = "1.15.0"
+version = "1.19.1"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -1277,7 +1277,7 @@ dependencies = [
 
 [[package]]
 name = "dcc-cua-e2e"
-version = "1.15.0"
+version = "1.19.1"
 dependencies = [
  "cua-driver-testkit",
  "dcc-cua-client",
@@ -1295,7 +1295,7 @@ dependencies = [
 
 [[package]]
 name = "dcc-cua-host"
-version = "1.15.0"
+version = "1.19.1"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -1324,7 +1324,7 @@ dependencies = [
 
 [[package]]
 name = "dcc-cua-indicator"
-version = "1.15.0"
+version = "1.19.1"
 dependencies = [
  "dcc-cua-interrupt",
  "dcc-cua-workspace-hack",
@@ -1337,7 +1337,7 @@ dependencies = [
 
 [[package]]
 name = "dcc-cua-interrupt"
-version = "1.15.0"
+version = "1.19.1"
 dependencies = [
  "dcc-cua-workspace-hack",
  "rstest",
@@ -1345,7 +1345,7 @@ dependencies = [
 
 [[package]]
 name = "dcc-cua-platform-windows"
-version = "1.15.0"
+version = "1.19.1"
 dependencies = [
  "base64 0.22.1",
  "cursor-overlay",
@@ -1363,7 +1363,7 @@ dependencies = [
 
 [[package]]
 name = "dcc-cua-profiles"
-version = "1.15.0"
+version = "1.19.1"
 dependencies = [
  "dcc-cua-semantic-profiles",
  "dcc-cua-workspace-hack",
@@ -1378,7 +1378,7 @@ dependencies = [
 
 [[package]]
 name = "dcc-cua-protocol"
-version = "1.15.0"
+version = "1.19.1"
 dependencies = [
  "dcc-cua-workspace-hack",
  "libc",
@@ -1392,7 +1392,7 @@ dependencies = [
 
 [[package]]
 name = "dcc-cua-semantic-profiles"
-version = "1.15.0"
+version = "1.19.1"
 dependencies = [
  "dcc-cua-workspace-hack",
  "rstest",
@@ -1405,7 +1405,7 @@ dependencies = [
 
 [[package]]
 name = "dcc-cua-shm"
-version = "1.15.0"
+version = "1.19.1"
 dependencies = [
  "dcc-cua-protocol",
  "dcc-cua-workspace-hack",
@@ -1418,7 +1418,7 @@ dependencies = [
 
 [[package]]
 name = "dcc-cua-showcase"
-version = "1.15.0"
+version = "1.19.1"
 dependencies = [
  "dcc-cua-workspace-hack",
  "mp4",
@@ -1434,7 +1434,7 @@ dependencies = [
 
 [[package]]
 name = "dcc-cua-workspace-hack"
-version = "1.15.0"
+version = "1.19.1"
 dependencies = [
  "aho-corasick",
  "block2 0.5.1",
@@ -3516,8 +3516,8 @@ checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
 
 [[package]]
 name = "pip-preview"
-version = "0.36.0"
-source = "git+https://github.com/loonghao/cua.git?rev=be4bbd3eac57796804f43b291a2012dcd2d96896#be4bbd3eac57796804f43b291a2012dcd2d96896"
+version = "0.38.0"
+source = "git+https://github.com/loonghao/cua.git?rev=05f43bda479d01aee512a0c092fb064ce1a330bd#05f43bda479d01aee512a0c092fb064ce1a330bd"
 dependencies = [
  "serde_json",
 ]
@@ -3557,8 +3557,8 @@ checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 
 [[package]]
 name = "platform-linux"
-version = "0.36.0"
-source = "git+https://github.com/loonghao/cua.git?rev=be4bbd3eac57796804f43b291a2012dcd2d96896#be4bbd3eac57796804f43b291a2012dcd2d96896"
+version = "0.38.0"
+source = "git+https://github.com/loonghao/cua.git?rev=05f43bda479d01aee512a0c092fb064ce1a330bd#05f43bda479d01aee512a0c092fb064ce1a330bd"
 dependencies = [
  "anyhow",
  "ashpd",
@@ -3604,8 +3604,8 @@ dependencies = [
 
 [[package]]
 name = "platform-macos"
-version = "0.36.0"
-source = "git+https://github.com/loonghao/cua.git?rev=be4bbd3eac57796804f43b291a2012dcd2d96896#be4bbd3eac57796804f43b291a2012dcd2d96896"
+version = "0.38.0"
+source = "git+https://github.com/loonghao/cua.git?rev=05f43bda479d01aee512a0c092fb064ce1a330bd#05f43bda479d01aee512a0c092fb064ce1a330bd"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3643,8 +3643,8 @@ dependencies = [
 
 [[package]]
 name = "platform-windows"
-version = "0.36.0"
-source = "git+https://github.com/loonghao/cua.git?rev=be4bbd3eac57796804f43b291a2012dcd2d96896#be4bbd3eac57796804f43b291a2012dcd2d96896"
+version = "0.38.0"
+source = "git+https://github.com/loonghao/cua.git?rev=05f43bda479d01aee512a0c092fb064ce1a330bd#05f43bda479d01aee512a0c092fb064ce1a330bd"
 dependencies = [
  "anyhow",
  "async-trait",

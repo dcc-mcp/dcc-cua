@@ -130,6 +130,8 @@ impl TrustedTaskActionScope {
     ///
     /// These are action identities, not Host method names such as `browser_click`.
     pub const NATIVE_ACTIONS: &'static [&'static str] = &[
+        "move",
+        "scroll",
         "click",
         "double_click",
         "right_click",
@@ -150,6 +152,7 @@ impl TrustedTaskActionScope {
     pub const RAW_INPUT_CATEGORIES: &'static [&'static str] = &["raw_input", "credential"];
     /// Authorization categories accepted for semantic exact-window input.
     pub const SEMANTIC_CATEGORIES: &'static [&'static str] = &[
+        "task_grant",
         "account_access",
         "account_security",
         "content_change",
@@ -171,9 +174,12 @@ impl TrustedTaskActionScope {
                     || self.is_capture_preparation()
             }
             "browser" => {
-                self.action == "browser_type"
+                (self.action == "browser_type"
                     && self.secret_input
                     && self.authorization_category == "credential"
+                    || self.action == "browser_extension_navigate"
+                        && !self.secret_input
+                        && self.authorization_category == "external_effect")
                     && self
                         .browser_origin
                         .as_deref()
@@ -193,6 +199,7 @@ impl TrustedTaskActionScope {
             "semantic" => {
                 Self::NATIVE_ACTIONS.contains(&self.action.as_str())
                     && Self::SEMANTIC_CATEGORIES.contains(&self.authorization_category.as_str())
+                    && (self.authorization_category != "task_grant" || !self.secret_input)
                     && self.browser_origin.is_none()
             }
             _ => false,
@@ -220,6 +227,15 @@ impl TrustedTaskActionScope {
             });
         }
         let action = request.action.get("action")?.as_str()?;
+        if action == "browser_extension_navigate" {
+            return Some(Self {
+                action: action.into(),
+                input_kind: "browser".into(),
+                secret_input: false,
+                authorization_category: "external_effect".into(),
+                browser_origin: Some(request.action.get("browser_origin")?.as_str()?.into()),
+            });
+        }
         if action == "clipboard_capture_secret" {
             return Some(Self {
                 action: action.to_owned(),
@@ -388,9 +404,18 @@ pub enum TrustedTaskAuthorizationHostError {
 
 #[async_trait]
 pub trait TrustedTaskAuthorizationHost: Send + Sync {
-    /// Optional constructor-owned synchronous admission fence for native video.
+    /// Optional constructor-owned permission for a normal login application.
+    /// It never authorizes protected system processes or widens action scope.
+    fn native_target_authorization(
+        &self,
+        _lease: &TrustedTaskAuthorizationLease,
+    ) -> Option<std::sync::Arc<dcc_cua_core::NativeTaskAuthorization>> {
+        None
+    }
+
+    /// Optional constructor-owned synchronous admission fence for native capture.
     /// Embeddings without a revocation-aware producer fence fail closed for
-    /// recording while retaining their existing non-recording task contracts.
+    /// recording and live observation while retaining ordinary snapshot contracts.
     fn recording_authorization(
         &self,
         _lease: &TrustedTaskAuthorizationLease,

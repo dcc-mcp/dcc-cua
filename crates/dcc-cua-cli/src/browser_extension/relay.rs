@@ -75,7 +75,7 @@ pub(super) async fn run(
                     return Err(std::io::Error::other("unsolicited native response").into());
                 }
                 Some(command) = commands.recv() => {
-                    if matches!(command.body["method"].as_str(), Some("click" | "type"))
+                    if matches!(command.body["method"].as_str(), Some("click" | "type" | "navigate"))
                         && super::current_browser_window(browser_pid).await.ok() != Some(browser_window) {
                         let _ = command.reply.send(json!({"schema":"dcc-cua.browser-extension.v1","type":"response","request_id":command.body["request_id"],"ok":false,"error":{"code":"target_not_foreground","message":"paired native window is no longer foreground; take a fresh observation"}}));
                         continue;

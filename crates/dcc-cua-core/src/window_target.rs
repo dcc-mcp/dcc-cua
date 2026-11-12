@@ -147,6 +147,19 @@ pub(crate) fn validate_target_policy(target: &WindowTarget) -> ComputerUseResult
     validate_observed_application_identity(&target.app_name)
 }
 
+pub(crate) fn validate_target_policy_with_authorization(
+    target: &WindowTarget,
+    session_id: &str,
+    authorization: Option<&crate::NativeTaskAuthorization>,
+) -> ComputerUseResult<()> {
+    if let Some(authorization) = authorization {
+        authorization.validate(session_id, target.pid, target.window_id)?;
+        crate::sensitive_target_policy::validate_authorized_application_identity(&target.app_name)
+    } else {
+        validate_target_policy(target)
+    }
+}
+
 /// Enumerate native window metadata without starting capture, input, or cursor services.
 /// Returns `None` when the platform needs the regular SDK inventory route.
 pub fn native_inventory(

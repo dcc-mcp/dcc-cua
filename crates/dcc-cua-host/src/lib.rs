@@ -23,6 +23,7 @@ mod task_authorization;
 mod task_authorization_broker;
 mod task_authorization_scope;
 mod task_grant;
+mod timing;
 mod wait;
 mod wire;
 use action_confirmation::{
@@ -89,6 +90,10 @@ pub use task_authorization_broker::{
 };
 use task_grant::TaskGrant;
 pub use task_grant::{MAX_APPLICATION_LABEL_CHARS, MAX_TASK_GRANT_ID_CHARS, TaskObservationMode};
+pub use timing::{
+    HOST_TIMING_SCHEMA, HostTimingObserver, HostTimingOutcome, HostTimingPhase,
+    HostTimingRequestKind, HostTimingSample, HostTimingStageSummary,
+};
 use wire::*;
 
 pub const HOST_HELLO_TIMEOUT_MS: u64 = 10_000;
@@ -883,8 +888,8 @@ impl HostAction {
         if self.input_kind == "raw_input" || self.uses_physical_keyboard() {
             return "raw_input".into();
         }
-        accessibility_root
-            .and_then(|root| self.semantic_element(root))
+        let element = accessibility_root.and_then(|root| self.semantic_element(root));
+        element
             .and_then(|element| element["policy_category"].as_str())
             .filter(|category| {
                 matches!(
@@ -900,7 +905,15 @@ impl HostAction {
                         | "publishing"
                 )
             })
-            .unwrap_or("unclassified_sensitive")
+            .unwrap_or_else(|| {
+                if element
+                    .is_some_and(|element| element["policy_tier"].as_str() == Some("task_grant"))
+                {
+                    "task_grant"
+                } else {
+                    "unclassified_sensitive"
+                }
+            })
             .to_owned()
     }
 
@@ -1450,9 +1463,14 @@ where
             await_parallel_request_capacity(&mut parallel_tasks).await;
             let task_driver = driver.clone();
             let task_writer = writer.clone();
+            let timing_observer = security_services.timing_observer.clone();
             parallel_tasks.spawn(async move {
                 let (response, attachment) =
-                    match handle_parallel_request(&task_driver, request).await {
+                    match timing::measure_request(
+                        timing_observer,
+                        HostTimingRequestKind::Other,
+                        handle_parallel_request(&task_driver, request),
+                    ).await {
                         Ok(result) => result,
                         Err(error) => (host_error_response(&error), None),
                     };

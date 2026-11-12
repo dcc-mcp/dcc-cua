@@ -15,6 +15,7 @@ mod driver_factory;
 mod input_state;
 mod interactive_desktop;
 mod live_observation;
+mod native_task_authorization;
 mod observation;
 mod platform_process;
 mod policy;
@@ -32,6 +33,7 @@ pub use contracts::*;
 pub use dcc_cua_showcase::RecordingAuthorization;
 pub use diagnostics_only::diagnostics_only;
 pub use input_state::*;
+pub use native_task_authorization::NativeTaskAuthorization;
 pub use private_worker::run_private_worker;
 #[cfg(target_os = "macos")]
 pub use private_worker::run_private_worker_with_appkit;

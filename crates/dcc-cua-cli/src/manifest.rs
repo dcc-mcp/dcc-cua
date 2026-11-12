@@ -311,6 +311,23 @@ pub(crate) fn document_for_platform(exact_window_pixels_available: bool) -> Valu
     });
     document["connection_lifetime"] = crate::lifetime_diagnostics::manifest_contract();
     document["host"]["task_authorization"]["authorization_owner"] = json!("connected_agent_host");
+    document["host"]["agent_host_workflows"] = json!({
+        "available": exact_window_pixels_available,
+        "platforms": ["windows"],
+        "enabled_by_default": false,
+        "configuration_owner": "trusted_agent_host_process_bootstrap",
+        "required_environment": ["DCC_CUA_WORKFLOW_POLICY", "DCC_CUA_ENVIRONMENT_ID", "DCC_CUA_AGENT_HOST_SESSION_ID"],
+        "start_selector": "workflow_recipe_id",
+        "methods": ["workflow_status", "workflow_cancel", "workflow_rebind"],
+        "exact_owned_process": true,
+        "child_process_handoff": false,
+        "uninstall_entry": "preconfigured_normal_uninstaller",
+        "success_requires": ["allowed_exit_code", "independent_artifact_verification"],
+        "human_boundary_method": "require_user_action",
+        "human_boundary_reasons": ["two_factor", "captcha", "new_legal_terms", "system_permission", "credential_unavailable"],
+        "unrestricted_bypass": false,
+        "secrets_in_recipes": false,
+    });
     document["host"]["task_authorization"]["ipc_can_mint_exact_retained_proposal"] = json!(true);
     if !exact_window_pixels_available {
         let runtime = document["runtime"]

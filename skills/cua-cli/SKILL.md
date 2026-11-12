@@ -50,6 +50,13 @@ indexes are re-resolved against that new tree and can drift. For exact token
 continuity use the persistent MCP task loop. On `stale_observation`, reobserve
 and reassess in the same live task rather than blindly replaying input.
 
+On `completion_unknown`, do not blindly retry input. The code or a timeout
+alone does not prove whether input was sent or the action completed. Preserve
+any typed input/effect facts, take a fresh observation, revalidate the same exact
+process/window target, and inspect the actual result before deciding whether
+further authorized action is needed. If the owning session ended, start a new
+authorized task before observing; do not reuse stale observations or references.
+
 `host-call` also creates a new Host connection each time. A resident Host or
 `host-ensure` does not preserve the old connection's sessions or issue task
 grants. `dcc-cua tools` lists driver tools, not Host IPC methods: `start_session`
@@ -60,12 +67,15 @@ For a visual-only task, select `observation_mode: "pixels_only"` at startup
 to avoid unnecessary accessibility traversal. Keep capture diagnostics off
 except while measuring; their hashes and histograms add work.
 
-If `get_window_state` reports `frame_recovery`, follow its `next_call` on the
-same task, then obtain fresh native state before resizing or observing. A
-maximized or minimized window cannot mint a frame token. If recovery requires
-a new task, request its indicated method within the authorized scope; do not
-ask the user to restore the window until the exact native recovery route has
-failed. Never borrow tokens or infer permission from the recovery hint.
+If resizing is needed and `get_window_state` reports `frame_recovery`, follow
+its `next_call` on the same task, then obtain fresh native state before
+requesting a frame token. A maximized or minimized window cannot mint that
+token. Ordinary snapshots and supported UIA actions do not require a frame
+token; do not restore or activate a maximized window merely to observe it or
+use a supported UIA control. If frame recovery requires a new task, request its
+indicated method within the authorized scope; do not ask the user to restore
+the window until the exact native recovery route has failed. Never borrow
+tokens or infer permission from the recovery hint.
 
 `host-jsonl`/`host-batch` preserve their own connection, not authorization by
 themselves. Treat `invalid_request` as a schema/validation error and
@@ -91,14 +101,24 @@ starting another Host or borrowing a different connection's capability.
 3. Use the latest observation as the only action coordinate/token source:
 
    ```powershell
-   dcc-cua snapshot --pid $pid --window-id $hwnd --activate --output before.png
-   dcc-cua act --pid $pid --window-id $hwnd --action-json '{"action":"click","element_index":12,"delivery_mode":"foreground"}'
+   dcc-cua snapshot --pid $pid --window-id $hwnd --output before.png
+   dcc-cua act --pid $pid --window-id $hwnd --action-json '{"action":"click","element_index":12,"delivery_mode":"background"}'
    dcc-cua act --pid $pid --window-id $hwnd --action-json '{"action":"click","x":100,"y":100,"delivery_mode":"foreground"}' --observation-width $imageWidth --observation-height $imageHeight
    dcc-cua snapshot --pid $pid --window-id $hwnd --output after.png
    dcc-cua verify --pid $pid --window-id $hwnd --expect-json '[{"window":{"exists":true}}]'
    dcc-cua clipboard-write --pid $pid --window-id $hwnd --text "bounded text"
    dcc-cua clipboard-read --pid $pid --window-id $hwnd --include-text
    ```
+
+   Start with passive capture; activation is not a prerequisite for observation.
+   The background semantic example applies only to a supported Windows UIA
+   control from the exact target's fresh accessibility observation. Windows UIA
+   supports `click`, `toggle`, `set_text` and `set_value` on suitable live
+   elements; `type`, `double_click`, coordinates and keyboard actions do not
+   inherit that support. Use the explicitly granted semantic task route for
+   these operations, keep the same target and fresh references, and verify the
+   actual post-action state. Physical input retains foreground and visibility
+   checks. Do not switch task modes merely to bypass refused activation.
 
    Prefer an accessibility element token within the same persistent task. A
    one-shot element index is resolved again against its new snapshot. Use coordinates only for a

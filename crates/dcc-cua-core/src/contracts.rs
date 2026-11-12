@@ -626,6 +626,9 @@ pub struct ComputerUseErrorDetails {
     /// Incomplete discovery candidates are diagnostic only, never target authority.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window_inventory: Option<ComputerUseWindowInventoryDiagnostic>,
+    /// Runtime-owned acknowledgement for cleanup after a failed session start.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub startup_cleanup_confirmed: Option<bool>,
     /// Measurements retained from the rejected native fence; never input authority.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub native_input_fence:

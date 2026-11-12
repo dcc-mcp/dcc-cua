@@ -796,7 +796,7 @@ impl LiveObservation {
         let stream_id = LIVE_OBSERVATION_STREAM_COUNTER.fetch_add(1, Ordering::Relaxed);
         #[cfg(not(windows))]
         {
-            let _ = (capture_exclusion, recording_authorization);
+            let _ = capture_exclusion;
             let fps = request.fps;
             let (sender, receiver) = watch::channel(LiveObservationStatus::default());
             let shutdown = LiveObservationShutdown::default();
@@ -806,6 +806,7 @@ impl LiveObservation {
                     session_id,
                     process_id,
                     window_handle,
+                    recording_authorization,
                 },
                 fps,
                 interrupt_generation(),
@@ -1032,6 +1033,29 @@ struct PortableCaptureTarget {
     session_id: String,
     process_id: u32,
     window_handle: u64,
+    recording_authorization: Option<Arc<dcc_cua_showcase::RecordingAuthorization>>,
+}
+
+#[cfg(any(not(windows), test))]
+fn with_portable_capture_authorization<T>(
+    authorization: Option<&dcc_cua_showcase::RecordingAuthorization>,
+    sender: &watch::Sender<LiveObservationStatus>,
+    work: impl FnOnce() -> T,
+) -> Option<T> {
+    let result = match authorization {
+        Some(authorization) => authorization.with_active(work),
+        None => Ok(work()),
+    };
+    if result.is_err() {
+        sender.send_modify(|status| {
+            status.record_terminal_error(&ComputerUseError::new(
+                ComputerUseErrorCode::InvalidAction,
+                "live capture task authorization expired or was revoked",
+            ));
+            status.latest = None;
+        });
+    }
+    result.ok()
 }
 
 #[cfg(not(windows))]
@@ -1044,11 +1068,15 @@ async fn run_portable_capture_loop(
 ) {
     let interval = std::time::Duration::from_secs_f64(1.0 / f64::from(fps));
     let mut sequence = 0_u64;
+    let authorization = target.recording_authorization.as_deref();
     loop {
         if shutdown.is_requested()
             || sender.is_closed()
             || interrupt_generation_changed(started_interrupt_generation, interrupt_generation())
         {
+            return;
+        }
+        if with_portable_capture_authorization(authorization, &sender, || ()).is_none() {
             return;
         }
         let capture_started = Instant::now();
@@ -1067,16 +1095,25 @@ async fn run_portable_capture_loop(
                 )
             }),
         };
+        if with_portable_capture_authorization(authorization, &sender, || ()).is_none() {
+            return;
+        }
         match capture {
             Ok(frame) => {
                 sequence = frame.sequence();
-                sender.send_modify(|status| {
-                    status.publish_frame(
-                        frame,
-                        capture_started.elapsed(),
-                        "driver_png_decode_preserved",
-                    );
-                });
+                if with_portable_capture_authorization(authorization, &sender, || {
+                    sender.send_modify(|status| {
+                        status.publish_frame(
+                            frame,
+                            capture_started.elapsed(),
+                            "driver_png_decode_preserved",
+                        );
+                    })
+                })
+                .is_none()
+                {
+                    return;
+                }
             }
             Err(error) => match capture_failure_disposition(error) {
                 CaptureFailureDisposition::Terminal(error) => {

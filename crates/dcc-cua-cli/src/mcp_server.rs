@@ -4,6 +4,10 @@ mod capture_popup;
 mod frame_recovery;
 mod interaction_recovery;
 mod owned_host;
+mod start_contract;
+mod transport;
+mod workflows;
+use transport::run_transport;
 
 use std::collections::BTreeMap;
 use std::error::Error;
@@ -26,7 +30,7 @@ use dcc_cua_host::{
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader, BufWriter};
+use tokio::io::{AsyncBufRead, AsyncWrite, BufReader, BufWriter};
 use uuid::Uuid;
 
 use owned_host::{
@@ -219,6 +223,8 @@ impl TaskSurface {
 }
 
 struct TaskProposal {
+    workflow_id: Option<String>,
+    user_action_required: Option<String>,
     surface: TaskSurface,
     observation_mode: TaskObservationMode,
     allowed_methods: Vec<String>,
@@ -252,6 +258,7 @@ struct TaskAuthorizationAuthority {
 }
 
 struct TaskAuthorizationServer {
+    workflows: crate::workflow::WorkflowManager,
     extension_transport: Option<crate::extension_transport::ProviderListener>,
     authority: TaskAuthorizationAuthority,
     proposals: BTreeMap<String, TaskProposal>,
@@ -264,6 +271,7 @@ impl TaskAuthorizationServer {
     fn automatic() -> Self {
         let (issuer, authorization_host) = dcc_cua_host::trusted_task_authorization_broker();
         Self {
+            workflows: crate::workflow::WorkflowManager::disabled(),
             extension_transport: None,
             authority: TaskAuthorizationAuthority {
                 issuer,
@@ -412,165 +420,26 @@ impl TaskAuthorizationServer {
     }
 
     fn prepare_task(&mut self, arguments: Value) -> Result<Value, String> {
-        let authority = &self.authority;
+        self.prepare_scoped_task(arguments, None)
+    }
+
+    fn prepare_scoped_task(
+        &mut self,
+        arguments: Value,
+        owned_workflow: Option<&str>,
+    ) -> Result<Value, String> {
         let input: PrepareTaskInput = serde_json::from_value(arguments)
             .map_err(|error| format!("invalid task request: {error}"))?;
-        if !(1..=MAX_TTL_MINUTES).contains(&input.ttl_minutes) {
-            return Err(format!(
-                "ttl_minutes must be between 1 and {MAX_TTL_MINUTES}"
-            ));
-        }
-        validate_allowed_methods(input.surface, &input.allowed_methods)?;
-        validate_native_lifecycle_methods(&input.allowed_methods)?;
-        capture_popup::validate_start(&input)?;
-        let preparation_requested = input
-            .allowed_methods
-            .iter()
-            .any(|method| method.starts_with("capture_preparation_"));
-        let preparation_action = input
-            .allowed_actions
-            .iter()
-            .any(TrustedTaskActionScope::is_capture_preparation);
-        if input.allow_capture_preparation != preparation_requested
-            || input.allow_capture_preparation != preparation_action
-            || (input.allow_capture_preparation
-                && (input.surface != TaskSurface::Window
-                    || input.observation_mode != TaskObservationMode::PixelsOnly
-                    || ![
-                        "get_window_state",
-                        "capture_preparation_begin",
-                        "capture_preparation_state",
-                        "capture_preparation_stop",
-                    ]
-                    .iter()
-                    .all(|required| {
-                        input
-                            .allowed_methods
-                            .iter()
-                            .any(|method| method == required)
-                    })))
-        {
-            return Err("capture preparation requires explicit allow_capture_preparation=true, pixels_only exact window, get_window_state, complete begin/state/stop and its closed action scope".into());
-        }
-        let requested_recording = input
-            .allowed_methods
-            .iter()
-            .any(|method| method.starts_with("recording_"));
-        if input.allow_recording != requested_recording
-            || (input.allow_recording
-                && (input.observation_mode != TaskObservationMode::PixelsOnly
-                    || input.surface != TaskSurface::Window
-                    || !["recording_start", "recording_state", "recording_stop"]
-                        .iter()
-                        .all(|required| {
-                            input
-                                .allowed_methods
-                                .iter()
-                                .any(|method| method == required)
-                        })))
-        {
-            return Err("recording methods require explicit allow_recording=true on a pixels_only window task".into());
-        }
-        if input.observation_mode == TaskObservationMode::PixelsOnly {
-            if input.surface != TaskSurface::Window
-                || !matches!(input.target_process_id, Some(pid) if pid != 0)
-                || !matches!(input.target_window_handle, Some(hwnd) if hwnd != 0)
-                || input.owned_browser_launch.is_some()
-                || !input.allowed_browser_origins.is_empty()
-            {
+        if let Some(pid) = input.target_process_id {
+            if let Some(workflow) = owned_workflow {
+                self.workflows.authorizes_process(workflow, pid)?;
+            } else if self.workflows.owns_process(pid) {
                 return Err(
-                    "pixels_only requires the window surface with an exact PID/HWND".into(),
+                    "an owned workflow process requires its recipe-bound task scope".into(),
                 );
             }
-            if input
-                .allowed_methods
-                .iter()
-                .any(|method| !input.observation_mode.permits_method(method))
-                || input.allowed_actions.iter().any(|action| {
-                    !action.is_window_minimize()
-                        && !action.is_window_frame()
-                        && !action.is_native_menu_dismiss()
-                        && !action.is_capture_preparation()
-                        && !action.is_pixels_input()
-                })
-            {
-                return Err(
-                    "pixels_only permits only closed native window_state or covered raw_input scopes, without semantic/browser methods or secrets"
-                        .into(),
-                );
-            }
-            if input
-                .allowed_methods
-                .iter()
-                .any(|method| method == "execute_action")
-                && !input
-                    .allowed_actions
-                    .iter()
-                    .any(TrustedTaskActionScope::is_pixels_input)
-            {
-                return Err("pixels_only execute_action requires an actual supported raw_input action scope".into());
-            }
         }
-        if input
-            .allowed_actions
-            .iter()
-            .any(TrustedTaskActionScope::is_native_menu_dismiss)
-            && (input.observation_mode != TaskObservationMode::PixelsOnly
-                || input.surface != TaskSurface::Window
-                || !["get_window_state", "change_window_state"]
-                    .iter()
-                    .all(|required| {
-                        input
-                            .allowed_methods
-                            .iter()
-                            .any(|method| method == required)
-                    }))
-        {
-            return Err("dismiss_menu requires explicit pixels_only exact window, get_window_state, change_window_state and its independent window_state action scope".into());
-        }
-        if input
-            .allowed_methods
-            .iter()
-            .any(|method| method == "set_window_frame")
-            && (input.observation_mode != TaskObservationMode::PixelsOnly
-                || !input
-                    .allowed_actions
-                    .iter()
-                    .any(TrustedTaskActionScope::is_window_frame)
-                || !input
-                    .allowed_methods
-                    .iter()
-                    .any(|method| method == "get_window_state"))
-        {
-            return Err("set_window_frame requires explicit pixels_only, get_window_state, and its closed window_state action scope".into());
-        }
-        if input
-            .allowed_methods
-            .iter()
-            .any(|method| method == "minimize_window")
-            && !input
-                .allowed_actions
-                .iter()
-                .any(TrustedTaskActionScope::is_window_minimize)
-        {
-            return Err(
-                "minimize_window requires the closed window_state/minimize_window action scope"
-                    .into(),
-            );
-        }
-        let allowed_browser_origins = input
-            .allowed_browser_origins
-            .iter()
-            .cloned()
-            .chain(
-                input
-                    .allowed_actions
-                    .iter()
-                    .filter_map(|action| action.browser_origin.clone()),
-            )
-            .collect::<std::collections::BTreeSet<_>>()
-            .into_iter()
-            .collect::<Vec<_>>();
+        let allowed_browser_origins = start_contract::validate_task_start(&input, false)?;
         let target = match (
             input.target_process_id,
             input.target_window_handle,
@@ -609,12 +478,7 @@ impl TaskAuthorizationServer {
             }
         };
         let now = unix_time_millis();
-        self.proposals.retain(|_, proposal| {
-            proposal.session.is_some() || proposal.registration.expires_at_unix_ms > now
-        });
-        if self.proposals.len() >= MAX_PENDING_TASKS {
-            return Err("too many live tasks".into());
-        }
+        self.ensure_task_capacity()?;
         let proposal_id = format!("task-{}", Uuid::new_v4());
         let capture_preparation = if input.allow_capture_preparation {
             let root = self.capture_preparation_journal_root.as_ref().ok_or_else(||
@@ -670,6 +534,16 @@ impl TaskAuthorizationServer {
             capture_preparation,
             expires_at_unix_ms: now.saturating_add(input.ttl_minutes * 60_000),
         };
+        let retained_deadline = owned_workflow
+            .map(|id| self.workflows.authorization_deadline(id))
+            .transpose()?;
+        if owned_workflow.is_some() {
+            registration.expires_at_unix_ms = registration.expires_at_unix_ms.min(
+                self.workflows
+                    .expires_at_unix_ms()
+                    .ok_or("workflow policy is unavailable")?,
+            );
+        }
         registration.validate().map_err(|error| error.to_string())?;
         if input.allow_recording {
             let root = self.recording_output_root.as_ref().ok_or_else(||
@@ -685,11 +559,17 @@ impl TaskAuthorizationServer {
             registration.recording_output_dir = Some(directory.to_string_lossy().into_owned());
             registration.validate().map_err(|error| error.to_string())?;
         }
-        let receipt = authority
-            .issuer
-            .register(registration.clone())
-            .map_err(|error| error.to_string())?;
+        let receipt = match retained_deadline {
+            Some(deadline) => self
+                .authority
+                .issuer
+                .register_with_monotonic_deadline(registration.clone(), deadline),
+            None => self.authority.issuer.register(registration.clone()),
+        }
+        .map_err(|error| error.to_string())?;
         let proposal = TaskProposal {
+            workflow_id: None,
+            user_action_required: None,
             surface: input.surface,
             observation_mode: input.observation_mode,
             allowed_methods: input.allowed_methods,
@@ -707,6 +587,13 @@ impl TaskAuthorizationServer {
     }
 
     async fn start_automatic_task(&mut self, arguments: Value) -> Result<Value, String> {
+        if arguments.get("workflow_recipe_id").is_some() {
+            return self.start_workflow_task(arguments).await;
+        }
+        self.start_exact_task(arguments).await
+    }
+
+    async fn start_exact_task(&mut self, arguments: Value) -> Result<Value, String> {
         let prepared = self.prepare_task(arguments)?;
         let proposal_id = prepared["task_id"]
             .as_str()
@@ -726,6 +613,7 @@ impl TaskAuthorizationServer {
     }
 
     async fn revoke_task(&mut self, arguments: Value) -> Result<Value, String> {
+        let workflow_cleanup = self.stop_task_workflow(&arguments);
         let authority = &self.authority;
         let proposal_id = required_string(&arguments, "task_id")?;
         let proposal = self
@@ -734,11 +622,15 @@ impl TaskAuthorizationServer {
             .ok_or_else(|| crate::lifetime_diagnostics::TASK_NOT_FOUND.to_owned())?;
         if proposal.revoked {
             finish_owned_host_task(proposal).await;
-            return Ok(proposal_payload(
+            let mut payload = proposal_payload(
                 proposal_id,
                 proposal,
                 stopped_task_status(proposal.cleanup.as_ref()),
-            ));
+            );
+            if let Some(cleanup) = workflow_cleanup {
+                payload["workflow"] = cleanup;
+            }
+            return Ok(payload);
         }
         let receipt = proposal
             .receipt
@@ -755,18 +647,25 @@ impl TaskAuthorizationServer {
         );
         proposal.cleanup = Some(match proposal.session.take() {
             Some(session) => stop_owned_task_session(session).await,
-            None if !proposal.session_open_attempted => {
-                json!({"success":true,"active":false,"cleanup_pending":false,"cleanup_issues":[]})
-            }
-            None => json!({"success":false,"active":null,"cleanup_pending":true,
-                "error":"task session startup did not return an owned session cleanup acknowledgement"}),
+            None => proposal.cleanup.clone().unwrap_or_else(|| {
+                if proposal.session_open_attempted {
+                    json!({"success":false,"active":null,"cleanup_pending":true,
+                        "error":"task session startup did not return an owned session cleanup acknowledgement"})
+                } else {
+                    json!({"success":true,"active":false,"cleanup_pending":false,"cleanup_issues":[]})
+                }
+            }),
         });
         finish_owned_host_task(proposal).await;
-        Ok(proposal_payload(
+        let mut payload = proposal_payload(
             proposal_id,
             proposal,
             stopped_task_status(proposal.cleanup.as_ref()),
-        ))
+        );
+        if let Some(cleanup) = workflow_cleanup {
+            payload["workflow"] = cleanup;
+        }
+        Ok(payload)
     }
 
     async fn shutdown_tasks(&mut self) -> Vec<Value> {
@@ -811,6 +710,9 @@ impl TaskAuthorizationServer {
             .ok_or_else(|| crate::lifetime_diagnostics::TASK_NOT_FOUND.to_owned())?;
         if proposal.revoked {
             return Err(crate::lifetime_diagnostics::TASK_STOPPED.into());
+        }
+        if proposal.user_action_required.is_some() {
+            return Err("task requires user action; stop it and obtain a fresh Agent Host task authorization".into());
         }
         if proposal.registration.expires_at_unix_ms <= unix_time_millis() {
             return Err(crate::lifetime_diagnostics::TASK_EXPIRED.into());
@@ -857,13 +759,15 @@ impl TaskAuthorizationServer {
         }))
     }
 
-    fn task_status(&self, arguments: Value) -> Result<Value, String> {
+    fn task_status(&mut self, arguments: Value) -> Result<Value, String> {
         let proposal_id = required_string(&arguments, "task_id")?;
         let proposal = self
             .proposals
             .get(proposal_id)
             .ok_or_else(|| crate::lifetime_diagnostics::TASK_NOT_FOUND.to_owned())?;
-        let status = if proposal.revoked {
+        let status = if proposal.user_action_required.is_some() && !proposal.revoked {
+            "needs_user_action"
+        } else if proposal.revoked {
             stopped_task_status(proposal.cleanup.as_ref())
         } else if proposal.registration.expires_at_unix_ms <= unix_time_millis() {
             "expired"
@@ -876,10 +780,25 @@ impl TaskAuthorizationServer {
         } else {
             "initializing"
         };
-        Ok(proposal_payload(proposal_id, proposal, status))
+        let mut payload = proposal_payload(proposal_id, proposal, status);
+        payload["user_action_reason"] = json!(proposal.user_action_required);
+        if let Some(id) = proposal.workflow_id.as_deref() {
+            payload["workflow"] = self.workflows.status(id)?;
+        }
+        Ok(payload)
     }
 
     async fn task_call(&mut self, arguments: Value) -> Result<Value, String> {
+        if arguments.get("method").and_then(Value::as_str) == Some("require_user_action") {
+            return self.require_user_action(arguments).map(tool_result);
+        }
+        if arguments
+            .get("method")
+            .and_then(Value::as_str)
+            .is_some_and(|method| method.starts_with("workflow_"))
+        {
+            return self.workflow_call(arguments).await.map(tool_result);
+        }
         let proposal_id = required_string(&arguments, "task_id")?.to_owned();
         let method = required_string(&arguments, "method")?.to_owned();
         let mut params = arguments
@@ -888,12 +807,16 @@ impl TaskAuthorizationServer {
             .cloned()
             .ok_or_else(|| "task call params must be an object".to_owned())?;
         validate_task_method_params(&method, &params)?;
+        self.validate_workflow_process(&proposal_id).await?;
         let proposal = self
             .proposals
             .get_mut(&proposal_id)
             .ok_or_else(|| crate::lifetime_diagnostics::TASK_NOT_FOUND.to_owned())?;
         if proposal.revoked {
             return Err(crate::lifetime_diagnostics::TASK_STOPPED.into());
+        }
+        if proposal.user_action_required.is_some() {
+            return Err("task requires user action; no automatic retry is authorized".into());
         }
         if proposal.registration.expires_at_unix_ms <= unix_time_millis() {
             return Err(crate::lifetime_diagnostics::TASK_EXPIRED.into());
@@ -1025,7 +948,21 @@ async fn open_task_session(
     client
         .open_logical_task_session(task_session_id(proposal_id), grant, DEFAULT_IDLE_TIMEOUT_MS)
         .await
-        .map_err(|error| error.to_string())
+        .map_err(|error| {
+            if let HostClientError::Remote { response, .. } = &error {
+                proposal.cleanup = startup_cleanup_receipt(response);
+            }
+            error.to_string()
+        })
+}
+
+fn startup_cleanup_receipt(response: &Value) -> Option<Value> {
+    response["details"]["startup_cleanup_confirmed"]
+        .as_bool()
+        .map(|confirmed| {
+            json!({"success":confirmed, "active":if confirmed {Some(false)} else {None},
+            "cleanup_pending":!confirmed, "cleanup_issues":[]})
+        })
 }
 
 fn task_session_grant(proposal: &TaskProposal, receipt: &TrustedTaskAuthorizationReceipt) -> Value {
@@ -1134,12 +1071,28 @@ fn validate_task_method_params(method: &str, params: &Value) -> Result<(), Strin
     if method == "browser_extension_call"
         && !matches!(
             params.get("method").and_then(Value::as_str),
-            Some("snapshot" | "click" | "type")
+            Some("snapshot" | "click" | "type" | "navigate")
         )
     {
         return Err(
-            "the task bridge permits only extension snapshot, click, and non-secret type".into(),
+            "the task bridge permits only extension snapshot, click, non-secret type, and granted navigation".into(),
         );
+    }
+    if method == "browser_extension_call" && params["method"] == "navigate" {
+        let valid = params["params"].as_object().is_some_and(|object| {
+            object.len() == 2
+                && object
+                    .get("snapshot_id")
+                    .and_then(Value::as_str)
+                    .is_some_and(|id| !id.is_empty() && id.len() <= 128)
+                && object
+                    .get("url")
+                    .and_then(Value::as_str)
+                    .is_some_and(|url| !url.is_empty() && url.len() <= 2048)
+        });
+        if !valid {
+            return Err("extension navigation accepts only bounded snapshot_id and url".into());
+        }
     }
     if method == "capture_preparation_begin" {
         let object = params
@@ -1490,6 +1443,17 @@ fn task_action_scope_schema() -> Value {
             native_menu_dismiss_scope_schema(),
             capture_preparation_scope_schema(),
             {
+                "title": "Exact-origin paired extension navigation",
+                "type": "object", "additionalProperties": false,
+                "required": ["action", "input_kind", "secret_input", "authorization_category", "browser_origin"],
+                "properties": {
+                    "action": {"const": "browser_extension_navigate"},
+                    "input_kind": {"const": "browser"}, "secret_input": {"const": false},
+                    "authorization_category": {"const": "external_effect"},
+                    "browser_origin": {"type":"string", "minLength":1, "maxLength":2048, "pattern":"^https?://[^/?#@]+$"}
+                }
+            },
+            {
                 "title": "Semantic exact-window input",
                 "type": "object",
                 "additionalProperties": false,
@@ -1560,7 +1524,7 @@ fn tool_definitions() -> Vec<Value> {
         json!({
             "name": "start_task",
             "title": "Start DCC-CUA task",
-            "description": "Start one exact bounded DCC-CUA task without a secondary confirmation step. Keep this mcp-server stdio connection open through stop_task: task IDs, observations and opaque refs are connection/session-scoped and cannot be resumed after reconnecting. The connected Agent Host owns user authorization. observation_mode defaults to semantic; explicitly choose pixels_only for an exact window snapshot without UIA or semantic selectors. Pixels-only tasks require complete exact-window capture proof and grant only closed native window_state methods or the advertised non-secret raw_input actions. Explicit set_window_frame requires get_window_state and its own action scope. Native dismiss_menu requires its independent window_state/dismiss_menu action scope plus get_window_state and change_window_state. These grant no raw input or recording. Each input requires the latest observation and a foreground, unchanged native instance. Pointer locations must be unredacted and natively reachable; keyboard and text require complete visibility. Explicit allow_recording=true grants native video-only recording_start/state/stop in an operator-owned task directory. Live observation and recording reuse the same native source, without an accessibility tree or trajectory.",
+            "description": "Start one exact bounded DCC-CUA task without a secondary confirmation step. Keep this mcp-server stdio connection open through stop_task: task IDs, observations and opaque refs are connection/session-scoped and cannot be resumed after reconnecting. The connected Agent Host owns user authorization. observation_mode defaults to semantic; explicitly choose pixels_only for an exact window snapshot without UIA or semantic selectors. Pixels-only tasks require complete exact-window capture proof and grant only closed native window_state methods or the advertised non-secret raw_input actions. Explicit set_window_frame requires get_window_state and its own action scope. Native dismiss_menu requires its independent window_state/dismiss_menu action scope plus get_window_state and change_window_state. These grant no raw input or recording. Capture does not require foreground activation. Every action requires the latest observation and an unchanged native instance. Explicitly granted semantic tasks may use background Windows UIA click, toggle, set_text or set_value on supported fresh same-task UIA elements; other semantic actions do not imply background support. Physical input requires the exact target in the foreground. Pointer locations must be unredacted and natively reachable; physical keyboard and text input require complete visibility. Explicit allow_recording=true grants native video-only recording_start/state/stop in an operator-owned task directory. Live observation and recording reuse the same native source, without an accessibility tree or trajectory.",
             "inputSchema": {
                 "type": "object",
                 "additionalProperties": false,
@@ -1719,7 +1683,7 @@ fn tool_definitions() -> Vec<Value> {
         json!({
             "name": "dcc_cua_task_call",
             "title": "Run DCC-CUA task call",
-            "description": "Call one closed Host method on the same MCP connection after start_task returned its provider/runtime/PID/HWND binding. Keep snapshot and action in that same task; observation IDs and opaque references are not reusable after reconnecting or in another CLI invocation. A pixels_only snapshot yields a formal observation_id and accessibility_available=false, without semantic element tokens. Its optional capture_diagnostics boolean defaults to false; true adds bounded byte hashes, histograms, timing, and native provenance for the existing two captures without changing pixels or input authority. Semantic snapshots reject this diagnostic opt-in. Its execute_action requires a granted supported raw_input action and that latest observation_id; omit accessibility_state_id, element selectors, secret handles, and input_backend_id. Delivery is foreground only, without implicit activation. Pixels-only window state and typed activation refusals expose interaction_recovery: snapshot permission is independent of foreground input readiness. Native background viability hints never authorize closed-bridge background input. Do not blindly retry refused activation. Use capture_after for a fresh pixel post-action observation; semantic post snapshots are refused. minimize_window requires the latest observation and same native instance, consumes it after an attempt, and reports native minimized state. set_window_frame requires a one-use window_state_id from explicit get_window_state no more than five seconds old, and frame={x,y,width,height} in exact i32 physical pixels with checked extents. It moves the same full native instance without activation or z-order change and confirms only an exact bounded native readback; every attempt consumes metadata and prior pixel evidence. Its response state does not mint another token. change_window_state also accepts dismiss_menu only with its independent window_state/dismiss_menu action scope and a one-use window_state_id copied from get_window_state.menu_dismiss_window_state_id, at most five seconds old. Frame and snapshot tokens cannot authorize menu dismissal. It sends one bounded standard native cancellation without activation, keyboard input or application close. Confirmed requires popup_hidden_or_gone, menu_inactive and owner_alive; an unconfirmed attempt is never success and must not be blindly retried. Every attempt consumes metadata and prior observations. Take a fresh observation afterward. Out-of-scope, expired, stopped, changed, or stale targets fail without prompting. Recording requires explicit allow_recording and an immutable task output directory; call recording_start with an empty params object for video-only output. Granted live_observation_start/state/stop expose the same native source. Recording start validates the actual first encoded frame, state reports source pauses and failures, and stop awaits video/sidecar finalization. Never pass credential values; use secret handles in supported semantic/browser tasks.",
+            "description": "Call one closed Host method on the same MCP connection after start_task returned its provider/runtime/PID/HWND binding. Keep snapshot and action in that same task; observation IDs and opaque references are not reusable after reconnecting or in another CLI invocation. In explicitly granted semantic tasks, supported Windows UIA click, toggle, set_text or set_value may use delivery_mode=background with the latest observation_id, accessibility_state_id and same-task UIA element reference. Take a fresh semantic snapshot and verify the actual post-action state; type, double_click, coordinates and keyboard input do not inherit this UIA background support. A pixels_only snapshot yields a formal observation_id and accessibility_available=false, without semantic element tokens. Its optional capture_diagnostics boolean defaults to false; true adds bounded byte hashes, histograms, timing, and native provenance for the existing two captures without changing pixels or input authority. Semantic snapshots reject this diagnostic opt-in. Its execute_action requires a granted supported raw_input action and that latest observation_id; omit accessibility_state_id, element selectors, secret handles, and input_backend_id. Pixels-only delivery is foreground only, without implicit activation. Pixels-only window state and typed activation refusals expose interaction_recovery: snapshot permission is independent of foreground input readiness. Native background viability hints never authorize pixels-only background input or a task-mode switch to bypass refusal. Do not blindly retry refused activation. In pixels_only tasks, use capture_after for a fresh pixel post-action observation; semantic post snapshots are refused in that mode. minimize_window requires the latest observation and same native instance, consumes it after an attempt, and reports native minimized state. set_window_frame requires a one-use window_state_id from explicit get_window_state no more than five seconds old, and frame={x,y,width,height} in exact i32 physical pixels with checked extents. It moves the same full native instance without activation or z-order change and confirms only an exact bounded native readback; every attempt consumes metadata and prior pixel evidence. Its response state does not mint another token. change_window_state also accepts dismiss_menu only with its independent window_state/dismiss_menu action scope and a one-use window_state_id copied from get_window_state.menu_dismiss_window_state_id, at most five seconds old. Frame and snapshot tokens cannot authorize menu dismissal. It sends one bounded standard native cancellation without activation, keyboard input or application close. Confirmed requires popup_hidden_or_gone, menu_inactive and owner_alive; an unconfirmed attempt is never success and must not be blindly retried. Every attempt consumes metadata and prior observations. Take a fresh observation afterward. Out-of-scope, expired, stopped, changed, or stale targets fail without prompting. Recording requires explicit allow_recording and an immutable task output directory; call recording_start with an empty params object for video-only output. Granted live_observation_start/state/stop expose the same native source. Recording start validates the actual first encoded frame, state reports source pauses and failures, and stop awaits video/sidecar finalization. Never pass credential values; use secret handles in supported semantic/browser tasks.",
             "inputSchema": {
                 "type": "object",
                 "additionalProperties": false,
@@ -1800,6 +1764,7 @@ fn tool_definitions() -> Vec<Value> {
     ];
     tools[0]["inputSchema"]["properties"]["allow_native_capture_popup_keyboard"] =
         capture_popup::owner_schema();
+    workflows::extend_tool_schema(&mut tools);
     tools
 }
 
@@ -2054,11 +2019,20 @@ fn runtime_build() -> RuntimeBuildIdentity {
 
 pub async fn run(diagnostics_dir: Option<std::path::PathBuf>) -> Result<(), Box<dyn Error>> {
     let mut server = TaskAuthorizationServer::automatic();
+    server.workflows = workflows::startup_policy()?;
     server.diagnostics = Some(ConnectionDiagnostics::new(runtime_build(), diagnostics_dir));
     let mut input = BufReader::new(tokio::io::stdin());
     let mut output = BufWriter::new(tokio::io::stdout());
+    run_connection(server, &mut input, &mut output).await
+}
+
+async fn run_connection<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin>(
+    mut server: TaskAuthorizationServer,
+    input: &mut R,
+    output: &mut W,
+) -> Result<(), Box<dyn Error>> {
     let mut reason = CloseReason::InputError;
-    let result = run_transport(&mut server, &mut input, &mut output, &mut reason).await;
+    let result = run_transport(&mut server, input, output, &mut reason).await;
     // Preserve the last observed task/Host associations at disconnect. Dropping
     // transports below does not attest that Host cleanup has finished.
     server.update_diagnostics();
@@ -2068,8 +2042,12 @@ pub async fn run(diagnostics_dir: Option<std::path::PathBuf>) -> Result<(), Box<
     // Finalize only this connection's owned task sessions before dropping their
     // transports. Read-only diagnostics retain the last observed associations.
     let cleanup_failures = server.shutdown_tasks().await;
+    let workflow_cleanup = server.workflows.stop_all();
+    if let Some(diagnostics) = server.diagnostics.as_mut() {
+        diagnostics.cleanup_finished(cleanup_failures.len());
+    }
     server.proposals.clear();
-    if cleanup_failures.is_empty() {
+    if cleanup_failures.is_empty() && workflow_cleanup["success"] != false {
         result
     } else {
         Err(std::io::Error::other(format!(
@@ -2082,82 +2060,6 @@ pub async fn run(diagnostics_dir: Option<std::path::PathBuf>) -> Result<(), Box<
         ))
         .into())
     }
-}
-
-async fn run_transport(
-    server: &mut TaskAuthorizationServer,
-    input: &mut BufReader<tokio::io::Stdin>,
-    output: &mut BufWriter<tokio::io::Stdout>,
-    reason: &mut CloseReason,
-) -> Result<(), Box<dyn Error>> {
-    loop {
-        *reason = CloseReason::InputError;
-        let mut line = Vec::new();
-        let count = (&mut *input)
-            .take(dcc_cua_protocol::MAX_JSON_FRAME_BYTES as u64 + 1)
-            .read_until(b'\n', &mut line)
-            .await?;
-        if count == 0 {
-            *reason = CloseReason::StdinEof;
-            break;
-        }
-        if let Some(diagnostics) = server.diagnostics.as_mut() {
-            diagnostics.activity();
-        }
-        if count > dcc_cua_protocol::MAX_JSON_FRAME_BYTES {
-            *reason = CloseReason::FrameLimit;
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "MCP request exceeds frame limit",
-            )
-            .into());
-        }
-        if line.iter().all(u8::is_ascii_whitespace) {
-            continue;
-        }
-        let decoded: Value = match serde_json::from_slice(&line) {
-            Ok(value) => value,
-            Err(_) => {
-                *reason = CloseReason::OutputError;
-                output
-                    .write_all(
-                        format!("{}\n", rpc_error(Value::Null, -32700, "Parse error")).as_bytes(),
-                    )
-                    .await?;
-                output.flush().await?;
-                continue;
-            }
-        };
-        if let Some(diagnostics) = server.diagnostics.as_mut() {
-            diagnostics.set_request_in_flight(true);
-        }
-        let mut responses = Vec::new();
-        if let Some(batch) = decoded.as_array() {
-            for message in batch {
-                if let Some(response) = server.handle_rpc(message.clone()).await {
-                    responses.push(response);
-                }
-            }
-        } else if let Some(response) = server.handle_rpc(decoded).await {
-            responses.push(response);
-        }
-        server.update_diagnostics();
-        if let Some(diagnostics) = server.diagnostics.as_mut() {
-            diagnostics.set_request_in_flight(false);
-        }
-        if responses.is_empty() {
-            continue;
-        }
-        let response = if responses.len() == 1 {
-            responses.remove(0)
-        } else {
-            Value::Array(responses)
-        };
-        *reason = CloseReason::OutputError;
-        output.write_all(format!("{response}\n").as_bytes()).await?;
-        output.flush().await?;
-    }
-    Ok(())
 }
 
 #[cfg(test)]

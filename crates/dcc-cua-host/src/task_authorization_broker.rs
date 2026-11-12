@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use async_trait::async_trait;
 use thiserror::Error;
@@ -113,6 +114,23 @@ impl TrustedTaskAuthorizationIssuer {
         &self,
         registration: TrustedTaskAuthorizationRegistration,
     ) -> Result<TrustedTaskAuthorizationReceipt, TrustedTaskAuthorizationBrokerError> {
+        self.register_inner(registration, None)
+    }
+
+    /// A trusted embedding may tighten lifetime with an already-retained deadline.
+    pub fn register_with_monotonic_deadline(
+        &self,
+        registration: TrustedTaskAuthorizationRegistration,
+        deadline: Instant,
+    ) -> Result<TrustedTaskAuthorizationReceipt, TrustedTaskAuthorizationBrokerError> {
+        self.register_inner(registration, Some(deadline))
+    }
+
+    fn register_inner(
+        &self,
+        registration: TrustedTaskAuthorizationRegistration,
+        deadline: Option<Instant>,
+    ) -> Result<TrustedTaskAuthorizationReceipt, TrustedTaskAuthorizationBrokerError> {
         registration.validate()?;
         let now = crate::task_authorization::unix_time_millis();
         let mut state = self
@@ -132,6 +150,18 @@ impl TrustedTaskAuthorizationIssuer {
             }
         };
         let expires_at_unix_ms = registration.expires_at_unix_ms;
+        let recording_authorization = Arc::new(match deadline {
+            Some(deadline) => dcc_cua_core::RecordingAuthorization::with_monotonic_deadline(
+                expires_at_unix_ms,
+                deadline,
+            ),
+            None => dcc_cua_core::RecordingAuthorization::new(expires_at_unix_ms),
+        });
+        recording_authorization.with_active(|| ()).map_err(|_| {
+            TrustedTaskAuthorizationBrokerError::InvalidRegistration {
+                reason: "the retained task deadline has expired".into(),
+            }
+        })?;
         let window_capability = format!("cua-window-{}", Uuid::new_v4());
         state.authorizations.insert(
             authorization_id.clone(),
@@ -140,9 +170,8 @@ impl TrustedTaskAuthorizationIssuer {
                 window_capability: window_capability.clone(),
                 binding: None,
                 revoked: false,
-                recording_authorization: Arc::new(dcc_cua_core::RecordingAuthorization::new(
-                    expires_at_unix_ms,
-                )),
+                native_target_authorization: None,
+                recording_authorization,
             },
         );
         Ok(TrustedTaskAuthorizationReceipt {
@@ -166,6 +195,9 @@ impl TrustedTaskAuthorizationIssuer {
             .ok_or(TrustedTaskAuthorizationBrokerError::NotFound)?;
         record.revoked = true;
         record.recording_authorization.revoke();
+        if let Some(authorization) = &record.native_target_authorization {
+            authorization.revoke();
+        }
         Ok(())
     }
 }
@@ -187,6 +219,12 @@ pub fn trusted_task_authorization_broker() -> (
     )
 }
 
+impl BrokerRecord {
+    fn is_active(&self) -> bool {
+        !self.revoked && self.recording_authorization.with_active(|| ()).is_ok()
+    }
+}
+
 #[derive(Default)]
 struct BrokerState {
     authorizations: BTreeMap<String, BrokerRecord>,
@@ -198,6 +236,7 @@ struct BrokerRecord {
     binding: Option<BrokerBinding>,
     revoked: bool,
     recording_authorization: Arc<dcc_cua_core::RecordingAuthorization>,
+    native_target_authorization: Option<Arc<dcc_cua_core::NativeTaskAuthorization>>,
 }
 
 struct BrokerBinding {
@@ -214,6 +253,37 @@ struct BrokerHost {
 
 #[async_trait]
 impl TrustedTaskAuthorizationHost for BrokerHost {
+    fn native_target_authorization(
+        &self,
+        lease: &TrustedTaskAuthorizationLease,
+    ) -> Option<Arc<dcc_cua_core::NativeTaskAuthorization>> {
+        let state = self.state.lock().ok()?;
+        let record = state.authorizations.get(&lease.authorization_id)?;
+        let binding = record.binding.as_ref()?;
+        if !record.is_active()
+            || record.registration.expires_at_unix_ms != lease.expires_at_unix_ms
+            || record.registration.expires_at_unix_ms
+                <= crate::task_authorization::unix_time_millis()
+            || binding.connection_id != lease.connection_id
+            || binding.session_id != lease.session_id
+            || binding.lease_request_digest != lease.request_digest
+            || binding.target_process_id != lease.target_process_id
+            || binding.target_window_handle != lease.target_window_handle
+            || record.window_capability != lease.window_capability
+            || record.registration.task_grant_id != lease.task_grant_id
+            || record.registration.application_label != lease.application_label
+            || record.registration.allowed_actions != lease.allowed_actions
+            || record.registration.allowed_host_methods != lease.allowed_host_methods
+            || record.registration.allowed_browser_origins != lease.allowed_browser_origins
+            || record.registration.browser_scope != lease.browser_scope
+            || record.registration.recording_output_dir != lease.recording_output_dir
+            || record.registration.capture_preparation != lease.capture_preparation
+        {
+            return None;
+        }
+        record.native_target_authorization.as_ref().map(Arc::clone)
+    }
+
     fn recording_authorization(
         &self,
         lease: &TrustedTaskAuthorizationLease,
@@ -221,7 +291,7 @@ impl TrustedTaskAuthorizationHost for BrokerHost {
         let state = self.state.lock().ok()?;
         let record = state.authorizations.get(&lease.authorization_id)?;
         let binding = record.binding.as_ref()?;
-        if record.revoked
+        if !record.is_active()
             || record.registration.expires_at_unix_ms != lease.expires_at_unix_ms
             || binding.connection_id != lease.connection_id
             || binding.session_id != lease.session_id
@@ -276,7 +346,7 @@ impl TrustedTaskAuthorizationHost for BrokerHost {
                 .as_deref()
                 .is_none_or(|expected| request.connection_id == expected)
             && target_matches;
-        if record.revoked
+        if !record.is_active()
             || record.binding.is_some()
             || registration.expires_at_unix_ms <= now
             || !exact_match
@@ -290,6 +360,34 @@ impl TrustedTaskAuthorizationHost for BrokerHost {
             target_process_id: request.target_process_id,
             target_window_handle: request.target_window_handle,
         });
+        if registration.allowed_actions.iter().any(|action| {
+            matches!(
+                action.authorization_category.as_str(),
+                "credential" | "account_access"
+            ) && match action.input_kind.as_str() {
+                "semantic" | "raw_input" => registration
+                    .allowed_host_methods
+                    .iter()
+                    .any(|method| method == "execute_action"),
+                "browser" => {
+                    action.action == "browser_type"
+                        && action.secret_input
+                        && registration
+                            .allowed_host_methods
+                            .iter()
+                            .any(|method| method == "browser_type")
+                }
+                _ => false,
+            }
+        }) {
+            record.native_target_authorization = Some(Arc::new(
+                dcc_cua_core::NativeTaskAuthorization::with_shared_lifetime(
+                    request.target_process_id,
+                    request.target_window_handle,
+                    Arc::clone(&record.recording_authorization),
+                ),
+            ));
+        }
         Ok(TrustedTaskAuthorizationLease {
             connection_id: request.connection_id,
             authorization_id: request.authorization_id,
@@ -338,7 +436,7 @@ impl TrustedTaskAuthorizationHost for BrokerHost {
             return Err(unavailable());
         }
         Ok(TrustedTaskAuthorizationValidationDecision {
-            status: if record.revoked {
+            status: if !record.is_active() {
                 TrustedTaskAuthorizationStatus::Revoked
             } else {
                 TrustedTaskAuthorizationStatus::Active
@@ -373,7 +471,7 @@ impl TrustedTaskAuthorizationHost for BrokerHost {
             return Err(unavailable());
         }
         Ok(TrustedTaskAuthorizationValidationDecision {
-            status: if record.revoked {
+            status: if !record.is_active() {
                 TrustedTaskAuthorizationStatus::Revoked
             } else {
                 TrustedTaskAuthorizationStatus::Active

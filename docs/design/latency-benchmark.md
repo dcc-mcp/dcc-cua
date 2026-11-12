@@ -4,6 +4,13 @@ Measure before changing the runtime. PNG encode CPU time is one component;
 it cannot establish an end-to-end speedup. Keep protocol, native Host and agent
 workflow measurements separate. None of these measurements authorize UI access.
 
+Embedding hosts can enable [content-free Host request timing](host-request-timing.md)
+through a constructor-owned observer. This optional boundary distinguishes action
+FIFO waiting, driver actions, explicit post-action waiting/observation and other
+covered provider calls without changing control responses. It does not measure
+the full task, client transport or automatic cleanup. Keep its setting in the
+private measurement metadata and compare its overhead before pooling samples.
+
 ## Protocol baseline without desktop access
 
 Use a private copy of a release artifact. Verify its archive checksum and install

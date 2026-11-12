@@ -88,3 +88,19 @@ Regression coverage must prove:
 - caller-supplied grant, receipt, capability, and widening fields are rejected;
 - subprocess behavior and the executable manifest match the source contract on
   every supported platform.
+
+## Native workflow implementation
+
+The trusted Host task lease can authorize a normal login application without
+removing OS/security identity checks. Constructor-owned native target fences
+bind the validated lease to its exact PID/HWND and one runtime session, share
+expiry/revocation, and cannot be installed through task text or Host IPC.
+
+Optional owned installation/uninstallation recipes are supplied only at MCP
+process bootstrap and are bound to the trusted parent session and environment.
+They do not add an unrestricted permission mode. Exact executable identity,
+method/action ceilings, owned process handles, fresh window rebinding, independent
+exit/result verification, cancellation and typed human boundaries are specified
+in [Trusted Agent Host workflows](../design/trusted-agent-host-workflows.md).
+The initial owned workflow launcher is Windows-only; unsupported platforms and
+process-tree handoffs fail closed. No production setting is enabled by this ADR.

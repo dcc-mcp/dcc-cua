@@ -31,6 +31,34 @@ fn overlay_exclusion_failure() -> Value {
     })
 }
 
+fn completion_unknown_failure(error: &ComputerUseError) -> Value {
+    let mut value = crate::lifetime_diagnostics::one_shot_failure("completion_unknown")
+        .expect("completion unknown has fixed guidance");
+    if let Some(details) = error.details.as_deref() {
+        // Project only existing closed facts. Do not serialize all details or
+        // infer missing input/effect state from a timeout or the error code.
+        let facts = [
+            ("phase", json!(details.phase)),
+            ("action_attempted", json!(details.action_attempted)),
+            (
+                "focus_mutation_attempted",
+                json!(details.focus_mutation_attempted),
+            ),
+            ("input_sent", json!(details.input_sent)),
+            ("completion", json!(details.completion)),
+            ("effect_unknown", json!(details.effect_unknown)),
+        ]
+        .into_iter()
+        .filter(|(_, value)| !value.is_null())
+        .map(|(key, value)| (key.to_owned(), value))
+        .collect::<serde_json::Map<String, Value>>();
+        if !facts.is_empty() {
+            value["error"]["details"] = Value::Object(facts);
+        }
+    }
+    value
+}
+
 pub(super) fn fatal_error_line(error: &(dyn std::error::Error + 'static)) -> String {
     serde_json::to_string(&fatal_error_value(error)).unwrap_or_else(|_| {
         r#"{"success":false,"error":{"code":"command_failed","message":"dcc-cua could not complete the command"}}"#.into()
@@ -86,6 +114,9 @@ pub(super) fn fatal_error_value(error: &(dyn std::error::Error + 'static)) -> Va
                 "message":"Window discovery is incomplete or incompatible with the executor desktop; an empty result does not prove application absence.",
                 "details":{"window_inventory":inventory,"automatic_relaunch":false,"retry_safe":false}
             }});
+        }
+        if error.code == ComputerUseErrorCode::CompletionUnknown {
+            return completion_unknown_failure(error);
         }
         if error.code == ComputerUseErrorCode::OverlayExclusionUnavailable {
             return overlay_exclusion_failure();

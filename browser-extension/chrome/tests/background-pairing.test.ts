@@ -7,6 +7,7 @@ import { test } from "node:test";
 import * as protocol from "../protocol.ts";
 import * as content from "../content-protocol.ts";
 import { PairingLifecycle } from "../pairing.ts";
+import { navigatePairedTab } from "../navigation.ts";
 
 const flush = () => new Promise(resolve => setImmediate(resolve));
 function event() {
@@ -19,7 +20,11 @@ function fixture() {
   const responses: any[] = [];
   let focused = true;
   let commands = 0;
+  const navigations: string[] = [];
+  let fireLoadingOnUpdate = false;
+  let navigationGate: Promise<void> | null = null;
   let badge = "";
+  let title = "";
   let nextRemove: Promise<void> | null = null;
   let nextSet: Promise<void> | null = null;
   let stored: unknown = { session_nonce: "stale", tab_id: 1, window_id: 2, origin: "https://example.com", document_id: "old" };
@@ -31,7 +36,7 @@ function fixture() {
     return resume;
   }
   const browser = {
-    action: { onClicked: clicked, setBadgeText: async ({ text }: { text: string }) => { badge = text; }, setBadgeBackgroundColor: async () => {} },
+    action: { onClicked: clicked, setBadgeText: async ({ text }: { text: string }) => { badge = text; }, setBadgeBackgroundColor: async () => {}, setTitle: async (value: { title: string }) => { title = value.title; } },
     runtime: {
       id: "published-extension", lastError: null, getManifest: () => ({ version: "0.3.1" }),
       connectNative: () => {
@@ -51,12 +56,77 @@ function fixture() {
     }, onChanged: event() },
     scripting: { executeScript: async () => {} },
     windows: { get: async () => ({ focused }) },
-    tabs: { get: async () => ({ active: true, windowId: 2 }), onUpdated: event(), onRemoved: event(), sendMessage: async () => { commands += 1; return { ok: true, result: { document: { origin: "https://example.com", id: "doc" } } }; } },
+    tabs: { get: async () => ({ active: true, windowId: 2 }), update: async (tab: number, value: { url: string }) => { navigations.push(value.url); if (fireLoadingOnUpdate) browser.tabs.onUpdated.fire(tab, { status: "loading" }); const gate = navigationGate; navigationGate = null; if (gate) await gate; }, onUpdated: event(), onRemoved: event(), sendMessage: async (_tab: number, value: any) => { commands += 1; return { ok: true, result: value.command.method === "prepare_navigation" ? { invalidated: true } : { document: { origin: "https://example.com", id: "doc" } } }; } },
   };
   const source = readFileSync(new URL("../entrypoints/background.ts", import.meta.url), "utf8")
     .replace(/^import[\s\S]*?;\r?\n/gm, "").replace(/export default /g, "").replace(/export /g, "");
-  runInNewContext(stripTypeScriptTypes(source), { ...protocol, ...content, PairingLifecycle, browser, defineBackground: (run: () => void) => run(), crypto: { randomUUID }, URL });
-  return { ports, responses, badge: () => badge, pauseClear: () => pauseStorage("remove"), pauseSave: () => pauseStorage("set"), loseFocus: () => { focused = false; }, commands: () => commands, stored: () => stored, async pair() { clicked.fire({ id: 1, windowId: 2, url: "https://example.com" }); await flush(); } };
+  runInNewContext(stripTypeScriptTypes(source), { ...protocol, ...content, PairingLifecycle, navigatePairedTab, browser, defineBackground: (run: () => void) => run(), crypto: { randomUUID }, URL });
+  return { ports, responses, navigations, tabs: browser.tabs, emitLoadingOnUpdate() { fireLoadingOnUpdate = true; }, pauseNavigation() { let resume!: () => void; navigationGate = new Promise<void>(resolve => { resume = resolve; }); return resume; }, badge: () => badge, title: () => title, disconnectError(message: string, source: "runtime" | "port") { if (source === "port") { ports.at(-1).error = { message }; (browser.runtime as any).lastError = { message: "different runtime error" }; } else { (browser.runtime as any).lastError = { message }; } }, pauseClear: () => pauseStorage("remove"), pauseSave: () => pauseStorage("set"), loseFocus: () => { focused = false; }, commands: () => commands, stored: () => stored, async pair() { clicked.fire({ id: 1, windowId: 2, url: "https://example.com" }); await flush(); } };
+}
+
+for (const [name, clearTab] of [
+  ["navigation", (f: ReturnType<typeof fixture>, tab: number) => f.tabs.onUpdated.fire(tab, { status: "loading" })],
+  ["removal", (f: ReturnType<typeof fixture>, tab: number) => f.tabs.onRemoved.fire(tab)],
+] as const) {
+  test(`${name} fences a late native hello acknowledgement`, async () => {
+    const f = fixture(); await flush(); await f.pair();
+    const port = f.ports[0];
+    const resume = f.pauseClear();
+    clearTab(f, 1); await flush();
+    port.onMessage.fire({ schema: protocol.PROTOCOL_SCHEMA, type: "hello_ack", protocol: 1, capabilities: ["task_owned_pairing_v1"] });
+    await flush();
+    assert.notEqual(f.badge(), "LINK");
+    resume(); await flush();
+    assert.equal(port.disconnected, true);
+    assert.equal(f.stored(), undefined);
+    assert.match(f.title(), /unpaired/);
+  });
+
+  test(`${name} of another tab leaves the paired native port intact`, async () => {
+    const f = fixture(); await flush(); await f.pair();
+    clearTab(f, 99); await flush();
+    const port = f.ports[0];
+    port.onMessage.fire({ schema: protocol.PROTOCOL_SCHEMA, type: "hello_ack", protocol: 1, capabilities: ["task_owned_pairing_v1"] });
+    await flush();
+    assert.equal(port.disconnected, false);
+    assert.equal(f.badge(), "LINK");
+    assert.ok(f.stored());
+  });
+
+  test(`${name} cleanup cannot remove a subsequent pairing`, async () => {
+    const f = fixture(); await flush(); await f.pair();
+    const oldPort = f.ports[0];
+    const resume = f.pauseClear();
+    clearTab(f, 1); await flush();
+    await f.pair();
+    resume(); await flush(); await flush();
+    assert.equal(f.ports.length, 2);
+    const replacement = f.stored();
+    assert.ok(replacement);
+    oldPort.onDisconnect.fire();
+    oldPort.onMessage.fire({ schema: protocol.PROTOCOL_SCHEMA, type: "hello_ack", protocol: 1, capabilities: ["task_owned_pairing_v1"] });
+    await flush();
+    assert.equal(f.stored(), replacement);
+    assert.equal(f.ports[1].disconnected, false);
+    f.ports[1].onMessage.fire({ schema: protocol.PROTOCOL_SCHEMA, type: "hello_ack", protocol: 1, capabilities: ["task_owned_pairing_v1"] });
+    await flush();
+    assert.equal(f.badge(), "LINK");
+  });
+
+  test(`${name} invalidates a pairing saved while cleanup waits`, async () => {
+    const f = fixture(); await flush();
+    const resume = f.pauseSave();
+    await f.pair();
+    clearTab(f, 1);
+    resume(); await flush(); await flush();
+    assert.equal(f.ports.length, 1);
+    const port = f.ports[0];
+    assert.equal(port.disconnected, true);
+    assert.equal(f.stored(), undefined);
+    port.onMessage.fire({ schema: protocol.PROTOCOL_SCHEMA, type: "hello_ack", protocol: 1, capabilities: ["task_owned_pairing_v1"] });
+    await flush();
+    assert.notEqual(f.badge(), "LINK");
+  });
 }
 
 test("background clears restored pairing and requires explicit pairing after disconnect", async () => {
@@ -105,7 +175,8 @@ test("a pending failure clear cannot remove a replacement pairing", async () => 
   replacement.onMessage.fire({ schema: protocol.PROTOCOL_SCHEMA, type: "hello_ack", protocol: 1, capabilities: ["task_owned_pairing_v1"] });
   await flush(); previous.onDisconnect.fire(); await flush();
   assert.ok(f.stored());
-  assert.equal(f.badge(), "ON");
+  assert.equal(f.badge(), "LINK");
+  assert.match(f.title(), /native_compatible/);
 });
 
 test("failure during a replacement save cannot clear the replacement generation", async () => {
@@ -121,7 +192,8 @@ test("failure during a replacement save cannot clear the replacement generation"
   f.ports[1].onMessage.fire({ schema: protocol.PROTOCOL_SCHEMA, type: "hello_ack", protocol: 1, capabilities: ["task_owned_pairing_v1"] });
   await flush(); previous.onDisconnect.fire(); await flush();
   assert.ok(f.stored());
-  assert.equal(f.badge(), "ON");
+  assert.equal(f.badge(), "LINK");
+  assert.match(f.title(), /native_compatible/);
 });
 
 
@@ -136,3 +208,82 @@ test("background denies extension input after the paired window loses focus", as
   assert.equal(f.responses.at(-1).error.code, "target_not_foreground");
   assert.equal(f.commands(), 1);
 });
+
+test("real background navigates only its paired tab and consumes pairing before replay", async () => {
+  const f = fixture(); await flush(); await f.pair();
+  f.emitLoadingOnUpdate();
+  const port = f.ports[0];
+  port.onMessage.fire({ schema: protocol.PROTOCOL_SCHEMA, type: "hello_ack", protocol: 1, capabilities: ["task_owned_pairing_v1"] });
+  await flush();
+  const pairing = f.stored() as any;
+  const request = { schema: protocol.PROTOCOL_SCHEMA, request_id: "navigate-1", method: "navigate",
+    session_nonce: pairing.session_nonce, tab_id: 1, snapshot_id: "fresh", url: "https://example.com/next", deadline_unix_ms: Date.now() + 10000 };
+  port.onMessage.fire(request); await flush();
+  assert.deepEqual(f.navigations, [request.url]);
+  assert.equal(f.stored(), undefined);
+  assert.equal(f.badge(), "");
+  assert.match(f.title(), /unpaired/);
+  assert.equal(f.responses.at(-1).result.completion_known, false);
+  port.onMessage.fire(request); await flush();
+  assert.equal(f.responses.at(-1).ok, false);
+  assert.equal(f.navigations.length, 1);
+  await f.pair();
+  const replacement = f.stored();
+  port.onDisconnect.fire(); await flush();
+  assert.equal(f.stored(), replacement);
+});
+
+test("late navigation completion cannot clear or report success for a replacement pairing", async () => {
+  const f = fixture(); await flush(); await f.pair();
+  const port = f.ports[0];
+  port.onMessage.fire({ schema: protocol.PROTOCOL_SCHEMA, type: "hello_ack", protocol: 1, capabilities: ["task_owned_pairing_v1"] });
+  await flush();
+  const pairing = f.stored() as any;
+  const resume = f.pauseNavigation();
+  port.onMessage.fire({ schema: protocol.PROTOCOL_SCHEMA, request_id: "old-navigation", method: "navigate",
+    session_nonce: pairing.session_nonce, tab_id: 1, snapshot_id: "fresh", url: "https://example.com/next", deadline_unix_ms: Date.now() + 10000 });
+  await flush(); assert.equal(f.navigations.length, 1);
+  await f.pair(); const replacement = f.stored();
+  resume(); await flush();
+  assert.equal(f.stored(), replacement);
+  assert.equal(f.responses.some((value: any) => value.request_id === "old-navigation" && value.ok), false);
+});
+
+test("compatible native handshake reports transport only, never task readiness", async () => {
+  const f = fixture(); await flush(); await f.pair();
+  assert.match(f.title(), /native_connecting/);
+  const commands = f.commands();
+  f.ports[0].onMessage.fire({ schema: protocol.PROTOCOL_SCHEMA, type: "hello_ack", protocol: 1, capabilities: ["task_owned_pairing_v1"] });
+  await flush();
+  assert.equal(f.badge(), "LINK");
+  assert.match(f.title(), /native_compatible.*task binding not verified/i);
+  assert.equal(f.commands(), commands);
+});
+
+test("legacy native handshake exposes a bounded compatibility reason and fails closed", async () => {
+  const f = fixture(); await flush(); await f.pair();
+  const port = f.ports[0];
+  port.onMessage.fire({ schema: protocol.PROTOCOL_SCHEMA, type: "hello_ack", protocol: 1, capabilities: ["native_host_bridge_v1"] });
+  await flush();
+  assert.match(f.title(), /native_incompatible/);
+  assert.equal(port.disconnected, true);
+  assert.equal(f.stored(), undefined);
+});
+
+for (const [message, code] of [
+  ["Specified native messaging host not found.", "native_host_unavailable"],
+  ["Access to the specified native messaging host is forbidden.", "native_host_forbidden"],
+  ["PRIVATE_SENTINEL https://example.test/?token=secret", "native_disconnected"],
+] as const) {
+  for (const source of ["runtime", "port"] as const) {
+    test(`native disconnect reports ${code} from ${source} without reflecting browser error text`, async () => {
+      const f = fixture(); await flush(); await f.pair();
+      f.disconnectError(message, source);
+      f.ports[0].onDisconnect.fire(); await flush();
+      assert.match(f.title(), new RegExp(code));
+      assert.doesNotMatch(f.title(), /PRIVATE_SENTINEL|example\.test|token=|secret/);
+      assert.equal(f.stored(), undefined);
+      assert.equal(f.badge(), "!");
+    });
+  }
+}

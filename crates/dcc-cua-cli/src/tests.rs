@@ -24,6 +24,7 @@ mod async_runtime;
 mod coordinate_space;
 mod host_jsonl;
 mod issue_228_window_pixels;
+mod login_acceptance;
 mod owned_process;
 mod process_output;
 mod profile_listing;

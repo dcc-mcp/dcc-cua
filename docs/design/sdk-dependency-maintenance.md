@@ -5,21 +5,94 @@ adapters and GUI fixtures inherit those declarations. `Cargo.lock` must resolve
 all upstream CUA crates to the same immutable Git source. The policy CI checks
 this contract with `scripts/test_sdk_dependency_contract.py`.
 
-## Current source
+## Current source candidate
 
-- Previous SDK: Driver 0.28.2 at
-  `loonghao/cua@3d2bcf50089ea18aa5bedab328b1afb3f710ea00`.
-- Updated SDK: Driver 0.36.0 plus the required DCC compatibility patch series.
-- Official release: [cua-driver-rs-v0.36.0](https://github.com/trycua/cua/releases/tag/cua-driver-rs-v0.36.0),
-  commit `trycua/cua@6d6c734c127025fb39ad5d585a10382808b39dc1` (2026-10-16).
-- Published compatibility source: `loonghao/cua@be4bbd3eac57796804f43b291a2012dcd2d96896`
-  ([owned Windows setup cleanup #9](https://github.com/loonghao/cua/pull/9)), based
-  on `6219e5e498958cf951aad28f1ec84117625dc586` from
-  [download metadata follow-up #8](https://github.com/loonghao/cua/pull/8) and
-  `55ab9c62fe23b87d015136f45c4e8995e9988615` from
-  [compatibility PR #7](https://github.com/loonghao/cua/pull/7). All six root
-  declarations and ten resolved SDK packages use this immutable Git source.
-  The original fork histories remain ancestors of this additive source update.
+- Official Driver release: [cua-driver-rs-v0.38.0](https://github.com/trycua/cua/releases/tag/cua-driver-rs-v0.38.0),
+  immutable commit `trycua/cua@85e2b1318bd77ccf3cfa88ccdf875a4bb7eaed19`.
+- Compatibility source: `loonghao/cua@05f43bda479d01aee512a0c092fb064ce1a330bd`,
+  integrating that release with the prior DCC source
+  `be4bbd3eac57796804f43b291a2012dcd2d96896`. Both contributor histories remain
+  ancestors. All six workspace declarations must resolve the same ten SDK
+  packages to this one immutable revision.
+- The compatibility diff against the official release spans 54 files. It
+  retains ancestor scopes, hidden file-input association, navigation readback,
+  bounded download metadata and owned Windows browser setup/cleanup contracts.
+  Upstream's process-family selection replaces the old name-prefix widening;
+  pre-launch PID baseline pruning remains intact.
+- Source licensing remains MIT in the official root `LICENSE.md` and Driver
+  package metadata. No dependency or runtime is installed by changing a pin.
+
+The merge candidate passed 141 selected mock, launch-selection, synthetic UIA and semantic tests.
+Its first complete 43-file review identified three issues, fixed in the pinned
+revision: single fully-proven consent selection, rollback on a pre-existing
+setup page without claiming tab ownership, and the suggested-filename opt-in
+API description. The affected 73 selected tests pass on the consent/rollback fixes. A later
+44-file review identified COM cleanup disposal order; the final source keeps
+owned-tab proof through rollback and disposes its handle before the outer COM
+scope ends. Its directly extracted production helper passes success, error and
+unwind ordering cases. The suggested relaxation of foreground visibility was
+not adopted: hidden documents cannot prove visible foreground readback.
+The subsequent URL comparison finding is fixed with parsed URL equality for
+the request/commit comparison and raw fallback on parse failure, while the DOM,
+frame, loader and visibility fences stay exact. Its directly extracted pure
+regression covers seven canonical and non-equivalent URL cases. Exact final review,
+downstream compilation, dependency/Hakari gates and platform CI are separate
+candidate requirements; prior revisions' green checks do not qualify this pin.
+The prior candidate exposed six SDK core Clippy diagnostics under Rust 1.95.
+The current candidate resolves those without lint exemptions; strict SDK core
+`--lib` Clippy and 17 targeted regression cases pass. A full SDK workspace
+Clippy attempt is still blocked offline by an uncached `webpki-roots v1.0.10`;
+the core-only result does not establish workspace-wide strict lint success.
+A strict Windows platform attempt also stops in the unchanged cursor-overlay
+crate on two inherited lints before reaching the platform crate.
+
+Pending Windows setup now retains a process-wide MTA usage token for agile UIA
+identities while keeping thread-bound COM scopes local. Pure tests verify that
+identities drop before the token on a different thread and on cleanup-scope
+refusal; actual COM and browser behavior remain untested locally. A successful
+new-tab invocation is recorded as an attempted action until a unique owned-tab
+identity is captured; incomplete ownership reports creation as unproven. The prior
+Windows reference drift was corrected using the exact-head CI-generated files;
+the related Python formatting failure was fixed only in its one reported file.
+The previous SDK revision `4791303` completed a 49-file review with zero
+findings; the returned file set matches its complete compatibility diff. The
+current revision synchronizes the checked-in installer version with the verified
+published 0.38.0 installer artifacts, fixes the compatibility fork's missing
+image-doctor ledger source, fences URL fragments during foreground readback,
+moves native consent inspection off the async executor, and limits DOM upload
+supplementation to explicit chooser elements. The prior SDK head `4fae640` passed first-run and image-doctor CI. The current
+`05f43bda` revision refreshes Linux/macOS generated download descriptions from
+digest-verified exact-head CI artifacts. Its full 54-file detailed review passed
+with zero findings; its fresh CI remains a separate qualification gate.
+The trusted-base contributor attribution check still needs a repository-aware
+solution for imported upstream source-PR references; it cannot be fixed by
+executing a policy change from this pull request's head.
+
+Git-source manifest discovery also requires the SDK to explicitly bind its
+workspace root. Without that binding, the offline consumer skipped the SDK
+manifest while scanning standalone compatibility fixtures. The same consumer
+resolves it with the binding. All direct and generated Hakari SDK references
+must agree before compilation qualifies the candidate.
+
+The current SDK source `05f43bda` passed downstream `cargo clippy --workspace
+--all-targets --locked --offline -- -D warnings`, formatting, dependency/layout
+tests and both Hakari drift checks. The lock audit retains all 614 registry package
+identities and checksums; only the ten SDK packages move to Driver 0.38.0 at
+one source revision. These local checks do not replace the exact downstream
+commit's full review and platform CI, or establish native acceptance.
+
+The separately reported console flash and Max capture refusal remain unproven
+runtime issues. See [process roles and console launch limits](windows-console-launch-assessment.md)
+and [the Max coordinate audit](max-capture-coordinate-audit.md). No provider,
+Host, browser, application window, permission or desktop binding was changed.
+
+## Previous source and validation history
+
+Driver 0.36.0 compatibility source `be4bbd3eac57796804f43b291a2012dcd2d96896`
+followed [owned Windows setup cleanup #9](https://github.com/loonghao/cua/pull/9),
+[download metadata #8](https://github.com/loonghao/cua/pull/8) and
+[compatibility #7](https://github.com/loonghao/cua/pull/7). The following results
+refer to those historical candidates, not the 0.38.0 pin.
 
 The follow-up preserves the default SDK download privacy contract. Only a
 trusted, already-approved host request can opt into a bounded suggested filename
@@ -50,14 +123,14 @@ This is the Rust **Driver SDK** under `libs/cua-driver/rust`, including
 `libs/cua` and the independently released `cua-sdk-v0.4.4`.
 
 The component-tagged release has native assets for Windows, Linux and macOS.
-Both current official installer entry points resolve Driver 0.36.0. GitHub's
+The selected release is Driver 0.38.0; source adoption does not run its installers. GitHub's
 `prerelease` label keeps the monorepo-wide Latest pointer separate; the Driver
 release notes identify plain SemVer Driver releases as its stable channel.
 The integration pins source, not the repository-wide Latest release.
 
 ## Why the compatibility fork remains
 
-Official Driver 0.36.0 still does not contain `scope_ancestor_role`,
+The selected official Driver 0.38.0 does not contain `scope_ancestor_role`,
 `scope_anchor` or `browser_scope_unavailable`. Replacing the source URL with
 upstream would silently remove a documented DCC capability. Retain only the
 necessary compatibility behavior on the official release base:
@@ -75,7 +148,7 @@ necessary compatibility behavior on the official release base:
   readback is fenced on both sides by document identity. Lost CDP replies
   invalidate refs and return an explicit unknown dispatch state; DCC preserves
   that redacted receipt instead of claiming the navigation never happened.
-- Responsive existing-profile socket proof. Driver 0.36 now shares consented
+- Responsive existing-profile socket proof. Driver 0.38 shares consented
   sockets: a failed probe releases only its current grant with
   `SharedSocketRelease::Close`; it must not remove another session's hold.
 - Exact Windows native consent-window ownership/topmost disambiguation.
@@ -91,7 +164,7 @@ that same RAII cleanup. Drop the obsolete netstat subprocess hunk because
 upstream uses the native TCP listener API, and do not restore deleted website
 documentation paths. The current Driver skill retains the compatibility API
 reference. The compatibility branch records the per-patch migration decisions
-in `libs/cua-driver/docs/dcc-compatibility-0360.md`.
+in `libs/cua-driver/docs/dcc-compatibility-0380.md`.
 
 The migration also compares the unmerged fork candidates, not only the
 installed pin. Preserve PR #5's duplicate-ID file-input refusal and borrowed
@@ -107,14 +180,14 @@ unchanged. Upstream inventory growth does not grant a new DCC action route:
 `run_script` is rejected by both unscoped native entry points. The real Linux
 pixels-only SDK inventory also rejects `parse_visual_regions`.
 
-Driver 0.36 defaults native `get_window_state` trees to Markdown. DCC explicitly
+Driver 0.38 defaults native `get_window_state` trees to Markdown. DCC explicitly
 requests `tree_format: "both"` for semantic snapshots and screenshot-plus-
 semantics, preserving read-only status/dialog/menu text alongside actionable
 elements and their SDK tokens; exact PID/window/session and bounds remain unchanged. The Windows
 overlay adapter supplies `target: None` for its existing point-only movement
 request because DCC does not have element bounds to pass upstream.
 
-Native input mappings also follow the 0.36 tool inventory. macOS window cursor
+Native input mappings also follow the 0.38 tool inventory. macOS window cursor
 movement uses its typed window target and screenshot coordinates; Linux and
 Windows overlay movement converts those coordinates once to native window units
 and adds the revalidated window origin. A macOS live/resized observation already

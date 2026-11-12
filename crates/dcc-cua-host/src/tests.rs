@@ -14,6 +14,7 @@ use dcc_cua_browser::BrowserSession;
 use dcc_cua_shm::SharedImageReader;
 use rstest::rstest;
 mod extension_input;
+mod request_timing;
 use serde_json::Value;
 
 async fn handle_request(

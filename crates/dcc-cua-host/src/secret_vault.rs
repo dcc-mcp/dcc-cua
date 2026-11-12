@@ -73,6 +73,7 @@ pub trait HostSecretVault: Send + Sync {
 /// a Host IPC request.
 #[derive(Clone, Default)]
 pub struct HostSecurityServices {
+    pub(crate) timing_observer: Option<Arc<dyn crate::HostTimingObserver>>,
     pub(crate) extension_transport_only: bool,
     pub(crate) extension_owner: Option<String>,
     pub(crate) extension_window: Option<(u32, u64)>,
@@ -82,6 +83,14 @@ pub struct HostSecurityServices {
 }
 
 impl HostSecurityServices {
+    /// Enable bounded, content-free Host request timing. This observer grants no
+    /// authority and never changes the IPC response. It must return promptly.
+    #[must_use]
+    pub fn with_timing_observer(mut self, observer: Arc<dyn crate::HostTimingObserver>) -> Self {
+        self.timing_observer = Some(observer);
+        self
+    }
+
     pub(crate) fn require_provider_transport_request(
         &self,
         request: &crate::Request,

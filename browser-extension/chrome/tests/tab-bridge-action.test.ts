@@ -64,3 +64,14 @@ test("tab bridge declares password controls sensitive without reading their valu
   assert.equal(snapshot.ok, true);
   assert.equal(snapshot.result.refs[0].states.sensitive, true);
 });
+
+test("navigation preparation revokes nonce, document and all old snapshot refs", () => {
+  const { command } = fixture();
+  const snapshot = command({ method: "snapshot", max_nodes: 10 }).result;
+  assert.equal(command({ method: "prepare_navigation", snapshot_id: "old" }).error.code, "stale_observation");
+  assert.equal(command({ method: "prepare_navigation", snapshot_id: snapshot.snapshot_id }).result.invalidated, true);
+  assert.equal(command({ method: "snapshot", max_nodes: 10 }).error.code, "pairing_mismatch");
+  assert.equal(command({ method: "click", snapshot_id: snapshot.snapshot_id, ref: snapshot.refs[0].ref }).error.code, "pairing_mismatch");
+  assert.equal(command({ method: "pair" }).ok, true);
+  assert.notEqual(command({ method: "snapshot", max_nodes: 10 }).result.snapshot_id, snapshot.snapshot_id);
+});

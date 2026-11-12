@@ -273,6 +273,17 @@ export default defineUnlistedScript(() => {
       });
     }
     if (command.method === "snapshot") return semanticSnapshot(command.max_nodes);
+    if (command.method === "prepare_navigation") {
+      if (state.documentUrl !== location.href || command.snapshot_id !== state.snapshotId) {
+        throw Object.assign(new Error("snapshot is no longer current"), { code: "stale_observation" });
+      }
+      state.sessionNonce = null;
+      state.documentId = null;
+      state.documentUrl = null;
+      state.snapshotId = null;
+      state.refs.clear();
+      return { invalidated: true, pairing_required: true };
+    }
     if (command.method === "click") return click(command);
     return replaceText(command);
   }
