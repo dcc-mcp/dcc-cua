@@ -1153,7 +1153,26 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertIn("ManifestKey = 'browser-extension/chrome'", script)
         self.assertIn("$baseProperty.Value = $componentVersion", script)
         self.assertIn("--force-with-lease", script)
-        self.assertNotIn("git merge", script)
+        # Refresh must only compare ancestry; it must never merge, rebase or
+        # reset a release branch. Differently named read-only git commands such
+        # as `git merge-base --is-ancestor` remain allowed.
+        self.assertIn("git merge-base --is-ancestor", script)
+        for forbidden in (
+            "git merge ",
+            "git rebase ",
+            "git reset ",
+        ):
+            self.assertNotIn(forbidden, script)
+
+    def test_refresh_guard_rejects_a_real_mutating_merge_command(self) -> None:
+        script = REFRESH_SCRIPT.read_text(encoding="utf-8")
+        guarded = script.replace(
+            "git checkout -B $branch $baseCommit",
+            "git merge $baseCommit\ngit checkout -B $branch $baseCommit",
+        )
+        self.assertNotEqual(script, guarded)
+        self.assertIn("git merge ", guarded)
+        self.assertIn("git rebase ", f"{guarded}\ngit rebase $baseCommit")
 
     def test_recovery_keeps_workflow_identity_separate_from_tagged_sources(self):
         workflow = WORKFLOW.read_text(encoding="utf-8")
