@@ -1,6 +1,6 @@
 use super::*;
 
-pub(super) const BROWSER_TOOL_CALL_TIMEOUT: Duration = Duration::from_secs(60);
+pub(in crate::runtime) const BROWSER_TOOL_CALL_TIMEOUT: Duration = Duration::from_secs(60);
 
 pub(super) fn browser_tool_timeout(
     name: &str,
