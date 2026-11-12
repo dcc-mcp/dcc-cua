@@ -647,6 +647,7 @@ impl TaskAuthorizationServer {
         );
         proposal.cleanup = Some(match proposal.session.take() {
             Some(session) => stop_owned_task_session(session).await,
+            None if proposal.cleanup.is_some() => proposal.cleanup.clone().unwrap(),
             None if !proposal.session_open_attempted => {
                 json!({"success":true,"active":false,"cleanup_pending":false,"cleanup_issues":[]})
             }
@@ -945,7 +946,21 @@ async fn open_task_session(
     client
         .open_logical_task_session(task_session_id(proposal_id), grant, DEFAULT_IDLE_TIMEOUT_MS)
         .await
-        .map_err(|error| error.to_string())
+        .map_err(|error| {
+            if let HostClientError::Remote { response, .. } = &error {
+                proposal.cleanup = startup_cleanup_receipt(response);
+            }
+            error.to_string()
+        })
+}
+
+fn startup_cleanup_receipt(response: &Value) -> Option<Value> {
+    response["details"]["startup_cleanup_confirmed"]
+        .as_bool()
+        .map(|confirmed| {
+            json!({"success":confirmed, "active":if confirmed {Some(false)} else {None},
+            "cleanup_pending":!confirmed, "cleanup_issues":[]})
+        })
 }
 
 fn task_session_grant(proposal: &TaskProposal, receipt: &TrustedTaskAuthorizationReceipt) -> Value {
