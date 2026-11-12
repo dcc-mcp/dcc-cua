@@ -290,8 +290,7 @@ async fn owned_browser_start_failure_reports_only_exact_session_cleanup_acknowle
             &ComputerUseSessionStartRequest::default(),
         )
         .await
-        .err()
-        .expect("refused startup must fail");
+        .expect_err("refused startup must fail");
     assert_eq!(error.code, ComputerUseErrorCode::BrowserRefused);
     assert_eq!(
         error.details.unwrap().startup_cleanup_confirmed,
