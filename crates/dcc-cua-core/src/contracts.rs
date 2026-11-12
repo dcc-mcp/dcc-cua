@@ -590,6 +590,9 @@ pub enum ComputerUseErrorCode {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ComputerUseErrorDetails {
+    /// Runtime-owned acknowledgement for cleanup after a failed session start.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub startup_cleanup_confirmed: Option<bool>,
     /// Measurements retained from the rejected native fence; never input authority.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub native_input_fence:

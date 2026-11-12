@@ -11,6 +11,7 @@ pub(crate) use gates::{
 };
 use input_target_policy::reject_ambiguous_embedded_browser_navigation;
 mod browser;
+pub(super) use browser::BROWSER_TOOL_CALL_TIMEOUT;
 mod capture_preparation;
 mod error_contracts;
 mod native_recording;

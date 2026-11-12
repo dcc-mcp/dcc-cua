@@ -120,6 +120,31 @@ async fn host_completion_does_not_replace_a_missing_session_cleanup_acknowledgem
 }
 
 #[rstest]
+#[case(json!({"details":{"startup_cleanup_confirmed":true}}), "stopped")]
+#[case(json!({"details":{"startup_cleanup_confirmed":false}}), "cleanup_unknown")]
+#[case(json!({}), "cleanup_unknown")]
+#[case(json!({"details":{"startup_cleanup_confirmed":"true"}}), "cleanup_unknown")]
+#[tokio::test]
+async fn failed_start_keeps_the_runtime_cleanup_receipt_separate_from_host_completion(
+    #[case] response: Value,
+    #[case] expected: &str,
+) {
+    let mut server = test_server();
+    let prepared = server.prepare_task(pixels_task()).unwrap();
+    let id = prepared["task_id"].as_str().unwrap();
+    let proposal = server.proposals.get_mut(id).unwrap();
+    proposal.session_open_attempted = true;
+    proposal.cleanup = startup_cleanup_receipt(&response);
+    proposal.host_task = Some(OwnedHostTask::spawn(async { Ok(()) }));
+    let stopped = server.revoke_task(json!({"task_id":id})).await.unwrap();
+    assert_eq!(stopped["status"], expected);
+    assert_eq!(
+        stopped["cleanup"]["host_connection_completion"]["success"],
+        true
+    );
+}
+
+#[rstest]
 #[tokio::test]
 async fn host_failure_overrides_a_successful_session_cleanup_acknowledgement() {
     let mut server = test_server();
