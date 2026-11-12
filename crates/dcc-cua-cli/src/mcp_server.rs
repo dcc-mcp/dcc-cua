@@ -647,12 +647,14 @@ impl TaskAuthorizationServer {
         );
         proposal.cleanup = Some(match proposal.session.take() {
             Some(session) => stop_owned_task_session(session).await,
-            None if proposal.cleanup.is_some() => proposal.cleanup.clone().unwrap(),
-            None if !proposal.session_open_attempted => {
-                json!({"success":true,"active":false,"cleanup_pending":false,"cleanup_issues":[]})
-            }
-            None => json!({"success":false,"active":null,"cleanup_pending":true,
-                "error":"task session startup did not return an owned session cleanup acknowledgement"}),
+            None => proposal.cleanup.clone().unwrap_or_else(|| {
+                if proposal.session_open_attempted {
+                    json!({"success":false,"active":null,"cleanup_pending":true,
+                        "error":"task session startup did not return an owned session cleanup acknowledgement"})
+                } else {
+                    json!({"success":true,"active":false,"cleanup_pending":false,"cleanup_issues":[]})
+                }
+            }),
         });
         finish_owned_host_task(proposal).await;
         let mut payload = proposal_payload(
