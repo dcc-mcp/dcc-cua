@@ -8,7 +8,7 @@ this contract with `scripts/test_sdk_dependency_contract.py`.
 ## Current source candidate
 
 The Driver 0.47.11 compatibility candidate is
-`loonghao/cua@28ddc93bc84ef8d91e591af625adc9ed2d0d608b`, proposed in
+`loonghao/cua@1193686f5fdf613fe6bd40146238b6a55432051d`, proposed in
 `loonghao/cua#13`. It merges the existing 0.38 compatibility source below,
 official Try CUA main `f9a2768c3d7eda97dc9a6e462415759e84d8a61e`, and the
 fork's main `c8207ad57b067b9bec2fb2905b85e6330cbd74b0`. Its upstream Driver
