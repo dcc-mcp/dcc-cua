@@ -43,7 +43,7 @@ RELEASE_PLEASE_ACTION = (
     "googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7"
 )
 CI_EXECUTABLE_SURFACE_SHA256 = (
-    "3d83b22a4e1557511dcc61ac8c4843c515d3fe64625d4a68422a2452a06bb6a1"
+    "b2404775c1ebf3bfffff862917de50c9264223fe845c68420842571c97690de6"
 )
 
 
@@ -256,6 +256,58 @@ def _ci_executable_surface(workflow: str) -> str:
 
 
 class ReleaseWorkflowTests(unittest.TestCase):
+    def test_intel_nextest_retains_output_without_weakening_the_suite(self):
+        workflow = _RestrictedWorkflowYamlParser(
+            CI_WORKFLOW.read_text(encoding="utf-8")
+        ).parse()
+        verify = workflow["jobs"]["verify"]
+        steps = verify["steps"]
+        diagnostic = next(step for step in steps if step.get("id") == "intel-nextest")
+        self.assertEqual(verify["timeout-minutes"], "45")
+        self.assertEqual(diagnostic["if"], "matrix.platform == 'macos-x86_64'")
+        self.assertEqual(diagnostic["timeout-minutes"], "25")
+        self.assertNotIn("continue-on-error", diagnostic)
+        self.assertIn(
+            "cargo nextest run --workspace --all-targets --locked",
+            diagnostic["run"]["text"],
+        )
+        upload = steps[steps.index(diagnostic) + 1]
+        self.assertEqual(upload["uses"], UPLOAD_ACTION)
+        self.assertEqual(upload["if"], "always() && matrix.platform == 'macos-x86_64'")
+        self.assertEqual(upload["with"]["retention-days"], "1")
+        self.assertEqual(upload["with"]["if-no-files-found"], "error")
+        self.assertIn("artifacts/ci-diagnostics/intel-nextest/", upload["with"]["path"])
+        normal = next(
+            step for step in steps
+            if step.get("run") == "cargo nextest run --workspace --all-targets --locked"
+        )
+        self.assertEqual(normal["if"], "matrix.platform != 'macos-x86_64'")
+        bash = (
+            shutil.which("bash", path=str(Path(
+                os.environ.get("ProgramFiles", "C:/Program Files"), "Git/bin"
+            )))
+            if os.name == "nt" else shutil.which("bash")
+        )
+        if bash is None:
+            self.skipTest("bash is required to exercise the CI shell pipeline")
+        for code in (0, 17):
+            with self.subTest(exit_code=code), tempfile.TemporaryDirectory() as directory:
+                fake = (
+                    'cargo() { printf "args=%s\\n" "$*"; '
+                    f'echo test-progress; echo test-error >&2; return {code}; }}\n'
+                )
+                result = subprocess.run(
+                    [bash, "--noprofile", "--norc", "-c", fake + diagnostic["run"]["text"]],
+                    cwd=directory, capture_output=True, text=True, timeout=10,
+                )
+                self.assertEqual(result.returncode, code, result.stderr)
+                saved = Path(directory, "artifacts/ci-diagnostics/intel-nextest/nextest.log").read_text()
+                self.assertIn("args=nextest run --workspace --all-targets --locked", saved)
+                self.assertIn("test-progress", saved)
+                self.assertIn("test-error", saved)
+                status = Path(directory, "artifacts/ci-diagnostics/intel-nextest/exit.txt").read_text()
+                self.assertIn(f"exit_code={code} ", status)
+
     def intel_check_diagnostics(self):
         workflow = _RestrictedWorkflowYamlParser(
             CI_WORKFLOW.read_text(encoding="utf-8")

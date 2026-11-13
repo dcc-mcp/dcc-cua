@@ -274,7 +274,29 @@ jobs:
       - run: cargo check --workspace --all-targets --locked
         if: matrix.platform != 'macos-x86_64'
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Test Intel workspace with retained progress diagnostics
+        id: intel-nextest
+        if: matrix.platform == 'macos-x86_64'
+        # The last Intel job lost its logs at the job deadline during nextest.
+        # Bound this step below the job limit so the following upload can run.
+        timeout-minutes: 25
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/ci-diagnostics/intel-nextest
+          trap 'status=$?; printf "exit_code=%s elapsed_seconds=%s\n" "$status" "$SECONDS" > artifacts/ci-diagnostics/intel-nextest/exit.txt' EXIT
+          cargo nextest run --workspace --all-targets --locked 2>&1 | tee artifacts/ci-diagnostics/intel-nextest/nextest.log
+      - name: Retain Intel test evidence even after failure
+        if: always() && matrix.platform == 'macos-x86_64'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: intel-nextest-${{ steps.ci-source.outputs.sha }}-${{ github.run_attempt }}
+          path: artifacts/ci-diagnostics/intel-nextest/
+          if-no-files-found: error
+          retention-days: 1
+          overwrite: false
       - run: cargo nextest run --workspace --all-targets --locked
+        if: matrix.platform != 'macos-x86_64'
       - run: cargo test --workspace --doc --locked
       - name: Run exact X11 window lifecycle tests
         if: matrix.os == 'ubuntu-latest'
