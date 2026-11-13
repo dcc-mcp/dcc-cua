@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.2](https://github.com/dcc-mcp/dcc-cua/compare/dcc-cua-browser-extension-v0.4.1...dcc-cua-browser-extension-v0.4.2) (2026-11-13)
+
+
+### Bug Fixes
+
+* **ci:** preserve signal failures in Intel diagnostics ([90c4878](https://github.com/dcc-mcp/dcc-cua/commit/90c4878ee4124feffca15da94985f42032a9506d))
+
 ## [0.4.1](https://github.com/dcc-mcp/dcc-cua/compare/dcc-cua-browser-extension-v0.4.0...dcc-cua-browser-extension-v0.4.1) (2026-11-13)
 
 
