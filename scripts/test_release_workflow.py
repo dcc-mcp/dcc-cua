@@ -43,7 +43,7 @@ RELEASE_PLEASE_ACTION = (
     "googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7"
 )
 CI_EXECUTABLE_SURFACE_SHA256 = (
-    "b2404775c1ebf3bfffff862917de50c9264223fe845c68420842571c97690de6"
+    "bec3cb7d901411a0d69b7296c723e09cdb986c0fcc6800017027c3b83a04dde4"
 )
 
 
@@ -1006,8 +1006,8 @@ class ReleaseWorkflowTests(unittest.TestCase):
     def test_pr_ci_final_archive_contract_rejects_name_lookup(self):
         ci = CI_WORKFLOW.read_text(encoding="utf-8")
         mutated = ci.replace(
-            'actions/artifacts/${ARTIFACT_ID}/zip"',
-            'actions/artifacts?name=dcc-cua-pr-native/zip"',
+            '--artifact-id "$ARTIFACT_ID"',
+            '--artifact-name-search "dcc-cua-pr-native"',
             1,
         )
         with self.assertRaises(AssertionError):
@@ -1083,18 +1083,24 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertIn(
             'artifact_bundle="$artifact_download_root/artifact.zip"', download_step
         )
-        self.assertIn(
-            'gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${ARTIFACT_ID}"',
-            download_step,
-        )
-        self.assertIn(
-            'gh api "repos/${GITHUB_REPOSITORY}" > "$artifact_repository_metadata"',
-            download_step,
-        )
-        self.assertIn(
-            'gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${ARTIFACT_ID}/zip"',
-            download_step,
-        )
+        self.assertIn("python -B scripts/download_uploaded_artifact.py \\", download_step)
+        for argument in (
+            '--repository "$GITHUB_REPOSITORY"',
+            '--root "$artifact_download_root"',
+            '--artifact-id "$ARTIFACT_ID"',
+            '--artifact-digest "$ARTIFACT_DIGEST"',
+            '--run-id "$GITHUB_RUN_ID"',
+            '--repository-id "$EXPECTED_REPOSITORY_ID"',
+            '--head-repository-id "$EXPECTED_HEAD_REPOSITORY_ID"',
+        ):
+            self.assertIn(argument, download_step)
+        name_prefix = "dcc-cua-native" if expected_head_sha else "dcc-cua-pr-native"
+        self.assertIn(f'--artifact-name "{name_prefix}-${{{{ matrix.platform }}}}"', download_step)
+        head_var = "EXPECTED_HEAD_SHA" if expected_head_sha else "EXPECTED_SOURCE_SHA"
+        self.assertIn(f'--head-sha "${head_var}"', download_step)
+        expected_head = expected_head_sha or "${{ steps.ci-source.outputs.sha }}"
+        self.assertIn(f"{head_var}: {expected_head}", download_step)
+        self.assertNotIn("gh api", download_step)
         self.assertNotIn("actions/download-artifact", download_step)
         self.assertNotIn("?name=", download_step)
 
@@ -1161,6 +1167,10 @@ class ReleaseWorkflowTests(unittest.TestCase):
             "upload-pr-native",
             None,
         )
+
+    def test_shared_artifact_readback_regressions_run_in_both_pipelines(self):
+        for workflow in (CI_WORKFLOW, WORKFLOW):
+            self.assertIn("scripts.test_download_uploaded_artifact", workflow.read_text(encoding="utf-8"))
 
     def test_marketplace_uses_a_bounded_installable_plugin_directory(self):
         marketplace = json.loads(MARKETPLACE.read_text(encoding="utf-8"))
@@ -1264,7 +1274,26 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertIn("ManifestKey = 'browser-extension/chrome'", script)
         self.assertIn("$baseProperty.Value = $componentVersion", script)
         self.assertIn("--force-with-lease", script)
-        self.assertNotIn("git merge", script)
+        # Refresh must only compare ancestry; it must never merge, rebase or
+        # reset a release branch. Differently named read-only git commands such
+        # as `git merge-base --is-ancestor` remain allowed.
+        self.assertIn("git merge-base --is-ancestor", script)
+        for forbidden in (
+            "git merge ",
+            "git rebase ",
+            "git reset ",
+        ):
+            self.assertNotIn(forbidden, script)
+
+    def test_refresh_guard_rejects_a_real_mutating_merge_command(self) -> None:
+        script = REFRESH_SCRIPT.read_text(encoding="utf-8")
+        guarded = script.replace(
+            "git checkout -B $branch $baseCommit",
+            "git merge $baseCommit\ngit checkout -B $branch $baseCommit",
+        )
+        self.assertNotEqual(script, guarded)
+        self.assertIn("git merge ", guarded)
+        self.assertIn("git rebase ", f"{guarded}\ngit rebase $baseCommit")
 
     def test_recovery_keeps_workflow_identity_separate_from_tagged_sources(self):
         workflow = WORKFLOW.read_text(encoding="utf-8")

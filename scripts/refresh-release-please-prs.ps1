@@ -40,6 +40,7 @@ if ($LASTEXITCODE -ne 0) { throw "current release refresh base resolution failed
 if ($env:GITHUB_SHA -and $env:GITHUB_SHA -ne $expectedBaseCommit) {
     throw "checkout HEAD $expectedBaseCommit does not match workflow base $env:GITHUB_SHA"
 }
+$workflowBaseCommit = $expectedBaseCommit
 
 git config user.name 'github-actions[bot]'
 git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
@@ -59,6 +60,31 @@ foreach ($component in $components) {
     $baseCommit = (git rev-parse --verify "${baseRef}^{commit}").Trim()
     if ($LASTEXITCODE -ne 0) { throw "$baseBranch resolution failed with code $LASTEXITCODE" }
     if ($baseCommit -ne $expectedBaseCommit) {
+        # A shallow checkout can contain both commit objects while omitting the
+        # parent chain. Fetch only the workflow commit's history; then use the
+        # standard ancestry result: 0 means advanced descendant, 1 means a
+        # divergent base, and an execution error must fail closed.
+        $shallowCheckout = (git rev-parse --is-shallow-repository).Trim()
+        if ($LASTEXITCODE -ne 0) { throw "shallow checkout resolution failed with code $LASTEXITCODE" }
+        if ($shallowCheckout -eq 'true') {
+            git fetch --no-tags --deepen=2147483647 origin $workflowBaseCommit
+            if ($LASTEXITCODE -ne 0) { throw "workflow base history fetch failed with code $LASTEXITCODE" }
+        }
+        $ancestryExit = 0
+        try {
+            git merge-base --is-ancestor $workflowBaseCommit $baseCommit
+            $ancestryExit = $LASTEXITCODE
+        } catch {
+            throw "workflow base ancestry check failed: $_"
+        }
+        if ($ancestryExit -ne 0 -and $ancestryExit -ne 1) {
+            throw "workflow base ancestry check returned unexpected code $ancestryExit"
+        }
+        $workflowBaseIsAncestor = $ancestryExit -eq 0
+        if ($workflowBaseIsAncestor) {
+            Write-Host "main advanced from workflow checkout $expectedBaseCommit to $baseCommit; skipping $($component.Name) release refresh for this run."
+            continue
+        }
         throw "fetched $baseBranch commit $baseCommit does not match expected base $expectedBaseCommit"
     }
 

@@ -50,7 +50,7 @@ jobs:
         with:
           toolchain: 1.95.0
       - run: cargo metadata --locked --no-deps --format-version 1
-      - run: python -B -m unittest scripts.test_release_workflow scripts.test_release_integrity scripts.test_verify_release_assets scripts.test_verify_final_archive scripts.test_verify_uploaded_artifact scripts.test_select_ci_source_sha scripts.test_refresh_release_please_prs scripts.test_resolve_release_recovery scripts.test_publish_verified_release scripts.test_release_identity_preflight
+      - run: python -B -m unittest scripts.test_release_workflow scripts.test_release_integrity scripts.test_verify_release_assets scripts.test_verify_final_archive scripts.test_verify_uploaded_artifact scripts.test_download_uploaded_artifact scripts.test_select_ci_source_sha scripts.test_refresh_release_please_prs scripts.test_resolve_release_recovery scripts.test_publish_verified_release scripts.test_release_identity_preflight
 
   release-please:
     needs: validate
@@ -324,6 +324,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           ARTIFACT_ID: ${{ steps.upload-native.outputs.artifact-id }}
           ARTIFACT_DIGEST: ${{ steps.upload-native.outputs.artifact-digest }}
+          EXPECTED_HEAD_SHA: ${{ github.sha }}
+          EXPECTED_REPOSITORY_ID: ${{ github.repository_id }}
+          EXPECTED_HEAD_REPOSITORY_ID: ${{ github.repository_id }}
         run: |
           set -euo pipefail
           case "$ARTIFACT_ID" in
@@ -337,9 +340,16 @@ jobs:
           artifact_metadata="$artifact_download_root/metadata.json"
           artifact_repository_metadata="$artifact_download_root/repository.json"
           artifact_bundle="$artifact_download_root/artifact.zip"
-          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${ARTIFACT_ID}" > "$artifact_metadata"
-          gh api "repos/${GITHUB_REPOSITORY}" > "$artifact_repository_metadata"
-          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${ARTIFACT_ID}/zip" > "$artifact_bundle"
+          python -B scripts/download_uploaded_artifact.py \
+            --repository "$GITHUB_REPOSITORY" \
+            --root "$artifact_download_root" \
+            --artifact-id "$ARTIFACT_ID" \
+            --artifact-name "dcc-cua-native-${{ matrix.platform }}" \
+            --artifact-digest "$ARTIFACT_DIGEST" \
+            --run-id "$GITHUB_RUN_ID" \
+            --head-sha "$EXPECTED_HEAD_SHA" \
+            --repository-id "$EXPECTED_REPOSITORY_ID" \
+            --head-repository-id "$EXPECTED_HEAD_REPOSITORY_ID"
           printf 'ARTIFACT_METADATA=%s\nARTIFACT_REPOSITORY_METADATA=%s\nARTIFACT_BUNDLE=%s\n' \
             "$artifact_metadata" "$artifact_repository_metadata" "$artifact_bundle" >> "$GITHUB_ENV"
       - name: Verify downloaded immutable native artifact
