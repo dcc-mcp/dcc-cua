@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.19.3](https://github.com/dcc-mcp/dcc-cua/compare/v1.19.2...v1.19.3) (2026-11-13)
+
+
+### Bug Fixes
+
+* **ci:** preserve signal failures in Intel diagnostics ([90c4878](https://github.com/dcc-mcp/dcc-cua/commit/90c4878ee4124feffca15da94985f42032a9506d))
+* **deps:** integrate Driver 0.49.1 compatibility source ([#401](https://github.com/dcc-mcp/dcc-cua/issues/401)) ([3d90b96](https://github.com/dcc-mcp/dcc-cua/commit/3d90b96266fe2368e3b2a94c89edf5bf3e625de3))
+* retain Intel CI diagnostics within the job deadline ([5473b44](https://github.com/dcc-mcp/dcc-cua/commit/5473b4441fb6f4584d33d4680b36165fdd7f62f9))
+
 ## [1.19.2](https://github.com/dcc-mcp/dcc-cua/compare/v1.19.1...v1.19.2) (2026-11-13)
 
 
