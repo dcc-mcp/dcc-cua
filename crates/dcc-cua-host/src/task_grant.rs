@@ -84,6 +84,8 @@ pub(super) struct TaskGrant {
     #[serde(default)]
     pub(super) recording_output_dir: Option<String>,
     #[serde(default)]
+    pub(super) recording_audio_grant: Option<dcc_cua_protocol::recording_audio::ProcessAudioGrant>,
+    #[serde(default)]
     pub(super) allow_live_observation: bool,
     #[serde(default)]
     pub(super) allow_browser_input: bool,
@@ -177,6 +179,16 @@ impl TaskGrant {
         if self.showcase_output_dir.is_some() && !self.allow_recording {
             return Err(HostError::Protocol(
                 "showcase_output_dir requires allow_recording".into(),
+            ));
+        }
+        if self.recording_audio_grant.is_some()
+            && (!self.allow_recording
+                || self.observation_mode != TaskObservationMode::PixelsOnly
+                || self.recording_output_dir.is_none()
+                || self.showcase_output_dir.is_some())
+        {
+            return Err(HostError::Protocol(
+                "audio requires independent trusted pixels_only manual recording permission".into(),
             ));
         }
         if self.recording_output_dir.is_some() && !self.allow_recording {

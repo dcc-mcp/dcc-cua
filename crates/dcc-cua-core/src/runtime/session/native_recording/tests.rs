@@ -35,8 +35,57 @@ fn proof() -> NativeFrameProvenance {
         capture_generation: 1,
         stream_id: 9,
         wgc_geometry: None,
+        wgc_timing: None,
         capture_preparation: None,
     }
+}
+
+#[rstest]
+fn wgc_pixels_from_before_recording_request_are_still_refused_after_publication() {
+    let requested_at = Instant::now();
+    let mut native = proof();
+    native.source = NativeFrameSource::Wgc;
+    let frame = crate::live_observation::LiveObservationFrame::new(
+        4,
+        vec![0; 16 * 16 * 4],
+        16,
+        16,
+        requested_at - Duration::from_millis(750),
+    )
+    .with_provenance(FrameCaptureProvenance::NativeExactWindow(Box::new(native)));
+    assert_eq!(
+        validate_native_recording_frame(&frame, &target(), 9, requested_at)
+            .unwrap_err()
+            .code,
+        ComputerUseErrorCode::StaleObservation
+    );
+}
+
+#[rstest]
+fn wgc_clock_uncertainty_cannot_admit_pixels_that_may_predate_the_request() {
+    let requested_at = Instant::now();
+    let mut native = proof();
+    native.source = NativeFrameSource::Wgc;
+    native.wgc_timing = Some(dcc_cua_showcase::NativeWgcFrameTiming {
+        compositor_time_100ns: 10_000,
+        published_qpc_100ns: 20_000,
+        published_at_unix_ms: 100_000,
+        calibration_bracket_ns: 2_000_000,
+        pipeline: Default::default(),
+    });
+    let provenance = FrameCaptureProvenance::NativeExactWindow(Box::new(native));
+    assert_eq!(
+        validate_native_recording_metadata(
+            &provenance,
+            requested_at + Duration::from_micros(500),
+            &target(),
+            9,
+            requested_at,
+        )
+        .unwrap_err()
+        .code,
+        ComputerUseErrorCode::StaleObservation
+    );
 }
 
 #[rstest]

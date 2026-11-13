@@ -44,6 +44,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use windows::core::{BOOL, HRESULT, PCWSTR, w};
 
 pub(crate) mod capture_exclusion;
+pub(super) mod cooperative_capture;
 pub(crate) mod cursor_registration;
 mod escape_hub_lifecycle;
 mod frame_wait;
@@ -52,8 +53,8 @@ pub(super) use owned_input_suppression::Guard as PlatformInputSuppressionGuard;
 mod presentation;
 mod rendering;
 use capture_exclusion::CaptureExclusionState;
-pub(super) use capture_exclusion::Guard as PlatformCaptureExclusionGuard;
 pub(super) use capture_exclusion::InputCursorGuard as PlatformInputCursorGuard;
+pub(super) use cooperative_capture::CaptureGuard as PlatformCaptureExclusionGuard;
 pub(super) use escape_hub_lifecycle::{
     EscapeHubAcquireAction, EscapeHubReleaseAction, acquire_action as escape_hub_acquire_action,
     release_action as escape_hub_release_action,
@@ -149,11 +150,15 @@ pub(super) fn system_language_tag() -> String {
 #[derive(Clone)]
 pub(super) struct PlatformCaptureExclusionSource {
     active: Arc<AtomicBool>,
+    input_capture: Arc<cooperative_capture::Pool>,
 }
 
 impl PlatformCaptureExclusionSource {
     pub(super) fn validate_active(&self) -> Result<(), IndicatorError> {
         if self.active.load(Ordering::Acquire) {
+            if self.input_capture.has_resources()? {
+                capture_exclusion::confirm_overlays_hidden()?;
+            }
             return Ok(());
         }
         Err(IndicatorError::CaptureExclusion(
@@ -163,7 +168,7 @@ impl PlatformCaptureExclusionSource {
 
     pub(super) fn begin(&self) -> Result<PlatformCaptureExclusionGuard, IndicatorError> {
         self.validate_active()?;
-        capture_exclusion::begin(&self.active)
+        cooperative_capture::begin_capture(&self.input_capture, &self.active, true)
     }
 
     pub(super) fn begin_input_cursor(&self) -> Result<PlatformInputCursorGuard, IndicatorError> {
@@ -181,9 +186,18 @@ pub(super) struct PlatformInputSuppressionSource {
     stop: Arc<AtomicBool>,
     generation: u64,
     target: (u32, u64),
+    input_capture: Arc<cooperative_capture::Pool>,
 }
 
 impl PlatformInputSuppressionSource {
+    pub(super) fn begin_with_capture(
+        &self,
+        process_id: u32,
+        window_handle: u64,
+    ) -> Result<cooperative_capture::OwnedEpoch, IndicatorError> {
+        let presentation = self.begin(process_id, window_handle)?;
+        cooperative_capture::begin_input(&self.input_capture, &self.active, presentation)
+    }
     pub(super) fn validate_active(&self) -> Result<(), IndicatorError> {
         if self.active.load(Ordering::Acquire)
             && !self.stop.load(Ordering::Acquire)
@@ -253,6 +267,7 @@ impl PlatformBanner {
             stop: Arc::clone(&stop),
             generation,
             target: (target.process_id, target.window_handle),
+            input_capture: Arc::default(),
         };
         let capture_exclusion = capture_exclusion::state();
         let cross_process_registration_gate = capture_exclusion::CrossProcessGate::acquire()?;
@@ -399,6 +414,7 @@ impl PlatformBanner {
     pub(super) fn capture_exclusion_source(&self) -> PlatformCaptureExclusionSource {
         PlatformCaptureExclusionSource {
             active: Arc::clone(&self.active),
+            input_capture: Arc::clone(&self.input_suppression.input_capture),
         }
     }
 
@@ -409,7 +425,13 @@ impl PlatformBanner {
     pub(super) fn begin_capture_exclusion(
         &self,
     ) -> Result<PlatformCaptureExclusionGuard, IndicatorError> {
-        capture_exclusion::begin(&self.active)
+        // Explicit snapshots share only an already-exclusive capture epoch.
+        // Only the live source, which revalidates before publication, borrows input.
+        cooperative_capture::begin_capture(
+            &self.input_suppression.input_capture,
+            &self.active,
+            false,
+        )
     }
 
     pub(super) fn set_recording(&self, recording: bool) {

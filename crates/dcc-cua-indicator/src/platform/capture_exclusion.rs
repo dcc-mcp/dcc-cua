@@ -17,7 +17,7 @@ use super::OverlayWindow;
 use super::cursor_registration::{OwnedCursorWindow, registered_window};
 use crate::IndicatorError;
 
-const CAPTURE_EXCLUSION_TIMEOUT: Duration = Duration::from_secs(1);
+pub(super) const CAPTURE_EXCLUSION_TIMEOUT: Duration = Duration::from_secs(1);
 const CAPTURE_REQUEST_NAME: windows::core::PCWSTR =
     w!("Local\\DccCuaControlBannerCaptureExclusionV1");
 const BANNER_CLASS_NAME: &str = "DccCuaControlBanner";
@@ -49,6 +49,17 @@ pub(super) struct CrossProcessGate {
 }
 
 impl CrossProcessGate {
+    pub(super) fn try_acquire() -> std::io::Result<Self> {
+        let lock_path = std::env::temp_dir().join(CROSS_PROCESS_GATE_FILE);
+        OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .share_mode(0)
+            .open(lock_path)
+            .map(|file| Self { _file: file })
+    }
     pub(super) fn acquire() -> Result<Self, IndicatorError> {
         let lock_path = std::env::temp_dir().join(CROSS_PROCESS_GATE_FILE);
         let deadline = Instant::now() + CAPTURE_EXCLUSION_TIMEOUT;
@@ -340,9 +351,11 @@ impl Drop for Guard {
     }
 }
 
-pub(super) fn begin(active: &AtomicBool) -> Result<Guard, IndicatorError> {
+pub(super) fn begin_with_gate(
+    active: &AtomicBool,
+    cross_process_gate: CrossProcessGate,
+) -> Result<Guard, IndicatorError> {
     let state = state();
-    let cross_process_gate = CrossProcessGate::acquire()?;
     let registration_gate = RegistrationGate::acquire()?;
     let cross_process_request = CrossProcessCaptureRequest::begin()?;
     // Own all restoration before publishing suppression or hiding any cursor.
@@ -380,6 +393,38 @@ pub(super) fn begin(active: &AtomicBool) -> Result<Guard, IndicatorError> {
         thread::sleep(Duration::from_millis(1));
     }
     Ok(guard)
+}
+
+unsafe extern "system" fn check_hidden_overlay(window: HWND, context: LPARAM) -> BOOL {
+    let confirmed = unsafe { &mut *(context.0 as *mut bool) };
+    if !unsafe { IsWindowVisible(window) }.as_bool() {
+        return BOOL(1);
+    }
+    let mut class = [0_u16; 128];
+    let length = unsafe { GetClassNameW(window, &mut class) };
+    if length == 0
+        || dcc_cua_overlay_kind(&String::from_utf16_lossy(&class[..length as usize])).is_some()
+    {
+        *confirmed = false;
+        return BOOL(0);
+    }
+    BOOL(1)
+}
+
+pub(super) fn confirm_overlays_hidden() -> Result<(), IndicatorError> {
+    let mut confirmed = true;
+    let result = unsafe {
+        EnumWindows(
+            Some(check_hidden_overlay),
+            LPARAM(&raw mut confirmed as isize),
+        )
+    };
+    if result.is_ok() && confirmed {
+        return Ok(());
+    }
+    Err(IndicatorError::CaptureExclusion(
+        "an overlay remains visible during owned input capture".into(),
+    ))
 }
 
 // Input owns only this runtime's opaque registered cursor, never capture's

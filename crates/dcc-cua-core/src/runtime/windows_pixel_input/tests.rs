@@ -48,11 +48,8 @@ async fn cancelled_async_waiter_keeps_worker_lease_until_release_and_postcheck()
     let waiter = tokio::spawn(run_owned_pixel_worker(
         move || {
             acquire_held.store(true, Ordering::Release);
-            Ok(Lease(acquire_held))
-        },
-        move || {
             acquire_overlay.store(true, Ordering::Release);
-            Ok(Lease(acquire_overlay))
+            Ok((Lease(acquire_overlay), Lease(acquire_held)))
         },
         move || {
             entered_tx.send(()).unwrap();
@@ -111,9 +108,6 @@ async fn failed_owned_presentation_acquisition_never_enters_native_dispatch() {
                 "renderer unavailable",
             ))
         },
-        || -> ComputerUseResult<()> {
-            panic!("overlay lease must not start after renderer failure")
-        },
         || -> ComputerUseResult<()> { panic!("native dispatch must not begin") },
     )
     .await;
@@ -140,11 +134,9 @@ async fn overlay_ack_failure_restores_the_banner_and_never_enters_native_input()
     let banner_hidden = Arc::new(AtomicBool::new(false));
     let (acquire_banner, check_banner) = (banner_hidden.clone(), banner_hidden.clone());
     let result = run_owned_pixel_worker(
-        move || {
-            acquire_banner.store(true, Ordering::Release);
-            Ok(Banner(acquire_banner))
-        },
         move || -> ComputerUseResult<()> {
+            acquire_banner.store(true, Ordering::Release);
+            let _banner = Banner(acquire_banner);
             assert!(check_banner.load(Ordering::Acquire));
             Err(pixel_presentation_error(IndicatorError::CaptureExclusion(
                 "registered cursor did not acknowledge suppression".into(),

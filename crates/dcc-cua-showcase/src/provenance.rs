@@ -61,7 +61,40 @@ pub struct NativeFrameProvenance {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wgc_geometry: Option<NativeWgcFrameGeometry>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wgc_timing: Option<NativeWgcFrameTiming>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capture_preparation: Option<PreparedCaptureFrameProvenance>,
+}
+
+/// Raw source and publication clocks remain distinct in every sample sidecar.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NativeWgcFrameTiming {
+    pub compositor_time_100ns: i64,
+    pub published_qpc_100ns: i64,
+    pub published_at_unix_ms: u128,
+    /// Full calibration bracket; midpoint uncertainty is at most half this.
+    pub calibration_bracket_ns: u64,
+    pub pipeline: NativeCapturePipelineTiming,
+}
+
+impl NativeWgcFrameTiming {
+    /// Freshness uses the earliest possible capture, not the media midpoint.
+    #[must_use]
+    pub fn capture_uncertainty(&self) -> std::time::Duration {
+        std::time::Duration::from_nanos(self.calibration_bracket_ns.div_ceil(2).saturating_add(100))
+    }
+}
+
+/// Disjoint wall-clock phases, not CPU costs. Source capture includes its wait
+/// and readback. Clock mapping and status serialization are outside these phases.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NativeCapturePipelineTiming {
+    pub recording_precheck_us: u64,
+    pub exclusion_acquire_us: u64,
+    pub source_capture_us: u64,
+    pub source_validation_us: u64,
+    pub recording_admission_us: u64,
+    pub publication_validation_us: u64,
 }
 
 /// Actual passive preparation binding carried with each recorded frame.

@@ -389,7 +389,6 @@ pub(super) struct PixelInputOwner {
     started_generation: u64,
     session_interrupted: bool,
     presentation: dcc_cua_indicator::BannerInputSuppressionSource,
-    overlays: dcc_cua_indicator::BannerCaptureExclusionSource,
 }
 
 #[cfg(windows)]
@@ -408,7 +407,6 @@ impl ComputerUseSession {
             started_generation,
             session_interrupted: self.control_banner_interrupted(),
             presentation: banner.input_suppression_source(),
-            overlays: banner.capture_exclusion_source(),
         })
     }
 }
@@ -427,7 +425,6 @@ pub(super) async fn perform_exact_pixel_action_with_capture_popup(
         started_generation,
         session_interrupted,
         presentation,
-        overlays,
     } = owner;
     validate_pixel_interrupt(
         started_generation,
@@ -457,15 +454,7 @@ pub(super) async fn perform_exact_pixel_action_with_capture_popup(
             // The worker, not its cancellable async waiter, owns both leases
             // through every final fence, native key-up cleanup and postcheck.
             presentation
-                .begin(fence.target.process_id, fence.target.window_handle)
-                .map_err(pixel_presentation_error)
-        },
-        // Only the opaque registered cursor belongs to this runtime. Capture's
-        // global exclusion would also hide peer presenters, which must remain
-        // visible to the unchanged native input proof.
-        move || {
-            overlays
-                .begin_input_cursor()
+                .begin_with_capture(fence.target.process_id, fence.target.window_handle)
                 .map_err(pixel_presentation_error)
         },
         move || {
@@ -589,19 +578,16 @@ pub(super) async fn perform_exact_pixel_action_with_capture_popup(
 }
 
 #[cfg(any(windows, test))]
-async fn run_owned_pixel_worker<Lease, OverlayLease, Outcome>(
+async fn run_owned_pixel_worker<Lease, Outcome>(
     acquire: impl FnOnce() -> ComputerUseResult<Lease> + Send + 'static,
-    exclude_overlays: impl FnOnce() -> ComputerUseResult<OverlayLease> + Send + 'static,
     dispatch: impl FnOnce() -> ComputerUseResult<Outcome> + Send + 'static,
 ) -> ComputerUseResult<Outcome>
 where
     Lease: Send + 'static,
-    OverlayLease: Send + 'static,
     Outcome: Send + 'static,
 {
     tokio::task::spawn_blocking(move || {
-        let _presentation = acquire()?;
-        let _overlays = exclude_overlays()?;
+        let _owned_presentation_and_cursor = acquire()?;
         dispatch()
     }).await.map_err(|_| ComputerUseError::new(ComputerUseErrorCode::CompletionUnknown,
         "the guarded native input worker did not return; take a fresh observation before any further input")

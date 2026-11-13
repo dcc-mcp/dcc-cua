@@ -39,6 +39,7 @@ pub(super) fn proposal_payload(proposal_id: &str, proposal: &TaskProposal, statu
         "native_action_popups": false,
         "secrets_accepted": false,
         "recording_output_dir": proposal.registration.recording_output_dir,
+        "recording_audio_grant": proposal.registration.recording_audio_grant,
         "cleanup": task_cleanup_payload(proposal.cleanup.as_ref()),
     })
 }

@@ -13,6 +13,7 @@ mod cross_client_task_authorization;
 mod endpoint;
 mod error_contract;
 mod extension_input;
+mod recording_audio;
 mod request_contract;
 mod request_handler;
 mod secret_vault;

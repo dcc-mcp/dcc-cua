@@ -38,7 +38,7 @@ fn exact_source_capture_exclusion_native_boundary() {
         .lines()
         .filter(|line| {
             [
-                "const CAPTURE_EXCLUSION_TIMEOUT:",
+                "pub(super) const CAPTURE_EXCLUSION_TIMEOUT:",
                 "const BANNER_CLASS_NAME:",
                 "const FRAME_CLASS_NAME:",
                 "const CURSOR_CLASS_NAME:",

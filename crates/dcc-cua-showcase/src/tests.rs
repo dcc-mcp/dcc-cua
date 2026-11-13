@@ -144,6 +144,20 @@ async fn first_encoded_acknowledgement_matches_the_actual_first_sample_sidecar()
             row_pitch_bytes: 160,
             bgra_byte_len: 32 * 16 * 4,
         }),
+        wgc_timing: Some(NativeWgcFrameTiming {
+            compositor_time_100ns: 100_000,
+            published_qpc_100ns: 7_600_000,
+            published_at_unix_ms: 50_750,
+            calibration_bracket_ns: 50_000,
+            pipeline: NativeCapturePipelineTiming {
+                recording_precheck_us: 7,
+                exclusion_acquire_us: 11,
+                source_capture_us: 22,
+                source_validation_us: 33,
+                recording_admission_us: 44,
+                publication_validation_us: 55,
+            },
+        }),
         capture_preparation: None,
     }));
     let mut initial = LiveObservationStatus::default();
@@ -1923,6 +1937,7 @@ fn recording_manifest_covers_encoded_samples_across_pause_resize_and_source_gaps
             capture_generation: sequence,
             stream_id: 7,
             wgc_geometry: None,
+            wgc_timing: None,
             capture_preparation: Some(PreparedCaptureFrameProvenance {
                 preparation_id: [19; 16],
                 actual_foreground: false,
@@ -2093,4 +2108,27 @@ fn encode_frames_with_progress(
     progress: &Mutex<ShowcaseProgress>,
 ) -> ShowcaseResult<Value> {
     encode_frames_with_authorization(frames, path, fps, ready, progress, None, &Mutex::new(None))
+}
+
+fn encode_frames_with_authorization(
+    frames: mpsc::Receiver<ShowcaseProducerEvent>,
+    path: &Path,
+    fps: u32,
+    ready: oneshot::Sender<ShowcaseResult<EncodedFirstFrameEvidence>>,
+    progress: &Mutex<ShowcaseProgress>,
+    authorization: Option<&RecordingAuthorization>,
+    terminal_reason: &Mutex<Option<Value>>,
+) -> ShowcaseResult<Value> {
+    encode_frames_with_audio(
+        frames,
+        path,
+        fps,
+        ready,
+        progress,
+        EncoderAuthorization {
+            video: authorization,
+            audio: None,
+        },
+        terminal_reason,
+    )
 }

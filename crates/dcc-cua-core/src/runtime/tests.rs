@@ -538,6 +538,7 @@ fn live_frame_final_publication_rejects_post_encoding_native_drift() {
         capture_generation: 5,
         stream_id: 7,
         wgc_geometry: None,
+        wgc_timing: None,
         capture_preparation: None,
     };
     let target = WindowTarget {
@@ -632,6 +633,7 @@ fn live_wgc_final_geometry_revalidates_actual_measurement_with_the_shared_resolv
         capture_generation: 5,
         stream_id: 7,
         wgc_geometry: Some(native_wgc_frame_geometry(resolved)),
+        wgc_timing: None,
         capture_preparation: None,
     };
     assert!(validate_live_source_geometry(&proof).is_ok());

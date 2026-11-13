@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 use cua_driver_testkit::{
     BrowserFixtureServer, ChildReaper, FixtureJournal, harness_app, spawn_in_job,
 };
+mod fixture_output;
 #[cfg(feature = "gui-e2e")]
 use dcc_cua_client::{HostClient, HostClientError, HostProcess, HostResponse, SnapshotTransport};
 #[cfg(feature = "gui-e2e")]
@@ -497,12 +498,14 @@ async fn controlled_electron_round_trip() {
     );
     let journal = FixtureJournal::start();
     let cdp_port = allocate_loopback_port();
+    // Declared before the reaper: its failure tail is read after the child is reaped.
+    let fixture_output = fixture_output::FixtureOutput::new();
     let mut fixture_command = Command::new(&fixture_path);
     fixture_command
         .args(fixture_args)
         .env("CUA_E2E_FIXTURE_JOURNAL_URL", journal.url())
         .env("CUA_ELECTRON_CDP_PORT", cdp_port.to_string())
-        .stdout(Stdio::null())
+        .stdout(fixture_output.stdout())
         .stderr(Stdio::inherit());
     let fixture_child = spawn_in_job(&mut fixture_command).expect("launch official CUA fixture");
     let fixture_pid = fixture_child.id();

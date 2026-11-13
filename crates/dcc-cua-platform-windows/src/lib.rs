@@ -34,6 +34,8 @@ mod occlusion;
 #[cfg(windows)]
 mod physical_input_fence;
 #[cfg(windows)]
+pub mod process_audio;
+#[cfg(windows)]
 mod queued_activation;
 #[cfg(any(windows, test))]
 mod snapshot;
@@ -135,8 +137,9 @@ pub use visible_capture::{
 };
 #[cfg(windows)]
 pub use wgc::{
-    PersistentWgcCapture, PersistentWgcFrame, WgcCaptureError, WgcCompositorTiming,
-    WgcCompositorTimingUnavailable, WgcFrameMeasurement, WgcPublishedFrameMeasurement,
+    PersistentWgcCapture, PersistentWgcFrame, WgcCaptureClock, WgcCaptureError,
+    WgcCompositorTiming, WgcCompositorTimingUnavailable, WgcFrameMeasurement,
+    WgcPublishedFrameMeasurement,
 };
 #[cfg(windows)]
 pub use windows::{

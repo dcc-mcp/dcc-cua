@@ -75,6 +75,7 @@ async fn owned_browser_login_uses_vault_reuses_cookie_and_stops_at_human_boundar
             allowed_browser_origins: vec![origin.clone()],
             browser_scope: None,
             recording_output_dir: None,
+            recording_audio_grant: None,
             capture_preparation: None,
             expires_at_unix_ms: now_ms() + 180_000,
         })
