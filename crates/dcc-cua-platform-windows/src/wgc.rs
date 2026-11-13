@@ -157,6 +157,8 @@ impl WgcFrameMeasurement {
             readback_total: self.readback_total,
             gpu_copy_map: self.gpu_copy_map,
             cpu_copy: self.cpu_copy,
+            compositor_system_relative_time_100ns: self.compositor_system_relative_time_100ns,
+            published_qpc_100ns: publish_time_100ns,
             compositor: compositor_timing_from_100ns(
                 self.compositor_system_relative_time_100ns,
                 publish_time_100ns,
@@ -237,6 +239,9 @@ pub struct WgcPublishedFrameMeasurement {
     pub readback_total: Duration,
     pub gpu_copy_map: Duration,
     pub cpu_copy: Duration,
+    // Preserve the raw clock pair even when the frame clock is rejected.
+    pub compositor_system_relative_time_100ns: Option<i64>,
+    pub published_qpc_100ns: Option<i64>,
     pub compositor: WgcCompositorTiming,
     pub capture_clock: Result<WgcCaptureClock, WgcCompositorTimingUnavailable>,
 }

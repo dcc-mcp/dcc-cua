@@ -282,7 +282,10 @@ fn bind_wgc_source_clock(
     let fail = |reason: &str| {
         ComputerUseError::new(
             ComputerUseErrorCode::StaleObservation,
-            format!("WGC source clock unavailable: {reason}; publication time is not capture time"),
+            format!(
+                "WGC source clock unavailable: {reason}; compositor_time_100ns={:?}; published_qpc_100ns={:?}; publication time is not capture time",
+                measurement.compositor_system_relative_time_100ns, measurement.published_qpc_100ns,
+            ),
         )
     };
     let clock = measurement

@@ -41,6 +41,8 @@ fn wgc_source_clock_binding_retains_raw_time_and_phase_evidence() {
         readback_total: Duration::ZERO,
         gpu_copy_map: Duration::ZERO,
         cpu_copy: Duration::ZERO,
+        compositor_system_relative_time_100ns: Some(10_000),
+        published_qpc_100ns: Some(7_510_000),
         compositor: dcc_cua_platform_windows::WgcCompositorTiming::Available {
             system_relative_time_100ns: 10_000,
             compositor_to_publish: Duration::from_millis(750),
@@ -69,15 +71,34 @@ fn wgc_source_clock_binding_retains_raw_time_and_phase_evidence() {
     unavailable.capture_clock = Err(
         dcc_cua_platform_windows::WgcCompositorTimingUnavailable::PerformanceCounterUnavailable,
     );
+    unavailable.published_qpc_100ns = None;
     let mut fresh_proof = proof.clone();
     let error =
         bind_wgc_source_clock(&mut fresh_proof, unavailable, pipeline, 200_000).unwrap_err();
     assert_eq!(error.code, ComputerUseErrorCode::StaleObservation);
-    assert!(error.message.contains("performance_counter_unavailable"));
+    assert_eq!(
+        error.message,
+        "WGC source clock unavailable: performance_counter_unavailable; compositor_time_100ns=Some(10000); published_qpc_100ns=None; publication time is not capture time",
+    );
     assert_eq!(
         fresh_proof, proof,
         "failure cannot replace source evidence with publication time"
     );
+
+    unavailable.published_qpc_100ns = Some(9_999);
+    unavailable.compositor = dcc_cua_platform_windows::WgcCompositorTiming::Unavailable {
+        reason: dcc_cua_platform_windows::WgcCompositorTimingUnavailable::TimestampAfterPublish,
+    };
+    unavailable.capture_clock =
+        Err(dcc_cua_platform_windows::WgcCompositorTimingUnavailable::TimestampAfterPublish);
+    let error =
+        bind_wgc_source_clock(&mut fresh_proof, unavailable, pipeline, 200_000).unwrap_err();
+    assert_eq!(error.code, ComputerUseErrorCode::StaleObservation);
+    assert_eq!(
+        error.message,
+        "WGC source clock unavailable: timestamp_after_publish; compositor_time_100ns=Some(10000); published_qpc_100ns=Some(9999); publication time is not capture time",
+    );
+    assert_eq!(fresh_proof, proof);
 }
 
 #[rstest]

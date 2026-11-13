@@ -1,14 +1,19 @@
 use rstest::rstest;
 
+use super::WgcCompositorTimingUnavailable::{
+    CalibrationBracketTooWide, PerformanceCounterUnavailable, TimestampAfterPublish,
+};
+
 #[rstest]
-#[case(Some(20_000), 1, 2, true)]
-#[case(Some(20_000), 3, 3, false)]
-#[case(None, 0, 1, false)]
+#[case(Some(20_000), 1, 2, None)]
+#[case(Some(20_000), 3, 3, Some(CalibrationBracketTooWide))]
+#[case(None, 0, 1, Some(PerformanceCounterUnavailable))]
+#[case(Some(9_999), 0, 1, Some(TimestampAfterPublish))]
 fn calibration_retries_only_wide_brackets_and_uses_the_accepted_sample(
     #[case] qpc: Option<i64>,
     #[case] wide_samples: usize,
     #[case] expected_samples: usize,
-    #[case] success: bool,
+    #[case] expected_error: Option<WgcCompositorTimingUnavailable>,
 ) {
     let now = Instant::now();
     let mut count = 0;
@@ -29,7 +34,9 @@ fn calibration_retries_only_wide_brackets_and_uses_the_accepted_sample(
         )
     });
     assert_eq!(count, expected_samples);
-    assert_eq!(result.capture_clock.is_ok(), success);
+    assert_eq!(result.capture_clock.err(), expected_error);
+    assert_eq!(result.compositor_system_relative_time_100ns, Some(10_000));
+    assert_eq!(result.published_qpc_100ns, qpc);
     if let Ok(clock) = result.capture_clock {
         assert_eq!(clock.published_at, now + Duration::from_millis(21));
         assert_eq!(clock.captured_at, now + Duration::from_micros(19_500));
