@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.19.2](https://github.com/dcc-mcp/dcc-cua/compare/v1.19.1...v1.19.2) (2026-11-13)
+
+
+### Bug Fixes
+
+* **ci:** attest exact artifact reads before bounded 404 retries ([72fd8b5](https://github.com/dcc-mcp/dcc-cua/commit/72fd8b5e3d1aadc5a07400e6275defea3b98b925))
+* **core:** preserve unknown window discovery outcomes ([90ce9e3](https://github.com/dcc-mcp/dcc-cua/commit/90ce9e367f7ebb6cb885e9e6abf6b50de808fa2c))
+* integrate verified artifact reader into window discovery CI ([e6ceb5e](https://github.com/dcc-mcp/dcc-cua/commit/e6ceb5ea6fccfaad3e98e8bcbfb64f9d8f9d11db))
+* merge current main into window discovery candidate ([de00ca1](https://github.com/dcc-mcp/dcc-cua/commit/de00ca12184bb5798064e8249c52c5cb75583330))
+* preserve owned browser startup failures and cleanup ([#402](https://github.com/dcc-mcp/dcc-cua/issues/402)) ([6594020](https://github.com/dcc-mcp/dcc-cua/commit/6594020c45b197c9d114fe1006af5357f27dab9a))
+* **release:** skip refresh when main advances after checkout ([#404](https://github.com/dcc-mcp/dcc-cua/issues/404)) ([92e975d](https://github.com/dcc-mcp/dcc-cua/commit/92e975df355ded3dd6974a66f4a9aa7656932ad7))
+
 ## [1.19.1](https://github.com/dcc-mcp/dcc-cua/compare/v1.19.0...v1.19.1) (2026-11-11)
 
 
