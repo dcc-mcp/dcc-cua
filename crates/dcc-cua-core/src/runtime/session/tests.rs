@@ -83,6 +83,7 @@ mod recording;
 mod sdk_snapshot_fixture;
 #[cfg(not(windows))]
 mod sdk_snapshot_format;
+mod session_state;
 mod visual_only;
 
 #[cfg(windows)]
@@ -280,7 +281,10 @@ impl DriverEnvelopeChannel for CountingRemoteChannel {
                     "enabled": false,
                     "owner": Value::Null,
                 }),
-                Some("get_session_state") => json!({"active": true}),
+                Some("get_session") => json!({
+                    "session": request.arguments.as_ref().expect("session arguments")["session"],
+                    "state": "active",
+                }),
                 Some("debug_window_info" | "run_script") => {
                     request.arguments.clone().expect("native tool arguments")
                 }
@@ -800,7 +804,7 @@ async fn successful_refresh_before_observation_requires_a_strictly_new_live_fram
 #[rstest]
 #[tokio::test]
 async fn successful_session_state_refresh_invalidates_the_previous_observation() {
-    let (mut session, calls) = counting_session();
+    let (mut session, calls, names) = counting_session_with_names();
     let evidence_epoch_before_refresh = session.action_evidence_epoch();
 
     let state = session.session_state().await.expect("refreshed state");
@@ -808,6 +812,10 @@ async fn successful_session_state_refresh_invalidates_the_previous_observation()
     assert!(session.action_evidence_epoch() > evidence_epoch_before_refresh);
     assert_eq!(state["structuredContent"]["active"], true);
     assert_eq!(calls.load(AtomicOrdering::SeqCst), 2);
+    assert_eq!(
+        *names.lock().expect("read state tool names"),
+        ["start_session", "get_session"]
+    );
     assert!(session.last_upstream_session_refresh.is_some());
     assert!(session.observation.is_none());
     assert_eq!(
