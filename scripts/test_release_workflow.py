@@ -509,6 +509,25 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertIn('if [ "$host" != "$EXPECTED_TARGET" ]; then', build_matrix)
         self.assertIn("EXPECTED_TARGET: ${{ matrix.target }}", build_matrix)
 
+    def test_linux_release_installs_linker_dependencies_before_build(self):
+        workflow = _RestrictedWorkflowYamlParser(
+            WORKFLOW.read_text(encoding="utf-8")
+        ).parse()
+        steps = workflow["jobs"]["build"]["steps"]
+        build = next(
+            index for index, step in enumerate(steps)
+            if step.get("run") == "cargo build --release --locked -p dcc-cua-cli"
+        )
+        packages = set()
+        for step in steps[:build]:
+            if step.get("if") == "matrix.os == 'ubuntu-latest'":
+                packages.update(step.get("run", "").split())
+        self.assertTrue(
+            {"libx11-dev", "libxi-dev", "libxtst-dev", "libxkbcommon-dev"}
+            <= packages,
+            "Linux release must install the SDK's native linker dependencies",
+        )
+
     def test_release_upload_fails_closed_until_all_target_assets_exist(self):
         workflow = WORKFLOW.read_text(encoding="utf-8")
         attach_assets = workflow[
