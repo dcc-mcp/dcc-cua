@@ -43,7 +43,7 @@ RELEASE_PLEASE_ACTION = (
     "googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7"
 )
 CI_EXECUTABLE_SURFACE_SHA256 = (
-    "bec3cb7d901411a0d69b7296c723e09cdb986c0fcc6800017027c3b83a04dde4"
+    "0f9ebaac6f3c8fc354e48bac8478425108c618f749eef087f367803087e3a5bf"
 )
 
 
@@ -265,7 +265,10 @@ class ReleaseWorkflowTests(unittest.TestCase):
         diagnostic = next(step for step in steps if step.get("id") == "intel-nextest")
         self.assertEqual(verify["timeout-minutes"], "45")
         self.assertEqual(diagnostic["if"], "matrix.platform == 'macos-x86_64'")
-        self.assertEqual(diagnostic["timeout-minutes"], "25")
+        self.assertEqual(
+            diagnostic["timeout-minutes"],
+            "${{ fromJSON(steps.intel-nextest-budget.outputs.minutes) }}",
+        )
         self.assertNotIn("continue-on-error", diagnostic)
         self.assertIn(
             "cargo nextest run --workspace --all-targets --locked",
@@ -321,7 +324,10 @@ class ReleaseWorkflowTests(unittest.TestCase):
         verify, steps, diagnostic = self.intel_check_diagnostics()
         self.assertEqual(verify["timeout-minutes"], "45")
         self.assertEqual(diagnostic["if"], "matrix.platform == 'macos-x86_64'")
-        self.assertEqual(diagnostic["timeout-minutes"], "35")
+        self.assertEqual(
+            diagnostic["timeout-minutes"],
+            "${{ fromJSON(steps.intel-check-budget.outputs.minutes) }}",
+        )
         self.assertNotIn("continue-on-error", diagnostic)
         upload = steps[steps.index(diagnostic) + 1]
         self.assertEqual(upload["uses"], UPLOAD_ACTION)
@@ -362,6 +368,36 @@ class ReleaseWorkflowTests(unittest.TestCase):
                 self.assertIn("compiler-error", saved)
                 status = Path(directory, "artifacts/ci-diagnostics/intel-check/exit.txt").read_text()
                 self.assertIn(f"exit_code={code} ", status)
+
+    def test_intel_budgets_use_the_current_job_cumulative_deadline(self):
+        workflow = _RestrictedWorkflowYamlParser(
+            CI_WORKFLOW.read_text(encoding="utf-8")
+        ).parse()
+        self.assertEqual(workflow["permissions"]["actions"], "read")
+        steps = workflow["jobs"]["verify"]["steps"]
+        for phase, maximum in (("check", 35), ("nextest", 25)):
+            with self.subTest(phase=phase):
+                diagnostic = next(s for s in steps if s.get("id") == f"intel-{phase}")
+                budget = steps[steps.index(diagnostic) - 1]
+                self.assertEqual(budget["id"], f"intel-{phase}-budget")
+                self.assertEqual(budget["if"], "matrix.platform == 'macos-x86_64'")
+                self.assertEqual(budget["timeout-minutes"], "2")
+                self.assertEqual(budget["env"]["GH_TOKEN"], "${{ github.token }}")
+                script = budget["run"]["text"]
+                self.assertIn("$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT/jobs", script)
+                self.assertIn('.runner_name == env.RUNNER_NAME', script)
+                self.assertIn('.status == "in_progress"', script)
+                self.assertIn('verify (macos-26-intel, macos-x86_64, x86_64)', script)
+                self.assertIn('length == 1', script)
+                self.assertIn('--job-minutes 45 --reserve-minutes 3', script)
+                self.assertIn(f'--maximum-minutes {maximum}', script)
+                self.assertIn('"$GITHUB_OUTPUT"', script)
+                self.assertNotIn("continue-on-error", budget)
+        policy = workflow["jobs"]["policy"]["steps"]
+        self.assertIn(
+            "python -B -m unittest scripts.test_ci_job_budget",
+            [s.get("run") for s in policy],
+        )
 
     def test_only_ci_artifact_readback_opts_in_to_build_metadata(self):
         ci = CI_WORKFLOW.read_text(encoding="utf-8")
@@ -486,7 +522,13 @@ class ReleaseWorkflowTests(unittest.TestCase):
     def test_intel_macos_release_target_runs_the_native_ci_contract(self):
         workflow = CI_WORKFLOW.read_text(encoding="utf-8")
 
-        self.assertEqual(workflow.count("macos-26-intel"), 2)
+        parsed = _RestrictedWorkflowYamlParser(workflow).parse()
+        for job in ("verify", "e2e"):
+            lanes = parsed["jobs"][job]["strategy"]["matrix"]["include"]
+            self.assertEqual(
+                [lane for lane in lanes if lane["os"] == "macos-26-intel"],
+                [{"os": "macos-26-intel", "platform": "macos-x86_64", "arch": "x86_64"}],
+            )
         self.assertGreaterEqual(
             workflow.count("if: startsWith(matrix.os, 'macos-')"), 3
         )
