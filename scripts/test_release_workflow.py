@@ -43,7 +43,7 @@ RELEASE_PLEASE_ACTION = (
     "googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7"
 )
 CI_EXECUTABLE_SURFACE_SHA256 = (
-    "0f9ebaac6f3c8fc354e48bac8478425108c618f749eef087f367803087e3a5bf"
+    "8405bf975167100a443268b716448dbd4c248104618bf4e5c0cff1bf99433632"
 )
 
 
@@ -368,6 +368,32 @@ class ReleaseWorkflowTests(unittest.TestCase):
                 self.assertIn("compiler-error", saved)
                 status = Path(directory, "artifacts/ci-diagnostics/intel-check/exit.txt").read_text()
                 self.assertIn(f"exit_code={code} ", status)
+
+    def test_intel_diagnostic_signals_cannot_record_success(self):
+        workflow = _RestrictedWorkflowYamlParser(
+            CI_WORKFLOW.read_text(encoding="utf-8")
+        ).parse()
+        steps = workflow["jobs"]["verify"]["steps"]
+        bash = (
+            shutil.which("bash", path=str(Path(
+                os.environ.get("ProgramFiles", "C:/Program Files"), "Git/bin"
+            )))
+            if os.name == "nt" else shutil.which("bash")
+        )
+        if bash is None:
+            self.skipTest("bash is required to exercise the CI shell pipeline")
+        for phase in ("check", "nextest"):
+            diagnostic = next(s for s in steps if s.get("id") == f"intel-{phase}")
+            for signal, code in (("INT", 130), ("TERM", 143)):
+                with self.subTest(phase=phase, signal=signal), tempfile.TemporaryDirectory() as directory:
+                    fake = f'cargo() {{ echo interrupted-cargo; kill -s {signal} "$$"; }}\n'
+                    result = subprocess.run(
+                        [bash, "--noprofile", "--norc", "-c", fake + diagnostic["run"]["text"]],
+                        cwd=directory, capture_output=True, text=True, timeout=10,
+                    )
+                    receipt = Path(directory, f"artifacts/ci-diagnostics/intel-{phase}/exit.txt").read_text()
+                    self.assertIn(f"exit_code={code} ", receipt)
+                    self.assertEqual(result.returncode, code, result.stderr)
 
     def test_intel_budgets_use_the_current_job_cumulative_deadline(self):
         workflow = _RestrictedWorkflowYamlParser(

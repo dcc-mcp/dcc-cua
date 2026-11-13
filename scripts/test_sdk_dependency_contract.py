@@ -15,7 +15,9 @@ SDK_PACKAGES = {
     "platform-macos",
     "platform-windows",
 }
-RESOLVED_SDK_PACKAGES = SDK_PACKAGES | {"cua-driver-core", "cua-cursor-motion", "pip-preview", "platform-linux"}
+# Driver 0.49 removed the upstream pip-preview crate; all nine remaining
+# packages must still resolve to the one exact immutable compatibility source.
+RESOLVED_SDK_PACKAGES = SDK_PACKAGES | {"cua-driver-core", "cua-cursor-motion", "platform-linux"}
 
 
 class SdkDependencyContractTests(unittest.TestCase):

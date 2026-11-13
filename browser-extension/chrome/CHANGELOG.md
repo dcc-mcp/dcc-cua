@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.4.1](https://github.com/dcc-mcp/dcc-cua/compare/dcc-cua-browser-extension-v0.4.0...dcc-cua-browser-extension-v0.4.1) (2026-11-13)
+
+
+### Bug Fixes
+
+* **extension:** distinguish native handshake from task readiness ([#382](https://github.com/dcc-mcp/dcc-cua/issues/382)) ([58acc8e](https://github.com/dcc-mcp/dcc-cua/commit/58acc8ea474e3454084b54bfa96941db4780e0bf))
+* integrate verified artifact reader into window discovery CI ([e6ceb5e](https://github.com/dcc-mcp/dcc-cua/commit/e6ceb5ea6fccfaad3e98e8bcbfb64f9d8f9d11db))
+* merge current main into window discovery candidate ([de00ca1](https://github.com/dcc-mcp/dcc-cua/commit/de00ca12184bb5798064e8249c52c5cb75583330))
+
 ## [0.4.0](https://github.com/dcc-mcp/dcc-cua/compare/dcc-cua-browser-extension-v0.3.2...dcc-cua-browser-extension-v0.4.0) (2026-10-27)
 
 

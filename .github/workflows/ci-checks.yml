@@ -260,6 +260,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          python -B -m unittest scripts.test_release_workflow.ReleaseWorkflowTests.test_intel_diagnostic_signals_cannot_record_success
           started_at="$(gh api "/repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT/jobs?per_page=100" \
             --jq '[.jobs[] | select(.name == "verify (macos-26-intel, macos-x86_64, x86_64)" and .runner_name == env.RUNNER_NAME and .status == "in_progress")] | if length == 1 then .[0].started_at else error("current Intel job is not unique") end')"
           python -B scripts/ci_job_budget.py --started-at "$started_at" \
@@ -274,6 +275,8 @@ jobs:
           set -euo pipefail
           mkdir -p artifacts/ci-diagnostics/intel-check
           trap 'status=$?; printf "exit_code=%s elapsed_seconds=%s\n" "$status" "$SECONDS" > artifacts/ci-diagnostics/intel-check/exit.txt' EXIT
+          trap 'exit 130' INT
+          trap 'exit 143' TERM
           cargo check --workspace --all-targets --locked --verbose --timings 2>&1 | tee artifacts/ci-diagnostics/intel-check/cargo-check.log
       - name: Retain Intel check evidence even after failure
         if: always() && matrix.platform == 'macos-x86_64'
@@ -312,6 +315,8 @@ jobs:
           set -euo pipefail
           mkdir -p artifacts/ci-diagnostics/intel-nextest
           trap 'status=$?; printf "exit_code=%s elapsed_seconds=%s\n" "$status" "$SECONDS" > artifacts/ci-diagnostics/intel-nextest/exit.txt' EXIT
+          trap 'exit 130' INT
+          trap 'exit 143' TERM
           cargo nextest run --workspace --all-targets --locked 2>&1 | tee artifacts/ci-diagnostics/intel-nextest/nextest.log
       - name: Retain Intel test evidence even after failure
         if: always() && matrix.platform == 'macos-x86_64'

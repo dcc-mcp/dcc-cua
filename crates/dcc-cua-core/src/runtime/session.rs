@@ -1531,14 +1531,15 @@ impl ComputerUseSession {
         Ok(())
     }
 
-    /// Read CUA's live capture policy for this exact session.
+    /// Read live upstream lifecycle and the Host's immutable exact-window policy.
     pub async fn session_state(&mut self) -> ComputerUseResult<Value> {
         self.ensure_active()?;
         self.refresh_upstream_session_before_state_if_needed()
             .await?;
-        let state = self
-            .call_bound_tool_value_without_refresh("get_session_state", json!({}))
+        let lifecycle = self
+            .call_bound_tool_value_without_refresh("get_session", json!({}))
             .await?;
+        let state = super::session_status::window_session_state(lifecycle, &self.session_id)?;
         Ok(attach_banner_status(state, self.banner_status()))
     }
 

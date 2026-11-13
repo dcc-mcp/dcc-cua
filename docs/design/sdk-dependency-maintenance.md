@@ -7,6 +7,73 @@ this contract with `scripts/test_sdk_dependency_contract.py`.
 
 ## Current source candidate
 
+The Driver 0.49.1 compatibility candidate is
+`loonghao/cua@f524ded47765f1905b8eead00f95ecd4b5bce74c`, proposed in the
+existing `loonghao/cua#13`. It merges official release commit
+`fc0dff22b8931397fadae56cc77a3df4a85f6a4e` into the preceding 0.47.11
+compatibility branch without replacing its history. The source workspace is
+0.49.1; the Unix installer still has the upstream baked value 0.48.0. A source
+pin does not change the installed runtime or prove the installer resolves 0.49.1.
+
+The merge preserves ancestor-scoped snapshot anchors, single-use continuations,
+navigation/loader fences, unambiguous upload associations and owned Windows
+consent/cleanup. Its one CDP mock conflict retains upstream click readback and
+node-resolution failure behavior alongside the existing upload fixture. The
+source passed 110 browser mocks, 32 Windows consent mocks, 35 Windows setup
+mocks, core-library strict Clippy and affected-crate formatting. The browser
+suite includes a fresh negative case that refuses an ancestor-scope request
+whose source ref is absent from the fresh semantics (`source_missing`), without
+silently reading the whole page. The existing `ancestor_missing` case separately
+checks refusal when the requested ancestor role cannot be proved. Native tests
+were not selected.
+
+The targeted update preserves all 617 preceding registry identities/checksums
+(including the earlier three Wayland additions), adding only `libloading 0.8.9`
+required by the upstream Linux dynamic-library adapters. Upstream removed
+`pip-preview`; the remaining nine SDK packages resolve to one exact Git revision.
+The dependency contract checks that new graph and still rejects mixed sources.
+
+Current-head Windows and Linux E2E exposed removal of the SDK's legacy
+`get_session_state` tool. The Host now reads live lifecycle through `get_session`,
+requires the exact public session to be active, and separately labels its
+immutable window-only policy as `capture_scope_source=host_exact_window_binding`.
+It preserves the upstream lifecycle receipt and refuses missing, foreign,
+ending, contradictory or broader-scope state. It does not infer desktop
+authorization from lifecycle state, retry a removed tool, or weaken the native
+E2E assertions. The original failure logs and pure regression evidence are
+retained separately from new-head native CI.
+
+The SDK fork's current-head CI has release-asset discovery and trusted-base
+attribution/CLA failures; no whole-SDK qualification or independent full-diff
+approval is implied. Local `bin/ci --quick --no-install` also stops in its
+Windows `pnpm` launcher while constructing the docs-check plan. No local-ci
+signoff was manufactured. Downstream candidate gates and the exact new-head
+CI/review must be recorded separately before qualification. Native acceptance
+and installation remain NOT_RUN.
+
+## Previous Driver 0.47.11 source and validation
+
+The Driver 0.47.11 compatibility candidate is
+`loonghao/cua@1193686f5fdf613fe6bd40146238b6a55432051d`, proposed in
+`loonghao/cua#13`. It merges the existing 0.38 compatibility source below,
+official Try CUA main `f9a2768c3d7eda97dc9a6e462415759e84d8a61e`, and the
+fork's main `c8207ad57b067b9bec2fb2905b85e6330cbd74b0`. Its upstream Driver
+workspace declares 0.47.11; its installer bookkeeping remains 0.47.10.
+
+The targeted lock update retains the 614 existing registry package identities
+and checksums and adds `wayland-protocols-plasma`, `xkbcommon`, and `xkeysym`.
+All ten SDK packages resolve to the single candidate revision. The preceding
+candidate `0648502320b473f4a9bd5d75cc3942120db6adcf` passed a Windows
+workspace/all-targets compile check with Rust 1.97.1; its SDK browser mock,
+Windows setup, consent and process-selection tests also passed. The current
+revision passed Windows workspace/all-targets strict Clippy, ten pure browser
+boundary cases, formatting, dependency/layout tests, and Hakari drift checks.
+These checks do not
+establish macOS behavior, complete upstream CI, an independent review, native
+acceptance, or a fix for the Intel macOS GUI E2E failure in DCC-CUA #400.
+
+## Previous Driver 0.38 source and validation
+
 - Official Driver release: [cua-driver-rs-v0.38.0](https://github.com/trycua/cua/releases/tag/cua-driver-rs-v0.38.0),
   immutable commit `trycua/cua@85e2b1318bd77ccf3cfa88ccdf875a4bb7eaed19`.
 - Compatibility source: `loonghao/cua@05f43bda479d01aee512a0c092fb064ce1a330bd`,
