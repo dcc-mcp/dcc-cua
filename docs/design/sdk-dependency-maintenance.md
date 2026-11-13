@@ -21,14 +21,27 @@ consent/cleanup. Its one CDP mock conflict retains upstream click readback and
 node-resolution failure behavior alongside the existing upload fixture. The
 source passed 110 browser mocks, 32 Windows consent mocks, 35 Windows setup
 mocks, core-library strict Clippy and affected-crate formatting. The browser
-suite includes a fresh negative case that refuses a vanished ancestor anchor
-without silently reading the whole page. Native tests were not selected.
+suite includes a fresh negative case that refuses an ancestor-scope request
+whose source ref is absent from the fresh semantics (`source_missing`), without
+silently reading the whole page. The existing `ancestor_missing` case separately
+checks refusal when the requested ancestor role cannot be proved. Native tests
+were not selected.
 
 The targeted update preserves all 617 preceding registry identities/checksums
 (including the earlier three Wayland additions), adding only `libloading 0.8.9`
 required by the upstream Linux dynamic-library adapters. Upstream removed
 `pip-preview`; the remaining nine SDK packages resolve to one exact Git revision.
 The dependency contract checks that new graph and still rejects mixed sources.
+
+Current-head Windows and Linux E2E exposed removal of the SDK's legacy
+`get_session_state` tool. The Host now reads live lifecycle through `get_session`,
+requires the exact public session to be active, and separately labels its
+immutable window-only policy as `capture_scope_source=host_exact_window_binding`.
+It preserves the upstream lifecycle receipt and refuses missing, foreign,
+ending, contradictory or broader-scope state. It does not infer desktop
+authorization from lifecycle state, retry a removed tool, or weaken the native
+E2E assertions. The original failure logs and pure regression evidence are
+retained separately from new-head native CI.
 
 The SDK fork's current-head CI has release-asset discovery and trusted-base
 attribution/CLA failures; no whole-SDK qualification or independent full-diff

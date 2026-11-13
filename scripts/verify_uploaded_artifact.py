@@ -48,7 +48,7 @@ def _require_server_id(value: object, field: str) -> int:
     return value
 
 
-def _validate_metadata(
+def validate_artifact_identity(
     document: dict,
     repository_document: dict,
     *,
@@ -59,7 +59,6 @@ def _validate_metadata(
     head_sha: str,
     repository_id: int,
     head_repository_id: int,
-    bundle_size: int,
 ) -> None:
     _require_server_id(repository_document.get("id"), "artifact repository")
     if repository_document.get("id") != repository_id:
@@ -71,8 +70,6 @@ def _validate_metadata(
         raise ValueError("artifact metadata name does not match the upload contract")
     if document.get("expired") is not False:
         raise ValueError("artifact metadata reports an expired artifact")
-    if document.get("size_in_bytes") != bundle_size:
-        raise ValueError("artifact metadata size does not match the downloaded bundle")
     if document.get("digest") != f"sha256:{artifact_digest}":
         raise ValueError("artifact digest does not match server metadata")
     workflow_run = document.get("workflow_run")
@@ -93,6 +90,12 @@ def _validate_metadata(
         raise ValueError(
             "workflow head repository identity does not match the workflow"
         )
+
+
+def _validate_metadata(document, repository_document, *, bundle_size, **identity):
+    validate_artifact_identity(document, repository_document, **identity)
+    if document.get("size_in_bytes") != bundle_size:
+        raise ValueError("artifact metadata size does not match the downloaded bundle")
 
 
 def _extract_exact_bundle(snapshot: Path, output_root: Path, names: set[str]) -> None:
