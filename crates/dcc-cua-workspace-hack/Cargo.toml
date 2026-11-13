@@ -23,7 +23,7 @@ aho-corasick = { version = "1" }
 bytemuck = { version = "1", default-features = false, features = ["aarch64_simd", "extern_crate_alloc"] }
 camino = { version = "1", default-features = false, features = ["serde1"] }
 chacha20 = { version = "0.10", default-features = false, features = ["rng", "xchacha", "zeroize"] }
-cua-driver-core = { git = "https://github.com/loonghao/cua.git", rev = "1193686f5fdf613fe6bd40146238b6a55432051d" }
+cua-driver-core = { git = "https://github.com/loonghao/cua.git", rev = "f524ded47765f1905b8eead00f95ecd4b5bce74c" }
 digest = { version = "0.10", features = ["mac", "std"] }
 flate2 = { version = "1", features = ["zlib-rs"] }
 futures-core = { version = "0.3" }
@@ -74,7 +74,7 @@ winnow = { version = "1" }
 
 [target.x86_64-unknown-linux-gnu.dependencies]
 crossbeam-utils = { version = "0.8", default-features = false, features = ["std"] }
-cua-driver-core = { git = "https://github.com/loonghao/cua.git", rev = "1193686f5fdf613fe6bd40146238b6a55432051d", default-features = false, features = ["keyring"] }
+cua-driver-core = { git = "https://github.com/loonghao/cua.git", rev = "f524ded47765f1905b8eead00f95ecd4b5bce74c", default-features = false, features = ["keyring"] }
 futures-io = { version = "0.3" }
 futures-sink = { version = "0.3" }
 hyper-rustls = { version = "0.27", default-features = false, features = ["aws-lc-rs", "http1", "http2", "tls12"] }

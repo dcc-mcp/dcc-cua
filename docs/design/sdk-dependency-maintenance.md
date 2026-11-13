@@ -7,6 +7,39 @@ this contract with `scripts/test_sdk_dependency_contract.py`.
 
 ## Current source candidate
 
+The Driver 0.49.1 compatibility candidate is
+`loonghao/cua@f524ded47765f1905b8eead00f95ecd4b5bce74c`, proposed in the
+existing `loonghao/cua#13`. It merges official release commit
+`fc0dff22b8931397fadae56cc77a3df4a85f6a4e` into the preceding 0.47.11
+compatibility branch without replacing its history. The source workspace is
+0.49.1; the Unix installer still has the upstream baked value 0.48.0. A source
+pin does not change the installed runtime or prove the installer resolves 0.49.1.
+
+The merge preserves ancestor-scoped snapshot anchors, single-use continuations,
+navigation/loader fences, unambiguous upload associations and owned Windows
+consent/cleanup. Its one CDP mock conflict retains upstream click readback and
+node-resolution failure behavior alongside the existing upload fixture. The
+source passed 110 browser mocks, 32 Windows consent mocks, 35 Windows setup
+mocks, core-library strict Clippy and affected-crate formatting. The browser
+suite includes a fresh negative case that refuses a vanished ancestor anchor
+without silently reading the whole page. Native tests were not selected.
+
+The targeted update preserves all 617 preceding registry identities/checksums
+(including the earlier three Wayland additions), adding only `libloading 0.8.9`
+required by the upstream Linux dynamic-library adapters. Upstream removed
+`pip-preview`; the remaining nine SDK packages resolve to one exact Git revision.
+The dependency contract checks that new graph and still rejects mixed sources.
+
+The SDK fork's current-head CI has release-asset discovery and trusted-base
+attribution/CLA failures; no whole-SDK qualification or independent full-diff
+approval is implied. Local `bin/ci --quick --no-install` also stops in its
+Windows `pnpm` launcher while constructing the docs-check plan. No local-ci
+signoff was manufactured. Downstream candidate gates and the exact new-head
+CI/review must be recorded separately before qualification. Native acceptance
+and installation remain NOT_RUN.
+
+## Previous Driver 0.47.11 source and validation
+
 The Driver 0.47.11 compatibility candidate is
 `loonghao/cua@1193686f5fdf613fe6bd40146238b6a55432051d`, proposed in
 `loonghao/cua#13`. It merges the existing 0.38 compatibility source below,
