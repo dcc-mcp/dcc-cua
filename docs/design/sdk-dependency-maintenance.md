@@ -8,7 +8,7 @@ this contract with `scripts/test_sdk_dependency_contract.py`.
 ## Current source candidate
 
 The browser-binding candidate is
-`loonghao/cua@989e50719f698eff6b66fbb6ea2bd7722208d5cf`, proposed in
+`loonghao/cua@ec0a7ec06167fc608da371282b5c22442bb9d158`, proposed in
 [loonghao/cua#14](https://github.com/loonghao/cua/pull/14). It narrowly extends
 the preceding Driver 0.49.1 fork with the complete native/CDP matching
 contribution from [trycua/cua#7495](https://github.com/trycua/cua/pull/7495),
@@ -16,7 +16,9 @@ preserving its contributor's authorship, and stable owner-checked Windows peer
 snapshots. Duplicate titles, incomplete snapshots and uncertain geometry still
 refuse binding. Linux has no complete peer snapshot and retains that refusal.
 
-All six direct declarations and nine resolved SDK packages share this revision.
+All six direct declarations, two generated workspace-hack references and nine
+resolved SDK packages share this revision. The dependency contract also checks
+Git references in member manifests so stale generated pins cannot pass.
 All 618 registry package identities, versions and checksums are unchanged;
 the SDK update changes no dependency manifests. The dependency contract passes.
 Cloud Rust tests and adapter compilation are pending. Native desktop
