@@ -7,6 +7,24 @@ this contract with `scripts/test_sdk_dependency_contract.py`.
 
 ## Current source candidate
 
+The browser-binding candidate is
+`loonghao/cua@e8ae216a61bf07b7c5dc51b7bcb1c4146cc31e4f`, proposed in
+[loonghao/cua#14](https://github.com/loonghao/cua/pull/14). It narrowly extends
+the preceding Driver 0.49.1 fork with the complete native/CDP matching
+contribution from [trycua/cua#7495](https://github.com/trycua/cua/pull/7495),
+preserving its contributor's authorship, and stable owner-checked Windows peer
+snapshots. Duplicate titles, incomplete snapshots and uncertain geometry still
+refuse binding. Linux has no complete peer snapshot and retains that refusal.
+
+All six direct declarations and nine resolved SDK packages share this revision.
+All 618 registry package identities, versions and checksums are unchanged;
+the SDK update changes no dependency manifests. The dependency contract passes.
+Cloud Rust tests and adapter compilation are pending. Native desktop
+certification, release packaging and installation remain NOT_RUN; the observed
+Windows refusal's exact target topology has not been established.
+
+## Previous Driver 0.49.1 source and validation
+
 The Driver 0.49.1 compatibility candidate is
 `loonghao/cua@f524ded47765f1905b8eead00f95ecd4b5bce74c`, proposed in the
 existing `loonghao/cua#13`. It merges official release commit
