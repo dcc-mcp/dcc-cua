@@ -43,6 +43,12 @@ class SdkDependencyContractTests(unittest.TestCase):
                 for kind in ("dependencies", "dev-dependencies", "build-dependencies"):
                     for alias, dependency in section.get(kind, {}).items():
                         name = dependency.get("package", alias) if isinstance(dependency, dict) else alias
+                        if isinstance(dependency, dict) and re.fullmatch(
+                            r"https://github\.com/(?:loonghao|trycua)/cua(?:\.git)?",
+                            dependency.get("git", ""),
+                        ):
+                            with self.subTest(member=member, package=name):
+                                self.assertEqual((dependency["git"], dependency.get("rev")), (git, revision))
                         if name in SDK_PACKAGES:
                             with self.subTest(member=member, package=name):
                                 self.assertIsInstance(dependency, dict)
