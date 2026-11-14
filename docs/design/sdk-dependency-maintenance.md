@@ -8,7 +8,7 @@ this contract with `scripts/test_sdk_dependency_contract.py`.
 ## Current source candidate
 
 The browser-binding candidate is
-`loonghao/cua@e8ae216a61bf07b7c5dc51b7bcb1c4146cc31e4f`, proposed in
+`loonghao/cua@989e50719f698eff6b66fbb6ea2bd7722208d5cf`, proposed in
 [loonghao/cua#14](https://github.com/loonghao/cua/pull/14). It narrowly extends
 the preceding Driver 0.49.1 fork with the complete native/CDP matching
 contribution from [trycua/cua#7495](https://github.com/trycua/cua/pull/7495),
