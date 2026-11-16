@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.19.4](https://github.com/dcc-mcp/dcc-cua/compare/v1.19.3...v1.19.4) (2026-11-16)
+
+
+### Bug Fixes
+
+* preserve browser setup delivery and identify the controlling agent ([3c63d08](https://github.com/dcc-mcp/dcc-cua/commit/3c63d08f89cd4a5bc0ff1c31cd6330ad4e1286d6))
+
 ## [1.19.3](https://github.com/dcc-mcp/dcc-cua/compare/v1.19.2...v1.19.3) (2026-11-13)
 
 
