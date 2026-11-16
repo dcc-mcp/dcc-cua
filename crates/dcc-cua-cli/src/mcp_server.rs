@@ -51,6 +51,30 @@ const DEFAULT_IDLE_TIMEOUT_MS: u64 = 15 * 60 * 1_000;
 const MAX_ALLOWED_METHODS: usize = 32;
 const CUA_RUNTIME_SESSION_PREFIX: &str = "__cua_runtime_";
 
+/// Self-reported presentation metadata; never used to authorize a task.
+fn client_display_name(params: &Value) -> String {
+    for field in ["title", "name"] {
+        if let Some(value) = params["clientInfo"][field].as_str() {
+            let label: String = value
+                .chars()
+                .filter(|ch| {
+                    !ch.is_control()
+                        && !matches!(*ch, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+                })
+                .take(80)
+                .collect();
+            let label = label.trim();
+            if !label.is_empty() {
+                return match label {
+                    "codex-mcp-client" => "Codex".into(),
+                    other => other.into(),
+                };
+            }
+        }
+    }
+    "Agent".into()
+}
+
 struct TaskBrowserPrepareAuthorizationHost {
     expected_public_session: String,
     bound_driver_session: Mutex<Option<BoundDriverSession>>,
@@ -258,6 +282,7 @@ struct TaskAuthorizationAuthority {
 }
 
 struct TaskAuthorizationServer {
+    client_display_name: Option<String>,
     workflows: crate::workflow::WorkflowManager,
     extension_transport: Option<crate::extension_transport::ProviderListener>,
     authority: TaskAuthorizationAuthority,
@@ -271,6 +296,7 @@ impl TaskAuthorizationServer {
     fn automatic() -> Self {
         let (issuer, authorization_host) = dcc_cua_host::trusted_task_authorization_broker();
         Self {
+            client_display_name: None,
             workflows: crate::workflow::WorkflowManager::disabled(),
             extension_transport: None,
             authority: TaskAuthorizationAuthority {
@@ -302,10 +328,11 @@ impl TaskAuthorizationServer {
             .filter(|value| value.is_object())
             .cloned()
             .unwrap_or_else(|| json!({}));
-        if method == "initialize"
-            && let Some(diagnostics) = self.diagnostics.as_mut()
-        {
-            diagnostics.initialized(&params);
+        if method == "initialize" && self.client_display_name.is_none() {
+            self.client_display_name = Some(client_display_name(&params));
+            if let Some(diagnostics) = self.diagnostics.as_mut() {
+                diagnostics.initialized(&params);
+            }
         }
         let result = match method {
             "initialize" => Ok(json!({
@@ -701,6 +728,7 @@ impl TaskAuthorizationServer {
 
     async fn start_task(&mut self, arguments: Value) -> Result<Value, String> {
         let connection_id = crate::extension_transport::connection_id(self.diagnostics.as_ref());
+        let agent_name = self.client_display_name.as_deref().unwrap_or("Agent");
         let extension_transport = &mut self.extension_transport;
         let authority = &self.authority;
         let proposal_id = required_string(&arguments, "task_id")?.to_owned();
@@ -735,6 +763,7 @@ impl TaskAuthorizationServer {
                     authority.authorization_host.clone(),
                     connection_id.as_deref(),
                     extension_transport,
+                    agent_name,
                 )
                 .await?,
             );
@@ -909,6 +938,7 @@ async fn open_task_session(
     authorization_host: std::sync::Arc<dyn TrustedTaskAuthorizationHost>,
     connection_id: Option<&str>,
     extension_transport: &mut Option<crate::extension_transport::ProviderListener>,
+    agent_name: &str,
 ) -> Result<LogicalTaskSession, String> {
     let receipt = proposal
         .receipt
@@ -942,7 +972,7 @@ async fn open_task_session(
     let mut client =
         HostClient::from_stream_with_transport(client_stream, SnapshotTransport::BinaryFrame);
     client
-        .hello(SERVER_NAME)
+        .hello(agent_name)
         .await
         .map_err(|error| error.to_string())?;
     client

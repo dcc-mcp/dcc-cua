@@ -108,6 +108,39 @@ pub struct BrowserPrepareRequest {
     pub profile: Option<Value>,
     #[serde(default)]
     pub strategy: Option<Value>,
+    #[serde(default)]
+    pub delivery_mode: Option<String>,
+}
+
+impl BrowserPrepareRequest {
+    fn into_driver_args(self) -> ComputerUseResult<Value> {
+        let delivery_mode = self.delivery_mode.as_deref().unwrap_or("background");
+        if !matches!(delivery_mode, "background" | "foreground") {
+            return Err(invalid(
+                "browser preparation delivery_mode must be background or foreground",
+            ));
+        }
+        if self
+            .approval_token
+            .as_deref()
+            .is_some_and(|value| value.chars().count() > MAX_TEXT_CHARS)
+        {
+            return Err(invalid(
+                "browser approval_token exceeds the 4096-character limit",
+            ));
+        }
+        let mut args = json!({"allow_launch": self.allow_launch, "delivery_mode": delivery_mode});
+        if let Some(value) = self.approval_token {
+            args["approval_token"] = json!(value);
+        }
+        if let Some(value) = self.profile {
+            args["profile"] = value;
+        }
+        if let Some(value) = self.strategy {
+            args["strategy"] = value;
+        }
+        Ok(args)
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -360,25 +393,7 @@ impl BrowserSession {
         native: &mut ComputerUseSession,
         request: BrowserPrepareRequest,
     ) -> ComputerUseResult<BrowserResult> {
-        if request
-            .approval_token
-            .as_deref()
-            .is_some_and(|value| value.chars().count() > MAX_TEXT_CHARS)
-        {
-            return Err(invalid(
-                "browser approval_token exceeds the 4096-character limit",
-            ));
-        }
-        let mut args = json!({"allow_launch": request.allow_launch});
-        if let Some(value) = request.approval_token {
-            args["approval_token"] = json!(value);
-        }
-        if let Some(value) = request.profile {
-            args["profile"] = value;
-        }
-        if let Some(value) = request.strategy {
-            args["strategy"] = value;
-        }
+        let args = request.into_driver_args()?;
         let existing_profile = args["strategy"]["kind"] == "existing_profile";
         self.begin_snapshot_sensitive_native_attempt();
         let mut result = BrowserResult::from_prepare_value(
