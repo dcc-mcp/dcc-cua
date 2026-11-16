@@ -540,7 +540,7 @@ fn control_labels_strip_control_characters_and_bound_names() {
     assert_eq!(label, "agent is controlling Blender");
 }
 
-#[test]
+#[rstest]
 fn banner_identifies_the_provider_agent_and_current_task() {
     let target = BannerTarget {
         process_id: 42,
