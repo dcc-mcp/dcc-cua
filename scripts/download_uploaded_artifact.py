@@ -148,11 +148,21 @@ def download(api, *, repository, root, identity, sleep=time.sleep):
                 or type(total) is not int
                 or not 0 <= total <= MAX_PAGES * 100
             ):
+                emit(
+                    stage="run_inventory",
+                    verdict="rejected",
+                    reason="invalid_shape_or_bound",
+                )
                 raise ValueError(
                     "run artifact inventory is invalid or exceeds its bound"
                 )
             for artifact in artifacts:
                 if not isinstance(artifact, dict):
+                    emit(
+                        stage="run_inventory",
+                        verdict="rejected",
+                        reason="invalid_entry",
+                    )
                     raise TypeError("run artifact entry must be an object")
                 server_id = artifact.get("id")
                 if (
@@ -160,6 +170,11 @@ def download(api, *, repository, root, identity, sleep=time.sleep):
                     or not 0 < server_id < 2**63
                     or server_id in seen
                 ):
+                    emit(
+                        stage="run_inventory",
+                        verdict="rejected",
+                        reason="invalid_or_duplicate_id",
+                    )
                     raise ValueError(
                         "run artifact inventory has invalid or duplicate IDs"
                     )
@@ -170,8 +185,18 @@ def download(api, *, repository, root, identity, sleep=time.sleep):
             if len(artifacts) < 100 or len(seen) >= total:
                 break
         else:
+            emit(
+                stage="run_inventory",
+                verdict="rejected",
+                reason="pagination_limit_exceeded",
+            )
             raise ValueError("run artifact pagination did not finish within its bound")
         if len(found) != 1:
+            emit(
+                stage="run_inventory",
+                verdict="rejected",
+                reason="upload_id_not_proven_in_run",
+            )
             raise ValueError(
                 "upload ID is not proven in the current run; do not retry an unexplained 404"
             )

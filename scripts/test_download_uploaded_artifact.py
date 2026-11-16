@@ -134,6 +134,50 @@ class UploadedArtifactDownloadTests(unittest.TestCase):
                 self.assertEqual(self.delays, [])
                 self.assertFalse(any(c[0] == "metadata" for c in self.api.calls))
 
+    def test_inventory_rejections_report_only_closed_reasons_before_download(self):
+        cases = (
+            ({"total_count": 0, "artifacts": []}, "upload_id_not_proven_in_run"),
+            (
+                {"total_count": "remote-body-secret", "artifacts": []},
+                "invalid_shape_or_bound",
+            ),
+            (
+                {"total_count": 1, "artifacts": ["remote-body-secret"]},
+                "invalid_entry",
+            ),
+            (
+                {"total_count": 2, "artifacts": [{"id": 999}, {"id": 999}]},
+                "invalid_or_duplicate_id",
+            ),
+        )
+        for listing, reason in cases:
+            with self.subTest(reason=reason):
+                self.api = FakeApi()
+                self.api.listings = [listing]
+                self.output = io.StringIO()
+                with self.assertRaises((ValueError, TypeError)):
+                    self.run_download()
+                diagnostics = [
+                    json.loads(line) for line in self.output.getvalue().splitlines()
+                ]
+                self.assertEqual(
+                    diagnostics,
+                    [
+                        {
+                            "type": "artifact_readback",
+                            "stage": "run_inventory",
+                            "verdict": "rejected",
+                            "reason": reason,
+                        }
+                    ],
+                )
+                self.assertNotIn("remote-body-secret", self.output.getvalue())
+                self.assertEqual(
+                    [c[0] for c in self.api.calls], ["repository", "run_artifacts"]
+                )
+                self.assertEqual(self.delays, [])
+                self.assertFalse((self.root / "artifact.zip").exists())
+
     def test_identity_expiry_and_digest_mismatches_fail_before_download(self):
         mutations = [
             ("id", 999),
