@@ -540,6 +540,20 @@ fn control_labels_strip_control_characters_and_bound_names() {
     assert_eq!(label, "agent is controlling Blender");
 }
 
+#[test]
+fn banner_identifies_the_provider_agent_and_current_task() {
+    let target = BannerTarget {
+        process_id: 42,
+        window_handle: 77,
+        agent_name: "Codex".into(),
+        application_name: "Fab plugin publication".into(),
+    };
+    assert_eq!(
+        target.identity(),
+        "DCC-CUA · Codex · Fab plugin publication"
+    );
+}
+
 #[cfg(windows)]
 #[rstest]
 fn a_windowed_target_places_the_banner_above_the_window() {

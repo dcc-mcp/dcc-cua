@@ -5,6 +5,31 @@ use super::*;
 mod prepare_recovery;
 
 #[rstest]
+#[case("foreground")]
+#[case("background")]
+fn browser_preparation_preserves_the_requested_input_delivery(#[case] mode: &str) {
+    let request: BrowserPrepareRequest = serde_json::from_value(json!({
+        "strategy": {"kind": "existing_profile"},
+        "delivery_mode": mode
+    }))
+    .unwrap();
+    let args = request.into_driver_args().unwrap();
+    assert_eq!(args["delivery_mode"], mode);
+    assert_eq!(args["strategy"]["kind"], "existing_profile");
+    assert_eq!(args["allow_launch"], false);
+}
+
+#[rstest]
+fn browser_preparation_rejects_an_unknown_delivery_before_native_dispatch() {
+    let request: BrowserPrepareRequest = serde_json::from_value(json!({
+        "strategy": {"kind": "existing_profile"}, "delivery_mode": "automatic"
+    }))
+    .unwrap();
+    let error = request.into_driver_args().unwrap_err();
+    assert_eq!(error.code, ComputerUseErrorCode::InvalidAction);
+}
+
+#[rstest]
 fn browser_urls_are_scheme_and_length_bounded() {
     assert!(validate_url("https://example.com").is_ok());
     assert!(validate_url("file:///secret").is_err());

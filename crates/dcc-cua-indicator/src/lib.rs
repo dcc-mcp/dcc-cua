@@ -427,7 +427,7 @@ impl BannerTarget {
 
     fn identity(&self) -> String {
         format!(
-            "{} · {}",
+            "DCC-CUA · {} · {}",
             display_name(&self.agent_name, "Agent"),
             display_name(&self.application_name, "application")
         )

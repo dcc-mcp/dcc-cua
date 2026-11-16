@@ -13,6 +13,44 @@ mod native_menu_tests;
 mod transport_tests;
 
 #[rstest]
+#[case(json!({"clientInfo":{"name":"codex-mcp-client"}}), "Codex")]
+#[case(json!({"clientInfo":{"name":"transport-id","title":"Claude Code"}}), "Claude Code")]
+#[case(json!({"clientInfo":{"name":"  \nCodex\t\u{202e}"}}), "Codex")]
+#[case(json!({"clientInfo":{"title":" ","name":"my-agent"}}), "my-agent")]
+#[case(json!({}), "Agent")]
+fn connection_identity_uses_bounded_readable_client_metadata(
+    #[case] params: Value,
+    #[case] expected: &str,
+) {
+    assert_eq!(client_display_name(&params), expected);
+    assert_eq!(
+        client_display_name(&json!({"clientInfo":{"name":"x".repeat(200)}}))
+            .chars()
+            .count(),
+        80
+    );
+}
+
+#[tokio::test]
+async fn initialize_binds_display_identity_once_without_changing_task_authority() {
+    let mut server = test_server();
+    let before = server.prepare_task(browser_task()).unwrap();
+    server.handle_rpc(json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"clientInfo":{"name":"codex-mcp-client"}}})).await;
+    assert_eq!(server.client_display_name.as_deref(), Some("Codex"));
+    server.handle_rpc(json!({"jsonrpc":"2.0","id":2,"method":"initialize","params":{"clientInfo":{"name":"other-agent"}}})).await;
+    assert_eq!(server.client_display_name.as_deref(), Some("Codex"));
+    let after = server.prepare_task(browser_task()).unwrap();
+    for field in [
+        "allowed_methods",
+        "allowed_actions",
+        "allowed_browser_origins",
+        "surface",
+    ] {
+        assert_eq!(before[field], after[field]);
+    }
+}
+
+#[rstest]
 fn extension_methods_are_browser_only_and_closed() {
     let start = tool_definitions()
         .into_iter()
