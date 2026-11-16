@@ -31,6 +31,7 @@ fn connection_identity_uses_bounded_readable_client_metadata(
     );
 }
 
+#[rstest]
 #[tokio::test]
 async fn initialize_binds_display_identity_once_without_changing_task_authority() {
     let mut server = test_server();
