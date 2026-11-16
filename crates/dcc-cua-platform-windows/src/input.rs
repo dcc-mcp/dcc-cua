@@ -346,6 +346,7 @@ pub enum WindowsForegroundClickPreflightReason {
     InvalidTarget,
     TargetNotForeground,
     UipiBlocked,
+    CoordinateSpaceUnavailable,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -444,6 +445,22 @@ pub fn send_click_exact_foreground_mods(
     modifiers: &[&str],
     mut activate: impl FnMut() -> Result<(), UiaError>,
 ) -> Result<WindowsForegroundClickOutcome, WindowsForegroundClickError> {
+    // Screenshot points and SendInput normalization must share physical desktop units.
+    let _dpi =
+        crate::visible_capture::ThreadDpiAwarenessGuard::per_monitor_v2().map_err(|error| {
+            WindowsForegroundClickError::NotAttempted {
+                attempts: 0,
+                failure: WindowsForegroundClickPreflightFailure {
+                    reason: WindowsForegroundClickPreflightReason::CoordinateSpaceUnavailable,
+                    target: WindowsWindowIdentity {
+                        window_handle: target.window_handle,
+                        process_id: target.process_id,
+                    },
+                    foreground: None,
+                    detail: error.to_string(),
+                },
+            }
+        })?;
     let mut activation_attempts = 0;
     let result = run_bounded_foreground_dispatch(
         || {

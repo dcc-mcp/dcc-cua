@@ -1219,6 +1219,7 @@ async fn handle_request_inner(
                 "accessibility_state_id": host.latest_accessibility_state_id,
                 "observation_mode": host.observation_mode,
                 "target": target,
+                "coordinate_space": screenshot.observation.coordinate_space(),
                 "observation": screenshot.observation,
                 "root": accessibility,
                 "node_count": node_count,

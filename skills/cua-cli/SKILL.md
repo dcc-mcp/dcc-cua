@@ -67,6 +67,23 @@ For a visual-only task, select `observation_mode: "pixels_only"` at startup
 to avoid unnecessary accessibility traversal. Keep capture diagnostics off
 except while measuring; their hashes and histograms add work.
 
+For `dcc_cua_task_call` / `execute_action`, pass `observation_id` and an
+`action` containing `action`, `input_kind` and `intent`. Semantic input also
+needs the current `accessibility_state_id` and element reference. Request the
+scope's observed authorization category (`task_grant` for ordinary controls);
+`ordinary_navigation` is not a task authorization category. `intent` is audit
+context, not permission to weaken an observed account or security category.
+Keyboard actions use `keys: ["ENTER"]`, not a singular `key` field.
+
+Raw `x`/`y` refer to the encoded image dimensions in `coordinate_space`, never
+UIA virtual-desktop bounds or the size of an on-screen preview. Convert a
+native point using `(screen_x - source_rect[0]) * width / source_rect[2]` and
+the corresponding Y expression. Do not apply display scaling again. Take a
+fresh image immediately before coordinate input; an accessibility-only
+observation is not a replacement screenshot. Use semantic references where
+supported, and verify the expected state transition: an Invoke acknowledgement
+alone does not prove that a custom popup opened.
+
 If resizing is needed and `get_window_state` reports `frame_recovery`, follow
 its `next_call` on the same task, then obtain fresh native state before
 requesting a frame token. A maximized or minimized window cannot mint that

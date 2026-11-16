@@ -493,18 +493,11 @@ pub(super) fn visible_snapshot_dimensions_for_action(
 pub(super) fn snapshot_coordinate_space_value(
     observation: &ComputerUseObservation,
 ) -> serde_json::Value {
-    json!({
-        "kind": "exact_window_image_pixels",
-        "origin": "top_left",
-        "width": observation.width,
-        "height": observation.height,
-        "dimensions_source": "encoded_png_ihdr",
-        "source_rect": observation.source_rect,
-        "action_flags": {
-            "width": "--observation-width",
-            "height": "--observation-height",
-        },
-    })
+    let mut value = observation.coordinate_space();
+    value["action_flags"] = json!({
+        "width": "--observation-width", "height": "--observation-height",
+    });
+    value
 }
 
 pub(super) fn snapshot_activation_result(

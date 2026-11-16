@@ -6,6 +6,20 @@ use crate::contracts::{ComputerUseObservation, OBSERVATION_COUNTER};
 use crate::runtime::ComputerUseSession;
 use crate::window_target::WindowTarget;
 
+impl ComputerUseObservation {
+    /// Coordinates accepted for pointer input refer to the delivered image, not UIA bounds.
+    pub fn coordinate_space(&self) -> Value {
+        json!({
+            "kind": "exact_window_image_pixels",
+            "origin": "top_left",
+            "width": self.width,
+            "height": self.height,
+            "dimensions_source": "encoded_png_ihdr",
+            "source_rect": self.source_rect,
+        })
+    }
+}
+
 pub(crate) fn semantic_observation(
     session_id: &str,
     target: &WindowTarget,

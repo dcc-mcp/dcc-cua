@@ -1713,7 +1713,7 @@ fn tool_definitions() -> Vec<Value> {
         json!({
             "name": "dcc_cua_task_call",
             "title": "Run DCC-CUA task call",
-            "description": "Call one closed Host method on the same MCP connection after start_task returned its provider/runtime/PID/HWND binding. Keep snapshot and action in that same task; observation IDs and opaque references are not reusable after reconnecting or in another CLI invocation. In explicitly granted semantic tasks, supported Windows UIA click, toggle, set_text or set_value may use delivery_mode=background with the latest observation_id, accessibility_state_id and same-task UIA element reference. Take a fresh semantic snapshot and verify the actual post-action state; type, double_click, coordinates and keyboard input do not inherit this UIA background support. A pixels_only snapshot yields a formal observation_id and accessibility_available=false, without semantic element tokens. Its optional capture_diagnostics boolean defaults to false; true adds bounded byte hashes, histograms, timing, and native provenance for the existing two captures without changing pixels or input authority. Semantic snapshots reject this diagnostic opt-in. Its execute_action requires a granted supported raw_input action and that latest observation_id; omit accessibility_state_id, element selectors, secret handles, and input_backend_id. Pixels-only delivery is foreground only, without implicit activation. Pixels-only window state and typed activation refusals expose interaction_recovery: snapshot permission is independent of foreground input readiness. Native background viability hints never authorize pixels-only background input or a task-mode switch to bypass refusal. Do not blindly retry refused activation. In pixels_only tasks, use capture_after for a fresh pixel post-action observation; semantic post snapshots are refused in that mode. minimize_window requires the latest observation and same native instance, consumes it after an attempt, and reports native minimized state. set_window_frame requires a one-use window_state_id from explicit get_window_state no more than five seconds old, and frame={x,y,width,height} in exact i32 physical pixels with checked extents. It moves the same full native instance without activation or z-order change and confirms only an exact bounded native readback; every attempt consumes metadata and prior pixel evidence. Its response state does not mint another token. change_window_state also accepts dismiss_menu only with its independent window_state/dismiss_menu action scope and a one-use window_state_id copied from get_window_state.menu_dismiss_window_state_id, at most five seconds old. Frame and snapshot tokens cannot authorize menu dismissal. It sends one bounded standard native cancellation without activation, keyboard input or application close. Confirmed requires popup_hidden_or_gone, menu_inactive and owner_alive; an unconfirmed attempt is never success and must not be blindly retried. Every attempt consumes metadata and prior observations. Take a fresh observation afterward. Out-of-scope, expired, stopped, changed, or stale targets fail without prompting. Recording requires explicit allow_recording and an immutable task output directory; call recording_start with an empty params object for video-only output. Granted live_observation_start/state/stop expose the same native source. Recording start validates the actual first encoded frame, state reports source pauses and failures, and stop awaits video/sidecar finalization. Never pass credential values; use secret handles in supported semantic/browser tasks.",
+            "description": "Call one closed Host method on the same MCP connection after start_task returned its provider/runtime/PID/HWND binding. execute_action params require observation_id and action {action, input_kind, intent}; semantic input also requires accessibility_state_id and a fresh element reference. Raw x/y are pixels in snapshot.coordinate_space, never UIA virtual-desktop bounds or a resized preview; source_rect already contains native window units, so do not apply DPI again. Keyboard input uses keys, not key. Keep snapshot and action in that same task; observation IDs and opaque references are not reusable after reconnecting or in another CLI invocation. In explicitly granted semantic tasks, supported Windows UIA click, toggle, set_text or set_value may use delivery_mode=background with the latest observation_id, accessibility_state_id and same-task UIA element reference. Take a fresh semantic snapshot and verify the actual post-action state; type, double_click, coordinates and keyboard input do not inherit this UIA background support. A pixels_only snapshot yields a formal observation_id and accessibility_available=false, without semantic element tokens. Its optional capture_diagnostics boolean defaults to false; true adds bounded byte hashes, histograms, timing, and native provenance for the existing two captures without changing pixels or input authority. Semantic snapshots reject this diagnostic opt-in. Its execute_action requires a granted supported raw_input action and that latest observation_id; omit accessibility_state_id, element selectors, secret handles, and input_backend_id. Pixels-only delivery is foreground only, without implicit activation. Pixels-only window state and typed activation refusals expose interaction_recovery: snapshot permission is independent of foreground input readiness. Native background viability hints never authorize pixels-only background input or a task-mode switch to bypass refusal. Do not blindly retry refused activation. In pixels_only tasks, use capture_after for a fresh pixel post-action observation; semantic post snapshots are refused in that mode. minimize_window requires the latest observation and same native instance, consumes it after an attempt, and reports native minimized state. set_window_frame requires a one-use window_state_id from explicit get_window_state no more than five seconds old, and frame={x,y,width,height} in exact i32 physical pixels with checked extents. It moves the same full native instance without activation or z-order change and confirms only an exact bounded native readback; every attempt consumes metadata and prior pixel evidence. Its response state does not mint another token. change_window_state also accepts dismiss_menu only with its independent window_state/dismiss_menu action scope and a one-use window_state_id copied from get_window_state.menu_dismiss_window_state_id, at most five seconds old. Frame and snapshot tokens cannot authorize menu dismissal. It sends one bounded standard native cancellation without activation, keyboard input or application close. Confirmed requires popup_hidden_or_gone, menu_inactive and owner_alive; an unconfirmed attempt is never success and must not be blindly retried. Every attempt consumes metadata and prior observations. Take a fresh observation afterward. Out-of-scope, expired, stopped, changed, or stale targets fail without prompting. Recording requires explicit allow_recording and an immutable task output directory; call recording_start with an empty params object for video-only output. Granted live_observation_start/state/stop expose the same native source. Recording start validates the actual first encoded frame, state reports source pauses and failures, and stop awaits video/sidecar finalization. Never pass credential values; use secret handles in supported semantic/browser tasks.",
             "inputSchema": {
                 "type": "object",
                 "additionalProperties": false,
@@ -1724,6 +1724,9 @@ fn tool_definitions() -> Vec<Value> {
                     "params": {"type": "object"}
                 },
                 "allOf": [{
+                    "if":{"properties":{"method":{"const":"execute_action"}}},
+                    "then":{"properties":{"params": action_params_schema()}}
+                }, {
                     "if":{"properties":{"method":{"const":"change_window_state"}}},
                     "then":{"properties":{"params":{"oneOf":[
                         {"type":"object","additionalProperties":false,"required":["operation"],"properties":{"operation":{"enum":["activate","restore_activate"]}}},
@@ -1804,6 +1807,38 @@ fn task_id_schema() -> Value {
         "additionalProperties": false,
         "required": ["task_id"],
         "properties": {"task_id": {"type": "string"}}
+    })
+}
+
+fn action_params_schema() -> Value {
+    json!({
+        "type":"object", "required":["observation_id","action"],
+        "properties":{
+            "observation_id":{"type":"string","minLength":1,"description":"Copy the latest same-task observation_id; never reuse it after an action attempt."},
+            "accessibility_state_id":{"type":"string","description":"Required for semantic input: copy the latest same-task accessibility_state_id."},
+            "capture_after":{"type":"boolean","default":false},
+            "post_snapshot_delay_ms":{"type":"integer","minimum":0},
+            "post_snapshot_mode":{"type":"string","enum":["full","semantic"]},
+            "action":{
+                "type":"object", "required":["action","input_kind","intent"],
+                "properties":{
+                    "action":{"type":"string","enum":TrustedTaskActionScope::NATIVE_ACTIONS},
+                    "input_kind":{"type":"string","enum":["semantic","raw_input"]},
+                    "intent":{"type":"string","description":"Required audit context. For bounded raw navigation use navigate or ordinary_edit. Semantic authorization uses the observed policy_tier, not this label."},
+                    "delivery_mode":{"type":"string","enum":["foreground","background"]},
+                    "element_index":{"type":"integer","minimum":0},
+                    "element_token":{"type":"string","minLength":1,"description":"Opaque reference from the latest same-task UIA observation; do not convert its virtual-desktop bounds to guessed coordinates."},
+                    "x":{"type":"number","minimum":0,"description":"X in snapshot.coordinate_space image pixels, not UIA/desktop bounds or a resized preview. source_rect already contains native window units; do not multiply DPI again."},
+                    "y":{"type":"number","minimum":0,"description":"Y in the latest delivered image, with the same coordinate contract as x."},
+                    "keys":{"type":"array","items":{"type":"string"},"description":"Keyboard input uses keys, not key; it requires a raw-input action scope."},
+                    "text":{"type":"string","description":"Non-secret text only. Credentials must use a trusted secret_handle."}
+                }
+            }
+        },
+        "allOf":[{
+            "if":{"properties":{"action":{"properties":{"input_kind":{"const":"semantic"}}}}},
+            "then":{"required":["accessibility_state_id"]}
+        }]
     })
 }
 

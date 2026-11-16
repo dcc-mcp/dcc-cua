@@ -968,6 +968,9 @@ pub(crate) fn map_windows_foreground_click_error(
                 WindowsForegroundClickPreflightReason::UipiBlocked => {
                     ComputerUseErrorCode::InputFailed
                 }
+                WindowsForegroundClickPreflightReason::CoordinateSpaceUnavailable => {
+                    ComputerUseErrorCode::BackendUnavailable
+                }
             };
             ComputerUseError::new(
                 code,

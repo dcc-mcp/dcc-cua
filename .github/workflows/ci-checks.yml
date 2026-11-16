@@ -339,6 +339,10 @@ jobs:
             cargo test --locked -p dcc-cua-core linux_pixels_native -- --ignored --test-threads=1
       - if: matrix.os == 'windows-latest'
         run: python -B -m unittest scripts.test_indicator_acceptance_probe
+      - name: Verify physical click coordinates without sending input
+        if: matrix.os == 'windows-latest'
+        timeout-minutes: 2
+        run: cargo test --locked -p dcc-cua-platform-windows foreground_click_uses_physical_coordinates_before_activation -- --ignored --test-threads=1
       - name: Compile GUI E2E on every target
         run: cargo nextest run --locked -p dcc-cua-e2e --features gui-e2e --no-run
 
