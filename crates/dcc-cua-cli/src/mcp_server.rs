@@ -347,7 +347,7 @@ impl TaskAuthorizationServer {
                     "version": env!("CARGO_PKG_VERSION"),
                     "description": "Start and operate exact bounded DCC-CUA tasks through the connected Agent Host."
                 },
-                "instructions": "Call start_task once with the exact target and bounded task scope. The connected Agent Host owns user authorization; DCC-CUA does not show a second confirmation card. Report provider/runtime/PID/HWND before the first observation or input, then use dcc_cua_task_call and verify every mutation."
+                "instructions": "Call start_task once with the exact target and bounded task scope. The connected Agent Host owns user authorization; DCC-CUA does not show a second confirmation card. Reuse the user's existing task authorization when it covers the target, origins and actions; a bounded runtime lease is not a request for another user approval. Browser preparation and a fresh task lease may be obtained automatically within that authorization. Ask for missing factual information rather than repeating permission questions. Honor Escape and revoked grants, and never blindly replay an action with unknown completion. Report provider/runtime/PID/HWND before the first observation or input, then use dcc_cua_task_call and verify every mutation."
             })),
             "ping" => Ok(json!({})),
             "tools/list" => Ok(json!({"tools": tool_definitions()})),
