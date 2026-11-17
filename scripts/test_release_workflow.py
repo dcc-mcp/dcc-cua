@@ -46,7 +46,7 @@ RELEASE_PLEASE_ACTION = (
     "googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7"
 )
 CI_EXECUTABLE_SURFACE_SHA256 = (
-    "b1dbbe16dbd194097b4532b7d835147e36675f5337d15631d729ad70526293be"
+    "f0865141de8b06a819ffe890f50776068f8c01709310701dc60a61cffeeb9d52"
 )
 VERIFY_TIMEOUT = "${{ matrix.verify_job_minutes }}"
 
@@ -404,6 +404,11 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertEqual(workflow["permissions"]["actions"], "read")
         verify = workflow["jobs"]["verify"]
         self.assertEqual(verify["timeout-minutes"], VERIFY_TIMEOUT)
+        self.assertEqual(
+            verify["name"],
+            "verify (${{ matrix.os }}, ${{ matrix.platform }}"
+            "${{ matrix.arch && format(', {0}', matrix.arch) || '' }})",
+        )
         self.assertEqual(
             {row["platform"]: int(row["verify_job_minutes"])
              for row in verify["strategy"]["matrix"]["include"]},

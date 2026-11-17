@@ -168,6 +168,7 @@ jobs:
 
   verify:
     timeout-minutes: ${{ matrix.verify_job_minutes }}
+    name: verify (${{ matrix.os }}, ${{ matrix.platform }}${{ matrix.arch && format(', {0}', matrix.arch) || '' }})
     strategy:
       fail-fast: false
       matrix:
