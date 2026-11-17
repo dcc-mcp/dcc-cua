@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.19.5](https://github.com/dcc-mcp/dcc-cua/compare/v1.19.4...v1.19.5) (2026-11-17)
+
+
+### Bug Fixes
+
+* **ci:** budget cold Intel verification within its job deadline ([4aa4684](https://github.com/dcc-mcp/dcc-cua/commit/4aa46848897479e81e2ee27fef069764ef2c9cfa))
+* **ci:** preserve verification check names with matrix budgets ([c382543](https://github.com/dcc-mcp/dcc-cua/commit/c382543f9c931ddab8b16a846280d041e3db8456))
+* **ci:** report bounded artifact inventory refusal reasons ([c1a22d4](https://github.com/dcc-mcp/dcc-cua/commit/c1a22d40030880f7d792a7ed94457d14576b94ec))
+* **ci:** report bounded artifact inventory refusal reasons ([#417](https://github.com/dcc-mcp/dcc-cua/issues/417)) ([1d81396](https://github.com/dcc-mcp/dcc-cua/commit/1d81396f9da52d4bbc2b7c1a1414773ad7bfa0a5))
+* **input:** keep foreground clicks in physical coordinates ([38a1d4f](https://github.com/dcc-mcp/dcc-cua/commit/38a1d4faeacde9b27f231f333b44d95fddc7449d))
+* **input:** keep foreground clicks in physical coordinates ([#419](https://github.com/dcc-mcp/dcc-cua/issues/419)) ([38a1d4f](https://github.com/dcc-mcp/dcc-cua/commit/38a1d4faeacde9b27f231f333b44d95fddc7449d))
+* **input:** report focus attempts from the dispatch count ([8c07c15](https://github.com/dcc-mcp/dcc-cua/commit/8c07c15bd9bb31e94bd8609da10d772cf0ced072))
+* preserve physical coordinates for foreground input ([f1a482c](https://github.com/dcc-mcp/dcc-cua/commit/f1a482c567ad39b7adcc4758190b4e04fd3166bf))
+
 ## [1.19.4](https://github.com/dcc-mcp/dcc-cua/compare/v1.19.3...v1.19.4) (2026-11-16)
 
 
