@@ -35,3 +35,29 @@ removed. Identity is presentation metadata and grants no authority.
 Chrome's own automation infobar is browser-owned and retains Chrome's wording.
 The DCC-CUA banner supplies the agent and task context without changing that
 browser-owned surface.
+
+## Existing Agent authorization
+
+The connected Agent Host owns user authorization. `start_task` converts that
+authority into a bounded runtime lease; it is not another user approval.
+An Agent with existing authorization for the target, origins and operations
+should obtain task leases, prepare the browser and revalidate fresh targets
+automatically. Do not infer authority from a client display name, a global
+"full access" label or the existence of an earlier unrelated lease.
+
+Browser-owned debugging consent is a technical preparation step. The platform
+adapter may handle it only with the task grant and complete native ownership,
+structure and uniqueness proof. Windows consent reads use the existing strict
+native-only walker so a large or unresponsive web document cannot consume the
+consent inspection budget. Truncated native reads still refuse.
+
+Missing facts, such as a publisher's trader status or public support email,
+require user input. They do not require repeating an already granted upload
+or submission approval. A technical refusal must name its actual stage and
+recovery requirement instead of being presented as missing user permission.
+
+Keep one connection and task through the authorized workflow. If a task ends,
+rebind and take fresh observations rather than reusing its opaque references.
+Escape and revoked authority remain stop signals. Unknown mutation completion
+requires destination readback before any new action; it never grants an
+automatic replay.

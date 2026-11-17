@@ -8,13 +8,20 @@ this contract with `scripts/test_sdk_dependency_contract.py`.
 ## Current source candidate
 
 The consent-bubble fix candidate is
-`loonghao/cua@2521ea215a30ca9076015f8693c5666628972c06`, proposed in
+`loonghao/cua@f32d4e91fd8f16bb1dbc65e2abffe1c273b602be`, proposed in
 `loonghao/cua#15` on top of the Driver 0.49.1 candidate below. It distinguishes
 an unrelated title-bound native bubble with non-dialog button classes from
 the actual debugging-consent modal. Once any native dialog-class button is
 present, incomplete, disabled, ambiguous, renderer-controlled or incorrectly
 owned consent still refuses. Native cancellation ignores a positively
 unrelated bubble after the real prompt disappears.
+
+Consent inspection also uses the existing strict native-only UIA walker for
+the target and its proven owned prompt windows, instead of caching the whole
+active web document within the four-second consent deadline. Incomplete native
+reads refuse, and all retained UIA references use the same RAII ownership on
+success, error and cancellation. This does not extend authorization or retry
+an input whose completion is unknown.
 
 The coexistence regression reproduced the observed three-button refusal on
 the base and passes after the fix. The whole Windows platform library passed
