@@ -39,12 +39,12 @@ rstest = "0.26.1"
 # The fork also retains DCC-specific safety fixes; the sync candidate must
 # verify those contracts before moving back to an unmodified upstream source.
 #
-# This draft revision merges upstream Driver 0.49.1 source with the existing fork.
+# This revision adds native peer-window binding proofs to the Driver 0.49.1 fork.
 # Compatibility and native acceptance remain subject to verification.
 # See docs/design/sdk-dependency-maintenance.md for migration and acceptance.
-cua-driver-contract = { git = "https://github.com/loonghao/cua.git", rev = "f524ded47765f1905b8eead00f95ecd4b5bce74c" }
-cua-driver-sdk = { git = "https://github.com/loonghao/cua.git", rev = "f524ded47765f1905b8eead00f95ecd4b5bce74c" }
-cua-driver-testkit = { git = "https://github.com/loonghao/cua.git", rev = "f524ded47765f1905b8eead00f95ecd4b5bce74c" }
-cursor-overlay = { git = "https://github.com/loonghao/cua.git", rev = "f524ded47765f1905b8eead00f95ecd4b5bce74c" }
-platform-macos = { git = "https://github.com/loonghao/cua.git", rev = "f524ded47765f1905b8eead00f95ecd4b5bce74c" }
-platform-windows = { git = "https://github.com/loonghao/cua.git", rev = "f524ded47765f1905b8eead00f95ecd4b5bce74c" }
+cua-driver-contract = { git = "https://github.com/loonghao/cua.git", rev = "ec0a7ec06167fc608da371282b5c22442bb9d158" }
+cua-driver-sdk = { git = "https://github.com/loonghao/cua.git", rev = "ec0a7ec06167fc608da371282b5c22442bb9d158" }
+cua-driver-testkit = { git = "https://github.com/loonghao/cua.git", rev = "ec0a7ec06167fc608da371282b5c22442bb9d158" }
+cursor-overlay = { git = "https://github.com/loonghao/cua.git", rev = "ec0a7ec06167fc608da371282b5c22442bb9d158" }
+platform-macos = { git = "https://github.com/loonghao/cua.git", rev = "ec0a7ec06167fc608da371282b5c22442bb9d158" }
+platform-windows = { git = "https://github.com/loonghao/cua.git", rev = "ec0a7ec06167fc608da371282b5c22442bb9d158" }
