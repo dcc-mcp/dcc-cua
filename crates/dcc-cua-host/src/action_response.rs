@@ -289,6 +289,7 @@ pub(super) fn action_completed_with_snapshot_response(
         "success": true,
         "observation_id": observation_id,
         "accessibility_state_id": observation_id,
+        "coordinate_space": screenshot.observation.coordinate_space(),
         "observation": screenshot.observation,
         "root": screenshot.accessibility,
         "node_count": node_count,

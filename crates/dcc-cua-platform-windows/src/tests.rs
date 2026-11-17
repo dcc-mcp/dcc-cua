@@ -1,6 +1,9 @@
 use rstest::rstest;
 
 #[cfg(windows)]
+mod coordinate_scope;
+
+#[cfg(windows)]
 use crate::wgc::{
     WgcCompositorTiming, WgcCompositorTimingUnavailable, WgcFrameMeasurement,
     compositor_timing_from_100ns,

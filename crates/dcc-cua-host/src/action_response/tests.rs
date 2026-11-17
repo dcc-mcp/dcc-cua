@@ -64,6 +64,37 @@ fn ordinary_snapshot_descriptor_remains_unchanged_without_secondary_images() {
     assert_eq!(prepared.primary.unwrap()["id"], "obs-100");
 }
 
+#[rstest]
+#[case([0, 0, 2360, 1446])]
+#[case([-2360, -1446, 2360, 1446])]
+fn post_snapshot_publishes_image_coordinates_separate_from_native_bounds(#[case] bounds: [i32; 4]) {
+    let mut observed = observation(100);
+    observed.width = 1568;
+    observed.height = 960;
+    observed.source_rect = bounds;
+    let screenshot = ComputerUseScreenshot {
+        data: vec![],
+        observation: observed,
+        accessibility: json!({}),
+    };
+    let (response, _) = action_completed_with_snapshot_response(
+        "session",
+        "action".into(),
+        owned_payload_result(ComputerUseToolStatus::Succeeded),
+        screenshot,
+        SnapshotTransport::BinaryFrame,
+        &mut None,
+    )
+    .unwrap();
+    assert_eq!(
+        response["post_snapshot"]["coordinate_space"],
+        json!({
+            "kind":"exact_window_image_pixels", "origin":"top_left", "width":1568, "height":960,
+            "dimensions_source":"encoded_png_ihdr", "source_rect":bounds,
+        })
+    );
+}
+
 fn owned_payload_result(status: ComputerUseToolStatus) -> ComputerUseToolResult {
     ComputerUseToolResult {
         status,

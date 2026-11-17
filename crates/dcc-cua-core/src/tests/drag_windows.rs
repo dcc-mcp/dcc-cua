@@ -875,10 +875,44 @@ fn foreground_click_pre_dispatch_exhaustion_is_known_not_sent_with_diagnostics()
         ComputerUseErrorCode::ForegroundActivationRefused
     );
     assert_eq!(details.action_attempted, Some(false));
+    assert_eq!(details.focus_mutation_attempted, Some(true));
     assert_eq!(details.input_sent, Some(ComputerUseInputState::NotSent));
     assert_eq!(details.completion, Some(ComputerUseCompletionState::Known));
     assert_eq!(details.blind_retry, Some(false));
     assert!(error.message.contains("HWND 0x63 PID 100"));
+}
+
+#[cfg(windows)]
+#[rstest]
+fn foreground_click_dpi_scope_failure_reports_no_focus_or_input_attempt() {
+    let error = map_windows_foreground_click_error(
+        dcc_cua_platform_windows::WindowsForegroundClickError::NotAttempted {
+            attempts: 0,
+            failure: dcc_cua_platform_windows::WindowsForegroundClickPreflightFailure {
+                reason: dcc_cua_platform_windows::WindowsForegroundClickPreflightReason::CoordinateSpaceUnavailable,
+                target: dcc_cua_platform_windows::WindowsWindowIdentity {
+                    window_handle: 7,
+                    process_id: 42,
+                },
+                foreground: None,
+                detail: "physical desktop coordinate space is unavailable".into(),
+            },
+        },
+    );
+
+    assert_eq!(error.code, ComputerUseErrorCode::BackendUnavailable);
+    let details = error.details.expect("typed pre-activation refusal details");
+    assert_eq!(
+        details.phase,
+        Some(ComputerUseErrorPhase::LocalMutationDispatch)
+    );
+    assert_eq!(details.action_attempted, Some(false));
+    assert_eq!(details.focus_mutation_attempted, Some(false));
+    assert_eq!(details.input_sent, Some(ComputerUseInputState::NotSent));
+    assert_eq!(details.completion, Some(ComputerUseCompletionState::Known));
+    assert_eq!(details.session_remains_active, Some(true));
+    assert_eq!(details.fresh_observation_required, Some(true));
+    assert_eq!(details.blind_retry, Some(false));
 }
 
 #[cfg(windows)]

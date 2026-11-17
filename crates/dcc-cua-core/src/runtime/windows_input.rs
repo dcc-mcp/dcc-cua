@@ -968,6 +968,9 @@ pub(crate) fn map_windows_foreground_click_error(
                 WindowsForegroundClickPreflightReason::UipiBlocked => {
                     ComputerUseErrorCode::InputFailed
                 }
+                WindowsForegroundClickPreflightReason::CoordinateSpaceUnavailable => {
+                    ComputerUseErrorCode::BackendUnavailable
+                }
             };
             ComputerUseError::new(
                 code,
@@ -980,7 +983,7 @@ pub(crate) fn map_windows_foreground_click_error(
             .with_details(ComputerUseErrorDetails {
                 phase: Some(ComputerUseErrorPhase::LocalMutationDispatch),
                 action_attempted: Some(false),
-                focus_mutation_attempted: Some(true),
+                focus_mutation_attempted: Some(attempts > 0),
                 input_sent: Some(ComputerUseInputState::NotSent),
                 completion: Some(ComputerUseCompletionState::Known),
                 effect_unknown: Some(false),

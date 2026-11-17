@@ -167,21 +167,27 @@ jobs:
       - run: cargo fmt --all -- --check
 
   verify:
-    timeout-minutes: 45
+    timeout-minutes: ${{ matrix.verify_job_minutes }}
+    name: verify (${{ matrix.os }}, ${{ matrix.platform }}${{ matrix.arch && format(', {0}', matrix.arch) || '' }})
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: windows-latest
             platform: windows-x86_64
+            verify_job_minutes: 45
           - os: ubuntu-latest
             platform: linux-x86_64
+            verify_job_minutes: 45
           - os: macos-26
             platform: macos-aarch64
             arch: arm64
+            verify_job_minutes: 45
           - os: macos-26-intel
             platform: macos-x86_64
             arch: x86_64
+            # Cold check + Clippy + nextest exceeded the former 45m budget.
+            verify_job_minutes: 60
     runs-on: ${{ matrix.os }}
     steps:
       - name: Select immutable CI source SHA
@@ -258,13 +264,14 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          CI_JOB_MINUTES: ${{ matrix.verify_job_minutes }}
         run: |
           set -euo pipefail
           python -B -m unittest scripts.test_release_workflow.ReleaseWorkflowTests.test_intel_diagnostic_signals_cannot_record_success
           started_at="$(gh api "/repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT/jobs?per_page=100" \
             --jq '[.jobs[] | select(.name == "verify (macos-26-intel, macos-x86_64, x86_64)" and .runner_name == env.RUNNER_NAME and .status == "in_progress")] | if length == 1 then .[0].started_at else error("current Intel job is not unique") end')"
           python -B scripts/ci_job_budget.py --started-at "$started_at" \
-            --job-minutes 45 --reserve-minutes 3 --maximum-minutes 35 >> "$GITHUB_OUTPUT"
+            --job-minutes "$CI_JOB_MINUTES" --reserve-minutes 3 --maximum-minutes 35 >> "$GITHUB_OUTPUT"
       - name: Check Intel workspace with retained build diagnostics
         id: intel-check
         if: matrix.platform == 'macos-x86_64'
@@ -299,16 +306,17 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          CI_JOB_MINUTES: ${{ matrix.verify_job_minutes }}
         run: |
           set -euo pipefail
           started_at="$(gh api "/repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT/jobs?per_page=100" \
             --jq '[.jobs[] | select(.name == "verify (macos-26-intel, macos-x86_64, x86_64)" and .runner_name == env.RUNNER_NAME and .status == "in_progress")] | if length == 1 then .[0].started_at else error("current Intel job is not unique") end')"
           python -B scripts/ci_job_budget.py --started-at "$started_at" \
-            --job-minutes 45 --reserve-minutes 3 --maximum-minutes 25 >> "$GITHUB_OUTPUT"
+            --job-minutes "$CI_JOB_MINUTES" --reserve-minutes 3 --maximum-minutes 25 >> "$GITHUB_OUTPUT"
       - name: Test Intel workspace with retained progress diagnostics
         id: intel-nextest
         if: matrix.platform == 'macos-x86_64'
-        # Recompute after check/upload/Clippy; never reset the 45-minute clock.
+        # Recompute after check/upload/Clippy; never reset the matrix job clock.
         timeout-minutes: ${{ fromJSON(steps.intel-nextest-budget.outputs.minutes) }}
         shell: bash
         run: |
@@ -339,6 +347,10 @@ jobs:
             cargo test --locked -p dcc-cua-core linux_pixels_native -- --ignored --test-threads=1
       - if: matrix.os == 'windows-latest'
         run: python -B -m unittest scripts.test_indicator_acceptance_probe
+      - name: Verify physical click coordinates without sending input
+        if: matrix.os == 'windows-latest'
+        timeout-minutes: 2
+        run: cargo test --locked -p dcc-cua-platform-windows foreground_click_uses_physical_coordinates_before_activation -- --ignored --test-threads=1
       - name: Compile GUI E2E on every target
         run: cargo nextest run --locked -p dcc-cua-e2e --features gui-e2e --no-run
 
