@@ -8,7 +8,7 @@ this contract with `scripts/test_sdk_dependency_contract.py`.
 ## Current source candidate
 
 The consent-bubble fix candidate is
-`loonghao/cua@f32d4e91fd8f16bb1dbc65e2abffe1c273b602be`, proposed in
+`loonghao/cua@a88f2509f2c74a425093197b8b2178e2df803bf5`, proposed in
 `loonghao/cua#15` on top of the Driver 0.49.1 candidate below. It distinguishes
 an unrelated title-bound native bubble with non-dialog button classes from
 the actual debugging-consent modal. Once any native dialog-class button is
@@ -22,6 +22,15 @@ active web document within the four-second consent deadline. Incomplete native
 reads refuse, and all retained UIA references use the same RAII ownership on
 success, error and cancellation. This does not extend authorization or retry
 an input whose completion is unknown.
+
+The exact target-owned native modal is inspected before the main window.
+Its existing PID/owner-chain/liveness/topmost uniqueness proof remains
+mandatory; only an absence of owned consent permits inline inspection, while
+an ambiguous or incomplete owned modal refuses without a fallback. Regression
+coverage proves that a valid owned modal never calls an unresponsive main
+window provider. The updated Windows platform suite passed 363 tests with
+three existing ignored; platform-only strict Clippy (`--no-deps`) passed.
+Whole-dependency Clippy remains a separate failed gate below.
 
 The coexistence regression reproduced the observed three-button refusal on
 the base and passes after the fix. The whole Windows platform library passed
