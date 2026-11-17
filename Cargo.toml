@@ -42,9 +42,9 @@ rstest = "0.26.1"
 # This draft revision merges upstream Driver 0.49.1 source with the existing fork.
 # Compatibility and native acceptance remain subject to verification.
 # See docs/design/sdk-dependency-maintenance.md for migration and acceptance.
-cua-driver-contract = { git = "https://github.com/loonghao/cua.git", rev = "a88f2509f2c74a425093197b8b2178e2df803bf5" }
-cua-driver-sdk = { git = "https://github.com/loonghao/cua.git", rev = "a88f2509f2c74a425093197b8b2178e2df803bf5" }
-cua-driver-testkit = { git = "https://github.com/loonghao/cua.git", rev = "a88f2509f2c74a425093197b8b2178e2df803bf5" }
-cursor-overlay = { git = "https://github.com/loonghao/cua.git", rev = "a88f2509f2c74a425093197b8b2178e2df803bf5" }
-platform-macos = { git = "https://github.com/loonghao/cua.git", rev = "a88f2509f2c74a425093197b8b2178e2df803bf5" }
-platform-windows = { git = "https://github.com/loonghao/cua.git", rev = "a88f2509f2c74a425093197b8b2178e2df803bf5" }
+cua-driver-contract = { git = "https://github.com/loonghao/cua.git", rev = "862866c2b52e56dded67301c32dc49098c366e48" }
+cua-driver-sdk = { git = "https://github.com/loonghao/cua.git", rev = "862866c2b52e56dded67301c32dc49098c366e48" }
+cua-driver-testkit = { git = "https://github.com/loonghao/cua.git", rev = "862866c2b52e56dded67301c32dc49098c366e48" }
+cursor-overlay = { git = "https://github.com/loonghao/cua.git", rev = "862866c2b52e56dded67301c32dc49098c366e48" }
+platform-macos = { git = "https://github.com/loonghao/cua.git", rev = "862866c2b52e56dded67301c32dc49098c366e48" }
+platform-windows = { git = "https://github.com/loonghao/cua.git", rev = "862866c2b52e56dded67301c32dc49098c366e48" }

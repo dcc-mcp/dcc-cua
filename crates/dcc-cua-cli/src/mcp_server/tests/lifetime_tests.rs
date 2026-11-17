@@ -88,6 +88,54 @@ async fn expired_task_guidance_does_not_renew_its_lease() {
 }
 
 #[rstest]
+#[tokio::test]
+async fn fresh_task_reuses_agent_authority_without_reviving_an_expired_lease() {
+    let mut server = test_server();
+    let request = browser_task();
+    let expired = server.prepare_task(request.clone()).unwrap();
+    let expired_id = expired["task_id"].as_str().unwrap();
+    server
+        .proposals
+        .get_mut(expired_id)
+        .unwrap()
+        .registration
+        .expires_at_unix_ms = 0;
+
+    let fresh = server.prepare_task(request).unwrap();
+    assert_ne!(fresh["task_id"], expired["task_id"]);
+    assert_eq!(fresh["status"], "ready");
+    assert_eq!(fresh["confirmation_required"], false);
+    assert!(fresh.get("confirmation_method").is_none());
+    for field in [
+        "target",
+        "surface",
+        "allowed_methods",
+        "allowed_actions",
+        "allowed_browser_origins",
+    ] {
+        assert_eq!(fresh[field], expired[field]);
+    }
+
+    let stale_call = server
+        .call_tool(json!({"name":"dcc_cua_task_call", "arguments":{
+            "task_id":expired_id, "method":"browser_snapshot", "params":{}
+        }}))
+        .await
+        .unwrap();
+    // Preparing the fresh task prunes the expired proposal; its old ID remains
+    // unusable instead of being renewed or transferred to the new lease.
+    assert_eq!(stale_call["structuredContent"]["code"], "task_not_found");
+    assert!(
+        server
+            .proposals
+            .get(fresh["task_id"].as_str().unwrap())
+            .unwrap()
+            .receipt
+            .is_some()
+    );
+}
+
+#[rstest]
 fn lifetime_guidance_is_discoverable_before_starting_a_task() {
     let tools = tool_definitions();
     for name in ["start_task", "task_status", "dcc_cua_task_call"] {

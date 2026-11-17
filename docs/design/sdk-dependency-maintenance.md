@@ -8,13 +8,17 @@ this contract with `scripts/test_sdk_dependency_contract.py`.
 ## Current source candidate
 
 The consent-bubble fix candidate is
-`loonghao/cua@a88f2509f2c74a425093197b8b2178e2df803bf5`, proposed in
+`loonghao/cua@862866c2b52e56dded67301c32dc49098c366e48`, proposed in
 `loonghao/cua#15` on top of the Driver 0.49.1 candidate below. It distinguishes
 an unrelated title-bound native bubble with non-dialog button classes from
 the actual debugging-consent modal. Once any native dialog-class button is
 present, incomplete, disabled, ambiguous, renderer-controlled or incorrectly
 owned consent still refuses. Native cancellation ignores a positively
-unrelated bubble after the real prompt disappears.
+unrelated bubble after the real prompt disappears. Presence and action selection
+now use the same complete consent classification: an unrelated bubble appearing
+and disappearing must not arm the user-revocation guard. The regression failed
+with `browser_consent_revoked` before this change; disappearance of a genuinely
+classified consent prompt still returns that exact refusal.
 
 Consent inspection also uses the existing strict native-only UIA walker for
 the target and its proven owned prompt windows, instead of caching the whole
@@ -28,9 +32,13 @@ Its existing PID/owner-chain/liveness/topmost uniqueness proof remains
 mandatory; only an absence of owned consent permits inline inspection, while
 an ambiguous or incomplete owned modal refuses without a fallback. Regression
 coverage proves that a valid owned modal never calls an unresponsive main
-window provider. The updated Windows platform suite passed 363 tests with
+window provider. The updated Windows platform suite passed 364 tests with
 three existing ignored; platform-only strict Clippy (`--no-deps`) passed.
 Whole-dependency Clippy remains a separate failed gate below.
+
+These source checks do not establish that an actual modal-HWND-rooted Chrome
+tree takes the owned-window fast path. Exact-candidate native acceptance and
+that topology evidence remain required before this draft is ready.
 
 The coexistence regression reproduced the observed three-button refusal on
 the base and passes after the fix. The whole Windows platform library passed
