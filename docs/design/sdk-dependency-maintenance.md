@@ -7,6 +7,27 @@ this contract with `scripts/test_sdk_dependency_contract.py`.
 
 ## Current source candidate
 
+The consent-bubble fix candidate is
+`loonghao/cua@2521ea215a30ca9076015f8693c5666628972c06`, proposed in
+`loonghao/cua#15` on top of the Driver 0.49.1 candidate below. It distinguishes
+an unrelated title-bound native bubble with non-dialog button classes from
+the actual debugging-consent modal. Once any native dialog-class button is
+present, incomplete, disabled, ambiguous, renderer-controlled or incorrectly
+owned consent still refuses. Native cancellation ignores a positively
+unrelated bubble after the real prompt disappears.
+
+The coexistence regression reproduced the observed three-button refusal on
+the base and passes after the fix. The whole Windows platform library passed
+361 tests with three existing ignored. Coverage includes opaque Unicode,
+mirrored geometry, both traversal orders, optional focus, renderer spoofing,
+and disabled/incomplete consent. Candidate-base `bin/ci --quick --no-install`
+passed four checks and intentionally skipped three heavy checks. Strict
+Clippy stops in unchanged cursor-overlay `render_map.rs:363`; the default-base
+monorepo quick run also has unrelated tooling/platform/lockfile failures.
+Neither result is reported as a whole-SDK qualification. Native acceptance,
+cross-platform qualification, review and official runtime installation remain
+separate gates.
+
 The Driver 0.49.1 compatibility candidate is
 `loonghao/cua@f524ded47765f1905b8eead00f95ecd4b5bce74c`, proposed in the
 existing `loonghao/cua#13`. It merges official release commit
