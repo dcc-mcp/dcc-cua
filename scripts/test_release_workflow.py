@@ -1,4 +1,5 @@
 import contextlib
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import os
@@ -8,6 +9,8 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+
+from scripts.ci_job_budget import remaining_minutes
 
 WORKFLOW = Path(__file__).parent.parent / ".github" / "workflows" / "release-please.yml"
 CI_WORKFLOW = Path(__file__).parent.parent / ".github" / "workflows" / "ci-checks.yml"
@@ -43,8 +46,9 @@ RELEASE_PLEASE_ACTION = (
     "googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7"
 )
 CI_EXECUTABLE_SURFACE_SHA256 = (
-    "b29e05508274e435e9ce414948d05c71ef0697494e5b2a688b20977dad4d215d"
+    "b1dbbe16dbd194097b4532b7d835147e36675f5337d15631d729ad70526293be"
 )
+VERIFY_TIMEOUT = "${{ matrix.verify_job_minutes }}"
 
 
 _YAML_META_TOKEN = re.compile(r"(?:^|[\s\[{:,-])[&*][A-Za-z_][\w.-]*")
@@ -263,7 +267,6 @@ class ReleaseWorkflowTests(unittest.TestCase):
         verify = workflow["jobs"]["verify"]
         steps = verify["steps"]
         diagnostic = next(step for step in steps if step.get("id") == "intel-nextest")
-        self.assertEqual(verify["timeout-minutes"], "45")
         self.assertEqual(diagnostic["if"], "matrix.platform == 'macos-x86_64'")
         self.assertEqual(
             diagnostic["timeout-minutes"],
@@ -322,7 +325,6 @@ class ReleaseWorkflowTests(unittest.TestCase):
 
     def test_intel_check_leaves_time_to_upload_failure_diagnostics(self):
         verify, steps, diagnostic = self.intel_check_diagnostics()
-        self.assertEqual(verify["timeout-minutes"], "45")
         self.assertEqual(diagnostic["if"], "matrix.platform == 'macos-x86_64'")
         self.assertEqual(
             diagnostic["timeout-minutes"],
@@ -400,7 +402,15 @@ class ReleaseWorkflowTests(unittest.TestCase):
             CI_WORKFLOW.read_text(encoding="utf-8")
         ).parse()
         self.assertEqual(workflow["permissions"]["actions"], "read")
-        steps = workflow["jobs"]["verify"]["steps"]
+        verify = workflow["jobs"]["verify"]
+        self.assertEqual(verify["timeout-minutes"], VERIFY_TIMEOUT)
+        self.assertEqual(
+            {row["platform"]: int(row["verify_job_minutes"])
+             for row in verify["strategy"]["matrix"]["include"]},
+            {"windows-x86_64": 45, "linux-x86_64": 45,
+             "macos-aarch64": 45, "macos-x86_64": 60},
+        )
+        steps = verify["steps"]
         for phase, maximum in (("check", 35), ("nextest", 25)):
             with self.subTest(phase=phase):
                 diagnostic = next(s for s in steps if s.get("id") == f"intel-{phase}")
@@ -409,13 +419,14 @@ class ReleaseWorkflowTests(unittest.TestCase):
                 self.assertEqual(budget["if"], "matrix.platform == 'macos-x86_64'")
                 self.assertEqual(budget["timeout-minutes"], "2")
                 self.assertEqual(budget["env"]["GH_TOKEN"], "${{ github.token }}")
+                self.assertEqual(budget["env"]["CI_JOB_MINUTES"], VERIFY_TIMEOUT)
                 script = budget["run"]["text"]
                 self.assertIn("$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT/jobs", script)
                 self.assertIn('.runner_name == env.RUNNER_NAME', script)
                 self.assertIn('.status == "in_progress"', script)
                 self.assertIn('verify (macos-26-intel, macos-x86_64, x86_64)', script)
                 self.assertIn('length == 1', script)
-                self.assertIn('--job-minutes 45 --reserve-minutes 3', script)
+                self.assertIn('--job-minutes "$CI_JOB_MINUTES" --reserve-minutes 3', script)
                 self.assertIn(f'--maximum-minutes {maximum}', script)
                 self.assertIn('"$GITHUB_OUTPUT"', script)
                 self.assertNotIn("continue-on-error", budget)
@@ -423,6 +434,27 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertIn(
             "python -B -m unittest scripts.test_ci_job_budget",
             [s.get("run") for s in policy],
+        )
+
+    def test_intel_cold_build_keeps_the_full_nextest_phase_budget(self):
+        workflow = _RestrictedWorkflowYamlParser(
+            CI_WORKFLOW.read_text(encoding="utf-8")
+        ).parse()
+        verify = workflow["jobs"]["verify"]
+        intel = next(
+            row for row in verify["strategy"]["matrix"]["include"]
+            if row["platform"] == "macos-x86_64"
+        )
+        # Run 43982375067: cold check + Clippy consumed 20m54s; nextest
+        # then spent 16m38s compiling before its 2,070 tests could start.
+        start = datetime(2026, 11, 16, 23, 48, 27, tzinfo=timezone.utc)
+        job_minutes = int(intel["verify_job_minutes"])
+        self.assertEqual(
+            remaining_minutes(
+                start.isoformat(), start + timedelta(minutes=20, seconds=54),
+                job_minutes=job_minutes, reserve_minutes=3, maximum_minutes=25,
+            ),
+            25,
         )
 
     def test_only_ci_artifact_readback_opts_in_to_build_metadata(self):
@@ -551,9 +583,12 @@ class ReleaseWorkflowTests(unittest.TestCase):
         parsed = _RestrictedWorkflowYamlParser(workflow).parse()
         for job in ("verify", "e2e"):
             lanes = parsed["jobs"][job]["strategy"]["matrix"]["include"]
+            expected = {"os": "macos-26-intel", "platform": "macos-x86_64", "arch": "x86_64"}
+            if job == "verify":
+                expected["verify_job_minutes"] = "60"
             self.assertEqual(
                 [lane for lane in lanes if lane["os"] == "macos-26-intel"],
-                [{"os": "macos-26-intel", "platform": "macos-x86_64", "arch": "x86_64"}],
+                [expected],
             )
         self.assertGreaterEqual(
             workflow.count("if: startsWith(matrix.os, 'macos-')"), 3
@@ -739,13 +774,13 @@ class ReleaseWorkflowTests(unittest.TestCase):
     def test_ci_source_checkout_rejects_job_defaults_that_mutate_before_build(self):
         ci = CI_WORKFLOW.read_text(encoding="utf-8")
         mutated = ci.replace(
-            "  verify:\n    timeout-minutes: 45",
+            f"  verify:\n    timeout-minutes: {VERIFY_TIMEOUT}",
             "  verify:\n"
             "    defaults:\n"
             "      run:\n"
             '        shell: bash -c \'grep -q "cargo check" {0} && '
             "git restore --source attacker-ref --worktree -- .; bash {0}'\n"
-            "    timeout-minutes: 45",
+            f"    timeout-minutes: {VERIFY_TIMEOUT}",
             1,
         )
         with self.assertRaises(AssertionError):
@@ -761,8 +796,8 @@ class ReleaseWorkflowTests(unittest.TestCase):
         )
         for insertion in insertions:
             mutated = ci.replace(
-                "  verify:\n    timeout-minutes: 45",
-                f"  verify:\n{insertion}    timeout-minutes: 45",
+                f"  verify:\n    timeout-minutes: {VERIFY_TIMEOUT}",
+                f"  verify:\n{insertion}    timeout-minutes: {VERIFY_TIMEOUT}",
                 1,
             )
             with self.subTest(insertion=insertion), self.assertRaises(AssertionError):
@@ -842,10 +877,10 @@ class ReleaseWorkflowTests(unittest.TestCase):
         ci = CI_WORKFLOW.read_text(encoding="utf-8")
         mutations = (
             ci.replace(
-                "    timeout-minutes: 45",
+                f"    timeout-minutes: {VERIFY_TIMEOUT}",
                 "    env: &unreviewed-env\n"
                 "      UNREVIEWED_EXECUTION: enabled\n"
-                "    timeout-minutes: 45",
+                f"    timeout-minutes: {VERIFY_TIMEOUT}",
                 1,
             ),
             ci.replace(
