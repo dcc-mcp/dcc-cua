@@ -201,28 +201,8 @@ impl ComputerUseSession {
         }
     }
 
-    /// Pending is recorded before the encoder can create a partial file. A
-    /// canceled startup cannot turn absence of an attached owner into success.
-    #[cfg(test)]
-    pub(super) async fn start_owned_native_recorder(
-        &mut self,
-        frames: tokio::sync::watch::Receiver<dcc_cua_showcase::LiveObservationStatus>,
-        output_dir: &str,
-        fps: u32,
-        owns_live_observation: bool,
-    ) -> ComputerUseResult<()> {
-        self.start_owned_native_recorder_with_cancellation(
-            frames,
-            output_dir,
-            fps,
-            owns_live_observation,
-            Arc::new(|| false),
-        )
-        .await
-    }
-
     #[cfg(any(windows, test))]
-    async fn start_owned_native_recorder_with_cancellation(
+    pub(super) async fn start_owned_native_recorder_with_cancellation(
         &mut self,
         frames: tokio::sync::watch::Receiver<dcc_cua_showcase::LiveObservationStatus>,
         output_dir: &str,

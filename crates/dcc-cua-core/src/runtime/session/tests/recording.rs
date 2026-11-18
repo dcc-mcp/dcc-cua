@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::sync::Arc;
 
 use rstest::rstest;
 
@@ -381,7 +382,13 @@ async fn native_video_cancelled_startup_stays_unknown_without_an_attached_owner(
         tokio::sync::watch::channel(dcc_cua_showcase::LiveObservationStatus::default());
     let cancelled = tokio::time::timeout(
         Duration::from_millis(20),
-        session.start_owned_native_recorder(receiver, directory.to_str().unwrap(), 10, false),
+        session.start_owned_native_recorder_with_cancellation(
+            receiver,
+            directory.to_str().unwrap(),
+            10,
+            false,
+            Arc::new(|| false),
+        ),
     )
     .await;
     assert!(
@@ -439,7 +446,13 @@ async fn native_video_startup_attaches_ready_owner_before_clearing_pending() {
     let (mut session, calls) = counting_session();
     let (_sender, receiver) = native_recorder_test_frames();
     session
-        .start_owned_native_recorder(receiver, directory.to_str().unwrap(), 10, false)
+        .start_owned_native_recorder_with_cancellation(
+            receiver,
+            directory.to_str().unwrap(),
+            10,
+            false,
+            Arc::new(|| false),
+        )
         .await
         .unwrap();
     assert!(!session.local_cleanup.recorder_pending);
@@ -474,7 +487,13 @@ async fn native_video_joined_start_failure_preserves_actual_partial_and_clears_p
     let (mut session, calls) = counting_session();
     let (_sender, receiver) = native_recorder_test_frames();
     let error = session
-        .start_owned_native_recorder(receiver, directory.to_str().unwrap(), 10, false)
+        .start_owned_native_recorder_with_cancellation(
+            receiver,
+            directory.to_str().unwrap(),
+            10,
+            false,
+            Arc::new(|| false),
+        )
         .await
         .unwrap_err();
     assert_eq!(error.code, ComputerUseErrorCode::CaptureFailed);
@@ -501,7 +520,13 @@ async fn native_video_refused_ready_start_preserves_refusal_and_real_drain_failu
     let (mut session, calls) = counting_session();
     let (_sender, receiver) = native_recorder_test_frames();
     session
-        .start_owned_native_recorder(receiver, directory.to_str().unwrap(), 10, false)
+        .start_owned_native_recorder_with_cancellation(
+            receiver,
+            directory.to_str().unwrap(),
+            10,
+            false,
+            Arc::new(|| false),
+        )
         .await
         .unwrap();
     std::fs::write(directory.join("showcase.mp4"), b"previous video").unwrap();
@@ -543,7 +568,13 @@ async fn native_video_cancelled_refused_start_keeps_final_media_and_unknown_owne
         crate::live_observation::LiveObservation::from_test_shutdown_gate();
     session.live_observation = Some(source);
     session
-        .start_owned_native_recorder(receiver, directory.to_str().unwrap(), 10, true)
+        .start_owned_native_recorder_with_cancellation(
+            receiver,
+            directory.to_str().unwrap(),
+            10,
+            true,
+            Arc::new(|| false),
+        )
         .await
         .unwrap();
     {
