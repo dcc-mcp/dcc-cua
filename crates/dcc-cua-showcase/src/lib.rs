@@ -1037,30 +1037,6 @@ struct EncoderControl<'a> {
     startup_cancelled: StartCancellation,
 }
 
-#[cfg(test)]
-fn encode_frames_with_audio(
-    frames: mpsc::Receiver<ShowcaseProducerEvent>,
-    path: &Path,
-    fps: u32,
-    ready: oneshot::Sender<ShowcaseResult<EncodedFirstFrameEvidence>>,
-    progress: &Mutex<ShowcaseProgress>,
-    security: EncoderAuthorization<'_>,
-    terminal_reason: &Mutex<Option<Value>>,
-) -> ShowcaseResult<Value> {
-    encode_frames_with_audio_cancelled(
-        frames,
-        path,
-        fps,
-        ready,
-        progress,
-        security,
-        EncoderControl {
-            terminal_reason,
-            startup_cancelled: Arc::new(|| false),
-        },
-    )
-}
-
 fn encode_frames_with_audio_cancelled(
     mut frames: mpsc::Receiver<ShowcaseProducerEvent>,
     path: &Path,

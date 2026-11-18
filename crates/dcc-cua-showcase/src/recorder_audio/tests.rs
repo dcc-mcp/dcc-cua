@@ -238,7 +238,7 @@ fn audio_end_is_observed_even_when_its_wakeup_cannot_enter_the_full_frame_queue(
     let authority = Arc::new(RecordingAuthorization::new(u64::MAX));
     let terminal = std::sync::Mutex::new(None);
     let (ready, _acknowledged) = tokio::sync::oneshot::channel();
-    let result = crate::encode_frames_with_audio(
+    let result = crate::encode_frames_with_audio_cancelled(
         receiver,
         &directory.join("showcase.mp4"),
         10,
@@ -307,7 +307,7 @@ fn video_error_still_finishes_audio_and_preserves_unknown_cleanup(
     let authority = Arc::new(RecordingAuthorization::new(u64::MAX));
     let progress = std::sync::Mutex::new(crate::ShowcaseProgress::default());
     let (ready, _ready) = tokio::sync::oneshot::channel();
-    let error = crate::encode_frames_with_audio(
+    let error = crate::encode_frames_with_audio_cancelled(
         receiver,
         &directory.join("showcase.mp4"),
         10,
@@ -394,7 +394,7 @@ fn audio_epoch_cannot_roll_into_a_later_video_segment_even_if_factory_lifetime_e
     let authority = Arc::new(RecordingAuthorization::new(u64::MAX));
     let terminal = std::sync::Mutex::new(None);
     let (ready, _ready) = tokio::sync::oneshot::channel();
-    let state = crate::encode_frames_with_audio(
+    let state = crate::encode_frames_with_audio_cancelled(
         receiver,
         &directory.join("showcase.mp4"),
         10,

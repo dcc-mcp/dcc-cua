@@ -2119,7 +2119,7 @@ fn encode_frames_with_authorization(
     authorization: Option<&RecordingAuthorization>,
     terminal_reason: &Mutex<Option<Value>>,
 ) -> ShowcaseResult<Value> {
-    encode_frames_with_audio(
+    encode_frames_with_audio_cancelled(
         frames,
         path,
         fps,
