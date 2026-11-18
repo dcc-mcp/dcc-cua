@@ -515,10 +515,14 @@ impl ProcessAudioSource for NativeProcessAudioSource {
                 })
                 .map_err(|_| AudioLifecycleError::Source)?,
         );
+        // Take one monotonic observation for the owner lease. The QPC mapping
+        // and the remaining-lifetime read must describe this same instant;
+        // otherwise startup latency can make the worker deadline disagree with
+        // the authorization fence by one conversion interval.
         let lease_epoch = Instant::now();
+        let authorization_lifetime = self.authorization.remaining_lifetime_at(lease_epoch);
         let lease_ticks = u64::try_from(
-            self.authorization
-                .remaining_lifetime()
+            authorization_lifetime
                 .min(Duration::from_millis(self.grant.max_duration_ms))
                 .as_nanos()
                 / 100,
@@ -527,8 +531,13 @@ impl ProcessAudioSource for NativeProcessAudioSource {
         let lease_deadline = qpc_for_media_epoch(lease_epoch)?
             .checked_add(lease_ticks)
             .ok_or(AudioLifecycleError::Budget)?;
+        let duration_ticks = self
+            .grant
+            .max_duration_ms
+            .checked_mul(10_000)
+            .ok_or(AudioLifecycleError::Budget)?;
         let duration_deadline = epoch
-            .checked_add(self.grant.max_duration_ms * 10_000)
+            .checked_add(duration_ticks)
             .ok_or(AudioLifecycleError::Budget)?;
         write_message(
             &mut input,

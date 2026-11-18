@@ -21,7 +21,17 @@ fn run_packet_loop<T>(
     mut ingest: impl FnMut(T) -> Result<(), AudioLifecycleError>,
     mut duration_stop_attested: impl FnMut() -> bool,
 ) -> PacketLoopEnd {
-    while !cancelled() {
+    loop {
+        // Cancellation is a normal stop only while the authorization is still
+        // live. Check the lease first so a simultaneous expiry cannot be
+        // hidden by the caller's stop signal.
+        if cancelled() {
+            return if authorized() {
+                PacketLoopEnd::Stopped
+            } else {
+                PacketLoopEnd::SourceFailed
+            };
+        }
         if !authorized() {
             return PacketLoopEnd::SourceFailed;
         }

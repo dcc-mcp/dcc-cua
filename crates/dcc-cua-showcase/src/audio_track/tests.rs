@@ -190,6 +190,20 @@ fn worker_accepted_timestamp_quantization_reaches_the_mux_without_dropping_pcm()
 }
 
 #[rstest]
+fn packet_crossing_aac_duration_boundary_stops_cleanly_before_writing() {
+    let mut buffer = AacTrackBuffer::new(grant()).unwrap();
+    assert_eq!(
+        buffer.push(999_999, &[1; 960]),
+        Err(AudioLifecycleError::DurationExhausted)
+    );
+    let mut after = AacTrackBuffer::new(grant()).unwrap();
+    assert_eq!(
+        after.push(1_000_000, &[1; 960]),
+        Err(AudioLifecycleError::Budget)
+    );
+}
+
+#[rstest]
 fn forward_qpc_gap_is_retained_and_disclosed_without_splicing_captured_pcm() {
     let mut audio = AacTrackBuffer::new(grant()).unwrap();
     audio.push(0, &[12; 960]).unwrap();

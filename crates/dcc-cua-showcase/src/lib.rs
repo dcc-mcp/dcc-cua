@@ -22,6 +22,8 @@ pub mod process_audio;
 pub mod recorder_audio;
 use audio_track::BoundedRecordingOutput;
 use recorder_audio::RecorderAudioFactory;
+
+pub type StartCancellation = Arc<dyn Fn() -> bool + Send + Sync>;
 mod recording_authorization;
 pub use recording_authorization::{RecordingAdmission, RecordingAuthorization};
 mod provenance;
@@ -560,6 +562,25 @@ impl ShowcaseRecorder {
         authorization: Option<Arc<RecordingAuthorization>>,
         audio: Option<Box<dyn RecorderAudioFactory>>,
     ) -> Result<Self, (ShowcaseError, Value)> {
+        Self::start_with_audio_outcome_and_cancellation(
+            frames,
+            output_dir,
+            fps,
+            authorization,
+            audio,
+            Arc::new(|| false),
+        )
+        .await
+    }
+
+    pub async fn start_with_audio_outcome_and_cancellation(
+        frames: watch::Receiver<LiveObservationStatus>,
+        output_dir: &str,
+        fps: u32,
+        authorization: Option<Arc<RecordingAuthorization>>,
+        audio: Option<Box<dyn RecorderAudioFactory>>,
+        startup_cancelled: StartCancellation,
+    ) -> Result<Self, (ShowcaseError, Value)> {
         let authorization = authorization.map(RecordingAuthorization::recording_local);
         if audio.is_some() && authorization.is_none() {
             return Err((
@@ -594,6 +615,7 @@ impl ShowcaseRecorder {
         let encoder_outcome = Arc::clone(&outcome);
         let encoder_finalization = Arc::clone(&finalization);
         let encoder_progress = Arc::clone(&progress);
+        let encoder_startup_cancelled = Arc::clone(&startup_cancelled);
         let audio_ended_sender = frame_sender.downgrade();
         let audio_ended = Arc::new(AtomicBool::new(false));
         let audio_run = audio.map(|factory| AudioRun {
@@ -617,6 +639,7 @@ impl ShowcaseRecorder {
                     audio: audio_run,
                 },
                 &encoder_terminal_reason,
+                encoder_startup_cancelled,
             );
             let terminal_reason = lock_unpoisoned(&encoder_terminal_reason).clone();
             let progress = lock_unpoisoned(&encoder_progress).clone();
@@ -1015,15 +1038,19 @@ fn encode_frames_with_audio(
     progress: &Mutex<ShowcaseProgress>,
     security: EncoderAuthorization<'_>,
     terminal_reason: &Mutex<Option<Value>>,
+    startup_cancelled: StartCancellation,
 ) -> ShowcaseResult<Value> {
     let EncoderAuthorization {
         video: authorization,
         audio,
     } = security;
+    if startup_cancelled() {
+        return Err(capture_error("recording startup was interrupted"));
+    }
     let FirstShowcaseFrame {
         frame: first,
         resumed_acknowledgement: first_frame_acknowledgement,
-    } = receive_first_frame(&mut frames)?;
+    } = receive_first_frame(&mut frames, &startup_cancelled)?;
     let first_admission = authorization
         .map(RecordingAuthorization::admit)
         .transpose()
@@ -1091,6 +1118,14 @@ fn encode_frames_with_audio(
             return Err(error);
         }
     };
+    if startup_cancelled() {
+        if let Some(owner) = audio_owner.as_mut()
+            && let Err(error) = owner.finish()
+        {
+            return Err(audio_error(error));
+        }
+        return Err(capture_error("recording startup was interrupted"));
+    }
     if let Some(owner) = audio_owner.as_ref() {
         // The source has acknowledged startup. Publish its existing identity
         // before returning recording_start; final cleanup evidence replaces it.
@@ -1106,6 +1141,11 @@ fn encode_frames_with_audio(
     let mut media_duration_ms = 0_u64;
     let video_result = (|| -> ShowcaseResult<()> {
         while let Some(event) = frames.blocking_recv() {
+            if startup_cancelled() {
+                *lock_unpoisoned(terminal_reason) =
+                    Some(json!({"code":"recording_startup_cancelled"}));
+                break;
+            }
             if audio_ended
                 .as_ref()
                 .is_some_and(|ended| ended.load(Ordering::Acquire))
@@ -1337,6 +1377,11 @@ fn encode_frames_with_audio(
         (Err(video), Ok(_)) => return Err(video),
         (Ok(()), buffer) => buffer?,
     };
+    if startup_cancelled() {
+        return Err(capture_error(
+            "recording startup was interrupted before media publication",
+        ));
+    }
     if let Some(segment) = active_segment {
         let tail_duration = segment.final_duration;
         let mut current_progress = lock_unpoisoned(progress);
@@ -1386,8 +1431,20 @@ fn audio_error(error: process_audio::AudioLifecycleError) -> ShowcaseError {
 
 fn receive_first_frame(
     frames: &mut mpsc::Receiver<ShowcaseProducerEvent>,
+    startup_cancelled: &StartCancellation,
 ) -> ShowcaseResult<FirstShowcaseFrame> {
-    while let Some(event) = frames.blocking_recv() {
+    loop {
+        if startup_cancelled() {
+            return Err(capture_error("recording startup was interrupted"));
+        }
+        let event = match frames.try_recv() {
+            Ok(event) => event,
+            Err(mpsc::error::TryRecvError::Empty) => {
+                std::thread::sleep(std::time::Duration::from_millis(2));
+                continue;
+            }
+            Err(mpsc::error::TryRecvError::Disconnected) => break,
+        };
         match event {
             ShowcaseProducerEvent::AudioEnded => {
                 return Err(capture_error("audio ended before first video frame"));

@@ -187,16 +187,21 @@ fn duration_exhausted_inside_ingest_stops_without_reading_another_packet() {
 
 #[rstest]
 fn stopped_or_already_expired_owner_does_not_enter_receive() {
-    for cancelled in [true, false] {
+    for (cancelled, authorized, expected) in [
+        (true, true, PacketLoopEnd::Stopped),
+        (false, true, PacketLoopEnd::Stopped),
+        (true, false, PacketLoopEnd::SourceFailed),
+        (false, false, PacketLoopEnd::SourceFailed),
+    ] {
         let outcome = run_packet_loop::<()>(
             Duration::from_millis(10),
-            || cancelled,
+            move || cancelled,
             || panic!("stopped owner must not read another packet"),
-            || true,
+            move || authorized,
             || Duration::from_millis(10),
             |_| panic!("stopped owner must not ingest"),
             || false,
         );
-        assert_eq!(outcome, PacketLoopEnd::Stopped);
+        assert_eq!(outcome, expected);
     }
 }

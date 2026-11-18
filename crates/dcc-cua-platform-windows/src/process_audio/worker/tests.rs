@@ -90,6 +90,18 @@ fn qpc_order_preserves_forward_gaps_but_rejects_overlap_and_rollback(
 }
 
 #[rstest]
+#[case(0, 480, 100_000)]
+#[case(100_000, 480, 200_000)]
+#[case(100_000, 481, 200_209)]
+fn qpc_packet_end_is_the_hard_duration_boundary(
+    #[case] timestamp: u64,
+    #[case] frames: u32,
+    #[case] expected_end: u64,
+) {
+    assert_eq!(qpc_packet_end(timestamp, frames).unwrap(), expected_end);
+}
+
+#[rstest]
 fn rejected_packet_retains_exact_metadata_without_changing_continuity_policy() {
     let packet = AudioWorkerPacketMetadata {
         frames: 480,

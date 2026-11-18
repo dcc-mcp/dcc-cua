@@ -170,6 +170,18 @@ fn elapsed_duration_during_packet_admission_is_a_normal_stop_without_a_mux_write
 }
 
 #[rstest]
+fn packet_crossing_the_duration_boundary_stops_before_mux_ingestion() {
+    let (s, m, c) = ports();
+    let mut session = start(s, m, grant(), auth(), Arc::new(AtomicU64::new(0))).unwrap();
+    assert_eq!(
+        session.ingest(target(), 999_999, &[1; 960]),
+        Err(AudioLifecycleError::DurationExhausted)
+    );
+    assert_eq!(c.lock().unwrap().packets, 0);
+    assert_eq!(session.stop().terminal_error, None);
+}
+
+#[rstest]
 #[case(true, false, AudioLifecycleError::Authorization)]
 #[case(false, true, AudioLifecycleError::Packet)]
 #[case(false, false, AudioLifecycleError::Budget)]
@@ -187,7 +199,8 @@ fn elapsed_duration_cannot_hide_revocation_bad_packets_or_packet_budget_overrun(
         authorization.revoke();
     }
     let samples = if bad_packet { &[][..] } else { &[1; 960][..] };
-    assert_eq!(session.ingest(target(), 999_999, samples), Err(expected));
+    let pts_us = if bad_packet { 999_999 } else { 1_000_000 };
+    assert_eq!(session.ingest(target(), pts_us, samples), Err(expected));
     assert_eq!(session.stop().terminal_error, Some(expected));
     assert_eq!(c.lock().unwrap().packets, 0);
 }

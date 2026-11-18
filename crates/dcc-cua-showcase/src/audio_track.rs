@@ -158,7 +158,15 @@ impl AacTrackBuffer {
             .ok_or(AudioLifecycleError::Budget)?;
         let max_frames = self.grant.max_duration_ms * u64::from(PROCESS_AUDIO_SAMPLE_RATE) / 1000;
         if end as u128 > u128::from(max_frames) {
-            return Err(AudioLifecycleError::Budget);
+            // Clamping a packet to the already admitted PCM timeline can add
+            // one frame at the AAC boundary. Treat that exact cutoff as a
+            // normal duration stop so the shared video track can finalize;
+            // packets wholly after the grant remain a hard budget failure.
+            return Err(if start < usize::try_from(max_frames).unwrap_or(usize::MAX) {
+                AudioLifecycleError::DurationExhausted
+            } else {
+                AudioLifecycleError::Budget
+            });
         }
         let length = end
             .checked_mul(PROCESS_AUDIO_CHANNELS)

@@ -115,11 +115,18 @@ impl ComputerUseSession {
                         .expect("live source remains owned");
                     (observation.subscribe_showcase(), observation.fps())
                 };
-                self.start_owned_native_recorder(
+                let startup_cancelled = Arc::new(move || {
+                    dcc_cua_interrupt::interrupt_generation_changed(
+                        started_generation,
+                        dcc_cua_interrupt::interrupt_generation(),
+                    )
+                });
+                self.start_owned_native_recorder_with_cancellation(
                     frames,
                     &request.output_dir,
                     fps,
                     owns_live_observation,
+                    startup_cancelled,
                 )
                 .await?;
                 // The first encoder acknowledgement is necessary but not sufficient:
@@ -183,14 +190,12 @@ impl ComputerUseSession {
                         self.stop_live_observation().await;
                     }
                     self.set_banner_recording(false);
-                    if self.last_recording_video.is_none() {
-                        self.last_recording_video = Some(
-                            RecordingVideoTerminalEvidence::from_failed_stop(
-                                json!({"startup_error":{"code":error.code,"message":error.message}}),
-                                &error,
-                            ),
-                        );
-                    }
+                    self.last_recording_video = Some(
+                        RecordingVideoTerminalEvidence::from_failed_stop(
+                            json!({"startup_error":{"code":error.code,"message":error.message}}),
+                            &error,
+                        ),
+                    );
                     Err(error)
                 }
             }
@@ -206,6 +211,25 @@ impl ComputerUseSession {
         output_dir: &str,
         fps: u32,
         owns_live_observation: bool,
+    ) -> ComputerUseResult<()> {
+        self.start_owned_native_recorder_with_cancellation(
+            frames,
+            output_dir,
+            fps,
+            owns_live_observation,
+            Arc::new(|| false),
+        )
+        .await
+    }
+
+    #[cfg(any(windows, test))]
+    async fn start_owned_native_recorder_with_cancellation(
+        &mut self,
+        frames: tokio::sync::watch::Receiver<dcc_cua_showcase::LiveObservationStatus>,
+        output_dir: &str,
+        fps: u32,
+        owns_live_observation: bool,
+        startup_cancelled: Arc<dyn Fn() -> bool + Send + Sync>,
     ) -> ComputerUseResult<()> {
         #[cfg(windows)]
         let grant = self.recording_audio_grant.clone();
@@ -233,12 +257,13 @@ impl ComputerUseSession {
                 Ok(None)
             }
         })?;
-        match ShowcaseRecorder::start_with_audio_outcome(
+        match ShowcaseRecorder::start_with_audio_outcome_and_cancellation(
             frames,
             output_dir,
             fps,
             self.recording_authorization.clone(),
             audio,
+            startup_cancelled,
         )
         .await
         {

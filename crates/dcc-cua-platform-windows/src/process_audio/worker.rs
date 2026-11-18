@@ -215,6 +215,13 @@ fn qpc_packet_has_valid_order(previous: AudioWorkerPacketClock, timestamp: u64) 
         && u128::from(delta) * 48_000 + 10_000_000 >= u128::from(previous.frames) * 10_000_000
 }
 
+fn qpc_packet_end(timestamp: u64, frames: u32) -> Result<u64, Failure> {
+    let duration = (u128::from(frames) * 10_000_000).div_ceil(48_000);
+    timestamp
+        .checked_add(u64::try_from(duration).map_err(|_| Failure::ContinuityLost)?)
+        .ok_or(Failure::ContinuityLost)
+}
+
 /// Copy only an acquired WASAPI packet, after testing SILENT before dereferencing.
 /// SAFETY: non-silent pointer must reference `frames * 2` initialized i16 samples
 /// until the matching ReleaseBuffer; silent packets may supply a null pointer.
@@ -339,6 +346,17 @@ fn capture_packets(
             break;
         }
         if timestamp >= deadline {
+            return if duration_limited {
+                Ok(())
+            } else {
+                Err(Failure::AuthorizationExpired)
+            };
+        }
+        // Do not forward a packet whose first sample is before the cutoff but
+        // whose final sample would cross it. The parent has the same hard
+        // duration boundary, and admitting this packet there would turn a
+        // normal cutoff into a mux Budget error instead of a clean stop.
+        if qpc_packet_end(timestamp, frames)? > deadline {
             return if duration_limited {
                 Ok(())
             } else {

@@ -245,7 +245,15 @@ impl<S: ProcessAudioSource, M: ProcessAudioMux> ProcessAudioSession<S, M> {
         }
         let ceiling = self.grant.max_duration_ms * 1000;
         if end > ceiling {
-            return Err(AudioLifecycleError::Budget);
+            // A packet that begins before the hard duration boundary is the
+            // normal cutoff race, not an invalid source or writer failure. Do
+            // not pass it to the mux; let the caller finalize the admitted
+            // media cleanly.
+            return Err(if pts_us < ceiling {
+                AudioLifecycleError::DurationExhausted
+            } else {
+                AudioLifecycleError::Budget
+            });
         }
         if now >= ceiling {
             return Err(AudioLifecycleError::DurationExhausted);
