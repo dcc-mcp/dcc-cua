@@ -39,7 +39,12 @@ fn audio_track_refuses_overlapping_or_unbounded_pcm_before_growth() {
         b.push(u64::MAX, &[1; 960]),
         Err(AudioLifecycleError::Budget)
     );
-    assert_eq!(b.push(999_000, &[1; 960]), Err(AudioLifecycleError::Budget));
+    // A packet that begins before the admitted duration but crosses its
+    // boundary ends capture normally so the shared video track can finalize.
+    assert_eq!(
+        b.push(999_000, &[1; 960]),
+        Err(AudioLifecycleError::DurationExhausted)
+    );
 }
 
 #[rstest]
