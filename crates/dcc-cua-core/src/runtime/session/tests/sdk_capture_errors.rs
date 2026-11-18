@@ -1,5 +1,6 @@
 use super::super::observation::require_sdk_window_image;
 use super::*;
+use rstest::rstest;
 
 fn window_reply(structured_json: Option<String>) -> cua_driver_sdk::ToolResult {
     cua_driver_sdk::ToolResult {
