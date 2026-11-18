@@ -638,8 +638,10 @@ impl ShowcaseRecorder {
                     video: authorization.as_deref(),
                     audio: audio_run,
                 },
-                &encoder_terminal_reason,
-                encoder_startup_cancelled,
+                EncoderControl {
+                    terminal_reason: &encoder_terminal_reason,
+                    startup_cancelled: encoder_startup_cancelled,
+                },
             );
             let terminal_reason = lock_unpoisoned(&encoder_terminal_reason).clone();
             let progress = lock_unpoisoned(&encoder_progress).clone();
@@ -1030,6 +1032,12 @@ struct EncoderAuthorization<'a> {
     audio: Option<AudioRun>,
 }
 
+struct EncoderControl<'a> {
+    terminal_reason: &'a Mutex<Option<Value>>,
+    startup_cancelled: StartCancellation,
+}
+
+#[cfg(test)]
 fn encode_frames_with_audio(
     frames: mpsc::Receiver<ShowcaseProducerEvent>,
     path: &Path,
@@ -1046,8 +1054,10 @@ fn encode_frames_with_audio(
         ready,
         progress,
         security,
-        terminal_reason,
-        Arc::new(|| false),
+        EncoderControl {
+            terminal_reason,
+            startup_cancelled: Arc::new(|| false),
+        },
     )
 }
 
@@ -1058,9 +1068,12 @@ fn encode_frames_with_audio_cancelled(
     ready: oneshot::Sender<ShowcaseResult<EncodedFirstFrameEvidence>>,
     progress: &Mutex<ShowcaseProgress>,
     security: EncoderAuthorization<'_>,
-    terminal_reason: &Mutex<Option<Value>>,
-    startup_cancelled: StartCancellation,
+    control: EncoderControl<'_>,
 ) -> ShowcaseResult<Value> {
+    let EncoderControl {
+        terminal_reason,
+        startup_cancelled,
+    } = control;
     let EncoderAuthorization {
         video: authorization,
         audio,
