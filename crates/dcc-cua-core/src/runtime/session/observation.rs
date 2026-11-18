@@ -18,6 +18,26 @@ fn require_actionable_native_frame(
     Ok(())
 }
 
+pub(super) fn require_sdk_window_image(
+    result: &cua_driver_sdk::ToolResult,
+) -> ComputerUseResult<&cua_driver_sdk::ImageContent> {
+    result.images.first().ok_or_else(|| {
+        // A successful SDK tree response can still carry a capture failure.
+        // Keep its diagnostic without treating the tree as a pixel observation.
+        let reason = result
+            .structured_json
+            .as_deref()
+            .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+            .and_then(|value| value.get("screenshot_error")?.as_str().map(str::to_owned))
+            .filter(|reason| !reason.trim().is_empty());
+        let message = match reason {
+            Some(reason) => format!("CUA window state returned no screenshot: {reason}"),
+            None => "CUA window state returned no screenshot".into(),
+        };
+        ComputerUseError::new(ComputerUseErrorCode::CaptureFailed, message)
+    })
+}
+
 impl ComputerUseSession {
     /// Report whether a user-confirmed action must renew its exact-target
     /// evidence before dispatch. The renewal itself remains read-only; callers
@@ -232,12 +252,7 @@ impl ComputerUseSession {
                 return self.finish_observation_sensitive_attempt(Err(error));
             }
         };
-        let image = result.images.first().ok_or_else(|| {
-            ComputerUseError::new(
-                ComputerUseErrorCode::CaptureFailed,
-                "CUA window state returned no screenshot",
-            )
-        })?;
+        let image = require_sdk_window_image(&result)?;
         let data = base64::engine::general_purpose::STANDARD
             .decode(&image.data_base64)
             .map_err(|error| {
