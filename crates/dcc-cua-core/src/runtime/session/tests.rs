@@ -80,6 +80,7 @@ mod modal_takeover;
 #[cfg(not(windows))]
 mod native_tool_boundaries;
 mod recording;
+mod sdk_capture_errors;
 mod sdk_snapshot_fixture;
 #[cfg(not(windows))]
 mod sdk_snapshot_format;
