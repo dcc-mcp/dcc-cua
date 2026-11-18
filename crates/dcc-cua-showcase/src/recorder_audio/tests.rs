@@ -253,7 +253,10 @@ fn audio_end_is_observed_even_when_its_wakeup_cannot_enter_the_full_frame_queue(
                 ended_flag: ended,
             }),
         },
-        &terminal,
+        crate::EncoderControl {
+            terminal_reason: &terminal,
+            startup_cancelled: Arc::new(|| false),
+        },
     )
     .unwrap();
     assert_eq!(
@@ -319,7 +322,10 @@ fn video_error_still_finishes_audio_and_preserves_unknown_cleanup(
                 ended_flag: Arc::new(crate::AtomicBool::new(false)),
             }),
         },
-        &std::sync::Mutex::new(None),
+        crate::EncoderControl {
+            terminal_reason: &std::sync::Mutex::new(None),
+            startup_cancelled: Arc::new(|| false),
+        },
     )
     .unwrap_err();
     assert_eq!(stops.load(Ordering::SeqCst), 1);
@@ -406,7 +412,10 @@ fn audio_epoch_cannot_roll_into_a_later_video_segment_even_if_factory_lifetime_e
                 ended_flag: Arc::new(crate::AtomicBool::new(false)),
             }),
         },
-        &terminal,
+        crate::EncoderControl {
+            terminal_reason: &terminal,
+            startup_cancelled: Arc::new(|| false),
+        },
     )
     .unwrap();
     assert_eq!(state["frames"], 1);

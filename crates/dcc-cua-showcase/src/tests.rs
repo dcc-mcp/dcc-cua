@@ -2129,6 +2129,9 @@ fn encode_frames_with_authorization(
             video: authorization,
             audio: None,
         },
-        terminal_reason,
+        EncoderControl {
+            terminal_reason,
+            startup_cancelled: Arc::new(|| false),
+        },
     )
 }
