@@ -67,7 +67,6 @@ fn run_packet_loop<T>(
             }
         }
     }
-    PacketLoopEnd::Stopped
 }
 
 pub struct NativeRecorderAudioFactory {
