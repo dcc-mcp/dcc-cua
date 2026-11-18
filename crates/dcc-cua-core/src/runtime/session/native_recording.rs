@@ -190,12 +190,11 @@ impl ComputerUseSession {
                         self.stop_live_observation().await;
                     }
                     self.set_banner_recording(false);
-                    self.last_recording_video = Some(
-                        RecordingVideoTerminalEvidence::from_failed_stop(
+                    self.last_recording_video =
+                        Some(RecordingVideoTerminalEvidence::from_failed_stop(
                             json!({"startup_error":{"code":error.code,"message":error.message}}),
                             &error,
-                        ),
-                    );
+                        ));
                     Err(error)
                 }
             }

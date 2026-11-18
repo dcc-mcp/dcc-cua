@@ -52,8 +52,9 @@ impl RecordingAuthorization {
     /// shorten or extend the lease at the conversion boundary.
     pub fn remaining_lifetime_at(&self, now: Instant) -> Duration {
         let wall = Duration::from_millis(self.expires_at_unix_ms.saturating_sub((self.clock)()));
-        self.monotonic_deadline
-            .map_or(wall, |deadline| wall.min(deadline.saturating_duration_since(now)))
+        self.monotonic_deadline.map_or(wall, |deadline| {
+            wall.min(deadline.saturating_duration_since(now))
+        })
     }
     #[must_use]
     pub fn new(expires_at_unix_ms: u64) -> Self {

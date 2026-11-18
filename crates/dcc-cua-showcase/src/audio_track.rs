@@ -162,11 +162,13 @@ impl AacTrackBuffer {
             // one frame at the AAC boundary. Treat that exact cutoff as a
             // normal duration stop so the shared video track can finalize;
             // packets wholly after the grant remain a hard budget failure.
-            return Err(if start < usize::try_from(max_frames).unwrap_or(usize::MAX) {
-                AudioLifecycleError::DurationExhausted
-            } else {
-                AudioLifecycleError::Budget
-            });
+            return Err(
+                if start < usize::try_from(max_frames).unwrap_or(usize::MAX) {
+                    AudioLifecycleError::DurationExhausted
+                } else {
+                    AudioLifecycleError::Budget
+                },
+            );
         }
         let length = end
             .checked_mul(PROCESS_AUDIO_CHANNELS)
