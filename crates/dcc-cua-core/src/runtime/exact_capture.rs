@@ -494,6 +494,22 @@ pub(crate) fn capture_verified_visible_bgra(
 }
 
 #[cfg(windows)]
+pub(super) async fn capture_exact_window(
+    process_id: u32,
+    window_id: u64,
+    purpose: FramePurpose,
+) -> ComputerUseResult<ExactWindowCapture> {
+    capture_exact_window_with_diagnostics(process_id, window_id, false, purpose).await
+}
+
+#[cfg(windows)]
+pub(super) async fn capture_exact_window_with_diagnostics(
+    process_id: u32,
+    window_id: u64,
+    diagnostics_enabled: bool,
+    purpose: crate::capture_diagnostics::FramePurpose,
+) -> ComputerUseResult<ExactWindowCapture> {
+    tokio::task::spawn_blocking(move || {
 struct ExactWgcCaptureRequest {
     process_id: u32,
     window_id: u64,
@@ -506,7 +522,6 @@ struct ExactWgcCaptureRequest {
     fallback: &'static str,
 }
 
-#[cfg(windows)]
 fn capture_exact_wgc_content(
     request: ExactWgcCaptureRequest,
 ) -> ComputerUseResult<ExactWindowCapture> {
@@ -523,7 +538,11 @@ fn capture_exact_wgc_content(
     } = request;
     let mut capture = dcc_cua_platform_windows::PersistentWgcCapture::new(process_id, window_id)
         .map_err(|error| {
-            ComputerUseError::new(ComputerUseErrorCode::CaptureFailed, error.to_string())
+            if let Some(reason) = error.geometry_failure() {
+                ComputerUseError::new(ComputerUseErrorCode::StaleObservation, reason.to_string())
+            } else {
+                ComputerUseError::new(ComputerUseErrorCode::CaptureFailed, error.to_string())
+            }
         })?;
     let frame = capture
         .next_measured_frame(Duration::from_secs(5))
@@ -606,23 +625,6 @@ fn capture_exact_wgc_content(
     })
 }
 
-#[cfg(windows)]
-pub(super) async fn capture_exact_window(
-    process_id: u32,
-    window_id: u64,
-    purpose: FramePurpose,
-) -> ComputerUseResult<ExactWindowCapture> {
-    capture_exact_window_with_diagnostics(process_id, window_id, false, purpose).await
-}
-
-#[cfg(windows)]
-pub(super) async fn capture_exact_window_with_diagnostics(
-    process_id: u32,
-    window_id: u64,
-    diagnostics_enabled: bool,
-    purpose: crate::capture_diagnostics::FramePurpose,
-) -> ComputerUseResult<ExactWindowCapture> {
-    tokio::task::spawn_blocking(move || {
         let capture_started = std::time::Instant::now();
         let generation = EXACT_WINDOW_CAPTURE_GENERATION.fetch_add(1, Ordering::Relaxed);
         let before = dcc_cua_platform_windows::exact_window_pixel_evidence(process_id, window_id)
@@ -646,18 +648,34 @@ pub(super) async fn capture_exact_window_with_diagnostics(
             let visible = match capture_verified_visible_bgra(process_id, window_id, before, true) {
                 Ok(visible) => visible,
                 Err(mut visible_error) => {
-                    if let Ok(capture) = capture_exact_wgc_content(ExactWgcCaptureRequest {
-                        process_id,
-                        window_id,
-                        before,
-                        generation,
-                        capture_started,
-                        diagnostics_enabled,
-                        purpose,
-                        allow_same_executable_route: true,
-                        fallback: "exact_window_wgc_after_visible_overlap",
-                    }) {
-                        return Ok(capture);
+                    let can_try_wgc = visible_error.code == ComputerUseErrorCode::CaptureFailed
+                        && visible_error
+                            .details
+                            .as_ref()
+                            .and_then(|details| details.capture.as_ref())
+                            .is_some_and(|capture| {
+                                matches!(
+                                    capture.reason,
+                                    ComputerUseCaptureReason::RootOverlap
+                                        | ComputerUseCaptureReason::TargetOutsideDesktop
+                                )
+                            });
+                    if can_try_wgc {
+                        if let Ok(capture) =
+                            capture_exact_wgc_content(ExactWgcCaptureRequest {
+                                process_id,
+                                window_id,
+                                before,
+                                generation,
+                                capture_started,
+                                diagnostics_enabled,
+                                purpose,
+                                allow_same_executable_route: true,
+                                fallback: "exact_window_wgc_after_visible_overlap",
+                            })
+                        {
+                            return Ok(capture);
+                        }
                     }
                     visible_error.message = format!(
                         "visible exact-window crop failed; exact WGC fallback failed: {}",
@@ -706,7 +724,8 @@ pub(super) async fn capture_exact_window_with_diagnostics(
             fallback: "exact_window_wgc",
         }) {
             Ok(capture) => return Ok(capture),
-            Err(error) => error.to_string(),
+            Err(error) if error.code == ComputerUseErrorCode::CaptureFailed => error.message,
+            Err(error) => return Err(error),
         };
         let visible = capture_verified_visible_bgra(process_id, window_id, before, true).map_err(
             |mut error| {
