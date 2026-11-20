@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.20.0](https://github.com/dcc-mcp/dcc-cua/compare/v1.19.5...v1.20.0) (2026-11-20)
+
+
+### Features
+
+* **capture:** define bounded frame quality evidence ([547b8bd](https://github.com/dcc-mcp/dcc-cua/commit/547b8bdb381df66102bb79265596b7309dd72a57))
+* define bounded frame quality evidence ([73fceb7](https://github.com/dcc-mcp/dcc-cua/commit/73fceb7270b817588c7b068daf219fa03d60c781))
+
+
+### Bug Fixes
+
+* **browser:** inspect native consent within existing agent authority ([53a393d](https://github.com/dcc-mcp/dcc-cua/commit/53a393d0386f00df06a8341de568556aabdaaedb))
+* **browser:** pin native consent bubble classification ([98600d6](https://github.com/dcc-mcp/dcc-cua/commit/98600d6bd917d824c7f2c2e0d0da73688a139f07))
+* **browser:** prefer exact owned consent inspection ([9fe0540](https://github.com/dcc-mcp/dcc-cua/commit/9fe05408b010ff5d2ac72419d5a8131feac695cb))
+* **browser:** preserve consent classification across task preparation ([3b1ae94](https://github.com/dcc-mcp/dcc-cua/commit/3b1ae945b41fb380c2dc34b2a03d7cde013e2e39))
+* preserve SDK screenshot failure diagnostics ([e1a83ec](https://github.com/dcc-mcp/dcc-cua/commit/e1a83ec93b25e5ceab7f3484e957c94d9d275295))
+
 ## [1.19.5](https://github.com/dcc-mcp/dcc-cua/compare/v1.19.4...v1.19.5) (2026-11-17)
 
 
