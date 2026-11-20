@@ -457,12 +457,15 @@ On Windows, for a live custom-rendered window whose accessibility provider is mi
 unresponsive, use `snapshot --pid PID --window-id HWND --pixels-only`. This
 explicit mode does not start accessibility. It inventories the native window,
 captures only that PID/HWND, and recaptures identity, bounds, DPI, visibility,
-occlusion, and capture generation before publishing. Movement, resize, HWND or
-PID reuse, minimization, hiding, occlusion, or cross-window substitution fails
-closed. It never returns or crops a whole-desktop screenshot. A normal snapshot
-that reaches a typed bounded accessibility timeout may use the same exact-window
-capture route, but its provenance is separately labeled
-`accessibility_timeout_degraded`; explicit mode is labeled `pixels_only`.
+occlusion, and capture generation before publishing. Partial overlap uses a
+redacted exact-window crop with opaque-black rectangles for proven occluders.
+The provenance exposes the proof failure and redacted rectangles. Coordinate
+input requires an unobscured point, while semantic background actions remain
+available when their provider supports them. It never returns or crops a
+whole-desktop screenshot. A normal snapshot that reaches a typed bounded
+accessibility timeout may use the same exact-window capture route, with
+provenance labeled `accessibility_timeout_degraded`; explicit mode is labeled
+`pixels_only`.
 The manifest omits `runtime.exact_window_pixels` and the corresponding Host
 capability on macOS and Linux, where this route returns `BackendUnavailable`.
 An absent provider is labeled `accessibility_unavailable_degraded` rather than
@@ -1317,8 +1320,10 @@ Window actions accept CUA's `element_token` as an alternative to
 `element_index`; when both are supplied the token wins. They also accept
 `delivery_mode: "background" | "foreground"`. The default is `background`,
 which preserves the user's foreground and lets CUA select its accessibility or
-synthetic-event route. Use `foreground` only after CUA reports that the
-background route is unavailable.
+synthetic-event route. Background UIA receipts include
+`focus_mutation_attempted`, `foreground_changed`, and `cursor_moved`. Use
+`foreground` after CUA reports that the background route is unavailable and the
+task explicitly permits foreground input.
 
 On Windows, a foreground coordinate click revalidates the exact PID/HWND
 immediately before `SendInput`. If foreground was lost before any input was

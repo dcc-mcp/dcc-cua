@@ -285,7 +285,8 @@ impl UiaSession {
         let fence = state.fences[index].clone();
         reject_app_shell_text_target(action, &fence)?;
         let action_name = normalized_action(&action.action)?;
-        let foreground = (action.delivery_mode.as_deref() == Some("background")).then(|| {
+        let delivery_mode = action.delivery_mode.as_deref().unwrap_or("background");
+        let foreground = (delivery_mode == "background").then(|| {
             (
                 unsafe { GetForegroundWindow() } as usize,
                 self.target.process_id,
@@ -307,10 +308,16 @@ impl UiaSession {
         let raw = self.request(&payload);
         self.snapshot = None;
         self.root_activation_snapshot = None;
-        let foreground =
-            foreground.map(|(window, process_id)| restore_foreground(window, process_id));
+        let foreground = foreground.map(|(window, process_id)| {
+            let restore_attempted = foreground_restore_still_required(window, process_id);
+            (
+                window,
+                restore_attempted,
+                restore_foreground(window, process_id),
+            )
+        });
         let raw = raw?;
-        completed_action_result(&raw, foreground)
+        completed_action_result_with_evidence(&raw, delivery_mode, foreground)
     }
 
     /// One existing-worker root request after explicit semantic activation failed.
@@ -526,27 +533,53 @@ pub(crate) fn retry_read_only_after_backend_failure<T>(
     }
 }
 
+#[cfg(test)]
 pub(crate) fn completed_action_result(
     raw: &Value,
     foreground_restore: Option<Result<(), UiaError>>,
 ) -> Result<Value, UiaError> {
+    let foreground = unsafe { GetForegroundWindow() } as usize;
+    completed_action_result_with_evidence(
+        raw,
+        "background",
+        foreground_restore.map(|result| (foreground, false, result)),
+    )
+}
+
+pub(crate) fn completed_action_result_with_evidence(
+    raw: &Value,
+    delivery_mode: &str,
+    foreground_restore: Option<(usize, bool, Result<(), UiaError>)>,
+) -> Result<Value, UiaError> {
     ensure_ok(raw)?;
+    let foreground_before = foreground_restore.as_ref().map(|(window, _, _)| *window);
+    let restore_attempted = foreground_restore
+        .as_ref()
+        .is_some_and(|(_, attempted, _)| *attempted);
     let foreground_restore = match foreground_restore {
         None => Value::Null,
-        Some(Ok(())) => json!({
+        Some((_, _, Ok(()))) => json!({
             "requested": true,
             "success": true,
         }),
-        Some(Err(error)) => json!({
+        Some((_, _, Err(error))) => json!({
             "requested": true,
             "success": false,
             "message": error_detail(&error),
         }),
     };
+    let foreground_after = unsafe { GetForegroundWindow() } as usize;
+    let foreground_changed =
+        foreground_before.is_some_and(|before| before != foreground_after && foreground_after != 0);
+    let focus_mutation_attempted = restore_attempted || foreground_changed;
     Ok(json!({
         "backend": "windows_uia",
         "success": true,
         "action_executed": true,
+        "delivery_mode": delivery_mode,
+        "focus_mutation_attempted": focus_mutation_attempted,
+        "foreground_changed": foreground_changed,
+        "cursor_moved": false,
         "message": raw.get("message").cloned().unwrap_or(Value::Null),
         "control": raw.get("control").cloned().unwrap_or(Value::Null),
         "foreground_restore": foreground_restore,
