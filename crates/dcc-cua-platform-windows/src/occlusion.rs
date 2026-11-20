@@ -63,8 +63,9 @@ pub(crate) fn redact_bgra(
         for (start, next) in spans {
             let start = start.max(end);
             if next > start {
-                for pixel in
-                    pixels[(y * width + start) * 4..(y * width + next) * 4].chunks_exact_mut(4)
+                for pixel in pixels[(y * width + start) * 4..(y * width + next) * 4]
+                    .as_chunks_mut::<4>()
+                    .0
                 {
                     pixel.copy_from_slice(&[0, 0, 0, 255]);
                 }

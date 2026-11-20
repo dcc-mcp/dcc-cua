@@ -660,8 +660,8 @@ fn capture_exact_wgc_content(
                                         | ComputerUseCaptureReason::TargetOutsideDesktop
                                 )
                             });
-                    if can_try_wgc {
-                        if let Ok(capture) =
+                    if can_try_wgc
+                        && let Ok(capture) =
                             capture_exact_wgc_content(ExactWgcCaptureRequest {
                                 process_id,
                                 window_id,
@@ -673,9 +673,8 @@ fn capture_exact_wgc_content(
                                 allow_same_executable_route: true,
                                 fallback: "exact_window_wgc_after_visible_overlap",
                             })
-                        {
-                            return Ok(capture);
-                        }
+                    {
+                        return Ok(capture);
                     }
                     visible_error.message = format!(
                         "visible exact-window crop failed; exact WGC fallback failed: {}",
