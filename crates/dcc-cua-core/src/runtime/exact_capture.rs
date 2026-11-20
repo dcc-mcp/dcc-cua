@@ -494,7 +494,7 @@ pub(crate) fn capture_verified_visible_bgra(
 }
 
 #[cfg(windows)]
-fn capture_exact_wgc_content(
+struct ExactWgcCaptureRequest {
     process_id: u32,
     window_id: u64,
     before: dcc_cua_platform_windows::ExactWindowPixelEvidence,
@@ -504,7 +504,23 @@ fn capture_exact_wgc_content(
     purpose: crate::capture_diagnostics::FramePurpose,
     allow_same_executable_route: bool,
     fallback: &'static str,
+}
+
+#[cfg(windows)]
+fn capture_exact_wgc_content(
+    request: ExactWgcCaptureRequest,
 ) -> ComputerUseResult<ExactWindowCapture> {
+    let ExactWgcCaptureRequest {
+        process_id,
+        window_id,
+        before,
+        generation,
+        capture_started,
+        diagnostics_enabled,
+        purpose,
+        allow_same_executable_route,
+        fallback,
+    } = request;
     let mut capture = dcc_cua_platform_windows::PersistentWgcCapture::new(process_id, window_id)
         .map_err(|error| {
             ComputerUseError::new(ComputerUseErrorCode::CaptureFailed, error.to_string())
@@ -630,7 +646,7 @@ pub(super) async fn capture_exact_window_with_diagnostics(
             let visible = match capture_verified_visible_bgra(process_id, window_id, before, true) {
                 Ok(visible) => visible,
                 Err(mut visible_error) => {
-                    if let Ok(capture) = capture_exact_wgc_content(
+                    if let Ok(capture) = capture_exact_wgc_content(ExactWgcCaptureRequest {
                         process_id,
                         window_id,
                         before,
@@ -638,9 +654,9 @@ pub(super) async fn capture_exact_window_with_diagnostics(
                         capture_started,
                         diagnostics_enabled,
                         purpose,
-                        true,
-                        "exact_window_wgc_after_visible_overlap",
-                    ) {
+                        allow_same_executable_route: true,
+                        fallback: "exact_window_wgc_after_visible_overlap",
+                    }) {
                         return Ok(capture);
                     }
                     visible_error.message = format!(
@@ -678,7 +694,7 @@ pub(super) async fn capture_exact_window_with_diagnostics(
                 redacted_regions: visible.capture.redacted_regions,
             });
         }
-        let wgc_error = match capture_exact_wgc_content(
+        let wgc_error = match capture_exact_wgc_content(ExactWgcCaptureRequest {
             process_id,
             window_id,
             before,
@@ -686,9 +702,9 @@ pub(super) async fn capture_exact_window_with_diagnostics(
             capture_started,
             diagnostics_enabled,
             purpose,
-            false,
-            "exact_window_wgc",
-        ) {
+            allow_same_executable_route: false,
+            fallback: "exact_window_wgc",
+        }) {
             Ok(capture) => return Ok(capture),
             Err(error) => error.to_string(),
         };
