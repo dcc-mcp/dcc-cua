@@ -12,6 +12,9 @@ use dcc_cua_interrupt::{interrupt_generation, interrupt_generation_changed};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+#[cfg(any(windows, test))]
+mod input_capture;
+
 #[allow(dead_code)]
 mod theme_tokens {
     include!(concat!(env!("OUT_DIR"), "/theme_tokens.rs"));
@@ -594,8 +597,26 @@ pub struct BannerInputSuppressionGuard {
     _platform: platform::PlatformInputSuppressionGuard,
 }
 
+/// An exact renderer/cursor lease that its own capture source may borrow.
+#[cfg(windows)]
+#[must_use = "hold through native key release and final input postcheck"]
+pub struct BannerInputCaptureGuard {
+    _platform: platform::cooperative_capture::OwnedEpoch,
+}
+
 #[cfg(windows)]
 impl BannerInputSuppressionSource {
+    pub fn begin_with_capture(
+        &self,
+        process_id: u32,
+        window_handle: u64,
+    ) -> Result<BannerInputCaptureGuard, IndicatorError> {
+        Ok(BannerInputCaptureGuard {
+            _platform: self
+                .platform
+                .begin_with_capture(process_id, window_handle)?,
+        })
+    }
     pub fn validate_active(&self) -> Result<(), IndicatorError> {
         self.platform.validate_active()
     }
@@ -611,7 +632,8 @@ impl BannerInputSuppressionSource {
     }
 }
 
-/// Cloneable capture lease source; it does not own or extend a control session.
+/// Cloneable live-capture lease source; it does not extend a control session.
+/// Revalidate with `validate_active` after readback and before publication.
 #[derive(Clone)]
 pub struct BannerCaptureExclusionSource {
     platform: platform::PlatformCaptureExclusionSource,

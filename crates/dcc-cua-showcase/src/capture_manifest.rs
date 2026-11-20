@@ -68,6 +68,10 @@ impl CaptureManifest {
             "schema": "dcc-cua-recorded-frame-v1", "kind": "frame", "media_sample_index": sample_index,
             "segment_index": segment_index, "media_start_ms": media_start_ms,
             "source_sequence": frame.sequence(), "captured_at_ms": frame.captured_at_ms(),
+            "capture_time_semantics": match frame.provenance() {
+                super::FrameCaptureProvenance::NativeExactWindow(proof) if proof.wgc_timing.is_some() => "wgc_compositor_clock",
+                _ => "producer_timestamp",
+            },
             "source_width": source_width, "source_height": source_height,
             "encoded_width": width, "encoded_height": height,
             "source_to_encoded_scale": {"x_numerator": width, "x_denominator": source_width,

@@ -212,6 +212,9 @@ fn setup(pid: u32) {
     restores.pending.clear();
     restores.deferred.clear();
 }
+fn begin_capture(active: &AtomicBool) -> Result<Guard, IndicatorError> {
+    begin_with_gate(active, CrossProcessGate::acquire()?)
+}
 fn flush_queued_restores() {
     let queued = std::mem::take(&mut *QUEUED_RESTORES.lock().unwrap());
     for raw in queued {
@@ -226,7 +229,7 @@ fn visible(raw: usize) -> bool {
 fn owned_cursor_success_restores_on_guard_drop() {
     let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     setup(std::process::id());
-    let guard = capture_exclusion::begin(&AtomicBool::new(true)).expect("owned overlay exclusion");
+    let guard = begin_capture(&AtomicBool::new(true)).expect("owned overlay exclusion");
     assert!(!visible(55));
     drop(guard);
     assert!(visible(55));
@@ -569,7 +572,7 @@ fn idle_host_cursor_watcher_hides_and_restores_only_its_registered_overlay() {
 fn foreign_same_class_window_is_not_hidden_and_capture_is_refused() {
     let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     setup(std::process::id().wrapping_add(1));
-    let result = capture_exclusion::begin(&AtomicBool::new(true));
+    let result = begin_capture(&AtomicBool::new(true));
     assert!(
         visible(55),
         "foreign same-class ordinary root must never be hidden"
@@ -585,7 +588,7 @@ fn same_process_unregistered_cursor_title_is_not_authority() {
     let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     setup(std::process::id());
     WINDOWS.lock().unwrap()[0].title = "Cua.AgentCursorOverlay.other-consumer".into();
-    let result = capture_exclusion::begin(&AtomicBool::new(true));
+    let result = begin_capture(&AtomicBool::new(true));
     assert!(visible(55));
     assert!(matches!(
         result,
@@ -597,7 +600,7 @@ fn same_process_unregistered_cursor_title_is_not_authority() {
 fn restoration_revalidates_registered_title_on_the_same_window() {
     let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     setup(std::process::id());
-    let guard = capture_exclusion::begin(&AtomicBool::new(true)).unwrap();
+    let guard = begin_capture(&AtomicBool::new(true)).unwrap();
     WINDOWS.lock().unwrap()[0].title = "unregistered".into();
     drop(guard);
     assert!(
@@ -624,7 +627,7 @@ fn assert_partial_exclusion_restores_owned_cursor(stop_after_hide: bool) {
         }
         state().acknowledged.store(1, Ordering::Release);
     });
-    let result = capture_exclusion::begin(&ACTIVE);
+    let result = begin_capture(&ACTIVE);
     presenter.join().unwrap();
     drop(registration);
     assert!(matches!(
@@ -723,7 +726,7 @@ fn enumeration_error_after_owned_hide_restores_before_returning_error() {
         title: "native-query-failure".into(),
         visible: true,
     });
-    let result = capture_exclusion::begin(&ACTIVE);
+    let result = begin_capture(&ACTIVE);
     assert!(result.is_err());
     assert!(visible(55));
     assert!(visible(88));
@@ -734,7 +737,27 @@ fn unresponsive_registered_title_refuses_capture_without_hiding() {
     let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     setup(std::process::id());
     TITLE_UNRESPONSIVE.store(true, Ordering::Release);
-    let result = capture_exclusion::begin(&ACTIVE);
+    let result = begin_capture(&ACTIVE);
     assert!(result.is_err());
     assert!(visible(55));
+}
+
+#[rstest]
+fn input_capture_checks_peer_visibility_without_hiding_or_signalling() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    setup(std::process::id());
+    assert!(confirm_overlays_hidden().is_err());
+    assert!(visible(55));
+    assert_eq!(ASYNC_HIDE_REQUESTS.load(Ordering::Acquire), 0);
+    let input = capture_exclusion::begin_input_cursor(&ACTIVE).unwrap();
+    assert!(confirm_overlays_hidden().is_ok());
+    WINDOWS.lock().unwrap().push(Window {
+        raw: 77, pid: std::process::id().wrapping_add(1), class: "DccCuaControlBanner",
+        title: "peer".into(), visible: true,
+    });
+    assert!(confirm_overlays_hidden().is_err());
+    assert!(visible(77));
+    assert_eq!(CAPTURE_REQUESTS.load(Ordering::Acquire), 0);
+    drop(input);
+    assert!(visible(55) && visible(77));
 }

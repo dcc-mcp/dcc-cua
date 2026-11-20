@@ -623,6 +623,7 @@ fn validate_recipe(recipe: &mut Recipe) -> Result<(), String> {
         allowed_browser_origins: Vec::new(),
         browser_scope: None,
         recording_output_dir: None,
+        recording_audio_grant: None,
         capture_preparation: None,
         expires_at_unix_ms: unix_ms().saturating_add(60_000),
     }
