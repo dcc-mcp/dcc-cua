@@ -533,19 +533,6 @@ pub(crate) fn retry_read_only_after_backend_failure<T>(
     }
 }
 
-#[cfg(test)]
-pub(crate) fn completed_action_result(
-    raw: &Value,
-    foreground_restore: Option<Result<(), UiaError>>,
-) -> Result<Value, UiaError> {
-    let foreground = unsafe { GetForegroundWindow() } as usize;
-    completed_action_result_with_evidence(
-        raw,
-        "background",
-        foreground_restore.map(|result| (foreground, false, result)),
-    )
-}
-
 pub(crate) fn completed_action_result_with_evidence(
     raw: &Value,
     delivery_mode: &str,

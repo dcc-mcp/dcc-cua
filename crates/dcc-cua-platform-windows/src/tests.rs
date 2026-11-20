@@ -945,10 +945,24 @@ fn dwm_capture_rect_is_already_physical_for_every_target_awareness_and_scale(
 use super::PersistentWgcCapture;
 #[cfg(windows)]
 use super::windows::{
-    ActivationRaiseMode, activation_raise_mode, completed_action_result,
-    exact_window_available_for_activation, exact_window_ownership_matches,
-    foreground_restore_required, input_gated_window_mutation, window_frame_matches,
+    ActivationRaiseMode, activation_raise_mode, exact_window_available_for_activation,
+    exact_window_ownership_matches, foreground_restore_required, input_gated_window_mutation,
+    window_frame_matches,
 };
+
+#[cfg(windows)]
+fn completed_action_result(
+    raw: &serde_json::Value,
+    foreground_restore: Option<Result<(), super::UiaError>>,
+) -> Result<serde_json::Value, super::UiaError> {
+    let foreground =
+        unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow() } as usize;
+    super::windows::completed_action_result_with_evidence(
+        raw,
+        "background",
+        foreground_restore.map(|result| (foreground, false, result)),
+    )
+}
 
 #[cfg(windows)]
 #[rstest]
