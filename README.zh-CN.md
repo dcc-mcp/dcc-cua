@@ -264,7 +264,10 @@ Windows MSVC 构建保留 Console 子系统，并嵌入 detached 控制台分配
 `snapshot --pid PID --window-id HWND --pixels-only`。该显式模式不会启动
 accessibility provider，只会捕获指定 PID/HWND；发布前后会复核窗口身份、原生边界、
 DPI、可见性、遮挡和 capture generation。窗口移动、缩放、PID/HWND 复用、最小化、
-隐藏、遮挡或跨窗口替换都会 fail closed，且绝不会返回或裁剪整桌面截图。普通 snapshot
+隐藏、跨窗口替换都会 fail closed。部分遮挡会使用精确窗口裁剪，并将已证明的遮挡区域
+填充为不透明黑色。provenance 会返回遮挡证明失败信息和 redacted rectangles。坐标输入
+要求目标点无遮挡，支持后台语义 provider 的动作可以继续执行。绝不会返回或裁剪整桌面截图。
+普通 snapshot
 遇到 typed bounded accessibility timeout 时可安全降级到同一精确窗口捕获路径，但
 provenance 会标记为 `accessibility_timeout_degraded`；显式模式标记为 `pixels_only`。
 macOS 与 Linux 的 manifest 不会广告 `runtime.exact_window_pixels` 或对应 Host capability，
@@ -319,7 +322,9 @@ Windows 全局 UIA 枚举超时时，如果 UIA 权限仍有效，`semantic` 会
 
 Windows 后台 UIA 动作可能已经成功，但系统拒绝恢复原前台窗口，或原窗口在动作中
 消失。此时结果仍为成功并带有 `action_executed: true`，恢复失败单独记录在
-`foreground_restore.success: false`。调用方不得重试输入，应重新观察并验证应用状态。
+`foreground_restore.success: false`。后台 UIA receipt 还会报告
+`focus_mutation_attempted`、`foreground_changed` 和 `cursor_moved`。调用方应重新观察并验证
+应用状态。
 UIA worker 脚本通过私有 stdin 管道直接加载，不再写入同用户可修改的临时文件，也不再
 使用 `ExecutionPolicy Bypass`。readiness、请求和响应都携带并校验协议版本；PowerShell
 中的策略分级、敏感目标和 stale fence 判定由夹具驱动的行为测试覆盖。
