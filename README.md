@@ -460,7 +460,8 @@ captures only that PID/HWND, and recaptures identity, bounds, DPI, visibility,
 occlusion, and capture generation before publishing. Partial overlap uses a
 redacted exact-window crop with opaque-black rectangles for proven occluders.
 The provenance exposes the proof failure and redacted rectangles. Coordinate
-input requires an unobscured point, while semantic background actions remain
+input requires an unobscured point. Partial occlusion may yield exact-HWND WGC
+content without redacted rectangles, or a redacted desktop crop; semantic background actions remain
 available when their provider supports them. It never returns or crops a
 whole-desktop screenshot. A normal snapshot that reaches a typed bounded
 accessibility timeout may use the same exact-window capture route, with

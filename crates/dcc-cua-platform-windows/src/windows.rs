@@ -286,12 +286,7 @@ impl UiaSession {
         reject_app_shell_text_target(action, &fence)?;
         let action_name = normalized_action(&action.action)?;
         let delivery_mode = action.delivery_mode.as_deref().unwrap_or("background");
-        let foreground = (delivery_mode == "background").then(|| {
-            (
-                unsafe { GetForegroundWindow() } as usize,
-                self.target.process_id,
-            )
-        });
+        let foreground_before = unsafe { GetForegroundWindow() } as usize;
         let payload = json!({
             "mode": "act",
             "scope": self.scope(true),
@@ -308,16 +303,15 @@ impl UiaSession {
         let raw = self.request(&payload);
         self.snapshot = None;
         self.root_activation_snapshot = None;
-        let foreground = foreground.map(|(window, process_id)| {
-            let restore_attempted = foreground_restore_still_required(window, process_id);
-            (
-                window,
-                restore_attempted,
-                restore_foreground(window, process_id),
-            )
-        });
+        let foreground = if delivery_mode == "background" {
+            let (restore_attempted, restore_result) =
+                restore_foreground(foreground_before, self.target.process_id);
+            Some((foreground_before, restore_attempted, restore_result))
+        } else {
+            None
+        };
         let raw = raw?;
-        completed_action_result_with_evidence(&raw, delivery_mode, foreground)
+        completed_action_result_with_evidence(&raw, delivery_mode, foreground_before, foreground)
     }
 
     /// One existing-worker root request after explicit semantic activation failed.
@@ -536,10 +530,10 @@ pub(crate) fn retry_read_only_after_backend_failure<T>(
 pub(crate) fn completed_action_result_with_evidence(
     raw: &Value,
     delivery_mode: &str,
+    foreground_before: usize,
     foreground_restore: Option<(usize, bool, Result<(), UiaError>)>,
 ) -> Result<Value, UiaError> {
     ensure_ok(raw)?;
-    let foreground_before = foreground_restore.as_ref().map(|(window, _, _)| *window);
     let restore_attempted = foreground_restore
         .as_ref()
         .is_some_and(|(_, attempted, _)| *attempted);
@@ -557,8 +551,9 @@ pub(crate) fn completed_action_result_with_evidence(
     };
     let foreground_after = unsafe { GetForegroundWindow() } as usize;
     let foreground_changed =
-        foreground_before.is_some_and(|before| before != foreground_after && foreground_after != 0);
-    let focus_mutation_attempted = restore_attempted || foreground_changed;
+        foreground_before != 0 && foreground_before != foreground_after && foreground_after != 0;
+    let uia_focus_attempted = raw.get("focus_attempted").and_then(Value::as_bool) == Some(true);
+    let focus_mutation_attempted = uia_focus_attempted || restore_attempted || foreground_changed;
     Ok(json!({
         "backend": "windows_uia",
         "success": true,
@@ -629,17 +624,17 @@ fn activation_diagnostic(
     }
 }
 
-fn restore_foreground(expected: usize, controlled_process_id: u32) -> Result<(), UiaError> {
+fn restore_foreground(expected: usize, controlled_process_id: u32) -> (bool, Result<(), UiaError>) {
     if !foreground_restore_still_required(expected, controlled_process_id) {
-        return Ok(());
+        return (false, Ok(()));
     }
     let expected = expected as windows_sys::Win32::Foundation::HWND;
     if expected.is_null() || unsafe { IsWindow(expected) } == 0 {
-        return Err(background_delivery_error());
+        return (false, Err(background_delivery_error()));
     }
     unsafe { SetForegroundWindow(expected) };
     if !foreground_restore_still_required(expected as usize, controlled_process_id) {
-        return Ok(());
+        return (true, Ok(()));
     }
 
     let current = unsafe { GetForegroundWindow() };
@@ -674,9 +669,9 @@ fn restore_foreground(expected: usize, controlled_process_id: u32) -> Result<(),
         }
     }
     if preserved {
-        Ok(())
+        (true, Ok(()))
     } else {
-        Err(background_delivery_error())
+        (true, Err(background_delivery_error()))
     }
 }
 

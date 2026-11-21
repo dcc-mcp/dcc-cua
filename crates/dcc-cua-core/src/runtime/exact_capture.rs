@@ -578,6 +578,9 @@ fn capture_exact_wgc_content(
         &after,
         ExactWindowPixelCaptureMode::WindowContent,
     )?;
+    let final_state = dcc_cua_platform_windows::exact_window_native_state(process_id, window_id)
+        .map_err(|error| ComputerUseError::new(ComputerUseErrorCode::InvalidTarget, error.to_string()))?;
+    validate_live_final_native_state(&after, &final_state)?;
     let geometry = dcc_cua_platform_windows::resolve_exact_wgc_geometry(
         dcc_cua_platform_windows::NativeWindowGeometry {
             win32_bounds: before.bounds,
@@ -660,9 +663,8 @@ fn capture_exact_wgc_content(
                                         | ComputerUseCaptureReason::TargetOutsideDesktop
                                 )
                             });
-                    if can_try_wgc
-                        && let Ok(capture) =
-                            capture_exact_wgc_content(ExactWgcCaptureRequest {
+                    if can_try_wgc {
+                        match capture_exact_wgc_content(ExactWgcCaptureRequest {
                                 process_id,
                                 window_id,
                                 before,
@@ -670,16 +672,26 @@ fn capture_exact_wgc_content(
                                 capture_started,
                                 diagnostics_enabled,
                                 purpose,
+                                // PersistentWgcCapture was created from this exact HWND before
+                                // the frame and is fenced again by native instance/geometry
+                                // evidence, so this narrowly-scoped fallback is safe even when
+                                // the conservative route classifier sees another same-image root.
                                 allow_same_executable_route: true,
                                 fallback: "exact_window_wgc_after_visible_overlap",
-                            })
-                    {
-                        return Ok(capture);
+                        }) {
+                            Ok(capture) => return Ok(capture),
+                            Err(error) if error.code == ComputerUseErrorCode::InvalidTarget => {
+                                return Err(error)
+                            }
+                            Err(_) => {}
+                        }
                     }
-                    visible_error.message = format!(
-                        "visible exact-window crop failed; exact WGC fallback failed: {}",
-                        visible_error.message
-                    );
+                    if can_try_wgc {
+                        visible_error.message = format!(
+                            "visible exact-window crop failed; exact WGC fallback failed: {}",
+                            visible_error.message
+                        );
+                    }
                     return Err(visible_error);
                 }
             };

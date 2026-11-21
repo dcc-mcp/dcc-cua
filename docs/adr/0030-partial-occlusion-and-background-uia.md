@@ -32,6 +32,13 @@ Windows UIA actions default to background delivery. Their receipts include
 
 - A smaller window can cover a DCC window while the agent continues reading
   target content that remains proven.
+- When the exact WGC route is available, partial overlap may still publish
+  HWND-bound content without redacted rectangles; otherwise the desktop crop
+  is redacted and publishes the proven occluder rectangles.
+- The same-executable WGC exception is limited to a session created from the
+  requested HWND and revalidated with exact native instance, geometry, DPI,
+  frame-size, and capture-generation fences; unbound WGC callers remain
+  fail-closed.
 - Occluded pixels cannot be mistaken for DCC pixels.
 - Semantic actions can preserve the user's active application when provider
   behavior supports background execution.

@@ -433,3 +433,5 @@ Latest 身份没有被扩展 release 污染。
 CUA SDK revision 固定在 `Cargo.toml` 和 `Cargo.lock`。发布完整性检查不会操作用户桌面，
 也不能证明真实用户环境中的 raw-input 行为。真实截图和输入仍要求当前操作系统具有原生
 桌面权限、交互式会话和独立的运行时验收。
+部分遮挡时，观察结果可能是无 redacted rectangles 的 exact-HWND WGC 内容，
+也可能是带遮挡区域的 redacted desktop crop；坐标输入仍要求新鲜的无遮挡点证明。
