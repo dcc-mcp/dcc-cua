@@ -28,7 +28,13 @@ fn partial_overlay_redacts_foreign_pixels_without_changing_target_coordinates() 
 fn complete_union_is_not_mistaken_for_observable_target_pixels() {
     let mut pixels = vec![9; 4 * 3 * 4];
     assert!(!redact_bgra(&mut pixels, [0, 0, 4, 3], &[[0, 0, 3, 3], [2, 0, 2, 3]]).unwrap());
-    assert!(pixels.chunks_exact(4).all(|p| p == [0, 0, 0, 255]));
+    assert!(
+        pixels
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .all(|p| p == &[0, 0, 0, 255])
+    );
 }
 
 #[rstest]
