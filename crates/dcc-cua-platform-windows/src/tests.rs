@@ -960,6 +960,7 @@ fn completed_action_result(
     super::windows::completed_action_result_with_evidence(
         raw,
         "background",
+        foreground,
         foreground_restore.map(|result| (foreground, false, result)),
     )
 }

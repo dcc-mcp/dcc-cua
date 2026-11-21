@@ -288,7 +288,8 @@ pub(crate) fn document_for_platform(exact_window_pixels_available: bool) -> Valu
                     "verified_visible_desktop_crop",
                 ],
                 "partial_occlusion": {
-                    "observation": "redacted_desktop_crop",
+                    "observation": "exact_window_wgc_or_redacted_desktop_crop",
+                    "possible_results": ["exact_window_wgc", "redacted_desktop_crop"],
                     "coordinate_input": "requires_unobscured_point",
                     "diagnostic_fields": ["desktop_proof_failure", "redacted_rectangles"],
                 },

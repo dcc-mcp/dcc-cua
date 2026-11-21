@@ -41,9 +41,11 @@ struct RootEnumeration {
 /// Decide whether WGC pixels can be attributed solely from one exact HWND.
 ///
 /// WGC frames do not expose a source HWND. When another visible top-level
-/// window belongs to the same executable, the request identity cannot prove
-/// the returned frame identity, so callers must use independently verified
-/// visible pixels or fail closed.
+/// window belongs to the same executable, callers must use independently
+/// verified visible pixels or fail closed unless the WGC session was created
+/// from the exact HWND and retains the native instance/geometry fences for the
+/// whole capture. The core exact-window fallback is the sole narrowly-scoped
+/// caller of that latter exception.
 pub fn exact_window_capture_route(
     process_id: u32,
     window_handle: u64,
