@@ -33,7 +33,7 @@ fn request() -> InProcessQtCaptureRequest {
     }
 }
 
-#[test]
+#[rstest]
 fn request_requires_the_capability_target_and_bounded_deadline() {
     let capability = capability();
     assert!(request().validate(&capability).is_ok());
@@ -70,7 +70,7 @@ fn invalid_queue_policy_is_rejected(#[case] max_depth: u32, #[case] max_command_
     );
 }
 
-#[test]
+#[rstest]
 fn widget_identity_rejects_empty_or_ambiguous_fields() {
     let mut widget = request().widget;
     widget.widget_path.clear();
@@ -87,7 +87,7 @@ fn widget_identity_rejects_empty_or_ambiguous_fields() {
     );
 }
 
-#[test]
+#[rstest]
 fn capability_and_receipt_keep_typed_wire_values() {
     let capability = capability();
     let encoded = serde_json::to_value(&capability).unwrap();
