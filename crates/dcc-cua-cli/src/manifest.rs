@@ -282,6 +282,17 @@ pub(crate) fn document_for_platform(exact_window_pixels_available: bool) -> Valu
                 "activation_scope": "same_exact_pid_hwnd_session",
                 "failure_details": "content_free_native_capture_proof",
                 "whole_desktop_fallback": false,
+                "observation_routes": [
+                    "exact_window_wgc",
+                    "redacted_desktop_crop",
+                    "verified_visible_desktop_crop",
+                ],
+                "partial_occlusion": {
+                    "observation": "exact_window_wgc_or_redacted_desktop_crop",
+                    "possible_results": ["exact_window_wgc", "redacted_desktop_crop"],
+                    "coordinate_input": "requires_unobscured_point",
+                    "diagnostic_fields": ["desktop_proof_failure", "redacted_rectangles"],
+                },
                 "publication_fences": ["process_id", "window_handle", "bounds", "dpi", "capture_generation", "visibility", "occlusion"],
                 "degraded_mode": "accessibility_timeout_degraded",
                 "unavailable_mode": "accessibility_unavailable_degraded",

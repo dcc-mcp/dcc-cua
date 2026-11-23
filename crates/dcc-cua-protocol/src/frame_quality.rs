@@ -77,7 +77,7 @@ pub fn assess_bgra(
         return Err(FrameDataError::InvalidLength);
     }
     let mut histograms = [[0_u64; 256]; 3];
-    for pixel in bgra.chunks_exact(4) {
+    for pixel in bgra.as_chunks::<4>().0 {
         for (channel, value) in [pixel[2], pixel[1], pixel[0]].into_iter().enumerate() {
             histograms[channel][usize::from(value)] += 1;
         }
