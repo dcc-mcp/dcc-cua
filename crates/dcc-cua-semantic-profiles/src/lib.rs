@@ -951,6 +951,9 @@ pub fn builtin_profiles() -> &'static [SemanticProfile] {
                 include_str!("../profiles/maya-2024.json"),
                 include_str!("../profiles/3dsmax.json"),
                 include_str!("../profiles/3dsmax-2024.json"),
+                include_str!("../profiles/blender.json"),
+                include_str!("../profiles/houdini.json"),
+                include_str!("../profiles/nuke.json"),
                 include_str!("../profiles/fab.json"),
                 include_str!("../profiles/steam-chromium.json"),
             ]

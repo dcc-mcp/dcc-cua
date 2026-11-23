@@ -1,0 +1,189 @@
+{
+  "schema_version": 3,
+  "id": "houdini",
+  "profile_version": "1.0.0",
+  "application": {
+    "family": "sidefx-houdini",
+    "versions": []
+  },
+  "display_name": "SideFX Houdini",
+  "selectors": [
+    {
+      "application_names": [
+        "houdini.exe"
+      ],
+      "window_title_contains": [
+        "Houdini"
+      ],
+      "localized_window_title_contains": {
+        "zh-CN": [
+          "SideFX Houdini"
+        ],
+        "ja-JP": [
+          "SideFX Houdini"
+        ]
+      }
+    }
+  ],
+  "surfaces": [
+    {
+      "id": "home",
+      "label": "SideFX Houdini start screen",
+      "role": "home",
+      "route": "accessibility",
+      "targets": [
+        {
+          "id": "new_scene",
+          "label": "Create a new scene",
+          "role": "button",
+          "names": [
+            "New",
+            "New Scene"
+          ],
+          "localized_names": {
+            "zh-CN": [
+              "新建",
+              "新建场景"
+            ],
+            "ja-JP": [
+              "新規",
+              "新規シーン"
+            ]
+          },
+          "supported_actions": [
+            "click"
+          ]
+        },
+        {
+          "id": "open_scene",
+          "label": "Open a scene",
+          "role": "button",
+          "names": [
+            "Open",
+            "Open Scene"
+          ],
+          "localized_names": {
+            "zh-CN": [
+              "打开",
+              "打开场景"
+            ],
+            "ja-JP": [
+              "開く",
+              "シーンを開く"
+            ]
+          },
+          "supported_actions": [
+            "click"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "surface_1",
+      "label": "Network Editor",
+      "role": "node_editor",
+      "route": "accessibility",
+      "targets": [
+        {
+          "id": "node_graph",
+          "label": "Network Editor",
+          "role": "node_editor",
+          "names": [
+            "Network Editor"
+          ],
+          "supported_actions": [
+            "select",
+            "open",
+            "connect"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "surface_2",
+      "label": "Viewport",
+      "role": "viewport",
+      "route": "accessibility",
+      "targets": [
+        {
+          "id": "active_view",
+          "label": "Viewport",
+          "role": "viewport",
+          "names": [
+            "Viewport"
+          ],
+          "supported_actions": [
+            "click",
+            "drag",
+            "frame_selection"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "surface_3",
+      "label": "Parameters",
+      "role": "property_editor",
+      "route": "accessibility",
+      "targets": [
+        {
+          "id": "property_field",
+          "label": "Parameters",
+          "role": "property_editor",
+          "names": [
+            "Parameters"
+          ],
+          "supported_actions": [
+            "set_value",
+            "toggle"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "dialog",
+      "label": "SideFX Houdini dialog",
+      "role": "dialog",
+      "route": "os_native_dialog",
+      "targets": [
+        {
+          "id": "file_dialog",
+          "label": "File dialog",
+          "role": "dialog",
+          "names": [
+            "Open",
+            "Save As"
+          ],
+          "localized_names": {
+            "zh-CN": [
+              "打开",
+              "另存为"
+            ],
+            "ja-JP": [
+              "開く",
+              "名前を付けて保存"
+            ]
+          },
+          "supported_actions": [
+            "inspect",
+            "set_value",
+            "accept",
+            "dismiss"
+          ]
+        }
+      ]
+    }
+  ],
+  "settings": {
+    "dialog_style": "os_native",
+    "preferred_route": "accessibility",
+    "default_locale": "en",
+    "destructive_confirmation_required": true
+  },
+  "binding": {
+    "require_exact_pid": true,
+    "require_exact_window_handle": true,
+    "require_window_version_match": true,
+    "fail_closed_on_ambiguity": true
+  }
+}

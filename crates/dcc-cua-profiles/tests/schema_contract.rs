@@ -62,7 +62,16 @@ fn published_profile_schemas_accept_every_repository_example() {
         "ue.json",
         &mut profiles,
     );
-    for name in ["maya.json", "maya-2024.json", "fab.json"] {
+    for name in [
+        "maya.json",
+        "maya-2024.json",
+        "3dsmax.json",
+        "3dsmax-2024.json",
+        "blender.json",
+        "houdini.json",
+        "nuke.json",
+        "fab.json",
+    ] {
         profiles.push(
             root.join("crates/dcc-cua-semantic-profiles/profiles")
                 .join(name),

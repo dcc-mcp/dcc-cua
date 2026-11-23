@@ -5,7 +5,7 @@ use serde_json::json;
 #[rstest]
 fn builtins_are_valid_and_have_independent_ids() {
     let profiles = builtin_profiles();
-    assert_eq!(profiles.len(), 7);
+    assert_eq!(profiles.len(), 10);
     assert_eq!(
         profiles
             .iter()
@@ -17,6 +17,9 @@ fn builtins_are_valid_and_have_independent_ids() {
             "maya-2024",
             "3dsmax",
             "3dsmax-2024",
+            "blender",
+            "houdini",
+            "nuke",
             "fab",
             "steam-chromium"
         ]
@@ -137,6 +140,24 @@ fn max_profiles_recognize_common_versions_and_share_dcc_surface_vocabulary() {
     for surface in common_surfaces {
         assert!(maya.surface(surface).is_some());
         assert!(versioned.surface(surface).is_some());
+    }
+}
+
+#[rstest]
+fn additional_dcc_profiles_match_exact_apps_and_share_common_surfaces() {
+    let cases = [
+        ("blender", "blender.exe", "Blender 4.5 - scene.blend"),
+        ("houdini", "houdini.exe", "Houdini 20.5 - hip"),
+        ("nuke", "nuke.exe", "Nuke 15.1 - comp.nk"),
+    ];
+    for (id, app, title) in cases {
+        let profile = builtin_profile(id).unwrap_or_else(|| panic!("{id} profile"));
+        assert!(profile.matches_window(app, title));
+        assert!(!profile.matches_window("notepad.exe", title));
+        assert_eq!(profile.settings.dialog_style, DialogStyle::OsNative);
+        assert!(profile.surface("viewport").is_some() || profile.surface("surface_1").is_some());
+        assert!(profile.surface("dialog").is_some());
+        assert!(profile.binding.fail_closed_on_ambiguity);
     }
 }
 
