@@ -131,11 +131,22 @@ impl ProfileCatalog {
     }
 
     #[must_use]
-    pub fn match_window(&self, application_name: &str, window_title: &str) -> ProfileMatch {
+    pub fn match_window(
+        &self,
+        application_name: &str,
+        window_title: &str,
+        window_version: Option<&str>,
+    ) -> ProfileMatch {
         let mut candidates = self
             .profiles
             .iter()
-            .filter(|entry| entry.profile.matches_window(application_name, window_title))
+            .filter(|entry| {
+                entry.profile.matches_discovery_window(
+                    application_name,
+                    window_title,
+                    window_version,
+                )
+            })
             .map(|entry| {
                 let version_specific = !entry.profile.application.versions.is_empty();
                 (entry, version_specific)

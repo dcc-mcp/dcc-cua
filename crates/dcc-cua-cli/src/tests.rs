@@ -519,9 +519,10 @@ fn target_binding_requires_the_profile_selector_to_match() {
 fn profile_matching_prefers_a_unique_host_version_variant() {
     let store_root = tempfile::tempdir().expect("empty Profile store");
     let store = dcc_cua_profiles::ProfileStore::open(store_root.path()).expect("Profile store");
-    let result = store
-        .catalog()
-        .match_window("maya.exe", "Autodesk Maya 2024: scene.ma");
+    let result =
+        store
+            .catalog()
+            .match_window("maya.exe", "Autodesk Maya 2024: scene.ma", Some("2024"));
 
     assert_eq!(result.selected.as_deref(), Some("maya-2024"));
     assert!(!result.ambiguous);
@@ -533,9 +534,11 @@ fn profile_matching_prefers_a_unique_host_version_variant() {
 fn profile_matching_prefers_unique_3ds_max_version_variant() {
     let store_root = tempfile::tempdir().expect("empty Profile store");
     let store = dcc_cua_profiles::ProfileStore::open(store_root.path()).expect("Profile store");
-    let result = store
-        .catalog()
-        .match_window("3dsmax.exe", "Autodesk 3ds Max 2024 - scene.max");
+    let result = store.catalog().match_window(
+        "3dsmax.exe",
+        "Autodesk 3ds Max 2024 - scene.max",
+        Some("2024"),
+    );
 
     assert_eq!(result.selected.as_deref(), Some("3dsmax-2024"));
     assert!(!result.ambiguous);

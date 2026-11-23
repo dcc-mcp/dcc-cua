@@ -608,15 +608,41 @@ impl SemanticProfile {
             && (!self.binding.require_exact_pid || process_id.is_some_and(|value| value != 0))
             && (!self.binding.require_exact_window_handle
                 || window_handle.is_some_and(|value| value != 0))
-            && (!self.binding.require_window_version_match
-                || window_version.is_some_and(|value| !value.trim().is_empty()))
             && (self.application.versions.is_empty()
+                || (!self.binding.require_window_version_match && window_version.is_none())
                 || window_version.is_some_and(|version| {
                     self.application
                         .versions
                         .iter()
                         .any(|expected| contains_version_token(version, expected))
                 }))
+    }
+
+    /// Match a window for discovery without requiring Host-owned exact-window
+    /// capabilities. Version evidence, when supplied, must agree with the
+    /// profile; without it the native process/title selectors remain
+    /// authoritative. Actions must still pass `matches_bound_window`.
+    #[must_use]
+    pub fn matches_discovery_window(
+        &self,
+        application_name: &str,
+        window_title: &str,
+        window_version: Option<&str>,
+    ) -> bool {
+        if !self.matches_window(application_name, window_title) {
+            return false;
+        }
+        match window_version {
+            Some(version) if !version.trim().is_empty() => {
+                self.application.versions.is_empty()
+                    || self
+                        .application
+                        .versions
+                        .iter()
+                        .any(|expected| contains_version_token(version, expected))
+            }
+            _ => true,
+        }
     }
 
     #[must_use]

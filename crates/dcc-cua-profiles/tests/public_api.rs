@@ -155,7 +155,9 @@ fn embedder_can_install_resolve_match_and_select_context_without_the_cli() {
         .expect("installed profile");
     assert_eq!(profile.id, "office");
 
-    let matched = store.catalog().match_window("office.exe", "Quarterly Plan");
+    let matched = store
+        .catalog()
+        .match_window("office.exe", "Quarterly Plan", None);
     assert_eq!(matched.selected.as_deref(), Some("office"));
     assert!(!matched.ambiguous);
 

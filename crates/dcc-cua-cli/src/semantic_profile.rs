@@ -217,12 +217,37 @@ pub(crate) fn target_matches_profile(
     let Some(target) = target else {
         return false;
     };
-    profile.matches_window(
-        target["app_name"].as_str().unwrap_or_default(),
-        target["title"].as_str().unwrap_or_default(),
-    ) || target["url"]
+    let application_name = target["app_name"].as_str().unwrap_or_default();
+    let window_title = target["title"].as_str().unwrap_or_default();
+    let process_id = target["process_id"]
+        .as_u64()
+        .and_then(|value| u32::try_from(value).ok())
+        .filter(|value| *value > 0);
+    let window_handle = target["window_handle"].as_u64().filter(|value| *value > 0);
+    let window_version = target["version"]
+        .as_str()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| {
+            target["window_version"]
+                .as_str()
+                .filter(|value| !value.trim().is_empty())
+        });
+    if target["url"]
         .as_str()
         .is_some_and(|url| profile.matches_url(url))
+    {
+        return true;
+    }
+    if process_id.is_none() && window_handle.is_none() && window_version.is_none() {
+        return profile.matches_discovery_window(application_name, window_title, None);
+    }
+    profile.matches_bound_window(
+        application_name,
+        window_title,
+        process_id,
+        window_handle,
+        window_version,
+    )
 }
 
 #[cfg(test)]
