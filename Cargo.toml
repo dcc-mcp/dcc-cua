@@ -37,11 +37,11 @@ rstest = "0.26.1"
 # runtime, platform adapters, cursor rendering and testkit. DCC-specific
 # contracts must be verified against each upstream release before adoption.
 #
-# Driver 0.59.5 is pinned by release commit, not a moving branch or tag.
+# Driver 0.60.0 is pinned by release commit, not a moving branch or tag.
 # See docs/design/sdk-dependency-maintenance.md for migration and acceptance.
-cua-driver-contract = { git = "https://github.com/trycua/cua.git", rev = "181227e2afb100979d5d507715ffc15b5ee9b747" }
-cua-driver-sdk = { git = "https://github.com/trycua/cua.git", rev = "181227e2afb100979d5d507715ffc15b5ee9b747" }
-cua-driver-testkit = { git = "https://github.com/trycua/cua.git", rev = "181227e2afb100979d5d507715ffc15b5ee9b747" }
-cursor-overlay = { git = "https://github.com/trycua/cua.git", rev = "181227e2afb100979d5d507715ffc15b5ee9b747" }
-platform-macos = { git = "https://github.com/trycua/cua.git", rev = "181227e2afb100979d5d507715ffc15b5ee9b747" }
-platform-windows = { git = "https://github.com/trycua/cua.git", rev = "181227e2afb100979d5d507715ffc15b5ee9b747" }
+cua-driver-contract = { git = "https://github.com/trycua/cua.git", rev = "7ebe6a662ea380d0b7a340a33ee59feaf8f56f43" }
+cua-driver-sdk = { git = "https://github.com/trycua/cua.git", rev = "7ebe6a662ea380d0b7a340a33ee59feaf8f56f43" }
+cua-driver-testkit = { git = "https://github.com/trycua/cua.git", rev = "7ebe6a662ea380d0b7a340a33ee59feaf8f56f43" }
+cursor-overlay = { git = "https://github.com/trycua/cua.git", rev = "7ebe6a662ea380d0b7a340a33ee59feaf8f56f43" }
+platform-macos = { git = "https://github.com/trycua/cua.git", rev = "7ebe6a662ea380d0b7a340a33ee59feaf8f56f43" }
+platform-windows = { git = "https://github.com/trycua/cua.git", rev = "7ebe6a662ea380d0b7a340a33ee59feaf8f56f43" }

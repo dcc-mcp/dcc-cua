@@ -217,18 +217,18 @@ fn allocate_loopback_port() -> u16 {
 
 #[cfg(feature = "gui-e2e")]
 fn browser_ref_by_text(snapshot: &Value, text: &str) -> String {
-    snapshot["result"]["structuredContent"]["refs"]
-        .as_array()
-        .and_then(|refs| {
-            refs.iter().find(|entry| {
-                entry["label"]
-                    .as_str()
-                    .or_else(|| entry["name"].as_str())
-                    .is_some_and(|label| label.contains(text))
-            })
+    let structured = &snapshot["result"]["structuredContent"];
+    ["refs", "content_refs"]
+        .into_iter()
+        .filter_map(|key| structured[key].as_array())
+        .flat_map(|refs| refs.iter())
+        .filter(|entry| {
+            entry["label"]
+                .as_str()
+                .or_else(|| entry["name"].as_str())
+                .is_some_and(|label| label.contains(text))
         })
-        .and_then(|entry| entry["ref"].as_str())
-        .map(str::to_owned)
+        .find_map(|entry| entry["ref"].as_str().map(str::to_owned))
         .unwrap_or_else(|| panic!("browser snapshot is missing ref text {text:?}: {snapshot}"))
 }
 

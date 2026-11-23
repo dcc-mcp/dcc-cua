@@ -7,9 +7,9 @@ this contract with `scripts/test_sdk_dependency_contract.py`.
 
 ## Upstream synchronization status
 
-The latest published Try CUA Driver release is `cua-driver-rs-v0.59.5`,
+The latest published Try CUA Driver release is `cua-driver-rs-v0.60.0`,
 published on 2026-11-23. DCC CUA pins its immutable release commit
-`trycua/cua@181227e2afb100979d5d507715ffc15b5ee9b747` across the runtime,
+`trycua/cua@7ebe6a662ea380d0b7a340a33ee59feaf8f56f43` across the runtime,
 platform adapters, cursor renderer, testkit and generated workspace-hack
 manifest.
 
@@ -19,7 +19,7 @@ formatting, linting and native acceptance remain required gates for delivery.
 
 ## Current source candidate
 
-The current source candidate is the official `trycua/cua` Driver 0.59.5
+The current source candidate is the official `trycua/cua` Driver 0.60.0
 release commit above. The prior `loonghao/cua` compatibility fork is retained
 in the historical record below for migration traceability.
 
@@ -222,7 +222,7 @@ necessary compatibility behavior on the official release base:
   mixed labelable controls; an outer host cannot acquire an inner input.
 - Explicit foreground navigation through DCC's exact-window activation path,
   the official Driver navigation dispatch receipt, live-target revalidation
-  and partial/unknown completion reporting. The official Driver 0.59.5 receipt
+  and partial/unknown completion reporting. The official Driver 0.60.0 receipt
   confirms dispatch and ref invalidation without DOM readback. DCC reports that
   boundary and requires a fresh browser snapshot for page-state verification.
 - Responsive existing-profile socket proof. Driver 0.38 shares consented
@@ -255,7 +255,7 @@ The only newly resolved registry packages are the new upstream scripting
 engine and its `relative-path` dependency; existing registry versions remain
 unchanged. Upstream inventory growth does not grant a new DCC action route:
 `run_script` is rejected by both unscoped native entry points. The DCC-facing
-Linux pixels-only inventory remains empty even though Driver 0.59.5 registers
+Linux pixels-only inventory remains empty even though Driver 0.60.0 registers
 the optional `parse_visual_regions` entry in its underlying registry. DCC does
 not expose that entry from pixels-only tasks, and the SDK's unavailable
 perception client rejects calls without a DCC capture binding.
