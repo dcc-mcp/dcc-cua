@@ -151,6 +151,15 @@ impl InProcessQtCaptureRequest {
         capability: &InProcessQtCapability,
     ) -> Result<(), InProcessQtContractError> {
         capability.validate()?;
+        match capability.readiness {
+            InProcessQtReadiness::Ready => {}
+            InProcessQtReadiness::Unavailable => {
+                return Err(InProcessQtContractError::UnsupportedMode);
+            }
+            InProcessQtReadiness::WaitingForDocument | InProcessQtReadiness::Disconnected => {
+                return Err(InProcessQtContractError::NotReady);
+            }
+        }
         self.target.validate()?;
         self.widget.validate()?;
         if self.target != capability.target {
@@ -173,6 +182,62 @@ pub struct InProcessQtCaptureReceipt {
     pub failure: Option<InProcessQtFailure>,
 }
 
+impl InProcessQtCaptureReceipt {
+    pub fn validate(&self) -> Result<(), InProcessQtContractError> {
+        self.target.validate()?;
+        self.widget.validate()?;
+        match self.status {
+            InProcessQtCommandStatus::Queued => {
+                if self.assessment.is_some() || self.failure.is_some() {
+                    return Err(InProcessQtContractError::InvalidReceipt);
+                }
+            }
+            InProcessQtCommandStatus::Captured => {
+                if !matches!(
+                    self.assessment,
+                    Some(FrameAssessment::Informative {
+                        attempted_mode: CaptureMode::InProcessQt,
+                        ..
+                    })
+                ) || self.failure.is_some()
+                {
+                    return Err(InProcessQtContractError::InvalidReceipt);
+                }
+            }
+            InProcessQtCommandStatus::BlankCapture => {
+                if !matches!(
+                    self.assessment,
+                    Some(FrameAssessment::BlankCapture {
+                        attempted_mode: CaptureMode::InProcessQt,
+                        ..
+                    })
+                ) || self.failure != Some(InProcessQtFailure::BlankCapture)
+                {
+                    return Err(InProcessQtContractError::InvalidReceipt);
+                }
+            }
+            InProcessQtCommandStatus::Refused => {
+                if self.assessment.is_some() || self.failure.is_none() {
+                    return Err(InProcessQtContractError::InvalidReceipt);
+                }
+            }
+            InProcessQtCommandStatus::Expired => {
+                if self.assessment.is_some() || self.failure != Some(InProcessQtFailure::Expired) {
+                    return Err(InProcessQtContractError::InvalidReceipt);
+                }
+            }
+            InProcessQtCommandStatus::Disconnected => {
+                if self.assessment.is_some()
+                    || self.failure != Some(InProcessQtFailure::Disconnected)
+                {
+                    return Err(InProcessQtContractError::InvalidReceipt);
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Error, Clone, Copy, PartialEq, Eq)]
 pub enum InProcessQtContractError {
     #[error("in-process Qt capture mode is unsupported")]
@@ -187,6 +252,10 @@ pub enum InProcessQtContractError {
     BindingChanged,
     #[error("in-process Qt capture deadline is invalid")]
     InvalidDeadline,
+    #[error("in-process Qt capture is not ready")]
+    NotReady,
+    #[error("in-process Qt capture receipt is inconsistent")]
+    InvalidReceipt,
     #[error("in-process Qt identifier is empty or too long")]
     InvalidIdentifier,
 }
