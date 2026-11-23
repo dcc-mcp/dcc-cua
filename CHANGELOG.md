@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.20.1](https://github.com/dcc-mcp/dcc-cua/compare/v1.20.0...v1.20.1) (2026-11-23)
+
+
+### Bug Fixes
+
+* address CodeRabbit occlusion feedback ([a343c6c](https://github.com/dcc-mcp/dcc-cua/commit/a343c6cdfd0f0eb8c9824b276022f0ef8b37ad96))
+* group exact capture request data ([0a361e0](https://github.com/dcc-mcp/dcc-cua/commit/0a361e00de18e57238dd03c97f94a1a0cc1a855f))
+* preserve exact capture boundary semantics ([bc00e5f](https://github.com/dcc-mcp/dcc-cua/commit/bc00e5fa850c63670dddb3f9405094ed2a3827cb))
+* preserve occluded window automation ([94b2729](https://github.com/dcc-mcp/dcc-cua/commit/94b2729b82095cfea7a1489611e0d52b5bafbc74))
+* satisfy latest clippy capture checks ([5416177](https://github.com/dcc-mcp/dcc-cua/commit/5416177fe49f8d9126cd8c8e81bc212e3dd4ca01))
+* satisfy rust layout policy ([c4400d6](https://github.com/dcc-mcp/dcc-cua/commit/c4400d63bb9a3dd061e26a00bef3ef75b759bbf2))
+
 ## [1.20.0](https://github.com/dcc-mcp/dcc-cua/compare/v1.19.5...v1.20.0) (2026-11-20)
 
 
