@@ -82,6 +82,9 @@ fn deliver_packet<T>(
         // Never sleep while holding the authorization fence: revocation wins
         // the next admission and the reader remains bounded for stop ACKs.
         std::thread::sleep(Duration::from_millis(1));
+        if started.elapsed() > wait {
+            return Err(AudioLifecycleError::Source);
+        }
     }
 }
 

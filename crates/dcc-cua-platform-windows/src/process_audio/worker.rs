@@ -469,6 +469,7 @@ fn run(
     }
     target.validate()?;
     client.start_stream().map_err(|_| Failure::StreamFailed)?;
+    let duration_exhausted = request.duration_limited && qpc()? >= request.deadline_qpc_100ns;
     let result = write_message(output, &AudioWorkerEvent::Started {})
         .map_err(|_| Failure::ProtocolFailed)
         .and_then(|()| {
@@ -488,9 +489,7 @@ fn run(
         diagnostic.stage = Some(AudioWorkerFailureStage::StopStream);
     }
     result.and(stop)?;
-    Ok(request.duration_limited
-        && state.load(Ordering::Acquire) != STOP
-        && qpc()? >= request.deadline_qpc_100ns)
+    Ok(duration_exhausted && state.load(Ordering::Acquire) != STOP)
 }
 
 pub fn run_owned_worker() -> i32 {

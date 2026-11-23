@@ -82,6 +82,7 @@ pub struct AacTrackBuffer {
     gap_frames: u64,
     gap_count: u64,
     gap_examples: Vec<AudioTimelineGap>,
+    last_packet_start_us: Option<u64>,
     last_packet_end_us: Option<u64>,
 }
 
@@ -122,6 +123,7 @@ impl AacTrackBuffer {
             gap_frames: 0,
             gap_count: 0,
             gap_examples: Vec::new(),
+            last_packet_start_us: None,
             last_packet_end_us: None,
         })
     }
@@ -140,9 +142,10 @@ impl AacTrackBuffer {
         let start = usize::try_from(start).map_err(|_| AudioLifecycleError::Budget)?;
         // Validate adjacent source times before rounding to PCM indices. The
         // destination clamp must not accumulate into a stricter timestamp fence.
-        if self
-            .last_packet_end_us
-            .is_some_and(|last| pts_us.saturating_add(PROCESS_AUDIO_TIMESTAMP_TOLERANCE_US) < last)
+        if self.last_packet_start_us.is_some_and(|last| pts_us < last)
+            || self.last_packet_end_us.is_some_and(|last| {
+                pts_us.saturating_add(PROCESS_AUDIO_TIMESTAMP_TOLERANCE_US) < last
+            })
         {
             return Err(AudioLifecycleError::Packet);
         }
@@ -176,6 +179,8 @@ impl AacTrackBuffer {
         self.samples
             .try_reserve_exact(length - self.samples.len())
             .map_err(|_| AudioLifecycleError::Budget)?;
+        self.last_packet_start_us = Some(pts_us);
+        self.last_packet_end_us = Some(packet_end_us);
         let gap = start - current;
         if gap != 0 {
             self.gap_count += 1;

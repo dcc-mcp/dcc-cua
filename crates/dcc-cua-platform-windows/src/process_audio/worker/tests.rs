@@ -44,7 +44,10 @@ fn invalid_packet_is_rejected_before_pointer_access(
     #[case] timestamp: u64,
 ) {
     // SAFETY: invalid metadata rejects before pointer access.
-    assert!(unsafe { copy_packet(std::ptr::null(), frames, flags, timestamp, None) }.is_err());
+    assert_eq!(
+        unsafe { copy_packet(std::ptr::null(), frames, flags, timestamp, None) },
+        Err(Failure::ContinuityLost)
+    );
 }
 
 #[rstest]

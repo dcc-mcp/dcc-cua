@@ -1475,7 +1475,6 @@ dependencies = [
  "memchr",
  "miniz_oxide",
  "num",
- "num-integer",
  "num-rational",
  "num-traits",
  "objc2 0.5.2",

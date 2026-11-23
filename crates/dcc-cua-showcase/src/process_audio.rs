@@ -94,6 +94,7 @@ pub struct ProcessAudioSession<S: ProcessAudioSource, M: ProcessAudioMux> {
     authorization: Arc<RecordingAuthorization>,
     clock_us: Arc<dyn Fn() -> u64 + Send + Sync>,
     last_clock_us: u64,
+    last_packet_start_us: Option<u64>,
     last_packet_end_us: Option<u64>,
     output_bytes: u64,
     packets: u64,
@@ -184,6 +185,7 @@ impl<S: ProcessAudioSource, M: ProcessAudioMux> ProcessAudioSession<S, M> {
             authorization,
             clock_us,
             last_clock_us: 0,
+            last_packet_start_us: None,
             last_packet_end_us: None,
             output_bytes: 0,
             packets: 0,
@@ -237,6 +239,7 @@ impl<S: ProcessAudioSource, M: ProcessAudioMux> ProcessAudioSession<S, M> {
             .checked_add(duration_us)
             .ok_or(AudioLifecycleError::Packet)?;
         if now < self.last_clock_us
+            || self.last_packet_start_us.is_some_and(|last| pts_us < last)
             || self.last_packet_end_us.is_some_and(|last| {
                 pts_us.saturating_add(PROCESS_AUDIO_TIMESTAMP_TOLERANCE_US) < last
             })
@@ -270,6 +273,7 @@ impl<S: ProcessAudioSource, M: ProcessAudioMux> ProcessAudioSession<S, M> {
         self.output_bytes += written;
         self.packets += 1;
         self.last_clock_us = now;
+        self.last_packet_start_us = Some(pts_us);
         self.last_packet_end_us = Some(end);
         drop(admission);
         Ok(())

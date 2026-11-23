@@ -152,8 +152,17 @@ impl RecorderAudioFactory for NativeRecorderAudioFactory {
         ended: Box<dyn Fn() + Send>,
     ) -> Result<Box<dyn RecorderAudioOwner>, AudioLifecycleError> {
         self.grant.validate()?;
-        let build =
-            super::worker::supported_windows_build().map_err(|_| AudioLifecycleError::Source)?;
+        let build = super::worker::supported_windows_build().map_err(|error| {
+            if error
+                == dcc_cua_protocol::recording_audio::worker::AudioWorkerFailure::UnsupportedPlatform
+            {
+                AudioLifecycleError::Policy(
+                    dcc_cua_protocol::recording_audio::ProcessAudioFailure::UnsupportedPlatform,
+                )
+            } else {
+                AudioLifecycleError::Source
+            }
+        })?;
         let cancelled = Arc::new(AtomicBool::new(false));
         let cancel = cancelled.clone();
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
