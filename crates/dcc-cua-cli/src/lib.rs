@@ -523,11 +523,13 @@ fn match_semantic_profile(flags: &[String]) -> Result<(), Box<dyn std::error::Er
     let application_name =
         flag_value(flags, "--app").ok_or("profile match requires --app APPLICATION_NAME")?;
     let window_title = flag_value(flags, "--title").unwrap_or_default();
+    let window_version = flag_value(flags, "--version");
 
     let store = profile_package::open_store(None)?;
-    let result = store
-        .catalog()
-        .match_window(&application_name, &window_title);
+    let result =
+        store
+            .catalog()
+            .match_window(&application_name, &window_title, window_version.as_deref());
     stdoutln!("{}", serde_json::to_string_pretty(&result)?);
     Ok(())
 }

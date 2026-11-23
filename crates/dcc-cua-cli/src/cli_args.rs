@@ -353,6 +353,7 @@ pub(super) fn print_help() -> std::io::Result<()> {
   profile match --app APP [--title TITLE]
   profile context --id PROFILE [--identity NAMESPACE=VALUE]... [--selector KEY=VALUE]... [--profile-store DIR] [--knowledge-root DIR]
   profile --id ue|maya|3dsmax|blender|houdini|nuke|fab|... [--profile-file PATH] [--app APP] [--surface ID] [--query TARGET] [--action ACTION] [--activate] [--max-elements N] [--max-depth N]
+  profile match --app APP [--title TITLE] [--version VERSION]
   profile-state --id PROFILE|--profile-file PATH [--source ID] [--etag ETAG] [--watch] [--poll-ms N] [--max-updates N]
   update [--check|--apply]
   desktop-snapshot [--output FILE]
