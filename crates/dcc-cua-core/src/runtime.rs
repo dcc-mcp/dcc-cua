@@ -1160,10 +1160,10 @@ impl ComputerUseDriver {
                         )
                     })
                     .map(|mut inventory| {
-                        if self.read_only_pixels {
-                            if let Some(object) = inventory.as_object_mut() {
-                                object.insert("tools".into(), Value::Array(Vec::new()));
-                            }
+                        if self.read_only_pixels
+                            && let Some(object) = inventory.as_object_mut()
+                        {
+                            object.insert("tools".into(), Value::Array(Vec::new()));
                         }
                         inventory
                     })
