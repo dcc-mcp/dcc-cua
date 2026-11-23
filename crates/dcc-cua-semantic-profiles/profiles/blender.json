@@ -1,0 +1,189 @@
+{
+  "schema_version": 3,
+  "id": "blender",
+  "profile_version": "1.0.0",
+  "application": {
+    "family": "blender",
+    "versions": []
+  },
+  "display_name": "Blender",
+  "selectors": [
+    {
+      "application_names": [
+        "blender.exe"
+      ],
+      "window_title_contains": [
+        "Blender"
+      ],
+      "localized_window_title_contains": {
+        "zh-CN": [
+          "Blender"
+        ],
+        "ja-JP": [
+          "Blender"
+        ]
+      }
+    }
+  ],
+  "surfaces": [
+    {
+      "id": "home",
+      "label": "Blender start screen",
+      "role": "home",
+      "route": "accessibility",
+      "targets": [
+        {
+          "id": "new_scene",
+          "label": "Create a new scene",
+          "role": "button",
+          "names": [
+            "New",
+            "New Scene"
+          ],
+          "localized_names": {
+            "zh-CN": [
+              "新建",
+              "新建场景"
+            ],
+            "ja-JP": [
+              "新規",
+              "新規シーン"
+            ]
+          },
+          "supported_actions": [
+            "click"
+          ]
+        },
+        {
+          "id": "open_scene",
+          "label": "Open a scene",
+          "role": "button",
+          "names": [
+            "Open",
+            "Open Scene"
+          ],
+          "localized_names": {
+            "zh-CN": [
+              "打开",
+              "打开场景"
+            ],
+            "ja-JP": [
+              "開く",
+              "シーンを開く"
+            ]
+          },
+          "supported_actions": [
+            "click"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "surface_1",
+      "label": "3D Viewport",
+      "role": "viewport",
+      "route": "accessibility",
+      "targets": [
+        {
+          "id": "active_view",
+          "label": "3D Viewport",
+          "role": "viewport",
+          "names": [
+            "3D Viewport"
+          ],
+          "supported_actions": [
+            "click",
+            "drag",
+            "frame_selection"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "surface_2",
+      "label": "Outliner",
+      "role": "tree",
+      "route": "accessibility",
+      "targets": [
+        {
+          "id": "scene_node",
+          "label": "Outliner",
+          "role": "tree",
+          "names": [
+            "Outliner"
+          ],
+          "supported_actions": [
+            "select",
+            "expand",
+            "context_menu"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "surface_3",
+      "label": "Properties",
+      "role": "property_editor",
+      "route": "accessibility",
+      "targets": [
+        {
+          "id": "property_field",
+          "label": "Properties",
+          "role": "property_editor",
+          "names": [
+            "Properties"
+          ],
+          "supported_actions": [
+            "set_value",
+            "toggle"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "dialog",
+      "label": "Blender dialog",
+      "role": "dialog",
+      "route": "os_native_dialog",
+      "targets": [
+        {
+          "id": "file_dialog",
+          "label": "File dialog",
+          "role": "dialog",
+          "names": [
+            "Open",
+            "Save As"
+          ],
+          "localized_names": {
+            "zh-CN": [
+              "打开",
+              "另存为"
+            ],
+            "ja-JP": [
+              "開く",
+              "名前を付けて保存"
+            ]
+          },
+          "supported_actions": [
+            "inspect",
+            "set_value",
+            "accept",
+            "dismiss"
+          ]
+        }
+      ]
+    }
+  ],
+  "settings": {
+    "dialog_style": "os_native",
+    "preferred_route": "accessibility",
+    "default_locale": "en",
+    "destructive_confirmation_required": true
+  },
+  "binding": {
+    "require_exact_pid": true,
+    "require_exact_window_handle": true,
+    "require_window_version_match": true,
+    "fail_closed_on_ambiguity": true
+  }
+}

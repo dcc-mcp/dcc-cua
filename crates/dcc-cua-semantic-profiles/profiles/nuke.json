@@ -1,0 +1,189 @@
+{
+  "schema_version": 3,
+  "id": "nuke",
+  "profile_version": "1.0.0",
+  "application": {
+    "family": "foundry-nuke",
+    "versions": []
+  },
+  "display_name": "Foundry Nuke",
+  "selectors": [
+    {
+      "application_names": [
+        "nuke.exe"
+      ],
+      "window_title_contains": [
+        "Nuke"
+      ],
+      "localized_window_title_contains": {
+        "zh-CN": [
+          "Foundry Nuke"
+        ],
+        "ja-JP": [
+          "Foundry Nuke"
+        ]
+      }
+    }
+  ],
+  "surfaces": [
+    {
+      "id": "home",
+      "label": "Foundry Nuke start screen",
+      "role": "home",
+      "route": "accessibility",
+      "targets": [
+        {
+          "id": "new_scene",
+          "label": "Create a new scene",
+          "role": "button",
+          "names": [
+            "New",
+            "New Scene"
+          ],
+          "localized_names": {
+            "zh-CN": [
+              "新建",
+              "新建场景"
+            ],
+            "ja-JP": [
+              "新規",
+              "新規シーン"
+            ]
+          },
+          "supported_actions": [
+            "click"
+          ]
+        },
+        {
+          "id": "open_scene",
+          "label": "Open a scene",
+          "role": "button",
+          "names": [
+            "Open",
+            "Open Scene"
+          ],
+          "localized_names": {
+            "zh-CN": [
+              "打开",
+              "打开场景"
+            ],
+            "ja-JP": [
+              "開く",
+              "シーンを開く"
+            ]
+          },
+          "supported_actions": [
+            "click"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "surface_1",
+      "label": "Node Graph",
+      "role": "node_editor",
+      "route": "accessibility",
+      "targets": [
+        {
+          "id": "node_graph",
+          "label": "Node Graph",
+          "role": "node_editor",
+          "names": [
+            "Node Graph"
+          ],
+          "supported_actions": [
+            "select",
+            "open",
+            "connect"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "surface_2",
+      "label": "Viewer",
+      "role": "viewport",
+      "route": "accessibility",
+      "targets": [
+        {
+          "id": "active_view",
+          "label": "Viewer",
+          "role": "viewport",
+          "names": [
+            "Viewer"
+          ],
+          "supported_actions": [
+            "click",
+            "drag",
+            "frame_selection"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "surface_3",
+      "label": "Properties",
+      "role": "property_editor",
+      "route": "accessibility",
+      "targets": [
+        {
+          "id": "property_field",
+          "label": "Properties",
+          "role": "property_editor",
+          "names": [
+            "Properties"
+          ],
+          "supported_actions": [
+            "set_value",
+            "toggle"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "dialog",
+      "label": "Foundry Nuke dialog",
+      "role": "dialog",
+      "route": "os_native_dialog",
+      "targets": [
+        {
+          "id": "file_dialog",
+          "label": "File dialog",
+          "role": "dialog",
+          "names": [
+            "Open",
+            "Save As"
+          ],
+          "localized_names": {
+            "zh-CN": [
+              "打开",
+              "另存为"
+            ],
+            "ja-JP": [
+              "開く",
+              "名前を付けて保存"
+            ]
+          },
+          "supported_actions": [
+            "inspect",
+            "set_value",
+            "accept",
+            "dismiss"
+          ]
+        }
+      ]
+    }
+  ],
+  "settings": {
+    "dialog_style": "os_native",
+    "preferred_route": "accessibility",
+    "default_locale": "en",
+    "destructive_confirmation_required": true
+  },
+  "binding": {
+    "require_exact_pid": true,
+    "require_exact_window_handle": true,
+    "require_window_version_match": true,
+    "fail_closed_on_ambiguity": true
+  }
+}

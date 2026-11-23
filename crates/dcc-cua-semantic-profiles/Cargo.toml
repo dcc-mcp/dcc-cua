@@ -1,6 +1,6 @@
 [package]
 name = "dcc-cua-semantic-profiles"
-description = "Independent deep semantic profiles for Unreal, Maya, 3ds Max, Fab, and Steam Chromium"
+description = "Independent deep semantic profiles for Unreal, Maya, 3ds Max, Blender, Houdini, Nuke, Fab, and Steam Chromium"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -23,3 +23,4 @@ url = "2"
 
 [dev-dependencies]
 rstest.workspace = true
+
