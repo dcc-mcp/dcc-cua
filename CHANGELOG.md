@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.21.0](https://github.com/dcc-mcp/dcc-cua/compare/v1.20.1...v1.21.0) (2026-11-23)
+
+
+### Features
+
+* add versioned 3ds Max semantic profiles ([5331520](https://github.com/dcc-mcp/dcc-cua/commit/533152007f1265adce216d261f2d81298e2bc538))
+* **profiles:** cover Blender Houdini and Nuke ([c831115](https://github.com/dcc-mcp/dcc-cua/commit/c83111515468982c9f8469fd852d513e2fa4c1f9))
+
 ## [1.20.1](https://github.com/dcc-mcp/dcc-cua/compare/v1.20.0...v1.20.1) (2026-11-23)
 
 
