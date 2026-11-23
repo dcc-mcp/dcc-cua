@@ -177,6 +177,48 @@ fn navigation_receipt_requires_the_exact_requested_url_for_success_and_failure()
 }
 
 #[rstest]
+fn official_sdk_minimal_navigation_success_is_enriched_without_unproven_readback() {
+    let receipt = json!({
+        "structuredContent": {
+            "status": "ok",
+            "target_id": "target-1",
+            "tab_id": "tab-1",
+            "url": "https://example.test/next",
+            "refs_invalidated": true
+        }
+    });
+    assert!(
+        navigation_response_is_success(
+            &receipt,
+            "target-1",
+            "tab-1",
+            "https://example.test/next",
+            "foreground"
+        )
+        .unwrap()
+    );
+
+    let public = BrowserResult::from_value(receipt)
+        .unwrap()
+        .into_public_navigation_receipt(
+            true,
+            "foreground",
+            true,
+            "target-1",
+            "tab-1",
+            "https://example.test/next",
+        )
+        .unwrap();
+    let structured = &public.value["structuredContent"];
+    assert_eq!(structured["delivery_mode"], "foreground");
+    assert_eq!(structured["dispatched"], true);
+    assert_eq!(structured["activated"], true);
+    assert_eq!(structured["activation_state"], "succeeded");
+    assert_eq!(structured["readback_state"], "not_provided");
+    assert!(structured["current_url"].is_null());
+}
+
+#[rstest]
 fn navigation_failure_receipt_requires_the_sdk_owned_error_contract() {
     for (error_code, error) in [
         ("invented_error", "invented diagnostic"),
@@ -1008,7 +1050,14 @@ fn navigation_unknown_completion_is_preserved_without_claiming_dispatch() {
         );
         let public = BrowserResult::from_value(receipt.clone())
             .unwrap()
-            .into_public_navigation_receipt(false)
+            .into_public_navigation_receipt(
+                false,
+                delivery_mode,
+                false,
+                "target-1",
+                "tab-1",
+                "https://example.test/next",
+            )
             .unwrap();
         assert!(public.value["structuredContent"]["dispatched"].is_null());
         assert_eq!(

@@ -220,11 +220,11 @@ necessary compatibility behavior on the official release base:
 - Hidden file-input associations with unique explicit labels. Preserve valid
   associations within shadow roots and same-process iframes while refusing
   mixed labelable controls; an outer host cannot acquire an inner input.
-- Explicit foreground navigation, frame/loader-bound completion receipts,
-  live-target revalidation and partial/unknown completion reporting. DOM
-  readback is fenced on both sides by document identity. Lost CDP replies
-  invalidate refs and return an explicit unknown dispatch state; DCC preserves
-  that redacted receipt instead of claiming the navigation never happened.
+- Explicit foreground navigation through DCC's exact-window activation path,
+  the official Driver navigation dispatch receipt, live-target revalidation
+  and partial/unknown completion reporting. The official Driver 0.59.5 receipt
+  confirms dispatch and ref invalidation without DOM readback. DCC reports that
+  boundary and requires a fresh browser snapshot for page-state verification.
 - Responsive existing-profile socket proof. Driver 0.38 shares consented
   sockets: a failed probe releases only its current grant with
   `SharedSocketRelease::Close`; it must not remove another session's hold.

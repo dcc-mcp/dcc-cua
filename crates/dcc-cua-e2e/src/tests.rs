@@ -985,25 +985,11 @@ async fn controlled_electron_round_trip() {
     assert_eq!(foreground_state["tab_id"], tab_id, "{foreground_state}");
     assert_eq!(foreground_state["activated"], true, "{foreground_state}");
     assert_eq!(
-        foreground_state["visibility_state"], "visible",
+        foreground_state["activation_state"], "succeeded",
         "{foreground_state}"
     );
-    assert!(
-        matches!(
-            foreground_state["ready_state"].as_str(),
-            Some("interactive" | "complete")
-        ),
-        "{foreground_state}"
-    );
-    assert!(
-        foreground_state["current_url"].is_string(),
-        "{foreground_state}"
-    );
-    assert!(foreground_state["title"].is_string(), "{foreground_state}");
-    assert!(
-        foreground_state["heading"].is_string(),
-        "{foreground_state}"
-    );
+    assert_eq!(foreground_state["readback_state"], "not_provided");
+    assert_eq!(foreground_state["refs_invalidated"], true);
     wait_for_browser_fixture(
         &browser_fixture,
         "page-marker",
