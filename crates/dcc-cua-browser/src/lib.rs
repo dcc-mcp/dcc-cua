@@ -491,18 +491,28 @@ impl BrowserSession {
         validate_navigate_request(&request)?;
         let delivery_mode = request.delivery_mode.as_deref().unwrap_or("background");
         self.begin_snapshot_sensitive_native_attempt();
-        let result = BrowserResult::from_value(
-            native
-                .call_browser_tool(
-                    "browser_navigate",
-                    json!({
-                        "target_id": request.target_id,
-                        "tab_id": request.tab_id,
-                        "url": request.url,
-                    }),
-                )
-                .await?,
-        )?;
+        let result = match native
+            .call_browser_tool(
+                "browser_navigate",
+                json!({
+                    "target_id": request.target_id,
+                    "tab_id": request.tab_id,
+                    "url": request.url,
+                }),
+            )
+            .await
+        {
+            Ok(value) => BrowserResult::from_value(value)?,
+            Err(error) if error.code == ComputerUseErrorCode::CompletionUnknown => {
+                return Ok(unknown_navigation_receipt(
+                    &request.target_id,
+                    &request.tab_id,
+                    &request.url,
+                    delivery_mode,
+                ));
+            }
+            Err(error) => return Err(error),
+        };
         if result.value["isError"] == true && result.value["structuredContent"].is_null() {
             return Ok(unknown_navigation_receipt(
                 &request.target_id,
@@ -1001,6 +1011,12 @@ impl BrowserResult {
         }
         if structured["dispatch_state"] == "unknown" {
             public["dispatch_state"] = json!("unknown");
+            public["blind_retry"] = json!(structured["blind_retry"].as_bool().unwrap_or(false));
+            public["fresh_observation_required"] = json!(
+                structured["fresh_observation_required"]
+                    .as_bool()
+                    .unwrap_or(true)
+            );
         }
         if succeeded && structured["delivery_mode"] == "foreground" {
             for key in [
@@ -1046,6 +1062,8 @@ fn unknown_navigation_receipt(
                 "activation_state": "not_started",
                 "readback_state": "not_started",
                 "refs_invalidated": true,
+                "blind_retry": false,
+                "fresh_observation_required": true,
                 "error_code": "navigation_completion_unknown",
                 "error": "browser navigation completion is unknown; refresh browser state before retrying"
             },

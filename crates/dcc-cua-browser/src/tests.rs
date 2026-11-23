@@ -1065,6 +1065,11 @@ fn navigation_unknown_completion_is_preserved_without_claiming_dispatch() {
             "unknown"
         );
         assert_eq!(public.value["structuredContent"]["refs_invalidated"], true);
+        assert_eq!(public.value["structuredContent"]["blind_retry"], false);
+        assert_eq!(
+            public.value["structuredContent"]["fresh_observation_required"],
+            true
+        );
         for (field, invalid_value) in [
             ("dispatched", json!(false)),
             ("dispatched", json!(true)),

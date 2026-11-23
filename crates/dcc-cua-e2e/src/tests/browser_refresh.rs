@@ -125,6 +125,11 @@ async fn run_snapshot_bound_browser_mutation<T: BrowserRequestTransport>(
     );
 
     for attempt in 0..2 {
+        let snapshot_format = if method == "browser_set_input_files" {
+            "dom_refs_v1"
+        } else {
+            "semantic_v2"
+        };
         let browser_snapshot = tokio::time::timeout(
             Duration::from_secs(90),
             transport.request(
@@ -136,7 +141,7 @@ async fn run_snapshot_bound_browser_mutation<T: BrowserRequestTransport>(
                     "request": {
                         "target_id": target_id,
                         "tab_id": tab_id,
-                        "snapshot_format": "semantic_v2"
+                        "snapshot_format": snapshot_format
                     }
                 }),
             ),
@@ -152,7 +157,11 @@ async fn run_snapshot_bound_browser_mutation<T: BrowserRequestTransport>(
         );
         request.insert(
             "ref".to_owned(),
-            json!(browser_ref_by_text(&browser_snapshot.value, element_text)),
+            json!(if method == "browser_set_input_files" {
+                browser_upload_ref_by_text(&browser_snapshot.value, element_text)
+            } else {
+                browser_ref_by_text(&browser_snapshot.value, element_text)
+            }),
         );
         let params = json!({
             "session_id": SESSION_ID,
@@ -322,6 +331,30 @@ fn snapshot_bound_request_fields_reject_old_coordinates_and_refs() {
             request.as_object().expect("request object")
         ));
     }
+}
+
+#[rstest]
+fn mutation_refs_ignore_content_refs_and_select_hidden_file_inputs() {
+    let snapshot = json!({
+        "result": {"structuredContent": {
+            "refs": [
+                {"ref": "p2:1", "label": "aria-label=standalone-upload id=upload type=file"},
+                {"ref": "p2:2", "label": "aria-label=standalone-download"}
+            ],
+            "content_refs": [
+                {"ref": "p2:3", "label": "aria-label=standalone-upload"}
+            ]
+        }}
+    });
+
+    assert_eq!(
+        browser_ref_by_text(&snapshot, "standalone-download"),
+        "p2:2"
+    );
+    assert_eq!(
+        browser_upload_ref_by_text(&snapshot, "standalone-upload"),
+        "p2:1"
+    );
 }
 
 #[cfg(test)]
