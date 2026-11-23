@@ -5,13 +5,21 @@ use serde_json::json;
 #[rstest]
 fn builtins_are_valid_and_have_independent_ids() {
     let profiles = builtin_profiles();
-    assert_eq!(profiles.len(), 5);
+    assert_eq!(profiles.len(), 7);
     assert_eq!(
         profiles
             .iter()
             .map(|profile| profile.id.as_str())
             .collect::<Vec<_>>(),
-        ["ue", "maya", "maya-2024", "fab", "steam-chromium"]
+        [
+            "ue",
+            "maya",
+            "maya-2024",
+            "3dsmax",
+            "3dsmax-2024",
+            "fab",
+            "steam-chromium"
+        ]
     );
 }
 
@@ -102,6 +110,34 @@ fn maya_2024_inherits_common_surfaces_and_matches_only_its_host_version() {
     assert!(profile.resolve_target("dialog", "file_dialog").is_some());
     assert!(profile.matches_window("maya.exe", "Autodesk Maya 2024: scene.ma"));
     assert!(!profile.matches_window("maya.exe", "Autodesk Maya 2025: scene.ma"));
+}
+
+#[rstest]
+fn max_profiles_recognize_common_versions_and_share_dcc_surface_vocabulary() {
+    let base = builtin_profile("3dsmax").expect("3ds Max profile");
+    let versioned = builtin_profile("3dsmax-2024").expect("3ds Max 2024 profile");
+    assert_eq!(base.application.family, "autodesk-3ds-max");
+    assert_eq!(versioned.application.versions, ["2024"]);
+    assert_eq!(
+        versioned.extends.as_ref().map(|parent| parent.id.as_str()),
+        Some("3dsmax")
+    );
+    assert!(base.matches_window("3dsmax.exe", "Autodesk 3ds Max 2024 - scene.max"));
+    assert!(versioned.matches_window("3dsmax.exe", "Autodesk 3ds Max 2024 - scene.max"));
+    assert!(!versioned.matches_window("3dsmax.exe", "Autodesk 3ds Max 2025 - scene.max"));
+    assert!(versioned.surface("viewport").is_some());
+    assert!(
+        versioned
+            .resolve_target("scene_explorer", "scene_node")
+            .is_some()
+    );
+
+    let maya = builtin_profile("maya").expect("Maya profile");
+    let common_surfaces = ["viewport", "dialog"];
+    for surface in common_surfaces {
+        assert!(maya.surface(surface).is_some());
+        assert!(versioned.surface(surface).is_some());
+    }
 }
 
 #[rstest]

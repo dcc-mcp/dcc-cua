@@ -530,6 +530,20 @@ fn profile_matching_prefers_a_unique_host_version_variant() {
 }
 
 #[rstest]
+fn profile_matching_prefers_unique_3ds_max_version_variant() {
+    let store_root = tempfile::tempdir().expect("empty Profile store");
+    let store = dcc_cua_profiles::ProfileStore::open(store_root.path()).expect("Profile store");
+    let result = store
+        .catalog()
+        .match_window("3dsmax.exe", "Autodesk 3ds Max 2024 - scene.max");
+
+    assert_eq!(result.selected.as_deref(), Some("3dsmax-2024"));
+    assert!(!result.ambiguous);
+    assert_eq!(result.candidates[0].id, "3dsmax-2024");
+    assert_eq!(result.candidates[1].id, "3dsmax");
+}
+
+#[rstest]
 #[case(vec![], false)]
 #[case(vec!["--stdio"], false)]
 #[case(vec!["--grant", "existing-profile"], true)]

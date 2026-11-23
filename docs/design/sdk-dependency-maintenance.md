@@ -5,6 +5,23 @@ adapters and GUI fixtures inherit those declarations. `Cargo.lock` must resolve
 all upstream CUA crates to the same immutable Git source. The policy CI checks
 this contract with `scripts/test_sdk_dependency_contract.py`.
 
+## Upstream synchronization status
+
+The official `trycua/cua` `main` was observed at
+`186e7cfd8a1707720aabe350c3784f6019bd955c` (Driver 0.59.4-era workspace) on
+2026-11-23. The pinned compatibility fork is `loonghao/cua@862866c…`, based on
+Driver 0.49.1 plus DCC-specific browser-consent and exact-window safety fixes.
+The fork and upstream diverged at `08a2f0df…`; the direct upstream diff touches
+4,883 files, including installer, CI, workspace, and SDK API changes.
+
+This is deliberately **not** a blind whole-repository rebase or version bump.
+The current pin remains in force until the exact upstream release commit passes
+the dependency contract, format/layout/clippy policy, cross-platform workspace
+checks, controlled E2E, native DCC acceptance, and independent review. The
+old browser-binding candidate `ec0a7ec…` must not be restored because it is
+not a descendant of the current consent fix.
+
+## Current source candidate
 ## Current source candidate
 
 The consent-bubble fix candidate is
@@ -428,3 +445,4 @@ native macOS and installed-client acceptance remain separate gates.
 Return to the official Git source once every required patch is present upstream
 and the same downstream acceptance gates pass. Preserve the third-party notice
 and remove obsolete compatibility comments at that point.
+

@@ -43,8 +43,13 @@ values win. Runtime consumers receive the resolved, flattened Profile so an
 Agent never spends tokens merging inheritance. Inheritance never carries task
 grants, credentials, PID/HWND scope, observations, or execution authority.
 
-`maya-2024` demonstrates the contract: it matches only Maya 2024 and inherits
-the reusable Maya selectors, surfaces, and targets from `maya@^1.0`.
+`maya-2024` and `3dsmax-2024` demonstrate the contract: each matches only its
+own Autodesk host version and inherits reusable selectors, surfaces, and
+targets from its base profile (`maya@^1.0` or `3dsmax@^1.0`). The Maya and 3ds
+Max bases deliberately share viewport, scene-tree, property-editor, and
+`os_native` dialog surface vocabulary, which gives cross-application DCC
+automation one stable semantic shape while versioned children remain isolated
+and fail closed on ambiguous host evidence.
 
 Profile selection is deterministic but conservative. Given an observed native
 application name and window title, a Profile whose `application.versions` is
