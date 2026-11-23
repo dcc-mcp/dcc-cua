@@ -1,0 +1,131 @@
+{
+  "schema_version": 3,
+  "id": "3dsmax",
+  "profile_version": "1.0.0",
+  "application": {"family": "autodesk-3ds-max", "versions": []},
+  "display_name": "Autodesk 3ds Max",
+  "selectors": [
+    {
+      "application_names": ["3dsmax.exe", "3ds max.exe", "3dsmax"],
+      "window_title_contains": ["Autodesk 3ds Max", "3ds Max"],
+      "localized_window_title_contains": {
+        "zh-CN": ["3ds Max", "三维_max"],
+        "ja-JP": ["3ds Max"]
+      }
+    }
+  ],
+  "surfaces": [
+    {
+      "id": "home",
+      "label": "3ds Max start screen",
+      "role": "home",
+      "route": "accessibility",
+      "targets": [
+        {
+          "id": "new_scene",
+          "label": "Create a new scene",
+          "role": "button",
+          "names": ["New Scene", "New"],
+          "localized_names": {
+            "zh-CN": ["新建场景", "新建"],
+            "zh-TW": ["新增場景", "新增"],
+            "ja-JP": ["新規シーン", "新規"],
+            "ko-KR": ["새 장면"],
+            "de-DE": ["Neue Szene"],
+            "fr-FR": ["Nouvelle scène"],
+            "es-ES": ["Nueva escena"],
+            "pt-BR": ["Nova cena"]
+          },
+          "supported_actions": ["click"]
+        },
+        {
+          "id": "open_scene",
+          "label": "Open a scene",
+          "role": "button",
+          "names": ["Open Scene", "Open"],
+          "localized_names": {
+            "zh-CN": ["打开场景", "打开"],
+            "zh-TW": ["開啟場景", "開啟"],
+            "ja-JP": ["シーンを開く", "開く"],
+            "ko-KR": ["장면 열기"],
+            "de-DE": ["Szene öffnen"],
+            "fr-FR": ["Ouvrir la scène"],
+            "es-ES": ["Abrir escena"],
+            "pt-BR": ["Abrir cena"]
+          },
+          "supported_actions": ["click"]
+        }
+      ]
+    },
+    {
+      "id": "viewport",
+      "label": "3ds Max viewport",
+      "role": "viewport",
+      "route": "accessibility",
+      "targets": [
+        {
+          "id": "active_view",
+          "label": "Active view",
+          "role": "viewport",
+          "names": ["Viewport", "Top", "Perspective", "Front"],
+          "supported_actions": ["click", "drag", "orbit", "frame_selection"]
+        }
+      ]
+    },
+    {
+      "id": "scene_explorer",
+      "label": "Scene Explorer",
+      "role": "tree",
+      "route": "accessibility",
+      "targets": [
+        {
+          "id": "scene_node",
+          "label": "Scene node",
+          "role": "tree_item",
+          "names": ["Scene Explorer item"],
+          "localized_names": {"zh-CN": ["场景资源管理器项目"]},
+          "supported_actions": ["select", "expand", "context_menu"]
+        }
+      ]
+    },
+    {
+      "id": "command_panel",
+      "label": "Command Panel",
+      "role": "property_editor",
+      "route": "accessibility",
+      "targets": [
+        {
+          "id": "command_field",
+          "label": "Command panel field",
+          "role": "property",
+          "supported_actions": ["set_value", "toggle"]
+        }
+      ]
+    },
+    {
+      "id": "dialog",
+      "label": "3ds Max dialog",
+      "role": "dialog",
+      "route": "os_native_dialog",
+      "targets": [
+        {
+          "id": "file_dialog",
+          "label": "File dialog",
+          "role": "dialog",
+          "names": ["Open", "Save As"],
+          "localized_names": {
+            "zh-CN": ["打开", "另存为"],
+            "ja-JP": ["開く", "名前を付けて保存"]
+          },
+          "supported_actions": ["inspect", "set_value", "accept", "dismiss"]
+        }
+      ]
+    }
+  ],
+  "settings": {
+    "dialog_style": "os_native",
+    "preferred_route": "accessibility",
+    "default_locale": "en",
+    "destructive_confirmation_required": true
+  }
+}

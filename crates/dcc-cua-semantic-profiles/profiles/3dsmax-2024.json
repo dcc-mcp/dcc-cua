@@ -1,0 +1,22 @@
+{
+  "schema_version": 3,
+  "id": "3dsmax-2024",
+  "profile_version": "1.0.0",
+  "application": {
+    "family": "autodesk-3ds-max",
+    "versions": ["2024"]
+  },
+  "extends": {
+    "id": "3dsmax",
+    "version": "^1.0"
+  },
+  "display_name": "Autodesk 3ds Max 2024",
+  "selectors": [],
+  "surfaces": [],
+  "settings": {
+    "dialog_style": "os_native",
+    "preferred_route": "accessibility",
+    "default_locale": "en",
+    "destructive_confirmation_required": true
+  }
+}

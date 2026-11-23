@@ -949,13 +949,15 @@ pub fn builtin_profiles() -> &'static [SemanticProfile] {
                 include_str!("../profiles/ue.json"),
                 include_str!("../profiles/maya.json"),
                 include_str!("../profiles/maya-2024.json"),
+                include_str!("../profiles/3dsmax.json"),
+                include_str!("../profiles/3dsmax-2024.json"),
                 include_str!("../profiles/fab.json"),
                 include_str!("../profiles/steam-chromium.json"),
             ]
             .into_iter()
             .map(|profile| parse_profile(profile).expect("built-in semantic profile is valid"))
             .collect::<Vec<_>>();
-            let child_index = profiles
+            let maya_child_index = profiles
                 .iter()
                 .position(|profile| profile.id == "maya-2024")
                 .expect("Maya 2024 profile");
@@ -964,8 +966,19 @@ pub fn builtin_profiles() -> &'static [SemanticProfile] {
                 .find(|profile| profile.id == "maya")
                 .expect("Maya base profile")
                 .clone();
-            profiles[child_index] = resolve_profile(&parent, &profiles[child_index])
+            profiles[maya_child_index] = resolve_profile(&parent, &profiles[maya_child_index])
                 .expect("built-in Maya 2024 inheritance is valid");
+            let max_child_index = profiles
+                .iter()
+                .position(|profile| profile.id == "3dsmax-2024")
+                .expect("3ds Max 2024 profile");
+            let max_parent = profiles
+                .iter()
+                .find(|profile| profile.id == "3dsmax")
+                .expect("3ds Max base profile")
+                .clone();
+            profiles[max_child_index] = resolve_profile(&max_parent, &profiles[max_child_index])
+                .expect("built-in 3ds Max 2024 inheritance is valid");
             profiles
         })
         .as_slice()
