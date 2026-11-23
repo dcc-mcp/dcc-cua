@@ -1,4 +1,4 @@
-//! Real native SDK construction with all upstream dispatch disabled.
+//! Real native SDK construction with all DCC pixels-only dispatch disabled.
 #![cfg(target_os = "linux")]
 
 use dcc_cua_core::ComputerUseDriver;
@@ -19,7 +19,6 @@ async fn linux_pixels_native_sdk_registry_has_no_dispatchable_tools() {
         "clipboard_read",
         "start_recording",
         "run_script",
-        "parse_visual_regions",
     ] {
         let result = driver
             .raw()
@@ -31,6 +30,18 @@ async fn linux_pixels_native_sdk_registry_has_no_dispatchable_tools() {
         assert!(result.images.is_empty());
         assert!(result.structured_json.is_none());
     }
+
+    // Try CUA Driver 0.59.5 registers its optional perception tool in every
+    // native SDK registry. DCC does not expose that tool from pixels-only
+    // routes and the default unavailable client cannot access the X11 frame.
+    let perception = driver
+        .raw()
+        .call_tool("parse_visual_regions".into(), "{}".into())
+        .await
+        .unwrap();
+    assert!(perception.is_error);
+    assert!(perception.images.is_empty());
+
     assert!(ComputerUseDriver::create().is_err());
     driver.raw().shutdown().await.unwrap();
     assert!(ComputerUseDriver::create().is_err());

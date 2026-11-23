@@ -254,8 +254,11 @@ The dependency graph adds `cua-cursor-motion` at the same immutable SDK source.
 The only newly resolved registry packages are the new upstream scripting
 engine and its `relative-path` dependency; existing registry versions remain
 unchanged. Upstream inventory growth does not grant a new DCC action route:
-`run_script` is rejected by both unscoped native entry points. The real Linux
-pixels-only SDK inventory also rejects `parse_visual_regions`.
+`run_script` is rejected by both unscoped native entry points. The DCC-facing
+Linux pixels-only inventory remains empty even though Driver 0.59.5 registers
+the optional `parse_visual_regions` entry in its underlying registry. DCC does
+not expose that entry from pixels-only tasks, and the SDK's unavailable
+perception client rejects calls without a DCC capture binding.
 
 Driver 0.38 defaults native `get_window_state` trees to Markdown. DCC explicitly
 requests `tree_format: "both"` for semantic snapshots and screenshot-plus-

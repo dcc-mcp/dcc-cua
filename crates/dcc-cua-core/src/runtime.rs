@@ -597,6 +597,7 @@ pub(crate) fn action_dispatch_completion_unknown(error: ComputerUseError) -> Com
 pub struct ComputerUseDriver {
     driver: Arc<CuaDriver>,
     upstream_cursor_renderer_enabled: bool,
+    read_only_pixels: bool,
     // ponytail: cache the static tool registry for this driver; recreate the
     // driver if a future SDK supports runtime tool registration.
     tool_inventory: Arc<tokio::sync::OnceCell<Value>>,
@@ -620,7 +621,7 @@ impl ComputerUseDriver {
         #[cfg(target_os = "linux")]
         {
             crate::driver_factory::create_read_only_pixels()
-                .map(Self::from_driver)
+                .map(|driver| Self::from_driver(driver).mark_read_only_pixels())
                 .map_err(|error| map_driver_error("create read-only X11 runtime", error))
         }
         #[cfg(not(target_os = "linux"))]
@@ -693,8 +694,15 @@ impl ComputerUseDriver {
         Self {
             driver,
             upstream_cursor_renderer_enabled,
+            read_only_pixels: false,
             tool_inventory: Arc::new(tokio::sync::OnceCell::new()),
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn mark_read_only_pixels(mut self) -> Self {
+        self.read_only_pixels = true;
+        self
     }
 
     #[must_use]
@@ -1144,12 +1152,21 @@ impl ComputerUseDriver {
                     .list_tools_json()
                     .await
                     .map_err(|error| map_driver_error("list CUA tools", error))?;
-                serde_json::from_str(&raw).map_err(|error| {
-                    ComputerUseError::new(
-                        ComputerUseErrorCode::BackendUnavailable,
-                        format!("CUA tool inventory returned invalid JSON: {error}"),
-                    )
-                })
+                serde_json::from_str::<Value>(&raw)
+                    .map_err(|error| {
+                        ComputerUseError::new(
+                            ComputerUseErrorCode::BackendUnavailable,
+                            format!("CUA tool inventory returned invalid JSON: {error}"),
+                        )
+                    })
+                    .map(|mut inventory| {
+                        if self.read_only_pixels {
+                            if let Some(object) = inventory.as_object_mut() {
+                                object.insert("tools".into(), Value::Array(Vec::new()));
+                            }
+                        }
+                        inventory
+                    })
             })
             .await
     }

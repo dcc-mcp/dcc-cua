@@ -16,8 +16,12 @@ composited desktops and other pixel formats fail closed. These limits are also
 advertised in the platform manifest; protocol method names are not capabilities.
 
 The one-shot CLI selects a dedicated native SDK runtime with desktop preparation
-and cursor rendering disabled, without installing a cursor theme. Its upstream
-tool registry is empty, so accidental semantic or input dispatch is refused.
+and cursor rendering disabled, without installing a cursor theme. Its DCC-facing
+tool inventory is empty, so accidental semantic or input dispatch is refused.
+Try CUA Driver 0.59.5 registers the optional `parse_visual_regions` entry in
+the underlying SDK registry. DCC filters that entry from pixels-only inventory,
+and the unavailable perception client refuses calls without a DCC capture
+binding.
 The SDK's independent `CUA_WAYLAND_NEST` startup opt-in is rejected before runtime
 construction. Embedders that need the same startup behavior can use
 `ComputerUseDriver::create_read_only_pixels()` in a dedicated process. Because
@@ -59,9 +63,10 @@ Linux CI compiles the exact pull-request head and runs two real Xvfb checks:
 - A native empty-shape test admits a mapped full-screen sibling only when its
   X11 bounding shape is empty, and refuses capture when that shape becomes
   nonempty. Shape changes remain part of the publication fence.
-- The real read-only SDK constructor exposes no dispatchable tools; constructor
-  configuration and CLI isolation tests cover disabled preparation and absence
-  of theme/configuration writes.
+- The real read-only SDK constructor exposes an empty DCC-facing tool inventory;
+  constructor configuration and CLI isolation tests cover disabled preparation
+  and absence of theme/configuration writes. The optional SDK perception entry
+  remains unavailable without a DCC capture binding.
 - The release CLI test verifies actual red and blue PNG pixels, exact selection
   between two windows with one PID, and rejection of wrong PID, activation,
   Wayland, remote DISPLAY, occlusion, hidden and closed targets. Failed commands
