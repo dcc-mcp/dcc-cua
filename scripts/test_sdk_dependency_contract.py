@@ -7,6 +7,9 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
+EXPECTED_SDK_GIT = "https://github.com/trycua/cua.git"
+EXPECTED_SDK_REV = "181227e2afb100979d5d507715ffc15b5ee9b747"
+EXPECTED_SDK_VERSION = "0.59.5"
 SDK_PACKAGES = {
     "cua-driver-contract",
     "cua-driver-sdk",
@@ -34,6 +37,8 @@ class SdkDependencyContractTests(unittest.TestCase):
                 sources.add((dependency["git"], dependency["rev"]))
         self.assertEqual(len(sources), 1, "CUA packages must use one source revision")
         git, revision = sources.pop()
+        self.assertEqual(git, EXPECTED_SDK_GIT)
+        self.assertEqual(revision, EXPECTED_SDK_REV)
 
         inherited = set()
         for member in workspace["workspace"]["members"]:
@@ -58,6 +63,7 @@ class SdkDependencyContractTests(unittest.TestCase):
             source = package.get("source", "")
             if package["name"] in RESOLVED_SDK_PACKAGES:
                 self.assertEqual(source, expected_source, package["name"])
+                self.assertEqual(package["version"], EXPECTED_SDK_VERSION, package["name"])
                 resolved.add(package["name"])
             if re.match(r"git\+https://github\.com/(?:loonghao|trycua)/cua(?:\.git)?\?", source):
                 self.assertEqual(source, expected_source, package["name"])

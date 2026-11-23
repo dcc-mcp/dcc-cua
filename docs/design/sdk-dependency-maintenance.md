@@ -7,77 +7,25 @@ this contract with `scripts/test_sdk_dependency_contract.py`.
 
 ## Upstream synchronization status
 
-The official `trycua/cua` `main` was observed at
-`186e7cfd8a1707720aabe350c3784f6019bd955c` (Driver 0.59.4-era workspace) on
-2026-11-23. The pinned compatibility fork is `loonghao/cua@862866c…`, based on
-Driver 0.49.1 plus DCC-specific browser-consent and exact-window safety fixes.
-The fork and upstream diverged at `08a2f0df…`; the direct upstream diff touches
-4,883 files, including installer, CI, workspace, and SDK API changes.
+The latest published Try CUA Driver release is `cua-driver-rs-v0.59.5`,
+published on 2026-11-23. DCC CUA pins its immutable release commit
+`trycua/cua@181227e2afb100979d5d507715ffc15b5ee9b747` across the runtime,
+platform adapters, cursor renderer, testkit and generated workspace-hack
+manifest.
 
-This is deliberately **not** a blind whole-repository rebase or version bump.
-The current pin remains in force until the exact upstream release commit passes
-the dependency contract, format/layout/clippy policy, cross-platform workspace
-checks, controlled E2E, native DCC acceptance, and independent review. The
-old browser-binding candidate `ec0a7ec…` must not be restored because it is
-not a descendant of the current consent fix.
+This update moves from the 0.49.1 compatibility fork to the official upstream
+release. The dependency contract, lockfile resolution, downstream compilation,
+formatting, linting and native acceptance remain required gates for delivery.
 
 ## Current source candidate
-## Current source candidate
 
-The consent-bubble fix candidate is
-`loonghao/cua@862866c2b52e56dded67301c32dc49098c366e48`, proposed in
-`loonghao/cua#15` on top of the Driver 0.49.1 candidate below. It distinguishes
-an unrelated title-bound native bubble with non-dialog button classes from
-the actual debugging-consent modal. Once any native dialog-class button is
-present, incomplete, disabled, ambiguous, renderer-controlled or incorrectly
-owned consent still refuses. Native cancellation ignores a positively
-unrelated bubble after the real prompt disappears. Presence and action selection
-now use the same complete consent classification: an unrelated bubble appearing
-and disappearing must not arm the user-revocation guard. The regression failed
-with `browser_consent_revoked` before this change; disappearance of a genuinely
-classified consent prompt still returns that exact refusal.
+The current source candidate is the official `trycua/cua` Driver 0.59.5
+release commit above. The prior `loonghao/cua` compatibility fork is retained
+in the historical record below for migration traceability.
 
-Consent inspection also uses the existing strict native-only UIA walker for
-the target and its proven owned prompt windows, instead of caching the whole
-active web document within the four-second consent deadline. Incomplete native
-reads refuse, and all retained UIA references use the same RAII ownership on
-success, error and cancellation. This does not extend authorization or retry
-an input whose completion is unknown.
+## Previous Driver 0.49.1 source and validation
 
-The exact target-owned native modal is inspected before the main window.
-Its existing PID/owner-chain/liveness/topmost uniqueness proof remains
-mandatory; only an absence of owned consent permits inline inspection, while
-an ambiguous or incomplete owned modal refuses without a fallback. Regression
-coverage proves that a valid owned modal never calls an unresponsive main
-window provider. The updated Windows platform suite passed 364 tests with
-three existing ignored; platform-only strict Clippy (`--no-deps`) passed.
-Whole-dependency Clippy remains a separate failed gate below.
-
-These source checks do not establish that an actual modal-HWND-rooted Chrome
-tree takes the owned-window fast path. Exact-candidate native acceptance and
-that topology evidence remain required before this draft is ready.
-
-The coexistence regression reproduced the observed three-button refusal on
-the base and passes after the fix. The whole Windows platform library passed
-361 tests with three existing ignored. Coverage includes opaque Unicode,
-mirrored geometry, both traversal orders, optional focus, renderer spoofing,
-and disabled/incomplete consent. Candidate-base `bin/ci --quick --no-install`
-passed four checks and intentionally skipped three heavy checks. Strict
-Clippy stops in unchanged cursor-overlay `render_map.rs:363`; the default-base
-monorepo quick run also has unrelated tooling/platform/lockfile failures.
-Neither result is reported as a whole-SDK qualification. Native acceptance,
-cross-platform qualification, review and official runtime installation remain
-separate gates.
-
-The Driver 0.49.1 compatibility candidate is
-`loonghao/cua@f524ded47765f1905b8eead00f95ecd4b5bce74c`, proposed in the
-existing `loonghao/cua#13`. It merges official release commit
-`fc0dff22b8931397fadae56cc77a3df4a85f6a4e` into the preceding 0.47.11
-compatibility branch without replacing its history. The source workspace is
-0.49.1; the Unix installer still has the upstream baked value 0.48.0. A source
-pin does not change the installed runtime or prove the installer resolves 0.49.1.
-
-The merge preserves ancestor-scoped snapshot anchors, single-use continuations,
+The merge preserved ancestor-scoped snapshot anchors, single-use continuations,
 navigation/loader fences, unambiguous upload associations and owned Windows
 consent/cleanup. Its one CDP mock conflict retains upstream click readback and
 node-resolution failure behavior alongside the existing upload fixture. The
@@ -257,7 +205,7 @@ The selected release is Driver 0.38.0; source adoption does not run its installe
 release notes identify plain SemVer Driver releases as its stable channel.
 The integration pins source, not the repository-wide Latest release.
 
-## Why the compatibility fork remains
+## Historical Driver 0.38 compatibility details
 
 The selected official Driver 0.38.0 does not contain `scope_ancestor_role`,
 `scope_anchor` or `browser_scope_unavailable`. Replacing the source URL with
