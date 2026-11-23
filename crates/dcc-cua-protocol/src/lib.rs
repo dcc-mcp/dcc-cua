@@ -23,6 +23,7 @@ pub const MAX_SESSION_IDLE_TIMEOUT_MS: u64 = 24 * 60 * 60 * 1_000;
 pub mod capture_preparation;
 pub mod continuity;
 pub mod frame_quality;
+pub mod in_process_qt;
 pub mod native_input_diagnostic;
 pub mod recording_audio;
 

@@ -26,6 +26,13 @@ startup-file path, arbitrary callback or different PID. An adapter that cannot
 provide its GUI-thread and teardown guarantees must advertise this mode as
 unsupported. Disconnecting the desktop does not grant new authority.
 
+The shared `dcc_cua_protocol::in_process_qt` module now defines the adapter
+boundary for this exchange. It validates the connection, task, process,
+window, document-generation and widget-generation binding, carries the
+bounded queue policy, and provides typed readiness, command status and failure
+values. These types make the adapter contract explicit without treating a
+declaration as proof that a live DCC adapter has installed the hook.
+
 Core capability discovery is tracked separately in
 [core issue 2867](https://github.com/dcc-mcp/dcc-mcp-core/issues/2867). A schema
 enum is not evidence that any live adapter implements that mode. Supported
