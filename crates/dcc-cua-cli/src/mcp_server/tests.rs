@@ -1299,9 +1299,10 @@ fn public_tool_schema_advertises_closed_pixel_actions_and_exact_window_only() {
     let scopes = pixel["properties"]["allowed_actions"]["items"]["oneOf"]
         .as_array()
         .unwrap();
-    assert_eq!(scopes.len(), 5);
+    assert_eq!(scopes.len(), 6);
     let window_actions: std::collections::BTreeSet<_> = scopes
         .iter()
+        .filter(|scope| scope["properties"]["input_kind"]["const"] == "window_state")
         .filter_map(|scope| scope["properties"]["action"]["const"].as_str())
         .collect();
     assert_eq!(
@@ -1920,7 +1921,12 @@ fn start_task_has_no_confirmation_ui_or_secret_value_fields() {
 fn task_action_schema_matches_the_closed_runtime_contract() {
     let schema = task_action_scope_schema();
     let variants = schema["oneOf"].as_array().unwrap();
-    assert_eq!(variants.len(), 9);
+    assert_eq!(variants.len(), 10);
+    let audio = variants
+        .iter()
+        .filter(|scope| scope["properties"]["input_kind"]["const"] == "playback_audio")
+        .collect::<Vec<_>>();
+    assert_eq!(audio, vec![&recording_audio::scope_schema()]);
 
     let variant = |input_kind: &str| {
         variants
@@ -2163,36 +2169,4 @@ fn capture_diagnostics_public_schema_defaults_false_without_an_extra_tool_or_gra
     assert_eq!(grant["allow_browser_input"], false);
 }
 
-#[rstest]
-#[tokio::test]
-async fn capture_diagnostics_observation_only_stop_and_expiry_remain_closed() {
-    let mut server = test_server();
-    let mut task = pixels_task();
-    task["allowed_methods"] = json!(["snapshot"]);
-    task["allowed_actions"] = json!([]);
-    let prepared = server.prepare_task(task.clone()).unwrap();
-    let id = prepared["task_id"].as_str().unwrap();
-    server.revoke_task(json!({"task_id": id})).await.unwrap();
-    let error = server
-        .task_call(
-            json!({"task_id":id, "method":"snapshot", "params":{"capture_diagnostics":true}}),
-        )
-        .await
-        .unwrap_err();
-    assert!(error.contains("stopped"), "{error}");
-    let prepared = server.prepare_task(task).unwrap();
-    let id = prepared["task_id"].as_str().unwrap();
-    server
-        .proposals
-        .get_mut(id)
-        .unwrap()
-        .registration
-        .expires_at_unix_ms = unix_time_millis().saturating_sub(1);
-    let error = server
-        .task_call(
-            json!({"task_id":id, "method":"snapshot", "params":{"capture_diagnostics":true}}),
-        )
-        .await
-        .unwrap_err();
-    assert!(error.contains("expired"), "{error}");
-}
+mod capture_diagnostics_tests;

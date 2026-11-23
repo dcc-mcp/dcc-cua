@@ -86,6 +86,15 @@ pub(crate) fn validate_grant_against_task_authorization(
     grant: &TaskGrant,
     lease: &TrustedTaskAuthorizationLease,
 ) -> Result<(), HostError> {
+    if grant.recording_audio_grant != lease.recording_audio_grant
+        || (lease.recording_audio_grant.is_some()
+            && (!grant.allow_recording
+                || grant.observation_mode != crate::TaskObservationMode::PixelsOnly))
+    {
+        return Err(browser_scope_denied(
+            "audio permission must exactly match the trusted pixels_only lease",
+        ));
+    }
     if grant.allow_capture_preparation != lease.capture_preparation.is_some()
         || (lease.capture_preparation.is_some()
             && grant.observation_mode != crate::TaskObservationMode::PixelsOnly)
@@ -131,6 +140,7 @@ pub(crate) fn validate_grant_against_task_authorization(
                     && !scope.is_window_frame()
                     && !scope.is_native_menu_dismiss()
                     && !scope.is_capture_preparation()
+                    && !scope.is_recording_audio()
                     && !scope.is_pixels_input()
             })
             || (lease
@@ -327,7 +337,16 @@ pub(crate) fn enforce_task_authorized_method(
                     "native recording requires a trusted immutable output directory",
                 )
             })?;
-        if !request.record_video || request.output_dir != directory {
+        let audio_granted = host
+            .task_authorization
+            .as_ref()
+            .is_some_and(|lease| lease.recording_audio_grant.is_some());
+        if !request.record_video
+            || request.output_dir != directory
+            || (request.recording_audio
+                == dcc_cua_protocol::recording_audio::RecordingAudioMode::TargetProcessTree)
+                != audio_granted
+        {
             return Err(browser_scope_denied(
                 "native recording requires video-only output in its exact authorized directory",
             ));

@@ -81,6 +81,21 @@ pub(super) fn validate_task_start(
                 .into(),
         );
     }
+    let audio_action = input
+        .allowed_actions
+        .iter()
+        .any(TrustedTaskActionScope::is_recording_audio);
+    if input.recording_audio.is_some() != audio_action
+        || (audio_action
+            && (!input.allow_recording
+                || input.observation_mode != TaskObservationMode::PixelsOnly
+                || input.surface != TaskSurface::Window))
+    {
+        return Err("audio requires an independent playback_audio action on a pixels_only recording window task".into());
+    }
+    if let Some(audio) = &input.recording_audio {
+        audio.validate()?;
+    }
     if input.observation_mode == TaskObservationMode::PixelsOnly {
         if input.surface != TaskSurface::Window
             || (!host_derived_target && !matches!(input.target_process_id, Some(pid) if pid != 0))
@@ -100,6 +115,7 @@ pub(super) fn validate_task_start(
                     && !action.is_window_frame()
                     && !action.is_native_menu_dismiss()
                     && !action.is_capture_preparation()
+                    && !action.is_recording_audio()
                     && !action.is_pixels_input()
             })
         {
@@ -202,3 +218,6 @@ impl TaskAuthorizationServer {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests;

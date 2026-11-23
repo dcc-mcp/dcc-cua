@@ -1,4 +1,6 @@
 use super::*;
+mod application_name;
+pub(crate) use application_name::resolved_application_name;
 mod gates;
 mod input_target_policy;
 #[cfg(any(windows, test))]
@@ -78,14 +80,6 @@ impl ComputerUseSession {
         Ok(())
     }
 
-    /// Constructor-owned task fence; never accepted from Host request payloads.
-    pub fn set_recording_authorization(
-        &mut self,
-        authorization: Arc<dcc_cua_showcase::RecordingAuthorization>,
-    ) {
-        self.recording_authorization = Some(authorization);
-    }
-
     /// Return the monotonic receipt for all action-scoped evidence.
     #[must_use]
     pub const fn action_evidence_epoch(&self) -> ActionEvidenceEpoch {
@@ -144,6 +138,7 @@ impl ComputerUseSession {
             recording_health: None,
             recording_keepalive: None,
             recording_authorization: None,
+            recording_audio_grant: None,
             native_task_authorization: None,
             #[cfg(windows)]
             windows_uia: None,
@@ -534,6 +529,16 @@ impl ComputerUseSession {
         &mut self,
         request: &ComputerUseRecordingStartRequest,
     ) -> ComputerUseResult<Value> {
+        let wants_audio = request.recording_audio
+            == dcc_cua_protocol::recording_audio::RecordingAudioMode::TargetProcessTree;
+        if wants_audio != self.recording_audio_grant.is_some()
+            || (wants_audio && (!self.uses_native_video_recording() || !request.record_video))
+        {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::InvalidAction,
+                "recording audio requires the independent trusted exact-window grant and native video",
+            ));
+        }
         validate_recording_start_request(request)?;
         self.ensure_active()?;
         if self.uses_native_video_recording() {
@@ -752,7 +757,12 @@ impl ComputerUseSession {
             action,
             ActionBannerPhase::Preparing,
         ));
-        validate_action(action)?;
+        #[cfg(windows)]
+        let exact_windows_pixels =
+            self.pixel_observation_route == Some(PixelObservationRoute::ExplicitPixelsOnly);
+        #[cfg(not(windows))]
+        let exact_windows_pixels = false;
+        validate_action_route(action, exact_windows_pixels)?;
         validate_window_action_coordinates(action)?;
         let observation = self.observation.clone().ok_or_else(|| {
             ComputerUseError::new(
@@ -2181,20 +2191,4 @@ impl ComputerUseSession {
             self.native_task_authorization.as_deref(),
         )
     }
-}
-
-pub(crate) fn resolved_application_name(configured: &str, target: &WindowTarget) -> String {
-    if !configured.trim().eq_ignore_ascii_case("application") && !configured.trim().is_empty() {
-        return configured.trim().to_owned();
-    }
-    let title = target.title.trim();
-    if !title.is_empty() {
-        return title.to_owned();
-    }
-    let process = target.app_name.trim();
-    process
-        .strip_suffix(".exe")
-        .or_else(|| process.strip_suffix(".EXE"))
-        .unwrap_or(process)
-        .to_owned()
 }
