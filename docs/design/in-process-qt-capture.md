@@ -29,7 +29,9 @@ unsupported. Disconnecting the desktop does not grant new authority.
 The shared `dcc_cua_protocol::in_process_qt` module now defines the adapter
 boundary for this exchange. It validates the connection, task, process,
 window, document-generation and widget-generation binding, carries the
-bounded queue policy, and provides typed readiness, command status and failure
+bounded queue policy, requires `ready` capability state before a capture
+request, and validates that command status, frame assessment and failure value
+remain coherent. It also provides typed readiness, command status and failure
 values. These types make the adapter contract explicit without treating a
 declaration as proof that a live DCC adapter has installed the hook.
 
