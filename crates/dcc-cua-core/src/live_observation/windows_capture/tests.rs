@@ -3,6 +3,105 @@ use rstest::rstest;
 use super::*;
 
 #[rstest]
+fn wgc_source_clock_binding_retains_raw_time_and_phase_evidence() {
+    let evidence = evidence();
+    let target = WindowsLiveTarget {
+        process_id: evidence.process_id,
+        window_handle: evidence.window_handle,
+        stream_id: 7,
+        instance: evidence.instance,
+        route: ExactWindowCaptureRoute::Wgc,
+    };
+    let mut proof = target.provenance(
+        evidence,
+        WindowsFrameGeometry::Wgc(
+            resolve_live_wgc_geometry(
+                evidence,
+                evidence,
+                measured_wgc_frame(),
+                96 * 86 * 4,
+                96,
+                86,
+            )
+            .unwrap(),
+        ),
+        9,
+    );
+    let now = Instant::now();
+    let pipeline = dcc_cua_showcase::NativeCapturePipelineTiming {
+        recording_precheck_us: 13,
+        exclusion_acquire_us: 17,
+        source_capture_us: 23,
+        source_validation_us: 41,
+        recording_admission_us: 97,
+        publication_validation_us: 31,
+    };
+    let measurement = dcc_cua_platform_windows::WgcPublishedFrameMeasurement {
+        source_wait: Duration::ZERO,
+        readback_total: Duration::ZERO,
+        gpu_copy_map: Duration::ZERO,
+        cpu_copy: Duration::ZERO,
+        compositor_system_relative_time_100ns: Some(10_000),
+        published_qpc_100ns: Some(7_510_000),
+        compositor: dcc_cua_platform_windows::WgcCompositorTiming::Available {
+            system_relative_time_100ns: 10_000,
+            compositor_to_publish: Duration::from_millis(750),
+        },
+        capture_clock: Ok(dcc_cua_platform_windows::WgcCaptureClock {
+            captured_at: now - Duration::from_millis(750),
+            published_at: now,
+            published_qpc_100ns: 7_510_000,
+            calibration_bracket: Duration::from_micros(50),
+        }),
+    };
+    assert_eq!(
+        bind_wgc_source_clock(&mut proof, measurement, pipeline, 100_000).unwrap(),
+        now - Duration::from_millis(750)
+    );
+    let FrameCaptureProvenance::NativeExactWindow(ref native) = proof else {
+        panic!("native proof")
+    };
+    let timing = native.wgc_timing.unwrap();
+    assert_eq!(timing.compositor_time_100ns, 10_000);
+    assert_eq!(timing.published_qpc_100ns, 7_510_000);
+    assert_eq!(timing.published_at_unix_ms, 100_000);
+    assert_eq!(timing.calibration_bracket_ns, 50_000);
+    assert_eq!(timing.pipeline, pipeline);
+    let mut unavailable = measurement;
+    unavailable.capture_clock = Err(
+        dcc_cua_platform_windows::WgcCompositorTimingUnavailable::PerformanceCounterUnavailable,
+    );
+    unavailable.published_qpc_100ns = None;
+    let mut fresh_proof = proof.clone();
+    let error =
+        bind_wgc_source_clock(&mut fresh_proof, unavailable, pipeline, 200_000).unwrap_err();
+    assert_eq!(error.code, ComputerUseErrorCode::StaleObservation);
+    assert_eq!(
+        error.message,
+        "WGC source clock unavailable: performance_counter_unavailable; compositor_time_100ns=Some(10000); published_qpc_100ns=None; publication time is not capture time",
+    );
+    assert_eq!(
+        fresh_proof, proof,
+        "failure cannot replace source evidence with publication time"
+    );
+
+    unavailable.published_qpc_100ns = Some(9_999);
+    unavailable.compositor = dcc_cua_platform_windows::WgcCompositorTiming::Unavailable {
+        reason: dcc_cua_platform_windows::WgcCompositorTimingUnavailable::TimestampAfterPublish,
+    };
+    unavailable.capture_clock =
+        Err(dcc_cua_platform_windows::WgcCompositorTimingUnavailable::TimestampAfterPublish);
+    let error =
+        bind_wgc_source_clock(&mut fresh_proof, unavailable, pipeline, 200_000).unwrap_err();
+    assert_eq!(error.code, ComputerUseErrorCode::StaleObservation);
+    assert_eq!(
+        error.message,
+        "WGC source clock unavailable: timestamp_after_publish; compositor_time_100ns=Some(10000); published_qpc_100ns=Some(9999); publication time is not capture time",
+    );
+    assert_eq!(fresh_proof, proof);
+}
+
+#[rstest]
 fn source_publication_revalidates_after_recording_admission_wait() {
     let lease_active = std::cell::Cell::new(true);
     let validation_called = std::cell::Cell::new(false);

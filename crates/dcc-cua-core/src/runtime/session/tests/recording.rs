@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::sync::Arc;
 
 use rstest::rstest;
 
@@ -151,6 +152,7 @@ async fn native_video_rejects_trajectory_only_before_any_driver_or_capture_call(
     session.pixel_observation_route = Some(PixelObservationRoute::ExplicitPixelsOnly);
     let error = session
         .recording_start(&ComputerUseRecordingStartRequest {
+            recording_audio: Default::default(),
             output_dir: "not-created".into(),
             record_video: false,
         })
@@ -380,7 +382,13 @@ async fn native_video_cancelled_startup_stays_unknown_without_an_attached_owner(
         tokio::sync::watch::channel(dcc_cua_showcase::LiveObservationStatus::default());
     let cancelled = tokio::time::timeout(
         Duration::from_millis(20),
-        session.start_owned_native_recorder(receiver, directory.to_str().unwrap(), 10, false),
+        session.start_owned_native_recorder_with_cancellation(
+            receiver,
+            directory.to_str().unwrap(),
+            10,
+            false,
+            Arc::new(|| false),
+        ),
     )
     .await;
     assert!(
@@ -438,7 +446,13 @@ async fn native_video_startup_attaches_ready_owner_before_clearing_pending() {
     let (mut session, calls) = counting_session();
     let (_sender, receiver) = native_recorder_test_frames();
     session
-        .start_owned_native_recorder(receiver, directory.to_str().unwrap(), 10, false)
+        .start_owned_native_recorder_with_cancellation(
+            receiver,
+            directory.to_str().unwrap(),
+            10,
+            false,
+            Arc::new(|| false),
+        )
         .await
         .unwrap();
     assert!(!session.local_cleanup.recorder_pending);
@@ -473,7 +487,13 @@ async fn native_video_joined_start_failure_preserves_actual_partial_and_clears_p
     let (mut session, calls) = counting_session();
     let (_sender, receiver) = native_recorder_test_frames();
     let error = session
-        .start_owned_native_recorder(receiver, directory.to_str().unwrap(), 10, false)
+        .start_owned_native_recorder_with_cancellation(
+            receiver,
+            directory.to_str().unwrap(),
+            10,
+            false,
+            Arc::new(|| false),
+        )
         .await
         .unwrap_err();
     assert_eq!(error.code, ComputerUseErrorCode::CaptureFailed);
@@ -500,7 +520,13 @@ async fn native_video_refused_ready_start_preserves_refusal_and_real_drain_failu
     let (mut session, calls) = counting_session();
     let (_sender, receiver) = native_recorder_test_frames();
     session
-        .start_owned_native_recorder(receiver, directory.to_str().unwrap(), 10, false)
+        .start_owned_native_recorder_with_cancellation(
+            receiver,
+            directory.to_str().unwrap(),
+            10,
+            false,
+            Arc::new(|| false),
+        )
         .await
         .unwrap();
     std::fs::write(directory.join("showcase.mp4"), b"previous video").unwrap();
@@ -542,7 +568,13 @@ async fn native_video_cancelled_refused_start_keeps_final_media_and_unknown_owne
         crate::live_observation::LiveObservation::from_test_shutdown_gate();
     session.live_observation = Some(source);
     session
-        .start_owned_native_recorder(receiver, directory.to_str().unwrap(), 10, true)
+        .start_owned_native_recorder_with_cancellation(
+            receiver,
+            directory.to_str().unwrap(),
+            10,
+            true,
+            Arc::new(|| false),
+        )
         .await
         .unwrap();
     {
@@ -647,6 +679,7 @@ async fn an_accepted_next_recording_clears_previous_terminal_video_evidence() {
 
     session
         .recording_start_after_target_validation(&ComputerUseRecordingStartRequest {
+            recording_audio: Default::default(),
             output_dir: directory.to_string_lossy().into_owned(),
             record_video: false,
         })
@@ -683,6 +716,7 @@ async fn a_failed_video_restart_preserves_previous_terminal_video_evidence() {
 
     let restart_error = session
         .recording_start_after_target_validation(&ComputerUseRecordingStartRequest {
+            recording_audio: Default::default(),
             output_dir: directory.to_string_lossy().into_owned(),
             record_video: true,
         })
@@ -746,5 +780,52 @@ async fn session_stop_reports_recording_finalize_failure_as_a_typed_cleanup_issu
         ["get_recording_state", "stop_recording", "end_session"]
     );
 
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[rstest]
+#[tokio::test]
+async fn audio_factory_resolution_failure_preserves_reusable_session_without_owned_resources() {
+    let (mut session, calls) = counting_session();
+    let error = session
+        .prepare_owned_native_recorder(|| {
+            Err(ComputerUseError::new(
+                ComputerUseErrorCode::BackendUnavailable,
+                "owned worker executable unavailable",
+            ))
+        })
+        .err()
+        .expect("constructor must fail");
+    assert_eq!(error.code, ComputerUseErrorCode::BackendUnavailable);
+    assert!(!session.local_cleanup.recorder_pending);
+    assert!(session.last_recording_video.is_none());
+    assert!(session.ensure_local_cleanup_reusable().is_ok());
+    assert_eq!(calls.load(AtomicOrdering::SeqCst), 0);
+}
+
+#[rstest]
+#[tokio::test]
+async fn new_owned_recording_attempt_cannot_reuse_a_previous_finalized_video_receipt() {
+    let directory =
+        std::env::temp_dir().join(format!("dcc-cua-recording-retry-{}", uuid::Uuid::new_v4()));
+    let (mut session, calls) = counting_session();
+    session.pixel_observation_route = Some(PixelObservationRoute::ExplicitPixelsOnly);
+    let _sender = attach_test_showcase(&mut session, &directory).await;
+    session.recording_stop().await.unwrap();
+    assert_eq!(
+        session.last_recording_video.as_ref().unwrap().state()["finalized"],
+        true
+    );
+    let previous_bytes = std::fs::read(directory.join("showcase.mp4")).unwrap();
+    session.prepare_owned_native_recorder(|| Ok(None)).unwrap();
+    let state = session.recording_state().await.unwrap();
+    assert_ne!(state["status"], "stopped");
+    assert_ne!(state["video"]["finalized"], true);
+    assert!(session.local_cleanup.recorder_pending);
+    assert_eq!(
+        std::fs::read(directory.join("showcase.mp4")).unwrap(),
+        previous_bytes
+    );
+    assert_eq!(calls.load(AtomicOrdering::SeqCst), 0);
     std::fs::remove_dir_all(directory).unwrap();
 }

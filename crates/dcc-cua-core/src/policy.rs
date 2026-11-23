@@ -672,11 +672,13 @@ pub(crate) fn validate_action(action: &ComputerUseAction) -> ComputerUseResult<(
             && (duration_ms == 0
                 || action.keys.is_empty()
                 || action.keys.len() > 2
-                || !action.modifiers.is_empty()
+                || !(action.modifiers.is_empty()
+                    || (action.modifiers.len() == 1
+                        && action.modifiers[0].eq_ignore_ascii_case("shift")))
                 || action
                     .keys
                     .iter()
-                    .map(|key| key.trim().to_ascii_lowercase())
+                    .map(|key| key.to_ascii_lowercase())
                     .any(|key| {
                         !matches!(
                             key.as_str(),
@@ -691,7 +693,7 @@ pub(crate) fn validate_action(action: &ComputerUseAction) -> ComputerUseResult<(
         {
             return Err(ComputerUseError::new(
                 ComputerUseErrorCode::InvalidAction,
-                "keypress duration_ms requires one or two unique WASD/arrow keys, no modifiers, and a non-zero duration",
+                "keypress duration_ms requires one or two unique WASD/arrow keys, at most one Shift modifier, and a non-zero duration",
             ));
         }
     }
@@ -785,6 +787,28 @@ pub(crate) fn keyboard_shortcut_keys(action: &ComputerUseAction) -> Vec<String> 
     }
     keys
 }
+
+/// Modifier holds are admitted only by the existing Windows exact-pixel fence.
+pub(crate) fn validate_action_route(
+    action: &ComputerUseAction,
+    exact_windows_pixels: bool,
+) -> ComputerUseResult<()> {
+    validate_action(action)?;
+    if action.action == "keypress"
+        && action.duration_ms.is_some()
+        && !action.modifiers.is_empty()
+        && !exact_windows_pixels
+    {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::InvalidAction,
+            "held modifiers require the Windows explicit pixels-only input route",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests;
 
 pub(crate) fn action_arguments(
     action: &ComputerUseAction,

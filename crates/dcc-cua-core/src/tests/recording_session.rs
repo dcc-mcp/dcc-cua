@@ -17,6 +17,7 @@ fn clipboard_and_recording_requests_are_bounded() {
     );
     assert!(
         validate_recording_start_request(&ComputerUseRecordingStartRequest {
+            recording_audio: Default::default(),
             output_dir: "relative/output".into(),
             record_video: false,
         })
@@ -24,6 +25,7 @@ fn clipboard_and_recording_requests_are_bounded() {
     );
     assert!(
         validate_recording_start_request(&ComputerUseRecordingStartRequest {
+            recording_audio: Default::default(),
             output_dir: "~/cua-recordings".into(),
             record_video: false,
         })
