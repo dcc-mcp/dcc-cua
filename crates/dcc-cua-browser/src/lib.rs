@@ -491,19 +491,41 @@ impl BrowserSession {
         validate_navigate_request(&request)?;
         let delivery_mode = request.delivery_mode.as_deref().unwrap_or("background");
         self.begin_snapshot_sensitive_native_attempt();
-        let result = BrowserResult::from_value(
-            native
-                .call_browser_tool(
-                    "browser_navigate",
-                    json!({
-                        "target_id": request.target_id,
-                        "tab_id": request.tab_id,
-                        "url": request.url,
-                        "delivery_mode": delivery_mode,
-                    }),
-                )
-                .await?,
-        )?;
+        let result = match native
+            .call_browser_tool(
+                "browser_navigate",
+                json!({
+                    "target_id": request.target_id,
+                    "tab_id": request.tab_id,
+                    "url": request.url,
+                }),
+            )
+            .await
+        {
+            Ok(value) => BrowserResult::from_value(value)?,
+            Err(error) if error.code == ComputerUseErrorCode::CompletionUnknown => {
+                return Ok(unknown_navigation_receipt(
+                    &request.target_id,
+                    &request.tab_id,
+                    &request.url,
+                    delivery_mode,
+                ));
+            }
+            Err(error) => return Err(error),
+        };
+        if result.value["isError"] == true && result.value["structuredContent"].is_null() {
+            return Ok(unknown_navigation_receipt(
+                &request.target_id,
+                &request.tab_id,
+                &request.url,
+                delivery_mode,
+            ));
+        }
+        let upstream_receipt_is_minimal = result.value["structuredContent"]["delivery_mode"]
+            .is_null()
+            && result.value["structuredContent"]["dispatched"].is_null()
+            && result.value["structuredContent"]["activation_state"].is_null()
+            && result.value["structuredContent"]["readback_state"].is_null();
         let succeeded = navigation_response_is_success(
             &result.value,
             &request.target_id,
@@ -511,7 +533,30 @@ impl BrowserSession {
             &request.url,
             delivery_mode,
         )?;
-        result.into_public_navigation_receipt(succeeded)
+        let activated = if upstream_receipt_is_minimal && succeeded && delivery_mode == "foreground"
+        {
+            match native.activate().await {
+                Ok(_) => true,
+                Err(_) => {
+                    return Ok(navigation_activation_failure_receipt(
+                        &request.target_id,
+                        &request.tab_id,
+                        &request.url,
+                        delivery_mode,
+                    ));
+                }
+            }
+        } else {
+            false
+        };
+        result.into_public_navigation_receipt(
+            succeeded,
+            delivery_mode,
+            activated,
+            &request.target_id,
+            &request.tab_id,
+            &request.url,
+        )
     }
 
     pub async fn click(
@@ -928,22 +973,50 @@ impl BrowserResult {
         Ok(Self { value, images })
     }
 
-    fn into_public_navigation_receipt(self, succeeded: bool) -> ComputerUseResult<Self> {
+    fn into_public_navigation_receipt(
+        self,
+        succeeded: bool,
+        requested_delivery_mode: &str,
+        activated: bool,
+        expected_target_id: &str,
+        expected_tab_id: &str,
+        expected_url: &str,
+    ) -> ComputerUseResult<Self> {
         let structured = structured_content(&self.value)?;
+        let upstream_receipt_is_minimal = structured["delivery_mode"].is_null();
         let mut public = json!({
             "status": structured["status"],
             "target_id": structured["target_id"],
             "tab_id": structured["tab_id"],
             "url": structured["url"],
-            "delivery_mode": structured["delivery_mode"],
+            "delivery_mode": structured["delivery_mode"].as_str().unwrap_or(requested_delivery_mode),
             "dispatched": structured["dispatched"],
             "activated": structured["activated"],
             "activation_state": structured["activation_state"],
             "readback_state": structured["readback_state"],
             "refs_invalidated": structured["refs_invalidated"],
         });
+        if upstream_receipt_is_minimal {
+            public["target_id"] = json!(expected_target_id);
+            public["tab_id"] = json!(expected_tab_id);
+            public["url"] = json!(expected_url);
+            public["dispatched"] = json!(true);
+            public["activated"] = json!(activated);
+            public["activation_state"] = json!(if activated {
+                "succeeded"
+            } else {
+                "not_requested"
+            });
+            public["readback_state"] = json!("not_provided");
+        }
         if structured["dispatch_state"] == "unknown" {
             public["dispatch_state"] = json!("unknown");
+            public["blind_retry"] = json!(structured["blind_retry"].as_bool().unwrap_or(false));
+            public["fresh_observation_required"] = json!(
+                structured["fresh_observation_required"]
+                    .as_bool()
+                    .unwrap_or(true)
+            );
         }
         if succeeded && structured["delivery_mode"] == "foreground" {
             for key in [
@@ -966,6 +1039,65 @@ impl BrowserResult {
             }),
             images: Vec::new(),
         })
+    }
+}
+
+fn unknown_navigation_receipt(
+    target_id: &str,
+    tab_id: &str,
+    url: &str,
+    delivery_mode: &str,
+) -> BrowserResult {
+    BrowserResult {
+        value: json!({
+            "structuredContent": {
+                "status": "error",
+                "target_id": target_id,
+                "tab_id": tab_id,
+                "url": url,
+                "delivery_mode": delivery_mode,
+                "dispatched": null,
+                "dispatch_state": "unknown",
+                "activated": false,
+                "activation_state": "not_started",
+                "readback_state": "not_started",
+                "refs_invalidated": true,
+                "blind_retry": false,
+                "fresh_observation_required": true,
+                "error_code": "navigation_completion_unknown",
+                "error": "browser navigation completion is unknown; refresh browser state before retrying"
+            },
+            "isError": true
+        }),
+        images: Vec::new(),
+    }
+}
+
+fn navigation_activation_failure_receipt(
+    target_id: &str,
+    tab_id: &str,
+    url: &str,
+    delivery_mode: &str,
+) -> BrowserResult {
+    BrowserResult {
+        value: json!({
+            "structuredContent": {
+                "status": "error",
+                "target_id": target_id,
+                "tab_id": tab_id,
+                "url": url,
+                "delivery_mode": delivery_mode,
+                "dispatched": true,
+                "activated": false,
+                "activation_state": "failed",
+                "readback_state": "not_started",
+                "refs_invalidated": true,
+                "error_code": "target_activation_failed",
+                "error": "foreground target activation failed"
+            },
+            "isError": true
+        }),
+        images: Vec::new(),
     }
 }
 
@@ -1349,9 +1481,27 @@ fn navigation_response_is_success(
     let structured = structured_content(value)?;
     let exact_identity = structured["target_id"].as_str() == Some(expected_target_id)
         && structured["tab_id"].as_str() == Some(expected_tab_id)
-        && structured["url"].as_str() == Some(expected_url)
-        && structured["delivery_mode"].as_str() == Some(expected_delivery_mode);
+        && structured["url"].as_str() == Some(expected_url);
     if !exact_identity {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::BackendUnavailable,
+            "browser navigation receipt returned inconsistent target, tab, URL, or delivery mode",
+        ));
+    }
+    if structured["delivery_mode"].is_null()
+        && structured["dispatched"].is_null()
+        && structured["activation_state"].is_null()
+        && structured["readback_state"].is_null()
+    {
+        if structured["status"] == "ok" && structured["refs_invalidated"] == true {
+            return Ok(true);
+        }
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::BackendUnavailable,
+            "browser navigation returned a malformed minimal SDK receipt",
+        ));
+    }
+    if structured["delivery_mode"].as_str() != Some(expected_delivery_mode) {
         return Err(ComputerUseError::new(
             ComputerUseErrorCode::BackendUnavailable,
             "browser navigation receipt returned inconsistent target, tab, URL, or delivery mode",

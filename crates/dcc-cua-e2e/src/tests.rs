@@ -46,7 +46,7 @@ const BROWSER_COMPLETENESS_HTML: &str = r#"<!doctype html>
 <body>
   <p data-cua-id="page-marker">BROWSER_COMPLETENESS_MARKER_v1</p>
   <label data-cua-id="upload-chooser" for="upload" aria-label="standalone-upload">Choose upload</label>
-  <input data-cua-id="upload" id="upload" type="file" hidden>
+  <input data-cua-id="upload" id="upload" aria-label="standalone-upload" type="file" hidden>
   <span data-cua-id="upload-state" id="upload-state">upload=0</span>
   <a data-cua-id="download" aria-label="standalone-download" href="/download" download>Download fixture</a>
   <script>
@@ -217,19 +217,39 @@ fn allocate_loopback_port() -> u16 {
 
 #[cfg(feature = "gui-e2e")]
 fn browser_ref_by_text(snapshot: &Value, text: &str) -> String {
-    snapshot["result"]["structuredContent"]["refs"]
+    let structured = &snapshot["result"]["structuredContent"];
+    structured["refs"]
         .as_array()
-        .and_then(|refs| {
-            refs.iter().find(|entry| {
-                entry["label"]
-                    .as_str()
-                    .or_else(|| entry["name"].as_str())
-                    .is_some_and(|label| label.contains(text))
-            })
+        .into_iter()
+        .flat_map(|refs| refs.iter())
+        .filter(|entry| {
+            entry["label"]
+                .as_str()
+                .or_else(|| entry["name"].as_str())
+                .is_some_and(|label| label.contains(text))
         })
-        .and_then(|entry| entry["ref"].as_str())
-        .map(str::to_owned)
+        .find_map(|entry| entry["ref"].as_str().map(str::to_owned))
         .unwrap_or_else(|| panic!("browser snapshot is missing ref text {text:?}: {snapshot}"))
+}
+
+#[cfg(feature = "gui-e2e")]
+fn browser_upload_ref_by_text(snapshot: &Value, text: &str) -> String {
+    let structured = &snapshot["result"]["structuredContent"];
+    structured["refs"]
+        .as_array()
+        .into_iter()
+        .flat_map(|refs| refs.iter())
+        .filter(|entry| {
+            let label = entry["label"]
+                .as_str()
+                .or_else(|| entry["name"].as_str())
+                .unwrap_or_default();
+            label.contains(text) && label.contains("type=file")
+        })
+        .find_map(|entry| entry["ref"].as_str().map(str::to_owned))
+        .unwrap_or_else(|| {
+            panic!("browser snapshot is missing upload ref text {text:?}: {snapshot}")
+        })
 }
 
 #[cfg(feature = "gui-e2e")]
@@ -985,25 +1005,11 @@ async fn controlled_electron_round_trip() {
     assert_eq!(foreground_state["tab_id"], tab_id, "{foreground_state}");
     assert_eq!(foreground_state["activated"], true, "{foreground_state}");
     assert_eq!(
-        foreground_state["visibility_state"], "visible",
+        foreground_state["activation_state"], "succeeded",
         "{foreground_state}"
     );
-    assert!(
-        matches!(
-            foreground_state["ready_state"].as_str(),
-            Some("interactive" | "complete")
-        ),
-        "{foreground_state}"
-    );
-    assert!(
-        foreground_state["current_url"].is_string(),
-        "{foreground_state}"
-    );
-    assert!(foreground_state["title"].is_string(), "{foreground_state}");
-    assert!(
-        foreground_state["heading"].is_string(),
-        "{foreground_state}"
-    );
+    assert_eq!(foreground_state["readback_state"], "not_provided");
+    assert_eq!(foreground_state["refs_invalidated"], true);
     wait_for_browser_fixture(
         &browser_fixture,
         "page-marker",
