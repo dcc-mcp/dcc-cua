@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.22.0](https://github.com/dcc-mcp/dcc-cua/compare/v1.21.0...v1.22.0) (2026-11-24)
+
+
+### Features
+
+* **profiles:** fence versioned DCC runtime matching ([e0a48e0](https://github.com/dcc-mcp/dcc-cua/commit/e0a48e05d7da81f7ee323301490d01bbc9846c96))
+
 ## [1.21.0](https://github.com/dcc-mcp/dcc-cua/compare/v1.20.1...v1.21.0) (2026-11-23)
 
 
