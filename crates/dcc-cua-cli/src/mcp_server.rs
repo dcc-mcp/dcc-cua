@@ -1117,6 +1117,9 @@ fn method_allowed(surface: TaskSurface, method: &str) -> bool {
 
 fn validate_task_method_params(method: &str, params: &Value) -> Result<(), String> {
     capture_popup::validate_params(method, params)?;
+    if method == "execute_action" {
+        validate_execute_action_params(params)?;
+    }
     if method == "browser_extension_call"
         && !matches!(
             params.get("method").and_then(Value::as_str),
@@ -1235,6 +1238,54 @@ fn validate_task_method_params(method: &str, params: &Value) -> Result<(), Strin
     }
     if method == "change_window_state" {
         validate_window_state_params(params)?;
+    }
+    Ok(())
+}
+
+fn validate_execute_action_params(params: &Value) -> Result<(), String> {
+    let object = params
+        .as_object()
+        .ok_or_else(|| "execute_action params must be an object".to_owned())?;
+    if object
+        .get("observation_id")
+        .and_then(Value::as_str)
+        .is_none_or(str::is_empty)
+    {
+        return Err("execute_action requires the latest observation_id".into());
+    }
+    let action = object
+        .get("action")
+        .and_then(Value::as_object)
+        .ok_or_else(|| {
+            "execute_action requires params.action with action, input_kind, and intent".to_owned()
+        })?;
+    if action
+        .get("action")
+        .and_then(Value::as_str)
+        .is_none_or(|value| !TrustedTaskActionScope::NATIVE_ACTIONS.contains(&value))
+    {
+        return Err("execute_action.action.action must be a supported native action".into());
+    }
+    if !matches!(
+        action.get("input_kind").and_then(Value::as_str),
+        Some("semantic" | "raw_input")
+    ) {
+        return Err("execute_action.action.input_kind must be semantic or raw_input".into());
+    }
+    if action
+        .get("intent")
+        .and_then(Value::as_str)
+        .is_none_or(str::is_empty)
+    {
+        return Err("execute_action.action.intent is required".into());
+    }
+    if action.get("input_kind").and_then(Value::as_str) == Some("semantic")
+        && object
+            .get("accessibility_state_id")
+            .and_then(Value::as_str)
+            .is_none_or(str::is_empty)
+    {
+        return Err("semantic execute_action requires accessibility_state_id".into());
     }
     Ok(())
 }

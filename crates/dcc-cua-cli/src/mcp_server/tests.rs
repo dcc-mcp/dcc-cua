@@ -90,6 +90,26 @@ fn extension_methods_are_browser_only_and_closed() {
 }
 
 #[rstest]
+fn execute_action_rejects_missing_nested_action_before_host_dispatch() {
+    let missing_action = json!({"observation_id":"obs-1"});
+    let error = validate_task_method_params("execute_action", &missing_action).unwrap_err();
+    assert!(error.contains("params.action"), "{error}");
+
+    let invalid_action = json!({
+        "observation_id":"obs-1",
+        "action":{"action":"click","input_kind":"raw_input"}
+    });
+    let error = validate_task_method_params("execute_action", &invalid_action).unwrap_err();
+    assert!(error.contains("intent"), "{error}");
+
+    let valid_action = json!({
+        "observation_id":"obs-1",
+        "action":{"action":"click","input_kind":"raw_input","intent":"ordinary_edit"}
+    });
+    assert!(validate_task_method_params("execute_action", &valid_action).is_ok());
+}
+
+#[rstest]
 #[tokio::test]
 async fn extension_snapshot_requires_the_task_origin_before_host_dispatch() {
     let mut server = test_server();
