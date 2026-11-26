@@ -36,6 +36,10 @@ class HttpFailure(RuntimeError):
         super().__init__(f"{stage} failed; HTTP status {status or 'unavailable'}")
 
 
+class ArtifactNotVisible(ValueError):
+    """The upload is not visible in the run inventory yet."""
+
+
 class GhApi:
     def __init__(self):
         if not os.environ.get("GH_TOKEN"):
@@ -191,18 +195,41 @@ def download(api, *, repository, root, identity, sleep=time.sleep):
                 reason="pagination_limit_exceeded",
             )
             raise ValueError("run artifact pagination did not finish within its bound")
-        if len(found) != 1:
+        if not found:
             emit(
                 stage="run_inventory",
                 verdict="rejected",
                 reason="upload_id_not_proven_in_run",
             )
-            raise ValueError(
-                "upload ID is not proven in the current run; do not retry an unexplained 404"
+            raise ArtifactNotVisible(
+                "upload ID is not proven in the current run; artifact visibility may still be propagating"
             )
+        if len(found) != 1:
+            emit(
+                stage="run_inventory",
+                verdict="rejected",
+                reason="upload_id_not_unique_in_run",
+            )
+            raise ValueError("upload ID is not unique in the current run")
         return found[0]
 
-    listed = confirm_in_run()
+    def confirm_uploaded_in_run():
+        for attempt in range(1, MAX_ATTEMPTS + 1):
+            try:
+                return confirm_in_run()
+            except ArtifactNotVisible:
+                if attempt == MAX_ATTEMPTS:
+                    raise
+                emit(
+                    stage="run_inventory",
+                    attempt=attempt,
+                    retry_reason="upload_visibility_propagation",
+                    delay_seconds=attempt,
+                )
+                sleep(attempt)
+        raise AssertionError("unreachable upload visibility retry state")
+
+    listed = confirm_uploaded_in_run()
 
     def read_proven(stage, operation):
         for attempt in range(1, MAX_ATTEMPTS + 1):

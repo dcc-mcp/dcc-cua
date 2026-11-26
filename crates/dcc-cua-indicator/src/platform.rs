@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -49,6 +49,7 @@ pub(crate) mod cursor_registration;
 mod escape_hub_lifecycle;
 mod frame_wait;
 mod owned_input_suppression;
+mod startup;
 pub(super) use owned_input_suppression::Guard as PlatformInputSuppressionGuard;
 mod presentation;
 mod rendering;
@@ -66,6 +67,7 @@ pub(super) use presentation::{TargetPresentationPolicy, target_presentation_poli
 use rendering::{
     record_rendering_result, record_rendering_results, set_activity_property, set_overlay_alpha,
 };
+use startup::BannerStartupStage;
 
 use super::{
     BannerActivity, BannerActivitySignal, BannerFailure, BannerIndicators, BannerStatus,
@@ -92,6 +94,7 @@ const ESCAPE_HOOK_WATCHDOG_INTERVAL_MS: u32 = 1_000;
 // Keep the wait bounded, but give the dedicated banner thread enough time to
 // create and present every frame before refusing the control session.
 const BANNER_START_TIMEOUT: Duration = Duration::from_secs(8);
+
 const SURFACE: COLORREF = rgb(
     theme_tokens::SURFACE.0,
     theme_tokens::SURFACE.1,
@@ -288,6 +291,8 @@ impl PlatformBanner {
         let thread_frame_visible = Arc::clone(&frame_visible);
         let thread_inside_target = Arc::clone(&inside_target);
         let thread_backend_failure = Arc::clone(&backend_failure);
+        let startup_stage = Arc::new(AtomicU8::new(BannerStartupStage::ThreadStarted as u8));
+        let thread_startup_stage = Arc::clone(&startup_stage);
         let thread_escape_hub = escape_hub;
         let thread_input_suppression = Arc::clone(&input_suppression.renderer);
         let thread = thread::Builder::new()
@@ -309,6 +314,7 @@ impl PlatformBanner {
                     &thread_backend_failure,
                     capture_exclusion,
                     &thread_input_suppression,
+                    &thread_startup_stage,
                 );
                 thread_active.store(false, Ordering::Release);
                 thread_input_suppression.stop();
@@ -352,8 +358,10 @@ impl PlatformBanner {
             Err(error) => {
                 stop.store(true, Ordering::Release);
                 let _ = thread.join();
+                let stage =
+                    BannerStartupStage::from_code(startup_stage.load(Ordering::Acquire)).label();
                 Err(IndicatorError::Backend(format!(
-                    "timed out while starting control banner: {error}"
+                    "timed out while starting control banner at {stage}: {error}"
                 )))
             }
         }
@@ -948,16 +956,22 @@ fn run_banner(
     rendering_failure: &Mutex<Option<BannerFailure>>,
     capture_exclusion: &CaptureExclusionState,
     input_suppression: &owned_input_suppression::RendererSuppression,
+    startup_stage: &AtomicU8,
 ) -> Result<(), IndicatorError> {
+    startup_stage.store(BannerStartupStage::DpiAwareness as u8, Ordering::Release);
     let dpi_awareness = ThreadDpiAwareness::enter()?;
     let target_window = HWND(target.window_handle as *mut core::ffi::c_void);
+    startup_stage.store(
+        BannerStartupStage::TargetValidation as u8,
+        Ordering::Release,
+    );
     validate_target(target_window, target.process_id)?;
     let identity = target.identity();
-    let overlay = OverlayWindow::new(create_overlay(
-        &identity,
-        BannerActivity::Connecting,
-        target_icon(target_window),
-    )?)?;
+    startup_stage.store(BannerStartupStage::TargetIcon as u8, Ordering::Release);
+    let icon = target_icon(target_window);
+    startup_stage.store(BannerStartupStage::OverlayCreation as u8, Ordering::Release);
+    let overlay = OverlayWindow::new(create_overlay(&identity, BannerActivity::Connecting, icon)?)?;
+    startup_stage.store(BannerStartupStage::FrameCreation as u8, Ordering::Release);
     let frames = (0..TARGET_FRAME_GRADIENT_STEPS)
         .map(|_| create_frame_overlay().and_then(OverlayWindow::new))
         .collect::<Result<Vec<_>, _>>()?;
@@ -968,11 +982,15 @@ fn run_banner(
         suppression: input_suppression,
     };
     let dpi_probe = DpiProbeWindow::create(&dpi_awareness).ok();
+    startup_stage.store(BannerStartupStage::TargetGeometry as u8, Ordering::Release);
     let target_geometry = read_target_geometry(target_window, dpi_probe.as_ref())?;
     let mut compact_hidden = compact_target(target_geometry);
+    startup_stage.store(BannerStartupStage::MonitorGeometry as u8, Ordering::Release);
     let mut geometry = banner_geometry(target_geometry, read_monitor_geometry(target_window)?);
     let mut frame_geometry = target_frame_geometry(target_geometry);
+    startup_stage.store(BannerStartupStage::BannerPlacement as u8, Ordering::Release);
     position_banner(overlay.0, target_window, geometry, true)?;
+    startup_stage.store(BannerStartupStage::FramePlacement as u8, Ordering::Release);
     for (band, frame) in frames.iter().enumerate() {
         set_overlay_alpha(
             frame.0,
@@ -1001,6 +1019,7 @@ fn run_banner(
         initial_visible && target_frame_has_visible_band(frame_geometry.thickness),
         Ordering::Release,
     );
+    startup_stage.store(BannerStartupStage::ReadinessSignal as u8, Ordering::Release);
     ready
         .try_send(Ok(()))
         .map_err(|error| IndicatorError::Backend(format!("signal banner readiness: {error}")))?;

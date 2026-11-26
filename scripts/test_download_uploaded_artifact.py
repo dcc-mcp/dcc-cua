@@ -120,23 +120,53 @@ class UploadedArtifactDownloadTests(unittest.TestCase):
         self.assertFalse((self.root / "artifact.zip").exists())
         self.assertNotIn('"stage": "complete"', self.output.getvalue())
 
-    def test_unproven_id_or_inventory_denial_is_not_retried(self):
-        for listing in (
-            {"total_count": 0, "artifacts": []},
-            reader.HttpFailure("run_artifacts", 404),
-            reader.HttpFailure("run_artifacts", 403),
+    def test_empty_inventory_visibility_is_bounded_but_denials_are_not_retried(self):
+        for listing, expected_delays in (
+            ({"total_count": 0, "artifacts": []}, [1, 2]),
+            (reader.HttpFailure("run_artifacts", 404), []),
+            (reader.HttpFailure("run_artifacts", 403), []),
         ):
             with self.subTest(listing=type(listing).__name__):
+                self.delays = []
                 self.api = FakeApi()
                 self.api.listings = [listing]
                 with self.assertRaises((ValueError, reader.HttpFailure)):
                     self.run_download()
-                self.assertEqual(self.delays, [])
+                self.assertEqual(self.delays, expected_delays)
                 self.assertFalse(any(c[0] == "metadata" for c in self.api.calls))
+
+    def test_upload_visibility_retries_are_bounded_before_download(self):
+        self.api.listings = [
+            {"total_count": 0, "artifacts": []},
+            {"total_count": 0, "artifacts": []},
+            {"total_count": 1, "artifacts": [self.api.metadata]},
+        ]
+        self.run_download()
+        self.assertEqual(self.delays, [1, 2])
+        self.assertEqual(
+            [c[0] for c in self.api.calls],
+            [
+                "repository",
+                "run_artifacts",
+                "run_artifacts",
+                "run_artifacts",
+                "metadata",
+                "bundle",
+            ],
+        )
+
+    def test_upload_visibility_retries_when_other_artifacts_are_already_listed(self):
+        self.api.listings = [
+            {"total_count": 1, "artifacts": [{"id": 999}]},
+            {"total_count": 1, "artifacts": [{"id": 999}]},
+            {"total_count": 1, "artifacts": [self.api.metadata]},
+        ]
+        self.run_download()
+        self.assertEqual(self.delays, [1, 2])
+        self.assertTrue((self.root / "artifact.zip").is_file())
 
     def test_inventory_rejections_report_only_closed_reasons_before_download(self):
         cases = (
-            ({"total_count": 0, "artifacts": []}, "upload_id_not_proven_in_run"),
             (
                 {"total_count": "remote-body-secret", "artifacts": []},
                 "invalid_shape_or_bound",
@@ -189,6 +219,9 @@ class UploadedArtifactDownloadTests(unittest.TestCase):
         for field, value in mutations:
             with self.subTest(field=field):
                 self.api = FakeApi()
+                self.api.listings = [
+                    {"total_count": 1, "artifacts": [copy.deepcopy(self.api.metadata)]}
+                ]
                 self.api.metadata[field] = value
                 with self.assertRaises(ValueError):
                     self.run_download()

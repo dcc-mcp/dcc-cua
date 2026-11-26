@@ -1,5 +1,5 @@
 use super::*;
-use crate::frame_quality::CaptureMode;
+use crate::frame_quality::{CaptureMode, FrameAssessment, assess_bgra};
 use rstest::rstest;
 
 fn capability() -> InProcessQtCapability {
@@ -54,6 +54,25 @@ fn request_requires_the_capability_target_and_bounded_deadline() {
 }
 
 #[rstest]
+#[case(
+    InProcessQtReadiness::Unavailable,
+    InProcessQtContractError::UnsupportedMode
+)]
+#[case(
+    InProcessQtReadiness::WaitingForDocument,
+    InProcessQtContractError::NotReady
+)]
+#[case(InProcessQtReadiness::Disconnected, InProcessQtContractError::NotReady)]
+fn request_requires_ready_capture_capability(
+    #[case] readiness: InProcessQtReadiness,
+    #[case] expected: InProcessQtContractError,
+) {
+    let mut capability = capability();
+    capability.readiness = readiness;
+    assert_eq!(request().validate(&capability), Err(expected));
+}
+
+#[rstest]
 #[case(0, 1_000)]
 #[case(33, 1_000)]
 #[case(8, 0)]
@@ -104,4 +123,55 @@ fn capability_and_receipt_keep_typed_wire_values() {
     let encoded = serde_json::to_value(receipt).unwrap();
     assert_eq!(encoded["status"], "blank_capture");
     assert_eq!(encoded["failure"], "blank_capture");
+}
+
+#[rstest]
+fn receipt_requires_coherent_capture_evidence() {
+    let capability = capability();
+    let widget = request().widget;
+    let informative = InProcessQtCaptureReceipt {
+        status: InProcessQtCommandStatus::Captured,
+        target: capability.target.clone(),
+        widget: widget.clone(),
+        assessment: Some(
+            assess_bgra(
+                CaptureMode::InProcessQt,
+                &[0, 0, 0, 255, 0, 0, 255, 255],
+                2,
+                1,
+            )
+            .unwrap(),
+        ),
+        failure: None,
+    };
+    assert!(informative.validate().is_ok());
+
+    let blank = InProcessQtCaptureReceipt {
+        status: InProcessQtCommandStatus::BlankCapture,
+        target: capability.target,
+        widget,
+        assessment: Some(assess_bgra(CaptureMode::InProcessQt, &[0, 0, 0, 255], 1, 1).unwrap()),
+        failure: Some(InProcessQtFailure::BlankCapture),
+    };
+    assert!(blank.validate().is_ok());
+
+    let mut forged = informative;
+    forged.failure = Some(InProcessQtFailure::BlankCapture);
+    assert_eq!(
+        forged.validate(),
+        Err(InProcessQtContractError::InvalidReceipt)
+    );
+
+    let mut wrong_mode = blank;
+    wrong_mode.assessment = Some(FrameAssessment::BlankCapture {
+        attempted_mode: CaptureMode::WindowContent,
+        statistics: match wrong_mode.assessment.take().unwrap() {
+            FrameAssessment::BlankCapture { statistics, .. } => statistics,
+            _ => unreachable!(),
+        },
+    });
+    assert_eq!(
+        wrong_mode.validate(),
+        Err(InProcessQtContractError::InvalidReceipt)
+    );
 }
