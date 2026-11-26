@@ -49,6 +49,7 @@ pub(crate) mod cursor_registration;
 mod escape_hub_lifecycle;
 mod frame_wait;
 mod owned_input_suppression;
+mod startup;
 pub(super) use owned_input_suppression::Guard as PlatformInputSuppressionGuard;
 mod presentation;
 mod rendering;
@@ -66,6 +67,7 @@ pub(super) use presentation::{TargetPresentationPolicy, target_presentation_poli
 use rendering::{
     record_rendering_result, record_rendering_results, set_activity_property, set_overlay_alpha,
 };
+use startup::BannerStartupStage;
 
 use super::{
     BannerActivity, BannerActivitySignal, BannerFailure, BannerIndicators, BannerStatus,
@@ -93,55 +95,6 @@ const ESCAPE_HOOK_WATCHDOG_INTERVAL_MS: u32 = 1_000;
 // create and present every frame before refusing the control session.
 const BANNER_START_TIMEOUT: Duration = Duration::from_secs(8);
 
-#[repr(u8)]
-#[derive(Clone, Copy)]
-enum BannerStartupStage {
-    ThreadStarted,
-    DpiAwareness,
-    TargetValidation,
-    TargetIcon,
-    OverlayCreation,
-    FrameCreation,
-    TargetGeometry,
-    MonitorGeometry,
-    BannerPlacement,
-    FramePlacement,
-    ReadinessSignal,
-}
-
-impl BannerStartupStage {
-    const fn label(self) -> &'static str {
-        match self {
-            Self::ThreadStarted => "thread_started",
-            Self::DpiAwareness => "dpi_awareness",
-            Self::TargetValidation => "target_validation",
-            Self::TargetIcon => "target_icon",
-            Self::OverlayCreation => "overlay_creation",
-            Self::FrameCreation => "frame_creation",
-            Self::TargetGeometry => "target_geometry",
-            Self::MonitorGeometry => "monitor_geometry",
-            Self::BannerPlacement => "banner_placement",
-            Self::FramePlacement => "frame_placement",
-            Self::ReadinessSignal => "readiness_signal",
-        }
-    }
-
-    fn from_code(code: u8) -> Self {
-        match code {
-            0 => Self::ThreadStarted,
-            1 => Self::DpiAwareness,
-            2 => Self::TargetValidation,
-            3 => Self::TargetIcon,
-            4 => Self::OverlayCreation,
-            5 => Self::FrameCreation,
-            6 => Self::TargetGeometry,
-            7 => Self::MonitorGeometry,
-            8 => Self::BannerPlacement,
-            9 => Self::FramePlacement,
-            _ => Self::ReadinessSignal,
-        }
-    }
-}
 const SURFACE: COLORREF = rgb(
     theme_tokens::SURFACE.0,
     theme_tokens::SURFACE.1,
