@@ -155,12 +155,18 @@ class UploadedArtifactDownloadTests(unittest.TestCase):
             ],
         )
 
+    def test_upload_visibility_retries_when_other_artifacts_are_already_listed(self):
+        self.api.listings = [
+            {"total_count": 1, "artifacts": [{"id": 999}]},
+            {"total_count": 1, "artifacts": [{"id": 999}]},
+            {"total_count": 1, "artifacts": [self.api.metadata]},
+        ]
+        self.run_download()
+        self.assertEqual(self.delays, [1, 2])
+        self.assertTrue((self.root / "artifact.zip").is_file())
+
     def test_inventory_rejections_report_only_closed_reasons_before_download(self):
         cases = (
-            (
-                {"total_count": 1, "artifacts": [{"id": 999}]},
-                "upload_id_not_proven_in_run",
-            ),
             (
                 {"total_count": "remote-body-secret", "artifacts": []},
                 "invalid_shape_or_bound",
@@ -213,6 +219,9 @@ class UploadedArtifactDownloadTests(unittest.TestCase):
         for field, value in mutations:
             with self.subTest(field=field):
                 self.api = FakeApi()
+                self.api.listings = [
+                    {"total_count": 1, "artifacts": [copy.deepcopy(self.api.metadata)]}
+                ]
                 self.api.metadata[field] = value
                 with self.assertRaises(ValueError):
                     self.run_download()

@@ -195,19 +195,22 @@ def download(api, *, repository, root, identity, sleep=time.sleep):
                 reason="pagination_limit_exceeded",
             )
             raise ValueError("run artifact pagination did not finish within its bound")
-        if len(found) != 1:
+        if not found:
             emit(
                 stage="run_inventory",
                 verdict="rejected",
                 reason="upload_id_not_proven_in_run",
             )
-            if total == 0 and not seen:
-                raise ArtifactNotVisible(
-                    "upload ID is not proven in the current run; do not retry an unexplained 404"
-                )
-            raise ValueError(
-                "upload ID is not proven in the current run; do not retry an unexplained 404"
+            raise ArtifactNotVisible(
+                "upload ID is not proven in the current run; artifact visibility may still be propagating"
             )
+        if len(found) != 1:
+            emit(
+                stage="run_inventory",
+                verdict="rejected",
+                reason="upload_id_not_unique_in_run",
+            )
+            raise ValueError("upload ID is not unique in the current run")
         return found[0]
 
     def confirm_uploaded_in_run():
