@@ -19,7 +19,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "1.21.0"
+version = "1.22.0"
 edition = "2024"
 rust-version = "1.95"
 publish = false
@@ -33,18 +33,15 @@ rstest = "0.26.1"
 
 # Keep the SDK, platform adapters, cursor renderer and testkit on one revision.
 #
-# The compatibility fork retains browser contracts that upstream trycua/cua has
-# not merged: `scope_ancestor_role` / `scope_anchor` ancestor-scoped semantic
-# snapshots and the `browser_scope_unavailable` refusal code. Upstream
-# The fork also retains DCC-specific safety fixes; the sync candidate must
-# verify those contracts before moving back to an unmodified upstream source.
+# Use the latest published Try CUA Driver release as one immutable source for
+# runtime, platform adapters, cursor rendering and testkit. DCC-specific
+# contracts must be verified against each upstream release before adoption.
 #
-# This draft revision merges upstream Driver 0.49.1 source with the existing fork.
-# Compatibility and native acceptance remain subject to verification.
+# Driver 0.60.0 is pinned by release commit, not a moving branch or tag.
 # See docs/design/sdk-dependency-maintenance.md for migration and acceptance.
-cua-driver-contract = { git = "https://github.com/loonghao/cua.git", rev = "862866c2b52e56dded67301c32dc49098c366e48" }
-cua-driver-sdk = { git = "https://github.com/loonghao/cua.git", rev = "862866c2b52e56dded67301c32dc49098c366e48" }
-cua-driver-testkit = { git = "https://github.com/loonghao/cua.git", rev = "862866c2b52e56dded67301c32dc49098c366e48" }
-cursor-overlay = { git = "https://github.com/loonghao/cua.git", rev = "862866c2b52e56dded67301c32dc49098c366e48" }
-platform-macos = { git = "https://github.com/loonghao/cua.git", rev = "862866c2b52e56dded67301c32dc49098c366e48" }
-platform-windows = { git = "https://github.com/loonghao/cua.git", rev = "862866c2b52e56dded67301c32dc49098c366e48" }
+cua-driver-contract = { git = "https://github.com/trycua/cua.git", rev = "7ebe6a662ea380d0b7a340a33ee59feaf8f56f43" }
+cua-driver-sdk = { git = "https://github.com/trycua/cua.git", rev = "7ebe6a662ea380d0b7a340a33ee59feaf8f56f43" }
+cua-driver-testkit = { git = "https://github.com/trycua/cua.git", rev = "7ebe6a662ea380d0b7a340a33ee59feaf8f56f43" }
+cursor-overlay = { git = "https://github.com/trycua/cua.git", rev = "7ebe6a662ea380d0b7a340a33ee59feaf8f56f43" }
+platform-macos = { git = "https://github.com/trycua/cua.git", rev = "7ebe6a662ea380d0b7a340a33ee59feaf8f56f43" }
+platform-windows = { git = "https://github.com/trycua/cua.git", rev = "7ebe6a662ea380d0b7a340a33ee59feaf8f56f43" }

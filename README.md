@@ -1089,13 +1089,13 @@ must preserve that exact anchor. A new observation invalidates prior refs and
 continuations.
 `browser_navigate` defaults to `delivery_mode: "background"`, preserving the
 selected tab. Callers that require a visible switch must explicitly request
-`delivery_mode: "foreground"`; success then requires exact target/tab identity,
-activation, and settled live `current_url`, `title`, `heading`, `ready_state`, and `visibility_state`
-readback bound to the committed frame and loader (including redirects). Any
-stale document, identity, or visibility drift fails closed. A post-dispatch
-failure remains a structured receipt with `dispatched`, activation/readback
-state, target/tab identity, and a stable error code, so callers can distinguish
-no delivery from a navigation that changed the page but failed verification. `browser_navigate`,
+`delivery_mode: "foreground"`; DCC applies its exact-window activation path
+and reports the activation result. Try CUA Driver 0.59.5 confirms
+dispatch and ref invalidation but does not provide DOM readback in its official
+navigation receipt, so `readback_state: "not_provided"` requires a fresh
+`browser_snapshot` for URL and page-state verification. A post-dispatch failure
+remains a structured unknown-completion receipt with target/tab identity and a
+stable error code. `browser_navigate`,
 `browser_set_input_files`, and `browser_download` invalidate the tab snapshot.
 Upload uses `allow_browser_input`; download is a separate
 destructive grant (`allow_browser_download`) and CUA's host approval evidence.
