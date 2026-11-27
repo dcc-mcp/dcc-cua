@@ -34,6 +34,8 @@ mod occlusion;
 #[cfg(windows)]
 mod physical_input_fence;
 #[cfg(windows)]
+mod print_window;
+#[cfg(windows)]
 pub mod process_audio;
 #[cfg(windows)]
 mod queued_activation;
@@ -107,6 +109,8 @@ pub use physical_input_fence::{
     send_guarded_capture_popup_keypress, send_guarded_capture_popup_text, send_guarded_click,
     send_guarded_drag, send_guarded_keypress, send_guarded_text,
 };
+#[cfg(windows)]
+pub use print_window::{PrintWindowCapture, PrintWindowCaptureError, capture_print_window};
 
 #[cfg(windows)]
 #[derive(Debug, Clone, PartialEq, Eq)]

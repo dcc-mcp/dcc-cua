@@ -11,7 +11,13 @@ pub enum FrameCaptureProvenance {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NativeFrameSource {
+    /// Windows Graphics Capture or another compositor-backed window-content
+    /// adapter supplied by the active platform.
     Wgc,
+    /// Windows-only HWND-owned content rendering through PrintWindow. Other
+    /// platforms can add their equivalent native content source independently.
+    PrintWindow,
+    /// A desktop crop that passed the native unobscured-window proof.
     VerifiedVisible,
 }
 
@@ -20,6 +26,7 @@ impl NativeFrameSource {
     pub const fn backend(self) -> &'static str {
         match self {
             Self::Wgc => "dcc-cua-wgc-exact-window",
+            Self::PrintWindow => "dcc-cua-print-window-exact-window",
             Self::VerifiedVisible => "dcc-cua-visible-exact-window",
         }
     }
@@ -105,4 +112,21 @@ pub struct PreparedCaptureFrameProvenance {
     pub actual_foreground: bool,
     /// Windows GetTickCount64 monotonic uptime milliseconds, never UTC.
     pub captured_at_ms: u64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::NativeFrameSource;
+
+    #[test]
+    fn print_window_source_has_a_stable_debug_backend() {
+        assert_eq!(
+            NativeFrameSource::PrintWindow.backend(),
+            "dcc-cua-print-window-exact-window"
+        );
+        assert_eq!(
+            serde_json::to_string(&NativeFrameSource::PrintWindow).expect("serialize source"),
+            "\"print_window\""
+        );
+    }
 }

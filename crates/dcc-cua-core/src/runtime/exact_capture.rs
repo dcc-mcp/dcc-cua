@@ -10,6 +10,8 @@ pub(super) struct ExactWindowCapture {
     pub(super) wgc_geometry: Option<dcc_cua_platform_windows::ResolvedWgcGeometry>,
     pub(super) data: Vec<u8>,
     pub(super) backend: &'static str,
+    #[cfg(windows)]
+    pub(super) source: dcc_cua_showcase::NativeFrameSource,
     pub(super) fallback: &'static str,
     #[cfg(windows)]
     pub(super) mode: ExactWindowPixelCaptureMode,
@@ -383,6 +385,11 @@ pub(super) fn validate_live_source_geometry(
                 return Err(invalid());
             }
         }
+        NativeFrameSource::PrintWindow => {
+            if proof.wgc_geometry.is_some() || proof.source_rect != proof.native_window_bounds {
+                return Err(invalid());
+            }
+        }
         NativeFrameSource::Wgc => {
             let measured = proof.wgc_geometry.ok_or_else(invalid)?;
             let native = dcc_cua_platform_windows::NativeWindowGeometry {
@@ -419,15 +426,14 @@ pub(super) fn validate_native_live_publication(
 ) -> ComputerUseResult<()> {
     let final_evidence = live_native_evidence(target.pid, target.window_id)?;
     validate_live_frame_provenance(proof, target, &final_evidence)?;
-    if proof.source == dcc_cua_showcase::NativeFrameSource::Wgc
-        && dcc_cua_platform_windows::exact_window_capture_route(target.pid, target.window_id)
-            .map_err(|error| map_capture_identity_error(target.pid, target.window_id, error))?
-            != dcc_cua_platform_windows::ExactWindowCaptureRoute::Wgc
-    {
-        return Err(ComputerUseError::new(
-            ComputerUseErrorCode::InvalidTarget,
-            "live WGC source became ambiguous before screenshot publication",
-        ));
+    if proof.source == dcc_cua_showcase::NativeFrameSource::Wgc {
+        // The route classifier is conservative when another root from the
+        // same executable is visible. A PersistentWgcCapture created from
+        // this exact HWND remains attributable through its owner, instance,
+        // geometry, and publication fences, so that classifier result does
+        // not invalidate the already-bound source.
+        dcc_cua_platform_windows::exact_window_capture_route(target.pid, target.window_id)
+            .map_err(|error| map_capture_identity_error(target.pid, target.window_id, error))?;
     }
     Ok(())
 }
@@ -617,12 +623,81 @@ fn capture_exact_wgc_content(
         diagnostics: encoded.diagnostics,
         wgc_geometry: Some(geometry),
         backend: "dcc-cua-wgc-exact-window",
+        source: dcc_cua_showcase::NativeFrameSource::Wgc,
         fallback,
         mode: ExactWindowPixelCaptureMode::WindowContent,
         generation,
         dpi: after.dpi,
         bounds: after.bounds,
         source_rect: geometry.source_rect,
+        native_evidence: after,
+        redacted_regions: Vec::new(),
+    })
+}
+
+fn capture_exact_print_window_content(
+    process_id: u32,
+    window_id: u64,
+    before: dcc_cua_platform_windows::ExactWindowPixelEvidence,
+    generation: u64,
+    capture_started: std::time::Instant,
+    diagnostics_enabled: bool,
+    purpose: crate::capture_diagnostics::FramePurpose,
+) -> ComputerUseResult<ExactWindowCapture> {
+    let capture = dcc_cua_platform_windows::capture_print_window(process_id, window_id)
+        .map_err(|error| {
+            ComputerUseError::new(ComputerUseErrorCode::CaptureFailed, error.to_string())
+        })?;
+    let after = dcc_cua_platform_windows::exact_window_pixel_evidence(process_id, window_id)
+        .map_err(|error| {
+            map_visible_capture_error(
+                ComputerUseErrorCode::InvalidTarget,
+                ComputerUseCaptureStage::NativeEvidence,
+                process_id,
+                window_id,
+                error,
+            )
+        })?;
+    validate_native_exact_window_pixel_evidence(
+        &before,
+        &after,
+        ExactWindowPixelCaptureMode::WindowContent,
+    )?;
+    let final_state = dcc_cua_platform_windows::exact_window_native_state(process_id, window_id)
+        .map_err(|error| ComputerUseError::new(ComputerUseErrorCode::InvalidTarget, error.to_string()))?;
+    validate_live_final_native_state(&after, &final_state)?;
+    if capture.bounds != after.bounds {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::StaleObservation,
+            "PrintWindow returned pixels for different physical HWND bounds",
+        ));
+    }
+    validate_exact_bgra_dimensions(
+        capture.bgra.len(),
+        capture.width,
+        capture.height,
+        capture.bounds,
+    )?;
+    let encoded = crate::capture_diagnostics::prepare_exact_frame(
+        &capture.bgra,
+        capture.width,
+        capture.height,
+        diagnostics_enabled,
+        capture_started.elapsed(),
+        purpose,
+    )?;
+    Ok(ExactWindowCapture {
+        data: encoded.data,
+        diagnostics: encoded.diagnostics,
+        wgc_geometry: None,
+        backend: "dcc-cua-print-window-exact-window",
+        source: dcc_cua_showcase::NativeFrameSource::PrintWindow,
+        fallback: "exact_window_print_window_content",
+        mode: ExactWindowPixelCaptureMode::WindowContent,
+        generation,
+        dpi: after.dpi,
+        bounds: after.bounds,
+        source_rect: capture.bounds,
         native_evidence: after,
         redacted_regions: Vec::new(),
     })
@@ -685,6 +760,21 @@ fn capture_exact_wgc_content(
                             }
                             Err(_) => {}
                         }
+                        match capture_exact_print_window_content(
+                            process_id,
+                            window_id,
+                            before,
+                            generation,
+                            capture_started,
+                            diagnostics_enabled,
+                            purpose,
+                        ) {
+                            Ok(capture) => return Ok(capture),
+                            Err(error) if error.code == ComputerUseErrorCode::InvalidTarget => {
+                                return Err(error)
+                            }
+                            Err(_) => {}
+                        }
                     }
                     if can_try_wgc {
                         visible_error.message = format!(
@@ -709,6 +799,7 @@ fn capture_exact_wgc_content(
                 diagnostics: encoded.diagnostics,
                 wgc_geometry: None,
                 backend: "dcc-cua-visible-exact-window",
+                source: dcc_cua_showcase::NativeFrameSource::VerifiedVisible,
                 fallback: "same_executable_multi_window_exact_visible_proof",
                 mode: if visible.capture.redacted_regions.is_empty() {
                     ExactWindowPixelCaptureMode::VisibleDesktopCrop
@@ -738,6 +829,19 @@ fn capture_exact_wgc_content(
             Err(error) if error.code == ComputerUseErrorCode::CaptureFailed => error.message,
             Err(error) => return Err(error),
         };
+        match capture_exact_print_window_content(
+            process_id,
+            window_id,
+            before,
+            generation,
+            capture_started,
+            diagnostics_enabled,
+            purpose,
+        ) {
+            Ok(capture) => return Ok(capture),
+            Err(error) if error.code == ComputerUseErrorCode::InvalidTarget => return Err(error),
+            Err(_) => {}
+        }
         let visible = capture_verified_visible_bgra(process_id, window_id, before, true).map_err(
             |mut error| {
                 error.message =
@@ -759,6 +863,7 @@ fn capture_exact_wgc_content(
             diagnostics: encoded.diagnostics,
             wgc_geometry: None,
             backend: "dcc-cua-visible-exact-window",
+            source: dcc_cua_showcase::NativeFrameSource::VerifiedVisible,
             fallback: "verified_same_process_visible_window_crop",
             mode: if visible.capture.redacted_regions.is_empty() {
                 ExactWindowPixelCaptureMode::VisibleDesktopCrop

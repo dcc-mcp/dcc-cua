@@ -172,7 +172,9 @@ pub(super) fn exact_native_observation_instance(
             .is_none_or(|value| value == 0)
         || !matches!(
             observation.capture_backend.as_str(),
-            "dcc-cua-wgc-exact-window" | "dcc-cua-visible-exact-window"
+            "dcc-cua-wgc-exact-window"
+                | "dcc-cua-print-window-exact-window"
+                | "dcc-cua-visible-exact-window"
         )
     {
         return Err(stale());
@@ -245,6 +247,13 @@ pub(super) fn exact_native_observation_geometry(
         }
         "dcc-cua-visible-exact-window" => {
             if Some(observation.source_rect) != native.dwm_bounds
+                || !provenance["wgc_geometry"].is_null()
+            {
+                return Err(stale());
+            }
+        }
+        "dcc-cua-print-window-exact-window" => {
+            if observation.source_rect != native.win32_bounds
                 || !provenance["wgc_geometry"].is_null()
             {
                 return Err(stale());

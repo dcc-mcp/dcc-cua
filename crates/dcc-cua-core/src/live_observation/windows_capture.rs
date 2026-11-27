@@ -100,7 +100,7 @@ impl WindowsLiveTarget {
         })
     }
 
-    fn evidence(self) -> ComputerUseResult<ExactWindowPixelEvidence> {
+    fn evidence(self, window_content: bool) -> ComputerUseResult<ExactWindowPixelEvidence> {
         let state = dcc_cua_platform_windows::exact_window_native_state(
             self.process_id,
             self.window_handle,
@@ -121,6 +121,34 @@ impl WindowsLiveTarget {
                 "the live exact target is hidden",
             ));
         }
+        if window_content {
+            let bounds = state.bounds.ok_or_else(|| {
+                ComputerUseError::new(
+                    ComputerUseErrorCode::StaleObservation,
+                    "the exact live Win32 bounds are unavailable",
+                )
+            })?;
+            let visible_bounds = state.visible_bounds.ok_or_else(|| {
+                ComputerUseError::new(
+                    ComputerUseErrorCode::StaleObservation,
+                    "the exact live DWM bounds are unavailable",
+                )
+            })?;
+            return Ok(ExactWindowPixelEvidence {
+                process_id: state.process_id,
+                window_handle: state.window_handle,
+                bounds,
+                visible_bounds,
+                dpi: state.dpi,
+                visible: state.visible,
+                minimized: state.minimized,
+                // WGC content does not require a desktop occlusion proof.
+                // Keep this false so the evidence never claims one was run.
+                unobscured: false,
+                visibility_failure: None,
+                instance: state.instance,
+            });
+        }
         let evidence = live_native_evidence(self.process_id, self.window_handle)?;
         validate_instance(self.instance, evidence.instance)?;
         Ok(evidence)
@@ -135,18 +163,6 @@ impl WindowsLiveTarget {
             ComputerUseError::new(ComputerUseErrorCode::InvalidTarget, error.to_string())
         })?;
         validate_instance(self.instance, state.instance)
-    }
-
-    fn require_wgc_route(self) -> ComputerUseResult<()> {
-        require_wgc_route(
-            dcc_cua_platform_windows::exact_window_capture_route(
-                self.process_id,
-                self.window_handle,
-            )
-            .map_err(|error| {
-                map_capture_identity_error(self.process_id, self.window_handle, error)
-            })?,
-        )
     }
 
     fn provenance(
@@ -241,14 +257,27 @@ fn validate_instance(
     Ok(())
 }
 
-fn require_wgc_route(route: ExactWindowCaptureRoute) -> ComputerUseResult<()> {
-    if route != ExactWindowCaptureRoute::Wgc {
-        return Err(ComputerUseError::new(
-            ComputerUseErrorCode::InvalidTarget,
-            "another same-executable root appeared during live WGC capture; restart requires a newly selected verified source",
-        ));
-    }
-    Ok(())
+fn native_source_matches_target(source: NativeFrameSource, route: ExactWindowCaptureRoute) -> bool {
+    // The route classifier is deliberately conservative because a raw WGC
+    // frame does not carry an HWND. A PersistentWgcCapture created from this
+    // exact HWND has a stronger binding than the classifier, though. Its owner,
+    // native instance, geometry, and frame publication are all revalidated on
+    // the capture worker, so it is safe to retain WGC for a same-executable
+    // multi-window target. The visible route remains the fallback for systems
+    // where WGC construction is unavailable.
+    matches!(
+        (source, route),
+        (
+            NativeFrameSource::Wgc,
+            ExactWindowCaptureRoute::Wgc | ExactWindowCaptureRoute::VerifiedVisible
+        ) | (
+            NativeFrameSource::PrintWindow,
+            ExactWindowCaptureRoute::Wgc | ExactWindowCaptureRoute::VerifiedVisible
+        ) | (
+            NativeFrameSource::VerifiedVisible,
+            ExactWindowCaptureRoute::VerifiedVisible
+        )
+    )
 }
 
 enum WindowsLiveCapture {
@@ -341,14 +370,15 @@ impl From<dcc_cua_platform_windows::WgcPublishedFrameMeasurement> for FrameCaptu
 }
 
 impl WindowsLiveCapture {
-    fn new(target: WindowsLiveTarget) -> Self {
-        if target.route == ExactWindowCaptureRoute::VerifiedVisible {
-            return Self::VerifiedVisible;
-        }
+    fn new(_target: WindowsLiveTarget) -> Self {
         // Initialize once through the same checked path as recovery. A typed
         // geometry error must reach the pause fence instead of being hidden by
         // an immediate second capture attempt.
         Self::Uninitialized
+    }
+
+    fn requires_capture_exclusion(&self) -> bool {
+        matches!(self, Self::Prepared(_) | Self::VerifiedVisible)
     }
 
     fn next_frame(&mut self, target: WindowsLiveTarget) -> ComputerUseResult<WindowsCapturedFrame> {
@@ -381,7 +411,7 @@ impl WindowsLiveCapture {
                 measurement: None,
             });
         }
-        let before = target.evidence()?;
+        let before = target.evidence(!matches!(self, Self::VerifiedVisible))?;
         if matches!(self, Self::VerifiedVisible) {
             let visible = capture_verified_visible_bgra(
                 target.process_id,
@@ -389,7 +419,7 @@ impl WindowsLiveCapture {
                 before,
                 false,
             )?;
-            let after = target.evidence()?;
+            let after = target.evidence(false)?;
             validate_live_native_evidence(&before, &after, true)?;
             validate_live_native_evidence(&visible.evidence, &after, true)?;
             return Ok(WindowsCapturedFrame {
@@ -405,7 +435,6 @@ impl WindowsLiveCapture {
                 ),
             });
         }
-        target.require_wgc_route()?;
         validate_live_native_evidence(&before, &before, false)?;
         let source_started = Instant::now();
         let (frame, capture_mode) = match self {
@@ -416,13 +445,35 @@ impl WindowsLiveCapture {
                 }
                 Err(_) => self.reinitialize(target, "reinitialized_wgc_recovery")?,
             },
-            Self::Uninitialized => self.reinitialize(target, "persistent_wgc")?,
+            Self::Uninitialized => match self.reinitialize(
+                target,
+                if target.route == ExactWindowCaptureRoute::VerifiedVisible {
+                    "persistent_wgc_exact_hwnd"
+                } else {
+                    "persistent_wgc"
+                },
+            ) {
+                Ok(frame) => frame,
+                Err(error)
+                    if target.route == ExactWindowCaptureRoute::VerifiedVisible
+                        && error.code == ComputerUseErrorCode::CaptureFailed =>
+                {
+                    // Keep the old visible proof as a capability fallback. A
+                    // successful exact WGC source is preferred even when the
+                    // executable has multiple roots, and no foreground or
+                    // desktop visibility is required on that path. Return one
+                    // retryable error before the next cycle acquires the
+                    // exclusion guard for the visible fallback.
+                    *self = Self::VerifiedVisible;
+                    return Err(error);
+                }
+                Err(error) => return Err(error),
+            },
             Self::VerifiedVisible => unreachable!("visible producer returned above"),
             Self::Prepared(_) => unreachable!("prepared producer returned above"),
         };
         let source_capture_duration = source_started.elapsed();
-        target.require_wgc_route()?;
-        let after = target.evidence()?;
+        let after = target.evidence(true)?;
         validate_live_native_evidence(&before, &after, false)?;
         let geometry = resolve_live_wgc_geometry(
             before,
@@ -458,7 +509,6 @@ impl WindowsLiveCapture {
         target: WindowsLiveTarget,
         capture_mode: &'static str,
     ) -> ComputerUseResult<(dcc_cua_platform_windows::PersistentWgcFrame, &'static str)> {
-        target.require_wgc_route()?;
         let mut capture = dcc_cua_platform_windows::PersistentWgcCapture::new(
             target.process_id,
             target.window_handle,
@@ -497,19 +547,11 @@ pub(super) fn run_windows_capture_loop(context: super::NativeCaptureLoop) {
         {
             return;
         }
-        let precheck_started = Instant::now();
-        if let Some(authorization) = &recording_authorization
-            && let Err(reason) = authorization.with_active(|| ())
-        {
-            sender.send_modify(|status| {
-                status.record_terminal_error(&ComputerUseError::new(
-                    ComputerUseErrorCode::InvalidAction,
-                    reason,
-                ))
-            });
-            return;
-        }
-        let recording_precheck = precheck_started.elapsed();
+        // The post-capture admission below is the authoritative revocation
+        // fence. A pre-capture lock probe only waits behind the encoder's
+        // admission while adding no safety, because a frame still must pass
+        // admission again before publication.
+        let recording_precheck = Duration::ZERO;
         // The producer services its single outstanding control request before
         // starting another frame, so it never races itself for exclusion.
         if let Some(work) = publications.take() {
@@ -526,13 +568,20 @@ pub(super) fn run_windows_capture_loop(context: super::NativeCaptureLoop) {
         }
         let capture_started = Instant::now();
         let captured = (|| {
-            let exclusion = capture_exclusion
-                .as_ref()
-                .map(dcc_cua_indicator::BannerCaptureExclusionSource::begin)
-                .transpose()
-                .map_err(|error| {
-                    ComputerUseError::new(ComputerUseErrorCode::CaptureFailed, error.to_string())
-                })?;
+            let exclusion = if capture.requires_capture_exclusion() {
+                capture_exclusion
+                    .as_ref()
+                    .map(dcc_cua_indicator::BannerCaptureExclusionSource::begin)
+                    .transpose()
+                    .map_err(|error| {
+                        ComputerUseError::new(
+                            ComputerUseErrorCode::CaptureFailed,
+                            error.to_string(),
+                        )
+                    })?
+            } else {
+                None
+            };
             let exclusion_acquire = capture_started.elapsed();
             let frame = capture.next_frame(target)?;
             Ok((frame, exclusion, exclusion_acquire))
@@ -767,14 +816,7 @@ fn service_native_publication(
             || check.proof.window_handle != target.window_handle
             || check.target.pid != target.process_id
             || check.target.window_id != target.window_handle
-            || !matches!(
-                (check.proof.source, target.route),
-                (NativeFrameSource::Wgc, ExactWindowCaptureRoute::Wgc)
-                    | (
-                        NativeFrameSource::VerifiedVisible,
-                        ExactWindowCaptureRoute::VerifiedVisible
-                    )
-            )
+            || !native_source_matches_target(check.proof.source, target.route)
             || check.proof.native_instance.process_creation_time_100ns
                 != target.instance.process_creation_time_100ns
             || check.proof.native_instance.window_thread_id != target.instance.window_thread_id
