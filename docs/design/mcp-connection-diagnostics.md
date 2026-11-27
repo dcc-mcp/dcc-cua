@@ -142,11 +142,22 @@ environment override. A missing directory produces `registry_available: false`
 without creating it during a query. The current MCP resource remains readable
 from memory when publication is unavailable.
 
-MCP `resources/list` advertises `dcc-cua://connection/current`; `resources/read`
-returns only that server connection's in-memory record. An MCP caller cannot
-enumerate other connections through this resource. The local `connections`
-command reads the registry without starting a Host, requesting a task grant,
-changing processes, or cleaning records.
+MCP `resources/list` advertises `dcc-cua://connection/current` and
+`dcc-cua://connection/metrics`. `resources/read` returns only the current
+server connection's in-memory record or its connection-scoped performance
+report. An MCP caller cannot enumerate other connections through these
+resources. The local `connections` command reads the registry without starting
+a Host, requesting a task grant, changing processes, or cleaning records.
+
+The performance report uses schema `dcc-cua.mcp-performance.v1`. It includes
+transport and tool latency totals and maxima, UTF-8 message bytes, estimated
+protocol tokens, exact model usage reported by the Agent Host, standalone
+snapshot count, post-action snapshot count, and post-snapshot reuse count.
+Protocol token counts use `ceil(UTF-8 bytes / 4)` and are estimates. Exact
+model usage can be sent with the one-way
+`notifications/dcc-cua/model_usage` notification or recorded through the
+`dcc_cua_record_model_usage` tool. The report stores aggregates only and does
+not retain prompts, responses, task arguments, coordinates, paths, or pixels.
 
 Reports scan at most 1,024 directory entries, accept at most 64 KiB per record,
 return at most 256 records, and tolerate unreadable or malformed records. A

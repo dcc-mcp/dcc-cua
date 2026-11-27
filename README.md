@@ -1175,10 +1175,13 @@ See [plugin integration](docs/agent-plugin.md) and
 
 Use `dcc-cua connections` for a bounded, read-only JSON list of instrumented
 local MCP connections. Each client can also read its own
-`dcc-cua://connection/current` MCP resource. These report process creation
-identity, compiled runtime identity, client-provided metadata, task counts,
-and observed or inferred close reasons without starting a Host or touching UI.
-Older bridges and chat IDs not supplied by clients remain unknown. See
+`dcc-cua://connection/current` and `dcc-cua://connection/metrics` MCP
+resources. The first reports process creation identity, compiled runtime
+identity, client-provided metadata, task counts, and observed or inferred close
+reasons without starting a Host or touching UI. The second reports connection
+latency, protocol message bytes, estimated protocol tokens, explicitly
+reported model tokens, and post-snapshot reuse. Older bridges and chat IDs not
+supplied by clients remain unknown. See
 [connection diagnostics and lifecycle boundaries](docs/design/mcp-connection-diagnostics.md).
 
 For local IPC versus stdio, native readiness, and the limits of remote SDK

@@ -32,6 +32,15 @@ fn action_schema_exposes_required_fields_and_coordinate_contract() {
             .unwrap()
             .contains("not key")
     );
+    assert_eq!(action["properties"]["path"]["minItems"], 2);
+    assert_eq!(action["properties"]["path"]["maxItems"], 201);
+    assert_eq!(action["properties"]["duration_ms"]["maximum"], 10000);
+    assert!(
+        params["properties"]["capture_after"]["description"]
+            .as_str()
+            .unwrap()
+            .contains("do not call snapshot again")
+    );
     assert_eq!(
         params["allOf"][0]["then"]["required"],
         json!(["accessibility_state_id"])

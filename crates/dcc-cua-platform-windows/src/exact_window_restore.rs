@@ -34,6 +34,7 @@ pub(crate) fn classify_restore_result<T>(
 
 /// Restore uses one gated foreground request rather than the general activation
 /// fallback chain. Every subsequent poll can stop without another mutation.
+#[cfg(test)]
 pub(crate) fn run_restored_foreground_request(
     target: UiaTarget,
     expected: crate::ExactWindowPixelInstanceEvidence,

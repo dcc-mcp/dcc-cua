@@ -121,8 +121,8 @@ use crate::runtime::{
     held_coordinate_click_as_drag, live_observation_start_disposition, map_indicator_error,
     preflight_live_observation_start, run_windows_combined_down_drag_sequence,
     run_windows_fenced_absolute_path, run_windows_fenced_absolute_path_with_trace,
-    run_windows_separated_raw_drag_sequence, tool_schema_from_inventory,
-    wait_for_window_probe_until, windows_input_dispatch_unknown,
+    run_windows_fenced_absolute_waypoints_with_trace, run_windows_separated_raw_drag_sequence,
+    tool_schema_from_inventory, wait_for_window_probe_until, windows_input_dispatch_unknown,
 };
 #[cfg(windows)]
 use crate::runtime::{

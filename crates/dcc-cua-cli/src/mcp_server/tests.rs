@@ -33,6 +33,43 @@ fn connection_identity_uses_bounded_readable_client_metadata(
 }
 
 #[rstest]
+fn performance_tools_and_resource_are_discoverable() {
+    let tools = tool_definitions();
+    assert!(tools.iter().any(|tool| tool["name"] == "dcc_cua_metrics"));
+    assert!(
+        tools
+            .iter()
+            .any(|tool| tool["name"] == "dcc_cua_record_model_usage")
+    );
+    let task_call = tools
+        .iter()
+        .find(|tool| tool["name"] == "dcc_cua_task_call")
+        .unwrap();
+    assert_eq!(
+        task_call["inputSchema"]["properties"]["include_metrics"]["default"],
+        false
+    );
+}
+
+#[rstest]
+#[tokio::test]
+async fn model_usage_notification_is_aggregated_without_a_response() {
+    let mut server = test_server();
+    let response = server
+        .handle_rpc(json!({
+            "jsonrpc":"2.0",
+            "method":"notifications/dcc-cua/model_usage",
+            "params":{"input_tokens":13,"output_tokens":5}
+        }))
+        .await;
+    assert!(response.is_none());
+
+    let report = server.performance.report();
+    assert_eq!(report["model_tokens"]["reported_model_calls_total"], 1);
+    assert_eq!(report["model_tokens"]["reported_total_tokens"], 18);
+}
+
+#[rstest]
 #[tokio::test]
 async fn initialize_binds_display_identity_once_without_changing_task_authority() {
     let mut server = test_server();

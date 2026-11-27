@@ -350,12 +350,33 @@ pub(crate) fn windows_combined_raw_drag_outcome(
 }
 
 #[cfg(windows)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct WindowsRawDragPath {
     source: (i32, i32),
     destination: (i32, i32),
     duration_ms: u64,
     steps: usize,
+    waypoints: Option<Vec<(i32, i32)>>,
+}
+
+#[cfg(windows)]
+fn windows_drag_waypoints(path: &WindowsRawDragPath) -> Vec<(i32, i32)> {
+    if let Some(waypoints) = &path.waypoints {
+        return waypoints.clone();
+    }
+
+    let steps = path.steps.max(1);
+    (0..=steps)
+        .map(|step| {
+            let progress = step as f64 / steps as f64;
+            (
+                path.source.0
+                    + ((path.destination.0 - path.source.0) as f64 * progress).round() as i32,
+                path.source.1
+                    + ((path.destination.1 - path.source.1) as f64 * progress).round() as i32,
+            )
+        })
+        .collect()
 }
 
 #[cfg(windows)]
@@ -737,9 +758,9 @@ pub(crate) fn select_windows_foreground_drag_backend(
                     "{WINDOWS_COMBINED_DOWN_DRAG_BACKEND_ID} does not support drag modifiers"
                 ));
             }
-            if action.path.len() != 2 {
+            if action.path.len() < 2 {
                 return Err(format!(
-                    "{WINDOWS_COMBINED_DOWN_DRAG_BACKEND_ID} requires exactly two path points"
+                    "{WINDOWS_COMBINED_DOWN_DRAG_BACKEND_ID} requires at least two path points"
                 ));
             }
             Ok(WindowsForegroundDragBackend::CombinedDownDrag)
@@ -1162,10 +1183,10 @@ fn send_windows_separated_raw_drag(
     path: WindowsRawDragPath,
     button: &str,
 ) -> Result<WindowsRawDragOutcome, String> {
-    let steps = path.steps.max(1);
-    let step_delay = Duration::from_millis(path.duration_ms / steps as u64);
+    let waypoints = windows_drag_waypoints(&path);
+    let move_count = waypoints.len().saturating_sub(1).max(1);
+    let step_delay = Duration::from_millis(path.duration_ms / move_count as u64);
     let (from_x, from_y) = path.source;
-    let (to_x, to_y) = path.destination;
     let pointer_button = match button {
         "right" => dcc_cua_platform_windows::WindowsPointerButton::Right,
         "middle" => dcc_cua_platform_windows::WindowsPointerButton::Middle,
@@ -1188,10 +1209,7 @@ fn send_windows_separated_raw_drag(
         },
         WindowsRawDragInputTrace::allows_drag_path,
         || {
-            for step in 1..=steps {
-                let progress = step as f64 / steps as f64;
-                let x = from_x + ((to_x - from_x) as f64 * progress).round() as i32;
-                let y = from_y + ((to_y - from_y) as f64 * progress).round() as i32;
+            for &(x, y) in waypoints.iter().skip(1) {
                 inject_consumable_windows_mouse_move(x, y)?;
                 if !step_delay.is_zero() {
                     std::thread::sleep(step_delay);
@@ -1213,7 +1231,8 @@ fn send_windows_combined_down_drag(
     let path_started = std::cell::Cell::new(false);
     let path_moves_inserted = std::cell::Cell::new(0_usize);
     let waypoints_completed = std::cell::Cell::new(0_usize);
-    let total_waypoints = std::cell::Cell::new(path.steps.max(1));
+    let total_waypoints =
+        std::cell::Cell::new(windows_drag_waypoints(&path).len().saturating_sub(1));
     let mut sequence = run_windows_combined_down_drag_sequence(
         CombinedDownDragPrelude::new(
             || {
@@ -1240,10 +1259,9 @@ fn send_windows_combined_down_drag(
             dcc_cua_platform_windows::WindowsRawInputSnapshot::allows_drag_path,
         ),
         || {
-            let outcome = run_windows_fenced_absolute_path_with_trace(
-                path.source,
-                path.destination,
-                path.steps,
+            let waypoints = windows_drag_waypoints(&path);
+            let outcome = run_windows_fenced_absolute_waypoints_with_trace(
+                &waypoints[1..],
                 path.duration_ms,
                 || validate_windows_relative_drag_fence(target, WindowsPointerButton::Left),
                 inject_windows_direct_absolute_mouse_move,
@@ -1275,10 +1293,10 @@ fn send_windows_calibrated_relative_drag(
     path: WindowsRawDragPath,
     button: &str,
 ) -> Result<WindowsRawDragOutcome, String> {
-    let steps = path.steps.max(1);
-    let step_delay = Duration::from_millis(path.duration_ms / steps as u64);
+    let waypoints = windows_drag_waypoints(&path);
+    let move_count = waypoints.len().saturating_sub(1).max(1);
+    let step_delay = Duration::from_millis(path.duration_ms / move_count as u64);
     let (from_x, from_y) = path.source;
-    let (to_x, to_y) = path.destination;
     let pointer_button = match button {
         "right" => dcc_cua_platform_windows::WindowsPointerButton::Right,
         "middle" => dcc_cua_platform_windows::WindowsPointerButton::Middle,
@@ -1313,17 +1331,8 @@ fn send_windows_calibrated_relative_drag(
     }
     std::thread::sleep(RAW_DRAG_PRE_DOWN_SETTLE);
 
-    let waypoints: Vec<_> = (1..=steps)
-        .map(|step| {
-            let progress = step as f64 / steps as f64;
-            (
-                from_x + ((to_x - from_x) as f64 * progress).round() as i32,
-                from_y + ((to_y - from_y) as f64 * progress).round() as i32,
-            )
-        })
-        .collect();
     let relative_path = run_windows_calibrated_relative_path(
-        &waypoints,
+        &waypoints[1..],
         RELATIVE_DRAG_MAX_ATTEMPTS_PER_WAYPOINT,
         RELATIVE_DRAG_ENDPOINT_TOLERANCE_PX,
         || validate_windows_relative_drag_fence(target, pointer_button),
@@ -1515,6 +1524,13 @@ pub(crate) async fn perform_windows_foreground_fast_action(
         let last = action.path.last().copied().unwrap_or(first);
         let (from_x, from_y) = screen_point(first);
         let (to_x, to_y) = screen_point(last);
+        let waypoints = (action.path.len() > 2).then(|| {
+            action
+                .path
+                .iter()
+                .map(|point| screen_point(*point))
+                .collect::<Vec<_>>()
+        });
         let _ = animate_to(from_x, from_y).await;
         dcc_cua_platform_windows::send_overlay_command(
             session_id.to_owned(),
@@ -1631,6 +1647,7 @@ pub(crate) async fn perform_windows_foreground_fast_action(
                         destination: (to_x, to_y),
                         duration_ms,
                         steps: steps as usize,
+                        waypoints,
                     };
                     let outcome = match backend {
                         WindowsForegroundDragBackend::SendInput => {

@@ -5,6 +5,8 @@ use task_payload::proposal_payload;
 mod capture_popup;
 mod frame_recovery;
 mod interaction_recovery;
+#[path = "mcp_performance.rs"]
+mod mcp_performance;
 mod owned_host;
 mod start_contract;
 mod transport;
@@ -14,7 +16,7 @@ use transport::run_transport;
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use dcc_cua_client::{HostClient, HostClientError, LogicalTaskSession, SnapshotTransport};
@@ -44,6 +46,10 @@ use super::connection_diagnostics::{
     AssociatedHost, CloseReason, ConnectionDiagnostics, RESOURCE_URI as CONNECTION_RESOURCE,
     RuntimeBuildIdentity, TaskCounts,
 };
+
+use mcp_performance::McpPerformance;
+
+const PERFORMANCE_RESOURCE_URI: &str = "dcc-cua://connection/metrics";
 
 const SERVER_NAME: &str = "dcc-cua-task-automation";
 const MAX_PENDING_TASKS: usize = 64;
@@ -294,6 +300,7 @@ struct TaskAuthorizationServer {
     recording_output_root: Option<std::path::PathBuf>,
     capture_preparation_journal_root: Option<std::path::PathBuf>,
     diagnostics: Option<ConnectionDiagnostics>,
+    performance: McpPerformance,
 }
 
 impl TaskAuthorizationServer {
@@ -315,6 +322,7 @@ impl TaskAuthorizationServer {
             )
             .map(Into::into),
             diagnostics: None,
+            performance: McpPerformance::new(),
         }
     }
 
@@ -324,9 +332,14 @@ impl TaskAuthorizationServer {
         let Some(method) = message.get("method").and_then(Value::as_str) else {
             return Some(rpc_error(id, -32600, "Invalid Request"));
         };
+        if method == "notifications/dcc-cua/model_usage" {
+            self.performance.record_model_usage_notification(&message);
+            return None;
+        }
         if method.starts_with("notifications/") || method == "$/cancelRequest" {
             return None;
         }
+        self.performance.record_model_usage_message(&message);
         let params = message
             .get("params")
             .filter(|value| value.is_object())
@@ -361,6 +374,11 @@ impl TaskAuthorizationServer {
                 "name": "dcc-cua-connection",
                 "description": "Read-only diagnostics for this MCP connection; client identifiers are self-reported.",
                 "mimeType": "application/json"
+            }, {
+                "uri": PERFORMANCE_RESOURCE_URI,
+                "name": "dcc-cua-performance",
+                "description": "Read-only latency, protocol-size, token-estimate, model-usage and post-snapshot reuse counters for this MCP connection.",
+                "mimeType": "application/json"
             }]})),
             "resources/read" => self.read_connection_resource(&params),
             "resources/templates/list" => Ok(json!({"resourceTemplates": []})),
@@ -376,7 +394,15 @@ impl TaskAuthorizationServer {
     }
 
     fn read_connection_resource(&self, params: &Value) -> Result<Value, String> {
-        if params.get("uri").and_then(Value::as_str) != Some(CONNECTION_RESOURCE) {
+        let uri = params.get("uri").and_then(Value::as_str);
+        if uri == Some(PERFORMANCE_RESOURCE_URI) {
+            return Ok(json!({"contents": [{
+                "uri": PERFORMANCE_RESOURCE_URI,
+                "mimeType": "application/json",
+                "text": serde_json::to_string(&self.performance.report()).map_err(|_| "performance metrics unavailable")?
+            }]}));
+        }
+        if uri != Some(CONNECTION_RESOURCE) {
             return Err("unknown DCC-CUA MCP resource".into());
         }
         let diagnostics = self
@@ -422,32 +448,62 @@ impl TaskAuthorizationServer {
             .get("name")
             .and_then(Value::as_str)
             .ok_or_else(|| "tools/call requires a tool name".to_owned())?;
+        let include_metrics = params
+            .get("arguments")
+            .and_then(Value::as_object)
+            .and_then(|arguments| arguments.get("include_metrics"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         let arguments = params
             .get("arguments")
             .filter(|value| value.is_object())
             .cloned()
             .unwrap_or_else(|| json!({}));
-        if name == "dcc_cua_task_call" {
-            return Ok(match self.task_call(arguments).await {
+        let started = Instant::now();
+        let mut result = if name == "dcc_cua_task_call" {
+            match self.task_call(arguments).await {
                 Ok(result) => result,
                 Err(message) => tool_error(message),
-            });
-        }
-        let result = match name {
-            "start_task" => {
-                return Ok(match self.start_automatic_task(arguments).await {
-                    Ok(payload) => tool_result(payload),
-                    Err(message) => tool_error(message),
-                });
             }
-            "stop_task" => self.revoke_task(arguments).await,
-            "task_status" => self.task_status(arguments),
-            _ => Err(format!("unknown DCC-CUA MCP tool: {name}")),
+        } else {
+            let result = match name {
+                "start_task" => self
+                    .start_automatic_task(arguments)
+                    .await
+                    .map(|payload| tool_result(payload)),
+                "stop_task" => self
+                    .revoke_task(arguments)
+                    .await
+                    .map(|payload| tool_result(payload)),
+                "task_status" => self
+                    .task_status(arguments)
+                    .map(|payload| tool_result(payload)),
+                "dcc_cua_metrics" => Ok(tool_result(self.performance.report())),
+                "dcc_cua_record_model_usage" => self
+                    .record_model_usage(arguments)
+                    .map(|payload| tool_result(payload)),
+                _ => Err(format!("unknown DCC-CUA MCP tool: {name}")),
+            };
+            match result {
+                Ok(payload) => payload,
+                Err(message) => tool_error(message),
+            }
         };
-        Ok(match result {
-            Ok(payload) => tool_result(payload),
-            Err(message) => tool_error(message),
-        })
+        let elapsed = started.elapsed();
+        self.performance.record_tool_call(name, elapsed);
+        if include_metrics {
+            self.performance
+                .annotate_call_result(&mut result, name, elapsed);
+        }
+        Ok(result)
+    }
+
+    fn record_model_usage(&mut self, arguments: Value) -> Result<Value, String> {
+        let usage = arguments
+            .get("usage")
+            .ok_or_else(|| "dcc_cua_record_model_usage requires usage".to_owned())?;
+        self.performance.record_model_usage(usage);
+        Ok(self.performance.report())
     }
 
     fn prepare_task(&mut self, arguments: Value) -> Result<Value, String> {
@@ -918,6 +974,7 @@ impl TaskAuthorizationServer {
         } else if method == "live_observation_start" && params.get("request").is_none() {
             params["request"] = json!({});
         }
+        let performance_params = params.clone();
         let response = proposal
             .session
             .as_mut()
@@ -946,6 +1003,8 @@ impl TaskAuthorizationServer {
             "target": proposal.session.as_ref().map(LogicalTaskSession::target),
             "native_action_popups": false,
         });
+        self.performance
+            .record_task_call(&method, &performance_params, &host);
         super::mcp_output::call_tool_result(host, response.binary_attachment.as_deref())
     }
 }
@@ -1767,6 +1826,25 @@ fn tool_definitions() -> Vec<Value> {
             "annotations": {"readOnlyHint": false, "destructiveHint": true, "idempotentHint": true, "openWorldHint": false}
         }),
         json!({
+            "name": "dcc_cua_metrics",
+            "title": "Read DCC-CUA performance metrics",
+            "description": "Read connection-scoped debug metrics for request time, protocol message bytes, estimated protocol tokens, explicitly reported model tokens, standalone snapshots, post-action snapshots and post_snapshot reuse. Estimated protocol tokens use ceil(UTF-8 bytes / 4); exact model usage must be reported by the Agent Host.",
+            "inputSchema": {"type":"object", "additionalProperties":false, "properties":{}},
+            "annotations": {"readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false}
+        }),
+        json!({
+            "name": "dcc_cua_record_model_usage",
+            "title": "Report model token usage",
+            "description": "Record exact model input/output token counts supplied by the Agent Host. This only updates local debug counters and grants no task authority. Prefer the one-way notifications/dcc-cua/model_usage message when the client can emit it without a tool round trip.",
+            "inputSchema": {
+                "type":"object", "additionalProperties":false, "required":["usage"],
+                "properties":{"usage":{"type":"object", "additionalProperties":false,
+                    "properties":{"input_tokens":{"type":"integer","minimum":0},"output_tokens":{"type":"integer","minimum":0},"prompt_tokens":{"type":"integer","minimum":0},"completion_tokens":{"type":"integer","minimum":0}},
+                    "anyOf":[{"required":["input_tokens"]},{"required":["output_tokens"]},{"required":["prompt_tokens"]},{"required":["completion_tokens"]}]}}
+            },
+            "annotations": {"readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false}
+        }),
+        json!({
             "name": "dcc_cua_task_call",
             "title": "Run DCC-CUA task call",
             "description": "Call one closed Host method on the same MCP connection after start_task returned its provider/runtime/PID/HWND binding. execute_action params require observation_id and action {action, input_kind, intent}; semantic input also requires accessibility_state_id and a fresh element reference. Raw x/y are pixels in snapshot.coordinate_space, never UIA virtual-desktop bounds or a resized preview; source_rect already contains native window units, so do not apply DPI again. Keyboard input uses keys, not key. Keep snapshot and action in that same task; observation IDs and opaque references are not reusable after reconnecting or in another CLI invocation. In explicitly granted semantic tasks, supported Windows UIA click, toggle, set_text or set_value may use delivery_mode=background with the latest observation_id, accessibility_state_id and same-task UIA element reference. Take a fresh semantic snapshot and verify the actual post-action state; type, double_click, coordinates and keyboard input do not inherit this UIA background support. A pixels_only snapshot yields a formal observation_id and accessibility_available=false, without semantic element tokens. Its optional capture_diagnostics boolean defaults to false; true adds bounded byte hashes, histograms, timing, and native provenance for the existing two captures without changing pixels or input authority. Semantic snapshots reject this diagnostic opt-in. Its execute_action requires a granted supported raw_input action and that latest observation_id; omit accessibility_state_id, element selectors, secret handles, and input_backend_id. Pixels-only delivery is foreground only, without implicit activation. Pixels-only window state and typed activation refusals expose interaction_recovery: snapshot permission is independent of foreground input readiness. Native background viability hints never authorize pixels-only background input or a task-mode switch to bypass refusal. Do not blindly retry refused activation. In pixels_only tasks, use capture_after for a fresh pixel post-action observation; semantic post snapshots are refused in that mode. minimize_window requires the latest observation and same native instance, consumes it after an attempt, and reports native minimized state. set_window_frame requires a one-use window_state_id from explicit get_window_state no more than five seconds old, and frame={x,y,width,height} in exact i32 physical pixels with checked extents. It moves the same full native instance without activation or z-order change and confirms only an exact bounded native readback; every attempt consumes metadata and prior pixel evidence. Its response state does not mint another token. change_window_state also accepts dismiss_menu only with its independent window_state/dismiss_menu action scope and a one-use window_state_id copied from get_window_state.menu_dismiss_window_state_id, at most five seconds old. Frame and snapshot tokens cannot authorize menu dismissal. It sends one bounded standard native cancellation without activation, keyboard input or application close. Confirmed requires popup_hidden_or_gone, menu_inactive and owner_alive; an unconfirmed attempt is never success and must not be blindly retried. Every attempt consumes metadata and prior observations. Take a fresh observation afterward. Out-of-scope, expired, stopped, changed, or stale targets fail without prompting. Recording requires explicit allow_recording and an immutable task output directory; call recording_start with an empty params object for video-only output. Granted live_observation_start/state/stop expose the same native source. Recording start validates the actual first encoded frame, state reports source pauses and failures, and stop awaits video/sidecar finalization. Never pass credential values; use secret handles in supported semantic/browser tasks.",
@@ -1777,7 +1855,8 @@ fn tool_definitions() -> Vec<Value> {
                 "properties": {
                     "task_id": {"type": "string"},
                     "method": {"type": "string"},
-                    "params": {"type": "object"}
+                    "params": {"type": "object"},
+                    "include_metrics": {"type":"boolean", "default":false, "description":"When true, add a connection-scoped performance snapshot to result _meta for debugging. It is omitted by default to avoid increasing model message tokens."}
                 },
                 "allOf": [{
                     "if":{"properties":{"method":{"const":"execute_action"}}},
@@ -1873,7 +1952,7 @@ fn action_params_schema() -> Value {
         "properties":{
             "observation_id":{"type":"string","minLength":1,"description":"Copy the latest same-task observation_id; never reuse it after an action attempt."},
             "accessibility_state_id":{"type":"string","description":"Required for semantic input: copy the latest same-task accessibility_state_id."},
-            "capture_after":{"type":"boolean","default":false},
+            "capture_after":{"type":"boolean","default":false,"description":"When true, the response contains the fresh post_snapshot for the next action. Reuse that observation_id directly and do not call snapshot again unless observation_required is true."},
             "post_snapshot_delay_ms":{"type":"integer","minimum":0},
             "post_snapshot_mode":{"type":"string","enum":["full","semantic"]},
             "action":{
@@ -1887,7 +1966,12 @@ fn action_params_schema() -> Value {
                     "element_token":{"type":"string","minLength":1,"description":"Opaque reference from the latest same-task UIA observation; do not convert its virtual-desktop bounds to guessed coordinates."},
                     "x":{"type":"number","minimum":0,"description":"X in snapshot.coordinate_space image pixels, not UIA/desktop bounds or a resized preview. source_rect already contains native window units; do not multiply DPI again."},
                     "y":{"type":"number","minimum":0,"description":"Y in the latest delivered image, with the same coordinate contract as x."},
+                    "button":{"type":"string","enum":["left","middle","right"]},
+                    "path":{"type":"array","minItems":2,"maxItems":201,"items":{"type":"object","additionalProperties":false,"required":["x","y"],"properties":{"x":{"type":"number","minimum":0},"y":{"type":"number","minimum":0}}},"description":"A bounded pixel trajectory in the latest screenshot. Use multiple points for one continuous pen or brush stroke. A two-point path may use steps for linear interpolation."},
+                    "duration_ms":{"type":"integer","minimum":1,"maximum":10000,"description":"Total duration for a drag or held keypress. Omit it to use the route default."},
+                    "steps":{"type":"integer","minimum":1,"maximum":200,"description":"Interpolation segments for a two-point drag. For a sampled multi-point brush path, send the points directly and omit steps."},
                     "keys":{"type":"array","items":{"type":"string"},"description":"Keyboard input uses keys, not key; it requires a raw-input action scope."},
+                    "modifiers":{"type":"array","items":{"type":"string"},"description":"Keyboard modifiers for supported raw-input actions."},
                     "text":{"type":"string","description":"Non-secret text only. Credentials must use a trusted secret_handle."}
                 }
             }

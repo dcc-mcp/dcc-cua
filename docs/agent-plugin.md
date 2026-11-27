@@ -17,6 +17,10 @@ The MCP surface is intentionally small:
 - `dcc_cua_task_call` performs one method inside that retained task scope.
 - `task_status` reads lifecycle state.
 - `stop_task` closes the session and revokes its internal lease.
+- `dcc_cua_metrics` reads connection-scoped latency, message-size, token and
+  observation-reuse counters.
+- `dcc_cua_record_model_usage` records exact model input and output token
+  counts supplied by the Agent Host.
 
 There are no MCP UI resources or separate prepare, authorize, and start tools.
 The internal constructor-owned broker remains process-local so an MCP caller
@@ -79,15 +83,42 @@ The checkout also includes `.claude-plugin/marketplace.json` and a portable
 `.mcp.json`. Hosts without Codex plugin support may launch `dcc-cua mcp-server`
 directly through their native MCP configuration.
 
-After installation, confirm that `tools/list` exposes exactly `start_task`,
-`task_status`, `stop_task`, and `dcc_cua_task_call`. Instrumented builds also
-advertise the read-only `dcc-cua://connection/current` resource, which reports
-only the caller's current connection. It does not grant task authority or list
-other clients. Use `dcc-cua connections` for the local bounded diagnostic
-registry; older resident bridges have no records. See
+After installation, confirm that `tools/list` exposes `start_task`,
+`task_status`, `stop_task`, `dcc_cua_task_call`, `dcc_cua_metrics`, and
+`dcc_cua_record_model_usage`. Instrumented builds also advertise the
+read-only `dcc-cua://connection/current` and `dcc-cua://connection/metrics`
+resources. Both report only the caller's current connection. They do not grant
+task authority or list other clients. Use `dcc-cua connections` for the local
+bounded diagnostic registry; older resident bridges have no records. See
 [MCP connection diagnostics](design/mcp-connection-diagnostics.md) for the
 schema and attribution limits. A stale authorization tool or card means an
 older runtime/plugin is still loaded; reconnect after upgrading.
+
+## Performance and token diagnostics
+
+Call `dcc_cua_metrics` after a scenario, or read
+`dcc-cua://connection/metrics`, to obtain one JSON report for the current MCP
+connection. The report includes transport and tool latency totals and maxima,
+UTF-8 message bytes, standalone snapshots, post-action snapshots, and the
+number of actions that consumed a returned `post_snapshot` directly. A
+`capture_after: true` response with `observation_required: false` is the next
+observation and should be passed to the next action without another `snapshot`.
+
+Protocol token fields are estimates using `ceil(UTF-8 bytes / 4)`. Exact model
+usage is outside the DCC-CUA process. An Agent Host can report it without an
+extra tool round trip by sending this notification on the same connection:
+
+```json
+{"jsonrpc":"2.0","method":"notifications/dcc-cua/model_usage","params":{"input_tokens":1200,"output_tokens":180}}
+```
+
+The same usage object may be attached to any request under
+`_meta.dcc-cua.model_usage`. The server keeps only bounded aggregate counters
+and does not copy prompts, responses, request IDs, paths, coordinates, pixels,
+or model names into the report. Passing `include_metrics: true` to
+`dcc_cua_task_call` adds the current report and that call's elapsed time under
+the result `_meta.dcc-cua.performance` field. It is disabled by default so a
+debug payload cannot inflate normal model messages.
 
 Before the first observation or input, report the `provider=dcc-cua`, runtime
 version, exact PID, and exact HWND returned by `start_task`. Use one persistent
@@ -191,7 +222,10 @@ check refuses dispatch or reports a partial dispatch; it does not activate the
 window or fall back to another backend. Any attempted action consumes the old
 observation. With `capture_after: true`, the post-action observation uses the
 same pixel route and cannot mint semantic element authorization. A failed post
-snapshot requires a fresh observation before another action.
+snapshot requires a fresh observation before another action. When an action
+requests `capture_after: true`, the returned `post_snapshot` is the next
+observation. Reuse its observation id directly and skip another `snapshot`
+call while `observation_required` is false.
 
 The native worker holds the owning banner suppression and the existing
 acknowledged exclusion of only its configured, process-local registered cursor
@@ -207,11 +241,14 @@ window may be covered. Keyboard and text actions retain the complete visibility
 requirement. A readable background capture alone never authorizes foreground
 input or click-through to another window.
 
-Windows pixel `drag` accepts exactly two screenshot-local `path` points and an
-optional `button` (`left`, `middle`, or `right`; default `left`). `duration_ms`
-is 1–10000 (default 500); `steps` is 1–200 (default 20). Do not supply x/y,
+Windows pixel `drag` accepts a bounded screenshot-local `path` with at least
+two points and an optional `button` (`left`, `middle`, or `right`;
+default `left`). Use multiple points for one continuous pen or brush stroke.
+With two points, `duration_ms` is 1–10000 (default 160) and `steps` is
+1–200 (default 20). Sampled multi-point paths send their points directly and
+omit `steps`. Do not supply x/y,
 modifiers, keys, text, semantic selectors, or backend overrides. The complete
-interpolated path must be observed and unredacted; every sampled point is
+submitted path must be observed and unredacted; every sampled point is
 natively preflighted before input and checked again before movement. Target
 identity, physical bounds, DPI, foreground and visibility remain fenced while
 the button is held. Failure or interruption releases only this operation's
@@ -221,7 +258,7 @@ a fresh snapshot or typed application-state readback to prove the intended move.
 For example, the `params` of a granted `execute_action` call can be:
 
 ```json
-{"observation_id":"<latest>","capture_after":true,"action":{"action":"drag","input_kind":"raw_input","intent":"ordinary_edit","delivery_mode":"foreground","path":[{"x":100,"y":200},{"x":260,"y":240}],"duration_ms":500,"steps":20}}
+{"observation_id":"<latest>","capture_after":true,"action":{"action":"drag","input_kind":"raw_input","intent":"ordinary_edit","delivery_mode":"foreground","path":[{"x":100,"y":200},{"x":140,"y":215},{"x":190,"y":225},{"x":260,"y":240}],"duration_ms":180}}
 ```
 
 Semantic selectors, browser/clipboard input, secret input, wheel, move,

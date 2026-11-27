@@ -408,7 +408,6 @@ fn drag_action() -> ComputerUseAction {
 
 #[rstest]
 #[case("empty")]
-#[case("extra_point")]
 #[case("coordinates")]
 #[case("keys")]
 #[case("modifiers")]
@@ -422,7 +421,6 @@ fn pixel_drag_rejects_unbounded_or_mixed_action_fields(#[case] variant: &str) {
     let mut action = drag_action();
     match variant {
         "empty" => action.path.clear(),
-        "extra_point" => action.path.push(ComputerUsePoint { x: 2.0, y: 2.0 }),
         "coordinates" => action.x = Some(1.0),
         "keys" => action.keys.push("shift".into()),
         "modifiers" => action.modifiers.push("shift".into()),
@@ -434,6 +432,25 @@ fn pixel_drag_rejects_unbounded_or_mixed_action_fields(#[case] variant: &str) {
         "nonfinite" => action.path[1].x = f64::INFINITY,
         _ => unreachable!(),
     }
+    assert_eq!(
+        validate_pixel_action(&action).unwrap_err().code,
+        ComputerUseErrorCode::InvalidAction
+    );
+}
+
+#[rstest]
+fn pixel_drag_accepts_a_sampled_brush_trajectory() {
+    let mut action = drag_action();
+    action.path.insert(1, ComputerUsePoint { x: 42.0, y: 31.0 });
+    validate_pixel_action(&action)
+        .expect("one guarded raw-input action may carry a sampled brush trajectory");
+}
+
+#[test]
+fn pixel_drag_rejects_interpolation_steps_for_a_sampled_trajectory() {
+    let mut action = drag_action();
+    action.path.insert(1, ComputerUsePoint { x: 42.0, y: 31.0 });
+    action.steps = Some(2);
     assert_eq!(
         validate_pixel_action(&action).unwrap_err().code,
         ComputerUseErrorCode::InvalidAction
@@ -484,6 +501,19 @@ fn pixel_drag_checks_physical_origin_and_the_entire_redaction_path(
     if accepted {
         assert_eq!(result.unwrap(), vec![(-290, 100), (-190, 140)]);
     }
+}
+
+#[cfg(windows)]
+#[test]
+fn pixel_drag_preserves_sampled_waypoints() {
+    let mut action = drag_action();
+    action.path = vec![
+        ComputerUsePoint { x: 10.0, y: 20.0 },
+        ComputerUsePoint { x: 42.0, y: 31.0 },
+        ComputerUsePoint { x: 110.0, y: 60.0 },
+    ];
+    let points = physical_drag_points(&action, &observed()).expect("sampled path is valid");
+    assert_eq!(points, vec![(-290, 100), (-258, 111), (-190, 140)]);
 }
 
 #[rstest]

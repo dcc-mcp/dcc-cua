@@ -170,11 +170,15 @@ fn combined_batch_keeps_move_and_left_down_ordered() {
 #[cfg(windows)]
 #[rstest]
 fn held_key_mapping_rejects_unknown_names() {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::VK_OEM_COMMA;
+
     assert!(matches!(
         virtual_key("not-a-key"),
         Err(super::WindowsHeldKeyError::InvalidKey(_))
     ));
     assert_eq!(virtual_key("a").unwrap(), u16::from(b'A'));
+    assert_eq!(virtual_key("comma").unwrap(), VK_OEM_COMMA);
+    assert_eq!(virtual_key(",").unwrap(), VK_OEM_COMMA);
 }
 
 #[cfg(windows)]

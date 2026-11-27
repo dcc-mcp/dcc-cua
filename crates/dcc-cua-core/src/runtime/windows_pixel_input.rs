@@ -1,6 +1,8 @@
 //! Explicit pixel input uses only local, final-boundary native dispatchers.
 use super::*;
 
+const DEFAULT_PIXEL_DRAG_DURATION_MS: u64 = 160;
+
 pub(super) fn validate_pixel_interrupt(
     started: u64,
     current: u64,
@@ -62,7 +64,8 @@ fn validate_pixel_action(action: &ComputerUseAction) -> ComputerUseResult<()> {
     );
     let drag = action.action == "drag";
     if drag
-        && (action.path.len() != 2
+        && (action.path.len() < 2
+            || action.path.len() > 201
             || action.x.is_some()
             || action.y.is_some()
             || !action.keys.is_empty()
@@ -75,6 +78,7 @@ fn validate_pixel_action(action: &ComputerUseAction) -> ComputerUseResult<()> {
             || action
                 .steps
                 .is_some_and(|steps| !(1..=MAX_DRAG_STEPS).contains(&steps))
+            || (action.path.len() > 2 && action.steps.is_some())
             || action
                 .path
                 .iter()
@@ -82,7 +86,7 @@ fn validate_pixel_action(action: &ComputerUseAction) -> ComputerUseResult<()> {
     {
         return Err(ComputerUseError::new(
             ComputerUseErrorCode::InvalidAction,
-            "pixels_only drag requires two endpoints, a bounded duration/steps, and no keyboard or semantic fields",
+            "pixels_only drag requires a bounded trajectory, a bounded duration, and no keyboard or semantic fields",
         ));
     }
     if click && (action.duration_ms.is_some() || action.x.is_none() || action.y.is_none()) {
@@ -205,25 +209,43 @@ fn physical_drag_points(
     observation: &ComputerUseObservation,
 ) -> ComputerUseResult<Vec<(i32, i32)>> {
     validate_pixel_action(action)?;
-    let [start, end] = action.path.as_slice() else {
+    if action.path.len() > 2 && action.steps.is_some() {
         return Err(ComputerUseError::new(
             ComputerUseErrorCode::InvalidAction,
-            "drag requires two endpoints",
+            "steps is only supported for a two-point drag path",
         ));
-    };
-    let steps = action.steps.unwrap_or(20);
-    let mut sample = action.clone();
-    let mut points = Vec::with_capacity(steps as usize + 1);
-    for index in 0..=steps {
-        let fraction = f64::from(index) / f64::from(steps);
-        sample.x = Some(start.x + (end.x - start.x) * fraction);
-        sample.y = Some(start.y + (end.y - start.y) * fraction);
-        points.push(physical_point(&sample, observation)?);
     }
-    if points.first() == points.last() {
+    let mut points = if action.path.len() == 2 {
+        let [start, end] = action.path.as_slice() else {
+            unreachable!("path length was checked");
+        };
+        let steps = action.steps.unwrap_or(20);
+        let mut sample = action.clone();
+        let mut points = Vec::with_capacity(steps as usize + 1);
+        for index in 0..=steps {
+            let fraction = f64::from(index) / f64::from(steps);
+            sample.x = Some(start.x + (end.x - start.x) * fraction);
+            sample.y = Some(start.y + (end.y - start.y) * fraction);
+            points.push(physical_point(&sample, observation)?);
+        }
+        points
+    } else {
+        action
+            .path
+            .iter()
+            .map(|point| {
+                let mut sample = action.clone();
+                sample.x = Some(point.x);
+                sample.y = Some(point.y);
+                physical_point(&sample, observation)
+            })
+            .collect::<ComputerUseResult<Vec<_>>>()?
+    };
+    points.dedup();
+    if points.len() < 2 || points.first() == points.last() {
         return Err(ComputerUseError::new(
             ComputerUseErrorCode::InvalidAction,
-            "drag endpoints must be distinct physical pixels",
+            "drag trajectory must contain two distinct physical pixels",
         ));
     }
     // Also refuse a redacted rectangle between samples; a sparse caller path
@@ -514,7 +536,7 @@ pub(super) async fn perform_exact_pixel_action_with_capture_popup(
                     dcc_cua_platform_windows::send_guarded_drag(
                         fence,
                         &drag_points,
-                        action.duration_ms.unwrap_or(500),
+                        action.duration_ms.unwrap_or(DEFAULT_PIXEL_DRAG_DURATION_MS),
                         button,
                         gate,
                         interrupted,

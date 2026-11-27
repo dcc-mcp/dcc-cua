@@ -1,5 +1,6 @@
 //! Bounded JSON-RPC byte transport; task cleanup remains owned by the connection.
 use std::error::Error;
+use std::time::Instant;
 
 use serde_json::Value;
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -34,6 +35,7 @@ pub(super) async fn run_transport<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin
             )
             .into());
         }
+        server.performance.record_transport_input(count);
         if line.iter().all(u8::is_ascii_whitespace) {
             continue;
         }
@@ -53,6 +55,7 @@ pub(super) async fn run_transport<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin
         if let Some(diagnostics) = server.diagnostics.as_mut() {
             diagnostics.set_request_in_flight(true);
         }
+        let request_started = Instant::now();
         let mut responses = Vec::new();
         if let Some(batch) = decoded.as_array() {
             for message in batch {
@@ -63,6 +66,9 @@ pub(super) async fn run_transport<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin
         } else if let Some(response) = server.handle_rpc(decoded).await {
             responses.push(response);
         }
+        server
+            .performance
+            .record_transport_latency(request_started.elapsed());
         server.update_diagnostics();
         if let Some(diagnostics) = server.diagnostics.as_mut() {
             diagnostics.set_request_in_flight(false);
@@ -76,7 +82,9 @@ pub(super) async fn run_transport<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin
             Value::Array(responses)
         };
         *reason = CloseReason::OutputError;
-        output.write_all(format!("{response}\n").as_bytes()).await?;
+        let encoded = format!("{response}\n");
+        server.performance.record_transport_output(encoded.len());
+        output.write_all(encoded.as_bytes()).await?;
         output.flush().await?;
     }
     Ok(())

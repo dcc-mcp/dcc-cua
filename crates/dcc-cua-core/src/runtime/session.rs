@@ -578,7 +578,10 @@ impl ComputerUseSession {
 
         let live_observation = match self
             .ensure_live_observation(&ComputerUseLiveObservationStartRequest {
-                fps: 10,
+                // A recording stream is a media source. Keep it at video
+                // cadence instead of inheriting the lightweight observation
+                // default.
+                fps: 30,
                 ..Default::default()
             })
             .await

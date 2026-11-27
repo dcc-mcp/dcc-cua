@@ -467,6 +467,40 @@ pub(crate) fn run_windows_fenced_absolute_path_with_trace<E>(
     outcome
 }
 
+#[cfg(any(windows, test))]
+pub(crate) fn run_windows_fenced_absolute_waypoints_with_trace<E>(
+    waypoints: &[(i32, i32)],
+    duration_ms: u64,
+    mut validate_exact_target: impl FnMut() -> Result<(), E>,
+    mut inject_absolute_move: impl FnMut(i32, i32) -> Result<(), E>,
+    mut settle: impl FnMut(Duration),
+) -> FencedAbsolutePathOutcome<E> {
+    let move_count = waypoints.len().max(1);
+    let step_delay = Duration::from_millis(duration_ms / move_count as u64);
+    let mut outcome = FencedAbsolutePathOutcome {
+        total_waypoints: waypoints.len(),
+        waypoints_completed: 0,
+        moves_inserted: 0,
+        error: None,
+    };
+    for &(x, y) in waypoints {
+        if let Err(error) = validate_exact_target() {
+            outcome.error = Some(error);
+            return outcome;
+        }
+        if let Err(error) = inject_absolute_move(x, y) {
+            outcome.error = Some(error);
+            return outcome;
+        }
+        outcome.moves_inserted += 1;
+        outcome.waypoints_completed += 1;
+        if !step_delay.is_zero() {
+            settle(step_delay);
+        }
+    }
+    outcome
+}
+
 #[allow(dead_code)]
 pub(crate) fn run_windows_fenced_absolute_path<E>(
     source: (i32, i32),
