@@ -1090,7 +1090,7 @@ continuations.
 `browser_navigate` defaults to `delivery_mode: "background"`, preserving the
 selected tab. Callers that require a visible switch must explicitly request
 `delivery_mode: "foreground"`; DCC applies its exact-window activation path
-and reports the activation result. Try CUA Driver 0.59.5 confirms
+and reports the activation result. Try CUA Driver 0.64.1 confirms
 dispatch and ref invalidation but does not provide DOM readback in its official
 navigation receipt, so `readback_state: "not_provided"` requires a fresh
 `browser_snapshot` for URL and page-state verification. A post-dispatch failure

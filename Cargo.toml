@@ -33,15 +33,15 @@ rstest = "0.26.1"
 
 # Keep the SDK, platform adapters, cursor renderer and testkit on one revision.
 #
-# Use the latest published Try CUA Driver release as one immutable source for
-# runtime, platform adapters, cursor rendering and testkit. DCC-specific
-# contracts must be verified against each upstream release before adoption.
+# Use one immutable Try CUA upstream revision for the runtime, platform
+# adapters, cursor rendering and testkit. DCC-specific contracts must be
+# verified against each upstream revision before adoption.
 #
-# Driver 0.60.0 is pinned by release commit, not a moving branch or tag.
+# The revision is pinned explicitly instead of following a moving branch.
 # See docs/design/sdk-dependency-maintenance.md for migration and acceptance.
-cua-driver-contract = { git = "https://github.com/trycua/cua.git", rev = "7ebe6a662ea380d0b7a340a33ee59feaf8f56f43" }
-cua-driver-sdk = { git = "https://github.com/trycua/cua.git", rev = "7ebe6a662ea380d0b7a340a33ee59feaf8f56f43" }
-cua-driver-testkit = { git = "https://github.com/trycua/cua.git", rev = "7ebe6a662ea380d0b7a340a33ee59feaf8f56f43" }
-cursor-overlay = { git = "https://github.com/trycua/cua.git", rev = "7ebe6a662ea380d0b7a340a33ee59feaf8f56f43" }
-platform-macos = { git = "https://github.com/trycua/cua.git", rev = "7ebe6a662ea380d0b7a340a33ee59feaf8f56f43" }
-platform-windows = { git = "https://github.com/trycua/cua.git", rev = "7ebe6a662ea380d0b7a340a33ee59feaf8f56f43" }
+cua-driver-contract = { git = "https://github.com/trycua/cua.git", rev = "3de125f3b87ece6ae8dd8b52047da7eb4e9a1f95" }
+cua-driver-sdk = { git = "https://github.com/trycua/cua.git", rev = "3de125f3b87ece6ae8dd8b52047da7eb4e9a1f95" }
+cua-driver-testkit = { git = "https://github.com/trycua/cua.git", rev = "3de125f3b87ece6ae8dd8b52047da7eb4e9a1f95" }
+cursor-overlay = { git = "https://github.com/trycua/cua.git", rev = "3de125f3b87ece6ae8dd8b52047da7eb4e9a1f95" }
+platform-macos = { git = "https://github.com/trycua/cua.git", rev = "3de125f3b87ece6ae8dd8b52047da7eb4e9a1f95" }
+platform-windows = { git = "https://github.com/trycua/cua.git", rev = "3de125f3b87ece6ae8dd8b52047da7eb4e9a1f95" }
