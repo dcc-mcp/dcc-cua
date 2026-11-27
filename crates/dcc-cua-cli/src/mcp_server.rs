@@ -16,7 +16,7 @@ use transport::run_transport;
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::sync::{Arc, Mutex};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use dcc_cua_client::{HostClient, HostClientError, LogicalTaskSession, SnapshotTransport};
@@ -56,6 +56,7 @@ const MAX_PENDING_TASKS: usize = 64;
 const MAX_TTL_MINUTES: u64 = 24 * 60;
 const DEFAULT_TTL_MINUTES: u64 = 60;
 const DEFAULT_IDLE_TIMEOUT_MS: u64 = 15 * 60 * 1_000;
+const TASK_STARTUP_TIMEOUT_MS: u64 = 15_000;
 const MAX_ALLOWED_METHODS: usize = 32;
 const CUA_RUNTIME_SESSION_PREFIX: &str = "__cua_runtime_";
 
@@ -1030,15 +1031,19 @@ async fn open_task_session(
     let security_services = HostSecurityServices::default()
         .with_task_authorization_host(authorization_host)
         .with_secret_vault(super::secret_vault::native_secret_vault());
-    crate::extension_transport::ensure(
-        extension_transport,
-        &driver,
-        connection_id,
-        &proposal.allowed_methods,
-        &receipt.window_capability,
-        &proposal.registration.target,
+    tokio::time::timeout(
+        Duration::from_millis(TASK_STARTUP_TIMEOUT_MS),
+        crate::extension_transport::ensure(
+            extension_transport,
+            &driver,
+            connection_id,
+            &proposal.allowed_methods,
+            &receipt.window_capability,
+            &proposal.registration.target,
+        ),
     )
-    .await?;
+    .await
+    .map_err(|_| startup_timeout("provider transport readiness"))??;
     // Retain the owner before hello/open-session can fail or be cancelled.
     // Closing the client transport requests cleanup; never abort admitted native work.
     proposal.host_task = Some(OwnedHostTask::spawn(async move {
@@ -1048,19 +1053,35 @@ async fn open_task_session(
     }));
     let mut client =
         HostClient::from_stream_with_transport(client_stream, SnapshotTransport::BinaryFrame);
-    client
-        .hello(agent_name)
-        .await
-        .map_err(|error| error.to_string())?;
-    client
-        .open_logical_task_session(task_session_id(proposal_id), grant, DEFAULT_IDLE_TIMEOUT_MS)
-        .await
-        .map_err(|error| {
-            if let HostClientError::Remote { response, .. } = &error {
-                proposal.cleanup = startup_cleanup_receipt(response);
-            }
-            error.to_string()
-        })
+    tokio::time::timeout(
+        Duration::from_millis(TASK_STARTUP_TIMEOUT_MS),
+        client.hello(agent_name),
+    )
+    .await
+    .map_err(|_| startup_timeout("Host hello"))?
+    .map_err(|error| format!("DCC-CUA task startup failed during Host hello: {error}"))?;
+    let session = tokio::time::timeout(
+        Duration::from_millis(TASK_STARTUP_TIMEOUT_MS),
+        client.open_logical_task_session(
+            task_session_id(proposal_id),
+            grant,
+            DEFAULT_IDLE_TIMEOUT_MS,
+        ),
+    )
+    .await
+    .map_err(|_| startup_timeout("Host open_session"))?;
+    session.map_err(|error| {
+        if let HostClientError::Remote { response, .. } = &error {
+            proposal.cleanup = startup_cleanup_receipt(response);
+        }
+        format!("DCC-CUA task startup failed during Host open_session: {error}")
+    })
+}
+
+fn startup_timeout(phase: &str) -> String {
+    format!(
+        "DCC-CUA task startup timed out during {phase} after {TASK_STARTUP_TIMEOUT_MS} ms; the task lease remains bounded and requires a fresh MCP start"
+    )
 }
 
 fn startup_cleanup_receipt(response: &Value) -> Option<Value> {
