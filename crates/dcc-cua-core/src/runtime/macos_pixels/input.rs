@@ -4,7 +4,7 @@ use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
 use core_graphics::geometry::CGPoint;
 use dcc_cua_indicator::macos_frame::{ExecutionFrame, require_exposure};
 use foreign_types::ForeignType;
-use platform_macos::input::{keyboard, mouse};
+use platform_macos::input::keyboard;
 use std::sync::atomic::AtomicBool;
 
 #[cfg(test)]
@@ -289,38 +289,23 @@ impl MacPixels {
                     global_y,
                 ) {
                     return Err(unavailable(
-                        "macOS click point does not hit the bound window",
+                        "macOS pointer sample does not hit the bound window",
                     ));
                 }
                 let _admission = admit()?;
-                attempted = true;
-                if action.action == "click" {
-                    mouse::click_at_xy_with_window_local(
-                        self.pid,
-                        global_x,
-                        global_y,
-                        x,
-                        y,
-                        self.window,
-                        1,
-                        &[],
-                        mouse::WindowClickDelivery::Foreground,
-                    )
-                    .map_err(|_| unavailable("macOS click dispatch failed"))?;
-                    continue;
-                }
                 let point = CGPoint::new(global_x, global_y);
                 if index == 0 {
-                    pointer_event(
+                    let moved = pointer_event(
                         self.pid,
                         self.window,
                         point,
                         (x, y),
                         CGEventType::MouseMoved,
-                    )?
-                    .post_to_pid(self.pid);
+                    )?;
+                    attempted = true;
+                    moved.post_to_pid(self.pid);
                 }
-                if dragging {
+                if dragging || action.action == "click" {
                     let kind = if index == 0 {
                         CGEventType::LeftMouseDown
                     } else {

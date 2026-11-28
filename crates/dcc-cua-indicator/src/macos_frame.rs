@@ -150,7 +150,24 @@ impl ExecutionFrame {
 
     pub fn validate(&mut self, pid: i32, window: u32, rect: &[i32; 4]) -> io::Result<()> {
         self.check_interrupt()?;
-        require_exposure(pid, window, rect, self.child.id() as i32).map_err(io::Error::other)
+        let mut blocker = FrameBlocker::default();
+        check_exposure(
+            pid,
+            window,
+            rect,
+            self.child.id() as i32,
+            Some(&mut blocker),
+        )
+        .map_err(|reason| {
+            if blocker.window == 0 {
+                io::Error::other(reason)
+            } else {
+                io::Error::other(format!(
+                    "{reason} (window {}, layer {}, system_dock {}, center_hit {})",
+                    blocker.window, blocker.layer, blocker.system_dock, blocker.center_hit
+                ))
+            }
+        })
     }
 }
 
