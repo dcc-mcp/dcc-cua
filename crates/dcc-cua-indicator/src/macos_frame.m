@@ -1,4 +1,5 @@
 #import <AppKit/AppKit.h>
+#import <ApplicationServices/ApplicationServices.h>
 #import <CoreGraphics/CoreGraphics.h>
 #include <poll.h>
 #include <unistd.h>
@@ -30,10 +31,32 @@ typedef struct {
     double bounds[4];
 } FrameBlocker;
 
+extern AXError _AXUIElementGetWindow(AXUIElementRef, CGWindowID *);
+
 static NSInteger hitWindow(CGPoint point) {
     CGFloat desktopTop = CGRectGetMaxY(CGDisplayBounds(CGMainDisplayID()));
-    return [NSWindow windowNumberAtPoint:NSMakePoint(point.x, desktopTop-point.y)
-               belowWindowWithWindowNumber:0];
+    NSInteger hit = [NSWindow windowNumberAtPoint:NSMakePoint(point.x, desktopTop-point.y)
+                       belowWindowWithWindowNumber:0];
+    if (hit != 0) return hit;
+    // A non-AppKit CLI can receive no window number. Ask the system-wide
+    // accessibility hit test for this exact point, never the target app alone.
+    AXUIElementRef system = AXUIElementCreateSystemWide();
+    if (!system) return 0;
+    AXUIElementRef element = NULL;
+    AXError result = AXUIElementCopyElementAtPosition(system, point.x, point.y, &element);
+    CFRelease(system);
+    if (result != kAXErrorSuccess || !element) return 0;
+    CFTypeRef containing = NULL;
+    CGWindowID number = 0;
+    if (AXUIElementCopyAttributeValue(element, kAXWindowAttribute, &containing) == kAXErrorSuccess &&
+        containing && CFGetTypeID(containing) == AXUIElementGetTypeID()) {
+        result = _AXUIElementGetWindow((AXUIElementRef)containing, &number);
+    } else {
+        result = _AXUIElementGetWindow(element, &number);
+    }
+    if (containing) CFRelease(containing);
+    CFRelease(element);
+    return result == kAXErrorSuccess ? number : 0;
 }
 
 int dcc_frame_point_hits(unsigned int window, double x, double y) {
@@ -78,10 +101,11 @@ int dcc_frame_exposed(int owner, unsigned int window, const int *rect, int rende
                     dock = [app.bundleIdentifier isEqualToString:@"com.apple.dock"] &&
                         [app.executableURL.path isEqualToString:@"/System/Library/CoreServices/Dock.app/Contents/MacOS/Dock"];
                     hit = hitWindow(CGPointMake(CGRectGetMidX(target), CGRectGetMidY(target)));
-                    // Tahoe's private, untitled Dock tracking surface spans the
+                    // Tahoe's untitled Dock tracking surface spans the
                     // display even when WindowServer routes input through it.
                     // Real Dock panels and every non-system owner remain blockers.
-                    if (dock && sharing && sharing.intValue == kCGWindowSharingNone &&
+                    if (dock && sharing && (sharing.intValue == kCGWindowSharingNone ||
+                        sharing.intValue == kCGWindowSharingReadOnly) &&
                         [entry[(__bridge id)kCGWindowName] length] == 0 && hit == window) continue;
                 }
                 if (blocker) {
