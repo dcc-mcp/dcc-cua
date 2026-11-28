@@ -1368,7 +1368,6 @@ fn pixel_raw_input_permission_is_derived_from_a_real_supported_scope(#[case] act
 
 #[rstest]
 #[case("action", json!("scroll"))]
-#[case("action", json!("move"))]
 #[case("action", json!("press"))]
 #[case("input_kind", json!("semantic"))]
 #[case("secret_input", json!(true))]
@@ -1380,6 +1379,17 @@ fn pixel_task_refuses_uncovered_or_sensitive_raw_scopes(#[case] field: &str, #[c
     task["allowed_actions"] = json!([{"action":"click", "input_kind":"raw_input", "secret_input":false, "authorization_category":"raw_input"}]);
     task["allowed_actions"][0][field] = value;
     assert!(test_server().prepare_task(task).is_err());
+}
+
+#[rstest]
+fn pixel_move_scope_matches_native_platform_support() {
+    let mut task = pixels_task();
+    task["allowed_methods"] = json!(["snapshot", "execute_action"]);
+    task["allowed_actions"] = json!([{"action":"move", "input_kind":"raw_input", "secret_input":false, "authorization_category":"raw_input"}]);
+    assert_eq!(
+        test_server().prepare_task(task).is_ok(),
+        cfg!(any(target_os = "linux", target_os = "macos"))
+    );
 }
 
 #[rstest]

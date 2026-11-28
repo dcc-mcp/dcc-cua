@@ -3,6 +3,7 @@ use core_graphics::event::{CGEvent, CGEventFlags, CGEventType, CGMouseButton, Ev
 use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
 use core_graphics::geometry::CGPoint;
 use dcc_cua_indicator::macos_frame::{ExecutionFrame, require_exposure};
+use foreign_types::ForeignType;
 use platform_macos::input::{keyboard, mouse};
 use std::sync::atomic::AtomicBool;
 
@@ -112,12 +113,30 @@ fn pointer_event(
     pid: i32,
     window: u32,
     point: CGPoint,
+    local: (f64, f64),
     kind: CGEventType,
 ) -> ComputerUseResult<CGEvent> {
     let source = CGEventSource::new(CGEventSourceStateID::Private)
         .map_err(|_| unavailable("macOS pointer source unavailable"))?;
     let event = CGEvent::new_mouse_event(source, kind, point, CGMouseButton::Left)
         .map_err(|_| unavailable("macOS pointer event unavailable"))?;
+    // PID delivery preserves the window number, but AppKit also needs the
+    // window-relative location to populate NSEvent.locationInWindow.
+    type SetWindowLocation = unsafe extern "C" fn(*mut libc::c_void, f64, f64);
+    static SET_LOCATION: std::sync::OnceLock<Option<SetWindowLocation>> =
+        std::sync::OnceLock::new();
+    let stamp = SET_LOCATION
+        .get_or_init(|| {
+            // The SDK uses this CoreGraphics symbol for its window-relative click.
+            let symbol =
+                unsafe { libc::dlsym(libc::RTLD_DEFAULT, c"CGEventSetWindowLocation".as_ptr()) };
+            (!symbol.is_null()).then(|| unsafe {
+                std::mem::transmute::<*mut libc::c_void, SetWindowLocation>(symbol)
+            })
+        })
+        .ok_or_else(|| unavailable("macOS window-local pointer events unavailable"))?;
+    // The retained CGEvent outlives this synchronous setter.
+    unsafe { stamp(event.as_ptr().cast(), local.0, local.1) };
     event.set_flags(CGEventFlags::empty());
     event.set_integer_value_field(EventField::EVENT_TARGET_UNIX_PROCESS_ID, i64::from(pid));
     // AppKit windowNumber and the two Quartz hit-test window fields.
@@ -279,8 +298,14 @@ impl MacPixels {
                 }
                 let point = CGPoint::new(global_x, global_y);
                 if index == 0 {
-                    pointer_event(self.pid, self.window, point, CGEventType::MouseMoved)?
-                        .post_to_pid(self.pid);
+                    pointer_event(
+                        self.pid,
+                        self.window,
+                        point,
+                        (x, y),
+                        CGEventType::MouseMoved,
+                    )?
+                    .post_to_pid(self.pid);
                 }
                 if dragging {
                     let kind = if index == 0 {
@@ -288,11 +313,12 @@ impl MacPixels {
                     } else {
                         CGEventType::LeftMouseDragged
                     };
-                    let event = pointer_event(self.pid, self.window, point, kind)?;
+                    let event = pointer_event(self.pid, self.window, point, (x, y), kind)?;
                     release = Some(pointer_event(
                         self.pid,
                         self.window,
                         point,
+                        (x, y),
                         CGEventType::LeftMouseUp,
                     )?);
                     event.post_to_pid(self.pid);

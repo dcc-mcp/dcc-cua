@@ -118,6 +118,7 @@ impl Fixture {
 async fn linux_pixels_native_sequence_stops_after_delivered_prefix(
     #[case] cause: &'static str,
     #[case] expected: ComputerUseErrorCode,
+    #[values("key_sequence", "drag")] operation: &str,
 ) {
     use x11rb::protocol::Event;
     use x11rb::protocol::xproto::{InputFocus, KEY_PRESS_EVENT, KEY_RELEASE_EVENT};
@@ -149,12 +150,17 @@ async fn linux_pixels_native_sequence_stops_after_delivered_prefix(
         .await
         .unwrap();
     let snapshot = session.screenshot_pixels_only().await.unwrap();
-    let action: ComputerUseAction = serde_json::from_value(json!({
-        "action":"key_sequence","input_kind":"raw_input","intent":"ordinary_edit",
-        "delivery_mode":"foreground","observation_id":snapshot.observation.observation_id,
-        "keys":["A","B"],"delay_ms":200
-    }))
-    .unwrap();
+    let mut fields = if operation == "drag" {
+        json!({"path":[{"x":5,"y":5},{"x":55,"y":35}],"duration_ms":600,"steps":2})
+    } else {
+        json!({"keys":["A","B"],"delay_ms":200})
+    };
+    fields["action"] = json!(operation);
+    fields["input_kind"] = json!("raw_input");
+    fields["intent"] = json!("ordinary_edit");
+    fields["delivery_mode"] = json!("foreground");
+    fields["observation_id"] = json!(snapshot.observation.observation_id);
+    let action = serde_json::from_value(fields).unwrap();
     let baseline = fixture
         .connection
         .query_tree(fixture.root)
@@ -165,11 +171,19 @@ async fn linux_pixels_native_sequence_stops_after_delivered_prefix(
     let deadline = Instant::now() + Duration::from_secs(5);
     let intervene = async {
         loop {
-            if let Some(Event::KeyRelease(key)) = fixture.connection.poll_for_event().unwrap() {
-                assert_eq!(key.event, fixture.window);
+            let recipient = match fixture.connection.poll_for_event().unwrap() {
+                Some(Event::KeyRelease(key)) if operation == "key_sequence" => Some(key.event),
+                Some(Event::ButtonPress(down)) if operation == "drag" => Some(down.event),
+                _ => None,
+            };
+            if let Some(window) = recipient {
+                assert_eq!(window, fixture.window);
                 break;
             }
-            assert!(Instant::now() < deadline, "first chord was never delivered");
+            assert!(
+                Instant::now() < deadline,
+                "initial input was never delivered"
+            );
             tokio::time::sleep(Duration::from_millis(2)).await;
         }
         assert_eq!(
@@ -246,11 +260,19 @@ async fn linux_pixels_native_sequence_stops_after_delivered_prefix(
             .children,
         baseline
     );
+    let mut releases = Vec::new();
     while let Some(event) = fixture.connection.poll_for_event().unwrap() {
+        if let Event::ButtonRelease(up) = &event {
+            releases.push((up.event, up.detail, up.event_x, up.event_y));
+        }
         assert!(
-            !matches!(event, Event::KeyPress(key) if key.response_type & 0x80 != 0),
-            "a second synthetic chord was delivered after interruption"
+            !matches!(event, Event::KeyPress(key) if key.response_type & 0x80 != 0)
+                && !matches!(event, Event::MotionNotify(motion) if motion.response_type & 0x80 != 0),
+            "synthetic input continued after interruption"
         );
+    }
+    if operation == "drag" {
+        assert_eq!(releases, [(fixture.window, 1, 5, 5)]);
     }
 }
 

@@ -40,6 +40,7 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-graphics = { version = "0.24", features = ["elcapitan"] }
+foreign-types = "0.5"
 libc = "0.2"
 platform-macos.workspace = true
 
