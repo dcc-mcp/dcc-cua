@@ -227,6 +227,23 @@ def benchmark(binary, pid, window, directory, report, terminal_snapshot):
                     if not native_state["foreground"]:
                         raise RuntimeError("Blender did not receive X11 keyboard focus")
         snapshot = call("snapshot", {})
+        if sys.platform == "darwin":
+            # Window creation precedes the first stable WindowServer hit test.
+            # Consume the first usable capture immediately on the usual path.
+            deadline = time.monotonic() + 8
+            while True:
+                current = snapshot["observation"]
+                if (current["process_id"], current["window_handle"]) != (pid, window):
+                    raise RuntimeError("Blender observation target changed")
+                provenance = current["capture_provenance"]
+                if provenance.get("exact_ax_focus") and provenance.get("input_exposure") == "exposed":
+                    break
+                if time.monotonic() >= deadline:
+                    report["input_exposure"] = provenance.get("input_exposure")
+                    report["input_blocker"] = provenance.get("input_blocker")
+                    raise RuntimeError("Blender did not acquire exact macOS focus and exposure")
+                time.sleep(0.1)
+                snapshot = call("snapshot", {})
         observation = snapshot["observation"]
         report["capture_size"] = [observation["width"], observation["height"]]
         if sys.platform == "darwin":
