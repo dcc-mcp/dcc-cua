@@ -1,4 +1,6 @@
 use super::*;
+use core_graphics::event::{CGEvent, CGEventFlags, CGEventType};
+use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
 use dcc_cua_indicator::macos_frame::{ExecutionFrame, require_exposure};
 use platform_macos::input::{keyboard, mouse};
 use std::sync::atomic::AtomicBool;
@@ -56,6 +58,50 @@ impl<'a> Chord<'a> {
             ));
         }
         Ok(Self { key, modifiers })
+    }
+
+    fn press(&self, pid: i32) -> ComputerUseResult<()> {
+        let press_base = || {
+            keyboard::press_key(pid, self.key, &self.modifiers)
+                .map_err(|_| unavailable("macOS key dispatch failed"))
+        };
+        if self.modifiers.is_empty() {
+            return press_base();
+        }
+        // Blender's Cocoa event loop updates held modifiers on flagsChanged.
+        // Prepare both halves before posting so a failed allocation cannot
+        // leave a modifier down. All transitions address the same task PID.
+        let source = CGEventSource::new(CGEventSourceStateID::Private)
+            .map_err(|_| unavailable("macOS modifier source unavailable"))?;
+        let mut flags = CGEventFlags::empty();
+        let mut transitions = Vec::with_capacity(self.modifiers.len());
+        for modifier in &self.modifiers {
+            let (code, flag) = match *modifier {
+                "cmd" => (55, CGEventFlags::CGEventFlagCommand),
+                "shift" => (56, CGEventFlags::CGEventFlagShift),
+                "alt" => (58, CGEventFlags::CGEventFlagAlternate),
+                "ctrl" => (59, CGEventFlags::CGEventFlagControl),
+                _ => return Err(unavailable("unsupported macOS modifier")),
+            };
+            let transition = |down, active| {
+                let event = CGEvent::new_keyboard_event(source.clone(), code, down)
+                    .map_err(|_| unavailable("macOS modifier event unavailable"))?;
+                event.set_type(CGEventType::FlagsChanged);
+                event.set_flags(active);
+                Ok::<_, ComputerUseError>(event)
+            };
+            let release = transition(false, flags)?;
+            flags |= flag;
+            transitions.push((transition(true, flags)?, release));
+        }
+        for (down, _) in &transitions {
+            down.post_to_pid(pid);
+        }
+        let result = press_base();
+        for (_, up) in transitions.iter().rev() {
+            up.post_to_pid(pid);
+        }
+        result
     }
 }
 
@@ -202,8 +248,7 @@ impl MacPixels {
                     .map_err(frame_error)?;
                 let _admission = admit()?;
                 attempted = true;
-                keyboard::press_key(self.pid, chord.key, &chord.modifiers)
-                    .map_err(|_| unavailable("macOS key dispatch failed"))?;
+                chord.press(self.pid)?;
             }
             drop(admit()?);
             self.require_input_target(&observation)?;

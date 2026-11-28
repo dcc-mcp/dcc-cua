@@ -269,7 +269,7 @@ jobs:
           set -euo pipefail
           python -B -m unittest scripts.test_release_workflow.ReleaseWorkflowTests.test_intel_diagnostic_signals_cannot_record_success
           started_at="$(gh api "/repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT/jobs?per_page=100" \
-            --jq '[.jobs[] | select(.name == "verify (macos-26-intel, macos-x86_64, x86_64)" and .runner_name == env.RUNNER_NAME and .status == "in_progress")] | if length == 1 then .[0].started_at else error("current Intel job is not unique") end')"
+            --jq '[.jobs[] | select(.name == "verify (macos-26-intel, macos-x86_64, x86_64)" and .runner_name == env.RUNNER_NAME and .status == "in_progress")] | if length == 1 then .[0] | [.started_at, .steps[0].started_at] | map(select(type == "string")) | min else error("current Intel job is not unique") end')"
           python -B scripts/ci_job_budget.py --started-at "$started_at" \
             --job-minutes "$CI_JOB_MINUTES" --reserve-minutes 3 --maximum-minutes 35 >> "$GITHUB_OUTPUT"
       - name: Check Intel workspace with retained build diagnostics
@@ -310,7 +310,7 @@ jobs:
         run: |
           set -euo pipefail
           started_at="$(gh api "/repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT/jobs?per_page=100" \
-            --jq '[.jobs[] | select(.name == "verify (macos-26-intel, macos-x86_64, x86_64)" and .runner_name == env.RUNNER_NAME and .status == "in_progress")] | if length == 1 then .[0].started_at else error("current Intel job is not unique") end')"
+            --jq '[.jobs[] | select(.name == "verify (macos-26-intel, macos-x86_64, x86_64)" and .runner_name == env.RUNNER_NAME and .status == "in_progress")] | if length == 1 then .[0] | [.started_at, .steps[0].started_at] | map(select(type == "string")) | min else error("current Intel job is not unique") end')"
           python -B scripts/ci_job_budget.py --started-at "$started_at" \
             --job-minutes "$CI_JOB_MINUTES" --reserve-minutes 3 --maximum-minutes 25 >> "$GITHUB_OUTPUT"
       - name: Test Intel workspace with retained progress diagnostics

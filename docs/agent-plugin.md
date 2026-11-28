@@ -397,10 +397,13 @@ Both Blender examples use one foreground 3D View in Object Mode, the English
 operator search and the default Blender keymap. The [modeling macro](../examples/blender-extrude-column.json)
 extrudes a plane, changes the object scale and renames it. The
 [rig and animation macro](../examples/blender-rig-keyframes.json) creates a
-connected three-bone chain, inserts a pose at the scene start, advances eight
-frames, rotates it 30 degrees and inserts a second pose. Pass either JSON
-object as `params.action` in one `dcc_cua_task_call` with `method=execute_action`.
-These two recipes set `delay_ms=0`. Every chord still checks its target and
+connected three-bone chain and keys a 30-degree rotation at frame 1. Run
+through the eight Right taps with `capture_after=true`. Verify Pose mode at
+frame 9 and the first keyframe, then reuse the post-action observation for
+the last three chords to clear the rotation, insert a key and return to Object
+Mode. Submit each batch as `params.action` with `method=execute_action`.
+The modeling recipe uses zero inter-step delay and the rig uses 12 ms.
+Every chord checks its target and
 the Agent frame. Windows presents the frame outside a restored window, or
 as a strip along an exposed monitor edge for a maximized window. A window
 covering the entire monitor has no space for this presenter. A sequence

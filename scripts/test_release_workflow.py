@@ -46,7 +46,7 @@ RELEASE_PLEASE_ACTION = (
     "googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7"
 )
 CI_EXECUTABLE_SURFACE_SHA256 = (
-    "756ef9fcceb5e4da07fbd05b2fe870d4ea2d54c5754559207b7e2794a7c64811"
+    "d9a811a64dfbd3f41a817974e9d94bd685fd4e1c697aee006e988c4e920d516e"
 )
 VERIFY_TIMEOUT = "${{ matrix.verify_job_minutes }}"
 
@@ -431,6 +431,7 @@ class ReleaseWorkflowTests(unittest.TestCase):
                 self.assertIn('.status == "in_progress"', script)
                 self.assertIn('verify (macos-26-intel, macos-x86_64, x86_64)', script)
                 self.assertIn('length == 1', script)
+                self.assertIn('[.started_at, .steps[0].started_at] | map(select(type == "string")) | min', script)
                 self.assertIn('--job-minutes "$CI_JOB_MINUTES" --reserve-minutes 3', script)
                 self.assertIn(f'--maximum-minutes {maximum}', script)
                 self.assertIn('"$GITHUB_OUTPUT"', script)

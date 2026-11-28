@@ -198,6 +198,21 @@ def benchmark(binary, pid, window, directory, report, terminal_snapshot):
                 metrics["redacted_rectangles"] = visibility["redacted_rectangles"][:16]
             return receipt
 
+        def next_observation(receipt):
+            post = receipt["post_snapshot"]
+            if receipt.get("status") != "succeeded":
+                raise RuntimeError("Blender action did not complete")
+            if post.get("success") is False:
+                report["calls"][-1]["post_snapshot_error"] = post.get("code")
+                if post.get("action_was_executed") is not True or receipt.get("observation_required") is not True:
+                    raise RuntimeError("Blender action completion or capture status is ambiguous")
+                # The action already ran. Only recover its missing observation.
+                post = call("snapshot", {})
+            observed = post["observation"]
+            if (observed["process_id"], observed["window_handle"]) != (pid, window):
+                raise RuntimeError("Blender observation target changed")
+            return post["observation_id"]
+
         if os.name == "nt" or sys.platform.startswith("linux"):
             native_state = call("get_window_state", {})["state"]
             report["initial_window"] = {k: native_state[k] for k in ("foreground", "bounds", "visible_bounds", "minimized") if k in native_state}
@@ -226,7 +241,7 @@ def benchmark(binary, pid, window, directory, report, terminal_snapshot):
         click = {"action": "click", "input_kind": "raw_input", "intent": "navigate", "delivery_mode": "foreground",
                  "x": round(x * observation["width"]), "y": round(y * observation["height"])}
         result = call("execute_action", {"observation_id": snapshot["observation_id"], "action": click, "capture_after": True})
-        observation_id = result["post_snapshot"]["observation_id"]
+        observation_id = next_observation(result)
         for case, example in CASES:
             before = set(state["objects"])
             action = json.loads((ROOT / "examples" / example).read_text(encoding="utf-8"))
@@ -240,7 +255,7 @@ def benchmark(binary, pid, window, directory, report, terminal_snapshot):
                 timings.append(confirmed_sequence(arrived, advance))
                 wait_scene(directory, lambda s: s["mode"] == "POSE" and s["frame"] == 9
                            and len(s.get("bones", [])) == 3 and bool(s.get("curves")))
-                observation_id = arrived["post_snapshot"]["observation_id"]
+                observation_id = next_observation(arrived)
                 action = dict(action, keys=action["keys"][boundary:])
             result = call("execute_action", {"observation_id": observation_id, "action": action, "capture_after": capture_after})
             # The execution frame lease has ended by the time the ordinary
@@ -254,7 +269,7 @@ def benchmark(binary, pid, window, directory, report, terminal_snapshot):
                                     "verified_ms": round((time.perf_counter() - begin) * 1000),
                                     "scene": state})
             if capture_after:
-                observation_id = result["post_snapshot"]["observation_id"]
+                observation_id = next_observation(result)
         report["metrics"] = structured(mcp.tool("dcc_cua_metrics", {}))
         mcp.stop(task)
 
