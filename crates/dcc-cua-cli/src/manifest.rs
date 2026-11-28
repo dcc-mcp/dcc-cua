@@ -21,7 +21,7 @@ pub(crate) fn document() -> Value {
             "cli_flag":"--pixels-only",
             "required_selectors":["--pid","--window-id"],
             "read_only_by_default":true, "input_available":true, "activation_available":false,
-            "input_actions":["click","key_sequence"],
+            "input_actions":["move","click","drag","key_sequence"],
             "key_sequence":{"capability":"guarded_key_sequence_v1","action_scope":"raw_input/key_sequence",
                 "delivery_mode":"foreground","requires_visible_execution_frame":true,"max_steps":64},
             "recording_available":false, "accessibility_provider_started":false,

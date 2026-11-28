@@ -37,7 +37,8 @@ pub(super) fn validate_pixel_action(action: &ComputerUseAction) -> ComputerUseRe
             | "keyboard_shortcut"
             | "type"
             | "type_chars"
-    ) || cfg!(target_os = "linux") && action.action == "move";
+    ) || cfg!(any(target_os = "linux", target_os = "macos"))
+        && action.action == "move";
     if !supported
         || action.element_index.is_some()
         || action.element_token.is_some()
@@ -133,4 +134,32 @@ pub(super) fn validate_pixel_action(action: &ComputerUseAction) -> ComputerUseRe
         ));
     }
     Ok(())
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(super) fn pointer_samples<T>(
+    action: &ComputerUseAction,
+    point: impl Fn(f64, f64) -> ComputerUseResult<T>,
+) -> ComputerUseResult<Vec<T>> {
+    let invalid =
+        |message: &str| ComputerUseError::new(ComputerUseErrorCode::InvalidAction, message);
+    if action.action != "drag" {
+        return Ok(vec![point(
+            action.x.ok_or_else(|| invalid("missing x"))?,
+            action.y.ok_or_else(|| invalid("missing y"))?,
+        )?]);
+    }
+    if let [a, b] = action.path.as_slice() {
+        let steps = action.steps.unwrap_or(20);
+        return (0..=steps)
+            .map(|i| {
+                let t = f64::from(i) / f64::from(steps);
+                point(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t)
+            })
+            .collect();
+    }
+    if action.steps.is_some() || !(2..=201).contains(&action.path.len()) {
+        return Err(invalid("pixel drag requires a bounded path"));
+    }
+    action.path.iter().map(|p| point(p.x, p.y)).collect()
 }

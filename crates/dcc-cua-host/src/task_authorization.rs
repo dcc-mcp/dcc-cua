@@ -72,7 +72,7 @@ impl TrustedTaskActionScope {
     /// Pixel actions whose native dispatch has the complete observation fence.
     pub const PIXELS_INPUT_ACTIONS: &'static [&'static str] = &[
         "click",
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         "move",
         "double_click",
         "right_click",

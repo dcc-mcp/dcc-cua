@@ -15,7 +15,19 @@ impl LinuxPixels {
                 "X11 pointer actions require an unmodified primary button",
             ));
         }
-        let points = path_points(action, guard.observation)?;
+        let points = crate::runtime::pixel_input_policy::pointer_samples(action, |x, y| {
+            let coord = |v: f64, n: u32| {
+                (0.0..f64::from(n))
+                    .contains(&v)
+                    .then(|| i16::try_from(v.floor() as i32).ok())
+                    .flatten()
+                    .ok_or_else(|| invalid("pointer outside exact X11 window"))
+            };
+            Ok((
+                coord(x, guard.observation.width)?,
+                coord(y, guard.observation.height)?,
+            ))
+        })?;
         let position = |(x, y): (i16, i16)| -> ComputerUseResult<KeyPressEvent> {
             let rect = guard.observation.source_rect;
             Ok(KeyPressEvent {
@@ -138,41 +150,4 @@ impl LinuxPixels {
         }
         result
     }
-}
-
-fn path_points(
-    action: &ComputerUseAction,
-    observation: &ComputerUseObservation,
-) -> ComputerUseResult<Vec<(i16, i16)>> {
-    let point = |x: f64, y: f64| {
-        let coordinate = |value: f64, size: u32| {
-            (value.is_finite() && value >= 0. && value < f64::from(size))
-                .then(|| i16::try_from(value.floor() as i32).ok())
-                .flatten()
-                .ok_or_else(|| invalid("pointer coordinate outside exact X11 window"))
-        };
-        Ok((
-            coordinate(x, observation.width)?,
-            coordinate(y, observation.height)?,
-        ))
-    };
-    if action.action != "drag" {
-        return Ok(vec![point(
-            action.x.ok_or_else(|| invalid("missing x"))?,
-            action.y.ok_or_else(|| invalid("missing y"))?,
-        )?]);
-    }
-    if let [a, b] = action.path.as_slice() {
-        let steps = action.steps.unwrap_or(20);
-        return (0..=steps)
-            .map(|i| {
-                let t = f64::from(i) / f64::from(steps);
-                point(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t)
-            })
-            .collect();
-    }
-    if action.steps.is_some() || !(2..=201).contains(&action.path.len()) {
-        return Err(invalid("X11 drag requires a bounded path"));
-    }
-    action.path.iter().map(|p| point(p.x, p.y)).collect()
 }

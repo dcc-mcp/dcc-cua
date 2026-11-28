@@ -26,7 +26,7 @@ def benchmark_pointer(binary, pid, hwnd, directory, report):
 
         opened = checked(mcp.tool("start_task", {
             "application_label": "Disposable Blender pointer benchmark", "surface": "window",
-            "observation_mode": "pixels_only" if sys.platform.startswith("linux") else "semantic",
+            "observation_mode": "semantic" if os.name == "nt" else "pixels_only",
             "target_process_id": pid, "target_window_handle": hwnd, "ttl_minutes": 3,
             "allowed_methods": ["snapshot", "execute_action"],
             "allowed_actions": [{"action": name, "input_kind": "raw_input", "secret_input": False,
@@ -42,8 +42,8 @@ def benchmark_pointer(binary, pid, hwnd, directory, report):
             report["calls"].append({"method": method, "roundtrip_ms": round((time.perf_counter()-start)*1000)})
             return checked(response)
 
-        snapshot = call("snapshot", {})
-        from test_blender_workflows import wait_scene
+        from test_blender_workflows import initial_snapshot, wait_scene
+        snapshot = initial_snapshot(call, pid, hwnd, report)
         scene = wait_scene(directory, lambda s: "pointer_targets" in s)
         source, center, destination = scene["pointer_targets"]
         obs = snapshot["observation"]

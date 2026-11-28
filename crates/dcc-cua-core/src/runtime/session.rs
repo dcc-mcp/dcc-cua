@@ -788,8 +788,10 @@ impl ComputerUseSession {
             UpstreamSessionState::UnixPixelsOnly {
                 input_available: true
             }
-        ) && (matches!(action.action.as_str(), "click" | "key_sequence")
-            || cfg!(target_os = "linux") && matches!(action.action.as_str(), "move" | "drag"));
+        ) && matches!(
+            action.action.as_str(),
+            "move" | "click" | "drag" | "key_sequence"
+        );
         #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         let unix_input = false;
         validate_action_route(action, exact_windows_pixels || unix_input)?;

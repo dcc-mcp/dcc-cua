@@ -1,6 +1,7 @@
 use super::*;
-use core_graphics::event::{CGEvent, CGEventFlags, CGEventType};
+use core_graphics::event::{CGEvent, CGEventFlags, CGEventType, CGMouseButton, EventField};
 use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
+use core_graphics::geometry::CGPoint;
 use dcc_cua_indicator::macos_frame::{ExecutionFrame, require_exposure};
 use platform_macos::input::{keyboard, mouse};
 use std::sync::atomic::AtomicBool;
@@ -105,6 +106,34 @@ impl<'a> Chord<'a> {
     }
 }
 
+// Address one AppKit window and post once to its process. A desktop HID
+// post can be delivered to another process if focus changes during a drag.
+fn pointer_event(
+    pid: i32,
+    window: u32,
+    point: CGPoint,
+    kind: CGEventType,
+) -> ComputerUseResult<CGEvent> {
+    let source = CGEventSource::new(CGEventSourceStateID::Private)
+        .map_err(|_| unavailable("macOS pointer source unavailable"))?;
+    let event = CGEvent::new_mouse_event(source, kind, point, CGMouseButton::Left)
+        .map_err(|_| unavailable("macOS pointer event unavailable"))?;
+    event.set_flags(CGEventFlags::empty());
+    event.set_integer_value_field(EventField::EVENT_TARGET_UNIX_PROCESS_ID, i64::from(pid));
+    // AppKit windowNumber and the two Quartz hit-test window fields.
+    for field in [
+        51,
+        EventField::MOUSE_EVENT_WINDOW_UNDER_MOUSE_POINTER,
+        EventField::MOUSE_EVENT_WINDOW_UNDER_MOUSE_POINTER_THAT_CAN_HANDLE_THIS_EVENT,
+    ] {
+        event.set_integer_value_field(field, i64::from(window));
+    }
+    if !matches!(kind, CGEventType::MouseMoved) {
+        event.set_integer_value_field(EventField::MOUSE_EVENT_CLICK_STATE, 1);
+    }
+    Ok(event)
+}
+
 impl MacPixels {
     fn require_input_target(
         &mut self,
@@ -174,33 +203,48 @@ impl MacPixels {
             .iter()
             .map(|s| Chord::parse(s))
             .collect::<ComputerUseResult<Vec<_>>>()?;
-        let click = if action.action == "click" {
+        let points = if matches!(action.action.as_str(), "move" | "drag" | "click") {
             if !action.modifiers.is_empty() || action.button.as_deref().is_some_and(|b| b != "left")
             {
                 return Err(ComputerUseError::new(
                     ComputerUseErrorCode::InvalidAction,
-                    "macOS pixel click requires the unmodified primary button",
+                    "macOS pointer input requires the unmodified primary button",
                 ));
             }
-            let coordinate = |value: Option<f64>, pixels: u32, points: i32| {
-                value
-                    .filter(|v| v.is_finite() && *v >= 0. && *v < f64::from(pixels))
-                    .map(|v| v * f64::from(points) / f64::from(pixels))
-                    .ok_or_else(|| unavailable("macOS click outside captured image"))
-            };
-            Some((
-                coordinate(action.x, observation.width, rect[2])?,
-                coordinate(action.y, observation.height, rect[3])?,
-            ))
+            crate::runtime::pixel_input_policy::pointer_samples(&action, |x, y| {
+                if !(0.0..f64::from(observation.width)).contains(&x)
+                    || !(0.0..f64::from(observation.height)).contains(&y)
+                {
+                    return Err(unavailable("macOS point outside captured window"));
+                }
+                Ok((
+                    x * f64::from(rect[2]) / f64::from(observation.width),
+                    y * f64::from(rect[3]) / f64::from(observation.height),
+                ))
+            })?
         } else {
-            None
+            Vec::new()
         };
         let mut frame = ExecutionFrame::start(self.pid, self.window, &rect).map_err(frame_error)?;
         let mut attempted = false;
         let mut wait_ms = 0;
         let start = Instant::now();
+        let mut release: Option<CGEvent> = None;
+        let dragging = action.action == "drag";
         let dispatch = (|| {
-            if let Some((x, y)) = click {
+            for (index, &(x, y)) in points.iter().enumerate() {
+                if dragging && index != 0 {
+                    let until = start
+                        + Duration::from_millis(
+                            action.duration_ms.unwrap_or(500) * index as u64
+                                / (points.len() - 1) as u64,
+                        );
+                    while let Some(left) = until.checked_duration_since(Instant::now()) {
+                        std::thread::sleep(left.min(Duration::from_millis(8)));
+                        drop(admit()?);
+                        frame.check_interrupt().map_err(frame_error)?;
+                    }
+                }
                 self.require_input_target(&observation)?;
                 frame
                     .validate(self.pid, self.window, &rect)
@@ -218,18 +262,46 @@ impl MacPixels {
                 }
                 let _admission = admit()?;
                 attempted = true;
-                mouse::click_at_xy_with_window_local(
-                    self.pid,
-                    global_x,
-                    global_y,
-                    x,
-                    y,
-                    self.window,
-                    1,
-                    &[],
-                    mouse::WindowClickDelivery::Foreground,
-                )
-                .map_err(|_| unavailable("macOS click dispatch failed"))?;
+                if action.action == "click" {
+                    mouse::click_at_xy_with_window_local(
+                        self.pid,
+                        global_x,
+                        global_y,
+                        x,
+                        y,
+                        self.window,
+                        1,
+                        &[],
+                        mouse::WindowClickDelivery::Foreground,
+                    )
+                    .map_err(|_| unavailable("macOS click dispatch failed"))?;
+                    continue;
+                }
+                let point = CGPoint::new(global_x, global_y);
+                if index == 0 {
+                    pointer_event(self.pid, self.window, point, CGEventType::MouseMoved)?
+                        .post_to_pid(self.pid);
+                }
+                if dragging {
+                    let kind = if index == 0 {
+                        CGEventType::LeftMouseDown
+                    } else {
+                        CGEventType::LeftMouseDragged
+                    };
+                    let event = pointer_event(self.pid, self.window, point, kind)?;
+                    release = Some(pointer_event(
+                        self.pid,
+                        self.window,
+                        point,
+                        CGEventType::LeftMouseUp,
+                    )?);
+                    event.post_to_pid(self.pid);
+                    if index + 1 == points.len()
+                        && let Some(up) = release.take()
+                    {
+                        up.post_to_pid(self.pid);
+                    }
+                }
             }
             for (index, chord) in chords.iter().enumerate() {
                 if index > 0 {
@@ -256,6 +328,15 @@ impl MacPixels {
                 .validate(self.pid, self.window, &rect)
                 .map_err(frame_error)
         })();
+        // Release a partially delivered press on its original live instance.
+        // The event carries that window number and never enters the HID stream.
+        if let Some(up) = release
+            && process_start(self.pid).is_ok_and(|stamp| stamp == self.process_start)
+            && platform_macos::windows::window_info_by_id(self.window)
+                .is_some_and(|w| w.pid == self.pid && w.window_id == self.window)
+        {
+            up.post_to_pid(self.pid);
+        }
         if let Err(error) = dispatch {
             return Err(error.with_details(ComputerUseErrorDetails {
                 action_attempted: Some(attempted),

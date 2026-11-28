@@ -44,7 +44,7 @@ fn executable_manifest_matches_public_host_capabilities() {
         assert_eq!(pixels["read_only_by_default"], true);
         assert_eq!(
             pixels["input_actions"],
-            serde_json::json!(["click", "key_sequence"])
+            serde_json::json!(["move", "click", "drag", "key_sequence"])
         );
         assert_eq!(pixels["input_available"], true);
         assert_eq!(
