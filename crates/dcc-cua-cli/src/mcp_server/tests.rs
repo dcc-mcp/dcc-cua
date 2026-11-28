@@ -53,6 +53,47 @@ fn performance_tools_and_resource_are_discoverable() {
 
 #[rstest]
 #[tokio::test]
+async fn compact_text_keeps_the_structured_observation_and_preserves_error_text() {
+    let observation = json!({"type":"accessibility_snapshot","observation_id":"new","root":{"elements":[{"element_token":"bound:1"}]}});
+    let projected =
+        crate::mcp_output::project_tool_result(observation.clone(), None, Some("summary")).unwrap();
+    assert_eq!(projected["structuredContent"], observation);
+    assert_eq!(projected["content"][0]["text"], "summary");
+    let error = crate::mcp_output::project_tool_result(
+        json!({"type":"error","message":"stale target"}),
+        None,
+        Some("summary"),
+    )
+    .unwrap();
+    assert_eq!(error["content"][0]["text"], "stale target");
+    let mut server = test_server();
+    assert!(
+        server
+            .task_call(json!({"method":"execute_action","compact_text":true}))
+            .await
+            .unwrap_err()
+            .contains("compact_text")
+    );
+}
+
+#[rstest]
+#[tokio::test]
+async fn host_verified_outcome_is_counted_without_a_response() {
+    let mut server = test_server();
+    let response = server
+        .handle_rpc(json!({
+            "jsonrpc":"2.0","method":"notifications/dcc-cua/task_outcome",
+            "params":{"success":false,"elapsed_ms":150}
+        }))
+        .await;
+    assert!(response.is_none());
+    let tasks = &server.performance.report()["agent_tasks"];
+    assert_eq!(tasks["reported_outcomes"], 1);
+    assert_eq!(tasks["success_rate"], 0.0);
+}
+
+#[rstest]
+#[tokio::test]
 async fn model_usage_notification_is_aggregated_without_a_response() {
     let mut server = test_server();
     let response = server

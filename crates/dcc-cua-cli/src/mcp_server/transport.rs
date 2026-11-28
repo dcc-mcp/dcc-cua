@@ -43,12 +43,13 @@ pub(super) async fn run_transport<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin
             Ok(value) => value,
             Err(_) => {
                 *reason = CloseReason::OutputError;
-                output
-                    .write_all(
-                        format!("{}\n", rpc_error(Value::Null, -32700, "Parse error")).as_bytes(),
-                    )
-                    .await?;
+                let response = rpc_error(Value::Null, -32700, "Parse error");
+                let encoded = format!("{response}\n");
+                output.write_all(encoded.as_bytes()).await?;
                 output.flush().await?;
+                server
+                    .performance
+                    .record_transport_output(encoded.len(), &response);
                 continue;
             }
         };
@@ -83,9 +84,11 @@ pub(super) async fn run_transport<R: AsyncBufRead + Unpin, W: AsyncWrite + Unpin
         };
         *reason = CloseReason::OutputError;
         let encoded = format!("{response}\n");
-        server.performance.record_transport_output(encoded.len());
         output.write_all(encoded.as_bytes()).await?;
         output.flush().await?;
+        server
+            .performance
+            .record_transport_output(encoded.len(), &response);
     }
     Ok(())
 }

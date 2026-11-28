@@ -109,11 +109,47 @@ usage is outside the DCC-CUA process. An Agent Host can report it without an
 extra tool round trip by sending this notification on the same connection:
 
 ```json
-{"jsonrpc":"2.0","method":"notifications/dcc-cua/model_usage","params":{"input_tokens":1200,"output_tokens":180}}
+{"jsonrpc":"2.0","method":"notifications/dcc-cua/model_usage","params":{"input_tokens":1200,"output_tokens":180,"cached_input_tokens":900,"model_elapsed_ms":1480}}
 ```
 
-The same usage object may be attached to any request under
-`_meta.dcc-cua.model_usage`. The server keeps only bounded aggregate counters
+Send one usage delta per model call on the connection. The same usage object
+may be attached under `params._meta.dcc-cua.model_usage` (the legacy
+top-level `_meta` also works). `model_tokens.available` indicates whether the
+host reported usage. `cached_input_fraction` divides cached tokens by input
+tokens for calls with cache measurements. `cache_hit_rate` is the fraction
+of those calls reporting at least one cached token. Optional `model_elapsed_ms` is the
+host's elapsed time waiting for a model call, including streaming.
+
+`transport.output_image_base64_bytes_total` counts the Base64 data strings in
+native MCP image blocks on stdout. `output_other_bytes_total` covers all other
+encoded JSONL bytes, including accessibility trees, metadata and framing.
+These two fields sum to `output_bytes_total`. Image tokenization happens at the
+model provider.
+
+For native buttons, request `accessibility_snapshot` with bounded `max_nodes`
+and `max_depth`. Clients that consume `structuredContent` can set
+`compact_text: true` alongside `method` in `dcc_cua_task_call` to send the
+full tree once. The structured observation and element references remain
+available for the next action.
+
+After verifying the scenario postcondition, the host can send one outcome
+per attempt. Measure from the start of the agent task through verification,
+including model calls, tool execution and waits. Include failures in the same
+measurement. A task can span multiple `start_task` leases. Send its outcome
+once on the reporting connection.
+
+```json
+{"jsonrpc":"2.0","method":"notifications/dcc-cua/task_outcome","params":{"success":true,"elapsed_ms":4210}}
+```
+
+`agent_tasks` reports the sample count, successes, success rate and total
+wall time. The rate is null until the host supplies an outcome.
+For a local Codex Host that retains rollout events, run
+`python scripts/codex_turn_metrics.py <rollout.jsonl> <turn_id>` to read the
+completed turn duration, time to first token, usage deltas and MCP method
+maxima. The reader emits counters only. A completed turn can contain multiple
+scenarios. Use their independent postconditions for outcome reporting.
+The server keeps only bounded aggregate counters
 and does not copy prompts, responses, request IDs, paths, coordinates, pixels,
 or model names into the report. Passing `include_metrics: true` to
 `dcc_cua_task_call` adds the current report and that call's elapsed time under

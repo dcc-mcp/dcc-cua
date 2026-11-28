@@ -49,13 +49,24 @@ pub(super) fn call_tool_result(
     structured_content: Value,
     attachment_bytes: Option<&[u8]>,
 ) -> Result<Value, String> {
+    project_tool_result(structured_content, attachment_bytes, None)
+}
+
+pub(super) fn project_tool_result(
+    structured_content: Value,
+    attachment_bytes: Option<&[u8]>,
+    success_summary: Option<&str>,
+) -> Result<Value, String> {
     let images = native_images(&structured_content, attachment_bytes)?;
     let is_error = structured_content["type"] == "error"
         || structured_content
             .pointer("/result/isError")
             .and_then(Value::as_bool)
             .unwrap_or(false);
-    let text = response_text(&structured_content, !images.is_empty(), is_error);
+    let text = success_summary
+        .filter(|_| !is_error)
+        .map(str::to_owned)
+        .unwrap_or_else(|| response_text(&structured_content, !images.is_empty(), is_error));
     let mut content = vec![json!({"type": "text", "text": text})];
     content.extend(images);
     Ok(json!({

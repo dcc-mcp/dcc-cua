@@ -337,6 +337,10 @@ impl TaskAuthorizationServer {
             self.performance.record_model_usage_notification(&message);
             return None;
         }
+        if method == "notifications/dcc-cua/task_outcome" {
+            self.performance.record_task_outcome(&message["params"]);
+            return None;
+        }
         if method.starts_with("notifications/") || method == "$/cancelRequest" {
             return None;
         }
@@ -889,6 +893,16 @@ impl TaskAuthorizationServer {
     }
 
     async fn task_call(&mut self, arguments: Value) -> Result<Value, String> {
+        let summary = match arguments.get("compact_text") {
+            None | Some(Value::Bool(false)) => None,
+            Some(Value::Bool(true)) if arguments["method"] == "accessibility_snapshot" => Some(
+                "Captured accessibility snapshot. Read the tree and observation ID in structuredContent.",
+            ),
+            _ => return Err(
+                "compact_text must be boolean and may be enabled only for accessibility_snapshot"
+                    .into(),
+            ),
+        };
         if arguments.get("method").and_then(Value::as_str) == Some("require_user_action") {
             return self.require_user_action(arguments).map(tool_result);
         }
@@ -1006,7 +1020,7 @@ impl TaskAuthorizationServer {
         });
         self.performance
             .record_task_call(&method, &performance_params, &host);
-        super::mcp_output::call_tool_result(host, response.binary_attachment.as_deref())
+        super::mcp_output::project_tool_result(host, response.binary_attachment.as_deref(), summary)
     }
 }
 
@@ -1860,7 +1874,7 @@ fn tool_definitions() -> Vec<Value> {
             "inputSchema": {
                 "type":"object", "additionalProperties":false, "required":["usage"],
                 "properties":{"usage":{"type":"object", "additionalProperties":false,
-                    "properties":{"input_tokens":{"type":"integer","minimum":0},"output_tokens":{"type":"integer","minimum":0},"prompt_tokens":{"type":"integer","minimum":0},"completion_tokens":{"type":"integer","minimum":0}},
+                    "properties":{"input_tokens":{"type":"integer","minimum":0},"output_tokens":{"type":"integer","minimum":0},"prompt_tokens":{"type":"integer","minimum":0},"completion_tokens":{"type":"integer","minimum":0},"cached_input_tokens":{"type":"integer","minimum":0},"model_elapsed_ms":{"type":"integer","minimum":0}},
                     "anyOf":[{"required":["input_tokens"]},{"required":["output_tokens"]},{"required":["prompt_tokens"]},{"required":["completion_tokens"]}]}}
             },
             "annotations": {"readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false}
@@ -1877,9 +1891,13 @@ fn tool_definitions() -> Vec<Value> {
                     "task_id": {"type": "string"},
                     "method": {"type": "string"},
                     "params": {"type": "object"},
-                    "include_metrics": {"type":"boolean", "default":false, "description":"When true, add a connection-scoped performance snapshot to result _meta for debugging. It is omitted by default to avoid increasing model message tokens."}
+                    "include_metrics": {"type":"boolean", "default":false, "description":"When true, add a connection-scoped performance snapshot to result _meta for debugging. It is omitted by default to avoid increasing model message tokens."},
+                    "compact_text":{"type":"boolean","default":false,"description":"For accessibility_snapshot, retain the full tree in structuredContent and return a short text block for clients that consume the structured result."}
                 },
                 "allOf": [{
+                    "if":{"required":["compact_text"],"properties":{"compact_text":{"const":true}}},
+                    "then":{"properties":{"method":{"const":"accessibility_snapshot"}}}
+                }, {
                     "if":{"properties":{"method":{"const":"execute_action"}}},
                     "then":{"properties":{"params": action_params_schema()}}
                 }, {
