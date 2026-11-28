@@ -17,9 +17,24 @@ case "$RUNNER_OS" in
     ;;
   *) exit 2 ;;
 esac
-curl --fail --location --retry 2 --max-time 240 \
-  "https://download.blender.org/release/Blender5.1/$file" -o "$scratch/$file"
-(cd "$scratch" && printf '%s  %s\n' "$sha" "$file" | if command -v sha256sum >/dev/null; then sha256sum -c -; else shasum -a 256 -c -; fi)
+verify_archive() {
+  (cd "$scratch" && printf '%s  %s\n' "$sha" "$file" |
+    if command -v sha256sum >/dev/null; then sha256sum -c -; else shasum -a 256 -c -; fi)
+}
+# All sources distribute the same pinned Blender archive. Hosted runners
+# sometimes receive HTTP 403 from the primary download server.
+downloaded=false
+for source in https://download.blender.org https://mirror.clarkson.edu/blender https://mirrors.ocf.berkeley.edu/blender; do
+  if curl --fail --location --connect-timeout 10 --max-time 150 \
+      "$source/release/Blender5.1/$file" -o "$scratch/$file" && verify_archive; then
+    downloaded=true
+    break
+  fi
+done
+if [[ "$downloaded" != true ]]; then
+  echo "No verified Blender $version archive available for $RUNNER_OS" >&2
+  exit 1
+fi
 command=(python -B scripts/test_blender_workflows.py --binary target/release/dcc-cua --report "$RUNNER_TEMP/blender-workflows.json")
 case "$RUNNER_OS" in
   Linux)

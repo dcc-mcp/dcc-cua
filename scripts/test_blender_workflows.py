@@ -14,6 +14,7 @@ from test_owned_workflow_e2e import attest, client, structured
 
 ROOT = Path(__file__).resolve().parents[1]
 CASES = [("model", "blender-extrude-column.json"), ("rig", "blender-rig-keyframes.json")]
+NO_CONSOLE = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 
 def unique_window(pid, directory):
@@ -38,7 +39,7 @@ for window in windows where window[kCGWindowOwnerPID as String] as? Int == pid &
         command = ["wmctrl", "-lp"]
     deadline = time.monotonic() + 60
     while time.monotonic() < deadline:
-        lines = subprocess.check_output(command, text=True, timeout=5).splitlines()
+        lines = subprocess.check_output(command, text=True, timeout=5, creationflags=NO_CONSOLE).splitlines()
         if sys.platform.startswith("linux"):
             candidates = [int(parts[0], 16) for line in lines
                           if len(parts := line.split()) >= 3 and parts[2] == str(pid)]
@@ -93,10 +94,18 @@ def wait_scene(directory, predicate):
 
 
 def benchmark(binary, pid, window, directory, report):
-    manifest = json.loads(subprocess.check_output([binary, "manifest"], text=True))
+    manifest = json.loads(subprocess.check_output([binary, "manifest"], text=True, creationflags=NO_CONSOLE))
+    version = manifest["version"]
+    print(f"provider=dcc-cua runtime={version} pid={pid} hwnd={window}", flush=True)
+    report.update(provider="dcc-cua", runtime=version, pid=pid, window_handle=window)
     capability = manifest["runtime"].get("exact_window_pixels", {}).get("key_sequence")
     actions = [{"action": name, "input_kind": "raw_input", "secret_input": False,
                 "authorization_category": "raw_input"} for name in ("click", "key_sequence") if capability]
+    methods = ["snapshot"]
+    if capability:
+        methods.append("execute_action")
+    if os.name == "nt":
+        methods.extend(("get_window_state", "change_window_state"))
     start = time.perf_counter()
     with client(binary, os.environ.copy(), None) as mcp:
         report["initialize_ms"] = round((time.perf_counter() - start) * 1000)
@@ -104,26 +113,41 @@ def benchmark(binary, pid, window, directory, report):
         started = structured(mcp.tool("start_task", {
             "application_label": "Disposable Blender workflow benchmark", "surface": "window",
             "observation_mode": "pixels_only", "target_process_id": pid, "target_window_handle": window,
-            "allowed_methods": ["snapshot", "execute_action"] if capability else ["snapshot"],
+            "allowed_methods": methods,
             "allowed_actions": actions, "ttl_minutes": 5}))
         report["start_task_ms"] = round((time.perf_counter() - start) * 1000)
         task = started["task_id"]
         mcp.tasks.append(task)
         assert attest(started) == (pid, window)
-        report["runtime"] = started["runtime_version"]
+        assert started["runtime_version"] == version
         (directory / "bound").touch()
 
         def call(method, params):
             begin = time.perf_counter()
             result = mcp.call(task, method, params)
-            receipt = structured(result)
-            if receipt.get("success") is False:
-                raise RuntimeError(f"{method} failed: {receipt.get('reason', 'unknown')}")
             metrics = {"method": method, "roundtrip_ms": round((time.perf_counter() - begin) * 1000),
                        "image_base64_bytes": sum(len(v["data"]) for v in result.get("content", []) if v["type"] == "image")}
             report["calls"].append(metrics)
+            if result.get("isError"):
+                for item in result.get("content", []):
+                    if item.get("type") == "text":
+                        try:
+                            error = json.loads(item["text"])
+                        except ValueError:
+                            continue
+                        if isinstance(error, dict):
+                            metrics["error_code"] = error.get("error_code", error.get("code"))
+                            metrics["reason"] = error.get("reason")
+                            raise RuntimeError(f"{method} failed: {metrics['error_code']} ({metrics['reason']})")
+            receipt = structured(result)
+            if receipt.get("success") is False:
+                raise RuntimeError(f"{method} failed: {receipt.get('reason', 'unknown')}")
             return receipt
 
+        if os.name == "nt":
+            native_state = call("get_window_state", {})["state"]
+            if not native_state["foreground"]:
+                call("change_window_state", {"operation": "restore_activate"})
         snapshot = call("snapshot", {})
         observation = snapshot["observation"]
         assert (observation["process_id"], observation["window_handle"]) == (pid, window)
@@ -140,9 +164,17 @@ def benchmark(binary, pid, window, directory, report):
             action = json.loads((ROOT / "examples" / example).read_text(encoding="utf-8"))
             begin = time.perf_counter()
             result = call("execute_action", {"observation_id": observation_id, "action": action, "capture_after": True})
-            assert result["status"] == "succeeded" and result["result"]["banner"]["target_frame_visible"] is True
+            # The execution frame lease has ended by the time the ordinary
+            # banner status is sampled. The native receipt covers the actual
+            # dispatch interval: each completed chord passed its frame guard.
+            delivery = result["result"]["delivery"]
+            timing = delivery["key_sequence_timing"]
+            if (result["status"] != "succeeded" or not delivery["post_dispatch_validated"]
+                    or timing["steps"] != len(action["keys"])):
+                raise RuntimeError(f"{case} did not complete the guarded sequence")
             state = wait_scene(directory, lambda s: verified(case, s, before))
             report["cases"].append({"case": case, "steps": len(action["keys"]), "verified": True,
+                                    "native_timing": timing,
                                     "verified_ms": round((time.perf_counter() - begin) * 1000),
                                     "scene": state})
             observation_id = result["post_snapshot"]["observation_id"]
@@ -156,17 +188,25 @@ def main():
     parser.add_argument("--blender", type=Path, required=True)
     parser.add_argument("--report", type=Path, required=True)
     args = parser.parse_args()
+    start = time.perf_counter()
     report = {"platform": sys.platform, "calls": [], "cases": [], "success": False}
     try:
         with tempfile.TemporaryDirectory() as folder:
             directory = Path(folder)
             env = dict(os.environ, DCC_CUA_BLENDER_BENCH=folder, BLENDER_USER_CONFIG=str(directory / "config"))
-            process = subprocess.Popen([str(args.blender.resolve()), "--factory-startup", "-p", "80", "90",
-                                        "1280", "800", "--python", str(ROOT / "scripts/fixtures/blender_scene_readback.py")],
-                                       env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            process = subprocess.Popen([str(args.blender.resolve()), "--factory-startup", "-p", "80", "180",
+                                        "960", "540", "--python", str(ROOT / "scripts/fixtures/blender_scene_readback.py")],
+                                       env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                       creationflags=NO_CONSOLE)
             try:
                 window = unique_window(process.pid, directory)
-                benchmark(args.binary.resolve(), process.pid, window, directory, report)
+                try:
+                    benchmark(args.binary.resolve(), process.pid, window, directory, report)
+                except Exception:
+                    scene = directory / "scene.json"
+                    if scene.is_file():
+                        report["last_scene"] = json.loads(scene.read_text(encoding="utf-8"))
+                    raise
                 report["success"] = True
             finally:
                 process.terminate()
@@ -179,6 +219,7 @@ def main():
         report["failure"] = str(error)
         raise
     finally:
+        report["workflow_wall_ms"] = round((time.perf_counter() - start) * 1000)
         args.report.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
 
 
