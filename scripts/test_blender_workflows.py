@@ -39,6 +39,9 @@ for window in windows where window[kCGWindowOwnerPID as String] as? Int == pid &
         command = ["wmctrl", "-lp"]
     deadline = time.monotonic() + 60
     while time.monotonic() < deadline:
+        if not (directory / "ready").is_file():
+            time.sleep(0.1)
+            continue
         lines = subprocess.check_output(command, text=True, timeout=5, creationflags=NO_CONSOLE).splitlines()
         if sys.platform.startswith("linux"):
             candidates = [int(parts[0], 16) for line in lines
@@ -93,6 +96,23 @@ def wait_scene(directory, predicate):
     raise RuntimeError("Blender scene readback did not confirm the expected state")
 
 
+def checked_result(response, method, report):
+    if response.get("isError"):
+        diagnostic = {"method": method}
+        for item in response.get("content", []):
+            if item.get("type") == "text":
+                try:
+                    error = json.loads(item["text"])
+                except ValueError:
+                    continue
+                if isinstance(error, dict):
+                    diagnostic.update(code=error.get("error_code", error.get("code")), reason=error.get("reason"))
+                    break
+        report["tool_failure"] = diagnostic
+        raise RuntimeError(f"{method} failed: {diagnostic.get('code')} ({diagnostic.get('reason')})")
+    return structured(response)
+
+
 def benchmark(binary, pid, window, directory, report):
     manifest = json.loads(subprocess.check_output([binary, "manifest"], text=True, creationflags=NO_CONSOLE))
     version = manifest["version"]
@@ -110,12 +130,13 @@ def benchmark(binary, pid, window, directory, report):
     with client(binary, os.environ.copy(), None) as mcp:
         report["initialize_ms"] = round((time.perf_counter() - start) * 1000)
         start = time.perf_counter()
-        started = structured(mcp.tool("start_task", {
+        response = mcp.tool("start_task", {
             "application_label": "Disposable Blender workflow benchmark", "surface": "window",
             "observation_mode": "pixels_only", "target_process_id": pid, "target_window_handle": window,
             "allowed_methods": methods,
-            "allowed_actions": actions, "ttl_minutes": 5}))
+            "allowed_actions": actions, "ttl_minutes": 5})
         report["start_task_ms"] = round((time.perf_counter() - start) * 1000)
+        started = checked_result(response, "start_task", report)
         task = started["task_id"]
         mcp.tasks.append(task)
         assert attest(started) == (pid, window)
@@ -128,18 +149,7 @@ def benchmark(binary, pid, window, directory, report):
             metrics = {"method": method, "roundtrip_ms": round((time.perf_counter() - begin) * 1000),
                        "image_base64_bytes": sum(len(v["data"]) for v in result.get("content", []) if v["type"] == "image")}
             report["calls"].append(metrics)
-            if result.get("isError"):
-                for item in result.get("content", []):
-                    if item.get("type") == "text":
-                        try:
-                            error = json.loads(item["text"])
-                        except ValueError:
-                            continue
-                        if isinstance(error, dict):
-                            metrics["error_code"] = error.get("error_code", error.get("code"))
-                            metrics["reason"] = error.get("reason")
-                            raise RuntimeError(f"{method} failed: {metrics['error_code']} ({metrics['reason']})")
-            receipt = structured(result)
+            receipt = checked_result(result, method, report)
             if receipt.get("success") is False:
                 raise RuntimeError(f"{method} failed: {receipt.get('reason', 'unknown')}")
             return receipt

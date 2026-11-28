@@ -14,6 +14,18 @@ pub(crate) fn document() -> Value {
     if cfg!(target_os = "linux") {
         document["runtime"]["exact_window_pixels"] = linux_exact_window_pixels();
     }
+    if cfg!(target_os = "macos") {
+        document["runtime"]["exact_window_pixels"] = json!({
+            "availability":"macos_on_screen_application_window",
+            "cli_flag":"--pixels-only",
+            "required_selectors":["--pid","--window-id"],
+            "read_only":true, "input_available":false, "activation_available":false,
+            "recording_available":false, "accessibility_provider_started":false,
+            "whole_desktop_fallback":false,
+            "native_bounds_units":"display_points", "coordinate_units":"image_pixels",
+            "publication_fences":["process_id","process_start","window_handle","bounds","visible","authorization"]
+        });
+    }
     document
 }
 

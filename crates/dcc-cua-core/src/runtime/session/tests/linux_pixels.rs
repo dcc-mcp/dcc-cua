@@ -285,7 +285,7 @@ async fn linux_pixels_native_cancel_and_stalled_server_drain_without_publication
         .unwrap();
     fixture.connection.ungrab_server().unwrap().check().unwrap();
     assert!(stopped.success);
-    assert!(session.linux_pixels.is_none());
+    assert!(session.unix_pixels.is_none());
     assert!(session.observation.is_none());
     assert_eq!(calls.load(AtomicOrdering::SeqCst), 0);
 }

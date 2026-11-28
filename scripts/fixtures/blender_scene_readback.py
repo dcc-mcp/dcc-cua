@@ -33,6 +33,9 @@ def armature_state(obj):
 
 
 def read_scene():
+    if not read_scene.ready:
+        (directory / "ready").touch()
+        read_scene.ready = True
     if not (directory / "bound").is_file():
         return 0.05
     context = bpy.context
@@ -62,4 +65,5 @@ def read_scene():
 
 
 read_scene.previous = None
+read_scene.ready = False
 bpy.app.timers.register(read_scene, first_interval=0.1)

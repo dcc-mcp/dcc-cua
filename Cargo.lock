@@ -1263,6 +1263,7 @@ dependencies = [
  "dcc-cua-protocol",
  "dcc-cua-showcase",
  "dcc-cua-workspace-hack",
+ "libc",
  "platform-macos",
  "png 0.17.16",
  "rstest",

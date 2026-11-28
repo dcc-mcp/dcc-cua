@@ -126,15 +126,15 @@ impl ComputerUseSession {
         &mut self,
         capture_diagnostics: bool,
     ) -> ComputerUseResult<ComputerUseScreenshot> {
-        #[cfg(not(any(windows, target_os = "linux")))]
+        #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
         let _ = capture_diagnostics;
-        #[cfg(not(any(windows, target_os = "linux")))]
+        #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
         return Err(ComputerUseError::new(
             ComputerUseErrorCode::BackendUnavailable,
             "pixels-only exact native window capture is unavailable on this platform",
         ));
-        #[cfg(target_os = "linux")]
-        return self.screenshot_linux_pixels(capture_diagnostics).await;
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        return self.screenshot_unix_pixels(capture_diagnostics).await;
         #[cfg(windows)]
         {
             self.ensure_active()?;
@@ -161,9 +161,9 @@ impl ComputerUseSession {
         max_elements: u32,
         max_depth: u32,
     ) -> ComputerUseResult<ComputerUseScreenshot> {
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         if self.pixel_observation_route == Some(PixelObservationRoute::ExplicitPixelsOnly) {
-            return self.screenshot_linux_pixels(false).await;
+            return self.screenshot_unix_pixels(false).await;
         }
         self.ensure_active()?;
         self.require_capture_preparation_settled()?;
@@ -541,8 +541,8 @@ impl ComputerUseSession {
         &mut self,
         request: &ComputerUseLiveObservationStartRequest,
     ) -> ComputerUseResult<LiveObservationStartOutcome> {
-        #[cfg(target_os = "linux")]
-        self.require_not_linux_pixels()?;
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        self.require_not_read_only_pixels()?;
         self.ensure_active()?;
         request.validate()?;
         self.ensure_local_cleanup_reusable()?;

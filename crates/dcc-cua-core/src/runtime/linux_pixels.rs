@@ -47,7 +47,7 @@ pub(super) struct LinuxPixels {
     native_task_authorization: Option<(String, Arc<crate::NativeTaskAuthorization>)>,
 }
 
-pub(super) type Handle = Arc<Mutex<LinuxPixels>>;
+use super::unix_pixels::Handle;
 
 fn refused(code: ComputerUseErrorCode, message: impl Into<String>) -> ComputerUseError {
     ComputerUseError::new(code, message)
@@ -644,18 +644,4 @@ impl LinuxPixels {
             "window_lifecycle_subscription":true, "occlusion_checked":true, "coordinate_units":"x11_pixels"});
         Ok((png, after.target, provenance))
     }
-}
-
-pub(super) async fn operate<T: Send + 'static>(
-    handle: Handle,
-    operation: impl FnOnce(&mut LinuxPixels) -> ComputerUseResult<T> + Send + 'static,
-) -> ComputerUseResult<T> {
-    tokio::task::spawn_blocking(move || {
-        let mut bound = handle
-            .lock()
-            .map_err(|_| native("X11 capture worker panicked"))?;
-        operation(&mut bound)
-    })
-    .await
-    .map_err(native)?
 }
