@@ -8,6 +8,7 @@ on:
       - 'examples/blender-*.json'
       - 'scripts/*blender*'
       - 'scripts/test_pointer_workflows.py'
+      - 'scripts/test_action_sequence.py'
       - 'skills/cua-cli/scripts/action_sequence.py'
       - 'scripts/fixtures/blender_scene_readback.py'
       - 'scripts/fixtures/blender_macos.swift'
@@ -47,6 +48,8 @@ jobs:
         shell: pwsh
         run: C:/msys64/usr/bin/bash.exe -lc 'pacman -Sy --noconfirm --needed mingw-w64-ucrt-x86_64-mesa'
       - run: cargo build --release --locked -p dcc-cua-cli
+      - name: Check script journal recovery
+        run: python -B -m unittest scripts.test_action_sequence
       - name: Verify mesh extrusion and armature keyframes
         shell: bash
         timeout-minutes: 10
