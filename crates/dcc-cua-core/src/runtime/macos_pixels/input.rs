@@ -159,12 +159,23 @@ impl MacPixels {
                 frame
                     .validate(self.pid, self.window, &rect)
                     .map_err(frame_error)?;
+                let global_x = f64::from(rect[0]) + x;
+                let global_y = f64::from(rect[1]) + y;
+                if !dcc_cua_indicator::macos_frame::point_hits_window(
+                    self.window,
+                    global_x,
+                    global_y,
+                ) {
+                    return Err(unavailable(
+                        "macOS click point does not hit the bound window",
+                    ));
+                }
                 let _admission = admit()?;
                 attempted = true;
                 mouse::click_at_xy_with_window_local(
                     self.pid,
-                    f64::from(rect[0]) + x,
-                    f64::from(rect[1]) + y,
+                    global_x,
+                    global_y,
                     x,
                     y,
                     self.window,

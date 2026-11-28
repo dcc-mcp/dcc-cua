@@ -127,6 +127,7 @@ def checked_result(response, method, report):
                         "macOS WindowServer bounds changed",
                         "macOS execution frame has no visible band",
                         "macOS window is covered by another on-screen surface",
+                        "macOS click point does not hit the bound window",
                         "macOS WindowServer exposure could not be verified",
                         "the exact X11 window lacks keyboard focus",
                         "the exact X11 target is occluded; pixels were discarded",

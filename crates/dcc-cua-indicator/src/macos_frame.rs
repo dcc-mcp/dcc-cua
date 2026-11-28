@@ -9,11 +9,15 @@ use std::time::{Duration, Instant};
 pub struct FrameBlocker {
     pid: i32,
     layer: i32,
+    sharing: i32,
+    system_dock: i32,
     window: u32,
+    center_hit: i32,
     bounds: [f64; 4],
 }
 
 unsafe extern "C" {
+    fn dcc_frame_point_hits(window: u32, x: f64, y: f64) -> i32;
     fn dcc_frame_exposed(
         owner: i32,
         window: u32,
@@ -23,6 +27,10 @@ unsafe extern "C" {
         blocker: *mut FrameBlocker,
     ) -> i32;
     fn dcc_run_frame(rect: *const i32, width: i32, red: i32, green: i32, blue: i32) -> i32;
+}
+
+pub fn point_hits_window(window: u32, x: f64, y: f64) -> bool {
+    unsafe { dcc_frame_point_hits(window, x, y) == 1 }
 }
 
 pub fn require_exposure(

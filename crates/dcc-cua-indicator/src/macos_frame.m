@@ -24,10 +24,30 @@ static BOOL fitsDisplay(CGRect rect) {
 // WindowServer lists on-screen windows front-to-back, including higher layers,
 // transient dialogs and other applications. Only rectangular uncovered bands count.
 typedef struct {
-    int pid, layer;
+    int pid, layer, sharing, systemDock;
     unsigned int window;
+    int centerHit;
     double bounds[4];
 } FrameBlocker;
+
+static NSInteger hitWindow(CGPoint point) {
+    CGFloat desktopTop = CGRectGetMaxY(CGDisplayBounds(CGMainDisplayID()));
+    return [NSWindow windowNumberAtPoint:NSMakePoint(point.x, desktopTop-point.y)
+               belowWindowWithWindowNumber:0];
+}
+
+int dcc_frame_point_hits(unsigned int window, double x, double y) {
+    return hitWindow(CGPointMake(x,y)) == window;
+}
+
+static BOOL fullDisplayBounds(CGRect rect) {
+    CGDirectDisplayID displays[16];
+    uint32_t count = 0;
+    if (CGGetActiveDisplayList(16, displays, &count) != kCGErrorSuccess) return NO;
+    for (uint32_t i=0; i<count; ++i)
+        if (CGRectEqualToRect(CGDisplayBounds(displays[i]), rect)) return YES;
+    return NO;
+}
 
 int dcc_frame_exposed(int owner, unsigned int window, const int *rect, int renderer, int width, FrameBlocker *blocker) {
     @autoreleasepool {
@@ -49,9 +69,24 @@ int dcc_frame_exposed(int owner, unsigned int window, const int *rect, int rende
                 return renderer == 0 || visibleBand ? 1 : -4;
             }
             if (CGRectIntersectsRect(bounds, target)) {
+                int layer = [entry[(__bridge id)kCGWindowLayer] intValue];
+                NSNumber *sharing = entry[(__bridge id)kCGWindowSharingState];
+                BOOL dock = NO;
+                NSInteger hit = -1;
+                if (layer == CGWindowLevelForKey(kCGDockWindowLevelKey) && fullDisplayBounds(bounds)) {
+                    NSRunningApplication *app = [NSRunningApplication runningApplicationWithProcessIdentifier:pid];
+                    dock = [app.bundleIdentifier isEqualToString:@"com.apple.dock"] &&
+                        [app.executableURL.path isEqualToString:@"/System/Library/CoreServices/Dock.app/Contents/MacOS/Dock"];
+                    hit = hitWindow(CGPointMake(CGRectGetMidX(target), CGRectGetMidY(target)));
+                    // Tahoe's private, untitled Dock tracking surface spans the
+                    // display even when WindowServer routes input through it.
+                    // Real Dock panels and every non-system owner remain blockers.
+                    if (dock && sharing && sharing.intValue == kCGWindowSharingNone &&
+                        [entry[(__bridge id)kCGWindowName] length] == 0 && hit == window) continue;
+                }
                 if (blocker) {
-                    *blocker = (FrameBlocker){pid, [entry[(__bridge id)kCGWindowLayer] intValue],
-                        [entry[(__bridge id)kCGWindowNumber] unsignedIntValue],
+                    *blocker = (FrameBlocker){pid, layer, sharing ? sharing.intValue : -1, dock,
+                        [entry[(__bridge id)kCGWindowNumber] unsignedIntValue], (int)hit,
                         {bounds.origin.x, bounds.origin.y, bounds.size.width, bounds.size.height}};
                 }
                 return -5;
@@ -106,7 +141,7 @@ int dcc_run_frame(const int *rect, int width, int red, int green, int blue) {
             panel.opaque = YES;
             panel.ignoresMouseEvents = YES;
             panel.hidesOnDeactivate = NO;
-            panel.level = NSFloatingWindowLevel;
+            panel.level = CGWindowLevelForKey(kCGDockWindowLevelKey) + 1;
             panel.backgroundColor = [NSColor colorWithSRGBRed:red/255.0 green:green/255.0 blue:blue/255.0 alpha:1];
             [panel orderFrontRegardless];
             [bands addObject:panel];
