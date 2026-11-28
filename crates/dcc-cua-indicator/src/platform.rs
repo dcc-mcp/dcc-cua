@@ -47,6 +47,7 @@ pub(crate) mod capture_exclusion;
 pub(super) mod cooperative_capture;
 pub(crate) mod cursor_registration;
 mod escape_hub_lifecycle;
+mod execution_frame;
 mod frame_wait;
 mod owned_input_suppression;
 mod startup;
@@ -193,6 +194,11 @@ pub(super) struct PlatformInputSuppressionSource {
 }
 
 impl PlatformInputSuppressionSource {
+    pub(super) fn execution_frame_visible(&self) -> bool {
+        self.renderer
+            .execution_frame_visible
+            .load(Ordering::Acquire)
+    }
     pub(super) fn begin_with_capture(
         &self,
         process_id: u32,
@@ -389,7 +395,8 @@ impl PlatformBanner {
             last_error,
             failure,
             visible: self.visible.load(Ordering::Acquire),
-            target_frame_visible: self.frame_visible.load(Ordering::Acquire),
+            target_frame_visible: self.frame_visible.load(Ordering::Acquire)
+                || self.input_suppression.execution_frame_visible(),
             interrupted: self.interrupted(),
             stop_key: "Escape",
             label: String::new(),
@@ -971,6 +978,16 @@ fn run_banner(
     let icon = target_icon(target_window);
     startup_stage.store(BannerStartupStage::OverlayCreation as u8, Ordering::Release);
     let overlay = OverlayWindow::new(create_overlay(&identity, BannerActivity::Connecting, icon)?)?;
+    let mut execution_frame = match execution_frame::ExecutionFrame::new() {
+        Ok(frame) => Some(frame),
+        Err(error) => {
+            record_rendering_result(
+                rendering_failure,
+                Err(IndicatorError::Rendering(error.to_string())),
+            );
+            None
+        }
+    };
     startup_stage.store(BannerStartupStage::FrameCreation as u8, Ordering::Release);
     let frames = (0..TARGET_FRAME_GRADIENT_STEPS)
         .map(|_| create_frame_overlay().and_then(OverlayWindow::new))
@@ -1035,6 +1052,26 @@ fn run_banner(
             stop.store(true, Ordering::Release);
             break;
         }
+        // Keep the user-facing frame independent of input/capture leases. Its
+        // window sits behind the target and only paints outside the target.
+        validate_target(target_window, target.process_id)?;
+        let presentation = current_target_presentation(target_window);
+        let next_target = if presentation.is_visible() {
+            Some(read_target_geometry(target_window, dpi_probe.as_ref())?)
+        } else {
+            None
+        };
+        let exterior_visible = match execution_frame.as_mut() {
+            Some(frame) => frame.update(
+                target_window,
+                next_target
+                    .filter(|_| presentation == TargetPresentationPolicy::ExactTargetForeground),
+            )?,
+            None => false,
+        };
+        input_suppression
+            .execution_frame_visible
+            .store(exterior_visible, Ordering::Release);
         let owned_input_hidden = input_suppression.hide_if_requested(|| {
             let mut surfaces = std::iter::once(&overlay).chain(frames.iter());
             for surface in surfaces.clone() {
@@ -1104,11 +1141,8 @@ fn run_banner(
                 frame_alpha = next_frame_alpha;
             }
         }
-        validate_target(target_window, target.process_id)?;
-        let presentation = current_target_presentation(target_window);
         let reassert_z_order = overlay_sync.observe(presentation);
-        if presentation.is_visible() {
-            let next_target = read_target_geometry(target_window, dpi_probe.as_ref())?;
+        if let Some(next_target) = next_target {
             let next_compact_hidden = compact_target(next_target);
             if next_compact_hidden != compact_hidden {
                 compact_hidden = next_compact_hidden;

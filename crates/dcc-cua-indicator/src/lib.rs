@@ -606,6 +606,9 @@ pub struct BannerInputCaptureGuard {
 
 #[cfg(windows)]
 impl BannerInputSuppressionSource {
+    pub fn execution_frame_visible(&self) -> bool {
+        self.platform.execution_frame_visible()
+    }
     pub fn begin_with_capture(
         &self,
         process_id: u32,

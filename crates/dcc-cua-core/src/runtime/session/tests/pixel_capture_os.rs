@@ -7,6 +7,12 @@ pub enum ExactWindowCaptureRoute {
     VerifiedVisible,
 }
 pub type ExactWindowCaptureIdentityError = String;
+// These fixtures exercise WGC and verified desktop fallback on an HWND whose
+// client does not implement PrintWindow content rendering.
+pub fn capture_print_window(pid: u32, hwnd: u64) -> Result<PrintWindowCapture, String> {
+    assert_eq!((pid, hwnd), (42, 77));
+    Err("fixture window has no PrintWindow content".into())
+}
 impl std::fmt::Display for VisibleWindowCaptureError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str(&self.message)

@@ -393,11 +393,26 @@ Repeated taps are supported. The timeline accepts 1–64 entries and a
 {"observation_id":"<latest>","capture_after":true,"action":{"action":"key_sequence","input_kind":"raw_input","intent":"ordinary_edit","delivery_mode":"foreground","keys":["G","Z","2","ENTER"],"delay_ms":60}}
 ```
 
-The [Blender macro](../examples/blender-extrude-column.json) creates a plane,
-extrudes it, changes its object scale and renames it in Blender's English
-3D View in Object Mode. Pass the JSON object as `params.action` in one
-`dcc_cua_task_call` with `method=execute_action`. One final post-snapshot
-can be reused by the next action. Verify the resulting application state.
+Both Blender examples use one foreground 3D View in Object Mode, the English
+operator search and the default Blender keymap. The [modeling macro](../examples/blender-extrude-column.json)
+extrudes a plane, changes the object scale and renames it. The
+[rig and animation macro](../examples/blender-rig-keyframes.json) creates a
+connected three-bone chain, inserts a pose at the scene start, advances eight
+frames, rotates it 30 degrees and inserts a second pose. Pass either JSON
+object as `params.action` in one `dcc_cua_task_call` with `method=execute_action`.
+These two recipes set `delay_ms=0`. Every chord still checks its target and
+the Agent frame. Windows presents the frame outside a restored window, or
+as a strip along an exposed monitor edge for a maximized window. A window
+covering the entire monitor has no space for this presenter. A sequence
+requires a visible frame before it can start and between chords.
+
+Use `capture_after=true` when the next decision needs the resulting view.
+For a terminal action with an application readback, verify the mesh or animation
+directly. A later UI action then needs a fresh observation. Successful native
+delivery reports `key_sequence_timing` with the chord count, dispatch time and
+time spent waiting between chords. Dispatch time includes native checks and
+input insertion. Measure screenshot round trips and application completion
+separately.
 End a macro at any point where the next decision depends on a dialog,
 selection or other unknown state. An interrupted macro can leave a completed
 prefix. Inspect that state before issuing further input.

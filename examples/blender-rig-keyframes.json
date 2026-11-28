@@ -1,0 +1,14 @@
+{
+  "action": "key_sequence",
+  "input_kind": "raw_input",
+  "intent": "ordinary_edit",
+  "delivery_mode": "foreground",
+  "delay_ms": 0,
+  "keys": [
+    "F3", "A", "D", "D", "SPACE", "A", "R", "M", "A", "T", "U", "R", "E", "ENTER",
+    "TAB", "E", "Z", "1", "ENTER", "E", "X", "1", "ENTER", "TAB",
+    "CTRL+TAB", "A", "SHIFT+LEFT", "I",
+    "RIGHT", "RIGHT", "RIGHT", "RIGHT", "RIGHT", "RIGHT", "RIGHT", "RIGHT",
+    "R", "X", "3", "0", "ENTER", "I", "CTRL+TAB"
+  ]
+}

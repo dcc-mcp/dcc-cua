@@ -224,6 +224,7 @@ fn failed_input_preserves_partial_cursor_and_event_delivery(
             delivery_completed: false,
             post_dispatch_validated: false,
             fresh_observation_required: true,
+            key_sequence_timing: None,
         },
     });
     let details = error.details.unwrap();
@@ -263,6 +264,7 @@ fn rejected_fence_diagnostic_reaches_closed_error_details_with_original_refusal(
             delivery_completed: false,
             post_dispatch_validated: false,
             fresh_observation_required: true,
+            key_sequence_timing: None,
         },
         native_input_fence: Some(sample),
         native_capture_popup: None,
@@ -319,6 +321,7 @@ fn popup_proof_refusal_uses_existing_capture_details_and_preserves_zero_input(
             delivery_completed: false,
             post_dispatch_validated: false,
             fresh_observation_required: true,
+            key_sequence_timing: None,
         },
         native_input_fence: None,
         visibility_failure: None,

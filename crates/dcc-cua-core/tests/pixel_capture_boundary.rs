@@ -109,6 +109,13 @@ fn exact_source_first_capture_instance_boundary() {
         "pub(crate) async fn gated_exact_window_observation",
     ));
     let mut native_types = String::new();
+    let print_window = include_str!("../../dcc-cua-platform-windows/src/print_window.rs");
+    native_types.push_str(item(print_window, "pub struct PrintWindowCapture {"));
+    let provenance = include_str!("../../dcc-cua-showcase/src/provenance.rs");
+    let frame_source = item(provenance, "pub enum NativeFrameSource");
+    selected.push_str(&format!(
+        "mod dcc_cua_showcase {{ #[derive(Clone,Copy,Debug,PartialEq,Eq)] {frame_source} }}"
+    ));
     for marker in [
         "pub struct ExactWindowPixelInstanceEvidence",
         "pub struct ExactWindowPixelEvidence",

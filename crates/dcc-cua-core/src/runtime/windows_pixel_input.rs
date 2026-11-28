@@ -353,6 +353,7 @@ fn input_error(failure: dcc_cua_platform_windows::WindowsGuardedInputError) -> C
         | Reason::TargetOutsideDesktop => ComputerUseErrorCode::TargetUnavailable,
         Reason::DesktopUnavailable => ComputerUseErrorCode::InteractiveDesktopUnavailable,
         Reason::Interrupted => ComputerUseErrorCode::UserInterrupted,
+        Reason::ExecutionFrameUnavailable => ComputerUseErrorCode::BackendUnavailable,
         Reason::InjectionIncomplete => ComputerUseErrorCode::InputFailed,
     };
     let attempted = failure.outcome.mutation_attempted;
@@ -476,13 +477,20 @@ pub(super) async fn perform_exact_pixel_action_with_capture_popup(
         Vec::new()
     };
     let input_presentation = presentation.clone();
+    let require_execution_frame = action.action == "key_sequence";
     let outcome = run_owned_pixel_worker(
         move || {
             // The worker, not its cancellable async waiter, owns both leases
             // through every final fence, native key-up cleanup and postcheck.
-            presentation
+            let guard = presentation
                 .begin_with_capture(fence.target.process_id, fence.target.window_handle)
-                .map_err(pixel_presentation_error)
+                .map_err(pixel_presentation_error)?;
+            if require_execution_frame && !presentation.execution_frame_visible() {
+                return Err(pixel_presentation_error(IndicatorError::Rendering(
+                    "the agent execution frame is unavailable; the foreground target needs a visible exterior edge for a key sequence".into(),
+                )));
+            }
+            Ok(guard)
         },
         move || {
             let gate = || {
@@ -556,6 +564,7 @@ pub(super) async fn perform_exact_pixel_action_with_capture_popup(
                     fence,
                     &action.keys,
                     action.delay_ms.unwrap_or(40),
+                    || input_presentation.execution_frame_visible(),
                     gate,
                     interrupted,
                 ),
