@@ -1604,6 +1604,9 @@ struct TaskRemoteErrorDetails {
     #[serde(flatten)]
     diagnostic: TaskRemoteErrorDiagnostics,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    native_input_fence:
+        Option<dcc_cua_protocol::native_input_diagnostic::NativeInputFenceDiagnostic>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     timed_out: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     phase: Option<dcc_cua_core::ComputerUseErrorPhase>,
@@ -1664,6 +1667,11 @@ fn project_task_remote_error(
     };
     let mut details = TaskRemoteErrorDetails {
         diagnostic: diagnostic.clone(),
+        native_input_fence: remote_error_field(remote_details, "native_input_fence")
+            .filter(|fence: &dcc_cua_protocol::native_input_diagnostic::NativeInputFenceDiagnostic| {
+                fence.schema_version == 1 && fence.redacted_rectangles.len()
+                    <= dcc_cua_protocol::native_input_diagnostic::MAX_NATIVE_INPUT_DIAGNOSTIC_REGIONS
+            }),
         timed_out: remote_error_field(remote_details, "timed_out"),
         phase: remote_error_field(remote_details, "phase"),
         action_attempted: remote_error_field(remote_details, "action_attempted"),

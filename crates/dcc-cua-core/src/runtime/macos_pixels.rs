@@ -182,16 +182,15 @@ impl MacPixels {
             "native_bounds_units":"display_points","coordinate_units":"image_pixels",
             "process_start":self.process_start,"capture_generation":self.generation});
         if self.input_lease.is_some() {
-            provenance["input_exposure"] = json!(
-                dcc_cua_indicator::macos_frame::require_exposure(
-                    self.pid,
-                    self.window,
-                    &after.bounds,
-                    0
-                )
-                .err()
-                .unwrap_or("exposed")
+            let (exposure, blocker) = dcc_cua_indicator::macos_frame::exposure_diagnostic(
+                self.pid,
+                self.window,
+                &after.bounds,
             );
+            provenance["input_exposure"] = json!(exposure);
+            if let Some(blocker) = blocker {
+                provenance["input_blocker"] = json!(blocker);
+            }
             provenance["exact_ax_focus"] = json!(
                 platform_macos::ax::bindings::focused_window_id_of_pid(self.pid)
                     .is_some_and(|id| id.own == self.window && id.root == self.window)

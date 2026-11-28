@@ -215,7 +215,7 @@ def benchmark(binary, pid, window, directory, report, terminal_snapshot):
         report["capture_size"] = [observation["width"], observation["height"]]
         if sys.platform == "darwin":
             provenance = observation["capture_provenance"]
-            for field in ("accessibility_granted", "exact_ax_focus", "input_exposure", "native_window_bounds"):
+            for field in ("accessibility_granted", "exact_ax_focus", "input_exposure", "input_blocker", "native_window_bounds"):
                 report[field] = provenance.get(field)
         assert (observation["process_id"], observation["window_handle"]) == (pid, window)
         if not capability:

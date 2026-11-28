@@ -23,7 +23,13 @@ static BOOL fitsDisplay(CGRect rect) {
 
 // WindowServer lists on-screen windows front-to-back, including higher layers,
 // transient dialogs and other applications. Only rectangular uncovered bands count.
-int dcc_frame_exposed(int owner, unsigned int window, const int *rect, int renderer, int width) {
+typedef struct {
+    int pid, layer;
+    unsigned int window;
+    double bounds[4];
+} FrameBlocker;
+
+int dcc_frame_exposed(int owner, unsigned int window, const int *rect, int renderer, int width, FrameBlocker *blocker) {
     @autoreleasepool {
         if (NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier != owner) return -1;
         CGRect target = CGRectMake(rect[0], rect[1], rect[2], rect[3]);
@@ -42,7 +48,14 @@ int dcc_frame_exposed(int owner, unsigned int window, const int *rect, int rende
                 if (!CGRectEqualToRect(bounds, target)) return -3;
                 return renderer == 0 || visibleBand ? 1 : -4;
             }
-            if (CGRectIntersectsRect(bounds, target)) return -5;
+            if (CGRectIntersectsRect(bounds, target)) {
+                if (blocker) {
+                    *blocker = (FrameBlocker){pid, [entry[(__bridge id)kCGWindowLayer] intValue],
+                        [entry[(__bridge id)kCGWindowNumber] unsignedIntValue],
+                        {bounds.origin.x, bounds.origin.y, bounds.size.width, bounds.size.height}};
+                }
+                return -5;
+            }
             for (NSUInteger edge=0; edge<4; ++edge) {
                 CGRect band = exterior(target, edge, width);
                 if (renderer > 0 && pid == renderer && !covered[edge] &&

@@ -694,6 +694,33 @@ fn foreground_remote_diagnostic_fixture() -> Value {
 }
 
 #[rstest]
+fn task_remote_error_projection_carries_only_valid_native_fence_samples() {
+    let sample = json!({
+        "schema_version":1,"authorizes_input":false,"target_process_id":42,"target_window_handle":7,
+        "unobscured":false,"point_proof_complete":true,"point_visible":false,"hit_is_target_or_child":false,
+        "redacted_rectangles":[[1,2,3,4]],"redaction_count":1,"redactions_complete":true,
+        "point":null,"hit_process_id":null,"hit_window_handle":null,"hit_root_window_handle":null
+    });
+    let project = |sample| {
+        let error = HostClientError::Remote {
+            code: "target_unavailable".into(),
+            message: "guard rejected input".into(),
+            response: json!({"details":{"input_sent":"not_sent","native_input_fence":sample}}),
+        };
+        serde_json::to_value(project_task_remote_error(&error, "execute_action").unwrap()).unwrap()
+    };
+    assert_eq!(
+        project(sample.clone())["details"]["native_input_fence"],
+        sample
+    );
+    let mut invalid = sample;
+    invalid["authorizes_input"] = json!(true);
+    let details = &project(invalid)["details"];
+    assert_eq!(details["input_sent"], "not_sent");
+    assert!(details.get("native_input_fence").is_none());
+}
+
+#[rstest]
 fn task_remote_error_projection_preserves_typed_identity_and_closed_diagnostics() {
     let foreground = foreground_remote_diagnostic_fixture();
     let preparation = json!({"reason":"gate_busy","os_error":5});

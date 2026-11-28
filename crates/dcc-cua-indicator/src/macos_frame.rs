@@ -4,6 +4,15 @@ use std::io;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
+#[repr(C)]
+#[derive(Default, serde::Serialize)]
+pub struct FrameBlocker {
+    pid: i32,
+    layer: i32,
+    window: u32,
+    bounds: [f64; 4],
+}
+
 unsafe extern "C" {
     fn dcc_frame_exposed(
         owner: i32,
@@ -11,6 +20,7 @@ unsafe extern "C" {
         rect: *const i32,
         renderer: i32,
         width: i32,
+        blocker: *mut FrameBlocker,
     ) -> i32;
     fn dcc_run_frame(rect: *const i32, width: i32, red: i32, green: i32, blue: i32) -> i32;
 }
@@ -21,7 +31,30 @@ pub fn require_exposure(
     rect: &[i32; 4],
     renderer: i32,
 ) -> Result<(), &'static str> {
-    // WindowServer only reads the fixed array during this call.
+    check_exposure(owner, window, rect, renderer, None)
+}
+
+pub fn exposure_diagnostic(
+    owner: i32,
+    window: u32,
+    rect: &[i32; 4],
+) -> (&'static str, Option<FrameBlocker>) {
+    let mut blocker = FrameBlocker::default();
+    let status = check_exposure(owner, window, rect, 0, Some(&mut blocker));
+    (
+        status.err().unwrap_or("exposed"),
+        (blocker.window != 0).then_some(blocker),
+    )
+}
+
+fn check_exposure(
+    owner: i32,
+    window: u32,
+    rect: &[i32; 4],
+    renderer: i32,
+    blocker: Option<&mut FrameBlocker>,
+) -> Result<(), &'static str> {
+    // WindowServer only accesses the fixed input and optional output during this call.
     match unsafe {
         dcc_frame_exposed(
             owner,
@@ -29,6 +62,7 @@ pub fn require_exposure(
             rect.as_ptr(),
             renderer,
             TARGET_FRAME_THICKNESS_DIP,
+            blocker.map_or(std::ptr::null_mut(), std::ptr::from_mut),
         )
     } {
         1 => Ok(()),

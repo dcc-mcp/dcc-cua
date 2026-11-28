@@ -50,7 +50,10 @@ case "$RUNNER_OS" in
   macOS)
     hdiutil attach -readonly -nobrowse -mountpoint "$scratch/mount" "$scratch/$file"
     trap 'hdiutil detach "$scratch/mount"' EXIT
-    "${command[@]}" --blender "$scratch/mount/Blender.app/Contents/MacOS/Blender"
+    ditto "$scratch/mount/Blender.app" "$scratch/Blender.app"
+    hdiutil detach "$scratch/mount"
+    trap - EXIT
+    "${command[@]}" --blender "$scratch/Blender.app/Contents/MacOS/Blender" --window-geometry 80 160 700 420
     ;;
   Windows)
     unzip -q "$scratch/$file" -d "$scratch"
