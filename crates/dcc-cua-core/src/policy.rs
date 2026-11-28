@@ -461,7 +461,7 @@ pub(crate) fn native_tool_result(
 }
 
 pub(crate) fn validate_action(action: &ComputerUseAction) -> ComputerUseResult<()> {
-    const ACTIONS: [&str; 13] = [
+    const ACTIONS: [&str; 14] = [
         "click",
         "double_click",
         "right_click",
@@ -473,6 +473,7 @@ pub(crate) fn validate_action(action: &ComputerUseAction) -> ComputerUseResult<(
         "type_chars",
         "set_text",
         "set_value",
+        "key_sequence",
         "keypress",
         "keyboard_shortcut",
     ];
@@ -482,7 +483,25 @@ pub(crate) fn validate_action(action: &ComputerUseAction) -> ComputerUseResult<(
             "unsupported Computer Use action",
         ));
     }
-    if action.keys.len() > MAX_KEY_TOKENS
+    let key_limit = if action.action == "key_sequence" {
+        64
+    } else {
+        MAX_KEY_TOKENS
+    };
+    if action.action == "key_sequence"
+        && (action.keys.is_empty()
+            || action
+                .keys
+                .iter()
+                .any(|step| step.is_empty() || step.len() > 64)
+            || !action.modifiers.is_empty())
+    {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::InvalidAction,
+            "key_sequence requires 1..64 taps or modifier chords in keys",
+        ));
+    }
+    if action.keys.len() > key_limit
         || action.modifiers.len() > MAX_MODIFIER_TOKENS
         || action.path.len() > MAX_DRAG_POINTS
     {
@@ -794,6 +813,12 @@ pub(crate) fn validate_action_route(
     exact_windows_pixels: bool,
 ) -> ComputerUseResult<()> {
     validate_action(action)?;
+    if action.action == "key_sequence" && !exact_windows_pixels {
+        return Err(ComputerUseError::new(
+            ComputerUseErrorCode::InvalidAction,
+            "key_sequence requires an exact Windows pixels_only task",
+        ));
+    }
     if action.action == "keypress"
         && action.duration_ms.is_some()
         && !action.modifiers.is_empty()

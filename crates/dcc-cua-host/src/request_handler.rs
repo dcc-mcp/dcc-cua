@@ -1832,7 +1832,27 @@ async fn handle_request_inner(
             let mut action = action.into_computer_use(observation_id)?;
             let input_turn = acquire_raw_input_turn(raw_input).await;
             revalidate_queued_action(host, &mut action).await?;
-            let result = timed(Phase::NativeAction, host.session.perform_action(&action)).await;
+            let deadline = if action.action == "key_sequence" {
+                let lease = host
+                    .bound_task_authorization(&session_id, "execute_action")
+                    .ok_or_else(|| {
+                        denied(
+                            HostProtocolErrorCode::TaskAuthorizationDenied,
+                            "key sequence lease",
+                        )
+                    })?;
+                let remaining = lease
+                    .expires_at_unix_ms
+                    .saturating_sub(crate::task_authorization::unix_time_millis());
+                Some(Instant::now() + Duration::from_millis(remaining))
+            } else {
+                None
+            };
+            let result = timed(
+                Phase::NativeAction,
+                host.session.perform_action_with_deadline(&action, deadline),
+            )
+            .await;
             action.text.zeroize();
             let result = host.finish_observation_sensitive_attempt(result);
             let result = if host.observation_mode == TaskObservationMode::PixelsOnly {

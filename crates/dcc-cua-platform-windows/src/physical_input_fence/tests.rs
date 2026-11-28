@@ -955,3 +955,63 @@ fn fence_diagnostic_is_reported_only_on_the_rejected_attempt(#[case] accepted: b
         assert_eq!(diagnostic.point, Some([100, 100]));
     }
 }
+
+#[test]
+fn key_sequence_releases_each_tap_and_orders_modifier_chords() {
+    let mut backend = FakeBackend::new();
+    let steps = ["A", "A", "CTRL+A"].map(String::from);
+    let result = run_key_sequence(&mut backend, fence(), &steps, 40).unwrap();
+    assert!(result.delivery_completed && result.post_dispatch_validated);
+    assert_eq!(backend.clock, 80);
+    let a = virtual_key("A").unwrap();
+    let ctrl = modifier_virtual_key("CTRL").unwrap();
+    let tap = vec![Event::Key(a, false), Event::Key(a, true)];
+    assert_eq!(backend.mutations[0].1, tap);
+    assert_eq!(backend.mutations[1].1, tap);
+    assert_eq!(
+        backend.mutations[2].1,
+        vec![
+            Event::Key(ctrl, false),
+            Event::Key(a, false),
+            Event::Key(a, true),
+            Event::Key(ctrl, true)
+        ]
+    );
+}
+
+#[test]
+fn invalid_late_chord_sends_no_input() {
+    let mut backend = FakeBackend::new();
+    let result = run_key_sequence(&mut backend, fence(), &["TAB".into(), "A+B".into()], 0);
+    assert_eq!(result.unwrap_err().reason, Reason::InvalidRequest);
+    assert!(backend.mutations.is_empty());
+}
+
+#[test]
+fn interruption_stops_a_key_sequence_before_the_next_tap() {
+    let mut backend = FakeBackend::new();
+    backend.interrupt_after_mutations = Some(1);
+    let result = run_key_sequence(&mut backend, fence(), &["A".into(), "B".into()], 0);
+    let error = result.unwrap_err();
+    assert_eq!(error.reason, Reason::Interrupted);
+    assert_eq!(error.outcome.inserted_events, 2);
+    assert_eq!(backend.mutations.len(), 1);
+}
+
+#[test]
+fn partial_key_sequence_chord_releases_only_inserted_modifiers() {
+    let mut backend = FakeBackend::new();
+    backend.partial_mutation = Some((0, 1));
+    let result = run_key_sequence(&mut backend, fence(), &["SHIFT+A".into(), "B".into()], 0);
+    let error = result.unwrap_err();
+    assert_eq!(error.outcome.cleanup_inserted_events, 1);
+    assert_eq!(backend.mutations.len(), 2);
+    assert_eq!(
+        backend.mutations[1],
+        (
+            true,
+            vec![Event::Key(modifier_virtual_key("SHIFT").unwrap(), true)],
+            None
+        )
+    );
+}

@@ -191,7 +191,7 @@ impl HostSession {
         })?;
         Ok(lease)
     }
-    fn bound_task_authorization(
+    pub(super) fn bound_task_authorization(
         &self,
         session_id: &str,
         method: &str,

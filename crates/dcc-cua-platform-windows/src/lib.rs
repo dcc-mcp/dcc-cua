@@ -107,7 +107,7 @@ pub use physical_input_fence::{
     WindowsGuardedInputError, WindowsGuardedInputOperation, WindowsGuardedInputOutcome,
     WindowsPhysicalInputFailureReason, WindowsPhysicalInputFence,
     send_guarded_capture_popup_keypress, send_guarded_capture_popup_text, send_guarded_click,
-    send_guarded_drag, send_guarded_keypress, send_guarded_text,
+    send_guarded_drag, send_guarded_key_sequence, send_guarded_keypress, send_guarded_text,
 };
 #[cfg(windows)]
 pub use print_window::{PrintWindowCapture, PrintWindowCaptureError, capture_print_window};

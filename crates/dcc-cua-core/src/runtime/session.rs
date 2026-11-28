@@ -751,6 +751,22 @@ impl ComputerUseSession {
         &mut self,
         action: &ComputerUseAction,
     ) -> ComputerUseResult<ComputerUseToolResult> {
+        self.perform_action_with_deadline(action, None).await
+    }
+
+    /// Apply a trusted task deadline to native timeline dispatch. The deadline
+    /// comes from the Host lease, never from the requested action payload.
+    pub async fn perform_action_with_deadline(
+        &mut self,
+        action: &ComputerUseAction,
+        authorization_deadline: Option<Instant>,
+    ) -> ComputerUseResult<ComputerUseToolResult> {
+        if action.action == "key_sequence" && authorization_deadline.is_none() {
+            return Err(ComputerUseError::new(
+                ComputerUseErrorCode::InvalidAction,
+                "key_sequence requires a trusted task deadline",
+            ));
+        }
         #[cfg(windows)]
         let capture_popup_metadata = self.capture_popup_metadata.take();
         #[cfg(windows)]
@@ -818,7 +834,7 @@ impl ComputerUseSession {
                     &self.scope,
                     &self.session_id,
                     &target,
-                    self.pixel_input_owner(pixel_started_generation)?,
+                    self.pixel_input_owner(pixel_started_generation, authorization_deadline)?,
                     capture_popup,
                 )
                 .await;

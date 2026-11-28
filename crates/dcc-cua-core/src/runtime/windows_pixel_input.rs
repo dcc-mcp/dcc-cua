@@ -35,6 +35,7 @@ fn validate_pixel_action(action: &ComputerUseAction) -> ComputerUseResult<()> {
             | "right_click"
             | "toggle"
             | "drag"
+            | "key_sequence"
             | "keypress"
             | "keyboard_shortcut"
             | "type"
@@ -51,7 +52,7 @@ fn validate_pixel_action(action: &ComputerUseAction) -> ComputerUseResult<()> {
         || action.scroll_y.is_some()
         || action.scroll_by.is_some()
         || (action.action != "drag" && action.steps.is_some())
-        || action.delay_ms.is_some_and(|delay| delay != 0)
+        || (action.action != "key_sequence" && action.delay_ms.is_some_and(|delay| delay != 0))
     {
         return Err(ComputerUseError::new(
             ComputerUseErrorCode::InvalidAction,
@@ -408,6 +409,7 @@ fn input_error(failure: dcc_cua_platform_windows::WindowsGuardedInputError) -> C
 
 #[cfg(windows)]
 pub(super) struct PixelInputOwner {
+    authorization_deadline: Option<Instant>,
     started_generation: u64,
     session_interrupted: bool,
     presentation: dcc_cua_indicator::BannerInputSuppressionSource,
@@ -418,6 +420,7 @@ impl ComputerUseSession {
     pub(super) fn pixel_input_owner(
         &self,
         started_generation: u64,
+        authorization_deadline: Option<Instant>,
     ) -> ComputerUseResult<PixelInputOwner> {
         let banner = self.control_banner.as_ref().ok_or_else(|| {
             ComputerUseError::new(
@@ -426,6 +429,7 @@ impl ComputerUseSession {
             )
         })?;
         Ok(PixelInputOwner {
+            authorization_deadline,
             started_generation,
             session_interrupted: self.control_banner_interrupted(),
             presentation: banner.input_suppression_source(),
@@ -444,6 +448,7 @@ pub(super) async fn perform_exact_pixel_action_with_capture_popup(
     capture_popup: Option<super::capture_popup::CapturePopupMetadata>,
 ) -> ComputerUseResult<ComputerUseToolResult> {
     let PixelInputOwner {
+        authorization_deadline,
         started_generation,
         session_interrupted,
         presentation,
@@ -481,6 +486,11 @@ pub(super) async fn perform_exact_pixel_action_with_capture_popup(
         },
         move || {
             let gate = || {
+                if authorization_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+                    return Err(dcc_cua_platform_windows::UiaError::PermissionDenied(
+                        "task lease expired during native input".into(),
+                    ));
+                }
                 if capture_popup.as_ref().is_some_and(|metadata| {
                     metadata.read_at.elapsed() > Duration::from_secs(5)
                         || Instant::now() >= metadata.authorization_deadline
@@ -542,6 +552,13 @@ pub(super) async fn perform_exact_pixel_action_with_capture_popup(
                         interrupted,
                     )
                 }
+                "key_sequence" => dcc_cua_platform_windows::send_guarded_key_sequence(
+                    fence,
+                    &action.keys,
+                    action.delay_ms.unwrap_or(40),
+                    gate,
+                    interrupted,
+                ),
                 "keypress" | "keyboard_shortcut" => {
                     let keys = keyboard_shortcut_keys(&action);
                     if let Some(metadata) = &capture_popup {

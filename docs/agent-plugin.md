@@ -379,6 +379,29 @@ Account verification, CAPTCHA/2FA, agreements, payments, and final irreversible
 publication remain separate human boundaries. Removing the duplicated DCC-CUA
 authorization card does not automate those external account/security decisions.
 
+### Ordered keyboard macros
+
+Use `key_sequence` for a predictable workflow in an exact Windows foreground
+window. Grant `execute_action` and the non-secret `raw_input/key_sequence`
+action on a `pixels_only` task. Place the cursor in the intended editor and
+use its latest observation. Each entry in `keys` is a tap or a chord such as
+`CTRL+A`. Keys in a chord are released in reverse order before the next tap.
+Repeated taps are supported. The timeline accepts 1–64 entries and a
+`delay_ms` of 0–200 between taps (default 40).
+
+```json
+{"observation_id":"<latest>","capture_after":true,"action":{"action":"key_sequence","input_kind":"raw_input","intent":"ordinary_edit","delivery_mode":"foreground","keys":["G","Z","2","ENTER"],"delay_ms":60}}
+```
+
+The [Blender macro](../examples/blender-extrude-column.json) creates a plane,
+extrudes it, changes its object scale and renames it in Blender's English
+3D View in Object Mode. Pass the JSON object as `params.action` in one
+`dcc_cua_task_call` with `method=execute_action`. One final post-snapshot
+can be reused by the next action. Verify the resulting application state.
+End a macro at any point where the next decision depends on a dialog,
+selection or other unknown state. An interrupted macro can leave a completed
+prefix. Inspect that state before issuing further input.
+
 ## Other agent hosts
 
 Hosts that support `.codex-plugin/plugin.json` can load the checkout directly.

@@ -2009,10 +2009,18 @@ fn action_params_schema() -> Value {
                     "path":{"type":"array","minItems":2,"maxItems":201,"items":{"type":"object","additionalProperties":false,"required":["x","y"],"properties":{"x":{"type":"number","minimum":0},"y":{"type":"number","minimum":0}}},"description":"A bounded pixel trajectory in the latest screenshot. Use multiple points for one continuous pen or brush stroke. A two-point path may use steps for linear interpolation."},
                     "duration_ms":{"type":"integer","minimum":1,"maximum":10000,"description":"Total duration for a drag or held keypress. Omit it to use the route default."},
                     "steps":{"type":"integer","minimum":1,"maximum":200,"description":"Interpolation segments for a two-point drag. For a sampled multi-point brush path, send the points directly and omit steps."},
-                    "keys":{"type":"array","items":{"type":"string"},"description":"Keyboard input uses keys, not key; it requires a raw-input action scope."},
+                    "keys":{"type":"array","items":{"type":"string"},"description":"Keyboard input uses keys, not key. keypress holds one chord. key_sequence on Windows pixels_only taps and releases each entry in order (e.g. [F2, CTRL+A, A, A, ENTER]). Grant key_sequence explicitly. Use one initial observation and optional final capture."},
+                    "delay_ms":{"type":"integer","minimum":0,"maximum":200,"description":"For key_sequence, pause between taps in milliseconds (default 40)."},
                     "modifiers":{"type":"array","items":{"type":"string"},"description":"Keyboard modifiers for supported raw-input actions."},
                     "text":{"type":"string","description":"Non-secret text only. Credentials must use a trusted secret_handle."}
-                }
+                },
+                "allOf":[{
+                    "if":{"properties":{"action":{"const":"key_sequence"}}},
+                    "then":{"required":["keys"],"properties":{
+                        "input_kind":{"const":"raw_input"},"delivery_mode":{"const":"foreground"},
+                        "keys":{"minItems":1,"maxItems":64,"items":{"minLength":1,"maxLength":64}}
+                    }}
+                }]
             }
         },
         "allOf":[{

@@ -1489,6 +1489,7 @@ fn public_tool_schema_advertises_closed_pixel_actions_and_exact_window_only() {
             "right_click",
             "toggle",
             "drag",
+            "key_sequence",
             "keypress",
             "keyboard_shortcut",
             "type",

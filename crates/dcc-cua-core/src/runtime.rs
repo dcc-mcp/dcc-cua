@@ -439,9 +439,8 @@ pub(crate) fn banner_activity_for_action_phase(
         ActionBannerPhase::Preparing => BannerActivity::Operating,
         #[cfg(any(windows, test))]
         ActionBannerPhase::Injecting => match _action.action.as_str() {
-            "type" | "type_chars" | "set_text" | "set_value" | "keypress" | "keyboard_shortcut" => {
-                BannerActivity::KeyboardInput
-            }
+            "type" | "type_chars" | "set_text" | "set_value" | "key_sequence" | "keypress"
+            | "keyboard_shortcut" => BannerActivity::KeyboardInput,
             _ => BannerActivity::PointerInput,
         },
     }
