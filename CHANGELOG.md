@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.23.0](https://github.com/dcc-mcp/dcc-cua/compare/v1.22.0...v1.23.0) (2026-11-28)
+
+
+### Features
+
+* accelerate and measure guarded DCC workflows ([df2b4f9](https://github.com/dcc-mcp/dcc-cua/commit/df2b4f914ce752f9c0e02e4311bd6be408d8ec35))
+
+
+### Bug Fixes
+
+* **ci:** retry delayed artifact visibility ([ee86885](https://github.com/dcc-mcp/dcc-cua/commit/ee868858107b05d59729fcdb1bb29a2cc8b45e90))
+* **cli:** validate task actions and banner startup ([8b8b5cf](https://github.com/dcc-mcp/dcc-cua/commit/8b8b5cfc141d80298a4fa7da8af16f47dc536bca))
+* enforce Qt readiness and harden task startup ([480d657](https://github.com/dcc-mcp/dcc-cua/commit/480d657be0bd3e5444dcf7c03ea90f161da8401a))
+* **indicator:** keep startup diagnostics within layout limit ([0ea4649](https://github.com/dcc-mcp/dcc-cua/commit/0ea46496ec30652af2b632ced2ea89a8ed792839))
+* **sdk:** adopt Try CUA Driver 0.60.0 ([8bd6fe9](https://github.com/dcc-mcp/dcc-cua/commit/8bd6fe93061ac751072599caedd9eddb9a3f740d))
+
 ## [1.22.0](https://github.com/dcc-mcp/dcc-cua/compare/v1.21.0...v1.22.0) (2026-11-24)
 
 
