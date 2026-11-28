@@ -8,8 +8,8 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 EXPECTED_SDK_GIT = "https://github.com/trycua/cua.git"
-EXPECTED_SDK_REV = "28bb78d776ca6c933f93c0a3fcfc3ed44de8bdf6"
-EXPECTED_SDK_VERSION = "0.66.0"
+EXPECTED_SDK_REV = "7ee02b7b435102e2d7f9088ac2e5208885a57b7e"
+EXPECTED_SDK_VERSION = "0.67.0"
 SDK_PACKAGES = {
     "cua-driver-contract",
     "cua-driver-sdk",
